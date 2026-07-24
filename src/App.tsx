@@ -5,134 +5,44 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
-import {
-  Archive,
-  ArchiveRestore,
-  Bot,
-  Check,
-  ChevronDown,
-  Circle,
-  Code2,
-  Command,
-  Download,
-  FileCode2,
-  Folder,
-  FolderOpen,
-  LoaderCircle,
-  MessageSquare,
-  Paperclip,
-  PanelRight,
-  PanelLeftClose,
-  PanelLeftOpen,
-  Plus,
-  Pin,
-  PinOff,
-  Pencil,
-  Search,
-  Settings,
-  Shield,
-  ShieldAlert,
-  ShieldCheck,
-  TerminalSquare,
-  Trash2,
-  UsersRound,
-  X,
-} from "lucide-react";
-import {
-  getCodexRuntimeStatus,
-  auditEvent,
-  exportTextFile,
-  getNormalChatWorkspace,
-  hasOpenRouterKey,
-  listOpenRouterModels,
-  respond,
-  restartRuntime,
-  rpc,
-  type CodexRuntimeStatus,
-  type JsonObject,
-} from "./lib/codex";
+import { Archive, ArchiveRestore, Bot, Check, ChevronDown, Circle, Code2, Command, Download, FileCode2, Folder, FolderOpen, LoaderCircle, MessageSquare, Paperclip, PanelRight, PanelLeftClose, PanelLeftOpen, Plus, Pin, PinOff, Pencil, Search, Settings, Shield, ShieldAlert, ShieldCheck, TerminalSquare, Trash2, UsersRound, X } from "lucide-react";
+import { getCodexRuntimeStatus, auditEvent, exportTextFile, getNormalChatWorkspace, hasOpenRouterKey, listOpenRouterModels, respond, restartRuntime, rpc, type CodexRuntimeStatus, type JsonObject } from "./lib/codex";
+import { deleteClaudeTranscript, getClaudeRuntimeStatus, interruptClaudeTurn, loadClaudeTranscript, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, startClaudeTurn, steerClaudeTurn, type ClaudeRuntimeStatus } from "./lib/claude";
 import { loadStored, storeValue } from "./lib/storage";
-import { DEFAULT_OPENAI_MODEL, DEFAULT_PROMPT_PROFILES, DEFAULT_SETTINGS, THEMES } from "./lib/appConfig";
+import { DEFAULT_CLAUDE_MODEL, DEFAULT_OPENAI_MODEL, DEFAULT_PROMPT_PROFILES, DEFAULT_SETTINGS, THEMES } from "./lib/appConfig";
 import { commandSandbox, threadResumeParams, threadRuntimeConfig, threadStartParams, turnStartParams } from "./lib/turnConfig";
 import { threadSearchParams, threadsForWorkspace, type ThreadSearchResponse } from "./lib/threadSearch";
 import { buildTurnInput, withoutSentAttachments } from "./lib/turnInput";
-import {
-  forgetSidebarThread,
-  optimisticStartedThread,
-  pruneSidebarIndex,
-  reconcileWorkspaceThreads,
-  rememberSidebarThread,
-  sidebarThread,
-  upsertThread,
-  type ThreadSidebarIndex,
-} from "./lib/threadList";
+import { forgetSidebarThread, optimisticStartedThread, pruneSidebarIndex, reconcileWorkspaceThreads, rememberSidebarThread, sidebarThread, upsertThread, type ThreadSidebarIndex } from "./lib/threadList";
 import { timelineFromTurns } from "./lib/threadTimeline";
 import { buildTranscriptMarkdown } from "./lib/transcript";
 import { timeAgo } from "./lib/timeAgo";
 import { RowMenu } from "./components/RowMenu";
 import { type ReasoningEffort, ModelPowerControl, type RuntimeModel } from "./components/ModelPowerControl";
 import { OpenRouterModelControl, type OpenRouterModel } from "./components/OpenRouterModelControl";
+import { ClaudeModelControl } from "./components/ClaudeModelControl";
 import { ApprovalCenter } from "./components/ApprovalCenter";
 import { Composer, type ComposerHandle } from "./components/Composer";
 import { CommandPalette } from "./components/CommandPalette";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { SettingsModal } from "./components/SettingsModal";
 import { AuthRequiredModal, RuntimeSetupModal } from "./components/RuntimeModals";
-import type {
-  AgentRecord,
-  AttachmentRecord,
-  CheckpointRecord,
-  McpView,
-  StudioTab,
-} from "./components/StudioDock";
-import type {
-  Account,
-  Activity,
-  AppSettings,
-  ArchivedThread,
-  ChatMessage,
-  CustomAgentProfile,
-  PendingApproval,
-  PermissionMode,
-  Project,
-  ProjectAction,
-  PromptProfile,
-  ScheduledTask,
-  ScheduleRunRecord,
-  SettingsSection,
-  Thread,
-  Turn,
-  ThemeName,
-  WorkspaceMode,
-} from "./types";
+import type { AgentRecord, AttachmentRecord, CheckpointRecord, McpView, StudioTab } from "./components/StudioDock";
+import type { Account, Activity, AppSettings, ArchivedThread, ChatMessage, CustomAgentProfile, PendingApproval, PermissionMode, Project, ProjectAction, PromptProfile, ScheduledTask, ScheduleRunRecord, SettingsSection, Thread, Turn, ThemeName, WorkspaceMode } from "./types";
 import { useTaskStore } from "./lib/taskStore";
 import { friendlyError } from "./lib/errors";
 import { recordError } from "./lib/errorLog";
 import { costTotals, formatCost, recordThreadCost } from "./lib/costLedger";
 import { useAppUpdater } from "./lib/appUpdater";
 import { useCodexEvents } from "./hooks/useCodexEvents";
+import { useClaudeEvents } from "./hooks/useClaudeEvents";
 import { useScheduler } from "./hooks/useScheduler";
 import { useTerminal } from "./hooks/useTerminal";
 import { usePaneResize } from "./hooks/usePaneResize";
 import { useWorkflowEngine } from "./hooks/useWorkflowEngine";
 import { isEstablishedOpenKiwiInstall, ONBOARDING_EXIT_MS, ONBOARDING_VERSION } from "./lib/onboarding";
-import {
-  createLocalSkill,
-  importLocalSkills,
-  normalizeSkillName,
-  resolveLocalSkills,
-  scanLocalSkills,
-  syncLocalSkills,
-  type LocalSkill,
-  type LocalSkillFile,
-} from "./lib/skills";
-import {
-  compactWorkflowRun,
-  normalizeWorkflows,
-  recoverWorkflowRuns,
-  type WorkflowDefinition,
-  type WorkflowRunRecord,
-} from "./lib/workflows";
+import { createLocalSkill, importLocalSkills, normalizeSkillName, resolveLocalSkills, scanLocalSkills, syncLocalSkills, type LocalSkill, type LocalSkillFile } from "./lib/skills";
+import { compactWorkflowRun, normalizeWorkflows, recoverWorkflowRuns, type WorkflowDefinition, type WorkflowRunRecord } from "./lib/workflows";
 
 const ChatTimeline = lazy(() => import("./components/ChatTimeline").then((module) => ({ default: module.ChatTimeline })));
 const StudioDock = lazy(() => import("./components/StudioDock").then((module) => ({ default: module.StudioDock })));
@@ -146,24 +56,10 @@ const initialProjects = loadStored<Project[]>("kiwi.projects", []).sort((a, b) =
 const initialWorkspaceMode: WorkspaceMode = loadStored<WorkspaceMode>("kiwi.workspaceMode", initialProjects.length ? "project" : "chat");
 const initialKnownThreads = pruneSidebarIndex(loadStored<ThreadSidebarIndex>("kiwi.knownThreads", {}));
 const initialOnboardingVersion = loadStored<number>("kiwi.onboardingVersion", 0);
-const establishedInstall = isEstablishedOpenKiwiInstall({
-  projects: initialProjects.length,
-  knownThreads: Object.keys(initialKnownThreads).length,
-  hasStoredSettings: localStorage.getItem("kiwi.settings") !== null,
-  hasSkillsFolder: Boolean(loadStored<string>("kiwi.skillsFolder", "")),
-});
+const establishedInstall = isEstablishedOpenKiwiInstall({ projects: initialProjects.length, knownThreads: Object.keys(initialKnownThreads).length, hasStoredSettings: localStorage.getItem("kiwi.settings") !== null, hasSkillsFolder: Boolean(loadStored<string>("kiwi.skillsFolder", "")) });
 const initialOnboardingOpen = initialOnboardingVersion < ONBOARDING_VERSION && !establishedInstall;
 const storedSettings = loadStored<Partial<AppSettings>>("kiwi.settings", {});
-const initialSettings: AppSettings = {
-  ...DEFAULT_SETTINGS,
-  ...storedSettings,
-  subagentMax: Math.min(24, Math.max(1, Number(storedSettings.subagentMax) || DEFAULT_SETTINGS.subagentMax)),
-  model: storedSettings.provider === "openrouter"
-    ? ((storedSettings.model || "").includes("/") ? storedSettings.model! : "")
-    : (storedSettings.model || DEFAULT_SETTINGS.model),
-  theme: THEMES.some((theme) => theme.id === storedSettings.theme) ? storedSettings.theme! : DEFAULT_SETTINGS.theme,
-  uiScale: Math.min(150, Math.max(80, Number(storedSettings.uiScale) || DEFAULT_SETTINGS.uiScale)),
-};
+const initialSettings: AppSettings = { ...DEFAULT_SETTINGS, ...storedSettings, subagentMax: Math.min(24, Math.max(1, Number(storedSettings.subagentMax) || DEFAULT_SETTINGS.subagentMax)), model: storedSettings.provider === "openrouter" ? ((storedSettings.model || "").includes("/") ? storedSettings.model! : "") : storedSettings.provider === "claude" ? ((storedSettings.model || "").startsWith("claude-") ? storedSettings.model! : DEFAULT_CLAUDE_MODEL) : storedSettings.model || DEFAULT_SETTINGS.model, theme: THEMES.some((theme) => theme.id === storedSettings.theme) ? storedSettings.theme! : DEFAULT_SETTINGS.theme, uiScale: Math.min(150, Math.max(80, Number(storedSettings.uiScale) || DEFAULT_SETTINGS.uiScale)) };
 
 function basename(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
@@ -178,6 +74,16 @@ function permissionLabel(mode: PermissionMode): string {
   if (mode === "read-only") return "Read only";
   if (mode === "full") return "Full access";
   return "Ask to act";
+}
+
+function providerLabel(provider: AppSettings["provider"]): string {
+  if (provider === "openrouter") return "OpenRouter";
+  if (provider === "claude") return "Claude";
+  return "OpenAI";
+}
+
+function isClaudeThread(thread: Thread | null | undefined): boolean {
+  return thread?.modelProvider?.toLowerCase() === "claude";
 }
 
 function PermissionIcon({ mode, size = 15 }: { mode: PermissionMode; size?: number }) {
@@ -205,17 +111,7 @@ function ThreadRowBadge({ threadId }: { threadId: string }) {
  * Subscribes to the streaming timeline itself so per-frame delta flushes stop
  * at this component boundary instead of re-rendering the entire App.
  */
-function ConversationTimeline({ threadId, running, thinkingLabel, approval, searchQuery, searchActiveMatch, onSearchMatches, onEditMessage, onApprovalRespond }: {
-  threadId: string;
-  running: boolean;
-  thinkingLabel: string;
-  approval: PendingApproval | null;
-  searchQuery?: string;
-  searchActiveMatch?: number;
-  onSearchMatches?: (count: number) => void;
-  onEditMessage: (text: string) => void;
-  onApprovalRespond: (approval: PendingApproval, result: JsonObject) => void;
-}) {
+function ConversationTimeline({ threadId, running, thinkingLabel, approval, searchQuery, searchActiveMatch, onSearchMatches, onEditMessage, onApprovalRespond }: { threadId: string; running: boolean; thinkingLabel: string; approval: PendingApproval | null; searchQuery?: string; searchActiveMatch?: number; onSearchMatches?: (count: number) => void; onEditMessage: (text: string) => void; onApprovalRespond: (approval: PendingApproval, result: JsonObject) => void }) {
   const messages = useTaskStore((state) => state.tasks[threadId]?.messages ?? EMPTY_MESSAGES);
   const activities = useTaskStore((state) => state.tasks[threadId]?.activities ?? EMPTY_ACTIVITIES);
   return <ChatTimeline messages={messages} activities={activities} running={running} thinkingLabel={thinkingLabel} approval={approval} searchQuery={searchQuery} searchActiveMatch={searchActiveMatch} onSearchMatches={onSearchMatches} onEditMessage={onEditMessage} onApprovalRespond={onApprovalRespond} />;
@@ -262,6 +158,8 @@ export default function App() {
   const [status, setStatus] = useState("Checking runtime");
   const [error, setError] = useState<string | null>(null);
   const [runtimeStatus, setRuntimeStatus] = useState<CodexRuntimeStatus | null>(null);
+  const [claudeStatus, setClaudeStatus] = useState<ClaudeRuntimeStatus | null>(null);
+  const [claudeLoginStarting, setClaudeLoginStarting] = useState(false);
   const [runtimeSetupOpen, setRuntimeSetupOpen] = useState(false);
   const [runtimeChecking, setRuntimeChecking] = useState(false);
   const [authRequiredOpen, setAuthRequiredOpen] = useState(false);
@@ -294,10 +192,14 @@ export default function App() {
   const composerRef = useRef<ComposerHandle>(null);
   const threadSearchRequestRef = useRef(0);
   const cancelRequestedRef = useRef(new Set<string>());
+  const claudeSaveTimersRef = useRef(new Map<string, number>());
   const permissionControlRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     storeValue("kiwi.workflows", workflows);
-    storeValue("kiwi.workflowRuns", workflowRuns.map((run) => compactWorkflowRun(run)));
+    storeValue(
+      "kiwi.workflowRuns",
+      workflowRuns.map((run) => compactWorkflowRun(run)),
+    );
     // Persist normalized workflow defaults and recover any run left active by
     // a previous app exit. Later updates are persisted by their own writers.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -307,24 +209,25 @@ export default function App() {
   }
   if (knownThreadsRef.current === null) knownThreadsRef.current = initialKnownThreads;
 
-  const selectedProject = useMemo(
-    () => projects.find((project) => project.id === activeProjectId) ?? null,
-    [activeProjectId, projects],
-  );
+  const selectedProject = useMemo(() => projects.find((project) => project.id === activeProjectId) ?? null, [activeProjectId, projects]);
   const activeProject = workspaceMode === "project" ? selectedProject : null;
-  const chatWorkspace = useMemo<Project | null>(() => chatWorkspacePath ? ({ id: "openkiwi-normal-chats", name: "Chats", path: chatWorkspacePath, isChat: true }) : null, [chatWorkspacePath]);
+  const chatWorkspace = useMemo<Project | null>(() => (chatWorkspacePath ? { id: "openkiwi-normal-chats", name: "Chats", path: chatWorkspacePath, isChat: true } : null), [chatWorkspacePath]);
   const activeWorkspace = workspaceMode === "chat" ? chatWorkspace : activeProject;
   const activeThreadId = activeThread?.id ?? null;
   // Per-project overrides win over global settings for thread operations.
   const effectiveSettings = useMemo<AppSettings>(() => {
     const overrides = activeProject?.overrides;
-    if (!overrides) return settings;
-    return {
-      ...settings,
-      ...(overrides.model ? { model: overrides.model } : {}),
-      ...(overrides.permission ? { permission: overrides.permission } : {}),
-      ...(overrides.systemPrompt ? { systemPrompt: overrides.systemPrompt } : {}),
-    };
+    const resolved = !overrides ? settings : { ...settings, ...(overrides.model ? { model: overrides.model } : {}), ...(overrides.permission ? { permission: overrides.permission } : {}), ...(overrides.systemPrompt ? { systemPrompt: overrides.systemPrompt } : {}) };
+    if (resolved.provider === "claude" && !resolved.model.startsWith("claude-")) {
+      return { ...resolved, model: DEFAULT_CLAUDE_MODEL };
+    }
+    if (resolved.provider === "openai" && resolved.model.includes("/")) {
+      return { ...resolved, model: DEFAULT_OPENAI_MODEL };
+    }
+    if (resolved.provider === "openrouter" && !resolved.model.includes("/")) {
+      return { ...resolved, model: "" };
+    }
+    return resolved;
   }, [activeProject, settings]);
 
   const terminal = useTerminal({ scrollback: settings.terminalScrollback, permission: effectiveSettings.permission, onError: setError });
@@ -333,10 +236,10 @@ export default function App() {
     const task = state.tasks[activeThreadId];
     return !task || (task.messages.length === 0 && task.activities.length === 0);
   });
-  const diff = useTaskStore((state) => activeThreadId ? state.tasks[activeThreadId]?.diff ?? "" : "");
-  const agentRecords = useTaskStore((state) => activeThreadId ? state.tasks[activeThreadId]?.agents ?? EMPTY_AGENTS : EMPTY_AGENTS);
-  const tokenUsage = useTaskStore((state) => activeThreadId ? state.tasks[activeThreadId]?.usage ?? null : null);
-  const taskStatus = useTaskStore((state) => activeThreadId ? state.statuses[activeThreadId] ?? "idle" : "idle");
+  const diff = useTaskStore((state) => (activeThreadId ? (state.tasks[activeThreadId]?.diff ?? "") : ""));
+  const agentRecords = useTaskStore((state) => (activeThreadId ? (state.tasks[activeThreadId]?.agents ?? EMPTY_AGENTS) : EMPTY_AGENTS));
+  const tokenUsage = useTaskStore((state) => (activeThreadId ? (state.tasks[activeThreadId]?.usage ?? null) : null));
+  const taskStatus = useTaskStore((state) => (activeThreadId ? (state.statuses[activeThreadId] ?? "idle") : "idle"));
   const running = startingTurn || taskStatus === "starting" || taskStatus === "running";
   // Standard approvals for the thread being viewed render inline in its
   // timeline; the modal is reserved for background threads and for complex
@@ -353,9 +256,7 @@ export default function App() {
     for (const task of Object.values(state.tasks)) {
       const candidate = task.approvals[0];
       if (!candidate) continue;
-      const handledInline = candidate.threadId === state.activeThreadId
-        && candidate.method !== "item/tool/requestUserInput"
-        && candidate.method !== "mcpServer/elicitation/request";
+      const handledInline = candidate.threadId === state.activeThreadId && candidate.method !== "item/tool/requestUserInput" && candidate.method !== "mcpServer/elicitation/request";
       if (handledInline) continue;
       if (!earliest || candidate.receivedAt < earliest.receivedAt) earliest = candidate;
     }
@@ -386,11 +287,7 @@ export default function App() {
     if (!activeProjectPath) return undefined;
     return async (query: string): Promise<string[]> => {
       if (!query.trim()) return [];
-      const result = await rpc<{ files: Array<{ path?: string; file_name?: string }> }>("fuzzyFileSearch", {
-        query: query.trim(),
-        roots: [activeProjectPath],
-        cancellationToken: crypto.randomUUID(),
-      });
+      const result = await rpc<{ files: Array<{ path?: string; file_name?: string }> }>("fuzzyFileSearch", { query: query.trim(), roots: [activeProjectPath], cancellationToken: crypto.randomUUID() });
       return (result.files ?? [])
         .map((entry) => entry.path || entry.file_name || "")
         .filter(Boolean)
@@ -422,38 +319,40 @@ export default function App() {
   }, [activeProject, settings.provider, taskStatus, tokenUsage]);
 
   // Only offer "Check settings" for failures settings can actually fix.
-  const errorSuggestsSettings = useMemo(() => Boolean(error) && /sign in|api key|openrouter|model|settings|runtime|codex|account/i.test(error ?? ""), [error]);
-  const workspaceArchived = useMemo(() => activeWorkspace
-    ? archivedThreads.filter((record) => record.path === normalizedProjectPath(activeWorkspace.path))
-    : [], [activeWorkspace, archivedThreads]);
+  const errorSuggestsSettings = useMemo(() => Boolean(error) && /sign in|api key|openrouter|claude|model|settings|runtime|codex|account/i.test(error ?? ""), [error]);
+  const workspaceArchived = useMemo(() => (activeWorkspace ? archivedThreads.filter((record) => record.path === normalizedProjectPath(activeWorkspace.path)) : []), [activeWorkspace, archivedThreads]);
 
   const persistSettings = useCallback((next: AppSettings) => {
     setSettings(next);
     storeValue("kiwi.settings", next);
   }, []);
 
-  const persistActiveProjectOverride = useCallback(<K extends keyof NonNullable<Project["overrides"]>>(
-    key: K,
-    value: NonNullable<Project["overrides"]>[K],
-  ) => {
-    if (!activeProject?.overrides?.[key]) return false;
-    setProjects((current) => {
-      const next = current.map((project) => project.id === activeProject.id
-        ? { ...project, overrides: { ...project.overrides, [key]: value } }
-        : project);
-      storeValue("kiwi.projects", next);
-      return next;
-    });
-    return true;
-  }, [activeProject]);
+  const persistActiveProjectOverride = useCallback(
+    <K extends keyof NonNullable<Project["overrides"]>>(key: K, value: NonNullable<Project["overrides"]>[K]) => {
+      if (!activeProject?.overrides?.[key]) return false;
+      setProjects((current) => {
+        const next = current.map((project) => (project.id === activeProject.id ? { ...project, overrides: { ...project.overrides, [key]: value } } : project));
+        storeValue("kiwi.projects", next);
+        return next;
+      });
+      return true;
+    },
+    [activeProject],
+  );
 
-  const persistComposerModel = useCallback((model: string) => {
-    if (!persistActiveProjectOverride("model", model)) persistSettings({ ...settings, model });
-  }, [persistActiveProjectOverride, persistSettings, settings]);
+  const persistComposerModel = useCallback(
+    (model: string) => {
+      if (!persistActiveProjectOverride("model", model)) persistSettings({ ...settings, model });
+    },
+    [persistActiveProjectOverride, persistSettings, settings],
+  );
 
-  const persistComposerPermission = useCallback((permission: PermissionMode) => {
-    if (!persistActiveProjectOverride("permission", permission)) persistSettings({ ...settings, permission });
-  }, [persistActiveProjectOverride, persistSettings, settings]);
+  const persistComposerPermission = useCallback(
+    (permission: PermissionMode) => {
+      if (!persistActiveProjectOverride("permission", permission)) persistSettings({ ...settings, permission });
+    },
+    [persistActiveProjectOverride, persistSettings, settings],
+  );
 
   const { paneSizes, startPaneResize } = usePaneResize((settings.uiScale || 100) / 100);
 
@@ -464,7 +363,7 @@ export default function App() {
     if (transientStatusTimerRef.current !== null) window.clearTimeout(transientStatusTimerRef.current);
     transientStatusTimerRef.current = window.setTimeout(() => {
       transientStatusTimerRef.current = null;
-      setStatus((current) => current === message ? "Ready" : current);
+      setStatus((current) => (current === message ? "Ready" : current));
     }, 3000);
   }, []);
 
@@ -497,9 +396,12 @@ export default function App() {
     requestAnimationFrame(() => setOnboardingOpen(true));
   }, []);
 
-  useEffect(() => () => {
-    if (onboardingExitTimerRef.current !== null) window.clearTimeout(onboardingExitTimerRef.current);
-  }, []);
+  useEffect(
+    () => () => {
+      if (onboardingExitTimerRef.current !== null) window.clearTimeout(onboardingExitTimerRef.current);
+    },
+    [],
+  );
 
   const startNormalChat = useCallback(() => {
     setWorkspaceMode("chat");
@@ -534,6 +436,37 @@ export default function App() {
     storeValue("kiwi.knownThreads", next);
   }, []);
 
+  const persistClaudeThread = useCallback(
+    (threadId: string) => {
+      const task = useTaskStore.getState().tasks[threadId];
+      const thread = activeThread?.id === threadId ? activeThread : (threads.find((entry) => entry.id === threadId) ?? knownThreadsRef.current?.[threadId]);
+      if (!task || !thread || !isClaudeThread(thread)) return Promise.resolve();
+      return saveClaudeTranscript({ thread, messages: task.messages.map((message) => ({ ...message, streaming: false })), activities: task.activities });
+    },
+    [activeThread, threads],
+  );
+
+  const scheduleClaudeThreadSave = useCallback(
+    (threadId: string) => {
+      const existing = claudeSaveTimersRef.current.get(threadId);
+      if (existing !== undefined) window.clearTimeout(existing);
+      const timer = window.setTimeout(() => {
+        claudeSaveTimersRef.current.delete(threadId);
+        void persistClaudeThread(threadId).catch(() => {});
+      }, 250);
+      claudeSaveTimersRef.current.set(threadId, timer);
+    },
+    [persistClaudeThread],
+  );
+
+  useEffect(
+    () => () => {
+      for (const timer of claudeSaveTimersRef.current.values()) window.clearTimeout(timer);
+      claudeSaveTimersRef.current.clear();
+    },
+    [],
+  );
+
   const checkRuntime = useCallback(async (showSetupWhenMissing = true): Promise<CodexRuntimeStatus> => {
     setRuntimeChecking(true);
     try {
@@ -547,14 +480,7 @@ export default function App() {
       }
       return result;
     } catch (reason) {
-      const result: CodexRuntimeStatus = {
-        available: false,
-        source: null,
-        path: null,
-        version: null,
-        compatible: false,
-        warning: null,
-      };
+      const result: CodexRuntimeStatus = { available: false, source: null, path: null, version: null, compatible: false, warning: null };
       setRuntimeStatus(result);
       setStatus("Setup required");
       setError(friendlyError(reason));
@@ -565,43 +491,63 @@ export default function App() {
     }
   }, []);
 
-  const loadThreadsRequestRef = useRef(0);
-  const loadThreads = useCallback(async (project: Project | null) => {
-    // Last-write-wins guard: a slow page loop for a previous workspace must
-    // not overwrite the thread list of the workspace the user switched to.
-    const requestId = ++loadThreadsRequestRef.current;
-    if (!project) {
-      setThreads([]);
-      return;
-    }
+  const refreshClaudeStatus = useCallback(async () => {
     try {
-      const allThreads: Thread[] = [];
-      let cursor: string | null = null;
-      for (let page = 0; page < 20; page += 1) {
-        const result: { data: Thread[]; nextCursor?: string | null } = await rpc("thread/list", { cwd: project.path, limit: 100, cursor });
-        if (loadThreadsRequestRef.current !== requestId) return;
-        allThreads.push(...(result.data ?? []));
-        cursor = result.nextCursor ?? null;
-        if (!cursor) break;
-      }
-      const projectPath = normalizedProjectPath(project.path);
-      const runtimeThreads = allThreads.filter((thread) => {
-        const boundPath = threadProjectBindingsRef.current?.[thread.id];
-        return normalizedProjectPath(boundPath || thread.cwd) === projectPath;
-      });
-      const merged = { ...(knownThreadsRef.current ?? {}) };
-      for (const thread of runtimeThreads) merged[thread.id] = sidebarThread(thread);
-      const remembered = pruneSidebarIndex(merged);
-      knownThreadsRef.current = remembered;
-      storeValue("kiwi.knownThreads", remembered);
-      if (loadThreadsRequestRef.current !== requestId) return;
-      setThreads(reconcileWorkspaceThreads(runtimeThreads, remembered, project.path, threadProjectBindingsRef.current ?? {}));
+      const result = await getClaudeRuntimeStatus();
+      setClaudeStatus(result);
+      return result;
     } catch (reason) {
-      if (loadThreadsRequestRef.current !== requestId) return;
-      setThreads(reconcileWorkspaceThreads([], knownThreadsRef.current ?? {}, project.path, threadProjectBindingsRef.current ?? {}));
+      const result: ClaudeRuntimeStatus = { available: false, path: null, version: null, loggedIn: false, authMethod: null, email: null, subscriptionType: null, warning: null };
+      setClaudeStatus(result);
       setError(friendlyError(reason));
+      return result;
     }
   }, []);
+
+  const loadThreadsRequestRef = useRef(0);
+  const loadThreads = useCallback(
+    async (project: Project | null) => {
+      // Last-write-wins guard: a slow page loop for a previous workspace must
+      // not overwrite the thread list of the workspace the user switched to.
+      const requestId = ++loadThreadsRequestRef.current;
+      if (!project) {
+        setThreads([]);
+        return;
+      }
+      if (!runtimeStatus?.available) {
+        setThreads(reconcileWorkspaceThreads([], knownThreadsRef.current ?? {}, project.path, threadProjectBindingsRef.current ?? {}));
+        return;
+      }
+      try {
+        const allThreads: Thread[] = [];
+        let cursor: string | null = null;
+        for (let page = 0; page < 20; page += 1) {
+          const result: { data: Thread[]; nextCursor?: string | null } = await rpc("thread/list", { cwd: project.path, limit: 100, cursor });
+          if (loadThreadsRequestRef.current !== requestId) return;
+          allThreads.push(...(result.data ?? []));
+          cursor = result.nextCursor ?? null;
+          if (!cursor) break;
+        }
+        const projectPath = normalizedProjectPath(project.path);
+        const runtimeThreads = allThreads.filter((thread) => {
+          const boundPath = threadProjectBindingsRef.current?.[thread.id];
+          return normalizedProjectPath(boundPath || thread.cwd) === projectPath;
+        });
+        const merged = { ...(knownThreadsRef.current ?? {}) };
+        for (const thread of runtimeThreads) merged[thread.id] = sidebarThread(thread);
+        const remembered = pruneSidebarIndex(merged);
+        knownThreadsRef.current = remembered;
+        storeValue("kiwi.knownThreads", remembered);
+        if (loadThreadsRequestRef.current !== requestId) return;
+        setThreads(reconcileWorkspaceThreads(runtimeThreads, remembered, project.path, threadProjectBindingsRef.current ?? {}));
+      } catch (reason) {
+        if (loadThreadsRequestRef.current !== requestId) return;
+        setThreads(reconcileWorkspaceThreads([], knownThreadsRef.current ?? {}, project.path, threadProjectBindingsRef.current ?? {}));
+        setError(friendlyError(reason));
+      }
+    },
+    [runtimeStatus?.available],
+  );
 
   const refreshAccount = useCallback(async () => {
     try {
@@ -638,9 +584,7 @@ export default function App() {
     setOpenRouterModelsError("");
     try {
       const result = await listOpenRouterModels<{ data?: OpenRouterModel[] }>();
-      const models = (result.data ?? [])
-        .filter((entry) => entry.id && entry.name)
-        .sort((a, b) => a.name.localeCompare(b.name));
+      const models = (result.data ?? []).filter((entry) => entry.id && entry.name).sort((a, b) => a.name.localeCompare(b.name));
       setOpenRouterModels(models);
       if (!models.length) setOpenRouterModelsError("OpenRouter returned an empty catalog");
     } catch (reason) {
@@ -660,71 +604,66 @@ export default function App() {
     }
   }, []);
 
-  const prepareLocalSkills = useCallback(async (
-    folder: string,
-    files: LocalSkillFile[],
-    aliases: Record<string, string>,
-    disabled: string[],
-  ) => {
-    const resolved = resolveLocalSkills(files, aliases, disabled);
-    setSkills(resolved);
-    if (!folder) {
-      skillRuntimeRootRef.current = "";
-      if (runtimeStatus?.available) await rpc("skills/extraRoots/set", { extraRoots: [] });
+  const prepareLocalSkills = useCallback(
+    async (folder: string, files: LocalSkillFile[], aliases: Record<string, string>, disabled: string[]) => {
+      const resolved = resolveLocalSkills(files, aliases, disabled);
+      setSkills(resolved);
+      if (!folder) {
+        skillRuntimeRootRef.current = "";
+        if (runtimeStatus?.available) await rpc("skills/extraRoots/set", { extraRoots: [] });
+        return resolved;
+      }
+      const runtimeRoot = await syncLocalSkills(folder, resolved);
+      skillRuntimeRootRef.current = runtimeRoot;
+      if (runtimeStatus?.available) {
+        await rpc("skills/extraRoots/set", { extraRoots: [runtimeRoot] });
+      }
       return resolved;
-    }
-    const runtimeRoot = await syncLocalSkills(folder, resolved);
-    skillRuntimeRootRef.current = runtimeRoot;
-    if (runtimeStatus?.available) {
-      await rpc("skills/extraRoots/set", { extraRoots: [runtimeRoot] });
-    }
-    return resolved;
-  }, [runtimeStatus?.available]);
+    },
+    [runtimeStatus?.available],
+  );
 
-  const refreshLocalSkills = useCallback(async (
-    folder = skillsFolder,
-    aliases = skillAliases,
-    disabled = disabledSkillPaths,
-  ) => {
-    if (!folder) {
-      setSkillFiles([]);
-      setSkills([]);
+  const refreshLocalSkills = useCallback(
+    async (folder = skillsFolder, aliases = skillAliases, disabled = disabledSkillPaths) => {
+      if (!folder) {
+        setSkillFiles([]);
+        setSkills([]);
+        setSkillsError("");
+        return prepareLocalSkills("", [], aliases, disabled);
+      }
+      setSkillsBusy(true);
       setSkillsError("");
-      return prepareLocalSkills("", [], aliases, disabled);
-    }
-    setSkillsBusy(true);
-    setSkillsError("");
-    try {
-      const files = await scanLocalSkills(folder);
-      setSkillFiles(files);
-      return await prepareLocalSkills(folder, files, aliases, disabled);
-    } catch (reason) {
-      setSkillsError(friendlyError(reason));
-      setSkillFiles([]);
-      setSkills([]);
-      try { await prepareLocalSkills("", [], aliases, disabled); } catch { /* Keep the scan error as the useful message. */ }
-      return [];
-    } finally {
-      setSkillsBusy(false);
-    }
-  }, [disabledSkillPaths, prepareLocalSkills, skillAliases, skillsFolder]);
+      try {
+        const files = await scanLocalSkills(folder);
+        setSkillFiles(files);
+        return await prepareLocalSkills(folder, files, aliases, disabled);
+      } catch (reason) {
+        setSkillsError(friendlyError(reason));
+        setSkillFiles([]);
+        setSkills([]);
+        try {
+          await prepareLocalSkills("", [], aliases, disabled);
+        } catch {
+          /* Keep the scan error as the useful message. */
+        }
+        return [];
+      } finally {
+        setSkillsBusy(false);
+      }
+    },
+    [disabledSkillPaths, prepareLocalSkills, skillAliases, skillsFolder],
+  );
 
-  const refreshTools = useCallback(async (workspace: Project | null) => {
-    await refreshLocalSkills();
-    if (!runtimeStatus?.available) return;
-    const tasks: Array<Promise<unknown>> = [
-      rpc<{ data: Array<{ name: string; tools?: Record<string, unknown>; authStatus?: string }> }>("mcpServerStatus/list", { detail: "full" })
-        .then((result) => setMcpServers(
-          (result.data ?? []).map((server) => ({
-            name: server.name,
-            status: server.authStatus || "ready",
-            tools: Object.keys(server.tools ?? {}).length,
-          })),
-        )),
-    ];
-    if (workspace) tasks.push(rpc("skills/list", { cwds: [workspace.path], forceReload: true }));
-    await Promise.allSettled(tasks);
-  }, [refreshLocalSkills, runtimeStatus?.available]);
+  const refreshTools = useCallback(
+    async (workspace: Project | null) => {
+      await refreshLocalSkills();
+      if (!runtimeStatus?.available) return;
+      const tasks: Array<Promise<unknown>> = [rpc<{ data: Array<{ name: string; tools?: Record<string, unknown>; authStatus?: string }> }>("mcpServerStatus/list", { detail: "full" }).then((result) => setMcpServers((result.data ?? []).map((server) => ({ name: server.name, status: server.authStatus || "ready", tools: Object.keys(server.tools ?? {}).length }))))];
+      if (workspace) tasks.push(rpc("skills/list", { cwds: [workspace.path], forceReload: true }));
+      await Promise.allSettled(tasks);
+    },
+    [refreshLocalSkills, runtimeStatus?.available],
+  );
 
   const ensureSkillRoots = useCallback(async () => {
     if (!runtimeStatus?.available) return;
@@ -732,23 +671,29 @@ export default function App() {
     await rpc("skills/extraRoots/set", { extraRoots: root ? [root] : [] });
   }, [runtimeStatus?.available]);
 
-  const executeCommand = useCallback(async (command: string[], cwd: string) => {
-    return rpc<{ exitCode: number; stdout: string; stderr: string }>("command/exec", { command, cwd, timeoutMs: 120000, sandboxPolicy: commandSandbox(effectiveSettings.permission, cwd) });
-  }, [effectiveSettings.permission]);
+  const executeCommand = useCallback(
+    async (command: string[], cwd: string) => {
+      return rpc<{ exitCode: number; stdout: string; stderr: string }>("command/exec", { command, cwd, timeoutMs: 120000, sandboxPolicy: commandSandbox(effectiveSettings.permission, cwd) });
+    },
+    [effectiveSettings.permission],
+  );
 
-  const refreshDiffFor = useCallback(async (threadId: string, projectPath: string) => {
-    try {
-      const result = await rpc<{ diff: string }>("gitDiffToRemote", { cwd: projectPath });
-      useTaskStore.getState().setDiff(threadId, result.diff ?? "");
-    } catch {
+  const refreshDiffFor = useCallback(
+    async (threadId: string, projectPath: string) => {
       try {
-        const result = await executeCommand(["git", "diff", "--no-ext-diff", "--"], projectPath);
-        useTaskStore.getState().setDiff(threadId, `${result.stdout}${result.stderr}`);
-      } catch (reason) {
-        setError(friendlyError(reason));
+        const result = await rpc<{ diff: string }>("gitDiffToRemote", { cwd: projectPath });
+        useTaskStore.getState().setDiff(threadId, result.diff ?? "");
+      } catch {
+        try {
+          const result = await executeCommand(["git", "diff", "--no-ext-diff", "--"], projectPath);
+          useTaskStore.getState().setDiff(threadId, `${result.stdout}${result.stderr}`);
+        } catch (reason) {
+          setError(friendlyError(reason));
+        }
       }
-    }
-  }, [executeCommand]);
+    },
+    [executeCommand],
+  );
 
   const refreshDiff = useCallback(async () => {
     if (!activeProject || !activeThreadId) return;
@@ -787,9 +732,7 @@ export default function App() {
     onTurnCompleted: (threadId, turn) => {
       const needsProviderRepair = providerRepairThreadsRef.current.delete(threadId);
       if (turn) {
-        setActiveThread((current) => current && current.id === threadId
-          ? { ...current, turns: [...(current.turns ?? []).filter((entry) => entry.id !== turn.id), turn] }
-          : current);
+        setActiveThread((current) => (current && current.id === threadId ? { ...current, turns: [...(current.turns ?? []).filter((entry) => entry.id !== turn.id), turn] } : current));
       }
       if (needsProviderRepair) {
         setStatus("Refreshing OpenRouter");
@@ -813,10 +756,7 @@ export default function App() {
         void (async () => {
           let granted = await isPermissionGranted();
           if (!granted) granted = (await requestPermission()) === "granted";
-          if (granted) sendNotification({
-            title: "OpenKiwi task complete",
-            body: projectName ? `“${label}” finished in ${projectName}.` : `“${label}” finished.`,
-          });
+          if (granted) sendNotification({ title: "OpenKiwi task complete", body: projectName ? `“${label}” finished in ${projectName}.` : `“${label}” finished.` });
         })().catch(() => {});
       }
       const projectPath = threadProjectBindingsRef.current?.[threadId];
@@ -838,35 +778,75 @@ export default function App() {
           // does not stay frozen on the thread's first optimistic prompt.
           const taskMessages = useTaskStore.getState().tasks[threadId]?.messages ?? [];
           const latestUserText = [...taskMessages].reverse().find((message) => message.role === "user")?.text;
-          const updated = {
-            ...known,
-            preview: latestUserText?.slice(0, 140) || known.preview,
-            updatedAt: Math.floor(Date.now() / 1000),
-          };
+          const updated = { ...known, preview: latestUserText?.slice(0, 140) || known.preview, updatedAt: Math.floor(Date.now() / 1000) };
           rememberThread(updated);
           setThreads((current) => upsertThread(current, updated));
         } else {
           void loadThreads(activeWorkspace);
         }
       }
-      if (projectPath && !projectPath.includes("normal-chats")) void refreshDiffFor(threadId, projectPath);
+      if (runtimeStatus?.available && projectPath && !projectPath.includes("normal-chats")) void refreshDiffFor(threadId, projectPath);
+    },
+  });
+
+  useClaudeEvents({
+    bindingFor: (threadId) => threadProjectBindingsRef.current?.[threadId],
+    onStatus: setStatus,
+    onError: setError,
+    onTranscriptChanged: scheduleClaudeThreadSave,
+    onApprovalRequested: (threadId) => {
+      if (!settings.notificationsEnabled || useTaskStore.getState().activeThreadId === threadId) return;
+      const thread = threads.find((entry) => entry.id === threadId) ?? knownThreadsRef.current?.[threadId];
+      void (async () => {
+        let granted = await isPermissionGranted();
+        if (!granted) granted = (await requestPermission()) === "granted";
+        if (granted) sendNotification({ title: "OpenKiwi needs your approval", body: `“${thread?.name || thread?.preview || "A Claude task"}” is waiting for permission to continue.` });
+      })().catch(() => {});
+    },
+    onTurnCompleted: (threadId) => {
+      const timer = claudeSaveTimersRef.current.get(threadId);
+      if (timer !== undefined) window.clearTimeout(timer);
+      claudeSaveTimersRef.current.delete(threadId);
+      const task = useTaskStore.getState().tasks[threadId];
+      const known = knownThreadsRef.current?.[threadId];
+      if (known) {
+        const latestUser = [...(task?.messages ?? [])].reverse().find((message) => message.role === "user")?.text;
+        const updated = { ...known, preview: latestUser?.slice(0, 140) || known.preview, updatedAt: Math.floor(Date.now() / 1000) };
+        rememberThread(updated);
+        setThreads((current) => upsertThread(current, updated));
+        void saveClaudeTranscript({ thread: updated, messages: (task?.messages ?? []).map((message) => ({ ...message, streaming: false })), activities: task?.activities ?? [] }).catch(() => {});
+      }
+      if (settings.notificationsEnabled && useTaskStore.getState().activeThreadId !== threadId) {
+        void (async () => {
+          let granted = await isPermissionGranted();
+          if (!granted) granted = (await requestPermission()) === "granted";
+          if (granted) sendNotification({ title: "OpenKiwi task complete", body: `“${known?.name || known?.preview || "Claude task"}” finished.` });
+        })().catch(() => {});
+      }
+      const projectPath = threadProjectBindingsRef.current?.[threadId];
+      if (runtimeStatus?.available && projectPath && !projectPath.includes("normal-chats")) void refreshDiffFor(threadId, projectPath);
     },
   });
 
   useEffect(() => {
-    void getNormalChatWorkspace().then(setChatWorkspacePath).catch((reason) => setError(friendlyError(reason)));
+    void getNormalChatWorkspace()
+      .then(setChatWorkspacePath)
+      .catch((reason) => setError(friendlyError(reason)));
     if (!initialOnboardingOpen && initialOnboardingVersion < ONBOARDING_VERSION) {
       storeValue("kiwi.onboardingVersion", ONBOARDING_VERSION);
     }
-    void checkRuntime(!initialOnboardingOpen).then((runtime) => {
+    void checkRuntime(!initialOnboardingOpen && initialSettings.provider !== "claude").then((runtime) => {
       if (!runtime.available) return;
       void refreshAccount();
       void refreshModels();
       void refreshUsage();
     });
+    void refreshClaudeStatus();
     void refreshOpenRouterModels();
-    void hasOpenRouterKey().then(setOpenRouterReady).catch(() => setOpenRouterReady(false));
-  }, [checkRuntime, refreshAccount, refreshModels, refreshOpenRouterModels, refreshUsage]);
+    void hasOpenRouterKey()
+      .then(setOpenRouterReady)
+      .catch(() => setOpenRouterReady(false));
+  }, [checkRuntime, refreshAccount, refreshClaudeStatus, refreshModels, refreshOpenRouterModels, refreshUsage]);
 
   const shortcutStateRef = useRef({ running: false, modalOpen: false, threadOpen: false, stopTurn: () => {}, newThread: () => {} });
   useEffect(() => {
@@ -915,7 +895,7 @@ export default function App() {
   const workspaceEffectRef = useRef<{ path: string | null; available: boolean } | null>(null);
   useEffect(() => {
     const path = activeWorkspace ? normalizedProjectPath(activeWorkspace.path) : null;
-    const available = Boolean(runtimeStatus?.available);
+    const available = Boolean(runtimeStatus?.available || claudeStatus?.available);
     const previous = workspaceEffectRef.current;
     if (previous && previous.path === path && previous.available === available) return;
     workspaceEffectRef.current = { path, available };
@@ -932,7 +912,7 @@ export default function App() {
     setThreadSearch("");
     setSearchResults(null);
     if (!activeProject) setStudioOpen(false);
-  }, [activeProject, activeWorkspace, loadThreads, runtimeStatus?.available]);
+  }, [activeProject, activeWorkspace, claudeStatus?.available, loadThreads, runtimeStatus?.available]);
 
   // Every surfaced error also lands in the diagnostics ring buffer/audit log.
   useEffect(() => {
@@ -969,7 +949,7 @@ export default function App() {
         setStatus("Runtime disconnected — reconnecting");
         const store = useTaskStore.getState();
         for (const [threadId, threadStatus] of Object.entries(store.statuses)) {
-          if (threadStatus === "running" || threadStatus === "starting") {
+          if ((threadStatus === "running" || threadStatus === "starting") && !isClaudeThread(knownThreadsRef.current?.[threadId])) {
             store.setActiveTurn(threadId, undefined);
             store.setTaskStatus(threadId, "error", "The Codex runtime disconnected during this task.");
           }
@@ -987,10 +967,12 @@ export default function App() {
             setError(friendlyError(reason));
           });
       }, 1500);
-    }).then((unlisten) => {
-      if (disposed) unlisten();
-      else stop = unlisten;
-    }).catch(() => {});
+    })
+      .then((unlisten) => {
+        if (disposed) unlisten();
+        else stop = unlisten;
+      })
+      .catch(() => {});
     return () => {
       disposed = true;
       stop?.();
@@ -1004,18 +986,25 @@ export default function App() {
   useEffect(() => {
     let disposed = false;
     let stop: (() => void) | undefined;
-    getCurrentWebview().onDragDropEvent((event) => {
-      if (event.payload.type === "over") setDropActive(true);
-      else if (event.payload.type === "drop") {
-        setDropActive(false);
-        addAttachmentPathsRef.current(event.payload.paths);
-      } else setDropActive(false);
-    }).then((unlisten) => {
-      if (disposed) unlisten();
-      else stop = unlisten;
-    }).catch(() => {
+    try {
+      void getCurrentWebview()
+        .onDragDropEvent((event) => {
+          if (event.payload.type === "over") setDropActive(true);
+          else if (event.payload.type === "drop") {
+            setDropActive(false);
+            addAttachmentPathsRef.current(event.payload.paths);
+          } else setDropActive(false);
+        })
+        .then((unlisten) => {
+          if (disposed) unlisten();
+          else stop = unlisten;
+        })
+        .catch(() => {
+          // Browser preview without a Tauri host.
+        });
+    } catch {
       // Browser preview without a Tauri host.
-    });
+    }
     return () => {
       disposed = true;
       stop?.();
@@ -1083,9 +1072,7 @@ export default function App() {
   };
 
   const toggleProjectPin = (project: Project) => {
-    const next = projects
-      .map((entry) => entry.id === project.id ? { ...entry, pinned: !entry.pinned } : entry)
-      .sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)));
+    const next = projects.map((entry) => (entry.id === project.id ? { ...entry, pinned: !entry.pinned } : entry)).sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)));
     setProjects(next);
     storeValue("kiwi.projects", next);
   };
@@ -1120,20 +1107,27 @@ export default function App() {
     setError(null);
     setStatus("Loading thread");
     try {
-      const threadProviderSettings = thread.modelProvider.toLowerCase() === "openrouter"
-        ? { ...effectiveSettings, provider: "openrouter" as const }
-        : effectiveSettings;
-      const result = await rpc<{ thread: Thread }>("thread/resume", threadResumeParams(
-        threadProviderSettings,
-        thread.id,
-        activeWorkspace.path,
-        {
-          customAgents,
-          modelContextWindow: effectiveSettings.provider === "openrouter"
-            ? openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.context_length
-            : undefined,
-        },
-      ));
+      if (isClaudeThread(thread)) {
+        const transcript = await loadClaudeTranscript(thread.id);
+        if (selectThreadRequestRef.current !== requestId) return;
+        const resolvedThread = transcript?.thread ?? thread;
+        bindThreadToProject(resolvedThread.id, activeWorkspace.path);
+        rememberThread(resolvedThread);
+        setActiveThread(resolvedThread);
+        useTaskStore.getState().hydrateTask(resolvedThread.id, transcript?.messages ?? [], transcript?.activities ?? [], activeWorkspace.path);
+        useTaskStore.getState().setActiveThread(resolvedThread.id);
+        if (settings.provider !== "claude") {
+          persistSettings({
+            ...settings,
+            provider: "claude",
+            model: settings.model.startsWith("claude-") ? settings.model : DEFAULT_CLAUDE_MODEL,
+          });
+        }
+        setStatus("Ready");
+        return;
+      }
+      const threadProviderSettings: AppSettings = thread.modelProvider.toLowerCase() === "openrouter" ? { ...effectiveSettings, provider: "openrouter", model: effectiveSettings.model.includes("/") ? effectiveSettings.model : "" } : { ...effectiveSettings, provider: "openai", model: effectiveSettings.model.includes("/") || effectiveSettings.model.startsWith("claude-") ? DEFAULT_OPENAI_MODEL : effectiveSettings.model };
+      const result = await rpc<{ thread: Thread }>("thread/resume", threadResumeParams(threadProviderSettings, thread.id, activeWorkspace.path, { customAgents, modelContextWindow: effectiveSettings.provider === "openrouter" ? openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.context_length : undefined }));
       if (selectThreadRequestRef.current !== requestId) return;
       bindThreadToProject(result.thread.id, activeWorkspace.path);
       rememberThread(result.thread);
@@ -1141,6 +1135,7 @@ export default function App() {
       const history = timelineFromTurns(result.thread.turns);
       useTaskStore.getState().hydrateTask(result.thread.id, history.messages, history.activities, activeWorkspace.path);
       useTaskStore.getState().setActiveThread(result.thread.id);
+      if (settings.provider !== threadProviderSettings.provider) persistSettings(threadProviderSettings);
       setStatus("Ready");
     } catch (reason) {
       if (selectThreadRequestRef.current !== requestId) return;
@@ -1157,7 +1152,12 @@ export default function App() {
     try {
       const path = await save({
         title: "Export conversation",
-        defaultPath: `${label.replace(/[\\/:*?"<>|]/g, "-").slice(0, 60).trim() || "openkiwi-thread"}.md`,
+        defaultPath: `${
+          label
+            .replace(/[\\/:*?"<>|]/g, "-")
+            .slice(0, 60)
+            .trim() || "openkiwi-thread"
+        }.md`,
         filters: [{ name: "Markdown", extensions: ["md"] }],
       });
       if (!path) return;
@@ -1183,7 +1183,7 @@ export default function App() {
   // draft when it was not.
   const sendMessage = async (text: string): Promise<boolean> => {
     if (!text || !activeWorkspace) return false;
-    if (!runtimeStatus?.available) {
+    if (settings.provider !== "claude" && !runtimeStatus?.available) {
       setRuntimeSetupOpen(true);
       return false;
     }
@@ -1196,9 +1196,21 @@ export default function App() {
       setError("Add an OpenRouter API key before using OpenRouter.");
       return false;
     }
+    if (settings.provider === "claude" && (!claudeStatus?.available || !claudeStatus.loggedIn)) {
+      openSettings("models");
+      setError(claudeStatus?.available ? "Sign in to Claude Code before using your Claude subscription." : "Install Claude Code, then sign in before using the Claude provider.");
+      return false;
+    }
     if (effectiveSettings.provider === "openrouter" && !effectiveSettings.model.trim()) {
       setError("Choose an OpenRouter model before starting this thread.");
       return false;
+    }
+    if (activeThread) {
+      const threadProvider = isClaudeThread(activeThread) ? "claude" : activeThread.modelProvider.toLowerCase() === "openrouter" ? "openrouter" : "openai";
+      if (threadProvider !== settings.provider) {
+        setError(`This thread belongs to ${providerLabel(threadProvider)}. Start a new thread to use ${providerLabel(settings.provider)}.`);
+        return false;
+      }
     }
 
     if (running && activeThread) {
@@ -1207,10 +1219,16 @@ export default function App() {
       const steerMessageId = `local-${crypto.randomUUID()}`;
       useTaskStore.getState().appendUserMessage(activeThread.id, { id: steerMessageId, role: "user", text });
       try {
-        await rpc("turn/steer", {
-          threadId: activeThread.id,
-          input: buildTurnInput(text, sentAttachments),
-        });
+        if (isClaudeThread(activeThread)) {
+          await steerClaudeTurn(
+            activeThread.id,
+            text,
+            sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })),
+          );
+          scheduleClaudeThreadSave(activeThread.id);
+        } else {
+          await rpc("turn/steer", { threadId: activeThread.id, input: buildTurnInput(text, sentAttachments) });
+        }
         setAttachments((current) => withoutSentAttachments(current, sentAttachments));
         setTransientStatus("Direction added");
         return true;
@@ -1231,19 +1249,50 @@ export default function App() {
     let sentMessageId: string | undefined;
     const sentAttachments = [...attachments];
     try {
+      if (settings.provider === "claude") {
+        if (skillsFolder && !skillRuntimeRootRef.current) await refreshLocalSkills();
+        let thread = activeThread;
+        if (!thread) {
+          thread = { id: crypto.randomUUID(), name: null, preview: text.slice(0, 140), cwd: activeWorkspace.path, updatedAt: Math.floor(Date.now() / 1000), modelProvider: "claude" };
+          startedThreadId = thread.id;
+          bindThreadToProject(thread.id, activeWorkspace.path);
+          rememberThread(thread);
+          setThreads((current) => upsertThread(current, thread!));
+          setActiveThread(thread);
+          useTaskStore.getState().ensureTask(thread.id, activeWorkspace.path);
+          useTaskStore.getState().setActiveThread(thread.id);
+        }
+        startedThreadId = thread.id;
+        const updatedThread = { ...thread, preview: text.slice(0, 140) || thread.preview, updatedAt: Math.floor(Date.now() / 1000) };
+        rememberThread(updatedThread);
+        setThreads((current) => upsertThread(current, updatedThread));
+        setActiveThread(updatedThread);
+        useTaskStore.getState().ensureTask(thread.id, activeWorkspace.path);
+        useTaskStore.getState().setTaskStatus(thread.id, "starting");
+        const canResumeClaude = Boolean(activeThread && useTaskStore.getState().tasks[thread.id]?.messages.some((message) => message.role === "assistant"));
+        sentMessageId = `local-${crypto.randomUUID()}`;
+        useTaskStore.getState().appendUserMessage(thread.id, { id: sentMessageId, role: "user", text });
+        await saveClaudeTranscript({ thread: updatedThread, messages: useTaskStore.getState().tasks[thread.id]?.messages ?? [], activities: useTaskStore.getState().tasks[thread.id]?.activities ?? [] });
+        const result = await startClaudeTurn({ threadId: thread.id, cwd: activeWorkspace.path, prompt: text, model: effectiveSettings.model || DEFAULT_CLAUDE_MODEL, effort: settings.ultra ? "ultra" : settings.reasoningEffort, permission: effectiveSettings.permission, systemPrompt: effectiveSettings.systemPrompt, resume: canResumeClaude, attachments: sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })), subagentsEnabled: settings.subagentsEnabled, subagentMax: settings.subagentMax, customAgents, skillsPluginPath: skillRuntimeRootRef.current || undefined });
+        useTaskStore.getState().setActiveTurn(thread.id, result.turnId);
+        useTaskStore.getState().setTaskStatus(thread.id, "running");
+        setStartingTurn(false);
+        setAttachments((current) => withoutSentAttachments(current, sentAttachments));
+        if (cancelRequestedRef.current.delete(thread.id)) {
+          await interruptClaudeTurn(thread.id);
+          useTaskStore.getState().setActiveTurn(thread.id, undefined);
+          useTaskStore.getState().setTaskStatus(thread.id, "interrupted");
+          setTransientStatus("Stopped");
+        }
+        return true;
+      }
+
       await ensureSkillRoots();
       const input = buildTurnInput(text, sentAttachments);
       let threadId = activeThread?.id;
       startedThreadId = threadId;
       if (!threadId) {
-        const result = await rpc<{ thread: Thread }>("thread/start", threadStartParams(effectiveSettings, activeWorkspace.path, {
-          serviceName: activeWorkspace.isChat ? "OpenKiwi Chat" : "OpenKiwi",
-          customAgents,
-          modelContextWindow: effectiveSettings.provider === "openrouter"
-            ? openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.context_length
-            : undefined,
-          interactive: true,
-        }));
+        const result = await rpc<{ thread: Thread }>("thread/start", threadStartParams(effectiveSettings, activeWorkspace.path, { serviceName: activeWorkspace.isChat ? "OpenKiwi Chat" : "OpenKiwi", customAgents, modelContextWindow: effectiveSettings.provider === "openrouter" ? openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.context_length : undefined, interactive: true }));
         const startedThread = optimisticStartedThread(result.thread, text);
         threadId = startedThread.id;
         startedThreadId = threadId;
@@ -1256,14 +1305,7 @@ export default function App() {
       } else if (settings.provider === "openrouter") {
         // Re-apply the isolated provider config before every subsequent turn.
         // This repairs a persisted thread after a compatibility refresh.
-        await rpc("thread/resume", {
-          ...threadResumeParams(effectiveSettings, threadId, activeWorkspace.path, {
-            customAgents,
-            modelContextWindow: openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.context_length,
-            excludeTurns: true,
-          }),
-          model: effectiveSettings.model,
-        });
+        await rpc("thread/resume", { ...threadResumeParams(effectiveSettings, threadId, activeWorkspace.path, { customAgents, modelContextWindow: openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.context_length, excludeTurns: true }), model: effectiveSettings.model });
       }
 
       if (activeThread?.id === threadId) {
@@ -1316,7 +1358,8 @@ export default function App() {
       return;
     }
     try {
-      await rpc("turn/interrupt", { threadId: activeThread.id, turnId });
+      if (isClaudeThread(activeThread)) await interruptClaudeTurn(activeThread.id);
+      else await rpc("turn/interrupt", { threadId: activeThread.id, turnId });
       useTaskStore.getState().setActiveTurn(activeThread.id, undefined);
       useTaskStore.getState().setTaskStatus(activeThread.id, "interrupted");
       setStartingTurn(false);
@@ -1353,11 +1396,7 @@ export default function App() {
     setLoginStarting(true);
     setError(null);
     try {
-      const result = await rpc<{ authUrl?: string }>("account/login/start", {
-        type: "chatgpt",
-        useHostedLoginSuccessPage: true,
-        appBrand: "codex",
-      });
+      const result = await rpc<{ authUrl?: string }>("account/login/start", { type: "chatgpt", useHostedLoginSuccessPage: true, appBrand: "codex" });
       if (!result.authUrl) throw new Error("Codex did not return a ChatGPT sign-in URL.");
       setAuthRequiredOpen(false);
       setStatus("Waiting for sign-in");
@@ -1371,13 +1410,51 @@ export default function App() {
     }
   };
 
+  const beginClaudeLogin = async () => {
+    if (!claudeStatus?.available) {
+      openSettings("models");
+      setError("Install Claude Code first, then return here to sign in.");
+      return;
+    }
+    setClaudeLoginStarting(true);
+    setError(null);
+    setStatus("Opening Claude sign-in");
+    try {
+      await startClaudeLogin();
+      setStatus("Finish sign-in in Terminal");
+      window.setTimeout(() => {
+        void refreshClaudeStatus().then((next) => {
+          if (next.loggedIn) setStatus("Ready");
+        });
+      }, 2500);
+    } catch (reason) {
+      setStatus("Setup required");
+      setError(friendlyError(reason));
+    } finally {
+      setClaudeLoginStarting(false);
+    }
+  };
+
   const respondToApproval = useCallback(async (approval: PendingApproval, result: JsonObject) => {
     try {
-      await respond(approval.id, result);
+      if (approval.method === "claude/can_use_tool") {
+        await respondToClaudePermission(approval.threadId, String(approval.id), result);
+      } else {
+        await respond(approval.id, result);
+      }
       void auditEvent("approval.resolved", { method: approval.method, responseRecorded: true }, approval.threadId).catch(() => {});
       useTaskStore.getState().resolveApproval(approval.threadId, approval.id);
     } catch (reason) {
-      setError(friendlyError(reason));
+      const message = friendlyError(reason);
+      if (
+        approval.method === "claude/can_use_tool" &&
+        /no longer|not currently running/i.test(message)
+      ) {
+        useTaskStore
+          .getState()
+          .resolveApproval(approval.threadId, approval.id);
+      }
+      setError(message);
     }
   }, []);
 
@@ -1391,10 +1468,15 @@ export default function App() {
     setRenamingThreadId(null);
     if (!name || name === thread.name) return;
     try {
-      await rpc("thread/name/set", { threadId: thread.id, name });
-      rememberThread({ ...thread, name });
-      setThreads((current) => current.map((entry) => entry.id === thread.id ? { ...entry, name } : entry));
-      setActiveThread((current) => current?.id === thread.id ? { ...current, name } : current);
+      const updated = { ...thread, name };
+      if (!isClaudeThread(thread)) await rpc("thread/name/set", { threadId: thread.id, name });
+      rememberThread(updated);
+      setThreads((current) => current.map((entry) => (entry.id === thread.id ? updated : entry)));
+      setActiveThread((current) => (current?.id === thread.id ? { ...current, name } : current));
+      if (isClaudeThread(thread)) {
+        const task = useTaskStore.getState().tasks[thread.id];
+        await saveClaudeTranscript({ thread: updated, messages: task?.messages ?? [], activities: task?.activities ?? [] });
+      }
     } catch (reason) {
       setError(friendlyError(reason));
     }
@@ -1404,7 +1486,7 @@ export default function App() {
     const label = thread.name || thread.preview || "Untitled thread";
     if (!window.confirm(`Archive “${label}”?\n\nIt moves to the Archived list in the sidebar, where you can restore or permanently delete it.`)) return;
     try {
-      await rpc("thread/archive", { threadId: thread.id });
+      if (!isClaudeThread(thread)) await rpc("thread/archive", { threadId: thread.id });
       if (activeThread?.id === thread.id) newThread();
       forgetThread(thread.id);
       setThreads((current) => current.filter((entry) => entry.id !== thread.id));
@@ -1417,7 +1499,12 @@ export default function App() {
 
   const unarchiveThread = async (record: ArchivedThread) => {
     try {
-      await rpc("thread/unarchive", { threadId: record.id });
+      const transcript = await loadClaudeTranscript(record.id);
+      if (transcript) {
+        rememberThread(transcript.thread);
+      } else {
+        await rpc("thread/unarchive", { threadId: record.id });
+      }
       persistArchivedThreads((current) => current.filter((entry) => entry.id !== record.id));
       void loadThreads(activeWorkspace);
     } catch (reason) {
@@ -1426,9 +1513,12 @@ export default function App() {
   };
 
   const deleteThreadForever = async (threadId: string, label: string) => {
-    if (!window.confirm(`Permanently delete “${label}”?\n\nThis removes the conversation from the Codex runtime and cannot be undone.`)) return;
+    const thread = threads.find((entry) => entry.id === threadId) ?? knownThreadsRef.current?.[threadId];
+    const claude = isClaudeThread(thread);
+    if (!window.confirm(`Permanently delete “${label}”?\n\nThis removes the conversation from ${claude ? "OpenKiwi" : "the Codex runtime"} and cannot be undone.`)) return;
     try {
-      await rpc("thread/delete", { threadId });
+      if (claude) await deleteClaudeTranscript(threadId);
+      else await rpc("thread/delete", { threadId });
       if (activeThread?.id === threadId) newThread();
       forgetThread(threadId);
       setThreads((current) => current.filter((entry) => entry.id !== threadId));
@@ -1452,18 +1542,30 @@ export default function App() {
 
   const startReview = async () => {
     if (!activeThread) return;
+    if (isClaudeThread(activeThread)) {
+      setError("Inline Studio review is currently available for OpenAI and OpenRouter threads. Ask Claude to review the project in the conversation instead.");
+      return;
+    }
     try {
       await rpc("review/start", { threadId: activeThread.id, target: { type: "uncommittedChanges" }, delivery: "inline" });
       setStatus("Reviewing");
-    } catch (reason) { setError(friendlyError(reason)); }
+    } catch (reason) {
+      setError(friendlyError(reason));
+    }
   };
 
   const compactThread = async () => {
     if (!activeThread) return;
+    if (isClaudeThread(activeThread)) {
+      setError("Claude Code manages its own context compaction. OpenKiwi’s manual compact action is available for OpenAI and OpenRouter threads.");
+      return;
+    }
     try {
       await rpc("thread/compact/start", { threadId: activeThread.id });
       setStatus("Compacting context");
-    } catch (reason) { setError(friendlyError(reason)); }
+    } catch (reason) {
+      setError(friendlyError(reason));
+    }
   };
 
   const openAgent = async (threadId: string) => {
@@ -1474,7 +1576,9 @@ export default function App() {
       useTaskStore.getState().hydrateTask(result.thread.id, history.messages, history.activities, result.thread.cwd);
       useTaskStore.getState().setActiveThread(result.thread.id);
       setStudioOpen(false);
-    } catch (reason) { setError(friendlyError(reason)); }
+    } catch (reason) {
+      setError(friendlyError(reason));
+    }
   };
 
   const stopAgent = async (threadId: string) => {
@@ -1488,7 +1592,9 @@ export default function App() {
       useTaskStore.getState().setActiveTurn(threadId, undefined);
       useTaskStore.getState().setTaskStatus(threadId, "interrupted");
       if (activeThreadId) useTaskStore.getState().upsertAgent(activeThreadId, { id: threadId, prompt: "Delegated task", status: "interrupted" });
-    } catch (reason) { setError(friendlyError(reason)); }
+    } catch (reason) {
+      setError(friendlyError(reason));
+    }
   };
 
   const createCheckpoint = () => {
@@ -1508,22 +1614,7 @@ export default function App() {
     if (!activeThread) return;
     try {
       await ensureSkillRoots();
-      const result = await rpc<{ thread: Thread }>("thread/fork", {
-        threadId: checkpoint?.threadId ?? activeThread.id,
-        lastTurnId: checkpoint?.turnId,
-        cwd: activeWorkspace?.path,
-        runtimeWorkspaceRoots: activeWorkspace ? [activeWorkspace.path] : undefined,
-        model: effectiveSettings.model,
-        modelProvider: effectiveSettings.provider === "openrouter" ? "openrouter" : undefined,
-        config: threadRuntimeConfig(effectiveSettings, {
-          customAgents,
-          modelContextWindow: effectiveSettings.provider === "openrouter"
-            ? openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.context_length
-            : undefined,
-        }),
-        baseInstructions: effectiveSettings.systemPrompt,
-        developerInstructions: "",
-      });
+      const result = await rpc<{ thread: Thread }>("thread/fork", { threadId: checkpoint?.threadId ?? activeThread.id, lastTurnId: checkpoint?.turnId, cwd: activeWorkspace?.path, runtimeWorkspaceRoots: activeWorkspace ? [activeWorkspace.path] : undefined, model: effectiveSettings.model, modelProvider: effectiveSettings.provider === "openrouter" ? "openrouter" : undefined, config: threadRuntimeConfig(effectiveSettings, { customAgents, modelContextWindow: effectiveSettings.provider === "openrouter" ? openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.context_length : undefined }), baseInstructions: effectiveSettings.systemPrompt, developerInstructions: "" });
       if (activeWorkspace) bindThreadToProject(result.thread.id, activeWorkspace.path);
       rememberThread(result.thread);
       setActiveThread(result.thread);
@@ -1532,7 +1623,9 @@ export default function App() {
       useTaskStore.getState().setActiveThread(result.thread.id);
       setStudioOpen(false);
       void loadThreads(activeWorkspace);
-    } catch (reason) { setError(friendlyError(reason)); }
+    } catch (reason) {
+      setError(friendlyError(reason));
+    }
   };
 
   const rollbackTurn = async () => {
@@ -1544,12 +1637,17 @@ export default function App() {
       setActiveThread(result.thread);
       const history = timelineFromTurns(result.thread.turns);
       useTaskStore.getState().hydrateTask(result.thread.id, history.messages, history.activities, activeWorkspace?.path);
-    } catch (reason) { setError(friendlyError(reason)); }
+    } catch (reason) {
+      setError(friendlyError(reason));
+    }
   };
 
   const createWorktree = async () => {
     if (!activeProject) return;
-    const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 12);
+    const stamp = new Date()
+      .toISOString()
+      .replace(/[-:TZ.]/g, "")
+      .slice(0, 12);
     const worktreePath = `${activeProject.path}-openkiwi-${stamp}`;
     const branch = `openkiwi/${stamp}`;
     try {
@@ -1562,13 +1660,15 @@ export default function App() {
       setActiveProjectId(project.id);
       setWorkspaceMode("project");
       storeValue("kiwi.workspaceMode", "project");
-    } catch (reason) { setError(friendlyError(reason)); }
+    } catch (reason) {
+      setError(friendlyError(reason));
+    }
   };
 
   const addAttachmentPaths = useCallback((paths: string[]) => {
     if (!paths.length) return;
     const imagePattern = /\.(png|jpe?g|gif|webp|heic)$/i;
-    setAttachments((current) => [...current, ...paths.filter((path) => !current.some((item) => item.path === path)).map((path) => ({ path, name: basename(path), kind: imagePattern.test(path) ? "image" as const : "file" as const }))]);
+    setAttachments((current) => [...current, ...paths.filter((path) => !current.some((item) => item.path === path)).map((path) => ({ path, name: basename(path), kind: imagePattern.test(path) ? ("image" as const) : ("file" as const) }))]);
   }, []);
 
   addAttachmentPathsRef.current = addAttachmentPaths;
@@ -1593,7 +1693,7 @@ export default function App() {
         }
         const extension = (item.type.split("/")[1] ?? "png").toLowerCase();
         const path = await invoke<string>("save_pasted_image", { dataBase64: btoa(binary), extension });
-        setAttachments((current) => current.some((entry) => entry.path === path) ? current : [...current, { path, name: basename(path), kind: "image" }]);
+        setAttachments((current) => (current.some((entry) => entry.path === path) ? current : [...current, { path, name: basename(path), kind: "image" }]));
       } catch (reason) {
         setError(friendlyError(reason));
       }
@@ -1609,8 +1709,7 @@ export default function App() {
     else if (action === "revert") {
       if (!window.confirm("Revert all tracked staged and working-tree changes? Untracked files will be kept.")) return;
       command = ["git", "restore", "--staged", "--worktree", "."];
-    }
-    else if (action === "commit") command = ["git", "commit", "-m", gitCommitMessage.trim()];
+    } else if (action === "commit") command = ["git", "commit", "-m", gitCommitMessage.trim()];
     else if (action === "comments") command = ["gh", "pr", "view", "--comments"];
     else if (action === "ci") command = ["gh", "pr", "checks"];
     else {
@@ -1623,7 +1722,9 @@ export default function App() {
       setGitOutput(combined.includes("not a git repository") ? "This project folder is not a Git repository yet. Initialize Git from the terminal to enable these workflows." : `$ ${command.join(" ")}\n${combined}\n[exit ${result.exitCode}]`);
       if (action === "diff" && activeThreadId) useTaskStore.getState().setDiff(activeThreadId, result.stdout);
       if (action === "commit" && result.exitCode === 0) setGitCommitMessage("");
-    } catch (reason) { setGitOutput(friendlyError(reason)); }
+    } catch (reason) {
+      setGitOutput(friendlyError(reason));
+    }
   };
 
   const runProjectAction = async (action: ProjectAction) => {
@@ -1647,7 +1748,9 @@ export default function App() {
       const result = await executeCommand(command, activeProject.path);
       setGitOutput(`$ ${command.join(" ")}\n${result.stdout}${result.stderr}\n[exit ${result.exitCode}]`);
       if (activeThreadId) await refreshDiffFor(activeThreadId, activeProject.path);
-    } catch (reason) { setError(friendlyError(reason)); }
+    } catch (reason) {
+      setError(friendlyError(reason));
+    }
   };
 
   const chooseSkillsFolder = async () => {
@@ -1660,12 +1763,7 @@ export default function App() {
 
   const importSkills = async () => {
     if (!skillsFolder) return;
-    const selected = await open({
-      directory: false,
-      multiple: true,
-      title: "Import Markdown skills",
-      filters: [{ name: "Markdown", extensions: ["md", "markdown"] }],
-    });
+    const selected = await open({ directory: false, multiple: true, title: "Import Markdown skills", filters: [{ name: "Markdown", extensions: ["md", "markdown"] }] });
     if (!selected) return;
     const paths = Array.isArray(selected) ? selected : [selected];
     setSkillsBusy(true);
@@ -1712,9 +1810,7 @@ export default function App() {
   };
 
   const toggleSkill = (path: string) => {
-    const next = disabledSkillPaths.includes(path)
-      ? disabledSkillPaths.filter((candidate) => candidate !== path)
-      : [...disabledSkillPaths, path];
+    const next = disabledSkillPaths.includes(path) ? disabledSkillPaths.filter((candidate) => candidate !== path) : [...disabledSkillPaths, path];
     setDisabledSkillPaths(next);
     storeValue("kiwi.disabledSkills", next);
     setSkills(resolveLocalSkills(skillFiles, skillAliases, next));
@@ -1724,24 +1820,20 @@ export default function App() {
     try {
       const result = await rpc<{ authorizationUrl: string }>("mcpServer/oauth/login", { name: server.name, threadId: activeThreadId });
       if (result.authorizationUrl) await openUrl(result.authorizationUrl);
-    } catch (reason) { setError(friendlyError(reason)); }
+    } catch (reason) {
+      setError(friendlyError(reason));
+    }
   };
 
   const updateSchedule = useCallback((id: string, patch: (current: ScheduledTask) => ScheduledTask) => {
     setScheduledTasks((current) => {
-      const next = current.map((item) => item.id === id ? patch(item) : item);
+      const next = current.map((item) => (item.id === id ? patch(item) : item));
       storeValue("kiwi.scheduledTasks", next);
       return next;
     });
   }, []);
 
-  shortcutStateRef.current = {
-    running: Boolean(running && activeThread),
-    modalOpen: onboardingOpen || settingsOpen || commandPaletteOpen || runtimeSetupOpen || authRequiredOpen || Boolean(pendingApproval) || permissionOpen,
-    threadOpen: Boolean(activeThreadId),
-    stopTurn: () => void stopTurn(),
-    newThread,
-  };
+  shortcutStateRef.current = { running: Boolean(running && activeThread), modalOpen: onboardingOpen || settingsOpen || commandPaletteOpen || runtimeSetupOpen || authRequiredOpen || Boolean(pendingApproval) || permissionOpen, threadOpen: Boolean(activeThreadId), stopTurn: () => void stopTurn(), newThread };
 
   const recordScheduleRun = useCallback((run: ScheduleRunRecord) => {
     setScheduleRuns((current) => {
@@ -1758,7 +1850,7 @@ export default function App() {
 
   const updateWorkflow = useCallback((id: string, patch: (current: WorkflowDefinition) => WorkflowDefinition) => {
     setWorkflows((current) => {
-      const next = current.map((workflow) => workflow.id === id ? patch(workflow) : workflow);
+      const next = current.map((workflow) => (workflow.id === id ? patch(workflow) : workflow));
       storeValue("kiwi.workflows", next);
       return next;
     });
@@ -1767,10 +1859,11 @@ export default function App() {
   const recordWorkflowRun = useCallback((run: WorkflowRunRecord) => {
     setWorkflowRuns((current) => {
       const existing = current.findIndex((item) => item.id === run.id);
-      const next = existing >= 0
-        ? current.map((item) => item.id === run.id ? run : item)
-        : [run, ...current].slice(0, 100);
-      storeValue("kiwi.workflowRuns", next.map((item) => compactWorkflowRun(item)));
+      const next = existing >= 0 ? current.map((item) => (item.id === run.id ? run : item)) : [run, ...current].slice(0, 100);
+      storeValue(
+        "kiwi.workflowRuns",
+        next.map((item) => compactWorkflowRun(item)),
+      );
       return next;
     });
   }, []);
@@ -1799,25 +1892,28 @@ export default function App() {
     onError: (message) => setError(message),
   });
 
-  const runWorkflowFromShortcut = useCallback(async (workflow: WorkflowDefinition) => {
-    if (workflowRuns.some((run) => run.workflowId === workflow.id && run.status === "running")) {
-      setError(`“${workflow.name}” is already running.`);
-      return;
-    }
-    const variables: Record<string, string> = {};
-    for (const variable of workflow.variables ?? []) {
-      if (!variable.promptOnRun) {
-        variables[variable.name] = variable.value;
-        continue;
+  const runWorkflowFromShortcut = useCallback(
+    async (workflow: WorkflowDefinition) => {
+      if (workflowRuns.some((run) => run.workflowId === workflow.id && run.status === "running")) {
+        setError(`“${workflow.name}” is already running.`);
+        return;
       }
-      const value = window.prompt(`Value for ${variable.name}`, variable.value);
-      if (value === null) return;
-      variables[variable.name] = value;
-    }
-    const commandCount = workflow.steps.filter((step) => step.type === "command").length;
-    if (commandCount && !window.confirm(`Run “${workflow.name}” now?\n\nIt contains ${commandCount} shell command${commandCount === 1 ? "" : "s"} that will run with the saved ${workflow.run.permission} permission setting.`)) return;
-    await runWorkflow(workflow.id, "manual", variables);
-  }, [runWorkflow, workflowRuns]);
+      const variables: Record<string, string> = {};
+      for (const variable of workflow.variables ?? []) {
+        if (!variable.promptOnRun) {
+          variables[variable.name] = variable.value;
+          continue;
+        }
+        const value = window.prompt(`Value for ${variable.name}`, variable.value);
+        if (value === null) return;
+        variables[variable.name] = value;
+      }
+      const commandCount = workflow.steps.filter((step) => step.type === "command").length;
+      if (commandCount && !window.confirm(`Run “${workflow.name}” now?\n\nIt contains ${commandCount} shell command${commandCount === 1 ? "" : "s"} that will run with the saved ${workflow.run.permission} permission setting.`)) return;
+      await runWorkflow(workflow.id, "manual", variables);
+    },
+    [runWorkflow, workflowRuns],
+  );
 
   useScheduler({
     schedules: scheduledTasks,
@@ -1840,7 +1936,9 @@ export default function App() {
       <aside className={`sidebar ${sidebarOpen ? "open" : "closed"}`} style={sidebarOpen ? { flexBasis: paneSizes.sidebar, width: paneSizes.sidebar } : undefined}>
         {sidebarOpen && <div className="pane-resize sidebar-resize" onPointerDown={startPaneResize("sidebar")} role="separator" aria-orientation="vertical" aria-label="Resize sidebar" />}
         <div className="sidebar-brand">
-          <div className="brand-mark"><img src="/openkiwi-logo.png" alt="" /></div>
+          <div className="brand-mark">
+            <img src="/openkiwi-logo.png" alt="" />
+          </div>
           <span>OpenKiwi</span>
           <button className="icon-button subtle collapse-button" onClick={() => setSidebarOpen(false)} title="Hide sidebar" aria-label="Hide sidebar">
             <PanelLeftClose size={17} />
@@ -1856,7 +1954,9 @@ export default function App() {
         <div className="sidebar-section workspaces-section">
           <div className="section-label-row">
             <span className="section-label">Workspaces</span>
-            <button className="icon-button tiny" onClick={addProject} title="Add project" aria-label="Add project"><Plus size={14} /></button>
+            <button className="icon-button tiny" onClick={addProject} title="Add project" aria-label="Add project">
+              <Plus size={14} />
+            </button>
           </div>
           <div className="workspace-list">
             <button
@@ -1867,7 +1967,9 @@ export default function App() {
               }}
               title="Conversations without a project folder"
             >
-              <span className="workspace-icon chat"><MessageSquare size={14} /></span>
+              <span className="workspace-icon chat">
+                <MessageSquare size={14} />
+              </span>
               <span className="workspace-name">Chats</span>
             </button>
             {projects.map((project) => (
@@ -1909,7 +2011,12 @@ export default function App() {
             <span className="section-label">Threads</span>
             {activeWorkspace && threads.length > 0 && <span className="thread-count">{threads.length}</span>}
           </div>
-          {activeWorkspace && <label className="thread-search"><Search size={11} /><input value={threadSearch} onChange={(event) => setThreadSearch(event.target.value)} placeholder={`Search ${workspaceMode === "chat" ? "chats" : activeProject?.name ?? "threads"}…`} /></label>}
+          {activeWorkspace && (
+            <label className="thread-search">
+              <Search size={11} />
+              <input value={threadSearch} onChange={(event) => setThreadSearch(event.target.value)} placeholder={`Search ${workspaceMode === "chat" ? "chats" : (activeProject?.name ?? "threads")}…`} />
+            </label>
+          )}
           <div className="thread-list">
             {displayedThreads.map((thread) => (
               <div key={thread.id} className={`thread-row-wrap ${activeThread?.id === thread.id ? "active" : ""}`}>
@@ -1961,22 +2068,23 @@ export default function App() {
                 <span className="thread-count">{workspaceArchived.length}</span>
                 <ChevronDown className={archivedOpen ? "open" : ""} size={12} />
               </button>
-              {archivedOpen && workspaceArchived.map((record) => (
-                <div key={record.id} className="thread-row-wrap archived">
-                  <span className="thread-row archived-label" title={`Archived ${new Date(record.archivedAt).toLocaleString()}`}>
-                    <Archive size={13} />
-                    <span>{record.label}</span>
-                  </span>
-                  <RowMenu
-                    label={`Options for archived ${record.label}`}
-                    scale={(settings.uiScale || 100) / 100}
-                    items={[
-                      { label: "Restore", icon: <ArchiveRestore size={13} />, onSelect: () => void unarchiveThread(record) },
-                      { label: "Delete forever", icon: <Trash2 size={13} />, danger: true, onSelect: () => void deleteThreadForever(record.id, record.label) },
-                    ]}
-                  />
-                </div>
-              ))}
+              {archivedOpen &&
+                workspaceArchived.map((record) => (
+                  <div key={record.id} className="thread-row-wrap archived">
+                    <span className="thread-row archived-label" title={`Archived ${new Date(record.archivedAt).toLocaleString()}`}>
+                      <Archive size={13} />
+                      <span>{record.label}</span>
+                    </span>
+                    <RowMenu
+                      label={`Options for archived ${record.label}`}
+                      scale={(settings.uiScale || 100) / 100}
+                      items={[
+                        { label: "Restore", icon: <ArchiveRestore size={13} />, onSelect: () => void unarchiveThread(record) },
+                        { label: "Delete forever", icon: <Trash2 size={13} />, danger: true, onSelect: () => void deleteThreadForever(record.id, record.label) },
+                      ]}
+                    />
+                  </div>
+                ))}
             </div>
           )}
         </div>
@@ -1999,8 +2107,8 @@ export default function App() {
               </button>
             )}
             <div className="project-heading">
-              <span>{activeWorkspace?.isChat ? "Normal chat" : activeProject?.name ?? "No project selected"}</span>
-              <small>{activeThread ? activeThread.name || activeThread.preview || "New thread" : activeWorkspace?.isChat ? "No project folder" : activeProject?.path ?? "Choose a project or use Chats"}</small>
+              <span>{activeWorkspace?.isChat ? "Normal chat" : (activeProject?.name ?? "No project selected")}</span>
+              <small>{activeThread ? activeThread.name || activeThread.preview || "New thread" : activeWorkspace?.isChat ? "No project folder" : (activeProject?.path ?? "Choose a project or use Chats")}</small>
             </div>
           </div>
           <div className="topbar-right">
@@ -2009,17 +2117,21 @@ export default function App() {
                 <Download size={15} />
               </button>
             )}
-            <button className="command-palette-trigger" onClick={() => setCommandPaletteOpen(true)} aria-label="Open command palette"><Command size={13} /><span>Search</span><kbd>⌘K</kbd></button>
+            <button className="command-palette-trigger" onClick={() => setCommandPaletteOpen(true)} aria-label="Open command palette">
+              <Command size={13} />
+              <span>Search</span>
+              <kbd>⌘K</kbd>
+            </button>
             <div className="runtime-status">
               {running ? <LoaderCircle className="spin" size={13} /> : <Circle size={8} fill="currentColor" />}
               <span>{status}</span>
             </div>
-            <button className="provider-pill" onClick={() => openSettings("models")} aria-label={`Configure ${settings.provider === "openai" ? "OpenAI" : "OpenRouter"} provider`}>
+            <button className="provider-pill" onClick={() => openSettings("models")} aria-label={`Configure ${providerLabel(settings.provider)} provider`}>
               <span className={`provider-dot ${settings.provider}`} />
-              {settings.provider === "openai" ? "OpenAI" : "OpenRouter"}
+              {providerLabel(settings.provider)}
               {settings.model && <small>{settings.model}</small>}
             </button>
-            <button className={`workspace-tools-trigger studio-toggle ${studioOpen ? "active" : ""}`} onClick={() => studioOpen ? setStudioOpen(false) : openStudio(studioTab)} title={activeProject ? "Open project workspace tools" : "Workspace tools are available inside projects"} aria-label={studioOpen ? "Close workspace tools" : "Open workspace tools"} aria-expanded={studioOpen} disabled={!activeProject}>
+            <button className={`workspace-tools-trigger studio-toggle ${studioOpen ? "active" : ""}`} onClick={() => (studioOpen ? setStudioOpen(false) : openStudio(studioTab))} title={activeProject ? "Open project workspace tools" : "Workspace tools are available inside projects"} aria-label={studioOpen ? "Close workspace tools" : "Open workspace tools"} aria-expanded={studioOpen} disabled={!activeProject}>
               <PanelRight size={17} />
               <span>Workspace</span>
             </button>
@@ -2028,9 +2140,16 @@ export default function App() {
 
         {appUpdater.phase === "available" && (
           <div className="app-update-banner" role="status">
-            <span className="app-update-banner-icon"><Download size={15} /></span>
-            <span><strong>OpenKiwi {appUpdater.availableVersion} is ready</strong><small>Review the release notes, then update and restart from Settings.</small></span>
-            <button className="secondary-button" onClick={() => openSettings("updates")}>View update</button>
+            <span className="app-update-banner-icon">
+              <Download size={15} />
+            </span>
+            <span>
+              <strong>OpenKiwi {appUpdater.availableVersion} is ready</strong>
+              <small>Review the release notes, then update and restart from Settings.</small>
+            </span>
+            <button className="secondary-button" onClick={() => openSettings("updates")}>
+              View update
+            </button>
           </div>
         )}
 
@@ -2039,14 +2158,35 @@ export default function App() {
             {error && (
               <div className="error-banner" role="alert">
                 <span>{error}</span>
-                {errorSuggestsSettings && <button className="error-settings" onClick={() => openSettings()}>Check settings</button>}
-                <button onClick={() => setError(null)} aria-label="Dismiss error"><X size={14} /></button>
+                {errorSuggestsSettings && (
+                  <button className="error-settings" onClick={() => openSettings()}>
+                    Check settings
+                  </button>
+                )}
+                <button onClick={() => setError(null)} aria-label="Dismiss error">
+                  <X size={14} />
+                </button>
               </div>
             )}
-            <div className="welcome-orbit"><Code2 size={34} /></div>
+            <div className="welcome-orbit">
+              <Code2 size={34} />
+            </div>
             <h1>Choose how you want to work.</h1>
             <p>Open a project for coding inside a folder, or use a normal chat with no project attached.</p>
-            <div className="welcome-actions"><button className="primary-button large" onClick={addProject}><FolderOpen size={17} /> Open project</button><button className="secondary-button" onClick={() => { setWorkspaceMode("chat"); storeValue("kiwi.workspaceMode", "chat"); }}><MessageSquare size={16} /> Normal chat</button></div>
+            <div className="welcome-actions">
+              <button className="primary-button large" onClick={addProject}>
+                <FolderOpen size={17} /> Open project
+              </button>
+              <button
+                className="secondary-button"
+                onClick={() => {
+                  setWorkspaceMode("chat");
+                  storeValue("kiwi.workspaceMode", "chat");
+                }}
+              >
+                <MessageSquare size={16} /> Normal chat
+              </button>
+            </div>
           </section>
         ) : (
           <>
@@ -2076,10 +2216,23 @@ export default function App() {
                     placeholder="Search this conversation…"
                     aria-label="Search this conversation"
                   />
-                  <small>{convSearchQuery.trim() ? (convSearchCount ? `${((convSearchIndex % convSearchCount) + convSearchCount) % convSearchCount + 1} of ${convSearchCount}` : "No matches") : ""}</small>
-                  <button onClick={() => setConvSearchIndex((current) => current - 1)} disabled={!convSearchCount} title="Previous match" aria-label="Previous match"><ChevronDown style={{ transform: "rotate(180deg)" }} size={13} /></button>
-                  <button onClick={() => setConvSearchIndex((current) => current + 1)} disabled={!convSearchCount} title="Next match" aria-label="Next match"><ChevronDown size={13} /></button>
-                  <button onClick={() => { setConvSearchOpen(false); setConvSearchQuery(""); }} title="Close search" aria-label="Close conversation search"><X size={13} /></button>
+                  <small>{convSearchQuery.trim() ? (convSearchCount ? `${(((convSearchIndex % convSearchCount) + convSearchCount) % convSearchCount) + 1} of ${convSearchCount}` : "No matches") : ""}</small>
+                  <button onClick={() => setConvSearchIndex((current) => current - 1)} disabled={!convSearchCount} title="Previous match" aria-label="Previous match">
+                    <ChevronDown style={{ transform: "rotate(180deg)" }} size={13} />
+                  </button>
+                  <button onClick={() => setConvSearchIndex((current) => current + 1)} disabled={!convSearchCount} title="Next match" aria-label="Next match">
+                    <ChevronDown size={13} />
+                  </button>
+                  <button
+                    onClick={() => {
+                      setConvSearchOpen(false);
+                      setConvSearchQuery("");
+                    }}
+                    title="Close search"
+                    aria-label="Close conversation search"
+                  >
+                    <X size={13} />
+                  </button>
                 </div>
               )}
               {timelineEmpty || !activeThreadId ? (
@@ -2088,26 +2241,40 @@ export default function App() {
                   <h1>{activeWorkspace.isChat ? "Start a normal chat." : "What should we build?"}</h1>
                   <p>{activeWorkspace.isChat ? "This conversation is not attached to any project folder. Ask a question, brainstorm, or work without repository context." : `This thread works inside ${activeProject?.name}. Commands and file changes start in that project folder.`}</p>
                   <div className="trust-strip">
-                    <span><Check size={13} /> No app-added system prompt</span>
-                    <span><Check size={13} /> {activeWorkspace.isChat ? "No project folder" : "Local project access"}</span>
-                    <span><Check size={13} /> Approval controls</span>
+                    <span>
+                      <Check size={13} /> No app-added system prompt
+                    </span>
+                    <span>
+                      <Check size={13} /> {activeWorkspace.isChat ? "No project folder" : "Local project access"}
+                    </span>
+                    <span>
+                      <Check size={13} /> Approval controls
+                    </span>
                   </div>
-                  {!activeWorkspace.isChat && <div className="empty-state-actions" aria-label="Project workspace shortcuts"><button onClick={() => openStudio("files")}><FileCode2 size={14} /> Browse files</button><button onClick={() => openStudio("terminal")}><TerminalSquare size={14} /> Terminal</button><button onClick={() => openStudio("review")}><Search size={14} /> Review changes</button></div>}
+                  {!activeWorkspace.isChat && (
+                    <div className="empty-state-actions" aria-label="Project workspace shortcuts">
+                      <button onClick={() => openStudio("files")}>
+                        <FileCode2 size={14} /> Browse files
+                      </button>
+                      <button onClick={() => openStudio("terminal")}>
+                        <TerminalSquare size={14} /> Terminal
+                      </button>
+                      <button onClick={() => openStudio("review")}>
+                        <Search size={14} /> Review changes
+                      </button>
+                    </div>
+                  )}
                 </div>
               ) : (
                 <ErrorBoundary label="conversation">
-                  <Suspense fallback={<div className="timeline-loading"><LoaderCircle className="spin" size={15} /> Loading conversation…</div>}>
-                    <ConversationTimeline
-                      threadId={activeThreadId}
-                      running={running}
-                      thinkingLabel={activeWorkspace.isChat ? "Thinking in normal chat" : `Working in ${activeProject?.name}`}
-                      approval={inlineApproval}
-                      searchQuery={convSearchOpen ? convSearchQuery : ""}
-                      searchActiveMatch={convSearchIndex}
-                      onSearchMatches={setConvSearchCount}
-                      onEditMessage={editMessageIntoComposer}
-                      onApprovalRespond={(approval, result) => void respondToApproval(approval, result)}
-                    />
+                  <Suspense
+                    fallback={
+                      <div className="timeline-loading">
+                        <LoaderCircle className="spin" size={15} /> Loading conversation…
+                      </div>
+                    }
+                  >
+                    <ConversationTimeline threadId={activeThreadId} running={running} thinkingLabel={activeWorkspace.isChat ? "Thinking in normal chat" : `Working in ${activeProject?.name}`} approval={inlineApproval} searchQuery={convSearchOpen ? convSearchQuery : ""} searchActiveMatch={convSearchIndex} onSearchMatches={setConvSearchCount} onEditMessage={editMessageIntoComposer} onApprovalRespond={(approval, result) => void respondToApproval(approval, result)} />
                   </Suspense>
                 </ErrorBoundary>
               )}
@@ -2117,8 +2284,14 @@ export default function App() {
               {error && (
                 <div className="error-banner" role="alert">
                   <span>{error}</span>
-                  {errorSuggestsSettings && <button className="error-settings" onClick={() => openSettings()}>Check settings</button>}
-                  <button onClick={() => setError(null)} aria-label="Dismiss error"><X size={14} /></button>
+                  {errorSuggestsSettings && (
+                    <button className="error-settings" onClick={() => openSettings()}>
+                      Check settings
+                    </button>
+                  )}
+                  <button onClick={() => setError(null)} aria-label="Dismiss error">
+                    <X size={14} />
+                  </button>
                 </div>
               )}
               <Composer
@@ -2127,46 +2300,36 @@ export default function App() {
                 running={running}
                 steering={Boolean(running && activeThread)}
                 dropActive={dropActive}
-                placeholder={running && activeThread
-                  ? "Add direction to the running task…"
-                  : activeWorkspace.isChat ? "Ask anything — no project folder attached…" : `Ask OpenKiwi to work in ${activeProject?.name ?? "this project"}…`}
+                placeholder={running && activeThread ? "Add direction to the running task…" : activeWorkspace.isChat ? "Ask anything — no project folder attached…" : `Ask OpenKiwi to work in ${activeProject?.name ?? "this project"}…`}
                 attachments={attachments}
                 searchFiles={searchProjectFiles}
                 onRemoveAttachment={(path) => setAttachments((current) => current.filter((entry) => entry.path !== path))}
                 onPasteImages={(items) => void pasteImages(items)}
                 onSend={sendMessage}
                 onStop={() => void stopTurn()}
-                modelControls={<>
-                {settings.provider === "openai" && (
-                  <ModelPowerControl
-                    model={effectiveSettings.model || DEFAULT_OPENAI_MODEL}
-                    effort={settings.reasoningEffort}
-                    ultra={settings.ultra}
-                    fast={settings.serviceTier === "priority"}
-                    runtimeModels={runtimeModels}
-                    onModel={persistComposerModel}
-                    onEffort={(reasoningEffort: ReasoningEffort) => persistSettings({ ...settings, reasoningEffort, ultra: false })}
-                    onUltra={(ultra) => persistSettings({ ...settings, ultra, subagentsEnabled: ultra ? true : settings.subagentsEnabled })}
-                    onFast={(fast) => persistSettings({ ...settings, serviceTier: fast ? "priority" : null })}
-                  />
-                )}
-                {settings.provider === "openrouter" && (
-                  <OpenRouterModelControl
-                    model={effectiveSettings.model}
-                    effort={settings.reasoningEffort}
-                    models={openRouterModels}
-                    loading={openRouterModelsLoading}
-                    error={openRouterModelsError}
-                    onModel={(model) => {
-                      persistComposerModel(model);
-                      if (settings.ultra) persistSettings({ ...settings, ultra: false });
-                    }}
-                    onEffort={(reasoningEffort) => persistSettings({ ...settings, reasoningEffort, ultra: false })}
-                    onRefresh={() => void refreshOpenRouterModels()}
-                  />
-                )}
-                </>}
-                controls={<>
+                modelControls={
+                  <>
+                    {settings.provider === "openai" && <ModelPowerControl model={effectiveSettings.model || DEFAULT_OPENAI_MODEL} effort={settings.reasoningEffort} ultra={settings.ultra} fast={settings.serviceTier === "priority"} runtimeModels={runtimeModels} onModel={persistComposerModel} onEffort={(reasoningEffort: ReasoningEffort) => persistSettings({ ...settings, reasoningEffort, ultra: false })} onUltra={(ultra) => persistSettings({ ...settings, ultra, subagentsEnabled: ultra ? true : settings.subagentsEnabled })} onFast={(fast) => persistSettings({ ...settings, serviceTier: fast ? "priority" : null })} />}
+                    {settings.provider === "openrouter" && (
+                      <OpenRouterModelControl
+                        model={effectiveSettings.model}
+                        effort={settings.reasoningEffort}
+                        models={openRouterModels}
+                        loading={openRouterModelsLoading}
+                        error={openRouterModelsError}
+                        onModel={(model) => {
+                          persistComposerModel(model);
+                          if (settings.ultra) persistSettings({ ...settings, ultra: false });
+                        }}
+                        onEffort={(reasoningEffort) => persistSettings({ ...settings, reasoningEffort, ultra: false })}
+                        onRefresh={() => void refreshOpenRouterModels()}
+                      />
+                    )}
+                    {settings.provider === "claude" && <ClaudeModelControl model={effectiveSettings.model || DEFAULT_CLAUDE_MODEL} effort={settings.reasoningEffort} onModel={(model) => persistComposerModel(model)} onEffort={(reasoningEffort) => persistSettings({ ...settings, reasoningEffort, ultra: false })} />}
+                  </>
+                }
+                controls={
+                  <>
                     <div className="permission-control" ref={permissionControlRef}>
                       <button className="toolbar-button" onClick={() => setPermissionOpen((open) => !open)} aria-haspopup="menu" aria-expanded={permissionOpen}>
                         <PermissionIcon mode={effectiveSettings.permission} />
@@ -2200,12 +2363,7 @@ export default function App() {
                       <Command size={14} />
                       Prompt: {effectiveSettings.systemPrompt ? (activeProject?.overrides?.systemPrompt ? "project" : "custom") : "empty"}
                     </button>
-                    <button
-                      className={`toolbar-button agents-button ${settings.subagentsEnabled ? "enabled" : ""}`}
-                      onClick={() => persistSettings({ ...settings, subagentsEnabled: !settings.subagentsEnabled })}
-                      disabled={Boolean(activeThread)}
-                      title={activeThread ? "Sub-agent access is fixed when a thread starts" : "Allow the model to spawn direct sub-agents for this thread"}
-                    >
+                    <button className={`toolbar-button agents-button ${settings.subagentsEnabled ? "enabled" : ""}`} onClick={() => persistSettings({ ...settings, subagentsEnabled: !settings.subagentsEnabled })} disabled={Boolean(activeThread)} title={activeThread ? "Sub-agent access is fixed when a thread starts" : "Allow the model to spawn direct sub-agents for this thread"}>
                       <UsersRound size={14} />
                       {settings.subagentsEnabled ? `Agents: ${settings.subagentMax}` : "Agents off"}
                     </button>
@@ -2213,13 +2371,15 @@ export default function App() {
                       <Paperclip size={14} />
                       {attachments.length ? attachments.length : "Attach"}
                     </button>
-                </>}
+                  </>
+                }
               />
               <div className="composer-caption">
                 OpenKiwi can make mistakes. Review commands and changes before shipping.
                 {tokenUsage?.contextWindow ? (
                   <span className={`context-meter ${tokenUsage.totalTokens / tokenUsage.contextWindow > 0.8 ? "warn" : ""}`}>
-                    {" "}· Context {Math.min(100, Math.round((tokenUsage.totalTokens / tokenUsage.contextWindow) * 100))}% used{costEstimate ? ` · ${costEstimate}` : ""}
+                    {" "}
+                    · Context {Math.min(100, Math.round((tokenUsage.totalTokens / tokenUsage.contextWindow) * 100))}% used{costEstimate ? ` · ${costEstimate}` : ""}
                   </span>
                 ) : null}
               </div>
@@ -2229,74 +2389,78 @@ export default function App() {
       </main>
 
       <ErrorBoundary label="workspace tools">
-        <Suspense fallback={null}><StudioDock
-          open={studioOpen && Boolean(activeProject)}
-          width={paneSizes.dock}
-          onResizeStart={startPaneResize("dock")}
-          tab={studioTab}
-          projectName={activeProject?.name}
-          projectPath={activeProject?.path}
-          activeThread={Boolean(activeThread)}
-          diff={diff}
-          agents={agentRecords}
-          terminalOutput={terminal.outputStore}
-          terminalCommand={terminal.command}
-          terminalRunning={terminal.running}
-          checkpoints={checkpoints.filter((item) => !activeThread || item.threadId === activeThread.id)}
-          attachments={attachments}
-          usage={tokenUsage}
-          costEstimate={costEstimate}
-          costTotals={costTotalsView}
-          rateSummary={rateSummary}
-          skills={skills}
-          mcpServers={mcpServers}
-          gitOutput={gitOutput}
-          gitCommitMessage={gitCommitMessage}
-          promptAudit={[
-            { label: "Base instruction", value: effectiveSettings.systemPrompt ? `${activeProject?.overrides?.systemPrompt ? "project" : "custom"} · ${effectiveSettings.systemPrompt.length} chars` : "empty" },
-            { label: "Developer instruction", value: "empty" },
-            { label: "Project instructions", value: settings.projectInstructionsEnabled ? "enabled · AGENTS.md up to 32 KB" : "disabled" },
-            { label: "Model", value: effectiveSettings.model || "provider default" },
-            { label: "Reasoning", value: settings.ultra ? "ultra" : settings.reasoningEffort },
-            { label: "Sub-agents", value: settings.subagentsEnabled ? `on · max ${settings.subagentMax}` : "off" },
-            { label: "Skills", value: skillsFolder ? `${skills.filter((skill) => skill.enabled).length} enabled · local folder` : "no folder selected" },
-            { label: "Permissions", value: permissionLabel(effectiveSettings.permission) },
-            { label: "Service tier", value: settings.serviceTier || "standard" },
-          ]}
-          projectActions={projectActions}
-          workflows={workflows.filter((workflow) => workflow.projectId === activeProject?.id && workflow.enabled)}
-          workflowRuns={workflowRuns}
-          onTab={setStudioTab}
-          onClose={() => setStudioOpen(false)}
-          onRefreshDiff={() => void refreshDiff()}
-          onReview={() => void startReview()}
-          onOpenAgent={(id) => void openAgent(id)}
-          onStopAgent={(id) => void stopAgent(id)}
-          onTerminalCommand={terminal.setCommand}
-          onRunTerminal={() => { if (activeProject) void terminal.run(activeProject.path); }}
-          onStopTerminal={() => void terminal.stop()}
-          onTerminalInput={terminal.write}
-          onTerminalResize={terminal.resize}
-          onCheckpoint={createCheckpoint}
-          onFork={(checkpoint) => void forkThread(checkpoint)}
-          onRollback={() => void rollbackTurn()}
-          onWorktree={() => void createWorktree()}
-          onAddAttachment={() => void addAttachment()}
-          onRemoveAttachment={(path) => setAttachments((current) => current.filter((item) => item.path !== path))}
-          onRefreshUsage={() => void refreshUsage()}
-          onCompact={() => void compactThread()}
-          onRefreshTools={() => void refreshTools(activeProject)}
-          onGitAction={(action) => void runGitAction(action)}
-          onGitCommitMessage={setGitCommitMessage}
-          onGitPathAction={(action, path) => void runGitPathAction(action, path)}
-          onAttachPath={(path) => setAttachments((current) => current.some((item) => item.path === path) ? current : [...current, { path, name: basename(path), kind: "file" }])}
-          onProjectAction={(action) => void runProjectAction(action)}
-          onRunWorkflow={(workflow) => void runWorkflowFromShortcut(workflow)}
-          onStopWorkflow={(workflowId) => void stopWorkflow(workflowId)}
-          onOpenWorkflowRun={(threadId) => void openAgent(threadId)}
-          onToggleSkill={(skill) => void toggleSkill(skill)}
-          onConnectMcp={(server) => void connectMcp(server)}
-        /></Suspense>
+        <Suspense fallback={null}>
+          <StudioDock
+            open={studioOpen && Boolean(activeProject)}
+            width={paneSizes.dock}
+            onResizeStart={startPaneResize("dock")}
+            tab={studioTab}
+            projectName={activeProject?.name}
+            projectPath={activeProject?.path}
+            activeThread={Boolean(activeThread)}
+            diff={diff}
+            agents={agentRecords}
+            terminalOutput={terminal.outputStore}
+            terminalCommand={terminal.command}
+            terminalRunning={terminal.running}
+            checkpoints={checkpoints.filter((item) => !activeThread || item.threadId === activeThread.id)}
+            attachments={attachments}
+            usage={tokenUsage}
+            costEstimate={costEstimate}
+            costTotals={costTotalsView}
+            rateSummary={rateSummary}
+            skills={skills}
+            mcpServers={mcpServers}
+            gitOutput={gitOutput}
+            gitCommitMessage={gitCommitMessage}
+            promptAudit={[
+              { label: "Base instruction", value: effectiveSettings.systemPrompt ? `${activeProject?.overrides?.systemPrompt ? "project" : "custom"} · ${effectiveSettings.systemPrompt.length} chars` : "empty" },
+              { label: "Developer instruction", value: "empty" },
+              { label: "Project instructions", value: settings.projectInstructionsEnabled ? "enabled · AGENTS.md up to 32 KB" : "disabled" },
+              { label: "Model", value: effectiveSettings.model || "provider default" },
+              { label: "Reasoning", value: settings.ultra ? "ultra" : settings.reasoningEffort },
+              { label: "Sub-agents", value: settings.subagentsEnabled ? `on · max ${settings.subagentMax}` : "off" },
+              { label: "Skills", value: skillsFolder ? `${skills.filter((skill) => skill.enabled).length} enabled · local folder` : "no folder selected" },
+              { label: "Permissions", value: permissionLabel(effectiveSettings.permission) },
+              { label: "Service tier", value: settings.serviceTier || "standard" },
+            ]}
+            projectActions={projectActions}
+            workflows={workflows.filter((workflow) => workflow.projectId === activeProject?.id && workflow.enabled)}
+            workflowRuns={workflowRuns}
+            onTab={setStudioTab}
+            onClose={() => setStudioOpen(false)}
+            onRefreshDiff={() => void refreshDiff()}
+            onReview={() => void startReview()}
+            onOpenAgent={(id) => void openAgent(id)}
+            onStopAgent={(id) => void stopAgent(id)}
+            onTerminalCommand={terminal.setCommand}
+            onRunTerminal={() => {
+              if (activeProject) void terminal.run(activeProject.path);
+            }}
+            onStopTerminal={() => void terminal.stop()}
+            onTerminalInput={terminal.write}
+            onTerminalResize={terminal.resize}
+            onCheckpoint={createCheckpoint}
+            onFork={(checkpoint) => void forkThread(checkpoint)}
+            onRollback={() => void rollbackTurn()}
+            onWorktree={() => void createWorktree()}
+            onAddAttachment={() => void addAttachment()}
+            onRemoveAttachment={(path) => setAttachments((current) => current.filter((item) => item.path !== path))}
+            onRefreshUsage={() => void refreshUsage()}
+            onCompact={() => void compactThread()}
+            onRefreshTools={() => void refreshTools(activeProject)}
+            onGitAction={(action) => void runGitAction(action)}
+            onGitCommitMessage={setGitCommitMessage}
+            onGitPathAction={(action, path) => void runGitPathAction(action, path)}
+            onAttachPath={(path) => setAttachments((current) => (current.some((item) => item.path === path) ? current : [...current, { path, name: basename(path), kind: "file" }]))}
+            onProjectAction={(action) => void runProjectAction(action)}
+            onRunWorkflow={(workflow) => void runWorkflowFromShortcut(workflow)}
+            onStopWorkflow={(workflowId) => void stopWorkflow(workflowId)}
+            onOpenWorkflowRun={(threadId) => void openAgent(threadId)}
+            onToggleSkill={(skill) => void toggleSkill(skill)}
+            onConnectMcp={(server) => void connectMcp(server)}
+          />
+        </Suspense>
       </ErrorBoundary>
 
       <SettingsModal
@@ -2306,6 +2470,8 @@ export default function App() {
         settings={settings}
         account={account}
         runtimeStatus={runtimeStatus}
+        claudeStatus={claudeStatus}
+        claudeLoginStarting={claudeLoginStarting}
         openRouterReady={openRouterReady}
         onClose={closeSettings}
         onSave={(next) => {
@@ -2313,10 +2479,18 @@ export default function App() {
           closeSettings();
         }}
         onThemePreview={setPreviewTheme}
-        onAccountChange={async () => { await refreshAccount(); await refreshModels(); }}
+        onAccountChange={async () => {
+          await refreshAccount();
+          await refreshModels();
+        }}
         onSignIn={beginChatGptLogin}
+        onClaudeSignIn={beginClaudeLogin}
+        onClaudeRefresh={refreshClaudeStatus}
         onRuntimeRequired={() => setRuntimeSetupOpen(true)}
-        onWorkspaceTools={() => { closeSettings(); openStudio("tools"); }}
+        onWorkspaceTools={() => {
+          closeSettings();
+          openStudio("tools");
+        }}
         onOpenRouterChange={setOpenRouterReady}
         onError={setError}
         profiles={promptProfiles}
@@ -2333,54 +2507,58 @@ export default function App() {
         mcpServers={mcpServers}
         onMcpChanged={() => void refreshTools(activeProject)}
         workspaceToolsAvailable={Boolean(activeProject)}
-        onProfiles={(value) => { setPromptProfiles(value); storeValue("kiwi.promptProfiles", value); }}
-        onAgents={(value) => { setCustomAgents(value); storeValue("kiwi.customAgents", value); }}
-        onActions={(value) => { setProjectActions(value); storeValue("kiwi.projectActions", value); }}
-        onSchedules={(value) => { setScheduledTasks(value); storeValue("kiwi.scheduledTasks", value); }}
+        onProfiles={(value) => {
+          setPromptProfiles(value);
+          storeValue("kiwi.promptProfiles", value);
+        }}
+        onAgents={(value) => {
+          setCustomAgents(value);
+          storeValue("kiwi.customAgents", value);
+        }}
+        onActions={(value) => {
+          setProjectActions(value);
+          storeValue("kiwi.projectActions", value);
+        }}
+        onSchedules={(value) => {
+          setScheduledTasks(value);
+          storeValue("kiwi.scheduledTasks", value);
+        }}
         onWorkflows={persistWorkflows}
         onRunWorkflow={async (workflowId, variables) => {
           closeSettings();
           await runWorkflow(workflowId, "manual", variables);
         }}
         onStopWorkflow={(workflowId) => stopWorkflow(workflowId)}
-        onProjects={(value) => { setProjects(value); storeValue("kiwi.projects", value); }}
+        onProjects={(value) => {
+          setProjects(value);
+          storeValue("kiwi.projects", value);
+        }}
         scheduleRuns={scheduleRuns}
-        onOpenRun={(threadId) => { closeSettings(); void openAgent(threadId); }}
+        onOpenRun={(threadId) => {
+          closeSettings();
+          void openAgent(threadId);
+        }}
         onChooseSkillsFolder={() => void chooseSkillsFolder()}
         onRefreshSkills={() => void refreshLocalSkills()}
         onImportSkills={() => void importSkills()}
         onCreateSkill={createSkill}
         onRenameSkill={renameSkill}
         onToggleSkill={toggleSkill}
-        onOpenOnboarding={() => { closeSettings(); openOnboarding(); }}
+        onOpenOnboarding={() => {
+          closeSettings();
+          openOnboarding();
+        }}
       />
 
-      {onboardingMounted && <Suspense fallback={null}><OnboardingModal
-        open={onboardingOpen}
-        runtimeStatus={runtimeStatus}
-        account={account}
-        openRouterReady={openRouterReady}
-        skillsFolder={skillsFolder}
-        onComplete={completeOnboarding}
-        onOpenSettings={(section) => openSettings(section)}
-        onChooseSkillsFolder={() => void chooseSkillsFolder()}
-        onAddProject={() => void addProject()}
-        onStartChat={startNormalChat}
-      /></Suspense>}
+      {onboardingMounted && (
+        <Suspense fallback={null}>
+          <OnboardingModal open={onboardingOpen} runtimeStatus={runtimeStatus} claudeStatus={claudeStatus} account={account} openRouterReady={openRouterReady} skillsFolder={skillsFolder} onComplete={completeOnboarding} onOpenSettings={(section) => openSettings(section)} onChooseSkillsFolder={() => void chooseSkillsFolder()} onAddProject={() => void addProject()} onStartChat={startNormalChat} />
+        </Suspense>
+      )}
 
-      <RuntimeSetupModal
-        open={runtimeSetupOpen}
-        checking={runtimeChecking}
-        onClose={() => setRuntimeSetupOpen(false)}
-        onRetry={() => void retryRuntime()}
-      />
+      <RuntimeSetupModal open={runtimeSetupOpen} checking={runtimeChecking} onClose={() => setRuntimeSetupOpen(false)} onRetry={() => void retryRuntime()} />
 
-      <AuthRequiredModal
-        open={authRequiredOpen}
-        busy={loginStarting}
-        onClose={() => setAuthRequiredOpen(false)}
-        onSignIn={() => void beginChatGptLogin()}
-      />
+      <AuthRequiredModal open={authRequiredOpen} busy={loginStarting} onClose={() => setAuthRequiredOpen(false)} onSignIn={() => void beginChatGptLogin()} />
 
       {pendingApproval && (
         <ApprovalCenter
@@ -2402,7 +2580,11 @@ export default function App() {
         workflows={workflows}
         projectActive={Boolean(activeProject)}
         onClose={() => setCommandPaletteOpen(false)}
-        onProject={(project) => { setActiveProjectId(project.id); setWorkspaceMode("project"); storeValue("kiwi.workspaceMode", "project"); }}
+        onProject={(project) => {
+          setActiveProjectId(project.id);
+          setWorkspaceMode("project");
+          storeValue("kiwi.workspaceMode", "project");
+        }}
         onThread={(thread) => void selectThread(thread)}
         onWorkflow={(workflow) => void runWorkflowFromShortcut(workflow)}
         onNewThread={newThread}

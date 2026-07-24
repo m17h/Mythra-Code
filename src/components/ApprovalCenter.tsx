@@ -13,6 +13,16 @@ function ApprovalButtons({ onDecision, allowSession = true, autoFocusDeny = true
 
 /** Maps a button decision onto the wire format each approval method expects. */
 export function approvalResponse(approval: PendingApproval, decision: Decision): JsonObject {
+  if (approval.method === "claude/can_use_tool") {
+    if (decision === "decline") {
+      return { behavior: "deny", message: "The user denied this action." };
+    }
+    return {
+      behavior: "allow",
+      ...(approval.params.input === undefined ? {} : { updatedInput: approval.params.input }),
+      updatedPermissions: decision === "acceptForSession" ? approval.params.permission_suggestions : undefined,
+    };
+  }
   if (approval.method === "item/permissions/requestApproval") {
     const requested = (approval.params.permissions ?? {}) as JsonObject;
     return {
@@ -25,6 +35,14 @@ export function approvalResponse(approval: PendingApproval, decision: Decision):
 }
 
 export function approvalSummary(approval: PendingApproval): { title: string; reason: string; command: string } {
+  if (approval.method === "claude/can_use_tool") {
+    const input = (approval.params.input ?? {}) as JsonObject;
+    return {
+      title: String(approval.params.title ?? approval.params.display_name ?? `Allow ${approval.params.tool_name ?? "this action"}?`),
+      reason: String(approval.params.reason ?? approval.params.description ?? "Claude is requesting permission to continue."),
+      command: String(input.command ?? input.file_path ?? approval.params.command ?? ""),
+    };
+  }
   const isFile = approval.method.includes("fileChange") || approval.method.includes("applyPatch");
   const permissions = approval.method === "item/permissions/requestApproval";
   const commandValue = approval.params.command;

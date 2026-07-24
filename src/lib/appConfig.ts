@@ -1,6 +1,7 @@
 import type { AppSettings, PromptProfile, ThemeName } from "../types";
 
 export const DEFAULT_OPENAI_MODEL = "gpt-5.6-sol";
+export const DEFAULT_CLAUDE_MODEL = "claude-fable-5";
 export const RELEASE_NOTES_URL = "https://github.com/m17h/OpenKiwi/releases/latest";
 
 export const THEMES: Array<{ id: ThemeName; name: string; description: string; swatches: [string, string, string] }> = [

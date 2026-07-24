@@ -3,6 +3,7 @@ import { save } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   Boxes,
+  BrainCircuit,
   Check,
   ChevronRight,
   Download,
@@ -23,7 +24,8 @@ import {
   X,
 } from "lucide-react";
 import { exportDiagnostics, recentAuditRows, rpc, saveOpenRouterKey, type AuditRow, type CodexRuntimeStatus } from "../lib/codex";
-import { DEFAULT_OPENAI_MODEL, DEFAULT_SETTINGS, RELEASE_NOTES_URL, THEMES } from "../lib/appConfig";
+import type { ClaudeRuntimeStatus } from "../lib/claude";
+import { DEFAULT_CLAUDE_MODEL, DEFAULT_OPENAI_MODEL, DEFAULT_SETTINGS, RELEASE_NOTES_URL, THEMES } from "../lib/appConfig";
 import { friendlyError } from "../lib/errors";
 import { updateProgress, type AppUpdater } from "../lib/appUpdater";
 import type { LocalSkill } from "../lib/skills";
@@ -52,12 +54,16 @@ export function SettingsModal({
   settings,
   account,
   runtimeStatus,
+  claudeStatus = null,
+  claudeLoginStarting = false,
   openRouterReady,
   onClose,
   onSave,
   onThemePreview,
   onAccountChange,
   onSignIn,
+  onClaudeSignIn = async () => {},
+  onClaudeRefresh = async () => ({ available: false, path: null, version: null, loggedIn: false, authMethod: null, email: null, subscriptionType: null, warning: null }),
   onRuntimeRequired,
   onWorkspaceTools,
   onOpenRouterChange,
@@ -100,12 +106,16 @@ export function SettingsModal({
   settings: AppSettings;
   account: Account | null;
   runtimeStatus: CodexRuntimeStatus | null;
+  claudeStatus?: ClaudeRuntimeStatus | null;
+  claudeLoginStarting?: boolean;
   openRouterReady: boolean;
   onClose: () => void;
   onSave: (settings: AppSettings) => void;
   onThemePreview: (theme: ThemeName) => void;
   onAccountChange: () => Promise<void>;
   onSignIn: () => Promise<void>;
+  onClaudeSignIn?: () => Promise<void>;
+  onClaudeRefresh?: () => Promise<ClaudeRuntimeStatus>;
   onRuntimeRequired: () => void;
   onWorkspaceTools: () => void;
   onOpenRouterChange: (ready: boolean) => void;
@@ -399,8 +409,11 @@ export function SettingsModal({
               </button>
             </div>
             <div className={`agent-limit-row ${local.subagentsEnabled ? "" : "disabled"}`}>
-              <div><strong>Maximum concurrent sub-agents</strong><small>Choose 1–24 active at once per thread, excluding the root agent.</small></div>
-              <div className="number-stepper" aria-label="Maximum concurrent sub-agents">
+              <div>
+                <strong>{local.provider === "claude" ? "Available specialist agents" : "Maximum concurrent sub-agents"}</strong>
+                <small>{local.provider === "claude" ? "Choose how many enabled custom profiles OpenKiwi exposes. Claude Code manages native concurrency." : "Choose 1–24 active at once per thread, excluding the root agent."}</small>
+              </div>
+              <div className="number-stepper" aria-label={local.provider === "claude" ? "Available Claude specialist agents" : "Maximum concurrent sub-agents"}>
                 <button type="button" onClick={() => setLocal({ ...local, subagentMax: Math.max(1, local.subagentMax - 1) })} disabled={!local.subagentsEnabled || local.subagentMax <= 1}><Minus size={13} /></button>
                 <strong>{local.subagentMax}</strong>
                 <button type="button" onClick={() => setLocal({ ...local, subagentMax: Math.min(24, local.subagentMax + 1) })} disabled={!local.subagentsEnabled || local.subagentMax >= 24}><Plus size={13} /></button>
@@ -417,10 +430,10 @@ export function SettingsModal({
           <section className="settings-section">
             <div className="settings-section-heading">
               <div className="settings-icon"><KeyRound size={17} /></div>
-              <div><h3>Model provider</h3><p>Credentials stay in the OS credential store or Codex’s isolated login store.</p></div>
+              <div><h3>Model provider</h3><p>Use a ChatGPT subscription, Claude subscription, or your own OpenRouter key.</p></div>
             </div>
             <div className="provider-cards">
-              <button className={`provider-card ${local.provider === "openai" ? "selected" : ""}`} onClick={() => setLocal({ ...local, provider: "openai", model: local.model.includes("/") ? DEFAULT_OPENAI_MODEL : (local.model || DEFAULT_OPENAI_MODEL), ultra: false })}>
+              <button className={`provider-card ${local.provider === "openai" ? "selected" : ""}`} onClick={() => setLocal({ ...local, provider: "openai", model: local.model.includes("/") || local.model.startsWith("claude-") ? DEFAULT_OPENAI_MODEL : (local.model || DEFAULT_OPENAI_MODEL), ultra: false })}>
                 <span className="provider-logo openai"><Sparkles size={17} /></span>
                 <span><strong>OpenAI</strong><small>Official ChatGPT subscription sign-in</small></span>
                 {local.provider === "openai" && <Check size={16} />}
@@ -429,6 +442,11 @@ export function SettingsModal({
                 <span className="provider-logo openrouter"><RotateCcw size={17} /></span>
                 <span><strong>OpenRouter</strong><small>Responses-compatible model routing</small></span>
                 {local.provider === "openrouter" && <Check size={16} />}
+              </button>
+              <button className={`provider-card ${local.provider === "claude" ? "selected" : ""}`} onClick={() => setLocal({ ...local, provider: "claude", model: local.model.startsWith("claude-") ? local.model : DEFAULT_CLAUDE_MODEL, ultra: false })}>
+                <span className="provider-logo claude"><BrainCircuit size={17} /></span>
+                <span><strong>Claude</strong><small>Official Claude Code subscription login</small></span>
+                {local.provider === "claude" && <Check size={16} />}
               </button>
             </div>
 
@@ -446,7 +464,7 @@ export function SettingsModal({
                   </button>
                 )}
               </div>
-            ) : (
+            ) : local.provider === "openrouter" ? (
               <div className="credential-panel stacked">
                 <div className="credential-status">
                   <div><strong>OpenRouter API key</strong><small>{openRouterReady ? "Stored securely on this device" : "No key stored"}</small></div>
@@ -457,6 +475,20 @@ export function SettingsModal({
                   <button className="secondary-button" onClick={() => void storeKey()} disabled={!apiKey.trim() || busy}>Save key</button>
                 </div>
               </div>
+            ) : (
+              <div className="credential-panel">
+                <div>
+                  <strong>{claudeStatus?.loggedIn ? claudeStatus.email || "Claude subscription" : "Claude Code subscription"}</strong>
+                  <small>{claudeStatus?.loggedIn
+                    ? `${claudeStatus.subscriptionType || claudeStatus.authMethod || "Claude"} plan connected · ${claudeStatus.version || "Claude Code"}`
+                    : claudeStatus?.available ? "Claude Code detected · sign in to continue" : "Claude Code must be installed first"}</small>
+                </div>
+                <button className="secondary-button" onClick={() => void (claudeStatus?.available ? onClaudeSignIn() : openUrl("https://docs.anthropic.com/en/docs/claude-code/setup"))} disabled={claudeLoginStarting}>
+                  {claudeLoginStarting ? <LoaderCircle className="spin" size={14} /> : !claudeStatus?.available ? <Download size={14} /> : null}
+                  {claudeLoginStarting ? "Signing in…" : claudeStatus?.loggedIn ? "Sign in again" : claudeStatus?.available ? "Sign in" : "Install Claude Code"}
+                </button>
+                <button className="icon-button" onClick={() => void onClaudeRefresh()} title="Refresh Claude status" aria-label="Refresh Claude status"><RotateCcw size={14} /></button>
+              </div>
             )}
 
             <label className="field-label">
@@ -464,10 +496,10 @@ export function SettingsModal({
               <input
                 value={local.model}
                 onChange={(event) => setLocal({ ...local, model: event.target.value })}
-                readOnly={local.provider === "openai"}
-                placeholder={local.provider === "openrouter" ? "e.g. anthropic/claude-sonnet-4" : "Select Sol, Terra, or Luna below the composer"}
+                readOnly={local.provider !== "openrouter"}
+                placeholder={local.provider === "openrouter" ? "e.g. anthropic/claude-sonnet-4" : local.provider === "claude" ? "Select Fable, Opus, Sonnet, or Haiku below the composer" : "Select Sol, Terra, or Luna below the composer"}
               />
-              <small>{local.provider === "openrouter" ? "Use the searchable picker beneath the composer, or enter any valid provider/model slug here." : "Use the animated selector beneath the composer. Availability follows the signed-in ChatGPT account."}</small>
+              <small>{local.provider === "openrouter" ? "Use the searchable picker beneath the composer, or enter any valid provider/model slug here." : local.provider === "claude" ? "Use the Claude selector beneath the composer. Availability follows your signed-in Claude Code subscription." : "Use the animated selector beneath the composer. Availability follows the signed-in ChatGPT account."}</small>
             </label>
           </section>}
           </div>

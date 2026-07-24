@@ -1,7 +1,7 @@
 import type { ReasoningEffort } from "./components/ModelPowerControl";
 import type { JsonObject } from "./lib/codex";
 
-export type Provider = "openai" | "openrouter";
+export type Provider = "openai" | "openrouter" | "claude";
 export type PermissionMode = "read-only" | "ask" | "full";
 export type ThemeName = "kiwi" | "midnight" | "ember" | "violet" | "daylight";
 export type WorkspaceMode = "chat" | "project";

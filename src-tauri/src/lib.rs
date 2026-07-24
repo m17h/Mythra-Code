@@ -51,6 +51,114 @@ struct RuntimeState {
     server: Mutex<Option<Arc<AppServer>>>,
 }
 
+#[derive(Default)]
+struct ClaudeState {
+    turns: Arc<Mutex<HashMap<String, Arc<ClaudeTurn>>>>,
+    authenticated: AtomicBool,
+}
+
+struct ClaudeTurn {
+    stdin: Mutex<ChildStdin>,
+    child: Arc<Mutex<Child>>,
+    pid: Option<u32>,
+    alive: Arc<AtomicBool>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ClaudeRuntimeStatus {
+    available: bool,
+    path: Option<String>,
+    version: Option<String>,
+    logged_in: bool,
+    auth_method: Option<String>,
+    email: Option<String>,
+    subscription_type: Option<String>,
+    warning: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ClaudeAttachment {
+    path: String,
+    kind: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ClaudeAgentInput {
+    name: String,
+    description: String,
+    instructions: String,
+    model: Option<String>,
+    enabled: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ClaudeTurnOptions {
+    thread_id: String,
+    cwd: String,
+    prompt: String,
+    model: String,
+    effort: String,
+    permission: String,
+    system_prompt: String,
+    resume: bool,
+    attachments: Vec<ClaudeAttachment>,
+    subagents_enabled: bool,
+    subagent_max: usize,
+    custom_agents: Vec<ClaudeAgentInput>,
+    skills_plugin_path: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ClaudeTurnStarted {
+    turn_id: String,
+}
+
+impl ClaudeTurn {
+    async fn write(&self, message: &Value) -> Result<(), String> {
+        if !self.alive.load(Ordering::Acquire) {
+            return Err("This Claude turn is no longer running".into());
+        }
+        let mut stdin = self.stdin.lock().await;
+        stdin
+            .write_all(format!("{message}\n").as_bytes())
+            .await
+            .map_err(|error| format!("Could not write to Claude Code: {error}"))?;
+        stdin
+            .flush()
+            .await
+            .map_err(|error| format!("Could not flush Claude Code input: {error}"))
+    }
+
+    async fn shutdown(&self) {
+        self.alive.store(false, Ordering::Release);
+        let _ = self.child.lock().await.kill().await;
+    }
+
+    async fn close_input(&self) {
+        self.alive.store(false, Ordering::Release);
+        let _ = self.stdin.lock().await.shutdown().await;
+    }
+}
+
+async fn remove_claude_turn_if_current(
+    turns: &Arc<Mutex<HashMap<String, Arc<ClaudeTurn>>>>,
+    thread_id: &str,
+    expected: &Arc<ClaudeTurn>,
+) {
+    let mut turns = turns.lock().await;
+    let current = turns
+        .get(thread_id)
+        .is_some_and(|current| Arc::ptr_eq(current, expected));
+    if current {
+        turns.remove(thread_id);
+    }
+}
+
 /// Shared SQLite connection, opened once at startup with DDL applied.
 /// Locked with a std::sync::Mutex and only used inside spawn_blocking.
 struct StateDb {
@@ -469,10 +577,10 @@ fn push_candidate(candidates: &mut Vec<PathBuf>, candidate: PathBuf) {
 }
 
 #[cfg(target_os = "macos")]
-async fn find_with_login_shell() -> Option<PathBuf> {
+async fn find_with_login_shell(program: &str) -> Option<PathBuf> {
     let shell = env::var_os("SHELL").unwrap_or_else(|| OsString::from("/bin/zsh"));
     let output = Command::new(shell)
-        .args(["-lc", "command -v codex"])
+        .args(["-lc", &format!("command -v {}", program)])
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()
@@ -492,7 +600,7 @@ async fn find_with_login_shell() -> Option<PathBuf> {
 }
 
 #[cfg(not(target_os = "macos"))]
-async fn find_with_login_shell() -> Option<PathBuf> {
+async fn find_with_login_shell(_program: &str) -> Option<PathBuf> {
     None
 }
 
@@ -541,7 +649,7 @@ async fn resolve_codex_binary(app: &AppHandle) -> Result<PathBuf, String> {
     if let Some(candidate) = candidates.into_iter().find(|candidate| candidate.is_file()) {
         return Ok(candidate);
     }
-    if let Some(candidate) = find_with_login_shell().await {
+    if let Some(candidate) = find_with_login_shell(executable_name).await {
         return Ok(candidate);
     }
 
@@ -619,6 +727,207 @@ async fn codex_runtime_status(app: AppHandle) -> CodexRuntimeStatus {
             compatible: false,
             warning: None,
         },
+    }
+}
+
+async fn resolve_claude_binary(app: &AppHandle) -> Result<PathBuf, String> {
+    let executable_name = if cfg!(windows) {
+        "claude.exe"
+    } else {
+        "claude"
+    };
+    if let Some(override_path) = env::var_os("OPENKIWI_CLAUDE_PATH") {
+        let override_path = PathBuf::from(override_path);
+        return override_path.is_file().then_some(override_path).ok_or_else(|| {
+            "OPENKIWI_CLAUDE_PATH does not point to a Claude Code executable. Update or remove it, then try again.".into()
+        });
+    }
+
+    let mut candidates = Vec::new();
+    if let Some(candidate) = find_on_path(executable_name) {
+        push_candidate(&mut candidates, candidate);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        push_candidate(&mut candidates, PathBuf::from("/opt/homebrew/bin/claude"));
+        push_candidate(&mut candidates, PathBuf::from("/usr/local/bin/claude"));
+    }
+    if let Ok(home) = app.path().home_dir() {
+        for relative in [
+            ".local/bin/claude",
+            ".npm-global/bin/claude",
+            ".bun/bin/claude",
+            ".volta/bin/claude",
+        ] {
+            push_candidate(&mut candidates, home.join(relative));
+        }
+    }
+    if let Some(candidate) = candidates.into_iter().find(|candidate| candidate.is_file()) {
+        return Ok(candidate);
+    }
+    if let Some(candidate) = find_with_login_shell(executable_name).await {
+        return Ok(candidate);
+    }
+
+    Err("OpenKiwi could not find Claude Code. Install Claude Code, sign in with `claude auth login`, then try again. Advanced users can set OPENKIWI_CLAUDE_PATH.".into())
+}
+
+fn subscription_only_command(path: &Path) -> Command {
+    let mut command = Command::new(path);
+    command
+        .env_remove("ANTHROPIC_API_KEY")
+        .env_remove("ANTHROPIC_AUTH_TOKEN")
+        .env_remove("ANTHROPIC_BASE_URL")
+        .env_remove("ANTHROPIC_CUSTOM_HEADERS")
+        .env_remove("ANTHROPIC_DEFAULT_HAIKU_MODEL")
+        .env_remove("ANTHROPIC_DEFAULT_OPUS_MODEL")
+        .env_remove("ANTHROPIC_DEFAULT_SONNET_MODEL")
+        .env_remove("CLAUDE_CODE_OAUTH_TOKEN")
+        .env_remove("AWS_BEARER_TOKEN_BEDROCK")
+        .env_remove("AWS_ACCESS_KEY_ID")
+        .env_remove("AWS_SECRET_ACCESS_KEY")
+        .env_remove("AWS_SESSION_TOKEN")
+        .env_remove("AWS_PROFILE")
+        .env_remove("GOOGLE_APPLICATION_CREDENTIALS")
+        .env_remove("CLAUDE_CODE_USE_BEDROCK")
+        .env_remove("CLAUDE_CODE_USE_VERTEX")
+        .env_remove("CLAUDE_CODE_USE_FOUNDRY")
+        .env_remove("ANTHROPIC_BEDROCK_BASE_URL")
+        .env_remove("ANTHROPIC_VERTEX_BASE_URL")
+        .env_remove("ANTHROPIC_VERTEX_PROJECT_ID")
+        .env_remove("VERTEX_REGION_CLAUDE_3_5_SONNET")
+        .env("COLUMNS", "1000")
+        .env("NO_COLOR", "1");
+    command
+}
+
+fn claude_credential_override_present() -> bool {
+    [
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_CUSTOM_HEADERS",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "CLAUDE_CODE_USE_BEDROCK",
+        "CLAUDE_CODE_USE_VERTEX",
+        "CLAUDE_CODE_USE_FOUNDRY",
+    ]
+    .iter()
+    .any(|key| env::var_os(key).is_some())
+}
+
+fn parse_claude_auth_status(stdout: &[u8]) -> Option<Value> {
+    serde_json::from_slice(stdout).ok().or_else(|| {
+        let compact = String::from_utf8_lossy(stdout)
+            .lines()
+            .map(str::trim)
+            .collect::<String>();
+        serde_json::from_str(&compact).ok()
+    })
+}
+
+async fn read_claude_runtime_status(app: &AppHandle) -> ClaudeRuntimeStatus {
+    let warning = claude_credential_override_present()
+    .then(|| "OpenKiwi ignores Anthropic credential, proxy, and hosted-provider environment overrides for Claude subscription sessions, so this provider uses only your Claude Code login.".to_string());
+    let Ok(path) = resolve_claude_binary(app).await else {
+        return ClaudeRuntimeStatus {
+            available: false,
+            path: None,
+            version: None,
+            logged_in: false,
+            auth_method: None,
+            email: None,
+            subscription_type: None,
+            warning,
+        };
+    };
+
+    let version = runtime_version(&path).await;
+    let auth = subscription_only_command(&path)
+        .args(["--setting-sources", "", "auth", "status"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .await
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| parse_claude_auth_status(&output.stdout));
+    ClaudeRuntimeStatus {
+        available: true,
+        path: Some(path.to_string_lossy().into_owned()),
+        version,
+        logged_in: auth
+            .as_ref()
+            .and_then(|value| value.get("loggedIn"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        auth_method: auth
+            .as_ref()
+            .and_then(|value| value.get("authMethod"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        email: auth
+            .as_ref()
+            .and_then(|value| value.get("email"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        subscription_type: auth
+            .as_ref()
+            .and_then(|value| value.get("subscriptionType"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        warning,
+    }
+}
+
+#[tauri::command]
+async fn claude_runtime_status(
+    app: AppHandle,
+    state: State<'_, ClaudeState>,
+) -> Result<ClaudeRuntimeStatus, String> {
+    let status = read_claude_runtime_status(&app).await;
+    state
+        .authenticated
+        .store(status.logged_in, Ordering::Release);
+    Ok(status)
+}
+
+#[tauri::command]
+async fn claude_login(app: AppHandle) -> Result<(), String> {
+    let path = resolve_claude_binary(&app).await?;
+    #[cfg(target_os = "macos")]
+    {
+        let escaped = path.to_string_lossy().replace('\'', "'\"'\"'");
+        let login_command = format!("'{}' auth login", escaped);
+        let status = Command::new("/usr/bin/osascript")
+            .args([
+                "-e",
+                "on run argv",
+                "-e",
+                "tell application \"Terminal\"",
+                "-e",
+                "activate",
+                "-e",
+                "do script (item 1 of argv)",
+                "-e",
+                "end tell",
+                "-e",
+                "end run",
+                "--",
+            ])
+            .arg(login_command)
+            .status()
+            .await
+            .map_err(|error| format!("Could not open Claude Code sign-in in Terminal: {error}"))?;
+        return status.success().then_some(()).ok_or_else(|| {
+            "Could not open Terminal. Run `claude auth login` yourself, then refresh Claude status."
+                .into()
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+        Err("Run `claude auth login` in a terminal, then refresh Claude status in OpenKiwi.".into())
     }
 }
 
@@ -866,6 +1175,421 @@ async fn state_write(app: AppHandle, key: String, value: Value) -> Result<(), St
     })
     .await
     .map_err(|error| format!("State write task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn state_delete(app: AppHandle, key: String) -> Result<(), String> {
+    let connection = shared_state_db(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let connection = lock_state_db(&connection)?;
+        connection
+            .execute("DELETE FROM app_state WHERE key = ?1", params![key])
+            .map_err(|error| format!("Could not delete OpenKiwi state: {error}"))?;
+        Ok(())
+    })
+    .await
+    .map_err(|error| format!("State delete task failed: {error}"))?
+}
+
+fn claude_image_media_type(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        _ => "image/png",
+    }
+}
+
+fn claude_user_message(
+    thread_id: &str,
+    prompt: &str,
+    attachments: &[ClaudeAttachment],
+) -> Result<Value, String> {
+    use base64::Engine as _;
+
+    let mut content = vec![json!({ "type": "text", "text": prompt })];
+    for attachment in attachments {
+        let path = PathBuf::from(&attachment.path);
+        if attachment.kind == "image" {
+            let bytes = fs::read(&path)
+                .map_err(|error| format!("Could not read {}: {error}", path.display()))?;
+            content.push(json!({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": claude_image_media_type(&path),
+                    "data": base64::engine::general_purpose::STANDARD.encode(bytes),
+                }
+            }));
+        } else {
+            content.push(json!({
+                "type": "text",
+                "text": format!("Attached file available at: {}", path.display()),
+            }));
+        }
+    }
+    Ok(json!({
+        "type": "user",
+        "message": { "role": "user", "content": content },
+        "parent_tool_use_id": Value::Null,
+        "session_id": thread_id,
+    }))
+}
+
+fn claude_effort(value: &str) -> &str {
+    match value {
+        "low" | "medium" | "high" | "xhigh" | "max" => value,
+        "extra" => "xhigh",
+        "ultra" => "max",
+        _ => "medium",
+    }
+}
+
+fn claude_agent_definitions(agents: &[ClaudeAgentInput], maximum: usize) -> Value {
+    let definitions = agents
+        .iter()
+        .filter(|agent| agent.enabled)
+        .take(maximum.clamp(1, 24))
+        .map(|agent| {
+            let mut definition = json!({
+                "description": agent.description,
+                "prompt": agent.instructions,
+            });
+            if let Some(model) = agent.model.as_deref().filter(|model| !model.is_empty()) {
+                definition["model"] = json!(model);
+            }
+            (normalize_skill_name(&agent.name), definition)
+        })
+        .filter(|(name, _)| !name.is_empty())
+        .collect::<serde_json::Map<_, _>>();
+    Value::Object(definitions)
+}
+
+async fn emit_claude_event(app: &AppHandle, thread_id: &str, turn_id: &str, message: Value) {
+    let _ = app.emit(
+        "claude-event",
+        json!({ "threadId": thread_id, "turnId": turn_id, "message": message }),
+    );
+}
+
+#[tauri::command]
+async fn claude_turn_start(
+    app: AppHandle,
+    state: State<'_, ClaudeState>,
+    options: ClaudeTurnOptions,
+) -> Result<ClaudeTurnStarted, String> {
+    let binary = resolve_claude_binary(&app).await?;
+    if !state.authenticated.load(Ordering::Acquire) {
+        let auth = read_claude_runtime_status(&app).await;
+        state.authenticated.store(auth.logged_in, Ordering::Release);
+        if !auth.logged_in {
+            return Err("Sign in to Claude Code before sending a message.".into());
+        }
+    }
+    if options.cwd.trim().is_empty() || !Path::new(&options.cwd).is_dir() {
+        return Err("Choose a valid project folder before starting this Claude thread.".into());
+    }
+    if state
+        .turns
+        .lock()
+        .await
+        .get(&options.thread_id)
+        .is_some_and(|turn| turn.alive.load(Ordering::Acquire))
+    {
+        return Err("Claude is already working in this thread".into());
+    }
+
+    let turn_id = uuid::Uuid::new_v4().to_string();
+    let mut command = subscription_only_command(&binary);
+    command
+        .current_dir(&options.cwd)
+        .env("CLAUDE_CODE_ENTRYPOINT", "sdk-ts")
+        .args([
+            "-p",
+            "--setting-sources",
+            "",
+            "--output-format",
+            "stream-json",
+            "--input-format",
+            "stream-json",
+            "--verbose",
+            "--include-partial-messages",
+            "--name",
+            "OpenKiwi",
+            "--model",
+            &options.model,
+            "--effort",
+            claude_effort(&options.effort),
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    if !options.system_prompt.trim().is_empty() {
+        command
+            .arg("--append-system-prompt")
+            .arg(&options.system_prompt);
+    }
+    let agent_definitions = claude_agent_definitions(&options.custom_agents, options.subagent_max);
+    if agent_definitions
+        .as_object()
+        .is_some_and(|agents| !agents.is_empty())
+    {
+        command.arg("--agents").arg(agent_definitions.to_string());
+    }
+    if options.resume {
+        command.arg(format!("--resume={}", options.thread_id));
+    } else {
+        command.args(["--session-id", &options.thread_id]);
+    }
+    match options.permission.as_str() {
+        "full" => {
+            command.args([
+                "--permission-mode",
+                "bypassPermissions",
+                "--allow-dangerously-skip-permissions",
+            ]);
+        }
+        "read-only" => {
+            command.args(["--permission-mode", "dontAsk"]);
+        }
+        _ => {
+            command.args([
+                "--permission-mode",
+                "manual",
+                "--permission-prompt-tool",
+                "stdio",
+            ]);
+        }
+    }
+    let mut disallowed = Vec::new();
+    if options.permission == "read-only" {
+        disallowed.extend([
+            "Write",
+            "Edit",
+            "NotebookEdit",
+            "Bash",
+            "WebFetch",
+            "WebSearch",
+        ]);
+    }
+    if !options.subagents_enabled {
+        disallowed.extend([
+            "Task",
+            "SendMessage",
+            "TaskCreate",
+            "TaskUpdate",
+            "TeamCreate",
+        ]);
+    }
+    if !disallowed.is_empty() {
+        command.args(["--disallowedTools", &disallowed.join(",")]);
+    }
+    if let Some(plugin_path) = options
+        .skills_plugin_path
+        .as_deref()
+        .filter(|path| Path::new(path).is_dir())
+    {
+        command.args(["--plugin-dir", plugin_path]);
+    }
+    let mut directories = HashSet::new();
+    for attachment in options
+        .attachments
+        .iter()
+        .filter(|attachment| attachment.kind != "image")
+    {
+        if let Some(parent) = Path::new(&attachment.path).parent() {
+            if directories.insert(parent.to_path_buf()) {
+                command.arg("--add-dir").arg(parent);
+            }
+        }
+    }
+
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("Could not start Claude Code: {error}"))?;
+    let pid = child.id();
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "Claude Code did not provide an input stream".to_string())?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Claude Code did not provide an output stream".to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "Claude Code did not provide an error stream".to_string())?;
+    let alive = Arc::new(AtomicBool::new(true));
+    let turn = Arc::new(ClaudeTurn {
+        stdin: Mutex::new(stdin),
+        child: Arc::new(Mutex::new(child)),
+        pid,
+        alive: alive.clone(),
+    });
+    state
+        .turns
+        .lock()
+        .await
+        .insert(options.thread_id.clone(), turn.clone());
+
+    let initialize = json!({
+        "type": "control_request",
+        "request_id": uuid::Uuid::new_v4().to_string(),
+        "request": { "subtype": "initialize" }
+    });
+    if let Err(error) = turn.write(&initialize).await {
+        state.turns.lock().await.remove(&options.thread_id);
+        turn.shutdown().await;
+        return Err(error);
+    }
+    let user_message =
+        claude_user_message(&options.thread_id, &options.prompt, &options.attachments)?;
+    if let Err(error) = turn.write(&user_message).await {
+        state.turns.lock().await.remove(&options.thread_id);
+        turn.shutdown().await;
+        return Err(error);
+    }
+
+    let stderr_lines = Arc::new(Mutex::new(Vec::<String>::new()));
+    let stderr_output = stderr_lines.clone();
+    let stderr_task = tauri::async_runtime::spawn(async move {
+        let mut lines = BufReader::new(stderr).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            let line = line.trim();
+            if !line.is_empty() {
+                stderr_output.lock().await.push(line.to_string());
+            }
+        }
+    });
+
+    let stdout_app = app.clone();
+    let stdout_thread = options.thread_id;
+    let stdout_turn = turn_id.clone();
+    let turns = state.turns.clone();
+    let stdout_child = turn.child.clone();
+    let stdout_runtime = turn.clone();
+    tauri::async_runtime::spawn(async move {
+        let mut lines = BufReader::new(stdout).lines();
+        let mut saw_result = false;
+        while let Ok(Some(line)) = lines.next_line().await {
+            if let Ok(message) = serde_json::from_str::<Value>(&line) {
+                if message.get("type").and_then(Value::as_str) == Some("result") {
+                    saw_result = true;
+                    // Stream-input mode deliberately waits for another user
+                    // message. OpenKiwi uses one process per turn so the next
+                    // turn can resume from the persisted Claude session.
+                    remove_claude_turn_if_current(&turns, &stdout_thread, &stdout_runtime).await;
+                    stdout_runtime.close_input().await;
+                }
+                emit_claude_event(&stdout_app, &stdout_thread, &stdout_turn, message).await;
+            }
+        }
+        alive.store(false, Ordering::Release);
+        remove_claude_turn_if_current(&turns, &stdout_thread, &stdout_runtime).await;
+        // Reap the completed child so repeated Claude turns cannot accumulate
+        // zombie processes during a long-running OpenKiwi session.
+        let exit = stdout_child.lock().await.wait().await.ok();
+        let _ = stderr_task.await;
+        if !saw_result {
+            let stderr = stderr_lines.lock().await.join("\n");
+            let detail = if stderr.trim().is_empty() {
+                "Claude Code exited before completing the turn.".to_string()
+            } else {
+                stderr
+                    .chars()
+                    .rev()
+                    .take(4000)
+                    .collect::<String>()
+                    .chars()
+                    .rev()
+                    .collect()
+            };
+            emit_claude_event(
+                &stdout_app,
+                &stdout_thread,
+                &stdout_turn,
+                json!({
+                    "type": "openkiwi_exit",
+                    "message": detail,
+                    "code": exit.and_then(|status| status.code()),
+                }),
+            )
+            .await;
+        }
+    });
+
+    Ok(ClaudeTurnStarted { turn_id })
+}
+
+#[tauri::command]
+async fn claude_turn_steer(
+    state: State<'_, ClaudeState>,
+    thread_id: String,
+    prompt: String,
+    attachments: Vec<ClaudeAttachment>,
+) -> Result<(), String> {
+    let turn = state
+        .turns
+        .lock()
+        .await
+        .get(&thread_id)
+        .cloned()
+        .ok_or_else(|| "Claude is not currently running in this thread".to_string())?;
+    turn.write(&claude_user_message(&thread_id, &prompt, &attachments)?)
+        .await
+}
+
+#[tauri::command]
+async fn claude_turn_interrupt(
+    state: State<'_, ClaudeState>,
+    thread_id: String,
+) -> Result<(), String> {
+    let turn = state
+        .turns
+        .lock()
+        .await
+        .get(&thread_id)
+        .cloned()
+        .ok_or_else(|| "Claude is not currently running in this thread".to_string())?;
+    turn.write(&json!({
+        "type": "control_request",
+        "request_id": uuid::Uuid::new_v4().to_string(),
+        "request": { "subtype": "interrupt" },
+    }))
+    .await
+}
+
+#[tauri::command]
+async fn claude_permission_respond(
+    state: State<'_, ClaudeState>,
+    thread_id: String,
+    request_id: String,
+    result: Value,
+) -> Result<(), String> {
+    let turn = state
+        .turns
+        .lock()
+        .await
+        .get(&thread_id)
+        .cloned()
+        .ok_or_else(|| "This Claude turn is no longer waiting for approval".to_string())?;
+    turn.write(&json!({
+        "type": "control_response",
+        "response": {
+            "subtype": "success",
+            "request_id": request_id,
+            "response": result,
+        }
+    }))
+    .await
 }
 
 #[tauri::command]
@@ -1379,6 +2103,15 @@ fn sync_skill_runtime_at(
     }
     fs::create_dir_all(runtime_root)
         .map_err(|error| format!("Could not create the skill runtime: {error}"))?;
+    fs::create_dir_all(runtime_root.join(".claude-plugin"))
+        .map_err(|error| format!("Could not create the Claude skill plugin: {error}"))?;
+    fs::create_dir_all(runtime_root.join("skills"))
+        .map_err(|error| format!("Could not create the Claude skills directory: {error}"))?;
+    fs::write(
+        runtime_root.join(".claude-plugin/plugin.json"),
+        r#"{"name":"openkiwi-skills","version":"1.0.0","description":"User-selected OpenKiwi skills"}"#,
+    )
+    .map_err(|error| format!("Could not prepare the Claude skill plugin: {error}"))?;
 
     let mut used_names = std::collections::HashSet::new();
     for config in configs.into_iter().filter(|config| config.enabled) {
@@ -1438,8 +2171,24 @@ fn sync_skill_runtime_at(
             source.display(),
             body.trim_start(),
         );
-        fs::write(package.join("SKILL.md"), bridge)
+        fs::write(package.join("SKILL.md"), &bridge)
             .map_err(|error| format!("Could not prepare skill `{name}`: {error}"))?;
+
+        let claude_package = runtime_root.join("skills").join(&name);
+        fs::create_dir_all(&claude_package)
+            .map_err(|error| format!("Could not create Claude skill `{name}`: {error}"))?;
+        let mut claude_count = 0;
+        let mut claude_bytes = 0;
+        copy_markdown_tree(
+            reference_root,
+            &source,
+            &claude_package,
+            0,
+            &mut claude_count,
+            &mut claude_bytes,
+        )?;
+        fs::write(claude_package.join("SKILL.md"), &bridge)
+            .map_err(|error| format!("Could not prepare Claude skill `{name}`: {error}"))?;
     }
     Ok(())
 }
@@ -2127,6 +2876,37 @@ fn shutdown_runtime_on_exit(app: &AppHandle) {
     }
 }
 
+fn shutdown_claude_on_exit(app: &AppHandle) {
+    let Some(state) = app.try_state::<ClaudeState>() else {
+        return;
+    };
+    let turns = tauri::async_runtime::block_on(async {
+        match timeout(Duration::from_millis(500), state.turns.lock()).await {
+            Ok(mut guard) => guard.drain().map(|(_, turn)| turn).collect::<Vec<_>>(),
+            Err(_) => Vec::new(),
+        }
+    });
+    for turn in turns {
+        let stopped = tauri::async_runtime::block_on(async {
+            timeout(Duration::from_secs(1), turn.shutdown())
+                .await
+                .is_ok()
+        });
+        if !stopped {
+            if let Some(pid) = turn.pid {
+                #[cfg(unix)]
+                let _ = std::process::Command::new("kill")
+                    .args(["-9", &pid.to_string()])
+                    .status();
+                #[cfg(windows)]
+                let _ = std::process::Command::new("taskkill")
+                    .args(["/PID", &pid.to_string(), "/T", "/F"])
+                    .status();
+            }
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // reqwest and the updater share the same provider-less rustls stack.
@@ -2150,10 +2930,18 @@ pub fn run() {
             Ok(())
         })
         .manage(RuntimeState::default())
+        .manage(ClaudeState::default())
         .invoke_handler(tauri::generate_handler![
             codex_runtime_status,
+            claude_runtime_status,
+            claude_login,
+            claude_turn_start,
+            claude_turn_steer,
+            claude_turn_interrupt,
+            claude_permission_respond,
             state_read,
             state_write,
+            state_delete,
             audit_append,
             audit_recent,
             diagnostics_read,
@@ -2180,6 +2968,7 @@ pub fn run() {
                 tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
             ) {
                 shutdown_runtime_on_exit(app_handle);
+                shutdown_claude_on_exit(app_handle);
             }
         });
 }
@@ -2256,6 +3045,22 @@ mod tests {
     fn runtime_compatibility_accepts_tested_contract() {
         assert!(runtime_is_compatible("codex-cli 0.145.0-alpha.18"));
         assert!(!runtime_is_compatible("codex-cli 0.144.9"));
+    }
+
+    #[test]
+    fn claude_auth_status_tolerates_terminal_wrapping() {
+        let wrapped = br#"{
+          "loggedIn": true,
+          "email": "a-very-long-address@
+          example.com",
+          "subscriptionType": "max"
+        }"#;
+        let parsed = parse_claude_auth_status(wrapped).unwrap();
+        assert_eq!(parsed.get("loggedIn"), Some(&Value::Bool(true)));
+        assert_eq!(
+            parsed.get("email").and_then(Value::as_str),
+            Some("a-very-long-address@example.com")
+        );
     }
 
     #[test]
@@ -2395,6 +3200,11 @@ mod tests {
         assert!(bridge.contains("# Release"));
         assert!(!bridge.contains("name: source-name"));
         assert!(runtime.join("ship-release/references/checks.md").is_file());
+        assert!(runtime.join(".claude-plugin/plugin.json").is_file());
+        assert!(runtime.join("skills/ship-release/SKILL.md").is_file());
+        assert!(runtime
+            .join("skills/ship-release/references/checks.md")
+            .is_file());
 
         fs::remove_dir_all(root).unwrap();
         fs::remove_dir_all(runtime).unwrap();

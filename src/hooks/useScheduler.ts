@@ -31,10 +31,29 @@ export function useScheduler(deps: SchedulerDeps): void {
 
   const runScheduledTask = useCallback(async (scheduled: ScheduledTask) => {
     const current = depsRef.current;
-    if (runningRef.current.has(scheduled.id) || !current.runtimeAvailable) return;
+    if (runningRef.current.has(scheduled.id)) return;
     const project = current.projects.find((item) => item.id === scheduled.projectId);
     const run: ScheduleRunSettings = scheduled.run ?? scheduleRunSnapshot(current.settings);
     if (!project) return;
+    if (run.provider === "claude") {
+      const error = "Claude scheduled tasks are not enabled yet. Use an OpenAI or OpenRouter schedule.";
+      current.updateSchedule(scheduled.id, (item) => ({
+        ...item,
+        nextRunAt: Date.now() + item.intervalMinutes * 60_000,
+      }));
+      current.recordRun({
+        id: crypto.randomUUID(),
+        scheduleId: scheduled.id,
+        scheduleName: scheduled.name,
+        projectId: scheduled.projectId,
+        at: Date.now(),
+        status: "failed",
+        error,
+      });
+      void auditEvent("schedule.failed", { scheduleId: scheduled.id, error }).catch(() => {});
+      return;
+    }
+    if (!current.runtimeAvailable) return;
     if (run.provider === "openai" && !current.chatGptConnected) return;
     if (run.provider === "openrouter" && !current.openRouterReady) return;
     runningRef.current.add(scheduled.id);

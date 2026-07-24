@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { ApprovalCenter } from "./ApprovalCenter";
+import { ApprovalCenter, approvalResponse } from "./ApprovalCenter";
 import type { PendingApproval } from "../types";
 
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn() }));
@@ -31,5 +31,23 @@ describe("ApprovalCenter", () => {
     render(<ApprovalCenter approval={approval("item/permissions/requestApproval", { permissions, reason: "Network access" })} onRespond={onRespond} />);
     fireEvent.click(screen.getByRole("button", { name: "Allow for session" }));
     expect(onRespond).toHaveBeenCalledWith({ permissions, scope: "session" });
+  });
+
+  it("maps Claude permission choices onto the Agent SDK response", () => {
+    const request = approval("claude/can_use_tool", {
+      tool_use_id: "tool-1",
+      input: { command: "npm test" },
+      permission_suggestions: [{ type: "addRules", rules: [{ toolName: "Bash" }] }],
+    });
+    expect(approvalResponse(request, "acceptForSession")).toEqual({
+      behavior: "allow",
+      updatedInput: { command: "npm test" },
+      updatedPermissions: [{ type: "addRules", rules: [{ toolName: "Bash" }] }],
+    });
+    expect(approvalResponse(request, "decline")).toEqual({ behavior: "deny", message: "The user denied this action." });
+    expect(approvalResponse(approval("claude/can_use_tool", {}), "accept")).toEqual({
+      behavior: "allow",
+      updatedPermissions: undefined,
+    });
   });
 });

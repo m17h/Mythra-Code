@@ -276,7 +276,7 @@ export function WorkflowManager({
           </div>
 
           <div className="workflow-runtime-summary">
-            <span><Bot size={12} /> {draft.run.provider === "openai" ? "OpenAI" : "OpenRouter"} · {draft.run.model || "Default model"}</span>
+            <span><Bot size={12} /> {draft.run.provider === "openai" ? "OpenAI" : draft.run.provider === "claude" ? "Claude" : "OpenRouter"} · {draft.run.model || "Default model"}</span>
             <span>{draft.run.reasoningEffort}{draft.run.ultra ? " + Ultra" : ""}</span>
             <span>{draft.run.permission}</span>
             <button onClick={() => setDraft({ ...draft, run: scheduleRunSnapshot(settings) })}><RotateCcw size={10} /> Use current settings</button>
@@ -405,7 +405,7 @@ export function WorkflowManager({
             )}
             <div className="workflow-run-summary">
               <span>{pendingRun.steps.length} steps</span>
-              <span>{pendingRun.run.provider === "openai" ? "OpenAI" : "OpenRouter"} · {pendingRun.run.model}</span>
+              <span>{pendingRun.run.provider === "openai" ? "OpenAI" : pendingRun.run.provider === "claude" ? "Claude" : "OpenRouter"} · {pendingRun.run.model}</span>
               <span>{pendingRun.run.reasoningEffort}{pendingRun.run.ultra ? " + Ultra" : ""}</span>
             </div>
             <div className="workflow-editor-actions">

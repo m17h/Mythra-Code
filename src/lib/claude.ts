@@ -1,0 +1,120 @@
+import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type {
+  Activity,
+  ChatMessage,
+  CustomAgentProfile,
+  PermissionMode,
+  Thread,
+} from "../types";
+import type { ReasoningEffort } from "../components/ModelPowerControl";
+import type { JsonObject } from "./codex";
+
+export interface ClaudeRuntimeStatus {
+  available: boolean;
+  path: string | null;
+  version: string | null;
+  loggedIn: boolean;
+  authMethod: string | null;
+  email: string | null;
+  subscriptionType: string | null;
+  warning: string | null;
+}
+
+export interface ClaudeEvent {
+  threadId: string;
+  turnId: string;
+  message: JsonObject;
+}
+
+export interface ClaudeAttachment {
+  path: string;
+  kind: "file" | "image";
+}
+
+export interface ClaudeTurnOptions {
+  threadId: string;
+  cwd: string;
+  prompt: string;
+  model: string;
+  effort: ReasoningEffort;
+  permission: PermissionMode;
+  systemPrompt: string;
+  resume: boolean;
+  attachments: ClaudeAttachment[];
+  subagentsEnabled: boolean;
+  subagentMax: number;
+  customAgents: CustomAgentProfile[];
+  skillsPluginPath?: string;
+}
+
+export interface ClaudeTranscript {
+  thread: Thread;
+  messages: ChatMessage[];
+  activities: Activity[];
+}
+
+export async function getClaudeRuntimeStatus(): Promise<ClaudeRuntimeStatus> {
+  return invoke<ClaudeRuntimeStatus>("claude_runtime_status");
+}
+
+export async function startClaudeLogin(): Promise<void> {
+  await invoke("claude_login");
+}
+
+export async function startClaudeTurn(
+  options: ClaudeTurnOptions,
+): Promise<{ turnId: string }> {
+  return invoke<{ turnId: string }>("claude_turn_start", { options });
+}
+
+export async function steerClaudeTurn(
+  threadId: string,
+  prompt: string,
+  attachments: ClaudeAttachment[],
+): Promise<void> {
+  await invoke("claude_turn_steer", { threadId, prompt, attachments });
+}
+
+export async function interruptClaudeTurn(threadId: string): Promise<void> {
+  await invoke("claude_turn_interrupt", { threadId });
+}
+
+export async function respondToClaudePermission(
+  threadId: string,
+  requestId: string,
+  result: JsonObject,
+): Promise<void> {
+  await invoke("claude_permission_respond", { threadId, requestId, result });
+}
+
+export async function onClaudeEvent(
+  handler: (event: ClaudeEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<ClaudeEvent>("claude-event", ({ payload }) => handler(payload));
+}
+
+function transcriptKey(threadId: string): string {
+  return `kiwi.claudeThread.${threadId}`;
+}
+
+export async function saveClaudeTranscript(
+  transcript: ClaudeTranscript,
+): Promise<void> {
+  await invoke("state_write", {
+    key: transcriptKey(transcript.thread.id),
+    value: transcript,
+  });
+}
+
+export async function loadClaudeTranscript(
+  threadId: string,
+): Promise<ClaudeTranscript | null> {
+  return invoke<ClaudeTranscript | null>("state_read", {
+    key: transcriptKey(threadId),
+  });
+}
+
+export async function deleteClaudeTranscript(threadId: string): Promise<void> {
+  await invoke("state_delete", { key: transcriptKey(threadId) });
+}

@@ -3,6 +3,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   ArrowRight,
   Bot,
+  BrainCircuit,
   Boxes,
   Check,
   ChevronLeft,
@@ -20,11 +21,13 @@ import {
   X,
 } from "lucide-react";
 import type { CodexRuntimeStatus } from "../lib/codex";
+import type { ClaudeRuntimeStatus } from "../lib/claude";
 import type { Account, SettingsSection } from "../types";
 
 const CODEX_INSTALL_URL = "https://learn.chatgpt.com/docs/codex/cli";
 const OPENROUTER_KEYS_URL = "https://openrouter.ai/settings/keys";
 const OPENROUTER_GUIDE_URL = "https://openrouter.ai/docs/quickstart";
+const CLAUDE_INSTALL_URL = "https://docs.anthropic.com/en/docs/claude-code/setup";
 
 const STEPS = [
   { id: "welcome", label: "Welcome", icon: Sparkles },
@@ -39,8 +42,9 @@ function StatusPill({ ready, children }: { ready: boolean; children: ReactNode }
   return <span className={`onboarding-status ${ready ? "ready" : "waiting"}`}><i />{children}</span>;
 }
 
-function ProviderStep({ runtimeStatus, account, openRouterReady }: {
+function ProviderStep({ runtimeStatus, claudeStatus, account, openRouterReady }: {
   runtimeStatus: CodexRuntimeStatus | null;
+  claudeStatus: ClaudeRuntimeStatus | null;
   account: Account | null;
   openRouterReady: boolean;
 }) {
@@ -48,9 +52,9 @@ function ProviderStep({ runtimeStatus, account, openRouterReady }: {
   const chatGptReady = account?.type === "chatgpt";
   return <div className="onboarding-page providers-page">
     <div className="onboarding-copy">
-      <span className="onboarding-eyebrow">Choose either provider</span>
+      <span className="onboarding-eyebrow">Choose your provider</span>
       <h2>Connect the models you want to use.</h2>
-      <p>OpenKiwi uses a local Codex runtime to power threads, tools, approvals, and both provider paths. Install one supported Codex option before connecting a model.</p>
+      <p>Subscription providers use their official local coding runtime and browser login. OpenRouter uses the API key you provide through OpenKiwi.</p>
     </div>
     <div className="onboarding-provider-grid">
       <article className="onboarding-provider-card openai">
@@ -65,6 +69,20 @@ function ProviderStep({ runtimeStatus, account, openRouterReady }: {
           <StatusPill ready={chatGptReady}>{chatGptReady ? "ChatGPT connected" : "Not signed in"}</StatusPill>
         </div>
         <button className="onboarding-link-button" onClick={() => void openUrl(CODEX_INSTALL_URL)}><ExternalLink size={12} /> Codex installation guide</button>
+      </article>
+
+      <article className="onboarding-provider-card claude">
+        <div className="onboarding-card-title"><span><BrainCircuit size={18} /></span><div><strong>Claude subscription</strong><small>Claude Code authentication</small></div></div>
+        <ol>
+          <li><b>1</b><span>Install <strong>Claude Code</strong>. OpenKiwi detects the local executable automatically.</span></li>
+          <li><b>2</b><span>Run <strong>claude auth login</strong>, or select Sign in from Models & accounts.</span></li>
+          <li><b>3</b><span>Choose Claude, then select Fable, Opus, Sonnet, or Haiku beneath the composer.</span></li>
+        </ol>
+        <div className="onboarding-card-footer">
+          <StatusPill ready={Boolean(claudeStatus?.available)}>{claudeStatus?.available ? "Claude Code detected" : "Claude Code needed"}</StatusPill>
+          <StatusPill ready={Boolean(claudeStatus?.loggedIn)}>{claudeStatus?.loggedIn ? "Claude connected" : "Not signed in"}</StatusPill>
+        </div>
+        <button className="onboarding-link-button" onClick={() => void openUrl(CLAUDE_INSTALL_URL)}><ExternalLink size={12} /> Claude Code setup</button>
       </article>
 
       <article className="onboarding-provider-card openrouter">
@@ -84,7 +102,7 @@ function ProviderStep({ runtimeStatus, account, openRouterReady }: {
         </div>
       </article>
     </div>
-    <div className="onboarding-note"><ShieldCheck size={14} /><span>OpenKiwi never asks you to paste a ChatGPT password. ChatGPT uses Codex’s browser sign-in; OpenRouter uses the API key you provide.</span></div>
+    <div className="onboarding-note"><ShieldCheck size={14} /><span>OpenKiwi never asks you to paste a subscription password. ChatGPT and Claude use their official local login; OpenRouter uses the API key you provide.</span></div>
   </div>;
 }
 
@@ -136,7 +154,7 @@ function SkillsStep({ skillsFolder, onChooseSkillsFolder }: { skillsFolder: stri
     <div className="onboarding-copy">
       <span className="onboarding-eyebrow">Reusable instructions you own</span>
       <h2>Skills are local Markdown playbooks.</h2>
-      <p>Choose one folder as your skills library. OpenKiwi scans it and exposes enabled skills by their app name to both OpenAI and OpenRouter models.</p>
+      <p>Choose one folder as your skills library. OpenKiwi scans it and exposes enabled skills by their app name to OpenAI, Claude, and OpenRouter models.</p>
     </div>
     <div className="onboarding-skills-layout">
       <div className="onboarding-folder-tree">
@@ -161,14 +179,16 @@ function SkillsStep({ skillsFolder, onChooseSkillsFolder }: { skillsFolder: stri
   </div>;
 }
 
-function ReadyStep({ runtimeStatus, account, openRouterReady, skillsFolder, onDestination }: {
+function ReadyStep({ runtimeStatus, claudeStatus, account, openRouterReady, skillsFolder, onDestination }: {
   runtimeStatus: CodexRuntimeStatus | null;
+  claudeStatus: ClaudeRuntimeStatus | null;
   account: Account | null;
   openRouterReady: boolean;
   skillsFolder: string;
   onDestination: (destination: "models" | "project" | "chat") => void;
 }) {
-  const providerReady = account?.type === "chatgpt" || openRouterReady;
+  const providerReady = account?.type === "chatgpt" || claudeStatus?.loggedIn || openRouterReady;
+  const runtimeReady = runtimeStatus?.available || claudeStatus?.available;
   return <div className="onboarding-page ready-page">
     <div className="onboarding-ready-mark"><Check size={28} /></div>
     <div className="onboarding-copy centered">
@@ -177,8 +197,8 @@ function ReadyStep({ runtimeStatus, account, openRouterReady, skillsFolder, onDe
       <p>Connect a provider, choose where the thread belongs, set its permissions, and start building. You can rerun this guide from General Settings at any time.</p>
     </div>
     <div className="onboarding-checklist">
-      <div className={runtimeStatus?.available ? "done" : ""}><span>{runtimeStatus?.available ? <Check size={13} /> : <TerminalSquare size={13} />}</span><strong>Codex runtime</strong><small>{runtimeStatus?.available ? `${runtimeStatus.source ?? "Codex"} detected` : "Install or connect Codex"}</small></div>
-      <div className={providerReady ? "done" : ""}><span>{providerReady ? <Check size={13} /> : <KeyRound size={13} />}</span><strong>Model provider</strong><small>{account?.type === "chatgpt" ? "ChatGPT connected" : openRouterReady ? "OpenRouter connected" : "Connect in Settings"}</small></div>
+      <div className={runtimeReady ? "done" : ""}><span>{runtimeReady ? <Check size={13} /> : <TerminalSquare size={13} />}</span><strong>Local runtime</strong><small>{runtimeStatus?.available ? `${runtimeStatus.source ?? "Codex"} detected` : claudeStatus?.available ? "Claude Code detected" : "Install Codex or Claude Code"}</small></div>
+      <div className={providerReady ? "done" : ""}><span>{providerReady ? <Check size={13} /> : <KeyRound size={13} />}</span><strong>Model provider</strong><small>{account?.type === "chatgpt" ? "ChatGPT connected" : claudeStatus?.loggedIn ? "Claude connected" : openRouterReady ? "OpenRouter connected" : "Connect in Settings"}</small></div>
       <div className={skillsFolder ? "done" : "optional"}><span>{skillsFolder ? <Check size={13} /> : <Boxes size={13} />}</span><strong>Skills folder</strong><small>{skillsFolder ? "Ready" : "Optional · set up later"}</small></div>
     </div>
     <div className="onboarding-destinations">
@@ -192,6 +212,7 @@ function ReadyStep({ runtimeStatus, account, openRouterReady, skillsFolder, onDe
 export function OnboardingModal({
   open,
   runtimeStatus,
+  claudeStatus = null,
   account,
   openRouterReady,
   skillsFolder,
@@ -203,6 +224,7 @@ export function OnboardingModal({
 }: {
   open: boolean;
   runtimeStatus: CodexRuntimeStatus | null;
+  claudeStatus?: ClaudeRuntimeStatus | null;
   account: Account | null;
   openRouterReady: boolean;
   skillsFolder: string;
@@ -253,11 +275,11 @@ export function OnboardingModal({
     </div>
     <div className="onboarding-time"><i /><span>About two minutes</span><i /></div>
   </div>;
-  else if (step.id === "providers") content = <ProviderStep runtimeStatus={runtimeStatus} account={account} openRouterReady={openRouterReady} />;
+  else if (step.id === "providers") content = <ProviderStep runtimeStatus={runtimeStatus} claudeStatus={claudeStatus} account={account} openRouterReady={openRouterReady} />;
   else if (step.id === "workspaces") content = <WorkspacesStep />;
   else if (step.id === "controls") content = <ControlsStep />;
   else if (step.id === "skills") content = <SkillsStep skillsFolder={skillsFolder} onChooseSkillsFolder={onChooseSkillsFolder} />;
-  else content = <ReadyStep runtimeStatus={runtimeStatus} account={account} openRouterReady={openRouterReady} skillsFolder={skillsFolder} onDestination={destination} />;
+  else content = <ReadyStep runtimeStatus={runtimeStatus} claudeStatus={claudeStatus} account={account} openRouterReady={openRouterReady} skillsFolder={skillsFolder} onDestination={destination} />;
 
   return <div className={`modal-backdrop onboarding-backdrop ${open ? "open" : "closed"}`} aria-hidden={!open} inert={!open ? true : undefined}>
     <div className="onboarding-modal" role="dialog" aria-modal="true" aria-label="OpenKiwi onboarding">
