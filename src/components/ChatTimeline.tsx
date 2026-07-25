@@ -4,9 +4,10 @@ import { Check, ChevronRight, Clipboard, FileCode2, Pencil, Sparkles, TerminalSq
 import Markdown from "react-markdown";
 import { Virtuoso } from "react-virtuoso";
 import remarkGfm from "remark-gfm";
-import type { Activity, ChatMessage, PendingApproval } from "../types";
+import type { Activity, ChatMessage, PendingApproval, Provider } from "../types";
 import type { JsonObject } from "../lib/codex";
 import { InlineApprovalCard } from "./ApprovalCenter";
+import { ProviderLogo } from "./BrandLogos";
 
 type TimelineEntry =
   | { kind: "message"; value: ChatMessage }
@@ -91,12 +92,12 @@ function CodePre({ children }: { children?: ReactNode }) {
   );
 }
 
-const MessageRow = memo(function MessageRow({ message, onEdit }: { message: ChatMessage; onEdit?: (text: string) => void }) {
+const MessageRow = memo(function MessageRow({ message, provider, onEdit }: { message: ChatMessage; provider: Provider; onEdit?: (text: string) => void }) {
   const [copied, setCopied] = useState(false);
   return (
     <article className={`message ${message.role}`}>
-      <div className="message-avatar">
-        {message.role === "assistant" ? <Sparkles size={14} /> : <span>You</span>}
+      <div className={`message-avatar ${message.role === "assistant" ? `provider-${provider}` : ""}`}>
+        {message.role === "assistant" ? <ProviderLogo provider={provider} size={14} /> : <span>You</span>}
       </div>
       <div className="message-body">
         {!message.streaming && (
@@ -274,6 +275,7 @@ export function ChatTimeline({
   running,
   thinkingLabel,
   approval,
+  provider = "openai",
   searchQuery,
   searchActiveMatch,
   onSearchMatches,
@@ -285,6 +287,7 @@ export function ChatTimeline({
   running: boolean;
   thinkingLabel: string;
   approval?: PendingApproval | null;
+  provider?: Provider;
   searchQuery?: string;
   searchActiveMatch?: number;
   onSearchMatches?: (count: number) => void;
@@ -345,7 +348,7 @@ export function ChatTimeline({
       itemContent={(index, entry) => {
         const hitClass = index === activeEntryIndex ? " search-hit" : "";
         if (entry.kind === "message") {
-          return <div className={`timeline-entry${hitClass}`}><MessageRow message={entry.value} onEdit={onEditMessage} /></div>;
+          return <div className={`timeline-entry${hitClass}`}><MessageRow message={entry.value} provider={provider} onEdit={onEditMessage} /></div>;
         }
         if (entry.kind === "activity") {
           return <div className={`timeline-entry${hitClass}`}><ActivityRow activity={entry.value} /></div>;

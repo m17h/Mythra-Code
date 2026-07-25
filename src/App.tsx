@@ -111,10 +111,10 @@ function ThreadRowBadge({ threadId }: { threadId: string }) {
  * Subscribes to the streaming timeline itself so per-frame delta flushes stop
  * at this component boundary instead of re-rendering the entire App.
  */
-function ConversationTimeline({ threadId, running, thinkingLabel, approval, searchQuery, searchActiveMatch, onSearchMatches, onEditMessage, onApprovalRespond }: { threadId: string; running: boolean; thinkingLabel: string; approval: PendingApproval | null; searchQuery?: string; searchActiveMatch?: number; onSearchMatches?: (count: number) => void; onEditMessage: (text: string) => void; onApprovalRespond: (approval: PendingApproval, result: JsonObject) => void }) {
+function ConversationTimeline({ threadId, running, thinkingLabel, approval, provider, searchQuery, searchActiveMatch, onSearchMatches, onEditMessage, onApprovalRespond }: { threadId: string; running: boolean; thinkingLabel: string; approval: PendingApproval | null; provider: AppSettings["provider"]; searchQuery?: string; searchActiveMatch?: number; onSearchMatches?: (count: number) => void; onEditMessage: (text: string) => void; onApprovalRespond: (approval: PendingApproval, result: JsonObject) => void }) {
   const messages = useTaskStore((state) => state.tasks[threadId]?.messages ?? EMPTY_MESSAGES);
   const activities = useTaskStore((state) => state.tasks[threadId]?.activities ?? EMPTY_ACTIVITIES);
-  return <ChatTimeline messages={messages} activities={activities} running={running} thinkingLabel={thinkingLabel} approval={approval} searchQuery={searchQuery} searchActiveMatch={searchActiveMatch} onSearchMatches={onSearchMatches} onEditMessage={onEditMessage} onApprovalRespond={onApprovalRespond} />;
+  return <ChatTimeline messages={messages} activities={activities} running={running} thinkingLabel={thinkingLabel} approval={approval} provider={provider} searchQuery={searchQuery} searchActiveMatch={searchActiveMatch} onSearchMatches={onSearchMatches} onEditMessage={onEditMessage} onApprovalRespond={onApprovalRespond} />;
 }
 
 export default function App() {
@@ -2274,7 +2274,7 @@ export default function App() {
                       </div>
                     }
                   >
-                    <ConversationTimeline threadId={activeThreadId} running={running} thinkingLabel={activeWorkspace.isChat ? "Thinking in normal chat" : `Working in ${activeProject?.name}`} approval={inlineApproval} searchQuery={convSearchOpen ? convSearchQuery : ""} searchActiveMatch={convSearchIndex} onSearchMatches={setConvSearchCount} onEditMessage={editMessageIntoComposer} onApprovalRespond={(approval, result) => void respondToApproval(approval, result)} />
+                    <ConversationTimeline threadId={activeThreadId} running={running} thinkingLabel={activeWorkspace.isChat ? "Thinking in normal chat" : `Working in ${activeProject?.name}`} approval={inlineApproval} provider={effectiveSettings.provider} searchQuery={convSearchOpen ? convSearchQuery : ""} searchActiveMatch={convSearchIndex} onSearchMatches={setConvSearchCount} onEditMessage={editMessageIntoComposer} onApprovalRespond={(approval, result) => void respondToApproval(approval, result)} />
                   </Suspense>
                 </ErrorBoundary>
               )}

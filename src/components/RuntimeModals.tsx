@@ -1,4 +1,5 @@
-import { Check, Download, ExternalLink, KeyRound, LoaderCircle, RotateCcw, ShieldCheck, Sparkles, TerminalSquare, X } from "lucide-react";
+import { Check, Download, ExternalLink, KeyRound, LoaderCircle, RotateCcw, ShieldCheck, TerminalSquare, X } from "lucide-react";
+import { OpenAILogo } from "./BrandLogos";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
 export function RuntimeSetupModal({
@@ -28,7 +29,7 @@ export function RuntimeSetupModal({
             <div><strong>Codex CLI <em>Recommended</em></strong><small>The dependable cross-platform option and easiest runtime to keep current.</small></div>
           </div>
           <div className="runtime-option">
-            <span className="runtime-option-icon chatgpt"><Sparkles size={17} /></span>
+            <span className="runtime-option-icon chatgpt"><OpenAILogo size={17} /></span>
             <div><strong>ChatGPT for macOS</strong><small>Already includes a usable Codex runtime. OpenKiwi detects it automatically.</small></div>
           </div>
         </div>

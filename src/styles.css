@@ -365,6 +365,11 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .message.user .message-body { justify-self: end; max-width: 84%; padding: 10px 14px; color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--r-lg) var(--r-lg) var(--r-xs) var(--r-lg); box-shadow: var(--elev-1); }
 .message-avatar { width: 24px; height: 24px; margin-top: 2px; display: grid; place-items: center; border-radius: var(--r-sm); color: #0f120d; background: var(--green); font-size: var(--fs-micro); font-weight: 700; letter-spacing: -.02em; }
 .message.user .message-avatar { background: var(--panel-3); color: var(--muted); }
+/* Provider marks are filled glyphs, so the avatar carries the brand colour and
+   the glyph reads as a knockout instead of tinting against the default green. */
+.message-avatar.provider-claude { background: #d97757; color: #fff; }
+.message-avatar.provider-openai { background: #0f120d; color: #fff; }
+.app-shell[data-theme="daylight"] .message-avatar.provider-openai { background: #1a1d18; }
 .message-body { min-width: 0; color: var(--ink-2); font-size: var(--fs-body); line-height: 1.68; letter-spacing: -.005em; text-wrap: pretty; }
 .message-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .virtual-timeline { height: 100%; direction: rtl; }

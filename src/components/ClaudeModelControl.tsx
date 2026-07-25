@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
-import { BrainCircuit, Check, ChevronDown, Gauge } from "lucide-react";
+import { Check, ChevronDown, Gauge } from "lucide-react";
 import type { ReasoningEffort } from "./ModelPowerControl";
+import { ClaudeLogo } from "./BrandLogos";
 
 const MODELS = [
   { id: "claude-fable-5", name: "Fable 5", tagline: "Frontier coding" },
@@ -65,8 +66,8 @@ export function ClaudeModelControl({
           aria-label={`Claude model: ${selected.name}`}
           onClick={() => setOpen((value) => !value)}
         >
-          <span className="openrouter-logo">
-            <BrainCircuit size={15} />
+          <span className="openrouter-logo claude-logo">
+            <ClaudeLogo size={15} />
           </span>
           <span className="openrouter-trigger-copy">
             <small>Claude subscription model</small>
@@ -97,8 +98,8 @@ export function ClaudeModelControl({
                   setOpen(false);
                 }}
               >
-                <span className="openrouter-provider-mark">
-                  <BrainCircuit size={13} />
+                <span className="openrouter-provider-mark claude-logo">
+                  <ClaudeLogo size={13} />
                 </span>
                 <span>
                   <strong>{entry.name}</strong>

@@ -3,7 +3,6 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   ArrowRight,
   Bot,
-  BrainCircuit,
   Boxes,
   Check,
   ChevronLeft,
@@ -23,6 +22,7 @@ import {
 import type { CodexRuntimeStatus } from "../lib/codex";
 import type { ClaudeRuntimeStatus } from "../lib/claude";
 import type { Account, SettingsSection } from "../types";
+import { ClaudeLogo, OpenAILogo } from "./BrandLogos";
 
 const CODEX_INSTALL_URL = "https://learn.chatgpt.com/docs/codex/cli";
 const OPENROUTER_KEYS_URL = "https://openrouter.ai/settings/keys";
@@ -58,7 +58,7 @@ function ProviderStep({ runtimeStatus, claudeStatus, account, openRouterReady }:
     </div>
     <div className="onboarding-provider-grid">
       <article className="onboarding-provider-card openai">
-        <div className="onboarding-card-title"><span><Sparkles size={18} /></span><div><strong>ChatGPT subscription</strong><small>OpenAI authentication</small></div></div>
+        <div className="onboarding-card-title"><span><OpenAILogo size={18} /></span><div><strong>ChatGPT subscription</strong><small>OpenAI authentication</small></div></div>
         <ol>
           <li><b>1</b><span>Install <strong>Codex CLI</strong> (recommended) or ChatGPT for macOS. OpenKiwi detects the runtime automatically.</span></li>
           <li><b>2</b><span>Open <strong>Settings → Models & accounts</strong> and choose OpenAI.</span></li>
@@ -72,7 +72,7 @@ function ProviderStep({ runtimeStatus, claudeStatus, account, openRouterReady }:
       </article>
 
       <article className="onboarding-provider-card claude">
-        <div className="onboarding-card-title"><span><BrainCircuit size={18} /></span><div><strong>Claude subscription</strong><small>Claude Code authentication</small></div></div>
+        <div className="onboarding-card-title"><span><ClaudeLogo size={18} /></span><div><strong>Claude subscription</strong><small>Claude Code authentication</small></div></div>
         <ol>
           <li><b>1</b><span>Install <strong>Claude Code</strong>. OpenKiwi detects the local executable automatically.</span></li>
           <li><b>2</b><span>Run <strong>claude auth login</strong>, or select Sign in from Models & accounts.</span></li>

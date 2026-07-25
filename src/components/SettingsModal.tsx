@@ -3,7 +3,6 @@ import { save } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   Boxes,
-  BrainCircuit,
   Check,
   ChevronRight,
   Download,
@@ -27,6 +26,7 @@ import { exportDiagnostics, recentAuditRows, rpc, saveOpenRouterKey, type AuditR
 import type { ClaudeRuntimeStatus } from "../lib/claude";
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_OPENAI_MODEL, DEFAULT_SETTINGS, RELEASE_NOTES_URL, THEMES } from "../lib/appConfig";
 import { friendlyError } from "../lib/errors";
+import { ClaudeLogo, OpenAILogo } from "./BrandLogos";
 import { updateProgress, type AppUpdater } from "../lib/appUpdater";
 import type { LocalSkill } from "../lib/skills";
 import type { WorkflowDefinition, WorkflowRunRecord } from "../lib/workflows";
@@ -483,7 +483,7 @@ export function SettingsModal({
             </div>
             <div className="provider-cards">
               <button className={`provider-card ${local.provider === "openai" ? "selected" : ""}`} onClick={() => setLocal({ ...local, provider: "openai", model: local.model.includes("/") || local.model.startsWith("claude-") ? DEFAULT_OPENAI_MODEL : (local.model || DEFAULT_OPENAI_MODEL), ultra: false })}>
-                <span className="provider-logo openai"><Sparkles size={17} /></span>
+                <span className="provider-logo openai"><OpenAILogo size={17} /></span>
                 <span><strong>OpenAI</strong><small>Official ChatGPT subscription sign-in</small></span>
                 {local.provider === "openai" && <Check size={16} />}
               </button>
@@ -493,7 +493,7 @@ export function SettingsModal({
                 {local.provider === "openrouter" && <Check size={16} />}
               </button>
               <button className={`provider-card ${local.provider === "claude" ? "selected" : ""}`} onClick={() => setLocal({ ...local, provider: "claude", model: local.model.startsWith("claude-") ? local.model : DEFAULT_CLAUDE_MODEL, ultra: false })}>
-                <span className="provider-logo claude"><BrainCircuit size={17} /></span>
+                <span className="provider-logo claude"><ClaudeLogo size={17} /></span>
                 <span><strong>Claude</strong><small>Official Claude Code subscription login</small></span>
                 {local.provider === "claude" && <Check size={16} />}
               </button>
