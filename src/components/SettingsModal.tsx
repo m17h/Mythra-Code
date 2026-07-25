@@ -483,10 +483,14 @@ export function SettingsModal({
                     ? `${claudeStatus.subscriptionType || claudeStatus.authMethod || "Claude"} plan connected · ${claudeStatus.version || "Claude Code"}`
                     : claudeStatus?.available ? "Claude Code detected · sign in to continue" : "Claude Code must be installed first"}</small>
                 </div>
-                <button className="secondary-button" onClick={() => void (claudeStatus?.available ? onClaudeSignIn() : openUrl("https://docs.anthropic.com/en/docs/claude-code/setup"))} disabled={claudeLoginStarting}>
-                  {claudeLoginStarting ? <LoaderCircle className="spin" size={14} /> : !claudeStatus?.available ? <Download size={14} /> : null}
-                  {claudeLoginStarting ? "Signing in…" : claudeStatus?.loggedIn ? "Sign in again" : claudeStatus?.available ? "Sign in" : "Install Claude Code"}
-                </button>
+                {claudeStatus?.loggedIn ? (
+                  <span className="connected-badge"><Check size={12} /> Connected</span>
+                ) : (
+                  <button className="secondary-button" onClick={() => void (claudeStatus?.available ? onClaudeSignIn() : openUrl("https://docs.anthropic.com/en/docs/claude-code/setup"))} disabled={claudeLoginStarting}>
+                    {claudeLoginStarting ? <LoaderCircle className="spin" size={14} /> : !claudeStatus?.available ? <Download size={14} /> : null}
+                    {claudeLoginStarting ? "Signing in…" : claudeStatus?.available ? "Sign in" : "Install Claude Code"}
+                  </button>
+                )}
                 <button className="icon-button" onClick={() => void onClaudeRefresh()} title="Refresh Claude status" aria-label="Refresh Claude status"><RotateCcw size={14} /></button>
               </div>
             )}

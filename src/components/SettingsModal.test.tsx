@@ -74,6 +74,28 @@ describe("SettingsModal", () => {
     expect(screen.getByRole("heading", { name: "Model provider" })).toBeInTheDocument();
   });
 
+  it("shows a connected state instead of prompting an authenticated Claude user to sign in again", () => {
+    render(<SettingsModal
+      {...modalProps({
+        initialSection: "models",
+        settings: { ...DEFAULT_SETTINGS, provider: "claude", model: "claude-sonnet-4-6" },
+        claudeStatus: {
+          available: true,
+          path: "/usr/local/bin/claude",
+          version: "2.1.0",
+          loggedIn: true,
+          authMethod: "claude.ai",
+          email: "morgan@example.com",
+          subscriptionType: "max",
+          warning: null,
+        },
+      })}
+    />);
+
+    expect(screen.getByText("Connected", { selector: ".connected-badge" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Sign in again" })).not.toBeInTheDocument();
+  });
+
   it("previews a theme immediately but does not save it when cancelled", () => {
     const onThemePreview = vi.fn();
     const onClose = vi.fn();
