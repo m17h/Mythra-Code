@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS } from "../lib/appConfig";
 import { scheduleRunSnapshot } from "../lib/turnConfig";
@@ -52,5 +52,42 @@ describe("CommandPalette", () => {
     render(<CommandPalette {...baseProps} projectActive workflows={[workflow]} projects={[{ id: "project-1", name: "OpenKiwi", path: "/tmp/openkiwi" }]} onWorkflow={onWorkflow} />);
     fireEvent.click(screen.getByRole("button", { name: /Run workflow: Release checks/i }));
     expect(onWorkflow).toHaveBeenCalledWith(workflow);
+  });
+
+  it("groups mixed results while preserving one keyboard navigation order", () => {
+    const onProject = vi.fn();
+    const onThread = vi.fn();
+    const project = { id: "project-1", name: "OpenKiwi", path: "/tmp/openkiwi" };
+    const thread = {
+      id: "thread-1",
+      name: "Polish UI",
+      preview: "Review the interface",
+      cwd: "/tmp/openkiwi",
+      updatedAt: 1,
+      modelProvider: "openai",
+    };
+
+    render(
+      <CommandPalette
+        {...baseProps}
+        projectActive={false}
+        projects={[project]}
+        threads={[thread]}
+        onProject={onProject}
+        onThread={onThread}
+      />,
+    );
+
+    expect(within(screen.getByRole("group", { name: "Commands" })).getByRole("button", { name: /New thread/i })).toBeInTheDocument();
+    expect(within(screen.getByRole("group", { name: "Projects" })).getByRole("button", { name: /OpenKiwi/i })).toBeInTheDocument();
+    expect(within(screen.getByRole("group", { name: "Threads" })).getByRole("button", { name: /Polish UI/i })).toBeInTheDocument();
+
+    const search = screen.getByRole("textbox", { name: /Search commands/i });
+    fireEvent.keyDown(search, { key: "ArrowDown" });
+    fireEvent.keyDown(search, { key: "ArrowDown" });
+    fireEvent.keyDown(search, { key: "Enter" });
+
+    expect(onProject).toHaveBeenCalledWith(project);
+    expect(onThread).not.toHaveBeenCalled();
   });
 });

@@ -47,6 +47,48 @@ import type {
   SettingsSection,
 } from "../types";
 
+/**
+ * Single source of truth for the settings navigation: the rail, the pane
+ * heading, and its supporting line all read from here, so a label can never
+ * drift between the button and the pane it opens.
+ */
+const SETTINGS_NAV: ReadonlyArray<{
+  group: string;
+  items: ReadonlyArray<{ id: SettingsSection; label: string; icon: typeof Palette; detail: string }>;
+}> = [
+  {
+    group: "Workspace",
+    items: [
+      { id: "general", label: "General", icon: Palette, detail: "Appearance, runtime behavior, and diagnostics" },
+      { id: "projects", label: "Projects", icon: FolderCog, detail: "Per-project model, permission, and prompt overrides" },
+    ],
+  },
+  {
+    group: "Intelligence",
+    items: [
+      { id: "models", label: "Models & accounts", icon: KeyRound, detail: "Providers, credentials, and model routing" },
+      { id: "prompts", label: "Prompts", icon: Sparkles, detail: "Your complete harness instruction and reusable profiles" },
+      { id: "agents", label: "Agents", icon: UsersRound, detail: "Delegation limits and specialist configurations" },
+    ],
+  },
+  {
+    group: "Automation",
+    items: [
+      { id: "workflows", label: "Workflows", icon: Play, detail: "Multi-step recipes, triggers, commands, skills, and traceable runs" },
+      { id: "skills", label: "Skills", icon: Boxes, detail: "Local Markdown workflows with model-facing invocation names" },
+      { id: "tools", label: "Tools & MCP", icon: Wrench, detail: "Model Context Protocol servers and live tool controls" },
+    ],
+  },
+  {
+    group: "System",
+    items: [
+      { id: "updates", label: "Updates", icon: Download, detail: "Secure releases delivered directly from the OpenKiwi repository" },
+    ],
+  },
+];
+
+const SETTINGS_PANES = new Map(SETTINGS_NAV.flatMap((section) => section.items.map((item) => [item.id, item] as const)));
+
 export function SettingsModal({
   open,
   initialSection,
@@ -259,20 +301,27 @@ export function SettingsModal({
 
         <div className="settings-layout">
           <nav className="settings-nav" aria-label="Settings categories">
-            {([
-              ["general", "General", Palette],
-              ["models", "Models & accounts", KeyRound],
-              ["prompts", "Prompts", Sparkles],
-              ["agents", "Agents", UsersRound],
-              ["workflows", "Workflows", Play],
-              ["projects", "Projects", FolderCog],
-              ["skills", "Skills", Boxes],
-              ["tools", "Tools & MCP", Wrench],
-              ["updates", "Updates", Download],
-            ] as const).map(([id, label, Icon]) => <button key={id} className={settingsSection === id ? "active" : ""} onClick={() => setSettingsSection(id)} aria-current={settingsSection === id ? "page" : undefined}><Icon size={14} /><span>{label}</span><ChevronRight size={12} /></button>)}
+            {SETTINGS_NAV.map((section) => (
+              <div className="settings-nav-group" key={section.group} role="group" aria-label={section.group}>
+                <span className="settings-nav-label" aria-hidden>{section.group}</span>
+                {section.items.map(({ id, label, icon: Icon }) => (
+                  <button
+                    key={id}
+                    className={settingsSection === id ? "active" : ""}
+                    onClick={() => setSettingsSection(id)}
+                    aria-current={settingsSection === id ? "page" : undefined}
+                  >
+                    <Icon size={14} /><span>{label}</span><ChevronRight size={12} />
+                  </button>
+                ))}
+              </div>
+            ))}
           </nav>
           <div className="settings-content">
-          <div className="settings-pane-heading"><span>{settingsSection === "general" ? "General" : settingsSection === "models" ? "Models & accounts" : settingsSection === "prompts" ? "Prompts" : settingsSection === "agents" ? "Agents" : settingsSection === "workflows" ? "Workflows" : settingsSection === "projects" ? "Projects" : settingsSection === "skills" ? "Skills" : settingsSection === "tools" ? "Tools & MCP" : "Updates"}</span><small>{settingsSection === "general" ? "Appearance, runtime behavior, and diagnostics" : settingsSection === "models" ? "Providers, credentials, and model routing" : settingsSection === "prompts" ? "Your complete harness instruction and reusable profiles" : settingsSection === "agents" ? "Delegation limits and specialist configurations" : settingsSection === "workflows" ? "Multi-step recipes, triggers, commands, skills, and traceable runs" : settingsSection === "projects" ? "Per-project model, permission, and prompt overrides" : settingsSection === "skills" ? "Local Markdown workflows with model-facing invocation names" : settingsSection === "tools" ? "Model Context Protocol servers and live tool controls" : "Secure releases delivered directly from the OpenKiwi repository"}</small></div>
+          <div className="settings-pane-heading">
+            <span>{SETTINGS_PANES.get(settingsSection)?.label}</span>
+            <small>{SETTINGS_PANES.get(settingsSection)?.detail}</small>
+          </div>
           {settingsSection === "general" &&
           <section className="settings-section getting-started-settings">
             <div className="settings-section-heading settings-heading-with-action">

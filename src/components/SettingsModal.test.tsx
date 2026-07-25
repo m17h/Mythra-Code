@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS } from "../lib/appConfig";
 import type { AppUpdater } from "../lib/appUpdater";
@@ -67,6 +67,15 @@ function modalProps(overrides: Partial<Parameters<typeof SettingsModal>[0]> = {}
 }
 
 describe("SettingsModal", () => {
+  it("organizes every settings destination into a labeled navigation group", () => {
+    render(<SettingsModal {...modalProps()} />);
+
+    expect(within(screen.getByRole("group", { name: "Workspace" })).getByRole("button", { name: /Projects/ })).toBeInTheDocument();
+    expect(within(screen.getByRole("group", { name: "Intelligence" })).getByRole("button", { name: /Models & accounts/ })).toBeInTheDocument();
+    expect(within(screen.getByRole("group", { name: "Automation" })).getByRole("button", { name: /Tools & MCP/ })).toBeInTheDocument();
+    expect(within(screen.getByRole("group", { name: "System" })).getByRole("button", { name: /Updates/ })).toBeInTheDocument();
+  });
+
   it("opens directly to the requested settings section", () => {
     render(<SettingsModal {...modalProps({ initialSection: "models" })} />);
 
