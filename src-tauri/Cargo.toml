@@ -1,6 +1,6 @@
 [package]
 name = "openkiwi"
-version = "0.9.1"
+version = "0.9.2"
 description = "A transparent, user-directed AI coding harness"
 authors = ["OpenKiwi contributors"]
 edition = "2021"
