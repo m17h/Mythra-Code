@@ -135,7 +135,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .app-shell[data-theme="daylight"] .composer-attachments > span:hover, .app-shell[data-theme="daylight"] .toolbar-button:hover:not(:disabled), .app-shell[data-theme="daylight"] .studio-list-row > button:hover, .app-shell[data-theme="daylight"] .openrouter-search-row button:hover:not(:disabled), .app-shell[data-theme="daylight"] .palette-search button:hover { background: rgba(0,0,0,.05); }
 .app-shell[data-theme="daylight"] .secondary-button:hover:not(:disabled), .app-shell[data-theme="daylight"] .empty-state-actions button:hover, .app-shell[data-theme="daylight"] .new-thread-button:hover:not(:disabled), .app-shell[data-theme="daylight"] .provider-pill:hover, .app-shell[data-theme="daylight"] .command-palette-trigger:hover, .app-shell[data-theme="daylight"] .workspace-tools-trigger:hover:not(:disabled) { background: rgba(0,0,0,.05); }
 .app-shell[data-theme="daylight"] .thread-provider-menu > button:hover, .app-shell[data-theme="daylight"] .thread-provider-menu > button.selected { background: rgba(0,0,0,.045); }
-.app-shell[data-theme="daylight"] .project-prompt-trigger:hover, .app-shell[data-theme="daylight"] .project-prompt-modes > button:hover, .app-shell[data-theme="daylight"] .project-prompt-modes > button.selected { background: rgba(0,0,0,.045); }
+.app-shell[data-theme="daylight"] .project-prompt-trigger:hover, .app-shell[data-theme="daylight"] .project-prompt-modes > button:hover, .app-shell[data-theme="daylight"] .project-prompt-modes > button.selected, .app-shell[data-theme="daylight"] .project-prompt-layer-toggle:hover, .app-shell[data-theme="daylight"] .project-prompt-layer-toggle.enabled { background: rgba(0,0,0,.045); }
 .app-shell[data-theme="daylight"] .diff-view, .app-shell[data-theme="daylight"] .git-screen { background: #f7f8f5; color: #454d43; }
 .app-shell[data-theme="daylight"] .diff-line-add { color: #2f6d1c; background: rgba(62,142,34,.09); }
 .app-shell[data-theme="daylight"] .diff-line-del { color: #a33b36; background: rgba(192,71,66,.08); }
@@ -333,6 +333,15 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .project-prompt-editor textarea { width: 100%; resize: vertical; min-height: 126px; padding: 10px 11px; border: 1px solid var(--line); border-radius: var(--r-sm); outline: none; color: var(--text); background: var(--field); font: var(--fs-ui)/1.55 var(--font-sans); }
 .project-prompt-editor textarea:focus { border-color: color-mix(in srgb, var(--green) 42%, var(--line-strong)); box-shadow: 0 0 0 3px var(--green-soft); }
 .project-prompt-editor small { color: var(--muted-2); font-size: var(--fs-micro); line-height: 1.45; }
+.project-prompt-layer-toggle { width: 100%; display: grid; grid-template-columns: 32px minmax(0,1fr); align-items: center; gap: 10px; padding: 9px 10px; border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--muted); background: rgba(255,255,255,.018); text-align: left; cursor: pointer; }
+.project-prompt-layer-toggle:hover, .project-prompt-layer-toggle.enabled { color: var(--text); border-color: var(--line-strong); background: rgba(255,255,255,.035); }
+.project-prompt-layer-toggle > span:last-child { display: flex; flex-direction: column; gap: 2px; }
+.project-prompt-layer-toggle strong { font-size: var(--fs-meta); font-weight: 600; }
+.project-prompt-layer-toggle small { color: var(--muted-2); font-size: var(--fs-micro); line-height: 1.4; }
+.project-prompt-switch { width: 30px; height: 18px; display: flex; align-items: center; padding: 2px; border-radius: 999px; background: var(--panel-3); box-shadow: inset 0 0 0 1px var(--line-strong); transition: background var(--t-fast) ease; }
+.project-prompt-switch i { width: 14px; height: 14px; border-radius: 50%; background: var(--muted-2); transform: translateX(0); transition: transform var(--t-fast) ease, background var(--t-fast) ease; }
+.project-prompt-layer-toggle.enabled .project-prompt-switch { background: var(--green-soft); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--green) 32%, var(--line-strong)); }
+.project-prompt-layer-toggle.enabled .project-prompt-switch i { background: var(--green); transform: translateX(12px); }
 .project-prompt-global-link { display: flex; align-items: center; gap: 6px; margin-top: var(--s-2); padding: 5px 2px; border: 0; color: var(--muted); background: transparent; font-size: var(--fs-meta); cursor: pointer; }
 .project-prompt-global-link:hover { color: var(--text); }
 .project-prompt-actions { display: flex; justify-content: flex-end; gap: var(--s-2); margin-top: var(--s-2); padding-top: var(--s-2); border-top: 1px solid var(--line); }

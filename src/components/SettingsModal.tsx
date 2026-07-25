@@ -11,6 +11,7 @@ import {
   KeyRound,
   LoaderCircle,
   Minus,
+  NotebookPen,
   Palette,
   PanelRight,
   Play,
@@ -67,7 +68,7 @@ const SETTINGS_NAV: ReadonlyArray<{
     group: "Intelligence",
     items: [
       { id: "models", label: "Models & accounts", icon: KeyRound, detail: "Default provider, credentials, and model routing" },
-      { id: "prompts", label: "Prompts", icon: Sparkles, detail: "Your complete harness instruction and reusable profiles" },
+      { id: "prompts", label: "Prompts", icon: NotebookPen, detail: "Your complete harness instruction and reusable profiles" },
       { id: "agents", label: "Agents", icon: UsersRound, detail: "Delegation limits and specialist configurations" },
     ],
   },
@@ -363,7 +364,7 @@ export function SettingsModal({
           {settingsSection === "prompts" &&
           <section className="settings-section">
             <div className="settings-section-heading">
-              <div className="settings-icon"><Sparkles size={17} /></div>
+              <div className="settings-icon"><NotebookPen size={17} /></div>
               <div><h3>Instruction prompt</h3><p>Sent as the thread’s complete base instruction. Empty means OpenKiwi supplies no base prompt.</p></div>
             </div>
             <textarea

@@ -30,7 +30,7 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { SettingsModal } from "./components/SettingsModal";
 import { AuthRequiredModal, RuntimeSetupModal } from "./components/RuntimeModals";
 import type { AgentRecord, AttachmentRecord, CheckpointRecord, McpView, StudioTab } from "./components/StudioDock";
-import type { Account, Activity, AppSettings, ArchivedThread, ChatMessage, CustomAgentProfile, PendingApproval, PermissionMode, Project, ProjectAction, PromptProfile, Provider, ScheduledTask, ScheduleRunRecord, SettingsSection, Thread, Turn, ThemeName, WorkspaceMode } from "./types";
+import type { Account, Activity, AppSettings, ArchivedThread, ChatMessage, CustomAgentProfile, PendingApproval, PermissionMode, Project, ProjectAction, ProjectPromptMode, PromptProfile, Provider, ScheduledTask, ScheduleRunRecord, SettingsSection, Thread, Turn, ThemeName, WorkspaceMode } from "./types";
 import { useTaskStore } from "./lib/taskStore";
 import { friendlyError } from "./lib/errors";
 import { recordError } from "./lib/errorLog";
@@ -46,6 +46,8 @@ import { isEstablishedOpenKiwiInstall, ONBOARDING_EXIT_MS, ONBOARDING_VERSION } 
 import { createLocalSkill, importLocalSkills, normalizeSkillName, resolveLocalSkills, scanLocalSkills, syncLocalSkills, type LocalSkill, type LocalSkillFile } from "./lib/skills";
 import { compactWorkflowRun, normalizeWorkflows, recoverWorkflowRuns, type WorkflowDefinition, type WorkflowRunRecord } from "./lib/workflows";
 import { modelForProvider, providerFromThread } from "./lib/threadProvider";
+import { resolveSystemPrompt } from "./lib/systemPrompt";
+import { providerAccountUsage } from "./lib/providerUsage";
 
 const ChatTimeline = lazy(() => import("./components/ChatTimeline").then((module) => ({ default: module.ChatTimeline })));
 const StudioDock = lazy(() => import("./components/StudioDock").then((module) => ({ default: module.StudioDock })));
@@ -225,7 +227,14 @@ export default function App() {
   // are resolved for the active thread (or the unsent new-thread draft).
   const effectiveSettings = useMemo<AppSettings>(() => {
     const overrides = activeProject?.overrides;
-    const resolved = !overrides ? settings : { ...settings, ...(overrides.model ? { model: overrides.model } : {}), ...(overrides.permission ? { permission: overrides.permission } : {}), ...(overrides.systemPrompt ? { systemPrompt: overrides.systemPrompt } : {}) };
+    const resolved = !overrides
+      ? settings
+      : {
+          ...settings,
+          ...(overrides.model ? { model: overrides.model } : {}),
+          ...(overrides.permission ? { permission: overrides.permission } : {}),
+          systemPrompt: resolveSystemPrompt(settings.systemPrompt, overrides.systemPrompt, overrides.systemPromptMode),
+        };
     const threadModel = activeThreadId ? threadModels[activeThreadId] : draftThreadModel;
     return { ...resolved, provider: activeProvider, model: modelForProvider(activeProvider, threadModel ?? resolved.model) };
   }, [activeProject, activeProvider, activeThreadId, draftThreadModel, settings, threadModels]);
@@ -318,6 +327,14 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeProject, effectiveSettings.provider, taskStatus, tokenUsage]);
 
+  const accountUsageView = useMemo(() => {
+    return providerAccountUsage(effectiveSettings.provider, {
+      openAiRateSummary: rateSummary,
+      claudeStatus,
+      openRouterReady,
+    });
+  }, [claudeStatus, effectiveSettings.provider, openRouterReady, rateSummary]);
+
   // Only offer "Check settings" for failures settings can actually fix.
   const errorSuggestsSettings = useMemo(() => Boolean(error) && /sign in|api key|openrouter|claude|model|settings|runtime|codex|account/i.test(error ?? ""), [error]);
   const workspaceArchived = useMemo(() => (activeWorkspace ? archivedThreads.filter((record) => record.path === normalizedProjectPath(activeWorkspace.path)) : []), [activeWorkspace, archivedThreads]);
@@ -380,14 +397,20 @@ export default function App() {
   );
 
   const persistActiveProjectPrompt = useCallback(
-    (systemPrompt: string | undefined) => {
+    (systemPrompt: string | undefined, mode: ProjectPromptMode) => {
       if (!activeProject) return;
       setProjects((current) => {
         const next = current.map((project) => {
           if (project.id !== activeProject.id) return project;
           const overrides = { ...(project.overrides ?? {}) };
-          if (systemPrompt?.trim()) overrides.systemPrompt = systemPrompt.trim();
-          else delete overrides.systemPrompt;
+          if (systemPrompt?.trim()) {
+            overrides.systemPrompt = systemPrompt.trim();
+            if (mode === "append") overrides.systemPromptMode = "append";
+            else delete overrides.systemPromptMode;
+          } else {
+            delete overrides.systemPrompt;
+            delete overrides.systemPromptMode;
+          }
           return { ...project, overrides: Object.keys(overrides).length ? overrides : undefined };
         });
         storeValue("kiwi.projects", next);
@@ -2181,6 +2204,7 @@ export default function App() {
                 key={activeProject.id}
                 projectName={activeProject.name}
                 projectPrompt={activeProject.overrides?.systemPrompt}
+                promptMode={activeProject.overrides?.systemPromptMode ?? "replace"}
                 appPrompt={settings.systemPrompt}
                 provider={effectiveSettings.provider}
                 threadStarted={Boolean(activeThread)}
@@ -2486,13 +2510,13 @@ export default function App() {
             usage={tokenUsage}
             costEstimate={costEstimate}
             costTotals={costTotalsView}
-            rateSummary={rateSummary}
+            accountUsage={accountUsageView}
             skills={skills}
             mcpServers={mcpServers}
             gitOutput={gitOutput}
             gitCommitMessage={gitCommitMessage}
             promptAudit={[
-              { label: "Base instruction", value: effectiveSettings.systemPrompt ? `${activeProject?.overrides?.systemPrompt ? "project" : "custom"} · ${effectiveSettings.systemPrompt.length} chars` : "empty" },
+              { label: "Base instruction", value: effectiveSettings.systemPrompt ? `${activeProject?.overrides?.systemPrompt ? (activeProject.overrides.systemPromptMode === "append" && settings.systemPrompt.trim() ? "app + project" : "project") : "app"} · ${effectiveSettings.systemPrompt.length} chars` : "empty" },
               { label: "Developer instruction", value: "empty" },
               { label: "AGENTS.md discovery", value: settings.projectInstructionsEnabled ? "enabled · up to 32 KB" : "disabled" },
               { label: "Model", value: effectiveSettings.model || "provider default" },
@@ -2524,7 +2548,11 @@ export default function App() {
             onWorktree={() => void createWorktree()}
             onAddAttachment={() => void addAttachment()}
             onRemoveAttachment={(path) => setAttachments((current) => current.filter((item) => item.path !== path))}
-            onRefreshUsage={() => void refreshUsage()}
+            onRefreshUsage={() => {
+              if (effectiveSettings.provider === "claude") void refreshClaudeStatus();
+              else if (effectiveSettings.provider === "openrouter") void hasOpenRouterKey().then(setOpenRouterReady).catch(() => setOpenRouterReady(false));
+              else void refreshUsage();
+            }}
             onCompact={() => void compactThread()}
             onRefreshTools={() => void refreshTools(activeProject)}
             onGitAction={(action) => void runGitAction(action)}

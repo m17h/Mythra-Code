@@ -32,13 +32,14 @@ export const DURABLE_STORAGE_KEYS = [
  * migrateStorage. Old installs then upgrade their data instead of loading
  * garbage into the new code.
  */
-export const STORAGE_SCHEMA_VERSION = 1;
+export const STORAGE_SCHEMA_VERSION = 2;
 
 export function migrateStorage(): void {
   const stored = loadStored<number>("kiwi.schemaVersion", 0);
   if (stored >= STORAGE_SCHEMA_VERSION) return;
-  // Future migrations run in order:
-  // if (stored < 2) { ...rewrite the affected keys... }
+  // Version 2 adds the optional project systemPromptMode field. Its absence
+  // intentionally preserves the previous "replace app prompt" behavior, so
+  // existing project records require no rewrite.
   storeValue("kiwi.schemaVersion", STORAGE_SCHEMA_VERSION);
 }
 

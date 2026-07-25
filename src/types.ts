@@ -6,11 +6,14 @@ export type PermissionMode = "read-only" | "ask" | "full";
 export type ThemeName = "kiwi" | "midnight" | "ember" | "violet" | "daylight";
 export type WorkspaceMode = "chat" | "project";
 export type SettingsSection = "general" | "models" | "prompts" | "agents" | "workflows" | "projects" | "skills" | "tools" | "updates";
+export type ProjectPromptMode = "replace" | "append";
 
 export interface ProjectOverrides {
   model?: string;
   permission?: PermissionMode;
   systemPrompt?: string;
+  /** Existing projects default to replace; append layers app instructions first. */
+  systemPromptMode?: ProjectPromptMode;
 }
 
 export interface Project {

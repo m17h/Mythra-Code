@@ -11,6 +11,7 @@ import {
   FolderOpen,
   KeyRound,
   MessageSquare,
+  NotebookPen,
   Shield,
   ShieldAlert,
   ShieldCheck,
@@ -271,7 +272,7 @@ export function OnboardingModal({
     <div className="onboarding-principles">
       <div><ShieldCheck size={16} /><span><strong>Your permissions</strong><small>Read only, ask first, or full access</small></span></div>
       <div><TerminalSquare size={16} /><span><strong>Your computer</strong><small>Projects and commands stay local</small></span></div>
-      <div><WandSparkles size={16} /><span><strong>Your instructions</strong><small>The base prompt starts empty</small></span></div>
+      <div><NotebookPen size={16} /><span><strong>Your instructions</strong><small>The base prompt starts empty</small></span></div>
     </div>
     <div className="onboarding-time"><i /><span>About two minutes</span><i /></div>
   </div>;

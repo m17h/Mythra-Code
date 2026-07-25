@@ -18,7 +18,7 @@ function dockProps(open: boolean): Parameters<typeof StudioDock>[0] {
     checkpoints: [],
     attachments: [],
     usage: null,
-    rateSummary: "",
+    accountUsage: { label: "OpenAI subscription", summary: "25% used" },
     skills: [],
     mcpServers: [],
     gitOutput: "",
@@ -88,5 +88,19 @@ describe("StudioDock", () => {
 
     expect(screen.getByText("Review center")).toBeInTheDocument();
     expect(screen.getByLabelText("Project workspace tools")).toHaveClass("open");
+  });
+
+  it("shows the usage summary for the active provider", () => {
+    render(
+      <StudioDock
+        {...dockProps(true)}
+        tab="usage"
+        accountUsage={{ label: "Claude subscription", summary: "Max plan connected · live limits are managed by Claude Code" }}
+      />,
+    );
+
+    expect(screen.getByText("Claude subscription")).toBeInTheDocument();
+    expect(screen.getByText(/Max plan connected/)).toBeInTheDocument();
+    expect(screen.queryByText("25% used")).not.toBeInTheDocument();
   });
 });

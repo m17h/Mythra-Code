@@ -104,7 +104,7 @@ export function StudioDock(props: {
   usage: TokenUsageView | null;
   costEstimate?: string;
   costTotals?: string;
-  rateSummary: string;
+  accountUsage: { label: string; summary: string };
   skills: SkillView[];
   mcpServers: McpView[];
   gitOutput: string;
@@ -270,7 +270,7 @@ export function StudioDock(props: {
           )}
           <div className="usage-hero"><span>Context used</span><strong>{props.usage?.totalTokens.toLocaleString() ?? "—"}</strong><small>{props.usage?.contextWindow ? `of ${props.usage.contextWindow.toLocaleString()} tokens` : "Current thread"}{props.costEstimate ? ` · ${props.costEstimate}` : ""}</small><i style={{ width: `${Math.min(100, ((props.usage?.totalTokens ?? 0) / (props.usage?.contextWindow || 1)) * 100)}%` }} /></div>
           <div className="metric-grid three"><div><strong>{props.usage?.inputTokens.toLocaleString() ?? "—"}</strong><span>Input</span></div><div><strong>{props.usage?.outputTokens.toLocaleString() ?? "—"}</strong><span>Output</span></div><div><strong>{props.usage?.reasoningOutputTokens.toLocaleString() ?? "—"}</strong><span>Reasoning</span></div></div>
-          <div className="rate-card"><span>Account limits</span><strong>{props.rateSummary || "Sign in to view live limits"}</strong></div>
+          <div className="rate-card"><span>{props.accountUsage.label}</span><strong>{props.accountUsage.summary}</strong></div>
           {props.costTotals && <div className="rate-card"><span>OpenRouter spend</span><strong>{props.costTotals}</strong></div>}
           <h3 className="panel-label">Request audit</h3><div className="audit-table">{props.promptAudit.map((row) => <div key={row.label}><span>{row.label}</span><code>{row.value}</code></div>)}</div>
         </>}

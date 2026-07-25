@@ -4,7 +4,7 @@ const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 
-import { DURABLE_STORAGE_KEYS, hydrateNativeStorage, loadStored, storeValue } from "./storage";
+import { DURABLE_STORAGE_KEYS, STORAGE_SCHEMA_VERSION, hydrateNativeStorage, loadStored, storeValue } from "./storage";
 
 describe("durable storage", () => {
   beforeEach(() => {
@@ -37,7 +37,7 @@ describe("durable storage", () => {
   it("stamps the storage schema version after hydration", async () => {
     invoke.mockResolvedValue(null);
     await hydrateNativeStorage(["kiwi.settings"]);
-    expect(loadStored("kiwi.schemaVersion", 0)).toBeGreaterThan(0);
+    expect(loadStored("kiwi.schemaVersion", 0)).toBe(STORAGE_SCHEMA_VERSION);
   });
 
   it("writes both the immediate cache and durable store", () => {

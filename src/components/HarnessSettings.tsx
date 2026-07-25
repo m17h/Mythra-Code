@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Bot, Check, Clock3, Play, Plus, Save, Sparkles, Trash2, Workflow, Wrench } from "lucide-react";
+import { Bot, Check, Clock3, NotebookPen, Play, Plus, Save, Trash2, Workflow, Wrench } from "lucide-react";
 import type { AppSettings, CustomAgentProfile, Project, ProjectAction, PromptProfile, ScheduledTask, ScheduleRunRecord } from "../types";
 import { rpc } from "../lib/codex";
 import { friendlyError } from "../lib/errors";
@@ -59,7 +59,7 @@ export function HarnessSettings({ section, settings, profiles, agents, actions, 
   return <>
     {section === "prompts" &&
     <section className="settings-section">
-      <div className="settings-section-heading"><div className="settings-icon"><Sparkles size={17} /></div><div><h3>Prompt profiles</h3><p>Switch your complete harness-level instruction without hidden text.</p></div></div>
+      <div className="settings-section-heading"><div className="settings-icon"><NotebookPen size={17} /></div><div><h3>Prompt profiles</h3><p>Switch your complete harness-level instruction without hidden text.</p></div></div>
       <div className="profile-grid">{profiles.map((profile) => <button key={profile.id} className={settings.promptProfileId === profile.id ? "selected" : ""} onClick={() => onSettings({ ...settings, promptProfileId: profile.id, systemPrompt: profile.prompt })}><span><strong>{profile.name}</strong><small>{profile.prompt ? `${profile.prompt.length} characters` : "Empty prompt"}</small></span>{settings.promptProfileId === profile.id && <Check size={13} />}</button>)}</div>
       <div className="inline-create"><input value={profileName} onChange={(event) => setProfileName(event.target.value)} placeholder="Profile name" /><button onClick={saveProfile} disabled={!profileName.trim()}><Save size={12} /> Save current prompt</button></div>
     </section>}
