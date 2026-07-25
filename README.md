@@ -4,6 +4,8 @@ OpenKiwi is a fast, local-first desktop coding harness with a user-owned instruc
 
 This repository contains a runnable desktop coding environment: normal chats, folder-bound project threads, concurrent background tasks, steering and interruption, three permission modes, typed approvals and user-input requests, an explicit empty-by-default instruction prompt, opt-in harness-level sub-agents, prompt/agent profiles, multi-step agent workflows, animated model controls, and an integrated workspace studio.
 
+Download it here: https://www.morgangermani.com/projects/openkiwi
+
 ## Why this architecture
 
 - **Tauri 2** keeps the native shell small and puts filesystem/process access behind Rust.
