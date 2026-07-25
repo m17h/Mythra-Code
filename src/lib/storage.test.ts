@@ -4,7 +4,7 @@ const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 
-import { hydrateNativeStorage, loadStored, storeValue } from "./storage";
+import { DURABLE_STORAGE_KEYS, hydrateNativeStorage, loadStored, storeValue } from "./storage";
 
 describe("durable storage", () => {
   beforeEach(() => {
@@ -16,6 +16,10 @@ describe("durable storage", () => {
     invoke.mockResolvedValueOnce({ theme: "kiwi" });
     await hydrateNativeStorage(["kiwi.settings"]);
     expect(loadStored("kiwi.settings", {})).toEqual({ theme: "kiwi" });
+  });
+
+  it("keeps per-thread model choices in durable storage", () => {
+    expect(DURABLE_STORAGE_KEYS).toContain("kiwi.threadModels");
   });
 
   it("migrates legacy localStorage when SQLite is empty", async () => {

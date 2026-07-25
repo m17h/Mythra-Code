@@ -80,7 +80,19 @@ describe("SettingsModal", () => {
     render(<SettingsModal {...modalProps({ initialSection: "models" })} />);
 
     expect(screen.getByRole("button", { name: /Models & accounts/ })).toHaveAttribute("aria-current", "page");
-    expect(screen.getByRole("heading", { name: "Model provider" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Default model provider" })).toBeInTheDocument();
+    expect(screen.getByText(/Each thread keeps its own provider/)).toBeInTheDocument();
+  });
+
+  it("keeps project prompts out of Settings and points to the chat header", () => {
+    render(<SettingsModal {...modalProps({
+      initialSection: "projects",
+      projects: [{ id: "kiwi", name: "OpenKiwi", path: "/code/kiwi", overrides: { systemPrompt: "Existing project prompt" } }],
+    })} />);
+
+    expect(screen.getByText(/Project instructions now live beside the project name/)).toBeInTheDocument();
+    expect(screen.queryByText("Instruction prompt override")).not.toBeInTheDocument();
+    expect(screen.queryByDisplayValue("Existing project prompt")).not.toBeInTheDocument();
   });
 
   it("shows a connected state instead of prompting an authenticated Claude user to sign in again", () => {

@@ -60,13 +60,13 @@ const SETTINGS_NAV: ReadonlyArray<{
     group: "Workspace",
     items: [
       { id: "general", label: "General", icon: Palette, detail: "Appearance, runtime behavior, and diagnostics" },
-      { id: "projects", label: "Projects", icon: FolderCog, detail: "Per-project model, permission, and prompt overrides" },
+      { id: "projects", label: "Projects", icon: FolderCog, detail: "Per-project model and permission overrides" },
     ],
   },
   {
     group: "Intelligence",
     items: [
-      { id: "models", label: "Models & accounts", icon: KeyRound, detail: "Providers, credentials, and model routing" },
+      { id: "models", label: "Models & accounts", icon: KeyRound, detail: "Default provider, credentials, and model routing" },
       { id: "prompts", label: "Prompts", icon: Sparkles, detail: "Your complete harness instruction and reusable profiles" },
       { id: "agents", label: "Agents", icon: UsersRound, detail: "Delegation limits and specialist configurations" },
     ],
@@ -376,7 +376,7 @@ export function SettingsModal({
             <div className="prompt-audit-row">
               <span><Check size={13} /> Base prompt visible</span>
               <span><Check size={13} /> Developer prompt empty</span>
-              <span><Check size={13} /> Project instructions {local.projectInstructionsEnabled ? "enabled" : "disabled"}</span>
+              <span><Check size={13} /> AGENTS.md discovery {local.projectInstructionsEnabled ? "enabled" : "disabled"}</span>
             </div>
           </section>}
 
@@ -428,7 +428,7 @@ export function SettingsModal({
           <section className="settings-section">
             <div className="settings-section-heading"><div className="settings-icon"><Wrench size={17} /></div><div><h3>Runtime behavior</h3><p>Control project guidance, background alerts, service tier, and terminal memory.</p></div></div>
             <div className="behavior-grid">
-              <div><span><strong>Project instructions</strong><small>Allow AGENTS.md discovery for project threads (up to 32 KB).</small></span><button type="button" role="switch" aria-checked={local.projectInstructionsEnabled} className={`toggle-switch ${local.projectInstructionsEnabled ? "on" : ""}`} onClick={() => setLocal({ ...local, projectInstructionsEnabled: !local.projectInstructionsEnabled })}><span /></button></div>
+              <div><span><strong>AGENTS.md discovery</strong><small>Allow AGENTS.md guidance for project threads (up to 32 KB).</small></span><button type="button" role="switch" aria-checked={local.projectInstructionsEnabled} className={`toggle-switch ${local.projectInstructionsEnabled ? "on" : ""}`} onClick={() => setLocal({ ...local, projectInstructionsEnabled: !local.projectInstructionsEnabled })}><span /></button></div>
               <div><span><strong>Desktop notifications</strong><small>Notify when a background task finishes.</small></span><button type="button" role="switch" aria-checked={local.notificationsEnabled} className={`toggle-switch ${local.notificationsEnabled ? "on" : ""}`} onClick={() => setLocal({ ...local, notificationsEnabled: !local.notificationsEnabled })}><span /></button></div>
             </div>
             <div className="runtime-field-grid"><label><span>OpenAI service tier</span><select value={local.serviceTier ?? ""} onChange={(event) => setLocal({ ...local, serviceTier: event.target.value || null })}><option value="">Standard</option><option value="priority">Fast / priority</option></select></label><label><span>Terminal scrollback</span><select value={local.terminalScrollback} onChange={(event) => setLocal({ ...local, terminalScrollback: Number(event.target.value) })}><option value={25000}>25k characters</option><option value={100000}>100k characters</option><option value={500000}>500k characters</option></select></label><label><span>UI size</span><select value={local.uiScale ?? 100} onChange={(event) => setLocal({ ...local, uiScale: Number(event.target.value) })}><option value={90}>Compact (90%)</option><option value={100}>Default (100%)</option><option value={110}>Comfortable (110%)</option><option value={125}>Large (125%)</option></select></label></div>
@@ -479,7 +479,7 @@ export function SettingsModal({
           <section className="settings-section">
             <div className="settings-section-heading">
               <div className="settings-icon"><KeyRound size={17} /></div>
-              <div><h3>Model provider</h3><p>Use a ChatGPT subscription, Claude subscription, or your own OpenRouter key.</p></div>
+              <div><h3>Default model provider</h3><p>New threads start with this provider. Each thread keeps its own provider after it starts.</p></div>
             </div>
             <div className="provider-cards">
               <button className={`provider-card ${local.provider === "openai" ? "selected" : ""}`} onClick={() => setLocal({ ...local, provider: "openai", model: local.model.includes("/") || local.model.startsWith("claude-") ? DEFAULT_OPENAI_MODEL : (local.model || DEFAULT_OPENAI_MODEL), ultra: false })}>
@@ -498,6 +498,7 @@ export function SettingsModal({
                 {local.provider === "claude" && <Check size={16} />}
               </button>
             </div>
+            <p className="provider-default-note">Use the provider control above the conversation to choose a different provider for one new thread without changing this default.</p>
 
             {local.provider === "openai" ? (
               <div className="credential-panel">
@@ -583,7 +584,7 @@ function ProjectOverridesSettings({ projects, onProjects }: { projects: Project[
     <section className="settings-section">
       <div className="settings-section-heading">
         <div className="settings-icon"><FolderCog size={17} /></div>
-        <div><h3>Per-project overrides</h3><p>Give a project its own model, permission mode, or instruction prompt. Empty fields inherit the global settings. Changes apply to the next thread operation.</p></div>
+        <div><h3>Per-project overrides</h3><p>Give a project its own model or permission mode. Project instructions now live beside the project name at the top of its chat window.</p></div>
       </div>
       {projects.length ? projects.map((project) => (
         <div className="project-override-card" key={project.id}>
@@ -606,10 +607,6 @@ function ProjectOverridesSettings({ projects, onProjects }: { projects: Project[
               <input value={project.overrides?.model ?? ""} placeholder="Inherit global" onChange={(event) => updateOverrides(project.id, { model: event.target.value || undefined })} />
             </label>
           </div>
-          <label className="field-label">
-            <span>Instruction prompt override</span>
-            <textarea className="prompt-editor" rows={3} value={project.overrides?.systemPrompt ?? ""} placeholder="Inherit the global prompt" onChange={(event) => updateOverrides(project.id, { systemPrompt: event.target.value || undefined })} />
-          </label>
         </div>
       )) : <div className="tool-empty-line">Open a project first — each project you add appears here with its own overrides.</div>}
     </section>

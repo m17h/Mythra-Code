@@ -7,6 +7,7 @@ export const DURABLE_STORAGE_KEYS = [
   "kiwi.settings",
   "kiwi.threadProjects",
   "kiwi.knownThreads",
+  "kiwi.threadModels",
   "kiwi.checkpoints",
   "kiwi.promptProfiles",
   "kiwi.customAgents",

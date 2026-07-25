@@ -21,6 +21,8 @@ import { RowMenu } from "./components/RowMenu";
 import { type ReasoningEffort, ModelPowerControl, type RuntimeModel } from "./components/ModelPowerControl";
 import { OpenRouterModelControl, type OpenRouterModel } from "./components/OpenRouterModelControl";
 import { ClaudeModelControl } from "./components/ClaudeModelControl";
+import { ThreadProviderControl } from "./components/ThreadProviderControl";
+import { ProjectPromptControl } from "./components/ProjectPromptControl";
 import { ApprovalCenter } from "./components/ApprovalCenter";
 import { Composer, type ComposerHandle } from "./components/Composer";
 import { CommandPalette } from "./components/CommandPalette";
@@ -28,7 +30,7 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { SettingsModal } from "./components/SettingsModal";
 import { AuthRequiredModal, RuntimeSetupModal } from "./components/RuntimeModals";
 import type { AgentRecord, AttachmentRecord, CheckpointRecord, McpView, StudioTab } from "./components/StudioDock";
-import type { Account, Activity, AppSettings, ArchivedThread, ChatMessage, CustomAgentProfile, PendingApproval, PermissionMode, Project, ProjectAction, PromptProfile, ScheduledTask, ScheduleRunRecord, SettingsSection, Thread, Turn, ThemeName, WorkspaceMode } from "./types";
+import type { Account, Activity, AppSettings, ArchivedThread, ChatMessage, CustomAgentProfile, PendingApproval, PermissionMode, Project, ProjectAction, PromptProfile, Provider, ScheduledTask, ScheduleRunRecord, SettingsSection, Thread, Turn, ThemeName, WorkspaceMode } from "./types";
 import { useTaskStore } from "./lib/taskStore";
 import { friendlyError } from "./lib/errors";
 import { recordError } from "./lib/errorLog";
@@ -43,6 +45,7 @@ import { useWorkflowEngine } from "./hooks/useWorkflowEngine";
 import { isEstablishedOpenKiwiInstall, ONBOARDING_EXIT_MS, ONBOARDING_VERSION } from "./lib/onboarding";
 import { createLocalSkill, importLocalSkills, normalizeSkillName, resolveLocalSkills, scanLocalSkills, syncLocalSkills, type LocalSkill, type LocalSkillFile } from "./lib/skills";
 import { compactWorkflowRun, normalizeWorkflows, recoverWorkflowRuns, type WorkflowDefinition, type WorkflowRunRecord } from "./lib/workflows";
+import { modelForProvider, providerFromThread } from "./lib/threadProvider";
 
 const ChatTimeline = lazy(() => import("./components/ChatTimeline").then((module) => ({ default: module.ChatTimeline })));
 const StudioDock = lazy(() => import("./components/StudioDock").then((module) => ({ default: module.StudioDock })));
@@ -127,6 +130,9 @@ export default function App() {
   const [activeThread, setActiveThread] = useState<Thread | null>(null);
   const [startingTurn, setStartingTurn] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(initialSettings);
+  const [threadModels, setThreadModels] = useState<Record<string, string>>(() => loadStored("kiwi.threadModels", {}));
+  const [draftThreadProvider, setDraftThreadProvider] = useState<Provider | null>(null);
+  const [draftThreadModel, setDraftThreadModel] = useState<string | null>(null);
   const [previewTheme, setPreviewTheme] = useState<ThemeName | null>(null);
   const [promptProfiles, setPromptProfiles] = useState<PromptProfile[]>(() => loadStored("kiwi.promptProfiles", DEFAULT_PROMPT_PROFILES));
   const [customAgents, setCustomAgents] = useState<CustomAgentProfile[]>(() => loadStored("kiwi.customAgents", []));
@@ -214,21 +220,15 @@ export default function App() {
   const chatWorkspace = useMemo<Project | null>(() => (chatWorkspacePath ? { id: "openkiwi-normal-chats", name: "Chats", path: chatWorkspacePath, isChat: true } : null), [chatWorkspacePath]);
   const activeWorkspace = workspaceMode === "chat" ? chatWorkspace : activeProject;
   const activeThreadId = activeThread?.id ?? null;
-  // Per-project overrides win over global settings for thread operations.
+  const activeProvider = activeThread ? providerFromThread(activeThread, settings.provider) : (draftThreadProvider ?? settings.provider);
+  // Per-project overrides win over global defaults, while provider and model
+  // are resolved for the active thread (or the unsent new-thread draft).
   const effectiveSettings = useMemo<AppSettings>(() => {
     const overrides = activeProject?.overrides;
     const resolved = !overrides ? settings : { ...settings, ...(overrides.model ? { model: overrides.model } : {}), ...(overrides.permission ? { permission: overrides.permission } : {}), ...(overrides.systemPrompt ? { systemPrompt: overrides.systemPrompt } : {}) };
-    if (resolved.provider === "claude" && !resolved.model.startsWith("claude-")) {
-      return { ...resolved, model: DEFAULT_CLAUDE_MODEL };
-    }
-    if (resolved.provider === "openai" && resolved.model.includes("/")) {
-      return { ...resolved, model: DEFAULT_OPENAI_MODEL };
-    }
-    if (resolved.provider === "openrouter" && !resolved.model.includes("/")) {
-      return { ...resolved, model: "" };
-    }
-    return resolved;
-  }, [activeProject, settings]);
+    const threadModel = activeThreadId ? threadModels[activeThreadId] : draftThreadModel;
+    return { ...resolved, provider: activeProvider, model: modelForProvider(activeProvider, threadModel ?? resolved.model) };
+  }, [activeProject, activeProvider, activeThreadId, draftThreadModel, settings, threadModels]);
 
   const terminal = useTerminal({ scrollback: settings.terminalScrollback, permission: effectiveSettings.permission, onError: setError });
   const timelineEmpty = useTaskStore((state) => {
@@ -310,13 +310,13 @@ export default function App() {
 
   // Aggregate OpenRouter spend across threads (today + this project).
   const costTotalsView = useMemo(() => {
-    if (settings.provider !== "openrouter") return "";
+    if (effectiveSettings.provider !== "openrouter") return "";
     const totals = costTotals(activeProject ? normalizedProjectPath(activeProject.path) : undefined);
     if (!totals.today && !totals.project) return "";
     return `${activeProject ? `This project ≈ ${formatCost(totals.project)} · ` : ""}Today ≈ ${formatCost(totals.today)}`;
     // taskStatus retriggers the memo after each turn completes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeProject, settings.provider, taskStatus, tokenUsage]);
+  }, [activeProject, effectiveSettings.provider, taskStatus, tokenUsage]);
 
   // Only offer "Check settings" for failures settings can actually fix.
   const errorSuggestsSettings = useMemo(() => Boolean(error) && /sign in|api key|openrouter|claude|model|settings|runtime|codex|account/i.test(error ?? ""), [error]);
@@ -325,6 +325,25 @@ export default function App() {
   const persistSettings = useCallback((next: AppSettings) => {
     setSettings(next);
     storeValue("kiwi.settings", next);
+  }, []);
+
+  const persistThreadModel = useCallback((threadId: string, model: string) => {
+    setThreadModels((current) => {
+      if (current[threadId] === model) return current;
+      const next = { ...current, [threadId]: model };
+      storeValue("kiwi.threadModels", next);
+      return next;
+    });
+  }, []);
+
+  const forgetThreadModel = useCallback((threadId: string) => {
+    setThreadModels((current) => {
+      if (!(threadId in current)) return current;
+      const next = { ...current };
+      delete next[threadId];
+      storeValue("kiwi.threadModels", next);
+      return next;
+    });
   }, []);
 
   const persistActiveProjectOverride = useCallback(
@@ -342,9 +361,15 @@ export default function App() {
 
   const persistComposerModel = useCallback(
     (model: string) => {
-      if (!persistActiveProjectOverride("model", model)) persistSettings({ ...settings, model });
+      if (activeThreadId) {
+        persistThreadModel(activeThreadId, model);
+      } else if (draftThreadProvider !== null) {
+        setDraftThreadModel(model);
+      } else if (!persistActiveProjectOverride("model", model)) {
+        persistSettings({ ...settings, model });
+      }
     },
-    [persistActiveProjectOverride, persistSettings, settings],
+    [activeThreadId, draftThreadProvider, persistActiveProjectOverride, persistSettings, persistThreadModel, settings],
   );
 
   const persistComposerPermission = useCallback(
@@ -352,6 +377,24 @@ export default function App() {
       if (!persistActiveProjectOverride("permission", permission)) persistSettings({ ...settings, permission });
     },
     [persistActiveProjectOverride, persistSettings, settings],
+  );
+
+  const persistActiveProjectPrompt = useCallback(
+    (systemPrompt: string | undefined) => {
+      if (!activeProject) return;
+      setProjects((current) => {
+        const next = current.map((project) => {
+          if (project.id !== activeProject.id) return project;
+          const overrides = { ...(project.overrides ?? {}) };
+          if (systemPrompt?.trim()) overrides.systemPrompt = systemPrompt.trim();
+          else delete overrides.systemPrompt;
+          return { ...project, overrides: Object.keys(overrides).length ? overrides : undefined };
+        });
+        storeValue("kiwi.projects", next);
+        return next;
+      });
+    },
+    [activeProject],
   );
 
   const { paneSizes, startPaneResize } = usePaneResize((settings.uiScale || 100) / 100);
@@ -717,7 +760,8 @@ export default function App() {
       setAuthRequiredOpen(true);
     },
     onProviderToolCompatibilityError: (threadId) => {
-      if (settings.provider === "openrouter") providerRepairThreadsRef.current.add(threadId);
+      const thread = threads.find((entry) => entry.id === threadId) ?? knownThreadsRef.current?.[threadId];
+      if (providerFromThread(thread, "openai") === "openrouter") providerRepairThreadsRef.current.add(threadId);
     },
     onApprovalRequested: (threadId) => {
       if (!settings.notificationsEnabled || useTaskStore.getState().activeThreadId === threadId) return;
@@ -760,9 +804,14 @@ export default function App() {
         })().catch(() => {});
       }
       const projectPath = threadProjectBindingsRef.current?.[threadId];
-      if (effectiveSettings.provider === "openrouter") {
+      const completedThread = threads.find((entry) => entry.id === threadId) ?? knownThreadsRef.current?.[threadId];
+      if (providerFromThread(completedThread, "openai") === "openrouter") {
         const usage = useTaskStore.getState().tasks[threadId]?.usage;
-        const pricing = openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.pricing;
+        // Newly stored thread models are authoritative. The active-model
+        // fallback preserves cost tracking for OpenRouter threads created
+        // before that storage existed.
+        const completedModel = threadModels[threadId] ?? (activeThreadId === threadId ? effectiveSettings.model : undefined);
+        const pricing = openRouterModels.find((entry) => entry.id === completedModel)?.pricing;
         const promptRate = Number(pricing?.prompt ?? NaN);
         const completionRate = Number(pricing?.completion ?? NaN);
         if (usage && Number.isFinite(promptRate) && Number.isFinite(completionRate)) {
@@ -908,6 +957,8 @@ export default function App() {
     if (previous && previous.path === path) return; // Only availability changed — keep the open conversation.
     setActiveThread(null);
     useTaskStore.getState().setActiveThread(null);
+    setDraftThreadProvider(null);
+    setDraftThreadModel(null);
     setAttachments([]);
     setThreadSearch("");
     setSearchResults(null);
@@ -1106,36 +1157,37 @@ export default function App() {
     const requestId = ++selectThreadRequestRef.current;
     setError(null);
     setStatus("Loading thread");
+    setDraftThreadProvider(null);
+    setDraftThreadModel(null);
     try {
       if (isClaudeThread(thread)) {
         const transcript = await loadClaudeTranscript(thread.id);
         if (selectThreadRequestRef.current !== requestId) return;
         const resolvedThread = transcript?.thread ?? thread;
+        if (!threadModels[resolvedThread.id]) {
+          const projectModel = activeProject?.overrides?.model ?? settings.model;
+          persistThreadModel(resolvedThread.id, modelForProvider("claude", projectModel));
+        }
         bindThreadToProject(resolvedThread.id, activeWorkspace.path);
         rememberThread(resolvedThread);
         setActiveThread(resolvedThread);
         useTaskStore.getState().hydrateTask(resolvedThread.id, transcript?.messages ?? [], transcript?.activities ?? [], activeWorkspace.path);
         useTaskStore.getState().setActiveThread(resolvedThread.id);
-        if (settings.provider !== "claude") {
-          persistSettings({
-            ...settings,
-            provider: "claude",
-            model: settings.model.startsWith("claude-") ? settings.model : DEFAULT_CLAUDE_MODEL,
-          });
-        }
         setStatus("Ready");
         return;
       }
-      const threadProviderSettings: AppSettings = thread.modelProvider.toLowerCase() === "openrouter" ? { ...effectiveSettings, provider: "openrouter", model: effectiveSettings.model.includes("/") ? effectiveSettings.model : "" } : { ...effectiveSettings, provider: "openai", model: effectiveSettings.model.includes("/") || effectiveSettings.model.startsWith("claude-") ? DEFAULT_OPENAI_MODEL : effectiveSettings.model };
-      const result = await rpc<{ thread: Thread }>("thread/resume", threadResumeParams(threadProviderSettings, thread.id, activeWorkspace.path, { customAgents, modelContextWindow: effectiveSettings.provider === "openrouter" ? openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.context_length : undefined }));
+      const provider = providerFromThread(thread, settings.provider);
+      const projectModel = activeProject?.overrides?.model ?? settings.model;
+      const threadProviderSettings: AppSettings = { ...effectiveSettings, provider, model: modelForProvider(provider, threadModels[thread.id] ?? projectModel) };
+      const result = await rpc<{ thread: Thread }>("thread/resume", threadResumeParams(threadProviderSettings, thread.id, activeWorkspace.path, { customAgents, modelContextWindow: provider === "openrouter" ? openRouterModels.find((entry) => entry.id === threadProviderSettings.model)?.context_length : undefined }));
       if (selectThreadRequestRef.current !== requestId) return;
+      if (!threadModels[result.thread.id]) persistThreadModel(result.thread.id, threadProviderSettings.model);
       bindThreadToProject(result.thread.id, activeWorkspace.path);
       rememberThread(result.thread);
       setActiveThread(result.thread);
       const history = timelineFromTurns(result.thread.turns);
       useTaskStore.getState().hydrateTask(result.thread.id, history.messages, history.activities, activeWorkspace.path);
       useTaskStore.getState().setActiveThread(result.thread.id);
-      if (settings.provider !== threadProviderSettings.provider) persistSettings(threadProviderSettings);
       setStatus("Ready");
     } catch (reason) {
       if (selectThreadRequestRef.current !== requestId) return;
@@ -1175,6 +1227,24 @@ export default function App() {
   const newThread = () => {
     setActiveThread(null);
     useTaskStore.getState().setActiveThread(null);
+    setDraftThreadProvider(null);
+    setDraftThreadModel(null);
+    setError(null);
+    requestAnimationFrame(() => composerRef.current?.focus());
+  };
+
+  const startNewThreadWithProvider = (provider: Provider) => {
+    if (running) {
+      setError("Stop the running task before starting a thread with another provider.");
+      return;
+    }
+    if (activeThread && !window.confirm(`Start a new ${providerLabel(provider)} thread?\n\nProvider sessions cannot share conversation state, so this keeps the current thread unchanged and starts a separate thread in the same workspace.`)) {
+      return;
+    }
+    setActiveThread(null);
+    useTaskStore.getState().setActiveThread(null);
+    setDraftThreadProvider(provider === settings.provider ? null : provider);
+    setDraftThreadModel(null);
     setError(null);
     requestAnimationFrame(() => composerRef.current?.focus());
   };
@@ -1183,20 +1253,20 @@ export default function App() {
   // draft when it was not.
   const sendMessage = async (text: string): Promise<boolean> => {
     if (!text || !activeWorkspace) return false;
-    if (settings.provider !== "claude" && !runtimeStatus?.available) {
+    if (effectiveSettings.provider !== "claude" && !runtimeStatus?.available) {
       setRuntimeSetupOpen(true);
       return false;
     }
-    if (settings.provider === "openai" && account?.type !== "chatgpt") {
+    if (effectiveSettings.provider === "openai" && account?.type !== "chatgpt") {
       setAuthRequiredOpen(true);
       return false;
     }
-    if (settings.provider === "openrouter" && !openRouterReady) {
+    if (effectiveSettings.provider === "openrouter" && !openRouterReady) {
       openSettings("models");
       setError("Add an OpenRouter API key before using OpenRouter.");
       return false;
     }
-    if (settings.provider === "claude" && (!claudeStatus?.available || !claudeStatus.loggedIn)) {
+    if (effectiveSettings.provider === "claude" && (!claudeStatus?.available || !claudeStatus.loggedIn)) {
       openSettings("models");
       setError(claudeStatus?.available ? "Sign in to Claude Code before using your Claude subscription." : "Install Claude Code, then sign in before using the Claude provider.");
       return false;
@@ -1205,14 +1275,6 @@ export default function App() {
       setError("Choose an OpenRouter model before starting this thread.");
       return false;
     }
-    if (activeThread) {
-      const threadProvider = isClaudeThread(activeThread) ? "claude" : activeThread.modelProvider.toLowerCase() === "openrouter" ? "openrouter" : "openai";
-      if (threadProvider !== settings.provider) {
-        setError(`This thread belongs to ${providerLabel(threadProvider)}. Start a new thread to use ${providerLabel(settings.provider)}.`);
-        return false;
-      }
-    }
-
     if (running && activeThread) {
       const sentAttachments = [...attachments];
       setError(null);
@@ -1249,7 +1311,7 @@ export default function App() {
     let sentMessageId: string | undefined;
     const sentAttachments = [...attachments];
     try {
-      if (settings.provider === "claude") {
+      if (effectiveSettings.provider === "claude") {
         if (skillsFolder && !skillRuntimeRootRef.current) await refreshLocalSkills();
         let thread = activeThread;
         if (!thread) {
@@ -1257,6 +1319,7 @@ export default function App() {
           startedThreadId = thread.id;
           bindThreadToProject(thread.id, activeWorkspace.path);
           rememberThread(thread);
+          persistThreadModel(thread.id, effectiveSettings.model);
           setThreads((current) => upsertThread(current, thread!));
           setActiveThread(thread);
           useTaskStore.getState().ensureTask(thread.id, activeWorkspace.path);
@@ -1298,11 +1361,12 @@ export default function App() {
         startedThreadId = threadId;
         bindThreadToProject(startedThread.id, activeWorkspace.path);
         rememberThread(startedThread);
+        persistThreadModel(startedThread.id, effectiveSettings.model);
         setThreads((current) => upsertThread(current, startedThread));
         setActiveThread(startedThread);
         useTaskStore.getState().ensureTask(startedThread.id, activeWorkspace.path);
         useTaskStore.getState().setActiveThread(startedThread.id);
-      } else if (settings.provider === "openrouter") {
+      } else if (effectiveSettings.provider === "openrouter") {
         // Re-apply the isolated provider config before every subsequent turn.
         // This repairs a persisted thread after a compatibility refresh.
         await rpc("thread/resume", { ...threadResumeParams(effectiveSettings, threadId, activeWorkspace.path, { customAgents, modelContextWindow: openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.context_length, excludeTurns: true }), model: effectiveSettings.model });
@@ -1521,6 +1585,7 @@ export default function App() {
       else await rpc("thread/delete", { threadId });
       if (activeThread?.id === threadId) newThread();
       forgetThread(threadId);
+      forgetThreadModel(threadId);
       setThreads((current) => current.filter((entry) => entry.id !== threadId));
       persistArchivedThreads((current) => current.filter((entry) => entry.id !== threadId));
       useTaskStore.getState().removeTask(threadId);
@@ -1617,6 +1682,7 @@ export default function App() {
       const result = await rpc<{ thread: Thread }>("thread/fork", { threadId: checkpoint?.threadId ?? activeThread.id, lastTurnId: checkpoint?.turnId, cwd: activeWorkspace?.path, runtimeWorkspaceRoots: activeWorkspace ? [activeWorkspace.path] : undefined, model: effectiveSettings.model, modelProvider: effectiveSettings.provider === "openrouter" ? "openrouter" : undefined, config: threadRuntimeConfig(effectiveSettings, { customAgents, modelContextWindow: effectiveSettings.provider === "openrouter" ? openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.context_length : undefined }), baseInstructions: effectiveSettings.systemPrompt, developerInstructions: "" });
       if (activeWorkspace) bindThreadToProject(result.thread.id, activeWorkspace.path);
       rememberThread(result.thread);
+      persistThreadModel(result.thread.id, effectiveSettings.model);
       setActiveThread(result.thread);
       const history = timelineFromTurns(result.thread.turns);
       useTaskStore.getState().hydrateTask(result.thread.id, history.messages, history.activities, activeWorkspace?.path);
@@ -2093,7 +2159,7 @@ export default function App() {
           <button className="sidebar-settings" onClick={() => openSettings()}>
             <Settings size={16} />
             <span>Settings</span>
-            <span className={`provider-dot ${settings.provider}`} />
+            <span className={`provider-dot ${settings.provider}`} title={`Default provider: ${providerLabel(settings.provider)}`} />
           </button>
         </div>
       </aside>
@@ -2110,6 +2176,18 @@ export default function App() {
               <span>{activeWorkspace?.isChat ? "Normal chat" : (activeProject?.name ?? "No project selected")}</span>
               <small>{activeThread ? activeThread.name || activeThread.preview || "New thread" : activeWorkspace?.isChat ? "No project folder" : (activeProject?.path ?? "Choose a project or use Chats")}</small>
             </div>
+            {activeProject && (
+              <ProjectPromptControl
+                key={activeProject.id}
+                projectName={activeProject.name}
+                projectPrompt={activeProject.overrides?.systemPrompt}
+                appPrompt={settings.systemPrompt}
+                provider={effectiveSettings.provider}
+                threadStarted={Boolean(activeThread)}
+                onSave={persistActiveProjectPrompt}
+                onAppPromptSettings={() => openSettings("prompts")}
+              />
+            )}
           </div>
           <div className="topbar-right">
             {activeThread && (
@@ -2126,11 +2204,15 @@ export default function App() {
               {running ? <LoaderCircle className="spin" size={13} /> : <Circle size={8} fill="currentColor" />}
               <span>{status}</span>
             </div>
-            <button className="provider-pill" onClick={() => openSettings("models")} aria-label={`Configure ${providerLabel(settings.provider)} provider`}>
-              <span className={`provider-dot ${settings.provider}`} />
-              {providerLabel(settings.provider)}
-              {settings.model && <small>{settings.model}</small>}
-            </button>
+            <ThreadProviderControl
+              provider={effectiveSettings.provider}
+              model={effectiveSettings.model}
+              defaultProvider={settings.provider}
+              threadStarted={Boolean(activeThread)}
+              disabled={!activeWorkspace || running}
+              onProvider={startNewThreadWithProvider}
+              onDefaultSettings={() => openSettings("models")}
+            />
             <button className={`workspace-tools-trigger studio-toggle ${studioOpen ? "active" : ""}`} onClick={() => (studioOpen ? setStudioOpen(false) : openStudio(studioTab))} title={activeProject ? "Open project workspace tools" : "Workspace tools are available inside projects"} aria-label={studioOpen ? "Close workspace tools" : "Open workspace tools"} aria-expanded={studioOpen} disabled={!activeProject}>
               <PanelRight size={17} />
               <span>Workspace</span>
@@ -2309,8 +2391,8 @@ export default function App() {
                 onStop={() => void stopTurn()}
                 modelControls={
                   <>
-                    {settings.provider === "openai" && <ModelPowerControl model={effectiveSettings.model || DEFAULT_OPENAI_MODEL} effort={settings.reasoningEffort} ultra={settings.ultra} fast={settings.serviceTier === "priority"} runtimeModels={runtimeModels} onModel={persistComposerModel} onEffort={(reasoningEffort: ReasoningEffort) => persistSettings({ ...settings, reasoningEffort, ultra: false })} onUltra={(ultra) => persistSettings({ ...settings, ultra, subagentsEnabled: ultra ? true : settings.subagentsEnabled })} onFast={(fast) => persistSettings({ ...settings, serviceTier: fast ? "priority" : null })} />}
-                    {settings.provider === "openrouter" && (
+                    {effectiveSettings.provider === "openai" && <ModelPowerControl model={effectiveSettings.model || DEFAULT_OPENAI_MODEL} effort={settings.reasoningEffort} ultra={settings.ultra} fast={settings.serviceTier === "priority"} runtimeModels={runtimeModels} onModel={persistComposerModel} onEffort={(reasoningEffort: ReasoningEffort) => persistSettings({ ...settings, reasoningEffort, ultra: false })} onUltra={(ultra) => persistSettings({ ...settings, ultra, subagentsEnabled: ultra ? true : settings.subagentsEnabled })} onFast={(fast) => persistSettings({ ...settings, serviceTier: fast ? "priority" : null })} />}
+                    {effectiveSettings.provider === "openrouter" && (
                       <OpenRouterModelControl
                         model={effectiveSettings.model}
                         effort={settings.reasoningEffort}
@@ -2325,7 +2407,7 @@ export default function App() {
                         onRefresh={() => void refreshOpenRouterModels()}
                       />
                     )}
-                    {settings.provider === "claude" && <ClaudeModelControl model={effectiveSettings.model || DEFAULT_CLAUDE_MODEL} effort={settings.reasoningEffort} onModel={(model) => persistComposerModel(model)} onEffort={(reasoningEffort) => persistSettings({ ...settings, reasoningEffort, ultra: false })} />}
+                    {effectiveSettings.provider === "claude" && <ClaudeModelControl model={effectiveSettings.model || DEFAULT_CLAUDE_MODEL} effort={settings.reasoningEffort} onModel={(model) => persistComposerModel(model)} onEffort={(reasoningEffort) => persistSettings({ ...settings, reasoningEffort, ultra: false })} />}
                   </>
                 }
                 controls={
@@ -2359,10 +2441,6 @@ export default function App() {
                         </div>
                       )}
                     </div>
-                    <button className="toolbar-button prompt-button" onClick={() => openSettings(activeProject?.overrides?.systemPrompt ? "projects" : "prompts")} title="Edit instruction prompt">
-                      <Command size={14} />
-                      Prompt: {effectiveSettings.systemPrompt ? (activeProject?.overrides?.systemPrompt ? "project" : "custom") : "empty"}
-                    </button>
                     <button className={`toolbar-button agents-button ${settings.subagentsEnabled ? "enabled" : ""}`} onClick={() => persistSettings({ ...settings, subagentsEnabled: !settings.subagentsEnabled })} disabled={Boolean(activeThread)} title={activeThread ? "Sub-agent access is fixed when a thread starts" : "Allow the model to spawn direct sub-agents for this thread"}>
                       <UsersRound size={14} />
                       {settings.subagentsEnabled ? `Agents: ${settings.subagentMax}` : "Agents off"}
@@ -2416,7 +2494,7 @@ export default function App() {
             promptAudit={[
               { label: "Base instruction", value: effectiveSettings.systemPrompt ? `${activeProject?.overrides?.systemPrompt ? "project" : "custom"} · ${effectiveSettings.systemPrompt.length} chars` : "empty" },
               { label: "Developer instruction", value: "empty" },
-              { label: "Project instructions", value: settings.projectInstructionsEnabled ? "enabled · AGENTS.md up to 32 KB" : "disabled" },
+              { label: "AGENTS.md discovery", value: settings.projectInstructionsEnabled ? "enabled · up to 32 KB" : "disabled" },
               { label: "Model", value: effectiveSettings.model || "provider default" },
               { label: "Reasoning", value: settings.ultra ? "ultra" : settings.reasoningEffort },
               { label: "Sub-agents", value: settings.subagentsEnabled ? `on · max ${settings.subagentMax}` : "off" },
