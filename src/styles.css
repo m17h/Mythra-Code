@@ -418,7 +418,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .empty-state-actions button { min-height: var(--ctl-md); display: flex; align-items: center; gap: 6px; padding: 0 11px; border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--muted); background: transparent; font-size: var(--fs-meta); letter-spacing: var(--track-tight); cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
 .empty-state-actions button:hover { color: var(--text); border-color: var(--line-strong); background: rgba(255,255,255,.05); }
 .timeline { width: 100%; margin: 0; padding: 0; }
-.message { display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: var(--s-3); margin-bottom: var(--s-6); }
+.message { display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: var(--s-3); }
 .message.user { grid-template-columns: minmax(0, 1fr); margin-left: 10%; }
 .message.user .message-avatar { display: none; }
 /* The user's turn reads as a quoted card; the assistant's runs flush, like prose. */
@@ -434,12 +434,15 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .message-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .virtual-timeline { height: 100%; direction: rtl; }
 .virtual-timeline [data-testid="virtuoso-item-list"] { direction: ltr; }
-.timeline-entry { width: min(var(--measure), calc(100% - 64px)); margin-inline: auto; }
+.timeline-entry { display: flow-root; width: min(var(--measure), calc(100% - 64px)); margin-inline: auto; }
+.timeline-entry-message { padding-bottom: var(--s-6); }
+.timeline-entry-activity { padding-bottom: 6px; }
+.timeline-entry-disclosure, .timeline-entry-approval { padding-bottom: var(--s-3); }
 .timeline-top-space { height: var(--s-8); direction: ltr; }
 .timeline-bottom-space { height: 72px; direction: ltr; }
 .virtual-timeline .message, .virtual-timeline .activity-row, .virtual-timeline .reasoning-disclosure { margin-left: 0; margin-right: 0; }
-.virtual-timeline .activity-row { margin: 0 0 6px 38px; }
-.virtual-timeline .reasoning-disclosure { margin: 0 0 var(--s-3) 38px; }
+.virtual-timeline .activity-row { margin: 0 0 0 38px; }
+.virtual-timeline .reasoning-disclosure { margin: 0 0 0 38px; }
 .rich-markdown { white-space: normal; }
 .rich-markdown > :first-child { margin-top: 0; }
 .rich-markdown > :last-child { margin-bottom: 0; }
@@ -1584,7 +1587,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .diff-file .diff-view { content-visibility: auto; contain-intrinsic-size: auto 300px; }
 
 /* Inline approval card (active thread) */
-.inline-approval { margin: 0 0 var(--s-3) 38px; padding: var(--s-3); border: 1px solid color-mix(in srgb, var(--orange) 26%, var(--line)); border-radius: var(--r-md); background: color-mix(in srgb, var(--orange) 6%, transparent); }
+.inline-approval { margin: 0 0 0 38px; padding: var(--s-3); border: 1px solid color-mix(in srgb, var(--orange) 26%, var(--line)); border-radius: var(--r-md); background: color-mix(in srgb, var(--orange) 6%, transparent); }
 .inline-approval-head { display: flex; align-items: center; gap: 7px; margin-bottom: var(--s-1); color: var(--orange); }
 .inline-approval-head strong { color: var(--text); font-size: var(--fs-ui); font-weight: 620; letter-spacing: var(--track-tight); }
 .inline-approval > p { margin: 0 0 var(--s-2); color: var(--muted); font-size: var(--fs-meta); line-height: 1.55; }

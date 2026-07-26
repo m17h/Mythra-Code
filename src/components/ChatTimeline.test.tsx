@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { ActivityRow, CommandDisclosure, ReasoningDisclosure, orderedTimelineEntries } from "./ChatTimeline";
+import { ActivityRow, CommandDisclosure, FileDisclosure, ReasoningDisclosure, followTimelineOutput, orderedTimelineEntries } from "./ChatTimeline";
 
 describe("ChatTimeline", () => {
   it("places command activity between the messages that surround it", () => {
@@ -14,25 +14,26 @@ describe("ChatTimeline", () => {
 
     expect(entries.map((entry) => entry.kind === "thinking"
       ? "thinking"
-      : entry.kind === "commands"
-        ? entry.value.map((command) => command.id).join(",")
+      : entry.kind === "commands" || entry.kind === "files"
+        ? entry.value.map((activity) => activity.id).join(",")
         : entry.value.id))
       .toEqual(["user", "command", "assistant"]);
   });
 
-  it("groups consecutive commands but preserves surrounding timeline order", () => {
+  it("groups consecutive commands and file changes while preserving timeline order", () => {
     const entries = orderedTimelineEntries(
       [{ id: "user", role: "user", text: "Check it", timelineOrder: 1 }],
       [
         { id: "one", kind: "command", title: "git status", timelineOrder: 2 },
         { id: "two", kind: "command", title: "npm test", timelineOrder: 3 },
         { id: "file", kind: "file", title: "Changed app.ts", timelineOrder: 4 },
-        { id: "three", kind: "command", title: "npm build", timelineOrder: 5 },
+        { id: "file-two", kind: "file", title: "Changed styles.css", timelineOrder: 5 },
+        { id: "three", kind: "command", title: "npm build", timelineOrder: 6 },
       ],
     );
 
-    expect(entries.map((entry) => entry.kind === "commands" ? entry.value.map((command) => command.id).join(",") : entry.kind))
-      .toEqual(["message", "one,two", "activity", "three"]);
+    expect(entries.map((entry) => entry.kind === "commands" || entry.kind === "files" ? entry.value.map((activity) => activity.id).join(",") : entry.kind))
+      .toEqual(["message", "one,two", "file,file-two", "three"]);
   });
 
   it("keeps grouped commands collapsed until the user opens them", () => {
@@ -44,14 +45,30 @@ describe("ChatTimeline", () => {
     const toggle = screen.getByRole("button", { name: "Show 2 executed commands" });
     expect(toggle).toHaveAttribute("aria-expanded", "false");
     expect(screen.getByText("Executed 2 commands")).toBeInTheDocument();
-    expect(screen.getByText("working tree clean")).toBeInTheDocument();
-    expect(screen.getByText("working tree clean").closest(".command-panel")).toHaveAttribute("aria-hidden", "true");
+    expect(screen.queryByText("working tree clean")).not.toBeInTheDocument();
 
     fireEvent.click(toggle);
     expect(toggle).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByRole("button", { name: "Hide 2 executed commands" })).toBeInTheDocument();
     expect(screen.getByText("working tree clean").closest(".command-panel")).toHaveAttribute("aria-hidden", "false");
     expect(screen.getByText("all tests passed")).toBeInTheDocument();
+  });
+
+  it("keeps file tool results in a compact disclosure", () => {
+    render(<FileDisclosure files={[
+      { id: "edit-one", kind: "file", title: "/project/src/App.tsx", detail: "The file has been updated successfully.", status: "completed" },
+      { id: "edit-two", kind: "file", title: "/project/src/styles.css", detail: "The stylesheet has been updated successfully.", status: "completed" },
+    ]} />);
+
+    const toggle = screen.getByRole("button", { name: "Show 2 file changes" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByText("Made 2 file changes")).toBeInTheDocument();
+    expect(screen.queryByText("The file has been updated successfully.")).not.toBeInTheDocument();
+
+    fireEvent.click(toggle);
+    expect(screen.getByRole("button", { name: "Hide 2 file changes" })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("The file has been updated successfully.")).toBeInTheDocument();
+    expect(screen.getByText("The stylesheet has been updated successfully.")).toBeInTheDocument();
   });
 
   it("uses singular command copy", () => {
@@ -82,5 +99,10 @@ describe("ChatTimeline", () => {
 
     expect(screen.getByRole("button", { name: "Hide thinking" })).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByText(/Reading the relevant files/)).toBeInTheDocument();
+  });
+
+  it("follows appended output without stacking smooth scroll animations", () => {
+    expect(followTimelineOutput(true)).toBe("auto");
+    expect(followTimelineOutput(false)).toBe(false);
   });
 });

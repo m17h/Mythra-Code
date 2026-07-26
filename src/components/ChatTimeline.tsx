@@ -13,25 +13,32 @@ type TimelineEntry =
   | { kind: "message"; value: ChatMessage }
   | { kind: "activity"; value: Activity }
   | { kind: "commands"; value: Activity[] }
+  | { kind: "files"; value: Activity[] }
   | { kind: "thinking"; label: string }
   | { kind: "approval"; value: PendingApproval };
 
 function entryOrder(entry: TimelineEntry): number {
   if (entry.kind === "thinking" || entry.kind === "approval") return Number.MAX_SAFE_INTEGER;
-  if (entry.kind === "commands") return entry.value[0]?.timelineOrder ?? Number.MAX_SAFE_INTEGER;
+  if (entry.kind === "commands" || entry.kind === "files") return entry.value[0]?.timelineOrder ?? Number.MAX_SAFE_INTEGER;
   return entry.value.timelineOrder ?? Number.MAX_SAFE_INTEGER;
 }
 
-function groupCommandRuns(entries: TimelineEntry[]): TimelineEntry[] {
+function groupToolRuns(entries: TimelineEntry[]): TimelineEntry[] {
   const grouped: TimelineEntry[] = [];
   for (const entry of entries) {
-    if (entry.kind !== "activity" || entry.value.kind !== "command") {
+    if (entry.kind !== "activity" || (entry.value.kind !== "command" && entry.value.kind !== "file")) {
       grouped.push(entry);
       continue;
     }
     const previous = grouped.at(-1);
-    if (previous?.kind === "commands") previous.value.push(entry.value);
-    else grouped.push({ kind: "commands", value: [entry.value] });
+    if (entry.value.kind === "command") {
+      if (previous?.kind === "commands") previous.value.push(entry.value);
+      else grouped.push({ kind: "commands", value: [entry.value] });
+    } else if (previous?.kind === "files") {
+      previous.value.push(entry.value);
+    } else {
+      grouped.push({ kind: "files", value: [entry.value] });
+    }
   }
   return grouped;
 }
@@ -61,7 +68,7 @@ export function orderedTimelineEntries(messages: ChatMessage[], activities: Acti
     previousOrder = Math.max(previousOrder, order);
     entries.push(next);
   }
-  return groupCommandRuns(sorted ? entries : entries.sort((left, right) => entryOrder(left) - entryOrder(right)));
+  return groupToolRuns(sorted ? entries : entries.sort((left, right) => entryOrder(left) - entryOrder(right)));
 }
 
 function textFromCodeNode(node: ReactNode): string {
@@ -215,43 +222,66 @@ export const ReasoningDisclosure = memo(function ReasoningDisclosure({
   );
 });
 
-export const CommandDisclosure = memo(function CommandDisclosure({ commands }: { commands: Activity[] }) {
+const ToolDisclosure = memo(function ToolDisclosure({
+  activities,
+  type,
+}: {
+  activities: Activity[];
+  type: "command" | "file";
+}) {
   const [expanded, setExpanded] = useState(false);
-  const count = commands.length;
-  const inProgress = commands.some((command) => command.status === "inProgress");
-  const label = `Executed ${count} ${count === 1 ? "command" : "commands"}`;
+  const count = activities.length;
+  const inProgress = activities.some((activity) => activity.status === "inProgress");
+  const isCommand = type === "command";
+  const noun = isCommand ? (count === 1 ? "command" : "commands") : (count === 1 ? "file change" : "file changes");
+  const label = isCommand ? `Executed ${count} ${noun}` : `Made ${count} ${noun}`;
+  const Icon = isCommand ? TerminalSquare : FileCode2;
   return (
-    <div className={`reasoning-disclosure command-disclosure ${expanded ? "expanded" : "collapsed"} ${inProgress ? "active" : "complete"}`}>
+    <div className={`reasoning-disclosure tool-disclosure ${isCommand ? "command-disclosure" : "file-disclosure"} ${expanded ? "expanded" : "collapsed"} ${inProgress ? "active" : "complete"}`}>
       <button
         type="button"
-        className="reasoning-toggle command-toggle"
+        className={`reasoning-toggle ${isCommand ? "command-toggle" : "file-toggle"}`}
         onClick={() => setExpanded((value) => !value)}
         aria-expanded={expanded}
-        aria-label={`${expanded ? "Hide" : "Show"} ${count} executed ${count === 1 ? "command" : "commands"}`}
+        aria-label={`${expanded ? "Hide" : "Show"} ${count} ${isCommand ? `executed ${noun}` : noun}`}
       >
         <ChevronRight className="reasoning-chevron" size={13} />
         <span>{label}</span>
-        {inProgress && <i className="reasoning-live-dot" aria-label="Command in progress" />}
+        {inProgress && <i className="reasoning-live-dot" aria-label={`${isCommand ? "Command" : "File change"} in progress`} />}
       </button>
-      <div className="reasoning-panel command-panel" aria-hidden={!expanded}>
+      <div className={`reasoning-panel ${isCommand ? "command-panel" : "file-panel"}`} aria-hidden={!expanded}>
         <div className="reasoning-panel-inner">
-          <div className="command-list">
-            {commands.map((command) => (
-              <div className="command-list-item" key={command.id}>
-                <div className="command-list-title">
-                  <TerminalSquare size={12} />
-                  <code>{command.title}</code>
-                  {command.status && <small>{command.status}</small>}
+          {expanded && (
+            <div className="command-list">
+              {activities.map((activity) => (
+                <div className="command-list-item" key={activity.id}>
+                  <div className="command-list-title">
+                    <Icon size={12} />
+                    <code>{activity.title}</code>
+                    {activity.status && <small>{activity.status}</small>}
+                  </div>
+                  {activity.detail && <pre>{activity.detail.slice(-1200)}</pre>}
                 </div>
-                {command.detail && <pre>{command.detail.slice(-1200)}</pre>}
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </div>
   );
 });
+
+export const CommandDisclosure = memo(function CommandDisclosure({ commands }: { commands: Activity[] }) {
+  return <ToolDisclosure activities={commands} type="command" />;
+});
+
+export const FileDisclosure = memo(function FileDisclosure({ files }: { files: Activity[] }) {
+  return <ToolDisclosure activities={files} type="file" />;
+});
+
+export function followTimelineOutput(atBottom: boolean): "auto" | false {
+  return atBottom ? "auto" : false;
+}
 
 function TimelineFooter() {
   return <div className="timeline-bottom-space" aria-hidden="true" />;
@@ -317,6 +347,8 @@ export function ChatTimeline({
           ? `${entry.value.title} ${entry.value.detail ?? ""}`
           : entry.kind === "commands"
             ? entry.value.map((command) => `${command.title} ${command.detail ?? ""}`).join(" ")
+            : entry.kind === "files"
+              ? entry.value.map((file) => `${file.title} ${file.detail ?? ""}`).join(" ")
           : "";
       if (haystack.toLowerCase().includes(query)) hits.push(index);
     });
@@ -338,33 +370,36 @@ export function ChatTimeline({
       className="timeline virtual-timeline"
       data={entries}
       components={VIRTUOSO_COMPONENTS}
-      followOutput={(atBottom) => atBottom ? "smooth" : false}
+      followOutput={followTimelineOutput}
       increaseViewportBy={{ top: 500, bottom: 800 }}
       computeItemKey={(index, entry) => entry.kind === "thinking"
         ? `thinking-${index}`
-        : entry.kind === "commands"
-          ? `commands-${entry.value.map((command) => command.id).join("-")}`
+        : entry.kind === "commands" || entry.kind === "files"
+          ? `${entry.kind}-${entry.value[0]?.id ?? index}`
           : `${entry.kind}-${entry.value.id}`}
       itemContent={(index, entry) => {
         const hitClass = index === activeEntryIndex ? " search-hit" : "";
         if (entry.kind === "message") {
-          return <div className={`timeline-entry${hitClass}`}><MessageRow message={entry.value} provider={provider} onEdit={onEditMessage} /></div>;
+          return <div className={`timeline-entry timeline-entry-message${hitClass}`}><MessageRow message={entry.value} provider={provider} onEdit={onEditMessage} /></div>;
         }
         if (entry.kind === "activity") {
-          return <div className={`timeline-entry${hitClass}`}><ActivityRow activity={entry.value} /></div>;
+          return <div className={`timeline-entry timeline-entry-activity${hitClass}`}><ActivityRow activity={entry.value} /></div>;
         }
         if (entry.kind === "commands") {
-          return <div className={`timeline-entry${hitClass}`}><CommandDisclosure commands={entry.value} /></div>;
+          return <div className={`timeline-entry timeline-entry-disclosure${hitClass}`}><CommandDisclosure commands={entry.value} /></div>;
+        }
+        if (entry.kind === "files") {
+          return <div className={`timeline-entry timeline-entry-disclosure${hitClass}`}><FileDisclosure files={entry.value} /></div>;
         }
         if (entry.kind === "approval") {
           return (
-            <div className="timeline-entry">
+            <div className="timeline-entry timeline-entry-approval">
               <InlineApprovalCard approval={entry.value} onRespond={(result) => onApprovalRespond?.(entry.value, result)} />
             </div>
           );
         }
         return (
-          <div className="timeline-entry">
+          <div className="timeline-entry timeline-entry-disclosure">
             <ReasoningDisclosure detail="" inProgress label={entry.label} />
           </div>
         );
