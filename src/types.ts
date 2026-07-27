@@ -166,6 +166,8 @@ export interface ArchivedThread {
   label: string;
   path: string;
   archivedAt: number;
+  /** Persist the provider because archived threads are removed from the live index. */
+  provider?: Provider;
 }
 
 export interface AppSettings {

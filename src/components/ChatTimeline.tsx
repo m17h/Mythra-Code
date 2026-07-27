@@ -1,4 +1,4 @@
-import { Children, isValidElement, memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Children, isValidElement, memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { VirtuosoHandle } from "react-virtuoso";
 import { Check, ChevronRight, Clipboard, FileCode2, ListChecks, Pencil, Sparkles, TerminalSquare, UsersRound } from "lucide-react";
 import Markdown from "react-markdown";
@@ -492,6 +492,37 @@ export function ChatTimeline({
   // In-conversation search: matches are entry indices; the active match is
   // scrolled into view and highlighted.
   const virtuosoRef = useRef<VirtuosoHandle>(null);
+  // A resumed thread can mount while its transcript RPC is still empty. In
+  // that case Virtuoso consumes initialTopMostItemIndex before there is an
+  // item to position. Markdown and virtualization measurements can also make
+  // a tall final answer grow over several layout passes, so keep restoring the
+  // bottom until the measured list height has been stable for a short window.
+  const initialPositionPendingRef = useRef(true);
+  const initialPositionSettleTimerRef = useRef<number | null>(null);
+  const restoreInitialBottom = useCallback(() => {
+    if (!initialPositionPendingRef.current || entries.length === 0) return;
+    // A final Markdown message can be taller than the viewport. Scrolling to
+    // its item index may align its top while it is still being measured;
+    // scrolling the scroller itself to an intentionally oversized offset
+    // clamps to the true bottom regardless of the final item's height.
+    virtuosoRef.current?.scrollTo({ top: Number.MAX_SAFE_INTEGER, behavior: "auto" });
+    if (initialPositionSettleTimerRef.current !== null) {
+      window.clearTimeout(initialPositionSettleTimerRef.current);
+    }
+    initialPositionSettleTimerRef.current = window.setTimeout(() => {
+      initialPositionPendingRef.current = false;
+      initialPositionSettleTimerRef.current = null;
+    }, 300);
+  }, [entries.length]);
+  useEffect(restoreInitialBottom, [restoreInitialBottom]);
+  useEffect(
+    () => () => {
+      if (initialPositionSettleTimerRef.current !== null) {
+        window.clearTimeout(initialPositionSettleTimerRef.current);
+      }
+    },
+    [],
+  );
   const matchIndices = useMemo(() => {
     const query = searchQuery?.trim().toLowerCase();
     if (!query) return [];
@@ -534,6 +565,7 @@ export function ChatTimeline({
       components={VIRTUOSO_COMPONENTS}
       initialTopMostItemIndex={INITIAL_TIMELINE_POSITION}
       followOutput={followTimelineOutput}
+      totalListHeightChanged={restoreInitialBottom}
       increaseViewportBy={{ top: 500, bottom: 800 }}
       computeItemKey={(index, entry) => entry.kind === "thinking"
         ? `thinking-${index}`

@@ -1,6 +1,25 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
-import { ActivityRow, CommandDisclosure, CompletedWorkDisclosure, FileDisclosure, INITIAL_TIMELINE_POSITION, ReasoningDisclosure, compactCompletedTurns, followTimelineOutput, orderedTimelineEntries, type WorkItemEntry } from "./ChatTimeline";
+import { describe, expect, it, vi } from "vitest";
+
+const { scrollToBottom } = vi.hoisted(() => ({ scrollToBottom: vi.fn() }));
+
+vi.mock("react-virtuoso", async () => {
+  const React = await import("react");
+  return {
+    Virtuoso: React.forwardRef(function MockVirtuoso(
+      props: {
+        data?: unknown[];
+        itemContent?: (index: number, entry: unknown) => React.ReactNode;
+      },
+      ref: React.ForwardedRef<{ scrollTo: typeof scrollToBottom }>,
+    ) {
+      React.useImperativeHandle(ref, () => ({ scrollTo: scrollToBottom }));
+      return <div>{props.data?.map((entry, index) => <div key={index}>{props.itemContent?.(index, entry)}</div>)}</div>;
+    }),
+  };
+});
+
+import { ActivityRow, ChatTimeline, CommandDisclosure, CompletedWorkDisclosure, FileDisclosure, INITIAL_TIMELINE_POSITION, ReasoningDisclosure, compactCompletedTurns, followTimelineOutput, orderedTimelineEntries, type WorkItemEntry } from "./ChatTimeline";
 
 describe("ChatTimeline", () => {
   it("places command activity between the messages that surround it", () => {
@@ -106,6 +125,44 @@ describe("ChatTimeline", () => {
 
   it("opens a newly mounted conversation at its latest entry", () => {
     expect(INITIAL_TIMELINE_POSITION).toEqual({ index: "LAST", align: "end" });
+  });
+
+  it("moves to the latest entry when an asynchronously resumed transcript first arrives", () => {
+    scrollToBottom.mockClear();
+    const { rerender } = render(
+      <ChatTimeline messages={[]} activities={[]} running={false} thinkingLabel="Thinking" />,
+    );
+
+    rerender(
+      <ChatTimeline
+        messages={[
+          { id: "first", role: "user", text: "Start", timelineOrder: 1 },
+          { id: "latest", role: "assistant", text: "Finished", timelineOrder: 2 },
+        ]}
+        activities={[]}
+        running={false}
+        thinkingLabel="Thinking"
+      />,
+    );
+
+    expect(scrollToBottom).toHaveBeenCalledWith({ top: Number.MAX_SAFE_INTEGER, behavior: "auto" });
+  });
+
+  it("reinforces the latest-entry position when a populated transcript mounts", () => {
+    scrollToBottom.mockClear();
+    render(
+      <ChatTimeline
+        messages={[
+          { id: "first", role: "user", text: "Start", timelineOrder: 1 },
+          { id: "latest", role: "assistant", text: "Finished", timelineOrder: 2 },
+        ]}
+        activities={[]}
+        running={false}
+        thinkingLabel="Thinking"
+      />,
+    );
+
+    expect(scrollToBottom).toHaveBeenCalledWith({ top: Number.MAX_SAFE_INTEGER, behavior: "auto" });
   });
 
   it("compacts a completed turn to its request, work disclosure, and final answer", () => {

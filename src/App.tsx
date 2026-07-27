@@ -49,6 +49,7 @@ import { modelForProvider, providerFromThread } from "./lib/threadProvider";
 import { resolveSystemPrompt } from "./lib/systemPrompt";
 import { providerAccountUsage } from "./lib/providerUsage";
 import { OPENKIWI_COMPLETION_INSTRUCTIONS, withOpenKiwiCompletionInstructions } from "./lib/completionPrompt";
+import { providerForArchivedThread } from "./lib/threadArchive";
 
 const ChatTimeline = lazy(() => import("./components/ChatTimeline").then((module) => ({ default: module.ChatTimeline })));
 const StudioDock = lazy(() => import("./components/StudioDock").then((module) => ({ default: module.StudioDock })));
@@ -1559,6 +1560,11 @@ export default function App() {
 
   const archiveThread = async (thread: Thread) => {
     const label = thread.name || thread.preview || "Untitled thread";
+    const taskStatus = useTaskStore.getState().statuses[thread.id];
+    if (taskStatus === "starting" || taskStatus === "running") {
+      setError(`Stop “${label}” before archiving it so its final output and transcript are preserved.`);
+      return;
+    }
     if (!window.confirm(`Archive “${label}”?\n\nIt moves to the Archived list in the sidebar, where you can restore or permanently delete it.`)) return;
     try {
       if (!isClaudeThread(thread)) await rpc("thread/archive", { threadId: thread.id });
@@ -1566,7 +1572,8 @@ export default function App() {
       forgetThread(thread.id);
       setThreads((current) => current.filter((entry) => entry.id !== thread.id));
       const path = normalizedProjectPath(threadProjectBindingsRef.current?.[thread.id] || thread.cwd);
-      persistArchivedThreads((current) => [{ id: thread.id, label, path, archivedAt: Date.now() }, ...current.filter((entry) => entry.id !== thread.id)]);
+      const provider = providerFromThread(thread, "openai");
+      persistArchivedThreads((current) => [{ id: thread.id, label, path, archivedAt: Date.now(), provider }, ...current.filter((entry) => entry.id !== thread.id)]);
     } catch (reason) {
       setError(friendlyError(reason));
     }
@@ -1589,9 +1596,32 @@ export default function App() {
 
   const deleteThreadForever = async (threadId: string, label: string) => {
     const thread = threads.find((entry) => entry.id === threadId) ?? knownThreadsRef.current?.[threadId];
-    const claude = isClaudeThread(thread);
+    const taskStatus = useTaskStore.getState().statuses[threadId];
+    if (taskStatus === "starting" || taskStatus === "running") {
+      setError(`Stop “${label}” before deleting it so no model process continues working after the conversation is removed.`);
+      return;
+    }
+    const archived = archivedThreads.find((record) => record.id === threadId);
+    let legacyClaudeTranscript = false;
+    if (!thread && archived && !archived.provider) {
+      try {
+        legacyClaudeTranscript = Boolean(await loadClaudeTranscript(threadId));
+      } catch (reason) {
+        setError(friendlyError(reason));
+        return;
+      }
+    }
+    const provider = thread
+      ? providerFromThread(thread, "openai")
+      : archived
+        ? providerForArchivedThread(archived, legacyClaudeTranscript)
+        : "openai";
+    const claude = provider === "claude";
     if (!window.confirm(`Permanently delete “${label}”?\n\nThis removes the conversation from ${claude ? "OpenKiwi" : "the Codex runtime"} and cannot be undone.`)) return;
     try {
+      const saveTimer = claudeSaveTimersRef.current.get(threadId);
+      if (saveTimer !== undefined) window.clearTimeout(saveTimer);
+      claudeSaveTimersRef.current.delete(threadId);
       if (claude) await deleteClaudeTranscript(threadId);
       else await rpc("thread/delete", { threadId });
       if (activeThread?.id === threadId) newThread();
@@ -1600,6 +1630,25 @@ export default function App() {
       setThreads((current) => current.filter((entry) => entry.id !== threadId));
       persistArchivedThreads((current) => current.filter((entry) => entry.id !== threadId));
       useTaskStore.getState().removeTask(threadId);
+      setPinnedThreadIds((current) => {
+        if (!current.includes(threadId)) return current;
+        const next = current.filter((id) => id !== threadId);
+        storeValue("kiwi.pinnedThreads", next);
+        return next;
+      });
+      setCheckpoints((current) => {
+        if (!current.some((checkpoint) => checkpoint.threadId === threadId)) return current;
+        const next = current.filter((checkpoint) => checkpoint.threadId !== threadId);
+        storeValue("kiwi.checkpoints", next);
+        return next;
+      });
+      const bindings = threadProjectBindingsRef.current ?? {};
+      if (threadId in bindings) {
+        const next = { ...bindings };
+        delete next[threadId];
+        threadProjectBindingsRef.current = next;
+        storeValue("kiwi.threadProjects", next);
+      }
     } catch (reason) {
       setError(friendlyError(reason));
     }

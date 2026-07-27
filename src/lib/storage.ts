@@ -32,14 +32,15 @@ export const DURABLE_STORAGE_KEYS = [
  * migrateStorage. Old installs then upgrade their data instead of loading
  * garbage into the new code.
  */
-export const STORAGE_SCHEMA_VERSION = 2;
+export const STORAGE_SCHEMA_VERSION = 3;
 
 export function migrateStorage(): void {
   const stored = loadStored<number>("kiwi.schemaVersion", 0);
   if (stored >= STORAGE_SCHEMA_VERSION) return;
-  // Version 2 adds the optional project systemPromptMode field. Its absence
-  // intentionally preserves the previous "replace app prompt" behavior, so
-  // existing project records require no rewrite.
+  // Version 2 adds the optional project systemPromptMode field. Version 3 adds
+  // provider metadata to newly archived threads. Both additions are optional;
+  // legacy archives are identified from their Claude transcript when needed,
+  // so existing records require no eager rewrite.
   storeValue("kiwi.schemaVersion", STORAGE_SCHEMA_VERSION);
 }
 

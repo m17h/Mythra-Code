@@ -919,10 +919,10 @@ async fn claude_login(app: AppHandle) -> Result<(), String> {
             .status()
             .await
             .map_err(|error| format!("Could not open Claude Code sign-in in Terminal: {error}"))?;
-        return status.success().then_some(()).ok_or_else(|| {
+        status.success().then_some(()).ok_or_else(|| {
             "Could not open Terminal. Run `claude auth login` yourself, then refresh Claude status."
                 .into()
-        });
+        })
     }
     #[cfg(not(target_os = "macos"))]
     {
