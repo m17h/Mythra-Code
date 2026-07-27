@@ -1,6 +1,6 @@
 import { Children, isValidElement, memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { VirtuosoHandle } from "react-virtuoso";
-import { Check, ChevronRight, Clipboard, FileCode2, Pencil, Sparkles, TerminalSquare, UsersRound } from "lucide-react";
+import { Check, ChevronRight, Clipboard, FileCode2, ListChecks, Pencil, Sparkles, TerminalSquare, UsersRound } from "lucide-react";
 import Markdown from "react-markdown";
 import { Virtuoso } from "react-virtuoso";
 import remarkGfm from "remark-gfm";
@@ -9,22 +9,42 @@ import type { JsonObject } from "../lib/codex";
 import { InlineApprovalCard } from "./ApprovalCenter";
 import { ProviderLogo } from "./BrandLogos";
 
-type TimelineEntry =
+export type WorkItemEntry =
   | { kind: "message"; value: ChatMessage }
   | { kind: "activity"; value: Activity }
   | { kind: "commands"; value: Activity[] }
-  | { kind: "files"; value: Activity[] }
+  | { kind: "files"; value: Activity[] };
+
+export type TimelineEntry =
+  | WorkItemEntry
+  | { kind: "work"; value: WorkItemEntry[] }
   | { kind: "thinking"; label: string }
   | { kind: "approval"; value: PendingApproval };
 
 function entryOrder(entry: TimelineEntry): number {
   if (entry.kind === "thinking" || entry.kind === "approval") return Number.MAX_SAFE_INTEGER;
   if (entry.kind === "commands" || entry.kind === "files") return entry.value[0]?.timelineOrder ?? Number.MAX_SAFE_INTEGER;
+  if (entry.kind === "work") return entry.value[0] ? entryOrder(entry.value[0]) : Number.MAX_SAFE_INTEGER;
   return entry.value.timelineOrder ?? Number.MAX_SAFE_INTEGER;
 }
 
-function groupToolRuns(entries: TimelineEntry[]): TimelineEntry[] {
-  const grouped: TimelineEntry[] = [];
+function workItemTurnId(entry: WorkItemEntry): string | undefined {
+  if (entry.kind === "commands" || entry.kind === "files") {
+    const turnId = entry.value[0]?.turnId;
+    return turnId && entry.value.every((activity) => activity.turnId === turnId) ? turnId : undefined;
+  }
+  return entry.value.turnId;
+}
+
+function workItemTurnStatus(entry: WorkItemEntry): ChatMessage["turnStatus"] {
+  if (entry.kind === "commands" || entry.kind === "files") {
+    return entry.value.find((activity) => activity.turnStatus)?.turnStatus;
+  }
+  return entry.value.turnStatus;
+}
+
+function groupToolRuns(entries: WorkItemEntry[]): WorkItemEntry[] {
+  const grouped: WorkItemEntry[] = [];
   for (const entry of entries) {
     if (entry.kind !== "activity" || (entry.value.kind !== "command" && entry.value.kind !== "file")) {
       grouped.push(entry);
@@ -43,11 +63,11 @@ function groupToolRuns(entries: TimelineEntry[]): TimelineEntry[] {
   return grouped;
 }
 
-export function orderedTimelineEntries(messages: ChatMessage[], activities: Activity[]): TimelineEntry[] {
+export function orderedTimelineEntries(messages: ChatMessage[], activities: Activity[]): WorkItemEntry[] {
   // Messages and activities each arrive in ascending timelineOrder, so a
   // linear two-pointer merge replaces an O(n log n) sort on every delta flush.
   // If either input turns out unsorted, fall back to a full sort.
-  const entries: TimelineEntry[] = [];
+  const entries: WorkItemEntry[] = [];
   let sorted = true;
   let messageIndex = 0;
   let activityIndex = 0;
@@ -55,7 +75,7 @@ export function orderedTimelineEntries(messages: ChatMessage[], activities: Acti
   while (messageIndex < messages.length || activityIndex < activities.length) {
     const messageOrder = messageIndex < messages.length ? messages[messageIndex].timelineOrder ?? Number.MAX_SAFE_INTEGER : Infinity;
     const activityOrder = activityIndex < activities.length ? activities[activityIndex].timelineOrder ?? Number.MAX_SAFE_INTEGER : Infinity;
-    let next: TimelineEntry;
+    let next: WorkItemEntry;
     if (messageOrder <= activityOrder) {
       next = { kind: "message", value: messages[messageIndex] };
       messageIndex += 1;
@@ -69,6 +89,75 @@ export function orderedTimelineEntries(messages: ChatMessage[], activities: Acti
     entries.push(next);
   }
   return groupToolRuns(sorted ? entries : entries.sort((left, right) => entryOrder(left) - entryOrder(right)));
+}
+
+function compactTurnSegment(segment: WorkItemEntry[], compact: boolean): TimelineEntry[] {
+  if (!compact) return segment;
+  const users = segment.filter((entry) => entry.kind === "message" && entry.value.role === "user");
+  const assistants = segment.filter((entry) => entry.kind === "message" && entry.value.role === "assistant" && !entry.value.streaming);
+  // Incomplete turns stay chronological. Steered user messages remain visible,
+  // with the work on either side compacted independently in place.
+  if (!users.length || !assistants.length) return segment;
+  const finalAssistant = assistants.at(-1)!;
+  const output: TimelineEntry[] = [];
+  let work: WorkItemEntry[] = [];
+  const flushWork = () => {
+    if (work.length) output.push({ kind: "work", value: work });
+    work = [];
+  };
+  for (const entry of segment) {
+    const staysVisible = entry === finalAssistant || (entry.kind === "message" && entry.value.role === "user");
+    if (staysVisible) {
+      flushWork();
+      output.push(entry);
+    } else {
+      work.push(entry);
+    }
+  }
+  flushWork();
+  return output;
+}
+
+/**
+ * Completed turns retain user direction and the final assistant answer while
+ * compacting intervening work. Active, interrupted, and failed turns remain
+ * fully chronological.
+ */
+export function compactCompletedTurns(entries: WorkItemEntry[], running: boolean): TimelineEntry[] {
+  const segments: Array<{ entries: WorkItemEntry[]; turnId?: string }> = [];
+  let segment: WorkItemEntry[] = [];
+  let segmentTurnId: string | undefined;
+  const flushSegment = () => {
+    if (segment.length) segments.push({ entries: segment, turnId: segmentTurnId });
+    segment = [];
+    segmentTurnId = undefined;
+  };
+  for (const entry of entries) {
+    const turnId = workItemTurnId(entry);
+    if (turnId) {
+      if (segment.length && segmentTurnId !== turnId) flushSegment();
+      segmentTurnId = turnId;
+      segment.push(entry);
+      continue;
+    }
+    if (segmentTurnId) flushSegment();
+    const startsNextLegacyTurn = entry.kind === "message"
+      && entry.value.role === "user"
+      && segment.some((candidate) => candidate.kind === "message" && candidate.value.role === "user");
+    if (startsNextLegacyTurn) flushSegment();
+    segment.push(entry);
+  }
+  flushSegment();
+
+  return segments.flatMap(({ entries: turnEntries, turnId }, index) => {
+    const status = turnEntries.map(workItemTurnStatus).find(Boolean);
+    // Runtime-tagged turns compact only after an explicit successful
+    // completion. Legacy transcripts retain the previous last-turn fallback.
+    const compact = turnId
+      ? status === "completed"
+      : index < segments.length - 1 || !running;
+    return compactTurnSegment(turnEntries, compact);
+  });
 }
 
 function textFromCodeNode(node: ReactNode): string {
@@ -279,9 +368,76 @@ export const FileDisclosure = memo(function FileDisclosure({ files }: { files: A
   return <ToolDisclosure activities={files} type="file" />;
 });
 
+function completedWorkParts(entries: WorkItemEntry[]): string[] {
+  let commands = 0;
+  let files = 0;
+  let otherSteps = 0;
+  for (const entry of entries) {
+    if (entry.kind === "commands") commands += entry.value.length;
+    else if (entry.kind === "files") files += entry.value.length;
+    else if (entry.kind === "activity" && entry.value.kind === "command") commands += 1;
+    else if (entry.kind === "activity" && entry.value.kind === "file") files += 1;
+    else otherSteps += 1;
+  }
+  const parts: string[] = [];
+  if (commands) parts.push(`${commands} command${commands === 1 ? "" : "s"}`);
+  if (files) parts.push(`${files} file change${files === 1 ? "" : "s"}`);
+  if (otherSteps) parts.push(`${otherSteps} other step${otherSteps === 1 ? "" : "s"}`);
+  return parts;
+}
+
+export const CompletedWorkDisclosure = memo(function CompletedWorkDisclosure({ entries, reveal = false }: { entries: WorkItemEntry[]; reveal?: boolean }) {
+  const [expanded, setExpanded] = useState(false);
+  useEffect(() => {
+    if (reveal) setExpanded(true);
+  }, [reveal]);
+  const parts = completedWorkParts(entries);
+  const description = parts.join(", ") || `${entries.length} step${entries.length === 1 ? "" : "s"}`;
+  return (
+    <div className={`reasoning-disclosure completed-work-disclosure ${expanded ? "expanded" : "collapsed"} complete`}>
+      <button
+        type="button"
+        className="reasoning-toggle completed-work-toggle"
+        onClick={() => setExpanded((value) => !value)}
+        aria-expanded={expanded}
+        aria-label={`${expanded ? "Hide" : "Show"} completed work: ${description}`}
+      >
+        <ChevronRight className="reasoning-chevron" size={13} />
+        <ListChecks size={13} />
+        <span>Work completed</span>
+        <small>{parts.join(" · ")}</small>
+      </button>
+      <div className="reasoning-panel completed-work-panel" aria-hidden={!expanded}>
+        <div className="reasoning-panel-inner">
+          {expanded && (
+            <div className="completed-work-list">
+              {entries.flatMap((entry) => {
+                if (entry.kind === "message") {
+                  return [(
+                    <div className="completed-work-update" key={`update-${entry.value.id}`}>
+                      <Sparkles size={13} />
+                      <div className="rich-markdown">
+                        <Markdown remarkPlugins={[remarkGfm]} components={{ pre: CodePre }}>{entry.value.text}</Markdown>
+                      </div>
+                    </div>
+                  )];
+                }
+                const activities = entry.kind === "activity" ? [entry.value] : entry.value;
+                return activities.map((activity) => <ActivityRow activity={activity} key={activity.id} />);
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+});
+
 export function followTimelineOutput(atBottom: boolean): "auto" | false {
   return atBottom ? "auto" : false;
 }
+
+export const INITIAL_TIMELINE_POSITION = { index: "LAST", align: "end" } as const;
 
 function TimelineFooter() {
   return <div className="timeline-bottom-space" aria-hidden="true" />;
@@ -325,7 +481,7 @@ export function ChatTimeline({
   onApprovalRespond?: (approval: PendingApproval, result: JsonObject) => void;
 }) {
   const entries = useMemo<TimelineEntry[]>(() => {
-    const next = orderedTimelineEntries(messages, activities);
+    const next = compactCompletedTurns(orderedTimelineEntries(messages, activities), running);
     if (running && !approval && !messages.some((message) => message.streaming) && !activities.some((activity) => activity.kind === "reasoning" && activity.status === "inProgress")) {
       next.push({ kind: "thinking", label: thinkingLabel });
     }
@@ -349,7 +505,13 @@ export function ChatTimeline({
             ? entry.value.map((command) => `${command.title} ${command.detail ?? ""}`).join(" ")
             : entry.kind === "files"
               ? entry.value.map((file) => `${file.title} ${file.detail ?? ""}`).join(" ")
-          : "";
+              : entry.kind === "work"
+                ? entry.value.map((item) => item.kind === "message"
+                  ? item.value.text
+                  : item.kind === "activity"
+                    ? `${item.value.title} ${item.value.detail ?? ""}`
+                    : item.value.map((activity) => `${activity.title} ${activity.detail ?? ""}`).join(" ")).join(" ")
+                : "";
       if (haystack.toLowerCase().includes(query)) hits.push(index);
     });
     return hits;
@@ -370,10 +532,13 @@ export function ChatTimeline({
       className="timeline virtual-timeline"
       data={entries}
       components={VIRTUOSO_COMPONENTS}
+      initialTopMostItemIndex={INITIAL_TIMELINE_POSITION}
       followOutput={followTimelineOutput}
       increaseViewportBy={{ top: 500, bottom: 800 }}
       computeItemKey={(index, entry) => entry.kind === "thinking"
         ? `thinking-${index}`
+        : entry.kind === "work"
+          ? `work-${entry.value[0] ? entryOrder(entry.value[0]) : index}`
         : entry.kind === "commands" || entry.kind === "files"
           ? `${entry.kind}-${entry.value[0]?.id ?? index}`
           : `${entry.kind}-${entry.value.id}`}
@@ -390,6 +555,9 @@ export function ChatTimeline({
         }
         if (entry.kind === "files") {
           return <div className={`timeline-entry timeline-entry-disclosure${hitClass}`}><FileDisclosure files={entry.value} /></div>;
+        }
+        if (entry.kind === "work") {
+          return <div className={`timeline-entry timeline-entry-disclosure${hitClass}`}><CompletedWorkDisclosure entries={entry.value} reveal={index === activeEntryIndex && Boolean(searchQuery?.trim())} /></div>;
         }
         if (entry.kind === "approval") {
           return (

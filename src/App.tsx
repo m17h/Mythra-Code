@@ -16,12 +16,12 @@ import { buildTurnInput, withoutSentAttachments } from "./lib/turnInput";
 import { forgetSidebarThread, optimisticStartedThread, pruneSidebarIndex, reconcileWorkspaceThreads, rememberSidebarThread, sidebarThread, upsertThread, type ThreadSidebarIndex } from "./lib/threadList";
 import { timelineFromTurns } from "./lib/threadTimeline";
 import { buildTranscriptMarkdown } from "./lib/transcript";
-import { timeAgo } from "./lib/timeAgo";
 import { RowMenu } from "./components/RowMenu";
 import { type ReasoningEffort, ModelPowerControl, type RuntimeModel } from "./components/ModelPowerControl";
 import { OpenRouterModelControl, type OpenRouterModel } from "./components/OpenRouterModelControl";
 import { ClaudeModelControl } from "./components/ClaudeModelControl";
 import { ThreadProviderControl } from "./components/ThreadProviderControl";
+import { ThreadInboxCard } from "./components/ThreadInboxCard";
 import { ProjectPromptControl } from "./components/ProjectPromptControl";
 import { ApprovalCenter } from "./components/ApprovalCenter";
 import { Composer, type ComposerHandle } from "./components/Composer";
@@ -48,6 +48,7 @@ import { compactWorkflowRun, normalizeWorkflows, recoverWorkflowRuns, type Workf
 import { modelForProvider, providerFromThread } from "./lib/threadProvider";
 import { resolveSystemPrompt } from "./lib/systemPrompt";
 import { providerAccountUsage } from "./lib/providerUsage";
+import { OPENKIWI_COMPLETION_INSTRUCTIONS, withOpenKiwiCompletionInstructions } from "./lib/completionPrompt";
 
 const ChatTimeline = lazy(() => import("./components/ChatTimeline").then((module) => ({ default: module.ChatTimeline })));
 const StudioDock = lazy(() => import("./components/StudioDock").then((module) => ({ default: module.StudioDock })));
@@ -98,28 +99,15 @@ function PermissionIcon({ mode, size = 15 }: { mode: PermissionMode; size?: numb
 }
 
 /**
- * Per-row spinner/unread badge with its own narrow store subscription, so
- * streaming updates re-render one sidebar row instead of the whole App.
- */
-function ThreadRowBadge({ threadId }: { threadId: string }) {
-  const status = useTaskStore((state) => state.statuses[threadId]);
-  const unread = useTaskStore((state) => Boolean(state.tasks[threadId]?.unread));
-  return (
-    <>
-      {(status === "running" || status === "starting") && <LoaderCircle className="spin thread-state" size={11} />}
-      {unread && <i className="thread-unread" />}
-    </>
-  );
-}
-
-/**
  * Subscribes to the streaming timeline itself so per-frame delta flushes stop
  * at this component boundary instead of re-rendering the entire App.
  */
 function ConversationTimeline({ threadId, running, thinkingLabel, approval, provider, searchQuery, searchActiveMatch, onSearchMatches, onEditMessage, onApprovalRespond }: { threadId: string; running: boolean; thinkingLabel: string; approval: PendingApproval | null; provider: AppSettings["provider"]; searchQuery?: string; searchActiveMatch?: number; onSearchMatches?: (count: number) => void; onEditMessage: (text: string) => void; onApprovalRespond: (approval: PendingApproval, result: JsonObject) => void }) {
   const messages = useTaskStore((state) => state.tasks[threadId]?.messages ?? EMPTY_MESSAGES);
   const activities = useTaskStore((state) => state.tasks[threadId]?.activities ?? EMPTY_ACTIVITIES);
-  return <ChatTimeline messages={messages} activities={activities} running={running} thinkingLabel={thinkingLabel} approval={approval} provider={provider} searchQuery={searchQuery} searchActiveMatch={searchActiveMatch} onSearchMatches={onSearchMatches} onEditMessage={onEditMessage} onApprovalRespond={onApprovalRespond} />;
+  // A thread change must create a fresh virtual scroller so its initial
+  // position is applied to the newly selected conversation.
+  return <ChatTimeline key={threadId} messages={messages} activities={activities} running={running} thinkingLabel={thinkingLabel} approval={approval} provider={provider} searchQuery={searchQuery} searchActiveMatch={searchActiveMatch} onSearchMatches={onSearchMatches} onEditMessage={onEditMessage} onApprovalRespond={onApprovalRespond} />;
 }
 
 export default function App() {
@@ -1359,7 +1347,7 @@ export default function App() {
         sentMessageId = `local-${crypto.randomUUID()}`;
         useTaskStore.getState().appendUserMessage(thread.id, { id: sentMessageId, role: "user", text });
         await saveClaudeTranscript({ thread: updatedThread, messages: useTaskStore.getState().tasks[thread.id]?.messages ?? [], activities: useTaskStore.getState().tasks[thread.id]?.activities ?? [] });
-        const result = await startClaudeTurn({ threadId: thread.id, cwd: activeWorkspace.path, prompt: text, model: effectiveSettings.model || DEFAULT_CLAUDE_MODEL, effort: settings.ultra ? "ultra" : settings.reasoningEffort, permission: effectiveSettings.permission, systemPrompt: effectiveSettings.systemPrompt, resume: canResumeClaude, attachments: sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })), subagentsEnabled: settings.subagentsEnabled, subagentMax: settings.subagentMax, customAgents, skillsPluginPath: skillRuntimeRootRef.current || undefined });
+        const result = await startClaudeTurn({ threadId: thread.id, cwd: activeWorkspace.path, prompt: text, model: effectiveSettings.model || DEFAULT_CLAUDE_MODEL, effort: settings.ultra ? "ultra" : settings.reasoningEffort, permission: effectiveSettings.permission, systemPrompt: withOpenKiwiCompletionInstructions(effectiveSettings.systemPrompt), resume: canResumeClaude, attachments: sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })), subagentsEnabled: settings.subagentsEnabled, subagentMax: settings.subagentMax, customAgents, skillsPluginPath: skillRuntimeRootRef.current || undefined });
         useTaskStore.getState().setActiveTurn(thread.id, result.turnId);
         useTaskStore.getState().setTaskStatus(thread.id, "running");
         setStartingTurn(false);
@@ -1702,7 +1690,7 @@ export default function App() {
     if (!activeThread) return;
     try {
       await ensureSkillRoots();
-      const result = await rpc<{ thread: Thread }>("thread/fork", { threadId: checkpoint?.threadId ?? activeThread.id, lastTurnId: checkpoint?.turnId, cwd: activeWorkspace?.path, runtimeWorkspaceRoots: activeWorkspace ? [activeWorkspace.path] : undefined, model: effectiveSettings.model, modelProvider: effectiveSettings.provider === "openrouter" ? "openrouter" : undefined, config: threadRuntimeConfig(effectiveSettings, { customAgents, modelContextWindow: effectiveSettings.provider === "openrouter" ? openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.context_length : undefined }), baseInstructions: effectiveSettings.systemPrompt, developerInstructions: "" });
+      const result = await rpc<{ thread: Thread }>("thread/fork", { threadId: checkpoint?.threadId ?? activeThread.id, lastTurnId: checkpoint?.turnId, cwd: activeWorkspace?.path, runtimeWorkspaceRoots: activeWorkspace ? [activeWorkspace.path] : undefined, model: effectiveSettings.model, modelProvider: effectiveSettings.provider === "openrouter" ? "openrouter" : undefined, config: threadRuntimeConfig(effectiveSettings, { customAgents, modelContextWindow: effectiveSettings.provider === "openrouter" ? openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.context_length : undefined }), baseInstructions: effectiveSettings.systemPrompt, developerInstructions: OPENKIWI_COMPLETION_INSTRUCTIONS });
       if (activeWorkspace) bindThreadToProject(result.thread.id, activeWorkspace.path);
       rememberThread(result.thread);
       persistThreadModel(result.thread.id, effectiveSettings.model);
@@ -2128,12 +2116,16 @@ export default function App() {
                     />
                   </div>
                 ) : (
-                  <button className="thread-row" onClick={() => void selectThread(thread)}>
-                    {pinnedThreadIds.includes(thread.id) ? <Pin size={13} /> : <MessageSquare size={14} />}
-                    <span>{thread.name || thread.preview || "Untitled thread"}</span>
-                    <ThreadRowBadge threadId={thread.id} />
-                    <time className="thread-time">{timeAgo(thread.updatedAt)}</time>
-                  </button>
+                  <ThreadInboxCard
+                    threadId={thread.id}
+                    title={thread.name || thread.preview || "Untitled thread"}
+                    workspaceName={activeWorkspace?.name ?? basename(thread.cwd)}
+                    directory={thread.cwd || activeWorkspace?.path || ""}
+                    provider={providerFromThread(thread, settings.provider)}
+                    providerName={providerLabel(providerFromThread(thread, settings.provider))}
+                    pinned={pinnedThreadIds.includes(thread.id)}
+                    onOpen={() => void selectThread(thread)}
+                  />
                 )}
                 <RowMenu
                   label={`Options for ${thread.name || thread.preview || "thread"}`}

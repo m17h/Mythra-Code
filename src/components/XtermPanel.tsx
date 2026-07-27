@@ -31,7 +31,7 @@ export function XtermPanel({
       fontFamily: 'ui-monospace, "SFMono-Regular", Menlo, monospace',
       fontSize: 11,
       lineHeight: 1.35,
-      theme: { background: "#0b0d0f", foreground: "#b7d6af", cursor: "#a7e26f", selectionBackground: "#34432c" },
+      theme: { background: "#202327", foreground: "#b7d6af", cursor: "#a7e26f", selectionBackground: "#34432c" },
     });
     const fit = new FitAddon();
     terminal.loadAddon(fit);

@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { ActivityRow, CommandDisclosure, FileDisclosure, ReasoningDisclosure, followTimelineOutput, orderedTimelineEntries } from "./ChatTimeline";
+import { ActivityRow, CommandDisclosure, CompletedWorkDisclosure, FileDisclosure, INITIAL_TIMELINE_POSITION, ReasoningDisclosure, compactCompletedTurns, followTimelineOutput, orderedTimelineEntries, type WorkItemEntry } from "./ChatTimeline";
 
 describe("ChatTimeline", () => {
   it("places command activity between the messages that surround it", () => {
@@ -12,9 +12,7 @@ describe("ChatTimeline", () => {
       [{ id: "command", kind: "command", title: "git status", detail: "clean", timelineOrder: 2 }],
     );
 
-    expect(entries.map((entry) => entry.kind === "thinking"
-      ? "thinking"
-      : entry.kind === "commands" || entry.kind === "files"
+    expect(entries.map((entry) => entry.kind === "commands" || entry.kind === "files"
         ? entry.value.map((activity) => activity.id).join(",")
         : entry.value.id))
       .toEqual(["user", "command", "assistant"]);
@@ -104,5 +102,160 @@ describe("ChatTimeline", () => {
   it("follows appended output without stacking smooth scroll animations", () => {
     expect(followTimelineOutput(true)).toBe("auto");
     expect(followTimelineOutput(false)).toBe(false);
+  });
+
+  it("opens a newly mounted conversation at its latest entry", () => {
+    expect(INITIAL_TIMELINE_POSITION).toEqual({ index: "LAST", align: "end" });
+  });
+
+  it("compacts a completed turn to its request, work disclosure, and final answer", () => {
+    const entries = compactCompletedTurns(orderedTimelineEntries(
+      [
+        { id: "user", role: "user", text: "Fix it", timelineOrder: 1 },
+        { id: "progress", role: "assistant", text: "I found the cause.", timelineOrder: 3 },
+        { id: "final", role: "assistant", text: "Fixed and verified.", timelineOrder: 6 },
+      ],
+      [
+        { id: "command", kind: "command", title: "npm test", timelineOrder: 2 },
+        { id: "file", kind: "file", title: "src/App.tsx", timelineOrder: 4 },
+        { id: "reasoning", kind: "reasoning", title: "Checking behavior", timelineOrder: 5 },
+      ],
+    ), false);
+
+    expect(entries.map((entry) => entry.kind)).toEqual(["message", "work", "message"]);
+    expect(entries[0]).toMatchObject({ kind: "message", value: { id: "user" } });
+    expect(entries[2]).toMatchObject({ kind: "message", value: { id: "final" } });
+    expect(entries[1]).toMatchObject({
+      kind: "work",
+      value: [
+        { kind: "commands", value: [{ id: "command" }] },
+        { kind: "message", value: { id: "progress" } },
+        { kind: "files", value: [{ id: "file" }] },
+        { kind: "activity", value: { id: "reasoning" } },
+      ],
+    });
+  });
+
+  it("leaves the active turn fully visible while it is running", () => {
+    const entries = compactCompletedTurns(orderedTimelineEntries(
+      [
+        { id: "user", role: "user", text: "Fix it", timelineOrder: 1 },
+        { id: "progress", role: "assistant", text: "Working on it.", timelineOrder: 3, streaming: true },
+      ],
+      [{ id: "command", kind: "command", title: "npm test", timelineOrder: 2 }],
+    ), true);
+
+    expect(entries.map((entry) => entry.kind)).toEqual(["message", "commands", "message"]);
+  });
+
+  it("compacts older completed turns while keeping the current turn live", () => {
+    const entries = compactCompletedTurns(orderedTimelineEntries(
+      [
+        { id: "user-one", role: "user", text: "First task", timelineOrder: 1 },
+        { id: "final-one", role: "assistant", text: "First task done.", timelineOrder: 3 },
+        { id: "user-two", role: "user", text: "Second task", timelineOrder: 4 },
+      ],
+      [
+        { id: "command-one", kind: "command", title: "npm test", timelineOrder: 2 },
+        { id: "command-two", kind: "command", title: "npm build", timelineOrder: 5 },
+      ],
+    ), true);
+
+    expect(entries.map((entry) => entry.kind)).toEqual(["message", "work", "message", "message", "commands"]);
+  });
+
+  it("keeps a steered runtime turn fully visible until that exact turn completes", () => {
+    const entries = compactCompletedTurns(orderedTimelineEntries(
+      [
+        { id: "user-one", role: "user", text: "Fix it", timelineOrder: 1, turnId: "turn-live" },
+        { id: "progress", role: "assistant", text: "I found the cause.", timelineOrder: 3, turnId: "turn-live" },
+        { id: "steer", role: "user", text: "Also cover the edge case.", timelineOrder: 4, turnId: "turn-live" },
+        { id: "stream", role: "assistant", text: "Updating", timelineOrder: 6, streaming: true, turnId: "turn-live" },
+      ],
+      [
+        { id: "command-one", kind: "command", title: "npm test", timelineOrder: 2, turnId: "turn-live" },
+        { id: "command-two", kind: "command", title: "npm build", timelineOrder: 5, turnId: "turn-live" },
+      ],
+    ), true);
+
+    expect(entries.map((entry) => entry.kind)).toEqual(["message", "commands", "message", "message", "commands", "message"]);
+  });
+
+  it("keeps steering visible and compacts the work around it after completion", () => {
+    const turn = { turnId: "turn-done", turnStatus: "completed" as const };
+    const entries = compactCompletedTurns(orderedTimelineEntries(
+      [
+        { id: "user-one", role: "user", text: "Fix it", timelineOrder: 1, ...turn },
+        { id: "progress", role: "assistant", text: "I found the cause.", timelineOrder: 3, ...turn },
+        { id: "steer", role: "user", text: "Also cover the edge case.", timelineOrder: 4, ...turn },
+        { id: "final", role: "assistant", text: "Fixed and verified.", timelineOrder: 6, ...turn },
+      ],
+      [
+        { id: "command-one", kind: "command", title: "npm test", timelineOrder: 2, ...turn },
+        { id: "command-two", kind: "command", title: "npm build", timelineOrder: 5, ...turn },
+      ],
+    ), false);
+
+    expect(entries.map((entry) => entry.kind)).toEqual(["message", "work", "message", "work", "message"]);
+    expect(entries.filter((entry) => entry.kind === "message").map((entry) => entry.value.id))
+      .toEqual(["user-one", "steer", "final"]);
+  });
+
+  it("does not hide an interrupted turn without a final answer", () => {
+    const entries = compactCompletedTurns(orderedTimelineEntries(
+      [{ id: "user", role: "user", text: "Fix it", timelineOrder: 1 }],
+      [{ id: "command", kind: "command", title: "npm test", timelineOrder: 2 }],
+    ), false);
+
+    expect(entries.map((entry) => entry.kind)).toEqual(["message", "commands"]);
+  });
+
+  it("does not present a rehydrated interrupted answer as a successful final response", () => {
+    const interrupted = { turnId: "turn-stopped", turnStatus: "interrupted" as const };
+    const entries = compactCompletedTurns(orderedTimelineEntries(
+      [
+        { id: "user", role: "user", text: "Fix it", timelineOrder: 1, ...interrupted },
+        { id: "partial", role: "assistant", text: "I started changing", timelineOrder: 3, ...interrupted },
+      ],
+      [{ id: "command", kind: "command", title: "npm test", timelineOrder: 2, ...interrupted }],
+    ), false);
+
+    expect(entries.map((entry) => entry.kind)).toEqual(["message", "commands", "message"]);
+  });
+
+  it("lets a clean follow-up compact after an answer-less interrupted legacy turn", () => {
+    const entries = compactCompletedTurns(orderedTimelineEntries(
+      [
+        { id: "user-one", role: "user", text: "First task", timelineOrder: 1 },
+        { id: "user-two", role: "user", text: "Try a different task", timelineOrder: 3 },
+        { id: "final-two", role: "assistant", text: "Second task done.", timelineOrder: 5 },
+      ],
+      [
+        { id: "command-one", kind: "command", title: "stopped command", timelineOrder: 2 },
+        { id: "command-two", kind: "command", title: "successful command", timelineOrder: 4 },
+      ],
+    ), false);
+
+    expect(entries.map((entry) => entry.kind)).toEqual(["message", "commands", "message", "work", "message"]);
+  });
+
+  it("keeps completed work collapsed until the user opens the audit trail", () => {
+    const work: WorkItemEntry[] = [
+      { kind: "commands", value: [{ id: "test", kind: "command", title: "npm test", detail: "Tests passed", status: "completed" }] },
+      { kind: "message", value: { id: "update", role: "assistant", text: "I found the **cause**." } },
+      { kind: "files", value: [{ id: "edit", kind: "file", title: "src/App.tsx", detail: "Updated", status: "completed" }] },
+    ];
+    const { rerender } = render(<CompletedWorkDisclosure entries={work} />);
+
+    const toggle = screen.getByRole("button", { name: "Show completed work: 1 command, 1 file change, 1 other step" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("Tests passed")).not.toBeInTheDocument();
+    expect(screen.queryByText(/I found the/)).not.toBeInTheDocument();
+
+    rerender(<CompletedWorkDisclosure entries={work} reveal />);
+    expect(screen.getByRole("button", { name: "Hide completed work: 1 command, 1 file change, 1 other step" })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("npm test")).toBeInTheDocument();
+    expect(screen.getByText("cause").tagName).toBe("STRONG");
+    expect(screen.getByText("Updated")).toBeInTheDocument();
   });
 });

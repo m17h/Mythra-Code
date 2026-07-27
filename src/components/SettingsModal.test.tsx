@@ -76,6 +76,14 @@ describe("SettingsModal", () => {
     expect(within(screen.getByRole("group", { name: "System" })).getByRole("button", { name: /Updates/ })).toBeInTheDocument();
   });
 
+  it("offers only the OpenKiwi and Daylight themes", () => {
+    render(<SettingsModal {...modalProps()} />);
+
+    expect(screen.getByRole("button", { name: /OpenKiwi.*Deep graphite/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Daylight.*Paper white/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Midnight|Ember|Violet/ })).not.toBeInTheDocument();
+  });
+
   it("opens directly to the requested settings section", () => {
     render(<SettingsModal {...modalProps({ initialSection: "models" })} />);
 
@@ -125,8 +133,8 @@ describe("SettingsModal", () => {
     vi.stubGlobal("confirm", vi.fn(() => true));
     render(<SettingsModal {...modalProps({ onThemePreview, onClose, onSave })} />);
 
-    fireEvent.click(screen.getByRole("button", { name: /Midnight/ }));
-    expect(onThemePreview).toHaveBeenLastCalledWith("midnight");
+    fireEvent.click(screen.getByRole("button", { name: /Daylight/ }));
+    expect(onThemePreview).toHaveBeenLastCalledWith("daylight");
 
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(window.confirm).toHaveBeenCalledOnce();
@@ -140,7 +148,7 @@ describe("SettingsModal", () => {
     vi.stubGlobal("confirm", vi.fn(() => false));
     render(<SettingsModal {...modalProps({ onClose })} />);
 
-    fireEvent.click(screen.getByRole("button", { name: /Midnight/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Daylight/ }));
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(onClose).not.toHaveBeenCalled();
     vi.unstubAllGlobals();

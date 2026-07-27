@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { Activity, ChatMessage, PendingApproval } from "../types";
+import type { Activity, ChatMessage, PendingApproval, Turn } from "../types";
 import type { AgentRecord, TokenUsageView } from "../components/StudioDock";
 
 export type TaskStatus = "idle" | "starting" | "running" | "completed" | "interrupted" | "error";
@@ -7,6 +7,10 @@ export type TaskStatus = "idle" | "starting" | "running" | "completed" | "interr
 export interface ThreadTaskState {
   threadId: string;
   activeTurnId?: string;
+  /** First optimistic entry waiting for the runtime to return its turn id. */
+  pendingTurnStartOrder?: number;
+  /** Wall-clock anchor for the sidebar's live "Working" duration. */
+  workingStartedAt?: number;
   lastCompletedTurnId?: string;
   lastCompletedTurnStatus?: TaskStatus;
   workspacePath?: string;
@@ -93,6 +97,13 @@ function scheduleDeltaFlush(flush: () => void): void {
   }
 }
 
+function completedTurnStatus(status: TaskStatus): Turn["status"] {
+  if (status === "interrupted") return "interrupted";
+  if (status === "error") return "failed";
+  if (status === "completed") return "completed";
+  return "inProgress";
+}
+
 export const useTaskStore = create<TaskStoreState>((set, get) => ({
   activeThreadId: null,
   tasks: {},
@@ -140,15 +151,24 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
   }),
   appendUserMessage: (threadId, message) => set((state) => {
     const task = state.tasks[threadId] ?? emptyTask(threadId);
-    return { tasks: { ...state.tasks, [threadId]: { ...task, messages: [...task.messages, withTimelineOrder(message)], updatedAt: Date.now() } } };
+    const nextMessage = withTimelineOrder({ ...message, turnId: message.turnId ?? task.activeTurnId });
+    const pendingTurnStartOrder = task.pendingTurnStartOrder
+      ?? (task.status === "starting" && !task.activeTurnId ? nextMessage.timelineOrder : undefined);
+    return { tasks: { ...state.tasks, [threadId]: { ...task, pendingTurnStartOrder, messages: [...task.messages, nextMessage], updatedAt: Date.now() } } };
   }),
   removeMessage: (threadId, messageId) => set((state) => {
     const task = state.tasks[threadId];
-    if (!task || !task.messages.some((message) => message.id === messageId)) return state;
+    const removed = task?.messages.find((message) => message.id === messageId);
+    if (!task || !removed) return state;
     return {
       tasks: {
         ...state.tasks,
-        [threadId]: { ...task, messages: task.messages.filter((message) => message.id !== messageId), updatedAt: Date.now() },
+        [threadId]: {
+          ...task,
+          pendingTurnStartOrder: task.pendingTurnStartOrder === removed.timelineOrder ? undefined : task.pendingTurnStartOrder,
+          messages: task.messages.filter((message) => message.id !== messageId),
+          updatedAt: Date.now(),
+        },
       },
     };
   }),
@@ -184,7 +204,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
         for (const [itemId, delta] of batch.get(threadId) ?? []) {
           const index = messages.findIndex((message) => message.id === itemId);
           if (index < 0) {
-            messages = [...messages, withTimelineOrder<ChatMessage>({ id: itemId, role: "assistant", text: delta, streaming: true })];
+            messages = [...messages, withTimelineOrder<ChatMessage>({ id: itemId, role: "assistant", text: delta, streaming: true, turnId: task.activeTurnId })];
             messagesCopied = true;
           } else {
             if (!messagesCopied) {
@@ -202,7 +222,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
           const detail = (stream?.content || stream?.summary || "").trim();
           if (!detail) continue;
           const index = activities.findIndex((activity) => activity.id === itemId);
-          const activity: Activity = { id: itemId, kind: "reasoning", title: "Model thinking", detail, status: "inProgress" };
+          const activity: Activity = { id: itemId, kind: "reasoning", title: "Model thinking", detail, status: "inProgress", turnId: task.activeTurnId };
           if (index < 0) {
             activities = [...activities, withTimelineOrder(activity)];
             activitiesCopied = true;
@@ -211,7 +231,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
               activities = [...activities];
               activitiesCopied = true;
             }
-            activities[index] = { ...activities[index], ...activity, timelineOrder: activities[index].timelineOrder };
+            activities[index] = { ...activities[index], ...activity, turnId: activity.turnId ?? activities[index].turnId, turnStatus: activity.turnStatus ?? activities[index].turnStatus, timelineOrder: activities[index].timelineOrder };
           }
         }
         tasks[threadId] = { ...task, messages, activities, unread: state.activeThreadId !== threadId, updatedAt: Date.now() };
@@ -227,8 +247,8 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     const task = state.tasks[threadId] ?? emptyTask(threadId);
     const exists = task.messages.some((entry) => entry.id === message.id);
     const messages = exists
-      ? task.messages.map((entry) => entry.id === message.id ? { ...message, streaming: false, timelineOrder: entry.timelineOrder } : entry)
-      : [...task.messages, withTimelineOrder({ ...message, streaming: false })];
+      ? task.messages.map((entry) => entry.id === message.id ? { ...message, streaming: false, turnId: message.turnId ?? entry.turnId ?? task.activeTurnId, turnStatus: message.turnStatus ?? entry.turnStatus, timelineOrder: entry.timelineOrder } : entry)
+      : [...task.messages, withTimelineOrder({ ...message, streaming: false, turnId: message.turnId ?? task.activeTurnId })];
     return { tasks: { ...state.tasks, [threadId]: { ...task, messages, unread: state.activeThreadId !== threadId, updatedAt: Date.now() } } };
     });
   },
@@ -238,25 +258,44 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       const task = state.tasks[threadId] ?? emptyTask(threadId);
       const exists = task.activities.some((entry) => entry.id === activity.id);
       const activities = exists
-        ? task.activities.map((entry) => entry.id === activity.id ? { ...activity, timelineOrder: entry.timelineOrder } : entry)
-        : [...task.activities, withTimelineOrder(activity)];
+        ? task.activities.map((entry) => entry.id === activity.id ? { ...activity, turnId: activity.turnId ?? entry.turnId ?? task.activeTurnId, turnStatus: activity.turnStatus ?? entry.turnStatus, timelineOrder: entry.timelineOrder } : entry)
+        : [...task.activities, withTimelineOrder({ ...activity, turnId: activity.turnId ?? task.activeTurnId })];
       return { tasks: { ...state.tasks, [threadId]: { ...task, activities, unread: state.activeThreadId !== threadId, updatedAt: Date.now() } } };
     });
   },
   setActiveTurn: (threadId, turnId) => set((state) => {
     const task = state.tasks[threadId] ?? emptyTask(threadId);
-    return { tasks: { ...state.tasks, [threadId]: { ...task, activeTurnId: turnId, updatedAt: Date.now() } } };
+    const threshold = turnId ? task.pendingTurnStartOrder : undefined;
+    const messages = threshold === undefined
+      ? task.messages
+      : task.messages.map((message) => !message.turnId && (message.timelineOrder ?? -1) >= threshold ? { ...message, turnId } : message);
+    const activities = threshold === undefined
+      ? task.activities
+      : task.activities.map((activity) => !activity.turnId && (activity.timelineOrder ?? -1) >= threshold ? { ...activity, turnId } : activity);
+    return { tasks: { ...state.tasks, [threadId]: { ...task, activeTurnId: turnId, pendingTurnStartOrder: turnId ? undefined : task.pendingTurnStartOrder, messages, activities, updatedAt: Date.now() } } };
   }),
   completeTurn: (threadId, turnId, status) => set((state) => {
     const task = state.tasks[threadId] ?? emptyTask(threadId);
+    const completedTurnId = turnId ?? task.activeTurnId;
     const newerTurnActive = Boolean(task.activeTurnId && turnId && task.activeTurnId !== turnId);
     const threadStatus = newerTurnActive ? task.status : status;
+    const turnStatus = completedTurnStatus(status);
+    const messages = completedTurnId
+      ? task.messages.map((message) => message.turnId === completedTurnId ? { ...message, turnStatus } : message)
+      : task.messages;
+    const activities = completedTurnId
+      ? task.activities.map((activity) => activity.turnId === completedTurnId ? { ...activity, turnStatus } : activity)
+      : task.activities;
     return {
       tasks: {
         ...state.tasks,
         [threadId]: {
           ...task,
+          messages,
+          activities,
           activeTurnId: task.activeTurnId === turnId || !turnId ? undefined : task.activeTurnId,
+          pendingTurnStartOrder: newerTurnActive ? task.pendingTurnStartOrder : undefined,
+          workingStartedAt: newerTurnActive ? task.workingStartedAt : undefined,
           lastCompletedTurnId: turnId,
           lastCompletedTurnStatus: status,
           status: threadStatus,
@@ -269,8 +308,31 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
   }),
   setTaskStatus: (threadId, status, error) => set((state) => {
     const task = state.tasks[threadId] ?? emptyTask(threadId);
+    const isWorking = status === "starting" || status === "running";
+    const wasWorking = task.status === "starting" || task.status === "running";
+    let latestPendingUser: number | undefined;
+    if (status === "starting" && !wasWorking && !task.activeTurnId) {
+      for (let index = task.messages.length - 1; index >= 0; index -= 1) {
+        const message = task.messages[index];
+        if (message.role === "user" && !message.turnId) {
+          latestPendingUser = message.timelineOrder;
+          break;
+        }
+      }
+    }
     return {
-      tasks: { ...state.tasks, [threadId]: { ...task, status, error, unread: state.activeThreadId !== threadId && status === "completed" ? true : task.unread, updatedAt: Date.now() } },
+      tasks: {
+        ...state.tasks,
+        [threadId]: {
+          ...task,
+          status,
+          error,
+          pendingTurnStartOrder: task.pendingTurnStartOrder ?? latestPendingUser,
+          workingStartedAt: isWorking ? (wasWorking ? task.workingStartedAt ?? Date.now() : Date.now()) : undefined,
+          unread: state.activeThreadId !== threadId && status === "completed" ? true : task.unread,
+          updatedAt: Date.now(),
+        },
+      },
       statuses: { ...state.statuses, [threadId]: status },
     };
   }),

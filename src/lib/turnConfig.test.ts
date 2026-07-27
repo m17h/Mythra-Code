@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ScheduleRunSettings } from "../types";
+import { OPENKIWI_COMPLETION_INSTRUCTIONS } from "./completionPrompt";
 import { threadResumeParams, threadRuntimeConfig, threadStartParams } from "./turnConfig";
 
 const baseRun: ScheduleRunSettings = {
@@ -53,5 +54,14 @@ describe("OpenRouter runtime isolation", () => {
       modelProvider: "openrouter",
       config: { model_context_window: 128_000, features: { apps: false, remote_plugin: false } },
     });
+  });
+
+  it("asks every new and resumed thread for a concise final summary", () => {
+    const start = threadStartParams(baseRun, "/tmp/project", { interactive: true });
+    const resume = threadResumeParams(baseRun, "thread-1", "/tmp/project");
+
+    expect(start.developerInstructions).toBe(OPENKIWI_COMPLETION_INSTRUCTIONS);
+    expect(start.config).toMatchObject({ developer_instructions: OPENKIWI_COMPLETION_INSTRUCTIONS });
+    expect(resume.developerInstructions).toBe(OPENKIWI_COMPLETION_INSTRUCTIONS);
   });
 });

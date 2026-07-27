@@ -1,10 +1,10 @@
-import { Sparkles } from "lucide-react";
+import { Route } from "lucide-react";
 import type { Provider } from "../types";
 
 /**
- * Official provider wordless marks, drawn as inline paths so they inherit
- * `currentColor` the same way the lucide icons they replaced did. OpenRouter
- * has no single-glyph mark that reads at 13–17px, so it keeps the sparkles.
+ * Official provider wordless marks, drawn as inline paths. Claude stays white
+ * inside its orange brand tile in every theme; OpenAI inherits the surrounding
+ * mark color. OpenRouter uses the same routing mark as its model control.
  */
 
 type LogoProps = { size?: number; className?: string };
@@ -16,7 +16,7 @@ export function ClaudeLogo({ size = 16, className }: LogoProps) {
       width={size}
       height={size}
       viewBox="0 0 24 24"
-      fill="currentColor"
+      fill="#fff"
       aria-hidden="true"
       focusable="false"
     >
@@ -44,5 +44,5 @@ export function OpenAILogo({ size = 16, className }: LogoProps) {
 export function ProviderLogo({ provider, size = 16, className }: LogoProps & { provider: Provider }) {
   if (provider === "claude") return <ClaudeLogo size={size} className={className} />;
   if (provider === "openai") return <OpenAILogo size={size} className={className} />;
-  return <Sparkles size={size} className={className} />;
+  return <Route size={size} className={className} />;
 }

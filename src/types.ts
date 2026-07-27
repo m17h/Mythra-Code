@@ -3,7 +3,7 @@ import type { JsonObject } from "./lib/codex";
 
 export type Provider = "openai" | "openrouter" | "claude";
 export type PermissionMode = "read-only" | "ask" | "full";
-export type ThemeName = "kiwi" | "midnight" | "ember" | "violet" | "daylight";
+export type ThemeName = "kiwi" | "daylight";
 export type WorkspaceMode = "chat" | "project";
 export type SettingsSection = "general" | "models" | "prompts" | "agents" | "workflows" | "projects" | "skills" | "tools" | "updates";
 export type ProjectPromptMode = "replace" | "append";
@@ -69,6 +69,9 @@ export interface ChatMessage {
   text: string;
   streaming?: boolean;
   timelineOrder?: number;
+  /** Runtime turn identity keeps steering inside the turn it belongs to. */
+  turnId?: string;
+  turnStatus?: Turn["status"];
 }
 
 export interface Activity {
@@ -78,6 +81,8 @@ export interface Activity {
   detail?: string;
   status?: string;
   timelineOrder?: number;
+  turnId?: string;
+  turnStatus?: Turn["status"];
 }
 
 export interface Account {

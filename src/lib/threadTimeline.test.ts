@@ -9,11 +9,12 @@ describe("timelineFromTurns", () => {
       { id: "assistant", type: "agentMessage", text: "Everything is clean." },
     ] }]);
 
-    expect(snapshot.messages.map((message) => [message.id, message.timelineOrder])).toEqual([
-      ["user", 1],
-      ["assistant", 3],
+    expect(snapshot.messages.map((message) => [message.id, message.timelineOrder, message.turnId, message.turnStatus])).toEqual([
+      ["user", 1, "turn-1", "completed"],
+      ["assistant", 3, "turn-1", "completed"],
     ]);
-    expect(snapshot.activities.map((activity) => [activity.id, activity.timelineOrder])).toEqual([["command", 2]]);
+    expect(snapshot.activities.map((activity) => [activity.id, activity.timelineOrder, activity.turnId, activity.turnStatus]))
+      .toEqual([["command", 2, "turn-1", "completed"]]);
   });
 
   it("restores model thinking as a collapsed reasoning activity", () => {
@@ -29,5 +30,14 @@ describe("timelineFromTurns", () => {
       detail: "Detailed thinking",
       status: "completed",
     });
+  });
+
+  it("preserves interrupted status when rebuilding persisted turns", () => {
+    const snapshot = timelineFromTurns([{ id: "turn-stopped", status: "interrupted", items: [
+      { id: "user", type: "userMessage", content: [{ type: "text", text: "inspect it" }] },
+      { id: "partial", type: "agentMessage", text: "I started checking" },
+    ] }]);
+
+    expect(snapshot.messages.map((message) => message.turnStatus)).toEqual(["interrupted", "interrupted"]);
   });
 });

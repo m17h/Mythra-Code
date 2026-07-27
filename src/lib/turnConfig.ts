@@ -1,5 +1,6 @@
 import type { CustomAgentProfile, PermissionMode, ScheduleRunSettings } from "../types";
 import type { JsonObject } from "./codex";
+import { OPENKIWI_COMPLETION_INSTRUCTIONS } from "./completionPrompt";
 
 export function commandSandbox(permission: PermissionMode, cwd: string): JsonObject {
   if (permission === "full") return { type: "dangerFullAccess" };
@@ -45,7 +46,7 @@ export function threadRuntimeConfig(run: ScheduleRunSettings, options: Pick<Thre
   return {
     project_doc_max_bytes: run.projectInstructionsEnabled ? 32_768 : 0,
     project_doc_fallback_filenames: [],
-    developer_instructions: "",
+    developer_instructions: OPENKIWI_COMPLETION_INSTRUCTIONS,
     model_reasoning_effort: run.ultra ? "ultra" : run.reasoningEffort,
     ...(run.provider === "openrouter" && Number.isFinite(contextWindow) && contextWindow > 0
       ? { model_context_window: Math.floor(contextWindow) }
@@ -70,7 +71,7 @@ export function threadStartParams(run: ScheduleRunSettings, cwd: string, options
     sandbox: sandboxMode(run.permission),
     approvalPolicy: options.interactive && run.permission === "ask" ? "on-request" : "never",
     baseInstructions: run.systemPrompt,
-    developerInstructions: "",
+    developerInstructions: OPENKIWI_COMPLETION_INSTRUCTIONS,
     config: threadRuntimeConfig(run, options),
     serviceName: options.serviceName ?? "OpenKiwi",
     serviceTier: run.serviceTier,
@@ -90,6 +91,7 @@ export function threadResumeParams(
     threadId,
     cwd,
     runtimeWorkspaceRoots: [cwd],
+    developerInstructions: OPENKIWI_COMPLETION_INSTRUCTIONS,
     ...(options.excludeTurns ? { excludeTurns: true } : {}),
     ...(run.provider === "openrouter" ? {
       modelProvider: "openrouter",

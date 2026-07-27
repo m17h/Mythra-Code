@@ -47,6 +47,19 @@ describe("task store", () => {
     expect(useTaskStore.getState().statuses).toEqual({ "thread-a": "running", "thread-b": "completed" });
   });
 
+  it("anchors one working duration across starting and running, then clears it", () => {
+    const store = useTaskStore.getState();
+    store.setTaskStatus("thread-a", "starting");
+    const startedAt = useTaskStore.getState().tasks["thread-a"].workingStartedAt;
+    expect(startedAt).toEqual(expect.any(Number));
+
+    store.setTaskStatus("thread-a", "running");
+    expect(useTaskStore.getState().tasks["thread-a"].workingStartedAt).toBe(startedAt);
+
+    store.setTaskStatus("thread-a", "completed");
+    expect(useTaskStore.getState().tasks["thread-a"].workingStartedAt).toBeUndefined();
+  });
+
   it("tracks the active runtime turn independently for each thread", () => {
     const store = useTaskStore.getState();
     store.setActiveTurn("thread-a", "turn-a");
@@ -55,6 +68,45 @@ describe("task store", () => {
 
     expect(useTaskStore.getState().tasks["thread-a"].activeTurnId).toBeUndefined();
     expect(useTaskStore.getState().tasks["thread-b"].activeTurnId).toBe("turn-b");
+  });
+
+  it("tags optimistic input and subsequent steering with the runtime turn id", () => {
+    const store = useTaskStore.getState();
+    store.setTaskStatus("thread-a", "starting");
+    store.appendUserMessage("thread-a", { id: "initial", role: "user", text: "Fix it" });
+    store.setActiveTurn("thread-a", "turn-a");
+    store.setTaskStatus("thread-a", "running");
+    store.appendUserMessage("thread-a", { id: "steer", role: "user", text: "Also test it" });
+    store.upsertActivity("thread-a", { id: "command", kind: "command", title: "npm test" });
+    store.completeMessage("thread-a", { id: "answer", role: "assistant", text: "Done" });
+
+    const task = useTaskStore.getState().tasks["thread-a"];
+    expect(task.messages.map((message) => message.turnId)).toEqual(["turn-a", "turn-a", "turn-a"]);
+    expect(task.activities[0].turnId).toBe("turn-a");
+  });
+
+  it("finds optimistic input when callers mark the turn starting after appending", () => {
+    const store = useTaskStore.getState();
+    store.appendUserMessage("thread-a", { id: "scheduled", role: "user", text: "Run the schedule" });
+    store.setTaskStatus("thread-a", "starting");
+    store.setActiveTurn("thread-a", "turn-scheduled");
+
+    expect(useTaskStore.getState().tasks["thread-a"].messages[0].turnId).toBe("turn-scheduled");
+  });
+
+  it("does not carry a failed optimistic turn boundary into a retry", () => {
+    const store = useTaskStore.getState();
+    store.setTaskStatus("thread-a", "starting");
+    store.appendUserMessage("thread-a", { id: "failed", role: "user", text: "First attempt" });
+    store.removeMessage("thread-a", "failed");
+    store.setTaskStatus("thread-a", "error");
+    store.appendUserMessage("thread-a", { id: "retry", role: "user", text: "Retry" });
+    store.setTaskStatus("thread-a", "starting");
+    store.setActiveTurn("thread-a", "turn-retry");
+
+    const task = useTaskStore.getState().tasks["thread-a"];
+    expect(task.messages).toHaveLength(1);
+    expect(task.messages[0]).toMatchObject({ id: "retry", turnId: "turn-retry" });
   });
 
   it("records exact turn completion without clearing a newer active turn", () => {
@@ -66,6 +118,20 @@ describe("task store", () => {
     expect(task.activeTurnId).toBe("turn-new");
     expect(task.lastCompletedTurnId).toBe("turn-old");
     expect(task.lastCompletedTurnStatus).toBe("completed");
+  });
+
+  it("persists the exact completion status on every entry in a turn", () => {
+    const store = useTaskStore.getState();
+    store.setTaskStatus("thread-a", "starting");
+    store.appendUserMessage("thread-a", { id: "user", role: "user", text: "Fix it" });
+    store.setActiveTurn("thread-a", "turn-a");
+    store.upsertActivity("thread-a", { id: "command", kind: "command", title: "npm test" });
+    store.completeMessage("thread-a", { id: "partial", role: "assistant", text: "I started" });
+    store.completeTurn("thread-a", "turn-a", "interrupted");
+
+    const task = useTaskStore.getState().tasks["thread-a"];
+    expect(task.messages.map((message) => message.turnStatus)).toEqual(["interrupted", "interrupted"]);
+    expect(task.activities[0].turnStatus).toBe("interrupted");
   });
 
   it("assigns chronology once and preserves it when activity completes", () => {
