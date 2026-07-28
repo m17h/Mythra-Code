@@ -19,8 +19,9 @@ if (!signingPassword) throw new Error("Updater signing password is unavailable. 
 if (process.platform === "darwin") {
   const hasAppleId = process.env.APPLE_ID && process.env.APPLE_PASSWORD && process.env.APPLE_TEAM_ID;
   const hasApiKey = process.env.APPLE_API_ISSUER && process.env.APPLE_API_KEY && process.env.APPLE_API_KEY_PATH;
-  if (!hasAppleId && !hasApiKey) {
-    throw new Error("A release build must be notarized. Set APPLE_ID, APPLE_PASSWORD, and APPLE_TEAM_ID (or the App Store Connect API key variables) for this command.");
+  const hasKeychainProfile = process.env.APPLE_NOTARY_KEYCHAIN_PROFILE;
+  if (!hasAppleId && !hasApiKey && !hasKeychainProfile) {
+    throw new Error("A release build must be notarized. Set Apple ID credentials, App Store Connect API key variables, or APPLE_NOTARY_KEYCHAIN_PROFILE.");
   }
 }
 
@@ -52,8 +53,56 @@ if (result.status !== 0) process.exit(result.status ?? 1);
 
 if (process.platform === "darwin") {
   const tauriArch = process.arch === "arm64" ? "aarch64" : "x86_64";
-  const appBundle = resolve(root, "src-tauri/target/release/bundle/macos/OpenKiwi.app");
+  const macosBundle = resolve(root, "src-tauri/target/release/bundle/macos");
+  const appBundle = resolve(macosBundle, "OpenKiwi.app");
+  const updaterArchive = resolve(macosBundle, "OpenKiwi.app.tar.gz");
+  const updaterSignature = `${updaterArchive}.sig`;
   if (!existsSync(appBundle)) throw new Error(`Built app not found at ${appBundle}`);
+
+  const notarizationCredentials = process.env.APPLE_NOTARY_KEYCHAIN_PROFILE
+    ? ["--keychain-profile", process.env.APPLE_NOTARY_KEYCHAIN_PROFILE]
+    : process.env.APPLE_ID
+      ? ["--apple-id", process.env.APPLE_ID, "--password", process.env.APPLE_PASSWORD, "--team-id", process.env.APPLE_TEAM_ID]
+      : ["--issuer", process.env.APPLE_API_ISSUER, "--key-id", process.env.APPLE_API_KEY, "--key", process.env.APPLE_API_KEY_PATH];
+  const appStapled = spawnSync("xcrun", ["stapler", "validate", appBundle], { stdio: "ignore" });
+  if (appStapled.status !== 0) {
+    const notaryZip = resolve(macosBundle, "OpenKiwi-notarization.zip");
+    rmSync(notaryZip, { force: true });
+    const zip = spawnSync("/usr/bin/ditto", ["-c", "-k", "--keepParent", appBundle, notaryZip], { cwd: macosBundle, stdio: "inherit" });
+    if (zip.status !== 0) process.exit(zip.status ?? 1);
+    const notarizeApp = spawnSync("xcrun", ["notarytool", "submit", notaryZip, ...notarizationCredentials, "--wait"], { stdio: "inherit" });
+    rmSync(notaryZip, { force: true });
+    if (notarizeApp.status !== 0) process.exit(notarizeApp.status ?? 1);
+    const stapleApp = spawnSync("xcrun", ["stapler", "staple", appBundle], { stdio: "inherit" });
+    if (stapleApp.status !== 0) process.exit(stapleApp.status ?? 1);
+
+    // Tauri created the updater archive before the notarization ticket was
+    // stapled. Repackage the final app without AppleDouble metadata and sign
+    // the new archive with the same updater key.
+    rmSync(updaterArchive, { force: true });
+    rmSync(updaterSignature, { force: true });
+    const archive = spawnSync("/usr/bin/tar", ["-czf", updaterArchive, "-C", macosBundle, "OpenKiwi.app"], {
+      cwd: root,
+      env: { ...releaseEnv, COPYFILE_DISABLE: "1" },
+      stdio: "inherit",
+    });
+    if (archive.status !== 0) process.exit(archive.status ?? 1);
+    const signArchive = spawnSync(tauri, ["signer", "sign", updaterArchive], {
+      cwd: root,
+      env: releaseEnv,
+      stdio: "inherit",
+    });
+    if (signArchive.status !== 0) process.exit(signArchive.status ?? 1);
+  }
+
+  for (const [command, args] of [
+    ["codesign", ["--verify", "--deep", "--strict", "--verbose=4", appBundle]],
+    ["xcrun", ["stapler", "validate", appBundle]],
+    ["spctl", ["--assess", "--type", "execute", "--verbose=4", appBundle]],
+  ]) {
+    const verify = spawnSync(command, args, { stdio: "inherit" });
+    if (verify.status !== 0) process.exit(verify.status ?? 1);
+  }
 
   const dmgDirectory = resolve(root, "src-tauri/target/release/bundle/dmg");
   rmSync(dmgDirectory, { recursive: true, force: true });
@@ -77,10 +126,7 @@ if (process.platform === "darwin") {
 
   const stapled = spawnSync("xcrun", ["stapler", "validate", dmg], { stdio: "ignore" });
   if (stapled.status !== 0) {
-    const credentials = process.env.APPLE_ID
-      ? ["--apple-id", process.env.APPLE_ID, "--password", process.env.APPLE_PASSWORD, "--team-id", process.env.APPLE_TEAM_ID]
-      : ["--issuer", process.env.APPLE_API_ISSUER, "--key-id", process.env.APPLE_API_KEY, "--key", process.env.APPLE_API_KEY_PATH];
-    const notarize = spawnSync("xcrun", ["notarytool", "submit", dmg, ...credentials, "--wait"], { stdio: "inherit" });
+    const notarize = spawnSync("xcrun", ["notarytool", "submit", dmg, ...notarizationCredentials, "--wait"], { stdio: "inherit" });
     if (notarize.status !== 0) process.exit(notarize.status ?? 1);
     const staple = spawnSync("xcrun", ["stapler", "staple", dmg], { stdio: "inherit" });
     if (staple.status !== 0) process.exit(staple.status ?? 1);

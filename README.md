@@ -95,6 +95,10 @@ The sidebar separates the two working modes explicitly:
 
 The new-thread button, thread-list heading, top bar, empty state, and composer all show the current scope, making it clear whether the next turn is a normal chat or will work inside a selected folder.
 
+Before the first message in a Git project, the user can choose **Shared project** or **Isolated worktree**. Isolation gives the thread its own app-managed linked worktree and private `openkiwi/*` branch while keeping it grouped under the original project. Every model turn, terminal command, file search, diff, Git action, and checkpoint for that thread runs against the isolated path; the shared folder is not added as a writable model root.
+
+The Studio exposes the worktree's status and actions to apply its complete non-ignored delta into the shared folder, merge a clean committed branch, reveal it in Finder, recreate a missing worktree from its branch, or clean it up. Apply first creates a shared-folder safety checkpoint and preserves the user's branch, `HEAD`, staging index, and ignored files. Cleanup identifies untracked and ignored worktree-only files before requiring destructive confirmation. OpenKiwi also warns before two active shared-folder threads are allowed to edit the same project concurrently.
+
 ## Sub-agents
 
 Sub-agents are disabled by default. For a new thread, use the composer toggle or **Settings → Sub-agents** and choose a maximum concurrency from 1–24. When enabled, OpenKiwi exposes the App Server's native collaboration tools and lets the model decide whether delegation is useful.
@@ -147,13 +151,13 @@ The right-side Studio contains nine integrated surfaces:
 2. **Review** — live turn/Git diff, per-hunk review marks, whole-diff approval state, and an App Server review turn.
 3. **Agents** — observed child threads, current status, child-thread inspection, and interruption.
 4. **Terminal** — a PTY-backed xterm surface with streamed bytes, stdin, resize, cancellation, and the selected permission sandbox.
-5. **History** — local checkpoints, App Server thread forks, conversation rollback, and real Git worktree creation.
+5. **Checkpoints** — automatic before/after source snapshots for every Git-project run, complete-worktree restore and reapply, reversible acceptance, pre-restore safety copies, run diffs, conversation forks and rollback, plus isolated-thread worktree review, apply, merge, recovery, and cleanup.
 6. **Context** — file mentions and native local-image inputs attached to the next turn.
 7. **Usage** — token/context telemetry, account rate limits, and a visible request-field audit.
 8. **Tools** — project actions, skill enable/disable, MCP status/OAuth, and permission-boundary guidance.
 9. **Git** — status, diff, file-level stage/revert, stage all, tracked-file revert confirmation, commits, PR comments, CI checks, and draft PR creation.
 
-The review approval and checkpoint records are UI review state. Conversation rollback intentionally does not claim to revert filesystem changes; file rollback remains an explicit Git action.
+Checkpoint snapshots are stored as hidden local Git refs without moving the project's branch, HEAD, commits, or staging index. They include tracked and untracked non-ignored source files; ignored files and build output are left alone. Restoring always requires a fresh safety snapshot of the current source state, and conversation rollback remains a separate chat-only action.
 
 ## Privacy and telemetry
 

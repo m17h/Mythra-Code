@@ -6,10 +6,12 @@ export const DURABLE_STORAGE_KEYS = [
   "kiwi.workspaceMode",
   "kiwi.settings",
   "kiwi.threadProjects",
+  "kiwi.threadWorktrees",
   "kiwi.knownThreads",
   "kiwi.threadModels",
   "kiwi.turnDurations",
   "kiwi.checkpoints",
+  "kiwi.checkpointHeads",
   "kiwi.promptProfiles",
   "kiwi.customAgents",
   "kiwi.projectActions",
@@ -33,15 +35,16 @@ export const DURABLE_STORAGE_KEYS = [
  * migrateStorage. Old installs then upgrade their data instead of loading
  * garbage into the new code.
  */
-export const STORAGE_SCHEMA_VERSION = 4;
+export const STORAGE_SCHEMA_VERSION = 6;
 
 export function migrateStorage(): void {
   const stored = loadStored<number>("kiwi.schemaVersion", 0);
   if (stored >= STORAGE_SCHEMA_VERSION) return;
   // Version 2 adds the optional project systemPromptMode field. Version 3 adds
   // provider metadata to newly archived threads. Version 4 adds a separate
-  // per-turn duration store. All additions are optional and require no eager
-  // rewrite of existing records.
+  // per-turn duration store. Version 5 adds the current filesystem checkpoint
+  // head for each project. Version 6 adds per-thread isolated worktree records.
+  // All additions are optional and require no eager rewrite of existing records.
   storeValue("kiwi.schemaVersion", STORAGE_SCHEMA_VERSION);
 }
 

@@ -9,7 +9,7 @@ React webview
   ├─ virtualized Markdown/event rendering
   ├─ animated model/reasoning power rail
   ├─ signed GitHub release checks + update progress
-  └─ Studio: review, agents, terminal, history, context, usage, tools, and Git
+  └─ Studio: review, agents, terminal, checkpoints, context, usage, tools, and Git
           │ Tauri IPC (allowlisted commands)
           ▼
 Rust desktop host
@@ -42,9 +42,11 @@ The control plane and execution plane remain separate. The React view never laun
 | OpenRouter model catalog | Native host | Live tool-capable `/api/v1/models` response |
 | ChatGPT login | App Server | OpenKiwi-specific `CODEX_HOME` credential storage |
 | Threads and rollout history | App Server | OpenKiwi-specific `CODEX_HOME` |
+| Thread project binding and isolated execution path | UI/native host | SQLite-backed cache; app-managed linked Git worktree |
 | Active JSON-RPC requests | Native host | Memory only |
 | Active approvals | Thread task store + App Server | Per-thread queue until answered |
-| Checkpoint labels and thread bindings | UI/native host | SQLite-backed cache |
+| Checkpoint metadata and thread bindings | UI/native host | SQLite-backed cache |
+| Checkpoint source snapshots | Native host + Git | Hidden local `refs/openkiwi/checkpoints/*` refs in each project repository |
 | Approval/lifecycle audit | Native host | SQLite; secret answers excluded |
 | Terminal processes | App Server | Connection-scoped memory |
 | Model catalog, usage, MCP and skill inventory | App Server | Refreshed runtime state |
@@ -55,7 +57,7 @@ OpenKiwi's private Codex home is under the platform Tauri app-data directory. Th
 
 A new thread is created with:
 
-- the selected project as `cwd`;
+- the selected shared project or isolated linked worktree as `cwd`;
 - the selected model/provider;
 - the selected reasoning effort, including Ultra when eligible;
 - the selected sandbox and approval policy;
@@ -65,6 +67,23 @@ A new thread is created with:
 - sub-agent tools explicitly enabled or disabled, with a user-selected child cap and depth fixed at one.
 
 These fields are set only when a thread is created. Existing threads retain their original prompt and provider context when resumed, which avoids silently rewriting conversation behavior.
+
+## Isolated worktree contract
+
+Project identity and execution location are deliberately separate. `kiwi.threadProjects` keeps a thread grouped under the user-selected source project. `kiwi.threadWorktrees` optionally supplies that thread's execution path, branch, base commit, shared Git directory, lifecycle status, and last applied tree. Model turns, resumptions, terminal commands, file search, diffs, checkpoints, and Git tools resolve through the execution path. A missing or removed worktree never silently falls back to the source folder; the user must recreate it or explicitly continue in shared mode.
+
+The native host creates linked worktrees below OpenKiwi's application-data directory. The model sandbox receives the worktree as its workspace plus the repository's shared Git common directory as an additional writable root, which permits normal Git metadata updates without making the user's source worktree writable.
+
+Applying isolated work is a source-state operation, not a commit or merge:
+
+1. refuse while either folder has an active model or command;
+2. capture a full safety checkpoint of the shared project;
+3. capture the isolated non-ignored source tree through a temporary Git index;
+4. calculate the delta since the isolated thread's last applied tree, pinned under `refs/openkiwi/worktrees/<thread>/applied` so Git maintenance cannot discard it;
+5. apply that delta to the safety tree in another temporary index;
+6. verify the source still matches the safety checkpoint and materialize the result without touching the user's real index, `HEAD`, branch, commits, or ignored files.
+
+Merging is available only when both worktrees are clean and isolated work has been committed; conflicts automatically abort the merge. Cleanup inspects modified, untracked, ahead, and ignored worktree-only state and requires an explicit destructive confirmation when any could be lost, then removes the thread's checkpoint and applied-baseline refs. Missing app-managed worktrees can be recreated from their surviving branch after pruning stale Git registrations; the UI warns that a deleted folder's uncommitted files cannot be recovered and that a later Apply may reconcile previously copied work. Forking an isolated conversation is intentionally blocked until independent worktree cloning semantics are available.
 
 ## Sub-agent contract
 
@@ -86,13 +105,27 @@ The webview renders collaboration tool calls and child activity as structured ti
 | Agents | collaboration thread items, `thread/read`, `turn/interrupt` |
 | Files | `fuzzyFileSearch`, `fs/readDirectory`, `fs/readFile` |
 | Terminal | PTY `command/exec`, streamed base64 output, `command/exec/write`, `command/exec/resize`, `command/exec/terminate` |
-| History | `thread/fork`, `thread/rollback`; Git worktrees through sandboxed command execution |
+| Checkpoints | Native temporary-index snapshots and guarded complete-worktree restore; `thread/fork`, `thread/rollback`; isolated worktree review/apply/merge/recovery/cleanup |
 | Context | `localImage` and explicit file mention inputs on `turn/start` |
 | Usage | `thread/tokenUsage/updated`, `account/rateLimits/read` |
 | Tools | `skills/list`, `skills/config/write`, MCP status/OAuth/reload, project actions |
 | Git | typed `git`/`gh` argv through `command/exec`; destructive tracked-file restore requires UI confirmation |
 
 Standalone terminal and Git commands receive an explicit sandbox policy derived from the same Read only / Ask to act / Full access setting used by agent threads.
+
+## Filesystem checkpoint contract
+
+For a project whose selected folder is the root of a Git repository, OpenKiwi captures a hidden snapshot immediately before a model turn and closes it with a second snapshot when the turn ends. Snapshot creation uses a temporary Git index, so the user's branch, `HEAD`, staged changes, and public commit history are not modified. Tracked files and untracked non-ignored files are represented; ignored paths remain outside checkpoint management.
+
+Restoring either side of a checkpoint:
+
+1. refuses to run while any thread is editing the same project;
+2. creates a complete current-state safety checkpoint;
+3. verifies natively that the worktree still matches that safety snapshot;
+4. replaces the complete non-ignored source worktree with the selected snapshot;
+5. preserves later snapshots as alternate restore points and leaves Git commits, `HEAD`, the real index, and ignored files unchanged.
+
+The UI's Accepted flag is metadata only and can always be reversed. Conversation rollback remains independent and never claims to change files.
 
 ## Provider contract
 

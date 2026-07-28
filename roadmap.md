@@ -6,12 +6,13 @@ OpenKiwi 1.0 establishes the core product: a fast, local-first macOS workspace f
 
 ### Isolated worktrees
 
-- Let each thread use either the shared project folder or an isolated Git worktree.
-- Create a dedicated branch and worktree for an isolated thread.
-- Show the active branch, worktree, and isolation state in the thread sidebar and workspace header.
-- Provide clear actions to review, merge or apply changes, open the worktree, and clean it up.
-- Warn before starting concurrent shared-folder runs that could edit the same files.
-- Continue supporting non-Git projects through the existing shared-folder mode.
+- [x] Let each thread use either the shared project folder or an isolated Git worktree.
+- [x] Create a dedicated branch and app-managed worktree for an isolated thread.
+- [x] Show the active branch, worktree, and isolation state in the thread sidebar and workspace header.
+- [x] Provide clear actions to review, merge or apply changes, open the worktree, recover a missing worktree, and clean it up.
+- [x] Warn before starting concurrent shared-folder runs that could edit the same files.
+- [x] Continue supporting non-Git projects through the existing shared-folder mode.
+- [ ] Consider isolated conversation forks later; OpenKiwi currently blocks them rather than allowing two threads to silently share one worktree.
 
 ### Provider and process recovery
 
@@ -22,13 +23,14 @@ OpenKiwi 1.0 establishes the core product: a fast, local-first macOS workspace f
 
 ## 1.2 — Recoverability and provider interoperability
 
-### Real run checkpoints
+### Real run checkpoints — implemented after 1.0
 
-- Create an automatic project checkpoint before a model begins changing files.
-- Associate each checkpoint with the run that created it.
-- Show the exact files and changes produced by that run.
-- Restore the project to its pre-run state without implying that conversation rollback alone changes files.
-- Add selective file and hunk restoration after whole-run recovery is proven reliable.
+- [x] Create an automatic project checkpoint before a model begins changing files.
+- [x] Associate each checkpoint with the run that created it.
+- [x] Show the exact files and changes produced by that run.
+- [x] Restore or reapply the complete project source state while preserving safety copies and alternate timelines.
+- [x] Keep acceptance reversible and separate from conversation rollback or Git commits.
+- [ ] Consider selective file and hunk restoration later; complete-worktree recovery remains the intentionally safer default.
 
 ### Continue with another provider
 

@@ -268,6 +268,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .thread-card-context { min-height: 16px; gap: var(--s-2); }
 .thread-card-workspace { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--muted-2); font-size: var(--fs-meta); font-weight: 540; }
 .thread-card-workspace svg { flex: 0 0 auto; opacity: .78; }
+.thread-card-workspace:has(svg.lucide-git-branch) { color: var(--info); }
 .thread-card-workspace > span, .thread-card-title, .thread-card-directory { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .thread-card-title { display: block; color: var(--ink-2); font-size: var(--fs-ui); font-weight: 590; line-height: 1.35; letter-spacing: var(--track-tight); }
 .thread-row-wrap.active .thread-card-title, .thread-card:hover .thread-card-title { color: var(--text); }
@@ -426,6 +427,14 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 /* ---- Thread surface: the reading room ---- */
 .conversation { position: relative; min-height: 0; flex: 1; overflow: hidden; display: flex; flex-direction: column; }
 .thread-empty-state { min-height: 100%; }
+.isolation-choice { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: min(560px, 100%); gap: var(--s-2); margin: 0 0 var(--s-4); text-align: left; }
+.isolation-choice > button { display: grid; grid-template-columns: 24px minmax(0, 1fr); align-items: center; gap: var(--s-2); padding: 11px 12px; border: 1px solid var(--line); border-radius: var(--r-md); color: var(--muted); background: var(--line-quiet); }
+.isolation-choice > button:hover:not(:disabled) { border-color: color-mix(in srgb, var(--info) 34%, var(--line)); color: var(--ink-2); }
+.isolation-choice > button.active { border-color: color-mix(in srgb, var(--info) 46%, var(--line)); color: var(--info); background: color-mix(in srgb, var(--info) 7%, var(--line-quiet)); }
+.isolation-choice > button > span { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.isolation-choice strong { color: var(--ink-2); font-size: var(--fs-ui); font-weight: 620; }
+.isolation-choice small { color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.35; }
+.isolation-chip { display: inline-flex; align-items: center; gap: 5px; max-width: 110px; padding: 5px 8px; border: 1px solid color-mix(in srgb, var(--info) 30%, var(--line)); border-radius: 999px; color: var(--info); background: color-mix(in srgb, var(--info) 7%, transparent); font-size: var(--fs-meta); font-weight: 620; white-space: nowrap; }
 .empty-state-icon { width: 46px; height: 46px; border-radius: var(--r-lg); }
 .empty-state-icon.chat { color: var(--info); border-color: color-mix(in srgb, var(--info) 24%, transparent); background: color-mix(in srgb, var(--info) 9%, transparent); }
 .thread-empty-state h1 { font-size: var(--fs-display); }
@@ -1182,11 +1191,11 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 /* Workspace studio */
 .studio-toggle.active { color: var(--green); background: var(--green-soft); }
 .studio-toggle:disabled { opacity: .32; cursor: default; }
-.studio-dock { position: relative; flex: 0 0 var(--dock-width, 430px); width: var(--dock-width, 430px); min-width: 0; overflow: hidden; display: grid; grid-template-columns: 60px minmax(0,1fr); border-left: 1px solid var(--line); background: var(--sidebar); box-shadow: none; opacity: 1; transform: translateX(0); will-change: width, flex-basis, opacity, transform; transition: flex-basis 280ms var(--ease), width 280ms var(--ease), opacity 190ms ease, transform 280ms var(--ease), border-color var(--t-mid) ease, box-shadow var(--t-mid) ease; }
+.studio-dock { position: relative; flex: 0 0 var(--dock-width, 430px); width: var(--dock-width, 430px); min-width: 0; overflow: hidden; display: grid; grid-template-columns: 70px minmax(0,1fr); border-left: 1px solid var(--line); background: var(--sidebar); box-shadow: none; opacity: 1; transform: translateX(0); will-change: width, flex-basis, opacity, transform; transition: flex-basis 280ms var(--ease), width 280ms var(--ease), opacity 190ms ease, transform 280ms var(--ease), border-color var(--t-mid) ease, box-shadow var(--t-mid) ease; }
 .studio-dock.closed { flex-basis: 0; width: 0; border-left-color: transparent; box-shadow: none; opacity: 0; transform: translateX(28px); pointer-events: none; }
-.studio-tabs { min-width: 60px; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: var(--s-2) var(--s-1); border-right: 1px solid var(--line); background: color-mix(in srgb, var(--bg) 70%, var(--sidebar)); }
-.studio-tabs button { position: relative; width: 50px; height: 46px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; padding: 0; border: 0; border-radius: var(--r-sm); color: var(--muted-2); background: transparent; font-size: var(--fs-micro); letter-spacing: -.01em; cursor: pointer; transition: color var(--t-fast) ease, background var(--t-fast) ease; }
-.studio-tabs button span { font-size: var(--fs-micro); }
+.studio-tabs { min-width: 70px; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: var(--s-2) var(--s-1); border-right: 1px solid var(--line); background: color-mix(in srgb, var(--bg) 70%, var(--sidebar)); }
+.studio-tabs button { position: relative; width: 62px; height: 46px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; padding: 0; border: 0; border-radius: var(--r-sm); color: var(--muted-2); background: transparent; font-size: var(--fs-micro); letter-spacing: -.01em; cursor: pointer; transition: color var(--t-fast) ease, background var(--t-fast) ease; }
+.studio-tabs button span { max-width: 60px; overflow: hidden; font-size: var(--fs-micro); white-space: nowrap; text-overflow: ellipsis; }
 .studio-tabs button:hover { color: var(--ink-2); background: rgba(255,255,255,.045); }
 .studio-tabs button.active { color: var(--green); background: rgba(255,255,255,.055); box-shadow: none; }
 .studio-tabs button.active::before { content: ""; position: absolute; left: 0; top: 10px; bottom: 10px; width: 2px; border-radius: var(--r-pill); background: var(--green); }
@@ -1276,6 +1285,53 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .status-orb.failed, .status-orb.interrupted { background: var(--red); box-shadow: 0 0 0 3px color-mix(in srgb, var(--red) 16%, transparent); }
 .history-warning { display: flex; align-items: flex-start; gap: var(--s-2); margin-bottom: var(--s-3); padding: var(--s-2) 10px; border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--muted); background: rgba(255,255,255,.02); font-size: var(--fs-meta); line-height: 1.5; }
 .history-warning svg { flex: 0 0 auto; margin-top: 1px; color: var(--muted-2); }
+.checkpoint-note { display: grid; grid-template-columns: 22px minmax(0,1fr); gap: var(--s-2); margin-bottom: var(--s-3); padding: 10px; border: 1px solid color-mix(in srgb, var(--green) 18%, var(--line)); border-radius: var(--r-sm); color: var(--green); background: var(--green-soft); }
+.checkpoint-note > svg { margin-top: 1px; }
+.checkpoint-note > div { display: flex; flex-direction: column; gap: 3px; }
+.checkpoint-note strong { color: var(--ink-2); font-size: var(--fs-meta); font-weight: 620; }
+.checkpoint-note span { color: var(--muted); font-size: var(--fs-meta); line-height: 1.45; }
+.checkpoint-list { display: flex; flex-direction: column; gap: var(--s-2); }
+.checkpoint-card { position: relative; overflow: hidden; display: flex; flex-direction: column; gap: var(--s-2); padding: 10px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--line-quiet); transition: border-color var(--t-fast) ease, background var(--t-fast) ease; }
+.checkpoint-card.current { border-color: color-mix(in srgb, var(--info) 35%, var(--line)); background: color-mix(in srgb, var(--info) 5%, var(--line-quiet)); }
+.checkpoint-card.accepted { border-color: color-mix(in srgb, var(--green) 28%, var(--line)); }
+.checkpoint-card.current::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 2px; background: var(--info); }
+.checkpoint-card-head { display: grid; grid-template-columns: 28px minmax(0,1fr); align-items: center; gap: var(--s-2); }
+.checkpoint-card-head > div { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.checkpoint-card-head strong { overflow: hidden; color: var(--ink-2); font-size: var(--fs-ui); font-weight: 620; white-space: nowrap; text-overflow: ellipsis; }
+.checkpoint-card-head small { color: var(--muted-2); font-size: var(--fs-micro); }
+.checkpoint-state-icon { width: 27px; height: 27px; display: grid; place-items: center; border-radius: var(--r-sm); color: var(--muted); background: var(--line); }
+.checkpoint-state-icon.ready, .checkpoint-state-icon.accepted { color: var(--green); background: var(--green-soft); }
+.checkpoint-state-icon.running { color: var(--info); background: color-mix(in srgb, var(--info) 8%, transparent); }
+.checkpoint-state-icon.interrupted, .checkpoint-state-icon.recovered { color: var(--orange); background: color-mix(in srgb, var(--orange) 8%, transparent); }
+.checkpoint-state-icon.failed { color: var(--red); background: color-mix(in srgb, var(--red) 8%, transparent); }
+.checkpoint-state-icon.safety { color: var(--orange); background: color-mix(in srgb, var(--orange) 8%, transparent); }
+.worktree-card { display: flex; flex-direction: column; gap: var(--s-3); margin-bottom: var(--s-3); padding: 11px; border: 1px solid color-mix(in srgb, var(--info) 28%, var(--line)); border-radius: var(--r-md); background: color-mix(in srgb, var(--info) 5%, var(--line-quiet)); }
+.worktree-card-head { display: grid; grid-template-columns: 28px minmax(0,1fr) auto; align-items: center; gap: var(--s-2); }
+.worktree-card-head > span { width: 27px; height: 27px; display: grid; place-items: center; border-radius: var(--r-sm); color: var(--info); background: color-mix(in srgb, var(--info) 10%, transparent); }
+.worktree-card-head > div { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.worktree-card-head strong, .worktree-card-head small { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.worktree-card-head strong { color: var(--ink-2); font-size: var(--fs-ui); }
+.worktree-card-head small { color: var(--muted-2); font-family: var(--font-mono); font-size: var(--fs-micro); }
+.worktree-card-head em { color: var(--info); font-size: var(--fs-micro); font-style: normal; text-transform: capitalize; }
+.worktree-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; overflow: hidden; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--line); }
+.worktree-metrics span { display: flex; flex-direction: column; gap: 1px; padding: 7px; color: var(--muted-2); background: var(--panel); font-size: var(--fs-micro); }
+.worktree-metrics strong { color: var(--ink-2); font-size: var(--fs-meta); }
+.checkpoint-meta { display: flex; flex-wrap: wrap; gap: 3px 8px; color: var(--muted-2); font-size: var(--fs-micro); }
+.checkpoint-meta span { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.checkpoint-meta span:not(:last-child)::after { content: " ·"; color: var(--line-strong); }
+.checkpoint-stats { color: var(--muted); font: var(--fs-meta) var(--font-mono); }
+.checkpoint-lineage { color: var(--info); font-size: var(--fs-micro); }
+.checkpoint-error { padding: 6px 7px; border-radius: var(--r-xs); color: var(--red); background: color-mix(in srgb, var(--red) 7%, transparent); font-size: var(--fs-micro); line-height: 1.4; }
+.checkpoint-actions { display: flex; flex-wrap: wrap; gap: 5px; }
+.checkpoint-actions button { min-height: 27px; display: inline-flex; align-items: center; gap: 4px; padding: 0 7px; border: 1px solid var(--line); border-radius: var(--r-xs); color: var(--muted); background: transparent; font-size: var(--fs-micro); cursor: pointer; }
+.checkpoint-actions button:hover:not(:disabled) { color: var(--text); border-color: var(--line-strong); background: var(--line); }
+.checkpoint-actions button:disabled { opacity: .35; cursor: default; }
+.checkpoint-actions button.approved { color: var(--green); border-color: var(--green-line); background: var(--green-soft); }
+.checkpoint-actions button.danger-action { color: color-mix(in srgb, var(--red) 74%, var(--muted)); }
+.checkpoint-actions button.icon-only { margin-left: auto; padding: 0 7px; }
+.checkpoint-preview { max-height: 260px; overflow: auto; padding-top: var(--s-1); border-top: 1px solid var(--line); }
+.checkpoint-preview > span { display: block; padding: var(--s-3); color: var(--muted-2); font-size: var(--fs-meta); text-align: center; }
+.checkpoint-preview .diff-view { max-height: none; margin: 0; }
 .attachment-drop { width: 100%; min-height: 104px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--s-2); margin-bottom: var(--s-3); padding: var(--s-4); border: 1px dashed var(--line-strong); border-radius: var(--r-md); color: var(--muted-2); background: transparent; text-align: center; cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
 .attachment-drop:hover { color: var(--info); border-color: color-mix(in srgb, var(--info) 34%, transparent); background: color-mix(in srgb, var(--info) 5%, transparent); }
 .attachment-drop strong { color: var(--ink-2); font-size: var(--fs-ui); font-weight: 600; }
@@ -1363,7 +1419,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 @keyframes update-sweep { 0% { transform: translateX(-110%); } 55%, 100% { transform: translateX(290%); } }
 
 @media (max-width: 1250px) {
-  .studio-dock { position: fixed; z-index: 30; top: 0; right: 0; bottom: 0; width: min(var(--dock-width, 430px), 92vw); grid-template-columns: 56px minmax(0,1fr); box-shadow: -24px 0 70px rgba(0,0,0,.52); transition: opacity 210ms ease, transform 290ms cubic-bezier(.22,.8,.25,1), border-color 180ms ease, box-shadow 180ms ease; }
+  .studio-dock { position: fixed; z-index: 30; top: 0; right: 0; bottom: 0; width: min(var(--dock-width, 430px), 92vw); grid-template-columns: 70px minmax(0,1fr); box-shadow: -24px 0 70px rgba(0,0,0,.52); transition: opacity 210ms ease, transform 290ms cubic-bezier(.22,.8,.25,1), border-color 180ms ease, box-shadow 180ms ease; }
   .studio-dock.closed { width: min(var(--dock-width, 430px), 92vw); opacity: 0; transform: translateX(104%); }
   .studio-panel { width: auto; min-width: 0; }
   .model-power-control { grid-template-columns: minmax(210px,.9fr) minmax(190px,1fr) 62px; }

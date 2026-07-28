@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { CircleDashed, Folder, Pin } from "lucide-react";
+import { CircleDashed, Folder, GitBranch, Pin } from "lucide-react";
 import { useTaskStore } from "../lib/taskStore";
 import type { Provider } from "../types";
 import { ProviderLogo } from "./BrandLogos";
@@ -69,6 +69,8 @@ interface ThreadInboxCardProps {
   provider: Provider;
   providerName: string;
   pinned: boolean;
+  isolated?: boolean;
+  branch?: string;
   onOpen: () => void;
 }
 
@@ -80,14 +82,16 @@ export function ThreadInboxCard({
   provider,
   providerName,
   pinned,
+  isolated = false,
+  branch,
   onOpen,
 }: ThreadInboxCardProps) {
   return (
     <button className="thread-card" onClick={onOpen} aria-label={`Open ${title}`}>
       <span className="thread-card-context">
         <span className="thread-card-workspace" title={directory}>
-          <Folder size={14} />
-          <span>{workspaceName}</span>
+          {isolated ? <GitBranch size={14} /> : <Folder size={14} />}
+          <span>{isolated ? branch || "Isolated" : workspaceName}</span>
         </span>
         <ThreadInboxStatus threadId={threadId} />
       </span>

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Command, FileCode2, Folder, GitBranch, MessageSquare, Plus, Search, SearchCode, Settings, TerminalSquare, UsersRound, Workflow as WorkflowIcon, Wrench, X } from "lucide-react";
+import { Command, FileCode2, Folder, GitBranch, History, MessageSquare, Plus, Search, SearchCode, Settings, TerminalSquare, UsersRound, Workflow as WorkflowIcon, Wrench, X } from "lucide-react";
 import type { WorkflowDefinition } from "../lib/workflows";
 import type { Project, Thread } from "../types";
 import type { StudioTab } from "./StudioDock";
@@ -32,6 +32,7 @@ export function CommandPalette({ open, projects, threads, workflows, projectActi
       { id: "review", label: "Review working changes", detail: "Inspect and approve the current diff", group: "Commands", icon: SearchCode, run: () => onTool("review") },
       { id: "terminal", label: "Open project terminal", detail: "Run commands in the active project folder", group: "Commands", icon: TerminalSquare, run: () => onTool("terminal") },
       { id: "agents", label: "Open agent control", detail: "Watch and manage delegated work", group: "Commands", icon: UsersRound, run: () => onTool("agents") },
+      { id: "checkpoints", label: "Open checkpoints", detail: "Restore, reapply, accept, and preview saved project states", group: "Commands", icon: History, run: () => onTool("checkpoints") },
       { id: "git", label: "Open Git workspace", detail: "Status, stage, commit, and review CI", group: "Commands", icon: GitBranch, run: () => onTool("git") },
       { id: "tools", label: "Open tools & skills", detail: "Project actions, skills, and MCP servers", group: "Commands", icon: Wrench, run: () => onTool("tools") },
     ] : []),

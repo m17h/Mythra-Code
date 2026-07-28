@@ -96,6 +96,70 @@ function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
     };
   }
   if (command === "state_read") return null;
+  if (command === "workspace_git_info") {
+    return { isRepo: true, isRoot: true, hasCommit: true, branch: "main", head: "head" };
+  }
+  if (command === "worktree_create") {
+    return {
+      path: "/managed/worktrees/isolated-thread",
+      branch: "openkiwi/isolated-thread",
+      baseCommit: "head",
+      gitDir: "/projects/alpha/.git",
+    };
+  }
+  if (command === "worktree_status") {
+    if (String(args?.worktreePath).includes("missing")) {
+      return {
+        exists: false,
+        registered: false,
+        branch: null,
+        baseCommit: null,
+        changedFiles: 0,
+        untrackedFiles: 0,
+        ignoredFiles: [],
+        ahead: 0,
+        behind: 0,
+        clean: false,
+      };
+    }
+    return {
+      exists: true,
+      registered: true,
+      branch: "openkiwi/isolated-thread",
+      baseCommit: "head",
+      changedFiles: 0,
+      untrackedFiles: 0,
+      ignoredFiles: [],
+      ahead: 0,
+      behind: 0,
+      clean: true,
+    };
+  }
+  if (command === "worktree_remove") return null;
+  if (command === "checkpoint_create") {
+    return {
+      commit: `before-${String(args?.id)}`,
+      repoRoot: String(args?.cwd),
+      fileCount: 4,
+      branch: "main",
+      head: "head",
+    };
+  }
+  if (command === "checkpoint_complete") {
+    return {
+      snapshot: {
+        commit: `after-${String(args?.id)}`,
+        repoRoot: String(args?.cwd),
+        fileCount: 5,
+        branch: "main",
+        head: "head",
+      },
+      changedFiles: 1,
+      additions: 2,
+      deletions: 0,
+    };
+  }
+  if (command === "checkpoint_delete") return null;
   if (command === "has_openrouter_key") return false;
   if (command === "codex_rpc") {
     const method = args?.method as string;
@@ -105,6 +169,19 @@ function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
         data: params.cwd === PROJECT_A.path ? [THREAD_A, THREAD_B] : [],
         nextCursor: null,
       };
+    }
+    if (method === "thread/start") {
+      return {
+        thread: {
+          ...THREAD_A,
+          id: "isolated-thread",
+          cwd: String(params.cwd),
+          turns: [],
+        },
+      };
+    }
+    if (method === "thread/read") {
+      return { thread: { ...THREAD_A, id: String(params.threadId), turns: [] } };
     }
     if (method === "thread/resume") return resumeImpl(params);
     if (method === "turn/start") return turnStartImpl(params);
@@ -129,6 +206,7 @@ async function renderApp() {
 
 beforeEach(() => {
   localStorage.clear();
+  vi.spyOn(window, "confirm").mockReturnValue(true);
   pendingResume = deferred<{ thread: Thread }>();
   resumeImpl = () => pendingResume.promise;
   turnStartImpl = (params) => ({ turn: { id: `turn-${String(params.threadId)}` } });
@@ -191,6 +269,14 @@ describe("workspace switching during thread selection", () => {
     await waitFor(() => {
       expect(useTaskStore.getState().statuses[THREAD_A.id]).toBe("starting");
     });
+    const checkpointCall = invokeMock.mock.calls.findIndex(
+      ([command]) => command === "checkpoint_create",
+    );
+    const turnStartCall = invokeMock.mock.calls.findIndex(
+      ([command, args]) => command === "codex_rpc" && args?.method === "turn/start",
+    );
+    expect(checkpointCall).toBeGreaterThanOrEqual(0);
+    expect(turnStartCall).toBeGreaterThan(checkpointCall);
     expect(screen.getByText("Steering active task")).toBeInTheDocument();
 
     // Navigate to idle thread B while A's start is still pending.
@@ -237,5 +323,114 @@ describe("workspace switching during thread selection", () => {
     await waitFor(() => {
       expect(useTaskStore.getState().activeThreadId).toBe(THREAD_A.id);
     });
+  });
+
+  it("starts an isolated thread in its worktree while keeping it grouped under the project", async () => {
+    const user = userEvent.setup();
+    resumeImpl = (params) => ({ thread: { ...THREAD_A, id: String(params.threadId), turns: [] } });
+    await renderApp();
+
+    await user.click(await screen.findByRole("button", { name: /Isolated worktree/i }));
+    const composer = await screen.findByPlaceholderText(/Ask OpenKiwi to work in/);
+    await user.type(composer, "build this in isolation{Enter}");
+
+    await waitFor(() => {
+      expect(
+        invokeMock.mock.calls.some(
+          ([command, args]) =>
+            command === "codex_rpc"
+            && args?.method === "thread/start"
+            && (args?.params as Record<string, unknown>)?.cwd === "/managed/worktrees/isolated-thread",
+        ),
+      ).toBe(true);
+    });
+    await waitFor(() => {
+      expect(
+        invokeMock.mock.calls.some(
+          ([command, args]) =>
+            command === "checkpoint_create"
+            && args?.cwd === "/managed/worktrees/isolated-thread",
+        ),
+      ).toBe(true);
+    });
+    const storedBindings = JSON.parse(localStorage.getItem("kiwi.threadProjects") ?? "{}") as Record<string, string>;
+    expect(Object.values(storedBindings)).toContain(PROJECT_A.path);
+    const storedWorktrees = JSON.parse(localStorage.getItem("kiwi.threadWorktrees") ?? "{}") as Record<string, { path: string; projectPath: string }>;
+    expect(Object.values(storedWorktrees)).toContainEqual(expect.objectContaining({
+      path: "/managed/worktrees/isolated-thread",
+      projectPath: PROJECT_A.path,
+    }));
+  });
+
+  it("resumes an isolated thread with its execution cwd and shared Git metadata root", async () => {
+    const user = userEvent.setup();
+    resumeImpl = (params) => ({ thread: { ...THREAD_A, id: String(params.threadId), turns: [] } });
+    localStorage.setItem("kiwi.threadWorktrees", JSON.stringify({
+      [THREAD_A.id]: {
+        threadId: THREAD_A.id,
+        projectId: PROJECT_A.id,
+        projectPath: PROJECT_A.path,
+        path: "/managed/worktrees/thread-a",
+        branch: "openkiwi/thread-a",
+        baseCommit: "head",
+        gitDir: "/projects/alpha/.git",
+        createdAt: Date.now(),
+        status: "active",
+      },
+    }));
+    await renderApp();
+
+    await user.click(await screen.findByText("Alpha thread"));
+    await waitFor(() => {
+      expect(
+        invokeMock.mock.calls.some(
+          ([command, args]) => {
+            if (command !== "codex_rpc" || args?.method !== "thread/resume") return false;
+            const params = args.params as Record<string, unknown>;
+            const roots = params.runtimeWorkspaceRoots as string[] | undefined;
+            return params.cwd === "/managed/worktrees/thread-a"
+              && roots?.includes("/projects/alpha/.git");
+          },
+        ),
+      ).toBe(true);
+    });
+  });
+
+  it("loads a missing isolated transcript read-only and blocks model sends", async () => {
+    const user = userEvent.setup();
+    localStorage.setItem("kiwi.threadWorktrees", JSON.stringify({
+      [THREAD_A.id]: {
+        threadId: THREAD_A.id,
+        projectId: PROJECT_A.id,
+        projectPath: PROJECT_A.path,
+        path: "/managed/worktrees/missing-thread-a",
+        branch: "openkiwi/thread-a",
+        baseCommit: "head",
+        gitDir: "/projects/alpha/.git",
+        createdAt: Date.now(),
+        status: "missing",
+      },
+    }));
+    await renderApp();
+
+    await user.click(await screen.findByText("Alpha thread"));
+    await waitFor(() => {
+      expect(
+        invokeMock.mock.calls.some(
+          ([command, args]) => command === "codex_rpc" && args?.method === "thread/read",
+        ),
+      ).toBe(true);
+    });
+    const turnsBefore = invokeMock.mock.calls.filter(
+      ([command, args]) => command === "codex_rpc" && args?.method === "turn/start",
+    ).length;
+    const composer = await screen.findByPlaceholderText(/Ask OpenKiwi to work in/);
+    await user.type(composer, "do not run this{Enter}");
+    expect(
+      invokeMock.mock.calls.filter(
+        ([command, args]) => command === "codex_rpc" && args?.method === "turn/start",
+      ),
+    ).toHaveLength(turnsBefore);
+    expect(await screen.findByText(/isolated worktree is unavailable/i)).toBeInTheDocument();
   });
 });

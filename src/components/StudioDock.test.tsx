@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { STUDIO_DOCK_EXIT_MS, StudioDock } from "./StudioDock";
 
@@ -40,8 +40,19 @@ function dockProps(open: boolean): Parameters<typeof StudioDock>[0] {
     onTerminalResize: vi.fn(),
     onCheckpoint: vi.fn(),
     onFork: vi.fn(),
+    onCheckpointRestore: vi.fn(),
+    onCheckpointAccept: vi.fn(),
+    onCheckpointPreview: vi.fn(),
+    onCheckpointDelete: vi.fn(),
     onRollback: vi.fn(),
-    onWorktree: vi.fn(),
+    onWorktreeReview: vi.fn(),
+    onWorktreeApply: vi.fn(),
+    onWorktreeMerge: vi.fn(),
+    onWorktreeReveal: vi.fn(),
+    onWorktreeRefresh: vi.fn(),
+    onWorktreeCleanup: vi.fn(),
+    onWorktreeRecreate: vi.fn(),
+    onWorktreeContinueShared: vi.fn(),
     onAddAttachment: vi.fn(),
     onRemoveAttachment: vi.fn(),
     onRefreshUsage: vi.fn(),
@@ -102,5 +113,89 @@ describe("StudioDock", () => {
     expect(screen.getByText("Claude subscription")).toBeInTheDocument();
     expect(screen.getByText(/Max plan connected/)).toBeInTheDocument();
     expect(screen.queryByText("25% used")).not.toBeInTheDocument();
+  });
+
+  it("offers reversible full-state actions for an automatic checkpoint", () => {
+    const onCheckpointRestore = vi.fn();
+    const onCheckpointAccept = vi.fn();
+    const onCheckpointPreview = vi.fn();
+    const checkpoint = {
+      id: "checkpoint-1",
+      threadId: "thread-1",
+      workspacePath: "/project",
+      label: "Run: repair the sidebar",
+      createdAt: Date.now(),
+      completedAt: Date.now(),
+      status: "restored-before" as const,
+      beforeCommit: "before",
+      afterCommit: "after",
+      changedFiles: 3,
+      additions: 12,
+      deletions: 4,
+    };
+
+    render(
+      <StudioDock
+        {...dockProps(true)}
+        tab="checkpoints"
+        activeThread
+        checkpoints={[checkpoint]}
+        checkpointHead={{ checkpointId: checkpoint.id, position: "before" }}
+        onCheckpointRestore={onCheckpointRestore}
+        onCheckpointAccept={onCheckpointAccept}
+        onCheckpointPreview={onCheckpointPreview}
+      />,
+    );
+
+    expect(screen.getByText(/current before state/)).toBeInTheDocument();
+    expect(screen.getByText("3 files · +12 −4")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Restore before" }));
+    fireEvent.click(screen.getByRole("button", { name: "Reapply run" }));
+    fireEvent.click(screen.getByRole("button", { name: "Accept" }));
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+
+    expect(onCheckpointRestore).toHaveBeenNthCalledWith(1, checkpoint, "before");
+    expect(onCheckpointRestore).toHaveBeenNthCalledWith(2, checkpoint, "after");
+    expect(onCheckpointAccept).toHaveBeenCalledWith(checkpoint);
+    expect(onCheckpointPreview).toHaveBeenCalledWith(checkpoint);
+  });
+
+  it("shows the complete action set for an isolated thread", () => {
+    render(
+      <StudioDock
+        {...dockProps(true)}
+        tab="checkpoints"
+        activeThread
+        worktree={{
+          threadId: "thread-1",
+          projectId: "project-1",
+          projectPath: "/project",
+          path: "/worktrees/thread-1",
+          branch: "openkiwi/thread-1",
+          baseCommit: "base",
+          gitDir: "/project/.git",
+          createdAt: 1,
+          status: "active",
+        }}
+        worktreeStatus={{
+          exists: true,
+          registered: true,
+          branch: "openkiwi/thread-1",
+          baseCommit: "base",
+          changedFiles: 2,
+          untrackedFiles: 1,
+          ignoredFiles: [],
+          ahead: 1,
+          behind: 0,
+          clean: false,
+        }}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Review" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Apply to project" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Merge branch" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reveal" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Clean up…" })).toBeInTheDocument();
   });
 });

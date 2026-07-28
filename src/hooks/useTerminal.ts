@@ -15,7 +15,7 @@ export interface TerminalController {
   running: boolean;
   setCommand: (value: string) => void;
   append: (text: string) => void;
-  run: (cwd: string) => Promise<void>;
+  run: (cwd: string, additionalWritableRoots?: string[]) => Promise<void>;
   stop: () => Promise<void>;
   write: (value: string) => void;
   resize: (columns: number, rows: number) => void;
@@ -56,7 +56,7 @@ export function useTerminal(options: { scrollback: number; permission: Permissio
     for (const listener of outputListenersRef.current) listener();
   }, []);
 
-  const run = useCallback(async (cwd: string) => {
+  const run = useCallback(async (cwd: string, additionalWritableRoots: string[] = []) => {
     const trimmed = stateRef.current.running ? "" : commandRef.current.trim();
     if (!trimmed) return;
     const id = crypto.randomUUID();
@@ -74,7 +74,7 @@ export function useTerminal(options: { scrollback: number; permission: Permissio
         size: sizeRef.current,
         cwd,
         timeoutMs: 300000,
-        sandboxPolicy: commandSandbox(optionsRef.current.permission, cwd),
+        sandboxPolicy: commandSandbox(optionsRef.current.permission, cwd, additionalWritableRoots),
       });
       append(`${result.stdout}${result.stderr}\n[exit ${result.exitCode}]\n`);
     } catch (reason) {

@@ -2,10 +2,10 @@ import type { CustomAgentProfile, PermissionMode, ScheduleRunSettings } from "..
 import type { JsonObject } from "./codex";
 import { OPENKIWI_COMPLETION_INSTRUCTIONS } from "./completionPrompt";
 
-export function commandSandbox(permission: PermissionMode, cwd: string): JsonObject {
+export function commandSandbox(permission: PermissionMode, cwd: string, additionalWritableRoots: string[] = []): JsonObject {
   if (permission === "full") return { type: "dangerFullAccess" };
   if (permission === "read-only") return { type: "readOnly", networkAccess: false };
-  return { type: "workspaceWrite", writableRoots: [cwd], networkAccess: true, excludeTmpdirEnvVar: false, excludeSlashTmp: false };
+  return { type: "workspaceWrite", writableRoots: [cwd, ...additionalWritableRoots], networkAccess: true, excludeTmpdirEnvVar: false, excludeSlashTmp: false };
 }
 
 export function sandboxMode(permission: PermissionMode): string {
@@ -33,6 +33,7 @@ export interface ThreadStartOptions {
   /** Non-interactive threads (scheduled runs) never issue approval requests,
    *  because nobody is guaranteed to be present to answer them. */
   interactive: boolean;
+  additionalWorkspaceRoots?: string[];
 }
 
 /**
@@ -67,7 +68,7 @@ export function threadRuntimeConfig(run: ScheduleRunSettings, options: Pick<Thre
 export function threadStartParams(run: ScheduleRunSettings, cwd: string, options: ThreadStartOptions): JsonObject {
   const params: JsonObject = {
     cwd,
-    runtimeWorkspaceRoots: [cwd],
+    runtimeWorkspaceRoots: [cwd, ...(options.additionalWorkspaceRoots ?? [])],
     sandbox: sandboxMode(run.permission),
     approvalPolicy: options.interactive && run.permission === "ask" ? "on-request" : "never",
     baseInstructions: run.systemPrompt,
@@ -85,12 +86,12 @@ export function threadResumeParams(
   run: ScheduleRunSettings,
   threadId: string,
   cwd: string,
-  options: Pick<ThreadStartOptions, "customAgents" | "modelContextWindow"> & { excludeTurns?: boolean } = {},
+  options: Pick<ThreadStartOptions, "customAgents" | "modelContextWindow" | "additionalWorkspaceRoots"> & { excludeTurns?: boolean } = {},
 ): JsonObject {
   return {
     threadId,
     cwd,
-    runtimeWorkspaceRoots: [cwd],
+    runtimeWorkspaceRoots: [cwd, ...(options.additionalWorkspaceRoots ?? [])],
     developerInstructions: OPENKIWI_COMPLETION_INSTRUCTIONS,
     ...(options.excludeTurns ? { excludeTurns: true } : {}),
     ...(run.provider === "openrouter" ? {
@@ -100,13 +101,13 @@ export function threadResumeParams(
   };
 }
 
-export function turnStartParams(run: ScheduleRunSettings, threadId: string, cwd: string, input: JsonObject[]): JsonObject {
+export function turnStartParams(run: ScheduleRunSettings, threadId: string, cwd: string, input: JsonObject[], additionalWritableRoots: string[] = []): JsonObject {
   return {
     threadId,
     input,
     cwd,
-    runtimeWorkspaceRoots: [cwd],
-    sandboxPolicy: commandSandbox(run.permission, cwd),
+    runtimeWorkspaceRoots: [cwd, ...additionalWritableRoots],
+    sandboxPolicy: commandSandbox(run.permission, cwd, additionalWritableRoots),
     model: run.model.trim() || undefined,
     effort: run.ultra ? "ultra" : run.reasoningEffort,
     serviceTier: run.serviceTier,
