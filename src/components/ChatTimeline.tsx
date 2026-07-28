@@ -319,9 +319,11 @@ const ToolDisclosure = memo(function ToolDisclosure({
   type: "command" | "file";
 }) {
   const [expanded, setExpanded] = useState(false);
-  const count = activities.length;
   const inProgress = activities.some((activity) => activity.status === "inProgress");
   const isCommand = type === "command";
+  const count = isCommand
+    ? activities.length
+    : activities.reduce((total, activity) => total + (activity.itemCount ?? 1), 0);
   const noun = isCommand ? (count === 1 ? "command" : "commands") : (count === 1 ? "file change" : "file changes");
   const label = isCommand ? `Executed ${count} ${noun}` : `Made ${count} ${noun}`;
   const Icon = isCommand ? TerminalSquare : FileCode2;
@@ -374,9 +376,9 @@ function completedWorkParts(entries: WorkItemEntry[]): string[] {
   let otherSteps = 0;
   for (const entry of entries) {
     if (entry.kind === "commands") commands += entry.value.length;
-    else if (entry.kind === "files") files += entry.value.length;
+    else if (entry.kind === "files") files += entry.value.reduce((total, activity) => total + (activity.itemCount ?? 1), 0);
     else if (entry.kind === "activity" && entry.value.kind === "command") commands += 1;
-    else if (entry.kind === "activity" && entry.value.kind === "file") files += 1;
+    else if (entry.kind === "activity" && entry.value.kind === "file") files += entry.value.itemCount ?? 1;
     else otherSteps += 1;
   }
   const parts: string[] = [];
@@ -386,13 +388,46 @@ function completedWorkParts(entries: WorkItemEntry[]): string[] {
   return parts;
 }
 
+function completedWorkDuration(entries: WorkItemEntry[]): number | undefined {
+  for (const entry of entries) {
+    if (entry.kind === "commands" || entry.kind === "files") {
+      const duration = entry.value.find((activity) => activity.turnDurationMs !== undefined)?.turnDurationMs;
+      if (duration !== undefined) return duration;
+      continue;
+    }
+    if (entry.value.turnDurationMs !== undefined) return entry.value.turnDurationMs;
+  }
+  return undefined;
+}
+
+export function formatCompletedDuration(durationMs: number): string {
+  const totalSeconds = Math.max(1, Math.round(durationMs / 1_000));
+  if (totalSeconds < 60) {
+    return `${totalSeconds} second${totalSeconds === 1 ? "" : "s"}`;
+  }
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (totalMinutes < 60) {
+    const minutes = `${totalMinutes} minute${totalMinutes === 1 ? "" : "s"}`;
+    return seconds ? `${minutes} ${seconds} second${seconds === 1 ? "" : "s"}` : minutes;
+  }
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  const hourPart = `${hours} hour${hours === 1 ? "" : "s"}`;
+  return minutes ? `${hourPart} ${minutes} minute${minutes === 1 ? "" : "s"}` : hourPart;
+}
+
 export const CompletedWorkDisclosure = memo(function CompletedWorkDisclosure({ entries, reveal = false }: { entries: WorkItemEntry[]; reveal?: boolean }) {
   const [expanded, setExpanded] = useState(false);
   useEffect(() => {
     if (reveal) setExpanded(true);
   }, [reveal]);
   const parts = completedWorkParts(entries);
-  const description = parts.join(", ") || `${entries.length} step${entries.length === 1 ? "" : "s"}`;
+  const durationMs = completedWorkDuration(entries);
+  const summaryParts = durationMs === undefined
+    ? parts
+    : [`Worked for ${formatCompletedDuration(durationMs)}`, ...parts];
+  const description = summaryParts.join(", ") || `${entries.length} step${entries.length === 1 ? "" : "s"}`;
   return (
     <div className={`reasoning-disclosure completed-work-disclosure ${expanded ? "expanded" : "collapsed"} complete`}>
       <button
@@ -405,7 +440,7 @@ export const CompletedWorkDisclosure = memo(function CompletedWorkDisclosure({ e
         <ChevronRight className="reasoning-chevron" size={13} />
         <ListChecks size={13} />
         <span>Work completed</span>
-        <small>{parts.join(" · ")}</small>
+        <small>{summaryParts.join(" · ")}</small>
       </button>
       <div className="reasoning-panel completed-work-panel" aria-hidden={!expanded}>
         <div className="reasoning-panel-inner">

@@ -72,6 +72,8 @@ export interface ChatMessage {
   /** Runtime turn identity keeps steering inside the turn it belongs to. */
   turnId?: string;
   turnStatus?: Turn["status"];
+  /** Wall-clock duration copied onto completed turn entries for timeline summaries. */
+  turnDurationMs?: number;
 }
 
 export interface Activity {
@@ -80,9 +82,13 @@ export interface Activity {
   title: string;
   detail?: string;
   status?: string;
+  /** Number of concrete operations represented by a grouped runtime activity. */
+  itemCount?: number;
   timelineOrder?: number;
   turnId?: string;
   turnStatus?: Turn["status"];
+  /** Wall-clock duration copied onto completed turn entries for timeline summaries. */
+  turnDurationMs?: number;
 }
 
 export interface Account {

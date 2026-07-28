@@ -1,8 +1,13 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { resetTaskStore, useTaskStore } from "./taskStore";
+import { durationForTurn, resetTurnDurationsForTests } from "./turnDurations";
 
 describe("task store", () => {
-  beforeEach(() => resetTaskStore());
+  beforeEach(() => {
+    localStorage.clear();
+    resetTurnDurationsForTests();
+    resetTaskStore();
+  });
 
   it("routes streamed output to the correct thread", () => {
     const store = useTaskStore.getState();
@@ -132,6 +137,59 @@ describe("task store", () => {
     const task = useTaskStore.getState().tasks["thread-a"];
     expect(task.messages.map((message) => message.turnStatus)).toEqual(["interrupted", "interrupted"]);
     expect(task.activities[0].turnStatus).toBe("interrupted");
+  });
+
+  it("records a completed turn duration and restores it with hydrated history", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-07-27T12:00:00Z"));
+      const store = useTaskStore.getState();
+      store.setTaskStatus("thread-a", "starting");
+      store.appendUserMessage("thread-a", { id: "user", role: "user", text: "Fix it" });
+      store.setActiveTurn("thread-a", "turn-a");
+      store.upsertActivity("thread-a", { id: "command", kind: "command", title: "npm test" });
+      store.completeMessage("thread-a", { id: "answer", role: "assistant", text: "Done" });
+
+      vi.advanceTimersByTime(10 * 60_000);
+      store.completeTurn("thread-a", "turn-a", "completed");
+
+      const completed = useTaskStore.getState().tasks["thread-a"];
+      expect(completed.messages.map((message) => message.turnDurationMs)).toEqual([600_000, 600_000]);
+      expect(completed.activities[0].turnDurationMs).toBe(600_000);
+      expect(durationForTurn("thread-a", "turn-a")).toBe(600_000);
+
+      resetTaskStore();
+      useTaskStore.getState().hydrateTask(
+        "thread-a",
+        [{ id: "user", role: "user", text: "Fix it", turnId: "turn-a", turnStatus: "completed" }],
+        [{ id: "command", kind: "command", title: "npm test", turnId: "turn-a", turnStatus: "completed" }],
+      );
+      const hydrated = useTaskStore.getState().tasks["thread-a"];
+      expect(hydrated.messages[0].turnDurationMs).toBe(600_000);
+      expect(hydrated.activities[0].turnDurationMs).toBe(600_000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("retains elapsed time when an idle status arrives before turn completion", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-07-27T12:00:00Z"));
+      const store = useTaskStore.getState();
+      store.setTaskStatus("thread-a", "starting");
+      store.appendUserMessage("thread-a", { id: "user", role: "user", text: "Fix it" });
+      store.setActiveTurn("thread-a", "turn-a");
+      store.upsertActivity("thread-a", { id: "command", kind: "command", title: "npm test" });
+
+      vi.advanceTimersByTime(90_000);
+      store.setTaskStatus("thread-a", "idle");
+      store.completeTurn("thread-a", "turn-a", "completed");
+
+      expect(useTaskStore.getState().tasks["thread-a"].activities[0].turnDurationMs).toBe(90_000);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("assigns chronology once and preserves it when activity completes", () => {

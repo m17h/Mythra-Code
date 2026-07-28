@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { Activity, ChatMessage, PendingApproval, Turn } from "../types";
 import type { AgentRecord, TokenUsageView } from "../components/StudioDock";
+import { durationForTurn, recordTurnDuration } from "./turnDurations";
 
 export type TaskStatus = "idle" | "starting" | "running" | "completed" | "interrupted" | "error";
 
@@ -11,6 +12,8 @@ export interface ThreadTaskState {
   pendingTurnStartOrder?: number;
   /** Wall-clock anchor for the sidebar's live "Working" duration. */
   workingStartedAt?: number;
+  /** Captures elapsed time if an idle status arrives before turn/completed. */
+  pendingTurnDurationMs?: number;
   lastCompletedTurnId?: string;
   lastCompletedTurnStatus?: TaskStatus;
   workspacePath?: string;
@@ -127,7 +130,10 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
   }),
   hydrateTask: (threadId, messages, activities, workspacePath) => set((state) => {
     const existing = state.tasks[threadId];
-    const hydratedMessages = messages.map(withTimelineOrder);
+    const hydratedMessages = messages.map((message) => withTimelineOrder({
+      ...message,
+      turnDurationMs: message.turnDurationMs ?? durationForTurn(threadId, message.turnId),
+    }));
     // The turns-derived history excludes the incomplete turn's partially
     // streamed assistant message. Keep it, so re-opening a running thread does
     // not truncate the stream to whatever deltas arrive after the hydrate.
@@ -141,7 +147,10 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
           ...(existing ?? emptyTask(threadId, workspacePath)),
           workspacePath,
           messages: [...hydratedMessages, ...inFlight],
-          activities: activities.map(withTimelineOrder),
+          activities: activities.map((activity) => withTimelineOrder({
+            ...activity,
+            turnDurationMs: activity.turnDurationMs ?? durationForTurn(threadId, activity.turnId),
+          })),
           unread: false,
           updatedAt: Date.now(),
         },
@@ -280,11 +289,24 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     const newerTurnActive = Boolean(task.activeTurnId && turnId && task.activeTurnId !== turnId);
     const threadStatus = newerTurnActive ? task.status : status;
     const turnStatus = completedTurnStatus(status);
+    const elapsedMs = task.workingStartedAt !== undefined
+      ? Date.now() - task.workingStartedAt
+      : task.pendingTurnDurationMs;
+    const turnDurationMs = status === "completed"
+      && !newerTurnActive
+      && completedTurnId
+      && elapsedMs !== undefined
+      ? recordTurnDuration(threadId, completedTurnId, elapsedMs)
+      : undefined;
     const messages = completedTurnId
-      ? task.messages.map((message) => message.turnId === completedTurnId ? { ...message, turnStatus } : message)
+      ? task.messages.map((message) => message.turnId === completedTurnId
+        ? { ...message, turnStatus, turnDurationMs: turnDurationMs ?? message.turnDurationMs }
+        : message)
       : task.messages;
     const activities = completedTurnId
-      ? task.activities.map((activity) => activity.turnId === completedTurnId ? { ...activity, turnStatus } : activity)
+      ? task.activities.map((activity) => activity.turnId === completedTurnId
+        ? { ...activity, turnStatus, turnDurationMs: turnDurationMs ?? activity.turnDurationMs }
+        : activity)
       : task.activities;
     return {
       tasks: {
@@ -296,6 +318,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
           activeTurnId: task.activeTurnId === turnId || !turnId ? undefined : task.activeTurnId,
           pendingTurnStartOrder: newerTurnActive ? task.pendingTurnStartOrder : undefined,
           workingStartedAt: newerTurnActive ? task.workingStartedAt : undefined,
+          pendingTurnDurationMs: newerTurnActive ? task.pendingTurnDurationMs : undefined,
           lastCompletedTurnId: turnId,
           lastCompletedTurnStatus: status,
           status: threadStatus,
@@ -310,6 +333,11 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     const task = state.tasks[threadId] ?? emptyTask(threadId);
     const isWorking = status === "starting" || status === "running";
     const wasWorking = task.status === "starting" || task.status === "running";
+    const pendingTurnDurationMs = isWorking
+      ? (wasWorking ? task.pendingTurnDurationMs : undefined)
+      : wasWorking && task.workingStartedAt !== undefined
+        ? Date.now() - task.workingStartedAt
+        : task.pendingTurnDurationMs;
     let latestPendingUser: number | undefined;
     if (status === "starting" && !wasWorking && !task.activeTurnId) {
       for (let index = task.messages.length - 1; index >= 0; index -= 1) {
@@ -329,6 +357,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
           error,
           pendingTurnStartOrder: task.pendingTurnStartOrder ?? latestPendingUser,
           workingStartedAt: isWorking ? (wasWorking ? task.workingStartedAt ?? Date.now() : Date.now()) : undefined,
+          pendingTurnDurationMs,
           unread: state.activeThreadId !== threadId && status === "completed" ? true : task.unread,
           updatedAt: Date.now(),
         },

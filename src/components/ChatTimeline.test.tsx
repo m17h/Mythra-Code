@@ -19,7 +19,7 @@ vi.mock("react-virtuoso", async () => {
   };
 });
 
-import { ActivityRow, ChatTimeline, CommandDisclosure, CompletedWorkDisclosure, FileDisclosure, INITIAL_TIMELINE_POSITION, ReasoningDisclosure, compactCompletedTurns, followTimelineOutput, orderedTimelineEntries, type WorkItemEntry } from "./ChatTimeline";
+import { ActivityRow, ChatTimeline, CommandDisclosure, CompletedWorkDisclosure, FileDisclosure, INITIAL_TIMELINE_POSITION, ReasoningDisclosure, compactCompletedTurns, followTimelineOutput, formatCompletedDuration, orderedTimelineEntries, type WorkItemEntry } from "./ChatTimeline";
 
 describe("ChatTimeline", () => {
   it("places command activity between the messages that surround it", () => {
@@ -314,5 +314,28 @@ describe("ChatTimeline", () => {
     expect(screen.getByText("npm test")).toBeInTheDocument();
     expect(screen.getByText("cause").tagName).toBe("STRONG");
     expect(screen.getByText("Updated")).toBeInTheDocument();
+  });
+
+  it("summarizes how long a completed run worked alongside its activity counts", () => {
+    const timing = { turnId: "turn-a", turnStatus: "completed" as const, turnDurationMs: 10 * 60_000 };
+    render(<CompletedWorkDisclosure entries={[
+      { kind: "commands", value: [
+        { id: "one", kind: "command", title: "npm test", ...timing },
+        { id: "two", kind: "command", title: "npm build", ...timing },
+      ] },
+      { kind: "files", value: [{ id: "edit", kind: "file", title: "9 file changes", itemCount: 9, ...timing }] },
+      { kind: "activity", value: { id: "reason", kind: "reasoning", title: "Check result", ...timing } },
+    ]} />);
+
+    expect(screen.getByText("Worked for 10 minutes · 2 commands · 9 file changes · 1 other step")).toBeInTheDocument();
+    expect(screen.getByRole("button", {
+      name: "Show completed work: Worked for 10 minutes, 2 commands, 9 file changes, 1 other step",
+    })).toBeInTheDocument();
+  });
+
+  it("formats completed run durations in readable units", () => {
+    expect(formatCompletedDuration(1_000)).toBe("1 second");
+    expect(formatCompletedDuration(65_000)).toBe("1 minute 5 seconds");
+    expect(formatCompletedDuration(2 * 60 * 60_000 + 12 * 60_000)).toBe("2 hours 12 minutes");
   });
 });

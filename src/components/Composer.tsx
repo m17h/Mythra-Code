@@ -2,6 +2,7 @@ import {
   forwardRef,
   useCallback,
   useImperativeHandle,
+  useLayoutEffect,
   useRef,
   useState,
   type ReactNode,
@@ -55,6 +56,20 @@ export function resetDraftStoreForTests(): void {
 
 const MENTION_PATTERN = /@([\w./-]*)$/;
 
+export const COMPOSER_INPUT_MIN_HEIGHT = 68;
+export const COMPOSER_INPUT_MAX_HEIGHT = COMPOSER_INPUT_MIN_HEIGHT * 2;
+
+export function resizeComposerTextarea(textarea: HTMLTextAreaElement): void {
+  textarea.style.height = "auto";
+  const contentHeight = textarea.scrollHeight;
+  const height = Math.min(
+    COMPOSER_INPUT_MAX_HEIGHT,
+    Math.max(COMPOSER_INPUT_MIN_HEIGHT, contentHeight),
+  );
+  textarea.style.height = `${height}px`;
+  textarea.style.overflowY = contentHeight > COMPOSER_INPUT_MAX_HEIGHT ? "auto" : "hidden";
+}
+
 export const Composer = forwardRef<ComposerHandle, {
   threadKey: string;
   running: boolean;
@@ -77,6 +92,10 @@ export const Composer = forwardRef<ComposerHandle, {
   const mentionRequestRef = useRef(0);
   const searchFilesRef = useRef(props.searchFiles);
   searchFilesRef.current = props.searchFiles;
+
+  useLayoutEffect(() => {
+    if (textareaRef.current) resizeComposerTextarea(textareaRef.current);
+  }, [draft, props.threadKey]);
 
   const setDraft = useCallback((text: string) => {
     setDraftState(text);

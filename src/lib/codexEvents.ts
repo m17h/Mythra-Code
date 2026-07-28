@@ -126,6 +126,7 @@ export function handleThreadItem(threadId: string, item: ThreadItem, ctx: CodexE
       id,
       kind: "file",
       title: `${item.changes?.length ?? 0} file change${item.changes?.length === 1 ? "" : "s"}`,
+      itemCount: item.changes?.length,
       status: item.status,
     });
     return;

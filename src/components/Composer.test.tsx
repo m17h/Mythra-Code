@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve()) }));
 
-import { Composer, draftFor, resetDraftStoreForTests } from "./Composer";
+import { COMPOSER_INPUT_MAX_HEIGHT, Composer, draftFor, resetDraftStoreForTests } from "./Composer";
 
 function composerProps(overrides: Partial<Parameters<typeof Composer>[0]> = {}): Parameters<typeof Composer>[0] {
   return {
@@ -65,5 +65,18 @@ describe("Composer", () => {
     render(<Composer {...composerProps({ running: true, steering: true })} />);
     expect(screen.getByText("Steering active task")).toBeInTheDocument();
     expect(screen.getByLabelText("Stop the active task")).toBeInTheDocument();
+  });
+
+  it("grows with a long prompt until twice its base height, then scrolls", () => {
+    render(<Composer {...composerProps()} />);
+    const textarea = screen.getByPlaceholderText("Ask anything");
+
+    Object.defineProperty(textarea, "scrollHeight", { configurable: true, value: 118 });
+    fireEvent.change(textarea, { target: { value: "A prompt long enough to wrap across several lines." } });
+    expect(textarea).toHaveStyle({ height: "118px", overflowY: "hidden" });
+
+    Object.defineProperty(textarea, "scrollHeight", { configurable: true, value: 260 });
+    fireEvent.change(textarea, { target: { value: "An even longer prompt that needs more room than the expanded composer allows." } });
+    expect(textarea).toHaveStyle({ height: `${COMPOSER_INPUT_MAX_HEIGHT}px`, overflowY: "auto" });
   });
 });

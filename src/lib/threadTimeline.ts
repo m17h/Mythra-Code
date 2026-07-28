@@ -17,7 +17,7 @@ function activityFromItem(item: ThreadItem, id: string, timelineOrder: number, t
     return { id, kind: "command", title: item.command ?? "Run command", detail: item.aggregatedOutput ?? item.cwd, status: item.status, timelineOrder, turnId, turnStatus };
   }
   if (item.type === "fileChange") {
-    return { id, kind: "file", title: `${item.changes?.length ?? 0} file change${item.changes?.length === 1 ? "" : "s"}`, status: item.status, timelineOrder, turnId, turnStatus };
+    return { id, kind: "file", title: `${item.changes?.length ?? 0} file change${item.changes?.length === 1 ? "" : "s"}`, itemCount: item.changes?.length, status: item.status, timelineOrder, turnId, turnStatus };
   }
   if (item.type === "reasoning") {
     const content = (item.content ?? []).filter((entry): entry is string => typeof entry === "string").join("\n\n").trim();

@@ -50,6 +50,7 @@ import { resolveSystemPrompt } from "./lib/systemPrompt";
 import { providerAccountUsage } from "./lib/providerUsage";
 import { OPENKIWI_COMPLETION_INSTRUCTIONS, withOpenKiwiCompletionInstructions } from "./lib/completionPrompt";
 import { providerForArchivedThread } from "./lib/threadArchive";
+import { deleteThreadTurnDurations } from "./lib/turnDurations";
 
 const ChatTimeline = lazy(() => import("./components/ChatTimeline").then((module) => ({ default: module.ChatTimeline })));
 const StudioDock = lazy(() => import("./components/StudioDock").then((module) => ({ default: module.StudioDock })));
@@ -1627,6 +1628,7 @@ export default function App() {
       if (activeThread?.id === threadId) newThread();
       forgetThread(threadId);
       forgetThreadModel(threadId);
+      deleteThreadTurnDurations(threadId);
       setThreads((current) => current.filter((entry) => entry.id !== threadId));
       persistArchivedThreads((current) => current.filter((entry) => entry.id !== threadId));
       useTaskStore.getState().removeTask(threadId);
