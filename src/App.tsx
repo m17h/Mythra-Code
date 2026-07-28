@@ -3352,7 +3352,10 @@ export default function App() {
                         title={!workspaceGitInfo?.isRepo || !workspaceGitInfo.isRoot || !workspaceGitInfo.hasCommit ? "Requires a Git repository root with at least one commit" : "Create a private branch and worktree for this thread"}
                       >
                         <GitBranch size={15} />
-                        <span><strong>Isolated worktree</strong><small>Private branch; apply or merge when ready</small></span>
+                        <span>
+                          <strong className="isolated-worktree-title">Isolated worktree</strong>
+                          <small>Private branch; apply or<br />merge when ready</small>
+                        </span>
                       </button>
                     </div>
                   )}

@@ -433,6 +433,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .isolation-choice > button.active { border-color: color-mix(in srgb, var(--info) 46%, var(--line)); color: var(--info); background: color-mix(in srgb, var(--info) 7%, var(--line-quiet)); }
 .isolation-choice > button > span { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .isolation-choice strong { color: var(--ink-2); font-size: var(--fs-ui); font-weight: 620; }
+.isolated-worktree-title { transform: translateX(-3px); }
 .isolation-choice small { color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.35; }
 .isolation-chip { display: inline-flex; align-items: center; gap: 5px; max-width: 110px; padding: 5px 8px; border: 1px solid color-mix(in srgb, var(--info) 30%, var(--line)); border-radius: 999px; color: var(--info); background: color-mix(in srgb, var(--info) 7%, transparent); font-size: var(--fs-meta); font-weight: 620; white-space: nowrap; }
 .empty-state-icon { width: 46px; height: 46px; border-radius: var(--r-lg); }
