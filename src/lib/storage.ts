@@ -27,6 +27,7 @@ export const DURABLE_STORAGE_KEYS = [
   "kiwi.workflowRuns",
   "kiwi.costLedger",
   "kiwi.paneSizes",
+  "kiwi.sidebarSplitRatio",
   "kiwi.onboardingVersion",
 ] as const;
 
@@ -35,7 +36,7 @@ export const DURABLE_STORAGE_KEYS = [
  * migrateStorage. Old installs then upgrade their data instead of loading
  * garbage into the new code.
  */
-export const STORAGE_SCHEMA_VERSION = 6;
+export const STORAGE_SCHEMA_VERSION = 7;
 
 export function migrateStorage(): void {
   const stored = loadStored<number>("kiwi.schemaVersion", 0);
@@ -44,6 +45,7 @@ export function migrateStorage(): void {
   // provider metadata to newly archived threads. Version 4 adds a separate
   // per-turn duration store. Version 5 adds the current filesystem checkpoint
   // head for each project. Version 6 adds per-thread isolated worktree records.
+  // Version 7 adds the persisted Projects/Threads sidebar split ratio.
   // All additions are optional and require no eager rewrite of existing records.
   storeValue("kiwi.schemaVersion", STORAGE_SCHEMA_VERSION);
 }

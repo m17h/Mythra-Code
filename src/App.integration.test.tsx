@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Thread } from "./types";
@@ -219,6 +219,61 @@ beforeEach(() => {
 });
 
 describe("workspace switching during thread selection", () => {
+  it("reorders projects by dragging and persists the exact order", async () => {
+    const user = userEvent.setup();
+    await renderApp();
+    const alphaRow = screen.getByRole("button", { name: PROJECT_A.name }).closest(".workspace-row-wrap");
+    const betaRow = screen.getByRole("button", { name: PROJECT_B.name }).closest(".workspace-row-wrap");
+    const workspaceList = alphaRow?.closest(".workspace-list");
+    expect(alphaRow).not.toBeNull();
+    expect(betaRow).not.toBeNull();
+    expect(workspaceList).not.toBeNull();
+    vi.spyOn(workspaceList!, "getBoundingClientRect").mockReturnValue({
+      top: 0,
+      bottom: 200,
+      height: 200,
+    } as DOMRect);
+    vi.spyOn(betaRow!, "getBoundingClientRect").mockReturnValue({
+      top: 0,
+      height: 34,
+    } as DOMRect);
+    Object.defineProperty(document, "elementFromPoint", {
+      configurable: true,
+      value: vi.fn(() => betaRow),
+    });
+
+    await user.pointer([
+      { keys: "[MouseLeft>]", target: alphaRow!, coords: { clientX: 10, clientY: 10 } },
+      { target: betaRow!, coords: { clientX: 10, clientY: 30 } },
+    ]);
+    expect(alphaRow).toHaveClass("dragging");
+    await user.pointer({ keys: "[/MouseLeft]", target: betaRow!, coords: { clientX: 10, clientY: 30 } });
+
+    const renderedOrder = [...document.querySelectorAll(".workspace-row-wrap .workspace-name")]
+      .map((node) => node.textContent);
+    expect(renderedOrder).toEqual([PROJECT_B.name, PROJECT_A.name]);
+    await waitFor(() => {
+      const stored = JSON.parse(localStorage.getItem("kiwi.projects") ?? "[]") as Array<{ id: string }>;
+      expect(stored.map((project) => project.id)).toEqual([PROJECT_B.id, PROJECT_A.id]);
+    });
+  });
+
+  it("resizes and persists the Projects/Threads divider", async () => {
+    await renderApp();
+    const separator = screen.getByRole("separator", { name: "Resize projects and threads" });
+    vi.spyOn(separator.parentElement!, "getBoundingClientRect").mockReturnValue({
+      top: 100,
+      height: 600,
+    } as DOMRect);
+
+    fireEvent.pointerDown(separator, { clientY: 280 });
+    fireEvent.pointerMove(window, { clientY: 500 });
+    fireEvent.pointerUp(window);
+
+    expect(separator).toHaveAttribute("aria-valuenow", "67");
+    expect(JSON.parse(localStorage.getItem("kiwi.sidebarSplitRatio") ?? "0")).toBeCloseTo(2 / 3);
+  });
+
   it("does not install a thread whose resume settles after switching workspaces", async () => {
     const user = userEvent.setup();
     await renderApp();

@@ -227,19 +227,31 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .new-thread-button:active:not(:disabled) { background: rgba(255,255,255,.05); }
 .new-thread-button:disabled { opacity: .38; cursor: default; }
 .new-thread-button kbd { padding: 2px 5px; border: 1px solid var(--line); border-radius: var(--r-xs); color: var(--muted-2); background: rgba(0,0,0,.24); font: 10.5px var(--font-mono); }
+.sidebar-sections { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .sidebar-section { padding: 0 var(--s-2); min-width: 232px; }
-.workspaces-section { padding-bottom: var(--s-3); }
-.threads-section { flex: 1; min-height: 0; display: flex; flex-direction: column; padding-top: var(--s-1); border-top: 1px solid var(--line); }
+.workspaces-section { flex: 0 0 30%; min-height: 104px; display: flex; flex-direction: column; padding-bottom: 2px; overflow: hidden; }
+.threads-section { flex: 1; min-height: 148px; display: flex; flex-direction: column; padding-top: 0; }
+.sidebar-section-resize { position: relative; flex: 0 0 9px; min-width: 232px; outline: none; cursor: row-resize; touch-action: none; }
+.sidebar-section-resize::after { content: ""; position: absolute; left: var(--s-2); right: var(--s-2); top: 4px; height: 1px; background: var(--line); transition: height var(--t-fast) ease, top var(--t-fast) ease, background var(--t-fast) ease; }
+.sidebar-section-resize:hover::after, .sidebar-section-resize:active::after, .sidebar-section-resize:focus-visible::after { top: 3px; height: 3px; border-radius: var(--r-pill); background: color-mix(in srgb, var(--green) 54%, var(--line)); }
 .section-label-row { display: flex; height: 28px; align-items: center; justify-content: space-between; padding: 0 var(--s-2); }
 .section-label { color: var(--muted-2); font-size: var(--fs-micro); font-weight: 650; text-transform: uppercase; letter-spacing: var(--track-caps); }
 .thread-count { color: var(--muted-2); font-size: var(--fs-micro); font-variant-numeric: tabular-nums; }
 .workspace-list, .thread-list { display: flex; flex-direction: column; gap: 2px; }
-/* A long workspace list must not squeeze the thread section off-screen. */
-.workspace-list { max-height: 30vh; overflow-y: auto; }
+/* Both lists scroll independently inside the user-adjustable sidebar split. */
+.workspace-list { flex: 1; min-height: 0; justify-content: flex-start; overflow-y: auto; }
+.workspace-list > .workspace-row { flex: 0 0 34px; }
 .thread-list { overflow-y: auto; min-height: 0; gap: 4px; padding: 1px 0 12px; }
 
 /* Unified workspace rows: Chats first, then projects */
 .workspace-row-wrap { position: relative; display: flex; align-items: center; border-radius: var(--r-sm); }
+.workspace-row-wrap .workspace-row { cursor: grab; }
+.workspace-row-wrap.dragging { opacity: .42; }
+.workspace-row-wrap.dragging .workspace-row { cursor: grabbing; }
+.project-reordering, .project-reordering * { cursor: grabbing !important; user-select: none !important; }
+.workspace-row-wrap.drop-before::after, .workspace-row-wrap.drop-after::after { content: ""; position: absolute; z-index: 3; left: var(--s-2); right: var(--s-2); height: 2px; border-radius: var(--r-pill); background: var(--green); box-shadow: 0 0 8px color-mix(in srgb, var(--green) 40%, transparent); pointer-events: none; }
+.workspace-row-wrap.drop-before::after { top: -2px; }
+.workspace-row-wrap.drop-after::after { bottom: -2px; }
 .workspace-row { position: relative; display: grid; grid-template-columns: 22px minmax(0,1fr); align-items: center; gap: var(--s-2); flex: 1; width: 100%; min-width: 0; height: 34px; border: 0; border-radius: var(--r-sm); background: transparent; color: var(--muted); padding: 0 var(--s-2); font-size: var(--fs-ui); letter-spacing: var(--track-tight); text-align: left; cursor: pointer; transition: color var(--t-fast) ease, background var(--t-fast) ease; }
 .workspace-row-wrap .workspace-row { padding-right: 30px; }
 .workspace-icon { width: 21px; height: 21px; display: grid; place-items: center; border-radius: var(--r-xs); color: var(--muted-2); background: transparent; transition: color var(--t-fast) ease, background var(--t-fast) ease; }

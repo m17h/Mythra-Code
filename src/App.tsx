@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -42,6 +42,7 @@ import { useClaudeEvents } from "./hooks/useClaudeEvents";
 import { useScheduler } from "./hooks/useScheduler";
 import { useTerminal } from "./hooks/useTerminal";
 import { usePaneResize } from "./hooks/usePaneResize";
+import { useSidebarSplitResize } from "./hooks/useSidebarSplitResize";
 import { useWorkflowEngine } from "./hooks/useWorkflowEngine";
 import { isEstablishedOpenKiwiInstall, ONBOARDING_EXIT_MS, ONBOARDING_VERSION } from "./lib/onboarding";
 import { createLocalSkill, importLocalSkills, normalizeSkillName, resolveLocalSkills, scanLocalSkills, syncLocalSkills, type LocalSkill, type LocalSkillFile } from "./lib/skills";
@@ -52,6 +53,7 @@ import { providerAccountUsage } from "./lib/providerUsage";
 import { OPENKIWI_COMPLETION_INSTRUCTIONS, withOpenKiwiCompletionInstructions } from "./lib/completionPrompt";
 import { providerForArchivedThread } from "./lib/threadArchive";
 import { deleteThreadTurnDurations } from "./lib/turnDurations";
+import { reorderProjects, type ProjectDropPosition } from "./lib/projectOrdering";
 import {
   checkpointIsRestorable,
   completeCheckpointSnapshot,
@@ -86,7 +88,7 @@ const EMPTY_MESSAGES: ChatMessage[] = [];
 const EMPTY_ACTIVITIES: Activity[] = [];
 const EMPTY_AGENTS: AgentRecord[] = [];
 
-const initialProjects = loadStored<Project[]>("kiwi.projects", []).sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)));
+const initialProjects = loadStored<Project[]>("kiwi.projects", []);
 const initialWorkspaceMode: WorkspaceMode = loadStored<WorkspaceMode>("kiwi.workspaceMode", initialProjects.length ? "project" : "chat");
 const initialKnownThreads = pruneSidebarIndex(loadStored<ThreadSidebarIndex>("kiwi.knownThreads", {}));
 const initialOnboardingVersion = loadStored<number>("kiwi.onboardingVersion", 0);
@@ -188,6 +190,11 @@ export default function App() {
   const [renamingThreadId, setRenamingThreadId] = useState<string | null>(null);
   const [threadNameDraft, setThreadNameDraft] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [draggedProjectId, setDraggedProjectId] = useState<string | null>(null);
+  const draggedProjectIdRef = useRef<string | null>(null);
+  const [projectDropTarget, setProjectDropTarget] = useState<{ id: string; position: ProjectDropPosition } | null>(null);
+  const projectDropTargetRef = useRef<{ id: string; position: ProjectDropPosition } | null>(null);
+  const suppressProjectClickRef = useRef(false);
   const [permissionOpen, setPermissionOpen] = useState(false);
   const [status, setStatus] = useState("Checking runtime");
   const [error, setError] = useState<string | null>(null);
@@ -525,6 +532,7 @@ export default function App() {
   );
 
   const { paneSizes, startPaneResize } = usePaneResize((settings.uiScale || 100) / 100);
+  const { splitRatio: sidebarSplitRatio, startSidebarSplitResize, resizeSidebarSplitWithKeyboard } = useSidebarSplitResize();
 
   // Confirmation statuses like "Stopped" used to persist in the topbar forever.
   const transientStatusTimerRef = useRef<number | null>(null);
@@ -1456,6 +1464,96 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [activeWorkspace, runtimeStatus?.available, threadSearch]);
 
+  const startProjectPointerDrag = (event: ReactPointerEvent<HTMLDivElement>, projectId: string) => {
+    if ((event.button !== undefined && event.button !== 0) || (event.target as HTMLElement).closest(".row-menu")) return;
+    const pointerId = event.pointerId;
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const workspaceList = event.currentTarget.closest(".workspace-list") as HTMLElement | null;
+    let active = false;
+    const isCurrentPointer = (candidate: number | undefined) =>
+      pointerId === undefined || candidate === undefined || candidate === pointerId;
+
+    const updateTarget = (clientX: number, clientY: number) => {
+      if (!workspaceList) return;
+      const listBounds = workspaceList.getBoundingClientRect();
+      if (clientY < listBounds.top - 8 || clientY > listBounds.bottom + 8) {
+        projectDropTargetRef.current = null;
+        setProjectDropTarget(null);
+        return;
+      }
+      if (clientY < listBounds.top + 24) workspaceList.scrollTop -= 8;
+      else if (clientY > listBounds.bottom - 24) workspaceList.scrollTop += 8;
+
+      const pointedRow = document.elementFromPoint(clientX, clientY)?.closest<HTMLElement>("[data-project-id]");
+      if (pointedRow?.dataset.projectId === projectId) {
+        projectDropTargetRef.current = null;
+        setProjectDropTarget(null);
+        return;
+      }
+      const rows = [...workspaceList.querySelectorAll<HTMLElement>("[data-project-id]")]
+        .filter((row) => row.dataset.projectId !== projectId);
+      const targetRow = pointedRow && pointedRow.dataset.projectId !== projectId && workspaceList.contains(pointedRow)
+        ? pointedRow
+        : rows.reduce<HTMLElement | null>((nearest, row) => {
+            if (!nearest) return row;
+            const rowDistance = Math.abs(clientY - (row.getBoundingClientRect().top + row.getBoundingClientRect().height / 2));
+            const nearestBounds = nearest.getBoundingClientRect();
+            const nearestDistance = Math.abs(clientY - (nearestBounds.top + nearestBounds.height / 2));
+            return rowDistance < nearestDistance ? row : nearest;
+          }, null);
+      const targetId = targetRow?.dataset.projectId;
+      if (!targetRow || !targetId) return;
+      const bounds = targetRow.getBoundingClientRect();
+      const position: ProjectDropPosition = clientY < bounds.top + bounds.height / 2 ? "before" : "after";
+      const nextTarget = { id: targetId, position };
+      projectDropTargetRef.current = nextTarget;
+      setProjectDropTarget((current) => current?.id === targetId && current.position === position ? current : nextTarget);
+    };
+
+    const onMove = (moveEvent: PointerEvent) => {
+      if (!isCurrentPointer(moveEvent.pointerId)) return;
+      if (!active && Math.hypot(moveEvent.clientX - startX, moveEvent.clientY - startY) < 5) return;
+      moveEvent.preventDefault();
+      if (!active) {
+        active = true;
+        draggedProjectIdRef.current = projectId;
+        setDraggedProjectId(projectId);
+        document.body.classList.add("project-reordering");
+      }
+      updateTarget(moveEvent.clientX, moveEvent.clientY);
+    };
+
+    const onEnd = (endEvent: PointerEvent) => {
+      if (!isCurrentPointer(endEvent.pointerId)) return;
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onEnd);
+      window.removeEventListener("pointercancel", onEnd);
+      document.body.classList.remove("project-reordering");
+
+      const target = projectDropTargetRef.current;
+      if (endEvent.type === "pointerup" && active && target) {
+        setProjects((current) => {
+          const next = reorderProjects(current, projectId, target.id, target.position);
+          if (next !== current) storeValue("kiwi.projects", next);
+          return next;
+        });
+        suppressProjectClickRef.current = true;
+        window.setTimeout(() => {
+          suppressProjectClickRef.current = false;
+        }, 0);
+      }
+      draggedProjectIdRef.current = null;
+      projectDropTargetRef.current = null;
+      setDraggedProjectId(null);
+      setProjectDropTarget(null);
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onEnd);
+    window.addEventListener("pointercancel", onEnd);
+  };
+
   const addProject = async () => {
     const selected = await open({ directory: true, multiple: false, title: "Choose a project folder" });
     if (!selected || Array.isArray(selected)) return;
@@ -1476,7 +1574,9 @@ export default function App() {
   };
 
   const toggleProjectPin = (project: Project) => {
-    const next = projects.map((entry) => (entry.id === project.id ? { ...entry, pinned: !entry.pinned } : entry)).sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)));
+    const updated = { ...project, pinned: !project.pinned };
+    const remaining = projects.filter((entry) => entry.id !== project.id);
+    const next = updated.pinned ? [updated, ...remaining] : projects.map((entry) => entry.id === project.id ? updated : entry);
     setProjects(next);
     storeValue("kiwi.projects", next);
   };
@@ -3009,7 +3109,8 @@ export default function App() {
           <kbd>⌘N</kbd>
         </button>
 
-        <div className="sidebar-section workspaces-section">
+        <div className="sidebar-sections">
+        <div className="sidebar-section workspaces-section" style={{ flexBasis: `${sidebarSplitRatio * 100}%` }}>
           <div className="section-label-row">
             <span className="section-label">Workspaces</span>
             <button className="icon-button tiny" onClick={addProject} title="Add project" aria-label="Add project">
@@ -3031,10 +3132,24 @@ export default function App() {
               <span className="workspace-name">Chats</span>
             </button>
             {projects.map((project) => (
-              <div key={project.id} className={`workspace-row-wrap ${workspaceMode === "project" && project.id === activeProjectId ? "active" : ""}`}>
+              <div
+                key={project.id}
+                className={[
+                  "workspace-row-wrap",
+                  workspaceMode === "project" && project.id === activeProjectId ? "active" : "",
+                  draggedProjectId === project.id ? "dragging" : "",
+                  projectDropTarget?.id === project.id ? `drop-${projectDropTarget.position}` : "",
+                ].filter(Boolean).join(" ")}
+                data-project-id={project.id}
+                onPointerDown={(event) => startProjectPointerDrag(event, project.id)}
+              >
                 <button
                   className="workspace-row"
-                  onClick={() => {
+                  onClick={(event) => {
+                    if (suppressProjectClickRef.current) {
+                      event.preventDefault();
+                      return;
+                    }
                     setActiveProjectId(project.id);
                     setWorkspaceMode("project");
                     storeValue("kiwi.workspaceMode", "project");
@@ -3063,6 +3178,19 @@ export default function App() {
             )}
           </div>
         </div>
+
+        <div
+          className="sidebar-section-resize"
+          onPointerDown={startSidebarSplitResize}
+          onKeyDown={resizeSidebarSplitWithKeyboard}
+          role="separator"
+          aria-orientation="horizontal"
+          aria-label="Resize projects and threads"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={Math.round(sidebarSplitRatio * 100)}
+          tabIndex={0}
+        />
 
         <div className="sidebar-section threads-section">
           <div className="section-label-row">
@@ -3151,6 +3279,7 @@ export default function App() {
                 ))}
             </div>
           )}
+        </div>
         </div>
 
         <div className="sidebar-footer">
