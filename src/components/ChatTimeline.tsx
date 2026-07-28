@@ -28,6 +28,35 @@ function entryOrder(entry: TimelineEntry): number {
   return entry.value.timelineOrder ?? Number.MAX_SAFE_INTEGER;
 }
 
+function workItemId(entry: WorkItemEntry): string | undefined {
+  if (entry.kind === "commands" || entry.kind === "files") return entry.value[0]?.id;
+  return entry.value.id;
+}
+
+/**
+ * Every delta flush rebuilds the timeline entry list, so the grouped arrays
+ * handed to the disclosures are new objects on every streamed frame even when
+ * nothing inside them changed. The underlying activity and message objects do
+ * keep their identity, so comparing element-wise lets `memo` actually hold and
+ * stops expanded panels from re-rendering (and re-parsing Markdown) at 60fps.
+ */
+function sameActivities(left: Activity[], right: Activity[]): boolean {
+  return left.length === right.length && left.every((activity, index) => activity === right[index]);
+}
+
+function sameWorkItem(left: WorkItemEntry, right: WorkItemEntry): boolean {
+  if (left === right) return true;
+  if (left.kind !== right.kind) return false;
+  if (left.kind === "commands" || left.kind === "files") {
+    return sameActivities(left.value, (right as typeof left).value);
+  }
+  return left.value === (right as typeof left).value;
+}
+
+function sameWorkItems(left: WorkItemEntry[], right: WorkItemEntry[]): boolean {
+  return left.length === right.length && left.every((entry, index) => sameWorkItem(entry, right[index]));
+}
+
 function workItemTurnId(entry: WorkItemEntry): string | undefined {
   if (entry.kind === "commands" || entry.kind === "files") {
     const turnId = entry.value[0]?.turnId;
@@ -369,13 +398,19 @@ const ToolDisclosure = memo(function ToolDisclosure({
   );
 });
 
-export const CommandDisclosure = memo(function CommandDisclosure({ commands }: { commands: Activity[] }) {
-  return <ToolDisclosure activities={commands} type="command" />;
-});
+export const CommandDisclosure = memo(
+  function CommandDisclosure({ commands }: { commands: Activity[] }) {
+    return <ToolDisclosure activities={commands} type="command" />;
+  },
+  (previous, next) => sameActivities(previous.commands, next.commands),
+);
 
-export const FileDisclosure = memo(function FileDisclosure({ files }: { files: Activity[] }) {
-  return <ToolDisclosure activities={files} type="file" />;
-});
+export const FileDisclosure = memo(
+  function FileDisclosure({ files }: { files: Activity[] }) {
+    return <ToolDisclosure activities={files} type="file" />;
+  },
+  (previous, next) => sameActivities(previous.files, next.files),
+);
 
 function completedWorkParts(entries: WorkItemEntry[]): string[] {
   let commands = 0;
@@ -473,7 +508,7 @@ export const CompletedWorkDisclosure = memo(function CompletedWorkDisclosure({ e
       </div>
     </div>
   );
-});
+}, (previous, next) => (previous.reveal ?? false) === (next.reveal ?? false) && sameWorkItems(previous.entries, next.entries));
 
 export function followTimelineOutput(atBottom: boolean): "auto" | false {
   return atBottom ? "auto" : false;
@@ -496,6 +531,8 @@ function TimelineHeader() {
 }
 
 const VIRTUOSO_COMPONENTS = { Header: TimelineHeader, Footer: TimelineFooter };
+
+const NO_SEARCH_MATCHES: number[] = [];
 
 export function ChatTimeline({
   messages,
@@ -538,9 +575,16 @@ export function ChatTimeline({
   // that case Virtuoso consumes initialTopMostItemIndex before there is an
   // item to position. Markdown and virtualization measurements can also make
   // a tall final answer grow over several layout passes, so keep restoring the
-  // bottom until the measured list height has been stable for a short window.
+  // bottom across the layout passes that follow the first rendered entry.
   const initialPositionPendingRef = useRef(true);
   const initialPositionSettleTimerRef = useRef<number | null>(null);
+  const endInitialPositioning = useCallback(() => {
+    initialPositionPendingRef.current = false;
+    if (initialPositionSettleTimerRef.current !== null) {
+      window.clearTimeout(initialPositionSettleTimerRef.current);
+      initialPositionSettleTimerRef.current = null;
+    }
+  }, []);
   const restoreInitialBottom = useCallback(() => {
     if (!initialPositionPendingRef.current || entries.length === 0) return;
     // A final Markdown message can be taller than the viewport. Scrolling to
@@ -548,17 +592,37 @@ export function ChatTimeline({
     // scrolling the scroller itself to an intentionally oversized offset
     // clamps to the true bottom regardless of the final item's height.
     virtuosoRef.current?.scrollTo({ top: Number.MAX_SAFE_INTEGER, behavior: "auto" });
-    if (initialPositionSettleTimerRef.current !== null) {
-      window.clearTimeout(initialPositionSettleTimerRef.current);
+    // The settle window is armed once, from the first restore, and is never
+    // extended. Restarting it per call kept it open for the whole of a
+    // streaming turn — deltas flush every animation frame, so the list height
+    // never stayed still for long enough to close it — and every one of those
+    // height changes then forced the scroller back to the bottom, overriding
+    // followOutput's decision not to follow and pinning the user there.
+    if (initialPositionSettleTimerRef.current === null) {
+      initialPositionSettleTimerRef.current = window.setTimeout(endInitialPositioning, 300);
     }
-    initialPositionSettleTimerRef.current = window.setTimeout(() => {
-      initialPositionPendingRef.current = false;
-      initialPositionSettleTimerRef.current = null;
-    }, 300);
-  }, [entries.length]);
+  }, [endInitialPositioning, entries.length]);
   useEffect(restoreInitialBottom, [restoreInitialBottom]);
+  // Any deliberate scroll gesture ends the initial positioning immediately, so
+  // a user who reaches for the transcript inside the settle window is not
+  // pulled back down by the next measurement pass.
+  const detachScrollIntentRef = useRef<(() => void) | null>(null);
+  const attachScrollIntent = useCallback((scroller: HTMLElement | Window | null) => {
+    detachScrollIntentRef.current?.();
+    detachScrollIntentRef.current = null;
+    if (!scroller) return;
+    const cancel = () => endInitialPositioning();
+    scroller.addEventListener("wheel", cancel, { passive: true });
+    scroller.addEventListener("touchmove", cancel, { passive: true });
+    detachScrollIntentRef.current = () => {
+      scroller.removeEventListener("wheel", cancel);
+      scroller.removeEventListener("touchmove", cancel);
+    };
+  }, [endInitialPositioning]);
   useEffect(
     () => () => {
+      detachScrollIntentRef.current?.();
+      detachScrollIntentRef.current = null;
       if (initialPositionSettleTimerRef.current !== null) {
         window.clearTimeout(initialPositionSettleTimerRef.current);
       }
@@ -567,7 +631,10 @@ export function ChatTimeline({
   );
   const matchIndices = useMemo(() => {
     const query = searchQuery?.trim().toLowerCase();
-    if (!query) return [];
+    // A shared constant, not a fresh literal: with no active search this memo
+    // re-runs on every streamed frame, and a new array each time would re-fire
+    // the onSearchMatches effect below for the whole turn.
+    if (!query) return NO_SEARCH_MATCHES;
     const hits: number[] = [];
     entries.forEach((entry, index) => {
       const haystack = entry.kind === "message"
@@ -603,16 +670,22 @@ export function ChatTimeline({
     <Virtuoso
       ref={virtuosoRef}
       className="timeline virtual-timeline"
+      scrollerRef={attachScrollIntent}
       data={entries}
       components={VIRTUOSO_COMPONENTS}
       initialTopMostItemIndex={INITIAL_TIMELINE_POSITION}
       followOutput={followTimelineOutput}
       totalListHeightChanged={restoreInitialBottom}
       increaseViewportBy={{ top: 500, bottom: 800 }}
+      // Keys are derived from item ids, never from the row index: the thinking
+      // row sits last and its index shifts as work arrives, and two compacted
+      // turns whose first item carries no timelineOrder used to collide on
+      // Number.MAX_SAFE_INTEGER. Either one makes Virtuoso remount a row and
+      // re-measure it from zero height mid-scroll.
       computeItemKey={(index, entry) => entry.kind === "thinking"
-        ? `thinking-${index}`
+        ? "thinking"
         : entry.kind === "work"
-          ? `work-${entry.value[0] ? entryOrder(entry.value[0]) : index}`
+          ? `work-${(entry.value[0] && workItemId(entry.value[0])) ?? index}`
         : entry.kind === "commands" || entry.kind === "files"
           ? `${entry.kind}-${entry.value[0]?.id ?? index}`
           : `${entry.kind}-${entry.value.id}`}

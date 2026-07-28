@@ -1,7 +1,10 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-const { scrollToBottom } = vi.hoisted(() => ({ scrollToBottom: vi.fn() }));
+const { scrollToBottom, virtuosoProps } = vi.hoisted(() => ({
+  scrollToBottom: vi.fn(),
+  virtuosoProps: { current: null as { totalListHeightChanged?: () => void } | null },
+}));
 
 vi.mock("react-virtuoso", async () => {
   const React = await import("react");
@@ -10,10 +13,12 @@ vi.mock("react-virtuoso", async () => {
       props: {
         data?: unknown[];
         itemContent?: (index: number, entry: unknown) => React.ReactNode;
+        totalListHeightChanged?: () => void;
       },
       ref: React.ForwardedRef<{ scrollTo: typeof scrollToBottom }>,
     ) {
       React.useImperativeHandle(ref, () => ({ scrollTo: scrollToBottom }));
+      virtuosoProps.current = props;
       return <div>{props.data?.map((entry, index) => <div key={index}>{props.itemContent?.(index, entry)}</div>)}</div>;
     }),
   };
@@ -163,6 +168,36 @@ describe("ChatTimeline", () => {
     );
 
     expect(scrollToBottom).toHaveBeenCalledWith({ top: Number.MAX_SAFE_INTEGER, behavior: "auto" });
+  });
+
+  it("stops restoring the bottom once the settle window closes, however often the height changes", () => {
+    vi.useFakeTimers();
+    try {
+      scrollToBottom.mockClear();
+      render(
+        <ChatTimeline
+          messages={[{ id: "answer", role: "assistant", text: "Working", timelineOrder: 1, streaming: true }]}
+          activities={[]}
+          running
+          thinkingLabel="Thinking"
+        />,
+      );
+      expect(scrollToBottom).toHaveBeenCalledTimes(1);
+
+      // A streaming turn changes the measured height faster than the settle
+      // window: the window must still close instead of being pushed back.
+      for (let frame = 0; frame < 40; frame += 1) {
+        vi.advanceTimersByTime(16);
+        virtuosoProps.current?.totalListHeightChanged?.();
+      }
+
+      expect(scrollToBottom.mock.calls.length).toBeLessThan(25);
+      const settled = scrollToBottom.mock.calls.length;
+      virtuosoProps.current?.totalListHeightChanged?.();
+      expect(scrollToBottom).toHaveBeenCalledTimes(settled);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("compacts a completed turn to its request, work disclosure, and final answer", () => {

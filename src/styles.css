@@ -389,7 +389,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .provider-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 3px rgba(167,226,111,.08); }
 .provider-dot.openrouter { background: #c798f4; box-shadow: 0 0 0 3px rgba(199,152,244,.08); }
 .provider-dot.claude { background: #df8a68; box-shadow: 0 0 0 3px rgba(223,138,104,.1); }
-.provider-default-note { margin: calc(-1 * var(--s-2)) 0 var(--s-4); padding: 0 var(--s-1); color: var(--muted); font-size: var(--fs-meta); line-height: 1.5; }
+.provider-default-note { margin: var(--s-3) 0 var(--s-4); padding: 0 var(--s-1); color: var(--muted); font-size: var(--fs-meta); line-height: 1.5; }
 
 .app-update-banner { min-height: 47px; display: grid; grid-template-columns: 30px minmax(0,1fr) auto; align-items: center; gap: 10px; padding: 6px 18px; border-bottom: 1px solid color-mix(in srgb, var(--green) 18%, var(--line)); background: linear-gradient(90deg, color-mix(in srgb, var(--green) 9%, var(--panel)), color-mix(in srgb, var(--green) 3%, var(--panel))); }
 .app-update-banner-icon { width: 29px; height: 29px; display: grid; place-items: center; border-radius: 8px; color: var(--green); background: var(--green-soft); box-shadow: 0 0 20px color-mix(in srgb, var(--green) 12%, transparent); }
