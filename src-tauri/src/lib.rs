@@ -204,6 +204,15 @@ struct WorkspaceGitInfo {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct WorkspaceGitInitializeResult {
+    info: WorkspaceGitInfo,
+    initialized: bool,
+    created_commit: bool,
+    tracked_files: usize,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct CreatedWorktree {
     path: String,
     branch: String,
@@ -1721,58 +1730,146 @@ fn worktree_status_sync(
     })
 }
 
+fn workspace_git_info_sync(cwd: &str) -> Result<WorkspaceGitInfo, String> {
+    let selected = match PathBuf::from(cwd).canonicalize() {
+        Ok(path) if path.is_dir() => path,
+        Ok(_) => {
+            return Ok(WorkspaceGitInfo {
+                is_repo: false,
+                is_root: false,
+                has_commit: false,
+                branch: None,
+                head: None,
+                error: Some("The selected path is not a folder".into()),
+            });
+        }
+        Err(error) => {
+            return Ok(WorkspaceGitInfo {
+                is_repo: false,
+                is_root: false,
+                has_commit: false,
+                branch: None,
+                head: None,
+                error: Some(format!("Could not open the project folder: {error}")),
+            });
+        }
+    };
+    let root = match git_stdout(&selected, &["rev-parse", "--show-toplevel"], None) {
+        Ok(value) => PathBuf::from(value),
+        Err(_) => {
+            return Ok(WorkspaceGitInfo {
+                is_repo: false,
+                is_root: false,
+                has_commit: false,
+                branch: None,
+                head: None,
+                error: None,
+            });
+        }
+    };
+    let root = root.canonicalize().unwrap_or(root);
+    let head = optional_git_stdout(&selected, &["rev-parse", "--verify", "HEAD"]);
+    Ok(WorkspaceGitInfo {
+        is_repo: true,
+        is_root: selected == root,
+        has_commit: head.is_some(),
+        branch: optional_git_stdout(&selected, &["symbolic-ref", "--short", "-q", "HEAD"]),
+        head,
+        error: None,
+    })
+}
+
+fn initialize_workspace_git_sync(cwd: &str) -> Result<WorkspaceGitInitializeResult, String> {
+    let selected = PathBuf::from(cwd)
+        .canonicalize()
+        .map_err(|error| format!("Could not open the project folder: {error}"))?;
+    if !selected.is_dir() {
+        return Err("Git can only be initialized inside a project folder".into());
+    }
+
+    let before = workspace_git_info_sync(cwd)?;
+    if before.is_repo && !before.is_root {
+        return Err(
+            "This project is inside another Git repository. Open that repository's root folder to use isolated worktrees."
+                .into(),
+        );
+    }
+    if before.has_commit {
+        let tracked_files = git_stdout(&selected, &["ls-files"], None)?
+            .lines()
+            .filter(|line| !line.is_empty())
+            .count();
+        return Ok(WorkspaceGitInitializeResult {
+            info: before,
+            initialized: false,
+            created_commit: false,
+            tracked_files,
+        });
+    }
+
+    let initialized = !before.is_repo;
+    if initialized {
+        git_stdout(&selected, &["init"], None)
+            .map_err(|error| format!("Could not initialize the Git repository: {error}"))?;
+    }
+
+    // The initial snapshot deliberately follows the project's .gitignore.
+    // A local command identity avoids changing or depending on global Git
+    // configuration, and --allow-empty keeps empty project folders eligible
+    // for worktrees.
+    git_stdout(&selected, &["add", "-A", "--", "."], None).map_err(|error| {
+        format!("Git was initialized, but the project snapshot could not be staged: {error}")
+    })?;
+    git_stdout(
+        &selected,
+        &[
+            "-c",
+            "user.name=OpenKiwi",
+            "-c",
+            "user.email=openkiwi@local",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "Initial project snapshot",
+        ],
+        None,
+    )
+    .map_err(|error| {
+        format!(
+            "Git was initialized, but the initial project snapshot could not be created: {error}"
+        )
+    })?;
+
+    let info = workspace_git_info_sync(cwd)?;
+    if !info.is_repo || !info.is_root || !info.has_commit {
+        return Err(
+            "Git initialized, but the repository is not ready for isolated worktrees".into(),
+        );
+    }
+    let tracked_files = git_stdout(&selected, &["ls-files"], None)?
+        .lines()
+        .filter(|line| !line.is_empty())
+        .count();
+    Ok(WorkspaceGitInitializeResult {
+        info,
+        initialized,
+        created_commit: true,
+        tracked_files,
+    })
+}
+
 #[tauri::command]
 async fn workspace_git_info(cwd: String) -> Result<WorkspaceGitInfo, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let selected = match PathBuf::from(&cwd).canonicalize() {
-            Ok(path) if path.is_dir() => path,
-            Ok(_) => {
-                return Ok(WorkspaceGitInfo {
-                    is_repo: false,
-                    is_root: false,
-                    has_commit: false,
-                    branch: None,
-                    head: None,
-                    error: Some("The selected path is not a folder".into()),
-                });
-            }
-            Err(error) => {
-                return Ok(WorkspaceGitInfo {
-                    is_repo: false,
-                    is_root: false,
-                    has_commit: false,
-                    branch: None,
-                    head: None,
-                    error: Some(format!("Could not open the project folder: {error}")),
-                });
-            }
-        };
-        let root = match git_stdout(&selected, &["rev-parse", "--show-toplevel"], None) {
-            Ok(value) => PathBuf::from(value),
-            Err(_) => {
-                return Ok(WorkspaceGitInfo {
-                    is_repo: false,
-                    is_root: false,
-                    has_commit: false,
-                    branch: None,
-                    head: None,
-                    error: None,
-                });
-            }
-        };
-        let root = root.canonicalize().unwrap_or(root);
-        let head = optional_git_stdout(&selected, &["rev-parse", "--verify", "HEAD"]);
-        Ok(WorkspaceGitInfo {
-            is_repo: true,
-            is_root: selected == root,
-            has_commit: head.is_some(),
-            branch: optional_git_stdout(&selected, &["symbolic-ref", "--short", "-q", "HEAD"]),
-            head,
-            error: None,
-        })
-    })
-    .await
-    .map_err(|error| format!("Git inspection task failed: {error}"))?
+    tauri::async_runtime::spawn_blocking(move || workspace_git_info_sync(&cwd))
+        .await
+        .map_err(|error| format!("Git inspection task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn workspace_git_initialize(cwd: String) -> Result<WorkspaceGitInitializeResult, String> {
+    tauri::async_runtime::spawn_blocking(move || initialize_workspace_git_sync(&cwd))
+        .await
+        .map_err(|error| format!("Git initialization task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -4235,6 +4332,7 @@ pub fn run() {
             checkpoint_restore,
             checkpoint_delete,
             workspace_git_info,
+            workspace_git_initialize,
             worktree_create,
             worktree_recreate,
             worktree_status,
@@ -4293,6 +4391,45 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
         String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    #[test]
+    fn workspace_git_initialization_creates_a_local_ignored_aware_baseline() {
+        let project = env::temp_dir().join(format!(
+            "openkiwi-git-initialize-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&project).expect("create project");
+        fs::write(project.join(".gitignore"), "private.txt\n").expect("gitignore");
+        fs::write(project.join("tracked.txt"), "project source\n").expect("tracked source");
+        fs::write(project.join("private.txt"), "do not commit\n").expect("ignored source");
+
+        let result =
+            initialize_workspace_git_sync(project.to_str().unwrap()).expect("initialize project");
+        assert!(result.initialized);
+        assert!(result.created_commit);
+        assert_eq!(result.tracked_files, 2);
+        assert!(result.info.is_repo);
+        assert!(result.info.is_root);
+        assert!(result.info.has_commit);
+
+        let tracked = test_git(&project, &["ls-files"]);
+        assert!(tracked.lines().any(|path| path == ".gitignore"));
+        assert!(tracked.lines().any(|path| path == "tracked.txt"));
+        assert!(!tracked.lines().any(|path| path == "private.txt"));
+        assert_eq!(
+            test_git(&project, &["log", "-1", "--pretty=%s"]),
+            "Initial project snapshot"
+        );
+        let head = test_git(&project, &["rev-parse", "HEAD"]);
+
+        let repeated =
+            initialize_workspace_git_sync(project.to_str().unwrap()).expect("repeat safely");
+        assert!(!repeated.initialized);
+        assert!(!repeated.created_commit);
+        assert_eq!(test_git(&project, &["rev-parse", "HEAD"]), head);
+
+        fs::remove_dir_all(project).expect("remove project");
     }
 
     #[test]

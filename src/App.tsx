@@ -69,6 +69,7 @@ import {
   applyWorktreeToSource,
   createThreadWorktree,
   executionPathForThread,
+  initializeWorkspaceGit,
   mergeWorktreeBranch,
   recreateThreadWorktree,
   readWorkspaceGitInfo,
@@ -161,6 +162,9 @@ export default function App() {
   const [threadWorktrees, setThreadWorktrees] = useState<Record<string, ThreadWorktreeRecord>>(() => loadStored("kiwi.threadWorktrees", {}));
   const threadWorktreesRef = useRef(threadWorktrees);
   const [workspaceGitInfo, setWorkspaceGitInfo] = useState<WorkspaceGitInfo | null>(null);
+  const [gitInitializing, setGitInitializing] = useState(false);
+  const [successToast, setSuccessToast] = useState<string | null>(null);
+  const successToastTimerRef = useRef<number | null>(null);
   const [worktreeStatus, setWorktreeStatus] = useState<WorktreeStatus | null>(null);
   const [worktreeBusy, setWorktreeBusy] = useState(false);
   const [previewTheme, setPreviewTheme] = useState<ThemeName | null>(null);
@@ -259,6 +263,8 @@ export default function App() {
   if (knownThreadsRef.current === null) knownThreadsRef.current = initialKnownThreads;
 
   const selectedProject = useMemo(() => projects.find((project) => project.id === activeProjectId) ?? null, [activeProjectId, projects]);
+  const activeProjectIdRef = useRef(activeProjectId);
+  activeProjectIdRef.current = activeProjectId;
   const activeProject = workspaceMode === "project" ? selectedProject : null;
   const chatWorkspace = useMemo<Project | null>(() => (chatWorkspacePath ? { id: "openkiwi-normal-chats", name: "Chats", path: chatWorkspacePath, isChat: true } : null), [chatWorkspacePath]);
   const activeWorkspace = workspaceMode === "chat" ? chatWorkspace : activeProject;
@@ -428,6 +434,57 @@ export default function App() {
       disposed = true;
     };
   }, [activeProject]);
+
+  useEffect(() => () => {
+    if (successToastTimerRef.current !== null) {
+      window.clearTimeout(successToastTimerRef.current);
+    }
+  }, []);
+
+  const showSuccessToast = useCallback((message: string) => {
+    if (successToastTimerRef.current !== null) {
+      window.clearTimeout(successToastTimerRef.current);
+    }
+    setSuccessToast(message);
+    successToastTimerRef.current = window.setTimeout(() => {
+      setSuccessToast(null);
+      successToastTimerRef.current = null;
+    }, 4_500);
+  }, []);
+
+  const dismissSuccessToast = useCallback(() => {
+    if (successToastTimerRef.current !== null) {
+      window.clearTimeout(successToastTimerRef.current);
+      successToastTimerRef.current = null;
+    }
+    setSuccessToast(null);
+  }, []);
+
+  const initializeActiveProjectGit = useCallback(async () => {
+    if (!activeProject || gitInitializing) return;
+    const project = activeProject;
+    setError(null);
+    setGitInitializing(true);
+    try {
+      const result = await initializeWorkspaceGit(project.path);
+      if (activeProjectIdRef.current === project.id) {
+        setWorkspaceGitInfo(result.info);
+        setDraftThreadIsolated(false);
+      }
+      showSuccessToast(
+        result.initialized
+          ? `Git repository created for ${project.name}. Isolated worktrees are ready.`
+          : `Initial Git snapshot created for ${project.name}. Isolated worktrees are ready.`,
+      );
+    } catch (reason) {
+      if (activeProjectIdRef.current === project.id) {
+        setError(friendlyError(reason));
+        void readWorkspaceGitInfo(project.path).then(setWorkspaceGitInfo).catch(() => {});
+      }
+    } finally {
+      setGitInitializing(false);
+    }
+  }, [activeProject, gitInitializing, showSuccessToast]);
 
   useEffect(() => {
     let disposed = false;
@@ -3087,6 +3144,15 @@ export default function App() {
 
   return (
     <div className="app-shell" data-theme={previewTheme ?? settings.theme} style={{ zoom: (settings.uiScale || 100) / 100 }}>
+      {successToast && (
+        <div className="app-toast success" role="status" aria-live="polite">
+          <span className="app-toast-icon"><Check size={14} strokeWidth={2.5} /></span>
+          <span>{successToast}</span>
+          <button onClick={dismissSuccessToast} aria-label="Dismiss notification">
+            <X size={13} />
+          </button>
+        </div>
+      )}
       {/* While Settings or Onboarding is open, the content behind the dialog
           is inert so keyboard and assistive-tech focus cannot reach it. The
           studio dock and remaining modals are covered by the full-screen
@@ -3474,18 +3540,54 @@ export default function App() {
                         <Folder size={15} />
                         <span><strong>Shared project</strong><small>Work directly in {activeProject?.name}</small></span>
                       </button>
-                      <button
-                        className={draftThreadIsolated ? "active" : ""}
-                        onClick={() => setDraftThreadIsolated(true)}
-                        disabled={!workspaceGitInfo?.isRepo || !workspaceGitInfo.isRoot || !workspaceGitInfo.hasCommit}
-                        title={!workspaceGitInfo?.isRepo || !workspaceGitInfo.isRoot || !workspaceGitInfo.hasCommit ? "Requires a Git repository root with at least one commit" : "Create a private branch and worktree for this thread"}
-                      >
-                        <GitBranch size={15} />
-                        <span>
-                          <strong className="isolated-worktree-title">Isolated worktree</strong>
-                          <small>Private branch; apply or<br />merge when ready</small>
-                        </span>
-                      </button>
+                      {workspaceGitInfo && !workspaceGitInfo.error && (
+                        (!workspaceGitInfo.isRepo || (workspaceGitInfo.isRoot && !workspaceGitInfo.hasCommit)) ? (
+                          <button
+                            className="git-initialize-choice"
+                            onClick={() => void initializeActiveProjectGit()}
+                            disabled={gitInitializing}
+                            aria-busy={gitInitializing}
+                            title="Create a local Git repository and initial snapshot. Nothing is pushed."
+                          >
+                            {gitInitializing ? <LoaderCircle className="spin" size={15} /> : <GitBranch size={15} />}
+                            <span>
+                              <strong>{workspaceGitInfo.isRepo ? "Create initial Git snapshot" : "Initialize Git repository"}</strong>
+                              <small>{gitInitializing ? "Preparing this project…" : "Local only; respects .gitignore"}</small>
+                            </span>
+                          </button>
+                        ) : (
+                          <button
+                            className={draftThreadIsolated ? "active" : ""}
+                            onClick={() => setDraftThreadIsolated(true)}
+                            disabled={!workspaceGitInfo.isRoot || !workspaceGitInfo.hasCommit}
+                            title={!workspaceGitInfo.isRoot ? "Open the Git repository root to use an isolated worktree" : !workspaceGitInfo.hasCommit ? "Requires at least one Git commit" : "Create a private branch and worktree for this thread"}
+                          >
+                            <GitBranch size={15} />
+                            <span>
+                              <strong className="isolated-worktree-title">Isolated worktree</strong>
+                              <small>{workspaceGitInfo.isRoot ? <>Private branch; apply or<br />merge when ready</> : "Open the repository root folder"}</small>
+                            </span>
+                          </button>
+                        )
+                      )}
+                      {!workspaceGitInfo && (
+                        <button disabled title="Checking this project's Git status">
+                          <LoaderCircle className="spin" size={15} />
+                          <span>
+                            <strong>Checking Git status</strong>
+                            <small>Preparing workspace options…</small>
+                          </span>
+                        </button>
+                      )}
+                      {workspaceGitInfo?.error && (
+                        <button disabled title={workspaceGitInfo.error}>
+                          <GitBranch size={15} />
+                          <span>
+                            <strong>Git status unavailable</strong>
+                            <small>Check that the project folder still exists</small>
+                          </span>
+                        </button>
+                      )}
                     </div>
                   )}
                   {!activeWorkspace.isChat && (

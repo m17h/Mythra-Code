@@ -443,11 +443,21 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .isolation-choice > button { display: grid; grid-template-columns: 24px minmax(0, 1fr); align-items: center; gap: var(--s-2); padding: 11px 12px; border: 1px solid var(--line); border-radius: var(--r-md); color: var(--muted); background: var(--line-quiet); }
 .isolation-choice > button:hover:not(:disabled) { border-color: color-mix(in srgb, var(--info) 34%, var(--line)); color: var(--ink-2); }
 .isolation-choice > button.active { border-color: color-mix(in srgb, var(--info) 46%, var(--line)); color: var(--info); background: color-mix(in srgb, var(--info) 7%, var(--line-quiet)); }
+.isolation-choice > button.git-initialize-choice { border-color: color-mix(in srgb, var(--green) 30%, var(--line)); color: var(--green); background: color-mix(in srgb, var(--green) 7%, var(--line-quiet)); cursor: pointer; }
+.isolation-choice > button.git-initialize-choice:hover:not(:disabled) { border-color: color-mix(in srgb, var(--green) 50%, var(--line)); background: color-mix(in srgb, var(--green) 11%, var(--line-quiet)); }
 .isolation-choice > button > span { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .isolation-choice strong { color: var(--ink-2); font-size: var(--fs-ui); font-weight: 620; }
 .isolated-worktree-title { transform: translateX(-3px); }
 .isolation-choice small { color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.35; }
 .isolation-chip { display: inline-flex; align-items: center; gap: 5px; max-width: 110px; padding: 5px 8px; border: 1px solid color-mix(in srgb, var(--info) 30%, var(--line)); border-radius: 999px; color: var(--info); background: color-mix(in srgb, var(--info) 7%, transparent); font-size: var(--fs-meta); font-weight: 620; white-space: nowrap; }
+.app-toast { position: fixed; top: 14px; left: 50%; z-index: 240; min-height: 38px; max-width: min(520px, calc(100vw - 32px)); display: flex; align-items: center; gap: var(--s-2); padding: 7px 9px; border: 1px solid var(--line-strong); border-radius: var(--r-md); color: var(--text); background: var(--panel-2); box-shadow: var(--elev-3); transform: translateX(-50%); animation: toast-arrive var(--t-mid) var(--ease) both; font-size: var(--fs-ui); }
+.app-toast.success { border-color: color-mix(in srgb, var(--green) 38%, var(--line)); }
+.app-toast-icon { width: 22px; height: 22px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 50%; color: #17220f; background: var(--green); }
+.app-toast > span:nth-child(2) { min-width: 0; overflow-wrap: anywhere; }
+.app-toast > button { width: 24px; height: 24px; flex: 0 0 auto; display: grid; place-items: center; margin-left: var(--s-1); padding: 0; border: 0; border-radius: var(--r-xs); color: var(--muted); background: transparent; cursor: pointer; }
+.app-toast > button:hover { color: var(--text); background: var(--line-quiet); }
+@keyframes toast-arrive { from { opacity: 0; transform: translate(-50%, -6px); } }
+@media (prefers-reduced-motion: reduce) { .app-toast { animation: none; } }
 .empty-state-icon { width: 46px; height: 46px; border-radius: var(--r-lg); }
 .empty-state-icon.chat { color: var(--info); border-color: color-mix(in srgb, var(--info) 24%, transparent); background: color-mix(in srgb, var(--info) 9%, transparent); }
 .thread-empty-state h1 { font-size: var(--fs-display); }

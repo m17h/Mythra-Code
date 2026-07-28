@@ -71,6 +71,8 @@ function deferred<T>(): Deferred<T> {
 let pendingResume: Deferred<{ thread: Thread }>;
 let resumeImpl: (params: Record<string, unknown>) => unknown;
 let turnStartImpl: (params: Record<string, unknown>) => unknown;
+let workspaceGitInfoImpl: () => unknown;
+let workspaceGitInitializeImpl: () => unknown;
 
 function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
   if (command === "codex_runtime_status") {
@@ -97,7 +99,10 @@ function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
   }
   if (command === "state_read") return null;
   if (command === "workspace_git_info") {
-    return { isRepo: true, isRoot: true, hasCommit: true, branch: "main", head: "head" };
+    return workspaceGitInfoImpl();
+  }
+  if (command === "workspace_git_initialize") {
+    return workspaceGitInitializeImpl();
   }
   if (command === "worktree_create") {
     return {
@@ -210,6 +215,13 @@ beforeEach(() => {
   pendingResume = deferred<{ thread: Thread }>();
   resumeImpl = () => pendingResume.promise;
   turnStartImpl = (params) => ({ turn: { id: `turn-${String(params.threadId)}` } });
+  workspaceGitInfoImpl = () => ({ isRepo: true, isRoot: true, hasCommit: true, branch: "main", head: "head" });
+  workspaceGitInitializeImpl = () => ({
+    info: { isRepo: true, isRoot: true, hasCommit: true, branch: "main", head: "new-head" },
+    initialized: true,
+    createdCommit: true,
+    trackedFiles: 2,
+  });
   invokeMock.mockReset();
   invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) =>
     stubInvoke(command, args),
@@ -219,6 +231,32 @@ beforeEach(() => {
 });
 
 describe("workspace switching during thread selection", () => {
+  it("initializes a plain project before offering an isolated worktree", async () => {
+    workspaceGitInfoImpl = () => ({
+      isRepo: false,
+      isRoot: false,
+      hasCommit: false,
+      branch: null,
+      head: null,
+      error: null,
+    });
+    const user = userEvent.setup();
+    await renderApp();
+
+    await user.click(await screen.findByRole("button", { name: /Initialize Git repository/i }));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("workspace_git_initialize", {
+        cwd: PROJECT_A.path,
+      });
+    });
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "Git repository created for Alpha. Isolated worktrees are ready.",
+    );
+    const isolatedChoice = await screen.findByRole("button", { name: /Isolated worktree/i });
+    expect(isolatedChoice).toBeEnabled();
+  });
+
   it("reorders projects by dragging and persists the exact order", async () => {
     const user = userEvent.setup();
     await renderApp();

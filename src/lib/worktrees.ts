@@ -28,6 +28,13 @@ export interface WorkspaceGitInfo {
   error?: string | null;
 }
 
+export interface WorkspaceGitInitializeResult {
+  info: WorkspaceGitInfo;
+  initialized: boolean;
+  createdCommit: boolean;
+  trackedFiles: number;
+}
+
 export interface CreatedWorktree {
   path: string;
   branch: string;
@@ -72,6 +79,10 @@ export function executionPathForThread(
 
 export async function readWorkspaceGitInfo(cwd: string): Promise<WorkspaceGitInfo> {
   return invoke<WorkspaceGitInfo>("workspace_git_info", { cwd });
+}
+
+export async function initializeWorkspaceGit(cwd: string): Promise<WorkspaceGitInitializeResult> {
+  return invoke<WorkspaceGitInitializeResult>("workspace_git_initialize", { cwd });
 }
 
 export async function createThreadWorktree(
