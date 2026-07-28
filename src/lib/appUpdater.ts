@@ -3,6 +3,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { isTauri } from "@tauri-apps/api/core";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
+import { recordError } from "./errorLog";
 import { friendlyError } from "./errors";
 
 export type AppUpdatePhase =
@@ -93,7 +94,12 @@ export function useAppUpdater(): AppUpdater {
         error: null,
       });
     } catch (reason) {
-      if (!silent) {
+      if (silent) {
+        // The startup check failing silently would otherwise leave no trace
+        // anywhere: if the endpoint, key, or manifest breaks, the installed
+        // base just stops updating. Keep it out of the UI but in diagnostics.
+        recordError(`Automatic update check failed: ${friendlyError(reason)}`);
+      } else {
         setState((current) => ({ ...current, phase: "error", error: friendlyError(reason) }));
       }
     } finally {

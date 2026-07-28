@@ -7,7 +7,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { Archive, ArchiveRestore, Bot, Check, ChevronDown, Circle, Code2, Command, Download, FileCode2, Folder, FolderOpen, LoaderCircle, MessageSquare, Paperclip, PanelRight, PanelLeftClose, PanelLeftOpen, Plus, Pin, PinOff, Pencil, Search, Settings, Shield, ShieldAlert, ShieldCheck, TerminalSquare, Trash2, UsersRound, X } from "lucide-react";
 import { getCodexRuntimeStatus, auditEvent, exportTextFile, getNormalChatWorkspace, hasOpenRouterKey, listOpenRouterModels, respond, restartRuntime, rpc, type CodexRuntimeStatus, type JsonObject } from "./lib/codex";
-import { deleteClaudeTranscript, getClaudeRuntimeStatus, interruptClaudeTurn, loadClaudeTranscript, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, startClaudeTurn, steerClaudeTurn, type ClaudeRuntimeStatus } from "./lib/claude";
+import { deleteClaudeTranscript, getClaudeRuntimeStatus, interruptClaudeTurn, isClaudeThreadBusyError, killClaudeTurn, loadClaudeTranscript, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, startClaudeTurn, steerClaudeTurn, type ClaudeRuntimeStatus } from "./lib/claude";
 import { loadStored, storeValue } from "./lib/storage";
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_OPENAI_MODEL, DEFAULT_PROMPT_PROFILES, DEFAULT_SETTINGS, THEMES } from "./lib/appConfig";
 import { commandSandbox, threadResumeParams, threadRuntimeConfig, threadStartParams, turnStartParams } from "./lib/turnConfig";
@@ -31,6 +31,7 @@ import { SettingsModal } from "./components/SettingsModal";
 import { AuthRequiredModal, RuntimeSetupModal } from "./components/RuntimeModals";
 import type { AgentRecord, AttachmentRecord, CheckpointRecord, McpView, StudioTab } from "./components/StudioDock";
 import type { Account, Activity, AppSettings, ArchivedThread, ChatMessage, CustomAgentProfile, PendingApproval, PermissionMode, Project, ProjectAction, ProjectPromptMode, PromptProfile, Provider, ScheduledTask, ScheduleRunRecord, SettingsSection, Thread, Turn, ThemeName, WorkspaceMode } from "./types";
+import { PendingTurnStarts, type PendingTurnStart } from "./lib/pendingTurnStarts";
 import { useTaskStore } from "./lib/taskStore";
 import { friendlyError } from "./lib/errors";
 import { recordError } from "./lib/errorLog";
@@ -120,7 +121,11 @@ export default function App() {
   const [chatWorkspacePath, setChatWorkspacePath] = useState("");
   const [threads, setThreads] = useState<Thread[]>([]);
   const [activeThread, setActiveThread] = useState<Thread | null>(null);
-  const [startingTurn, setStartingTurn] = useState(false);
+  // True only while a send with no active thread yet (a brand-new draft) is
+  // creating its thread. Once a thread exists, its own task status carries
+  // the starting/running state — never a global flag, so a start in one
+  // thread cannot make another thread look busy.
+  const [startingDraftTurn, setStartingDraftTurn] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(initialSettings);
   const [threadModels, setThreadModels] = useState<Record<string, string>>(() => loadStored("kiwi.threadModels", {}));
   const [draftThreadProvider, setDraftThreadProvider] = useState<Provider | null>(null);
@@ -189,7 +194,7 @@ export default function App() {
   const [openRouterModelsError, setOpenRouterModelsError] = useState("");
   const composerRef = useRef<ComposerHandle>(null);
   const threadSearchRequestRef = useRef(0);
-  const cancelRequestedRef = useRef(new Set<string>());
+  const pendingTurnStartsRef = useRef(new PendingTurnStarts());
   const claudeSaveTimersRef = useRef(new Map<string, number>());
   const permissionControlRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -239,7 +244,7 @@ export default function App() {
   const agentRecords = useTaskStore((state) => (activeThreadId ? (state.tasks[activeThreadId]?.agents ?? EMPTY_AGENTS) : EMPTY_AGENTS));
   const tokenUsage = useTaskStore((state) => (activeThreadId ? (state.tasks[activeThreadId]?.usage ?? null) : null));
   const taskStatus = useTaskStore((state) => (activeThreadId ? (state.statuses[activeThreadId] ?? "idle") : "idle"));
-  const running = startingTurn || taskStatus === "starting" || taskStatus === "running";
+  const running = activeThreadId ? taskStatus === "starting" || taskStatus === "running" : startingDraftTurn;
   // Standard approvals for the thread being viewed render inline in its
   // timeline; the modal is reserved for background threads and for complex
   // input/elicitation forms.
@@ -856,6 +861,10 @@ export default function App() {
     onStatus: setStatus,
     onError: setError,
     onTranscriptChanged: scheduleClaudeThreadSave,
+    onUnsupportedControlRequest: (threadId, requestId, subtype) => {
+      void respondClaudeControlError(threadId, requestId, `OpenKiwi does not support ${subtype} requests yet.`).catch(() => undefined);
+      void auditEvent("claude.unsupportedControlRequest", { subtype }, threadId).catch(() => undefined);
+    },
     onApprovalRequested: (threadId) => {
       if (!settings.notificationsEnabled || useTaskStore.getState().activeThreadId === threadId) return;
       const thread = threads.find((entry) => entry.id === threadId) ?? knownThreadsRef.current?.[threadId];
@@ -968,6 +977,9 @@ export default function App() {
     }
     void refreshToolsRef.current(activeWorkspace);
     if (previous && previous.path === path) return; // Only availability changed — keep the open conversation.
+    // Invalidate any in-flight thread selection: a slow thread/resume issued
+    // from the previous workspace must not re-install its thread here.
+    selectThreadRequestRef.current += 1;
     setActiveThread(null);
     useTaskStore.getState().setActiveThread(null);
     setDraftThreadProvider(null);
@@ -1018,7 +1030,7 @@ export default function App() {
             store.setTaskStatus(threadId, "error", "The Codex runtime disconnected during this task.");
           }
         }
-        setStartingTurn(false);
+        setStartingDraftTurn(false);
         void rpc("model/list", { limit: 1 })
           .then(() => {
             if (disposed) return;
@@ -1317,7 +1329,18 @@ export default function App() {
     }
 
     setError(null);
-    setStartingTurn(true);
+    let pendingStart: PendingTurnStart | undefined;
+    // Mark the start synchronously, before the first await, so Stop and the
+    // composer reflect it immediately — and only on the thread actually
+    // starting. A send with no active thread yet is tracked by the draft
+    // flag until the created thread's own status takes over.
+    const startingThreadId = activeThread?.id;
+    if (startingThreadId) {
+      useTaskStore.getState().setTaskStatus(startingThreadId, "starting");
+      pendingStart = pendingTurnStartsRef.current.begin(startingThreadId);
+    } else {
+      setStartingDraftTurn(true);
+    }
     setStatus("Starting");
 
     let startedThreadId: string | undefined;
@@ -1345,6 +1368,7 @@ export default function App() {
         setActiveThread(updatedThread);
         useTaskStore.getState().ensureTask(thread.id, activeWorkspace.path);
         useTaskStore.getState().setTaskStatus(thread.id, "starting");
+        if (!pendingStart) pendingStart = pendingTurnStartsRef.current.begin(thread.id);
         const canResumeClaude = Boolean(activeThread && useTaskStore.getState().tasks[thread.id]?.messages.some((message) => message.role === "assistant"));
         sentMessageId = `local-${crypto.randomUUID()}`;
         useTaskStore.getState().appendUserMessage(thread.id, { id: sentMessageId, role: "user", text });
@@ -1352,9 +1376,9 @@ export default function App() {
         const result = await startClaudeTurn({ threadId: thread.id, cwd: activeWorkspace.path, prompt: text, model: effectiveSettings.model || DEFAULT_CLAUDE_MODEL, effort: settings.ultra ? "ultra" : settings.reasoningEffort, permission: effectiveSettings.permission, systemPrompt: withOpenKiwiCompletionInstructions(effectiveSettings.systemPrompt), resume: canResumeClaude, attachments: sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })), subagentsEnabled: settings.subagentsEnabled, subagentMax: settings.subagentMax, customAgents, skillsPluginPath: skillRuntimeRootRef.current || undefined });
         useTaskStore.getState().setActiveTurn(thread.id, result.turnId);
         useTaskStore.getState().setTaskStatus(thread.id, "running");
-        setStartingTurn(false);
+        setStartingDraftTurn(false);
         setAttachments((current) => withoutSentAttachments(current, sentAttachments));
-        if (cancelRequestedRef.current.delete(thread.id)) {
+        if (pendingTurnStartsRef.current.finish(thread.id, pendingStart)) {
           await interruptClaudeTurn(thread.id);
           useTaskStore.getState().setActiveTurn(thread.id, undefined);
           useTaskStore.getState().setTaskStatus(thread.id, "interrupted");
@@ -1393,14 +1417,15 @@ export default function App() {
       }
       useTaskStore.getState().ensureTask(threadId, activeWorkspace.path);
       useTaskStore.getState().setTaskStatus(threadId, "starting");
+      if (!pendingStart) pendingStart = pendingTurnStartsRef.current.begin(threadId);
       sentMessageId = `local-${crypto.randomUUID()}`;
       useTaskStore.getState().appendUserMessage(threadId, { id: sentMessageId, role: "user", text });
 
       const result = await rpc<{ turn: Turn }>("turn/start", turnStartParams(effectiveSettings, threadId, activeWorkspace.path, input));
       if (result.turn?.id) useTaskStore.getState().setActiveTurn(threadId, result.turn.id);
-      setStartingTurn(false);
+      setStartingDraftTurn(false);
       setAttachments((current) => withoutSentAttachments(current, sentAttachments));
-      if (cancelRequestedRef.current.delete(threadId)) {
+      if (pendingTurnStartsRef.current.finish(threadId, pendingStart)) {
         // The user pressed stop while the turn was still starting.
         if (result.turn?.id) await rpc("turn/interrupt", { threadId, turnId: result.turn.id });
         useTaskStore.getState().setActiveTurn(threadId, undefined);
@@ -1409,14 +1434,23 @@ export default function App() {
       }
       return true;
     } catch (reason) {
-      setStartingTurn(false);
-      // Use the locally captured thread id: for a brand-new thread the
-      // activeThread closure is still null here, which used to leave the
-      // thread stuck in "starting" forever.
-      if (startedThreadId) {
-        cancelRequestedRef.current.delete(startedThreadId);
-        if (sentMessageId) useTaskStore.getState().removeMessage(startedThreadId, sentMessageId);
-        useTaskStore.getState().setTaskStatus(startedThreadId, "error", friendlyError(reason));
+      setStartingDraftTurn(false);
+      // Use the locally captured thread ids: for a brand-new thread the
+      // activeThread closure is still null here (which used to leave the
+      // thread stuck in "starting" forever), and a failure before the send
+      // resolved its thread must still clear the "starting" mark applied at
+      // the top of this function.
+      const failedThreadId = startedThreadId ?? startingThreadId;
+      if (failedThreadId) {
+        if (pendingStart) pendingTurnStartsRef.current.finish(failedThreadId, pendingStart);
+        if (sentMessageId) useTaskStore.getState().removeMessage(failedThreadId, sentMessageId);
+        useTaskStore.getState().setTaskStatus(failedThreadId, "error", friendlyError(reason));
+        if (isClaudeThreadBusyError(reason)) {
+          // The backend slot is held by a Claude process the UI no longer
+          // tracks (e.g. after an event loss). Free it so a retry succeeds
+          // instead of failing until OpenKiwi restarts.
+          void killClaudeTurn(failedThreadId).catch(() => undefined);
+        }
       }
       setStatus("Ready");
       setError(friendlyError(reason));
@@ -1428,10 +1462,14 @@ export default function App() {
     if (!activeThread || !running) return;
     const turnId = useTaskStore.getState().tasks[activeThread.id]?.activeTurnId;
     if (!turnId) {
-      // The turn/start RPC is still in flight. Record the intent so
-      // sendMessage interrupts the turn the moment its id is known.
-      cancelRequestedRef.current.add(activeThread.id);
-      setStatus("Stopping");
+      // If this thread's turn/start RPC is still in flight, flag that exact
+      // pending start so sendMessage interrupts the turn the moment its id is
+      // known. When this thread has no start in flight (e.g. the user
+      // navigated here while another thread was starting), there is nothing
+      // to stop and no intent must be recorded.
+      if (pendingTurnStartsRef.current.requestCancel(activeThread.id)) {
+        setStatus("Stopping");
+      }
       return;
     }
     try {
@@ -1439,7 +1477,7 @@ export default function App() {
       else await rpc("turn/interrupt", { threadId: activeThread.id, turnId });
       useTaskStore.getState().setActiveTurn(activeThread.id, undefined);
       useTaskStore.getState().setTaskStatus(activeThread.id, "interrupted");
-      setStartingTurn(false);
+      setStartingDraftTurn(false);
       setTransientStatus("Stopped");
     } catch (reason) {
       setError(friendlyError(reason));
@@ -2061,7 +2099,11 @@ export default function App() {
 
   return (
     <div className="app-shell" data-theme={previewTheme ?? settings.theme} style={{ zoom: (settings.uiScale || 100) / 100 }}>
-      <aside className={`sidebar ${sidebarOpen ? "open" : "closed"}`} style={sidebarOpen ? { flexBasis: paneSizes.sidebar, width: paneSizes.sidebar } : undefined}>
+      {/* While Settings or Onboarding is open, the content behind the dialog
+          is inert so keyboard and assistive-tech focus cannot reach it. The
+          studio dock and remaining modals are covered by the full-screen
+          backdrop and each dialog's own focus containment. */}
+      <aside inert={settingsOpen || onboardingOpen ? true : undefined} className={`sidebar ${sidebarOpen ? "open" : "closed"}`} style={sidebarOpen ? { flexBasis: paneSizes.sidebar, width: paneSizes.sidebar } : undefined}>
         {sidebarOpen && <div className="pane-resize sidebar-resize" onPointerDown={startPaneResize("sidebar")} role="separator" aria-orientation="vertical" aria-label="Resize sidebar" />}
         <div className="sidebar-brand">
           <div className="brand-mark">
@@ -2230,7 +2272,7 @@ export default function App() {
         </div>
       </aside>
 
-      <main className="main-panel">
+      <main inert={settingsOpen || onboardingOpen ? true : undefined} className="main-panel">
         <header className="topbar">
           <div className="topbar-left">
             {!sidebarOpen && (

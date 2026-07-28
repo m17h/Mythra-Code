@@ -57,6 +57,12 @@ struct ClaudeState {
     authenticated: AtomicBool,
 }
 
+/// How long a cooperative interrupt gets to unwind before the Claude process
+/// is force-killed. Generous enough for the CLI to finish an in-flight tool
+/// call and emit its `result`, short enough that a wedged process cannot hold
+/// the thread's slot indefinitely.
+const CLAUDE_INTERRUPT_GRACE: Duration = Duration::from_secs(10);
+
 struct ClaudeTurn {
     stdin: Mutex<ChildStdin>,
     child: Arc<Mutex<Child>>,
@@ -1411,6 +1417,14 @@ async fn claude_turn_start(
         }
     }
 
+    // Build the first user message before spawning anything. Reading an
+    // attachment can fail (file deleted, pasted image evicted from the
+    // cache), and past the spawn every error path must also remove the turn
+    // from the map and kill the child — otherwise the thread reports
+    // "Claude is already working" until OpenKiwi restarts.
+    let user_message =
+        claude_user_message(&options.thread_id, &options.prompt, &options.attachments)?;
+
     let mut child = command
         .spawn()
         .map_err(|error| format!("Could not start Claude Code: {error}"))?;
@@ -1450,8 +1464,6 @@ async fn claude_turn_start(
         turn.shutdown().await;
         return Err(error);
     }
-    let user_message =
-        claude_user_message(&options.thread_id, &options.prompt, &options.attachments)?;
     if let Err(error) = turn.write(&user_message).await {
         state.turns.lock().await.remove(&options.thread_id);
         turn.shutdown().await;
@@ -1559,12 +1571,46 @@ async fn claude_turn_interrupt(
         .get(&thread_id)
         .cloned()
         .ok_or_else(|| "Claude is not currently running in this thread".to_string())?;
-    turn.write(&json!({
+    let interrupt = json!({
         "type": "control_request",
         "request_id": uuid::Uuid::new_v4().to_string(),
         "request": { "subtype": "interrupt" },
-    }))
-    .await
+    });
+    if let Err(error) = turn.write(&interrupt).await {
+        // The stdin pipe is unusable, so the process is dead or wedged and a
+        // cooperative interrupt can never reach it. Free the slot now instead
+        // of leaving the thread stuck until OpenKiwi restarts.
+        remove_claude_turn_if_current(&state.turns, &thread_id, &turn).await;
+        turn.shutdown().await;
+        return Err(error);
+    }
+    // Escalate if the CLI ignores the interrupt. A healthy process emits a
+    // `result` well within the grace period (which sets `alive` to false via
+    // close_input); a wedged one would otherwise hold the per-thread slot
+    // until app restart.
+    let turns = state.turns.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(CLAUDE_INTERRUPT_GRACE).await;
+        if turn.alive.load(Ordering::Acquire) {
+            remove_claude_turn_if_current(&turns, &thread_id, &turn).await;
+            turn.shutdown().await;
+        }
+    });
+    Ok(())
+}
+
+/// Force-stop the Claude process for a thread, releasing its slot immediately.
+/// Used by the frontend when a stale process is blocking new turns.
+#[tauri::command]
+async fn claude_turn_kill(
+    state: State<'_, ClaudeState>,
+    thread_id: String,
+) -> Result<(), String> {
+    let turn = state.turns.lock().await.remove(&thread_id);
+    if let Some(turn) = turn {
+        turn.shutdown().await;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1587,6 +1633,33 @@ async fn claude_permission_respond(
             "subtype": "success",
             "request_id": request_id,
             "response": result,
+        }
+    }))
+    .await
+}
+
+/// Answer a Claude control request OpenKiwi does not implement with an error
+/// response, so a CLI blocking on the reply cannot stall the turn.
+#[tauri::command]
+async fn claude_control_error(
+    state: State<'_, ClaudeState>,
+    thread_id: String,
+    request_id: String,
+    message: String,
+) -> Result<(), String> {
+    let turn = state
+        .turns
+        .lock()
+        .await
+        .get(&thread_id)
+        .cloned()
+        .ok_or_else(|| "This Claude turn is no longer running".to_string())?;
+    turn.write(&json!({
+        "type": "control_response",
+        "response": {
+            "subtype": "error",
+            "request_id": request_id,
+            "error": message,
         }
     }))
     .await
@@ -2938,7 +3011,9 @@ pub fn run() {
             claude_turn_start,
             claude_turn_steer,
             claude_turn_interrupt,
+            claude_turn_kill,
             claude_permission_respond,
+            claude_control_error,
             state_read,
             state_write,
             state_delete,
@@ -2976,6 +3051,72 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Regression for the leaked-turn defect: claude_turn_start builds this
+    // message BEFORE spawning the CLI, so an unreadable attachment must fail
+    // here — never after the process is registered in the per-thread map.
+    #[test]
+    fn claude_user_message_fails_for_an_unreadable_image_attachment() {
+        let attachment = ClaudeAttachment {
+            path: std::env::temp_dir()
+                .join("openkiwi-test-missing-image.png")
+                .to_string_lossy()
+                .into_owned(),
+            kind: "image".into(),
+        };
+        let result = claude_user_message("thread-1", "look at this", &[attachment]);
+        let error = result.expect_err("missing image attachments must fail");
+        assert!(error.contains("Could not read"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn claude_user_message_references_file_attachments_without_reading_them() {
+        let attachment = ClaudeAttachment {
+            path: std::env::temp_dir()
+                .join("openkiwi-test-missing-file.txt")
+                .to_string_lossy()
+                .into_owned(),
+            kind: "file".into(),
+        };
+        let message = claude_user_message("thread-1", "check the file", &[attachment])
+            .expect("file attachments are passed by reference and must not fail");
+        let content = message
+            .pointer("/message/content")
+            .and_then(Value::as_array)
+            .expect("user message content");
+        assert_eq!(content.len(), 2);
+        assert!(
+            text_of(&content[1]).contains("openkiwi-test-missing-file.txt"),
+            "file attachment should be referenced by path"
+        );
+    }
+
+    #[test]
+    fn claude_user_message_embeds_readable_images_as_base64() {
+        let path = std::env::temp_dir().join("openkiwi-test-real-image.png");
+        std::fs::write(&path, [0x89, 0x50, 0x4e, 0x47]).expect("write test image");
+        let attachment = ClaudeAttachment {
+            path: path.to_string_lossy().into_owned(),
+            kind: "image".into(),
+        };
+        let message = claude_user_message("thread-1", "look", &[attachment])
+            .expect("readable image attachments must succeed");
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(
+            message
+                .pointer("/message/content/1/source/media_type")
+                .and_then(Value::as_str),
+            Some("image/png")
+        );
+        assert!(message
+            .pointer("/message/content/1/source/data")
+            .and_then(Value::as_str)
+            .is_some_and(|data| !data.is_empty()));
+    }
+
+    fn text_of(entry: &Value) -> &str {
+        entry.get("text").and_then(Value::as_str).unwrap_or_default()
+    }
 
     #[test]
     fn pasted_image_cleanup_expires_old_files_and_preserves_the_current_paste() {

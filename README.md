@@ -1,6 +1,8 @@
 # OpenKiwi
 
-OpenKiwi is a fast, local-first desktop coding harness with a user-owned instruction prompt. It supports OpenAI through an official ChatGPT subscription sign-in flow and OpenRouter through a user-supplied API key.
+OpenKiwi is a fast, local-first desktop coding harness with a user-owned instruction prompt. It supports OpenAI through an official ChatGPT subscription sign-in flow, Claude through the locally installed Claude Code CLI with its own subscription sign-in, and OpenRouter through a user-supplied API key.
+
+**Platform support:** packaged OpenKiwi releases currently target **macOS on Apple silicon** only. Intel Macs, Windows, and Linux are not supported yet; the update feed publishes only a `darwin-aarch64` bundle.
 
 This repository contains a runnable desktop coding environment: normal chats, folder-bound project threads, concurrent background tasks, steering and interruption, three permission modes, typed approvals and user-input requests, an explicit empty-by-default instruction prompt, opt-in harness-level sub-agents, prompt/agent profiles, multi-step agent workflows, animated model controls, and an integrated workspace studio.
 
@@ -17,9 +19,10 @@ Download it here: https://www.morgangermani.com/projects/openkiwi
 
 Requirements:
 
+- macOS on Apple silicon (the supported release platform)
 - Node.js 20 or newer
 - Rust stable
-- A recent Codex runtime: either the Codex CLI or ChatGPT for macOS
+- A recent Codex runtime (the Codex CLI or ChatGPT for macOS) and/or the Claude Code CLI — each provider needs only its own runtime
 
 ```bash
 npm install
@@ -45,6 +48,14 @@ Open **Settings → OpenAI → Sign in**. OpenKiwi starts the official Codex bro
 OpenKiwi blocks OpenAI turns until that sign-in completes. Attempting to send while signed out preserves the draft and opens a dedicated authentication dialog rather than issuing an unauthorized request.
 
 OpenKiwi checks for the Codex CLI first and also recognizes the runtime included with ChatGPT for macOS. If neither is available, it opens a guided setup dialog with the official installation guide and a retry action. Only one of the two installations is needed.
+
+### Claude
+
+OpenKiwi drives the locally installed [Claude Code CLI](https://claude.com/claude-code) directly. Open **Settings → Models & accounts**, pick Claude, and sign in through the CLI's own browser flow — OpenKiwi never sees or stores Anthropic credentials. To keep usage on the signed-in subscription, OpenKiwi launches each turn with API-key/Bedrock/Vertex environment overrides scrubbed and warns when such overrides are present.
+
+Each Claude thread runs one CLI process per turn with `--session-id`/`--resume`, so conversations persist and resume across app restarts. OpenKiwi's permission modes map to the CLI's permission system: *Ask to act* routes every tool request through OpenKiwi's approval UI over stdio; *Read only* disables editing and shell tools; *Full access* passes `bypassPermissions`. The CLI runs with `--setting-sources ""`, so a user's personal Claude Code settings, hooks, and allowlists do not silently apply inside OpenKiwi, and the project-instructions toggle currently governs Codex/OpenRouter `AGENTS.md` loading only.
+
+Selected OpenKiwi skills and custom sub-agents are bridged to Claude through a generated local plugin directory. Model and reasoning-effort choices are sent as real CLI flags per turn.
 
 ### OpenRouter
 
@@ -143,6 +154,10 @@ The right-side Studio contains nine integrated surfaces:
 9. **Git** — status, diff, file-level stage/revert, stage all, tracked-file revert confirmation, commits, PR comments, CI checks, and draft PR creation.
 
 The review approval and checkpoint records are UI review state. Conversation rollback intentionally does not claim to revert filesystem changes; file rollback remains an explicit Git action.
+
+## Privacy and telemetry
+
+OpenKiwi contains **no telemetry, analytics, or crash reporting**. The only network connections the app itself makes are the update check against GitHub Releases and, when an OpenRouter key is saved, the OpenRouter model catalog and inference requests. Prompts, transcripts, settings, and audit records stay in local storage (SQLite in the app's data directory). Diagnostics leave the machine only when a user explicitly exports them.
 
 ## Security boundaries
 

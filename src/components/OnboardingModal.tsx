@@ -23,6 +23,7 @@ import {
 import type { CodexRuntimeStatus } from "../lib/codex";
 import type { ClaudeRuntimeStatus } from "../lib/claude";
 import type { Account, SettingsSection } from "../types";
+import { useModalFocus } from "../hooks/useModalFocus";
 import { ClaudeLogo, OpenAILogo } from "./BrandLogos";
 
 const CODEX_INSTALL_URL = "https://learn.chatgpt.com/docs/codex/cli";
@@ -237,6 +238,8 @@ export function OnboardingModal({
 }) {
   const [stepIndex, setStepIndex] = useState(0);
   const headingRef = useRef<HTMLDivElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useModalFocus(dialogRef, open);
   useEffect(() => {
     if (open) setStepIndex(0);
   }, [open]);
@@ -283,7 +286,7 @@ export function OnboardingModal({
   else content = <ReadyStep runtimeStatus={runtimeStatus} claudeStatus={claudeStatus} account={account} openRouterReady={openRouterReady} skillsFolder={skillsFolder} onDestination={destination} />;
 
   return <div className={`modal-backdrop onboarding-backdrop ${open ? "open" : "closed"}`} aria-hidden={!open} inert={!open ? true : undefined}>
-    <div className="onboarding-modal" role="dialog" aria-modal="true" aria-label="OpenKiwi onboarding">
+    <div ref={dialogRef} className="onboarding-modal" role="dialog" aria-modal="true" aria-label="OpenKiwi onboarding">
       <aside className="onboarding-rail">
         <div className="onboarding-brand"><span>OK</span><div><strong>OpenKiwi</strong><small>Getting started</small></div></div>
         <nav aria-label="Onboarding progress">
@@ -295,7 +298,7 @@ export function OnboardingModal({
       </aside>
       <main className="onboarding-main">
         <button className="onboarding-close" onClick={onComplete} aria-label="Skip onboarding"><X size={17} /></button>
-        <div ref={headingRef} tabIndex={-1} className="onboarding-stage" key={step.id}>{content}</div>
+        <div ref={headingRef} tabIndex={-1} data-autofocus className="onboarding-stage" key={step.id}>{content}</div>
         <footer className="onboarding-footer">
           <button className="onboarding-skip" onClick={onComplete}>Skip tour</button>
           <div>

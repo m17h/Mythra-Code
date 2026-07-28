@@ -1,4 +1,5 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { basename, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { gunzipSync } from "node:zlib";
@@ -98,6 +99,12 @@ const latest = {
 };
 writeFileSync(resolve(output, "latest.json"), `${JSON.stringify(latest, null, 2)}\n`);
 writeFileSync(resolve(output, "release-notes.md"), `${notes}\n`);
+
+// Record the digests for the download-verification step of the runbook, so
+// the recorded evidence always matches the staged artifacts.
+const digest = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
+const shaLines = [updaterName, dmgName].map((name) => `${digest(resolve(output, name))}  ${name}`);
+writeFileSync(resolve(root, "release-assets/local-sha256.txt"), `${shaLines.join("\n")}\n`);
 
 console.log(`Prepared OpenKiwi ${version} release assets in ${output}`);
 for (const entry of readdirSync(output).sort()) console.log(`- ${basename(entry)}`);

@@ -111,7 +111,17 @@ env_key = "OPENROUTER_API_KEY"
 wire_api = "responses"
 ```
 
-The key comes from the OS credential store and is added only to the App Server child environment. Saving or replacing the key restarts App Server so the child receives the new credential.
+The key comes from the OS credential store and is added only to the App Server child environment. Saving or replacing the key restarts App Server so the child receives the new credential. At runtime the host also injects a loopback proxy as the provider `base_url`; the proxy holds the real bearer key, whitelists request headers, and sanitizes tool JSON schemas that OpenRouter destinations reject.
+
+### Claude
+
+Claude threads bypass App Server entirely. The native host resolves the locally installed Claude Code CLI (`resolve_claude_binary`: PATH, well-known install dirs, login-shell fallback, `OPENKIWI_CLAUDE_PATH` override) and spawns **one CLI process per turn** in `-p --input-format stream-json --output-format stream-json` mode:
+
+- Thread identity is an app-minted UUID passed as `--session-id` on the first turn and `--resume` on later turns, so conversations persist in Claude Code's own session store and survive app restarts. Transcripts are additionally mirrored into OpenKiwi's SQLite state for instant thread switching.
+- Permission modes map to CLI flags: manual approvals use `--permission-prompt-tool stdio` and surface as `control_request`/`control_response` exchanges routed through the same approval UI as Codex; read-only adds `--disallowedTools`; full access passes `bypassPermissions`. Unknown control requests are answered with an error response so a newer CLI cannot stall a turn.
+- `--setting-sources ""` keeps the user's personal Claude Code settings, hooks, and allowlists out of OpenKiwi sessions. Subscription-only auth is enforced by scrubbing `ANTHROPIC_*`/Bedrock/Vertex credential overrides from the child environment.
+- Events are emitted to the webview as `claude-event` tagged with `threadId` and `turnId`; `src/lib/claudeEvents.ts` normalizes the CLI's stream (`stream_event` deltas, `assistant`/`user` messages, `result`) into the same task-store shapes the Codex router produces. Interrupts are cooperative (a `control_request` on stdin) and escalate to a process kill if the CLI does not unwind within a grace period.
+- Selected skills and custom sub-agents are bridged through a generated plugin directory passed via `--plugin-dir`/`--agents`.
 
 ## Protocol handling
 

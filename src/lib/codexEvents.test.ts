@@ -159,4 +159,21 @@ describe("runtimeMessage", () => {
     expect(runtimeMessage({ error: { message: "Readable failure" } })).toBe("Readable failure");
     expect(runtimeMessage({ code: 400 })).toBe('{"code":400}');
   });
+  it("answers unknown server requests with an empty response and a visible warning", () => {
+    const ctx = makeContext();
+    routeCodexEvent({ id: 42, method: "consent/requestDecision", params: { threadId: "thread-a" } }, ctx);
+
+    expect(ctx.respond).toHaveBeenCalledWith(42, {});
+    expect(ctx.audit).toHaveBeenCalledWith("rpc.unhandledRequest", { method: "consent/requestDecision" }, "thread-a");
+    expect(useTaskStore.getState().tasks["thread-a"].activities.at(-1)).toMatchObject({
+      kind: "warning",
+      title: "Unsupported runtime request",
+    });
+  });
+
+  it("leaves unknown notifications without an id unanswered", () => {
+    const ctx = makeContext();
+    routeCodexEvent({ method: "some/futureNotification", params: { threadId: "thread-a" } }, ctx);
+    expect(ctx.respond).not.toHaveBeenCalled();
+  });
 });

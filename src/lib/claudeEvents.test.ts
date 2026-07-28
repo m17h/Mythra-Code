@@ -9,6 +9,7 @@ const context: ClaudeEventContext = {
   onTurnCompleted: vi.fn(),
   onApprovalRequested: vi.fn(),
   onTranscriptChanged: vi.fn(),
+  onUnsupportedControlRequest: vi.fn(),
 };
 
 function send(message: Record<string, unknown>) {
@@ -149,5 +150,24 @@ describe("Claude event routing", () => {
       status: "failed",
     });
     expect(context.onTurnCompleted).toHaveBeenCalledWith("thread-1");
+  });
+
+  it("answers unknown control requests with an error instead of stalling", () => {
+    send({
+      type: "control_request",
+      request_id: "request-9",
+      request: { subtype: "hook_callback", data: {} },
+    });
+
+    expect(context.onUnsupportedControlRequest).toHaveBeenCalledWith(
+      "thread-1",
+      "request-9",
+      "hook_callback",
+    );
+    expect(context.onApprovalRequested).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().tasks["thread-1"].activities.at(-1)).toMatchObject({
+      kind: "warning",
+      title: "Unsupported Claude Code request",
+    });
   });
 });

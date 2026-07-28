@@ -27,6 +27,7 @@ import { exportDiagnostics, recentAuditRows, rpc, saveOpenRouterKey, type AuditR
 import type { ClaudeRuntimeStatus } from "../lib/claude";
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_OPENAI_MODEL, DEFAULT_SETTINGS, RELEASE_NOTES_URL, THEMES } from "../lib/appConfig";
 import { friendlyError } from "../lib/errors";
+import { useModalFocus } from "../hooks/useModalFocus";
 import { ClaudeLogo, OpenAILogo } from "./BrandLogos";
 import { updateProgress, type AppUpdater } from "../lib/appUpdater";
 import type { LocalSkill } from "../lib/skills";
@@ -226,6 +227,9 @@ export function SettingsModal({
     }
   }, [appUpdater.phase, initialSection, open]);
 
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useModalFocus(dialogRef, open);
+
   const requestCloseRef = useRef(requestClose);
   requestCloseRef.current = requestClose;
   useEffect(() => {
@@ -294,7 +298,7 @@ export function SettingsModal({
 
   return (
     <div className={`modal-backdrop settings-backdrop ${open ? "open" : "closed"}`} onMouseDown={requestClose} aria-hidden={!open} inert={!open ? true : undefined}>
-      <div className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" onMouseDown={(event) => event.stopPropagation()}>
+      <div ref={dialogRef} className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" onMouseDown={(event) => event.stopPropagation()}>
         <div className="modal-header">
           <div><h2 id="settings-title">Settings</h2><p>Customize OpenKiwi without hidden configuration.</p></div>
           <button className="icon-button" onClick={requestClose} aria-label="Close settings"><X size={18} /></button>

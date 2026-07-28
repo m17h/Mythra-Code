@@ -95,6 +95,11 @@ export interface ClaudeEventContext {
   onTurnCompleted: (threadId: string) => void;
   onApprovalRequested: (threadId: string) => void;
   onTranscriptChanged: (threadId: string) => void;
+  onUnsupportedControlRequest: (
+    threadId: string,
+    requestId: string,
+    subtype: string,
+  ) => void;
 }
 
 export function routeClaudeEvent(
@@ -123,7 +128,20 @@ export function routeClaudeEvent(
         receivedAt: Date.now(),
       });
       ctx.onApprovalRequested(threadId);
+      return;
     }
+    // A blocking control request OpenKiwi does not implement (a newer CLI's
+    // hook callback or permission variant). Never leave it unanswered — a CLI
+    // waiting on the reply would stall the turn until the process is killed.
+    const requestId = text(message.request_id);
+    const subtype = text(request.subtype) || "unknown";
+    if (requestId) ctx.onUnsupportedControlRequest(threadId, requestId, subtype);
+    store.upsertActivity(threadId, {
+      id: `claude-control-${requestId || crypto.randomUUID()}`,
+      kind: "warning",
+      title: "Unsupported Claude Code request",
+      detail: `Claude Code sent a \`${subtype}\` control request this version of OpenKiwi does not support. It was answered with an error; updating OpenKiwi may be required.`,
+    });
     return;
   }
 

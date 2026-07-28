@@ -306,5 +306,20 @@ export function routeCodexEvent(event: CodexEvent, ctx: CodexEventContext): void
   }
   if (method === "account/login/completed" && params.success === false) {
     ctx.onLoginFailed(String(params.error ?? "Sign in did not complete"));
+    return;
+  }
+  if (event.id !== undefined) {
+    // A server→client request nobody above recognized. Never leave it
+    // unanswered — a newer runtime that blocks on the reply (a new consent or
+    // elicitation method, for example) would otherwise hang the turn with no
+    // diagnostic.
+    void ctx.respond(event.id, {});
+    ctx.audit("rpc.unhandledRequest", { method }, eventThreadId);
+    useTaskStore.getState().upsertActivity(eventThreadId, {
+      id: `unhandled-request-${String(event.id)}`,
+      kind: "warning",
+      title: "Unsupported runtime request",
+      detail: `The Codex runtime sent a \`${method}\` request this version of OpenKiwi does not support. It was answered with an empty response; updating OpenKiwi may be required.`,
+    });
   }
 }

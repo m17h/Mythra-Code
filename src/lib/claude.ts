@@ -80,6 +80,32 @@ export async function interruptClaudeTurn(threadId: string): Promise<void> {
   await invoke("claude_turn_interrupt", { threadId });
 }
 
+/**
+ * Force-stop the Claude process for a thread, releasing its backend slot
+ * immediately. The cooperative interrupt already escalates to a kill on its
+ * own; this is for recovering a slot the UI no longer tracks.
+ */
+export async function killClaudeTurn(threadId: string): Promise<void> {
+  await invoke("claude_turn_kill", { threadId });
+}
+
+/** Matches the backend's per-thread busy rejection from claude_turn_start. */
+export function isClaudeThreadBusyError(reason: unknown): boolean {
+  return String(reason).includes("Claude is already working in this thread");
+}
+
+/**
+ * Answer a control request OpenKiwi does not implement with an error
+ * response, so a Claude CLI blocking on the reply cannot stall the turn.
+ */
+export async function respondClaudeControlError(
+  threadId: string,
+  requestId: string,
+  message: string,
+): Promise<void> {
+  await invoke("claude_control_error", { threadId, requestId, message });
+}
+
 export async function respondToClaudePermission(
   threadId: string,
   requestId: string,

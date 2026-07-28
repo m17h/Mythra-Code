@@ -154,6 +154,21 @@ describe("SettingsModal", () => {
     vi.unstubAllGlobals();
   });
 
+  it("moves focus into the dialog on open and keeps Tab inside it", async () => {
+    const { rerender } = render(<SettingsModal {...modalProps({ open: false })} />);
+    rerender(<SettingsModal {...modalProps()} />);
+
+    const dialog = screen.getByRole("dialog", { name: "Settings" });
+    expect(dialog.contains(document.activeElement)).toBe(true);
+
+    const focusable = dialog.querySelectorAll<HTMLElement>("button, input, select, textarea");
+    const last = focusable[focusable.length - 1];
+    last.focus();
+    fireEvent.keyDown(last, { key: "Tab" });
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    expect(document.activeElement).toBe(focusable[0]);
+  });
+
   it("offers the onboarding guide again from General settings", () => {
     const onOpenOnboarding = vi.fn();
     render(<SettingsModal {...modalProps({ onOpenOnboarding })} />);
