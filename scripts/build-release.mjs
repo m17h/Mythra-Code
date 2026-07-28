@@ -87,9 +87,14 @@ if (process.platform === "darwin") {
       stdio: "inherit",
     });
     if (archive.status !== 0) process.exit(archive.status ?? 1);
+    const signerEnv = { ...releaseEnv };
+    if (existsSync(signingKey)) {
+      delete signerEnv.TAURI_SIGNING_PRIVATE_KEY;
+      signerEnv.TAURI_SIGNING_PRIVATE_KEY_PATH = signingKey;
+    }
     const signArchive = spawnSync(tauri, ["signer", "sign", updaterArchive], {
       cwd: root,
-      env: releaseEnv,
+      env: signerEnv,
       stdio: "inherit",
     });
     if (signArchive.status !== 0) process.exit(signArchive.status ?? 1);
