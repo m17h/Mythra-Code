@@ -427,7 +427,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 /* ---- Thread surface: the reading room ---- */
 .conversation { position: relative; min-height: 0; flex: 1; overflow: hidden; display: flex; flex-direction: column; }
 .thread-empty-state { min-height: 100%; }
-.isolation-choice { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: min(560px, 100%); gap: var(--s-2); margin: 0 0 var(--s-4); text-align: left; }
+.isolation-choice { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: min(560px, 100%); gap: var(--s-2); margin: var(--s-3) 0 var(--s-4); text-align: left; }
 .isolation-choice > button { display: grid; grid-template-columns: 24px minmax(0, 1fr); align-items: center; gap: var(--s-2); padding: 11px 12px; border: 1px solid var(--line); border-radius: var(--r-md); color: var(--muted); background: var(--line-quiet); }
 .isolation-choice > button:hover:not(:disabled) { border-color: color-mix(in srgb, var(--info) 34%, var(--line)); color: var(--ink-2); }
 .isolation-choice > button.active { border-color: color-mix(in srgb, var(--info) 46%, var(--line)); color: var(--info); background: color-mix(in srgb, var(--info) 7%, var(--line-quiet)); }
