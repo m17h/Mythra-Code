@@ -135,7 +135,14 @@ export function compactCompletedTurns(entries: WorkItemEntry[], running: boolean
   for (const entry of entries) {
     const turnId = workItemTurnId(entry);
     if (turnId) {
-      if (segment.length && segmentTurnId !== turnId) flushSegment();
+      // Early/legacy saves can contain the optimistic user prompt just before
+      // the runtime-tagged entries without copying the returned turn id onto
+      // that prompt. Treat a prompt-only prefix as part of the tagged turn so
+      // a successfully completed run can still collapse as one unit.
+      const isOrphanedPromptPrefix = !segmentTurnId
+        && segment.length > 0
+        && segment.every((candidate) => candidate.kind === "message" && candidate.value.role === "user");
+      if (segment.length && segmentTurnId !== turnId && !isOrphanedPromptPrefix) flushSegment();
       segmentTurnId = turnId;
       segment.push(entry);
       continue;

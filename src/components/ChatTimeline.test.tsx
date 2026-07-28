@@ -258,6 +258,35 @@ describe("ChatTimeline", () => {
       .toEqual(["user-one", "steer", "final"]);
   });
 
+  it("compacts a completed runtime turn whose saved opening prompt is missing its turn id", () => {
+    const completed = { turnId: "turn-done", turnStatus: "completed" as const };
+    const entries = compactCompletedTurns(orderedTimelineEntries(
+      [
+        { id: "orphaned-user", role: "user", text: "Expand the NPC dialogue", timelineOrder: 1 },
+        { id: "progress-one", role: "assistant", text: "Building the dialogue engine.", timelineOrder: 2, ...completed },
+        { id: "progress-two", role: "assistant", text: "Adding NPC memory.", timelineOrder: 4, ...completed },
+        { id: "final", role: "assistant", text: "Dialogue and memory are complete.", timelineOrder: 6, ...completed },
+      ],
+      [
+        { id: "file", kind: "file", title: "dialogue.py", timelineOrder: 3, ...completed },
+        { id: "command", kind: "command", title: "pytest", timelineOrder: 5, ...completed },
+      ],
+    ), false);
+
+    expect(entries.map((entry) => entry.kind)).toEqual(["message", "work", "message"]);
+    expect(entries[0]).toMatchObject({ kind: "message", value: { id: "orphaned-user" } });
+    expect(entries[1]).toMatchObject({
+      kind: "work",
+      value: [
+        { kind: "message", value: { id: "progress-one" } },
+        { kind: "files", value: [{ id: "file" }] },
+        { kind: "message", value: { id: "progress-two" } },
+        { kind: "commands", value: [{ id: "command" }] },
+      ],
+    });
+    expect(entries[2]).toMatchObject({ kind: "message", value: { id: "final" } });
+  });
+
   it("does not hide an interrupted turn without a final answer", () => {
     const entries = compactCompletedTurns(orderedTimelineEntries(
       [{ id: "user", role: "user", text: "Fix it", timelineOrder: 1 }],
