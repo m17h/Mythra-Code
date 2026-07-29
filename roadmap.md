@@ -53,7 +53,8 @@ OpenKiwi 1.0 establishes the core product: a fast, local-first macOS workspace f
 - Show run-scoped diffs instead of mixing unrelated workspace changes together.
 - Support selective stage, revert, and checkpoint restore actions.
 - Present test results and relevant warnings alongside the diff.
-- Add guided commit, push, pull-request, and release-note actions with explicit user confirmation.
+- [x] Connect a GitHub account, attach/create/clone repositories, and provide guided commit, fetch, pull, push, and draft pull-request actions.
+- Add guided release-note actions with explicit user confirmation.
 - Provide a concise shipping checklist rather than turning OpenKiwi into a full code editor.
 
 ### Reusable project profiles

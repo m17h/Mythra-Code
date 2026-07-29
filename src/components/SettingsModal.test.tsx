@@ -26,6 +26,19 @@ function modalProps(overrides: Partial<Parameters<typeof SettingsModal>[0]> = {}
     account: null,
     runtimeStatus: null,
     openRouterReady: false,
+    githubStatus: null,
+    usageTotals: {
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      cacheWriteInputTokens: 0,
+      outputTokens: 0,
+      reasoningOutputTokens: 0,
+      totalTokens: 0,
+      estimatedCost: 0,
+      pricedTokens: 0,
+      unpricedTokens: 0,
+      threads: 0,
+    },
     onClose: vi.fn(),
     onSave: vi.fn(),
     onThemePreview: vi.fn(),
@@ -34,6 +47,9 @@ function modalProps(overrides: Partial<Parameters<typeof SettingsModal>[0]> = {}
     onRuntimeRequired: vi.fn(),
     onWorkspaceTools: vi.fn(),
     onOpenRouterChange: vi.fn(),
+    onGitHubSignIn: vi.fn(async () => undefined),
+    onGitHubRefresh: vi.fn(async () => undefined),
+    onGitHubClone: vi.fn(async () => true),
     onError: vi.fn(),
     profiles: [],
     agents: [],
@@ -90,6 +106,48 @@ describe("SettingsModal", () => {
     expect(screen.getByRole("button", { name: /Models & accounts/ })).toHaveAttribute("aria-current", "page");
     expect(screen.getByRole("heading", { name: "Default model provider" })).toBeInTheDocument();
     expect(screen.getByText(/Each thread keeps its own provider/)).toBeInTheDocument();
+  });
+
+  it("shows GitHub connection and repository cloning in their own settings pane", () => {
+    const onGitHubRefresh = vi.fn(async () => undefined);
+    render(<SettingsModal {...modalProps({
+      initialSection: "github",
+      onGitHubRefresh,
+      githubStatus: {
+        available: true,
+        authenticated: true,
+        login: "morgan",
+        name: "Morgan",
+      },
+    })} />);
+
+    expect(screen.getByRole("heading", { name: "GitHub account" })).toBeInTheDocument();
+    expect(screen.getByText("@morgan")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Clone a repository" })).toBeInTheDocument();
+    expect(onGitHubRefresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows cumulative all-time token and API-equivalent usage", () => {
+    render(<SettingsModal {...modalProps({
+      initialSection: "usage",
+      usageTotals: {
+        inputTokens: 12_000,
+        cachedInputTokens: 2_000,
+        cacheWriteInputTokens: 0,
+        outputTokens: 3_000,
+        reasoningOutputTokens: 1_000,
+        totalTokens: 15_000,
+        estimatedCost: 1.25,
+        pricedTokens: 15_000,
+        unpricedTokens: 0,
+        threads: 4,
+      },
+    })} />);
+
+    expect(screen.getByText("$1.25")).toBeInTheDocument();
+    expect(screen.getByText("12,000")).toBeInTheDocument();
+    expect(screen.getByText("3,000")).toBeInTheDocument();
+    expect(screen.getByText("4 tracked threads")).toBeInTheDocument();
   });
 
   it("keeps project prompts out of Settings and points to the chat header", () => {

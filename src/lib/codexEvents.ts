@@ -242,6 +242,7 @@ export function routeCodexEvent(event: CodexEvent, ctx: CodexEventContext): void
         totalTokens: Number(usage.total.totalTokens ?? 0),
         inputTokens: Number(usage.total.inputTokens ?? 0),
         cachedInputTokens: Number(usage.total.cachedInputTokens ?? 0),
+        cacheWriteInputTokens: Number(usage.total.cacheWriteInputTokens ?? 0),
         outputTokens: Number(usage.total.outputTokens ?? 0),
         reasoningOutputTokens: Number(usage.total.reasoningOutputTokens ?? 0),
         contextWindow: usage.modelContextWindow,

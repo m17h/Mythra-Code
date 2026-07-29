@@ -7,7 +7,7 @@ import { costTotals, formatCost, recordThreadCost } from "./costLedger";
 describe("cost ledger", () => {
   beforeEach(() => localStorage.clear());
 
-  it("keeps one cumulative entry per thread and sums totals", () => {
+  it("stores only cumulative deltas and sums totals", () => {
     recordThreadCost("t1", "/proj/a", 0.05);
     recordThreadCost("t1", "/proj/a", 0.12);
     recordThreadCost("t2", "/proj/b", 0.03);
@@ -23,10 +23,10 @@ describe("cost ledger", () => {
     expect(costTotals("/proj/a")).toEqual({ today: 0, project: 0 });
   });
 
-  it("caps the ledger size", () => {
+  it("retains complete local history", () => {
     for (let index = 0; index < 520; index += 1) recordThreadCost(`t${index}`, "/p", 0.01);
     const stored = JSON.parse(localStorage.getItem("kiwi.costLedger") ?? "[]") as unknown[];
-    expect(stored.length).toBeLessThanOrEqual(500);
+    expect(stored).toHaveLength(520);
   });
 
   it("formats sub-cent costs with more precision", () => {

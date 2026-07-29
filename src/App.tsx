@@ -35,7 +35,30 @@ import { PendingTurnStarts, type PendingTurnStart } from "./lib/pendingTurnStart
 import { useTaskStore } from "./lib/taskStore";
 import { friendlyError } from "./lib/errors";
 import { recordError } from "./lib/errorLog";
+import {
+  annotateThreadUsage,
+  estimateUsageCost,
+  formatEstimatedCost,
+  pricingForModel,
+  usageForThread,
+  usageTotals,
+  type ModelPricing,
+} from "./lib/usageLedger";
 import { costTotals, formatCost, recordThreadCost } from "./lib/costLedger";
+import {
+  attachGitHubRemote,
+  cloneGitHubRepository,
+  createGitHubRepository,
+  getGitHubRepoStatus,
+  getGitHubStatus,
+  gitActionUnavailableReason,
+  githubCliCommand,
+  gitPushCommand,
+  startGitHubLogin,
+  type GitWorkspaceAction,
+  type GitHubAccountStatus,
+  type GitHubRepoStatus,
+} from "./lib/github";
 import { useAppUpdater } from "./lib/appUpdater";
 import { useCodexEvents } from "./hooks/useCodexEvents";
 import { useClaudeEvents } from "./hooks/useClaudeEvents";
@@ -75,6 +98,7 @@ import {
   readWorkspaceGitInfo,
   readWorktreeStatus,
   removeThreadWorktree,
+  setWorktreeAppliedBaseline,
   type CreatedWorktree,
   type ThreadWorktreeRecord,
   type WorktreeStatus,
@@ -238,6 +262,14 @@ export default function App() {
   const [mcpServers, setMcpServers] = useState<McpView[]>([]);
   const [gitOutput, setGitOutput] = useState("");
   const [gitCommitMessage, setGitCommitMessage] = useState("");
+  const [githubStatus, setGithubStatus] = useState<GitHubAccountStatus | null>(null);
+  const [githubBusy, setGithubBusy] = useState(false);
+  const [githubLoginPending, setGithubLoginPending] = useState(false);
+  const [githubRepoStatus, setGithubRepoStatus] = useState<GitHubRepoStatus | null>(null);
+  const [githubRepoError, setGithubRepoError] = useState("");
+  const [githubRemoteInput, setGithubRemoteInput] = useState("");
+  const [githubRepoName, setGithubRepoName] = useState("");
+  const [githubRepoVisibility, setGithubRepoVisibility] = useState<"private" | "public">("private");
   const [runtimeModels, setRuntimeModels] = useState<RuntimeModel[]>([]);
   const [openRouterModels, setOpenRouterModels] = useState<OpenRouterModel[]>([]);
   const [openRouterModelsLoading, setOpenRouterModelsLoading] = useState(false);
@@ -257,6 +289,7 @@ export default function App() {
     // a previous app exit. Later updates are persisted by their own writers.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
   if (threadProjectBindingsRef.current === null) {
     threadProjectBindingsRef.current = loadStored("kiwi.threadProjects", {});
   }
@@ -355,28 +388,54 @@ export default function App() {
     };
   }, [activeProjectPath]);
 
-  // OpenRouter publishes per-token USD pricing — surface the spend estimate
-  // for the active thread instead of discarding the data.
-  const costEstimate = useMemo(() => {
-    if (effectiveSettings.provider !== "openrouter" || !tokenUsage) return "";
+  const activeOpenRouterPricing = useMemo<ModelPricing | undefined>(() => {
+    if (effectiveSettings.provider !== "openrouter") return undefined;
     const pricing = openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.pricing;
-    const promptRate = Number(pricing?.prompt ?? NaN);
-    const completionRate = Number(pricing?.completion ?? NaN);
-    if (!Number.isFinite(promptRate) || !Number.isFinite(completionRate)) return "";
-    const cost = tokenUsage.inputTokens * promptRate + tokenUsage.outputTokens * completionRate;
-    if (!Number.isFinite(cost) || cost < 0) return "";
-    return cost >= 0.01 ? `≈ $${cost.toFixed(2)} this thread` : `≈ $${cost.toFixed(4)} this thread`;
-  }, [effectiveSettings.model, effectiveSettings.provider, openRouterModels, tokenUsage]);
+    const input = Number(pricing?.prompt ?? NaN);
+    const output = Number(pricing?.completion ?? NaN);
+    if (!Number.isFinite(input) || !Number.isFinite(output)) return undefined;
+    return {
+      inputPerMillion: input * 1_000_000,
+      outputPerMillion: output * 1_000_000,
+      source: "OpenRouter",
+      asOf: new Date().toISOString().slice(0, 10),
+    };
+  }, [effectiveSettings.model, effectiveSettings.provider, openRouterModels]);
 
-  // Aggregate OpenRouter spend across threads (today + this project).
+  useEffect(() => {
+    if (!activeThreadId) return;
+    annotateThreadUsage(activeThreadId, {
+      provider: effectiveSettings.provider,
+      model: effectiveSettings.model,
+      projectPath: activeWorkspace ? normalizedProjectPath(activeWorkspace.path) : undefined,
+      pricing: activeOpenRouterPricing ?? pricingForModel(effectiveSettings.provider, effectiveSettings.model),
+    });
+  }, [activeOpenRouterPricing, activeThreadId, activeWorkspace, effectiveSettings.model, effectiveSettings.provider, tokenUsage]);
+
+  const activeUsageRecord = useMemo(
+    () => activeThreadId ? usageForThread(activeThreadId) : null,
+    [activeThreadId, taskStatus, tokenUsage],
+  );
+  const activeUsageCost = activeUsageRecord?.estimatedCost
+    ?? (tokenUsage ? estimateUsageCost(tokenUsage, activeUsageRecord?.pricing) : null);
+  const activeUsageIsUnpriced = Boolean(
+    activeUsageRecord
+    && activeUsageRecord.unpricedTokens
+    && !activeUsageRecord.pricedTokens,
+  );
+  const costEstimate = !tokenUsage
+    ? ""
+    : activeUsageCost === null || activeUsageIsUnpriced
+      ? "Price unavailable for this model"
+      : `≈ ${formatEstimatedCost(activeUsageCost)} ${activeUsageRecord?.pricing?.source === "OpenRouter" ? "estimated spend" : "API-equivalent"}${activeUsageRecord?.unpricedTokens ? " · partial estimate" : ""}`;
+  const allTimeUsage = useMemo(() => usageTotals(), [settingsOpen, taskStatus, tokenUsage]);
   const costTotalsView = useMemo(() => {
-    if (effectiveSettings.provider !== "openrouter") return "";
     const totals = costTotals(activeProject ? normalizedProjectPath(activeProject.path) : undefined);
     if (!totals.today && !totals.project) return "";
-    return `${activeProject ? `This project ≈ ${formatCost(totals.project)} · ` : ""}Today ≈ ${formatCost(totals.today)}`;
-    // taskStatus retriggers the memo after each turn completes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeProject, effectiveSettings.provider, taskStatus, tokenUsage]);
+    return activeProject
+      ? `${formatCost(totals.project)} in this project · ${formatCost(totals.today)} today`
+      : `${formatCost(totals.today)} today`;
+  }, [activeProject, taskStatus, tokenUsage]);
 
   const accountUsageView = useMemo(() => {
     return providerAccountUsage(effectiveSettings.provider, {
@@ -451,6 +510,38 @@ export default function App() {
       successToastTimerRef.current = null;
     }, 4_500);
   }, []);
+
+  useEffect(() => {
+    if (!githubLoginPending) return;
+    let disposed = false;
+    let attempts = 0;
+    const check = async () => {
+      attempts += 1;
+      try {
+        const next = await getGitHubStatus();
+        if (disposed) return;
+        setGithubStatus(next);
+        if (next.authenticated) {
+          setGithubLoginPending(false);
+          showSuccessToast(`GitHub connected${next.login ? ` as @${next.login}` : ""}`);
+        } else if (attempts >= 45) {
+          setGithubLoginPending(false);
+          setError("GitHub sign-in was not detected. Finish `gh auth login`, then use Refresh in GitHub settings.");
+        }
+      } catch (reason) {
+        if (!disposed && attempts >= 45) {
+          setGithubLoginPending(false);
+          setError(`Could not verify GitHub sign-in: ${friendlyError(reason)}`);
+        }
+      }
+    };
+    const timer = window.setInterval(() => void check(), 2_000);
+    void check();
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [githubLoginPending, showSuccessToast]);
 
   const dismissSuccessToast = useCallback(() => {
     if (successToastTimerRef.current !== null) {
@@ -1207,17 +1298,30 @@ export default function App() {
       }
       const projectPath = threadProjectBindingsRef.current?.[threadId];
       const completedThread = threads.find((entry) => entry.id === threadId) ?? knownThreadsRef.current?.[threadId];
-      if (providerFromThread(completedThread, "openai") === "openrouter") {
-        const usage = useTaskStore.getState().tasks[threadId]?.usage;
-        // Newly stored thread models are authoritative. The active-model
-        // fallback preserves cost tracking for OpenRouter threads created
-        // before that storage existed.
-        const completedModel = threadModels[threadId] ?? (activeThreadId === threadId ? effectiveSettings.model : undefined);
-        const pricing = openRouterModels.find((entry) => entry.id === completedModel)?.pricing;
-        const promptRate = Number(pricing?.prompt ?? NaN);
-        const completionRate = Number(pricing?.completion ?? NaN);
-        if (usage && Number.isFinite(promptRate) && Number.isFinite(completionRate)) {
-          recordThreadCost(threadId, projectPath ? normalizedProjectPath(projectPath) : "", usage.inputTokens * promptRate + usage.outputTokens * completionRate);
+      const completedProvider = providerFromThread(completedThread, "openai");
+      const completedModel = threadModels[threadId]
+        ?? (activeThreadId === threadId ? effectiveSettings.model : modelForProvider(completedProvider, ""));
+      const pricing = completedProvider === "openrouter"
+        ? openRouterModels.find((entry) => entry.id === completedModel)?.pricing
+        : undefined;
+      const promptRate = Number(pricing?.prompt ?? NaN);
+      const completionRate = Number(pricing?.completion ?? NaN);
+      annotateThreadUsage(threadId, {
+        provider: completedProvider,
+        model: completedModel,
+        projectPath: projectPath ? normalizedProjectPath(projectPath) : undefined,
+        pricing: Number.isFinite(promptRate) && Number.isFinite(completionRate)
+          ? { inputPerMillion: promptRate * 1_000_000, outputPerMillion: completionRate * 1_000_000, source: "OpenRouter", asOf: new Date().toISOString().slice(0, 10) }
+          : pricingForModel(completedProvider, completedModel),
+      });
+      if (completedProvider === "openrouter") {
+        const completedUsage = usageForThread(threadId);
+        if (completedUsage?.estimatedCost != null) {
+          recordThreadCost(
+            threadId,
+            projectPath ? normalizedProjectPath(projectPath) : "",
+            completedUsage.estimatedCost,
+          );
         }
       }
       if (projectPath && activeWorkspace && normalizedProjectPath(projectPath) === normalizedProjectPath(activeWorkspace.path)) {
@@ -2380,6 +2484,8 @@ export default function App() {
     label,
     status = "ready",
     restoredFromId,
+    worktreeThreadId,
+    worktreeBaseline,
     serialize = true,
   }: {
     threadId: string;
@@ -2387,6 +2493,8 @@ export default function App() {
     label: string;
     status?: CheckpointRecord["status"];
     restoredFromId?: string;
+    worktreeThreadId?: string;
+    worktreeBaseline?: string;
     serialize?: boolean;
   }): Promise<CheckpointRecord> => {
     const id = crypto.randomUUID();
@@ -2406,6 +2514,8 @@ export default function App() {
       parentId: parent?.checkpointId,
       parentPosition: parent?.position,
       restoredFromId,
+      worktreeThreadId,
+      worktreeBaseline,
     };
     persistCheckpoints((current) => [checkpoint, ...current]);
     const capture = async () => {
@@ -2498,16 +2608,48 @@ export default function App() {
     let safetyId: string | null = null;
     try {
       await runCheckpointProjectOperation(checkpoint.workspacePath, async () => {
+        const relatedWorktree = checkpoint.worktreeThreadId
+          ? threadWorktreesRef.current[checkpoint.worktreeThreadId]
+          : undefined;
         const safety = await captureCurrentStateCheckpoint({
           threadId: activeThread?.id ?? checkpoint.threadId,
           workspacePath: checkpoint.workspacePath!,
           label: `Safety copy before restoring ${checkpoint.label}`,
           status: "safety",
           restoredFromId: checkpoint.id,
+          worktreeThreadId: relatedWorktree?.threadId,
+          worktreeBaseline: relatedWorktree
+            ? relatedWorktree.appliedTree ?? relatedWorktree.baseCommit
+            : undefined,
           serialize: false,
         });
         safetyId = safety.id;
         await restoreCheckpointSnapshot(checkpoint.id, checkpoint.workspacePath!, target, safety.id);
+        if (
+          target === "after"
+          && checkpoint.worktreeThreadId
+          && checkpoint.worktreeBaseline
+          && relatedWorktree
+          && relatedWorktree.status !== "removed"
+        ) {
+          const restoredTree = await setWorktreeAppliedBaseline(
+            checkpoint.worktreeThreadId,
+            checkpoint.workspacePath!,
+            checkpoint.worktreeBaseline,
+          );
+          persistThreadWorktrees((current) => {
+            const record = current[checkpoint.worktreeThreadId!];
+            if (!record) return current;
+            return {
+              ...current,
+              [record.threadId]: {
+                ...record,
+                appliedTree: restoredTree,
+                status: checkpoint.worktreeBaseline === record.baseCommit ? "active" : "applied",
+              },
+            };
+          });
+        }
       });
       persistCheckpoints((current) => current.map((entry) => entry.id === checkpoint.id ? {
         ...entry,
@@ -2674,6 +2816,8 @@ export default function App() {
           workspacePath: activeThreadWorktree.projectPath,
           label: `Safety copy before applying ${activeThreadWorktree.branch}`,
           status: "safety",
+          worktreeThreadId: activeThread.id,
+          worktreeBaseline: activeThreadWorktree.appliedTree ?? activeThreadWorktree.baseCommit,
           serialize: false,
         });
         const applied = await applyWorktreeToSource(
@@ -2908,10 +3052,58 @@ export default function App() {
     }
   }, []);
 
-  const runGitAction = async (action: "status" | "diff" | "stage" | "revert" | "commit" | "comments" | "ci" | "pr") => {
+  const refreshGitHubRepo = useCallback(async (cwd = activeExecutionPath || activeProject?.path || "") => {
+    if (!cwd) {
+      setGithubRepoStatus(null);
+      setGithubRepoError("");
+      return;
+    }
+    try {
+      setGithubRepoStatus(await getGitHubRepoStatus(cwd));
+      setGithubRepoError("");
+    } catch (reason) {
+      setGithubRepoStatus(null);
+      setGithubRepoError(friendlyError(reason));
+    }
+  }, [activeExecutionPath, activeProject?.path]);
+
+  useEffect(() => {
+    void refreshGitHubRepo();
+    setGithubRemoteInput("");
+    setGithubRepoName(activeProject?.name.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") ?? "");
+  }, [activeExecutionPath, activeProject?.id, activeProject?.name, refreshGitHubRepo]);
+
+  const runGitAction = async (action: GitWorkspaceAction) => {
     if (!activeProject) return;
+    const unavailable = gitActionUnavailableReason(action, effectiveSettings.permission);
+    if (unavailable) {
+      setGitOutput(unavailable);
+      return;
+    }
     const commandPath = activeExecutionPath || activeProject.path;
     const gitRoots = activeThreadWorktree?.gitDir ? [activeThreadWorktree.gitDir] : [];
+    const pushCommand = gitPushCommand(githubRepoStatus);
+    if (action === "commitPush") {
+      if (!pushCommand) {
+        setGitOutput("Check out a named branch before committing and pushing to GitHub.");
+        return;
+      }
+      const commitCommand = ["git", "commit", "-m", gitCommitMessage.trim()];
+      try {
+        const commit = await executeCommand(commitCommand, commandPath, gitRoots);
+        if (commit.exitCode !== 0) {
+          setGitOutput(`$ ${commitCommand.join(" ")}\n${commit.stdout}${commit.stderr}\n[exit ${commit.exitCode}]`);
+          return;
+        }
+        const push = await executeCommand(pushCommand, commandPath, gitRoots);
+        setGitOutput(`$ ${commitCommand.join(" ")}\n${commit.stdout}${commit.stderr}\n[exit ${commit.exitCode}]\n\n$ ${pushCommand.join(" ")}\n${push.stdout}${push.stderr}\n[exit ${push.exitCode}]`);
+        setGitCommitMessage("");
+        if (push.exitCode === 0) void refreshGitHubRepo(commandPath);
+      } catch (reason) {
+        setGitOutput(friendlyError(reason));
+      }
+      return;
+    }
     let command: string[];
     if (action === "status") command = ["git", "status", "--short", "--branch"];
     else if (action === "diff") command = ["git", "diff", "--stat", "--patch"];
@@ -2920,11 +3112,19 @@ export default function App() {
       if (!window.confirm("Revert all tracked staged and working-tree changes? Untracked files will be kept.")) return;
       command = ["git", "restore", "--staged", "--worktree", "."];
     } else if (action === "commit") command = ["git", "commit", "-m", gitCommitMessage.trim()];
-    else if (action === "comments") command = ["gh", "pr", "view", "--comments"];
-    else if (action === "ci") command = ["gh", "pr", "checks"];
+    else if (action === "fetch") command = ["git", "fetch", "--prune", "origin"];
+    else if (action === "pull") command = ["git", "pull", "--ff-only"];
+    else if (action === "push") {
+      if (!pushCommand) {
+        setGitOutput("Check out a named branch before pushing to GitHub.");
+        return;
+      }
+      command = pushCommand;
+    } else if (action === "comments") command = githubCliCommand(githubStatus?.path || "gh", "comments");
+    else if (action === "ci") command = githubCliCommand(githubStatus?.path || "gh", "ci");
     else {
       if (!window.confirm("Create a draft pull request on the configured GitHub remote?")) return;
-      command = ["gh", "pr", "create", "--draft", "--fill"];
+      command = githubCliCommand(githubStatus?.path || "gh", "pr");
     }
     try {
       const result = await executeCommand(command, commandPath, gitRoots);
@@ -2932,8 +3132,101 @@ export default function App() {
       setGitOutput(combined.includes("not a git repository") ? "This project folder is not a Git repository yet. Initialize Git from the terminal to enable these workflows." : `$ ${command.join(" ")}\n${combined}\n[exit ${result.exitCode}]`);
       if (action === "diff" && activeThreadId) useTaskStore.getState().setDiff(activeThreadId, result.stdout);
       if (action === "commit" && result.exitCode === 0) setGitCommitMessage("");
+      if (result.exitCode === 0) void refreshGitHubRepo(commandPath);
     } catch (reason) {
       setGitOutput(friendlyError(reason));
+    }
+  };
+
+  const attachActiveGitHubRemote = async () => {
+    if (!activeProject || !githubRemoteInput.trim()) return;
+    const unavailable = gitActionUnavailableReason("attach", effectiveSettings.permission);
+    if (unavailable) {
+      setGitOutput(unavailable);
+      return;
+    }
+    setGithubBusy(true);
+    try {
+      const next = await attachGitHubRemote(activeExecutionPath || activeProject.path, githubRemoteInput.trim());
+      setGithubRepoStatus(next);
+      setGithubRemoteInput("");
+      showSuccessToast("GitHub repository attached");
+    } catch (reason) {
+      setError(friendlyError(reason));
+    } finally {
+      setGithubBusy(false);
+    }
+  };
+
+  const createActiveGitHubRepository = async () => {
+    if (!activeProject || !githubRepoName.trim()) return;
+    const unavailable = gitActionUnavailableReason("create", effectiveSettings.permission);
+    if (unavailable) {
+      setGitOutput(unavailable);
+      return;
+    }
+    setGithubBusy(true);
+    try {
+      const next = await createGitHubRepository(activeExecutionPath || activeProject.path, githubRepoName.trim(), githubRepoVisibility);
+      setGithubRepoStatus(next);
+      showSuccessToast(`${githubRepoVisibility === "private" ? "Private" : "Public"} GitHub repository created`);
+    } catch (reason) {
+      setError(friendlyError(reason));
+    } finally {
+      setGithubBusy(false);
+    }
+  };
+
+  const refreshGitHubAccount = async () => {
+    setGithubBusy(true);
+    try {
+      setGithubStatus(await getGitHubStatus());
+    } catch (reason) {
+      setError(friendlyError(reason));
+    } finally {
+      setGithubBusy(false);
+    }
+  };
+
+  const beginGitHubLogin = async () => {
+    setGithubBusy(true);
+    try {
+      await startGitHubLogin();
+      setGithubLoginPending(true);
+      showSuccessToast("Finish GitHub sign-in in Terminal; OpenKiwi will connect automatically");
+    } catch (reason) {
+      setError(friendlyError(reason));
+    } finally {
+      setGithubBusy(false);
+    }
+  };
+
+  const cloneGitHubProject = async (url: string, folderName: string): Promise<boolean> => {
+    const safeName = folderName.trim();
+    if (!safeName || safeName === "." || safeName === ".." || /[\\/]/.test(safeName)) {
+      setError("Choose a simple local folder name without slashes.");
+      return false;
+    }
+    const parent = await open({ directory: true, multiple: false, title: "Choose where to clone the project" });
+    if (!parent || Array.isArray(parent)) return false;
+    const destination = `${parent.replace(/[\\/]+$/, "")}/${safeName}`;
+    setGithubBusy(true);
+    try {
+      await cloneGitHubRepository(url.trim(), destination);
+      const project: Project = { id: crypto.randomUUID(), name: safeName, path: destination };
+      const next = [...projects, project];
+      setProjects(next);
+      storeValue("kiwi.projects", next);
+      setActiveProjectId(project.id);
+      setWorkspaceMode("project");
+      storeValue("kiwi.workspaceMode", "project");
+      showSuccessToast("GitHub repository cloned and added");
+      return true;
+    } catch (reason) {
+      setError(friendlyError(reason));
+      return false;
+    } finally {
+      setGithubBusy(false);
     }
   };
 
@@ -2952,6 +3245,11 @@ export default function App() {
 
   const runGitPathAction = async (action: "stage" | "revert", path: string) => {
     if (!activeProject) return;
+    const unavailable = gitActionUnavailableReason(action, effectiveSettings.permission);
+    if (unavailable) {
+      setGitOutput(unavailable);
+      return;
+    }
     const commandPath = activeExecutionPath || activeProject.path;
     if (action === "revert" && !window.confirm(`Revert changes to ${path}?`)) return;
     const command = action === "stage" ? ["git", "add", "--", path] : ["git", "restore", "--staged", "--worktree", "--", path];
@@ -3712,9 +4010,9 @@ export default function App() {
               <div className="composer-caption">
                 OpenKiwi can make mistakes. Review commands and changes before shipping.
                 {tokenUsage?.contextWindow ? (
-                  <span className={`context-meter ${tokenUsage.totalTokens / tokenUsage.contextWindow > 0.8 ? "warn" : ""}`}>
+                  <span className={`context-meter ${(tokenUsage.contextTokens ?? tokenUsage.totalTokens) / tokenUsage.contextWindow > 0.8 ? "warn" : ""}`}>
                     {" "}
-                    · Context {Math.min(100, Math.round((tokenUsage.totalTokens / tokenUsage.contextWindow) * 100))}% used{costEstimate ? ` · ${costEstimate}` : ""}
+                    · Context {Math.min(100, Math.round(((tokenUsage.contextTokens ?? tokenUsage.totalTokens) / tokenUsage.contextWindow) * 100))}% used{costEstimate ? ` · ${costEstimate}` : ""}
                   </span>
                 ) : null}
               </div>
@@ -3762,6 +4060,13 @@ export default function App() {
             mcpServers={mcpServers}
             gitOutput={gitOutput}
             gitCommitMessage={gitCommitMessage}
+            githubAuthenticated={Boolean(githubStatus?.authenticated)}
+            githubRepoStatus={githubRepoStatus}
+            githubRepoError={githubRepoError}
+            gitActionsReadOnly={effectiveSettings.permission === "read-only"}
+            githubRemoteInput={githubRemoteInput}
+            githubRepoName={githubRepoName}
+            githubRepoVisibility={githubRepoVisibility}
             promptAudit={[
               { label: "Base instruction", value: effectiveSettings.systemPrompt ? `${activeProject?.overrides?.systemPrompt ? (activeProject.overrides.systemPromptMode === "append" && settings.systemPrompt.trim() ? "app + project" : "project") : "app"} · ${effectiveSettings.systemPrompt.length} chars` : "empty" },
               { label: "Developer instruction", value: "empty" },
@@ -3776,7 +4081,10 @@ export default function App() {
             projectActions={projectActions}
             workflows={workflows.filter((workflow) => workflow.projectId === activeProject?.id && workflow.enabled)}
             workflowRuns={workflowRuns}
-            onTab={setStudioTab}
+            onTab={(tab) => {
+              setStudioTab(tab);
+              if (tab === "git") void refreshGitHubAccount();
+            }}
             onClose={() => setStudioOpen(false)}
             onRefreshDiff={() => void refreshDiff()}
             onReview={() => void startReview()}
@@ -3820,6 +4128,15 @@ export default function App() {
             onRefreshTools={() => void refreshTools(activeProject)}
             onGitAction={(action) => void runGitAction(action)}
             onGitCommitMessage={setGitCommitMessage}
+            onGitHubRemoteInput={setGithubRemoteInput}
+            onGitHubRepoName={setGithubRepoName}
+            onGitHubRepoVisibility={setGithubRepoVisibility}
+            onGitHubAttach={() => void attachActiveGitHubRemote()}
+            onGitHubCreate={() => void createActiveGitHubRepository()}
+            onOpenGitHubSettings={() => {
+              setStudioOpen(false);
+              openSettings("github");
+            }}
             onGitPathAction={(action, path) => void runGitPathAction(action, path)}
             onAttachPath={(path) => setAttachments((current) => (current.some((item) => item.path === path) ? current : [...current, { path, name: basename(path), kind: "file" }]))}
             onProjectAction={(action) => void runProjectAction(action)}
@@ -3842,6 +4159,9 @@ export default function App() {
         claudeStatus={claudeStatus}
         claudeLoginStarting={claudeLoginStarting}
         openRouterReady={openRouterReady}
+        githubStatus={githubStatus}
+        githubBusy={githubBusy || githubLoginPending}
+        usageTotals={allTimeUsage}
         onClose={closeSettings}
         onSave={(next) => {
           persistSettings(next);
@@ -3861,6 +4181,9 @@ export default function App() {
           openStudio("tools");
         }}
         onOpenRouterChange={setOpenRouterReady}
+        onGitHubSignIn={beginGitHubLogin}
+        onGitHubRefresh={refreshGitHubAccount}
+        onGitHubClone={cloneGitHubProject}
         onError={setError}
         profiles={promptProfiles}
         agents={customAgents}

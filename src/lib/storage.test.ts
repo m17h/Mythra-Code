@@ -4,10 +4,11 @@ const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 
-import { DURABLE_STORAGE_KEYS, STORAGE_SCHEMA_VERSION, hydrateNativeStorage, loadStored, storeValue } from "./storage";
+import { DURABLE_STORAGE_KEYS, STORAGE_SCHEMA_VERSION, flushPendingStateWrites, hydrateNativeStorage, loadStored, removeStoredValue, storeValue } from "./storage";
 
 describe("durable storage", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    await flushPendingStateWrites();
     localStorage.clear();
     invoke.mockReset();
   });
@@ -40,7 +41,7 @@ describe("durable storage", () => {
     expect(loadStored("kiwi.schemaVersion", 0)).toBe(STORAGE_SCHEMA_VERSION);
   });
 
-  it("writes both the immediate cache and durable store", () => {
+  it("writes both the immediate cache and durable store", async () => {
     invoke.mockResolvedValue(undefined);
     storeValue("kiwi.workspaceMode", "projects");
     expect(localStorage.getItem("kiwi.workspaceMode")).toBe('"projects"');
@@ -48,5 +49,40 @@ describe("durable storage", () => {
       key: "kiwi.workspaceMode",
       value: "projects",
     });
+    await flushPendingStateWrites();
+  });
+
+  it("serializes native writes for the same key", async () => {
+    const releases: Array<() => void> = [];
+    invoke.mockImplementation(() => new Promise<void>((resolve) => releases.push(resolve)));
+
+    storeValue("kiwi.settings", { value: 1 });
+    storeValue("kiwi.settings", { value: 2 });
+    expect(invoke).toHaveBeenCalledTimes(1);
+
+    releases.shift()?.();
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledTimes(2));
+    releases.shift()?.();
+    await flushPendingStateWrites();
+    expect(invoke.mock.calls.map(([, payload]) => payload)).toEqual([
+      { key: "kiwi.settings", value: { value: 1 } },
+      { key: "kiwi.settings", value: { value: 2 } },
+    ]);
+  });
+
+  it("orders a durable delete after an in-flight write", async () => {
+    const releases: Array<() => void> = [];
+    invoke.mockImplementation(() => new Promise<void>((resolve) => releases.push(resolve)));
+
+    storeValue("kiwi.usageLedger", [{ threadId: "one" }]);
+    removeStoredValue("kiwi.usageLedger");
+    expect(localStorage.getItem("kiwi.usageLedger")).toBeNull();
+    expect(invoke).toHaveBeenCalledTimes(1);
+
+    releases.shift()?.();
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledTimes(2));
+    expect(invoke).toHaveBeenLastCalledWith("state_delete", { key: "kiwi.usageLedger" });
+    releases.shift()?.();
+    await flushPendingStateWrites();
   });
 });

@@ -213,6 +213,33 @@ struct WorkspaceGitInitializeResult {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct GitHubAccountStatus {
+    available: bool,
+    authenticated: bool,
+    path: Option<String>,
+    version: Option<String>,
+    login: Option<String>,
+    name: Option<String>,
+    email: Option<String>,
+    avatar_url: Option<String>,
+    profile_url: Option<String>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitHubRepoStatus {
+    is_repo: bool,
+    remote_url: Option<String>,
+    repository: Option<String>,
+    branch: Option<String>,
+    upstream: Option<String>,
+    ahead: usize,
+    behind: usize,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct CreatedWorktree {
     path: String,
     branch: String,
@@ -1017,6 +1044,305 @@ async fn claude_login(app: AppHandle) -> Result<(), String> {
     }
 }
 
+async fn resolve_github_binary(app: &AppHandle) -> Result<PathBuf, String> {
+    let executable_name = if cfg!(windows) { "gh.exe" } else { "gh" };
+    if let Some(override_path) = env::var_os("OPENKIWI_GH_PATH") {
+        let override_path = PathBuf::from(override_path);
+        return override_path.is_file().then_some(override_path).ok_or_else(|| {
+            "OPENKIWI_GH_PATH does not point to a GitHub CLI executable.".into()
+        });
+    }
+    let mut candidates = Vec::new();
+    if let Some(candidate) = find_on_path(executable_name) {
+        push_candidate(&mut candidates, candidate);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        push_candidate(&mut candidates, PathBuf::from("/opt/homebrew/bin/gh"));
+        push_candidate(&mut candidates, PathBuf::from("/usr/local/bin/gh"));
+    }
+    if let Ok(home) = app.path().home_dir() {
+        for relative in [".local/bin/gh", ".cargo/bin/gh", ".npm-global/bin/gh"] {
+            push_candidate(&mut candidates, home.join(relative));
+        }
+    }
+    if let Some(candidate) = candidates.into_iter().find(|candidate| candidate.is_file()) {
+        return Ok(candidate);
+    }
+    if let Some(candidate) = find_with_login_shell(executable_name).await {
+        return Ok(candidate);
+    }
+    Err("GitHub CLI is not installed. Install it from cli.github.com, then refresh GitHub settings.".into())
+}
+
+#[tauri::command]
+async fn github_status(app: AppHandle) -> GitHubAccountStatus {
+    let path = match resolve_github_binary(&app).await {
+        Ok(path) => path,
+        Err(error) => {
+            return GitHubAccountStatus {
+                available: false,
+                authenticated: false,
+                path: None,
+                version: None,
+                login: None,
+                name: None,
+                email: None,
+                avatar_url: None,
+                profile_url: None,
+                error: Some(error),
+            };
+        }
+    };
+    let version = Command::new(&path)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .ok()
+        .and_then(|output| output.status.success().then(|| {
+            String::from_utf8_lossy(&output.stdout).lines().next().unwrap_or_default().trim().to_string()
+        }))
+        .filter(|value| !value.is_empty());
+    let auth = Command::new(&path)
+        .args(["auth", "status", "--hostname", "github.com"])
+        .stdin(Stdio::null())
+        .output()
+        .await;
+    let authenticated = auth.as_ref().is_ok_and(|output| output.status.success());
+    if !authenticated {
+        let error = auth.ok()
+            .map(|output| String::from_utf8_lossy(&output.stderr).trim().to_string())
+            .filter(|value| !value.is_empty());
+        return GitHubAccountStatus {
+            available: true,
+            authenticated: false,
+            path: Some(path.to_string_lossy().into_owned()),
+            version,
+            login: None,
+            name: None,
+            email: None,
+            avatar_url: None,
+            profile_url: None,
+            error,
+        };
+    }
+    let user = Command::new(&path)
+        .args(["api", "user"])
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| serde_json::from_slice::<Value>(&output.stdout).ok());
+    GitHubAccountStatus {
+        available: true,
+        authenticated: true,
+        path: Some(path.to_string_lossy().into_owned()),
+        version,
+        login: user.as_ref().and_then(|value| value.get("login")).and_then(Value::as_str).map(str::to_string),
+        name: user.as_ref().and_then(|value| value.get("name")).and_then(Value::as_str).map(str::to_string),
+        email: user.as_ref().and_then(|value| value.get("email")).and_then(Value::as_str).map(str::to_string),
+        avatar_url: user.as_ref().and_then(|value| value.get("avatar_url")).and_then(Value::as_str).map(str::to_string),
+        profile_url: user.as_ref().and_then(|value| value.get("html_url")).and_then(Value::as_str).map(str::to_string),
+        error: None,
+    }
+}
+
+#[tauri::command]
+async fn github_login(app: AppHandle) -> Result<(), String> {
+    let path = resolve_github_binary(&app).await?;
+    #[cfg(target_os = "macos")]
+    {
+        let escaped = path.to_string_lossy().replace('\'', "'\"'\"'");
+        let login_command = format!(
+            "'{}' auth login --hostname github.com --git-protocol https --web",
+            escaped
+        );
+        let status = Command::new("/usr/bin/osascript")
+            .args([
+                "-e", "on run argv",
+                "-e", "tell application \"Terminal\"",
+                "-e", "activate",
+                "-e", "do script (item 1 of argv)",
+                "-e", "end tell",
+                "-e", "end run",
+                "--",
+            ])
+            .arg(login_command)
+            .status()
+            .await
+            .map_err(|error| format!("Could not open GitHub sign-in in Terminal: {error}"))?;
+        return status.success().then_some(()).ok_or_else(|| {
+            "Could not open GitHub sign-in. Run `gh auth login` yourself, then refresh GitHub settings.".into()
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+        Err("Run `gh auth login` in a terminal, then refresh GitHub settings.".into())
+    }
+}
+
+fn parse_github_repository(remote: &str) -> Option<String> {
+    let trimmed = remote.trim().trim_end_matches('/').trim_end_matches(".git");
+    let path = if let Some(value) = trimmed.strip_prefix("git@github.com:") {
+        value
+    } else if let Some(value) = trimmed.strip_prefix("ssh://git@github.com/") {
+        value
+    } else if let Some(value) = trimmed.strip_prefix("https://github.com/") {
+        value
+    } else if let Some(value) = trimmed.strip_prefix("http://github.com/") {
+        value
+    } else {
+        return None;
+    };
+    let mut parts = path.split('/');
+    let owner = parts.next()?;
+    let repo = parts.next()?;
+    (parts.next().is_none() && !owner.is_empty() && !repo.is_empty())
+        .then(|| format!("{owner}/{repo}"))
+}
+
+fn validate_github_repository_name(name: &str) -> Result<(), String> {
+    let valid = !name.is_empty()
+        && name.len() <= 100
+        && !name.starts_with('-')
+        && name
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-'));
+    valid.then_some(()).ok_or_else(|| {
+        "Repository name must be 1–100 characters using only letters, numbers, periods, underscores, or hyphens, and cannot begin with a hyphen.".into()
+    })
+}
+
+fn github_repo_status_sync(cwd: &str) -> Result<GitHubRepoStatus, String> {
+    let selected = PathBuf::from(cwd)
+        .canonicalize()
+        .map_err(|error| format!("Could not open the project folder: {error}"))?;
+    if git_stdout(&selected, &["rev-parse", "--show-toplevel"], None).is_err() {
+        return Ok(GitHubRepoStatus {
+            is_repo: false,
+            remote_url: None,
+            repository: None,
+            branch: None,
+            upstream: None,
+            ahead: 0,
+            behind: 0,
+        });
+    }
+    let remote_url = optional_git_stdout(&selected, &["remote", "get-url", "origin"]);
+    let upstream = optional_git_stdout(&selected, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]);
+    let (ahead, behind) = upstream.as_ref()
+        .and_then(|_| optional_git_stdout(&selected, &["rev-list", "--left-right", "--count", "HEAD...@{upstream}"]))
+        .and_then(|counts| {
+            let mut parts = counts.split_whitespace();
+            Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
+        })
+        .unwrap_or((0, 0));
+    Ok(GitHubRepoStatus {
+        is_repo: true,
+        repository: remote_url.as_deref().and_then(parse_github_repository),
+        remote_url,
+        branch: optional_git_stdout(&selected, &["symbolic-ref", "--short", "-q", "HEAD"]),
+        upstream,
+        ahead,
+        behind,
+    })
+}
+
+#[tauri::command]
+async fn github_repo_status(cwd: String) -> Result<GitHubRepoStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || github_repo_status_sync(&cwd))
+        .await
+        .map_err(|error| format!("GitHub repository inspection failed: {error}"))?
+}
+
+fn github_attach_remote_sync(cwd: &str, url: &str) -> Result<GitHubRepoStatus, String> {
+    if parse_github_repository(url).is_none() {
+        return Err("Enter a GitHub repository URL such as https://github.com/owner/repository.git".into());
+    }
+    let selected = PathBuf::from(cwd)
+        .canonicalize()
+        .map_err(|error| format!("Could not open the project folder: {error}"))?;
+    if optional_git_stdout(&selected, &["remote", "get-url", "origin"]).is_some() {
+        return Err("This project already has an origin remote. Remove or change it in Git before attaching another repository.".into());
+    }
+    git_stdout(&selected, &["remote", "add", "origin", url], None)?;
+    github_repo_status_sync(cwd)
+}
+
+#[tauri::command]
+async fn github_attach_remote(cwd: String, url: String) -> Result<GitHubRepoStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || github_attach_remote_sync(&cwd, &url))
+        .await
+        .map_err(|error| format!("GitHub remote task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn github_create_repository(
+    app: AppHandle,
+    cwd: String,
+    name: String,
+    visibility: String,
+) -> Result<GitHubRepoStatus, String> {
+    let path = resolve_github_binary(&app).await?;
+    validate_github_repository_name(&name)?;
+    if visibility != "private" && visibility != "public" {
+        return Err("Repository visibility must be private or public.".into());
+    }
+    let selected = PathBuf::from(&cwd)
+        .canonicalize()
+        .map_err(|error| format!("Could not open the project folder: {error}"))?;
+    if optional_git_stdout(&selected, &["remote", "get-url", "origin"]).is_some() {
+        return Err("This project already has an origin remote.".into());
+    }
+    let visibility_flag = if visibility == "public" { "--public" } else { "--private" };
+    let output = Command::new(path)
+        .args(["repo", "create", "--source", &cwd, "--remote", "origin", visibility_flag, "--", &name])
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .map_err(|error| format!("Could not run GitHub CLI: {error}"))?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if detail.is_empty() { "GitHub repository creation failed.".into() } else { detail });
+    }
+    github_repo_status_sync(&cwd)
+}
+
+#[tauri::command]
+async fn github_clone_repository(
+    app: AppHandle,
+    url: String,
+    destination: String,
+) -> Result<(), String> {
+    if parse_github_repository(&url).is_none() {
+        return Err("Enter a valid GitHub repository URL.".into());
+    }
+    let path = resolve_github_binary(&app).await?;
+    let destination_path = PathBuf::from(&destination);
+    if destination_path.exists() {
+        return Err("The destination already exists. Choose a new project folder name.".into());
+    }
+    let parent = destination_path.parent().ok_or_else(|| "The clone destination is invalid.".to_string())?;
+    if !parent.is_dir() {
+        return Err("The clone destination's parent folder does not exist.".into());
+    }
+    let output = Command::new(path)
+        .args(["repo", "clone", &url, &destination])
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .map_err(|error| format!("Could not run GitHub CLI: {error}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(if detail.is_empty() { "GitHub repository clone failed.".into() } else { detail })
+    }
+}
+
 fn unix_timestamp_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1616,6 +1942,23 @@ fn worktree_applied_ref(thread_id: &str) -> Result<String, String> {
     Ok(format!("refs/openkiwi/worktrees/{thread_id}/applied"))
 }
 
+fn set_worktree_applied_baseline_sync(
+    project_path: &str,
+    thread_id: &str,
+    baseline: &str,
+) -> Result<String, String> {
+    let source = checkpoint_repo(project_path)?;
+    let tree = git_stdout(
+        &source,
+        &["rev-parse", "--verify", &format!("{baseline}^{{tree}}")],
+        None,
+    )
+    .map_err(|_| "The saved worktree baseline is no longer available".to_string())?;
+    let reference = worktree_applied_ref(thread_id)?;
+    git_stdout(&source, &["update-ref", &reference, &tree], None)?;
+    Ok(tree)
+}
+
 fn checkpoint_safety_tree(repo: &Path, safety_id: &str) -> Result<String, String> {
     let safety_reference = checkpoint_ref(safety_id, "after")?;
     git_stdout(
@@ -2099,6 +2442,19 @@ async fn worktree_apply_to_source(
     })
     .await
     .map_err(|error| format!("Worktree apply task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn worktree_set_applied_baseline(
+    thread_id: String,
+    project_path: String,
+    baseline: String,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        set_worktree_applied_baseline_sync(&project_path, &thread_id, &baseline)
+    })
+    .await
+    .map_err(|error| format!("Worktree baseline task failed: {error}"))?
 }
 
 fn worktree_merge_branch_sync(
@@ -4317,6 +4673,12 @@ pub fn run() {
             codex_runtime_status,
             claude_runtime_status,
             claude_login,
+            github_status,
+            github_login,
+            github_repo_status,
+            github_attach_remote,
+            github_create_repository,
+            github_clone_repository,
             claude_turn_start,
             claude_turn_steer,
             claude_turn_interrupt,
@@ -4337,6 +4699,7 @@ pub fn run() {
             worktree_recreate,
             worktree_status,
             worktree_apply_to_source,
+            worktree_set_applied_baseline,
             worktree_merge_branch,
             worktree_remove,
             audit_append,
@@ -4374,6 +4737,35 @@ pub fn run() {
 mod tests {
     use super::*;
 
+    #[test]
+    fn github_repository_parser_accepts_https_and_ssh_but_rejects_other_hosts() {
+        assert_eq!(
+            parse_github_repository("https://github.com/openai/codex.git"),
+            Some("openai/codex".into())
+        );
+        assert_eq!(
+            parse_github_repository("git@github.com:anthropics/claude-code.git"),
+            Some("anthropics/claude-code".into())
+        );
+        assert_eq!(
+            parse_github_repository("https://example.com/openai/codex.git"),
+            None
+        );
+        assert_eq!(
+            parse_github_repository("https://github.com/openai/codex/extra"),
+            None
+        );
+    }
+
+    #[test]
+    fn github_repository_names_cannot_be_interpreted_as_cli_flags_or_owner_paths() {
+        assert!(validate_github_repository_name("openkiwi.app").is_ok());
+        assert!(validate_github_repository_name("openkiwi_desktop-2").is_ok());
+        assert!(validate_github_repository_name("--public").is_err());
+        assert!(validate_github_repository_name("owner/repository").is_err());
+        assert!(validate_github_repository_name("two words").is_err());
+    }
+
     fn test_git(repo: &Path, args: &[&str]) -> String {
         let output = StdCommand::new("git")
             .current_dir(repo)
@@ -4391,6 +4783,77 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
         String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    #[test]
+    fn github_remote_attachment_validates_and_refuses_to_replace_origin() {
+        let project = env::temp_dir().join(format!(
+            "openkiwi-github-attach-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&project).expect("create project");
+        test_git(&project, &["init", "-b", "main"]);
+        fs::write(project.join("README.md"), "OpenKiwi\n").expect("write source");
+        test_git(&project, &["add", "."]);
+        test_git(&project, &["commit", "-m", "Initial"]);
+
+        let status = github_attach_remote_sync(
+            project.to_str().unwrap(),
+            "https://github.com/example/openkiwi.git",
+        )
+        .expect("attach GitHub origin");
+        assert_eq!(status.repository.as_deref(), Some("example/openkiwi"));
+        assert_eq!(
+            test_git(&project, &["remote", "get-url", "origin"]),
+            "https://github.com/example/openkiwi.git"
+        );
+        assert!(github_attach_remote_sync(
+            project.to_str().unwrap(),
+            "https://github.com/example/other.git",
+        )
+        .is_err());
+
+        fs::remove_dir_all(project).expect("remove project");
+    }
+
+    #[test]
+    fn github_status_reports_named_branch_and_divergence() {
+        let root = env::temp_dir().join(format!(
+            "openkiwi-github-status-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let source = root.join("source");
+        let remote = root.join("remote.git");
+        let peer = root.join("peer");
+        fs::create_dir_all(&source).expect("create source");
+        test_git(&source, &["init", "-b", "main"]);
+        fs::write(source.join("README.md"), "baseline\n").expect("write baseline");
+        test_git(&source, &["add", "."]);
+        test_git(&source, &["commit", "-m", "Baseline"]);
+        test_git(&root, &["init", "--bare", remote.to_str().unwrap()]);
+        test_git(&source, &["remote", "add", "origin", remote.to_str().unwrap()]);
+        test_git(&source, &["push", "--set-upstream", "origin", "main"]);
+
+        test_git(&root, &["clone", "--branch", "main", remote.to_str().unwrap(), peer.to_str().unwrap()]);
+        fs::write(peer.join("peer.txt"), "remote change\n").expect("write peer change");
+        test_git(&peer, &["add", "."]);
+        test_git(&peer, &["commit", "-m", "Remote change"]);
+        test_git(&peer, &["push"]);
+
+        fs::write(source.join("local.txt"), "local change\n").expect("write local change");
+        test_git(&source, &["add", "."]);
+        test_git(&source, &["commit", "-m", "Local change"]);
+        test_git(&source, &["fetch", "origin"]);
+        test_git(&source, &["remote", "set-url", "origin", "https://github.com/example/openkiwi.git"]);
+
+        let status = github_repo_status_sync(source.to_str().unwrap()).expect("inspect status");
+        assert_eq!(status.repository.as_deref(), Some("example/openkiwi"));
+        assert_eq!(status.branch.as_deref(), Some("main"));
+        assert_eq!(status.upstream.as_deref(), Some("origin/main"));
+        assert_eq!(status.ahead, 1);
+        assert_eq!(status.behind, 1);
+
+        fs::remove_dir_all(root).expect("remove repositories");
     }
 
     #[test]
@@ -4965,6 +5428,114 @@ mod tests {
             fs::read_to_string(source.join("source.txt")).unwrap(),
             "shared edit\n"
         );
+        test_git(
+            &source,
+            &["worktree", "remove", "--force", isolated.to_str().unwrap()],
+        );
+        fs::remove_dir_all(&source).expect("remove source");
+    }
+
+    #[test]
+    fn restoring_pre_apply_safety_can_rebaseline_and_reapply_the_worktree() {
+        let source = env::temp_dir().join(format!(
+            "openkiwi-worktree-reapply-source-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let isolated = env::temp_dir().join(format!(
+            "openkiwi-worktree-reapply-isolated-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&source).expect("source repo");
+        test_git(&source, &["init"]);
+        fs::write(source.join("source.txt"), "base\n").expect("base");
+        test_git(&source, &["add", "."]);
+        test_git(&source, &["commit", "-m", "base"]);
+        let base = test_git(&source, &["rev-parse", "HEAD"]);
+        test_git(
+            &source,
+            &[
+                "worktree",
+                "add",
+                isolated.to_str().unwrap(),
+                "-b",
+                "openkiwi/test-reapply",
+                &base,
+            ],
+        );
+        fs::write(isolated.join("source.txt"), "isolated\n").expect("isolated edit");
+
+        for phase in ["before", "after"] {
+            capture_checkpoint_snapshot(
+                "pre-apply-state",
+                source.to_str().unwrap(),
+                phase,
+                "pre apply",
+            )
+            .expect("pre-apply checkpoint");
+        }
+        for phase in ["before", "after"] {
+            capture_checkpoint_snapshot(
+                "first-apply-safety",
+                source.to_str().unwrap(),
+                phase,
+                "first apply safety",
+            )
+            .expect("first apply safety");
+        }
+        let reference = "refs/openkiwi/worktrees/reapply-thread/applied";
+        worktree_apply_to_source_sync(
+            source.to_str().unwrap(),
+            isolated.to_str().unwrap(),
+            &base,
+            "first-apply-safety",
+            Some(reference),
+        )
+        .expect("first apply");
+        assert_eq!(fs::read_to_string(source.join("source.txt")).unwrap(), "isolated\n");
+
+        for phase in ["before", "after"] {
+            capture_checkpoint_snapshot(
+                "restore-safety",
+                source.to_str().unwrap(),
+                phase,
+                "restore safety",
+            )
+            .expect("restore safety");
+        }
+        restore_checkpoint_snapshot(
+            "pre-apply-state",
+            source.to_str().unwrap(),
+            "after",
+            "restore-safety",
+        )
+        .expect("restore pre-apply files");
+        assert_eq!(fs::read_to_string(source.join("source.txt")).unwrap(), "base\n");
+
+        let baseline_tree = set_worktree_applied_baseline_sync(
+            source.to_str().unwrap(),
+            "reapply-thread",
+            &base,
+        )
+        .expect("restore applied baseline");
+        for phase in ["before", "after"] {
+            capture_checkpoint_snapshot(
+                "second-apply-safety",
+                source.to_str().unwrap(),
+                phase,
+                "second apply safety",
+            )
+            .expect("second apply safety");
+        }
+        worktree_apply_to_source_sync(
+            source.to_str().unwrap(),
+            isolated.to_str().unwrap(),
+            &baseline_tree,
+            "second-apply-safety",
+            Some(reference),
+        )
+        .expect("reapply");
+        assert_eq!(fs::read_to_string(source.join("source.txt")).unwrap(), "isolated\n");
+
         test_git(
             &source,
             &["worktree", "remove", "--force", isolated.to_str().unwrap()],

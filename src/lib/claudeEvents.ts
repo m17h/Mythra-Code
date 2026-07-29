@@ -1,5 +1,6 @@
 import type { ClaudeEvent } from "./claude";
 import type { JsonObject } from "./codex";
+import type { TokenUsageView } from "../components/StudioDock";
 import { useTaskStore } from "./taskStore";
 
 interface ClaudeBlock {
@@ -10,6 +11,7 @@ interface ClaudeBlock {
 
 const assistantIds = new Map<string, string>();
 const blocks = new Map<string, Map<number, ClaudeBlock>>();
+const partialUsage = new Map<string, { usage: TokenUsageView; messageIds: Set<string> }>();
 
 function object(value: unknown): JsonObject {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -26,23 +28,81 @@ function number(value: unknown): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function applyUsage(threadId: string, value: unknown): void {
+function usageView(value: unknown): TokenUsageView | null {
   const usage = object(value);
-  if (!Object.keys(usage).length) return;
+  if (!Object.keys(usage).length) return null;
   const inputTokens =
     number(usage.input_tokens) +
     number(usage.cache_creation_input_tokens) +
     number(usage.cache_read_input_tokens);
   const cachedInputTokens = number(usage.cache_read_input_tokens);
+  const cacheWriteInputTokens = number(usage.cache_creation_input_tokens);
   const outputTokens = number(usage.output_tokens);
-  useTaskStore.getState().setUsage(threadId, {
+  return {
     totalTokens: inputTokens + outputTokens,
     inputTokens,
     cachedInputTokens,
+    cacheWriteInputTokens,
     outputTokens,
     reasoningOutputTokens: 0,
     contextWindow: null,
+  };
+}
+
+function addUsage(left: TokenUsageView, right: TokenUsageView): TokenUsageView {
+  return {
+    totalTokens: left.totalTokens + right.totalTokens,
+    inputTokens: left.inputTokens + right.inputTokens,
+    cachedInputTokens: left.cachedInputTokens + right.cachedInputTokens,
+    cacheWriteInputTokens: (left.cacheWriteInputTokens ?? 0) + (right.cacheWriteInputTokens ?? 0),
+    outputTokens: left.outputTokens + right.outputTokens,
+    reasoningOutputTokens: left.reasoningOutputTokens + right.reasoningOutputTokens,
+    contextWindow: null,
+  };
+}
+
+function remainingUsage(total: TokenUsageView, recorded: TokenUsageView): TokenUsageView {
+  const inputTokens = Math.max(0, total.inputTokens - recorded.inputTokens);
+  const outputTokens = Math.max(0, total.outputTokens - recorded.outputTokens);
+  return {
+    totalTokens: inputTokens + outputTokens,
+    inputTokens,
+    cachedInputTokens: Math.max(0, total.cachedInputTokens - recorded.cachedInputTokens),
+    cacheWriteInputTokens: Math.max(0, (total.cacheWriteInputTokens ?? 0) - (recorded.cacheWriteInputTokens ?? 0)),
+    outputTokens,
+    reasoningOutputTokens: Math.max(0, total.reasoningOutputTokens - recorded.reasoningOutputTokens),
+    contextWindow: null,
+  };
+}
+
+function recordAssistantUsage(threadId: string, turnId: string, messageId: string, value: unknown): void {
+  const usage = usageView(value);
+  if (!usage || usage.totalTokens <= 0) return;
+  const key = `${threadId}\0${turnId}`;
+  const current = partialUsage.get(key);
+  if (current?.messageIds.has(messageId)) return;
+  useTaskStore.getState().addUsage(threadId, usage, `claude-assistant:${messageId}`);
+  partialUsage.set(key, {
+    usage: current ? addUsage(current.usage, usage) : usage,
+    messageIds: new Set([...(current?.messageIds ?? []), messageId]),
   });
+  if (partialUsage.size > 100) partialUsage.delete(partialUsage.keys().next().value as string);
+}
+
+function recordResultUsage(threadId: string, turnId: string, value: unknown): void {
+  const key = `${threadId}\0${turnId}`;
+  const recorded = partialUsage.get(key)?.usage;
+  partialUsage.delete(key);
+  const total = usageView(value);
+  if (!total) return;
+  const usage = recorded ? remainingUsage(total, recorded) : total;
+  if (usage.totalTokens > 0) {
+    useTaskStore.getState().addUsage(threadId, usage, `claude-result:${turnId}`);
+  }
+}
+
+export function resetClaudeEventUsageState(): void {
+  partialUsage.clear();
 }
 
 function activityKind(name: string): "command" | "file" | "agent" {
@@ -204,10 +264,10 @@ export function routeClaudeEvent(
 
   if (type === "assistant") {
     const assistant = object(message.message);
-    applyUsage(threadId, assistant.usage);
     const id =
       text(assistant.id) || assistantIds.get(threadId) || `claude-${turnId}`;
     const content = Array.isArray(assistant.content) ? assistant.content : [];
+    recordAssistantUsage(threadId, turnId, id, assistant.usage);
     const answer = content
       .map((entry) => object(entry))
       .filter((entry) => entry.type === "text")
@@ -258,7 +318,7 @@ export function routeClaudeEvent(
 
   if (type === "result") {
     store.flushDeltas();
-    applyUsage(threadId, message.usage);
+    recordResultUsage(threadId, turnId, message.usage);
     const subtype = text(message.subtype);
     const alreadyInterrupted =
       useTaskStore.getState().tasks[threadId]?.status === "interrupted";

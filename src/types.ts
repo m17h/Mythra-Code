@@ -5,7 +5,7 @@ export type Provider = "openai" | "openrouter" | "claude";
 export type PermissionMode = "read-only" | "ask" | "full";
 export type ThemeName = "kiwi" | "daylight";
 export type WorkspaceMode = "chat" | "project";
-export type SettingsSection = "general" | "models" | "prompts" | "agents" | "workflows" | "projects" | "skills" | "tools" | "updates";
+export type SettingsSection = "general" | "models" | "github" | "usage" | "prompts" | "agents" | "workflows" | "projects" | "skills" | "tools" | "updates";
 export type ProjectPromptMode = "replace" | "append";
 
 export interface ProjectOverrides {

@@ -163,3 +163,15 @@ export async function removeThreadWorktree(
     deleteBranch,
   });
 }
+
+export async function setWorktreeAppliedBaseline(
+  threadId: string,
+  projectPath: string,
+  baseline: string,
+): Promise<string> {
+  return invoke<string>("worktree_set_applied_baseline", {
+    threadId,
+    projectPath,
+    baseline,
+  });
+}

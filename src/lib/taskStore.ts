@@ -2,6 +2,8 @@ import { create } from "zustand";
 import type { Activity, ChatMessage, PendingApproval, Turn } from "../types";
 import type { AgentRecord, TokenUsageView } from "../components/StudioDock";
 import { durationForTurn, recordTurnDuration } from "./turnDurations";
+import { recordCumulativeUsage, recordUsageDelta, resetUsageLedgerCache, usageForThread, USAGE_LEDGER_KEY } from "./usageLedger";
+import { removeStoredValue } from "./storage";
 
 export type TaskStatus = "idle" | "starting" | "running" | "completed" | "interrupted" | "error";
 
@@ -48,6 +50,7 @@ interface TaskStoreState {
   setTaskStatus: (threadId: string, status: TaskStatus, error?: string) => void;
   setDiff: (threadId: string, diff: string) => void;
   setUsage: (threadId: string, usage: TokenUsageView | null) => void;
+  addUsage: (threadId: string, usage: TokenUsageView, eventId?: string) => void;
   upsertAgent: (threadId: string, agent: AgentRecord) => void;
   enqueueApproval: (approval: PendingApproval) => void;
   resolveApproval: (threadId: string, approvalId: string | number) => void;
@@ -79,7 +82,7 @@ function emptyTask(threadId: string, workspacePath?: string): ThreadTaskState {
     approvals: [],
     agents: [],
     diff: "",
-    usage: null,
+    usage: usageForThread(threadId)?.usage ?? null,
     unread: false,
     updatedAt: Date.now(),
   };
@@ -371,7 +374,13 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
   }),
   setUsage: (threadId, usage) => set((state) => {
     const task = state.tasks[threadId] ?? emptyTask(threadId);
-    return { tasks: { ...state.tasks, [threadId]: { ...task, usage, updatedAt: Date.now() } } };
+    const persisted = usage ? recordCumulativeUsage(threadId, usage) : null;
+    return { tasks: { ...state.tasks, [threadId]: { ...task, usage: persisted, updatedAt: Date.now() } } };
+  }),
+  addUsage: (threadId, usage, eventId) => set((state) => {
+    const task = state.tasks[threadId] ?? emptyTask(threadId);
+    const persisted = recordUsageDelta(threadId, usage, eventId);
+    return { tasks: { ...state.tasks, [threadId]: { ...task, usage: persisted, updatedAt: Date.now() } } };
   }),
   upsertAgent: (threadId, agent) => set((state) => {
     const task = state.tasks[threadId] ?? emptyTask(threadId);
@@ -413,5 +422,7 @@ export function resetTaskStore(): void {
   pendingReasoningItems.clear();
   reasoningStreams.clear();
   timelineSequence = 0;
+  removeStoredValue(USAGE_LEDGER_KEY);
+  resetUsageLedgerCache();
   useTaskStore.setState({ activeThreadId: null, tasks: {}, statuses: {} });
 }

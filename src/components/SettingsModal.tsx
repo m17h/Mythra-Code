@@ -8,6 +8,8 @@ import {
   Download,
   ExternalLink,
   FolderCog,
+  Gauge,
+  GitFork,
   KeyRound,
   LoaderCircle,
   Minus,
@@ -35,6 +37,8 @@ import type { WorkflowDefinition, WorkflowRunRecord } from "../lib/workflows";
 import { HarnessSettings } from "./HarnessSettings";
 import { SkillLibrary } from "./SkillLibrary";
 import type { McpView } from "./StudioDock";
+import type { GitHubAccountStatus } from "../lib/github";
+import { formatEstimatedCost, type UsageTotals } from "../lib/usageLedger";
 import type {
   Account,
   AppSettings,
@@ -69,6 +73,8 @@ const SETTINGS_NAV: ReadonlyArray<{
     group: "Intelligence",
     items: [
       { id: "models", label: "Models & accounts", icon: KeyRound, detail: "Default provider, credentials, and model routing" },
+      { id: "github", label: "GitHub", icon: GitFork, detail: "Account connection and repository cloning" },
+      { id: "usage", label: "Usage", icon: Gauge, detail: "All-time tokens and API-equivalent inference value" },
       { id: "prompts", label: "Prompts", icon: NotebookPen, detail: "Your complete harness instruction and reusable profiles" },
       { id: "agents", label: "Agents", icon: UsersRound, detail: "Delegation limits and specialist configurations" },
     ],
@@ -101,6 +107,9 @@ export function SettingsModal({
   claudeStatus = null,
   claudeLoginStarting = false,
   openRouterReady,
+  githubStatus,
+  githubBusy = false,
+  usageTotals,
   onClose,
   onSave,
   onThemePreview,
@@ -111,6 +120,9 @@ export function SettingsModal({
   onRuntimeRequired,
   onWorkspaceTools,
   onOpenRouterChange,
+  onGitHubSignIn,
+  onGitHubRefresh,
+  onGitHubClone,
   onError,
   profiles,
   agents,
@@ -153,6 +165,9 @@ export function SettingsModal({
   claudeStatus?: ClaudeRuntimeStatus | null;
   claudeLoginStarting?: boolean;
   openRouterReady: boolean;
+  githubStatus: GitHubAccountStatus | null;
+  githubBusy?: boolean;
+  usageTotals: UsageTotals;
   onClose: () => void;
   onSave: (settings: AppSettings) => void;
   onThemePreview: (theme: ThemeName) => void;
@@ -163,6 +178,9 @@ export function SettingsModal({
   onRuntimeRequired: () => void;
   onWorkspaceTools: () => void;
   onOpenRouterChange: (ready: boolean) => void;
+  onGitHubSignIn: () => Promise<void>;
+  onGitHubRefresh: () => Promise<void>;
+  onGitHubClone: (url: string, folderName: string) => Promise<boolean>;
   onError: (error: string | null) => void;
   profiles: PromptProfile[];
   agents: CustomAgentProfile[];
@@ -200,6 +218,9 @@ export function SettingsModal({
   const [apiKey, setApiKey] = useState("");
   const [busy, setBusy] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>(initialSection);
+  const [cloneUrl, setCloneUrl] = useState("");
+  const [cloneFolder, setCloneFolder] = useState("");
+  const githubRefreshRequestedRef = useRef(false);
 
   // Buffered edits (theme, prompt, toggles) are discarded on close — warn
   // before silently throwing away work like a hand-written system prompt.
@@ -226,6 +247,17 @@ export function SettingsModal({
       setSettingsSection("updates");
     }
   }, [appUpdater.phase, initialSection, open]);
+
+  useEffect(() => {
+    if (!open) {
+      githubRefreshRequestedRef.current = false;
+      return;
+    }
+    if (settingsSection === "github" && !githubRefreshRequestedRef.current) {
+      githubRefreshRequestedRef.current = true;
+      void onGitHubRefresh();
+    }
+  }, [onGitHubRefresh, open, settingsSection]);
 
   const dialogRef = useRef<HTMLDivElement>(null);
   useModalFocus(dialogRef, open);
@@ -414,6 +446,26 @@ export function SettingsModal({
 
           {settingsSection === "projects" && <ProjectOverridesSettings projects={projects} onProjects={onProjects} />}
 
+          {settingsSection === "github" &&
+          <GitHubSettings
+            status={githubStatus}
+            busy={githubBusy}
+            cloneUrl={cloneUrl}
+            cloneFolder={cloneFolder}
+            onCloneUrl={setCloneUrl}
+            onCloneFolder={setCloneFolder}
+            onSignIn={onGitHubSignIn}
+            onRefresh={onGitHubRefresh}
+            onClone={async () => {
+              if (await onGitHubClone(cloneUrl, cloneFolder)) {
+                setCloneUrl("");
+                setCloneFolder("");
+              }
+            }}
+          />}
+
+          {settingsSection === "usage" && <AllTimeUsageSettings totals={usageTotals} />}
+
           {settingsSection === "skills" && <SkillLibrary
             folder={skillsFolder}
             skills={skills}
@@ -572,6 +624,97 @@ export function SettingsModal({
       </div>
     </div>
   );
+}
+
+function GitHubSettings({
+  status,
+  busy,
+  cloneUrl,
+  cloneFolder,
+  onCloneUrl,
+  onCloneFolder,
+  onSignIn,
+  onRefresh,
+  onClone,
+}: {
+  status: GitHubAccountStatus | null;
+  busy: boolean;
+  cloneUrl: string;
+  cloneFolder: string;
+  onCloneUrl: (value: string) => void;
+  onCloneFolder: (value: string) => void;
+  onSignIn: () => Promise<void>;
+  onRefresh: () => Promise<void>;
+  onClone: () => Promise<void>;
+}) {
+  return <>
+    <section className="settings-section">
+      <div className="settings-section-heading">
+        <div className="settings-icon"><GitFork size={17} /></div>
+        <div><h3>GitHub account</h3><p>OpenKiwi uses the official GitHub CLI and never injects its token into prompts or project files. Agents with command access can still run credential-aware CLI tools, so use the same care you would in a terminal.</p></div>
+      </div>
+      <div className="credential-panel github-account-panel">
+        <span className="github-avatar-placeholder"><GitFork size={18} /></span>
+        <div>
+          <strong>{status?.authenticated ? status.name || status.login || "GitHub account" : status?.available ? "GitHub is ready to connect" : "GitHub CLI is required"}</strong>
+          <small>{status?.authenticated ? `@${status.login}${status.email ? ` · ${status.email}` : ""}` : status?.error || "Install GitHub CLI to connect repositories."}</small>
+        </div>
+        {status?.authenticated ? (
+          <span className="connected-badge"><Check size={12} /> Connected</span>
+        ) : (
+          <button className="secondary-button" onClick={() => void onSignIn()} disabled={busy || !status?.available}>
+            {busy ? <LoaderCircle className="spin" size={14} /> : <GitFork size={14} />} Sign in
+          </button>
+        )}
+        <button className="icon-button" onClick={() => void onRefresh()} disabled={busy} title="Refresh GitHub status" aria-label="Refresh GitHub status"><RotateCcw size={14} /></button>
+      </div>
+      {!status?.available && <button className="secondary-button settings-external-action" onClick={() => void openUrl("https://cli.github.com/")}><ExternalLink size={13} /> Install GitHub CLI</button>}
+    </section>
+    <section className="settings-section">
+      <div className="settings-section-heading">
+        <div className="settings-icon"><Download size={17} /></div>
+        <div><h3>Clone a repository</h3><p>Download a GitHub repository into a new local folder and add it to OpenKiwi as a project.</p></div>
+      </div>
+      <div className="github-clone-grid">
+        <label className="field-label"><span>Repository URL</span><input value={cloneUrl} onChange={(event) => onCloneUrl(event.target.value)} placeholder="https://github.com/owner/repository.git" /></label>
+        <label className="field-label"><span>Local folder name</span><input value={cloneFolder} onChange={(event) => onCloneFolder(event.target.value)} placeholder="repository" /></label>
+      </div>
+      <button className="primary-button" disabled={!status?.authenticated || busy || !cloneUrl.trim() || !cloneFolder.trim()} onClick={() => void onClone()}>{busy ? <LoaderCircle className="spin" size={13} /> : <Download size={13} />} Choose location and clone</button>
+    </section>
+  </>;
+}
+
+function AllTimeUsageSettings({ totals }: { totals: UsageTotals }) {
+  return <section className="settings-section">
+    <div className="settings-section-heading">
+      <div className="settings-icon"><Gauge size={17} /></div>
+      <div><h3>All-time local usage</h3><p>Accumulated since local usage history was enabled on this device. Dollar values estimate standard API pricing; subscription use is not an API charge.</p></div>
+    </div>
+    <div className="usage-settings-hero">
+      <span>Estimated API-equivalent value</span>
+      <strong>{formatEstimatedCost(totals.estimatedCost)}</strong>
+      <small>{totals.threads.toLocaleString()} tracked thread{totals.threads === 1 ? "" : "s"}</small>
+    </div>
+    <div className="metric-grid three usage-settings-metrics">
+      <div><strong>{totals.inputTokens.toLocaleString()}</strong><span>Input tokens</span></div>
+      <div><strong>{totals.outputTokens.toLocaleString()}</strong><span>Output tokens</span></div>
+      <div><strong>{totals.totalTokens.toLocaleString()}</strong><span>Total tokens</span></div>
+    </div>
+    {(totals.cachedInputTokens > 0 || totals.cacheWriteInputTokens > 0) && (
+      <div className="usage-cache-note">Prompt caching: {totals.cachedInputTokens.toLocaleString()} read · {totals.cacheWriteInputTokens.toLocaleString()} written</div>
+    )}
+    <div className="usage-pricing-note">
+      <ShieldCheck size={14} />
+      <span>{totals.unpricedTokens
+        ? `${totals.unpricedTokens.toLocaleString()} tokens are excluded from the dollar estimate because their model has no official published price.`
+        : "All tracked tokens with model metadata have a published price."} Cache-write premiums are included when providers report them; long-context, regional, batch, and priority pricing adjustments are not.</span>
+    </div>
+    <div className="usage-source-links">
+      <span>Pricing catalog checked July 28, 2026.</span>
+      <button className="secondary-button" onClick={() => void openUrl("https://developers.openai.com/api/docs/models/compare")}><ExternalLink size={12} /> OpenAI pricing</button>
+      <button className="secondary-button" onClick={() => void openUrl("https://www.anthropic.com/pricing")}><ExternalLink size={12} /> Anthropic pricing</button>
+    </div>
+  </section>;
 }
 
 function ProjectOverridesSettings({ projects, onProjects }: { projects: Project[]; onProjects: (value: Project[]) => void }) {

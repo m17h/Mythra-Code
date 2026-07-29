@@ -26,6 +26,7 @@ export const DURABLE_STORAGE_KEYS = [
   "kiwi.workflows",
   "kiwi.workflowRuns",
   "kiwi.costLedger",
+  "kiwi.usageLedger",
   "kiwi.paneSizes",
   "kiwi.sidebarSplitRatio",
   "kiwi.onboardingVersion",
@@ -36,7 +37,32 @@ export const DURABLE_STORAGE_KEYS = [
  * migrateStorage. Old installs then upgrade their data instead of loading
  * garbage into the new code.
  */
-export const STORAGE_SCHEMA_VERSION = 7;
+export const STORAGE_SCHEMA_VERSION = 9;
+const nativeWriteQueues = new Map<string, Promise<void>>();
+
+function queueNativeStateOperation(key: string, operation: () => Promise<unknown>): void {
+  const previous = nativeWriteQueues.get(key);
+  const write = () => {
+    try {
+      return Promise.resolve(operation()).then(() => undefined);
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  };
+  const next = previous
+    ? previous.catch(() => undefined).then(write)
+    : write();
+  nativeWriteQueues.set(key, next);
+  void next.finally(() => {
+    if (nativeWriteQueues.get(key) === next) nativeWriteQueues.delete(key);
+  }).catch(() => {
+    // localStorage remains the immediate fallback if the native mirror fails.
+  });
+}
+
+export async function flushPendingStateWrites(): Promise<void> {
+  await Promise.allSettled([...nativeWriteQueues.values()]);
+}
 
 export function migrateStorage(): void {
   const stored = loadStored<number>("kiwi.schemaVersion", 0);
@@ -46,6 +72,9 @@ export function migrateStorage(): void {
   // per-turn duration store. Version 5 adds the current filesystem checkpoint
   // head for each project. Version 6 adds per-thread isolated worktree records.
   // Version 7 adds the persisted Projects/Threads sidebar split ratio.
+  // Version 8 adds the durable per-thread and all-time token usage ledger.
+  // Version 9 adds cumulative usage baselines, cache-write accounting, and
+  // checkpoint metadata that can restore an applied worktree baseline.
   // All additions are optional and require no eager rewrite of existing records.
   storeValue("kiwi.schemaVersion", STORAGE_SCHEMA_VERSION);
 }
@@ -66,10 +95,18 @@ export function storeValue<T>(key: string, value: T): void {
     // Quota or privacy-mode failures must not abort the calling flow;
     // the SQLite mirror below still persists the value on desktop builds.
   }
-  void Promise.resolve(invoke("state_write", { key, value })).catch(() => {
-    // Browser previews and tests do not have a Tauri host. localStorage remains
-    // the safe fallback while desktop builds persist the same value in SQLite.
-  });
+  // Writes for the same key are serialized so an older async SQLite write can
+  // never finish after and overwrite a newer value.
+  queueNativeStateOperation(key, () => invoke("state_write", { key, value }));
+}
+
+export function removeStoredValue(key: string): void {
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    // The native mirror can still remove the durable value.
+  }
+  queueNativeStateOperation(key, () => invoke("state_delete", { key }));
 }
 
 export async function hydrateNativeStorage(

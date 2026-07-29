@@ -887,6 +887,19 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .credential-panel strong { font-size: var(--fs-ui); font-weight: 600; }
 .credential-panel small { color: var(--muted-2); font-size: var(--fs-meta); }
 .credential-panel.stacked { align-items: stretch; flex-direction: column; }
+.github-account-panel { justify-content: flex-start; }
+.github-account-panel > div { flex: 1; min-width: 0; }
+.github-account-panel > img, .github-avatar-placeholder { width: 34px; height: 34px; flex: 0 0 auto; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 50%; background: var(--field); object-fit: cover; }
+.settings-external-action { margin-top: var(--s-2); }
+.github-clone-grid { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(140px, .8fr); gap: var(--s-3); margin-bottom: var(--s-3); }
+.usage-settings-hero { display: flex; flex-direction: column; gap: 4px; margin-bottom: var(--s-3); padding: var(--s-5); border: 1px solid color-mix(in srgb, var(--green) 24%, var(--line)); border-radius: var(--r-md); background: linear-gradient(145deg, color-mix(in srgb, var(--green) 8%, transparent), transparent); }
+.usage-settings-hero span { color: var(--muted); font-size: var(--fs-meta); }
+.usage-settings-hero strong { font-size: 32px; letter-spacing: var(--track-display); }
+.usage-settings-hero small { color: var(--muted-2); }
+.usage-settings-metrics { margin-bottom: var(--s-3); }
+.usage-pricing-note { display: flex; align-items: flex-start; gap: var(--s-2); padding: var(--s-3); border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--muted); font-size: var(--fs-meta); line-height: 1.45; }
+.usage-pricing-note svg { flex: 0 0 auto; color: var(--green); }
+.usage-source-links { display: flex; align-items: center; justify-content: flex-end; gap: var(--s-2); margin-top: var(--s-3); color: var(--muted-2); font-size: var(--fs-micro); }
 .credential-status { display: flex; align-items: center; justify-content: space-between; }
 .connected-badge { display: flex; align-items: center; gap: 4px; padding: 4px 7px; border-radius: 99px; color: var(--green); background: var(--green-soft); font-size: var(--fs-meta); }
 .key-input-row { display: flex !important; flex-direction: row !important; gap: 7px !important; }
@@ -1276,6 +1289,16 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .git-file-list code { overflow: hidden; color: var(--muted); font-size: var(--fs-meta); white-space: nowrap; text-overflow: ellipsis; }
 .git-file-list button { height: 22px; display: flex; align-items: center; gap: 3px; padding: 0 6px; border: 0; border-radius: 5px; color: var(--green); background: var(--green-soft); font-size: var(--fs-micro); cursor: pointer; }
 .git-file-list button.danger-action { padding: 0; justify-content: center; color: var(--red); background: rgba(239,138,135,.07); }
+.github-repo-card { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; align-items: center; gap: var(--s-2); margin-bottom: var(--s-3); padding: var(--s-3); border: 1px solid var(--line); border-radius: var(--r-sm); }
+.github-repo-card > div { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.github-repo-card strong, .github-repo-card small { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.github-repo-card small { color: var(--muted-2); font-size: var(--fs-meta); }
+.github-repo-icon { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 8px; color: var(--ink-2); background: var(--field); }
+.github-connect-project { display: grid; gap: var(--s-2); margin-bottom: var(--s-3); padding: var(--s-3); border: 1px solid var(--line); border-radius: var(--r-sm); background: rgba(255,255,255,.012); }
+.github-connect-project > button { justify-self: start; }
+.github-create-divider { display: flex; align-items: center; gap: var(--s-2); color: var(--muted-2); font-size: var(--fs-micro); text-transform: uppercase; letter-spacing: var(--track-caps); }
+.github-create-divider::before, .github-create-divider::after { content: ""; height: 1px; flex: 1; background: var(--line); }
+.github-create-row { display: grid; grid-template-columns: minmax(0, 1fr) 90px auto; gap: var(--s-1); }
 .manager-status { margin-top: 6px; padding: 7px 8px; border-radius: 6px; color: var(--muted); background: rgba(255,255,255,.02); font-size: var(--fs-meta); }
 .terminal-input { display: grid; grid-template-columns: 13px minmax(0,1fr) 32px; align-items: center; gap: 6px; margin-top: var(--s-2); color: var(--green); font-family: var(--font-mono); }
 .terminal-input input, .dock-field input { width: 100%; height: 34px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--r-sm); outline: 0; color: var(--text); background: var(--field); font: 11px var(--font-mono); transition: border-color var(--t-fast) ease; }
@@ -1364,6 +1387,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .usage-hero strong { font-size: 25px; font-weight: 600; letter-spacing: var(--track-display); font-variant-numeric: tabular-nums; }
 .usage-hero small { color: var(--muted-2); font-size: var(--fs-meta); }
 .usage-hero i { position: absolute; left: 0; bottom: 0; height: 2px; background: var(--info); box-shadow: none; transition: width var(--t-mid) var(--ease); }
+.usage-cache-note { margin: calc(var(--s-1) * -1) 0 var(--s-3); color: var(--muted-2); font-size: var(--fs-meta); font-variant-numeric: tabular-nums; }
 .rate-card { display: flex; flex-direction: column; gap: var(--s-1); margin: var(--s-2) 0 var(--s-3); padding: var(--s-3); border: 1px solid var(--line); border-radius: var(--r-sm); }
 .tool-policy-card { display: grid; grid-template-columns: 18px minmax(0,1fr); gap: var(--s-2); padding: 10px; border: 1px solid color-mix(in srgb, var(--green) 14%, var(--line)); border-radius: var(--r-sm); color: var(--green); background: var(--green-soft); }
 .tool-policy-card > div { display: flex; flex-direction: column; gap: 3px; }

@@ -23,6 +23,13 @@ function dockProps(open: boolean): Parameters<typeof StudioDock>[0] {
     mcpServers: [],
     gitOutput: "",
     gitCommitMessage: "",
+    githubAuthenticated: false,
+    githubRepoStatus: null,
+    githubRepoError: "",
+    gitActionsReadOnly: false,
+    githubRemoteInput: "",
+    githubRepoName: "",
+    githubRepoVisibility: "private",
     promptAudit: [],
     projectActions: [],
     workflows: [],
@@ -60,6 +67,12 @@ function dockProps(open: boolean): Parameters<typeof StudioDock>[0] {
     onRefreshTools: vi.fn(),
     onGitAction: vi.fn(),
     onGitCommitMessage: vi.fn(),
+    onGitHubRemoteInput: vi.fn(),
+    onGitHubRepoName: vi.fn(),
+    onGitHubRepoVisibility: vi.fn(),
+    onGitHubAttach: vi.fn(),
+    onGitHubCreate: vi.fn(),
+    onOpenGitHubSettings: vi.fn(),
     onGitPathAction: vi.fn(),
     onAttachPath: vi.fn(),
     onProjectAction: vi.fn(),
@@ -113,6 +126,27 @@ describe("StudioDock", () => {
     expect(screen.getByText("Claude subscription")).toBeInTheDocument();
     expect(screen.getByText(/Max plan connected/)).toBeInTheDocument();
     expect(screen.queryByText("25% used")).not.toBeInTheDocument();
+  });
+
+  it("uses current context pressure instead of cumulative thread history", () => {
+    render(
+      <StudioDock
+        {...dockProps(true)}
+        tab="usage"
+        usage={{
+          totalTokens: 180_000,
+          contextTokens: 20_000,
+          inputTokens: 160_000,
+          cachedInputTokens: 0,
+          outputTokens: 20_000,
+          reasoningOutputTokens: 0,
+          contextWindow: 200_000,
+        }}
+      />,
+    );
+
+    expect(screen.getByText(/10% of context/)).toBeInTheDocument();
+    expect(screen.queryByText(/Compact before the limit/)).not.toBeInTheDocument();
   });
 
   it("offers reversible full-state actions for an automatic checkpoint", () => {
@@ -223,5 +257,25 @@ describe("StudioDock", () => {
     expect(screen.getByRole("heading", { name: "Checkpoints" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Apply to project" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Worktrees workspace tool" })).toBeInTheDocument();
+  });
+
+  it("keeps Git inspection available but gates mutations in read-only mode", () => {
+    render(
+      <StudioDock
+        {...dockProps(true)}
+        tab="git"
+        gitActionsReadOnly
+        diff={"diff --git a/src/file.ts b/src/file.ts\n--- a/src/file.ts\n+++ b/src/file.ts\n+change"}
+        githubAuthenticated
+        githubRepoStatus={{ isRepo: true, repository: "owner/repo", branch: "main", upstream: "origin/main", ahead: 0, behind: 0 }}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Status" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Diff" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Stage all" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Stage" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Push" })).toBeDisabled();
+    expect(screen.getByText(/Read only allows Status and Diff/)).toBeInTheDocument();
   });
 });

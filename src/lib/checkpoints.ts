@@ -30,6 +30,10 @@ export interface CheckpointRecord {
   parentId?: string;
   parentPosition?: CheckpointRestoreTarget;
   restoredFromId?: string;
+  /** Safety checkpoints around Apply remember the matching worktree baseline
+   * so restoring the files also restores what the next Apply should diff from. */
+  worktreeThreadId?: string;
+  worktreeBaseline?: string;
   overlappingRun?: boolean;
   beforeCommit?: string;
   afterCommit?: string;

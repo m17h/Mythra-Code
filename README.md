@@ -153,21 +153,22 @@ The right-side Studio contains nine integrated surfaces:
 4. **Terminal** — a PTY-backed xterm surface with streamed bytes, stdin, resize, cancellation, and the selected permission sandbox.
 5. **Checkpoints** — automatic before/after source snapshots for every Git-project run, complete-worktree restore and reapply, reversible acceptance, pre-restore safety copies, run diffs, conversation forks and rollback, plus isolated-thread worktree review, apply, merge, recovery, and cleanup.
 6. **Context** — file mentions and native local-image inputs attached to the next turn.
-7. **Usage** — token/context telemetry, account rate limits, and a visible request-field audit.
+7. **Usage** — cumulative per-thread input/output tokens, API-equivalent inference value, account rate limits, and a visible request-field audit.
 8. **Tools** — project actions, skill enable/disable, MCP status/OAuth, and permission-boundary guidance.
-9. **Git** — status, diff, file-level stage/revert, stage all, tracked-file revert confirmation, commits, PR comments, CI checks, and draft PR creation.
+9. **Git** — GitHub repository attachment/creation, branch sync state, status, diff, file-level stage/revert, stage all, tracked-file revert confirmation, commits, fetch/pull/push, PR comments, CI checks, and draft PR creation.
 
 Checkpoint snapshots are stored as hidden local Git refs without moving the project's branch, HEAD, commits, or staging index. They include tracked and untracked non-ignored source files; ignored files and build output are left alone. Restoring always requires a fresh safety snapshot of the current source state, and conversation rollback remains a separate chat-only action.
 
 ## Privacy and telemetry
 
-OpenKiwi contains **no telemetry, analytics, or crash reporting**. The only network connections the app itself makes are the update check against GitHub Releases and, when an OpenRouter key is saved, the OpenRouter model catalog and inference requests. Prompts, transcripts, settings, and audit records stay in local storage (SQLite in the app's data directory). Diagnostics leave the machine only when a user explicitly exports them.
+OpenKiwi contains **no telemetry, analytics, or crash reporting**. Network connections are limited to the selected model provider, update checks against GitHub Releases, and user-initiated GitHub account or repository actions through the official GitHub CLI. OpenKiwi never injects GitHub credentials into model prompts or project files. Agents with command access can still invoke credential-aware tools such as `git` or `gh`, just as they could in a terminal. Prompts, transcripts, settings, local usage totals, and audit records stay in local storage (SQLite in the app's data directory). Diagnostics leave the machine only when a user explicitly exports them.
 
 ## Security boundaries
 
 - The webview can call only a small allowlist of App Server RPC methods.
 - The packaged app has a restrictive Content Security Policy and no external font dependency.
 - OpenRouter credentials use the OS keychain/keyring.
+- GitHub credentials remain in the official GitHub CLI credential store.
 - ChatGPT credentials use Codex's isolated credential store.
 - Model content is not rendered as HTML.
 - App Server uses stdio and is never exposed as a network listener.

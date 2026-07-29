@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { routeClaudeEvent, type ClaudeEventContext } from "./claudeEvents";
+import { resetClaudeEventUsageState, routeClaudeEvent, type ClaudeEventContext } from "./claudeEvents";
 import { resetTaskStore, useTaskStore } from "./taskStore";
 
 const context: ClaudeEventContext = {
@@ -12,15 +12,16 @@ const context: ClaudeEventContext = {
   onUnsupportedControlRequest: vi.fn(),
 };
 
-function send(message: Record<string, unknown>) {
+function send(message: Record<string, unknown>, turnId = "turn-1") {
   routeClaudeEvent(
-    { threadId: "thread-1", turnId: "turn-1", message },
+    { threadId: "thread-1", turnId, message },
     context,
   );
 }
 
 describe("Claude event routing", () => {
   beforeEach(() => {
+    resetClaudeEventUsageState();
     resetTaskStore();
     vi.clearAllMocks();
   });
@@ -94,7 +95,7 @@ describe("Claude event routing", () => {
       type: "result",
       subtype: "success",
       is_error: false,
-      usage: { input_tokens: 12, cache_read_input_tokens: 4, output_tokens: 8 },
+      usage: { input_tokens: 12, cache_read_input_tokens: 4, cache_creation_input_tokens: 3, output_tokens: 8 },
     });
     const task = useTaskStore.getState().tasks["thread-1"];
     expect(task.messages[0]).toMatchObject({
@@ -103,12 +104,76 @@ describe("Claude event routing", () => {
     });
     expect(task.status).toBe("completed");
     expect(task.usage).toMatchObject({
-      totalTokens: 24,
-      inputTokens: 16,
+      totalTokens: 27,
+      inputTokens: 19,
       cachedInputTokens: 4,
+      cacheWriteInputTokens: 3,
       outputTokens: 8,
     });
     expect(context.onTurnCompleted).toHaveBeenCalledWith("thread-1");
+  });
+
+  it("keeps accumulating input and output usage across Claude runs", () => {
+    send({
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      usage: { input_tokens: 100, cache_read_input_tokens: 20, output_tokens: 30 },
+    }, "turn-1");
+    send({
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      usage: { input_tokens: 80, cache_read_input_tokens: 10, output_tokens: 45 },
+    }, "turn-2");
+
+    expect(useTaskStore.getState().tasks["thread-1"].usage).toMatchObject({
+      totalTokens: 285,
+      inputTokens: 210,
+      cachedInputTokens: 30,
+      outputTokens: 75,
+    });
+  });
+
+  it("counts assistant usage once when the final result repeats the turn total", () => {
+    send({
+      type: "assistant",
+      message: {
+        id: "message-usage",
+        content: [{ type: "text", text: "Working" }],
+        usage: { input_tokens: 100, cache_read_input_tokens: 20, output_tokens: 30 },
+      },
+    });
+    send({
+      type: "result",
+      subtype: "success",
+      usage: { input_tokens: 100, cache_read_input_tokens: 20, output_tokens: 30 },
+    });
+
+    expect(useTaskStore.getState().tasks["thread-1"].usage).toMatchObject({
+      inputTokens: 120,
+      cachedInputTokens: 20,
+      outputTokens: 30,
+      totalTokens: 150,
+    });
+  });
+
+  it("retains usage from an interrupted run even when no result usage arrives", () => {
+    send({
+      type: "assistant",
+      message: {
+        id: "message-interrupted",
+        content: [{ type: "text", text: "Partial work" }],
+        usage: { input_tokens: 70, cache_creation_input_tokens: 10, output_tokens: 15 },
+      },
+    }, "turn-interrupted");
+
+    expect(useTaskStore.getState().tasks["thread-1"].usage).toMatchObject({
+      inputTokens: 80,
+      cacheWriteInputTokens: 10,
+      outputTokens: 15,
+      totalTokens: 95,
+    });
   });
 
   it("does not turn a user interruption into a failed or completed task", () => {

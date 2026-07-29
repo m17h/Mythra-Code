@@ -26,6 +26,7 @@ import {
   ShieldCheck,
   TerminalSquare,
   Trash2,
+  Upload,
   UsersRound,
   Workflow as WorkflowIcon,
   Wrench,
@@ -44,6 +45,7 @@ import {
   type CheckpointRestoreTarget,
 } from "../lib/checkpoints";
 import type { ThreadWorktreeRecord, WorktreeStatus } from "../lib/worktrees";
+import type { GitHubRepoStatus } from "../lib/github";
 
 export type StudioTab = "files" | "review" | "agents" | "terminal" | "checkpoints" | "worktrees" | "context" | "usage" | "tools" | "git";
 
@@ -62,8 +64,12 @@ export interface AttachmentRecord {
 
 export interface TokenUsageView {
   totalTokens: number;
+  /** Tokens currently occupying runtime context. This can shrink after
+   * compaction or when a resumed runtime rebaselines its counters. */
+  contextTokens?: number;
   inputTokens: number;
   cachedInputTokens: number;
+  cacheWriteInputTokens?: number;
   outputTokens: number;
   reasoningOutputTokens: number;
   contextWindow?: number | null;
@@ -120,6 +126,13 @@ export function StudioDock(props: {
   mcpServers: McpView[];
   gitOutput: string;
   gitCommitMessage: string;
+  githubAuthenticated: boolean;
+  githubRepoStatus: GitHubRepoStatus | null;
+  githubRepoError?: string;
+  gitActionsReadOnly: boolean;
+  githubRemoteInput: string;
+  githubRepoName: string;
+  githubRepoVisibility: "private" | "public";
   promptAudit: Array<{ label: string; value: string }>;
   projectActions: ProjectAction[];
   workflows: WorkflowDefinition[];
@@ -155,8 +168,14 @@ export function StudioDock(props: {
   onRefreshUsage: () => void;
   onCompact: () => void;
   onRefreshTools: () => void;
-  onGitAction: (action: "status" | "diff" | "stage" | "revert" | "commit" | "comments" | "ci" | "pr") => void;
+  onGitAction: (action: "status" | "diff" | "stage" | "revert" | "commit" | "commitPush" | "fetch" | "pull" | "push" | "comments" | "ci" | "pr") => void;
   onGitCommitMessage: (value: string) => void;
+  onGitHubRemoteInput: (value: string) => void;
+  onGitHubRepoName: (value: string) => void;
+  onGitHubRepoVisibility: (value: "private" | "public") => void;
+  onGitHubAttach: () => void;
+  onGitHubCreate: () => void;
+  onOpenGitHubSettings: () => void;
   onGitPathAction: (action: "stage" | "revert", path: string) => void;
   onAttachPath: (path: string) => void;
   onProjectAction: (action: ProjectAction) => void;
@@ -238,6 +257,7 @@ export function StudioDock(props: {
                           event.preventDefault();
                           props.onGitPathAction("stage", section.path);
                         }}
+                        disabled={props.gitActionsReadOnly}
                         title={`Stage ${section.path}`}
                       >
                         <Plus size={10} /> Stage
@@ -248,6 +268,7 @@ export function StudioDock(props: {
                           event.preventDefault();
                           props.onGitPathAction("revert", section.path);
                         }}
+                        disabled={props.gitActionsReadOnly}
                         title={`Revert ${section.path}`}
                       >
                         <RotateCcw size={10} />
@@ -393,15 +414,29 @@ export function StudioDock(props: {
         </>}
 
         {props.tab === "usage" && <>
-          <PanelHeader icon={Gauge} title="Usage & audit" subtitle="Context, tokens, and visible request fields" onClose={props.onClose} />
+          <PanelHeader icon={Gauge} title="Usage & audit" subtitle="Cumulative thread totals, context pressure, and visible request fields" onClose={props.onClose} />
           <div className="studio-actions"><button onClick={props.onRefreshUsage}><RefreshCw size={13} /> Refresh</button><button onClick={props.onCompact} disabled={!props.activeThread} title="Summarize older turns to free context in this thread"><Shrink size={13} /> Compact context</button></div>
-          {props.usage?.contextWindow && props.usage.totalTokens / props.usage.contextWindow > 0.7 && (
-            <div className="history-warning"><Gauge size={13} /> Context is getting full. Compacting summarizes older turns so the thread can keep going.</div>
-          )}
-          <div className="usage-hero"><span>Context used</span><strong>{props.usage?.totalTokens.toLocaleString() ?? "—"}</strong><small>{props.usage?.contextWindow ? `of ${props.usage.contextWindow.toLocaleString()} tokens` : "Current thread"}{props.costEstimate ? ` · ${props.costEstimate}` : ""}</small><i style={{ width: `${Math.min(100, ((props.usage?.totalTokens ?? 0) / (props.usage?.contextWindow || 1)) * 100)}%` }} /></div>
+          {props.usage?.contextWindow && (props.usage.contextTokens ?? props.usage.totalTokens) / props.usage.contextWindow >= 0.7 ? (
+            <div className="history-warning"><ShieldCheck size={13} /> This thread has used {Math.min(100, Math.round(((props.usage.contextTokens ?? props.usage.totalTokens) / props.usage.contextWindow) * 100))}% of its context window. Compact before the limit if responses begin losing older detail.</div>
+          ) : null}
+          <div className="usage-hero">
+            <span>Thread tokens</span>
+            <strong>{props.usage?.totalTokens.toLocaleString() ?? "—"}</strong>
+            <small>
+              Cumulative in this thread
+              {props.usage?.contextWindow ? ` · ${Math.min(100, Math.round(((props.usage.contextTokens ?? props.usage.totalTokens) / props.usage.contextWindow) * 100))}% of context` : ""}
+              {props.costEstimate ? ` · ${props.costEstimate}` : ""}
+            </small>
+            {props.usage?.contextWindow ? <i style={{ width: `${Math.min(100, ((props.usage.contextTokens ?? props.usage.totalTokens) / props.usage.contextWindow) * 100)}%` }} /> : null}
+          </div>
           <div className="metric-grid three"><div><strong>{props.usage?.inputTokens.toLocaleString() ?? "—"}</strong><span>Input</span></div><div><strong>{props.usage?.outputTokens.toLocaleString() ?? "—"}</strong><span>Output</span></div><div><strong>{props.usage?.reasoningOutputTokens.toLocaleString() ?? "—"}</strong><span>Reasoning</span></div></div>
+          {props.usage && (props.usage.cachedInputTokens > 0 || (props.usage.cacheWriteInputTokens ?? 0) > 0) ? (
+            <div className="usage-cache-note">
+              Prompt caching: {props.usage.cachedInputTokens.toLocaleString()} read · {(props.usage.cacheWriteInputTokens ?? 0).toLocaleString()} written
+            </div>
+          ) : null}
           <div className="rate-card"><span>{props.accountUsage.label}</span><strong>{props.accountUsage.summary}</strong></div>
-          {props.costTotals && <div className="rate-card"><span>OpenRouter spend</span><strong>{props.costTotals}</strong></div>}
+          {props.costTotals && <div className="rate-card"><span>OpenRouter history</span><strong>{props.costTotals}</strong></div>}
           <h3 className="panel-label">Request audit</h3><div className="audit-table">{props.promptAudit.map((row) => <div key={row.label}><span>{row.label}</span><code>{row.value}</code></div>)}</div>
         </>}
 
@@ -421,11 +456,34 @@ export function StudioDock(props: {
 
         {props.tab === "git" && <>
           <PanelHeader icon={GitBranch} title="Git workspace" subtitle="Shape changes without leaving OPENKIWI" onClose={props.onClose} />
-          <div className="studio-actions wrap"><button onClick={() => props.onGitAction("status")}><RefreshCw size={13} /> Status</button><button onClick={() => props.onGitAction("diff")}><CodeXml size={13} /> Diff</button><button onClick={() => props.onGitAction("stage")}><Plus size={13} /> Stage all</button><button className="danger-action" onClick={() => props.onGitAction("revert")} aria-label="Revert all Git changes"><RotateCcw size={13} /> Revert all</button></div>
-          {diffFiles.length > 0 && <><h3 className="panel-label">Changed files</h3><div className="git-file-list">{diffFiles.map((path) => <div key={path}><code>{path}</code><button onClick={() => props.onGitPathAction("stage", path)}><Plus size={11} /> Stage</button><button className="danger-action" onClick={() => props.onGitPathAction("revert", path)}><RotateCcw size={11} /></button></div>)}</div></>}
+          {props.gitActionsReadOnly && <div className="history-warning"><ShieldCheck size={13} /> Read only allows Status and Diff. Switch thread access to Ask or Full access before changing Git or contacting GitHub.</div>}
+          <div className="github-repo-card">
+            <span className="github-repo-icon"><GitFork size={16} /></span>
+            <div>
+              <strong>{props.githubRepoStatus?.repository || (props.githubRepoError ? "GitHub status unavailable" : "No GitHub repository attached")}</strong>
+              <small>{props.githubRepoError || (props.githubRepoStatus?.repository
+                ? `${props.githubRepoStatus.branch || "detached"}${props.githubRepoStatus.upstream ? ` · ${props.githubRepoStatus.ahead} ahead · ${props.githubRepoStatus.behind} behind` : " · not pushed yet"}`
+                : props.githubAuthenticated ? "Attach an existing repository or create a new one." : "Connect GitHub in Settings to publish this project.")}</small>
+            </div>
+            {!props.githubAuthenticated && <button onClick={props.onOpenGitHubSettings}>Connect</button>}
+          </div>
+          {!props.githubRepoStatus?.repository && props.githubAuthenticated && (
+            <div className="github-connect-project">
+              <label className="dock-field"><span>Existing repository URL</span><input value={props.githubRemoteInput} onChange={(event) => props.onGitHubRemoteInput(event.target.value)} placeholder="https://github.com/owner/repository.git" /></label>
+              <button onClick={props.onGitHubAttach} disabled={props.gitActionsReadOnly || !props.githubRemoteInput.trim()}><GitFork size={13} /> Attach remote</button>
+              <div className="github-create-divider"><span>or create one</span></div>
+              <div className="github-create-row">
+                <input value={props.githubRepoName} onChange={(event) => props.onGitHubRepoName(event.target.value)} placeholder="repository-name" aria-label="New GitHub repository name" />
+                <select value={props.githubRepoVisibility} onChange={(event) => props.onGitHubRepoVisibility(event.target.value as "private" | "public")} aria-label="Repository visibility"><option value="private">Private</option><option value="public">Public</option></select>
+                <button onClick={props.onGitHubCreate} disabled={props.gitActionsReadOnly || !props.githubRepoName.trim()}><Plus size={13} /> Create</button>
+              </div>
+            </div>
+          )}
+          <div className="studio-actions wrap"><button onClick={() => props.onGitAction("status")}><RefreshCw size={13} /> Status</button><button onClick={() => props.onGitAction("diff")}><CodeXml size={13} /> Diff</button><button onClick={() => props.onGitAction("stage")} disabled={props.gitActionsReadOnly}><Plus size={13} /> Stage all</button><button className="danger-action" onClick={() => props.onGitAction("revert")} aria-label="Revert all Git changes" disabled={props.gitActionsReadOnly}><RotateCcw size={13} /> Revert all</button></div>
+          {diffFiles.length > 0 && <><h3 className="panel-label">Changed files</h3><div className="git-file-list">{diffFiles.map((path) => <div key={path}><code>{path}</code><button onClick={() => props.onGitPathAction("stage", path)} disabled={props.gitActionsReadOnly}><Plus size={11} /> Stage</button><button className="danger-action" onClick={() => props.onGitPathAction("revert", path)} disabled={props.gitActionsReadOnly}><RotateCcw size={11} /></button></div>)}</div></>}
           <pre className="git-screen">{props.gitOutput || "Choose an action to inspect the repository."}</pre>
           <label className="dock-field"><span>Commit message</span><input value={props.gitCommitMessage} onChange={(e) => props.onGitCommitMessage(e.target.value)} placeholder="Describe this change" /></label>
-          <div className="studio-actions wrap"><button onClick={() => props.onGitAction("commit")} disabled={!props.gitCommitMessage.trim()}><GitCommitHorizontal size={13} /> Commit staged</button><button onClick={() => props.onGitAction("comments")}><CodeXml size={13} /> Review comments</button><button onClick={() => props.onGitAction("ci")}><ShieldCheck size={13} /> CI checks</button><button onClick={() => props.onGitAction("pr")}><GitFork size={13} /> Draft PR</button></div>
+          <div className="studio-actions wrap"><button onClick={() => props.onGitAction("commit")} disabled={props.gitActionsReadOnly || !props.gitCommitMessage.trim()}><GitCommitHorizontal size={13} /> Commit staged</button><button onClick={() => props.onGitAction("commitPush")} disabled={props.gitActionsReadOnly || !props.gitCommitMessage.trim() || !props.githubRepoStatus?.repository || !props.githubRepoStatus.branch}><Upload size={13} /> Commit & push</button><button onClick={() => props.onGitAction("fetch")} disabled={props.gitActionsReadOnly || !props.githubRepoStatus?.repository}><RefreshCw size={13} /> Fetch</button><button onClick={() => props.onGitAction("pull")} disabled={props.gitActionsReadOnly || !props.githubRepoStatus?.upstream}><RotateCw size={13} /> Pull</button><button onClick={() => props.onGitAction("push")} disabled={props.gitActionsReadOnly || !props.githubRepoStatus?.repository || !props.githubRepoStatus.branch} title={!props.githubRepoStatus?.branch ? "Check out a named branch before pushing" : undefined}><Upload size={13} /> Push</button><button onClick={() => props.onGitAction("comments")} disabled={props.gitActionsReadOnly || !props.githubRepoStatus?.repository}><CodeXml size={13} /> Review comments</button><button onClick={() => props.onGitAction("ci")} disabled={props.gitActionsReadOnly || !props.githubRepoStatus?.repository}><ShieldCheck size={13} /> CI checks</button><button onClick={() => props.onGitAction("pr")} disabled={props.gitActionsReadOnly || !props.githubRepoStatus?.repository}><GitFork size={13} /> Draft PR</button></div>
         </>}
       </div>
     </aside>
