@@ -3,6 +3,7 @@ import {
   Bot,
   Boxes,
   Check,
+  ChevronDown,
   ChevronRight,
   CircleStop,
   Clock3,
@@ -465,17 +466,20 @@ export function StudioDock(props: {
                 ? `${props.githubRepoStatus.branch || "detached"}${props.githubRepoStatus.upstream ? ` · ${props.githubRepoStatus.ahead} ahead · ${props.githubRepoStatus.behind} behind` : " · not pushed yet"}`
                 : props.githubAuthenticated ? "Attach an existing repository or create a new one." : "Connect GitHub in Settings to publish this project.")}</small>
             </div>
-            {!props.githubAuthenticated && <button onClick={props.onOpenGitHubSettings}>Connect</button>}
+            {!props.githubAuthenticated && <button className="github-secondary-button" onClick={props.onOpenGitHubSettings}>Connect</button>}
           </div>
           {!props.githubRepoStatus?.repository && props.githubAuthenticated && (
             <div className="github-connect-project">
               <label className="dock-field"><span>Existing repository URL</span><input value={props.githubRemoteInput} onChange={(event) => props.onGitHubRemoteInput(event.target.value)} placeholder="https://github.com/owner/repository.git" /></label>
-              <button onClick={props.onGitHubAttach} disabled={props.gitActionsReadOnly || !props.githubRemoteInput.trim()}><GitFork size={13} /> Attach remote</button>
+              <button className="github-secondary-button" onClick={props.onGitHubAttach} disabled={props.gitActionsReadOnly || !props.githubRemoteInput.trim()}><GitFork size={13} /> Attach remote</button>
               <div className="github-create-divider"><span>or create one</span></div>
               <div className="github-create-row">
-                <input value={props.githubRepoName} onChange={(event) => props.onGitHubRepoName(event.target.value)} placeholder="repository-name" aria-label="New GitHub repository name" />
-                <select value={props.githubRepoVisibility} onChange={(event) => props.onGitHubRepoVisibility(event.target.value as "private" | "public")} aria-label="Repository visibility"><option value="private">Private</option><option value="public">Public</option></select>
-                <button onClick={props.onGitHubCreate} disabled={props.gitActionsReadOnly || !props.githubRepoName.trim()}><Plus size={13} /> Create</button>
+                <input className="github-repo-name-input" value={props.githubRepoName} onChange={(event) => props.onGitHubRepoName(event.target.value)} placeholder="repository-name" aria-label="New GitHub repository name" />
+                <span className="github-visibility-select">
+                  <select value={props.githubRepoVisibility} onChange={(event) => props.onGitHubRepoVisibility(event.target.value as "private" | "public")} aria-label="Repository visibility"><option value="private">Private</option><option value="public">Public</option></select>
+                  <ChevronDown size={13} aria-hidden="true" />
+                </span>
+                <button className="github-create-button" onClick={props.onGitHubCreate} disabled={props.gitActionsReadOnly || !props.githubRepoName.trim()}><Plus size={13} /> Create</button>
               </div>
             </div>
           )}

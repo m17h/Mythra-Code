@@ -11,6 +11,8 @@ export const THEMES: Array<{ id: ThemeName; name: string; description: string; s
 
 export const DEFAULT_SETTINGS: AppSettings = {
   provider: "openai",
+  openAiLogo: "openai",
+  claudeLogo: "claude",
   model: DEFAULT_OPENAI_MODEL,
   permission: "ask",
   systemPrompt: "",

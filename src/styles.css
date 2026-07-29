@@ -135,6 +135,8 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .app-shell[data-theme="daylight"] .diff-line-hunk { color: #14639f; }
 .app-shell[data-theme="daylight"] .primary-button { border-color: #35791d; color: #ffffff; }
 .app-shell[data-theme="daylight"] .primary-button:hover { background: #47a02a; }
+.app-shell[data-theme="daylight"] .github-create-button { border-color: #2e6d18; color: #ffffff; background: #35791d; }
+.app-shell[data-theme="daylight"] .github-create-button:hover:not(:disabled) { background: #3a8320; }
 .app-shell[data-theme="daylight"] .send-button { color: #ffffff; }
 .app-shell[data-theme="daylight"] .send-button:disabled { color: #9aa294; background: #e2e5de; }
 .app-shell[data-theme="daylight"] .secondary-button { color: #3c443c; }
@@ -330,7 +332,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .sidebar-settings .provider-dot { margin-left: auto; }
 
 /* ---- Main panel: a flat, quiet ground. No ambient glows. ---- */
-.main-panel { position: relative; min-width: 0; flex: 1; display: flex; flex-direction: column; background: var(--bg); }
+.main-panel { position: relative; min-width: 0; flex: 1; display: flex; flex-direction: column; container-name: chat-main; container-type: inline-size; background: var(--bg); }
 .topbar { position: relative; z-index: 4; flex: 0 0 var(--topbar-h); height: var(--topbar-h); display: flex; align-items: center; justify-content: space-between; gap: var(--s-4); padding: 0 var(--s-4); border-bottom: 1px solid var(--line); background: var(--topbar); backdrop-filter: saturate(140%) blur(18px); -webkit-backdrop-filter: saturate(140%) blur(18px); }
 .topbar-left, .topbar-right { display: flex; align-items: center; gap: var(--s-2); min-width: 0; }
 .topbar-left { flex: 1 1 auto; }
@@ -479,6 +481,10 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
    the glyph reads as a knockout instead of tinting against the default green. */
 .message-avatar.provider-claude { background: #d97757; color: #fff; }
 .message-avatar.provider-openai { background: #0f120d; color: #fff; }
+.message-avatar.provider-openai .codex-logo-option {
+  transform: scale(1.35);
+  transform-origin: center;
+}
 .app-shell[data-theme="daylight"] .message-avatar.provider-openai { background: #1a1d18; }
 .message-body { min-width: 0; color: var(--ink-2); font-size: var(--fs-body); line-height: 1.68; letter-spacing: -.005em; text-wrap: pretty; }
 .message-text { white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -882,6 +888,16 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .provider-logo.openai { color: var(--green); }
 .provider-logo.openrouter { color: #c798f4; }
 .provider-logo.claude { color: #fff; background: #d97757; }
+.openai-logo-choice { display: grid; place-items: center; flex: 0 0 auto; }
+.openai-logo-choice > svg { grid-area: 1 / 1; }
+.openai-logo-choice .codex-logo-option { display: none; }
+.app-shell[data-openai-logo="codex"] .openai-logo-choice .openai-logo-option { display: none; }
+.app-shell[data-openai-logo="codex"] .openai-logo-choice .codex-logo-option { display: block; }
+.claude-logo-choice { display: grid; place-items: center; flex: 0 0 auto; }
+.claude-logo-choice > svg { grid-area: 1 / 1; }
+.claude-logo-choice .anthropic-logo-option { display: none; }
+.app-shell[data-claude-logo="anthropic"] .claude-logo-choice .claude-logo-option { display: none; }
+.app-shell[data-claude-logo="anthropic"] .claude-logo-choice .anthropic-logo-option { display: block; }
 .credential-panel { min-height: 58px; margin-top: 9px; padding: 10px 11px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid var(--line); border-radius: 9px; background: rgba(255,255,255,.015); }
 .credential-panel > div, .credential-status > div { display: flex; flex-direction: column; gap: 3px; }
 .credential-panel strong { font-size: var(--fs-ui); font-weight: 600; }
@@ -911,6 +927,22 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .field-label input:focus, .key-input-row input:focus { border-color: var(--green-line); box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 9%, transparent); }
 /* Fields are focus-ringed by their own border treatment — no doubled outline. */
 .field-label input:focus-visible, .key-input-row input:focus-visible, .prompt-editor:focus-visible, .thread-search input:focus-visible, .palette-search input:focus-visible, .composer textarea:focus-visible { outline: none; }
+.provider-logo-settings { display: grid; gap: var(--s-3); margin-top: var(--s-4); padding-top: var(--s-4); border-top: 1px solid var(--line); }
+.provider-logo-settings > div:first-child { display: flex; flex-direction: column; gap: 3px; }
+.provider-logo-settings > div:first-child > strong { color: var(--ink-2); font-size: var(--fs-ui); font-weight: 620; }
+.provider-logo-settings > div:first-child > small { color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.45; }
+.provider-logo-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-2); }
+.provider-logo-options > button { min-width: 0; min-height: 58px; display: grid; grid-template-columns: 36px minmax(0, 1fr) 16px; align-items: center; gap: 10px; padding: 9px 10px; border: 1px solid var(--line); border-radius: var(--r-md); color: var(--muted); background: rgba(255,255,255,.014); text-align: left; cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
+.provider-logo-options > button:hover { color: var(--ink-2); border-color: var(--line-strong); background: rgba(255,255,255,.035); }
+.provider-logo-options > button.selected { color: var(--text); border-color: var(--green-line); background: var(--green-soft); }
+.provider-logo-options > button > span:nth-child(2) { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.provider-logo-options strong { color: inherit; font-size: var(--fs-ui); font-weight: 600; }
+.provider-logo-options small { overflow: hidden; color: var(--muted-2); font-size: var(--fs-micro); white-space: nowrap; text-overflow: ellipsis; }
+.provider-logo-options > button > svg { color: var(--green); }
+.provider-logo-preview { width: 36px; height: 36px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--field); }
+.provider-logo-preview.openai { color: var(--green); }
+.provider-logo-preview.claude { color: #fff; background: #d97757; }
+.provider-logo-preview.anthropic { color: #171714; background: #f1f0eb; }
 .profile-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 6px; }
 .profile-grid > button { min-height: 50px; display: grid; grid-template-columns: minmax(0,1fr) 15px; align-items: center; gap: var(--s-1); padding: 10px; border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--muted); background: rgba(255,255,255,.014); text-align: left; cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
 .profile-grid > button:hover { color: var(--ink-2); border-color: var(--line-strong); background: rgba(255,255,255,.035); }
@@ -1081,6 +1113,42 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
   .permission-menu { width: min(296px, calc(100vw - 40px)); }
 }
 
+/* The workspace dock and thread sidebar can narrow the conversation even
+   while the app window remains wide. These rules respond to the actual chat
+   column so header controls compact by priority instead of overlapping. */
+@container chat-main (max-width: 900px) {
+  .topbar { gap: var(--s-2); padding-inline: var(--s-3); }
+  .topbar-left, .topbar-right { gap: var(--s-1); }
+  .topbar-left { flex: 1 1 0; }
+  .topbar-right { flex: 0 1 auto; }
+  .project-heading { max-width: 180px; padding-left: 0; }
+  .project-heading small { max-width: 180px; }
+  .project-prompt-trigger > span { display: none; }
+  .command-palette-trigger { width: var(--ctl-md); justify-content: center; padding: 0; }
+  .command-palette-trigger span, .command-palette-trigger kbd { display: none; }
+  .provider-pill small { display: none; }
+  .runtime-status { max-width: 92px; }
+}
+
+@container chat-main (max-width: 720px) {
+  .project-heading { max-width: 136px; }
+  .project-heading small { display: none; }
+  .runtime-status, .command-palette-trigger, .topbar-export-button { display: none; }
+  .project-prompt-trigger { width: var(--ctl-md); justify-content: center; padding: 0; }
+  .project-prompt-trigger small, .project-prompt-trigger > svg:last-child { display: none; }
+  .provider-pill { padding-inline: 7px; }
+  .provider-pill .provider-label { display: none; }
+  .workspace-tools-trigger { width: var(--ctl-md); justify-content: center; padding: 0; }
+  .workspace-tools-trigger span { display: none; }
+  .isolation-chip span { display: none; }
+}
+
+@container chat-main (max-width: 520px) {
+  .topbar { padding-inline: var(--s-2); }
+  .project-heading { max-width: 104px; }
+  .provider-pill > svg:last-child { display: none; }
+}
+
 /* Touch and pen: reveal-on-hover affordances have no trigger, so pin them on. */
 @media (hover: none) {
   .code-copy { opacity: 1; }
@@ -1206,7 +1274,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .reasoning-labels { display: flex; justify-content: space-between; margin-top: 6px; color: var(--muted-2); font-size: var(--fs-micro); }
 .reasoning-labels span { transition: color var(--t-fast) ease; }
 .reasoning-labels span.active { color: var(--ink-2); font-weight: 600; text-shadow: none; }
-.ultra-lever { position: relative; z-index: 2; height: 52px; display: flex; align-items: center; justify-content: space-between; gap: var(--s-1); padding: var(--s-1) 6px; border: 1px solid var(--line); border-radius: var(--r-md); color: var(--muted-2); background: var(--field); cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
+.ultra-lever { position: relative; z-index: 2; min-width: 0; height: 52px; display: flex; align-items: center; justify-content: space-between; gap: var(--s-1); padding: var(--s-1) 6px; border: 1px solid var(--line); border-radius: var(--r-md); color: var(--muted-2); background: var(--field); cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
 .ultra-lever:hover:not(:disabled) { color: var(--ink-2); border-color: var(--line-strong); }
 .ultra-lever:disabled { opacity: .35; cursor: default; }
 .lever-label { display: flex; flex-direction: column; align-items: center; gap: 2px; font-size: var(--fs-micro); font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
@@ -1294,11 +1362,27 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .github-repo-card strong, .github-repo-card small { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .github-repo-card small { color: var(--muted-2); font-size: var(--fs-meta); }
 .github-repo-icon { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 8px; color: var(--ink-2); background: var(--field); }
+.github-secondary-button { min-height: 30px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; padding: 0 9px; border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--ink-2); background: color-mix(in srgb, var(--text) 3.5%, transparent); font-size: var(--fs-meta); cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
+.github-secondary-button:hover:not(:disabled) { color: var(--text); border-color: var(--line-strong); background: color-mix(in srgb, var(--text) 7%, transparent); }
+.github-secondary-button:disabled { opacity: .4; cursor: default; }
 .github-connect-project { display: grid; gap: var(--s-2); margin-bottom: var(--s-3); padding: var(--s-3); border: 1px solid var(--line); border-radius: var(--r-sm); background: rgba(255,255,255,.012); }
 .github-connect-project > button { justify-self: start; }
 .github-create-divider { display: flex; align-items: center; gap: var(--s-2); color: var(--muted-2); font-size: var(--fs-micro); text-transform: uppercase; letter-spacing: var(--track-caps); }
 .github-create-divider::before, .github-create-divider::after { content: ""; height: 1px; flex: 1; background: var(--line); }
 .github-create-row { display: grid; grid-template-columns: minmax(0, 1fr) 90px auto; gap: var(--s-1); }
+.github-repo-name-input { min-width: 0; width: 100%; height: 34px; appearance: none; padding: 0 9px; border: 1px solid var(--line); border-radius: var(--r-sm); outline: 0; color: var(--text); background: var(--field); font: 11px var(--font-mono); transition: border-color var(--t-fast) ease, background var(--t-fast) ease, box-shadow var(--t-fast) ease; }
+.github-repo-name-input::placeholder { color: var(--muted-2); }
+.github-repo-name-input:hover { border-color: var(--line-strong); }
+.github-repo-name-input:focus { border-color: color-mix(in srgb, var(--green) 48%, var(--line-strong)); box-shadow: 0 0 0 3px var(--green-soft); }
+.github-visibility-select { position: relative; min-width: 0; height: 34px; display: flex; align-items: center; border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--ink-2); background: var(--field); transition: border-color var(--t-fast) ease, background var(--t-fast) ease, box-shadow var(--t-fast) ease; }
+.github-visibility-select:hover { border-color: var(--line-strong); }
+.github-visibility-select:focus-within { border-color: color-mix(in srgb, var(--green) 48%, var(--line-strong)); box-shadow: 0 0 0 3px var(--green-soft); }
+.github-visibility-select select { width: 100%; height: 100%; appearance: none; padding: 0 26px 0 9px; border: 0; outline: 0; color: inherit; background: transparent; font-size: var(--fs-meta); cursor: pointer; }
+.github-visibility-select option { color: var(--text); background: var(--panel); }
+.github-visibility-select svg { position: absolute; right: 8px; color: var(--muted-2); pointer-events: none; }
+.github-create-button { min-height: 34px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; padding: 0 10px; border: 1px solid color-mix(in srgb, var(--green) 76%, #fff); border-radius: var(--r-sm); color: #10140c; background: var(--green); font-size: var(--fs-meta); font-weight: 650; cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
+.github-create-button:hover:not(:disabled) { background: color-mix(in srgb, var(--green) 88%, #fff); }
+.github-create-button:disabled { opacity: .4; cursor: default; }
 .manager-status { margin-top: 6px; padding: 7px 8px; border-radius: 6px; color: var(--muted); background: rgba(255,255,255,.02); font-size: var(--fs-meta); }
 .terminal-input { display: grid; grid-template-columns: 13px minmax(0,1fr) 32px; align-items: center; gap: 6px; margin-top: var(--s-2); color: var(--green); font-family: var(--font-mono); }
 .terminal-input input, .dock-field input { width: 100%; height: 34px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--r-sm); outline: 0; color: var(--text); background: var(--field); font: 11px var(--font-mono); transition: border-color var(--t-fast) ease; }
@@ -1762,3 +1846,40 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .recent-errors-list > div:last-child { border-bottom: 0; }
 .recent-errors-list small { color: var(--muted-2); font-size: var(--fs-micro); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .recent-errors-list span { min-width: 0; color: var(--ink-2); font-size: var(--fs-meta); line-height: 1.5; overflow-wrap: anywhere; }
+
+/* Composer controls also respond to the chat column, not the outer window.
+   The model selector remains beside Ultra while reasoning gets a full row. */
+@container chat-main (max-width: 900px) {
+  .composer-zone { padding-inline: var(--s-4); }
+  .model-power-control, .openrouter-control { gap: var(--s-2); margin-inline: 6px; }
+  .model-power-control { grid-template-columns: minmax(0, 1fr) 58px; }
+  .model-picker { grid-column: 1; grid-row: 1; }
+  .ultra-lever { grid-column: 2; grid-row: 1; width: 58px; }
+  .reasoning-control { grid-column: 1 / -1; grid-row: 2; }
+  .openrouter-control { grid-template-columns: minmax(0, 1fr); }
+  .openrouter-reasoning { grid-column: 1; }
+  .openrouter-menu, .claude-model-menu { width: min(570px, calc(100cqw - 44px)); }
+}
+
+@container chat-main (max-width: 600px) {
+  .composer-zone { padding-inline: var(--s-3); }
+  .model-power-control, .openrouter-control { margin-inline: var(--s-1); padding: 6px; }
+  .model-power-control { grid-template-columns: minmax(0, 1fr) 54px; }
+  .ultra-lever { width: 54px; padding-inline: var(--s-1); }
+  .model-picker-copy em, .openrouter-trigger-copy em { display: none; }
+  .composer-toolbar { flex-wrap: wrap; row-gap: var(--s-1); }
+}
+
+/* Anthropic's AI monogram uses its warm-white-and-ink treatment instead of
+   Claude's orange product tile wherever the saved model-logo choice appears. */
+.provider-logo.claude.anthropic-mark,
+.app-shell[data-claude-logo="anthropic"] .provider-logo.claude,
+.app-shell[data-claude-logo="anthropic"] .provider-mark.claude,
+.app-shell[data-claude-logo="anthropic"] .thread-card-provider.claude,
+.app-shell[data-claude-logo="anthropic"] .message-avatar.provider-claude,
+.app-shell[data-claude-logo="anthropic"] .claude-control .openrouter-logo,
+.app-shell[data-claude-logo="anthropic"] .claude-control .openrouter-provider-mark {
+  border-color: rgba(23, 23, 20, .18);
+  color: #171714;
+  background: #f1f0eb;
+}

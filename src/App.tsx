@@ -120,7 +120,7 @@ const initialOnboardingVersion = loadStored<number>("kiwi.onboardingVersion", 0)
 const establishedInstall = isEstablishedOpenKiwiInstall({ projects: initialProjects.length, knownThreads: Object.keys(initialKnownThreads).length, hasStoredSettings: localStorage.getItem("kiwi.settings") !== null, hasSkillsFolder: Boolean(loadStored<string>("kiwi.skillsFolder", "")) });
 const initialOnboardingOpen = initialOnboardingVersion < ONBOARDING_VERSION && !establishedInstall;
 const storedSettings = loadStored<Partial<AppSettings>>("kiwi.settings", {});
-const initialSettings: AppSettings = { ...DEFAULT_SETTINGS, ...storedSettings, subagentMax: Math.min(24, Math.max(1, Number(storedSettings.subagentMax) || DEFAULT_SETTINGS.subagentMax)), model: storedSettings.provider === "openrouter" ? ((storedSettings.model || "").includes("/") ? storedSettings.model! : "") : storedSettings.provider === "claude" ? ((storedSettings.model || "").startsWith("claude-") ? storedSettings.model! : DEFAULT_CLAUDE_MODEL) : storedSettings.model || DEFAULT_SETTINGS.model, theme: THEMES.some((theme) => theme.id === storedSettings.theme) ? storedSettings.theme! : DEFAULT_SETTINGS.theme, uiScale: Math.min(150, Math.max(80, Number(storedSettings.uiScale) || DEFAULT_SETTINGS.uiScale)) };
+const initialSettings: AppSettings = { ...DEFAULT_SETTINGS, ...storedSettings, openAiLogo: storedSettings.openAiLogo === "codex" ? "codex" : "openai", claudeLogo: storedSettings.claudeLogo === "anthropic" ? "anthropic" : "claude", subagentMax: Math.min(24, Math.max(1, Number(storedSettings.subagentMax) || DEFAULT_SETTINGS.subagentMax)), model: storedSettings.provider === "openrouter" ? ((storedSettings.model || "").includes("/") ? storedSettings.model! : "") : storedSettings.provider === "claude" ? ((storedSettings.model || "").startsWith("claude-") ? storedSettings.model! : DEFAULT_CLAUDE_MODEL) : storedSettings.model || DEFAULT_SETTINGS.model, theme: THEMES.some((theme) => theme.id === storedSettings.theme) ? storedSettings.theme! : DEFAULT_SETTINGS.theme, uiScale: Math.min(150, Math.max(80, Number(storedSettings.uiScale) || DEFAULT_SETTINGS.uiScale)) };
 
 function basename(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
@@ -3441,7 +3441,7 @@ export default function App() {
   });
 
   return (
-    <div className="app-shell" data-theme={previewTheme ?? settings.theme} style={{ zoom: (settings.uiScale || 100) / 100 }}>
+    <div className="app-shell" data-theme={previewTheme ?? settings.theme} data-openai-logo={settings.openAiLogo} data-claude-logo={settings.claudeLogo} style={{ zoom: (settings.uiScale || 100) / 100 }}>
       {successToast && (
         <div className="app-toast success" role="status" aria-live="polite">
           <span className="app-toast-icon"><Check size={14} strokeWidth={2.5} /></span>
@@ -3671,7 +3671,7 @@ export default function App() {
             </div>
             {activeThreadWorktree && activeThreadWorktree.status !== "removed" && (
               <button className="isolation-chip" onClick={() => void revealItemInDir(activeThreadWorktree.path)} title={activeThreadWorktree.path}>
-                <GitBranch size={12} /> Isolated
+                <GitBranch size={12} /> <span>Isolated</span>
               </button>
             )}
             {activeProject && (
@@ -3690,7 +3690,7 @@ export default function App() {
           </div>
           <div className="topbar-right">
             {activeThread && (
-              <button className="icon-button" onClick={() => void exportTranscript()} title="Export conversation as Markdown" aria-label="Export conversation as Markdown">
+              <button className="icon-button topbar-export-button" onClick={() => void exportTranscript()} title="Export conversation as Markdown" aria-label="Export conversation as Markdown">
                 <Download size={15} />
               </button>
             )}

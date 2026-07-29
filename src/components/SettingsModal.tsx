@@ -30,7 +30,7 @@ import type { ClaudeRuntimeStatus } from "../lib/claude";
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_OPENAI_MODEL, DEFAULT_SETTINGS, RELEASE_NOTES_URL, THEMES } from "../lib/appConfig";
 import { friendlyError } from "../lib/errors";
 import { useModalFocus } from "../hooks/useModalFocus";
-import { ClaudeLogo, OpenAILogo } from "./BrandLogos";
+import { AnthropicLogo, ClaudeLogo, CodexLogo, OpenAILogo } from "./BrandLogos";
 import { updateProgress, type AppUpdater } from "../lib/appUpdater";
 import type { LocalSkill } from "../lib/skills";
 import type { WorkflowDefinition, WorkflowRunRecord } from "../lib/workflows";
@@ -540,7 +540,7 @@ export function SettingsModal({
             </div>
             <div className="provider-cards">
               <button className={`provider-card ${local.provider === "openai" ? "selected" : ""}`} onClick={() => setLocal({ ...local, provider: "openai", model: local.model.includes("/") || local.model.startsWith("claude-") ? DEFAULT_OPENAI_MODEL : (local.model || DEFAULT_OPENAI_MODEL), ultra: false })}>
-                <span className="provider-logo openai"><OpenAILogo size={17} /></span>
+                <span className="provider-logo openai">{local.openAiLogo === "codex" ? <CodexLogo size={18} /> : <OpenAILogo size={17} />}</span>
                 <span><strong>OpenAI</strong><small>Official ChatGPT subscription sign-in</small></span>
                 {local.provider === "openai" && <Check size={16} />}
               </button>
@@ -550,7 +550,7 @@ export function SettingsModal({
                 {local.provider === "openrouter" && <Check size={16} />}
               </button>
               <button className={`provider-card ${local.provider === "claude" ? "selected" : ""}`} onClick={() => setLocal({ ...local, provider: "claude", model: local.model.startsWith("claude-") ? local.model : DEFAULT_CLAUDE_MODEL, ultra: false })}>
-                <span className="provider-logo claude"><ClaudeLogo size={17} /></span>
+                <span className={`provider-logo claude${local.claudeLogo === "anthropic" ? " anthropic-mark" : ""}`}>{local.claudeLogo === "anthropic" ? <AnthropicLogo size={17} /> : <ClaudeLogo size={17} />}</span>
                 <span><strong>Claude</strong><small>Official Claude Code subscription login</small></span>
                 {local.provider === "claude" && <Check size={16} />}
               </button>
@@ -612,6 +612,43 @@ export function SettingsModal({
               />
               <small>{local.provider === "openrouter" ? "Use the searchable picker beneath the composer, or enter any valid provider/model slug here." : local.provider === "claude" ? "Use the Claude selector beneath the composer. Availability follows your signed-in Claude Code subscription." : "Use the animated selector beneath the composer. Availability follows the signed-in ChatGPT account."}</small>
             </label>
+
+            <div className="provider-logo-settings">
+              <div>
+                <strong>OpenAI model logo</strong>
+                <small>Choose the mark used for OpenAI threads, responses, and provider controls throughout OpenKiwi.</small>
+              </div>
+              <div className="provider-logo-options" role="radiogroup" aria-label="OpenAI model logo">
+                <button type="button" className={local.openAiLogo === "openai" ? "selected" : ""} role="radio" aria-checked={local.openAiLogo === "openai"} onClick={() => setLocal({ ...local, openAiLogo: "openai" })}>
+                  <span className="provider-logo-preview openai"><OpenAILogo size={20} /></span>
+                  <span><strong>OpenAI</strong></span>
+                  {local.openAiLogo === "openai" && <Check size={14} />}
+                </button>
+                <button type="button" className={local.openAiLogo === "codex" ? "selected" : ""} role="radio" aria-checked={local.openAiLogo === "codex"} onClick={() => setLocal({ ...local, openAiLogo: "codex" })}>
+                  <span className="provider-logo-preview codex"><CodexLogo size={22} /></span>
+                  <span><strong>Codex</strong></span>
+                  {local.openAiLogo === "codex" && <Check size={14} />}
+                </button>
+              </div>
+            </div>
+            <div className="provider-logo-settings">
+              <div>
+                <strong>Claude model logo</strong>
+                <small>Choose the mark used for Claude threads, responses, and provider controls throughout OpenKiwi.</small>
+              </div>
+              <div className="provider-logo-options" role="radiogroup" aria-label="Claude model logo">
+                <button type="button" className={local.claudeLogo === "claude" ? "selected" : ""} role="radio" aria-checked={local.claudeLogo === "claude"} onClick={() => setLocal({ ...local, claudeLogo: "claude" })}>
+                  <span className="provider-logo-preview claude"><ClaudeLogo size={20} /></span>
+                  <span><strong>Claude</strong></span>
+                  {local.claudeLogo === "claude" && <Check size={14} />}
+                </button>
+                <button type="button" className={local.claudeLogo === "anthropic" ? "selected" : ""} role="radio" aria-checked={local.claudeLogo === "anthropic"} onClick={() => setLocal({ ...local, claudeLogo: "anthropic" })}>
+                  <span className="provider-logo-preview anthropic"><AnthropicLogo size={20} /></span>
+                  <span><strong>Anthropic</strong></span>
+                  {local.claudeLogo === "anthropic" && <Check size={14} />}
+                </button>
+              </div>
+            </div>
           </section>}
           </div>
         </div>

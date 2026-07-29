@@ -1,3 +1,4 @@
+import { useId } from "react";
 import { Route } from "lucide-react";
 import type { Provider } from "../types";
 
@@ -25,6 +26,32 @@ export function ClaudeLogo({ size = 16, className }: LogoProps) {
   );
 }
 
+export function AnthropicLogo({ size = 16, className }: LogoProps) {
+  return (
+    <svg
+      className={className}
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M13.827 3.52h3.603L24 20h-3.603l-6.57-16.48z" />
+      <path d="M6.569 3.52h3.767L16.906 20h-3.674l-1.343-3.461H5.017L3.674 20H0L6.569 3.52zm4.132 9.959L8.453 7.687 6.205 13.48h4.496z" />
+    </svg>
+  );
+}
+
+export function ClaudeProviderLogo({ size = 16, className }: LogoProps) {
+  return (
+    <span className={`claude-logo-choice${className ? ` ${className}` : ""}`} style={{ width: size, height: size }}>
+      <ClaudeLogo size={size} className="claude-logo-option" />
+      <AnthropicLogo size={size} className="anthropic-logo-option" />
+    </span>
+  );
+}
+
 export function OpenAILogo({ size = 16, className }: LogoProps) {
   return (
     <svg
@@ -41,8 +68,43 @@ export function OpenAILogo({ size = 16, className }: LogoProps) {
   );
 }
 
+/** Compact vector interpretation of the official Codex terminal-cloud mark. */
+export function CodexLogo({ size = 16, className }: LogoProps) {
+  const gradientId = `codex-gradient-${useId().replace(/:/g, "")}`;
+  return (
+    <svg
+      className={className}
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <defs>
+        <linearGradient id={gradientId} x1="6" y1="3" x2="17" y2="21" gradientUnits="userSpaceOnUse">
+          <stop stopColor="#b9a7ff" />
+          <stop offset=".48" stopColor="#668cff" />
+          <stop offset="1" stopColor="#3326ff" />
+        </linearGradient>
+      </defs>
+      <path
+        fill={`url(#${gradientId})`}
+        d="M11.9 1.7c1.72 0 3.27.82 4.25 2.14 1.68-.2 3.39.62 4.24 2.08.83 1.43.77 3.2-.05 4.55 1.33 1.1 1.93 2.9 1.43 4.55-.5 1.61-1.96 2.8-3.6 3.03-.55 1.67-2.02 2.9-3.76 3.12-1.6.2-3.14-.42-4.13-1.55-1.42.85-3.25.86-4.68-.02-1.42-.88-2.22-2.48-2.09-4.08-1.53-.6-2.65-2.05-2.8-3.72-.15-1.64.66-3.23 1.98-4.15-.47-1.61.04-3.38 1.3-4.49 1.27-1.12 3.05-1.4 4.54-.79a5.27 5.27 0 0 1 3.37-1.2Z"
+      />
+      <path d="m7.8 8.1 2.55 3.9-2.55 3.9M12.55 15.9h4.1" fill="none" stroke="#fff" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 export function ProviderLogo({ provider, size = 16, className }: LogoProps & { provider: Provider }) {
-  if (provider === "claude") return <ClaudeLogo size={size} className={className} />;
-  if (provider === "openai") return <OpenAILogo size={size} className={className} />;
+  if (provider === "claude") return <ClaudeProviderLogo size={size} className={className} />;
+  if (provider === "openai") {
+    return (
+      <span className={`openai-logo-choice${className ? ` ${className}` : ""}`} style={{ width: size, height: size }}>
+        <OpenAILogo size={size} className="openai-logo-option" />
+        <CodexLogo size={size} className="codex-logo-option" />
+      </span>
+    );
+  }
   return <Route size={size} className={className} />;
 }

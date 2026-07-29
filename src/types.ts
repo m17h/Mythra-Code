@@ -2,6 +2,8 @@ import type { ReasoningEffort } from "./components/ModelPowerControl";
 import type { JsonObject } from "./lib/codex";
 
 export type Provider = "openai" | "openrouter" | "claude";
+export type OpenAILogoStyle = "openai" | "codex";
+export type ClaudeLogoStyle = "claude" | "anthropic";
 export type PermissionMode = "read-only" | "ask" | "full";
 export type ThemeName = "kiwi" | "daylight";
 export type WorkspaceMode = "chat" | "project";
@@ -178,6 +180,8 @@ export interface ArchivedThread {
 
 export interface AppSettings {
   provider: Provider;
+  openAiLogo: OpenAILogoStyle;
+  claudeLogo: ClaudeLogoStyle;
   model: string;
   permission: PermissionMode;
   systemPrompt: string;

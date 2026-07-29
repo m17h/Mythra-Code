@@ -108,6 +108,28 @@ describe("SettingsModal", () => {
     expect(screen.getByText(/Each thread keeps its own provider/)).toBeInTheDocument();
   });
 
+  it("saves the chosen logo for OpenAI models", () => {
+    const onSave = vi.fn();
+    render(<SettingsModal {...modalProps({ initialSection: "models", onSave })} />);
+
+    fireEvent.click(screen.getByRole("radio", { name: "Codex" }));
+    expect(screen.getByRole("radio", { name: "Codex" })).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ openAiLogo: "codex" }));
+  });
+
+  it("saves the chosen logo for Claude models", () => {
+    const onSave = vi.fn();
+    render(<SettingsModal {...modalProps({ initialSection: "models", onSave })} />);
+
+    fireEvent.click(screen.getByRole("radio", { name: "Anthropic" }));
+    expect(screen.getByRole("radio", { name: "Anthropic" })).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ claudeLogo: "anthropic" }));
+  });
+
   it("shows GitHub connection and repository cloning in their own settings pane", () => {
     const onGitHubRefresh = vi.fn(async () => undefined);
     render(<SettingsModal {...modalProps({

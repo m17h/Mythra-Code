@@ -61,7 +61,7 @@ export function ThreadProviderControl({
         disabled={disabled}
       >
         <span className={`provider-mark ${provider}`}><ProviderLogo provider={provider} size={13} /></span>
-        {label}
+        <span className="provider-label">{label}</span>
         {model && <small>{model}</small>}
         <ChevronDown size={12} />
       </button>
