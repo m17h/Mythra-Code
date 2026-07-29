@@ -45,7 +45,7 @@ import {
 } from "../lib/checkpoints";
 import type { ThreadWorktreeRecord, WorktreeStatus } from "../lib/worktrees";
 
-export type StudioTab = "files" | "review" | "agents" | "terminal" | "checkpoints" | "context" | "usage" | "tools" | "git";
+export type StudioTab = "files" | "review" | "agents" | "terminal" | "checkpoints" | "worktrees" | "context" | "usage" | "tools" | "git";
 
 export interface AgentRecord {
   id: string;
@@ -80,6 +80,7 @@ const TABS: Array<{ id: StudioTab; label: string; icon: typeof CodeXml }> = [
   { id: "agents", label: "Agents", icon: UsersRound },
   { id: "terminal", label: "Terminal", icon: TerminalSquare },
   { id: "checkpoints", label: "Checkpoints", icon: History },
+  { id: "worktrees", label: "Worktrees", icon: GitFork },
   { id: "context", label: "Context", icon: Paperclip },
   { id: "usage", label: "Usage", icon: Gauge },
   { id: "tools", label: "Tools", icon: Wrench },
@@ -146,7 +147,7 @@ export function StudioDock(props: {
   onWorktreeMerge: () => void;
   onWorktreeReveal: () => void;
   onWorktreeRefresh: () => void;
-  onWorktreeCleanup: () => void;
+  onWorktreeRemove: () => void;
   onWorktreeRecreate: () => void;
   onWorktreeContinueShared: () => void;
   onAddAttachment: () => void;
@@ -341,7 +342,14 @@ export function StudioDock(props: {
               );
             }) : <Empty icon={History} title="No checkpoints yet" text="The first project run will automatically create a restorable checkpoint." />}
           </div>
-          <h3 className="panel-label">Conversation and isolation</h3>
+          <h3 className="panel-label">Conversation history</h3>
+          <div className="studio-actions wrap"><button onClick={() => props.onFork()} disabled={!props.activeThread}><GitFork size={13} /> Fork thread</button><button onClick={props.onRollback} disabled={!props.activeThread}><RotateCcw size={13} /> Undo conversation turn</button></div>
+          <div className="history-warning"><ShieldCheck size={13} /> Conversation undo changes chat history only. Checkpoint restore changes project files without rewriting Git commits.</div>
+        </>}
+
+        {props.tab === "worktrees" && <>
+          <PanelHeader icon={GitFork} title="Worktrees" subtitle="Isolated branches and project handoff" onClose={props.onClose} />
+          <div className="checkpoint-note"><ShieldCheck size={14} /><div><strong>Experiment without touching the shared project.</strong><span>Apply copies the resulting files into your project. Merge preserves committed branch history. Removing an unapplied worktree leaves the shared project unchanged.</span></div></div>
           {props.worktree ? (
             <div className="worktree-card">
               <div className="worktree-card-head">
@@ -368,15 +376,14 @@ export function StudioDock(props: {
                   <button onClick={props.onWorktreeMerge} disabled={props.worktreeBusy}><GitCommitHorizontal size={13} /> Merge branch</button>
                   <button onClick={props.onWorktreeReveal} disabled={props.worktreeBusy}><Eye size={13} /> Reveal</button>
                   <button onClick={props.onWorktreeRefresh} disabled={props.worktreeBusy}><RefreshCw size={13} /> Refresh</button>
-                  <button className="danger-action" onClick={props.onWorktreeCleanup} disabled={props.worktreeBusy}><Trash2 size={13} /> Clean up…</button>
+                  <button className="danger-action" onClick={props.onWorktreeRemove} disabled={props.worktreeBusy}><Trash2 size={13} /> Remove worktree…</button>
                 </div>
               )}
             </div>
           ) : (
             <div className="history-warning"><ShieldCheck size={13} /> This thread uses the shared project folder. Choose Isolated worktree before sending the first message in a new thread.</div>
           )}
-          <div className="studio-actions wrap"><button onClick={() => props.onFork()} disabled={!props.activeThread}><GitFork size={13} /> Fork thread</button><button onClick={props.onRollback} disabled={!props.activeThread}><RotateCcw size={13} /> Undo conversation turn</button></div>
-          <div className="history-warning"><ShieldCheck size={13} /> Conversation undo changes chat history only. Checkpoint restore changes project files without rewriting Git commits.</div>
+          <div className="history-warning"><ShieldCheck size={13} /> Worktrees and their branches stay local unless you explicitly push them to a Git remote.</div>
         </>}
 
         {props.tab === "context" && <>

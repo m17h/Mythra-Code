@@ -50,7 +50,7 @@ function dockProps(open: boolean): Parameters<typeof StudioDock>[0] {
     onWorktreeMerge: vi.fn(),
     onWorktreeReveal: vi.fn(),
     onWorktreeRefresh: vi.fn(),
-    onWorktreeCleanup: vi.fn(),
+    onWorktreeRemove: vi.fn(),
     onWorktreeRecreate: vi.fn(),
     onWorktreeContinueShared: vi.fn(),
     onAddAttachment: vi.fn(),
@@ -164,7 +164,7 @@ describe("StudioDock", () => {
     render(
       <StudioDock
         {...dockProps(true)}
-        tab="checkpoints"
+        tab="worktrees"
         activeThread
         worktree={{
           threadId: "thread-1",
@@ -196,6 +196,32 @@ describe("StudioDock", () => {
     expect(screen.getByRole("button", { name: "Apply to project" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Merge branch" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Reveal" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Clean up…" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Remove worktree…" })).toBeInTheDocument();
+    expect(screen.getByText(/Worktrees and their branches stay local/)).toBeInTheDocument();
+  });
+
+  it("keeps worktree management out of the Checkpoints tab", () => {
+    render(
+      <StudioDock
+        {...dockProps(true)}
+        tab="checkpoints"
+        activeThread
+        worktree={{
+          threadId: "thread-1",
+          projectId: "project-1",
+          projectPath: "/project",
+          path: "/worktrees/thread-1",
+          branch: "openkiwi/thread-1",
+          baseCommit: "base",
+          gitDir: "/project/.git",
+          createdAt: 1,
+          status: "active",
+        }}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: "Checkpoints" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Apply to project" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Worktrees workspace tool" })).toBeInTheDocument();
   });
 });

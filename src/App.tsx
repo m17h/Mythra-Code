@@ -1644,7 +1644,7 @@ export default function App() {
         && record.status !== "removed",
     ).length;
     if (isolatedCount > 0) {
-      setError(`Clean up the ${isolatedCount} isolated worktree${isolatedCount === 1 ? "" : "s"} in this project before removing it from OpenKiwi.`);
+      setError(`Remove the ${isolatedCount} isolated worktree${isolatedCount === 1 ? "" : "s"} in this project from the Worktrees workspace tab before removing the project from OpenKiwi.`);
       return;
     }
     const confirmed = window.confirm(`Remove “${project.name}” from OpenKiwi?\n\nIts folder and every file inside it will remain untouched on your Mac.`);
@@ -2226,7 +2226,7 @@ export default function App() {
     const thread = threads.find((entry) => entry.id === threadId) ?? knownThreadsRef.current?.[threadId];
     const isolation = threadWorktreesRef.current[threadId];
     if (isolation && isolation.status !== "removed") {
-      setError(`Clean up “${isolation.branch}” from the Checkpoints workspace tab before permanently deleting this thread.`);
+      setError(`Remove “${isolation.branch}” from the Worktrees workspace tab before permanently deleting this thread.`);
       return;
     }
     const taskStatus = useTaskStore.getState().statuses[threadId];
@@ -2592,7 +2592,7 @@ export default function App() {
     if (!activeThread) return;
     if (activeThreadWorktree && activeThreadWorktree.status !== "removed") {
       setError(
-        "Forking an isolated conversation is not available yet because two threads must not silently share one worktree. Apply or merge its changes, clean it up, and continue from the shared project first.",
+        "Forking an isolated conversation is not available yet because two threads must not silently share one worktree. Apply or merge its changes, remove the worktree, and continue from the shared project first.",
       );
       return;
     }
@@ -2749,10 +2749,10 @@ export default function App() {
     }
   };
 
-  const cleanupActiveWorktree = async () => {
+  const removeActiveWorktree = async () => {
     if (!activeThread || !activeThreadWorktree) return;
     if (projectHasActiveTask(activeThreadWorktree.path) || projectHasActiveTask(activeThreadWorktree.projectPath)) {
-      setError("Wait for active tasks in the isolated worktree and source project before cleaning it up.");
+      setError("Wait for active tasks in the isolated worktree and source project before removing it.");
       return;
     }
     setWorktreeBusy(true);
@@ -2772,8 +2772,8 @@ export default function App() {
       ].filter(Boolean).join(", ");
       if (!window.confirm(
         destructive
-          ? `Permanently delete this isolated worktree and branch?\n\nIt contains ${details}. Those worktree-only files and commits will be permanently deleted. The shared project is not changed.`
-          : `Delete this isolated worktree and its branch?\n\nThe shared project and conversation remain available. This thread must be explicitly switched to shared mode before it can run again.`,
+          ? `Remove this isolated worktree and delete its branch?\n\nIt contains ${details}. Those worktree-only files and commits will be permanently deleted. The shared project and GitHub are not changed.`
+          : `Remove this isolated worktree and delete its branch?\n\nThe shared project, GitHub repository, and conversation remain available. This thread must be explicitly switched to shared mode before it can run again.`,
       )) return;
       const worktreeCheckpoints = checkpointsRef.current.filter(
         (checkpoint) => checkpoint.workspacePath
@@ -2800,7 +2800,7 @@ export default function App() {
               status: "failed",
               beforeCommit: undefined,
               afterCommit: undefined,
-              error: "The isolated worktree was cleaned up; this historical checkpoint is no longer restorable.",
+              error: "The isolated worktree was removed; this historical checkpoint is no longer restorable.",
             }
           : checkpoint
       )));
@@ -2813,7 +2813,7 @@ export default function App() {
         },
       }));
       setWorktreeStatus(null);
-      setTransientStatus("Isolated worktree cleaned up");
+      setTransientStatus("Isolated worktree removed");
     } catch (reason) {
       setError(friendlyError(reason));
     } finally {
@@ -2824,7 +2824,7 @@ export default function App() {
   const continueThreadInSharedProject = () => {
     if (!activeThread || !activeThreadWorktree) return;
     if (activeThreadWorktree.status === "missing") {
-      setError("Recreate the missing worktree from its branch, then clean it up before continuing this conversation in the shared project.");
+      setError("Recreate the missing worktree from its branch, then remove it before continuing this conversation in the shared project.");
       return;
     }
     if (!window.confirm(
@@ -3806,7 +3806,7 @@ export default function App() {
               if (activeThreadWorktree) void revealItemInDir(activeThreadWorktree.path);
             }}
             onWorktreeRefresh={() => void refreshActiveWorktreeStatus()}
-            onWorktreeCleanup={() => void cleanupActiveWorktree()}
+            onWorktreeRemove={() => void removeActiveWorktree()}
             onWorktreeRecreate={() => void recreateActiveWorktree()}
             onWorktreeContinueShared={continueThreadInSharedProject}
             onAddAttachment={() => void addAttachment()}
