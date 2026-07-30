@@ -1847,9 +1847,10 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .recent-errors-list small { color: var(--muted-2); font-size: var(--fs-micro); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .recent-errors-list span { min-width: 0; color: var(--ink-2); font-size: var(--fs-meta); line-height: 1.5; overflow-wrap: anywhere; }
 
-/* Composer controls also respond to the chat column, not the outer window.
-   The model selector remains beside Ultra while reasoning gets a full row. */
-@container chat-main (max-width: 900px) {
+/* Composer controls respond to the chat column, but stay side-by-side until
+   the conversation is genuinely cramped. The 900px header compaction above
+   must not force the much roomier composer into its stacked layout. */
+@container chat-main (max-width: 680px) {
   .composer-zone { padding-inline: var(--s-4); }
   .model-power-control, .openrouter-control { gap: var(--s-2); margin-inline: 6px; }
   .model-power-control { grid-template-columns: minmax(0, 1fr) 58px; }
