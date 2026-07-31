@@ -7,6 +7,34 @@ function normalizedPath(path: string): string {
   return normalized || "/";
 }
 
+export function threadBelongsToWorkspace(
+  thread: Thread,
+  workspacePath: string,
+  bindings: Record<string, string>,
+): boolean {
+  return normalizedPath(bindings[thread.id] || thread.cwd) === normalizedPath(workspacePath);
+}
+
+export function filterThreadsForWorkspace(
+  threads: Thread[],
+  workspacePath: string,
+  bindings: Record<string, string>,
+): Thread[] {
+  return threads.filter((thread) => threadBelongsToWorkspace(thread, workspacePath, bindings));
+}
+
+export function countSidebarThreadsByWorkspace(
+  index: ThreadSidebarIndex,
+  bindings: Record<string, string>,
+): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const thread of Object.values(index)) {
+    const path = normalizedPath(bindings[thread.id] || thread.cwd);
+    counts[path] = (counts[path] ?? 0) + 1;
+  }
+  return counts;
+}
+
 export function sidebarThread(thread: Thread): Thread {
   const { turns: _turns, ...summary } = thread;
   return summary;
@@ -41,14 +69,12 @@ export function reconcileWorkspaceThreads(
   workspacePath: string,
   bindings: Record<string, string>,
 ): Thread[] {
-  const targetPath = normalizedPath(workspacePath);
-  const belongsToWorkspace = (thread: Thread) => normalizedPath(bindings[thread.id] || thread.cwd) === targetPath;
   const merged = new Map<string, Thread>();
   for (const thread of Object.values(rememberedThreads)) {
-    if (belongsToWorkspace(thread)) merged.set(thread.id, thread);
+    if (threadBelongsToWorkspace(thread, workspacePath, bindings)) merged.set(thread.id, thread);
   }
   for (const thread of runtimeThreads) {
-    if (belongsToWorkspace(thread)) merged.set(thread.id, sidebarThread(thread));
+    if (threadBelongsToWorkspace(thread, workspacePath, bindings)) merged.set(thread.id, sidebarThread(thread));
   }
   return [...merged.values()].sort((left, right) => right.updatedAt - left.updatedAt);
 }

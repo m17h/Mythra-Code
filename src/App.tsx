@@ -13,7 +13,7 @@ import { DEFAULT_CLAUDE_MODEL, DEFAULT_OPENAI_MODEL, DEFAULT_PROMPT_PROFILES, DE
 import { commandSandbox, threadResumeParams, threadRuntimeConfig, threadStartParams, turnStartParams } from "./lib/turnConfig";
 import { threadSearchParams, threadsForWorkspace, type ThreadSearchResponse } from "./lib/threadSearch";
 import { buildTurnInput, withoutSentAttachments } from "./lib/turnInput";
-import { forgetSidebarThread, optimisticStartedThread, pruneSidebarIndex, reconcileWorkspaceThreads, rememberSidebarThread, sidebarThread, upsertThread, type ThreadSidebarIndex } from "./lib/threadList";
+import { countSidebarThreadsByWorkspace, filterThreadsForWorkspace, forgetSidebarThread, optimisticStartedThread, pruneSidebarIndex, reconcileWorkspaceThreads, rememberSidebarThread, sidebarThread, threadBelongsToWorkspace, upsertThread, type ThreadSidebarIndex } from "./lib/threadList";
 import { timelineFromTurns } from "./lib/threadTimeline";
 import { buildTranscriptMarkdown } from "./lib/transcript";
 import { RowMenu } from "./components/RowMenu";
@@ -360,11 +360,15 @@ export default function App() {
     for (const task of Object.values(state.tasks)) count += task.approvals.length;
     return count;
   });
+  const threadProjectBindings = threadProjectBindingsRef.current ?? {};
+  const projectThreadCounts = countSidebarThreadsByWorkspace(knownThreadsRef.current ?? {}, threadProjectBindings);
   const displayedThreads = useMemo(() => {
+    if (!activeWorkspace) return [];
     const query = threadSearch.trim().toLowerCase();
-    const merged = threads.filter((thread) => `${thread.name ?? ""} ${thread.preview}`.toLowerCase().includes(query));
+    const merged = filterThreadsForWorkspace(threads, activeWorkspace.path, threadProjectBindings)
+      .filter((thread) => `${thread.name ?? ""} ${thread.preview}`.toLowerCase().includes(query));
     const mergedIds = new Set(merged.map((thread) => thread.id));
-    for (const found of searchResults ?? []) {
+    for (const found of filterThreadsForWorkspace(searchResults ?? [], activeWorkspace.path, threadProjectBindings)) {
       if (!mergedIds.has(found.id)) {
         mergedIds.add(found.id);
         merged.push(found);
@@ -372,7 +376,7 @@ export default function App() {
     }
     const pinned = new Set(pinnedThreadIds);
     return merged.sort((a, b) => Number(pinned.has(b.id)) - Number(pinned.has(a.id)) || b.updatedAt - a.updatedAt);
-  }, [pinnedThreadIds, searchResults, threadSearch, threads]);
+  }, [activeWorkspace, pinnedThreadIds, searchResults, threadProjectBindings, threadSearch, threads]);
   // @-mention autocomplete searches project files with the same fuzzy RPC the
   // file browser uses. Only available inside a project workspace.
   const activeProjectPath = activeProject ? activeExecutionPath : undefined;
@@ -1378,7 +1382,9 @@ export default function App() {
         const latestUser = [...(task?.messages ?? [])].reverse().find((message) => message.role === "user")?.text;
         const updated = { ...known, preview: latestUser?.slice(0, 140) || known.preview, updatedAt: Math.floor(Date.now() / 1000) };
         rememberThread(updated);
-        setThreads((current) => upsertThread(current, updated));
+        if (activeWorkspace && threadBelongsToWorkspace(updated, activeWorkspace.path, threadProjectBindingsRef.current ?? {})) {
+          setThreads((current) => upsertThread(current, updated));
+        }
         void saveClaudeTranscript({ thread: updated, messages: (task?.messages ?? []).map((message) => ({ ...message, streaming: false })), activities: task?.activities ?? [] }).catch(() => {});
       }
       if (settings.notificationsEnabled && useTaskStore.getState().activeThreadId !== threadId) {
@@ -3509,6 +3515,7 @@ export default function App() {
               >
                 <button
                   className="workspace-row"
+                  aria-label={project.name}
                   onClick={(event) => {
                     if (suppressProjectClickRef.current) {
                       event.preventDefault();
@@ -3522,6 +3529,13 @@ export default function App() {
                 >
                   <span className="workspace-icon">{project.pinned ? <Pin size={13} /> : <Folder size={14} />}</span>
                   <span className="workspace-name">{project.name}</span>
+                  <span
+                    className="workspace-thread-count"
+                    title={`${projectThreadCounts[normalizedProjectPath(project.path)] ?? 0} active thread${(projectThreadCounts[normalizedProjectPath(project.path)] ?? 0) === 1 ? "" : "s"}`}
+                    aria-label={`${projectThreadCounts[normalizedProjectPath(project.path)] ?? 0} active thread${(projectThreadCounts[normalizedProjectPath(project.path)] ?? 0) === 1 ? "" : "s"}`}
+                  >
+                    {projectThreadCounts[normalizedProjectPath(project.path)] ?? 0}
+                  </span>
                 </button>
                 <RowMenu
                   label={`Options for ${project.name}`}

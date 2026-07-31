@@ -312,6 +312,13 @@ describe("workspace switching during thread selection", () => {
     expect(JSON.parse(localStorage.getItem("kiwi.sidebarSplitRatio") ?? "0")).toBeCloseTo(2 / 3);
   });
 
+  it("shows the active thread count beside each project", async () => {
+    await renderApp();
+
+    expect(await screen.findByLabelText("2 active threads")).toBeInTheDocument();
+    expect(screen.getByLabelText("0 active threads")).toBeInTheDocument();
+  });
+
   it("does not install a thread whose resume settles after switching workspaces", async () => {
     const user = userEvent.setup();
     await renderApp();

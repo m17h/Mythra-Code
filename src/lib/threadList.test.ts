@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { Thread } from "../types";
-import { forgetSidebarThread, optimisticStartedThread, reconcileWorkspaceThreads, rememberSidebarThread, upsertThread } from "./threadList";
+import {
+  countSidebarThreadsByWorkspace,
+  filterThreadsForWorkspace,
+  forgetSidebarThread,
+  optimisticStartedThread,
+  reconcileWorkspaceThreads,
+  rememberSidebarThread,
+  upsertThread,
+} from "./threadList";
 
 function makeThread(id: string, overrides: Partial<Thread> = {}): Thread {
   return {
@@ -45,5 +53,27 @@ describe("thread sidebar list", () => {
 
     expect(reconcileWorkspaceThreads([indexed], remembered, "/normal-chats", {})).toEqual([indexed]);
     expect(forgetSidebarThread(remembered, "chat")).toEqual({});
+  });
+
+  it("filters a stale mixed sidebar list at the workspace boundary", () => {
+    const alpha = makeThread("alpha", { cwd: "/projects/alpha" });
+    const beta = makeThread("beta", { cwd: "/projects/beta" });
+
+    expect(filterThreadsForWorkspace([alpha, beta], "/projects/beta", {})).toEqual([beta]);
+  });
+
+  it("uses the persisted project binding for worktrees and project counts", () => {
+    const shared = makeThread("shared", { cwd: "/projects/alpha" });
+    const isolated = makeThread("isolated", { cwd: "/managed/worktrees/isolated" });
+    const beta = makeThread("beta", { cwd: "/projects/beta" });
+    const bindings = { isolated: "/projects/alpha" };
+    const index = { shared, isolated, beta };
+
+    expect(filterThreadsForWorkspace(Object.values(index), "/projects/alpha", bindings))
+      .toEqual([shared, isolated]);
+    expect(countSidebarThreadsByWorkspace(index, bindings)).toEqual({
+      "/projects/alpha": 2,
+      "/projects/beta": 1,
+    });
   });
 });

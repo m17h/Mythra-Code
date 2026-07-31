@@ -254,16 +254,18 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .workspace-row-wrap.drop-before::after, .workspace-row-wrap.drop-after::after { content: ""; position: absolute; z-index: 3; left: var(--s-2); right: var(--s-2); height: 2px; border-radius: var(--r-pill); background: var(--green); box-shadow: 0 0 8px color-mix(in srgb, var(--green) 40%, transparent); pointer-events: none; }
 .workspace-row-wrap.drop-before::after { top: -2px; }
 .workspace-row-wrap.drop-after::after { bottom: -2px; }
-.workspace-row { position: relative; display: grid; grid-template-columns: 22px minmax(0,1fr); align-items: center; gap: var(--s-2); flex: 1; width: 100%; min-width: 0; height: 34px; border: 0; border-radius: var(--r-sm); background: transparent; color: var(--muted); padding: 0 var(--s-2); font-size: var(--fs-ui); letter-spacing: var(--track-tight); text-align: left; cursor: pointer; transition: color var(--t-fast) ease, background var(--t-fast) ease; }
+.workspace-row { position: relative; display: grid; grid-template-columns: 22px minmax(0,1fr) auto; align-items: center; gap: var(--s-2); flex: 1; width: 100%; min-width: 0; height: 34px; border: 0; border-radius: var(--r-sm); background: transparent; color: var(--muted); padding: 0 var(--s-2); font-size: var(--fs-ui); letter-spacing: var(--track-tight); text-align: left; cursor: pointer; transition: color var(--t-fast) ease, background var(--t-fast) ease; }
 .workspace-row-wrap .workspace-row { padding-right: 30px; }
 .workspace-icon { width: 21px; height: 21px; display: grid; place-items: center; border-radius: var(--r-xs); color: var(--muted-2); background: transparent; transition: color var(--t-fast) ease, background var(--t-fast) ease; }
 .workspace-icon.chat { color: var(--info); background: transparent; }
 .workspace-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.workspace-thread-count { min-width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; padding: 0 5px; border: 1px solid var(--line); border-radius: var(--r-pill); color: var(--muted-2); background: color-mix(in srgb, var(--text) 4%, transparent); font-size: 10px; font-weight: 620; line-height: 1; font-variant-numeric: tabular-nums; }
 .workspace-row:hover { color: var(--ink-2); background: rgba(255,255,255,.035); }
 .workspace-row.active, .workspace-row-wrap.active { color: var(--text); background: rgba(255,255,255,.062); }
 .workspace-row-wrap.active .workspace-row { color: var(--text); }
 .workspace-row.active .workspace-name, .workspace-row-wrap.active .workspace-name { font-weight: 600; }
 .workspace-row-wrap.active .workspace-icon { color: var(--green); background: transparent; }
+.workspace-row-wrap.active .workspace-thread-count { border-color: color-mix(in srgb, var(--green) 25%, var(--line)); color: var(--green); background: color-mix(in srgb, var(--green) 8%, transparent); }
 .workspace-row.chat.active .workspace-icon { color: var(--info); background: transparent; }
 /* Active marker: a short hairline rule, inset from the row edges. */
 .workspace-row.chat.active { box-shadow: none; }
