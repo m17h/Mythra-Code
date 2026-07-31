@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   gitActionUnavailableReason,
   githubCliCommand,
+  gitPushCompletionNote,
   gitPushCommand,
 } from "./github";
 
@@ -28,5 +29,11 @@ describe("GitHub workspace commands", () => {
       .toEqual(["/opt/homebrew/bin/gh", "pr", "view", "--comments"]);
     expect(githubCliCommand("/opt/homebrew/bin/gh", "pr"))
       .toEqual(["/opt/homebrew/bin/gh", "pr", "create", "--draft", "--fill"]);
+  });
+
+  it("explains that push only sends committed changes", () => {
+    expect(gitPushCompletionNote("")).toBe("Push succeeded. This branch's committed changes are on GitHub.");
+    expect(gitPushCompletionNote(" M src/App.tsx\n?? src/new.ts\n"))
+      .toBe("Push succeeded, but 2 uncommitted entries remain local. Stage and commit before pushing again.");
   });
 });

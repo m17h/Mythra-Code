@@ -1,4 +1,5 @@
 import type { Thread } from "../types";
+import type { TaskStatus } from "./taskStore";
 
 export type ThreadSidebarIndex = Record<string, Thread>;
 
@@ -23,13 +24,17 @@ export function filterThreadsForWorkspace(
   return threads.filter((thread) => threadBelongsToWorkspace(thread, workspacePath, bindings));
 }
 
-export function countSidebarThreadsByWorkspace(
+export function countActiveThreadsByWorkspace(
   index: ThreadSidebarIndex,
   bindings: Record<string, string>,
+  statuses: Record<string, TaskStatus | undefined>,
 ): Record<string, number> {
   const counts: Record<string, number> = {};
-  for (const thread of Object.values(index)) {
-    const path = normalizedPath(bindings[thread.id] || thread.cwd);
+  for (const [threadId, status] of Object.entries(statuses)) {
+    if (status !== "starting" && status !== "running") continue;
+    const pathValue = bindings[threadId] || index[threadId]?.cwd;
+    if (!pathValue) continue;
+    const path = normalizedPath(pathValue);
     counts[path] = (counts[path] ?? 0) + 1;
   }
   return counts;

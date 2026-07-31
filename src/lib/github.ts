@@ -83,6 +83,12 @@ export function gitPushCommand(status: GitHubRepoStatus | null): string[] | null
     : ["git", "push", "--set-upstream", "origin", status.branch];
 }
 
+export function gitPushCompletionNote(statusPorcelain: string): string {
+  const remaining = statusPorcelain.split(/\r?\n/).filter((line) => line.trim()).length;
+  if (!remaining) return "Push succeeded. This branch's committed changes are on GitHub.";
+  return `Push succeeded, but ${remaining} uncommitted entr${remaining === 1 ? "y remains" : "ies remain"} local. Stage and commit before pushing again.`;
+}
+
 export function githubCliCommand(
   binary: string,
   action: Extract<GitWorkspaceAction, "comments" | "ci" | "pr">,

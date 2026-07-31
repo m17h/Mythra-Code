@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Thread } from "../types";
 import {
-  countSidebarThreadsByWorkspace,
+  countActiveThreadsByWorkspace,
   filterThreadsForWorkspace,
   forgetSidebarThread,
   optimisticStartedThread,
@@ -62,7 +62,7 @@ describe("thread sidebar list", () => {
     expect(filterThreadsForWorkspace([alpha, beta], "/projects/beta", {})).toEqual([beta]);
   });
 
-  it("uses the persisted project binding for worktrees and project counts", () => {
+  it("uses working statuses and persisted bindings for project counts", () => {
     const shared = makeThread("shared", { cwd: "/projects/alpha" });
     const isolated = makeThread("isolated", { cwd: "/managed/worktrees/isolated" });
     const beta = makeThread("beta", { cwd: "/projects/beta" });
@@ -71,9 +71,19 @@ describe("thread sidebar list", () => {
 
     expect(filterThreadsForWorkspace(Object.values(index), "/projects/alpha", bindings))
       .toEqual([shared, isolated]);
-    expect(countSidebarThreadsByWorkspace(index, bindings)).toEqual({
-      "/projects/alpha": 2,
+    expect(countActiveThreadsByWorkspace(index, bindings, {
+      shared: "completed",
+      isolated: "running",
+      beta: "starting",
+    })).toEqual({
+      "/projects/alpha": 1,
       "/projects/beta": 1,
+    });
+  });
+
+  it("counts a newly starting task before its sidebar metadata arrives", () => {
+    expect(countActiveThreadsByWorkspace({}, { draft: "/projects/alpha" }, { draft: "starting" })).toEqual({
+      "/projects/alpha": 1,
     });
   });
 });

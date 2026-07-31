@@ -71,6 +71,7 @@ function deferred<T>(): Deferred<T> {
 let pendingResume: Deferred<{ thread: Thread }>;
 let resumeImpl: (params: Record<string, unknown>) => unknown;
 let turnStartImpl: (params: Record<string, unknown>) => unknown;
+let commandExecImpl: (params: Record<string, unknown>) => unknown;
 let workspaceGitInfoImpl: () => unknown;
 let workspaceGitInitializeImpl: () => unknown;
 
@@ -95,6 +96,31 @@ function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
       email: null,
       subscriptionType: null,
       warning: null,
+    };
+  }
+  if (command === "github_status") {
+    return {
+      available: true,
+      authenticated: true,
+      path: "/opt/homebrew/bin/gh",
+      version: "gh version test",
+      login: "test-user",
+      name: "Test User",
+      email: null,
+      avatarUrl: null,
+      profileUrl: null,
+      error: null,
+    };
+  }
+  if (command === "github_repo_status") {
+    return {
+      isRepo: true,
+      remoteUrl: "https://github.com/test-user/alpha.git",
+      repository: "test-user/alpha",
+      branch: "main",
+      upstream: "origin/main",
+      ahead: 0,
+      behind: 0,
     };
   }
   if (command === "state_read") return null;
@@ -185,6 +211,7 @@ function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
         },
       };
     }
+    if (method === "command/exec") return commandExecImpl(params);
     if (method === "thread/read") {
       return { thread: { ...THREAD_A, id: String(params.threadId), turns: [] } };
     }
@@ -215,6 +242,7 @@ beforeEach(() => {
   pendingResume = deferred<{ thread: Thread }>();
   resumeImpl = () => pendingResume.promise;
   turnStartImpl = (params) => ({ turn: { id: `turn-${String(params.threadId)}` } });
+  commandExecImpl = () => ({ exitCode: 0, stdout: "", stderr: "" });
   workspaceGitInfoImpl = () => ({ isRepo: true, isRoot: true, hasCommit: true, branch: "main", head: "head" });
   workspaceGitInitializeImpl = () => ({
     info: { isRepo: true, isRoot: true, hasCommit: true, branch: "main", head: "new-head" },
@@ -312,11 +340,47 @@ describe("workspace switching during thread selection", () => {
     expect(JSON.parse(localStorage.getItem("kiwi.sidebarSplitRatio") ?? "0")).toBeCloseTo(2 / 3);
   });
 
-  it("shows the active thread count beside each project", async () => {
+  it("shows only actively working thread counts beside projects", async () => {
+    await renderApp();
+    const { useTaskStore } = await import("./lib/taskStore");
+
+    expect(screen.queryByText("0", { selector: ".workspace-thread-count" })).not.toBeInTheDocument();
+    act(() => {
+      useTaskStore.getState().ensureTask(THREAD_A.id, PROJECT_A.path);
+      useTaskStore.getState().ensureTask(THREAD_B.id, PROJECT_A.path);
+      useTaskStore.getState().setTaskStatus(THREAD_A.id, "running");
+      useTaskStore.getState().setTaskStatus(THREAD_B.id, "completed");
+    });
+
+    expect(await screen.findByRole("button", { name: `${PROJECT_A.name}, 1 thread working` })).toBeInTheDocument();
+    expect(screen.queryAllByText("1", { selector: ".workspace-thread-count" })).toHaveLength(1);
+  });
+
+  it("shows a successful push immediately, then explains uncommitted entries", async () => {
+    const user = userEvent.setup();
+    const pendingStatus = deferred<{ exitCode: number; stdout: string; stderr: string }>();
+    commandExecImpl = (params) => {
+      const command = params.command as string[];
+      if (command.join(" ") === "git push") {
+        return { exitCode: 0, stdout: "", stderr: "Everything up-to-date\n" };
+      }
+      if (command.join(" ") === "git status --porcelain -uall") return pendingStatus.promise;
+      return { exitCode: 0, stdout: "", stderr: "" };
+    };
     await renderApp();
 
-    expect(await screen.findByLabelText("2 active threads")).toBeInTheDocument();
-    expect(screen.getByLabelText("0 active threads")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
+    await user.click(await screen.findByRole("button", { name: "Git workspace tool" }));
+    await user.click(await screen.findByRole("button", { name: "Push commits" }));
+
+    expect(await screen.findByText(/Everything up-to-date/)).toBeInTheDocument();
+    expect(screen.queryByText(/uncommitted entr/)).not.toBeInTheDocument();
+
+    await act(async () => {
+      pendingStatus.resolve({ exitCode: 0, stdout: " M src/App.tsx\n?? src/new.ts\n", stderr: "" });
+      await pendingStatus.promise;
+    });
+    expect(await screen.findByText(/2 uncommitted entries remain local/)).toBeInTheDocument();
   });
 
   it("does not install a thread whose resume settles after switching workspaces", async () => {

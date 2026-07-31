@@ -129,7 +129,7 @@ describe("StudioDock", () => {
   });
 
   it("uses current context pressure instead of cumulative thread history", () => {
-    render(
+    const { container } = render(
       <StudioDock
         {...dockProps(true)}
         tab="usage"
@@ -147,6 +147,10 @@ describe("StudioDock", () => {
 
     expect(screen.getByText(/10% of context/)).toBeInTheDocument();
     expect(screen.queryByText(/Compact before the limit/)).not.toBeInTheDocument();
+    const metrics = container.querySelector(".usage-token-metrics");
+    expect(metrics).toBeInTheDocument();
+    expect(metrics?.lastElementChild).toHaveClass("usage-reasoning-metric");
+    expect(metrics?.lastElementChild).toHaveTextContent("Reasoning");
   });
 
   it("offers reversible full-state actions for an automatic checkpoint", () => {
@@ -275,7 +279,7 @@ describe("StudioDock", () => {
     expect(screen.getByRole("button", { name: "Diff" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Stage all" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Stage" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Push" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Push commits" })).toBeDisabled();
     expect(screen.getByText(/Read only allows Status and Diff/)).toBeInTheDocument();
   });
 });

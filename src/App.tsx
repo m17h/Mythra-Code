@@ -13,7 +13,7 @@ import { DEFAULT_CLAUDE_MODEL, DEFAULT_OPENAI_MODEL, DEFAULT_PROMPT_PROFILES, DE
 import { commandSandbox, threadResumeParams, threadRuntimeConfig, threadStartParams, turnStartParams } from "./lib/turnConfig";
 import { threadSearchParams, threadsForWorkspace, type ThreadSearchResponse } from "./lib/threadSearch";
 import { buildTurnInput, withoutSentAttachments } from "./lib/turnInput";
-import { countSidebarThreadsByWorkspace, filterThreadsForWorkspace, forgetSidebarThread, optimisticStartedThread, pruneSidebarIndex, reconcileWorkspaceThreads, rememberSidebarThread, sidebarThread, threadBelongsToWorkspace, upsertThread, type ThreadSidebarIndex } from "./lib/threadList";
+import { countActiveThreadsByWorkspace, filterThreadsForWorkspace, forgetSidebarThread, optimisticStartedThread, pruneSidebarIndex, reconcileWorkspaceThreads, rememberSidebarThread, sidebarThread, threadBelongsToWorkspace, upsertThread, type ThreadSidebarIndex } from "./lib/threadList";
 import { timelineFromTurns } from "./lib/threadTimeline";
 import { buildTranscriptMarkdown } from "./lib/transcript";
 import { RowMenu } from "./components/RowMenu";
@@ -53,6 +53,7 @@ import {
   getGitHubStatus,
   gitActionUnavailableReason,
   githubCliCommand,
+  gitPushCompletionNote,
   gitPushCommand,
   startGitHubLogin,
   type GitWorkspaceAction,
@@ -333,6 +334,7 @@ export default function App() {
   const agentRecords = useTaskStore((state) => (activeThreadId ? (state.tasks[activeThreadId]?.agents ?? EMPTY_AGENTS) : EMPTY_AGENTS));
   const tokenUsage = useTaskStore((state) => (activeThreadId ? (state.tasks[activeThreadId]?.usage ?? null) : null));
   const taskStatus = useTaskStore((state) => (activeThreadId ? (state.statuses[activeThreadId] ?? "idle") : "idle"));
+  const threadTaskStatuses = useTaskStore((state) => state.statuses);
   const running = activeThreadId ? taskStatus === "starting" || taskStatus === "running" : startingDraftTurn;
   // Standard approvals for the thread being viewed render inline in its
   // timeline; the modal is reserved for background threads and for complex
@@ -361,7 +363,11 @@ export default function App() {
     return count;
   });
   const threadProjectBindings = threadProjectBindingsRef.current ?? {};
-  const projectThreadCounts = countSidebarThreadsByWorkspace(knownThreadsRef.current ?? {}, threadProjectBindings);
+  const projectThreadCounts = countActiveThreadsByWorkspace(
+    knownThreadsRef.current ?? {},
+    threadProjectBindings,
+    threadTaskStatuses,
+  );
   const displayedThreads = useMemo(() => {
     if (!activeWorkspace) return [];
     const query = threadSearch.trim().toLowerCase();
@@ -3089,6 +3095,21 @@ export default function App() {
     const commandPath = activeExecutionPath || activeProject.path;
     const gitRoots = activeThreadWorktree?.gitDir ? [activeThreadWorktree.gitDir] : [];
     const pushCommand = gitPushCommand(githubRepoStatus);
+    const pushCompletionNote = async () => {
+      try {
+        const remaining = await executeCommand(["git", "status", "--porcelain", "-uall"], commandPath, gitRoots);
+        return remaining.exitCode === 0 ? gitPushCompletionNote(remaining.stdout) : "";
+      } catch {
+        return "";
+      }
+    };
+    const showPushOutput = (output: string) => {
+      setGitOutput(output);
+      void pushCompletionNote().then((note) => {
+        if (!note) return;
+        setGitOutput((current) => current === output ? `${output}\n\n${note}` : current);
+      });
+    };
     if (action === "commitPush") {
       if (!pushCommand) {
         setGitOutput("Check out a named branch before committing and pushing to GitHub.");
@@ -3102,7 +3123,9 @@ export default function App() {
           return;
         }
         const push = await executeCommand(pushCommand, commandPath, gitRoots);
-        setGitOutput(`$ ${commitCommand.join(" ")}\n${commit.stdout}${commit.stderr}\n[exit ${commit.exitCode}]\n\n$ ${pushCommand.join(" ")}\n${push.stdout}${push.stderr}\n[exit ${push.exitCode}]`);
+        const output = `$ ${commitCommand.join(" ")}\n${commit.stdout}${commit.stderr}\n[exit ${commit.exitCode}]\n\n$ ${pushCommand.join(" ")}\n${push.stdout}${push.stderr}\n[exit ${push.exitCode}]`;
+        if (push.exitCode === 0) showPushOutput(output);
+        else setGitOutput(output);
         setGitCommitMessage("");
         if (push.exitCode === 0) void refreshGitHubRepo(commandPath);
       } catch (reason) {
@@ -3135,7 +3158,11 @@ export default function App() {
     try {
       const result = await executeCommand(command, commandPath, gitRoots);
       const combined = `${result.stdout}${result.stderr || ""}`;
-      setGitOutput(combined.includes("not a git repository") ? "This project folder is not a Git repository yet. Initialize Git from the terminal to enable these workflows." : `$ ${command.join(" ")}\n${combined}\n[exit ${result.exitCode}]`);
+      const output = combined.includes("not a git repository")
+        ? "This project folder is not a Git repository yet. Initialize Git from the terminal to enable these workflows."
+        : `$ ${command.join(" ")}\n${combined}\n[exit ${result.exitCode}]`;
+      if (action === "push" && result.exitCode === 0) showPushOutput(output);
+      else setGitOutput(output);
       if (action === "diff" && activeThreadId) useTaskStore.getState().setDiff(activeThreadId, result.stdout);
       if (action === "commit" && result.exitCode === 0) setGitCommitMessage("");
       if (result.exitCode === 0) void refreshGitHubRepo(commandPath);
@@ -3501,8 +3528,10 @@ export default function App() {
               </span>
               <span className="workspace-name">Chats</span>
             </button>
-            {projects.map((project) => (
-              <div
+            {projects.map((project) => {
+              const workingCount = projectThreadCounts[normalizedProjectPath(project.path)] ?? 0;
+              const workingLabel = `${workingCount} thread${workingCount === 1 ? "" : "s"} working`;
+              return <div
                 key={project.id}
                 className={[
                   "workspace-row-wrap",
@@ -3515,7 +3544,7 @@ export default function App() {
               >
                 <button
                   className="workspace-row"
-                  aria-label={project.name}
+                  aria-label={workingCount > 0 ? `${project.name}, ${workingLabel}` : project.name}
                   onClick={(event) => {
                     if (suppressProjectClickRef.current) {
                       event.preventDefault();
@@ -3529,13 +3558,15 @@ export default function App() {
                 >
                   <span className="workspace-icon">{project.pinned ? <Pin size={13} /> : <Folder size={14} />}</span>
                   <span className="workspace-name">{project.name}</span>
-                  <span
-                    className="workspace-thread-count"
-                    title={`${projectThreadCounts[normalizedProjectPath(project.path)] ?? 0} active thread${(projectThreadCounts[normalizedProjectPath(project.path)] ?? 0) === 1 ? "" : "s"}`}
-                    aria-label={`${projectThreadCounts[normalizedProjectPath(project.path)] ?? 0} active thread${(projectThreadCounts[normalizedProjectPath(project.path)] ?? 0) === 1 ? "" : "s"}`}
-                  >
-                    {projectThreadCounts[normalizedProjectPath(project.path)] ?? 0}
-                  </span>
+                  {workingCount > 0 && (
+                    <span
+                      className="workspace-thread-count"
+                      title={workingLabel}
+                      aria-hidden="true"
+                    >
+                      {workingCount}
+                    </span>
+                  )}
                 </button>
                 <RowMenu
                   label={`Options for ${project.name}`}
@@ -3546,8 +3577,8 @@ export default function App() {
                     { label: "Remove from OpenKiwi", icon: <Trash2 size={13} />, danger: true, onSelect: () => removeProject(project) },
                   ]}
                 />
-              </div>
-            ))}
+              </div>;
+            })}
             {!projects.length && (
               <button className="empty-project-button" onClick={addProject}>
                 <FolderOpen size={17} />
