@@ -1,7 +1,7 @@
 import type { ReasoningEffort } from "./components/ModelPowerControl";
 import type { JsonObject } from "./lib/codex";
 
-export type Provider = "openai" | "openrouter" | "claude";
+export type Provider = "openai" | "openrouter" | "claude" | "cursor";
 export type OpenAILogoStyle = "openai" | "codex";
 export type ClaudeLogoStyle = "claude" | "anthropic";
 export type PermissionMode = "read-only" | "ask" | "full";

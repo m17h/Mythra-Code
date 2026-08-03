@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_CLAUDE_MODEL, DEFAULT_OPENAI_MODEL } from "./appConfig";
+import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_OPENAI_MODEL } from "./appConfig";
 import { modelForProvider, providerFromThread } from "./threadProvider";
 
 describe("thread provider resolution", () => {
   it("uses the provider recorded on an existing thread", () => {
     expect(providerFromThread({ modelProvider: "claude" }, "openai")).toBe("claude");
     expect(providerFromThread({ modelProvider: "openrouter" }, "openai")).toBe("openrouter");
+    expect(providerFromThread({ modelProvider: "cursor" }, "openai")).toBe("cursor");
   });
 
   it("falls back safely when an older thread has no recognized provider", () => {
@@ -18,5 +19,7 @@ describe("thread provider resolution", () => {
     expect(modelForProvider("openai", "anthropic/claude-sonnet")).toBe(DEFAULT_OPENAI_MODEL);
     expect(modelForProvider("openrouter", "gpt-5.6-sol")).toBe("");
     expect(modelForProvider("openrouter", "anthropic/claude-sonnet")).toBe("anthropic/claude-sonnet");
+    expect(modelForProvider("cursor", "")).toBe(DEFAULT_CURSOR_MODEL);
+    expect(modelForProvider("cursor", "cursor-grok-4.5")).toBe("cursor-grok-4.5");
   });
 });

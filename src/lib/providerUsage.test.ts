@@ -12,6 +12,16 @@ const connectedClaude = {
   warning: null,
 };
 
+const connectedCursor = {
+  available: true,
+  path: "/bin/cursor-agent",
+  version: "2026.07.23",
+  loggedIn: true,
+  email: "person@example.com",
+  subscriptionType: "Pro",
+  warning: null,
+};
+
 describe("provider account usage", () => {
   it("shows OpenAI rate limits only for OpenAI", () => {
     expect(providerAccountUsage("openai", {
@@ -54,5 +64,19 @@ describe("provider account usage", () => {
       label: "OpenRouter usage",
       summary: "Pay as you go · tracked spend appears below",
     });
+  });
+
+  it("shows the connected Cursor subscription without OpenAI limits", () => {
+    const view = providerAccountUsage("cursor", {
+      openAiRateSummary: "42% used",
+      claudeStatus: connectedClaude,
+      cursorStatus: connectedCursor,
+      openRouterReady: true,
+    });
+    expect(view).toEqual({
+      label: "Cursor subscription",
+      summary: "Pro connected · live usage and limits are managed by Cursor",
+    });
+    expect(view.summary).not.toContain("42%");
   });
 });

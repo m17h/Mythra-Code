@@ -13,6 +13,19 @@ function ApprovalButtons({ onDecision, allowSession = true, autoFocusDeny = true
 
 /** Maps a button decision onto the wire format each approval method expects. */
 export function approvalResponse(approval: PendingApproval, decision: Decision): JsonObject {
+  if (approval.method === "cursor/request_permission") {
+    const options = Array.isArray(approval.params.options) ? approval.params.options as JsonObject[] : [];
+    const desired = decision === "decline"
+      ? ["reject_once", "reject_always"]
+      : decision === "acceptForSession"
+        ? ["allow_always", "allow_once"]
+        : ["allow_once", "allow_always"];
+    const selected = desired.map((kind) => options.find((option) => option.kind === kind)).find(Boolean) ?? options[0];
+    const optionId = selected?.optionId;
+    return optionId === undefined
+      ? { outcome: { outcome: "cancelled" } }
+      : { outcome: { outcome: "selected", optionId } };
+  }
   if (approval.method === "claude/can_use_tool") {
     if (decision === "decline") {
       return { behavior: "deny", message: "The user denied this action." };
@@ -128,7 +141,7 @@ function Modal({ title, description, threadLabel, pendingCount, children }: { ti
 
 export function ApprovalCenter({ approval, threadLabel, pendingCount, onRespond }: { approval: PendingApproval; threadLabel?: string; pendingCount?: number; onRespond: (value: JsonObject) => void }) {
   const context = { threadLabel, pendingCount };
-  if (approval.method === "item/tool/requestUserInput") return <UserInputRequest approval={approval} onRespond={onRespond} {...context} />;
+  if (approval.method === "item/tool/requestUserInput" || approval.method === "cursor/ask_question") return <UserInputRequest approval={approval} onRespond={onRespond} {...context} />;
   if (approval.method === "mcpServer/elicitation/request") return <McpRequest approval={approval} onRespond={onRespond} {...context} />;
   return <StandardApproval approval={approval} onRespond={onRespond} {...context} />;
 }

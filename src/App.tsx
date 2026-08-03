@@ -8,8 +8,9 @@ import { isPermissionGranted, requestPermission, sendNotification } from "@tauri
 import { Archive, ArchiveRestore, Bot, Check, ChevronDown, Circle, Code2, Command, Download, FileCode2, Folder, FolderOpen, GitBranch, LoaderCircle, MessageSquare, Paperclip, PanelRight, PanelLeftClose, PanelLeftOpen, Plus, Pin, PinOff, Pencil, Search, Settings, Shield, ShieldAlert, ShieldCheck, TerminalSquare, Trash2, UsersRound, X } from "lucide-react";
 import { getCodexRuntimeStatus, auditEvent, exportTextFile, getNormalChatWorkspace, hasOpenRouterKey, listOpenRouterModels, respond, restartRuntime, rpc, type CodexRuntimeStatus, type JsonObject } from "./lib/codex";
 import { deleteClaudeTranscript, getClaudeRuntimeStatus, interruptClaudeTurn, isClaudeThreadBusyError, killClaudeTurn, loadClaudeTranscript, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, startClaudeTurn, steerClaudeTurn, type ClaudeRuntimeStatus } from "./lib/claude";
+import { deleteCursorTranscript, getCursorRuntimeStatus, interruptCursorTurn, killCursorTurn, listCursorModels, loadCursorTranscript, respondToCursorPermission, saveCursorTranscript, startCursorLogin, startCursorTurn, steerCursorTurn, type CursorModel, type CursorRuntimeStatus } from "./lib/cursor";
 import { loadStored, storeValue } from "./lib/storage";
-import { DEFAULT_CLAUDE_MODEL, DEFAULT_OPENAI_MODEL, DEFAULT_PROMPT_PROFILES, DEFAULT_SETTINGS, THEMES } from "./lib/appConfig";
+import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_OPENAI_MODEL, DEFAULT_PROMPT_PROFILES, DEFAULT_SETTINGS, THEMES } from "./lib/appConfig";
 import { commandSandbox, threadResumeParams, threadRuntimeConfig, threadStartParams, turnStartParams } from "./lib/turnConfig";
 import { threadSearchParams, threadsForWorkspace, type ThreadSearchResponse } from "./lib/threadSearch";
 import { buildTurnInput, withoutSentAttachments } from "./lib/turnInput";
@@ -20,6 +21,7 @@ import { RowMenu } from "./components/RowMenu";
 import { type ReasoningEffort, ModelPowerControl, type RuntimeModel } from "./components/ModelPowerControl";
 import { OpenRouterModelControl, type OpenRouterModel } from "./components/OpenRouterModelControl";
 import { ClaudeModelControl } from "./components/ClaudeModelControl";
+import { CursorModelControl } from "./components/CursorModelControl";
 import { ThreadProviderControl } from "./components/ThreadProviderControl";
 import { ThreadInboxCard } from "./components/ThreadInboxCard";
 import { ProjectPromptControl } from "./components/ProjectPromptControl";
@@ -63,6 +65,7 @@ import {
 import { useAppUpdater } from "./lib/appUpdater";
 import { useCodexEvents } from "./hooks/useCodexEvents";
 import { useClaudeEvents } from "./hooks/useClaudeEvents";
+import { useCursorEvents } from "./hooks/useCursorEvents";
 import { useScheduler } from "./hooks/useScheduler";
 import { useTerminal } from "./hooks/useTerminal";
 import { usePaneResize } from "./hooks/usePaneResize";
@@ -121,7 +124,7 @@ const initialOnboardingVersion = loadStored<number>("kiwi.onboardingVersion", 0)
 const establishedInstall = isEstablishedOpenKiwiInstall({ projects: initialProjects.length, knownThreads: Object.keys(initialKnownThreads).length, hasStoredSettings: localStorage.getItem("kiwi.settings") !== null, hasSkillsFolder: Boolean(loadStored<string>("kiwi.skillsFolder", "")) });
 const initialOnboardingOpen = initialOnboardingVersion < ONBOARDING_VERSION && !establishedInstall;
 const storedSettings = loadStored<Partial<AppSettings>>("kiwi.settings", {});
-const initialSettings: AppSettings = { ...DEFAULT_SETTINGS, ...storedSettings, openAiLogo: storedSettings.openAiLogo === "codex" ? "codex" : "openai", claudeLogo: storedSettings.claudeLogo === "anthropic" ? "anthropic" : "claude", subagentMax: Math.min(24, Math.max(1, Number(storedSettings.subagentMax) || DEFAULT_SETTINGS.subagentMax)), model: storedSettings.provider === "openrouter" ? ((storedSettings.model || "").includes("/") ? storedSettings.model! : "") : storedSettings.provider === "claude" ? ((storedSettings.model || "").startsWith("claude-") ? storedSettings.model! : DEFAULT_CLAUDE_MODEL) : storedSettings.model || DEFAULT_SETTINGS.model, theme: THEMES.some((theme) => theme.id === storedSettings.theme) ? storedSettings.theme! : DEFAULT_SETTINGS.theme, uiScale: Math.min(150, Math.max(80, Number(storedSettings.uiScale) || DEFAULT_SETTINGS.uiScale)) };
+const initialSettings: AppSettings = { ...DEFAULT_SETTINGS, ...storedSettings, openAiLogo: storedSettings.openAiLogo === "codex" ? "codex" : "openai", claudeLogo: storedSettings.claudeLogo === "anthropic" ? "anthropic" : "claude", subagentMax: Math.min(24, Math.max(1, Number(storedSettings.subagentMax) || DEFAULT_SETTINGS.subagentMax)), model: modelForProvider(storedSettings.provider ?? DEFAULT_SETTINGS.provider, storedSettings.model ?? DEFAULT_SETTINGS.model), theme: THEMES.some((theme) => theme.id === storedSettings.theme) ? storedSettings.theme! : DEFAULT_SETTINGS.theme, uiScale: Math.min(150, Math.max(80, Number(storedSettings.uiScale) || DEFAULT_SETTINGS.uiScale)) };
 
 function basename(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
@@ -141,11 +144,20 @@ function permissionLabel(mode: PermissionMode): string {
 function providerLabel(provider: AppSettings["provider"]): string {
   if (provider === "openrouter") return "OpenRouter";
   if (provider === "claude") return "Claude";
+  if (provider === "cursor") return "Cursor";
   return "OpenAI";
 }
 
 function isClaudeThread(thread: Thread | null | undefined): boolean {
   return thread?.modelProvider?.toLowerCase() === "claude";
+}
+
+function isCursorThread(thread: Thread | null | undefined): boolean {
+  return thread?.modelProvider?.toLowerCase() === "cursor";
+}
+
+function isLocalSubscriptionThread(thread: Thread | null | undefined): boolean {
+  return isClaudeThread(thread) || isCursorThread(thread);
 }
 
 function PermissionIcon({ mode, size = 15 }: { mode: PermissionMode; size?: number }) {
@@ -230,6 +242,10 @@ export default function App() {
   const [runtimeStatus, setRuntimeStatus] = useState<CodexRuntimeStatus | null>(null);
   const [claudeStatus, setClaudeStatus] = useState<ClaudeRuntimeStatus | null>(null);
   const [claudeLoginStarting, setClaudeLoginStarting] = useState(false);
+  const [cursorStatus, setCursorStatus] = useState<CursorRuntimeStatus | null>(null);
+  const [cursorLoginStarting, setCursorLoginStarting] = useState(false);
+  const [cursorModels, setCursorModels] = useState<CursorModel[]>([]);
+  const [cursorModelsLoading, setCursorModelsLoading] = useState(false);
   const [runtimeSetupOpen, setRuntimeSetupOpen] = useState(false);
   const [runtimeChecking, setRuntimeChecking] = useState(false);
   const [authRequiredOpen, setAuthRequiredOpen] = useState(false);
@@ -279,6 +295,8 @@ export default function App() {
   const threadSearchRequestRef = useRef(0);
   const pendingTurnStartsRef = useRef(new PendingTurnStarts());
   const claudeSaveTimersRef = useRef(new Map<string, number>());
+  const cursorSaveTimersRef = useRef(new Map<string, number>());
+  const cursorSessionIdsRef = useRef<Record<string, string>>({});
   const permissionControlRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     storeValue("kiwi.workflows", workflows);
@@ -343,7 +361,7 @@ export default function App() {
     if (!state.activeThreadId) return null;
     const candidate = state.tasks[state.activeThreadId]?.approvals[0] ?? null;
     if (!candidate) return null;
-    if (candidate.method === "item/tool/requestUserInput" || candidate.method === "mcpServer/elicitation/request") return null;
+    if (candidate.method === "item/tool/requestUserInput" || candidate.method === "cursor/ask_question" || candidate.method === "mcpServer/elicitation/request") return null;
     return candidate;
   });
   const pendingApproval = useTaskStore((state) => {
@@ -351,7 +369,7 @@ export default function App() {
     for (const task of Object.values(state.tasks)) {
       const candidate = task.approvals[0];
       if (!candidate) continue;
-      const handledInline = candidate.threadId === state.activeThreadId && candidate.method !== "item/tool/requestUserInput" && candidate.method !== "mcpServer/elicitation/request";
+      const handledInline = candidate.threadId === state.activeThreadId && candidate.method !== "item/tool/requestUserInput" && candidate.method !== "cursor/ask_question" && candidate.method !== "mcpServer/elicitation/request";
       if (handledInline) continue;
       if (!earliest || candidate.receivedAt < earliest.receivedAt) earliest = candidate;
     }
@@ -451,9 +469,10 @@ export default function App() {
     return providerAccountUsage(effectiveSettings.provider, {
       openAiRateSummary: rateSummary,
       claudeStatus,
+      cursorStatus,
       openRouterReady,
     });
-  }, [claudeStatus, effectiveSettings.provider, openRouterReady, rateSummary]);
+  }, [claudeStatus, cursorStatus, effectiveSettings.provider, openRouterReady, rateSummary]);
 
   // Only offer "Check settings" for failures settings can actually fix.
   const errorSuggestsSettings = useMemo(() => Boolean(error) && /sign in|api key|openrouter|claude|model|settings|runtime|codex|account/i.test(error ?? ""), [error]);
@@ -1001,10 +1020,40 @@ export default function App() {
     [persistClaudeThread],
   );
 
+  const persistCursorThread = useCallback(
+    (threadId: string) => {
+      const task = useTaskStore.getState().tasks[threadId];
+      const thread = activeThread?.id === threadId ? activeThread : (threads.find((entry) => entry.id === threadId) ?? knownThreadsRef.current?.[threadId]);
+      if (!task || !thread || !isCursorThread(thread)) return Promise.resolve();
+      return saveCursorTranscript({
+        thread,
+        cursorSessionId: cursorSessionIdsRef.current[threadId] ?? "",
+        messages: task.messages.map((message) => ({ ...message, streaming: false })),
+        activities: task.activities,
+      });
+    },
+    [activeThread, threads],
+  );
+
+  const scheduleCursorThreadSave = useCallback(
+    (threadId: string) => {
+      const existing = cursorSaveTimersRef.current.get(threadId);
+      if (existing !== undefined) window.clearTimeout(existing);
+      const timer = window.setTimeout(() => {
+        cursorSaveTimersRef.current.delete(threadId);
+        void persistCursorThread(threadId).catch(() => {});
+      }, 250);
+      cursorSaveTimersRef.current.set(threadId, timer);
+    },
+    [persistCursorThread],
+  );
+
   useEffect(
     () => () => {
       for (const timer of claudeSaveTimersRef.current.values()) window.clearTimeout(timer);
       claudeSaveTimersRef.current.clear();
+      for (const timer of cursorSaveTimersRef.current.values()) window.clearTimeout(timer);
+      cursorSaveTimersRef.current.clear();
     },
     [],
   );
@@ -1045,6 +1094,35 @@ export default function App() {
       return result;
     }
   }, []);
+
+  const refreshCursorStatus = useCallback(async () => {
+    try {
+      const result = await getCursorRuntimeStatus();
+      const normalized = result ?? { available: false, path: null, version: null, loggedIn: false, email: null, subscriptionType: null, warning: null };
+      setCursorStatus(normalized);
+      return normalized;
+    } catch (reason) {
+      const result: CursorRuntimeStatus = { available: false, path: null, version: null, loggedIn: false, email: null, subscriptionType: null, warning: null };
+      setCursorStatus(result);
+      setError(friendlyError(reason));
+      return result;
+    }
+  }, []);
+
+  const refreshCursorModels = useCallback(async () => {
+    setCursorModelsLoading(true);
+    try {
+      const models = await listCursorModels() ?? [];
+      setCursorModels(models);
+      return models;
+    } catch (reason) {
+      setCursorModels([]);
+      if (cursorStatus?.loggedIn) setError(friendlyError(reason));
+      return [];
+    } finally {
+      setCursorModelsLoading(false);
+    }
+  }, [cursorStatus?.loggedIn]);
 
   const loadThreadsRequestRef = useRef(0);
   const loadThreads = useCallback(
@@ -1407,6 +1485,51 @@ export default function App() {
     },
   });
 
+  useCursorEvents({
+    bindingFor: (threadId) => {
+      const logicalPath = threadProjectBindingsRef.current?.[threadId];
+      return logicalPath ? executionPathFor(threadId, logicalPath) : undefined;
+    },
+    onStatus: setStatus,
+    onError: setError,
+    onTranscriptChanged: scheduleCursorThreadSave,
+    onApprovalRequested: (threadId) => {
+      if (!settings.notificationsEnabled || useTaskStore.getState().activeThreadId === threadId) return;
+      const thread = threads.find((entry) => entry.id === threadId) ?? knownThreadsRef.current?.[threadId];
+      void (async () => {
+        let granted = await isPermissionGranted();
+        if (!granted) granted = (await requestPermission()) === "granted";
+        if (granted) sendNotification({ title: "OpenKiwi needs your approval", body: `“${thread?.name || thread?.preview || "A Cursor task"}” is waiting for permission to continue.` });
+      })().catch(() => {});
+    },
+    onTurnCompleted: (threadId) => {
+      void finalizeRunCheckpoint(threadId);
+      const timer = cursorSaveTimersRef.current.get(threadId);
+      if (timer !== undefined) window.clearTimeout(timer);
+      cursorSaveTimersRef.current.delete(threadId);
+      const task = useTaskStore.getState().tasks[threadId];
+      const known = knownThreadsRef.current?.[threadId];
+      if (known) {
+        const latestUser = [...(task?.messages ?? [])].reverse().find((message) => message.role === "user")?.text;
+        const updated = { ...known, preview: latestUser?.slice(0, 140) || known.preview, updatedAt: Math.floor(Date.now() / 1000) };
+        rememberThread(updated);
+        if (activeWorkspace && threadBelongsToWorkspace(updated, activeWorkspace.path, threadProjectBindingsRef.current ?? {})) {
+          setThreads((current) => upsertThread(current, updated));
+        }
+        void saveCursorTranscript({ thread: updated, cursorSessionId: cursorSessionIdsRef.current[threadId] ?? "", messages: (task?.messages ?? []).map((message) => ({ ...message, streaming: false })), activities: task?.activities ?? [] }).catch(() => {});
+      }
+      if (settings.notificationsEnabled && useTaskStore.getState().activeThreadId !== threadId) {
+        void (async () => {
+          let granted = await isPermissionGranted();
+          if (!granted) granted = (await requestPermission()) === "granted";
+          if (granted) sendNotification({ title: "OpenKiwi task complete", body: `“${known?.name || known?.preview || "Cursor task"}” finished.` });
+        })().catch(() => {});
+      }
+      const projectPath = threadProjectBindingsRef.current?.[threadId];
+      if (projectPath && !projectPath.includes("normal-chats")) void refreshDiffFor(threadId, executionPathFor(threadId, projectPath));
+    },
+  });
+
   useEffect(() => {
     void getNormalChatWorkspace()
       .then(setChatWorkspacePath)
@@ -1414,18 +1537,21 @@ export default function App() {
     if (!initialOnboardingOpen && initialOnboardingVersion < ONBOARDING_VERSION) {
       storeValue("kiwi.onboardingVersion", ONBOARDING_VERSION);
     }
-    void checkRuntime(!initialOnboardingOpen && initialSettings.provider !== "claude").then((runtime) => {
+    void checkRuntime(!initialOnboardingOpen && initialSettings.provider !== "claude" && initialSettings.provider !== "cursor").then((runtime) => {
       if (!runtime.available) return;
       void refreshAccount();
       void refreshModels();
       void refreshUsage();
     });
     void refreshClaudeStatus();
+    void refreshCursorStatus().then((next) => {
+      if (next.loggedIn) void refreshCursorModels();
+    });
     void refreshOpenRouterModels();
     void hasOpenRouterKey()
       .then(setOpenRouterReady)
       .catch(() => setOpenRouterReady(false));
-  }, [checkRuntime, refreshAccount, refreshClaudeStatus, refreshModels, refreshOpenRouterModels, refreshUsage]);
+  }, [checkRuntime, refreshAccount, refreshClaudeStatus, refreshCursorModels, refreshCursorStatus, refreshModels, refreshOpenRouterModels, refreshUsage]);
 
   const shortcutStateRef = useRef({ running: false, modalOpen: false, threadOpen: false, stopTurn: () => {}, newThread: () => {} });
   useEffect(() => {
@@ -1474,7 +1600,7 @@ export default function App() {
   const workspaceEffectRef = useRef<{ path: string | null; available: boolean } | null>(null);
   useEffect(() => {
     const path = activeWorkspace ? normalizedProjectPath(activeWorkspace.path) : null;
-    const available = Boolean(runtimeStatus?.available || claudeStatus?.available);
+    const available = Boolean(runtimeStatus?.available || claudeStatus?.available || cursorStatus?.available);
     const previous = workspaceEffectRef.current;
     if (previous && previous.path === path && previous.available === available) return;
     workspaceEffectRef.current = { path, available };
@@ -1496,7 +1622,7 @@ export default function App() {
     setThreadSearch("");
     setSearchResults(null);
     if (!activeProject) setStudioOpen(false);
-  }, [activeProject, activeWorkspace, claudeStatus?.available, loadThreads, runtimeStatus?.available]);
+  }, [activeProject, activeWorkspace, claudeStatus?.available, cursorStatus?.available, loadThreads, runtimeStatus?.available]);
 
   // Every surfaced error also lands in the diagnostics ring buffer/audit log.
   useEffect(() => {
@@ -1533,7 +1659,7 @@ export default function App() {
         setStatus("Runtime disconnected — reconnecting");
         const store = useTaskStore.getState();
         for (const [threadId, threadStatus] of Object.entries(store.statuses)) {
-          if ((threadStatus === "running" || threadStatus === "starting") && !isClaudeThread(knownThreadsRef.current?.[threadId])) {
+          if ((threadStatus === "running" || threadStatus === "starting") && !isLocalSubscriptionThread(knownThreadsRef.current?.[threadId])) {
             store.setActiveTurn(threadId, undefined);
             store.setTaskStatus(threadId, "error", "The Codex runtime disconnected during this task.");
             void finalizeRunCheckpoint(threadId, undefined, "interrupted");
@@ -1817,6 +1943,23 @@ export default function App() {
         setStatus("Ready");
         return;
       }
+      if (isCursorThread(thread)) {
+        const transcript = await loadCursorTranscript(thread.id);
+        if (selectThreadRequestRef.current !== requestId) return;
+        const resolvedThread = transcript?.thread ?? thread;
+        if (transcript?.cursorSessionId) cursorSessionIdsRef.current[resolvedThread.id] = transcript.cursorSessionId;
+        if (!threadModels[resolvedThread.id]) {
+          const projectModel = activeProject?.overrides?.model ?? settings.model;
+          persistThreadModel(resolvedThread.id, modelForProvider("cursor", projectModel));
+        }
+        bindThreadToProject(resolvedThread.id, activeWorkspace.path);
+        rememberThread(resolvedThread);
+        setActiveThread(resolvedThread);
+        useTaskStore.getState().hydrateTask(resolvedThread.id, transcript?.messages ?? [], transcript?.activities ?? [], executionPath);
+        useTaskStore.getState().setActiveThread(resolvedThread.id);
+        setStatus("Ready");
+        return;
+      }
       const provider = providerFromThread(thread, settings.provider);
       const projectModel = activeProject?.overrides?.model ?? settings.model;
       const threadProviderSettings: AppSettings = { ...effectiveSettings, provider, model: modelForProvider(provider, threadModels[thread.id] ?? projectModel) };
@@ -1888,7 +2031,7 @@ export default function App() {
     setActiveThread(null);
     useTaskStore.getState().setActiveThread(null);
     setDraftThreadProvider(provider === settings.provider ? null : provider);
-    setDraftThreadModel(null);
+    setDraftThreadModel(provider === settings.provider ? null : modelForProvider(provider, ""));
     setDraftThreadIsolated(false);
     setError(null);
     requestAnimationFrame(() => composerRef.current?.focus());
@@ -1911,7 +2054,7 @@ export default function App() {
       setError("Isolated threads require a Git repository root with at least one commit.");
       return false;
     }
-    if (effectiveSettings.provider !== "claude" && !runtimeStatus?.available) {
+    if (effectiveSettings.provider !== "claude" && effectiveSettings.provider !== "cursor" && !runtimeStatus?.available) {
       setRuntimeSetupOpen(true);
       return false;
     }
@@ -1927,6 +2070,11 @@ export default function App() {
     if (effectiveSettings.provider === "claude" && (!claudeStatus?.available || !claudeStatus.loggedIn)) {
       openSettings("models");
       setError(claudeStatus?.available ? "Sign in to Claude Code before using your Claude subscription." : "Install Claude Code, then sign in before using the Claude provider.");
+      return false;
+    }
+    if (effectiveSettings.provider === "cursor" && (!cursorStatus?.available || !cursorStatus.loggedIn)) {
+      openSettings("models");
+      setError(cursorStatus?.available ? "Sign in to Cursor Agent before using your Cursor subscription." : "Install Cursor Agent, then sign in before using the Cursor provider.");
       return false;
     }
     if (effectiveSettings.provider === "openrouter" && !effectiveSettings.model.trim()) {
@@ -1946,6 +2094,9 @@ export default function App() {
             sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })),
           );
           scheduleClaudeThreadSave(activeThread.id);
+        } else if (isCursorThread(activeThread)) {
+          await steerCursorTurn(activeThread.id, text);
+          scheduleCursorThreadSave(activeThread.id);
         } else {
           await rpc("turn/steer", { threadId: activeThread.id, input: buildTurnInput(text, sentAttachments) });
         }
@@ -2064,6 +2215,74 @@ export default function App() {
         return true;
       }
 
+      if (effectiveSettings.provider === "cursor") {
+        let thread = activeThread;
+        if (!thread) {
+          thread = { id: crypto.randomUUID(), name: null, preview: text.slice(0, 140), cwd: executionPath, updatedAt: Math.floor(Date.now() / 1000), modelProvider: "cursor" };
+          startedThreadId = thread.id;
+          bindThreadToProject(thread.id, activeWorkspace.path);
+          if (provisionalWorktree && activeProject) {
+            const record: ThreadWorktreeRecord = {
+              threadId: thread.id,
+              projectId: activeProject.id,
+              projectPath: activeProject.path,
+              path: provisionalWorktree.path,
+              branch: provisionalWorktree.branch,
+              baseCommit: provisionalWorktree.baseCommit,
+              gitDir: provisionalWorktree.gitDir,
+              createdAt: Date.now(),
+              status: "active",
+            };
+            persistThreadWorktrees((current) => ({ ...current, [thread!.id]: record }));
+            provisionalPersisted = true;
+            setDraftThreadIsolated(false);
+          }
+          rememberThread(thread);
+          persistThreadModel(thread.id, effectiveSettings.model);
+          setThreads((current) => upsertThread(current, thread!));
+          setActiveThread(thread);
+          useTaskStore.getState().ensureTask(thread.id, executionPath);
+          useTaskStore.getState().setActiveThread(thread.id);
+        }
+        startedThreadId = thread.id;
+        const updatedThread = { ...thread, preview: text.slice(0, 140) || thread.preview, updatedAt: Math.floor(Date.now() / 1000) };
+        rememberThread(updatedThread);
+        setThreads((current) => upsertThread(current, updatedThread));
+        setActiveThread(updatedThread);
+        useTaskStore.getState().ensureTask(thread.id, executionPath);
+        useTaskStore.getState().setTaskStatus(thread.id, "starting");
+        if (!pendingStart) pendingStart = pendingTurnStartsRef.current.begin(thread.id);
+        await beginRunCheckpoint(thread.id, executionPath, text, effectiveSettings.provider, effectiveSettings.model);
+        sentMessageId = `local-${crypto.randomUUID()}`;
+        useTaskStore.getState().appendUserMessage(thread.id, { id: sentMessageId, role: "user", text });
+        const priorSessionId = cursorSessionIdsRef.current[thread.id];
+        await saveCursorTranscript({ thread: updatedThread, cursorSessionId: priorSessionId ?? "", messages: useTaskStore.getState().tasks[thread.id]?.messages ?? [], activities: useTaskStore.getState().tasks[thread.id]?.activities ?? [] });
+        const result = await startCursorTurn({
+          threadId: thread.id,
+          cwd: executionPath,
+          prompt: text,
+          model: effectiveSettings.model || DEFAULT_CURSOR_MODEL,
+          effort: settings.ultra ? "ultra" : settings.reasoningEffort,
+          permission: effectiveSettings.permission,
+          systemPrompt: withOpenKiwiCompletionInstructions(effectiveSettings.systemPrompt),
+          resumeSessionId: priorSessionId || undefined,
+          attachments: sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })),
+        });
+        cursorSessionIdsRef.current[thread.id] = result.cursorSessionId;
+        useTaskStore.getState().setActiveTurn(thread.id, result.turnId);
+        useTaskStore.getState().setTaskStatus(thread.id, "running");
+        setStartingDraftTurn(false);
+        setAttachments((current) => withoutSentAttachments(current, sentAttachments));
+        scheduleCursorThreadSave(thread.id);
+        if (pendingTurnStartsRef.current.finish(thread.id, pendingStart)) {
+          await interruptCursorTurn(thread.id);
+          useTaskStore.getState().setActiveTurn(thread.id, undefined);
+          useTaskStore.getState().setTaskStatus(thread.id, "interrupted");
+          setTransientStatus("Stopped");
+        }
+        return true;
+      }
+
       await ensureSkillRoots();
       const input = buildTurnInput(text, sentAttachments);
       let threadId = activeThread?.id;
@@ -2155,6 +2374,8 @@ export default function App() {
           // tracks (e.g. after an event loss). Free it so a retry succeeds
           // instead of failing until OpenKiwi restarts.
           void killClaudeTurn(failedThreadId).catch(() => undefined);
+        } else if (effectiveSettings.provider === "cursor" && /already working/i.test(friendlyError(reason))) {
+          void killCursorTurn(failedThreadId).catch(() => undefined);
         }
       }
       setStatus("Ready");
@@ -2179,6 +2400,7 @@ export default function App() {
     }
     try {
       if (isClaudeThread(activeThread)) await interruptClaudeTurn(activeThread.id);
+      else if (isCursorThread(activeThread)) await interruptCursorTurn(activeThread.id);
       else await rpc("turn/interrupt", { threadId: activeThread.id, turnId });
       useTaskStore.getState().setActiveTurn(activeThread.id, undefined);
       useTaskStore.getState().setTaskStatus(activeThread.id, "interrupted");
@@ -2255,10 +2477,40 @@ export default function App() {
     }
   };
 
+  const beginCursorLogin = async () => {
+    if (!cursorStatus?.available) {
+      openSettings("models");
+      setError("Install Cursor Agent first, then return here to sign in.");
+      return;
+    }
+    setCursorLoginStarting(true);
+    setError(null);
+    setStatus("Opening Cursor sign-in");
+    try {
+      await startCursorLogin();
+      setStatus("Finish sign-in in Terminal");
+      window.setTimeout(() => {
+        void refreshCursorStatus().then((next) => {
+          if (next.loggedIn) {
+            setStatus("Ready");
+            void refreshCursorModels();
+          }
+        });
+      }, 2500);
+    } catch (reason) {
+      setStatus("Setup required");
+      setError(friendlyError(reason));
+    } finally {
+      setCursorLoginStarting(false);
+    }
+  };
+
   const respondToApproval = useCallback(async (approval: PendingApproval, result: JsonObject) => {
     try {
       if (approval.method === "claude/can_use_tool") {
         await respondToClaudePermission(approval.threadId, String(approval.id), result);
+      } else if (approval.method === "cursor/request_permission" || approval.method === "cursor/ask_question") {
+        await respondToCursorPermission(approval.threadId, approval.id, result);
       } else {
         await respond(approval.id, result);
       }
@@ -2267,7 +2519,7 @@ export default function App() {
     } catch (reason) {
       const message = friendlyError(reason);
       if (
-        approval.method === "claude/can_use_tool" &&
+        (approval.method === "claude/can_use_tool" || approval.method === "cursor/request_permission" || approval.method === "cursor/ask_question") &&
         /no longer|not currently running/i.test(message)
       ) {
         useTaskStore
@@ -2289,13 +2541,16 @@ export default function App() {
     if (!name || name === thread.name) return;
     try {
       const updated = { ...thread, name };
-      if (!isClaudeThread(thread)) await rpc("thread/name/set", { threadId: thread.id, name });
+      if (!isLocalSubscriptionThread(thread)) await rpc("thread/name/set", { threadId: thread.id, name });
       rememberThread(updated);
       setThreads((current) => current.map((entry) => (entry.id === thread.id ? updated : entry)));
       setActiveThread((current) => (current?.id === thread.id ? { ...current, name } : current));
       if (isClaudeThread(thread)) {
         const task = useTaskStore.getState().tasks[thread.id];
         await saveClaudeTranscript({ thread: updated, messages: task?.messages ?? [], activities: task?.activities ?? [] });
+      } else if (isCursorThread(thread)) {
+        const task = useTaskStore.getState().tasks[thread.id];
+        await saveCursorTranscript({ thread: updated, cursorSessionId: cursorSessionIdsRef.current[thread.id] ?? "", messages: task?.messages ?? [], activities: task?.activities ?? [] });
       }
     } catch (reason) {
       setError(friendlyError(reason));
@@ -2311,7 +2566,7 @@ export default function App() {
     }
     if (!window.confirm(`Archive “${label}”?\n\nIt moves to the Archived list in the sidebar, where you can restore or permanently delete it.`)) return;
     try {
-      if (!isClaudeThread(thread)) await rpc("thread/archive", { threadId: thread.id });
+      if (!isLocalSubscriptionThread(thread)) await rpc("thread/archive", { threadId: thread.id });
       if (activeThread?.id === thread.id) newThread();
       forgetThread(thread.id);
       setThreads((current) => current.filter((entry) => entry.id !== thread.id));
@@ -2325,9 +2580,13 @@ export default function App() {
 
   const unarchiveThread = async (record: ArchivedThread) => {
     try {
-      const transcript = await loadClaudeTranscript(record.id);
-      if (transcript) {
-        rememberThread(transcript.thread);
+      const claudeTranscript = record.provider === "cursor" ? null : await loadClaudeTranscript(record.id);
+      const cursorTranscript = claudeTranscript || record.provider === "claude" ? null : await loadCursorTranscript(record.id);
+      if (claudeTranscript) {
+        rememberThread(claudeTranscript.thread);
+      } else if (cursorTranscript) {
+        if (cursorTranscript.cursorSessionId) cursorSessionIdsRef.current[record.id] = cursorTranscript.cursorSessionId;
+        rememberThread(cursorTranscript.thread);
       } else {
         await rpc("thread/unarchive", { threadId: record.id });
       }
@@ -2365,14 +2624,19 @@ export default function App() {
       : archived
         ? providerForArchivedThread(archived, legacyClaudeTranscript)
         : "openai";
-    const claude = provider === "claude";
-    if (!window.confirm(`Permanently delete “${label}”?\n\nThis removes the conversation from ${claude ? "OpenKiwi" : "the Codex runtime"} and cannot be undone.`)) return;
+    const localSubscription = provider === "claude" || provider === "cursor";
+    if (!window.confirm(`Permanently delete “${label}”?\n\nThis removes the conversation from ${localSubscription ? "OpenKiwi" : "the Codex runtime"} and cannot be undone.`)) return;
     try {
       const saveTimer = claudeSaveTimersRef.current.get(threadId);
       if (saveTimer !== undefined) window.clearTimeout(saveTimer);
       claudeSaveTimersRef.current.delete(threadId);
-      if (claude) await deleteClaudeTranscript(threadId);
+      const cursorSaveTimer = cursorSaveTimersRef.current.get(threadId);
+      if (cursorSaveTimer !== undefined) window.clearTimeout(cursorSaveTimer);
+      cursorSaveTimersRef.current.delete(threadId);
+      if (provider === "claude") await deleteClaudeTranscript(threadId);
+      else if (provider === "cursor") await deleteCursorTranscript(threadId);
       else await rpc("thread/delete", { threadId });
+      delete cursorSessionIdsRef.current[threadId];
       if (activeThread?.id === threadId) newThread();
       forgetThread(threadId);
       forgetThreadModel(threadId);
@@ -2435,8 +2699,8 @@ export default function App() {
 
   const startReview = async () => {
     if (!activeThread) return;
-    if (isClaudeThread(activeThread)) {
-      setError("Inline Studio review is currently available for OpenAI and OpenRouter threads. Ask Claude to review the project in the conversation instead.");
+    if (isLocalSubscriptionThread(activeThread)) {
+      setError(`Inline Studio review is currently available for OpenAI and OpenRouter threads. Ask ${providerLabel(providerFromThread(activeThread, settings.provider))} to review the project in the conversation instead.`);
       return;
     }
     try {
@@ -2449,8 +2713,8 @@ export default function App() {
 
   const compactThread = async () => {
     if (!activeThread) return;
-    if (isClaudeThread(activeThread)) {
-      setError("Claude Code manages its own context compaction. OpenKiwi’s manual compact action is available for OpenAI and OpenRouter threads.");
+    if (isLocalSubscriptionThread(activeThread)) {
+      setError(`${providerLabel(providerFromThread(activeThread, settings.provider))} manages its own context compaction. OpenKiwi’s manual compact action is available for OpenAI and OpenRouter threads.`);
       return;
     }
     try {
@@ -4008,6 +4272,7 @@ export default function App() {
                       />
                     )}
                     {effectiveSettings.provider === "claude" && <ClaudeModelControl model={effectiveSettings.model || DEFAULT_CLAUDE_MODEL} effort={settings.reasoningEffort} onModel={(model) => persistComposerModel(model)} onEffort={(reasoningEffort) => persistSettings({ ...settings, reasoningEffort, ultra: false })} />}
+                    {effectiveSettings.provider === "cursor" && <CursorModelControl model={effectiveSettings.model || DEFAULT_CURSOR_MODEL} models={cursorModels} effort={settings.reasoningEffort} loading={cursorModelsLoading} onRefresh={() => void refreshCursorModels()} onModel={(model) => persistComposerModel(model)} onEffort={(reasoningEffort) => persistSettings({ ...settings, reasoningEffort, ultra: false })} />}
                   </>
                 }
                 controls={
@@ -4166,6 +4431,7 @@ export default function App() {
             onRemoveAttachment={(path) => setAttachments((current) => current.filter((item) => item.path !== path))}
             onRefreshUsage={() => {
               if (effectiveSettings.provider === "claude") void refreshClaudeStatus();
+              else if (effectiveSettings.provider === "cursor") void Promise.all([refreshCursorStatus(), refreshCursorModels()]);
               else if (effectiveSettings.provider === "openrouter") void hasOpenRouterKey().then(setOpenRouterReady).catch(() => setOpenRouterReady(false));
               else void refreshUsage();
             }}
@@ -4203,6 +4469,8 @@ export default function App() {
         runtimeStatus={runtimeStatus}
         claudeStatus={claudeStatus}
         claudeLoginStarting={claudeLoginStarting}
+        cursorStatus={cursorStatus}
+        cursorLoginStarting={cursorLoginStarting}
         openRouterReady={openRouterReady}
         githubStatus={githubStatus}
         githubBusy={githubBusy || githubLoginPending}
@@ -4220,6 +4488,12 @@ export default function App() {
         onSignIn={beginChatGptLogin}
         onClaudeSignIn={beginClaudeLogin}
         onClaudeRefresh={refreshClaudeStatus}
+        onCursorSignIn={beginCursorLogin}
+        onCursorRefresh={async () => {
+          const next = await refreshCursorStatus();
+          if (next.loggedIn) await refreshCursorModels();
+          return next;
+        }}
         onRuntimeRequired={() => setRuntimeSetupOpen(true)}
         onWorkspaceTools={() => {
           closeSettings();
@@ -4289,7 +4563,7 @@ export default function App() {
 
       {onboardingMounted && (
         <Suspense fallback={null}>
-          <OnboardingModal open={onboardingOpen} runtimeStatus={runtimeStatus} claudeStatus={claudeStatus} account={account} openRouterReady={openRouterReady} skillsFolder={skillsFolder} onComplete={completeOnboarding} onOpenSettings={(section) => openSettings(section)} onChooseSkillsFolder={() => void chooseSkillsFolder()} onAddProject={() => void addProject()} onStartChat={startNormalChat} />
+          <OnboardingModal open={onboardingOpen} runtimeStatus={runtimeStatus} claudeStatus={claudeStatus} cursorStatus={cursorStatus} account={account} openRouterReady={openRouterReady} skillsFolder={skillsFolder} onComplete={completeOnboarding} onOpenSettings={(section) => openSettings(section)} onChooseSkillsFolder={() => void chooseSkillsFolder()} onAddProject={() => void addProject()} onStartChat={startNormalChat} />
         </Suspense>
       )}
 

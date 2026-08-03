@@ -31,6 +31,13 @@ use tokio::{
     time::{timeout, timeout_at, Duration, Instant},
 };
 
+mod cursor;
+use cursor::{
+    cursor_login, cursor_models, cursor_permission_respond, cursor_runtime_status,
+    cursor_turn_interrupt, cursor_turn_kill, cursor_turn_start, cursor_turn_steer,
+    shutdown_cursor_on_exit, CursorState,
+};
+
 const KEYRING_SERVICE: &str = "com.kiwi.harness";
 const OPENROUTER_ACCOUNT: &str = "openrouter-api-key";
 
@@ -4669,10 +4676,14 @@ pub fn run() {
         })
         .manage(RuntimeState::default())
         .manage(ClaudeState::default())
+        .manage(CursorState::default())
         .invoke_handler(tauri::generate_handler![
             codex_runtime_status,
             claude_runtime_status,
             claude_login,
+            cursor_runtime_status,
+            cursor_login,
+            cursor_models,
             github_status,
             github_login,
             github_repo_status,
@@ -4685,6 +4696,11 @@ pub fn run() {
             claude_turn_kill,
             claude_permission_respond,
             claude_control_error,
+            cursor_turn_start,
+            cursor_turn_steer,
+            cursor_turn_interrupt,
+            cursor_turn_kill,
+            cursor_permission_respond,
             state_read,
             state_write,
             state_delete,
@@ -4729,6 +4745,7 @@ pub fn run() {
             ) {
                 shutdown_runtime_on_exit(app_handle);
                 shutdown_claude_on_exit(app_handle);
+                shutdown_cursor_on_exit(app_handle);
             }
         });
 }

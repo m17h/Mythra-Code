@@ -22,14 +22,16 @@ import {
 } from "lucide-react";
 import type { CodexRuntimeStatus } from "../lib/codex";
 import type { ClaudeRuntimeStatus } from "../lib/claude";
+import type { CursorRuntimeStatus } from "../lib/cursor";
 import type { Account, SettingsSection } from "../types";
 import { useModalFocus } from "../hooks/useModalFocus";
-import { ClaudeLogo, OpenAILogo } from "./BrandLogos";
+import { ClaudeLogo, CursorLogo, OpenAILogo } from "./BrandLogos";
 
 const CODEX_INSTALL_URL = "https://learn.chatgpt.com/docs/codex/cli";
 const OPENROUTER_KEYS_URL = "https://openrouter.ai/settings/keys";
 const OPENROUTER_GUIDE_URL = "https://openrouter.ai/docs/quickstart";
 const CLAUDE_INSTALL_URL = "https://docs.anthropic.com/en/docs/claude-code/setup";
+const CURSOR_INSTALL_URL = "https://cursor.com/docs/cli/installation";
 
 const STEPS = [
   { id: "welcome", label: "Welcome", icon: Sparkles },
@@ -44,9 +46,10 @@ function StatusPill({ ready, children }: { ready: boolean; children: ReactNode }
   return <span className={`onboarding-status ${ready ? "ready" : "waiting"}`}><i />{children}</span>;
 }
 
-function ProviderStep({ runtimeStatus, claudeStatus, account, openRouterReady }: {
+function ProviderStep({ runtimeStatus, claudeStatus, cursorStatus, account, openRouterReady }: {
   runtimeStatus: CodexRuntimeStatus | null;
   claudeStatus: ClaudeRuntimeStatus | null;
+  cursorStatus: CursorRuntimeStatus | null;
   account: Account | null;
   openRouterReady: boolean;
 }) {
@@ -87,6 +90,20 @@ function ProviderStep({ runtimeStatus, claudeStatus, account, openRouterReady }:
         <button className="onboarding-link-button" onClick={() => void openUrl(CLAUDE_INSTALL_URL)}><ExternalLink size={12} /> Claude Code setup</button>
       </article>
 
+      <article className="onboarding-provider-card cursor">
+        <div className="onboarding-card-title"><span><CursorLogo size={18} /></span><div><strong>Cursor subscription</strong><small>Cursor Agent authentication</small></div></div>
+        <ol>
+          <li><b>1</b><span>Install <strong>Cursor Agent</strong>. OpenKiwi detects the official local executable automatically.</span></li>
+          <li><b>2</b><span>Choose Cursor in <strong>Models & accounts</strong>, then complete its official browser sign-in.</span></li>
+          <li><b>3</b><span>Select Grok 4.5 or another model from the live catalog attached to your subscription.</span></li>
+        </ol>
+        <div className="onboarding-card-footer">
+          <StatusPill ready={Boolean(cursorStatus?.available)}>{cursorStatus?.available ? "Cursor Agent detected" : "Cursor Agent needed"}</StatusPill>
+          <StatusPill ready={Boolean(cursorStatus?.loggedIn)}>{cursorStatus?.loggedIn ? "Cursor connected" : "Not signed in"}</StatusPill>
+        </div>
+        <button className="onboarding-link-button" onClick={() => void openUrl(CURSOR_INSTALL_URL)}><ExternalLink size={12} /> Cursor Agent setup</button>
+      </article>
+
       <article className="onboarding-provider-card openrouter">
         <div className="onboarding-card-title"><span><Bot size={18} /></span><div><strong>OpenRouter</strong><small>One key, broad model catalog</small></div></div>
         <ol>
@@ -104,7 +121,7 @@ function ProviderStep({ runtimeStatus, claudeStatus, account, openRouterReady }:
         </div>
       </article>
     </div>
-    <div className="onboarding-note"><ShieldCheck size={14} /><span>OpenKiwi never asks you to paste a subscription password. ChatGPT and Claude use their official local login; OpenRouter uses the API key you provide.</span></div>
+    <div className="onboarding-note"><ShieldCheck size={14} /><span>OpenKiwi never asks you to paste a subscription password. ChatGPT, Claude, and Cursor use their official local login; OpenRouter uses the API key you provide.</span></div>
   </div>;
 }
 
@@ -181,16 +198,17 @@ function SkillsStep({ skillsFolder, onChooseSkillsFolder }: { skillsFolder: stri
   </div>;
 }
 
-function ReadyStep({ runtimeStatus, claudeStatus, account, openRouterReady, skillsFolder, onDestination }: {
+function ReadyStep({ runtimeStatus, claudeStatus, cursorStatus, account, openRouterReady, skillsFolder, onDestination }: {
   runtimeStatus: CodexRuntimeStatus | null;
   claudeStatus: ClaudeRuntimeStatus | null;
+  cursorStatus: CursorRuntimeStatus | null;
   account: Account | null;
   openRouterReady: boolean;
   skillsFolder: string;
   onDestination: (destination: "models" | "project" | "chat") => void;
 }) {
-  const providerReady = account?.type === "chatgpt" || claudeStatus?.loggedIn || openRouterReady;
-  const runtimeReady = runtimeStatus?.available || claudeStatus?.available;
+  const providerReady = account?.type === "chatgpt" || claudeStatus?.loggedIn || cursorStatus?.loggedIn || openRouterReady;
+  const runtimeReady = runtimeStatus?.available || claudeStatus?.available || cursorStatus?.available;
   return <div className="onboarding-page ready-page">
     <div className="onboarding-ready-mark"><Check size={28} /></div>
     <div className="onboarding-copy centered">
@@ -199,8 +217,8 @@ function ReadyStep({ runtimeStatus, claudeStatus, account, openRouterReady, skil
       <p>Connect a provider, choose where the thread belongs, set its permissions, and start building. You can rerun this guide from General Settings at any time.</p>
     </div>
     <div className="onboarding-checklist">
-      <div className={runtimeReady ? "done" : ""}><span>{runtimeReady ? <Check size={13} /> : <TerminalSquare size={13} />}</span><strong>Local runtime</strong><small>{runtimeStatus?.available ? `${runtimeStatus.source ?? "Codex"} detected` : claudeStatus?.available ? "Claude Code detected" : "Install Codex or Claude Code"}</small></div>
-      <div className={providerReady ? "done" : ""}><span>{providerReady ? <Check size={13} /> : <KeyRound size={13} />}</span><strong>Model provider</strong><small>{account?.type === "chatgpt" ? "ChatGPT connected" : claudeStatus?.loggedIn ? "Claude connected" : openRouterReady ? "OpenRouter connected" : "Connect in Settings"}</small></div>
+      <div className={runtimeReady ? "done" : ""}><span>{runtimeReady ? <Check size={13} /> : <TerminalSquare size={13} />}</span><strong>Local runtime</strong><small>{runtimeStatus?.available ? `${runtimeStatus.source ?? "Codex"} detected` : claudeStatus?.available ? "Claude Code detected" : cursorStatus?.available ? "Cursor Agent detected" : "Install a provider runtime"}</small></div>
+      <div className={providerReady ? "done" : ""}><span>{providerReady ? <Check size={13} /> : <KeyRound size={13} />}</span><strong>Model provider</strong><small>{account?.type === "chatgpt" ? "ChatGPT connected" : claudeStatus?.loggedIn ? "Claude connected" : cursorStatus?.loggedIn ? "Cursor connected" : openRouterReady ? "OpenRouter connected" : "Connect in Settings"}</small></div>
       <div className={skillsFolder ? "done" : "optional"}><span>{skillsFolder ? <Check size={13} /> : <Boxes size={13} />}</span><strong>Skills folder</strong><small>{skillsFolder ? "Ready" : "Optional · set up later"}</small></div>
     </div>
     <div className="onboarding-destinations">
@@ -215,6 +233,7 @@ export function OnboardingModal({
   open,
   runtimeStatus,
   claudeStatus = null,
+  cursorStatus = null,
   account,
   openRouterReady,
   skillsFolder,
@@ -227,6 +246,7 @@ export function OnboardingModal({
   open: boolean;
   runtimeStatus: CodexRuntimeStatus | null;
   claudeStatus?: ClaudeRuntimeStatus | null;
+  cursorStatus?: CursorRuntimeStatus | null;
   account: Account | null;
   openRouterReady: boolean;
   skillsFolder: string;
@@ -279,11 +299,11 @@ export function OnboardingModal({
     </div>
     <div className="onboarding-time"><i /><span>About two minutes</span><i /></div>
   </div>;
-  else if (step.id === "providers") content = <ProviderStep runtimeStatus={runtimeStatus} claudeStatus={claudeStatus} account={account} openRouterReady={openRouterReady} />;
+  else if (step.id === "providers") content = <ProviderStep runtimeStatus={runtimeStatus} claudeStatus={claudeStatus} cursorStatus={cursorStatus} account={account} openRouterReady={openRouterReady} />;
   else if (step.id === "workspaces") content = <WorkspacesStep />;
   else if (step.id === "controls") content = <ControlsStep />;
   else if (step.id === "skills") content = <SkillsStep skillsFolder={skillsFolder} onChooseSkillsFolder={onChooseSkillsFolder} />;
-  else content = <ReadyStep runtimeStatus={runtimeStatus} claudeStatus={claudeStatus} account={account} openRouterReady={openRouterReady} skillsFolder={skillsFolder} onDestination={destination} />;
+  else content = <ReadyStep runtimeStatus={runtimeStatus} claudeStatus={claudeStatus} cursorStatus={cursorStatus} account={account} openRouterReady={openRouterReady} skillsFolder={skillsFolder} onDestination={destination} />;
 
   return <div className={`modal-backdrop onboarding-backdrop ${open ? "open" : "closed"}`} aria-hidden={!open} inert={!open ? true : undefined}>
     <div ref={dialogRef} className="onboarding-modal" role="dialog" aria-modal="true" aria-label="OpenKiwi onboarding">

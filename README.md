@@ -1,6 +1,6 @@
 # OpenKiwi
 
-OpenKiwi is a fast, local-first desktop coding harness with a user-owned instruction prompt. It supports OpenAI through an official ChatGPT subscription sign-in flow, Claude through the locally installed Claude Code CLI with its own subscription sign-in, and OpenRouter through a user-supplied API key.
+OpenKiwi is a fast, local-first desktop coding harness with a user-owned instruction prompt. It supports OpenAI through an official ChatGPT subscription sign-in flow, Claude through the locally installed Claude Code CLI, Cursor subscription models (including Grok when entitled) through Cursor Agent, and OpenRouter through a user-supplied API key.
 
 **Platform support:** packaged OpenKiwi releases currently target **macOS on Apple silicon** only. Intel Macs, Windows, and Linux are not supported yet; the update feed publishes only a `darwin-aarch64` bundle.
 
@@ -22,7 +22,7 @@ Requirements:
 - macOS on Apple silicon (the supported release platform)
 - Node.js 20 or newer
 - Rust stable
-- A recent Codex runtime (the Codex CLI or ChatGPT for macOS) and/or the Claude Code CLI — each provider needs only its own runtime
+- A recent Codex runtime (the Codex CLI or ChatGPT for macOS), Claude Code CLI, and/or Cursor Agent — each provider needs only its own runtime
 
 ```bash
 npm install
@@ -56,6 +56,10 @@ OpenKiwi drives the locally installed [Claude Code CLI](https://claude.com/claud
 Each Claude thread runs one CLI process per turn with `--session-id`/`--resume`, so conversations persist and resume across app restarts. OpenKiwi's permission modes map to the CLI's permission system: *Ask to act* routes every tool request through OpenKiwi's approval UI over stdio; *Read only* disables editing and shell tools; *Full access* passes `bypassPermissions`. The CLI runs with `--setting-sources ""`, so a user's personal Claude Code settings, hooks, and allowlists do not silently apply inside OpenKiwi, and the project-instructions toggle currently governs Codex/OpenRouter `AGENTS.md` loading only.
 
 Selected OpenKiwi skills and custom sub-agents are bridged to Claude through a generated local plugin directory. Model and reasoning-effort choices are sent as real CLI flags per turn.
+
+### Cursor
+
+Open **Settings → Models & accounts**, pick Cursor, and sign in with Cursor Agent. OpenKiwi talks to the official `cursor-agent acp` interface, fetches the live model catalog attached to that Cursor account, and exposes Grok 4.5 whenever Cursor advertises it for the subscription. Cursor threads persist locally with their ACP session ID, stream messages and tool activity into the normal timeline, and use OpenKiwi's permission and structured-question UI. The app uses Cursor's official 2D cube mark from its public brand kit.
 
 ### OpenRouter
 

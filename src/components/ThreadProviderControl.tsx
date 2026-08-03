@@ -6,6 +6,7 @@ import { ProviderLogo } from "./BrandLogos";
 const PROVIDERS: Array<{ id: Provider; label: string; detail: string }> = [
   { id: "openai", label: "OpenAI", detail: "ChatGPT subscription" },
   { id: "claude", label: "Claude", detail: "Claude Code subscription" },
+  { id: "cursor", label: "Cursor", detail: "Cursor subscription models" },
   { id: "openrouter", label: "OpenRouter", detail: "API model routing" },
 ];
 

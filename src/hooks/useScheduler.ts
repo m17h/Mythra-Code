@@ -35,8 +35,8 @@ export function useScheduler(deps: SchedulerDeps): void {
     const project = current.projects.find((item) => item.id === scheduled.projectId);
     const run: ScheduleRunSettings = scheduled.run ?? scheduleRunSnapshot(current.settings);
     if (!project) return;
-    if (run.provider === "claude") {
-      const error = "Claude scheduled tasks are not enabled yet. Use an OpenAI or OpenRouter schedule.";
+    if (run.provider === "claude" || run.provider === "cursor") {
+      const error = `${run.provider === "cursor" ? "Cursor" : "Claude"} scheduled tasks are not enabled yet. Use an OpenAI or OpenRouter schedule.`;
       current.updateSchedule(scheduled.id, (item) => ({
         ...item,
         nextRunAt: Date.now() + item.intervalMinutes * 60_000,

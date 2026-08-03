@@ -131,8 +131,8 @@ export function ProjectPromptControl({
               </button>
               <small>
                 {threadStarted
-                  ? provider === "claude"
-                    ? "Claude will use this update starting with your next message in this thread."
+                  ? provider === "claude" || provider === "cursor"
+                    ? `${provider === "cursor" ? "Cursor" : "Claude"} will use this update starting with your next message in this thread.`
                     : "This applies when you start the next thread; the current conversation is unchanged."
                   : "This will be the complete base instruction for the next thread."}
               </small>

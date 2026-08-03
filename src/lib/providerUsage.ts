@@ -1,4 +1,5 @@
 import type { ClaudeRuntimeStatus } from "./claude";
+import type { CursorRuntimeStatus } from "./cursor";
 import type { Provider } from "../types";
 
 export interface AccountUsageView {
@@ -11,6 +12,7 @@ export function providerAccountUsage(
   options: {
     openAiRateSummary: string;
     claudeStatus: ClaudeRuntimeStatus | null;
+    cursorStatus?: CursorRuntimeStatus | null;
     openRouterReady: boolean;
   },
 ): AccountUsageView {
@@ -21,6 +23,13 @@ export function providerAccountUsage(
     const plan = options.claudeStatus.subscriptionType || options.claudeStatus.authMethod || "Claude";
     const planLabel = `${plan.charAt(0).toUpperCase()}${plan.slice(1)}`;
     return { label: "Claude subscription", summary: `${planLabel} plan connected · live limits are managed by Claude Code` };
+  }
+  if (provider === "cursor") {
+    if (!options.cursorStatus) return { label: "Cursor subscription", summary: "Checking Cursor Agent…" };
+    if (!options.cursorStatus.available) return { label: "Cursor subscription", summary: "Install Cursor Agent to view this account" };
+    if (!options.cursorStatus.loggedIn) return { label: "Cursor subscription", summary: "Sign in to Cursor Agent to view this account" };
+    const plan = options.cursorStatus.subscriptionType || "Cursor";
+    return { label: "Cursor subscription", summary: `${plan} connected · live usage and limits are managed by Cursor` };
   }
   if (provider === "openrouter") {
     return {

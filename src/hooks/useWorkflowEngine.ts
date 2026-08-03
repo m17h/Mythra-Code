@@ -222,8 +222,9 @@ function workflowPreflight(
   if (workflow.run.provider === "openrouter" && !current.openRouterReady) {
     return { ready: false, retryWhenReady: true, message: "Add an OpenRouter API key before running this workflow." };
   }
-  if (workflow.run.provider === "claude") {
-    return { ready: false, retryWhenReady: false, message: "Claude workflows are not enabled yet. Run this workflow from a Claude project thread, or save it with OpenAI/OpenRouter." };
+  if (workflow.run.provider === "claude" || workflow.run.provider === "cursor") {
+    const provider = workflow.run.provider === "cursor" ? "Cursor" : "Claude";
+    return { ready: false, retryWhenReady: false, message: `${provider} workflows are not enabled yet. Run these steps from a ${provider} project thread, or save the workflow with OpenAI/OpenRouter.` };
   }
   return { ready: true, workflow, project };
 }

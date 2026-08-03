@@ -27,10 +27,11 @@ import {
 } from "lucide-react";
 import { exportDiagnostics, recentAuditRows, rpc, saveOpenRouterKey, type AuditRow, type CodexRuntimeStatus } from "../lib/codex";
 import type { ClaudeRuntimeStatus } from "../lib/claude";
-import { DEFAULT_CLAUDE_MODEL, DEFAULT_OPENAI_MODEL, DEFAULT_SETTINGS, RELEASE_NOTES_URL, THEMES } from "../lib/appConfig";
+import type { CursorRuntimeStatus } from "../lib/cursor";
+import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_OPENAI_MODEL, DEFAULT_SETTINGS, RELEASE_NOTES_URL, THEMES } from "../lib/appConfig";
 import { friendlyError } from "../lib/errors";
 import { useModalFocus } from "../hooks/useModalFocus";
-import { AnthropicLogo, ClaudeLogo, CodexLogo, OpenAILogo } from "./BrandLogos";
+import { AnthropicLogo, ClaudeLogo, CodexLogo, CursorLogo, OpenAILogo } from "./BrandLogos";
 import { updateProgress, type AppUpdater } from "../lib/appUpdater";
 import type { LocalSkill } from "../lib/skills";
 import type { WorkflowDefinition, WorkflowRunRecord } from "../lib/workflows";
@@ -106,6 +107,8 @@ export function SettingsModal({
   runtimeStatus,
   claudeStatus = null,
   claudeLoginStarting = false,
+  cursorStatus = null,
+  cursorLoginStarting = false,
   openRouterReady,
   githubStatus,
   githubBusy = false,
@@ -117,6 +120,8 @@ export function SettingsModal({
   onSignIn,
   onClaudeSignIn = async () => {},
   onClaudeRefresh = async () => ({ available: false, path: null, version: null, loggedIn: false, authMethod: null, email: null, subscriptionType: null, warning: null }),
+  onCursorSignIn = async () => {},
+  onCursorRefresh = async () => ({ available: false, path: null, version: null, loggedIn: false, email: null, subscriptionType: null, warning: null }),
   onRuntimeRequired,
   onWorkspaceTools,
   onOpenRouterChange,
@@ -164,6 +169,8 @@ export function SettingsModal({
   runtimeStatus: CodexRuntimeStatus | null;
   claudeStatus?: ClaudeRuntimeStatus | null;
   claudeLoginStarting?: boolean;
+  cursorStatus?: CursorRuntimeStatus | null;
+  cursorLoginStarting?: boolean;
   openRouterReady: boolean;
   githubStatus: GitHubAccountStatus | null;
   githubBusy?: boolean;
@@ -175,6 +182,8 @@ export function SettingsModal({
   onSignIn: () => Promise<void>;
   onClaudeSignIn?: () => Promise<void>;
   onClaudeRefresh?: () => Promise<ClaudeRuntimeStatus>;
+  onCursorSignIn?: () => Promise<void>;
+  onCursorRefresh?: () => Promise<CursorRuntimeStatus>;
   onRuntimeRequired: () => void;
   onWorkspaceTools: () => void;
   onOpenRouterChange: (ready: boolean) => void;
@@ -539,20 +548,25 @@ export function SettingsModal({
               <div><h3>Default model provider</h3><p>New threads start with this provider. Each thread keeps its own provider after it starts.</p></div>
             </div>
             <div className="provider-cards">
-              <button className={`provider-card ${local.provider === "openai" ? "selected" : ""}`} onClick={() => setLocal({ ...local, provider: "openai", model: local.model.includes("/") || local.model.startsWith("claude-") ? DEFAULT_OPENAI_MODEL : (local.model || DEFAULT_OPENAI_MODEL), ultra: false })}>
+              <button className={`provider-card ${local.provider === "openai" ? "selected" : ""}`} onClick={() => setLocal({ ...local, provider: "openai", model: local.provider === "openai" ? (local.model || DEFAULT_OPENAI_MODEL) : DEFAULT_OPENAI_MODEL, ultra: false })}>
                 <span className="provider-logo openai">{local.openAiLogo === "codex" ? <CodexLogo size={18} /> : <OpenAILogo size={17} />}</span>
                 <span><strong>OpenAI</strong><small>Official ChatGPT subscription sign-in</small></span>
                 {local.provider === "openai" && <Check size={16} />}
               </button>
-              <button className={`provider-card ${local.provider === "openrouter" ? "selected" : ""}`} onClick={() => setLocal({ ...local, provider: "openrouter", model: local.model.includes("/") ? local.model : "", ultra: false })}>
+              <button className={`provider-card ${local.provider === "openrouter" ? "selected" : ""}`} onClick={() => setLocal({ ...local, provider: "openrouter", model: local.provider === "openrouter" ? local.model : "", ultra: false })}>
                 <span className="provider-logo openrouter"><RotateCcw size={17} /></span>
                 <span><strong>OpenRouter</strong><small>Responses-compatible model routing</small></span>
                 {local.provider === "openrouter" && <Check size={16} />}
               </button>
-              <button className={`provider-card ${local.provider === "claude" ? "selected" : ""}`} onClick={() => setLocal({ ...local, provider: "claude", model: local.model.startsWith("claude-") ? local.model : DEFAULT_CLAUDE_MODEL, ultra: false })}>
+              <button className={`provider-card ${local.provider === "claude" ? "selected" : ""}`} onClick={() => setLocal({ ...local, provider: "claude", model: local.provider === "claude" ? (local.model || DEFAULT_CLAUDE_MODEL) : DEFAULT_CLAUDE_MODEL, ultra: false })}>
                 <span className={`provider-logo claude${local.claudeLogo === "anthropic" ? " anthropic-mark" : ""}`}>{local.claudeLogo === "anthropic" ? <AnthropicLogo size={17} /> : <ClaudeLogo size={17} />}</span>
                 <span><strong>Claude</strong><small>Official Claude Code subscription login</small></span>
                 {local.provider === "claude" && <Check size={16} />}
+              </button>
+              <button className={`provider-card ${local.provider === "cursor" ? "selected" : ""}`} onClick={() => setLocal({ ...local, provider: "cursor", model: local.provider === "cursor" ? local.model : DEFAULT_CURSOR_MODEL, ultra: false })}>
+                <span className="provider-logo cursor"><CursorLogo size={17} /></span>
+                <span><strong>Cursor</strong><small>Official Cursor subscription login</small></span>
+                {local.provider === "cursor" && <Check size={16} />}
               </button>
             </div>
             <p className="provider-default-note">Use the provider control above the conversation to choose a different provider for one new thread without changing this default.</p>
@@ -582,7 +596,7 @@ export function SettingsModal({
                   <button className="secondary-button" onClick={() => void storeKey()} disabled={!apiKey.trim() || busy}>Save key</button>
                 </div>
               </div>
-            ) : (
+            ) : local.provider === "claude" ? (
               <div className="credential-panel">
                 <div>
                   <strong>{claudeStatus?.loggedIn ? claudeStatus.email || "Claude subscription" : "Claude Code subscription"}</strong>
@@ -600,6 +614,25 @@ export function SettingsModal({
                 )}
                 <button className="icon-button" onClick={() => void onClaudeRefresh()} title="Refresh Claude status" aria-label="Refresh Claude status"><RotateCcw size={14} /></button>
               </div>
+            ) : (
+              <div className="credential-panel">
+                <span className="provider-logo cursor"><CursorLogo size={17} /></span>
+                <div>
+                  <strong>{cursorStatus?.loggedIn ? cursorStatus.email || "Cursor subscription" : "Cursor Agent subscription"}</strong>
+                  <small>{cursorStatus?.loggedIn
+                    ? `${cursorStatus.subscriptionType || "Cursor"} plan connected · ${cursorStatus.version || "Cursor Agent"}`
+                    : cursorStatus?.available ? "Cursor Agent detected · sign in to continue" : "Cursor Agent must be installed first"}</small>
+                </div>
+                {cursorStatus?.loggedIn ? (
+                  <span className="connected-badge"><Check size={12} /> Connected</span>
+                ) : (
+                  <button className="secondary-button" onClick={() => void (cursorStatus?.available ? onCursorSignIn() : openUrl("https://cursor.com/docs/cli/installation"))} disabled={cursorLoginStarting}>
+                    {cursorLoginStarting ? <LoaderCircle className="spin" size={14} /> : !cursorStatus?.available ? <Download size={14} /> : null}
+                    {cursorLoginStarting ? "Signing in…" : cursorStatus?.available ? "Sign in" : "Install Cursor Agent"}
+                  </button>
+                )}
+                <button className="icon-button" onClick={() => void onCursorRefresh()} title="Refresh Cursor status" aria-label="Refresh Cursor status"><RotateCcw size={14} /></button>
+              </div>
             )}
 
             <label className="field-label">
@@ -608,9 +641,9 @@ export function SettingsModal({
                 value={local.model}
                 onChange={(event) => setLocal({ ...local, model: event.target.value })}
                 readOnly={local.provider !== "openrouter"}
-                placeholder={local.provider === "openrouter" ? "e.g. anthropic/claude-sonnet-4" : local.provider === "claude" ? "Select Fable, Opus, Sonnet, or Haiku below the composer" : "Select Sol, Terra, or Luna below the composer"}
+                placeholder={local.provider === "openrouter" ? "e.g. anthropic/claude-sonnet-4" : local.provider === "claude" ? "Select a Claude model below the composer" : local.provider === "cursor" ? "Select Grok 4.5 or another Cursor model below the composer" : "Select Sol, Terra, or Luna below the composer"}
               />
-              <small>{local.provider === "openrouter" ? "Use the searchable picker beneath the composer, or enter any valid provider/model slug here." : local.provider === "claude" ? "Use the Claude selector beneath the composer. Availability follows your signed-in Claude Code subscription." : "Use the animated selector beneath the composer. Availability follows the signed-in ChatGPT account."}</small>
+              <small>{local.provider === "openrouter" ? "Use the searchable picker beneath the composer, or enter any valid provider/model slug here." : local.provider === "claude" ? "Use the Claude selector beneath the composer. Availability follows your signed-in Claude Code subscription." : local.provider === "cursor" ? "Use the Cursor selector beneath the composer. Its live catalog comes from your signed-in Cursor subscription." : "Use the animated selector beneath the composer. Availability follows the signed-in ChatGPT account."}</small>
             </label>
 
             <div className="provider-logo-settings">
@@ -628,6 +661,19 @@ export function SettingsModal({
                   <span className="provider-logo-preview codex"><CodexLogo size={22} /></span>
                   <span><strong>Codex</strong></span>
                   {local.openAiLogo === "codex" && <Check size={14} />}
+                </button>
+              </div>
+            </div>
+            <div className="provider-logo-settings">
+              <div>
+                <strong>Cursor model logo</strong>
+                <small>Cursor threads, responses, and model controls use the official 2D cube mark from Cursor’s public brand kit.</small>
+              </div>
+              <div className="provider-logo-options">
+                <button type="button" className="selected" disabled>
+                  <span className="provider-logo-preview cursor"><CursorLogo size={21} /></span>
+                  <span><strong>Cursor</strong></span>
+                  <Check size={14} />
                 </button>
               </div>
             </div>

@@ -30,6 +30,8 @@ Codex App Server
   └─ OpenAI or OpenRouter Responses transport
 ```
 
+Cursor subscription threads bypass App Server and use Cursor Agent's ACP stdio transport.
+
 The control plane and execution plane remain separate. The React view never launches commands directly; it asks the Rust host, which talks to App Server. App Server owns the OS sandbox and pauses on approval requests.
 
 ## State ownership
@@ -41,6 +43,7 @@ The control plane and execution plane remain separate. The React view never laun
 | OpenRouter API key | Native host | OS credential store |
 | OpenRouter model catalog | Native host | Live tool-capable `/api/v1/models` response |
 | ChatGPT login | App Server | OpenKiwi-specific `CODEX_HOME` credential storage |
+| Cursor login and model catalog | Cursor Agent | Cursor's browser login and `cursor/list_available_models` ACP extension |
 | Threads and rollout history | App Server | OpenKiwi-specific `CODEX_HOME` |
 | Thread project binding and isolated execution path | UI/native host | SQLite-backed cache; app-managed linked Git worktree |
 | Active JSON-RPC requests | Native host | Memory only |
@@ -145,6 +148,10 @@ wire_api = "responses"
 ```
 
 The key comes from the OS credential store and is added only to the App Server child environment. Saving or replacing the key restarts App Server so the child receives the new credential. At runtime the host also injects a loopback proxy as the provider `base_url`; the proxy holds the real bearer key, whitelists request headers, and sanitizes tool JSON schemas that OpenRouter destinations reject.
+
+### Cursor
+
+Cursor threads use the locally installed official Cursor Agent CLI in `acp` mode. The native host initializes and authenticates the ACP connection, obtains the account's live model catalog through `cursor/list_available_models`, creates or loads a Cursor session, applies model selection through the session's advertised model config option, and streams `session/update` notifications into OpenKiwi. Permission and question requests remain pending over JSON-RPC until the user answers in OpenKiwi. Session IDs and mirrored transcripts are stored locally so threads resume across app restarts; Cursor retains control of subscription authentication, entitlements, usage, and limits.
 
 ### Claude
 
