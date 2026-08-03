@@ -228,6 +228,29 @@ describe("ChatTimeline", () => {
     });
   });
 
+  it("renders a completed Cursor answer as Markdown after collapsed tool work", () => {
+    const completed = { turnId: "cursor-turn", turnStatus: "completed" as const };
+    render(
+      <ChatTimeline
+        messages={[
+          { id: "user", role: "user", text: "What next?", timelineOrder: 1, ...completed },
+          { id: "progress", role: "assistant", text: "I’ll inspect it.", timelineOrder: 2, ...completed },
+          { id: "final", role: "assistant", text: "Start with **talents** next.", timelineOrder: 4, streaming: false, ...completed },
+        ]}
+        activities={[
+          { id: "find", kind: "command", title: "Find", detail: "71 files", status: "completed", timelineOrder: 3, ...completed },
+        ]}
+        running={false}
+        thinkingLabel="Thinking"
+        provider="cursor"
+      />,
+    );
+
+    expect(screen.getByText("talents").tagName).toBe("STRONG");
+    expect(screen.getByText("Work completed")).toBeInTheDocument();
+    expect(screen.queryByText("Find")).not.toBeInTheDocument();
+  });
+
   it("leaves the active turn fully visible while it is running", () => {
     const entries = compactCompletedTurns(orderedTimelineEntries(
       [

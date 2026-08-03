@@ -3,6 +3,51 @@ import type { JsonObject } from "./codex";
 import type { TokenUsageView } from "../components/StudioDock";
 import { useTaskStore } from "./taskStore";
 
+const activeAssistantSegments = new Map<string, string>();
+const assistantSegmentCounts = new Map<string, number>();
+
+function turnKey(threadId: string, turnId: string): string {
+  return `${threadId}\0${turnId}`;
+}
+
+/**
+ * Cursor's ACP stream does not provide a message-completed notification and
+ * may emit assistant text both before and after tool calls. Keep each stretch
+ * of text on its own timeline item so the final answer is anchored after the
+ * work that produced it instead of at the turn's first text chunk.
+ */
+function assistantMessageId(threadId: string, turnId: string): string {
+  const key = turnKey(threadId, turnId);
+  const active = activeAssistantSegments.get(key);
+  if (active) return active;
+  const next = (assistantSegmentCounts.get(key) ?? 0) + 1;
+  assistantSegmentCounts.set(key, next);
+  const id = `cursor-${turnId}-message-${next}`;
+  activeAssistantSegments.set(key, id);
+  return id;
+}
+
+function finalizeAssistantSegments(threadId: string, turnId: string, all = false): void {
+  const key = turnKey(threadId, turnId);
+  const activeId = activeAssistantSegments.get(key);
+  const store = useTaskStore.getState();
+  // Materialize queued chunks before looking up their message objects.
+  store.flushDeltas();
+  const messages = useTaskStore.getState().tasks[threadId]?.messages ?? [];
+  for (const message of messages) {
+    if (message.role !== "assistant" || !message.streaming || message.turnId !== turnId) continue;
+    if (!all && message.id !== activeId) continue;
+    store.completeMessage(threadId, { ...message, streaming: false });
+  }
+  activeAssistantSegments.delete(key);
+  if (all) assistantSegmentCounts.delete(key);
+}
+
+export function resetCursorEventStateForTests(): void {
+  activeAssistantSegments.clear();
+  assistantSegmentCounts.clear();
+}
+
 function object(value: unknown): JsonObject {
   return value && typeof value === "object" && !Array.isArray(value) ? value as JsonObject : {};
 }
@@ -139,12 +184,19 @@ export function routeCursorEvent(event: CursorEvent, ctx: CursorEventContext): v
     const update = object(object(message.params).update);
     const kind = text(update.sessionUpdate);
     if (kind === "agent_message_chunk") {
-      store.queueAssistantDelta(threadId, text(update.messageId) || `cursor-${turnId}`, contentText(update.content));
+      // Skip empty/non-text chunks so they cannot open a segment that would
+      // finalize into an empty assistant bubble at the next tool boundary.
+      const delta = contentText(update.content);
+      if (delta) store.queueAssistantDelta(threadId, assistantMessageId(threadId, turnId), delta);
     } else if (kind === "agent_thought_chunk") {
       store.queueReasoningDelta(threadId, `thinking-${turnId}`, contentText(update.content), "content");
     } else if (kind === "tool_call" || kind === "tool_call_update") {
+      // A new tool call ends the preceding assistant-text segment. Updates to
+      // an already-running tool are not boundaries because Cursor can deliver
+      // a late status update while it has started streaming its final answer.
+      if (kind === "tool_call") finalizeAssistantSegments(threadId, turnId);
       const id = text(update.toolCallId) || crypto.randomUUID();
-      const existing = store.tasks[threadId]?.activities.find((activity) => activity.id === id);
+      const existing = useTaskStore.getState().tasks[threadId]?.activities.find((activity) => activity.id === id);
       const status = text(update.status);
       store.upsertActivity(threadId, {
         id,
@@ -177,13 +229,16 @@ export function routeCursorEvent(event: CursorEvent, ctx: CursorEventContext): v
   }
 
   if (message.type === "result") {
-    store.flushDeltas();
+    finalizeAssistantSegments(threadId, turnId, true);
     const result = object(message.result);
     const usage = usageView(result.usage);
     if (usage) store.addUsage(threadId, usage, `cursor-result:${turnId}`);
-    const thinking = store.tasks[threadId]?.activities.find((activity) => activity.id === `thinking-${turnId}`);
+    // Re-read state: the flush inside finalizeAssistantSegments may have just
+    // materialized the thinking activity, which the entry snapshot predates.
+    const task = useTaskStore.getState().tasks[threadId];
+    const thinking = task?.activities.find((activity) => activity.id === `thinking-${turnId}`);
     if (thinking?.detail) store.upsertActivity(threadId, { ...thinking, status: "completed" });
-    const interrupted = result.stopReason === "cancelled" || store.tasks[threadId]?.status === "interrupted";
+    const interrupted = result.stopReason === "cancelled" || task?.status === "interrupted";
     store.completeTurn(threadId, turnId, interrupted ? "interrupted" : "completed");
     ctx.onStatus(interrupted ? "Stopped" : "Ready");
     ctx.onTranscriptChanged(threadId);
@@ -192,9 +247,9 @@ export function routeCursorEvent(event: CursorEvent, ctx: CursorEventContext): v
   }
 
   if (message.type === "openkiwi_error" || message.type === "openkiwi_exit") {
-    store.flushDeltas();
+    finalizeAssistantSegments(threadId, turnId, true);
     const detail = text(message.message) || "Cursor Agent stopped unexpectedly.";
-    const interrupted = store.tasks[threadId]?.status === "interrupted";
+    const interrupted = useTaskStore.getState().tasks[threadId]?.status === "interrupted";
     store.completeTurn(threadId, turnId, interrupted ? "interrupted" : "error");
     if (!interrupted) {
       store.setTaskStatus(threadId, "error", detail);
