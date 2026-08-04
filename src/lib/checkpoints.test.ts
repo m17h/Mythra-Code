@@ -5,10 +5,12 @@ const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 
 import {
+  CHECKPOINT_RETENTION_MIN_AGE_MS,
   checkpointIsRestorable,
   checkpointStatusLabel,
   completeCheckpointSnapshot,
   createCheckpointSnapshot,
+  partitionCheckpointsForRetention,
   restoreCheckpointSnapshot,
   type CheckpointRecord,
 } from "./checkpoints";
@@ -40,6 +42,42 @@ describe("checkpoints", () => {
     expect(checkpointStatusLabel({ ...checkpoint, status: "restored-before" })).toBe("Restored before run");
     expect(checkpointStatusLabel({ ...checkpoint, status: "interrupted" })).toBe("Run interrupted");
     expect(checkpointStatusLabel({ ...checkpoint, status: "recovered" })).toBe("Recovered after restart");
+  });
+
+  it("caps records per project while protecting recent and load-bearing checkpoints", () => {
+    const now = 100 * CHECKPOINT_RETENTION_MIN_AGE_MS;
+    const old = now - 2 * CHECKPOINT_RETENTION_MIN_AGE_MS;
+    const record = (id: string, overrides: Partial<CheckpointRecord> = {}): CheckpointRecord => ({
+      ...checkpoint,
+      id,
+      createdAt: old,
+      ...overrides,
+    });
+    const records = [
+      record("recent", { createdAt: now - 1_000 }),
+      record("running", { status: "running" }),
+      record("safety", { status: "safety" }),
+      record("worktree", { worktreeBaseline: "base-commit" }),
+      record("head"),
+      record("other-project", { workspacePath: "/other" }),
+      ...Array.from({ length: 5 }, (_, index) => record(`plain-${index}`, { createdAt: old - index })),
+    ];
+
+    const { kept, pruned } = partitionCheckpointsForRetention(records, new Set(["head"]), now, 4);
+    expect(pruned.map((entry) => entry.id)).toEqual(["plain-0", "plain-1", "plain-2", "plain-3", "plain-4"]);
+    expect(kept.map((entry) => entry.id)).toEqual(["recent", "running", "safety", "worktree", "head", "other-project"]);
+  });
+
+  it("keeps everything when the project is under the retention cap", () => {
+    const now = 100 * CHECKPOINT_RETENTION_MIN_AGE_MS;
+    const records = Array.from({ length: 3 }, (_, index) => ({
+      ...checkpoint,
+      id: `checkpoint-${index}`,
+      createdAt: now - 2 * CHECKPOINT_RETENTION_MIN_AGE_MS,
+    }));
+    const { kept, pruned } = partitionCheckpointsForRetention(records, new Set(), now, 4);
+    expect(kept).toBe(records);
+    expect(pruned).toEqual([]);
   });
 
   it("uses dedicated native commands for before, after, and restore", async () => {

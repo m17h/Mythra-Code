@@ -41,7 +41,11 @@ export function ProjectPromptControl({
       if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
     };
     const escape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
+      if (event.key === "Escape") {
+        // Escape closes only this popover — never the app-level stop-turn handler.
+        event.stopPropagation();
+        setOpen(false);
+      }
     };
     document.addEventListener("pointerdown", close);
     document.addEventListener("keydown", escape, true);

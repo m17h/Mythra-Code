@@ -64,6 +64,72 @@ describe("WorkflowManager", () => {
     expect(onWorkflows).not.toHaveBeenCalled();
   });
 
+  it("lets the interval field hold transient values while typing and clamps on blur", () => {
+    render(
+      <WorkflowManager
+        workflows={[]}
+        runs={[]}
+        projects={[project]}
+        skills={[]}
+        settings={DEFAULT_SETTINGS}
+        onWorkflows={vi.fn()}
+        onRun={vi.fn()}
+        onStop={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "New workflow" }));
+    fireEvent.change(screen.getByRole("combobox", { name: "Trigger" }), { target: { value: "interval" } });
+    const interval = screen.getByRole("spinbutton", { name: "Every (minutes)" });
+
+    // Typing "45" passes through "4", which must not snap to the minimum.
+    fireEvent.change(interval, { target: { value: "4" } });
+    expect(interval).toHaveValue(4);
+    fireEvent.change(interval, { target: { value: "45" } });
+    fireEvent.blur(interval);
+    expect(interval).toHaveValue(45);
+
+    fireEvent.change(interval, { target: { value: "2" } });
+    fireEvent.blur(interval);
+    expect(interval).toHaveValue(5);
+  });
+
+  it("moves focus into the run dialog and closes it on Escape", () => {
+    const onRun = vi.fn();
+    const workflow: WorkflowDefinition = {
+      id: "workflow-1",
+      name: "Release",
+      description: "",
+      projectId: project.id,
+      enabled: true,
+      trigger: { type: "manual" },
+      steps: [{ id: "step-1", type: "command", name: "Check", command: "git status", continueOnError: false }],
+      skillNames: [],
+      run: scheduleRunSnapshot(DEFAULT_SETTINGS),
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    render(
+      <WorkflowManager
+        workflows={[workflow]}
+        runs={[]}
+        projects={[project]}
+        skills={[]}
+        settings={DEFAULT_SETTINGS}
+        onWorkflows={vi.fn()}
+        onRun={onRun}
+        onStop={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+    const dialog = screen.getByRole("dialog", { name: "Run Release" });
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Run Release" })).not.toBeInTheDocument();
+    expect(onRun).not.toHaveBeenCalled();
+  });
+
   it("collects prompted variables before a manual run", () => {
     const onRun = vi.fn();
     const workflow: WorkflowDefinition = {

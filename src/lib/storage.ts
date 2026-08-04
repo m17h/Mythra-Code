@@ -64,6 +64,15 @@ export async function flushPendingStateWrites(): Promise<void> {
   await Promise.allSettled([...nativeWriteQueues.values()]);
 }
 
+if (typeof window !== "undefined") {
+  // Best-effort quit-time flush: without it, native-mirror writes queued just
+  // before the window closes can be lost, and the next launch hydrates stale
+  // data over the newer localStorage copy.
+  window.addEventListener("pagehide", () => {
+    void flushPendingStateWrites();
+  });
+}
+
 export function migrateStorage(): void {
   const stored = loadStored<number>("kiwi.schemaVersion", 0);
   if (stored >= STORAGE_SCHEMA_VERSION) return;

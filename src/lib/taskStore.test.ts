@@ -45,6 +45,21 @@ describe("task store", () => {
     expect(useTaskStore.getState().tasks["thread-a"].approvals.map((entry) => entry.id)).toEqual([2]);
   });
 
+  it("clears every queued approval for a thread at once", () => {
+    const store = useTaskStore.getState();
+    store.enqueueApproval({ id: 1, method: "item/commandExecution/requestApproval", params: {}, threadId: "thread-a", receivedAt: 1 });
+    store.enqueueApproval({ id: 2, method: "item/fileChange/requestApproval", params: {}, threadId: "thread-a", receivedAt: 2 });
+    store.enqueueApproval({ id: 3, method: "item/commandExecution/requestApproval", params: {}, threadId: "thread-b", receivedAt: 3 });
+
+    store.clearApprovals("thread-a");
+    expect(useTaskStore.getState().tasks["thread-a"].approvals).toEqual([]);
+    expect(useTaskStore.getState().tasks["thread-b"].approvals).toHaveLength(1);
+    // Clearing a thread without approvals (or without a task) is a no-op.
+    store.clearApprovals("thread-a");
+    store.clearApprovals("thread-missing");
+    expect(useTaskStore.getState().tasks["thread-missing"]).toBeUndefined();
+  });
+
   it("tracks per-thread status independently", () => {
     const store = useTaskStore.getState();
     store.setTaskStatus("thread-a", "running");
@@ -122,6 +137,27 @@ describe("task store", () => {
     const task = useTaskStore.getState().tasks["thread-a"];
     expect(task.activeTurnId).toBe("turn-new");
     expect(task.lastCompletedTurnId).toBe("turn-old");
+    expect(task.lastCompletedTurnStatus).toBe("completed");
+  });
+
+  it("preserves the last completed turn when a completion arrives without a turn id", () => {
+    const store = useTaskStore.getState();
+    store.completeTurn("thread-a", "turn-1", "completed");
+    store.completeTurn("thread-a", undefined, "error");
+
+    const task = useTaskStore.getState().tasks["thread-a"];
+    expect(task.lastCompletedTurnId).toBe("turn-1");
+    expect(task.lastCompletedTurnStatus).toBe("completed");
+    expect(task.status).toBe("error");
+  });
+
+  it("records the active turn as completed when the completion omits its id", () => {
+    const store = useTaskStore.getState();
+    store.setActiveTurn("thread-a", "turn-live");
+    store.completeTurn("thread-a", undefined, "completed");
+
+    const task = useTaskStore.getState().tasks["thread-a"];
+    expect(task.lastCompletedTurnId).toBe("turn-live");
     expect(task.lastCompletedTurnStatus).toBe("completed");
   });
 

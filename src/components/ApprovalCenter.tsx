@@ -7,8 +7,45 @@ import type { PendingApproval } from "../types";
 
 type Decision = "accept" | "acceptForSession" | "decline";
 
-function ApprovalButtons({ onDecision, allowSession = true, autoFocusDeny = true }: { onDecision: (value: Decision) => void; allowSession?: boolean; autoFocusDeny?: boolean }) {
-  return <div className="approval-actions"><button className="secondary-button danger" autoFocus={autoFocusDeny} onClick={() => onDecision("decline")}>Deny</button>{allowSession && <button className="secondary-button" onClick={() => onDecision("acceptForSession")}>Allow for session</button>}<button className="primary-button" onClick={() => onDecision("accept")}>Allow once</button></div>;
+export const APPROVAL_GRACE_MS = 250;
+
+/**
+ * One decision per mounted approval. The first activation latches and disables
+ * every action button so a double-click or repeated Enter cannot answer the
+ * next queued request that swaps into the same DOM, and an activation grace
+ * after mount keeps the buttons disabled long enough that an approval popping
+ * up mid-typing cannot consume a stray Enter/Space already in flight.
+ */
+function useDecisionLock(grace = true): { locked: boolean; decide: (action: () => void) => void } {
+  const [submitted, setSubmitted] = useState(false);
+  const [settling, setSettling] = useState(grace);
+  useEffect(() => {
+    if (!grace) return;
+    const timer = window.setTimeout(() => setSettling(false), APPROVAL_GRACE_MS);
+    return () => window.clearTimeout(timer);
+  }, [grace]);
+  const locked = submitted || settling;
+  return {
+    locked,
+    decide: (action: () => void) => {
+      if (locked) return;
+      setSubmitted(true);
+      action();
+    },
+  };
+}
+
+function ApprovalButtons({ onDecision, allowSession = true, autoFocusDeny = true, disabled = false }: { onDecision: (value: Decision) => void; allowSession?: boolean; autoFocusDeny?: boolean; disabled?: boolean }) {
+  const denyRef = useRef<HTMLButtonElement>(null);
+  // Deny is the safe default focus target, but only once the activation grace
+  // has passed — a disabled button cannot take focus, and focusing it earlier
+  // is exactly the focus steal that let mid-flight typing answer the request.
+  useEffect(() => {
+    if (disabled || !autoFocusDeny) return;
+    const active = document.activeElement;
+    if (active === null || active === document.body || active.getAttribute("role") === "alertdialog") denyRef.current?.focus();
+  }, [autoFocusDeny, disabled]);
+  return <div className="approval-actions"><button ref={denyRef} className="secondary-button danger" disabled={disabled} onClick={() => onDecision("decline")}>Deny</button>{allowSession && <button className="secondary-button" disabled={disabled} onClick={() => onDecision("acceptForSession")}>Allow for session</button>}<button className="primary-button" disabled={disabled} onClick={() => onDecision("accept")}>Allow once</button></div>;
 }
 
 /** Maps a button decision onto the wire format each approval method expects. */
@@ -72,12 +109,14 @@ export function approvalSummary(approval: PendingApproval): { title: string; rea
  */
 export function InlineApprovalCard({ approval, onRespond }: { approval: PendingApproval; onRespond: (value: JsonObject) => void }) {
   const { title, reason, command } = approvalSummary(approval);
+  // Latch only — the inline card never steals focus, so no activation grace.
+  const { locked, decide } = useDecisionLock(false);
   return (
     <div className="inline-approval" role="group" aria-label={title}>
       <div className="inline-approval-head"><ShieldAlert size={14} /><strong>{title}</strong></div>
       <p>{reason}</p>
       {command && <pre className="approval-command">{command}</pre>}
-      <ApprovalButtons autoFocusDeny={false} onDecision={(decision) => onRespond(approvalResponse(approval, decision))} />
+      <ApprovalButtons autoFocusDeny={false} disabled={locked} onDecision={(decision) => decide(() => onRespond(approvalResponse(approval, decision)))} />
     </div>
   );
 }
@@ -86,18 +125,35 @@ interface ApprovalContext { threadLabel?: string; pendingCount?: number }
 
 function StandardApproval({ approval, onRespond, threadLabel, pendingCount }: { approval: PendingApproval; onRespond: (value: JsonObject) => void } & ApprovalContext) {
   const { title, reason, command } = approvalSummary(approval);
-  return <Modal title={title} description={reason} threadLabel={threadLabel} pendingCount={pendingCount}>{command && <pre className="approval-command">{command}</pre>}<ApprovalButtons onDecision={(decision) => onRespond(approvalResponse(approval, decision))} /></Modal>;
+  const { locked, decide } = useDecisionLock();
+  return <Modal title={title} description={reason} threadLabel={threadLabel} pendingCount={pendingCount}>{command && <pre className="approval-command">{command}</pre>}<ApprovalButtons disabled={locked} onDecision={(decision) => decide(() => onRespond(approvalResponse(approval, decision)))} /></Modal>;
 }
 
 interface UserQuestion { id: string; header: string; question: string; isSecret?: boolean; options?: Array<{ label: string; description: string }> | null }
 
 function UserInputRequest({ approval, onRespond, threadLabel, pendingCount }: { approval: PendingApproval; onRespond: (value: JsonObject) => void } & ApprovalContext) {
   const questions = (approval.params.questions ?? []) as UserQuestion[];
-  const [answers, setAnswers] = useState<Record<string, string>>({});
-  return <Modal title="The agent needs your input" description="Answer these questions to continue the task." threadLabel={threadLabel} pendingCount={pendingCount}><div className="request-fields">{questions.map((question) => <label key={question.id}><span>{question.header}</span><small>{question.question}</small>{question.options?.length ? <select value={answers[question.id] ?? ""} onChange={(event) => setAnswers((current) => ({ ...current, [question.id]: event.target.value }))}><option value="">Choose…</option>{question.options.map((option) => <option key={option.label} value={option.label}>{option.label} — {option.description}</option>)}</select> : <input type={question.isSecret ? "password" : "text"} value={answers[question.id] ?? ""} onChange={(event) => setAnswers((current) => ({ ...current, [question.id]: event.target.value }))} />}</label>)}</div><div className="approval-actions"><button className="secondary-button danger" onClick={() => onRespond({ answers: {} })}>Cancel</button><button className="primary-button" onClick={() => onRespond({ answers: Object.fromEntries(Object.entries(answers).map(([id, value]) => [id, { answers: [value] }])) })}>Continue</button></div></Modal>;
+  // Every question gets an entry up front so untouched ones still reach the
+  // submitted payload instead of being silently dropped.
+  const [answers, setAnswers] = useState<Record<string, string>>(() => Object.fromEntries(questions.map((question) => [question.id, ""])));
+  const { locked, decide } = useDecisionLock();
+  return <Modal title="The agent needs your input" description="Answer these questions to continue the task." threadLabel={threadLabel} pendingCount={pendingCount}><div className="request-fields">{questions.map((question) => <label key={question.id}><span>{question.header}</span><small>{question.question}</small>{question.options?.length ? <select value={answers[question.id] ?? ""} onChange={(event) => setAnswers((current) => ({ ...current, [question.id]: event.target.value }))}><option value="">Choose…</option>{question.options.map((option, index) => <option key={index} value={option.label}>{option.label} — {option.description}</option>)}</select> : <input type={question.isSecret ? "password" : "text"} value={answers[question.id] ?? ""} onChange={(event) => setAnswers((current) => ({ ...current, [question.id]: event.target.value }))} />}</label>)}</div><div className="approval-actions"><button className="secondary-button danger" disabled={locked} onClick={() => decide(() => onRespond({ answers: {} }))}>Cancel</button><button className="primary-button" disabled={locked} onClick={() => decide(() => onRespond({ answers: Object.fromEntries(Object.entries(answers).map(([id, value]) => [id, { answers: [value] }])) }))}>Continue</button></div></Modal>;
 }
 
 interface JsonSchemaProperty { type?: string; title?: string; description?: string; default?: unknown; enum?: unknown[] }
+
+/**
+ * Numeric fields keep the raw typed string in state — coercing per keystroke
+ * turns "" into 0 and partial input like "1e" into NaN. Conversion happens
+ * once on submit, and only when the input parses to a finite number.
+ */
+function submittedFieldValue(value: unknown, field: JsonSchemaProperty): unknown {
+  if ((field.type === "number" || field.type === "integer") && typeof value === "string") {
+    const numeric = Number(value);
+    return value.trim() !== "" && Number.isFinite(numeric) ? numeric : value;
+  }
+  return value;
+}
 
 function McpRequest({ approval, onRespond, threadLabel, pendingCount }: { approval: PendingApproval; onRespond: (value: JsonObject) => void } & ApprovalContext) {
   const mode = String(approval.params.mode ?? "form");
@@ -106,7 +162,9 @@ function McpRequest({ approval, onRespond, threadLabel, pendingCount }: { approv
   const schema = (approval.params.requestedSchema ?? {}) as { properties?: Record<string, JsonSchemaProperty>; required?: string[] };
   const fields = useMemo(() => Object.entries(schema.properties ?? {}), [schema.properties]);
   const [content, setContent] = useState<Record<string, unknown>>(() => Object.fromEntries(fields.map(([key, value]) => [key, value.default ?? ""])));
-  return <Modal title={`${String(approval.params.serverName ?? "MCP")} needs your input`} description={message} threadLabel={threadLabel} pendingCount={pendingCount}>{url && <button className="elicitation-url" onClick={() => void openUrl(url)}><ExternalLink size={13} /> Open secure request</button>}{mode !== "url" && <div className="request-fields">{fields.map(([key, field]) => <label key={key}><span>{field.title || key}{schema.required?.includes(key) ? " *" : ""}</span>{field.description && <small>{field.description}</small>}{field.type === "boolean" ? <select value={String(content[key] ?? false)} onChange={(event) => setContent((current) => ({ ...current, [key]: event.target.value === "true" }))}><option value="false">No</option><option value="true">Yes</option></select> : field.enum ? <select value={String(content[key] ?? "")} onChange={(event) => setContent((current) => ({ ...current, [key]: event.target.value }))}>{field.enum.map((option) => <option key={String(option)} value={String(option)}>{String(option)}</option>)}</select> : <input type={field.type === "number" || field.type === "integer" ? "number" : "text"} value={String(content[key] ?? "")} onChange={(event) => setContent((current) => ({ ...current, [key]: field.type === "number" || field.type === "integer" ? Number(event.target.value) : event.target.value }))} />}</label>)}</div>}<div className="approval-actions"><button className="secondary-button danger" onClick={() => onRespond({ action: "decline", content: null, _meta: null })}>Decline</button><button className="primary-button" onClick={() => onRespond({ action: "accept", content: mode === "url" ? null : content, _meta: null })}>{mode === "url" ? "I’m done" : "Submit"}</button></div></Modal>;
+  const { locked, decide } = useDecisionLock();
+  const submittedContent = () => Object.fromEntries(fields.map(([key, field]) => [key, submittedFieldValue(content[key], field)]));
+  return <Modal title={`${String(approval.params.serverName ?? "MCP")} needs your input`} description={message} threadLabel={threadLabel} pendingCount={pendingCount}>{url && <button className="elicitation-url" onClick={() => void openUrl(url)}><ExternalLink size={13} /> Open secure request</button>}{mode !== "url" && <div className="request-fields">{fields.map(([key, field]) => <label key={key}><span>{field.title || key}{schema.required?.includes(key) ? " *" : ""}</span>{field.description && <small>{field.description}</small>}{field.type === "boolean" ? <select value={String(content[key] ?? false)} onChange={(event) => setContent((current) => ({ ...current, [key]: event.target.value === "true" }))}><option value="false">No</option><option value="true">Yes</option></select> : field.enum ? <select value={String(content[key] ?? "")} onChange={(event) => setContent((current) => ({ ...current, [key]: event.target.value }))}>{field.enum.map((option) => <option key={String(option)} value={String(option)}>{String(option)}</option>)}</select> : <input type={field.type === "number" || field.type === "integer" ? "number" : "text"} value={String(content[key] ?? "")} onChange={(event) => setContent((current) => ({ ...current, [key]: event.target.value }))} />}</label>)}</div>}<div className="approval-actions"><button className="secondary-button danger" disabled={locked} onClick={() => decide(() => onRespond({ action: "decline", content: null, _meta: null }))}>Decline</button><button className="primary-button" disabled={locked} onClick={() => decide(() => onRespond({ action: "accept", content: mode === "url" ? null : submittedContent(), _meta: null }))}>{mode === "url" ? "I’m done" : "Submit"}</button></div></Modal>;
 }
 
 function Modal({ title, description, threadLabel, pendingCount, children }: { title: string; description: string; threadLabel?: string; pendingCount?: number; children: ReactNode }) {
@@ -136,7 +194,16 @@ function Modal({ title, description, threadLabel, pendingCount, children }: { ti
     document.addEventListener("keydown", onKeyDown, true);
     return () => document.removeEventListener("keydown", onKeyDown, true);
   }, []);
-  return <div className="modal-backdrop approval-backdrop"><div ref={modalRef} className="approval-modal" role="alertdialog" aria-modal="true" aria-label={title}><div className="approval-shield"><ShieldAlert size={22} /></div><h2>{title}</h2><p>{description}</p>{threadLabel && <div className="approval-thread-line"><MessageSquare size={12} /> Requested by <strong>{threadLabel}</strong></div>}{children}{pendingCount != null && pendingCount > 0 && <div className="approval-queue-note">{pendingCount} more approval{pendingCount === 1 ? "" : "s"} waiting</div>}</div></div>;
+  // Move keyboard focus behind the aria-modal boundary on mount: the first
+  // form field when the request has one, otherwise the dialog itself. Action
+  // buttons are still disabled at this point (activation grace), so the modal
+  // cannot rely on them as the initial target.
+  useEffect(() => {
+    const modal = modalRef.current;
+    if (!modal || modal.contains(document.activeElement)) return;
+    (modal.querySelector<HTMLElement>("input, select, textarea") ?? modal).focus();
+  }, []);
+  return <div className="modal-backdrop approval-backdrop"><div ref={modalRef} className="approval-modal" data-approval-modal="" role="alertdialog" aria-modal="true" aria-label={title} tabIndex={-1}><div className="approval-shield"><ShieldAlert size={22} /></div><h2>{title}</h2><p>{description}</p>{threadLabel && <div className="approval-thread-line"><MessageSquare size={12} /> Requested by <strong>{threadLabel}</strong></div>}{children}{pendingCount != null && pendingCount > 0 && <div className="approval-queue-note">{pendingCount} more approval{pendingCount === 1 ? "" : "s"} waiting</div>}</div></div>;
 }
 
 export function ApprovalCenter({ approval, threadLabel, pendingCount, onRespond }: { approval: PendingApproval; threadLabel?: string; pendingCount?: number; onRespond: (value: JsonObject) => void }) {

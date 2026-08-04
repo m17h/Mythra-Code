@@ -86,6 +86,7 @@ import {
   completeCheckpointSnapshot,
   createCheckpointSnapshot,
   deleteCheckpointSnapshot,
+  partitionCheckpointsForRetention,
   readCheckpointDiff,
   restoreCheckpointSnapshot,
   type CheckpointHead,
@@ -320,6 +321,10 @@ export default function App() {
   const activeProject = workspaceMode === "project" ? selectedProject : null;
   const chatWorkspace = useMemo<Project | null>(() => (chatWorkspacePath ? { id: "openkiwi-normal-chats", name: "Chats", path: chatWorkspacePath, isChat: true } : null), [chatWorkspacePath]);
   const activeWorkspace = workspaceMode === "chat" ? chatWorkspace : activeProject;
+  // Current workspace identity for async continuations (sendMessage) that
+  // must not install UI state after a mid-flight workspace switch.
+  const activeWorkspacePathRef = useRef<string | null>(null);
+  activeWorkspacePathRef.current = activeWorkspace ? normalizedProjectPath(activeWorkspace.path) : null;
   const activeThreadId = activeThread?.id ?? null;
   const activeThreadWorktree = activeThreadId ? threadWorktrees[activeThreadId] : undefined;
   const activeExecutionPath = activeWorkspace
@@ -722,23 +727,6 @@ export default function App() {
     }, 3000);
   }, []);
 
-  const persistCheckpoints = useCallback((update: (current: CheckpointRecord[]) => CheckpointRecord[]) => {
-    const next = update(checkpointsRef.current);
-    checkpointsRef.current = next;
-    setCheckpoints(next);
-    storeValue("kiwi.checkpoints", next);
-  }, []);
-
-  const persistCheckpointHead = useCallback((workspacePath: string, head: CheckpointHead | null) => {
-    const key = normalizedProjectPath(workspacePath);
-    const next = { ...checkpointHeadsRef.current };
-    if (head) next[key] = head;
-    else delete next[key];
-    checkpointHeadsRef.current = next;
-    setCheckpointHeads(next);
-    storeValue("kiwi.checkpointHeads", next);
-  }, []);
-
   const runCheckpointProjectOperation = useCallback(async <T,>(
     workspacePath: string,
     operation: () => Promise<T>,
@@ -760,6 +748,41 @@ export default function App() {
         checkpointProjectQueuesRef.current.delete(key);
       }
     }
+  }, []);
+
+  const persistCheckpoints = useCallback((update: (current: CheckpointRecord[]) => CheckpointRecord[]) => {
+    const next = update(checkpointsRef.current);
+    // Retention: the record list is rewritten wholesale on every turn and
+    // would otherwise grow forever. Prune old overflow past the per-project
+    // cap, and delete each pruned record's backing git snapshot the same way
+    // an explicit delete does. Heads and in-flight run checkpoints are
+    // explicitly protected; the partition itself keeps anything running,
+    // safety-related, worktree-linked, or newer than seven days.
+    const protectedIds = new Set<string>([
+      ...Object.values(checkpointHeadsRef.current).map((head) => head.checkpointId),
+      ...activeRunCheckpointsRef.current.values(),
+    ]);
+    const { kept, pruned } = partitionCheckpointsForRetention(next, protectedIds);
+    checkpointsRef.current = kept;
+    setCheckpoints(kept);
+    storeValue("kiwi.checkpoints", kept);
+    for (const record of pruned) {
+      if (!record.workspacePath || !record.beforeCommit) continue;
+      void runCheckpointProjectOperation(
+        record.workspacePath,
+        () => deleteCheckpointSnapshot(record.id, record.workspacePath!),
+      ).catch(() => undefined);
+    }
+  }, [runCheckpointProjectOperation]);
+
+  const persistCheckpointHead = useCallback((workspacePath: string, head: CheckpointHead | null) => {
+    const key = normalizedProjectPath(workspacePath);
+    const next = { ...checkpointHeadsRef.current };
+    if (head) next[key] = head;
+    else delete next[key];
+    checkpointHeadsRef.current = next;
+    setCheckpointHeads(next);
+    storeValue("kiwi.checkpointHeads", next);
   }, []);
 
   const beginRunCheckpoint = useCallback(async (
@@ -1457,12 +1480,15 @@ export default function App() {
     },
     onTurnCompleted: (threadId) => {
       void finalizeRunCheckpoint(threadId);
-      const timer = claudeSaveTimersRef.current.get(threadId);
-      if (timer !== undefined) window.clearTimeout(timer);
-      claudeSaveTimersRef.current.delete(threadId);
       const task = useTaskStore.getState().tasks[threadId];
       const known = knownThreadsRef.current?.[threadId];
       if (known) {
+        // Cancel the debounced save only when this final save replaces it;
+        // otherwise a thread no longer in the index would lose the last
+        // scheduled persist of its final turn.
+        const timer = claudeSaveTimersRef.current.get(threadId);
+        if (timer !== undefined) window.clearTimeout(timer);
+        claudeSaveTimersRef.current.delete(threadId);
         const latestUser = [...(task?.messages ?? [])].reverse().find((message) => message.role === "user")?.text;
         const updated = { ...known, preview: latestUser?.slice(0, 140) || known.preview, updatedAt: Math.floor(Date.now() / 1000) };
         rememberThread(updated);
@@ -1504,12 +1530,15 @@ export default function App() {
     },
     onTurnCompleted: (threadId) => {
       void finalizeRunCheckpoint(threadId);
-      const timer = cursorSaveTimersRef.current.get(threadId);
-      if (timer !== undefined) window.clearTimeout(timer);
-      cursorSaveTimersRef.current.delete(threadId);
       const task = useTaskStore.getState().tasks[threadId];
       const known = knownThreadsRef.current?.[threadId];
       if (known) {
+        // Cancel the debounced save only when this final save replaces it;
+        // otherwise a thread no longer in the index would lose the last
+        // scheduled persist of its final turn.
+        const timer = cursorSaveTimersRef.current.get(threadId);
+        if (timer !== undefined) window.clearTimeout(timer);
+        cursorSaveTimersRef.current.delete(threadId);
         const latestUser = [...(task?.messages ?? [])].reverse().find((message) => message.role === "user")?.text;
         const updated = { ...known, preview: latestUser?.slice(0, 140) || known.preview, updatedAt: Math.floor(Date.now() / 1000) };
         rememberThread(updated);
@@ -1530,7 +1559,14 @@ export default function App() {
     },
   });
 
+  // The startup sequence must run exactly once per launch. Some of its
+  // callbacks change identity later (refreshCursorModels depends on the
+  // Cursor login state), and re-running checkRuntime on such a change could
+  // pop the Codex setup modal in the middle of a session.
+  const startupRanRef = useRef(false);
   useEffect(() => {
+    if (startupRanRef.current) return;
+    startupRanRef.current = true;
     void getNormalChatWorkspace()
       .then(setChatWorkspacePath)
       .catch((reason) => setError(friendlyError(reason)));
@@ -1544,14 +1580,18 @@ export default function App() {
       void refreshUsage();
     });
     void refreshClaudeStatus();
-    void refreshCursorStatus().then((next) => {
-      if (next.loggedIn) void refreshCursorModels();
-    });
+    void refreshCursorStatus();
     void refreshOpenRouterModels();
     void hasOpenRouterKey()
       .then(setOpenRouterReady)
       .catch(() => setOpenRouterReady(false));
-  }, [checkRuntime, refreshAccount, refreshClaudeStatus, refreshCursorModels, refreshCursorStatus, refreshModels, refreshOpenRouterModels, refreshUsage]);
+  }, [checkRuntime, refreshAccount, refreshClaudeStatus, refreshCursorStatus, refreshModels, refreshOpenRouterModels, refreshUsage]);
+
+  // Cursor sign-in (at startup or later) refreshes only the Cursor model
+  // list, never the whole startup sequence above.
+  useEffect(() => {
+    if (cursorStatus?.loggedIn) void refreshCursorModels();
+  }, [cursorStatus?.loggedIn, refreshCursorModels]);
 
   const shortcutStateRef = useRef({ running: false, modalOpen: false, threadOpen: false, stopTurn: () => {}, newThread: () => {} });
   useEffect(() => {
@@ -1664,6 +1704,21 @@ export default function App() {
             store.setTaskStatus(threadId, "error", "The Codex runtime disconnected during this task.");
             void finalizeRunCheckpoint(threadId, undefined, "interrupted");
           }
+        }
+        // Queued Codex approvals reference request ids the dead process owned.
+        // Every response to them would fail after the respawn, leaving an
+        // undismissable modal — drop them, and say so in the thread.
+        for (const task of Object.values(store.tasks)) {
+          const codexApprovals = task.approvals.filter((approval) => !approval.method.startsWith("claude/") && !approval.method.startsWith("cursor/"));
+          if (!codexApprovals.length || codexApprovals.length !== task.approvals.length) continue;
+          store.clearApprovals(task.threadId);
+          store.upsertActivity(task.threadId, {
+            id: `approvals-dropped-${Date.now()}`,
+            kind: "warning",
+            title: codexApprovals.length === 1 ? "A pending approval was dropped" : `${codexApprovals.length} pending approvals were dropped`,
+            detail: "The Codex runtime disconnected, so its queued approval requests can no longer be answered. The model will ask again if it still needs permission.",
+          });
+          void auditEvent("approval.droppedOnRuntimeRestart", { count: codexApprovals.length }, task.threadId).catch(() => {});
         }
         setStartingDraftTurn(false);
         void rpc("model/list", { limit: 1 })
@@ -2129,6 +2184,12 @@ export default function App() {
     }
 
     setError(null);
+    // Workspace identity captured at send start. After each await below the
+    // continuation may resume in a different workspace; installation into the
+    // visible UI (thread list, active thread) is then skipped, while the
+    // thread itself still starts and stays bound to its own project.
+    const sendWorkspacePath = normalizedProjectPath(activeWorkspace.path);
+    const workspaceChangedMidSend = () => activeWorkspacePathRef.current !== sendWorkspacePath;
     let pendingStart: PendingTurnStart | undefined;
     // Mark the start synchronously, before the first await, so Stop and the
     // composer reflect it immediately — and only on the thread actually
@@ -2183,16 +2244,20 @@ export default function App() {
           }
           rememberThread(thread);
           persistThreadModel(thread.id, effectiveSettings.model);
-          setThreads((current) => upsertThread(current, thread!));
-          setActiveThread(thread);
           useTaskStore.getState().ensureTask(thread.id, executionPath);
-          useTaskStore.getState().setActiveThread(thread.id);
+          if (!workspaceChangedMidSend()) {
+            setThreads((current) => upsertThread(current, thread!));
+            setActiveThread(thread);
+            useTaskStore.getState().setActiveThread(thread.id);
+          }
         }
         startedThreadId = thread.id;
         const updatedThread = { ...thread, preview: text.slice(0, 140) || thread.preview, updatedAt: Math.floor(Date.now() / 1000) };
         rememberThread(updatedThread);
-        setThreads((current) => upsertThread(current, updatedThread));
-        setActiveThread(updatedThread);
+        if (!workspaceChangedMidSend()) {
+          setThreads((current) => upsertThread(current, updatedThread));
+          setActiveThread(updatedThread);
+        }
         useTaskStore.getState().ensureTask(thread.id, executionPath);
         useTaskStore.getState().setTaskStatus(thread.id, "starting");
         if (!pendingStart) pendingStart = pendingTurnStartsRef.current.begin(thread.id);
@@ -2239,16 +2304,20 @@ export default function App() {
           }
           rememberThread(thread);
           persistThreadModel(thread.id, effectiveSettings.model);
-          setThreads((current) => upsertThread(current, thread!));
-          setActiveThread(thread);
           useTaskStore.getState().ensureTask(thread.id, executionPath);
-          useTaskStore.getState().setActiveThread(thread.id);
+          if (!workspaceChangedMidSend()) {
+            setThreads((current) => upsertThread(current, thread!));
+            setActiveThread(thread);
+            useTaskStore.getState().setActiveThread(thread.id);
+          }
         }
         startedThreadId = thread.id;
         const updatedThread = { ...thread, preview: text.slice(0, 140) || thread.preview, updatedAt: Math.floor(Date.now() / 1000) };
         rememberThread(updatedThread);
-        setThreads((current) => upsertThread(current, updatedThread));
-        setActiveThread(updatedThread);
+        if (!workspaceChangedMidSend()) {
+          setThreads((current) => upsertThread(current, updatedThread));
+          setActiveThread(updatedThread);
+        }
         useTaskStore.getState().ensureTask(thread.id, executionPath);
         useTaskStore.getState().setTaskStatus(thread.id, "starting");
         if (!pendingStart) pendingStart = pendingTurnStartsRef.current.begin(thread.id);
@@ -2311,10 +2380,12 @@ export default function App() {
         }
         rememberThread(startedThread);
         persistThreadModel(startedThread.id, effectiveSettings.model);
-        setThreads((current) => upsertThread(current, startedThread));
-        setActiveThread(startedThread);
         useTaskStore.getState().ensureTask(startedThread.id, executionPath);
-        useTaskStore.getState().setActiveThread(startedThread.id);
+        if (!workspaceChangedMidSend()) {
+          setThreads((current) => upsertThread(current, startedThread));
+          setActiveThread(startedThread);
+          useTaskStore.getState().setActiveThread(startedThread.id);
+        }
       } else if (effectiveSettings.provider === "openrouter") {
         // Re-apply the isolated provider config before every subsequent turn.
         // This repairs a persisted thread after a compatibility refresh.
@@ -2324,8 +2395,10 @@ export default function App() {
       if (activeThread?.id === threadId) {
         const updatedThread = { ...activeThread, updatedAt: Math.floor(Date.now() / 1000) };
         rememberThread(updatedThread);
-        setThreads((current) => upsertThread(current, updatedThread));
-        setActiveThread(updatedThread);
+        if (!workspaceChangedMidSend()) {
+          setThreads((current) => upsertThread(current, updatedThread));
+          setActiveThread(updatedThread);
+        }
       }
       useTaskStore.getState().ensureTask(threadId, executionPath);
       useTaskStore.getState().setTaskStatus(threadId, "starting");
@@ -2518,10 +2591,10 @@ export default function App() {
       useTaskStore.getState().resolveApproval(approval.threadId, approval.id);
     } catch (reason) {
       const message = friendlyError(reason);
-      if (
-        (approval.method === "claude/can_use_tool" || approval.method === "cursor/request_permission" || approval.method === "cursor/ask_question") &&
-        /no longer|not currently running/i.test(message)
-      ) {
+      // A rejection that says the runtime no longer knows this request (the
+      // turn ended, or the process crashed and respawned) can never succeed
+      // on retry. Resolve it locally so the modal cannot reappear forever.
+      if (/no longer|not currently running|unknown request|not found|closed/i.test(message)) {
         useTaskStore
           .getState()
           .resolveApproval(approval.threadId, approval.id);
@@ -4573,6 +4646,7 @@ export default function App() {
 
       {pendingApproval && (
         <ApprovalCenter
+          key={`${pendingApproval.threadId}:${pendingApproval.id}`}
           approval={pendingApproval}
           threadLabel={(() => {
             if (pendingApproval.threadId === "runtime") return undefined;

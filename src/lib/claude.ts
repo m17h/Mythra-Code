@@ -117,7 +117,24 @@ export async function respondToClaudePermission(
 export async function onClaudeEvent(
   handler: (event: ClaudeEvent) => void,
 ): Promise<UnlistenFn> {
-  return listen<ClaudeEvent>("claude-event", ({ payload }) => handler(payload));
+  // The backend emits single messages on "claude-event" and coalesced bursts
+  // of stream deltas on "claude-events" as an ordered array. Keep both
+  // subscriptions so either backend version works.
+  const single = await listen<ClaudeEvent>("claude-event", ({ payload }) => handler(payload));
+  try {
+    const batched = await listen<ClaudeEvent[]>("claude-events", ({ payload }) => {
+      for (const event of payload) handler(event);
+    });
+    return () => {
+      single();
+      batched();
+    };
+  } catch (reason) {
+    // If the second subscription fails, do not leave the first listener
+    // orphaned and delivering every event twice after a retry.
+    single();
+    throw reason;
+  }
 }
 
 function transcriptKey(threadId: string): string {

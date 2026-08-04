@@ -68,19 +68,26 @@ export function OpenRouterModelControl({
   const canUseCustom = search.trim().includes("/") && !models.some((entry) => entry.id.toLowerCase() === query);
 
   useEffect(() => {
+    if (!open) return;
     function handlePointerDown(event: PointerEvent) {
       if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
     }
+    // Capture phase + stopPropagation: Escape closes only this menu and never
+    // reaches the app-level handler that stops the running turn.
     function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") setOpen(false);
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        setOpen(false);
+        rootRef.current?.querySelector<HTMLButtonElement>(".openrouter-trigger")?.focus();
+      }
     }
     document.addEventListener("pointerdown", handlePointerDown);
-    document.addEventListener("keydown", handleKeyDown);
+    document.addEventListener("keydown", handleKeyDown, true);
     return () => {
       document.removeEventListener("pointerdown", handlePointerDown);
-      document.removeEventListener("keydown", handleKeyDown);
+      document.removeEventListener("keydown", handleKeyDown, true);
     };
-  }, []);
+  }, [open]);
 
   useEffect(() => {
     if (open) requestAnimationFrame(() => searchRef.current?.focus());
@@ -102,7 +109,7 @@ export function OpenRouterModelControl({
         <div className="openrouter-menu">
           <div className="openrouter-search-row">
             <Search size={14} />
-            <input ref={searchRef} aria-label="Search OpenRouter models" value={search} onChange={(event) => setSearch(event.target.value)} onKeyDown={(event) => { if (event.key === "ArrowDown") { event.preventDefault(); optionRefs.current.find(Boolean)?.focus(); } }} placeholder="Search models or enter provider/model…" />
+            <input ref={searchRef} aria-label="Search OpenRouter models" value={search} onChange={(event) => setSearch(event.target.value)} onKeyDown={(event) => { if (event.key === "ArrowDown") { event.preventDefault(); optionRefs.current.find((item) => item?.isConnected)?.focus(); } }} placeholder="Search models or enter provider/model…" />
             <button type="button" onClick={onRefresh} title="Refresh catalog" aria-label="Refresh OpenRouter model catalog" disabled={loading}>{loading ? <LoaderCircle className="spin" size={13} /> : <RefreshCw size={13} />}</button>
           </div>
           <div className="openrouter-menu-meta"><span>{query ? `${filtered.length} matches` : `${models.length} available`}</span><small>Tool-capable catalog</small></div>
@@ -117,11 +124,12 @@ export function OpenRouterModelControl({
                 key={entry.id}
                 ref={(node) => { optionRefs.current[filtered.indexOf(entry)] = node; }}
                 onKeyDown={(event) => {
-                  const enabled = optionRefs.current.filter((item): item is HTMLButtonElement => Boolean(item));
+                  // Filtering shrinks the list without truncating the ref
+                  // array; only connected nodes are real navigation targets.
+                  const enabled = optionRefs.current.filter((item): item is HTMLButtonElement => Boolean(item?.isConnected));
                   const index = enabled.indexOf(event.currentTarget);
                   if (event.key === "ArrowDown") { event.preventDefault(); enabled[(index + 1) % enabled.length]?.focus(); }
                   if (event.key === "ArrowUp") { event.preventDefault(); (index <= 0 ? searchRef.current : enabled[index - 1])?.focus(); }
-                  if (event.key === "Escape") { event.preventDefault(); setOpen(false); }
                 }}
                 onClick={() => {
                   onModel(entry.id);

@@ -22,11 +22,17 @@ export function durationForTurn(threadId: string, turnId?: string): number | und
 export function recordTurnDuration(threadId: string, turnId: string, durationMs: number): number {
   const normalized = Math.max(0, Math.round(durationMs));
   const all = durations();
-  const threadDurations = { ...(all[threadId] ?? {}), [turnId]: normalized };
+  // Re-insert the touched keys so they move to the end of the key order;
+  // eviction below then removes the least-recently-touched entries instead of
+  // whichever thread happened to be recorded first (possibly a live one).
+  const threadDurations = { ...(all[threadId] ?? {}) };
+  delete threadDurations[turnId];
+  threadDurations[turnId] = normalized;
   const turnIds = Object.keys(threadDurations);
   while (turnIds.length > MAX_TURNS_PER_THREAD) {
     delete threadDurations[turnIds.shift()!];
   }
+  delete all[threadId];
   all[threadId] = threadDurations;
 
   const threadIds = Object.keys(all);

@@ -70,19 +70,26 @@ export function ModelPowerControl({
   const SelectedModelIcon = selectedModel.icon;
 
   useEffect(() => {
+    if (!menuOpen) return;
     function handlePointerDown(event: PointerEvent) {
       if (!rootRef.current?.contains(event.target as Node)) setMenuOpen(false);
     }
+    // Capture phase + stopPropagation: Escape closes only this menu and never
+    // reaches the app-level handler that stops the running turn.
     function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") setMenuOpen(false);
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        setMenuOpen(false);
+        rootRef.current?.querySelector<HTMLButtonElement>(".model-picker-trigger")?.focus();
+      }
     }
     document.addEventListener("pointerdown", handlePointerDown);
-    document.addEventListener("keydown", handleKeyDown);
+    document.addEventListener("keydown", handleKeyDown, true);
     return () => {
       document.removeEventListener("pointerdown", handlePointerDown);
-      document.removeEventListener("keydown", handleKeyDown);
+      document.removeEventListener("keydown", handleKeyDown, true);
     };
-  }, []);
+  }, [menuOpen]);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -135,7 +142,6 @@ export function ModelPowerControl({
           if (event.key === "ArrowUp") { event.preventDefault(); moveOptionFocus(-1); }
           if (event.key === "Home") { event.preventDefault(); optionRefs.current.find((entry) => entry && !entry.disabled)?.focus(); }
           if (event.key === "End") { event.preventDefault(); [...optionRefs.current].reverse().find((entry) => entry && !entry.disabled)?.focus(); }
-          if (event.key === "Escape") { event.preventDefault(); setMenuOpen(false); rootRef.current?.querySelector<HTMLButtonElement>(".model-picker-trigger")?.focus(); }
         }}>
           <div className="model-menu-heading"><span>Choose your model</span><small>OpenAI subscription</small></div>
           {MODELS.map((entry) => {

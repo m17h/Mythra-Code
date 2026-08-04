@@ -39,17 +39,19 @@ const tauriConfig = JSON.parse(readFileSync(tauriConfigPath, "utf8"));
 tauriConfig.version = version;
 writeFileSync(tauriConfigPath, `${JSON.stringify(tauriConfig, null, 2)}\n`);
 
-const cargoManifest = readFileSync(cargoManifestPath, "utf8").replace(
-  /(^\[package\][\s\S]*?^version\s*=\s*")[^"]+("$)/m,
-  `$1${version}$2`,
-);
-writeFileSync(cargoManifestPath, cargoManifest);
+// Rewrites that rely on a regex must prove the regex actually matched, or a
+// drifting file format would silently leave the old version in place.
+function rewriteVersion(path, pattern) {
+  const before = readFileSync(path, "utf8");
+  const after = before.replace(pattern, `$1${version}$2`);
+  if (after === before || !after.includes(version)) {
+    throw new Error(`Could not update the version in ${path}: the expected version line was not found. Update it to ${version} manually or fix the pattern in scripts/bump-version.mjs.`);
+  }
+  writeFileSync(path, after);
+}
 
-const cargoLock = readFileSync(cargoLockPath, "utf8").replace(
-  /(\[\[package\]\]\nname = "openkiwi"\nversion = ")[^"]+("\n)/,
-  `$1${version}$2`,
-);
-writeFileSync(cargoLockPath, cargoLock);
+rewriteVersion(cargoManifestPath, /(^\[package\][\s\S]*?^version\s*=\s*")[^"]+("$)/m);
+rewriteVersion(cargoLockPath, /(\[\[package\]\]\nname = "openkiwi"\nversion = ")[^"]+("\n)/);
 
 console.log(`OpenKiwi ${current} → ${version}`);
 console.log("Updated package.json, package-lock.json, tauri.conf.json, Cargo.toml, and Cargo.lock.");

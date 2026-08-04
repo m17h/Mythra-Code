@@ -34,7 +34,23 @@ export function useScheduler(deps: SchedulerDeps): void {
     if (runningRef.current.has(scheduled.id)) return;
     const project = current.projects.find((item) => item.id === scheduled.projectId);
     const run: ScheduleRunSettings = scheduled.run ?? scheduleRunSnapshot(current.settings);
-    if (!project) return;
+    if (!project) {
+      // A silent return here would retry every 30 seconds forever with no
+      // trace. Disable the schedule and record why it can never fire.
+      const error = "This schedule's project was removed from OpenKiwi, so the schedule was disabled.";
+      current.updateSchedule(scheduled.id, (item) => ({ ...item, enabled: false }));
+      current.recordRun({
+        id: crypto.randomUUID(),
+        scheduleId: scheduled.id,
+        scheduleName: scheduled.name,
+        projectId: scheduled.projectId,
+        at: Date.now(),
+        status: "failed",
+        error,
+      });
+      void auditEvent("schedule.failed", { scheduleId: scheduled.id, error }).catch(() => {});
+      return;
+    }
     if (run.provider === "claude" || run.provider === "cursor") {
       const error = `${run.provider === "cursor" ? "Cursor" : "Claude"} scheduled tasks are not enabled yet. Use an OpenAI or OpenRouter schedule.`;
       current.updateSchedule(scheduled.id, (item) => ({
@@ -57,12 +73,15 @@ export function useScheduler(deps: SchedulerDeps): void {
     if (run.provider === "openai" && !current.chatGptConnected) return;
     if (run.provider === "openrouter" && !current.openRouterReady) return;
     runningRef.current.add(scheduled.id);
+    let startedThreadId: string | undefined;
+    let turnStarted = false;
     try {
       await current.ensureSkillRoots();
       const started = await rpc<{ thread: Thread }>("thread/start", threadStartParams(run, project.path, {
         serviceName: "OpenKiwi",
         interactive: false,
       }));
+      startedThreadId = started.thread.id;
       current.bindThreadToProject(started.thread.id, project.path);
       useTaskStore.getState().ensureTask(started.thread.id, project.path);
       useTaskStore.getState().appendUserMessage(started.thread.id, { id: `scheduled-${crypto.randomUUID()}`, role: "user", text: scheduled.prompt });
@@ -70,6 +89,7 @@ export function useScheduler(deps: SchedulerDeps): void {
       await rpc("turn/start", turnStartParams(run, started.thread.id, project.path, [
         { type: "text", text: scheduled.prompt, text_elements: [] },
       ]));
+      turnStarted = true;
       current.updateSchedule(scheduled.id, (item) => ({
         ...item,
         lastRunAt: Date.now(),
@@ -88,12 +108,19 @@ export function useScheduler(deps: SchedulerDeps): void {
       });
       current.onThreadStarted(project);
     } catch (reason) {
+      // A thread whose turn never started would otherwise stay "starting"
+      // forever, blocking checkpoints, worktree operations, and deletion for
+      // the whole project.
+      if (startedThreadId && !turnStarted) {
+        useTaskStore.getState().setTaskStatus(startedThreadId, "error", String(reason).slice(0, 200));
+      }
       depsRef.current.updateSchedule(scheduled.id, (item) => ({ ...item, nextRunAt: Date.now() + 5 * 60_000 }));
       depsRef.current.recordRun({
         id: crypto.randomUUID(),
         scheduleId: scheduled.id,
         scheduleName: scheduled.name,
         projectId: scheduled.projectId,
+        threadId: startedThreadId,
         at: Date.now(),
         status: "failed",
         error: String(reason).slice(0, 200),

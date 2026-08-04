@@ -54,6 +54,7 @@ interface TaskStoreState {
   upsertAgent: (threadId: string, agent: AgentRecord) => void;
   enqueueApproval: (approval: PendingApproval) => void;
   resolveApproval: (threadId: string, approvalId: string | number) => void;
+  clearApprovals: (threadId: string) => void;
   clearUnread: (threadId: string) => void;
   removeTask: (threadId: string) => void;
 }
@@ -322,8 +323,11 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
           pendingTurnStartOrder: newerTurnActive ? task.pendingTurnStartOrder : undefined,
           workingStartedAt: newerTurnActive ? task.workingStartedAt : undefined,
           pendingTurnDurationMs: newerTurnActive ? task.pendingTurnDurationMs : undefined,
-          lastCompletedTurnId: turnId,
-          lastCompletedTurnStatus: status,
+          // A completion without a turn id (runtime exit, provider crash)
+          // must not erase the record of the last turn that really finished —
+          // workflow waiters key off it and would otherwise idle out.
+          lastCompletedTurnId: completedTurnId ?? task.lastCompletedTurnId,
+          lastCompletedTurnStatus: completedTurnId ? status : task.lastCompletedTurnStatus,
           status: threadStatus,
           unread: state.activeThreadId !== threadId && threadStatus === "completed" ? true : task.unread,
           updatedAt: Date.now(),
@@ -397,6 +401,11 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     const task = state.tasks[threadId];
     if (!task) return state;
     return { tasks: { ...state.tasks, [threadId]: { ...task, approvals: task.approvals.filter((entry) => entry.id !== approvalId), updatedAt: Date.now() } } };
+  }),
+  clearApprovals: (threadId) => set((state) => {
+    const task = state.tasks[threadId];
+    if (!task || task.approvals.length === 0) return state;
+    return { tasks: { ...state.tasks, [threadId]: { ...task, approvals: [], updatedAt: Date.now() } } };
   }),
   clearUnread: (threadId) => set((state) => state.tasks[threadId] ? { tasks: { ...state.tasks, [threadId]: { ...state.tasks[threadId], unread: false } } } : state),
   removeTask: (threadId) => {

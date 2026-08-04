@@ -19,4 +19,29 @@ describe("ModelPowerControl", () => {
     fireEvent.click(screen.getByRole("switch", { name: /Ultra/i }));
     expect(onUltra).toHaveBeenCalledWith(true);
   });
+
+  it("closes the menu on Escape without letting the key reach app-level handlers", () => {
+    // Stand-in for App's document-level Escape handler that stops the turn.
+    const appEscape = vi.fn();
+    const listener = (event: KeyboardEvent) => {
+      if (event.key === "Escape") appEscape();
+    };
+    document.addEventListener("keydown", listener);
+    try {
+      render(<ModelPowerControl model="gpt-5.6-sol" effort="medium" ultra={false} fast={false} runtimeModels={[]} onModel={vi.fn()} onEffort={vi.fn()} onFast={vi.fn()} onUltra={vi.fn()} />);
+      const trigger = screen.getByRole("button", { name: /OpenAI model: Sol/i });
+      fireEvent.click(trigger);
+      expect(trigger).toHaveAttribute("aria-expanded", "true");
+
+      fireEvent.keyDown(document.body, { key: "Escape" });
+      expect(trigger).toHaveAttribute("aria-expanded", "false");
+      expect(appEscape).not.toHaveBeenCalled();
+
+      // With the menu closed the key propagates normally again.
+      fireEvent.keyDown(document.body, { key: "Escape" });
+      expect(appEscape).toHaveBeenCalledTimes(1);
+    } finally {
+      document.removeEventListener("keydown", listener);
+    }
+  });
 });

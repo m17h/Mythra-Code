@@ -400,6 +400,67 @@ describe("workflow turn waiting", () => {
     });
   });
 
+  it("does not strand the workflow thread in starting when turn/start fails terminally", async () => {
+    const workflow = testWorkflow({
+      steps: [{
+        id: "step-1",
+        type: "agent",
+        name: "Review",
+        prompt: "Review it",
+        continueOnError: false,
+      }],
+    });
+    const runs: WorkflowRunRecord[] = [];
+    codex.rpc.mockImplementation((method: string) => {
+      if (method === "thread/start") return Promise.resolve({ thread: { id: "thread-1" } });
+      if (method === "turn/start") return Promise.reject(new Error("model unavailable"));
+      return Promise.resolve({});
+    });
+    const { result } = renderHook(() => useWorkflowEngine(testEngineDeps(workflow, runs)));
+
+    await act(async () => {
+      await result.current.runWorkflow("workflow-1");
+    });
+
+    expect(runs.at(-1)).toMatchObject({ status: "failed" });
+    expect(useTaskStore.getState().statuses["thread-1"]).toBe("error");
+  });
+
+  it("leaves the thread status to a successful retry after a failed turn/start", async () => {
+    const workflow = testWorkflow({
+      steps: [{
+        id: "step-1",
+        type: "agent",
+        name: "Review",
+        prompt: "Review it",
+        continueOnError: false,
+        retryCount: 1,
+        retryDelaySeconds: 0,
+      }],
+    });
+    const runs: WorkflowRunRecord[] = [];
+    let turnAttempt = 0;
+    codex.rpc.mockImplementation((method: string) => {
+      if (method === "thread/start") return Promise.resolve({ thread: { id: "thread-1" } });
+      if (method === "turn/start") {
+        turnAttempt += 1;
+        if (turnAttempt === 1) return Promise.reject(new Error("model unavailable"));
+        queueMicrotask(() => useTaskStore.getState().completeTurn("thread-1", "turn-1", "completed"));
+        return Promise.resolve({ turn: { id: "turn-1" } });
+      }
+      return Promise.resolve({});
+    });
+    const { result } = renderHook(() => useWorkflowEngine(testEngineDeps(workflow, runs)));
+
+    await act(async () => {
+      await result.current.runWorkflow("workflow-1");
+    });
+
+    expect(turnAttempt).toBe(2);
+    expect(runs.at(-1)).toMatchObject({ status: "completed" });
+    expect(useTaskStore.getState().statuses["thread-1"]).toBe("completed");
+  });
+
   it("silently waits for runtime readiness before firing an app-start workflow", async () => {
     const workflow = testWorkflow({
       enabled: true,

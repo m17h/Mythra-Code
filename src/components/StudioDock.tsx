@@ -294,7 +294,7 @@ export function StudioDock(props: {
         {props.tab === "terminal" && <>
           <PanelHeader icon={TerminalSquare} title="Terminal" subtitle={props.projectName || "Project shell"} onClose={props.onClose} />
           <XtermPanel outputStore={props.terminalOutput} placeholder={"OPENKIWI terminal ready\n"} running={props.terminalRunning} onInput={props.onTerminalInput} onResize={props.onTerminalResize} />
-          <div className="terminal-input"><span>$</span><input aria-label="Terminal command" value={props.terminalCommand} onChange={(e) => props.onTerminalCommand(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") props.onRunTerminal(); }} placeholder="npm test" /><button aria-label={props.terminalRunning ? "Stop terminal command" : "Run terminal command"} onClick={props.terminalRunning ? props.onStopTerminal : props.onRunTerminal}>{props.terminalRunning ? <CircleStop size={14} /> : <Play size={14} />}</button></div>
+          <div className="terminal-input"><span>$</span><input aria-label="Terminal command" value={props.terminalCommand} onChange={(e) => props.onTerminalCommand(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !props.terminalRunning) props.onRunTerminal(); }} placeholder="npm test" /><button aria-label={props.terminalRunning ? "Stop terminal command" : "Run terminal command"} onClick={props.terminalRunning ? props.onStopTerminal : props.onRunTerminal}>{props.terminalRunning ? <CircleStop size={14} /> : <Play size={14} />}</button></div>
         </>}
 
         {props.tab === "checkpoints" && <>

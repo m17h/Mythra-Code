@@ -1,5 +1,9 @@
-import { defineConfig } from "vite";
+import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
+
+// This file runs under Node, but the project deliberately avoids depending on
+// @types/node; declare the one Node global the config reads.
+declare const process: { env: Record<string, string | undefined> };
 
 export default defineConfig({
   plugins: [react()],

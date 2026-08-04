@@ -142,6 +142,58 @@ describe("Cursor event routing", () => {
     expect(assistants).toHaveLength(0);
   });
 
+  it("keeps a late session/update from resurrecting a completed turn", () => {
+    sessionUpdate({
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "text", text: "All done." },
+    });
+    send({ type: "result", result: { stopReason: "end_turn" } });
+    expect(useTaskStore.getState().statuses["thread-1"]).toBe("completed");
+
+    sessionUpdate({
+      sessionUpdate: "tool_call_update",
+      toolCallId: "late-tool",
+      status: "completed",
+      rawOutput: { totalMatches: 2 },
+    });
+    sessionUpdate({
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "text", text: "stray chunk" },
+    });
+    useTaskStore.getState().flushDeltas();
+
+    const task = useTaskStore.getState().tasks["thread-1"];
+    expect(useTaskStore.getState().statuses["thread-1"]).toBe("completed");
+    expect(task.activeTurnId).toBeUndefined();
+    // The stray chunk must not open a streaming bubble nothing will finalize.
+    expect(task.messages.filter((message) => message.streaming)).toHaveLength(0);
+    // A new turn still runs normally afterwards.
+    sessionUpdate({
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "text", text: "Next turn" },
+    }, "turn-2");
+    expect(useTaskStore.getState().statuses["thread-1"]).toBe("running");
+  });
+
+  it("counts usage once when a turn emits both usage snapshots and a result total", () => {
+    sessionUpdate({
+      sessionUpdate: "usage_update",
+      usage: { inputTokens: 100, outputTokens: 40 },
+    });
+    sessionUpdate({
+      sessionUpdate: "usage_update",
+      usage: { inputTokens: 200, outputTokens: 80 },
+    });
+    send({ type: "result", result: { usage: { inputTokens: 200, outputTokens: 80 } } });
+
+    const usage = useTaskStore.getState().tasks["thread-1"].usage;
+    expect(usage).toMatchObject({ inputTokens: 200, outputTokens: 80 });
+
+    // A turn without in-turn snapshots still records its result total.
+    send({ type: "result", result: { usage: { inputTokens: 50, outputTokens: 10 } } }, "turn-2");
+    expect(useTaskStore.getState().tasks["thread-1"].usage).toMatchObject({ inputTokens: 250, outputTokens: 90 });
+  });
+
   it("keeps one thread's tool boundary from finalizing another thread's stream", () => {
     useTaskStore.getState().setTaskStatus("thread-2", "starting");
     sessionUpdate({

@@ -1,6 +1,7 @@
 import {
   forwardRef,
   useCallback,
+  useEffect,
   useImperativeHandle,
   useLayoutEffect,
   useRef,
@@ -90,8 +91,13 @@ export const Composer = forwardRef<ComposerHandle, {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const threadKeyRef = useRef(props.threadKey);
   const mentionRequestRef = useRef(0);
+  const mentionTimerRef = useRef<number | null>(null);
   const searchFilesRef = useRef(props.searchFiles);
   searchFilesRef.current = props.searchFiles;
+
+  useEffect(() => () => {
+    if (mentionTimerRef.current !== null) window.clearTimeout(mentionTimerRef.current);
+  }, []);
 
   useLayoutEffect(() => {
     if (textareaRef.current) resizeComposerTextarea(textareaRef.current);
@@ -130,7 +136,9 @@ export const Composer = forwardRef<ComposerHandle, {
     }
     const query = match[1];
     const requestId = ++mentionRequestRef.current;
-    window.setTimeout(() => {
+    if (mentionTimerRef.current !== null) window.clearTimeout(mentionTimerRef.current);
+    mentionTimerRef.current = window.setTimeout(() => {
+      mentionTimerRef.current = null;
       if (mentionRequestRef.current !== requestId) return;
       searchFilesRef.current?.(query)
         .then((results) => {
@@ -166,15 +174,18 @@ export const Composer = forwardRef<ComposerHandle, {
     const delivered = await props.onSend(text);
     if (!delivered) {
       if (threadKeyRef.current === sentFromKey) {
-        // Still on the same thread — restore visibly unless the user typed.
+        // Still on the same thread — restore the failed text ahead of anything
+        // the user typed while the send was in flight, so neither is lost.
         setDraftState((current) => {
-          const restored = current || text;
+          const restored = current && current !== text ? `${text}\n\n${current}` : text;
           persistDraft(sentFromKey, restored);
           return restored;
         });
-      } else if (!draftFor(sentFromKey)) {
-        // Restore silently into the original thread's persisted draft.
-        persistDraft(sentFromKey, text);
+      } else {
+        // Restore silently into the original thread's persisted draft,
+        // keeping any draft written there since.
+        const existing = draftFor(sentFromKey);
+        persistDraft(sentFromKey, existing && existing !== text ? `${text}\n\n${existing}` : text);
       }
     }
   }, [closeMentions, draft, props, setDraft]);

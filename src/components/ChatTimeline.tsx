@@ -1,6 +1,7 @@
 import { Children, isValidElement, memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { VirtuosoHandle } from "react-virtuoso";
 import { Check, ChevronRight, Clipboard, FileCode2, ListChecks, Pencil, Sparkles, TerminalSquare, UsersRound } from "lucide-react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import Markdown from "react-markdown";
 import { Virtuoso } from "react-virtuoso";
 import remarkGfm from "remark-gfm";
@@ -202,18 +203,55 @@ function textFromCodeNode(node: ReactNode): string {
   return String(child.props.children ?? "").replace(/\n$/, "");
 }
 
-function CodePre({ children }: { children?: ReactNode }) {
+/**
+ * "Copied" only appears once the clipboard write actually resolved — a failed
+ * write shows nothing rather than a false confirmation. The reset timer is
+ * cleared on unmount so it cannot fire into an unmounted row.
+ */
+function useCopyFeedback(): [boolean, (text: string) => void] {
   const [copied, setCopied] = useState(false);
+  const timerRef = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+  }, []);
+  const copy = useCallback((text: string) => {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+      timerRef.current = window.setTimeout(() => setCopied(false), 1200);
+    }).catch(() => {});
+  }, []);
+  return [copied, copy];
+}
+
+/**
+ * Markdown links must never navigate the webview itself away from the app.
+ * http(s) destinations open in the system browser; anything else is inert.
+ */
+function MarkdownLink({ href, children }: { href?: string; children?: ReactNode }) {
+  const external = Boolean(href && /^https?:\/\//i.test(href));
+  return (
+    <a
+      href={href}
+      title={external ? href : undefined}
+      onClick={(event) => {
+        event.preventDefault();
+        if (external && href) void openUrl(href);
+      }}
+    >
+      {children}
+    </a>
+  );
+}
+
+function CodePre({ children }: { children?: ReactNode }) {
+  const [copied, copy] = useCopyFeedback();
   const text = textFromCodeNode(children);
   return (
     <div className="code-block">
       <button
         className="code-copy"
-        onClick={() => {
-          void navigator.clipboard.writeText(text);
-          setCopied(true);
-          window.setTimeout(() => setCopied(false), 1200);
-        }}
+        onClick={() => copy(text)}
         title="Copy code"
       >
         {copied ? <Check size={12} /> : <Clipboard size={12} />}
@@ -224,8 +262,11 @@ function CodePre({ children }: { children?: ReactNode }) {
   );
 }
 
+const MARKDOWN_COMPONENTS = { pre: CodePre, a: MarkdownLink };
+const REASONING_MARKDOWN_COMPONENTS = { a: MarkdownLink };
+
 const MessageRow = memo(function MessageRow({ message, provider, onEdit }: { message: ChatMessage; provider: Provider; onEdit?: (text: string) => void }) {
-  const [copied, setCopied] = useState(false);
+  const [copied, copy] = useCopyFeedback();
   return (
     <article className={`message ${message.role}`}>
       <div className={`message-avatar ${message.role === "assistant" ? `provider-${provider}` : ""}`}>
@@ -235,11 +276,7 @@ const MessageRow = memo(function MessageRow({ message, provider, onEdit }: { mes
         {!message.streaming && (
           <div className="message-actions">
             <button
-              onClick={() => {
-                void navigator.clipboard.writeText(message.text);
-                setCopied(true);
-                window.setTimeout(() => setCopied(false), 1200);
-              }}
+              onClick={() => copy(message.text)}
               title="Copy message"
             >
               {copied ? <Check size={11} /> : <Clipboard size={11} />}
@@ -260,7 +297,7 @@ const MessageRow = memo(function MessageRow({ message, provider, onEdit }: { mes
           <div className="message-text plain-stream">{message.text}</div>
         ) : (
           <div className="message-text rich-markdown">
-            <Markdown remarkPlugins={[remarkGfm]} components={{ pre: CodePre }}>{message.text}</Markdown>
+            <Markdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>{message.text}</Markdown>
           </div>
         )}
         {message.streaming && <span className="stream-caret" />}
@@ -338,7 +375,7 @@ export const ReasoningDisclosure = memo(function ReasoningDisclosure({
             <div className="reasoning-text rich-markdown">
               {inProgress
                 ? <div className="plain-stream">{detail || "Waiting for the model’s thoughts…"}</div>
-                : <Markdown remarkPlugins={[remarkGfm]}>{detail || "Waiting for the model’s thoughts…"}</Markdown>}
+                : <Markdown remarkPlugins={[remarkGfm]} components={REASONING_MARKDOWN_COMPONENTS}>{detail || "Waiting for the model’s thoughts…"}</Markdown>}
             </div>
           )}
         </div>
@@ -494,7 +531,7 @@ export const CompletedWorkDisclosure = memo(function CompletedWorkDisclosure({ e
                     <div className="completed-work-update" key={`update-${entry.value.id}`}>
                       <Sparkles size={13} />
                       <div className="rich-markdown">
-                        <Markdown remarkPlugins={[remarkGfm]} components={{ pre: CodePre }}>{entry.value.text}</Markdown>
+                        <Markdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>{entry.value.text}</Markdown>
                       </div>
                     </div>
                   )];

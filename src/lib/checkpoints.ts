@@ -102,6 +102,44 @@ export function checkpointStatusLabel(checkpoint: CheckpointRecord): string {
   }
 }
 
+export const CHECKPOINT_RETENTION_PER_PROJECT = 150;
+export const CHECKPOINT_RETENTION_MIN_AGE_MS = 7 * 24 * 60 * 60_000;
+
+/**
+ * Splits checkpoint records into the retained list and the overflow to prune,
+ * capping each project at `limit` records. Pruning is conservative: it never
+ * touches records that are still running, safety copies, worktree
+ * baseline/apply anchors, explicitly protected ids (current heads, active
+ * runs), or anything newer than seven days.
+ */
+export function partitionCheckpointsForRetention(
+  records: CheckpointRecord[],
+  protectedIds: ReadonlySet<string> = new Set(),
+  now = Date.now(),
+  limit = CHECKPOINT_RETENTION_PER_PROJECT,
+): { kept: CheckpointRecord[]; pruned: CheckpointRecord[] } {
+  if (records.length <= limit) return { kept: records, pruned: [] };
+  const perProjectCounts = new Map<string, number>();
+  const prunedIds = new Set<string>();
+  const newestFirst = [...records].sort((left, right) => right.createdAt - left.createdAt);
+  for (const record of newestFirst) {
+    const key = record.workspacePath ?? "";
+    const count = (perProjectCounts.get(key) ?? 0) + 1;
+    perProjectCounts.set(key, count);
+    if (count <= limit) continue;
+    if (protectedIds.has(record.id)) continue;
+    if (record.status === "running" || record.status === "safety") continue;
+    if (record.worktreeThreadId || record.worktreeBaseline) continue;
+    if (now - record.createdAt < CHECKPOINT_RETENTION_MIN_AGE_MS) continue;
+    prunedIds.add(record.id);
+  }
+  if (!prunedIds.size) return { kept: records, pruned: [] };
+  return {
+    kept: records.filter((record) => !prunedIds.has(record.id)),
+    pruned: records.filter((record) => prunedIds.has(record.id)),
+  };
+}
+
 export async function createCheckpointSnapshot(
   id: string,
   cwd: string,

@@ -84,9 +84,14 @@ copyFileSync(dmgSource, resolve(output, dmgName));
 copyFileSync(resolve(root, "src-tauri/icons/openkiwi-ok-master.png"), resolve(output, "OpenKiwi-icon.png"));
 
 const notesPath = resolve(root, "release-assets/release-notes.md");
-const notes = existsSync(notesPath)
-  ? readFileSync(notesPath, "utf8").trim()
-  : `OpenKiwi ${version}`;
+let notes = `OpenKiwi ${version}`;
+if (existsSync(notesPath)) {
+  notes = readFileSync(notesPath, "utf8").trim();
+  // Guard against silently shipping the previous release's notes.
+  if (!notes.includes(version) && !process.argv.includes("--allow-stale-notes")) {
+    throw new Error(`release-assets/release-notes.md never mentions ${version}; it looks like stale notes left over from a previous release.\nUpdate the notes for ${version}, or pass --allow-stale-notes to use them anyway.`);
+  }
+}
 const signature = readFileSync(signatureSource, "utf8").trim();
 const updaterUrl = `https://github.com/m17h/OpenKiwi/releases/download/v${version}/${updaterName}`;
 const latest = {

@@ -1,5 +1,8 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { openUrl } from "@tauri-apps/plugin-opener";
+
+vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn() }));
 
 const { scrollToBottom, virtuosoProps } = vi.hoisted(() => ({
   scrollToBottom: vi.fn(),
@@ -424,5 +427,58 @@ describe("ChatTimeline", () => {
     expect(formatCompletedDuration(1_000)).toBe("1 second");
     expect(formatCompletedDuration(65_000)).toBe("1 minute 5 seconds");
     expect(formatCompletedDuration(2 * 60 * 60_000 + 12 * 60_000)).toBe("2 hours 12 minutes");
+  });
+
+  it("opens markdown http links externally instead of navigating the webview", () => {
+    vi.mocked(openUrl).mockClear();
+    render(
+      <ChatTimeline
+        messages={[{ id: "answer", role: "assistant", text: "See the [docs](https://example.com/docs).", timelineOrder: 1 }]}
+        activities={[]}
+        running={false}
+        thinkingLabel="Thinking"
+      />,
+    );
+
+    const link = screen.getByRole("link", { name: "docs" });
+    expect(link).toHaveAttribute("title", "https://example.com/docs");
+    fireEvent.click(link);
+    expect(openUrl).toHaveBeenCalledWith("https://example.com/docs");
+  });
+
+  it("keeps non-http markdown links inert", () => {
+    vi.mocked(openUrl).mockClear();
+    render(
+      <ChatTimeline
+        messages={[{ id: "answer", role: "assistant", text: "Mail [us](mailto:team@example.com).", timelineOrder: 1 }]}
+        activities={[]}
+        running={false}
+        thinkingLabel="Thinking"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("link", { name: "us" }));
+    expect(openUrl).not.toHaveBeenCalled();
+  });
+
+  it("only confirms a copy once the clipboard write succeeds", async () => {
+    const writeText = vi.fn<(text: string) => Promise<void>>(() => Promise.reject(new Error("denied")));
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    render(
+      <ChatTimeline
+        messages={[{ id: "answer", role: "assistant", text: "Answer", timelineOrder: 1 }]}
+        activities={[]}
+        running={false}
+        thinkingLabel="Thinking"
+      />,
+    );
+
+    fireEvent.click(screen.getByTitle("Copy message"));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("Answer"));
+    expect(screen.queryByText("Copied")).not.toBeInTheDocument();
+
+    writeText.mockImplementation(() => Promise.resolve());
+    fireEvent.click(screen.getByTitle("Copy message"));
+    await waitFor(() => expect(screen.getByText("Copied")).toBeInTheDocument());
   });
 });

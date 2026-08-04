@@ -22,16 +22,16 @@ describe("CommandPalette", () => {
   it("exposes direct project tool commands when a project is active", () => {
     const onTool = vi.fn();
     render(<CommandPalette {...baseProps} projectActive onTool={onTool} />);
-    fireEvent.click(screen.getByRole("button", { name: /Browse project files/i }));
+    fireEvent.click(screen.getByRole("option", { name: /Browse project files/i }));
     expect(onTool).toHaveBeenCalledWith("files");
-    expect(screen.getByRole("button", { name: /Open project terminal/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Open Git workspace/i })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /Open project terminal/i })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /Open Git workspace/i })).toBeInTheDocument();
   });
 
   it("does not offer project-only tools during a normal chat", () => {
     render(<CommandPalette {...baseProps} projectActive={false} />);
-    expect(screen.queryByRole("button", { name: /Browse project files/i })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /New thread/i })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /Browse project files/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /New thread/i })).toBeInTheDocument();
   });
 
   it("runs enabled workflows directly from search", () => {
@@ -50,7 +50,7 @@ describe("CommandPalette", () => {
       updatedAt: 1,
     };
     render(<CommandPalette {...baseProps} projectActive workflows={[workflow]} projects={[{ id: "project-1", name: "OpenKiwi", path: "/tmp/openkiwi" }]} onWorkflow={onWorkflow} />);
-    fireEvent.click(screen.getByRole("button", { name: /Run workflow: Release checks/i }));
+    fireEvent.click(screen.getByRole("option", { name: /Run workflow: Release checks/i }));
     expect(onWorkflow).toHaveBeenCalledWith(workflow);
   });
 
@@ -78,9 +78,9 @@ describe("CommandPalette", () => {
       />,
     );
 
-    expect(within(screen.getByRole("group", { name: "Commands" })).getByRole("button", { name: /New thread/i })).toBeInTheDocument();
-    expect(within(screen.getByRole("group", { name: "Projects" })).getByRole("button", { name: /OpenKiwi/i })).toBeInTheDocument();
-    expect(within(screen.getByRole("group", { name: "Threads" })).getByRole("button", { name: /Polish UI/i })).toBeInTheDocument();
+    expect(within(screen.getByRole("group", { name: "Commands" })).getByRole("option", { name: /New thread/i })).toBeInTheDocument();
+    expect(within(screen.getByRole("group", { name: "Projects" })).getByRole("option", { name: /OpenKiwi/i })).toBeInTheDocument();
+    expect(within(screen.getByRole("group", { name: "Threads" })).getByRole("option", { name: /Polish UI/i })).toBeInTheDocument();
 
     const search = screen.getByRole("textbox", { name: /Search commands/i });
     fireEvent.keyDown(search, { key: "ArrowDown" });

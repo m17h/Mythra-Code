@@ -100,14 +100,15 @@ export function CommandPalette({ open, projects, threads, workflows, projectActi
           />
           <button onClick={onClose} aria-label="Close command palette"><X size={14} /></button>
         </div>
-        <div className="palette-results" id="command-palette-results" aria-label="Matching commands" ref={resultsRef}>
+        <div className="palette-results" id="command-palette-results" role="listbox" aria-label="Matching commands" ref={resultsRef}>
           {groups.map((group) => (
             <div className="palette-group" key={group.label} role="group" aria-label={group.label}>
               <span className="palette-group-label" aria-hidden>{group.label}</span>
               {group.items.map(({ action, index }) => (
                 <button
                   id={`command-${action.id}`}
-                  aria-current={active === index ? "true" : undefined}
+                  role="option"
+                  aria-selected={active === index}
                   key={action.id}
                   className={active === index ? "active" : ""}
                   onMouseEnter={() => setActive(index)}

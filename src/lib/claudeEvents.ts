@@ -86,7 +86,21 @@ function recordAssistantUsage(threadId: string, turnId: string, messageId: strin
     usage: current ? addUsage(current.usage, usage) : usage,
     messageIds: new Set([...(current?.messageIds ?? []), messageId]),
   });
-  if (partialUsage.size > 100) partialUsage.delete(partialUsage.keys().next().value as string);
+  if (partialUsage.size > 100) {
+    // Evict the oldest-inserted turn that is not currently live; dropping a
+    // live turn's partial record would double count its usage at the result.
+    const tasks = useTaskStore.getState().tasks;
+    let evictKey: string | undefined;
+    for (const candidate of partialUsage.keys()) {
+      const separator = candidate.indexOf("\0");
+      const candidateThread = candidate.slice(0, separator);
+      const candidateTurn = candidate.slice(separator + 1);
+      if (tasks[candidateThread]?.activeTurnId === candidateTurn) continue;
+      evictKey = candidate;
+      break;
+    }
+    partialUsage.delete(evictKey ?? (partialUsage.keys().next().value as string));
+  }
 }
 
 function recordResultUsage(threadId: string, turnId: string, value: unknown): void {
@@ -370,6 +384,8 @@ export function routeClaudeEvent(
 
   if (type === "openkiwi_exit") {
     store.flushDeltas();
+    // The result event that would clean this up is never coming.
+    partialUsage.delete(`${threadId}\0${turnId}`);
     const interrupted =
       useTaskStore.getState().tasks[threadId]?.status === "interrupted";
     const detail =

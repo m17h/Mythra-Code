@@ -63,14 +63,18 @@ const MAX_TERMINAL_DECODERS = 32;
 export function decodeTerminalChunk(value: unknown, streamKey = "default"): string {
   if (typeof value !== "string" || !value) return "";
   let decoder = terminalDecoders.get(streamKey);
-  if (!decoder) {
+  if (decoder) {
+    // Re-insert to refresh recency, so eviction below always removes the
+    // least-recently-used stream and never one that is actively writing.
+    terminalDecoders.delete(streamKey);
+  } else {
     if (terminalDecoders.size >= MAX_TERMINAL_DECODERS) {
       const oldest = terminalDecoders.keys().next().value;
       if (oldest !== undefined) terminalDecoders.delete(oldest);
     }
     decoder = new TextDecoder("utf-8");
-    terminalDecoders.set(streamKey, decoder);
   }
+  terminalDecoders.set(streamKey, decoder);
   try {
     const bytes = Uint8Array.from(atob(value), (character) => character.charCodeAt(0));
     return decoder.decode(bytes, { stream: true });
@@ -194,7 +198,8 @@ export function routeCodexEvent(event: CodexEvent, ctx: CodexEventContext): void
   const params = event.params ?? {};
   const eventThreadId = typeof params.threadId === "string" ? params.threadId : RUNTIME_THREAD_ID;
   if (event.id !== undefined && method === "currentTime/read") {
-    void ctx.respond(event.id, { currentTimeAt: Math.floor(Date.now() / 1000) });
+    void ctx.respond(event.id, { currentTimeAt: Math.floor(Date.now() / 1000) })
+      .catch((reason) => ctx.audit("rpc.respondFailed", { method, error: String(reason) }, eventThreadId));
     return;
   }
   if (event.id !== undefined && (
@@ -280,8 +285,16 @@ export function routeCodexEvent(event: CodexEvent, ctx: CodexEventContext): void
   }
   if (method === "thread/status/changed") {
     const statusValue = params.status as { type?: string } | undefined;
-    const nextStatus = statusValue?.type === "active" ? "running" : statusValue?.type === "systemError" ? "error" : "idle";
-    useTaskStore.getState().setTaskStatus(eventThreadId, nextStatus);
+    const nextStatus = statusValue?.type === "active"
+      ? "running"
+      : statusValue?.type === "systemError"
+        ? "error"
+        : statusValue?.type === "idle"
+          ? "idle"
+          : undefined;
+    // A status type this version does not recognize (from a newer runtime)
+    // must not flip a running thread back to idle.
+    if (nextStatus) useTaskStore.getState().setTaskStatus(eventThreadId, nextStatus);
     return;
   }
   if (method === "error" || method === "warning" || method === "guardianWarning" || method === "configWarning") {
@@ -314,7 +327,8 @@ export function routeCodexEvent(event: CodexEvent, ctx: CodexEventContext): void
     // unanswered — a newer runtime that blocks on the reply (a new consent or
     // elicitation method, for example) would otherwise hang the turn with no
     // diagnostic.
-    void ctx.respond(event.id, {});
+    void ctx.respond(event.id, {})
+      .catch((reason) => ctx.audit("rpc.respondFailed", { method, error: String(reason) }, eventThreadId));
     ctx.audit("rpc.unhandledRequest", { method }, eventThreadId);
     useTaskStore.getState().upsertActivity(eventThreadId, {
       id: `unhandled-request-${String(event.id)}`,

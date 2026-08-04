@@ -31,10 +31,12 @@ pub struct CursorState {
 struct CursorProcess {
     stdin: Arc<Mutex<ChildStdin>>,
     child: Arc<Mutex<Child>>,
+    pid: Option<u32>,
     pending: PendingMap,
     next_id: AtomicI64,
     alive: Arc<AtomicBool>,
     session_id: Mutex<Option<String>>,
+    turn_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -128,6 +130,9 @@ impl CursorProcess {
     async fn shutdown(&self) {
         self.alive.store(false, Ordering::Release);
         let _ = self.stdin.lock().await.shutdown().await;
+        if let Some(pid) = self.pid {
+            super::kill_process_tree(pid);
+        }
         let _ = self.child.lock().await.kill().await;
     }
 }
@@ -316,21 +321,25 @@ async fn spawn_cursor_process(
     event_context: Option<(String, String, String)>,
 ) -> Result<Arc<CursorProcess>, String> {
     let binary = resolve_cursor_binary(app).await?;
-    let mut child = Command::new(&binary)
+    let mut command = Command::new(&binary);
+    command
         .arg("acp")
         .current_dir(cwd)
         .env("NO_COLOR", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|error| {
-            format!(
-                "Could not start Cursor Agent at `{}`: {error}",
-                binary.display()
-            )
-        })?;
+        .kill_on_drop(true);
+    // A dedicated process group lets kill_process_tree reach every
+    // descendant the agent spawns, not just the direct child.
+    #[cfg(unix)]
+    command.process_group(0);
+    let mut child = command.spawn().map_err(|error| {
+        format!(
+            "Could not start Cursor Agent at `{}`: {error}",
+            binary.display()
+        )
+    })?;
     let stdin = Arc::new(Mutex::new(
         child
             .stdin
@@ -342,16 +351,21 @@ async fn spawn_cursor_process(
         .take()
         .ok_or("Cursor Agent did not expose stdout")?;
     let stderr = child.stderr.take();
+    let pid = child.id();
     let child = Arc::new(Mutex::new(child));
     let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
     let alive = Arc::new(AtomicBool::new(true));
     let process = Arc::new(CursorProcess {
         stdin: stdin.clone(),
         child: child.clone(),
+        pid,
         pending: pending.clone(),
         next_id: AtomicI64::new(1),
         alive: alive.clone(),
         session_id: Mutex::new(None),
+        turn_id: event_context
+            .as_ref()
+            .map(|(_, turn_id, _)| turn_id.clone()),
     });
 
     let app_for_reader = app.clone();
@@ -361,6 +375,17 @@ async fn spawn_cursor_process(
         let mut lines = BufReader::new(stdout).lines();
         while let Ok(Some(line)) = lines.next_line().await {
             let Ok(message) = serde_json::from_str::<Value>(&line) else {
+                // Surface unparseable output instead of dropping it, so a
+                // wedged or misbehaving agent is visible in the thread.
+                if let Some((thread_id, turn_id, _)) = event_for_reader.as_ref() {
+                    let _ = app_for_reader.emit(
+                        "cursor-event",
+                        json!({
+                            "threadId": thread_id, "turnId": turn_id,
+                            "message": { "type": "stderr", "line": format!("Unparseable Cursor Agent output: {line}") }
+                        }),
+                    );
+                }
                 continue;
             };
             if let Some(id) = message.get("id").and_then(Value::as_i64) {
@@ -547,7 +572,16 @@ fn model_config_id(setup: &Value) -> Option<String> {
 
 #[tauri::command]
 pub async fn cursor_models(app: AppHandle) -> Result<Vec<CursorModel>, String> {
-    let process = spawn_cursor_process(&app, Path::new("/tmp"), None).await?;
+    // The model catalog query needs a working directory but no project;
+    // OpenKiwi's own data folder avoids handing the agent a shared /tmp cwd.
+    let workspace = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Could not resolve OpenKiwi app data: {error}"))?;
+    tokio::fs::create_dir_all(&workspace)
+        .await
+        .map_err(|error| format!("Could not create OpenKiwi app data: {error}"))?;
+    let process = spawn_cursor_process(&app, &workspace, None).await?;
     let result = async {
         initialize_cursor(&process).await?;
         let response = process
@@ -594,7 +628,7 @@ fn config_option_id(setup: &Value, effort: &str) -> Option<(String, Value)> {
     None
 }
 
-fn cursor_prompt_blocks(options: &CursorTurnOptions) -> Result<Vec<Value>, String> {
+async fn cursor_prompt_blocks(options: &CursorTurnOptions) -> Result<Vec<Value>, String> {
     let mut text = options.prompt.clone();
     if !options.system_prompt.trim().is_empty() {
         text = format!(
@@ -606,8 +640,7 @@ fn cursor_prompt_blocks(options: &CursorTurnOptions) -> Result<Vec<Value>, Strin
     let mut blocks = vec![json!({ "type": "text", "text": text })];
     for attachment in &options.attachments {
         if attachment.kind == "image" {
-            let bytes = std::fs::read(&attachment.path)
-                .map_err(|error| format!("Could not read Cursor image attachment: {error}"))?;
+            let bytes = super::read_image_attachment(Path::new(&attachment.path)).await?;
             let extension = Path::new(&attachment.path)
                 .extension()
                 .and_then(|value| value.to_str())
@@ -672,11 +705,14 @@ pub async fn cursor_turn_start(
         )),
     )
     .await?;
-    state
-        .turns
-        .lock()
-        .await
-        .insert(options.thread_id.clone(), process.clone());
+    if !super::claim_turn_slot(&state.turns, &options.thread_id, &process, |existing| {
+        existing.alive.load(Ordering::Acquire)
+    })
+    .await
+    {
+        process.shutdown().await;
+        return Err("Cursor is already working in this thread".into());
+    }
 
     let start_result = async {
         initialize_cursor(&process).await?;
@@ -731,14 +767,21 @@ pub async fn cursor_turn_start(
                 )
                 .await;
         }
-        let blocks = cursor_prompt_blocks(&options)?;
+        let blocks = cursor_prompt_blocks(&options).await?;
         Ok::<_, String>((session_id, blocks))
     }
     .await;
     let (session_id, blocks) = match start_result {
         Ok(value) => value,
         Err(error) => {
-            state.turns.lock().await.remove(&options.thread_id);
+            let mut turns = state.turns.lock().await;
+            if turns
+                .get(&options.thread_id)
+                .is_some_and(|current| Arc::ptr_eq(current, &process))
+            {
+                turns.remove(&options.thread_id);
+            }
+            drop(turns);
             process.shutdown().await;
             return Err(error);
         }
@@ -796,6 +839,7 @@ pub async fn cursor_turn_start(
 
 #[tauri::command]
 pub async fn cursor_turn_steer(
+    app: AppHandle,
     state: State<'_, CursorState>,
     thread_id: String,
     prompt: String,
@@ -815,7 +859,7 @@ pub async fn cursor_turn_steer(
         .ok_or("Cursor session is still starting")?;
     let turn_for_prompt = turn.clone();
     tauri::async_runtime::spawn(async move {
-        let _ = turn_for_prompt
+        if let Err(error) = turn_for_prompt
             .request(
                 "session/prompt",
                 json!({
@@ -823,7 +867,22 @@ pub async fn cursor_turn_steer(
                     "prompt": [{ "type": "text", "text": prompt }]
                 }),
             )
-            .await;
+            .await
+        {
+            // A dropped steer means the user's guidance never reached the
+            // agent; surface it instead of failing silently.
+            let _ = app.emit(
+                "cursor-event",
+                json!({
+                    "threadId": thread_id,
+                    "turnId": turn_for_prompt.turn_id.clone().unwrap_or_default(),
+                    "message": {
+                        "type": "openkiwi_error",
+                        "message": format!("Cursor did not accept the added instructions: {error}"),
+                    }
+                }),
+            );
+        }
     });
     Ok(())
 }
@@ -886,13 +945,24 @@ pub fn shutdown_cursor_on_exit(app: &AppHandle) {
     let Some(state) = app.try_state::<CursorState>() else {
         return;
     };
-    let turns = state.turns.clone();
-    tauri::async_runtime::block_on(async move {
-        let active: Vec<_> = turns.lock().await.drain().map(|(_, turn)| turn).collect();
-        for turn in active {
-            turn.shutdown().await;
+    let turns = tauri::async_runtime::block_on(async {
+        match timeout(Duration::from_millis(500), state.turns.lock()).await {
+            Ok(mut guard) => guard.drain().map(|(_, turn)| turn).collect::<Vec<_>>(),
+            Err(_) => Vec::new(),
         }
     });
+    for turn in turns {
+        let stopped = tauri::async_runtime::block_on(async {
+            timeout(Duration::from_secs(2), turn.shutdown())
+                .await
+                .is_ok()
+        });
+        if !stopped {
+            if let Some(pid) = turn.pid {
+                super::kill_process_tree(pid);
+            }
+        }
+    }
 }
 
 #[cfg(test)]

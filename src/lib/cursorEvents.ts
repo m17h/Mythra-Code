@@ -5,9 +5,26 @@ import { useTaskStore } from "./taskStore";
 
 const activeAssistantSegments = new Map<string, string>();
 const assistantSegmentCounts = new Map<string, number>();
+// Turns whose `result` (or terminal error) already arrived. Cursor can deliver
+// a late session/update after the result; treating it as fresh work would flip
+// the completed thread back to "running" forever.
+const completedTurns = new Set<string>();
+const MAX_COMPLETED_TURNS = 200;
+// Turns whose usage was already accumulated from in-turn `usage_update`
+// snapshots; the result total for those turns must not be added again.
+const turnsWithUsageSnapshots = new Set<string>();
 
 function turnKey(threadId: string, turnId: string): string {
   return `${threadId}\0${turnId}`;
+}
+
+function markTurnCompleted(key: string): void {
+  completedTurns.delete(key);
+  completedTurns.add(key);
+  if (completedTurns.size > MAX_COMPLETED_TURNS) {
+    const oldest = completedTurns.values().next().value;
+    if (oldest !== undefined) completedTurns.delete(oldest);
+  }
 }
 
 /**
@@ -46,6 +63,8 @@ function finalizeAssistantSegments(threadId: string, turnId: string, all = false
 export function resetCursorEventStateForTests(): void {
   activeAssistantSegments.clear();
   assistantSegmentCounts.clear();
+  completedTurns.clear();
+  turnsWithUsageSnapshots.clear();
 }
 
 function object(value: unknown): JsonObject {
@@ -183,13 +202,16 @@ export function routeCursorEvent(event: CursorEvent, ctx: CursorEventContext): v
   if (message.type === "notification" && message.method === "session/update") {
     const update = object(object(message.params).update);
     const kind = text(update.sessionUpdate);
+    const turnAlreadyCompleted = completedTurns.has(turnKey(threadId, turnId));
     if (kind === "agent_message_chunk") {
       // Skip empty/non-text chunks so they cannot open a segment that would
       // finalize into an empty assistant bubble at the next tool boundary.
+      // A chunk arriving after the turn's result would open a streaming
+      // segment nothing will ever finalize, so drop it too.
       const delta = contentText(update.content);
-      if (delta) store.queueAssistantDelta(threadId, assistantMessageId(threadId, turnId), delta);
+      if (delta && !turnAlreadyCompleted) store.queueAssistantDelta(threadId, assistantMessageId(threadId, turnId), delta);
     } else if (kind === "agent_thought_chunk") {
-      store.queueReasoningDelta(threadId, `thinking-${turnId}`, contentText(update.content), "content");
+      if (!turnAlreadyCompleted) store.queueReasoningDelta(threadId, `thinking-${turnId}`, contentText(update.content), "content");
     } else if (kind === "tool_call" || kind === "tool_call_update") {
       // A new tool call ends the preceding assistant-text segment. Updates to
       // an already-running tool are not boundaries because Cursor can deliver
@@ -219,20 +241,34 @@ export function routeCursorEvent(event: CursorEvent, ctx: CursorEventContext): v
       });
     } else if (kind === "usage_update") {
       const usage = usageView(update.usage ?? update);
-      if (usage) store.setUsage(threadId, usage);
+      if (usage && !turnAlreadyCompleted) {
+        store.setUsage(threadId, usage);
+        turnsWithUsageSnapshots.add(turnKey(threadId, turnId));
+      }
     }
-    store.setActiveTurn(threadId, turnId);
-    store.setTaskStatus(threadId, "running");
-    ctx.onStatus("Working");
+    // A late update for a turn that already delivered its result may still
+    // refine content (a tool call finishing), but must not resurrect the
+    // thread as busy or reinstall the finished turn as active.
+    if (!turnAlreadyCompleted) {
+      store.setActiveTurn(threadId, turnId);
+      store.setTaskStatus(threadId, "running");
+      ctx.onStatus("Working");
+    }
     ctx.onTranscriptChanged(threadId);
     return;
   }
 
   if (message.type === "result") {
+    const key = turnKey(threadId, turnId);
     finalizeAssistantSegments(threadId, turnId, true);
+    markTurnCompleted(key);
     const result = object(message.result);
     const usage = usageView(result.usage);
-    if (usage) store.addUsage(threadId, usage, `cursor-result:${turnId}`);
+    // In-turn usage_update snapshots already accumulated this turn's tokens
+    // through the cumulative-snapshot path; adding the result total on top
+    // would double count and corrupt the snapshot baseline.
+    if (usage && !turnsWithUsageSnapshots.has(key)) store.addUsage(threadId, usage, `cursor-result:${turnId}`);
+    turnsWithUsageSnapshots.delete(key);
     // Re-read state: the flush inside finalizeAssistantSegments may have just
     // materialized the thinking activity, which the entry snapshot predates.
     const task = useTaskStore.getState().tasks[threadId];
@@ -247,7 +283,10 @@ export function routeCursorEvent(event: CursorEvent, ctx: CursorEventContext): v
   }
 
   if (message.type === "openkiwi_error" || message.type === "openkiwi_exit") {
+    const key = turnKey(threadId, turnId);
     finalizeAssistantSegments(threadId, turnId, true);
+    markTurnCompleted(key);
+    turnsWithUsageSnapshots.delete(key);
     const detail = text(message.message) || "Cursor Agent stopped unexpectedly.";
     const interrupted = useTaskStore.getState().tasks[threadId]?.status === "interrupted";
     store.completeTurn(threadId, turnId, interrupted ? "interrupted" : "error");

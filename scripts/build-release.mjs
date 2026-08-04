@@ -1,10 +1,27 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const root = resolve(import.meta.dirname, "..");
 const version = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")).version;
+
+// A release binary must be traceable to a commit: refuse to build from a
+// dirty working tree unless the operator explicitly overrides.
+const allowDirty = process.argv.includes("--allow-dirty") || process.env.OPENKIWI_ALLOW_DIRTY === "1";
+const treeStatus = spawnSync("git", ["status", "--porcelain"], { cwd: root, encoding: "utf8" });
+if (treeStatus.status !== 0) throw new Error("Could not check the git working tree (git status --porcelain failed).");
+const dirtyTree = treeStatus.stdout.trim();
+if (dirtyTree) {
+  if (!allowDirty) {
+    throw new Error(`Refusing to build a release from a dirty working tree:\n${dirtyTree}\nCommit or stash these changes, or rerun with --allow-dirty (or OPENKIWI_ALLOW_DIRTY=1) to override.`);
+  }
+  console.warn("############################################################");
+  console.warn("# WARNING: building a release from a DIRTY working tree.   #");
+  console.warn("# The shipped binary will not match any committed source.  #");
+  console.warn("############################################################");
+  console.warn(dirtyTree);
+}
 const defaultKey = resolve(homedir(), ".tauri/openkiwi-updater.key");
 const signingKey = process.env.TAURI_SIGNING_PRIVATE_KEY || defaultKey;
 if (!signingKey.includes("untrusted comment") && !existsSync(signingKey)) throw new Error(`Updater signing key not found at ${signingKey}`);
@@ -138,7 +155,18 @@ if (process.platform === "darwin") {
   }
 }
 
-const prepare = spawnSync(process.execPath, [resolve(root, "scripts/prepare-release.mjs")], { cwd: root, stdio: "inherit" });
+const prepare = spawnSync(process.execPath, [resolve(root, "scripts/prepare-release.mjs"), ...process.argv.slice(2)], { cwd: root, stdio: "inherit" });
 if (prepare.status !== 0) process.exit(prepare.status ?? 1);
+
+// Record the built commit alongside the staged assets so any shipped build is
+// traceable back to its exact source.
+const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" });
+if (head.status !== 0 || !head.stdout.trim()) throw new Error("Could not record the built commit SHA (git rev-parse HEAD failed).");
+const buildInfo = [
+  `version: ${version}`,
+  `commit: ${head.stdout.trim()}${dirtyTree ? " (built from a dirty working tree)" : ""}`,
+  `built_at: ${new Date().toISOString()}`,
+];
+writeFileSync(resolve(root, "release-assets/latest/build-info.txt"), `${buildInfo.join("\n")}\n`);
 
 console.log(`OpenKiwi ${version} is signed, notarized, and staged for publishing.`);

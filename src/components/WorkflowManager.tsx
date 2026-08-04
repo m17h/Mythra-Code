@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -17,6 +17,7 @@ import {
   Workflow,
   X,
 } from "lucide-react";
+import { useModalFocus } from "../hooks/useModalFocus";
 import { scheduleRunSnapshot } from "../lib/turnConfig";
 import {
   nextWorkflowRunAt,
@@ -102,9 +103,14 @@ export function WorkflowManager({
 }) {
   const [draft, setDraft] = useState<WorkflowDefinition | null>(null);
   const [draftError, setDraftError] = useState("");
+  // Raw interval text while the field is being edited: clamping per keystroke
+  // makes normal values like 45 untypeable (the leading "4" snaps to 5).
+  const [intervalText, setIntervalText] = useState<string | null>(null);
   const [pendingRun, setPendingRun] = useState<WorkflowDefinition | null>(null);
   const [runVariables, setRunVariables] = useState<Record<string, string>>({});
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const runDialogRef = useRef<HTMLDivElement>(null);
+  const runInspectorRef = useRef<HTMLDivElement>(null);
   const latestRuns = useMemo(() => {
     const latest = new Map<string, WorkflowRunRecord>();
     for (const run of runs) {
@@ -113,6 +119,23 @@ export function WorkflowManager({
     return latest;
   }, [runs]);
   const selectedRun = selectedRunId ? runs.find((run) => run.id === selectedRunId) ?? null : null;
+
+  useModalFocus(runDialogRef, Boolean(pendingRun));
+  useModalFocus(runInspectorRef, Boolean(selectedRun));
+
+  // Escape closes the topmost workflow surface without reaching the Settings
+  // modal's own document-level Escape handler underneath.
+  useEffect(() => {
+    if (!pendingRun && !selectedRun) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.stopPropagation();
+      if (pendingRun) setPendingRun(null);
+      else setSelectedRunId(null);
+    };
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => document.removeEventListener("keydown", onKeyDown, true);
+  }, [pendingRun, selectedRun]);
 
   const prepareRun = (workflow: WorkflowDefinition) => {
     setRunVariables(Object.fromEntries((workflow.variables ?? []).map((variable) => [variable.name, variable.value])));
@@ -267,10 +290,12 @@ export function WorkflowManager({
             <label className="wide"><span>Description</span><input value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} placeholder="What this workflow accomplishes" /></label>
             <label><span>Trigger</span><select value={draft.trigger.type} onChange={(event) => {
               const trigger = triggerFor(event.target.value as WorkflowTrigger["type"]);
+              setIntervalText(null);
               setDraft({ ...draft, trigger, nextRunAt: nextWorkflowRunAt(trigger) });
             }}><option value="manual">Manual</option><option value="interval">Interval</option><option value="app-start">When OpenKiwi starts</option></select></label>
-            {draft.trigger.type === "interval" && <label><span>Every (minutes)</span><input type="number" min={5} value={draft.trigger.intervalMinutes} onChange={(event) => {
+            {draft.trigger.type === "interval" && <label><span>Every (minutes)</span><input type="number" min={5} value={intervalText ?? String(draft.trigger.intervalMinutes)} onChange={(event) => setIntervalText(event.target.value)} onBlur={(event) => {
               const trigger: WorkflowTrigger = { type: "interval", intervalMinutes: Math.max(5, Number(event.target.value) || 5) };
+              setIntervalText(null);
               setDraft({ ...draft, trigger, nextRunAt: nextWorkflowRunAt(trigger) });
             }} /></label>}
           </div>
@@ -391,7 +416,7 @@ export function WorkflowManager({
 
       {pendingRun && (
         <div className="workflow-dialog-backdrop" onMouseDown={() => setPendingRun(null)}>
-          <div className="workflow-run-dialog" role="dialog" aria-modal="true" aria-label={`Run ${pendingRun.name}`} onMouseDown={(event) => event.stopPropagation()}>
+          <div className="workflow-run-dialog" ref={runDialogRef} role="dialog" aria-modal="true" aria-label={`Run ${pendingRun.name}`} onMouseDown={(event) => event.stopPropagation()}>
             <div className="workflow-editor-header">
               <span><Play size={15} /><strong>Run {pendingRun.name}</strong></span>
               <button className="icon-button" onClick={() => setPendingRun(null)} aria-label="Close run workflow dialog"><X size={14} /></button>
@@ -421,7 +446,7 @@ export function WorkflowManager({
       )}
 
       {selectedRun && (
-        <div className="workflow-run-inspector">
+        <div className="workflow-run-inspector" ref={runInspectorRef} role="dialog" aria-label={`Run details for ${selectedRun.workflowName}`}>
           <div className="workflow-editor-header">
             <span><Clock3 size={15} /><strong>Run details · {selectedRun.workflowName}</strong></span>
             <button className="icon-button" onClick={() => setSelectedRunId(null)} aria-label="Close run details"><X size={14} /></button>

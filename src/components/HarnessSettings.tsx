@@ -43,7 +43,9 @@ export function HarnessSettings({ section, settings, profiles, agents, actions, 
   const [scheduleName, setScheduleName] = useState("");
   const [schedulePrompt, setSchedulePrompt] = useState("");
   const [scheduleProject, setScheduleProject] = useState("");
-  const [scheduleMinutes, setScheduleMinutes] = useState(60);
+  // Raw text while typing — clamping per keystroke makes values like 45
+  // untypeable (the leading "4" snaps to 5). Clamped on blur and on submit.
+  const [scheduleMinutes, setScheduleMinutes] = useState("60");
   const [mcpName, setMcpName] = useState("");
   const [mcpCommand, setMcpCommand] = useState("");
   const [mcpStatus, setMcpStatus] = useState("");
@@ -112,7 +114,7 @@ export function HarnessSettings({ section, settings, profiles, agents, actions, 
           </div>
         </>
       )}
-      <div className="schedule-create"><input value={scheduleName} onChange={(event) => setScheduleName(event.target.value)} placeholder="Task name" /><select value={scheduleProject} onChange={(event) => setScheduleProject(event.target.value)}><option value="">Choose project…</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select><input type="number" min={5} value={scheduleMinutes} onChange={(event) => setScheduleMinutes(Math.max(5, Number(event.target.value)))} /><textarea value={schedulePrompt} onChange={(event) => setSchedulePrompt(event.target.value)} placeholder="Prompt to run" rows={3} /><button onClick={() => { if (!scheduleName.trim() || !schedulePrompt.trim() || !scheduleProject) return; onSchedules([...schedules, { id: crypto.randomUUID(), name: scheduleName.trim(), prompt: schedulePrompt.trim(), projectId: scheduleProject, intervalMinutes: scheduleMinutes, enabled: true, nextRunAt: Date.now() + scheduleMinutes * 60_000, run: scheduleRunSnapshot(settings) }]); setScheduleName(""); setSchedulePrompt(""); }} disabled={!scheduleName.trim() || !schedulePrompt.trim() || !scheduleProject}><Plus size={12} /> Add schedule</button></div>
+      <div className="schedule-create"><input value={scheduleName} onChange={(event) => setScheduleName(event.target.value)} placeholder="Task name" /><select value={scheduleProject} onChange={(event) => setScheduleProject(event.target.value)}><option value="">Choose project…</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select><input type="number" min={5} aria-label="Interval in minutes" value={scheduleMinutes} onChange={(event) => setScheduleMinutes(event.target.value)} onBlur={(event) => setScheduleMinutes(String(Math.max(5, Number(event.target.value) || 5)))} /><textarea value={schedulePrompt} onChange={(event) => setSchedulePrompt(event.target.value)} placeholder="Prompt to run" rows={3} /><button onClick={() => { if (!scheduleName.trim() || !schedulePrompt.trim() || !scheduleProject) return; const intervalMinutes = Math.max(5, Number(scheduleMinutes) || 5); onSchedules([...schedules, { id: crypto.randomUUID(), name: scheduleName.trim(), prompt: schedulePrompt.trim(), projectId: scheduleProject, intervalMinutes, enabled: true, nextRunAt: Date.now() + intervalMinutes * 60_000, run: scheduleRunSnapshot(settings) }]); setScheduleName(""); setSchedulePrompt(""); }} disabled={!scheduleName.trim() || !schedulePrompt.trim() || !scheduleProject}><Plus size={12} /> Add schedule</button></div>
     </section>
     </>}
 

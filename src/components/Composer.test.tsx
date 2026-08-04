@@ -47,6 +47,19 @@ describe("Composer", () => {
     await waitFor(() => expect(textarea).toHaveValue("keep me"));
   });
 
+  it("keeps both the failed text and a draft typed while the send was in flight", async () => {
+    let resolveSend!: (value: boolean) => void;
+    const onSend = vi.fn(() => new Promise<boolean>((resolve) => { resolveSend = resolve; }));
+    render(<Composer {...composerProps({ onSend })} />);
+    const textarea = screen.getByPlaceholderText("Ask anything");
+    fireEvent.change(textarea, { target: { value: "first message" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    fireEvent.change(textarea, { target: { value: "second draft" } });
+    resolveSend(false);
+    await waitFor(() => expect(textarea).toHaveValue("first message\n\nsecond draft"));
+    expect(draftFor("thread-a")).toBe("first message\n\nsecond draft");
+  });
+
   it("persists drafts per thread and restores them on switch", async () => {
     const props = composerProps();
     const { rerender } = render(<Composer {...props} />);

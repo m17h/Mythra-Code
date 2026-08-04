@@ -451,7 +451,20 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
             active.processId = undefined;
             active.turnId = undefined;
             stepError = reason;
-            if (active.stopRequested || isWorkflowStoppedError(reason)) {
+            // An agent turn that never started (turn/start rejected) leaves
+            // the workflow thread in "starting" with no runtime event coming
+            // to repair it. Reset it here whenever this attempt is terminal —
+            // a retried attempt re-marks "starting" itself.
+            const stopped = active.stopRequested || isWorkflowStoppedError(reason);
+            const willRetry = !stopped && attempt <= retry.count && !turnTimedOut;
+            if (!willRetry && useTaskStore.getState().tasks[threadId]?.status === "starting") {
+              useTaskStore.getState().setTaskStatus(
+                threadId,
+                stopped ? "interrupted" : "error",
+                stopped ? undefined : friendlyError(reason),
+              );
+            }
+            if (stopped) {
               throw new WorkflowStoppedError();
             }
             if (attempt <= retry.count && !turnTimedOut) {

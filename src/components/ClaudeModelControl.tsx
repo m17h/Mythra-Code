@@ -51,6 +51,21 @@ export function ClaudeModelControl({
     return () => document.removeEventListener("pointerdown", close);
   }, []);
 
+  useEffect(() => {
+    if (!open) return;
+    // Capture phase + stopPropagation: Escape closes only this menu and never
+    // reaches the app-level handler that stops the running turn.
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        setOpen(false);
+        rootRef.current?.querySelector<HTMLButtonElement>(".openrouter-trigger")?.focus();
+      }
+    };
+    document.addEventListener("keydown", escape, true);
+    return () => document.removeEventListener("keydown", escape, true);
+  }, [open]);
+
   return (
     <div
       className="openrouter-control claude-control"

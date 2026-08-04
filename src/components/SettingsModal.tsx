@@ -276,7 +276,10 @@ export function SettingsModal({
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") requestCloseRef.current();
+      if (event.key !== "Escape") return;
+      // An approval modal stacked above Settings owns Escape while present.
+      if (document.querySelector("[data-approval-modal]")) return;
+      requestCloseRef.current();
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);

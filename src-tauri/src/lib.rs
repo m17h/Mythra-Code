@@ -50,6 +50,10 @@ struct AppServer {
     pending: PendingMap,
     next_id: AtomicI64,
     alive: Arc<AtomicBool>,
+    /// Ids of server-initiated requests this exact instance is waiting on.
+    /// `codex_respond` consults it so a response can never be sent to a
+    /// different (respawned) server than the one that asked.
+    server_requests: Arc<Mutex<HashSet<String>>>,
     openrouter_proxy_url: Option<String>,
     openrouter_proxy_task: Option<tokio::task::JoinHandle<()>>,
 }
@@ -57,6 +61,38 @@ struct AppServer {
 #[derive(Default)]
 struct RuntimeState {
     server: Mutex<Option<Arc<AppServer>>>,
+    /// Pid of the most recently spawned app-server child. Unlike `server`,
+    /// this is always accessible without awaiting the async mutex, so the
+    /// exit handler can still tear the process tree down while `ensure_server`
+    /// holds the lock during a slow spawn/initialize.
+    server_pid: std::sync::Mutex<Option<u32>>,
+}
+
+/// Kill a provider child and all of its descendants. Provider children are
+/// spawned in their own process group on unix, so signalling the negative
+/// pgid reaches the whole tree; `taskkill /T` walks the tree on Windows.
+/// Falls back to the pid itself if the group signal fails (for example when
+/// the child never became a group leader).
+fn kill_process_tree(pid: u32) {
+    #[cfg(unix)]
+    {
+        let killed_group = StdCommand::new("kill")
+            .args(["-9", "--", &format!("-{pid}")])
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if !killed_group {
+            let _ = StdCommand::new("kill")
+                .args(["-9", &pid.to_string()])
+                .status();
+        }
+    }
+    #[cfg(windows)]
+    {
+        let _ = StdCommand::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .status();
+    }
 }
 
 #[derive(Default)]
@@ -150,6 +186,9 @@ impl ClaudeTurn {
 
     async fn shutdown(&self) {
         self.alive.store(false, Ordering::Release);
+        if let Some(pid) = self.pid {
+            kill_process_tree(pid);
+        }
         let _ = self.child.lock().await.kill().await;
     }
 
@@ -157,6 +196,66 @@ impl ClaudeTurn {
         self.alive.store(false, Ordering::Release);
         let _ = self.stdin.lock().await.shutdown().await;
     }
+}
+
+/// How much provider stderr is retained per turn. Only the tail is ever
+/// surfaced to the user, so a chatty process cannot grow memory without limit.
+const CLAUDE_STDERR_TAIL_BYTES: usize = 16 * 1024;
+
+/// Bounded tail of a child process's output: keeps only the newest bytes.
+struct TailBuffer {
+    limit: usize,
+    text: String,
+}
+
+impl TailBuffer {
+    fn new(limit: usize) -> Self {
+        Self {
+            limit,
+            text: String::new(),
+        }
+    }
+
+    fn push_line(&mut self, line: &str) {
+        if !self.text.is_empty() {
+            self.text.push('\n');
+        }
+        self.text.push_str(line);
+        if self.text.len() > self.limit {
+            let excess = self.text.len() - self.limit;
+            let cut = (excess..self.text.len())
+                .find(|index| self.text.is_char_boundary(*index))
+                .unwrap_or(self.text.len());
+            self.text.drain(..cut);
+        }
+    }
+
+    fn contents(&self) -> &str {
+        &self.text
+    }
+}
+
+/// Claim the per-thread turn slot for a freshly spawned process. The
+/// pre-spawn "already working" check races with concurrent starts, so this
+/// re-checks under the lock at insert time: without it, a second start would
+/// silently evict a live turn's handle, leaving its process running but
+/// unkillable. Returns false when a different live turn holds the slot; the
+/// caller must then kill the process it just spawned.
+async fn claim_turn_slot<T>(
+    turns: &Arc<Mutex<HashMap<String, Arc<T>>>>,
+    thread_id: &str,
+    turn: &Arc<T>,
+    is_live: impl Fn(&T) -> bool,
+) -> bool {
+    let mut turns = turns.lock().await;
+    if turns
+        .get(thread_id)
+        .is_some_and(|existing| !Arc::ptr_eq(existing, turn) && is_live(existing))
+    {
+        return false;
+    }
+    turns.insert(thread_id.to_string(), turn.clone());
+    true
 }
 
 async fn remove_claude_turn_if_current(
@@ -386,6 +485,9 @@ impl AppServer {
 
     async fn shutdown(&self) {
         self.alive.store(false, Ordering::Release);
+        if let Some(pid) = self.pid {
+            kill_process_tree(pid);
+        }
         let _ = self.child.lock().await.kill().await;
         if let Some(task) = &self.openrouter_proxy_task {
             task.abort();
@@ -646,17 +748,125 @@ async fn start_openrouter_proxy(
     Ok((format!("http://{address}/{path_token}"), task))
 }
 
-async fn write_runtime_config(codex_home: &PathBuf) -> Result<(), String> {
+const OPENROUTER_DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
+
+/// Configuration keys OpenKiwi re-asserts on every startup, as
+/// `(section, key, value)` with TOML-encoded values. Everything else in
+/// config.toml (model selection, MCP servers, …) belongs to the user and the
+/// Codex runtime and is preserved verbatim.
+fn managed_runtime_config(openrouter_base_url: &str) -> Vec<(&'static str, &'static str, String)> {
+    let base_url = serde_json::to_string(openrouter_base_url)
+        .unwrap_or_else(|_| format!("\"{OPENROUTER_DEFAULT_BASE_URL}\""));
+    vec![
+        ("", "cli_auth_credentials_store", "\"keyring\"".into()),
+        ("", "project_doc_max_bytes", "0".into()),
+        ("agents", "max_threads", "1".into()),
+        ("features", "multi_agent", "false".into()),
+        ("model_providers.openrouter", "base_url", base_url),
+    ]
+}
+
+/// Line-based TOML reconcile: re-asserts each managed `key = value` inside
+/// its `[section]` while preserving every other line. Deliberately does not
+/// pull in a TOML crate — the managed keys are all scalars in header-based
+/// sections, which this handles conservatively. Returns None when the file
+/// already matches.
+fn reconcile_config_toml(existing: &str, managed: &[(&str, &str, String)]) -> Option<String> {
+    let mut lines: Vec<String> = existing.lines().map(str::to_string).collect();
+    let mut changed = false;
+
+    for (section, key, value) in managed {
+        let desired = format!("{key} = {value}");
+        let mut section_start = None;
+        let mut section_end = lines.len();
+        if section.is_empty() {
+            section_start = Some(0);
+            section_end = lines
+                .iter()
+                .position(|line| line.trim_start().starts_with('['))
+                .unwrap_or(lines.len());
+        } else {
+            let header = format!("[{section}]");
+            for (index, line) in lines.iter().enumerate() {
+                let trimmed = line.trim();
+                if section_start.is_none() {
+                    if trimmed == header {
+                        section_start = Some(index + 1);
+                    }
+                } else if trimmed.starts_with('[') {
+                    section_end = index;
+                    break;
+                }
+            }
+        }
+        match section_start {
+            Some(start) => {
+                let existing_line = (start..section_end).find(|index| {
+                    lines[*index]
+                        .split_once('=')
+                        .map(|(name, _)| name.trim() == *key)
+                        .unwrap_or(false)
+                });
+                match existing_line {
+                    Some(index) => {
+                        if lines[index].trim() != desired {
+                            lines[index] = desired;
+                            changed = true;
+                        }
+                    }
+                    None => {
+                        lines.insert(start, desired);
+                        changed = true;
+                    }
+                }
+            }
+            None => {
+                if lines.last().is_some_and(|line| !line.trim().is_empty()) {
+                    lines.push(String::new());
+                }
+                lines.push(format!("[{section}]"));
+                lines.push(desired);
+                changed = true;
+            }
+        }
+    }
+
+    changed.then(|| {
+        let mut output = lines.join("\n");
+        output.push('\n');
+        output
+    })
+}
+
+async fn write_runtime_config(
+    codex_home: &PathBuf,
+    openrouter_base_url: Option<&str>,
+) -> Result<(), String> {
     tokio::fs::create_dir_all(codex_home)
         .await
         .map_err(|error| format!("Could not create OpenKiwi runtime directory: {error}"))?;
 
     let config_path = codex_home.join("config.toml");
-    if tokio::fs::try_exists(&config_path).await.unwrap_or(false) {
-        return Ok(());
-    }
+    let base_url = openrouter_base_url.unwrap_or(OPENROUTER_DEFAULT_BASE_URL);
+    let existing = match tokio::fs::read_to_string(&config_path).await {
+        Ok(existing) => Some(existing),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(format!(
+                "Could not read OpenKiwi runtime configuration: {error}"
+            ))
+        }
+    };
 
-    let config = r#"cli_auth_credentials_store = "keyring"
+    let updated = match &existing {
+        // Hardening keys must hold for existing profiles too, not only for
+        // brand-new ones, so reconcile the managed keys on every startup.
+        Some(existing) => reconcile_config_toml(existing, &managed_runtime_config(base_url)),
+        None => {
+            let base_url_toml = serde_json::to_string(base_url)
+                .map_err(|error| format!("Could not encode the OpenRouter base URL: {error}"))?;
+            Some(format!(
+                r#"cli_auth_credentials_store = "keyring"
 model_provider = "openai"
 project_doc_max_bytes = 0
 project_doc_fallback_filenames = []
@@ -671,15 +881,29 @@ multi_agent = false
 
 [model_providers.openrouter]
 name = "OpenRouter"
-base_url = "https://openrouter.ai/api/v1"
+base_url = {base_url_toml}
 env_key = "OPENROUTER_API_KEY"
 env_key_instructions = "Add your OpenRouter API key in OpenKiwi Settings."
 wire_api = "responses"
-"#;
+"#
+            ))
+        }
+    };
 
-    tokio::fs::write(config_path, config)
-        .await
-        .map_err(|error| format!("Could not write OpenKiwi runtime configuration: {error}"))
+    if let Some(config) = updated {
+        tokio::fs::write(&config_path, config)
+            .await
+            .map_err(|error| format!("Could not write OpenKiwi runtime configuration: {error}"))?;
+    }
+    // The OpenRouter proxy base URL embeds a secret path token; keep the file
+    // readable by the current user only.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = tokio::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o600))
+            .await;
+    }
+    Ok(())
 }
 
 fn find_on_path(program: &str) -> Option<PathBuf> {
@@ -1423,15 +1647,30 @@ fn run_git_with_input(
     let mut child = command
         .spawn()
         .map_err(|error| format!("Could not run Git: {error}"))?;
-    child
+    let mut stdin = child
         .stdin
-        .as_mut()
-        .ok_or_else(|| "Could not open Git input".to_string())?
-        .write_all(input)
-        .map_err(|error| format!("Could not send data to Git: {error}"))?;
-    child
+        .take()
+        .ok_or_else(|| "Could not open Git input".to_string())?;
+    // Write stdin from a separate thread while the output pipes are drained.
+    // Writing everything first can deadlock: Git blocks once its 64KB
+    // stdout/stderr pipes fill (for example a chatty failing `git apply`)
+    // while this side blocks writing the rest of a large patch.
+    let input = input.to_vec();
+    let writer = std::thread::spawn(move || stdin.write_all(&input));
+    let output = child
         .wait_with_output()
-        .map_err(|error| format!("Could not finish Git: {error}"))
+        .map_err(|error| format!("Could not finish Git: {error}"))?;
+    let written = writer
+        .join()
+        .map_err(|_| "Could not send data to Git".to_string())?;
+    if let Err(error) = written {
+        // A broken pipe is expected when Git fails early; only surface the
+        // write error when Git otherwise claims success.
+        if output.status.success() {
+            return Err(format!("Could not send data to Git: {error}"));
+        }
+    }
+    Ok(output)
 }
 
 fn git_stdout(cwd: &Path, args: &[&str], index_file: Option<&Path>) -> Result<String, String> {
@@ -2778,9 +3017,25 @@ fn state_db_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(app_data.join("openkiwi.sqlite3"))
 }
 
+/// Current on-disk schema, recorded via `PRAGMA user_version` so future
+/// releases have a migration hook. Version 0 is a pre-versioning database
+/// with the same shape and is stamped in place.
+const STATE_DB_SCHEMA_VERSION: i64 = 1;
+
+/// Startup cap for the audit log; the newest rows win.
+const MAX_AUDIT_EVENT_ROWS: i64 = 20_000;
+
 fn open_state_db(path: &Path) -> Result<Connection, String> {
     let connection = Connection::open(path)
         .map_err(|error| format!("Could not open OpenKiwi state database: {error}"))?;
+    let user_version: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(|error| format!("Could not read OpenKiwi state database version: {error}"))?;
+    if user_version > STATE_DB_SCHEMA_VERSION {
+        return Err(format!(
+            "OpenKiwi state database uses schema version {user_version}, which is newer than this build supports ({STATE_DB_SCHEMA_VERSION}). Update OpenKiwi."
+        ));
+    }
     connection
         .execute_batch(
             "PRAGMA journal_mode=WAL;
@@ -2801,6 +3056,19 @@ fn open_state_db(path: &Path) -> Result<Connection, String> {
              CREATE INDEX IF NOT EXISTS audit_events_created_at ON audit_events(created_at DESC);",
         )
         .map_err(|error| format!("Could not initialize OpenKiwi state database: {error}"))?;
+    connection
+        .execute_batch(&format!("PRAGMA user_version = {STATE_DB_SCHEMA_VERSION};"))
+        .map_err(|error| format!("Could not stamp OpenKiwi state database version: {error}"))?;
+    // Keep the audit log bounded: prune to the newest rows at startup so a
+    // long-lived profile cannot grow the database without limit.
+    connection
+        .execute(
+            "DELETE FROM audit_events WHERE id NOT IN (
+               SELECT id FROM audit_events ORDER BY id DESC LIMIT ?1
+             )",
+            params![MAX_AUDIT_EVENT_ROWS],
+        )
+        .map_err(|error| format!("Could not prune OpenKiwi audit history: {error}"))?;
     Ok(connection)
 }
 
@@ -2813,9 +3081,12 @@ fn shared_state_db(app: &AppHandle) -> Result<Arc<std::sync::Mutex<Connection>>,
 fn lock_state_db(
     connection: &std::sync::Mutex<Connection>,
 ) -> Result<std::sync::MutexGuard<'_, Connection>, String> {
-    connection
+    // A panic while holding the guard poisons the mutex, but the connection
+    // itself is still usable (SQLite statements are transactional). Recover
+    // instead of failing every persistence call for the rest of the session.
+    Ok(connection
         .lock()
-        .map_err(|_| "OpenKiwi state database is unavailable".to_string())
+        .unwrap_or_else(std::sync::PoisonError::into_inner))
 }
 
 #[tauri::command]
@@ -2887,7 +3158,63 @@ fn claude_image_media_type(path: &Path) -> &'static str {
     }
 }
 
-fn claude_user_message(
+/// The largest image attachment OpenKiwi will read into memory — the same
+/// cap `save_pasted_image` enforces.
+const MAX_IMAGE_ATTACHMENT_BYTES: u64 = 50 * 1024 * 1024;
+
+/// Reads an image attachment after checking that it is a regular file within
+/// the size cap, via tokio::fs so the async runtime is never blocked on disk.
+async fn read_image_attachment(path: &Path) -> Result<Vec<u8>, String> {
+    let metadata = tokio::fs::metadata(path)
+        .await
+        .map_err(|error| format!("Could not read {}: {error}", path.display()))?;
+    if !metadata.is_file() {
+        return Err(format!(
+            "Could not read {}: not a regular file",
+            path.display()
+        ));
+    }
+    if metadata.len() > MAX_IMAGE_ATTACHMENT_BYTES {
+        return Err(format!(
+            "{} exceeds the 50 MB image attachment limit",
+            path.display()
+        ));
+    }
+    tokio::fs::read(path)
+        .await
+        .map_err(|error| format!("Could not read {}: {error}", path.display()))
+}
+
+/// Directory grant for a non-image attachment. Returns None when the
+/// attachment should be referenced without an `--add-dir` grant: the path
+/// cannot be verified as a regular file, or its parent resolves to the
+/// filesystem root or a top-level system directory — granting `/`, `/etc`,
+/// or `/usr` would hand the agent far more than the attachment.
+fn attachment_add_dir(path: &Path) -> Option<PathBuf> {
+    let canonical = path.canonicalize().ok()?;
+    if !canonical.is_file() {
+        return None;
+    }
+    let parent = canonical.parent()?;
+    (!add_dir_is_too_broad(parent)).then(|| parent.to_path_buf())
+}
+
+/// True when granting this directory would hand the agent the filesystem
+/// root or a top-level system folder. Depth is measured on the canonical
+/// path; `/private/<x>` gets one extra level because macOS resolves `/etc`,
+/// `/var`, and `/tmp` there.
+fn add_dir_is_too_broad(parent: &Path) -> bool {
+    let depth = parent
+        .components()
+        .filter(|component| matches!(component, std::path::Component::Normal(_)))
+        .count();
+    if depth <= 1 {
+        return true;
+    }
+    depth == 2 && parent.starts_with("/private")
+}
+
+async fn claude_user_message(
     thread_id: &str,
     prompt: &str,
     attachments: &[ClaudeAttachment],
@@ -2898,8 +3225,7 @@ fn claude_user_message(
     for attachment in attachments {
         let path = PathBuf::from(&attachment.path);
         if attachment.kind == "image" {
-            let bytes = fs::read(&path)
-                .map_err(|error| format!("Could not read {}: {error}", path.display()))?;
+            let bytes = read_image_attachment(&path).await?;
             content.push(json!({
                 "type": "image",
                 "source": {
@@ -2959,6 +3285,15 @@ async fn emit_claude_event(app: &AppHandle, thread_id: &str, turn_id: &str, mess
     );
 }
 
+/// Values forwarded to a provider CLI as argument values must not look like
+/// flags, or the CLI would parse them as options instead.
+fn validate_cli_value(value: &str, label: &str) -> Result<(), String> {
+    if value.trim().is_empty() || value.starts_with('-') {
+        return Err(format!("{label} is invalid."));
+    }
+    Ok(())
+}
+
 #[tauri::command]
 async fn claude_turn_start(
     app: AppHandle,
@@ -2976,6 +3311,8 @@ async fn claude_turn_start(
     if options.cwd.trim().is_empty() || !Path::new(&options.cwd).is_dir() {
         return Err("Choose a valid project folder before starting this Claude thread.".into());
     }
+    validate_cli_value(&options.thread_id, "The thread identity")?;
+    validate_cli_value(&options.model, "The model identity")?;
     if state
         .turns
         .lock()
@@ -3012,6 +3349,10 @@ async fn claude_turn_start(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    // A dedicated process group lets kill_process_tree reach every
+    // descendant the CLI spawns, not just the direct child.
+    #[cfg(unix)]
+    command.process_group(0);
     if !options.system_prompt.trim().is_empty() {
         command
             .arg("--append-system-prompt")
@@ -3085,8 +3426,8 @@ async fn claude_turn_start(
         .iter()
         .filter(|attachment| attachment.kind != "image")
     {
-        if let Some(parent) = Path::new(&attachment.path).parent() {
-            if directories.insert(parent.to_path_buf()) {
+        if let Some(parent) = attachment_add_dir(Path::new(&attachment.path)) {
+            if directories.insert(parent.clone()) {
                 command.arg("--add-dir").arg(parent);
             }
         }
@@ -3098,7 +3439,7 @@ async fn claude_turn_start(
     // from the map and kill the child — otherwise the thread reports
     // "Claude is already working" until OpenKiwi restarts.
     let user_message =
-        claude_user_message(&options.thread_id, &options.prompt, &options.attachments)?;
+        claude_user_message(&options.thread_id, &options.prompt, &options.attachments).await?;
 
     let mut child = command
         .spawn()
@@ -3123,11 +3464,14 @@ async fn claude_turn_start(
         pid,
         alive: alive.clone(),
     });
-    state
-        .turns
-        .lock()
-        .await
-        .insert(options.thread_id.clone(), turn.clone());
+    if !claim_turn_slot(&state.turns, &options.thread_id, &turn, |existing| {
+        existing.alive.load(Ordering::Acquire)
+    })
+    .await
+    {
+        turn.shutdown().await;
+        return Err("Claude is already working in this thread".into());
+    }
 
     let initialize = json!({
         "type": "control_request",
@@ -3135,24 +3479,24 @@ async fn claude_turn_start(
         "request": { "subtype": "initialize" }
     });
     if let Err(error) = turn.write(&initialize).await {
-        state.turns.lock().await.remove(&options.thread_id);
+        remove_claude_turn_if_current(&state.turns, &options.thread_id, &turn).await;
         turn.shutdown().await;
         return Err(error);
     }
     if let Err(error) = turn.write(&user_message).await {
-        state.turns.lock().await.remove(&options.thread_id);
+        remove_claude_turn_if_current(&state.turns, &options.thread_id, &turn).await;
         turn.shutdown().await;
         return Err(error);
     }
 
-    let stderr_lines = Arc::new(Mutex::new(Vec::<String>::new()));
+    let stderr_lines = Arc::new(Mutex::new(TailBuffer::new(CLAUDE_STDERR_TAIL_BYTES)));
     let stderr_output = stderr_lines.clone();
     let stderr_task = tauri::async_runtime::spawn(async move {
         let mut lines = BufReader::new(stderr).lines();
         while let Ok(Some(line)) = lines.next_line().await {
             let line = line.trim();
             if !line.is_empty() {
-                stderr_output.lock().await.push(line.to_string());
+                stderr_output.lock().await.push_line(line);
             }
         }
     });
@@ -3164,29 +3508,119 @@ async fn claude_turn_start(
     let stdout_child = turn.child.clone();
     let stdout_runtime = turn.clone();
     tauri::async_runtime::spawn(async move {
+        const DELTA_FLUSH_INTERVAL: Duration = Duration::from_millis(25);
         let mut lines = BufReader::new(stdout).lines();
         let mut saw_result = false;
-        while let Ok(Some(line)) = lines.next_line().await {
-            if let Ok(message) = serde_json::from_str::<Value>(&line) {
-                if message.get("type").and_then(Value::as_str) == Some("result") {
-                    saw_result = true;
-                    // Stream-input mode deliberately waits for another user
-                    // message. OpenKiwi uses one process per turn so the next
-                    // turn can resume from the persisted Claude session.
-                    remove_claude_turn_if_current(&turns, &stdout_thread, &stdout_runtime).await;
-                    stdout_runtime.close_input().await;
-                }
-                emit_claude_event(&stdout_app, &stdout_thread, &stdout_turn, message).await;
+        // High-frequency `stream_event` messages are coalesced into a single
+        // "claude-events" array emit (mirroring the Codex reader), flushed on
+        // a ~25ms tick or before any non-delta message so ordering is
+        // strictly preserved. Each array entry is exactly the payload the
+        // per-line "claude-event" emit would have carried.
+        let mut delta_buffer: Vec<Value> = Vec::new();
+        let mut flush_deadline = Instant::now();
+        let flush_deltas = |buffer: &mut Vec<Value>, app: &AppHandle| {
+            if !buffer.is_empty() {
+                let batch = std::mem::take(buffer);
+                let _ = app.emit("claude-events", Value::Array(batch));
             }
+        };
+
+        loop {
+            // `Lines::next_line` is cancellation safe, so racing it against
+            // the flush deadline cannot drop partial lines.
+            let next = if delta_buffer.is_empty() {
+                lines.next_line().await
+            } else {
+                match timeout_at(flush_deadline, lines.next_line()).await {
+                    Ok(next) => next,
+                    Err(_) => {
+                        flush_deltas(&mut delta_buffer, &stdout_app);
+                        continue;
+                    }
+                }
+            };
+            let line = match next {
+                Ok(Some(line)) => line,
+                Ok(None) => break,
+                Err(error) => {
+                    flush_deltas(&mut delta_buffer, &stdout_app);
+                    emit_claude_event(
+                        &stdout_app,
+                        &stdout_thread,
+                        &stdout_turn,
+                        json!({
+                            "type": "openkiwi_diagnostic",
+                            "message": format!("Could not read Claude Code output: {error}"),
+                        }),
+                    )
+                    .await;
+                    break;
+                }
+            };
+            let Ok(message) = serde_json::from_str::<Value>(&line) else {
+                flush_deltas(&mut delta_buffer, &stdout_app);
+                stderr_lines
+                    .lock()
+                    .await
+                    .push_line(&format!("Unparseable Claude Code output: {line}"));
+                emit_claude_event(
+                    &stdout_app,
+                    &stdout_thread,
+                    &stdout_turn,
+                    json!({
+                        "type": "openkiwi_diagnostic",
+                        "message": format!("Claude Code sent output OpenKiwi could not parse: {line}"),
+                    }),
+                )
+                .await;
+                continue;
+            };
+            if message.get("type").and_then(Value::as_str) == Some("stream_event") {
+                if delta_buffer.is_empty() {
+                    flush_deadline = Instant::now() + DELTA_FLUSH_INTERVAL;
+                }
+                delta_buffer.push(json!({
+                    "threadId": stdout_thread,
+                    "turnId": stdout_turn,
+                    "message": message,
+                }));
+                continue;
+            }
+            flush_deltas(&mut delta_buffer, &stdout_app);
+            if message.get("type").and_then(Value::as_str) == Some("result") {
+                saw_result = true;
+                // Stream-input mode deliberately waits for another user
+                // message. OpenKiwi uses one process per turn so the next
+                // turn can resume from the persisted Claude session.
+                remove_claude_turn_if_current(&turns, &stdout_thread, &stdout_runtime).await;
+                stdout_runtime.close_input().await;
+            }
+            emit_claude_event(&stdout_app, &stdout_thread, &stdout_turn, message).await;
         }
+        flush_deltas(&mut delta_buffer, &stdout_app);
         alive.store(false, Ordering::Release);
         remove_claude_turn_if_current(&turns, &stdout_thread, &stdout_runtime).await;
         // Reap the completed child so repeated Claude turns cannot accumulate
-        // zombie processes during a long-running OpenKiwi session.
-        let exit = stdout_child.lock().await.wait().await.ok();
+        // zombie processes during a long-running OpenKiwi session. Bounded
+        // like the Codex reaper: a child that closed stdout but refuses to
+        // exit is force-killed along with its descendants.
+        let exit = {
+            let mut child = stdout_child.lock().await;
+            match timeout(Duration::from_secs(5), child.wait()).await {
+                Ok(exit) => exit.ok(),
+                Err(_) => {
+                    if let Some(pid) = stdout_runtime.pid {
+                        kill_process_tree(pid);
+                    }
+                    // `kill` also awaits the child, so it is reaped either way.
+                    let _ = child.kill().await;
+                    None
+                }
+            }
+        };
         let _ = stderr_task.await;
         if !saw_result {
-            let stderr = stderr_lines.lock().await.join("\n");
+            let stderr = stderr_lines.lock().await.contents().to_string();
             let detail = if stderr.trim().is_empty() {
                 "Claude Code exited before completing the turn.".to_string()
             } else {
@@ -3230,7 +3664,7 @@ async fn claude_turn_steer(
         .get(&thread_id)
         .cloned()
         .ok_or_else(|| "Claude is not currently running in this thread".to_string())?;
-    turn.write(&claude_user_message(&thread_id, &prompt, &attachments)?)
+    turn.write(&claude_user_message(&thread_id, &prompt, &attachments).await?)
         .await
 }
 
@@ -3348,6 +3782,7 @@ async fn audit_append(
     tauri::async_runtime::spawn_blocking(move || {
         let connection = lock_state_db(&connection)?;
         let json = serde_json::to_string(&payload).map_err(|error| format!("Could not encode audit event: {error}"))?;
+        let json = truncate_audit_payload(json);
         connection
             .execute(
                 "INSERT INTO audit_events(created_at, kind, thread_id, payload) VALUES (?1, ?2, ?3, ?4)",
@@ -3358,6 +3793,22 @@ async fn audit_append(
     })
     .await
     .map_err(|error| format!("Audit write task failed: {error}"))?
+}
+
+const MAX_AUDIT_PAYLOAD_BYTES: usize = 16 * 1024;
+
+/// Caps an audit payload's stored size. Oversized payloads are wrapped in a
+/// small marker object whose `detail` holds the truncated original JSON, so
+/// the stored column remains valid JSON.
+fn truncate_audit_payload(json: String) -> String {
+    if json.len() <= MAX_AUDIT_PAYLOAD_BYTES {
+        return json;
+    }
+    let cut = (0..=MAX_AUDIT_PAYLOAD_BYTES)
+        .rev()
+        .find(|index| json.is_char_boundary(*index))
+        .unwrap_or(0);
+    json!({ "truncated": true, "detail": &json[..cut] }).to_string()
 }
 
 /// A `kind` prefix is only safe inside a LIKE pattern when it is restricted
@@ -3505,7 +3956,17 @@ fn validated_export_path(app: &AppHandle, path: &str) -> Result<PathBuf, String>
     {
         return Err("Diagnostics cannot be exported into a hidden folder.".into());
     }
-    Ok(parent.join(file_name))
+    let destination = parent.join(file_name);
+    // The parent is canonicalized above, but `tokio::fs::write` would still
+    // follow a symlink at the final component, letting a pre-planted link
+    // redirect the export outside the validated folder.
+    if fs::symlink_metadata(&destination)
+        .map(|metadata| metadata.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        return Err("The export destination is a symbolic link. Choose a regular file path.".into());
+    }
+    Ok(destination)
 }
 
 #[tauri::command]
@@ -3834,7 +4295,60 @@ fn copy_markdown_tree(
     Ok(())
 }
 
+/// Serializes skill-runtime rebuilds so two concurrent syncs cannot tear
+/// down each other's half-built trees.
+static SKILL_SYNC_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn sync_skill_runtime_at(
+    runtime_root: &Path,
+    folder: &Path,
+    configs: Vec<SkillBridgeConfig>,
+) -> Result<(), String> {
+    let _guard = SKILL_SYNC_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let parent = runtime_root
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(|| "The skill runtime location is invalid.".to_string())?;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("Could not prepare the skill runtime folder: {error}"))?;
+    let base_name = runtime_root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("skill-runtime");
+    let token = uuid::Uuid::new_v4().simple().to_string();
+
+    // Build the complete new tree in a sibling staging directory first, then
+    // swap it in via renames. A reader (or a failed sync) can therefore never
+    // observe a half-built or deleted runtime.
+    let staging = parent.join(format!("{base_name}.staging-{token}"));
+    if let Err(error) = build_skill_runtime(&staging, folder, configs) {
+        let _ = fs::remove_dir_all(&staging);
+        return Err(error);
+    }
+    let trash = parent.join(format!("{base_name}.trash-{token}"));
+    let had_previous = runtime_root.exists();
+    if had_previous {
+        if let Err(error) = fs::rename(runtime_root, &trash) {
+            let _ = fs::remove_dir_all(&staging);
+            return Err(format!("Could not refresh the skill runtime: {error}"));
+        }
+    }
+    if let Err(error) = fs::rename(&staging, runtime_root) {
+        if had_previous {
+            let _ = fs::rename(&trash, runtime_root);
+        }
+        let _ = fs::remove_dir_all(&staging);
+        return Err(format!("Could not activate the skill runtime: {error}"));
+    }
+    if had_previous {
+        let _ = fs::remove_dir_all(&trash);
+    }
+    Ok(())
+}
+
+fn build_skill_runtime(
     runtime_root: &Path,
     folder: &Path,
     configs: Vec<SkillBridgeConfig>,
@@ -3842,10 +4356,6 @@ fn sync_skill_runtime_at(
     let folder = folder
         .canonicalize()
         .map_err(|error| format!("Could not open the skills folder: {error}"))?;
-    if runtime_root.exists() {
-        fs::remove_dir_all(runtime_root)
-            .map_err(|error| format!("Could not refresh the skill runtime: {error}"))?;
-    }
     fs::create_dir_all(runtime_root)
         .map_err(|error| format!("Could not create the skill runtime: {error}"))?;
     fs::create_dir_all(runtime_root.join(".claude-plugin"))
@@ -4147,7 +4657,6 @@ async fn spawn_server(app: &AppHandle) -> Result<Arc<AppServer>, String> {
         .app_data_dir()
         .map_err(|error| format!("Could not resolve app data directory: {error}"))?;
     let codex_home = app_data.join("codex-home");
-    write_runtime_config(&codex_home).await?;
 
     let codex_binary = resolve_codex_binary(app).await?;
     let home = app.path().home_dir().ok();
@@ -4160,21 +4669,27 @@ async fn spawn_server(app: &AppHandle) -> Result<Arc<AppServer>, String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    // A dedicated process group lets kill_process_tree reach every
+    // descendant the runtime spawns, not just the direct child.
+    #[cfg(unix)]
+    command.process_group(0);
 
     let mut openrouter_proxy_url = None;
     let mut openrouter_proxy_task = None;
     if let Some(key) = openrouter_key().await {
         let (proxy_url, task) = start_openrouter_proxy(key.clone()).await?;
-        let proxy_url_toml = serde_json::to_string(&proxy_url)
-            .map_err(|error| format!("Could not configure OpenRouter compatibility: {error}"))?;
-        command
-            .arg("-c")
-            .arg(format!(
-                "model_providers.openrouter.base_url={proxy_url_toml}"
-            ))
-            .env("OPENROUTER_API_KEY", key);
+        command.env("OPENROUTER_API_KEY", key);
         openrouter_proxy_url = Some(proxy_url);
         openrouter_proxy_task = Some(task);
+    }
+    // The proxy base URL embeds a secret path token, so it is written into
+    // the 0600 app-managed config.toml rather than passed as a `-c` CLI
+    // override, which any local process could read via `ps`.
+    if let Err(error) = write_runtime_config(&codex_home, openrouter_proxy_url.as_deref()).await {
+        if let Some(task) = &openrouter_proxy_task {
+            task.abort();
+        }
+        return Err(error);
     }
 
     if let Some(path) = runtime_path(&codex_binary, home.as_deref()) {
@@ -4223,6 +4738,8 @@ async fn spawn_server(app: &AppHandle) -> Result<Arc<AppServer>, String> {
     let app_for_reader = app.clone();
     let alive = Arc::new(AtomicBool::new(true));
     let alive_for_reader = alive.clone();
+    let server_requests: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
+    let server_requests_for_reader = server_requests.clone();
 
     tauri::async_runtime::spawn(async move {
         const DELTA_FLUSH_INTERVAL: Duration = Duration::from_millis(25);
@@ -4298,6 +4815,17 @@ async fn spawn_server(app: &AppHandle) -> Result<Arc<AppServer>, String> {
                     delta_buffer.push(message);
                 } else {
                     flush_deltas(&mut delta_buffer, &app_for_reader);
+                    if message.get("id").is_some() && message.get("method").is_some() {
+                        // A server-initiated request: record its id (before
+                        // emitting) so codex_respond can verify the response
+                        // targets this exact server instance.
+                        if let Some(id) = message.get("id") {
+                            server_requests_for_reader
+                                .lock()
+                                .await
+                                .insert(id.to_string());
+                        }
+                    }
                     let _ = app_for_reader.emit("codex-event", message);
                 }
             }
@@ -4342,6 +4870,7 @@ async fn spawn_server(app: &AppHandle) -> Result<Arc<AppServer>, String> {
         pending,
         next_id: AtomicI64::new(1),
         alive,
+        server_requests,
         openrouter_proxy_url,
         openrouter_proxy_task,
     });
@@ -4376,6 +4905,12 @@ async fn ensure_server(app: &AppHandle, state: &RuntimeState) -> Result<Arc<AppS
 
     let server = spawn_server(app).await?;
     *guard = Some(server.clone());
+    // Record the pid where the exit handler can reach it without the async
+    // server lock (which this function holds during spawn/initialize).
+    *state
+        .server_pid
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = server.pid;
     Ok(server)
 }
 
@@ -4510,12 +5045,29 @@ async fn codex_rpc(
 
 #[tauri::command]
 async fn codex_respond(
-    app: AppHandle,
     state: State<'_, RuntimeState>,
     id: Value,
     result: Value,
 ) -> Result<(), String> {
-    let server = ensure_server(&app, &state).await?;
+    // Deliberately not ensure_server: a response to a server-initiated
+    // request is only meaningful for the exact instance that asked. Spawning
+    // (or targeting) a fresh server would hand it a stale request id.
+    let server = state
+        .server
+        .lock()
+        .await
+        .as_ref()
+        .filter(|server| server.is_alive())
+        .cloned()
+        .ok_or_else(|| {
+            "The Codex runtime is no longer running, so this request can no longer be answered."
+                .to_string()
+        })?;
+    if !server.server_requests.lock().await.remove(&id.to_string()) {
+        return Err(
+            "The Codex runtime restarted, so this request can no longer be answered.".into(),
+        );
+    }
     server.respond(id, result).await
 }
 
@@ -4596,27 +5148,37 @@ fn shutdown_runtime_on_exit(app: &AppHandle) {
     };
     let server = tauri::async_runtime::block_on(async {
         match timeout(Duration::from_millis(500), state.server.lock()).await {
-            Ok(mut guard) => guard.take(),
-            Err(_) => None,
+            Ok(mut guard) => Ok(guard.take()),
+            Err(_) => Err(()),
         }
     });
-    let Some(server) = server else { return };
-    let graceful = tauri::async_runtime::block_on(async {
-        timeout(Duration::from_secs(2), server.shutdown())
-            .await
-            .is_ok()
-    });
-    if !graceful {
-        // Last resort: signal the child by pid without touching any locks.
-        if let Some(pid) = server.pid {
-            #[cfg(unix)]
-            let _ = std::process::Command::new("kill")
-                .args(["-9", &pid.to_string()])
-                .status();
-            #[cfg(windows)]
-            let _ = std::process::Command::new("taskkill")
-                .args(["/PID", &pid.to_string(), "/T", "/F"])
-                .status();
+    match server {
+        Ok(Some(server)) => {
+            let graceful = tauri::async_runtime::block_on(async {
+                timeout(Duration::from_secs(2), server.shutdown())
+                    .await
+                    .is_ok()
+            });
+            if !graceful {
+                // Last resort: signal the tree by pid without touching locks.
+                if let Some(pid) = server.pid {
+                    kill_process_tree(pid);
+                }
+            }
+        }
+        Ok(None) => {}
+        Err(()) => {
+            // `ensure_server` can hold the server lock for the whole
+            // spawn/initialize window (up to ~2 minutes). Fall back to the
+            // separately recorded pid so the child's process tree is still
+            // torn down instead of being orphaned.
+            let pid = *state
+                .server_pid
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(pid) = pid {
+                kill_process_tree(pid);
+            }
         }
     }
 }
@@ -4639,14 +5201,7 @@ fn shutdown_claude_on_exit(app: &AppHandle) {
         });
         if !stopped {
             if let Some(pid) = turn.pid {
-                #[cfg(unix)]
-                let _ = std::process::Command::new("kill")
-                    .args(["-9", &pid.to_string()])
-                    .status();
-                #[cfg(windows)]
-                let _ = std::process::Command::new("taskkill")
-                    .args(["/PID", &pid.to_string(), "/T", "/F"])
-                    .status();
+                kill_process_tree(pid);
             }
         }
     }
@@ -5668,8 +6223,8 @@ mod tests {
     // Regression for the leaked-turn defect: claude_turn_start builds this
     // message BEFORE spawning the CLI, so an unreadable attachment must fail
     // here — never after the process is registered in the per-thread map.
-    #[test]
-    fn claude_user_message_fails_for_an_unreadable_image_attachment() {
+    #[tokio::test]
+    async fn claude_user_message_fails_for_an_unreadable_image_attachment() {
         let attachment = ClaudeAttachment {
             path: std::env::temp_dir()
                 .join("openkiwi-test-missing-image.png")
@@ -5677,7 +6232,7 @@ mod tests {
                 .into_owned(),
             kind: "image".into(),
         };
-        let result = claude_user_message("thread-1", "look at this", &[attachment]);
+        let result = claude_user_message("thread-1", "look at this", &[attachment]).await;
         let error = result.expect_err("missing image attachments must fail");
         assert!(
             error.contains("Could not read"),
@@ -5685,8 +6240,23 @@ mod tests {
         );
     }
 
-    #[test]
-    fn claude_user_message_references_file_attachments_without_reading_them() {
+    #[tokio::test]
+    async fn claude_user_message_rejects_a_non_regular_image_attachment() {
+        let attachment = ClaudeAttachment {
+            path: std::env::temp_dir().to_string_lossy().into_owned(),
+            kind: "image".into(),
+        };
+        let error = claude_user_message("thread-1", "look at this", &[attachment])
+            .await
+            .expect_err("directories must not be read as image attachments");
+        assert!(
+            error.contains("not a regular file"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn claude_user_message_references_file_attachments_without_reading_them() {
         let attachment = ClaudeAttachment {
             path: std::env::temp_dir()
                 .join("openkiwi-test-missing-file.txt")
@@ -5695,6 +6265,7 @@ mod tests {
             kind: "file".into(),
         };
         let message = claude_user_message("thread-1", "check the file", &[attachment])
+            .await
             .expect("file attachments are passed by reference and must not fail");
         let content = message
             .pointer("/message/content")
@@ -5707,8 +6278,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn claude_user_message_embeds_readable_images_as_base64() {
+    #[tokio::test]
+    async fn claude_user_message_embeds_readable_images_as_base64() {
         let path = std::env::temp_dir().join("openkiwi-test-real-image.png");
         std::fs::write(&path, [0x89, 0x50, 0x4e, 0x47]).expect("write test image");
         let attachment = ClaudeAttachment {
@@ -5716,6 +6287,7 @@ mod tests {
             kind: "image".into(),
         };
         let message = claude_user_message("thread-1", "look", &[attachment])
+            .await
             .expect("readable image attachments must succeed");
         let _ = std::fs::remove_file(&path);
         assert_eq!(
@@ -5728,6 +6300,160 @@ mod tests {
             .pointer("/message/content/1/source/data")
             .and_then(Value::as_str)
             .is_some_and(|data| !data.is_empty()));
+    }
+
+    #[test]
+    fn attachment_add_dir_refuses_root_level_and_unverifiable_paths() {
+        let directory = skill_test_directory("attachment-grant");
+        fs::create_dir_all(&directory).unwrap();
+        let file = directory.join("notes.txt");
+        fs::write(&file, "attachment\n").unwrap();
+
+        // A regular file in a nested folder grants exactly its parent.
+        assert_eq!(
+            attachment_add_dir(&file),
+            Some(directory.canonicalize().unwrap())
+        );
+        // Missing files and directories get no grant.
+        assert_eq!(attachment_add_dir(&directory.join("missing.txt")), None);
+        assert_eq!(attachment_add_dir(&directory), None);
+        #[cfg(unix)]
+        {
+            // Files directly under `/` or a top-level system folder would
+            // grant far more than the attachment.
+            assert_eq!(attachment_add_dir(Path::new("/etc/hosts")), None);
+        }
+        assert!(add_dir_is_too_broad(Path::new("/")));
+        assert!(add_dir_is_too_broad(Path::new("/etc")));
+        assert!(add_dir_is_too_broad(Path::new("/usr")));
+        assert!(add_dir_is_too_broad(Path::new("/private/etc")));
+        assert!(!add_dir_is_too_broad(Path::new("/Users/person/project")));
+        assert!(!add_dir_is_too_broad(Path::new("/private/tmp/scratch")));
+
+        fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn tail_buffer_keeps_only_the_newest_bytes() {
+        let mut buffer = TailBuffer::new(16);
+        buffer.push_line("first line");
+        assert_eq!(buffer.contents(), "first line");
+        buffer.push_line("second");
+        buffer.push_line("third");
+        assert!(buffer.contents().len() <= 16);
+        assert!(buffer.contents().ends_with("second\nthird"));
+        assert!(!buffer.contents().contains("first"));
+
+        let mut unicode = TailBuffer::new(4);
+        unicode.push_line("aééé");
+        assert!(unicode.contents().len() <= 4);
+        assert!(unicode.contents().chars().all(|character| character == 'é'));
+    }
+
+    #[tokio::test]
+    async fn claiming_an_occupied_turn_slot_fails_instead_of_evicting_the_live_turn() {
+        struct FakeTurn {
+            live: AtomicBool,
+        }
+        let turns: Arc<Mutex<HashMap<String, Arc<FakeTurn>>>> = Arc::default();
+        let first = Arc::new(FakeTurn {
+            live: AtomicBool::new(true),
+        });
+        let second = Arc::new(FakeTurn {
+            live: AtomicBool::new(true),
+        });
+        let is_live = |turn: &FakeTurn| turn.live.load(Ordering::Acquire);
+
+        assert!(claim_turn_slot(&turns, "thread", &first, is_live).await);
+        // A concurrent start that lost the race must not evict the live turn.
+        assert!(!claim_turn_slot(&turns, "thread", &second, is_live).await);
+        assert!(Arc::ptr_eq(
+            turns.lock().await.get("thread").unwrap(),
+            &first
+        ));
+        // Once the occupant is no longer live, the slot can be reclaimed.
+        first.live.store(false, Ordering::Release);
+        assert!(claim_turn_slot(&turns, "thread", &second, is_live).await);
+        assert!(Arc::ptr_eq(
+            turns.lock().await.get("thread").unwrap(),
+            &second
+        ));
+    }
+
+    #[test]
+    fn cli_values_that_look_like_flags_are_rejected() {
+        assert!(validate_cli_value("claude-opus-4", "The model identity").is_ok());
+        assert!(validate_cli_value("b7c9e3a0", "The thread identity").is_ok());
+        assert!(validate_cli_value("--resume=other", "The thread identity").is_err());
+        assert!(validate_cli_value("-p", "The model identity").is_err());
+        assert!(validate_cli_value("  ", "The model identity").is_err());
+    }
+
+    #[test]
+    fn oversized_audit_payloads_are_truncated_into_valid_json() {
+        let small = truncate_audit_payload("{\"ok\":true}".into());
+        assert_eq!(small, "{\"ok\":true}");
+
+        let big = serde_json::to_string(&json!({ "detail": "é".repeat(20_000) })).unwrap();
+        let truncated = truncate_audit_payload(big);
+        assert!(truncated.len() < 2 * MAX_AUDIT_PAYLOAD_BYTES);
+        let parsed = serde_json::from_str::<Value>(&truncated).expect("truncated payload parses");
+        assert_eq!(parsed.get("truncated"), Some(&Value::Bool(true)));
+        assert!(parsed
+            .get("detail")
+            .and_then(Value::as_str)
+            .is_some_and(|detail| !detail.is_empty()));
+    }
+
+    #[test]
+    fn runtime_config_reconcile_reasserts_managed_keys_and_preserves_user_content() {
+        let existing = "\
+model_provider = \"openrouter\"
+project_doc_max_bytes = 4096
+
+[mcp_servers.docs]
+command = \"docs-server\"
+
+[agents]
+max_threads = 8
+max_depth = 1
+
+[model_providers.openrouter]
+name = \"OpenRouter\"
+base_url = \"https://openrouter.ai/api/v1\"
+";
+        let managed = managed_runtime_config("http://127.0.0.1:9999/secret-token");
+        let updated = reconcile_config_toml(existing, &managed)
+            .expect("drifted managed keys must be rewritten");
+        // Managed keys are re-asserted…
+        assert!(updated.contains("project_doc_max_bytes = 0"));
+        assert!(updated.contains("cli_auth_credentials_store = \"keyring\""));
+        assert!(updated.contains("max_threads = 1"));
+        assert!(updated.contains("\n[features]\nmulti_agent = false"));
+        assert!(updated.contains("base_url = \"http://127.0.0.1:9999/secret-token\""));
+        // …while user content is preserved verbatim.
+        assert!(updated.contains("model_provider = \"openrouter\""));
+        assert!(updated.contains("[mcp_servers.docs]"));
+        assert!(updated.contains("command = \"docs-server\""));
+        assert!(updated.contains("max_depth = 1"));
+        assert!(updated.contains("name = \"OpenRouter\""));
+
+        // A file that already matches is left untouched.
+        assert_eq!(reconcile_config_toml(&updated, &managed), None);
+    }
+
+    #[test]
+    fn git_input_larger_than_the_pipe_buffer_completes() {
+        let repo = env::temp_dir().join(format!("openkiwi-git-input-test-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&repo).expect("create repo");
+        test_git(&repo, &["init"]);
+        // Well past the 64KB pipe capacity that used to deadlock.
+        let blob = vec![b'a'; 5 * 1024 * 1024];
+        let output = run_git_with_input(&repo, &["hash-object", "-w", "--stdin"], None, &blob)
+            .expect("hash large stdin");
+        assert!(output.status.success());
+        assert!(!output.stdout.is_empty());
+        fs::remove_dir_all(&repo).expect("remove repo");
     }
 
     fn text_of(entry: &Value) -> &str {

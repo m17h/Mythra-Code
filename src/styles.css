@@ -23,7 +23,7 @@
   --text: #eceeeb;
   --ink-2: #c3c7c4;
   --muted: #8d9299;
-  --muted-2: #757b82;
+  --muted-2: #8f959e; /* 5.4:1 on --bg, 4.6:1 on --panel — AA at meta sizes */
 
   /* ---- Accent: one colour, used sparingly ---- */
   --green: #a6df72;
@@ -90,7 +90,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,.2); background-clip: content-box; }
 
 .app-shell { display: flex; height: 100%; overflow: hidden; color: var(--text); background: var(--bg); font-size: var(--fs-ui); letter-spacing: var(--track-tight); transition: color 260ms ease, background 260ms ease; }
-.app-shell[data-theme="daylight"] { --bg: #f4f5f2; --sidebar: #ebede8; --panel: #ffffff; --panel-2: #f1f2ee; --panel-3: #e2e5de; --line: rgba(25,35,20,.11); --line-strong: rgba(25,35,20,.19); --muted: #58615a; --muted-2: #78817a; --text: #1c211b; --green: #3e8e22; --green-soft: rgba(62,142,34,.11); --orange: #a8621a; --red: #c04742; --shadow: 0 22px 70px rgba(55,65,45,.18); --topbar: rgba(244,245,242,.86); --field: #ffffff; }
+.app-shell[data-theme="daylight"] { --bg: #f4f5f2; --sidebar: #ebede8; --panel: #ffffff; --panel-2: #f1f2ee; --panel-3: #e2e5de; --line: rgba(25,35,20,.11); --line-strong: rgba(25,35,20,.19); --muted: #58615a; --muted-2: #61695f; /* 5.2:1 on --bg, 4.8:1 on --sidebar */ --text: #1c211b; --green: #3e8e22; --green-soft: rgba(62,142,34,.11); --orange: #a8621a; --red: #c04742; --shadow: 0 22px 70px rgba(55,65,45,.18); --topbar: rgba(244,245,242,.86); --field: #ffffff; }
 /* Daylight overrides the semantic tokens inherited from the OpenKiwi palette. */
 .app-shell[data-theme="daylight"] {
   --ink-2: #3c443c; --line-quiet: rgba(25,35,20,.06); --green-line: rgba(62,142,34,.3); --info: #14639f;

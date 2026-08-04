@@ -29,3 +29,7 @@ Object.defineProperty(globalThis, "localStorage", {
   configurable: true,
   value: memoryStorage,
 });
+
+// Reset the backing store between tests so one file's storage writes can
+// never leak into another test.
+afterEach(() => values.clear());

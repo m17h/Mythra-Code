@@ -48,6 +48,10 @@ const INITIAL_STATE: AppUpdateState = {
 // check the next time OpenKiwi is launched.
 let automaticCheckStarted = false;
 
+// Long-running sessions should still learn about new releases without a
+// relaunch; re-check silently a few times a day.
+const AUTOMATIC_RECHECK_INTERVAL_MS = 6 * 60 * 60_000;
+
 export function updateProgress(downloadedBytes: number, totalBytes: number | null): number | null {
   if (!totalBytes || totalBytes <= 0) return null;
   return Math.min(100, Math.max(0, Math.round((downloadedBytes / totalBytes) * 100)));
@@ -57,6 +61,8 @@ export function useAppUpdater(): AppUpdater {
   const [state, setState] = useState<AppUpdateState>(INITIAL_STATE);
   const updateRef = useRef<Update | null>(null);
   const checkingRef = useRef(false);
+  const phaseRef = useRef<AppUpdatePhase>(state.phase);
+  phaseRef.current = state.phase;
 
   const performCheck = useCallback(async (silent: boolean) => {
     if (!isTauri() || checkingRef.current) return;
@@ -158,7 +164,16 @@ export function useAppUpdater(): AppUpdater {
       automaticCheckStarted = true;
       void performCheck(true);
     }, 3_500);
-    return () => window.clearTimeout(timer);
+    const recheckTimer = window.setInterval(() => {
+      // Never interrupt an in-flight download/install: performCheck closes
+      // the Update handle downloadAndInstall is still using.
+      if (phaseRef.current === "downloading" || phaseRef.current === "installing" || phaseRef.current === "restarting") return;
+      void performCheck(true);
+    }, AUTOMATIC_RECHECK_INTERVAL_MS);
+    return () => {
+      window.clearTimeout(timer);
+      window.clearInterval(recheckTimer);
+    };
   }, [performCheck]);
 
   useEffect(() => () => {

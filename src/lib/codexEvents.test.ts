@@ -76,6 +76,27 @@ describe("routeCodexEvent", () => {
     expect(ctx.respond).toHaveBeenCalledWith(3, expect.objectContaining({ currentTimeAt: expect.any(Number) }));
   });
 
+  it("audits instead of throwing when a direct response fails", async () => {
+    const ctx = makeContext({ respond: vi.fn(async () => { throw new Error("runtime gone"); }) });
+    routeCodexEvent({ id: 3, method: "currentTime/read", params: {} }, ctx);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(ctx.audit).toHaveBeenCalledWith("rpc.respondFailed", expect.objectContaining({ method: "currentTime/read" }), expect.anything());
+  });
+
+  it("maps known thread status types and ignores unknown ones", () => {
+    const ctx = makeContext();
+    useTaskStore.getState().setTaskStatus("thread-a", "running");
+    routeCodexEvent({ method: "thread/status/changed", params: { threadId: "thread-a", status: { type: "futureStatusType" } } }, ctx);
+    expect(useTaskStore.getState().statuses["thread-a"]).toBe("running");
+    routeCodexEvent({ method: "thread/status/changed", params: { threadId: "thread-a", status: { type: "idle" } } }, ctx);
+    expect(useTaskStore.getState().statuses["thread-a"]).toBe("idle");
+    routeCodexEvent({ method: "thread/status/changed", params: { threadId: "thread-a", status: { type: "active" } } }, ctx);
+    expect(useTaskStore.getState().statuses["thread-a"]).toBe("running");
+    routeCodexEvent({ method: "thread/status/changed", params: { threadId: "thread-a", status: { type: "systemError" } } }, ctx);
+    expect(useTaskStore.getState().statuses["thread-a"]).toBe("error");
+  });
+
   it("marks turn lifecycle and only reports status for the active thread", () => {
     const ctx = makeContext();
     useTaskStore.getState().setActiveThread("thread-a");
