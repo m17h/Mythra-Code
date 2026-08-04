@@ -73,6 +73,10 @@ export async function killCursorTurn(threadId: string): Promise<void> {
   await invoke("cursor_turn_kill", { threadId });
 }
 
+export function isCursorTurnActive(threadId: string): Promise<boolean> {
+  return invoke<boolean>("cursor_turn_active", { threadId });
+}
+
 export async function respondToCursorPermission(threadId: string, requestId: string | number, result: JsonObject): Promise<void> {
   await invoke("cursor_permission_respond", { threadId, requestId, result });
 }

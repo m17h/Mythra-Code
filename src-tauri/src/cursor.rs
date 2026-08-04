@@ -554,7 +554,7 @@ fn models_from_response(response: Value) -> Vec<CursorModel> {
             })
         })
         .collect();
-    models.sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
+    models.sort_by_key(|model| model.name.to_lowercase());
     models.dedup_by(|left, right| left.id == right.id);
     models
 }
@@ -922,6 +922,19 @@ pub async fn cursor_turn_kill(
         .ok_or("Cursor is not currently running in this thread")?;
     turn.shutdown().await;
     Ok(())
+}
+
+#[tauri::command]
+pub async fn cursor_turn_active(
+    state: State<'_, CursorState>,
+    thread_id: String,
+) -> Result<bool, String> {
+    Ok(state
+        .turns
+        .lock()
+        .await
+        .get(&thread_id)
+        .is_some_and(|turn| turn.alive.load(Ordering::Acquire)))
 }
 
 #[tauri::command]

@@ -198,9 +198,9 @@ pub(super) async fn github_login(app: AppHandle) -> Result<(), String> {
             .status()
             .await
             .map_err(|error| format!("Could not open GitHub sign-in in Terminal: {error}"))?;
-        return status.success().then_some(()).ok_or_else(|| {
+        status.success().then_some(()).ok_or_else(|| {
             "Could not open GitHub sign-in. Run `gh auth login` yourself, then refresh GitHub settings.".into()
-        });
+        })
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -217,10 +217,8 @@ pub(super) fn parse_github_repository(remote: &str) -> Option<String> {
         value
     } else if let Some(value) = trimmed.strip_prefix("https://github.com/") {
         value
-    } else if let Some(value) = trimmed.strip_prefix("http://github.com/") {
-        value
     } else {
-        return None;
+        trimmed.strip_prefix("http://github.com/")?
     };
     let mut parts = path.split('/');
     let owner = parts.next()?;

@@ -89,6 +89,10 @@ export async function killClaudeTurn(threadId: string): Promise<void> {
   await invoke("claude_turn_kill", { threadId });
 }
 
+export function isClaudeTurnActive(threadId: string): Promise<boolean> {
+  return invoke<boolean>("claude_turn_active", { threadId });
+}
+
 /** Matches the backend's per-thread busy rejection from claude_turn_start. */
 export function isClaudeThreadBusyError(reason: unknown): boolean {
   return String(reason).includes("Claude is already working in this thread");

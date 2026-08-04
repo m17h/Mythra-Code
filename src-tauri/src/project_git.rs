@@ -1117,7 +1117,7 @@ pub(super) fn worktree_apply_to_source_sync(
         None,
     )
     .map_err(|_| "The worktree's last applied source state is no longer available".to_string())?;
-    let safety_tree = verify_current_safety_tree(&source, &safety_id)?;
+    let safety_tree = verify_current_safety_tree(&source, safety_id)?;
     let (isolated_tree, _) = current_worktree_tree(&worktree)?;
     let patch = run_git(
         &worktree,
@@ -1125,7 +1125,7 @@ pub(super) fn worktree_apply_to_source_sync(
             "diff",
             "--binary",
             "--full-index",
-            &base_commit,
+            base_commit,
             &isolated_tree,
             "--",
         ],

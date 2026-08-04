@@ -65,6 +65,8 @@ import { useAppUpdater } from "./lib/appUpdater";
 import { usePersistedState, usePersistedStateRef } from "./hooks/usePersistedState";
 import { useTurnRunner } from "./hooks/useTurnRunner";
 import { useCheckpoints } from "./hooks/useCheckpoints";
+import { useAppShortcuts } from "./hooks/useAppShortcuts";
+import { useThreadHealth } from "./hooks/useThreadHealth";
 import { useCodexEvents } from "./hooks/useCodexEvents";
 import { useClaudeEvents } from "./hooks/useClaudeEvents";
 import { useCursorEvents } from "./hooks/useCursorEvents";
@@ -349,14 +351,14 @@ export default function App() {
     for (const task of Object.values(state.tasks)) count += task.approvals.length;
     return count;
   });
-  const threadProjectBindings = threadProjectBindingsRef.current ?? {};
   const projectThreadCounts = countActiveThreadsByWorkspace(
     knownThreadsRef.current ?? {},
-    threadProjectBindings,
+    threadProjectBindingsRef.current ?? {},
     threadTaskStatuses,
   );
   const displayedThreads = useMemo(() => {
     if (!activeWorkspace) return [];
+    const threadProjectBindings = threadProjectBindingsRef.current ?? {};
     const query = threadSearch.trim().toLowerCase();
     const merged = filterThreadsForWorkspace(threads, activeWorkspace.path, threadProjectBindings)
       .filter((thread) => `${thread.name ?? ""} ${thread.preview}`.toLowerCase().includes(query));
@@ -369,7 +371,7 @@ export default function App() {
     }
     const pinned = new Set(pinnedThreadIds);
     return merged.sort((a, b) => Number(pinned.has(b.id)) - Number(pinned.has(a.id)) || b.updatedAt - a.updatedAt);
-  }, [activeWorkspace, pinnedThreadIds, searchResults, threadProjectBindings, threadSearch, threads]);
+  }, [activeWorkspace, pinnedThreadIds, searchResults, threadSearch, threads]);
   // @-mention autocomplete searches project files with the same fuzzy RPC the
   // file browser uses. Only available inside a project workspace.
   const activeProjectPath = activeProject ? activeExecutionPath : undefined;
@@ -409,10 +411,7 @@ export default function App() {
     });
   }, [activeOpenRouterPricing, activeThreadId, activeWorkspace, effectiveSettings.model, effectiveSettings.provider, tokenUsage]);
 
-  const activeUsageRecord = useMemo(
-    () => activeThreadId ? usageForThread(activeThreadId) : null,
-    [activeThreadId, taskStatus, tokenUsage],
-  );
+  const activeUsageRecord = activeThreadId ? usageForThread(activeThreadId) : null;
   const activeUsageCost = activeUsageRecord?.estimatedCost
     ?? (tokenUsage ? estimateUsageCost(tokenUsage, activeUsageRecord?.pricing) : null);
   const activeUsageIsUnpriced = Boolean(
@@ -425,14 +424,14 @@ export default function App() {
     : activeUsageCost === null || activeUsageIsUnpriced
       ? "Price unavailable for this model"
       : `≈ ${formatEstimatedCost(activeUsageCost)} ${activeUsageRecord?.pricing?.source === "OpenRouter" ? "estimated spend" : "API-equivalent"}${activeUsageRecord?.unpricedTokens ? " · partial estimate" : ""}`;
-  const allTimeUsage = useMemo(() => usageTotals(), [settingsOpen, taskStatus, tokenUsage]);
-  const costTotalsView = useMemo(() => {
+  const allTimeUsage = usageTotals();
+  const costTotalsView = (() => {
     const totals = costTotals(activeProject ? normalizedProjectPath(activeProject.path) : undefined);
     if (!totals.today && !totals.project) return "";
     return activeProject
       ? `${formatCost(totals.project)} in this project · ${formatCost(totals.today)} today`
       : `${formatCost(totals.today)} today`;
-  }, [activeProject, taskStatus, tokenUsage]);
+  })();
 
   const accountUsageView = useMemo(() => {
     return providerAccountUsage(effectiveSettings.provider, {
@@ -453,7 +452,7 @@ export default function App() {
 
   const executionPathFor = useCallback((threadId: string | null | undefined, logicalPath: string) => (
     executionPathForThread(threadId, logicalPath, threadWorktreesRef.current)
-  ), []);
+  ), [threadWorktreesRef]);
 
   useEffect(() => {
     let disposed = false;
@@ -907,6 +906,9 @@ export default function App() {
     } catch (reason) {
       setError(friendlyError(reason));
     }
+  // Babel's TS-7-compatible parser treats the `result.account` property as
+  // the unrelated component state named `account`.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const refreshModels = useCallback(async () => {
@@ -1038,6 +1040,9 @@ export default function App() {
         }
       }
     },
+    // The parser reports the unrelated rendered `diff` value here; refresh
+    // writes through the task store and reads only executeCommand.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [executeCommand],
   );
 
@@ -1331,44 +1336,6 @@ export default function App() {
   useEffect(() => {
     if (cursorStatus?.loggedIn) void refreshCursorModels();
   }, [cursorStatus?.loggedIn, refreshCursorModels]);
-
-  const shortcutStateRef = useRef({ running: false, modalOpen: false, threadOpen: false, stopTurn: () => {}, newThread: () => {} });
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      const meta = event.metaKey || event.ctrlKey;
-      if (meta && event.key.toLowerCase() === "k") {
-        event.preventDefault();
-        setCommandPaletteOpen((open) => !open);
-        return;
-      }
-      if (meta && event.key.toLowerCase() === "f" && shortcutStateRef.current.threadOpen && !shortcutStateRef.current.modalOpen) {
-        event.preventDefault();
-        setConvSearchOpen(true);
-        requestAnimationFrame(() => convSearchInputRef.current?.focus());
-        return;
-      }
-      if (meta && event.key.toLowerCase() === "n") {
-        event.preventDefault();
-        shortcutStateRef.current.newThread();
-        return;
-      }
-      if (meta && event.key === ",") {
-        event.preventDefault();
-        openSettings();
-        return;
-      }
-      if (event.key === "Escape" && !shortcutStateRef.current.modalOpen && shortcutStateRef.current.running) {
-        // Escape inside a text field (thread rename, search, composer) means
-        // "cancel that edit", never "interrupt the running task".
-        const target = event.target as HTMLElement | null;
-        if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) return;
-        event.preventDefault();
-        shortcutStateRef.current.stopTurn();
-      }
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [openSettings]);
 
   // Workspace-change side effects are keyed on the workspace *path* and
   // runtime availability, with refreshTools read through a ref. Depending on
@@ -2812,7 +2779,23 @@ export default function App() {
     setScheduledTasks((current) => current.map((item) => (item.id === id ? patch(item) : item)));
   }, [setScheduledTasks]);
 
-  shortcutStateRef.current = { running: Boolean(running && activeThread), modalOpen: onboardingOpen || settingsOpen || commandPaletteOpen || runtimeSetupOpen || authRequiredOpen || Boolean(pendingApproval) || permissionOpen, threadOpen: Boolean(activeThreadId), stopTurn: () => void stopTurn(), newThread };
+  useAppShortcuts({
+    running: Boolean(running && activeThread),
+    modalOpen: onboardingOpen || settingsOpen || commandPaletteOpen || runtimeSetupOpen || authRequiredOpen || Boolean(pendingApproval) || permissionOpen,
+    threadOpen: Boolean(activeThreadId),
+    toggleCommandPalette: () => setCommandPaletteOpen((open) => !open),
+    openConversationSearch: () => {
+      setConvSearchOpen(true);
+      requestAnimationFrame(() => convSearchInputRef.current?.focus());
+    },
+    newThread,
+    openSettings,
+    stopTurn: () => void stopTurn(),
+  });
+  useThreadHealth({
+    runtimeAvailable: Boolean(runtimeStatus?.available),
+    threadFor: (threadId) => knownThreadsRef.current?.[threadId] ?? (activeThread?.id === threadId ? activeThread : undefined),
+  });
 
   const recordScheduleRun = useCallback((run: ScheduleRunRecord) => {
     setScheduleRuns((current) => [run, ...current].slice(0, 100));

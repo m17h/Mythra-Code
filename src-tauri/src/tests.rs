@@ -1410,3 +1410,48 @@ fn skill_runtime_bridge_preserves_app_name_body_and_markdown_references() {
     fs::remove_dir_all(root).unwrap();
     fs::remove_dir_all(runtime).unwrap();
 }
+
+#[test]
+fn command_exec_bridge_requires_a_bounded_explicit_sandbox() {
+    let root = skill_test_directory("rpc-command-sandbox");
+    fs::create_dir_all(&root).unwrap();
+    let valid = json!({
+        "command": ["echo", "safe"],
+        "cwd": root,
+        "sandboxPolicy": { "type": "workspaceWrite", "writableRoots": [root] },
+    });
+    assert!(validate_rpc_params("command/exec", &valid).is_ok());
+
+    let mut missing_sandbox = valid.clone();
+    missing_sandbox
+        .as_object_mut()
+        .unwrap()
+        .remove("sandboxPolicy");
+    assert!(validate_rpc_params("command/exec", &missing_sandbox)
+        .unwrap_err()
+        .contains("explicit sandbox"));
+
+    let overbroad = json!({
+        "command": ["echo", "unsafe"],
+        "cwd": root,
+        "sandboxPolicy": { "type": "workspaceWrite", "writableRoots": [std::path::MAIN_SEPARATOR.to_string()] },
+    });
+    assert!(validate_rpc_params("command/exec", &overbroad)
+        .unwrap_err()
+        .contains("filesystem root"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn config_bridge_is_limited_to_mcp_server_settings() {
+    assert!(validate_rpc_params(
+        "config/value/write",
+        &json!({ "keyPath": "mcp_servers.example", "value": null }),
+    )
+    .is_ok());
+    assert!(validate_rpc_params(
+        "config/value/write",
+        &json!({ "keyPath": "approval_policy", "value": "never" }),
+    )
+    .is_err());
+}

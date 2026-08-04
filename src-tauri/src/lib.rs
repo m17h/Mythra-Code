@@ -37,8 +37,8 @@ mod project_git;
 mod skills;
 use cursor::{
     cursor_login, cursor_models, cursor_permission_respond, cursor_runtime_status,
-    cursor_turn_interrupt, cursor_turn_kill, cursor_turn_start, cursor_turn_steer,
-    shutdown_cursor_on_exit, CursorState,
+    cursor_turn_active, cursor_turn_interrupt, cursor_turn_kill, cursor_turn_start,
+    cursor_turn_steer, shutdown_cursor_on_exit, CursorState,
 };
 use github::{
     github_attach_remote, github_clone_repository, github_create_repository, github_login,
@@ -1898,6 +1898,19 @@ async fn claude_turn_kill(state: State<'_, ClaudeState>, thread_id: String) -> R
 }
 
 #[tauri::command]
+async fn claude_turn_active(
+    state: State<'_, ClaudeState>,
+    thread_id: String,
+) -> Result<bool, String> {
+    Ok(state
+        .turns
+        .lock()
+        .await
+        .get(&thread_id)
+        .is_some_and(|turn| turn.alive.load(Ordering::Acquire)))
+}
+
+#[tauri::command]
 async fn claude_permission_respond(
     state: State<'_, ClaudeState>,
     thread_id: String,
@@ -2516,6 +2529,88 @@ async fn ensure_server(app: &AppHandle, state: &RuntimeState) -> Result<Arc<AppS
     Ok(server)
 }
 
+/// Validate the high-impact RPCs that the webview is allowed to forward.
+/// The Codex app-server normally enforces its own approval policy for agent
+/// turns, but OpenKiwi also exposes a user-operated terminal and workflows via
+/// `command/exec`. Requiring an explicit, bounded sandbox policy here keeps a
+/// compromised renderer from silently omitting the sandbox or widening a
+/// workspace-write request to a filesystem root.
+fn validate_rpc_params(method: &str, params: &Value) -> Result<(), String> {
+    if method == "command/exec" {
+        let command = params
+            .get("command")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "command/exec requires a command array".to_string())?;
+        if command.is_empty()
+            || command.len() > 256
+            || command.iter().any(|value| {
+                value
+                    .as_str()
+                    .is_none_or(|argument| argument.is_empty() || argument.len() > 32_768)
+            })
+        {
+            return Err("command/exec received an invalid or oversized command".into());
+        }
+        let cwd = params
+            .get("cwd")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "command/exec requires a working directory".to_string())?;
+        let cwd = PathBuf::from(cwd)
+            .canonicalize()
+            .map_err(|error| format!("command/exec working directory is unavailable: {error}"))?;
+        if !cwd.is_dir() {
+            return Err("command/exec working directory is not a folder".into());
+        }
+        let sandbox = params
+            .get("sandboxPolicy")
+            .and_then(Value::as_object)
+            .ok_or_else(|| "command/exec requires an explicit sandbox policy".to_string())?;
+        let sandbox_type = sandbox
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if !matches!(
+            sandbox_type,
+            "readOnly" | "workspaceWrite" | "dangerFullAccess"
+        ) {
+            return Err("command/exec received an unknown sandbox policy".into());
+        }
+        if sandbox_type == "workspaceWrite" {
+            let roots = sandbox
+                .get("writableRoots")
+                .and_then(Value::as_array)
+                .ok_or_else(|| "workspaceWrite requires writable roots".to_string())?;
+            if roots.is_empty() || roots.len() > 16 {
+                return Err("workspaceWrite requires 1–16 writable roots".into());
+            }
+            for root in roots {
+                let root = root
+                    .as_str()
+                    .ok_or_else(|| "workspaceWrite roots must be paths".to_string())?;
+                let canonical = PathBuf::from(root).canonicalize().map_err(|error| {
+                    format!("workspaceWrite root `{root}` is unavailable: {error}")
+                })?;
+                if !canonical.is_dir() || canonical.parent().is_none() {
+                    return Err("workspaceWrite cannot grant a filesystem root".into());
+                }
+            }
+        }
+    }
+    if matches!(method, "config/value/write" | "config/value/delete") {
+        let key = params
+            .get("keyPath")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if !key.starts_with("mcp_servers.") || key.len() > 256 {
+            return Err(
+                "OpenKiwi only permits MCP server settings through the desktop bridge".into(),
+            );
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 async fn codex_rpc(
     app: AppHandle,
@@ -2528,7 +2623,6 @@ async fn codex_rpc(
         "account/login/start",
         "account/logout",
         "account/rateLimits/read",
-        "account/usage/read",
         "model/list",
         "thread/list",
         "thread/start",
@@ -2541,11 +2635,7 @@ async fn codex_rpc(
         "thread/unarchive",
         "thread/delete",
         "thread/search",
-        "thread/settings/update",
         "thread/compact/start",
-        "thread/backgroundTerminals/list",
-        "thread/backgroundTerminals/clean",
-        "thread/backgroundTerminals/terminate",
         "turn/start",
         "turn/steer",
         "turn/interrupt",
@@ -2554,34 +2644,17 @@ async fn codex_rpc(
         "command/exec/write",
         "command/exec/resize",
         "command/exec/terminate",
-        "process/spawn",
-        "process/writeStdin",
-        "process/resizePty",
-        "process/kill",
         "skills/list",
-        "skills/config/write",
         "skills/extraRoots/set",
         "mcpServerStatus/list",
         "mcpServer/oauth/login",
-        "mcpServer/resource/read",
-        "mcpServer/tool/call",
         "config/mcpServer/reload",
-        "config/read",
         "config/value/write",
-        "config/batchWrite",
-        "modelProvider/capabilities/read",
-        "permissionProfile/list",
-        "experimentalFeature/list",
-        "experimentalFeature/enablement/set",
+        "config/value/delete",
         "gitDiffToRemote",
         "fs/readFile",
-        "fs/writeFile",
         "fs/readDirectory",
-        "fs/getMetadata",
         "fuzzyFileSearch",
-        "fuzzyFileSearch/sessionStart",
-        "fuzzyFileSearch/sessionUpdate",
-        "fuzzyFileSearch/sessionStop",
     ];
     // Methods that are safe to transparently re-send after the runtime is
     // respawned. Everything else (turn/start, command/exec, config writes, …)
@@ -2590,21 +2663,15 @@ async fn codex_rpc(
     const RETRYABLE_METHODS: &[&str] = &[
         "account/read",
         "account/rateLimits/read",
-        "account/usage/read",
         "model/list",
         "thread/list",
         "thread/read",
         "thread/search",
         "skills/list",
         "mcpServerStatus/list",
-        "config/read",
-        "modelProvider/capabilities/read",
-        "permissionProfile/list",
-        "experimentalFeature/list",
         "gitDiffToRemote",
         "fs/readFile",
         "fs/readDirectory",
-        "fs/getMetadata",
         "fuzzyFileSearch",
     ];
     if !ALLOWED_METHODS.contains(&method.as_str()) {
@@ -2612,6 +2679,7 @@ async fn codex_rpc(
             "OpenKiwi's desktop bridge does not allow the RPC method `{method}`"
         ));
     }
+    validate_rpc_params(&method, &params)?;
     let server = ensure_server(&app, &state).await?;
     if matches!(
         method.as_str(),
@@ -2851,12 +2919,14 @@ pub fn run() {
             claude_turn_steer,
             claude_turn_interrupt,
             claude_turn_kill,
+            claude_turn_active,
             claude_permission_respond,
             claude_control_error,
             cursor_turn_start,
             cursor_turn_steer,
             cursor_turn_interrupt,
             cursor_turn_kill,
+            cursor_turn_active,
             cursor_permission_respond,
             state_read,
             state_write,

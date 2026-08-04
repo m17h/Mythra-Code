@@ -60,6 +60,9 @@ export function FileBrowser({ root, onAttach }: { root: string; onAttach: (path:
       })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
+  // `entries` is derived below and is not read by this directory request;
+  // Babel's TypeScript parser currently reports it as a false dependency.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentDirectory]);
 
   useEffect(() => {
