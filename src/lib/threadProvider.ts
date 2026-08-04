@@ -7,6 +7,18 @@ export function providerFromThread(thread: Pick<Thread, "modelProvider"> | null 
   return fallback;
 }
 
+export function isClaudeThread(thread: Pick<Thread, "modelProvider"> | null | undefined): boolean {
+  return thread?.modelProvider?.toLowerCase() === "claude";
+}
+
+export function isCursorThread(thread: Pick<Thread, "modelProvider"> | null | undefined): boolean {
+  return thread?.modelProvider?.toLowerCase() === "cursor";
+}
+
+export function isLocalSubscriptionThread(thread: Pick<Thread, "modelProvider"> | null | undefined): boolean {
+  return isClaudeThread(thread) || isCursorThread(thread);
+}
+
 export function modelForProvider(provider: Provider, model: string | null | undefined): string {
   const candidate = model?.trim() ?? "";
   if (provider === "claude") return candidate.startsWith("claude-") ? candidate : DEFAULT_CLAUDE_MODEL;

@@ -7,14 +7,13 @@ import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { Archive, ArchiveRestore, Bot, Check, ChevronDown, Circle, Code2, Command, Download, FileCode2, Folder, FolderOpen, GitBranch, LoaderCircle, MessageSquare, Paperclip, PanelRight, PanelLeftClose, PanelLeftOpen, Plus, Pin, PinOff, Pencil, Search, Settings, Shield, ShieldAlert, ShieldCheck, TerminalSquare, Trash2, UsersRound, X } from "lucide-react";
 import { getCodexRuntimeStatus, auditEvent, exportTextFile, getNormalChatWorkspace, hasOpenRouterKey, listOpenRouterModels, respond, restartRuntime, rpc, type CodexRuntimeStatus, type JsonObject } from "./lib/codex";
-import { deleteClaudeTranscript, getClaudeRuntimeStatus, interruptClaudeTurn, isClaudeThreadBusyError, killClaudeTurn, loadClaudeTranscript, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, startClaudeTurn, steerClaudeTurn, type ClaudeRuntimeStatus } from "./lib/claude";
-import { deleteCursorTranscript, getCursorRuntimeStatus, interruptCursorTurn, killCursorTurn, listCursorModels, loadCursorTranscript, respondToCursorPermission, saveCursorTranscript, startCursorLogin, startCursorTurn, steerCursorTurn, type CursorModel, type CursorRuntimeStatus } from "./lib/cursor";
+import { deleteClaudeTranscript, getClaudeRuntimeStatus, loadClaudeTranscript, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, type ClaudeRuntimeStatus } from "./lib/claude";
+import { deleteCursorTranscript, getCursorRuntimeStatus, listCursorModels, loadCursorTranscript, respondToCursorPermission, saveCursorTranscript, startCursorLogin, type CursorModel, type CursorRuntimeStatus } from "./lib/cursor";
 import { loadStored, storeValue } from "./lib/storage";
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_OPENAI_MODEL, DEFAULT_PROMPT_PROFILES, DEFAULT_SETTINGS, THEMES } from "./lib/appConfig";
-import { commandSandbox, threadResumeParams, threadRuntimeConfig, threadStartParams, turnStartParams } from "./lib/turnConfig";
+import { commandSandbox, threadResumeParams, threadRuntimeConfig } from "./lib/turnConfig";
 import { threadSearchParams, threadsForWorkspace, type ThreadSearchResponse } from "./lib/threadSearch";
-import { buildTurnInput, withoutSentAttachments } from "./lib/turnInput";
-import { countActiveThreadsByWorkspace, filterThreadsForWorkspace, forgetSidebarThread, optimisticStartedThread, pruneSidebarIndex, reconcileWorkspaceThreads, rememberSidebarThread, sidebarThread, threadBelongsToWorkspace, upsertThread, type ThreadSidebarIndex } from "./lib/threadList";
+import { countActiveThreadsByWorkspace, filterThreadsForWorkspace, forgetSidebarThread, pruneSidebarIndex, reconcileWorkspaceThreads, rememberSidebarThread, sidebarThread, threadBelongsToWorkspace, upsertThread, type ThreadSidebarIndex } from "./lib/threadList";
 import { timelineFromTurns } from "./lib/threadTimeline";
 import { buildTranscriptMarkdown } from "./lib/transcript";
 import { RowMenu } from "./components/RowMenu";
@@ -32,8 +31,8 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { SettingsModal } from "./components/SettingsModal";
 import { AuthRequiredModal, RuntimeSetupModal } from "./components/RuntimeModals";
 import type { AgentRecord, AttachmentRecord, McpView, StudioTab } from "./components/StudioDock";
-import type { Account, Activity, AppSettings, ArchivedThread, ChatMessage, CustomAgentProfile, PendingApproval, PermissionMode, Project, ProjectAction, ProjectPromptMode, PromptProfile, Provider, ScheduledTask, ScheduleRunRecord, SettingsSection, Thread, Turn, ThemeName, WorkspaceMode } from "./types";
-import { PendingTurnStarts, type PendingTurnStart } from "./lib/pendingTurnStarts";
+import type { Account, Activity, AppSettings, ArchivedThread, ChatMessage, CustomAgentProfile, PendingApproval, PermissionMode, Project, ProjectAction, ProjectPromptMode, PromptProfile, Provider, ScheduledTask, ScheduleRunRecord, SettingsSection, Thread, ThemeName, WorkspaceMode } from "./types";
+import { PendingTurnStarts } from "./lib/pendingTurnStarts";
 import { useTaskStore } from "./lib/taskStore";
 import { friendlyError } from "./lib/errors";
 import { recordError } from "./lib/errorLog";
@@ -63,6 +62,9 @@ import {
   type GitHubRepoStatus,
 } from "./lib/github";
 import { useAppUpdater } from "./lib/appUpdater";
+import { usePersistedState, usePersistedStateRef } from "./hooks/usePersistedState";
+import { useTurnRunner } from "./hooks/useTurnRunner";
+import { useCheckpoints } from "./hooks/useCheckpoints";
 import { useCodexEvents } from "./hooks/useCodexEvents";
 import { useClaudeEvents } from "./hooks/useClaudeEvents";
 import { useCursorEvents } from "./hooks/useCursorEvents";
@@ -74,28 +76,20 @@ import { useWorkflowEngine } from "./hooks/useWorkflowEngine";
 import { isEstablishedOpenKiwiInstall, ONBOARDING_EXIT_MS, ONBOARDING_VERSION } from "./lib/onboarding";
 import { createLocalSkill, importLocalSkills, normalizeSkillName, resolveLocalSkills, scanLocalSkills, syncLocalSkills, type LocalSkill, type LocalSkillFile } from "./lib/skills";
 import { compactWorkflowRun, normalizeWorkflows, recoverWorkflowRuns, type WorkflowDefinition, type WorkflowRunRecord } from "./lib/workflows";
-import { modelForProvider, providerFromThread } from "./lib/threadProvider";
+import { isClaudeThread, isCursorThread, isLocalSubscriptionThread, modelForProvider, providerFromThread } from "./lib/threadProvider";
+import { basename, normalizedProjectPath } from "./lib/paths";
 import { resolveSystemPrompt } from "./lib/systemPrompt";
 import { providerAccountUsage } from "./lib/providerUsage";
-import { OPENKIWI_COMPLETION_INSTRUCTIONS, withOpenKiwiCompletionInstructions } from "./lib/completionPrompt";
+import { OPENKIWI_COMPLETION_INSTRUCTIONS } from "./lib/completionPrompt";
 import { providerForArchivedThread } from "./lib/threadArchive";
 import { deleteThreadTurnDurations } from "./lib/turnDurations";
 import { reorderProjects, type ProjectDropPosition } from "./lib/projectOrdering";
 import {
-  checkpointIsRestorable,
-  completeCheckpointSnapshot,
-  createCheckpointSnapshot,
   deleteCheckpointSnapshot,
-  partitionCheckpointsForRetention,
-  readCheckpointDiff,
-  restoreCheckpointSnapshot,
-  type CheckpointHead,
   type CheckpointRecord,
-  type CheckpointRestoreTarget,
 } from "./lib/checkpoints";
 import {
   applyWorktreeToSource,
-  createThreadWorktree,
   executionPathForThread,
   initializeWorkspaceGit,
   mergeWorktreeBranch,
@@ -103,8 +97,6 @@ import {
   readWorkspaceGitInfo,
   readWorktreeStatus,
   removeThreadWorktree,
-  setWorktreeAppliedBaseline,
-  type CreatedWorktree,
   type ThreadWorktreeRecord,
   type WorktreeStatus,
   type WorkspaceGitInfo,
@@ -127,15 +119,6 @@ const initialOnboardingOpen = initialOnboardingVersion < ONBOARDING_VERSION && !
 const storedSettings = loadStored<Partial<AppSettings>>("kiwi.settings", {});
 const initialSettings: AppSettings = { ...DEFAULT_SETTINGS, ...storedSettings, openAiLogo: storedSettings.openAiLogo === "codex" ? "codex" : "openai", claudeLogo: storedSettings.claudeLogo === "anthropic" ? "anthropic" : "claude", subagentMax: Math.min(24, Math.max(1, Number(storedSettings.subagentMax) || DEFAULT_SETTINGS.subagentMax)), model: modelForProvider(storedSettings.provider ?? DEFAULT_SETTINGS.provider, storedSettings.model ?? DEFAULT_SETTINGS.model), theme: THEMES.some((theme) => theme.id === storedSettings.theme) ? storedSettings.theme! : DEFAULT_SETTINGS.theme, uiScale: Math.min(150, Math.max(80, Number(storedSettings.uiScale) || DEFAULT_SETTINGS.uiScale)) };
 
-function basename(path: string): string {
-  return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
-}
-
-function normalizedProjectPath(path: string): string {
-  const normalized = path.replace(/\\/g, "/").replace(/\/+$/, "");
-  return normalized || "/";
-}
-
 function permissionLabel(mode: PermissionMode): string {
   if (mode === "read-only") return "Read only";
   if (mode === "full") return "Full access";
@@ -147,18 +130,6 @@ function providerLabel(provider: AppSettings["provider"]): string {
   if (provider === "claude") return "Claude";
   if (provider === "cursor") return "Cursor";
   return "OpenAI";
-}
-
-function isClaudeThread(thread: Thread | null | undefined): boolean {
-  return thread?.modelProvider?.toLowerCase() === "claude";
-}
-
-function isCursorThread(thread: Thread | null | undefined): boolean {
-  return thread?.modelProvider?.toLowerCase() === "cursor";
-}
-
-function isLocalSubscriptionThread(thread: Thread | null | undefined): boolean {
-  return isClaudeThread(thread) || isCursorThread(thread);
 }
 
 function PermissionIcon({ mode, size = 15 }: { mode: PermissionMode; size?: number }) {
@@ -181,9 +152,9 @@ function ConversationTimeline({ threadId, running, thinkingLabel, approval, prov
 
 export default function App() {
   const appUpdater = useAppUpdater();
-  const [projects, setProjects] = useState<Project[]>(initialProjects);
+  const [projects, setProjects] = usePersistedState<Project[]>("kiwi.projects", [], { init: () => initialProjects });
   const [activeProjectId, setActiveProjectId] = useState<string | null>(initialProjects[0]?.id ?? null);
-  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>(initialWorkspaceMode);
+  const [workspaceMode, setWorkspaceMode] = usePersistedState<WorkspaceMode>("kiwi.workspaceMode", "chat", { init: () => initialWorkspaceMode });
   const [chatWorkspacePath, setChatWorkspacePath] = useState("");
   const [threads, setThreads] = useState<Thread[]>([]);
   const [activeThread, setActiveThread] = useState<Thread | null>(null);
@@ -192,13 +163,12 @@ export default function App() {
   // the starting/running state — never a global flag, so a start in one
   // thread cannot make another thread look busy.
   const [startingDraftTurn, setStartingDraftTurn] = useState(false);
-  const [settings, setSettings] = useState<AppSettings>(initialSettings);
-  const [threadModels, setThreadModels] = useState<Record<string, string>>(() => loadStored("kiwi.threadModels", {}));
+  const [settings, persistSettings] = usePersistedState<AppSettings>("kiwi.settings", DEFAULT_SETTINGS, { init: () => initialSettings });
+  const [threadModels, setThreadModels] = usePersistedState<Record<string, string>>("kiwi.threadModels", {});
   const [draftThreadProvider, setDraftThreadProvider] = useState<Provider | null>(null);
   const [draftThreadModel, setDraftThreadModel] = useState<string | null>(null);
   const [draftThreadIsolated, setDraftThreadIsolated] = useState(false);
-  const [threadWorktrees, setThreadWorktrees] = useState<Record<string, ThreadWorktreeRecord>>(() => loadStored("kiwi.threadWorktrees", {}));
-  const threadWorktreesRef = useRef(threadWorktrees);
+  const [threadWorktrees, persistThreadWorktrees, threadWorktreesRef] = usePersistedStateRef<Record<string, ThreadWorktreeRecord>>("kiwi.threadWorktrees", {});
   const [workspaceGitInfo, setWorkspaceGitInfo] = useState<WorkspaceGitInfo | null>(null);
   const [gitInitializing, setGitInitializing] = useState(false);
   const [successToast, setSuccessToast] = useState<string | null>(null);
@@ -206,13 +176,16 @@ export default function App() {
   const [worktreeStatus, setWorktreeStatus] = useState<WorktreeStatus | null>(null);
   const [worktreeBusy, setWorktreeBusy] = useState(false);
   const [previewTheme, setPreviewTheme] = useState<ThemeName | null>(null);
-  const [promptProfiles, setPromptProfiles] = useState<PromptProfile[]>(() => loadStored("kiwi.promptProfiles", DEFAULT_PROMPT_PROFILES));
-  const [customAgents, setCustomAgents] = useState<CustomAgentProfile[]>(() => loadStored("kiwi.customAgents", []));
-  const [projectActions, setProjectActions] = useState<ProjectAction[]>(() => loadStored("kiwi.projectActions", []));
-  const [scheduledTasks, setScheduledTasks] = useState<ScheduledTask[]>(() => loadStored("kiwi.scheduledTasks", []));
-  const [scheduleRuns, setScheduleRuns] = useState<ScheduleRunRecord[]>(() => loadStored("kiwi.scheduleRuns", []));
-  const [workflows, setWorkflows] = useState<WorkflowDefinition[]>(() => normalizeWorkflows(loadStored("kiwi.workflows", [])));
-  const [workflowRuns, setWorkflowRuns] = useState<WorkflowRunRecord[]>(() => recoverWorkflowRuns(loadStored("kiwi.workflowRuns", [])));
+  const [promptProfiles, setPromptProfiles] = usePersistedState<PromptProfile[]>("kiwi.promptProfiles", DEFAULT_PROMPT_PROFILES);
+  const [customAgents, setCustomAgents] = usePersistedState<CustomAgentProfile[]>("kiwi.customAgents", []);
+  const [projectActions, setProjectActions] = usePersistedState<ProjectAction[]>("kiwi.projectActions", []);
+  const [scheduledTasks, setScheduledTasks] = usePersistedState<ScheduledTask[]>("kiwi.scheduledTasks", []);
+  const [scheduleRuns, setScheduleRuns] = usePersistedState<ScheduleRunRecord[]>("kiwi.scheduleRuns", []);
+  const [workflows, setWorkflows] = usePersistedState<WorkflowDefinition[]>("kiwi.workflows", [], { init: (load) => normalizeWorkflows(load()) });
+  const [workflowRuns, setWorkflowRuns] = usePersistedState<WorkflowRunRecord[]>("kiwi.workflowRuns", [], {
+    init: (load) => recoverWorkflowRuns(load()),
+    serialize: (runs) => runs.map((run) => compactWorkflowRun(run)),
+  });
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsInitialSection, setSettingsInitialSection] = useState<SettingsSection>("general");
   const [onboardingOpen, setOnboardingOpen] = useState(initialOnboardingOpen);
@@ -226,8 +199,8 @@ export default function App() {
   const [convSearchCount, setConvSearchCount] = useState(0);
   const convSearchInputRef = useRef<HTMLInputElement>(null);
   const [searchResults, setSearchResults] = useState<Thread[] | null>(null);
-  const [pinnedThreadIds, setPinnedThreadIds] = useState<string[]>(() => loadStored("kiwi.pinnedThreads", []));
-  const [archivedThreads, setArchivedThreads] = useState<ArchivedThread[]>(() => loadStored("kiwi.archivedThreads", []));
+  const [pinnedThreadIds, setPinnedThreadIds] = usePersistedState<string[]>("kiwi.pinnedThreads", []);
+  const [archivedThreads, persistArchivedThreads] = usePersistedState<ArchivedThread[]>("kiwi.archivedThreads", []);
   const [archivedOpen, setArchivedOpen] = useState(false);
   const [renamingThreadId, setRenamingThreadId] = useState<string | null>(null);
   const [threadNameDraft, setThreadNameDraft] = useState("");
@@ -258,21 +231,12 @@ export default function App() {
   const [openRouterReady, setOpenRouterReady] = useState(false);
   const [studioOpen, setStudioOpen] = useState(false);
   const [studioTab, setStudioTab] = useState<StudioTab>("review");
-  const [checkpoints, setCheckpoints] = useState<CheckpointRecord[]>(() => loadStored("kiwi.checkpoints", []));
-  const checkpointsRef = useRef(checkpoints);
-  const [checkpointHeads, setCheckpointHeads] = useState<Record<string, CheckpointHead>>(() => loadStored("kiwi.checkpointHeads", {}));
-  const checkpointHeadsRef = useRef(checkpointHeads);
-  const activeRunCheckpointsRef = useRef(new Map<string, string>());
-  const checkpointProjectQueuesRef = useRef(new Map<string, Promise<void>>());
-  const checkpointUnsupportedPathsRef = useRef(new Set<string>());
-  const [checkpointBusyId, setCheckpointBusyId] = useState<string | null>(null);
-  const [checkpointPreview, setCheckpointPreview] = useState<{ id: string; diff: string } | null>(null);
   const [attachments, setAttachments] = useState<AttachmentRecord[]>([]);
   const [rateSummary, setRateSummary] = useState("");
-  const [skillsFolder, setSkillsFolder] = useState(() => loadStored<string>("kiwi.skillsFolder", ""));
+  const [skillsFolder, setSkillsFolder] = usePersistedState<string>("kiwi.skillsFolder", "");
   const [skillFiles, setSkillFiles] = useState<LocalSkillFile[]>([]);
-  const [skillAliases, setSkillAliases] = useState<Record<string, string>>(() => loadStored("kiwi.skillAliases", {}));
-  const [disabledSkillPaths, setDisabledSkillPaths] = useState<string[]>(() => loadStored("kiwi.disabledSkills", []));
+  const [skillAliases, setSkillAliases] = usePersistedState<Record<string, string>>("kiwi.skillAliases", {});
+  const [disabledSkillPaths, setDisabledSkillPaths] = usePersistedState<string[]>("kiwi.disabledSkills", []);
   const [skills, setSkills] = useState<LocalSkill[]>([]);
   const [skillsBusy, setSkillsBusy] = useState(false);
   const [skillsError, setSkillsError] = useState("");
@@ -483,28 +447,9 @@ export default function App() {
   const errorSuggestsSettings = useMemo(() => Boolean(error) && /sign in|api key|openrouter|claude|model|settings|runtime|codex|account/i.test(error ?? ""), [error]);
   const workspaceArchived = useMemo(() => (activeWorkspace ? archivedThreads.filter((record) => record.path === normalizedProjectPath(activeWorkspace.path)) : []), [activeWorkspace, archivedThreads]);
 
-  const persistSettings = useCallback((next: AppSettings) => {
-    setSettings(next);
-    storeValue("kiwi.settings", next);
-  }, []);
-
   const persistThreadModel = useCallback((threadId: string, model: string) => {
-    setThreadModels((current) => {
-      if (current[threadId] === model) return current;
-      const next = { ...current, [threadId]: model };
-      storeValue("kiwi.threadModels", next);
-      return next;
-    });
-  }, []);
-
-  const persistThreadWorktrees = useCallback((
-    update: (current: Record<string, ThreadWorktreeRecord>) => Record<string, ThreadWorktreeRecord>,
-  ) => {
-    const next = update(threadWorktreesRef.current);
-    threadWorktreesRef.current = next;
-    setThreadWorktrees(next);
-    storeValue("kiwi.threadWorktrees", next);
-  }, []);
+    setThreadModels((current) => (current[threadId] === model ? current : { ...current, [threadId]: model }));
+  }, [setThreadModels]);
 
   const executionPathFor = useCallback((threadId: string | null | undefined, logicalPath: string) => (
     executionPathForThread(threadId, logicalPath, threadWorktreesRef.current)
@@ -651,22 +596,17 @@ export default function App() {
       if (!(threadId in current)) return current;
       const next = { ...current };
       delete next[threadId];
-      storeValue("kiwi.threadModels", next);
       return next;
     });
-  }, []);
+  }, [setThreadModels]);
 
   const persistActiveProjectOverride = useCallback(
     <K extends keyof NonNullable<Project["overrides"]>>(key: K, value: NonNullable<Project["overrides"]>[K]) => {
       if (!activeProject?.overrides?.[key]) return false;
-      setProjects((current) => {
-        const next = current.map((project) => (project.id === activeProject.id ? { ...project, overrides: { ...project.overrides, [key]: value } } : project));
-        storeValue("kiwi.projects", next);
-        return next;
-      });
+      setProjects((current) => current.map((project) => (project.id === activeProject.id ? { ...project, overrides: { ...project.overrides, [key]: value } } : project)));
       return true;
     },
-    [activeProject],
+    [activeProject, setProjects],
   );
 
   const persistComposerModel = useCallback(
@@ -692,25 +632,21 @@ export default function App() {
   const persistActiveProjectPrompt = useCallback(
     (systemPrompt: string | undefined, mode: ProjectPromptMode) => {
       if (!activeProject) return;
-      setProjects((current) => {
-        const next = current.map((project) => {
-          if (project.id !== activeProject.id) return project;
-          const overrides = { ...(project.overrides ?? {}) };
-          if (systemPrompt?.trim()) {
-            overrides.systemPrompt = systemPrompt.trim();
-            if (mode === "append") overrides.systemPromptMode = "append";
-            else delete overrides.systemPromptMode;
-          } else {
-            delete overrides.systemPrompt;
-            delete overrides.systemPromptMode;
-          }
-          return { ...project, overrides: Object.keys(overrides).length ? overrides : undefined };
-        });
-        storeValue("kiwi.projects", next);
-        return next;
-      });
+      setProjects((current) => current.map((project) => {
+        if (project.id !== activeProject.id) return project;
+        const overrides = { ...(project.overrides ?? {}) };
+        if (systemPrompt?.trim()) {
+          overrides.systemPrompt = systemPrompt.trim();
+          if (mode === "append") overrides.systemPromptMode = "append";
+          else delete overrides.systemPromptMode;
+        } else {
+          delete overrides.systemPrompt;
+          delete overrides.systemPromptMode;
+        }
+        return { ...project, overrides: Object.keys(overrides).length ? overrides : undefined };
+      }));
     },
-    [activeProject],
+    [activeProject, setProjects],
   );
 
   const { paneSizes, startPaneResize } = usePaneResize((settings.uiScale || 100) / 100);
@@ -726,230 +662,6 @@ export default function App() {
       setStatus((current) => (current === message ? "Ready" : current));
     }, 3000);
   }, []);
-
-  const runCheckpointProjectOperation = useCallback(async <T,>(
-    workspacePath: string,
-    operation: () => Promise<T>,
-  ): Promise<T> => {
-    const key = normalizedProjectPath(workspacePath);
-    const previous = checkpointProjectQueuesRef.current.get(key) ?? Promise.resolve();
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const tail = previous.catch(() => undefined).then(() => gate);
-    checkpointProjectQueuesRef.current.set(key, tail);
-    await previous.catch(() => undefined);
-    try {
-      return await operation();
-    } finally {
-      release();
-      if (checkpointProjectQueuesRef.current.get(key) === tail) {
-        checkpointProjectQueuesRef.current.delete(key);
-      }
-    }
-  }, []);
-
-  const persistCheckpoints = useCallback((update: (current: CheckpointRecord[]) => CheckpointRecord[]) => {
-    const next = update(checkpointsRef.current);
-    // Retention: the record list is rewritten wholesale on every turn and
-    // would otherwise grow forever. Prune old overflow past the per-project
-    // cap, and delete each pruned record's backing git snapshot the same way
-    // an explicit delete does. Heads and in-flight run checkpoints are
-    // explicitly protected; the partition itself keeps anything running,
-    // safety-related, worktree-linked, or newer than seven days.
-    const protectedIds = new Set<string>([
-      ...Object.values(checkpointHeadsRef.current).map((head) => head.checkpointId),
-      ...activeRunCheckpointsRef.current.values(),
-    ]);
-    const { kept, pruned } = partitionCheckpointsForRetention(next, protectedIds);
-    checkpointsRef.current = kept;
-    setCheckpoints(kept);
-    storeValue("kiwi.checkpoints", kept);
-    for (const record of pruned) {
-      if (!record.workspacePath || !record.beforeCommit) continue;
-      void runCheckpointProjectOperation(
-        record.workspacePath,
-        () => deleteCheckpointSnapshot(record.id, record.workspacePath!),
-      ).catch(() => undefined);
-    }
-  }, [runCheckpointProjectOperation]);
-
-  const persistCheckpointHead = useCallback((workspacePath: string, head: CheckpointHead | null) => {
-    const key = normalizedProjectPath(workspacePath);
-    const next = { ...checkpointHeadsRef.current };
-    if (head) next[key] = head;
-    else delete next[key];
-    checkpointHeadsRef.current = next;
-    setCheckpointHeads(next);
-    storeValue("kiwi.checkpointHeads", next);
-  }, []);
-
-  const beginRunCheckpoint = useCallback(async (
-    threadId: string,
-    workspacePath: string,
-    prompt: string,
-    provider: Provider,
-    model: string,
-  ): Promise<string | undefined> => {
-    const pathKey = normalizedProjectPath(workspacePath);
-    if (
-      (chatWorkspacePath && pathKey === normalizedProjectPath(chatWorkspacePath))
-      || checkpointUnsupportedPathsRef.current.has(pathKey)
-    ) return undefined;
-    const id = crypto.randomUUID();
-    const parent = checkpointHeadsRef.current[pathKey];
-    const taskState = useTaskStore.getState();
-    const overlappingRun = Object.entries(taskState.statuses).some(([candidateId, taskStatus]) => {
-      if (candidateId === threadId || (taskStatus !== "starting" && taskStatus !== "running")) return false;
-      const binding = taskState.tasks[candidateId]?.workspacePath
-        ?? threadProjectBindingsRef.current?.[candidateId];
-      return Boolean(binding && normalizedProjectPath(binding) === pathKey);
-    });
-    const label = prompt.trim()
-      ? `Run: ${prompt.trim().replace(/\s+/g, " ").slice(0, 72)}`
-      : "Model run";
-    const checkpoint: CheckpointRecord = {
-      id,
-      threadId,
-      workspacePath,
-      threadLabel: knownThreadsRef.current?.[threadId]?.name || knownThreadsRef.current?.[threadId]?.preview || prompt.slice(0, 72),
-      provider,
-      model,
-      label,
-      createdAt: Date.now(),
-      status: "running",
-      parentId: parent?.checkpointId,
-      parentPosition: parent?.position,
-      overlappingRun,
-    };
-    persistCheckpoints((current) => [
-      checkpoint,
-      ...current.map((entry) => (
-        overlappingRun
-        && entry.status === "running"
-        && entry.workspacePath
-        && normalizedProjectPath(entry.workspacePath) === pathKey
-          ? { ...entry, overlappingRun: true }
-          : entry
-      )),
-    ]);
-    try {
-      const snapshot = await runCheckpointProjectOperation(
-        workspacePath,
-        () => createCheckpointSnapshot(id, workspacePath, `${label} · before`),
-      );
-      persistCheckpoints((current) => current.map((entry) => entry.id === id ? {
-        ...entry,
-        repoRoot: snapshot.repoRoot,
-        beforeCommit: snapshot.commit,
-        fileCount: snapshot.fileCount,
-        branch: snapshot.branch ?? undefined,
-        head: snapshot.head ?? undefined,
-      } : entry));
-      activeRunCheckpointsRef.current.set(threadId, id);
-      return id;
-    } catch (reason) {
-      const message = friendlyError(reason);
-      persistCheckpoints((current) => current.filter((entry) => entry.id !== id));
-      void deleteCheckpointSnapshot(id, workspacePath).catch(() => undefined);
-      if (/Checkpoints (?:currently )?require/i.test(message)) {
-        checkpointUnsupportedPathsRef.current.add(pathKey);
-        useTaskStore.getState().upsertActivity(threadId, {
-          id: `checkpoint-unavailable-${id}`,
-          kind: "warning",
-          title: "Automatic checkpoints unavailable",
-          detail: `${message}. The model can still work, but OpenKiwi cannot create restorable file snapshots here.`,
-        });
-      } else {
-        recordError(`Could not create the automatic checkpoint: ${message}`);
-        useTaskStore.getState().upsertActivity(threadId, {
-          id: `checkpoint-failed-${id}`,
-          kind: "warning",
-          title: "Automatic checkpoint failed",
-          detail: message,
-        });
-      }
-      return undefined;
-    }
-  }, [chatWorkspacePath, persistCheckpoints, runCheckpointProjectOperation]);
-
-  const finalizeRunCheckpoint = useCallback(async (
-    threadId: string,
-    turnId?: string,
-    completionStatus: "ready" | "interrupted" | "recovered" = "ready",
-  ) => {
-    const id = activeRunCheckpointsRef.current.get(threadId);
-    if (!id) return;
-    activeRunCheckpointsRef.current.delete(threadId);
-    const checkpoint = checkpointsRef.current.find((entry) => entry.id === id);
-    if (!checkpoint?.workspacePath) return;
-    try {
-      const result = await runCheckpointProjectOperation(
-        checkpoint.workspacePath,
-        () => completeCheckpointSnapshot(id, checkpoint.workspacePath!, `${checkpoint.label} · completed`),
-      );
-      persistCheckpoints((current) => current.map((entry) => entry.id === id ? {
-        ...entry,
-        turnId: turnId ?? entry.turnId,
-        status: completionStatus,
-        completedAt: Date.now(),
-        afterCommit: result.snapshot.commit,
-        fileCount: result.snapshot.fileCount,
-        changedFiles: result.changedFiles,
-        additions: result.additions,
-        deletions: result.deletions,
-      } : entry));
-      persistCheckpointHead(checkpoint.workspacePath, { checkpointId: id, position: "after" });
-    } catch (reason) {
-      const message = friendlyError(reason);
-      persistCheckpoints((current) => current.map((entry) => entry.id === id ? {
-        ...entry,
-        status: "failed",
-        completedAt: Date.now(),
-        error: message,
-      } : entry));
-      recordError(`Could not finish checkpoint “${checkpoint.label}”: ${message}`);
-    }
-  }, [persistCheckpointHead, persistCheckpoints, runCheckpointProjectOperation]);
-
-  const discardRunCheckpoint = useCallback((threadId: string) => {
-    const id = activeRunCheckpointsRef.current.get(threadId);
-    if (!id) return;
-    activeRunCheckpointsRef.current.delete(threadId);
-    const checkpoint = checkpointsRef.current.find((entry) => entry.id === id);
-    persistCheckpoints((current) => current.filter((entry) => entry.id !== id));
-    if (checkpoint?.workspacePath) {
-      void runCheckpointProjectOperation(
-        checkpoint.workspacePath,
-        () => deleteCheckpointSnapshot(id, checkpoint.workspacePath!),
-      ).catch(() => undefined);
-    }
-  }, [persistCheckpoints, runCheckpointProjectOperation]);
-
-  useEffect(() => {
-    for (const checkpoint of checkpointsRef.current) {
-      if (checkpoint.status === "running" && (!checkpoint.workspacePath || !checkpoint.beforeCommit)) {
-        persistCheckpoints((current) => current.map((entry) => entry.id === checkpoint.id ? {
-          ...entry,
-          status: "failed",
-          completedAt: Date.now(),
-          error: "OpenKiwi closed before the initial project snapshot finished.",
-        } : entry));
-        continue;
-      }
-      if (
-        checkpoint.status !== "running"
-        || !checkpoint.workspacePath
-        || !checkpoint.beforeCommit
-        || activeRunCheckpointsRef.current.has(checkpoint.threadId)
-      ) {
-        continue;
-      }
-      activeRunCheckpointsRef.current.set(checkpoint.threadId, checkpoint.id);
-      void finalizeRunCheckpoint(checkpoint.threadId, checkpoint.turnId, "recovered");
-    }
-  }, [finalizeRunCheckpoint, persistCheckpoints]);
 
   const openSettings = useCallback((section: SettingsSection = "general") => {
     setSettingsInitialSection(section);
@@ -989,16 +701,7 @@ export default function App() {
 
   const startNormalChat = useCallback(() => {
     setWorkspaceMode("chat");
-    storeValue("kiwi.workspaceMode", "chat");
-  }, []);
-
-  const persistArchivedThreads = useCallback((update: (current: ArchivedThread[]) => ArchivedThread[]) => {
-    setArchivedThreads((current) => {
-      const next = update(current);
-      storeValue("kiwi.archivedThreads", next);
-      return next;
-    });
-  }, []);
+  }, [setWorkspaceMode]);
 
   const bindThreadToProject = useCallback((threadId: string, projectPath: string) => {
     const current = threadProjectBindingsRef.current ?? {};
@@ -1342,6 +1045,42 @@ export default function App() {
     if (!activeProject || !activeThreadId || !activeExecutionPath) return;
     await refreshDiffFor(activeThreadId, activeExecutionPath);
   }, [activeExecutionPath, activeProject, activeThreadId, refreshDiffFor]);
+
+  const {
+    checkpoints,
+    checkpointHeads,
+    checkpointsRef,
+    checkpointBusyId,
+    checkpointPreview,
+    runCheckpointProjectOperation,
+    persistCheckpoints,
+    beginRunCheckpoint,
+    finalizeRunCheckpoint,
+    discardRunCheckpoint,
+    projectHasActiveTask,
+    captureCurrentStateCheckpoint,
+    createCheckpoint,
+    restoreCheckpoint,
+    toggleCheckpointAccepted,
+    previewCheckpoint,
+    removeCheckpoint,
+    forgetThreadCheckpoints,
+  } = useCheckpoints({
+    chatWorkspacePath,
+    activeThread,
+    activeProject,
+    activeThreadId,
+    activeExecutionPath,
+    defaultProvider: settings.provider,
+    threadModels,
+    knownThreadsRef,
+    threadProjectBindingsRef,
+    threadWorktreesRef,
+    persistThreadWorktrees,
+    refreshDiffFor,
+    setError,
+    setTransientStatus,
+  });
 
   // The event context is rebuilt each render so callbacks always see fresh
   // state; useCodexEvents reads it through a ref and subscribes exactly once.
@@ -1887,11 +1626,7 @@ export default function App() {
 
       const target = projectDropTargetRef.current;
       if (endEvent.type === "pointerup" && active && target) {
-        setProjects((current) => {
-          const next = reorderProjects(current, projectId, target.id, target.position);
-          if (next !== current) storeValue("kiwi.projects", next);
-          return next;
-        });
+        setProjects((current) => reorderProjects(current, projectId, target.id, target.position));
         suppressProjectClickRef.current = true;
         window.setTimeout(() => {
           suppressProjectClickRef.current = false;
@@ -1915,7 +1650,6 @@ export default function App() {
     if (existing) {
       setActiveProjectId(existing.id);
       setWorkspaceMode("project");
-      storeValue("kiwi.workspaceMode", "project");
       return;
     }
     const project: Project = { id: crypto.randomUUID(), name: basename(selected), path: selected };
@@ -1923,8 +1657,6 @@ export default function App() {
     setProjects(next);
     setActiveProjectId(project.id);
     setWorkspaceMode("project");
-    storeValue("kiwi.workspaceMode", "project");
-    storeValue("kiwi.projects", next);
   };
 
   const toggleProjectPin = (project: Project) => {
@@ -1932,7 +1664,6 @@ export default function App() {
     const remaining = projects.filter((entry) => entry.id !== project.id);
     const next = updated.pinned ? [updated, ...remaining] : projects.map((entry) => entry.id === project.id ? updated : entry);
     setProjects(next);
-    storeValue("kiwi.projects", next);
   };
 
   const removeProject = (project: Project) => {
@@ -1948,13 +1679,9 @@ export default function App() {
     if (!confirmed) return;
     const next = projects.filter((entry) => entry.id !== project.id);
     setProjects(next);
-    storeValue("kiwi.projects", next);
     if (activeProjectId === project.id) {
       setActiveProjectId(next[0]?.id ?? null);
-      if (!next.length) {
-        setWorkspaceMode("chat");
-        storeValue("kiwi.workspaceMode", "chat");
-      }
+      if (!next.length) setWorkspaceMode("chat");
     }
   };
 
@@ -2092,397 +1819,54 @@ export default function App() {
     requestAnimationFrame(() => composerRef.current?.focus());
   };
 
-  // Returns true when the message was delivered; the Composer restores its
-  // draft when it was not.
-  const sendMessage = async (text: string): Promise<boolean> => {
-    if (!text || !activeWorkspace) return false;
-    const currentIsolation = activeThread ? threadWorktreesRef.current[activeThread.id] : undefined;
-    if (currentIsolation && worktreeBusy) {
-      setError("Wait for the isolated worktree operation to finish before starting another model turn.");
-      return false;
-    }
-    if (currentIsolation?.status === "missing" || currentIsolation?.status === "removed") {
-      setError("This thread's isolated worktree is unavailable. Recreate it or explicitly continue in the shared project before sending another message.");
-      return false;
-    }
-    if (!activeThread && draftThreadIsolated && (!workspaceGitInfo?.isRepo || !workspaceGitInfo.isRoot || !workspaceGitInfo.hasCommit)) {
-      setError("Isolated threads require a Git repository root with at least one commit.");
-      return false;
-    }
-    if (effectiveSettings.provider !== "claude" && effectiveSettings.provider !== "cursor" && !runtimeStatus?.available) {
-      setRuntimeSetupOpen(true);
-      return false;
-    }
-    if (effectiveSettings.provider === "openai" && account?.type !== "chatgpt") {
-      setAuthRequiredOpen(true);
-      return false;
-    }
-    if (effectiveSettings.provider === "openrouter" && !openRouterReady) {
-      openSettings("models");
-      setError("Add an OpenRouter API key before using OpenRouter.");
-      return false;
-    }
-    if (effectiveSettings.provider === "claude" && (!claudeStatus?.available || !claudeStatus.loggedIn)) {
-      openSettings("models");
-      setError(claudeStatus?.available ? "Sign in to Claude Code before using your Claude subscription." : "Install Claude Code, then sign in before using the Claude provider.");
-      return false;
-    }
-    if (effectiveSettings.provider === "cursor" && (!cursorStatus?.available || !cursorStatus.loggedIn)) {
-      openSettings("models");
-      setError(cursorStatus?.available ? "Sign in to Cursor Agent before using your Cursor subscription." : "Install Cursor Agent, then sign in before using the Cursor provider.");
-      return false;
-    }
-    if (effectiveSettings.provider === "openrouter" && !effectiveSettings.model.trim()) {
-      setError("Choose an OpenRouter model before starting this thread.");
-      return false;
-    }
-    if (running && activeThread) {
-      const sentAttachments = [...attachments];
-      setError(null);
-      const steerMessageId = `local-${crypto.randomUUID()}`;
-      useTaskStore.getState().appendUserMessage(activeThread.id, { id: steerMessageId, role: "user", text });
-      try {
-        if (isClaudeThread(activeThread)) {
-          await steerClaudeTurn(
-            activeThread.id,
-            text,
-            sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })),
-          );
-          scheduleClaudeThreadSave(activeThread.id);
-        } else if (isCursorThread(activeThread)) {
-          await steerCursorTurn(activeThread.id, text);
-          scheduleCursorThreadSave(activeThread.id);
-        } else {
-          await rpc("turn/steer", { threadId: activeThread.id, input: buildTurnInput(text, sentAttachments) });
-        }
-        setAttachments((current) => withoutSentAttachments(current, sentAttachments));
-        setTransientStatus("Direction added");
-        return true;
-      } catch (reason) {
-        // The message never reached the runtime — remove the optimistic bubble
-        // so a retry does not duplicate it in the timeline.
-        useTaskStore.getState().removeMessage(activeThread.id, steerMessageId);
-        setError(friendlyError(reason));
-        return false;
-      }
-    }
-
-    const willUseSharedFolder = !currentIsolation && !(draftThreadIsolated && !activeThread);
-    if (willUseSharedFolder) {
-      const sharedPath = normalizedProjectPath(activeWorkspace.path);
-      const taskState = useTaskStore.getState();
-      const anotherSharedRun = Object.entries(taskState.statuses).some(([threadId, threadStatus]) => {
-        if (threadId === activeThread?.id || (threadStatus !== "starting" && threadStatus !== "running")) return false;
-        const logicalPath = threadProjectBindingsRef.current?.[threadId];
-        const executionPath = taskState.tasks[threadId]?.workspacePath
-          ?? (logicalPath ? executionPathFor(threadId, logicalPath) : undefined);
-        return Boolean(executionPath && normalizedProjectPath(executionPath) === sharedPath);
-      });
-      if (anotherSharedRun && !window.confirm(
-        "Another thread is already working in this shared project folder.\n\nBoth models can edit the same files at the same time. Continue anyway, or cancel and start this as an isolated worktree instead?",
-      )) return false;
-    }
-
-    setError(null);
-    // Workspace identity captured at send start. After each await below the
-    // continuation may resume in a different workspace; installation into the
-    // visible UI (thread list, active thread) is then skipped, while the
-    // thread itself still starts and stays bound to its own project.
-    const sendWorkspacePath = normalizedProjectPath(activeWorkspace.path);
-    const workspaceChangedMidSend = () => activeWorkspacePathRef.current !== sendWorkspacePath;
-    let pendingStart: PendingTurnStart | undefined;
-    // Mark the start synchronously, before the first await, so Stop and the
-    // composer reflect it immediately — and only on the thread actually
-    // starting. A send with no active thread yet is tracked by the draft
-    // flag until the created thread's own status takes over.
-    const startingThreadId = activeThread?.id;
-    if (startingThreadId) {
-      useTaskStore.getState().setTaskStatus(startingThreadId, "starting");
-      pendingStart = pendingTurnStartsRef.current.begin(startingThreadId);
-    } else {
-      setStartingDraftTurn(true);
-    }
-    setStatus("Starting");
-
-    let startedThreadId: string | undefined;
-    let sentMessageId: string | undefined;
-    let provisionalWorktree: CreatedWorktree | undefined;
-    let provisionalPersisted = false;
-    const sentAttachments = [...attachments];
-    try {
-      let executionPath = activeWorkspace.path;
-      if (!activeThread && draftThreadIsolated && activeProject) {
-        provisionalWorktree = await createThreadWorktree(activeProject.path, text);
-        executionPath = provisionalWorktree.path;
-      } else if (activeThread) {
-        executionPath = executionPathFor(activeThread.id, activeWorkspace.path);
-      }
-      const isolationGitDir = provisionalWorktree?.gitDir ?? currentIsolation?.gitDir;
-      const additionalWorkspaceRoots = isolationGitDir ? [isolationGitDir] : [];
-      if (effectiveSettings.provider === "claude") {
-        if (skillsFolder && !skillRuntimeRootRef.current) await refreshLocalSkills();
-        let thread = activeThread;
-        if (!thread) {
-          thread = { id: crypto.randomUUID(), name: null, preview: text.slice(0, 140), cwd: executionPath, updatedAt: Math.floor(Date.now() / 1000), modelProvider: "claude" };
-          startedThreadId = thread.id;
-          bindThreadToProject(thread.id, activeWorkspace.path);
-          if (provisionalWorktree && activeProject) {
-            const record: ThreadWorktreeRecord = {
-              threadId: thread.id,
-              projectId: activeProject.id,
-              projectPath: activeProject.path,
-              path: provisionalWorktree.path,
-              branch: provisionalWorktree.branch,
-              baseCommit: provisionalWorktree.baseCommit,
-              gitDir: provisionalWorktree.gitDir,
-              createdAt: Date.now(),
-              status: "active",
-            };
-            persistThreadWorktrees((current) => ({ ...current, [thread!.id]: record }));
-            provisionalPersisted = true;
-            setDraftThreadIsolated(false);
-          }
-          rememberThread(thread);
-          persistThreadModel(thread.id, effectiveSettings.model);
-          useTaskStore.getState().ensureTask(thread.id, executionPath);
-          if (!workspaceChangedMidSend()) {
-            setThreads((current) => upsertThread(current, thread!));
-            setActiveThread(thread);
-            useTaskStore.getState().setActiveThread(thread.id);
-          }
-        }
-        startedThreadId = thread.id;
-        const updatedThread = { ...thread, preview: text.slice(0, 140) || thread.preview, updatedAt: Math.floor(Date.now() / 1000) };
-        rememberThread(updatedThread);
-        if (!workspaceChangedMidSend()) {
-          setThreads((current) => upsertThread(current, updatedThread));
-          setActiveThread(updatedThread);
-        }
-        useTaskStore.getState().ensureTask(thread.id, executionPath);
-        useTaskStore.getState().setTaskStatus(thread.id, "starting");
-        if (!pendingStart) pendingStart = pendingTurnStartsRef.current.begin(thread.id);
-        await beginRunCheckpoint(thread.id, executionPath, text, effectiveSettings.provider, effectiveSettings.model);
-        const canResumeClaude = Boolean(activeThread && useTaskStore.getState().tasks[thread.id]?.messages.some((message) => message.role === "assistant"));
-        sentMessageId = `local-${crypto.randomUUID()}`;
-        useTaskStore.getState().appendUserMessage(thread.id, { id: sentMessageId, role: "user", text });
-        await saveClaudeTranscript({ thread: updatedThread, messages: useTaskStore.getState().tasks[thread.id]?.messages ?? [], activities: useTaskStore.getState().tasks[thread.id]?.activities ?? [] });
-        const result = await startClaudeTurn({ threadId: thread.id, cwd: executionPath, prompt: text, model: effectiveSettings.model || DEFAULT_CLAUDE_MODEL, effort: settings.ultra ? "ultra" : settings.reasoningEffort, permission: effectiveSettings.permission, systemPrompt: withOpenKiwiCompletionInstructions(effectiveSettings.systemPrompt), resume: canResumeClaude, attachments: sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })), subagentsEnabled: settings.subagentsEnabled, subagentMax: settings.subagentMax, customAgents, skillsPluginPath: skillRuntimeRootRef.current || undefined });
-        useTaskStore.getState().setActiveTurn(thread.id, result.turnId);
-        useTaskStore.getState().setTaskStatus(thread.id, "running");
-        setStartingDraftTurn(false);
-        setAttachments((current) => withoutSentAttachments(current, sentAttachments));
-        if (pendingTurnStartsRef.current.finish(thread.id, pendingStart)) {
-          await interruptClaudeTurn(thread.id);
-          useTaskStore.getState().setActiveTurn(thread.id, undefined);
-          useTaskStore.getState().setTaskStatus(thread.id, "interrupted");
-          setTransientStatus("Stopped");
-        }
-        return true;
-      }
-
-      if (effectiveSettings.provider === "cursor") {
-        let thread = activeThread;
-        if (!thread) {
-          thread = { id: crypto.randomUUID(), name: null, preview: text.slice(0, 140), cwd: executionPath, updatedAt: Math.floor(Date.now() / 1000), modelProvider: "cursor" };
-          startedThreadId = thread.id;
-          bindThreadToProject(thread.id, activeWorkspace.path);
-          if (provisionalWorktree && activeProject) {
-            const record: ThreadWorktreeRecord = {
-              threadId: thread.id,
-              projectId: activeProject.id,
-              projectPath: activeProject.path,
-              path: provisionalWorktree.path,
-              branch: provisionalWorktree.branch,
-              baseCommit: provisionalWorktree.baseCommit,
-              gitDir: provisionalWorktree.gitDir,
-              createdAt: Date.now(),
-              status: "active",
-            };
-            persistThreadWorktrees((current) => ({ ...current, [thread!.id]: record }));
-            provisionalPersisted = true;
-            setDraftThreadIsolated(false);
-          }
-          rememberThread(thread);
-          persistThreadModel(thread.id, effectiveSettings.model);
-          useTaskStore.getState().ensureTask(thread.id, executionPath);
-          if (!workspaceChangedMidSend()) {
-            setThreads((current) => upsertThread(current, thread!));
-            setActiveThread(thread);
-            useTaskStore.getState().setActiveThread(thread.id);
-          }
-        }
-        startedThreadId = thread.id;
-        const updatedThread = { ...thread, preview: text.slice(0, 140) || thread.preview, updatedAt: Math.floor(Date.now() / 1000) };
-        rememberThread(updatedThread);
-        if (!workspaceChangedMidSend()) {
-          setThreads((current) => upsertThread(current, updatedThread));
-          setActiveThread(updatedThread);
-        }
-        useTaskStore.getState().ensureTask(thread.id, executionPath);
-        useTaskStore.getState().setTaskStatus(thread.id, "starting");
-        if (!pendingStart) pendingStart = pendingTurnStartsRef.current.begin(thread.id);
-        await beginRunCheckpoint(thread.id, executionPath, text, effectiveSettings.provider, effectiveSettings.model);
-        sentMessageId = `local-${crypto.randomUUID()}`;
-        useTaskStore.getState().appendUserMessage(thread.id, { id: sentMessageId, role: "user", text });
-        const priorSessionId = cursorSessionIdsRef.current[thread.id];
-        await saveCursorTranscript({ thread: updatedThread, cursorSessionId: priorSessionId ?? "", messages: useTaskStore.getState().tasks[thread.id]?.messages ?? [], activities: useTaskStore.getState().tasks[thread.id]?.activities ?? [] });
-        const result = await startCursorTurn({
-          threadId: thread.id,
-          cwd: executionPath,
-          prompt: text,
-          model: effectiveSettings.model || DEFAULT_CURSOR_MODEL,
-          effort: settings.ultra ? "ultra" : settings.reasoningEffort,
-          permission: effectiveSettings.permission,
-          systemPrompt: withOpenKiwiCompletionInstructions(effectiveSettings.systemPrompt),
-          resumeSessionId: priorSessionId || undefined,
-          attachments: sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })),
-        });
-        cursorSessionIdsRef.current[thread.id] = result.cursorSessionId;
-        useTaskStore.getState().setActiveTurn(thread.id, result.turnId);
-        useTaskStore.getState().setTaskStatus(thread.id, "running");
-        setStartingDraftTurn(false);
-        setAttachments((current) => withoutSentAttachments(current, sentAttachments));
-        scheduleCursorThreadSave(thread.id);
-        if (pendingTurnStartsRef.current.finish(thread.id, pendingStart)) {
-          await interruptCursorTurn(thread.id);
-          useTaskStore.getState().setActiveTurn(thread.id, undefined);
-          useTaskStore.getState().setTaskStatus(thread.id, "interrupted");
-          setTransientStatus("Stopped");
-        }
-        return true;
-      }
-
-      await ensureSkillRoots();
-      const input = buildTurnInput(text, sentAttachments);
-      let threadId = activeThread?.id;
-      startedThreadId = threadId;
-      if (!threadId) {
-        const result = await rpc<{ thread: Thread }>("thread/start", threadStartParams(effectiveSettings, executionPath, { serviceName: activeWorkspace.isChat ? "OpenKiwi Chat" : "OpenKiwi", customAgents, modelContextWindow: effectiveSettings.provider === "openrouter" ? openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.context_length : undefined, interactive: true, additionalWorkspaceRoots }));
-        const startedThread = optimisticStartedThread(result.thread, text);
-        threadId = startedThread.id;
-        startedThreadId = threadId;
-        bindThreadToProject(startedThread.id, activeWorkspace.path);
-        if (provisionalWorktree && activeProject) {
-          const record: ThreadWorktreeRecord = {
-            threadId: startedThread.id,
-            projectId: activeProject.id,
-            projectPath: activeProject.path,
-            path: provisionalWorktree.path,
-            branch: provisionalWorktree.branch,
-            baseCommit: provisionalWorktree.baseCommit,
-            gitDir: provisionalWorktree.gitDir,
-            createdAt: Date.now(),
-            status: "active",
-          };
-          persistThreadWorktrees((current) => ({ ...current, [startedThread.id]: record }));
-          provisionalPersisted = true;
-          setDraftThreadIsolated(false);
-        }
-        rememberThread(startedThread);
-        persistThreadModel(startedThread.id, effectiveSettings.model);
-        useTaskStore.getState().ensureTask(startedThread.id, executionPath);
-        if (!workspaceChangedMidSend()) {
-          setThreads((current) => upsertThread(current, startedThread));
-          setActiveThread(startedThread);
-          useTaskStore.getState().setActiveThread(startedThread.id);
-        }
-      } else if (effectiveSettings.provider === "openrouter") {
-        // Re-apply the isolated provider config before every subsequent turn.
-        // This repairs a persisted thread after a compatibility refresh.
-        await rpc("thread/resume", { ...threadResumeParams(effectiveSettings, threadId, executionPath, { customAgents, modelContextWindow: openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.context_length, excludeTurns: true, additionalWorkspaceRoots }), model: effectiveSettings.model });
-      }
-
-      if (activeThread?.id === threadId) {
-        const updatedThread = { ...activeThread, updatedAt: Math.floor(Date.now() / 1000) };
-        rememberThread(updatedThread);
-        if (!workspaceChangedMidSend()) {
-          setThreads((current) => upsertThread(current, updatedThread));
-          setActiveThread(updatedThread);
-        }
-      }
-      useTaskStore.getState().ensureTask(threadId, executionPath);
-      useTaskStore.getState().setTaskStatus(threadId, "starting");
-      if (!pendingStart) pendingStart = pendingTurnStartsRef.current.begin(threadId);
-      await beginRunCheckpoint(threadId, executionPath, text, effectiveSettings.provider, effectiveSettings.model);
-      sentMessageId = `local-${crypto.randomUUID()}`;
-      useTaskStore.getState().appendUserMessage(threadId, { id: sentMessageId, role: "user", text });
-
-      const result = await rpc<{ turn: Turn }>("turn/start", turnStartParams(effectiveSettings, threadId, executionPath, input, additionalWorkspaceRoots));
-      if (result.turn?.id) useTaskStore.getState().setActiveTurn(threadId, result.turn.id);
-      setStartingDraftTurn(false);
-      setAttachments((current) => withoutSentAttachments(current, sentAttachments));
-      if (pendingTurnStartsRef.current.finish(threadId, pendingStart)) {
-        // The user pressed stop while the turn was still starting.
-        if (result.turn?.id) await rpc("turn/interrupt", { threadId, turnId: result.turn.id });
-        useTaskStore.getState().setActiveTurn(threadId, undefined);
-        useTaskStore.getState().setTaskStatus(threadId, "interrupted");
-        setTransientStatus("Stopped");
-      }
-      return true;
-    } catch (reason) {
-      setStartingDraftTurn(false);
-      // Use the locally captured thread ids: for a brand-new thread the
-      // activeThread closure is still null here (which used to leave the
-      // thread stuck in "starting" forever), and a failure before the send
-      // resolved its thread must still clear the "starting" mark applied at
-      // the top of this function.
-      const failedThreadId = startedThreadId ?? startingThreadId;
-      if (provisionalWorktree && activeProject && !provisionalPersisted) {
-        void removeThreadWorktree(
-          undefined,
-          activeProject.path,
-          provisionalWorktree.path,
-          provisionalWorktree.branch,
-          true,
-          true,
-        ).catch(() => undefined);
-      }
-      if (failedThreadId) {
-        discardRunCheckpoint(failedThreadId);
-        if (pendingStart) pendingTurnStartsRef.current.finish(failedThreadId, pendingStart);
-        if (sentMessageId) useTaskStore.getState().removeMessage(failedThreadId, sentMessageId);
-        useTaskStore.getState().setTaskStatus(failedThreadId, "error", friendlyError(reason));
-        if (isClaudeThreadBusyError(reason)) {
-          // The backend slot is held by a Claude process the UI no longer
-          // tracks (e.g. after an event loss). Free it so a retry succeeds
-          // instead of failing until OpenKiwi restarts.
-          void killClaudeTurn(failedThreadId).catch(() => undefined);
-        } else if (effectiveSettings.provider === "cursor" && /already working/i.test(friendlyError(reason))) {
-          void killCursorTurn(failedThreadId).catch(() => undefined);
-        }
-      }
-      setStatus("Ready");
-      setError(friendlyError(reason));
-      return false;
-    }
-  };
-
-  const stopTurn = async () => {
-    if (!activeThread || !running) return;
-    const turnId = useTaskStore.getState().tasks[activeThread.id]?.activeTurnId;
-    if (!turnId) {
-      // If this thread's turn/start RPC is still in flight, flag that exact
-      // pending start so sendMessage interrupts the turn the moment its id is
-      // known. When this thread has no start in flight (e.g. the user
-      // navigated here while another thread was starting), there is nothing
-      // to stop and no intent must be recorded.
-      if (pendingTurnStartsRef.current.requestCancel(activeThread.id)) {
-        setStatus("Stopping");
-      }
-      return;
-    }
-    try {
-      if (isClaudeThread(activeThread)) await interruptClaudeTurn(activeThread.id);
-      else if (isCursorThread(activeThread)) await interruptCursorTurn(activeThread.id);
-      else await rpc("turn/interrupt", { threadId: activeThread.id, turnId });
-      useTaskStore.getState().setActiveTurn(activeThread.id, undefined);
-      useTaskStore.getState().setTaskStatus(activeThread.id, "interrupted");
-      setStartingDraftTurn(false);
-      setTransientStatus("Stopped");
-    } catch (reason) {
-      setError(friendlyError(reason));
-    }
-  };
+  const { sendMessage, stopTurn } = useTurnRunner({
+    activeThread,
+    activeWorkspace,
+    activeProject,
+    running,
+    attachments,
+    effectiveSettings,
+    settings,
+    customAgents,
+    openRouterModels,
+    runtimeStatus,
+    claudeStatus,
+    cursorStatus,
+    account,
+    openRouterReady,
+    workspaceGitInfo,
+    draftThreadIsolated,
+    worktreeBusy,
+    skillsFolder,
+    threadWorktreesRef,
+    threadProjectBindingsRef,
+    activeWorkspacePathRef,
+    pendingTurnStartsRef,
+    skillRuntimeRootRef,
+    cursorSessionIdsRef,
+    executionPathFor,
+    bindThreadToProject,
+    rememberThread,
+    persistThreadModel,
+    persistThreadWorktrees,
+    beginRunCheckpoint,
+    discardRunCheckpoint,
+    refreshLocalSkills,
+    ensureSkillRoots,
+    scheduleClaudeThreadSave,
+    scheduleCursorThreadSave,
+    setThreads,
+    setActiveThread,
+    setAttachments,
+    setDraftThreadIsolated,
+    setStartingDraftTurn,
+    setError,
+    setStatus,
+    setTransientStatus,
+    setRuntimeSetupOpen,
+    setAuthRequiredOpen,
+    openSettings,
+  });
 
   const retryRuntime = async () => {
     const runtime = await checkRuntime(false);
@@ -2717,30 +2101,8 @@ export default function App() {
       setThreads((current) => current.filter((entry) => entry.id !== threadId));
       persistArchivedThreads((current) => current.filter((entry) => entry.id !== threadId));
       useTaskStore.getState().removeTask(threadId);
-      setPinnedThreadIds((current) => {
-        if (!current.includes(threadId)) return current;
-        const next = current.filter((id) => id !== threadId);
-        storeValue("kiwi.pinnedThreads", next);
-        return next;
-      });
-      const deletedCheckpointIds = new Set(
-        checkpointsRef.current
-          .filter((checkpoint) => checkpoint.threadId === threadId)
-          .map((checkpoint) => checkpoint.id),
-      );
-      for (const [path, head] of Object.entries(checkpointHeadsRef.current)) {
-        if (deletedCheckpointIds.has(head.checkpointId)) persistCheckpointHead(path, null);
-      }
-      const deletedCheckpoints = checkpointsRef.current.filter((checkpoint) => checkpoint.threadId === threadId);
-      for (const checkpoint of deletedCheckpoints) {
-        if (checkpoint.workspacePath) {
-          void runCheckpointProjectOperation(
-            checkpoint.workspacePath,
-            () => deleteCheckpointSnapshot(checkpoint.id, checkpoint.workspacePath!),
-          ).catch(() => undefined);
-        }
-      }
-      persistCheckpoints((current) => current.filter((checkpoint) => checkpoint.threadId !== threadId));
+      setPinnedThreadIds((current) => (current.includes(threadId) ? current.filter((id) => id !== threadId) : current));
+      forgetThreadCheckpoints(threadId);
       const bindings = threadProjectBindingsRef.current ?? {};
       if (threadId in bindings) {
         const next = { ...bindings };
@@ -2762,7 +2124,6 @@ export default function App() {
   const toggleThreadPin = (threadId: string) => {
     const next = pinnedThreadIds.includes(threadId) ? pinnedThreadIds.filter((id) => id !== threadId) : [...pinnedThreadIds, threadId];
     setPinnedThreadIds(next);
-    storeValue("kiwi.pinnedThreads", next);
   };
 
   const openStudio = (tab: StudioTab) => {
@@ -2824,258 +2185,6 @@ export default function App() {
       if (activeThreadId) useTaskStore.getState().upsertAgent(activeThreadId, { id: threadId, prompt: "Delegated task", status: "interrupted" });
     } catch (reason) {
       setError(friendlyError(reason));
-    }
-  };
-
-  const captureCurrentStateCheckpoint = async ({
-    threadId,
-    workspacePath,
-    label,
-    status = "ready",
-    restoredFromId,
-    worktreeThreadId,
-    worktreeBaseline,
-    serialize = true,
-  }: {
-    threadId: string;
-    workspacePath: string;
-    label: string;
-    status?: CheckpointRecord["status"];
-    restoredFromId?: string;
-    worktreeThreadId?: string;
-    worktreeBaseline?: string;
-    serialize?: boolean;
-  }): Promise<CheckpointRecord> => {
-    const id = crypto.randomUUID();
-    const pathKey = normalizedProjectPath(workspacePath);
-    const parent = checkpointHeadsRef.current[pathKey];
-    const thread = knownThreadsRef.current?.[threadId];
-    const checkpoint: CheckpointRecord = {
-      id,
-      threadId,
-      workspacePath,
-      threadLabel: thread?.name || thread?.preview || "Project state",
-      provider: providerFromThread(thread, settings.provider),
-      model: threadModels[threadId],
-      label,
-      createdAt: Date.now(),
-      status: "running",
-      parentId: parent?.checkpointId,
-      parentPosition: parent?.position,
-      restoredFromId,
-      worktreeThreadId,
-      worktreeBaseline,
-    };
-    persistCheckpoints((current) => [checkpoint, ...current]);
-    const capture = async () => {
-      const before = await createCheckpointSnapshot(id, workspacePath, `${label} · saved`);
-      const after = await completeCheckpointSnapshot(id, workspacePath, `${label} · saved`);
-      const completed: CheckpointRecord = {
-        ...checkpoint,
-        repoRoot: before.repoRoot,
-        beforeCommit: before.commit,
-        afterCommit: after.snapshot.commit,
-        branch: before.branch ?? undefined,
-        head: before.head ?? undefined,
-        fileCount: after.snapshot.fileCount,
-        changedFiles: after.changedFiles,
-        additions: after.additions,
-        deletions: after.deletions,
-        status,
-        completedAt: Date.now(),
-      };
-      persistCheckpoints((current) => current.map((entry) => entry.id === id ? completed : entry));
-      return completed;
-    };
-    try {
-      return serialize
-        ? await runCheckpointProjectOperation(workspacePath, capture)
-        : await capture();
-    } catch (reason) {
-      persistCheckpoints((current) => current.filter((entry) => entry.id !== id));
-      void deleteCheckpointSnapshot(id, workspacePath).catch(() => undefined);
-      throw reason;
-    }
-  };
-
-  const createCheckpoint = async () => {
-    if (!activeThread || !activeProject) return;
-    if (projectHasActiveTask(activeExecutionPath)) {
-      setError("Wait for active tasks in this project to finish before saving a manual checkpoint.");
-      return;
-    }
-    setCheckpointBusyId("manual");
-    try {
-      const count = checkpointsRef.current.filter((item) => normalizedProjectPath(item.workspacePath ?? "") === normalizedProjectPath(activeExecutionPath)).length + 1;
-      const checkpoint = await captureCurrentStateCheckpoint({
-        threadId: activeThread.id,
-        workspacePath: activeExecutionPath,
-        label: `Manual checkpoint ${count}`,
-      });
-      persistCheckpointHead(activeExecutionPath, { checkpointId: checkpoint.id, position: "after" });
-      setTransientStatus("Checkpoint saved");
-    } catch (reason) {
-      setError(friendlyError(reason));
-    } finally {
-      setCheckpointBusyId(null);
-    }
-  };
-
-  const projectHasActiveTask = (workspacePath: string): boolean => {
-    const target = normalizedProjectPath(workspacePath);
-    if (checkpointProjectQueuesRef.current.has(target)) return true;
-    const state = useTaskStore.getState();
-    return Object.entries(state.statuses).some(([threadId, taskStatus]) => {
-      if (taskStatus !== "starting" && taskStatus !== "running") return false;
-      const binding = threadProjectBindingsRef.current?.[threadId];
-      const executionPath = state.tasks[threadId]?.workspacePath;
-      return Boolean(
-        (binding && normalizedProjectPath(binding) === target)
-        || (executionPath && normalizedProjectPath(executionPath) === target),
-      );
-    });
-  };
-
-  const restoreCheckpoint = async (checkpoint: CheckpointRecord, target: CheckpointRestoreTarget) => {
-    if (!checkpoint.workspacePath || !checkpointIsRestorable(checkpoint, target)) {
-      setError("This older conversation marker does not contain a restorable file snapshot.");
-      return;
-    }
-    if (projectHasActiveTask(checkpoint.workspacePath)) {
-      setError("Stop every active task in this project before restoring a checkpoint.");
-      return;
-    }
-    const action = target === "before"
-      ? `restore the project to before “${checkpoint.label}”`
-      : `restore the completed state of “${checkpoint.label}”`;
-    if (!window.confirm(
-      `Are you sure you want to ${action}?\n\n`
-      + "The complete project source state will move to that point. Later work will leave the active folder, but OpenKiwi will save the current state as a new safety checkpoint first. Git commits and ignored files are not changed.",
-    )) return;
-
-    setCheckpointBusyId(checkpoint.id);
-    let safetyId: string | null = null;
-    try {
-      await runCheckpointProjectOperation(checkpoint.workspacePath, async () => {
-        const relatedWorktree = checkpoint.worktreeThreadId
-          ? threadWorktreesRef.current[checkpoint.worktreeThreadId]
-          : undefined;
-        const safety = await captureCurrentStateCheckpoint({
-          threadId: activeThread?.id ?? checkpoint.threadId,
-          workspacePath: checkpoint.workspacePath!,
-          label: `Safety copy before restoring ${checkpoint.label}`,
-          status: "safety",
-          restoredFromId: checkpoint.id,
-          worktreeThreadId: relatedWorktree?.threadId,
-          worktreeBaseline: relatedWorktree
-            ? relatedWorktree.appliedTree ?? relatedWorktree.baseCommit
-            : undefined,
-          serialize: false,
-        });
-        safetyId = safety.id;
-        await restoreCheckpointSnapshot(checkpoint.id, checkpoint.workspacePath!, target, safety.id);
-        if (
-          target === "after"
-          && checkpoint.worktreeThreadId
-          && checkpoint.worktreeBaseline
-          && relatedWorktree
-          && relatedWorktree.status !== "removed"
-        ) {
-          const restoredTree = await setWorktreeAppliedBaseline(
-            checkpoint.worktreeThreadId,
-            checkpoint.workspacePath!,
-            checkpoint.worktreeBaseline,
-          );
-          persistThreadWorktrees((current) => {
-            const record = current[checkpoint.worktreeThreadId!];
-            if (!record) return current;
-            return {
-              ...current,
-              [record.threadId]: {
-                ...record,
-                appliedTree: restoredTree,
-                status: checkpoint.worktreeBaseline === record.baseCommit ? "active" : "applied",
-              },
-            };
-          });
-        }
-      });
-      persistCheckpoints((current) => current.map((entry) => entry.id === checkpoint.id ? {
-        ...entry,
-        status: target === "before" ? "restored-before" : "restored-after",
-      } : entry));
-      persistCheckpointHead(checkpoint.workspacePath, { checkpointId: checkpoint.id, position: target });
-      setCheckpointPreview(null);
-      if (activeThreadId && normalizedProjectPath(activeExecutionPath) === normalizedProjectPath(checkpoint.workspacePath)) {
-        await refreshDiffFor(activeThreadId, activeExecutionPath);
-      }
-      setTransientStatus(target === "before" ? "Restored before run" : "Completed state restored");
-    } catch (reason) {
-      if (safetyId) persistCheckpointHead(checkpoint.workspacePath, { checkpointId: safetyId, position: "after" });
-      setError(`Checkpoint restore stopped: ${friendlyError(reason)}${safetyId ? " Your pre-restore safety copy is available in Checkpoints." : ""}`);
-    } finally {
-      setCheckpointBusyId(null);
-    }
-  };
-
-  const toggleCheckpointAccepted = (checkpoint: CheckpointRecord) => {
-    persistCheckpoints((current) => current.map((entry) => entry.id === checkpoint.id ? {
-      ...entry,
-      accepted: !entry.accepted,
-    } : entry));
-    setTransientStatus(checkpoint.accepted ? "Acceptance undone" : "Checkpoint accepted");
-  };
-
-  const previewCheckpoint = async (checkpoint: CheckpointRecord) => {
-    if (!checkpoint.workspacePath || !checkpoint.afterCommit) {
-      setError("This checkpoint does not have a completed file snapshot to preview.");
-      return;
-    }
-    if (checkpointPreview?.id === checkpoint.id) {
-      setCheckpointPreview(null);
-      return;
-    }
-    setCheckpointBusyId(checkpoint.id);
-    try {
-      const diff = await runCheckpointProjectOperation(
-        checkpoint.workspacePath,
-        () => readCheckpointDiff(checkpoint.id, checkpoint.workspacePath!),
-      );
-      setCheckpointPreview({ id: checkpoint.id, diff });
-    } catch (reason) {
-      setError(friendlyError(reason));
-    } finally {
-      setCheckpointBusyId(null);
-    }
-  };
-
-  const removeCheckpoint = async (checkpoint: CheckpointRecord) => {
-    if (!checkpoint.workspacePath) {
-      persistCheckpoints((current) => current.filter((entry) => entry.id !== checkpoint.id));
-      return;
-    }
-    if (checkpoint.status === "running") {
-      setError("Wait for this run to finish before deleting its checkpoint.");
-      return;
-    }
-    if (!window.confirm(`Delete “${checkpoint.label}”?\n\nIts saved file states will no longer be restorable. Your current files and Git history will not change.`)) return;
-    setCheckpointBusyId(checkpoint.id);
-    try {
-      await runCheckpointProjectOperation(
-        checkpoint.workspacePath,
-        () => deleteCheckpointSnapshot(checkpoint.id, checkpoint.workspacePath!),
-      );
-      persistCheckpoints((current) => current.filter((entry) => entry.id !== checkpoint.id));
-      const pathKey = normalizedProjectPath(checkpoint.workspacePath);
-      if (checkpointHeadsRef.current[pathKey]?.checkpointId === checkpoint.id) {
-        persistCheckpointHead(checkpoint.workspacePath, null);
-      }
-      if (checkpointPreview?.id === checkpoint.id) setCheckpointPreview(null);
-      setTransientStatus("Checkpoint deleted");
-    } catch (reason) {
-      setError(friendlyError(reason));
-    } finally {
-      setCheckpointBusyId(null);
     }
   };
 
@@ -3586,10 +2695,8 @@ export default function App() {
       const project: Project = { id: crypto.randomUUID(), name: safeName, path: destination };
       const next = [...projects, project];
       setProjects(next);
-      storeValue("kiwi.projects", next);
       setActiveProjectId(project.id);
       setWorkspaceMode("project");
-      storeValue("kiwi.workspaceMode", "project");
       showSuccessToast("GitHub repository cloned and added");
       return true;
     } catch (reason) {
@@ -3636,7 +2743,6 @@ export default function App() {
     const selected = await open({ directory: true, multiple: false, title: "Choose your OpenKiwi skills folder" });
     if (!selected || Array.isArray(selected)) return;
     setSkillsFolder(selected);
-    storeValue("kiwi.skillsFolder", selected);
     await refreshLocalSkills(selected, skillAliases, disabledSkillPaths);
   };
 
@@ -3682,7 +2788,6 @@ export default function App() {
     }
     const next = { ...skillAliases, [path]: name };
     setSkillAliases(next);
-    storeValue("kiwi.skillAliases", next);
     setSkills(resolveLocalSkills(skillFiles, next, disabledSkillPaths));
     setSkillsError("");
     return true;
@@ -3691,7 +2796,6 @@ export default function App() {
   const toggleSkill = (path: string) => {
     const next = disabledSkillPaths.includes(path) ? disabledSkillPaths.filter((candidate) => candidate !== path) : [...disabledSkillPaths, path];
     setDisabledSkillPaths(next);
-    storeValue("kiwi.disabledSkills", next);
     setSkills(resolveLocalSkills(skillFiles, skillAliases, next));
   };
 
@@ -3705,47 +2809,25 @@ export default function App() {
   };
 
   const updateSchedule = useCallback((id: string, patch: (current: ScheduledTask) => ScheduledTask) => {
-    setScheduledTasks((current) => {
-      const next = current.map((item) => (item.id === id ? patch(item) : item));
-      storeValue("kiwi.scheduledTasks", next);
-      return next;
-    });
-  }, []);
+    setScheduledTasks((current) => current.map((item) => (item.id === id ? patch(item) : item)));
+  }, [setScheduledTasks]);
 
   shortcutStateRef.current = { running: Boolean(running && activeThread), modalOpen: onboardingOpen || settingsOpen || commandPaletteOpen || runtimeSetupOpen || authRequiredOpen || Boolean(pendingApproval) || permissionOpen, threadOpen: Boolean(activeThreadId), stopTurn: () => void stopTurn(), newThread };
 
   const recordScheduleRun = useCallback((run: ScheduleRunRecord) => {
-    setScheduleRuns((current) => {
-      const next = [run, ...current].slice(0, 100);
-      storeValue("kiwi.scheduleRuns", next);
-      return next;
-    });
-  }, []);
-
-  const persistWorkflows = useCallback((next: WorkflowDefinition[]) => {
-    setWorkflows(next);
-    storeValue("kiwi.workflows", next);
-  }, []);
+    setScheduleRuns((current) => [run, ...current].slice(0, 100));
+  }, [setScheduleRuns]);
 
   const updateWorkflow = useCallback((id: string, patch: (current: WorkflowDefinition) => WorkflowDefinition) => {
-    setWorkflows((current) => {
-      const next = current.map((workflow) => (workflow.id === id ? patch(workflow) : workflow));
-      storeValue("kiwi.workflows", next);
-      return next;
-    });
-  }, []);
+    setWorkflows((current) => current.map((workflow) => (workflow.id === id ? patch(workflow) : workflow)));
+  }, [setWorkflows]);
 
   const recordWorkflowRun = useCallback((run: WorkflowRunRecord) => {
     setWorkflowRuns((current) => {
       const existing = current.findIndex((item) => item.id === run.id);
-      const next = existing >= 0 ? current.map((item) => (item.id === run.id ? run : item)) : [run, ...current].slice(0, 100);
-      storeValue(
-        "kiwi.workflowRuns",
-        next.map((item) => compactWorkflowRun(item)),
-      );
-      return next;
+      return existing >= 0 ? current.map((item) => (item.id === run.id ? run : item)) : [run, ...current].slice(0, 100);
     });
-  }, []);
+  }, [setWorkflowRuns]);
 
   const { runWorkflow, stopWorkflow } = useWorkflowEngine({
     workflows,
@@ -3762,7 +2844,6 @@ export default function App() {
       if (source === "manual") {
         setActiveProjectId(project.id);
         setWorkspaceMode("project");
-        storeValue("kiwi.workspaceMode", "project");
         void openAgent(threadId);
       } else if (activeProject?.id === project.id) {
         void loadThreads(project);
@@ -3854,10 +2935,7 @@ export default function App() {
           <div className="workspace-list">
             <button
               className={`workspace-row chat ${workspaceMode === "chat" ? "active" : ""}`}
-              onClick={() => {
-                setWorkspaceMode("chat");
-                storeValue("kiwi.workspaceMode", "chat");
-              }}
+              onClick={() => setWorkspaceMode("chat")}
               title="Conversations without a project folder"
             >
               <span className="workspace-icon chat">
@@ -3889,7 +2967,6 @@ export default function App() {
                     }
                     setActiveProjectId(project.id);
                     setWorkspaceMode("project");
-                    storeValue("kiwi.workspaceMode", "project");
                   }}
                   title={project.path}
                 >
@@ -4142,10 +3219,7 @@ export default function App() {
               </button>
               <button
                 className="secondary-button"
-                onClick={() => {
-                  setWorkspaceMode("chat");
-                  storeValue("kiwi.workspaceMode", "chat");
-                }}
+                onClick={() => setWorkspaceMode("chat")}
               >
                 <MessageSquare size={16} /> Normal chat
               </button>
@@ -4591,32 +3665,17 @@ export default function App() {
         mcpServers={mcpServers}
         onMcpChanged={() => void refreshTools(activeProject)}
         workspaceToolsAvailable={Boolean(activeProject)}
-        onProfiles={(value) => {
-          setPromptProfiles(value);
-          storeValue("kiwi.promptProfiles", value);
-        }}
-        onAgents={(value) => {
-          setCustomAgents(value);
-          storeValue("kiwi.customAgents", value);
-        }}
-        onActions={(value) => {
-          setProjectActions(value);
-          storeValue("kiwi.projectActions", value);
-        }}
-        onSchedules={(value) => {
-          setScheduledTasks(value);
-          storeValue("kiwi.scheduledTasks", value);
-        }}
-        onWorkflows={persistWorkflows}
+        onProfiles={setPromptProfiles}
+        onAgents={setCustomAgents}
+        onActions={setProjectActions}
+        onSchedules={setScheduledTasks}
+        onWorkflows={setWorkflows}
         onRunWorkflow={async (workflowId, variables) => {
           closeSettings();
           await runWorkflow(workflowId, "manual", variables);
         }}
         onStopWorkflow={(workflowId) => stopWorkflow(workflowId)}
-        onProjects={(value) => {
-          setProjects(value);
-          storeValue("kiwi.projects", value);
-        }}
+        onProjects={setProjects}
         scheduleRuns={scheduleRuns}
         onOpenRun={(threadId) => {
           closeSettings();
@@ -4668,7 +3727,6 @@ export default function App() {
         onProject={(project) => {
           setActiveProjectId(project.id);
           setWorkspaceMode("project");
-          storeValue("kiwi.workspaceMode", "project");
         }}
         onThread={(thread) => void selectThread(thread)}
         onWorkflow={(workflow) => void runWorkflowFromShortcut(workflow)}
