@@ -12,8 +12,10 @@ export default [
       parserOptions: {
         requireConfigFile: false,
         babelOptions: {
-          presets: [["@babel/preset-typescript", { ignoreExtensions: true }]],
-          plugins: ["@babel/plugin-syntax-jsx"],
+          // Babel receives each real filename from ESLint, so the TypeScript
+          // preset can distinguish .ts from .tsx and enable JSX only where it
+          // is valid. Forcing one mode for both breaks one of the two groups.
+          presets: ["@babel/preset-typescript"],
         },
       },
     },

@@ -147,4 +147,18 @@ describe("useCheckpoints", () => {
     expect(result.current.checkpointHeads).toEqual({ "/tmp/keep": { checkpointId: "keep", position: "after" } });
     await waitFor(() => expect(checkpointApi.deleteCheckpointSnapshot).toHaveBeenCalledWith(saved.id, "/tmp/project"));
   });
+
+  it("cleans up a half-created checkpoint recovered after restart", async () => {
+    const incomplete = checkpoint({ status: "running", beforeCommit: undefined, afterCommit: undefined });
+    localStorage.setItem("kiwi.checkpoints", JSON.stringify([incomplete]));
+
+    const { result } = renderHook(() => useCheckpoints(context()));
+
+    await waitFor(() => expect(result.current.checkpoints[0]).toMatchObject({
+      id: incomplete.id,
+      status: "failed",
+      error: "OpenKiwi closed before the initial project snapshot finished.",
+    }));
+    await waitFor(() => expect(checkpointApi.deleteCheckpointSnapshot).toHaveBeenCalledWith(incomplete.id, "/tmp/project"));
+  });
 });

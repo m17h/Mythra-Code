@@ -57,7 +57,7 @@ use persistence::{
 use project_git::*;
 use project_git::{
     checkpoint_complete, checkpoint_create, checkpoint_delete, checkpoint_diff, checkpoint_restore,
-    git_stdout, optional_git_stdout, unix_timestamp_ms, workspace_git_info,
+    git_common_dir, git_stdout, optional_git_stdout, unix_timestamp_ms, workspace_git_info,
     workspace_git_initialize, worktree_apply_to_source, worktree_create, worktree_merge_branch,
     worktree_recreate, worktree_remove, worktree_set_applied_baseline, worktree_status,
 };
@@ -2533,8 +2533,9 @@ async fn ensure_server(app: &AppHandle, state: &RuntimeState) -> Result<Arc<AppS
 /// The Codex app-server normally enforces its own approval policy for agent
 /// turns, but OpenKiwi also exposes a user-operated terminal and workflows via
 /// `command/exec`. Requiring an explicit, bounded sandbox policy here keeps a
-/// compromised renderer from silently omitting the sandbox or widening a
-/// workspace-write request to a filesystem root.
+/// malformed renderer request from silently omitting the sandbox or widening
+/// a workspace-write request beyond its workspace (except for the shared Git
+/// directory required by an isolated linked worktree).
 fn validate_rpc_params(method: &str, params: &Value) -> Result<(), String> {
     if method == "command/exec" {
         let command = params
@@ -2584,6 +2585,8 @@ fn validate_rpc_params(method: &str, params: &Value) -> Result<(), String> {
             if roots.is_empty() || roots.len() > 16 {
                 return Err("workspaceWrite requires 1–16 writable roots".into());
             }
+            let shared_git_dir = git_common_dir(&cwd).ok();
+            let mut grants_working_directory = false;
             for root in roots {
                 let root = root
                     .as_str()
@@ -2594,6 +2597,20 @@ fn validate_rpc_params(method: &str, params: &Value) -> Result<(), String> {
                 if !canonical.is_dir() || canonical.parent().is_none() {
                     return Err("workspaceWrite cannot grant a filesystem root".into());
                 }
+                grants_working_directory |= canonical == cwd;
+                if !canonical.starts_with(&cwd)
+                    && shared_git_dir
+                        .as_ref()
+                        .is_none_or(|git_dir| canonical != *git_dir)
+                {
+                    return Err(
+                        "workspaceWrite roots must stay inside the working directory or match its shared Git directory"
+                            .into(),
+                    );
+                }
+            }
+            if !grants_working_directory {
+                return Err("workspaceWrite must grant its working directory".into());
             }
         }
     }

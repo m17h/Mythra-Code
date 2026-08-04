@@ -188,4 +188,27 @@ describe("useTurnRunner", () => {
     expect(deps.setStatus).toHaveBeenCalledWith("Ready");
     expect(deps.setError).toHaveBeenLastCalledWith("provider unavailable");
   });
+
+  it("does not resurrect a turn whose result beat the start response", async () => {
+    cursor.startCursorTurn.mockImplementationOnce(async () => {
+      const store = useTaskStore.getState();
+      store.setActiveTurn(CURSOR_THREAD.id, "turn-fast");
+      store.setTaskStatus(CURSOR_THREAD.id, "running");
+      store.completeTurn(CURSOR_THREAD.id, "turn-fast", "completed");
+      return { turnId: "turn-fast", cursorSessionId: "session-fast" };
+    });
+    useTaskStore.getState().ensureTask(CURSOR_THREAD.id, CURSOR_THREAD.cwd);
+    const deps = context();
+    const { result } = renderHook(() => useTurnRunner(deps));
+
+    let delivered = false;
+    await act(async () => { delivered = await result.current.sendMessage("answer quickly"); });
+
+    const task = useTaskStore.getState().tasks[CURSOR_THREAD.id];
+    expect(delivered).toBe(true);
+    expect(task.activeTurnId).toBeUndefined();
+    expect(task.status).toBe("completed");
+    expect(task.lastCompletedTurnId).toBe("turn-fast");
+    expect(cursor.interruptCursorTurn).not.toHaveBeenCalled();
+  });
 });

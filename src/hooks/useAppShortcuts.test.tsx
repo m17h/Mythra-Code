@@ -5,6 +5,7 @@ import { useAppShortcuts, type AppShortcutContext } from "./useAppShortcuts";
 function context(overrides: Partial<AppShortcutContext> = {}): AppShortcutContext {
   return {
     modalOpen: false,
+    commandPaletteOpen: false,
     threadOpen: true,
     running: true,
     toggleCommandPalette: vi.fn(),
@@ -43,6 +44,29 @@ describe("useAppShortcuts", () => {
 
     expect(deps.stopTurn).toHaveBeenCalledOnce();
     input.remove();
+  });
+
+  it("does not open app-level commands over a blocking modal", () => {
+    const deps = context({ modalOpen: true });
+    renderHook(() => useAppShortcuts(deps));
+
+    fireEvent.keyDown(document.body, { key: "k", metaKey: true });
+    fireEvent.keyDown(document.body, { key: "n", metaKey: true });
+    fireEvent.keyDown(document.body, { key: ",", metaKey: true });
+    fireEvent.keyDown(document.body, { key: "Escape" });
+
+    expect(deps.toggleCommandPalette).not.toHaveBeenCalled();
+    expect(deps.newThread).not.toHaveBeenCalled();
+    expect(deps.openSettings).not.toHaveBeenCalled();
+    expect(deps.stopTurn).not.toHaveBeenCalled();
+  });
+
+  it("lets Command-K close the command palette", () => {
+    const deps = context({ modalOpen: true, commandPaletteOpen: true });
+    renderHook(() => useAppShortcuts(deps));
+
+    fireEvent.keyDown(document.body, { key: "k", metaKey: true });
+    expect(deps.toggleCommandPalette).toHaveBeenCalledOnce();
   });
 
   it("uses fresh state and yields to a component that already handled the key", () => {

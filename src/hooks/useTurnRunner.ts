@@ -298,12 +298,18 @@ export function useTurnRunner(context: TurnRunnerContext): {
       sentMessageId = `local-${crypto.randomUUID()}`;
       useTaskStore.getState().appendUserMessage(thread.id, { id: sentMessageId, role: "user", text });
       const result = await strategy.startTurn(thread, updatedThread);
-      useTaskStore.getState().setActiveTurn(thread.id, result.turnId);
-      useTaskStore.getState().setTaskStatus(thread.id, "running");
+      // Provider events can race ahead of the start RPC response. If a very
+      // short turn already delivered its result, reinstalling it here would
+      // resurrect the completed thread as permanently running.
+      const completedBeforeStartReturned = useTaskStore.getState().tasks[thread.id]?.lastCompletedTurnId === result.turnId;
+      if (!completedBeforeStartReturned) {
+        useTaskStore.getState().setActiveTurn(thread.id, result.turnId);
+        useTaskStore.getState().setTaskStatus(thread.id, "running");
+      }
       setStartingDraftTurn(false);
       setAttachments((current) => withoutSentAttachments(current, sentAttachments));
       strategy.afterStart?.(thread.id);
-      if (pendingTurnStartsRef.current.finish(thread.id, pendingStart)) {
+      if (pendingTurnStartsRef.current.finish(thread.id, pendingStart) && !completedBeforeStartReturned) {
         await strategy.interrupt(thread.id);
         useTaskStore.getState().setActiveTurn(thread.id, undefined);
         useTaskStore.getState().setTaskStatus(thread.id, "interrupted");
@@ -407,12 +413,19 @@ export function useTurnRunner(context: TurnRunnerContext): {
       useTaskStore.getState().appendUserMessage(threadId, { id: sentMessageId, role: "user", text });
 
       const result = await rpc<{ turn: Turn }>("turn/start", turnStartParams(effectiveSettings, threadId, executionPath, input, additionalWorkspaceRoots));
-      if (result.turn?.id) useTaskStore.getState().setActiveTurn(threadId, result.turn.id);
+      const resultTurnId = result.turn?.id;
+      const completedBeforeStartReturned = Boolean(
+        resultTurnId
+        && useTaskStore.getState().tasks[threadId]?.lastCompletedTurnId === resultTurnId,
+      );
+      if (resultTurnId && !completedBeforeStartReturned) {
+        useTaskStore.getState().setActiveTurn(threadId, resultTurnId);
+      }
       setStartingDraftTurn(false);
       setAttachments((current) => withoutSentAttachments(current, sentAttachments));
-      if (pendingTurnStartsRef.current.finish(threadId, pendingStart)) {
+      if (pendingTurnStartsRef.current.finish(threadId, pendingStart) && !completedBeforeStartReturned) {
         // The user pressed stop while the turn was still starting.
-        if (result.turn?.id) await rpc("turn/interrupt", { threadId, turnId: result.turn.id });
+        if (resultTurnId) await rpc("turn/interrupt", { threadId, turnId: resultTurnId });
         useTaskStore.getState().setActiveTurn(threadId, undefined);
         useTaskStore.getState().setTaskStatus(threadId, "interrupted");
         setTransientStatus("Stopped");

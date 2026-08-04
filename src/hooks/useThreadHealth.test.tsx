@@ -22,8 +22,9 @@ const CURSOR_THREAD: Thread = {
   modelProvider: "cursor",
 };
 
-function makeStaleWorkingTask(threadId: string): void {
+function makeStaleWorkingTask(threadId: string, turnId?: string): void {
   useTaskStore.getState().ensureTask(threadId, "/tmp/project");
+  if (turnId) useTaskStore.getState().setActiveTurn(threadId, turnId);
   useTaskStore.getState().setTaskStatus(threadId, "running");
   useTaskStore.setState((state) => ({
     tasks: {
@@ -49,14 +50,14 @@ describe("useThreadHealth", () => {
     expect(terminalTurnStatus({ id: "4", items: [], status: "inProgress" })).toBeNull();
   });
 
-  it("repairs a local-provider thread after its process has ended", async () => {
+  it("safely interrupts a local-provider thread after its process disappears", async () => {
     cursor.isCursorTurnActive.mockResolvedValue(false);
     makeStaleWorkingTask(CURSOR_THREAD.id);
     renderHook(() => useThreadHealth({ runtimeAvailable: false, threadFor: () => CURSOR_THREAD }));
 
     act(() => fireEvent.focus(window));
 
-    await waitFor(() => expect(useTaskStore.getState().statuses[CURSOR_THREAD.id]).toBe("completed"));
+    await waitFor(() => expect(useTaskStore.getState().statuses[CURSOR_THREAD.id]).toBe("interrupted"));
     expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]?.activities.at(-1)).toMatchObject({
       title: "Thread status recovered",
     });
@@ -67,7 +68,7 @@ describe("useThreadHealth", () => {
     codex.rpc
       .mockResolvedValueOnce({ thread: { ...thread, turns: [{ id: "turn-1", items: [], status: "inProgress" }] } })
       .mockResolvedValueOnce({ thread: { ...thread, turns: [{ id: "turn-1", items: [], status: "failed" }] } });
-    makeStaleWorkingTask(thread.id);
+    makeStaleWorkingTask(thread.id, "turn-1");
     renderHook(() => useThreadHealth({ runtimeAvailable: true, threadFor: () => thread }));
 
     act(() => fireEvent.focus(window));
@@ -76,5 +77,18 @@ describe("useThreadHealth", () => {
 
     act(() => fireEvent.focus(window));
     await waitFor(() => expect(useTaskStore.getState().statuses[thread.id]).toBe("error"));
+  });
+
+  it("does not apply a terminal status from a different Codex turn", async () => {
+    const thread: Thread = { ...CURSOR_THREAD, id: "thread-codex-newer", modelProvider: "openai" };
+    codex.rpc.mockResolvedValue({
+      thread: { ...thread, turns: [{ id: "turn-old", items: [], status: "completed" }] },
+    });
+    makeStaleWorkingTask(thread.id, "turn-new");
+    renderHook(() => useThreadHealth({ runtimeAvailable: true, threadFor: () => thread }));
+
+    await waitFor(() => expect(codex.rpc).toHaveBeenCalled());
+    expect(useTaskStore.getState().statuses[thread.id]).toBe("running");
+    expect(useTaskStore.getState().tasks[thread.id]?.activeTurnId).toBe("turn-new");
   });
 });

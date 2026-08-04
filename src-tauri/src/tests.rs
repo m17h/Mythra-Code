@@ -1414,7 +1414,9 @@ fn skill_runtime_bridge_preserves_app_name_body_and_markdown_references() {
 #[test]
 fn command_exec_bridge_requires_a_bounded_explicit_sandbox() {
     let root = skill_test_directory("rpc-command-sandbox");
+    let sibling = skill_test_directory("rpc-command-sibling");
     fs::create_dir_all(&root).unwrap();
+    fs::create_dir_all(&sibling).unwrap();
     let valid = json!({
         "command": ["echo", "safe"],
         "cwd": root,
@@ -1439,7 +1441,61 @@ fn command_exec_bridge_requires_a_bounded_explicit_sandbox() {
     assert!(validate_rpc_params("command/exec", &overbroad)
         .unwrap_err()
         .contains("filesystem root"));
+
+    let sibling_grant = json!({
+        "command": ["echo", "unsafe"],
+        "cwd": root,
+        "sandboxPolicy": { "type": "workspaceWrite", "writableRoots": [root, sibling] },
+    });
+    assert!(validate_rpc_params("command/exec", &sibling_grant)
+        .unwrap_err()
+        .contains("inside the working directory"));
+
+    let missing_cwd_grant = json!({
+        "command": ["echo", "unsafe"],
+        "cwd": root,
+        "sandboxPolicy": { "type": "workspaceWrite", "writableRoots": [root.join("nested")] },
+    });
+    fs::create_dir_all(root.join("nested")).unwrap();
+    assert!(validate_rpc_params("command/exec", &missing_cwd_grant)
+        .unwrap_err()
+        .contains("must grant its working directory"));
     fs::remove_dir_all(root).unwrap();
+    fs::remove_dir_all(sibling).unwrap();
+}
+
+#[test]
+fn command_exec_bridge_allows_an_isolated_worktrees_shared_git_directory() {
+    let source = skill_test_directory("rpc-command-source");
+    let worktree = skill_test_directory("rpc-command-worktree");
+    fs::create_dir_all(&source).unwrap();
+    test_git(&source, &["init", "-b", "main"]);
+    fs::write(source.join("README.md"), "OpenKiwi\n").unwrap();
+    test_git(&source, &["add", "."]);
+    test_git(&source, &["commit", "-m", "Initial"]);
+    test_git(
+        &source,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "openkiwi/rpc-test",
+            worktree.to_str().unwrap(),
+        ],
+    );
+    let shared_git_dir = git_common_dir(&worktree).unwrap();
+    let valid = json!({
+        "command": ["git", "status"],
+        "cwd": worktree,
+        "sandboxPolicy": { "type": "workspaceWrite", "writableRoots": [worktree, shared_git_dir] },
+    });
+    assert!(validate_rpc_params("command/exec", &valid).is_ok());
+
+    test_git(
+        &source,
+        &["worktree", "remove", "--force", worktree.to_str().unwrap()],
+    );
+    fs::remove_dir_all(source).unwrap();
 }
 
 #[test]

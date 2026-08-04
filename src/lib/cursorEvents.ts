@@ -131,6 +131,7 @@ export function routeCursorEvent(event: CursorEvent, ctx: CursorEventContext): v
   const message = object(event.message);
   const store = useTaskStore.getState();
   store.ensureTask(threadId, ctx.bindingFor(threadId));
+  const turnAlreadyCompleted = completedTurns.has(turnKey(threadId, turnId));
 
   if (message.type === "permission_request") {
     const params = object(message.params);
@@ -177,7 +178,15 @@ export function routeCursorEvent(event: CursorEvent, ctx: CursorEventContext): v
 
   if (message.type === "notification" && message.method === "cursor/create_plan") {
     const params = object(message.params);
-    store.upsertActivity(threadId, { id: `cursor-plan-${turnId}`, kind: "agent", title: text(params.name) || "Cursor plan", detail: text(params.plan) || text(params.overview), status: "inProgress" });
+    const id = `cursor-plan-${turnId}`;
+    const existing = useTaskStore.getState().tasks[threadId]?.activities.find((activity) => activity.id === id);
+    if (turnAlreadyCompleted && !existing) return;
+    if (!turnAlreadyCompleted) {
+      store.setActiveTurn(threadId, turnId);
+      store.setTaskStatus(threadId, "running");
+      ctx.onStatus("Working");
+    }
+    store.upsertActivity(threadId, { id, kind: "agent", title: text(params.name) || "Cursor plan", detail: text(params.plan) || text(params.overview), status: "inProgress" });
     ctx.onTranscriptChanged(threadId);
     return;
   }
@@ -185,8 +194,16 @@ export function routeCursorEvent(event: CursorEvent, ctx: CursorEventContext): v
   if (message.type === "notification" && message.method === "cursor/update_todos") {
     const params = object(message.params);
     const todos = Array.isArray(params.todos) ? params.todos : [];
+    const id = `cursor-plan-${turnId}`;
+    const existing = useTaskStore.getState().tasks[threadId]?.activities.find((activity) => activity.id === id);
+    if (turnAlreadyCompleted && !existing) return;
+    if (!turnAlreadyCompleted) {
+      store.setActiveTurn(threadId, turnId);
+      store.setTaskStatus(threadId, "running");
+      ctx.onStatus("Working");
+    }
     store.upsertActivity(threadId, {
-      id: `cursor-plan-${turnId}`,
+      id,
       kind: "agent",
       title: "Cursor plan",
       detail: todos.map((value) => {
@@ -202,7 +219,14 @@ export function routeCursorEvent(event: CursorEvent, ctx: CursorEventContext): v
   if (message.type === "notification" && message.method === "session/update") {
     const update = object(object(message.params).update);
     const kind = text(update.sessionUpdate);
-    const turnAlreadyCompleted = completedTurns.has(turnKey(threadId, turnId));
+    if (!turnAlreadyCompleted) {
+      // Install the turn before materializing a tool/plan activity. Cursor can
+      // emit notifications before session/prompt returns; doing this at the
+      // end left the first activity detached from its turn in that race.
+      store.setActiveTurn(threadId, turnId);
+      store.setTaskStatus(threadId, "running");
+      ctx.onStatus("Working");
+    }
     if (kind === "agent_message_chunk") {
       // Skip empty/non-text chunks so they cannot open a segment that would
       // finalize into an empty assistant bubble at the next tool boundary.
@@ -220,25 +244,34 @@ export function routeCursorEvent(event: CursorEvent, ctx: CursorEventContext): v
       const id = text(update.toolCallId) || crypto.randomUUID();
       const existing = useTaskStore.getState().tasks[threadId]?.activities.find((activity) => activity.id === id);
       const status = text(update.status);
-      store.upsertActivity(threadId, {
-        id,
-        kind: activityKind(text(update.kind) || existing?.kind || "tool"),
-        title: text(update.title) || existing?.title || "Cursor tool",
-        detail: detailFor(update.rawOutput ?? update.rawInput ?? update.content) || existing?.detail,
-        status: status === "completed" ? "completed" : status === "failed" ? "failed" : "inProgress",
-      });
+      // A genuinely new tool after result is stale noise and would otherwise
+      // appear below the final answer, detached from the completed turn. A
+      // late status update for a tool we already showed may still refine it.
+      if (!turnAlreadyCompleted || existing) {
+        store.upsertActivity(threadId, {
+          id,
+          kind: activityKind(text(update.kind) || existing?.kind || "tool"),
+          title: text(update.title) || existing?.title || "Cursor tool",
+          detail: detailFor(update.rawOutput ?? update.rawInput ?? update.content) || existing?.detail,
+          status: status === "completed" ? "completed" : status === "failed" ? "failed" : "inProgress",
+        });
+      }
     } else if (kind === "plan") {
       const entries = Array.isArray(object(update.plan).entries) ? object(update.plan).entries as unknown[] : [];
-      store.upsertActivity(threadId, {
-        id: `cursor-plan-${turnId}`,
-        kind: "agent",
-        title: "Cursor plan",
-        detail: entries.map((entry) => {
-          const item = object(entry);
-          return `${item.status === "completed" ? "✓" : item.status === "in_progress" ? "→" : "○"} ${text(item.content)}`;
-        }).join("\n"),
-        status: entries.every((entry) => object(entry).status === "completed") ? "completed" : "inProgress",
-      });
+      const id = `cursor-plan-${turnId}`;
+      const existing = useTaskStore.getState().tasks[threadId]?.activities.find((activity) => activity.id === id);
+      if (!turnAlreadyCompleted || existing) {
+        store.upsertActivity(threadId, {
+          id,
+          kind: "agent",
+          title: "Cursor plan",
+          detail: entries.map((entry) => {
+            const item = object(entry);
+            return `${item.status === "completed" ? "✓" : item.status === "in_progress" ? "→" : "○"} ${text(item.content)}`;
+          }).join("\n"),
+          status: entries.every((entry) => object(entry).status === "completed") ? "completed" : "inProgress",
+        });
+      }
     } else if (kind === "usage_update") {
       const usage = usageView(update.usage ?? update);
       if (usage && !turnAlreadyCompleted) {
@@ -249,11 +282,6 @@ export function routeCursorEvent(event: CursorEvent, ctx: CursorEventContext): v
     // A late update for a turn that already delivered its result may still
     // refine content (a tool call finishing), but must not resurrect the
     // thread as busy or reinstall the finished turn as active.
-    if (!turnAlreadyCompleted) {
-      store.setActiveTurn(threadId, turnId);
-      store.setTaskStatus(threadId, "running");
-      ctx.onStatus("Working");
-    }
     ctx.onTranscriptChanged(threadId);
     return;
   }

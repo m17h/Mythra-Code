@@ -23,7 +23,9 @@ function recordRecoveredStatus(threadId: string, task: ThreadTaskState, status: 
     id: `thread-health-${Date.now()}`,
     kind: "warning",
     title: "Thread status recovered",
-    detail: "OpenKiwi reconciled this thread after its final provider event was missed.",
+    detail: status === "interrupted"
+      ? "The local provider process ended without reporting a final turn status. OpenKiwi marked the turn as interrupted instead of assuming it succeeded."
+      : "OpenKiwi reconciled this thread after its final provider event was missed.",
   });
 }
 
@@ -55,16 +57,17 @@ export function useThreadHealth(context: ThreadHealthContext): void {
           if (!thread) continue;
           try {
             if (isClaudeThread(thread)) {
-              if (!await isClaudeTurnActive(task.threadId)) recordRecoveredStatus(task.threadId, task, "completed");
+              if (!await isClaudeTurnActive(task.threadId)) recordRecoveredStatus(task.threadId, task, "interrupted");
               continue;
             }
             if (isCursorThread(thread)) {
-              if (!await isCursorTurnActive(task.threadId)) recordRecoveredStatus(task.threadId, task, "completed");
+              if (!await isCursorTurnActive(task.threadId)) recordRecoveredStatus(task.threadId, task, "interrupted");
               continue;
             }
             if (!contextRef.current.runtimeAvailable) continue;
             const result = await rpc<{ thread: Thread }>("thread/read", { threadId: task.threadId, includeTurns: true });
             const latest = result.thread.turns?.at(-1);
+            if (task.activeTurnId && latest?.id !== task.activeTurnId) continue;
             const status = terminalTurnStatus(latest);
             if (status) recordRecoveredStatus(task.threadId, task, status);
           } catch {
@@ -75,6 +78,7 @@ export function useThreadHealth(context: ThreadHealthContext): void {
         checking = false;
       }
     };
+    void check();
     const interval = window.setInterval(() => void check(), THREAD_HEALTH_INTERVAL_MS);
     const onFocus = () => void check();
     window.addEventListener("focus", onFocus);

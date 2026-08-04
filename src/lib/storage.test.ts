@@ -35,6 +35,22 @@ describe("durable storage", () => {
     });
   });
 
+  it("replays a cache write that was still pending when the app closed", async () => {
+    localStorage.setItem("kiwi.settings", JSON.stringify({ theme: "newer-cache" }));
+    localStorage.setItem("kiwi.nativePending.kiwi.settings", "previous-session");
+    invoke.mockResolvedValue(undefined);
+
+    await hydrateNativeStorage(["kiwi.settings"]);
+
+    expect(loadStored("kiwi.settings", {})).toEqual({ theme: "newer-cache" });
+    expect(invoke).toHaveBeenCalledWith("state_write", {
+      key: "kiwi.settings",
+      value: { theme: "newer-cache" },
+    });
+    expect(localStorage.getItem("kiwi.nativePending.kiwi.settings")).toBeNull();
+    expect(invoke).not.toHaveBeenCalledWith("state_read", { key: "kiwi.settings" });
+  });
+
   it("stamps the storage schema version after hydration", async () => {
     invoke.mockResolvedValue(null);
     await hydrateNativeStorage(["kiwi.settings"]);

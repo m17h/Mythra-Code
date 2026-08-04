@@ -2782,6 +2782,7 @@ export default function App() {
   useAppShortcuts({
     running: Boolean(running && activeThread),
     modalOpen: onboardingOpen || settingsOpen || commandPaletteOpen || runtimeSetupOpen || authRequiredOpen || Boolean(pendingApproval) || permissionOpen,
+    commandPaletteOpen,
     threadOpen: Boolean(activeThreadId),
     toggleCommandPalette: () => setCommandPaletteOpen((open) => !open),
     openConversationSearch: () => {

@@ -165,6 +165,7 @@ describe("Cursor event routing", () => {
     const task = useTaskStore.getState().tasks["thread-1"];
     expect(useTaskStore.getState().statuses["thread-1"]).toBe("completed");
     expect(task.activeTurnId).toBeUndefined();
+    expect(task.activities.some((activity) => activity.id === "late-tool")).toBe(false);
     // The stray chunk must not open a streaming bubble nothing will finalize.
     expect(task.messages.filter((message) => message.streaming)).toHaveLength(0);
     // A new turn still runs normally afterwards.
@@ -173,6 +174,23 @@ describe("Cursor event routing", () => {
       content: { type: "text", text: "Next turn" },
     }, "turn-2");
     expect(useTaskStore.getState().statuses["thread-1"]).toBe("running");
+  });
+
+  it("attaches an early Cursor plan notification to its turn", () => {
+    send({
+      type: "notification",
+      method: "cursor/create_plan",
+      params: { name: "Review plan", plan: "Inspect then report" },
+    });
+
+    const task = useTaskStore.getState().tasks["thread-1"];
+    expect(task.activeTurnId).toBe("turn-1");
+    expect(task.status).toBe("running");
+    expect(task.activities[0]).toMatchObject({
+      id: "cursor-plan-turn-1",
+      turnId: "turn-1",
+      detail: "Inspect then report",
+    });
   });
 
   it("counts usage once when a turn emits both usage snapshots and a result total", () => {

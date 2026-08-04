@@ -39,6 +39,32 @@ export const DURABLE_STORAGE_KEYS = [
  */
 export const STORAGE_SCHEMA_VERSION = 9;
 const nativeWriteQueues = new Map<string, Promise<void>>();
+const NATIVE_PENDING_PREFIX = "kiwi.nativePending.";
+let nativeOperationSequence = 0;
+
+function pendingMarkerKey(key: string): string {
+  return `${NATIVE_PENDING_PREFIX}${key}`;
+}
+
+function markNativeOperationPending(key: string): string {
+  const token = `${Date.now()}-${nativeOperationSequence += 1}`;
+  try {
+    localStorage.setItem(pendingMarkerKey(key), token);
+  } catch {
+    // SQLite can still persist the value when localStorage is unavailable.
+  }
+  return token;
+}
+
+function clearNativeOperationPending(key: string, token: string): void {
+  try {
+    const marker = pendingMarkerKey(key);
+    // A newer queued write owns a different token and must keep its marker.
+    if (localStorage.getItem(marker) === token) localStorage.removeItem(marker);
+  } catch {
+    // The marker is only a recovery aid for the localStorage cache.
+  }
+}
 
 function queueNativeStateOperation(key: string, operation: () => Promise<unknown>): void {
   const previous = nativeWriteQueues.get(key);
@@ -105,8 +131,14 @@ export function storeValue<T>(key: string, value: T): void {
     // the SQLite mirror below still persists the value on desktop builds.
   }
   // Writes for the same key are serialized so an older async SQLite write can
-  // never finish after and overwrite a newer value.
-  queueNativeStateOperation(key, () => invoke("state_write", { key, value }));
+  // never finish after and overwrite a newer value. The marker survives a
+  // renderer/app crash and tells the next launch that localStorage is newer
+  // than SQLite and must be replayed rather than overwritten.
+  const token = markNativeOperationPending(key);
+  queueNativeStateOperation(key, async () => {
+    await invoke("state_write", { key, value });
+    clearNativeOperationPending(key, token);
+  });
 }
 
 export function removeStoredValue(key: string): void {
@@ -115,7 +147,11 @@ export function removeStoredValue(key: string): void {
   } catch {
     // The native mirror can still remove the durable value.
   }
-  queueNativeStateOperation(key, () => invoke("state_delete", { key }));
+  const token = markNativeOperationPending(key);
+  queueNativeStateOperation(key, async () => {
+    await invoke("state_delete", { key });
+    clearNativeOperationPending(key, token);
+  });
 }
 
 export async function hydrateNativeStorage(
@@ -124,6 +160,32 @@ export async function hydrateNativeStorage(
   await Promise.all(
     keys.map(async (key) => {
       try {
+        const marker = pendingMarkerKey(key);
+        const pendingToken = localStorage.getItem(marker);
+        if (pendingToken !== null) {
+          const cached = localStorage.getItem(key);
+          if (cached === null) {
+            await invoke("state_delete", { key });
+            clearNativeOperationPending(key, pendingToken);
+            return;
+          }
+          try {
+            await invoke("state_write", { key, value: JSON.parse(cached) });
+            clearNativeOperationPending(key, pendingToken);
+            return;
+          } catch (error) {
+            // Keep a valid pending marker for the next launch if the replay
+            // failed. Invalid JSON cannot be replayed, so fall through to the
+            // durable value instead of leaving hydration permanently wedged.
+            try {
+              JSON.parse(cached);
+              throw error;
+            } catch (parseError) {
+              if (parseError === error) throw error;
+              localStorage.removeItem(marker);
+            }
+          }
+        }
         const nativeValue = await invoke<unknown | null>("state_read", { key });
         if (nativeValue !== null) {
           localStorage.setItem(key, JSON.stringify(nativeValue));

@@ -20,7 +20,7 @@ Download it here: https://www.morgangermani.com/projects/openkiwi
 Requirements:
 
 - macOS on Apple silicon (the supported release platform)
-- Node.js 20 or newer
+- Node.js 20.19 or newer
 - Rust stable
 - A recent Codex runtime (the Codex CLI or ChatGPT for macOS), Claude Code CLI, and/or Cursor Agent — each provider needs only its own runtime
 
@@ -213,7 +213,7 @@ npm run release:publish
 
 ## Verification and release notes
 
-`npm run verify` runs TypeScript, Rust, unit/integration component tests, and the production web build. `npm run desktop:build` produces only the local `.app` without updater artifacts; it never invokes Tauri's DMG bundler. `npm run release:build` requires publisher-owned signing/notarization credentials, builds the signed update payload, and creates the DMG exclusively through the standalone `create-dmg` command. OpenKiwi does not embed those credentials or bundle Codex.
+`npm run verify` runs ESLint, strict Clippy, TypeScript and Rust checks, unit/integration component tests, and the production web build. `npm run desktop:build` produces only the local `.app` without updater artifacts; it never invokes Tauri's DMG bundler. `npm run release:build` requires publisher-owned signing/notarization credentials, builds the signed update payload, and creates the DMG exclusively through the standalone `create-dmg` command. OpenKiwi does not embed those credentials or bundle Codex.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the component and state model.
 

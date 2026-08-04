@@ -270,6 +270,16 @@ export function useCheckpoints(context: CheckpointsContext) {
           completedAt: Date.now(),
           error: "OpenKiwi closed before the initial project snapshot finished.",
         } : entry));
+        // checkpoint_create may have written its private Git ref immediately
+        // before the renderer closed, before the returned commit could be
+        // persisted. Deleting by id is safe even when no ref was created and
+        // prevents that half-snapshot from leaking indefinitely.
+        if (checkpoint.workspacePath) {
+          void runCheckpointProjectOperation(
+            checkpoint.workspacePath,
+            () => deleteCheckpointSnapshot(checkpoint.id, checkpoint.workspacePath!),
+          ).catch(() => undefined);
+        }
         continue;
       }
       if (
@@ -283,7 +293,7 @@ export function useCheckpoints(context: CheckpointsContext) {
       activeRunCheckpointsRef.current.set(checkpoint.threadId, checkpoint.id);
       void finalizeRunCheckpoint(checkpoint.threadId, checkpoint.turnId, "recovered");
     }
-  }, [checkpointsRef, finalizeRunCheckpoint, persistCheckpoints]);
+  }, [checkpointsRef, finalizeRunCheckpoint, persistCheckpoints, runCheckpointProjectOperation]);
 
   const projectHasActiveTask = useCallback((workspacePath: string): boolean => {
     const { threadProjectBindingsRef } = contextRef.current;

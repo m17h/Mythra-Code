@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 
 export interface AppShortcutContext {
   modalOpen: boolean;
+  commandPaletteOpen: boolean;
   threadOpen: boolean;
   running: boolean;
   toggleCommandPalette: () => void;
@@ -38,12 +39,13 @@ export function useAppShortcuts(context: AppShortcutContext): void {
       const current = contextRef.current;
       const meta = event.metaKey || event.ctrlKey;
       const key = event.key.toLowerCase();
-      if (meta && key === "k") {
+      if (meta && key === "k" && (!current.modalOpen || current.commandPaletteOpen)) {
         event.preventDefault();
         current.toggleCommandPalette();
         return;
       }
-      if (meta && key === "f" && current.threadOpen && !current.modalOpen) {
+      if (current.modalOpen) return;
+      if (meta && key === "f" && current.threadOpen) {
         event.preventDefault();
         current.openConversationSearch();
         return;
@@ -60,7 +62,6 @@ export function useAppShortcuts(context: AppShortcutContext): void {
       }
       if (
         event.key === "Escape"
-        && !current.modalOpen
         && current.running
         && !isEditableShortcutTarget(event.target)
       ) {
