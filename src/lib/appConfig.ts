@@ -14,6 +14,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   provider: "openai",
   openAiLogo: "openai",
   claudeLogo: "claude",
+  cursorLogo: "cube",
   model: DEFAULT_OPENAI_MODEL,
   permission: "ask",
   systemPrompt: "",

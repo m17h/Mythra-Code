@@ -1,6 +1,6 @@
 import { render } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { AnthropicLogo, ClaudeLogo, CodexLogo, ProviderLogo } from "./BrandLogos";
+import { AnthropicLogo, ClaudeLogo, CodexLogo, OpenAILogo, ProviderLogo } from "./BrandLogos";
 
 describe("BrandLogos", () => {
   it("keeps the Claude glyph white regardless of inherited theme color", () => {
@@ -25,10 +25,21 @@ describe("BrandLogos", () => {
     expect(container.querySelector(".codex-logo-option")).toBeInTheDocument();
   });
 
+  it("keeps the standard OpenAI mark white", () => {
+    const { container } = render(<OpenAILogo />);
+    expect(container.querySelector("svg")).toHaveAttribute("fill", "#fff");
+  });
+
   it("provides both selectable Claude and Anthropic marks for Claude providers", () => {
     const { container } = render(<ProviderLogo provider="claude" />);
     expect(container.querySelector(".claude-logo-option")).toBeInTheDocument();
     expect(container.querySelector(".anthropic-logo-option")).toBeInTheDocument();
+  });
+
+  it("provides both official Cursor cube and dark app-icon marks", () => {
+    const { container } = render(<ProviderLogo provider="cursor" />);
+    expect(container.querySelector(".cursor-cube-logo-option")).toBeInTheDocument();
+    expect(container.querySelector(".cursor-dark-logo-option")).toHaveAttribute("src", "/cursor-app-icon-dark.png");
   });
 
   it("renders the Anthropic AI monogram as a self-contained vector", () => {

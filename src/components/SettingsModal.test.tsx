@@ -130,6 +130,17 @@ describe("SettingsModal", () => {
     expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ claudeLogo: "anthropic" }));
   });
 
+  it("saves the official dark app icon for Cursor models", () => {
+    const onSave = vi.fn();
+    render(<SettingsModal {...modalProps({ initialSection: "models", onSave })} />);
+
+    fireEvent.click(screen.getByRole("radio", { name: /Cursor Dark/ }));
+    expect(screen.getByRole("radio", { name: /Cursor Dark/ })).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ cursorLogo: "app-dark" }));
+  });
+
   it("shows GitHub connection and repository cloning in their own settings pane", () => {
     const onGitHubRefresh = vi.fn(async () => undefined);
     render(<SettingsModal {...modalProps({

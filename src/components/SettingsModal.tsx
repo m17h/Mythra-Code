@@ -31,7 +31,7 @@ import type { CursorRuntimeStatus } from "../lib/cursor";
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_OPENAI_MODEL, DEFAULT_SETTINGS, RELEASE_NOTES_URL, THEMES } from "../lib/appConfig";
 import { friendlyError } from "../lib/errors";
 import { useModalFocus } from "../hooks/useModalFocus";
-import { AnthropicLogo, ClaudeLogo, CodexLogo, CursorLogo, OpenAILogo } from "./BrandLogos";
+import { AnthropicLogo, ClaudeLogo, CodexLogo, CursorDarkAppIcon, CursorLogo, OpenAILogo } from "./BrandLogos";
 import { updateProgress, type AppUpdater } from "../lib/appUpdater";
 import type { LocalSkill } from "../lib/skills";
 import type { WorkflowDefinition, WorkflowRunRecord } from "../lib/workflows";
@@ -566,7 +566,7 @@ export function SettingsModal({
                 {local.provider === "claude" && <Check size={16} />}
               </button>
               <button className={`provider-card ${local.provider === "cursor" ? "selected" : ""}`} onClick={() => setLocal({ ...local, provider: "cursor", model: local.provider === "cursor" ? local.model : DEFAULT_CURSOR_MODEL, ultra: false })}>
-                <span className="provider-logo cursor"><CursorLogo size={17} /></span>
+                <span className={`provider-logo cursor${local.cursorLogo === "app-dark" ? " app-dark" : ""}`}>{local.cursorLogo === "app-dark" ? <CursorDarkAppIcon size={23} /> : <CursorLogo size={17} />}</span>
                 <span><strong>Cursor</strong><small>Official Cursor subscription login</small></span>
                 {local.provider === "cursor" && <Check size={16} />}
               </button>
@@ -618,7 +618,7 @@ export function SettingsModal({
               </div>
             ) : (
               <div className="credential-panel">
-                <span className="provider-logo cursor"><CursorLogo size={17} /></span>
+                <span className={`provider-logo cursor${local.cursorLogo === "app-dark" ? " app-dark" : ""}`}>{local.cursorLogo === "app-dark" ? <CursorDarkAppIcon size={23} /> : <CursorLogo size={17} />}</span>
                 <div>
                   <strong>{cursorStatus?.loggedIn ? cursorStatus.email || "Cursor subscription" : "Cursor Agent subscription"}</strong>
                   <small>{cursorStatus?.loggedIn
@@ -669,13 +669,18 @@ export function SettingsModal({
             <div className="provider-logo-settings">
               <div>
                 <strong>Cursor model logo</strong>
-                <small>Cursor threads, responses, and model controls use the official 2D cube mark from Cursor’s public brand kit.</small>
+                <small>Choose the official Cursor mark used for threads, responses, and model controls.</small>
               </div>
-              <div className="provider-logo-options">
-                <button type="button" className="selected" disabled>
+              <div className="provider-logo-options" role="radiogroup" aria-label="Cursor model logo">
+                <button type="button" className={local.cursorLogo === "cube" ? "selected" : ""} role="radio" aria-checked={local.cursorLogo === "cube"} onClick={() => setLocal({ ...local, cursorLogo: "cube" })}>
                   <span className="provider-logo-preview cursor"><CursorLogo size={21} /></span>
                   <span><strong>Cursor</strong></span>
-                  <Check size={14} />
+                  {local.cursorLogo === "cube" && <Check size={14} />}
+                </button>
+                <button type="button" className={local.cursorLogo === "app-dark" ? "selected" : ""} role="radio" aria-checked={local.cursorLogo === "app-dark"} onClick={() => setLocal({ ...local, cursorLogo: "app-dark" })}>
+                  <span className="provider-logo-preview cursor-app-dark"><CursorDarkAppIcon size={30} /></span>
+                  <span><strong>Cursor Dark</strong></span>
+                  {local.cursorLogo === "app-dark" && <Check size={14} />}
                 </button>
               </div>
             </div>

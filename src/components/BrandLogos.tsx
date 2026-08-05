@@ -4,8 +4,8 @@ import type { Provider } from "../types";
 
 /**
  * Official provider wordless marks, drawn as inline paths. Claude stays white
- * inside its orange brand tile in every theme; OpenAI inherits the surrounding
- * mark color. OpenRouter uses the same routing mark as its model control.
+ * inside its orange brand tile in every theme; OpenAI stays white inside its
+ * dark tile. OpenRouter uses the same routing mark as its model control.
  */
 
 type LogoProps = { size?: number; className?: string };
@@ -59,7 +59,7 @@ export function OpenAILogo({ size = 16, className }: LogoProps) {
       width={size}
       height={size}
       viewBox="0 0 24 24"
-      fill="currentColor"
+      fill="#fff"
       aria-hidden="true"
       focusable="false"
     >
@@ -105,8 +105,32 @@ export function CursorLogo({ size = 16, className }: LogoProps) {
   );
 }
 
+/** Official Cursor 2.5D dark app icon from Cursor's downloadable brand kit. */
+export function CursorDarkAppIcon({ size = 16, className }: LogoProps) {
+  return (
+    <img
+      className={className}
+      width={size}
+      height={size}
+      src="/cursor-app-icon-dark.png"
+      alt=""
+      aria-hidden="true"
+      draggable={false}
+    />
+  );
+}
+
+export function CursorProviderLogo({ size = 16, className }: LogoProps) {
+  return (
+    <span className={`cursor-logo-choice${className ? ` ${className}` : ""}`} style={{ width: size, height: size }}>
+      <CursorLogo size={size} className="cursor-cube-logo-option" />
+      <CursorDarkAppIcon size={size} className="cursor-dark-logo-option" />
+    </span>
+  );
+}
+
 export function ProviderLogo({ provider, size = 16, className }: LogoProps & { provider: Provider }) {
-  if (provider === "cursor") return <CursorLogo size={size} className={className} />;
+  if (provider === "cursor") return <CursorProviderLogo size={size} className={className} />;
   if (provider === "claude") return <ClaudeProviderLogo size={size} className={className} />;
   if (provider === "openai") {
     return (

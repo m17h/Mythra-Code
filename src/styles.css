@@ -295,6 +295,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .thread-card-pin { flex: 0 0 auto; color: var(--green); opacity: .7; }
 .thread-card-provider { display: grid; flex: 0 0 auto; width: 19px; height: 19px; place-items: center; border: 1px solid var(--line); border-radius: 6px; color: var(--ink-2); background: color-mix(in srgb, var(--text) 5%, transparent); }
 .thread-card-provider.claude { border-color: rgba(217,119,87,.38); color: #fff; background: #d97757; }
+.thread-card-provider.openai { color: #fff; background: #1a1d18; }
 .thread-card-provider.openrouter { color: #b9a0ff; background: rgba(122,86,190,.12); }
 .thread-card-provider.cursor { border-color: rgba(237,236,236,.35); color: #26251e; background: #edecec; }
 .app-shell[data-theme="daylight"] .thread-card-provider.openrouter { color: #7a56be; }
@@ -649,7 +650,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .runtime-option { min-width: 0; display: grid; grid-template-columns: 34px minmax(0,1fr); gap: 9px; align-items: start; padding: 12px; border: 1px solid var(--line); border-radius: 11px; background: rgba(255,255,255,.018); }
 .runtime-option.recommended { border-color: color-mix(in srgb, var(--green) 21%, var(--line)); background: var(--green-soft); }
 .runtime-option-icon { width: 31px; height: 31px; display: grid; place-items: center; border-radius: 8px; color: var(--green); background: color-mix(in srgb, var(--green) 12%, transparent); }
-.runtime-option-icon.chatgpt { color: var(--info); background: color-mix(in srgb, var(--info) 9%, transparent); }
+.runtime-option-icon.chatgpt { color: #fff; background: #1a1d18; }
 .runtime-option > div { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .runtime-option strong { color: var(--text); font-size: var(--fs-meta); }
 .runtime-option strong em { display: inline-block; margin-left: 4px; padding: 2px 4px; border-radius: 4px; color: #10140d; background: var(--green); font-size: var(--fs-micro); font-style: normal; letter-spacing: .06em; text-transform: uppercase; vertical-align: 1px; }
@@ -723,6 +724,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .onboarding-provider-card.claude { border-color: color-mix(in srgb, #df8a68 20%, var(--line)); }
 .onboarding-card-title { display: flex; align-items: center; gap: 9px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
 .onboarding-card-title > span { width: 33px; height: 33px; display: grid; place-items: center; border-radius: 9px; color: #79d7a6; background: rgba(121,215,166,.08); }
+.onboarding-provider-card.openai .onboarding-card-title > span { color: #fff; background: #1a1d18; }
 .onboarding-provider-card.openrouter .onboarding-card-title > span { color: #c39bff; background: rgba(195,155,255,.09); }
 .onboarding-provider-card.claude .onboarding-card-title > span { color: #fff; background: #d97757; }
 .onboarding-card-title > div { display: flex; flex-direction: column; gap: 2px; }
@@ -893,15 +895,21 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .provider-card strong { font-size: var(--fs-ui); font-weight: 600; }
 .provider-card small { color: var(--muted-2); font-size: var(--fs-micro); }
 .provider-logo { width: 30px; height: 30px; display: grid; place-items: center; border-radius: var(--r-sm); background: var(--panel-3); }
-.provider-logo.openai { color: var(--green); }
+.provider-logo.openai { color: #fff; background: #1a1d18; }
 .provider-logo.openrouter { color: #c798f4; }
 .provider-logo.claude { color: #fff; background: #d97757; }
 .provider-logo.cursor { color: #26251e; background: #edecec; }
+.provider-logo.cursor.app-dark { overflow: hidden; color: #fff; background: #11100d; }
 .openai-logo-choice { display: grid; place-items: center; flex: 0 0 auto; }
 .openai-logo-choice > svg { grid-area: 1 / 1; }
 .openai-logo-choice .codex-logo-option { display: none; }
 .app-shell[data-openai-logo="codex"] .openai-logo-choice .openai-logo-option { display: none; }
 .app-shell[data-openai-logo="codex"] .openai-logo-choice .codex-logo-option { display: block; }
+.cursor-logo-choice { display: grid; place-items: center; flex: 0 0 auto; }
+.cursor-logo-choice > * { grid-area: 1 / 1; }
+.cursor-logo-choice .cursor-dark-logo-option { display: none; border-radius: 22%; object-fit: cover; }
+.app-shell[data-cursor-logo="app-dark"] .cursor-logo-choice .cursor-cube-logo-option { display: none; }
+.app-shell[data-cursor-logo="app-dark"] .cursor-logo-choice .cursor-dark-logo-option { display: block; }
 .claude-logo-choice { display: grid; place-items: center; flex: 0 0 auto; }
 .claude-logo-choice > svg { grid-area: 1 / 1; }
 .claude-logo-choice .anthropic-logo-option { display: none; }
@@ -949,10 +957,32 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .provider-logo-options small { overflow: hidden; color: var(--muted-2); font-size: var(--fs-micro); white-space: nowrap; text-overflow: ellipsis; }
 .provider-logo-options > button > svg { color: var(--green); }
 .provider-logo-preview { width: 36px; height: 36px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--field); }
-.provider-logo-preview.openai { color: var(--green); }
+.provider-logo-preview.openai { color: #fff; background: #1a1d18; }
 .provider-logo-preview.claude { color: #fff; background: #d97757; }
 .provider-logo-preview.anthropic { color: #171714; background: #f1f0eb; }
 .provider-logo-preview.cursor { color: #26251e; background: #edecec; }
+.provider-logo-preview.cursor-app-dark { overflow: hidden; background: #11100d; }
+
+/* The saved Cursor app-icon choice carries its own dark tile. Match every
+   surrounding provider surface to that tile so it reads as one official icon. */
+.app-shell[data-cursor-logo="app-dark"] .provider-mark.cursor,
+.app-shell[data-cursor-logo="app-dark"] .thread-card-provider.cursor,
+.app-shell[data-cursor-logo="app-dark"] .message-avatar.provider-cursor,
+.app-shell[data-cursor-logo="app-dark"] .provider-logo.cursor,
+.app-shell[data-cursor-logo="app-dark"] .cursor-logo,
+.app-shell[data-cursor-logo="app-dark"] .cursor-model-menu-logo {
+  border-color: rgba(255, 255, 255, .12);
+  color: #fff !important;
+  background: #11100d !important;
+  overflow: hidden;
+}
+.app-shell[data-cursor-logo="app-dark"] .provider-mark.cursor .cursor-logo-choice,
+.app-shell[data-cursor-logo="app-dark"] .thread-card-provider.cursor .cursor-logo-choice,
+.app-shell[data-cursor-logo="app-dark"] .message-avatar.provider-cursor .cursor-logo-choice,
+.app-shell[data-cursor-logo="app-dark"] .cursor-logo .cursor-logo-choice,
+.app-shell[data-cursor-logo="app-dark"] .cursor-model-menu-logo .cursor-logo-choice {
+  transform: scale(1.35);
+}
 .profile-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 6px; }
 .profile-grid > button { min-height: 50px; display: grid; grid-template-columns: minmax(0,1fr) 15px; align-items: center; gap: var(--s-1); padding: 10px; border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--muted); background: rgba(255,255,255,.014); text-align: left; cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
 .profile-grid > button:hover { color: var(--ink-2); border-color: var(--line-strong); background: rgba(255,255,255,.035); }

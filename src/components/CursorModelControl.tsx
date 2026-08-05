@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
 import { Check, ChevronDown, Gauge, LoaderCircle, RefreshCw, Search, X } from "lucide-react";
 import type { CursorModel } from "../lib/cursor";
 import type { ReasoningEffort } from "./ModelPowerControl";
-import { CursorLogo } from "./BrandLogos";
+import { CursorProviderLogo } from "./BrandLogos";
 
 const EFFORTS: Array<{ value: Exclude<ReasoningEffort, "ultra">; label: string }> = [
   { value: "low", label: "Low" },
@@ -110,7 +110,7 @@ export function CursorModelControl({
     <div className="openrouter-control cursor-control" ref={rootRef} style={{ "--router-fill": `${fill}%` } as CSSProperties}>
       <div className={`openrouter-picker ${open ? "open" : ""}`}>
         <button type="button" className="openrouter-trigger" aria-haspopup="menu" aria-expanded={open} aria-label={`Cursor model: ${selected.name}`} onClick={() => setOpen((value) => !value)} onKeyDown={(event) => { if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); setOpen(true); } }}>
-          <span className="openrouter-logo cursor-logo"><CursorLogo size={15} /></span>
+          <span className="openrouter-logo cursor-logo"><CursorProviderLogo size={15} /></span>
           <span className="openrouter-trigger-copy">
             <small>Cursor subscription model</small>
             <strong>{selected.name}</strong>
@@ -120,7 +120,7 @@ export function CursorModelControl({
         </button>
         <div className="openrouter-menu cursor-model-menu">
           <div className="cursor-model-menu-heading">
-            <span className="cursor-model-menu-logo"><CursorLogo size={19} /></span>
+            <span className="cursor-model-menu-logo"><CursorProviderLogo size={19} /></span>
             <span><strong>Choose a Cursor model</strong><small>Live catalog from your subscription</small></span>
             <kbd>esc</kbd>
           </div>
@@ -144,7 +144,7 @@ export function CursorModelControl({
                 if (event.key === "ArrowRight" && columns === 2) { event.preventDefault(); enabled[Math.min(enabled.length - 1, index + 1)]?.focus(); }
                 if (event.key === "ArrowLeft" && columns === 2) { event.preventDefault(); enabled[Math.max(0, index - 1)]?.focus(); }
               }} onClick={() => { onModel(entry.id); setOpen(false); setQuery(""); }}>
-                <span className="openrouter-provider-mark cursor-logo"><CursorLogo size={13} /></span>
+                <span className="openrouter-provider-mark cursor-logo"><CursorProviderLogo size={13} /></span>
                 <span><strong>{entry.name}</strong><small><em>{modelFamily(entry)}</em><code>{entry.id}</code></small></span>
                 {entry.id === selected.id && <Check size={13} />}
               </button>
