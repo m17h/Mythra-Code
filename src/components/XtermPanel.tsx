@@ -19,7 +19,7 @@ export function XtermPanel({
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
-  const renderedLengthRef = useRef(0);
+  const cursorRef = useRef(0);
 
   useEffect(() => {
     if (!hostRef.current) return;
@@ -53,28 +53,25 @@ export function XtermPanel({
   }, [onInput, onResize]);
 
   // Output is written to xterm imperatively via the store subscription — no
-  // React re-render per chunk. On mount the accumulated buffer is replayed.
+  // React re-render per chunk. On mount the retained buffer is replayed by
+  // reading from cursor 0, which the store clamps to the oldest retained
+  // character.
   useEffect(() => {
     let placeholderShown = false;
     const sync = () => {
       const terminal = terminalRef.current;
       if (!terminal) return;
-      const output = outputStore.get();
-      if (placeholderShown && output) {
+      const { text, cursor } = outputStore.read(cursorRef.current);
+      cursorRef.current = cursor;
+      if (!text) return;
+      if (placeholderShown) {
         terminal.reset();
         placeholderShown = false;
-        renderedLengthRef.current = 0;
       }
-      if (output.length < renderedLengthRef.current) {
-        terminal.clear();
-        renderedLengthRef.current = 0;
-      }
-      const delta = output.slice(renderedLengthRef.current);
-      if (delta) terminal.write(delta.replace(/\n/g, "\r\n"));
-      renderedLengthRef.current = output.length;
+      terminal.write(text.replace(/\n/g, "\r\n"));
     };
-    renderedLengthRef.current = 0;
-    if (!outputStore.get() && placeholder) {
+    cursorRef.current = 0;
+    if (!outputStore.appendedLength() && placeholder) {
       terminalRef.current?.write(placeholder.replace(/\n/g, "\r\n"));
       placeholderShown = true;
     }

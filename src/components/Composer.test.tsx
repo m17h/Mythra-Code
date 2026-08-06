@@ -9,7 +9,7 @@ function composerProps(overrides: Partial<Parameters<typeof Composer>[0]> = {}):
   return {
     threadKey: "thread-a",
     running: false,
-    steering: false,
+    queueing: false,
     dropActive: false,
     placeholder: "Ask anything",
     attachments: [],
@@ -17,6 +17,7 @@ function composerProps(overrides: Partial<Parameters<typeof Composer>[0]> = {}):
     onRemoveAttachment: vi.fn(),
     onPasteImages: vi.fn(),
     onSend: vi.fn(async () => true),
+    onSteer: vi.fn(async () => true),
     onStop: vi.fn(),
     ...overrides,
   };
@@ -74,10 +75,73 @@ describe("Composer", () => {
     expect(draftFor("thread-a")).toBe("draft for A");
   });
 
-  it("shows the steering hint while a task runs", () => {
-    render(<Composer {...composerProps({ running: true, steering: true })} />);
-    expect(screen.getByText("Steering active task")).toBeInTheDocument();
+  it("queues by default and offers explicit steering while a task runs", async () => {
+    const onSend = vi.fn(async () => true);
+    const onSteer = vi.fn(async () => true);
+    render(<Composer {...composerProps({ running: true, queueing: true, onSend, onSteer })} />);
+    expect(screen.getByText("Enter queues")).toBeInTheDocument();
     expect(screen.getByLabelText("Stop the active task")).toBeInTheDocument();
+    const textarea = screen.getByPlaceholderText("Ask anything");
+    fireEvent.change(textarea, { target: { value: "next task" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith("next task"));
+    expect(onSteer).not.toHaveBeenCalled();
+
+    fireEvent.change(textarea, { target: { value: "change direction" } });
+    fireEvent.click(screen.getByRole("button", { name: "Steer" }));
+    await waitFor(() => expect(onSteer).toHaveBeenCalledWith("change direction"));
+  });
+
+  it("offers stop but does not submit another message while a first turn is still starting", () => {
+    // A draft thread has no turn to steer and nothing to queue behind yet, so
+    // the running chrome must not promise either or start a second thread.
+    const onSend = vi.fn(async () => true);
+    render(<Composer {...composerProps({ running: true, queueing: false, onSend })} />);
+    expect(screen.getByLabelText("Stop the active task")).toBeInTheDocument();
+    expect(screen.queryByText("Enter queues")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Steer" })).not.toBeInTheDocument();
+    const textarea = screen.getByPlaceholderText("Ask anything");
+    fireEvent.change(textarea, { target: { value: "send after startup" } });
+    expect(screen.getByTitle("Wait for the first turn to start")).toBeDisabled();
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(onSend).not.toHaveBeenCalled();
+    expect(textarea).toHaveValue("send after startup");
+  });
+
+  const QUEUED = {
+    id: "queued-1",
+    threadId: "thread-a",
+    text: "run the follow-up",
+    attachments: [],
+    createdAt: 0,
+    status: "queued" as const,
+  };
+
+  it("says a queued turn runs next while a task is running", () => {
+    render(<Composer {...composerProps({ running: true, queueing: true, queuedTurns: [QUEUED], onRetryQueued: vi.fn(), onSteerQueued: vi.fn() })} />);
+    expect(screen.getByRole("list", { name: "Queued follow-up messages" })).toBeInTheDocument();
+    expect(screen.getByText("Runs after the active turn")).toBeInTheDocument();
+    expect(screen.getByLabelText("Steer queued message 1 now")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Start queued message 1")).not.toBeInTheDocument();
+  });
+
+  it("lets a queued turn be started by hand once nothing is running", () => {
+    const onRetryQueued = vi.fn();
+    render(<Composer {...composerProps({ running: false, queueing: false, queuedTurns: [QUEUED], onRetryQueued, onSteerQueued: vi.fn() })} />);
+    expect(screen.getByText("Waiting — start it now or remove it")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Steer queued message 1 now")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Start queued message 1"));
+    expect(onRetryQueued).toHaveBeenCalledWith("queued-1");
+  });
+
+  it("only offers Start for the FIFO head while later messages wait behind it", () => {
+    const onRetryQueued = vi.fn();
+    const second = { ...QUEUED, id: "queued-2", text: "second follow-up" };
+    render(<Composer {...composerProps({ running: false, queueing: false, queuedTurns: [QUEUED, second], onRetryQueued })} />);
+
+    expect(screen.getByLabelText("Start queued message 1")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Start queued message 2")).not.toBeInTheDocument();
+    expect(screen.getByText("Waiting behind an earlier message")).toBeInTheDocument();
   });
 
   it("grows with a long prompt until twice its base height, then scrolls", () => {

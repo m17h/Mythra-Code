@@ -1,4 +1,4 @@
-import { useCallback, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
+import { useCallback, useEffect, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import { rpc, type CodexRuntimeStatus } from "../lib/codex";
 import {
   interruptClaudeTurn,
@@ -39,6 +39,48 @@ import type { OpenRouterModel } from "../components/OpenRouterModelControl";
 import type { AttachmentRecord } from "../components/StudioDock";
 import type { Account, AppSettings, CustomAgentProfile, Project, Provider, SettingsSection, Thread, Turn } from "../types";
 
+const queuedDeliveries = new Map<string, { threadId: string; context: TurnRunnerContext }>();
+const activeQueuedDeliveries = new Set<string>();
+
+/**
+ * Release the captured delivery contexts for a thread. A context pins the whole
+ * App render context, so a deleted conversation must not keep one alive. With
+ * no thread id every capture is dropped, which tests use to isolate cases.
+ */
+export function forgetQueuedDeliveries(threadId?: string): void {
+  if (threadId === undefined) {
+    queuedDeliveries.clear();
+    activeQueuedDeliveries.clear();
+    return;
+  }
+  for (const [queuedTurnId, delivery] of queuedDeliveries) {
+    if (delivery.threadId === threadId) queuedDeliveries.delete(queuedTurnId);
+  }
+  activeQueuedDeliveries.delete(threadId);
+}
+
+function queuedDeliveryContext(context: TurnRunnerContext, threadId: string, attachments: AttachmentRecord[]): TurnRunnerContext {
+  const visible = () => useTaskStore.getState().activeThreadId === threadId;
+  return {
+    ...context,
+    running: false,
+    deferredDelivery: true,
+    attachments: attachments.map((attachment) => ({ ...attachment })),
+    // Always treat a deferred send as background-capable. The normal delivery
+    // path still updates durable thread/task state and the sidebar entry, but
+    // it must never activate a task or clear attachments in whichever
+    // conversation the user happens to be viewing when the queued turn starts.
+    // The live workspace ref is deliberately kept: delivery still has to know
+    // whether the user is in the workspace this turn was queued from.
+    setActiveThread: () => undefined,
+    setAttachments: () => undefined,
+    setStartingDraftTurn: () => undefined,
+    setError: (error) => { if (visible()) context.setError(error); },
+    setStatus: (status) => { if (visible()) context.setStatus(status); },
+    setTransientStatus: (status) => { if (visible()) context.setTransientStatus(status); },
+  };
+}
+
 /** The verbatim isolation record persisted for a thread's private worktree. */
 function threadWorktreeRecord(threadId: string, project: Project, worktree: CreatedWorktree): ThreadWorktreeRecord {
   return {
@@ -59,6 +101,12 @@ export interface TurnRunnerContext {
   activeWorkspace: Project | null;
   activeProject: Project | null;
   running: boolean;
+  /**
+   * Set only on the synthetic context a queued follow-up is delivered with.
+   * Such a send starts without the user watching, so it must never block the
+   * window on a modal prompt.
+   */
+  deferredDelivery?: boolean;
   attachments: AttachmentRecord[];
   effectiveSettings: AppSettings;
   settings: AppSettings;
@@ -82,6 +130,7 @@ export interface TurnRunnerContext {
   executionPathFor: (threadId: string | null | undefined, logicalPath: string) => string;
   bindThreadToProject: (threadId: string, projectPath: string) => void;
   rememberThread: (thread: Thread) => void;
+  onThreadCreated: (threadId: string) => void;
   persistThreadModel: (threadId: string, model: string) => void;
   persistThreadWorktrees: SetPersisted<Record<string, ThreadWorktreeRecord>>;
   beginRunCheckpoint: (threadId: string, workspacePath: string, prompt: string, provider: Provider, model: string) => Promise<string | undefined>;
@@ -112,6 +161,10 @@ export interface TurnRunnerContext {
  */
 export function useTurnRunner(context: TurnRunnerContext): {
   sendMessage: (text: string) => Promise<boolean>;
+  steerMessage: (text: string) => Promise<boolean>;
+  steerQueuedMessage: (queuedTurnId: string) => Promise<void>;
+  retryQueuedMessage: (queuedTurnId: string) => void;
+  removeQueuedMessage: (queuedTurnId: string) => void;
   stopTurn: () => Promise<void>;
 } {
   const contextRef = useRef(context);
@@ -119,16 +172,15 @@ export function useTurnRunner(context: TurnRunnerContext): {
 
   // Returns true when the message was delivered; the Composer restores its
   // draft when it was not.
-  const sendMessage = useCallback(async (text: string): Promise<boolean> => {
-    const ctx = contextRef.current;
+  const deliverMessage = useCallback(async (ctx: TurnRunnerContext, text: string, mode: "turn" | "steer"): Promise<boolean> => {
     const {
-      activeThread, activeWorkspace, activeProject, running, attachments,
+      activeThread, activeWorkspace, activeProject, running, attachments, deferredDelivery,
       effectiveSettings, settings, customAgents, openRouterModels,
       runtimeStatus, claudeStatus, cursorStatus, account, openRouterReady,
       workspaceGitInfo, draftThreadIsolated, worktreeBusy, skillsFolder,
       threadWorktreesRef, threadProjectBindingsRef, activeWorkspacePathRef,
       pendingTurnStartsRef, skillRuntimeRootRef, cursorSessionIdsRef,
-      executionPathFor, bindThreadToProject, rememberThread, persistThreadModel,
+      executionPathFor, bindThreadToProject, rememberThread, onThreadCreated, persistThreadModel,
       persistThreadWorktrees, beginRunCheckpoint, discardRunCheckpoint,
       refreshLocalSkills, ensureSkillRoots, scheduleClaudeThreadSave, scheduleCursorThreadSave,
       setThreads, setActiveThread, setAttachments, setDraftThreadIsolated,
@@ -176,7 +228,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       setError("Choose an OpenRouter model before starting this thread.");
       return false;
     }
-    if (running && activeThread) {
+    if (mode === "steer" && running && activeThread) {
       const sentAttachments = [...attachments];
       setError(null);
       const steerMessageId = `local-${crypto.randomUUID()}`;
@@ -218,9 +270,25 @@ export function useTurnRunner(context: TurnRunnerContext): {
           ?? (logicalPath ? executionPathFor(threadId, logicalPath) : undefined);
         return Boolean(executionPath && normalizedProjectPath(executionPath) === sharedPath);
       });
-      if (anotherSharedRun && !window.confirm(
-        "Another thread is already working in this shared project folder.\n\nBoth models can edit the same files at the same time. Continue anyway, or cancel and start this as an isolated worktree instead?",
-      )) return false;
+      if (anotherSharedRun) {
+        // A queued follow-up starts on its own schedule, possibly while the
+        // user is reading another conversation. A modal there would block the
+        // whole window with no context, but silently allowing two models to
+        // edit one shared folder is unsafe. Hold the queue at this entry and
+        // let the user retry it once the other run is finished.
+        if (deferredDelivery && activeThread) {
+          const overlapMessage = "This queued follow-up is waiting because another conversation is working in the same shared project folder. Start it again after that task finishes.";
+          useTaskStore.getState().upsertActivity(activeThread.id, {
+            id: `shared-folder-overlap-${activeThread.id}-${Date.now()}`,
+            kind: "warning",
+            title: "Another thread is working in this project folder",
+            detail: overlapMessage,
+          });
+          throw new Error(overlapMessage);
+        } else if (!window.confirm(
+          "Another thread is already working in this shared project folder.\n\nBoth models can edit the same files at the same time. Continue anyway, or cancel and start this as an isolated worktree instead?",
+        )) return false;
+      }
     }
 
     setError(null);
@@ -276,6 +344,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
           setDraftThreadIsolated(false);
         }
         rememberThread(thread);
+        onThreadCreated(thread.id);
         persistThreadModel(thread.id, effectiveSettings.model);
         useTaskStore.getState().ensureTask(thread.id, executionPath);
         if (!workspaceChangedMidSend()) {
@@ -384,6 +453,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
           setDraftThreadIsolated(false);
         }
         rememberThread(startedThread);
+        onThreadCreated(startedThread.id);
         persistThreadModel(startedThread.id, effectiveSettings.model);
         useTaskStore.getState().ensureTask(startedThread.id, executionPath);
         if (!workspaceChangedMidSend()) {
@@ -469,6 +539,159 @@ export function useTurnRunner(context: TurnRunnerContext): {
     }
   }, []);
 
+  const pumpQueuedThread = useCallback(async (threadId: string, force = false): Promise<void> => {
+    if (activeQueuedDeliveries.has(threadId)) return;
+    const task = useTaskStore.getState().tasks[threadId];
+    if (!task || task.status === "starting" || task.status === "running") return;
+    // "idle" is the status a task carries when its queue was restored from disk
+    // in a later app session: the run those follow-ups were queued behind no
+    // longer exists, so the oldest one is simply the next thing to start.
+    if (!force && task.status !== "completed" && task.status !== "idle") return;
+    // Strictly FIFO: only ever start the head. A head left "failed" (or being
+    // steered) holds the queue until the user retries or removes it, so
+    // follow-ups can never silently run out of the order they were written in.
+    const queuedTurn = task.queuedTurns[0];
+    if (!queuedTurn || queuedTurn.status !== "queued") return;
+    const queuedContext = queuedDeliveries.get(queuedTurn.id)?.context;
+    // A durable queue can outlive the renderer. Once the user opens that task,
+    // the render path below reattaches a fresh delivery context and pumping
+    // resumes; guessing provider/workspace settings before then is unsafe.
+    if (!queuedContext) return;
+
+    activeQueuedDeliveries.add(threadId);
+    useTaskStore.getState().setQueuedTurnStatus(threadId, queuedTurn.id, "sending");
+    let delivered = false;
+    try {
+      delivered = await deliverMessage(queuedContext, queuedTurn.text, "turn");
+      if (delivered) {
+        useTaskStore.getState().removeQueuedTurn(threadId, queuedTurn.id);
+        queuedDeliveries.delete(queuedTurn.id);
+      } else {
+        const error = useTaskStore.getState().tasks[threadId]?.error ?? "The queued turn could not be started.";
+        useTaskStore.getState().setQueuedTurnStatus(threadId, queuedTurn.id, "failed", error);
+      }
+    } catch (reason) {
+      // Delivery reports failure by returning false; an actual throw would
+      // otherwise leave this thread's queue wedged for the rest of the session.
+      useTaskStore.getState().setQueuedTurnStatus(threadId, queuedTurn.id, "failed", friendlyError(reason));
+    } finally {
+      activeQueuedDeliveries.delete(threadId);
+    }
+
+    // A very fast provider can finish before its start call resolves. If that
+    // happened, there was no later status transition to wake the next item.
+    if (delivered && useTaskStore.getState().tasks[threadId]?.status === "completed") {
+      queueMicrotask(() => { void pumpQueuedThread(threadId); });
+    }
+  }, [deliverMessage]);
+
+  // Reattach durable queue entries to the live provider/workspace context
+  // whenever their task is open. Entries created during this app session keep
+  // their original captured context and therefore continue in the background.
+  const activeThreadId = context.activeThread?.id ?? null;
+  if (activeThreadId) {
+    const queuedTurns = useTaskStore.getState().tasks[activeThreadId]?.queuedTurns ?? [];
+    for (const queuedTurn of queuedTurns) {
+      // Refresh live readiness/settings for entries the user can act on. The
+      // thread/provider/workspace identity remains the same, while a sign-in,
+      // model repair, or settings change made after queuing can now unblock a
+      // retry without requiring an app restart.
+      if (activeQueuedDeliveries.has(activeThreadId)) continue;
+      queuedDeliveries.set(queuedTurn.id, {
+        threadId: activeThreadId,
+        context: queuedDeliveryContext(context, activeThreadId, queuedTurn.attachments),
+      });
+    }
+  }
+
+  useEffect(() => {
+    const unsubscribe = useTaskStore.subscribe((state, previous) => {
+      // This fires for every store write, which during a turn means every
+      // streamed delta flush. A task's status only ever changes together with
+      // its `statuses` entry, so an unchanged statuses map means no completion
+      // to react to — and scanning every task's queue per animation frame is
+      // pure waste.
+      if (state.statuses === previous.statuses) return;
+      for (const threadId in state.statuses) {
+        if (state.statuses[threadId] !== "completed" || previous.statuses[threadId] === "completed") continue;
+        if (state.tasks[threadId]?.queuedTurns.some((entry) => entry.status === "queued")) {
+          void pumpQueuedThread(threadId);
+        }
+      }
+    });
+    return unsubscribe;
+  }, [pumpQueuedThread]);
+
+  // Opening a task is the moment a queue restored from a previous app session
+  // gains a live delivery context (attached during the render above), so it is
+  // also the moment those follow-ups become startable.
+  useEffect(() => {
+    if (activeThreadId) void pumpQueuedThread(activeThreadId);
+  }, [activeThreadId, pumpQueuedThread]);
+
+  const sendMessage = useCallback(async (text: string): Promise<boolean> => {
+    const ctx = contextRef.current;
+    if (!text || !ctx.activeWorkspace) return false;
+    if (ctx.running && !ctx.activeThread) return false;
+    if (ctx.running && ctx.activeThread) {
+      const sentAttachments = [...ctx.attachments];
+      const queuedTurn = useTaskStore.getState().enqueueTurn(ctx.activeThread.id, text, sentAttachments);
+      queuedDeliveries.set(queuedTurn.id, {
+        threadId: ctx.activeThread.id,
+        context: queuedDeliveryContext(ctx, ctx.activeThread.id, sentAttachments),
+      });
+      ctx.setAttachments((current) => withoutSentAttachments(current, sentAttachments));
+      ctx.setError(null);
+      ctx.setTransientStatus("Message queued for the next turn");
+      return true;
+    }
+    return deliverMessage(ctx, text, "turn");
+  }, [deliverMessage]);
+
+  const steerMessage = useCallback(async (text: string): Promise<boolean> => {
+    const ctx = contextRef.current;
+    if (ctx.running && !ctx.activeThread) return false;
+    return deliverMessage(ctx, text, ctx.running && ctx.activeThread ? "steer" : "turn");
+  }, [deliverMessage]);
+
+  const steerQueuedMessage = useCallback(async (queuedTurnId: string): Promise<void> => {
+    const ctx = contextRef.current;
+    const threadId = ctx.activeThread?.id;
+    if (!threadId || !ctx.running) return;
+    const queuedTurn = useTaskStore.getState().tasks[threadId]?.queuedTurns.find((entry) => entry.id === queuedTurnId);
+    if (!queuedTurn || queuedTurn.status === "sending") return;
+    useTaskStore.getState().setQueuedTurnStatus(threadId, queuedTurn.id, "sending");
+    const delivered = await deliverMessage(
+      { ...ctx, attachments: queuedTurn.attachments, setAttachments: () => undefined },
+      queuedTurn.text,
+      "steer",
+    );
+    if (delivered) {
+      useTaskStore.getState().removeQueuedTurn(threadId, queuedTurn.id);
+      queuedDeliveries.delete(queuedTurn.id);
+    } else {
+      useTaskStore.getState().setQueuedTurnStatus(threadId, queuedTurn.id, "failed", "The message could not be steered into the active turn.");
+    }
+  }, [deliverMessage]);
+
+  const retryQueuedMessage = useCallback((queuedTurnId: string) => {
+    const threadId = contextRef.current.activeThread?.id;
+    if (!threadId) return;
+    const head = useTaskStore.getState().tasks[threadId]?.queuedTurns[0];
+    if (head?.id !== queuedTurnId) return;
+    useTaskStore.getState().setQueuedTurnStatus(threadId, queuedTurnId, "queued");
+    void pumpQueuedThread(threadId, true);
+  }, [pumpQueuedThread]);
+
+  const removeQueuedMessage = useCallback((queuedTurnId: string) => {
+    const threadId = contextRef.current.activeThread?.id;
+    if (!threadId) return;
+    const wasHead = useTaskStore.getState().tasks[threadId]?.queuedTurns[0]?.id === queuedTurnId;
+    useTaskStore.getState().removeQueuedTurn(threadId, queuedTurnId);
+    queuedDeliveries.delete(queuedTurnId);
+    if (wasHead) void pumpQueuedThread(threadId);
+  }, [pumpQueuedThread]);
+
   const stopTurn = useCallback(async () => {
     const ctx = contextRef.current;
     const { activeThread, running, pendingTurnStartsRef, setError, setStatus, setStartingDraftTurn, setTransientStatus } = ctx;
@@ -498,5 +721,5 @@ export function useTurnRunner(context: TurnRunnerContext): {
     }
   }, []);
 
-  return { sendMessage, stopTurn };
+  return { sendMessage, steerMessage, steerQueuedMessage, retryQueuedMessage, removeQueuedMessage, stopTurn };
 }

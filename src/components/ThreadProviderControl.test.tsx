@@ -13,13 +13,13 @@ describe("ThreadProviderControl", () => {
     expect(onProvider).toHaveBeenCalledWith("claude");
   });
 
-  it("explains that switching an established thread starts a new one", () => {
+  it("offers provider handoff for an established thread", () => {
     render(<ThreadProviderControl provider="claude" model="claude-fable-5" defaultProvider="openai" threadStarted onProvider={vi.fn()} onDefaultSettings={vi.fn()} />);
 
     fireEvent.click(screen.getByRole("button", { name: "Thread provider: Claude" }));
 
-    expect(screen.getByText(/Changing provider starts a new thread/)).toBeInTheDocument();
-    expect(screen.getByRole("menuitemradio", { name: /Start a new OpenAI thread/ })).toBeInTheDocument();
+    expect(screen.getByText(/hand off this conversation/)).toBeInTheDocument();
+    expect(screen.getByRole("menuitemradio", { name: /Hand off to OpenAI/ })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: /Default for new threads/ })).toBeInTheDocument();
     expect(screen.getByText("OpenAI · change in Settings")).toBeInTheDocument();
   });

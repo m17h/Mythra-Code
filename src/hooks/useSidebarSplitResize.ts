@@ -25,34 +25,53 @@ export function useSidebarSplitResize() {
   const splitRatioRef = useRef(splitRatio);
   splitRatioRef.current = splitRatio;
 
-  const updateFromClientY = useCallback((clientY: number, separator: HTMLElement, persist: boolean) => {
-    const container = separator.parentElement;
-    if (!container) return;
-    const bounds = container.getBoundingClientRect();
-    const next = clampSidebarSplitRatio((clientY - bounds.top) / bounds.height, bounds.height);
-    splitRatioRef.current = next;
-    setSplitRatio(next);
-    if (persist) storeValue("kiwi.sidebarSplitRatio", next);
-  }, []);
-
   const startSidebarSplitResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     event.preventDefault();
-    const separator = event.currentTarget;
+    const container = event.currentTarget.parentElement;
+    if (!container) return;
+    // The container's box is fixed for the duration of the drag — only the split
+    // inside it moves — so it is measured once here. Re-measuring per pointer
+    // event forced a synchronous layout right after the previous commit had
+    // dirtied it, which is the classic read-after-write layout thrash.
+    const bounds = container.getBoundingClientRect();
+    // Held-and-committed once per frame for the same reason as the pane
+    // resizer: the ratio feeds the whole App tree, and pointer events outpace
+    // painted frames.
+    let latestY = event.clientY;
+    let moved = false;
+    let frame: number | null = null;
+
+    const commit = () => {
+      frame = null;
+      // A press with no movement is not a resize: the separator has height, so
+      // deriving a ratio from the press position alone would nudge the split.
+      if (!moved) return;
+      const next = clampSidebarSplitRatio((latestY - bounds.top) / bounds.height, bounds.height);
+      // Once the pointer is beyond a clamped limit, further moves in the same
+      // direction should not keep re-rendering the App with an identical ratio.
+      if (splitRatioRef.current === next) return;
+      splitRatioRef.current = next;
+      setSplitRatio(next);
+    };
 
     const onMove = (moveEvent: PointerEvent) => {
-      updateFromClientY(moveEvent.clientY, separator, false);
+      latestY = moveEvent.clientY;
+      moved = true;
+      if (frame === null) frame = requestAnimationFrame(commit);
     };
     const onEnd = () => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onEnd);
       window.removeEventListener("pointercancel", onEnd);
+      if (frame !== null) cancelAnimationFrame(frame);
+      commit();
       storeValue("kiwi.sidebarSplitRatio", splitRatioRef.current);
     };
 
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onEnd);
     window.addEventListener("pointercancel", onEnd);
-  }, [updateFromClientY]);
+  }, []);
 
   const resizeSidebarSplitWithKeyboard = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;

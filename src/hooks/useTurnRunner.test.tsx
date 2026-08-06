@@ -34,7 +34,7 @@ vi.mock("../lib/worktrees", async (importOriginal) => ({
   ...worktrees,
 }));
 
-import { useTurnRunner, type TurnRunnerContext } from "./useTurnRunner";
+import { forgetQueuedDeliveries, useTurnRunner, type TurnRunnerContext } from "./useTurnRunner";
 
 const CURSOR_THREAD: Thread = {
   id: "thread-cursor",
@@ -83,6 +83,7 @@ function context(overrides: Partial<TurnRunnerContext> = {}): TurnRunnerContext 
     executionPathFor: (_threadId, path) => path,
     bindThreadToProject: vi.fn(),
     rememberThread: vi.fn(),
+    onThreadCreated: vi.fn(),
     persistThreadModel: vi.fn(),
     persistThreadWorktrees: vi.fn(),
     beginRunCheckpoint: vi.fn(async () => "checkpoint-1"),
@@ -109,6 +110,7 @@ function context(overrides: Partial<TurnRunnerContext> = {}): TurnRunnerContext 
 describe("useTurnRunner", () => {
   beforeEach(() => {
     resetTaskStore();
+    forgetQueuedDeliveries();
     vi.clearAllMocks();
     cursor.interruptCursorTurn.mockResolvedValue(undefined);
     cursor.saveCursorTranscript.mockResolvedValue(undefined);
@@ -158,14 +160,141 @@ describe("useTurnRunner", () => {
     expect(cursor.interruptCursorTurn).toHaveBeenCalledWith(CURSOR_THREAD.id);
   });
 
-  it("removes an optimistic steering message when Cursor rejects it", async () => {
+  it("queues a running-task message by default without steering", async () => {
+    useTaskStore.getState().ensureTask(CURSOR_THREAD.id, CURSOR_THREAD.cwd);
+    useTaskStore.getState().setActiveTurn(CURSOR_THREAD.id, "turn-live");
+    useTaskStore.getState().setTaskStatus(CURSOR_THREAD.id, "running");
+    const deps = context({ running: true });
+    const { result } = renderHook(() => useTurnRunner(deps));
+
+    let delivered = false;
+    await act(async () => { delivered = await result.current.sendMessage("do this next"); });
+
+    expect(delivered).toBe(true);
+    expect(cursor.steerCursorTurn).not.toHaveBeenCalled();
+    expect(cursor.startCursorTurn).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]?.queuedTurns).toEqual([
+      expect.objectContaining({ text: "do this next", status: "queued" }),
+    ]);
+  });
+
+  it("refuses a second send until the first thread has an id", async () => {
+    const deps = context({ activeThread: null, running: true });
+    const { result } = renderHook(() => useTurnRunner(deps));
+
+    let delivered = true;
+    await act(async () => { delivered = await result.current.sendMessage("do this after startup"); });
+
+    expect(delivered).toBe(false);
+    expect(cursor.startCursorTurn).not.toHaveBeenCalled();
+  });
+
+  it("starts the oldest queued message after the active turn completes", async () => {
+    useTaskStore.getState().ensureTask(CURSOR_THREAD.id, CURSOR_THREAD.cwd);
+    useTaskStore.getState().setActiveTurn(CURSOR_THREAD.id, "turn-live");
+    useTaskStore.getState().setTaskStatus(CURSOR_THREAD.id, "running");
+    const deps = context({ running: true });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { await result.current.sendMessage("do this next"); });
+
+    await act(async () => {
+      useTaskStore.getState().completeTurn(CURSOR_THREAD.id, "turn-live", "completed");
+      await Promise.resolve();
+    });
+
+    expect(cursor.startCursorTurn).toHaveBeenCalledWith(expect.objectContaining({ prompt: "do this next" }));
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]?.queuedTurns).toEqual([]);
+  });
+
+  it("starts a queue restored from an earlier app session when the task is opened", async () => {
+    useTaskStore.getState().ensureTask(CURSOR_THREAD.id, CURSOR_THREAD.cwd);
+    // A durable entry with no in-memory delivery context and an idle task is
+    // exactly the state an app restart leaves behind.
+    useTaskStore.getState().enqueueTurn(CURSOR_THREAD.id, "finish the migration", []);
+    const deps = context({ running: false });
+
+    renderHook(() => useTurnRunner(deps));
+    await act(async () => { await Promise.resolve(); });
+
+    expect(cursor.startCursorTurn).toHaveBeenCalledWith(expect.objectContaining({ prompt: "finish the migration" }));
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]?.queuedTurns).toEqual([]);
+  });
+
+  it("holds the queue at a failed head instead of starting later follow-ups", async () => {
+    useTaskStore.getState().ensureTask(CURSOR_THREAD.id, CURSOR_THREAD.cwd);
+    useTaskStore.getState().setActiveTurn(CURSOR_THREAD.id, "turn-live");
+    useTaskStore.getState().setTaskStatus(CURSOR_THREAD.id, "running");
+    const deps = context({ running: true });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { await result.current.sendMessage("first follow-up"); });
+    await act(async () => { await result.current.sendMessage("second follow-up"); });
+
+    cursor.startCursorTurn.mockRejectedValueOnce(new Error("cursor is already working"));
+    await act(async () => {
+      useTaskStore.getState().completeTurn(CURSOR_THREAD.id, "turn-live", "completed");
+      await Promise.resolve();
+    });
+
+    const failed = useTaskStore.getState().tasks[CURSOR_THREAD.id]?.queuedTurns ?? [];
+    expect(failed.map((entry) => [entry.text, entry.status])).toEqual([
+      ["first follow-up", "failed"],
+      ["second follow-up", "queued"],
+    ]);
+
+    // A later completion must not let the second follow-up jump the failed one.
+    await act(async () => {
+      useTaskStore.getState().setTaskStatus(CURSOR_THREAD.id, "completed");
+      await Promise.resolve();
+    });
+    expect(cursor.startCursorTurn).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      result.current.retryQueuedMessage(failed[0].id);
+      await Promise.resolve();
+    });
+    expect(cursor.startCursorTurn).toHaveBeenLastCalledWith(expect.objectContaining({ prompt: "first follow-up" }));
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]?.queuedTurns.map((entry) => entry.text)).toEqual(["second follow-up"]);
+  });
+
+  it("holds the queued turn without a modal when another shared-folder run overlaps", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    useTaskStore.getState().ensureTask(CURSOR_THREAD.id, CURSOR_THREAD.cwd);
+    useTaskStore.getState().setActiveTurn(CURSOR_THREAD.id, "turn-live");
+    useTaskStore.getState().setTaskStatus(CURSOR_THREAD.id, "running");
+    const deps = context({ running: true });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { await result.current.sendMessage("do this next"); });
+
+    // A second conversation starts working in the same shared folder before the
+    // queued follow-up gets its turn.
+    useTaskStore.getState().ensureTask("thread-other", "/tmp/project");
+    useTaskStore.getState().setTaskStatus("thread-other", "running");
+    await act(async () => {
+      useTaskStore.getState().completeTurn(CURSOR_THREAD.id, "turn-live", "completed");
+      await Promise.resolve();
+    });
+
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(cursor.startCursorTurn).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]?.queuedTurns[0]).toMatchObject({
+      text: "do this next",
+      status: "failed",
+      error: expect.stringContaining("another conversation is working"),
+    });
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]?.activities).toContainEqual(
+      expect.objectContaining({ kind: "warning", title: "Another thread is working in this project folder" }),
+    );
+    confirmSpy.mockRestore();
+  });
+
+  it("removes an optimistic steering message when explicit Cursor steering fails", async () => {
     cursor.steerCursorTurn.mockRejectedValueOnce(new Error("steer failed"));
     useTaskStore.getState().ensureTask(CURSOR_THREAD.id, CURSOR_THREAD.cwd);
     const deps = context({ running: true });
     const { result } = renderHook(() => useTurnRunner(deps));
 
     let delivered = true;
-    await act(async () => { delivered = await result.current.sendMessage("change direction"); });
+    await act(async () => { delivered = await result.current.steerMessage("change direction"); });
 
     expect(delivered).toBe(false);
     expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]?.messages).toEqual([]);

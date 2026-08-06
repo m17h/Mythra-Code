@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { resetTaskStore, useTaskStore } from "./taskStore";
+import { resetTaskStore, sanitizeStoredQueuedTurns, useTaskStore } from "./taskStore";
 import { durationForTurn, resetTurnDurationsForTests } from "./turnDurations";
 
 describe("task store", () => {
@@ -22,6 +22,30 @@ describe("task store", () => {
     expect(state.tasks["thread-a"].messages).toEqual([]);
     expect(state.tasks["thread-b"].messages[0].text).toBe("hello world");
     expect(state.tasks["thread-b"].unread).toBe(true);
+  });
+
+  it("leaves the statuses map untouched while streaming deltas", () => {
+    const store = useTaskStore.getState();
+    store.ensureTask("thread-a", "/a");
+    store.setActiveThread("thread-a");
+    store.setTaskStatus("thread-a", "running");
+    const statuses = useTaskStore.getState().statuses;
+
+    store.queueAssistantDelta("thread-a", "message-1", "hello");
+    store.flushDeltas();
+    store.queueReasoningDelta("thread-a", "reasoning-1", "thinking", "content");
+    store.flushDeltas();
+    store.upsertActivity("thread-a", { id: "cmd-1", kind: "command", title: "npm test", status: "inProgress" });
+
+    // Streaming must not rewrite `statuses`. App's shell selectors and the
+    // queued-turn pump both key off this map's identity to stay out of the
+    // per-frame delta path; a rewrite here would re-render the whole app and
+    // rescan every thread's queue on every animation frame.
+    expect(useTaskStore.getState().statuses).toBe(statuses);
+
+    store.completeTurn("thread-a", undefined, "completed");
+    expect(useTaskStore.getState().statuses).not.toBe(statuses);
+    expect(useTaskStore.getState().statuses["thread-a"]).toBe("completed");
   });
 
   it("batches reasoning deltas and keeps them separate by thread", () => {
@@ -65,6 +89,58 @@ describe("task store", () => {
     store.setTaskStatus("thread-a", "running");
     store.setTaskStatus("thread-b", "completed");
     expect(useTaskStore.getState().statuses).toEqual({ "thread-a": "running", "thread-b": "completed" });
+  });
+
+  it("persists queued turns with attachments and removes them after delivery", () => {
+    const store = useTaskStore.getState();
+    const queued = store.enqueueTurn("thread-a", "Run the follow-up", [
+      { name: "notes.md", path: "/tmp/notes.md", kind: "file" },
+    ]);
+
+    expect(useTaskStore.getState().tasks["thread-a"].queuedTurns[0]).toMatchObject({
+      id: queued.id,
+      text: "Run the follow-up",
+      status: "queued",
+      attachments: [{ name: "notes.md", path: "/tmp/notes.md" }],
+    });
+    expect(JSON.parse(localStorage.getItem("kiwi.queuedTurns") ?? "{}")["thread-a"][0].id).toBe(queued.id);
+
+    store.setQueuedTurnStatus("thread-a", queued.id, "failed", "Try again");
+    expect(useTaskStore.getState().tasks["thread-a"].queuedTurns[0]).toMatchObject({ status: "failed", error: "Try again" });
+
+    store.removeQueuedTurn("thread-a", queued.id);
+    expect(useTaskStore.getState().tasks["thread-a"].queuedTurns).toEqual([]);
+    expect(JSON.parse(localStorage.getItem("kiwi.queuedTurns") ?? "{}")["thread-a"]).toBeUndefined();
+  });
+
+  it("restores a durable queue without half-written entries or undeliverable statuses", () => {
+    const restored = sanitizeStoredQueuedTurns({
+      "thread-a": [
+        { id: "q1", text: "still queued", attachments: [{ name: "a.ts", path: "/a.ts", kind: "file" }, { name: "bad.ts", path: "/bad.ts", kind: "other" }, { name: "broken" }], createdAt: 5, status: "sending" },
+        { id: "q2", text: "kept as failed", attachments: "nope", createdAt: "later", status: "failed" },
+        { id: "q3", text: "unknown status", attachments: [], createdAt: 7, status: "in-orbit" },
+        { id: "q1", text: "duplicate id", attachments: [], createdAt: 8, status: "queued" },
+        { id: "blank", text: "   ", attachments: [], createdAt: 9, status: "queued" },
+        { id: "q4" },
+        null,
+      ],
+      "thread-b": "not an array",
+      "thread-c": [],
+    });
+
+    // A restart cannot leave a turn mid-delivery, and an unrecognised status
+    // would be an entry the queue pump silently never picks up again.
+    expect(restored["thread-a"].map((entry) => [entry.id, entry.status])).toEqual([
+      ["q1", "queued"],
+      ["q2", "failed"],
+      ["q3", "queued"],
+    ]);
+    expect(restored["thread-a"][0].attachments).toEqual([{ name: "a.ts", path: "/a.ts", kind: "file" }]);
+    expect(restored["thread-a"][0].threadId).toBe("thread-a");
+    expect(restored["thread-a"][1].attachments).toEqual([]);
+    expect(restored["thread-a"][1].createdAt).toEqual(expect.any(Number));
+    expect(restored["thread-b"]).toBeUndefined();
+    expect(restored["thread-c"]).toBeUndefined();
   });
 
   it("anchors one working duration across starting and running, then clears it", () => {

@@ -29,6 +29,28 @@ describe("cost ledger", () => {
     expect(stored).toHaveLength(520);
   });
 
+  it("parses the stored ledger once across repeated reads", () => {
+    recordThreadCost("t1", "/proj/a", 0.05);
+    const parse = vi.spyOn(JSON, "parse");
+    costTotals("/proj/a");
+    costTotals("/proj/a");
+    costTotals("/proj/a");
+    // Only the first read may parse; later reads must hit the cache. `costTotals`
+    // runs on every App render, so a parse per call put the whole spend history
+    // on the render path.
+    expect(parse).toHaveBeenCalledTimes(1);
+  });
+
+  it("picks up a ledger replaced outside this module", () => {
+    recordThreadCost("t1", "/proj/a", 0.05);
+    expect(costTotals("/proj/a").project).toBeCloseTo(0.05);
+    localStorage.setItem(
+      "kiwi.costLedger",
+      JSON.stringify([{ threadId: "t9", projectPath: "/proj/a", cost: 0.5, day: new Date().toISOString().slice(0, 10), updatedAt: Date.now() }]),
+    );
+    expect(costTotals("/proj/a").project).toBeCloseTo(0.5);
+  });
+
   it("formats sub-cent costs with more precision", () => {
     expect(formatCost(0.0004)).toBe("$0.0004");
     expect(formatCost(1.234)).toBe("$1.23");

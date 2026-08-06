@@ -1,4 +1,4 @@
-import { loadStored, storeValue } from "./storage";
+import { storeValue } from "./storage";
 
 export interface CostEntry {
   threadId: string;
@@ -14,6 +14,39 @@ function today(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
+// `costTotals` runs on every App render, so re-parsing the stored ledger each
+// time put a full JSON.parse of the whole spend history (hundreds of KB for a
+// long-lived install) on the render path. The parse result is cached against
+// the exact raw string it came from, so a write from anywhere else — another
+// module, a test's localStorage.clear() — is still picked up, while a repeat
+// read only costs the string comparison.
+let cachedRaw: string | null | undefined;
+let cachedEntries: CostEntry[] | null = null;
+
+function ledger(): CostEntry[] {
+  const raw = localStorage.getItem(LEDGER_KEY);
+  if (cachedEntries && raw === cachedRaw) return cachedEntries;
+  cachedRaw = raw;
+  cachedEntries = parseEntries(raw);
+  return cachedEntries;
+}
+
+function parseEntries(raw: string | null): CostEntry[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? (parsed as CostEntry[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Clears the module cache after tests or explicit storage resets. */
+export function resetCostLedgerCache(): void {
+  cachedRaw = undefined;
+  cachedEntries = null;
+}
+
 /**
  * Stores each thread's cumulative OpenRouter cost estimate so the Usage tab
  * can show spend across threads, not just the open one. Entries store the
@@ -22,32 +55,33 @@ function today(): string {
  */
 export function recordThreadCost(threadId: string, projectPath: string, cost: number): void {
   if (!threadId || !Number.isFinite(cost) || cost <= 0) return;
-  const stored = loadStored<CostEntry[]>(LEDGER_KEY, []);
-  const ledger = Array.isArray(stored) ? stored : [];
-  const previousTotal = ledger
-    .filter((entry) => entry.threadId === threadId)
-    .reduce((sum, entry) => sum + entry.cost, 0);
+  const entries = ledger();
+  let previousTotal = 0;
+  for (const entry of entries) {
+    if (entry.threadId === threadId) previousTotal += entry.cost;
+  }
   const incrementalCost = Math.max(0, cost - previousTotal);
   if (incrementalCost <= 0) return;
   const day = today();
-  const existing = ledger.find((entry) => entry.threadId === threadId && entry.day === day);
-  if (existing) {
-    existing.cost += incrementalCost;
-    existing.projectPath = projectPath;
-    existing.updatedAt = Date.now();
+  const next = [...entries];
+  const existing = next.findIndex((entry) => entry.threadId === threadId && entry.day === day);
+  if (existing >= 0) {
+    next[existing] = { ...next[existing], cost: next[existing].cost + incrementalCost, projectPath, updatedAt: Date.now() };
   } else {
-    ledger.push({ threadId, projectPath, cost: incrementalCost, day, updatedAt: Date.now() });
+    next.push({ threadId, projectPath, cost: incrementalCost, day, updatedAt: Date.now() });
   }
-  ledger.sort((left, right) => right.updatedAt - left.updatedAt);
-  storeValue(LEDGER_KEY, ledger);
+  next.sort((left, right) => right.updatedAt - left.updatedAt);
+  storeValue(LEDGER_KEY, next);
+  // Costs are recorded once per turn, so re-reading the stored string once on
+  // the next read is cheaper than serializing it a second time here.
+  resetCostLedgerCache();
 }
 
 export function costTotals(projectPath?: string): { today: number; project: number } {
-  const ledger = loadStored<CostEntry[]>(LEDGER_KEY, []);
   const day = today();
   let todayTotal = 0;
   let projectTotal = 0;
-  for (const entry of ledger) {
+  for (const entry of ledger()) {
     if (entry.day === day) todayTotal += entry.cost;
     if (projectPath && entry.projectPath === projectPath) projectTotal += entry.cost;
   }

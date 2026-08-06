@@ -29,6 +29,9 @@ export const DURABLE_STORAGE_KEYS = [
   "kiwi.usageLedger",
   "kiwi.paneSizes",
   "kiwi.sidebarSplitRatio",
+  "kiwi.queuedTurns",
+  "kiwi.threadHandoffs",
+  "kiwi.pendingHandoff",
   "kiwi.onboardingVersion",
 ] as const;
 
@@ -37,7 +40,7 @@ export const DURABLE_STORAGE_KEYS = [
  * migrateStorage. Old installs then upgrade their data instead of loading
  * garbage into the new code.
  */
-export const STORAGE_SCHEMA_VERSION = 9;
+export const STORAGE_SCHEMA_VERSION = 10;
 const nativeWriteQueues = new Map<string, Promise<void>>();
 const NATIVE_PENDING_PREFIX = "kiwi.nativePending.";
 let nativeOperationSequence = 0;
@@ -110,6 +113,9 @@ export function migrateStorage(): void {
   // Version 8 adds the durable per-thread and all-time token usage ledger.
   // Version 9 adds cumulative usage baselines, cache-write accounting, and
   // checkpoint metadata that can restore an applied worktree baseline.
+  // Version 10 adds durable queued follow-up turns, provider-handoff
+  // provenance, and an in-progress handoff draft. These stores are empty by
+  // default, so no eager rewrite is required.
   // All additions are optional and require no eager rewrite of existing records.
   storeValue("kiwi.schemaVersion", STORAGE_SCHEMA_VERSION);
 }

@@ -460,6 +460,12 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .isolated-worktree-title { transform: translateX(-3px); }
 .isolation-choice small { color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.35; }
 .isolation-chip { display: inline-flex; align-items: center; gap: 5px; max-width: 110px; padding: 5px 8px; border: 1px solid color-mix(in srgb, var(--info) 30%, var(--line)); border-radius: 999px; color: var(--info); background: color-mix(in srgb, var(--info) 7%, transparent); font-size: var(--fs-meta); font-weight: 620; white-space: nowrap; }
+.handoff-chip { display: inline-flex; align-items: center; gap: 5px; max-width: 132px; padding: 5px 8px; border: 1px solid color-mix(in srgb, var(--green) 28%, var(--line)); border-radius: 999px; color: var(--green); background: color-mix(in srgb, var(--green) 6%, transparent); font-size: var(--fs-meta); font-weight: 620; white-space: nowrap; cursor: pointer; }
+.handoff-chip:hover { border-color: color-mix(in srgb, var(--green) 46%, var(--line)); background: color-mix(in srgb, var(--green) 11%, transparent); }
+.handoff-draft-banner { width: min(560px, 100%); display: flex; align-items: center; gap: 9px; margin-bottom: var(--s-4); padding: 9px 11px; border: 1px solid color-mix(in srgb, var(--green) 25%, var(--line)); border-radius: var(--r-md); color: var(--green); background: color-mix(in srgb, var(--green) 6%, transparent); text-align: left; }
+.handoff-draft-banner > span { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.handoff-draft-banner strong { font-size: var(--fs-ui); font-weight: 650; }
+.handoff-draft-banner small { color: var(--muted); font-size: var(--fs-meta); line-height: 1.4; }
 .app-toast { position: fixed; top: 14px; left: 50%; z-index: 240; min-height: 38px; max-width: min(520px, calc(100vw - 32px)); display: flex; align-items: center; gap: var(--s-2); padding: 7px 9px; border: 1px solid var(--line-strong); border-radius: var(--r-md); color: var(--text); background: var(--panel-2); box-shadow: var(--elev-3); transform: translateX(-50%); animation: toast-arrive var(--t-mid) var(--ease) both; font-size: var(--fs-ui); }
 .app-toast.success { border-color: color-mix(in srgb, var(--green) 38%, var(--line)); }
 .app-toast-icon { width: 22px; height: 22px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 50%; color: #17220f; background: var(--green); }
@@ -1180,7 +1186,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
   .provider-pill .provider-label { display: none; }
   .workspace-tools-trigger { width: var(--ctl-md); justify-content: center; padding: 0; }
   .workspace-tools-trigger span { display: none; }
-  .isolation-chip span { display: none; }
+  .isolation-chip span, .handoff-chip span { display: none; }
 }
 
 @container chat-main (max-width: 520px) {
@@ -1365,7 +1371,13 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 /* Workspace studio */
 .studio-toggle.active { color: var(--green); background: var(--green-soft); }
 .studio-toggle:disabled { opacity: .32; cursor: default; }
-.studio-dock { position: relative; flex: 0 0 var(--dock-width, 430px); width: var(--dock-width, 430px); min-width: 0; overflow: hidden; display: grid; grid-template-columns: 70px minmax(0,1fr); border-left: 1px solid var(--line); background: var(--sidebar); box-shadow: none; opacity: 1; transform: translateX(0); will-change: width, flex-basis, opacity, transform; transition: flex-basis 280ms var(--ease), width 280ms var(--ease), opacity 190ms ease, transform 280ms var(--ease), border-color var(--t-mid) ease, box-shadow var(--t-mid) ease; }
+.studio-dock { position: relative; flex: 0 0 var(--dock-width, 430px); width: var(--dock-width, 430px); min-width: 0; overflow: hidden; display: grid; grid-template-columns: 70px minmax(0,1fr); border-left: 1px solid var(--line); background: var(--sidebar); box-shadow: none; opacity: 1; transform: translateX(0); transition: flex-basis 280ms var(--ease), width 280ms var(--ease), opacity 190ms ease, transform 280ms var(--ease), border-color var(--t-mid) ease, box-shadow var(--t-mid) ease; }
+/* The dock deliberately carries no `will-change`. Declaring it here kept a
+   full-height compositing layer resident for the whole session — including
+   while the dock was closed and 0px wide — and it bought nothing: width and
+   flex-basis are layout properties a compositor hint cannot help with, and
+   browsers already promote a layer for the duration of a running
+   transform/opacity transition. */
 .studio-dock.closed { flex-basis: 0; width: 0; border-left-color: transparent; box-shadow: none; opacity: 0; transform: translateX(28px); pointer-events: none; }
 .studio-tabs { min-width: 70px; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: var(--s-2) var(--s-1); border-right: 1px solid var(--line); background: color-mix(in srgb, var(--bg) 70%, var(--sidebar)); }
 .studio-tabs button { position: relative; width: 62px; height: 46px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; padding: 0; border: 0; border-radius: var(--r-sm); color: var(--muted-2); background: transparent; font-size: var(--fs-micro); letter-spacing: -.01em; cursor: pointer; transition: color var(--t-fast) ease, background var(--t-fast) ease; }
@@ -1704,12 +1716,32 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .diff-line-del { color: #eba3a0; background: rgba(239,138,135,.07); }
 .diff-line-hunk { color: #8fd6ff; }
 
-/* Composer steering mode — visible cue that Enter steers the running task */
-.composer.steering { border-color: color-mix(in srgb, var(--info) 30%, transparent); }
-.composer.steering:focus-within { border-color: color-mix(in srgb, var(--info) 44%, transparent); box-shadow: 0 14px 45px rgba(0,0,0,.32), 0 0 0 1px color-mix(in srgb, var(--info) 6%, transparent); }
-.steer-hint { display: flex; align-items: center; gap: 5px; height: 29px; padding: 0 8px; border-radius: 7px; color: var(--info); background: color-mix(in srgb, var(--info) 8%, transparent); font-size: var(--fs-meta); white-space: nowrap; }
-.composer.steering .send-button { background: var(--info); }
-.composer.steering .send-button:hover:not(:disabled) { background: color-mix(in srgb, var(--info) 85%, var(--text)); }
+/* Running composer: follow-ups queue by default; steering is explicit. */
+.composer.queueing { border-color: color-mix(in srgb, var(--green) 24%, var(--line-strong)); }
+.queue-hint { display: flex; align-items: center; gap: 5px; height: 29px; padding: 0 8px; border-radius: 7px; color: var(--muted); background: rgba(255,255,255,.035); font-size: var(--fs-meta); white-space: nowrap; }
+.steer-button { height: var(--ctl-md); display: flex; align-items: center; gap: 5px; padding: 0 10px; border: 1px solid color-mix(in srgb, var(--info) 24%, var(--line)); border-radius: var(--r-md); color: var(--info); background: color-mix(in srgb, var(--info) 7%, transparent); font-size: var(--fs-meta); cursor: pointer; transition: background var(--t-fast) ease, border-color var(--t-fast) ease, opacity var(--t-fast) ease; }
+.steer-button:hover:not(:disabled) { border-color: color-mix(in srgb, var(--info) 40%, var(--line)); background: color-mix(in srgb, var(--info) 13%, transparent); }
+.steer-button:disabled { opacity: .42; cursor: default; }
+.send-button.queue-button { width: auto; display: flex; grid-template-columns: none; gap: 5px; padding: 0 11px; font-size: var(--fs-meta); font-weight: 650; }
+.queued-turns { display: flex; flex-direction: column; gap: 4px; padding: 9px 10px 7px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--field) 72%, transparent); }
+.queued-turns-list { display: flex; flex-direction: column; gap: 4px; }
+.queued-turns-heading { min-height: 20px; display: flex; align-items: center; justify-content: space-between; padding: 0 3px; color: var(--muted); font-size: var(--fs-micro); text-transform: uppercase; letter-spacing: var(--track-caps); }
+.queued-turns-heading > span { display: flex; align-items: center; gap: 5px; }
+.queued-turns-heading small { color: var(--muted-2); font-size: inherit; text-transform: none; letter-spacing: 0; }
+.queued-turn { min-height: 38px; display: grid; grid-template-columns: 22px minmax(0,1fr) auto; align-items: center; gap: 7px; padding: 4px 5px; border: 1px solid var(--line); border-radius: var(--r-sm); background: rgba(255,255,255,.025); }
+.queued-turn.failed { border-color: color-mix(in srgb, var(--red) 25%, var(--line)); }
+.queued-turn.sending { border-color: color-mix(in srgb, var(--green) 25%, var(--line)); }
+.queued-turn-index { width: 19px; height: 19px; display: grid; place-items: center; border-radius: 50%; color: var(--muted); background: rgba(255,255,255,.055); font-size: var(--fs-micro); font-variant-numeric: tabular-nums; }
+.queued-turn-copy { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.queued-turn-copy strong, .queued-turn-copy small { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.queued-turn-copy strong { color: var(--ink-2); font-size: var(--fs-meta); font-weight: 520; }
+.queued-turn-copy small { color: var(--muted-2); font-size: var(--fs-micro); }
+.queued-turn.failed .queued-turn-copy small { color: var(--red); }
+.queued-turn-actions { display: flex; align-items: center; gap: 2px; }
+.queued-turn-actions button { width: 25px; height: 25px; display: grid; place-items: center; padding: 0; border: 0; border-radius: var(--r-xs); color: var(--muted); background: transparent; cursor: pointer; }
+.queued-turn-actions button:hover { color: var(--text); background: rgba(255,255,255,.065); }
+.queued-turn-actions .steer-queued:hover { color: var(--info); }
+.queued-turn-actions .remove-queued:hover { color: var(--red); }
 
 /* Composer attachment chips — attachments are manageable in every chat mode */
 /* Attachment chips: the remove control only asserts itself on hover/focus. */

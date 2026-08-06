@@ -74,7 +74,7 @@ export function ThreadProviderControl({
         <div className="thread-provider-menu" role="menu" aria-label="Thread provider">
           <div className="thread-provider-menu-heading" role="presentation">
             <strong>{threadStarted ? "Thread provider" : "Provider for this thread"}</strong>
-            <small>{threadStarted ? "Changing provider starts a new thread so conversation context stays correct." : "This choice does not change the app default."}</small>
+            <small>{threadStarted ? "Choose another provider to hand off this conversation in a new linked thread." : "This choice does not change the app default."}</small>
           </div>
           {PROVIDERS.map((entry) => (
             <button
@@ -88,7 +88,7 @@ export function ThreadProviderControl({
               }}
             >
               <span className={`provider-mark ${entry.id}`}><ProviderLogo provider={entry.id} size={14} /></span>
-              <span><strong>{entry.label}</strong><small>{entry.id === provider ? (threadStarted ? "Current thread" : "Selected for this thread") : threadStarted ? `Start a new ${entry.label} thread` : entry.detail}</small></span>
+              <span><strong>{entry.label}</strong><small>{entry.id === provider ? (threadStarted ? "Current thread" : "Selected for this thread") : threadStarted ? `Hand off to ${entry.label}` : entry.detail}</small></span>
               {entry.id === provider && <Check size={14} />}
             </button>
           ))}

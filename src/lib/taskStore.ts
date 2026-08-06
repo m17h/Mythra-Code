@@ -1,11 +1,88 @@
 import { create } from "zustand";
 import type { Activity, ChatMessage, PendingApproval, Turn } from "../types";
 import type { AgentRecord, TokenUsageView } from "../components/StudioDock";
+import type { AttachmentRecord } from "../components/StudioDock";
 import { durationForTurn, recordTurnDuration } from "./turnDurations";
 import { recordCumulativeUsage, recordUsageDelta, resetUsageLedgerCache, usageForThread, USAGE_LEDGER_KEY } from "./usageLedger";
-import { removeStoredValue } from "./storage";
+import { loadStored, removeStoredValue, storeValue } from "./storage";
 
 export type TaskStatus = "idle" | "starting" | "running" | "completed" | "interrupted" | "error";
+
+export type QueuedTurnStatus = "queued" | "sending" | "failed";
+
+export interface QueuedTurn {
+  id: string;
+  threadId: string;
+  text: string;
+  attachments: AttachmentRecord[];
+  createdAt: number;
+  status: QueuedTurnStatus;
+  error?: string;
+}
+
+const QUEUED_TURNS_KEY = "kiwi.queuedTurns";
+
+/**
+ * Rebuild the durable queue from storage. Anything that cannot be delivered
+ * verbatim is dropped or normalised here rather than at delivery time: a
+ * half-written record must never turn into a model turn with a missing prompt
+ * or a bogus attachment path.
+ */
+export function sanitizeStoredQueuedTurns(stored: unknown): Record<string, QueuedTurn[]> {
+  if (!stored || typeof stored !== "object") return {};
+  const result: Record<string, QueuedTurn[]> = {};
+  const seenIds = new Set<string>();
+  for (const [threadId, entries] of Object.entries(stored as Record<string, unknown>)) {
+    if (!threadId.trim() || !Array.isArray(entries)) continue;
+    const queuedTurns: QueuedTurn[] = [];
+    for (const candidate of entries) {
+      if (!candidate || typeof candidate !== "object") continue;
+      const entry = candidate as Record<string, unknown>;
+      if (typeof entry.id !== "string" || !entry.id.trim() || seenIds.has(entry.id)) continue;
+      if (typeof entry.text !== "string" || !entry.text.trim()) continue;
+      seenIds.add(entry.id);
+      const attachments: AttachmentRecord[] = Array.isArray(entry.attachments)
+        ? entry.attachments.flatMap((candidateAttachment) => {
+            if (!candidateAttachment || typeof candidateAttachment !== "object") return [];
+            const attachment = candidateAttachment as Record<string, unknown>;
+            if (typeof attachment.path !== "string" || !attachment.path.trim()) return [];
+            if (typeof attachment.name !== "string" || !attachment.name.trim()) return [];
+            if (attachment.kind !== "file" && attachment.kind !== "image") return [];
+            return [{ path: attachment.path, name: attachment.name, kind: attachment.kind }];
+          })
+        : [];
+      queuedTurns.push({
+        id: entry.id,
+        threadId,
+        text: entry.text,
+        attachments,
+        createdAt: typeof entry.createdAt === "number" && Number.isFinite(entry.createdAt) ? entry.createdAt : Date.now(),
+        // A process cannot still be delivering after an app restart, and an
+        // unknown status would be a queue entry the pump never picks up.
+        status: entry.status === "failed" ? "failed" : "queued",
+        ...(typeof entry.error === "string" && entry.error ? { error: entry.error } : {}),
+      });
+    }
+    if (queuedTurns.length) result[threadId] = queuedTurns;
+  }
+  return result;
+}
+
+function loadQueuedTurns(): Record<string, QueuedTurn[]> {
+  return sanitizeStoredQueuedTurns(loadStored<Record<string, QueuedTurn[]>>(QUEUED_TURNS_KEY, {}));
+}
+
+let queuedTurnsCache = loadQueuedTurns();
+
+function persistQueuedTurns(threadId: string, entries: QueuedTurn[]): void {
+  if (entries.length) queuedTurnsCache = { ...queuedTurnsCache, [threadId]: entries };
+  else {
+    const next = { ...queuedTurnsCache };
+    delete next[threadId];
+    queuedTurnsCache = next;
+  }
+  storeValue(QUEUED_TURNS_KEY, queuedTurnsCache);
+}
 
 export interface ThreadTaskState {
   threadId: string;
@@ -23,6 +100,7 @@ export interface ThreadTaskState {
   messages: ChatMessage[];
   activities: Activity[];
   approvals: PendingApproval[];
+  queuedTurns: QueuedTurn[];
   agents: AgentRecord[];
   diff: string;
   usage: TokenUsageView | null;
@@ -55,6 +133,9 @@ interface TaskStoreState {
   enqueueApproval: (approval: PendingApproval) => void;
   resolveApproval: (threadId: string, approvalId: string | number) => void;
   clearApprovals: (threadId: string) => void;
+  enqueueTurn: (threadId: string, text: string, attachments: AttachmentRecord[]) => QueuedTurn;
+  setQueuedTurnStatus: (threadId: string, queuedTurnId: string, status: QueuedTurnStatus, error?: string) => void;
+  removeQueuedTurn: (threadId: string, queuedTurnId: string) => void;
   clearUnread: (threadId: string) => void;
   removeTask: (threadId: string) => void;
 }
@@ -81,6 +162,7 @@ function emptyTask(threadId: string, workspacePath?: string): ThreadTaskState {
     messages: [],
     activities: [],
     approvals: [],
+    queuedTurns: queuedTurnsCache[threadId] ?? [],
     agents: [],
     diff: "",
     usage: usageForThread(threadId)?.usage ?? null,
@@ -407,6 +489,39 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     if (!task || task.approvals.length === 0) return state;
     return { tasks: { ...state.tasks, [threadId]: { ...task, approvals: [], updatedAt: Date.now() } } };
   }),
+  enqueueTurn: (threadId, text, attachments) => {
+    const queuedTurn: QueuedTurn = {
+      id: `queued-${crypto.randomUUID()}`,
+      threadId,
+      text,
+      attachments: attachments.map((attachment) => ({ ...attachment })),
+      createdAt: Date.now(),
+      status: "queued",
+    };
+    set((state) => {
+      const task = state.tasks[threadId] ?? emptyTask(threadId);
+      const queuedTurns = [...task.queuedTurns, queuedTurn];
+      persistQueuedTurns(threadId, queuedTurns);
+      return { tasks: { ...state.tasks, [threadId]: { ...task, queuedTurns, updatedAt: Date.now() } } };
+    });
+    return queuedTurn;
+  },
+  setQueuedTurnStatus: (threadId, queuedTurnId, status, error) => set((state) => {
+    const task = state.tasks[threadId];
+    if (!task || !task.queuedTurns.some((entry) => entry.id === queuedTurnId)) return state;
+    const queuedTurns = task.queuedTurns.map((entry) => entry.id === queuedTurnId
+      ? { ...entry, status, ...(error ? { error } : { error: undefined }) }
+      : entry);
+    persistQueuedTurns(threadId, queuedTurns);
+    return { tasks: { ...state.tasks, [threadId]: { ...task, queuedTurns, updatedAt: Date.now() } } };
+  }),
+  removeQueuedTurn: (threadId, queuedTurnId) => set((state) => {
+    const task = state.tasks[threadId];
+    if (!task || !task.queuedTurns.some((entry) => entry.id === queuedTurnId)) return state;
+    const queuedTurns = task.queuedTurns.filter((entry) => entry.id !== queuedTurnId);
+    persistQueuedTurns(threadId, queuedTurns);
+    return { tasks: { ...state.tasks, [threadId]: { ...task, queuedTurns, updatedAt: Date.now() } } };
+  }),
   clearUnread: (threadId) => set((state) => state.tasks[threadId] ? { tasks: { ...state.tasks, [threadId]: { ...state.tasks[threadId], unread: false } } } : state),
   removeTask: (threadId) => {
     // Clear queued streaming buffers so a pending flush cannot resurrect the
@@ -421,6 +536,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       const statuses = { ...state.statuses };
       delete tasks[threadId];
       delete statuses[threadId];
+      persistQueuedTurns(threadId, []);
       return { tasks, statuses, activeThreadId: state.activeThreadId === threadId ? null : state.activeThreadId };
     });
   },
@@ -433,5 +549,7 @@ export function resetTaskStore(): void {
   timelineSequence = 0;
   removeStoredValue(USAGE_LEDGER_KEY);
   resetUsageLedgerCache();
+  queuedTurnsCache = {};
+  removeStoredValue(QUEUED_TURNS_KEY);
   useTaskStore.setState({ activeThreadId: null, tasks: {}, statuses: {} });
 }

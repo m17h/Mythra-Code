@@ -5,7 +5,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
-import { Archive, ArchiveRestore, Bot, Check, ChevronDown, Circle, Code2, Command, Download, FileCode2, Folder, FolderOpen, GitBranch, LoaderCircle, MessageSquare, Paperclip, PanelRight, PanelLeftClose, PanelLeftOpen, Plus, Pin, PinOff, Pencil, Search, Settings, Shield, ShieldAlert, ShieldCheck, TerminalSquare, Trash2, UsersRound, X } from "lucide-react";
+import { Archive, ArchiveRestore, Bot, Check, ChevronDown, Circle, Code2, Command, Download, FileCode2, Folder, FolderOpen, GitBranch, GitFork, LoaderCircle, MessageSquare, Paperclip, PanelRight, PanelLeftClose, PanelLeftOpen, Plus, Pin, PinOff, Pencil, Search, Settings, Shield, ShieldAlert, ShieldCheck, TerminalSquare, Trash2, UsersRound, X } from "lucide-react";
 import { getCodexRuntimeStatus, auditEvent, exportTextFile, getNormalChatWorkspace, hasOpenRouterKey, listOpenRouterModels, respond, restartRuntime, rpc, type CodexRuntimeStatus, type JsonObject } from "./lib/codex";
 import { deleteClaudeTranscript, getClaudeRuntimeStatus, loadClaudeTranscript, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, type ClaudeRuntimeStatus } from "./lib/claude";
 import { deleteCursorTranscript, getCursorRuntimeStatus, listCursorModels, loadCursorTranscript, respondToCursorPermission, saveCursorTranscript, startCursorLogin, type CursorModel, type CursorRuntimeStatus } from "./lib/cursor";
@@ -25,15 +25,15 @@ import { ThreadProviderControl } from "./components/ThreadProviderControl";
 import { ThreadInboxCard } from "./components/ThreadInboxCard";
 import { ProjectPromptControl } from "./components/ProjectPromptControl";
 import { ApprovalCenter } from "./components/ApprovalCenter";
-import { Composer, type ComposerHandle } from "./components/Composer";
+import { Composer, discardDraft, type ComposerHandle } from "./components/Composer";
 import { CommandPalette } from "./components/CommandPalette";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { SettingsModal } from "./components/SettingsModal";
 import { AuthRequiredModal, RuntimeSetupModal } from "./components/RuntimeModals";
 import type { AgentRecord, AttachmentRecord, McpView, StudioTab } from "./components/StudioDock";
-import type { Account, Activity, AppSettings, ArchivedThread, ChatMessage, CustomAgentProfile, PendingApproval, PermissionMode, Project, ProjectAction, ProjectPromptMode, PromptProfile, Provider, ScheduledTask, ScheduleRunRecord, SettingsSection, Thread, ThemeName, WorkspaceMode } from "./types";
+import type { Account, Activity, AppSettings, ArchivedThread, ChatMessage, CustomAgentProfile, PendingApproval, PermissionMode, Project, ProjectAction, ProjectPromptMode, PromptProfile, Provider, ScheduledTask, ScheduleRunRecord, SettingsSection, Thread, ThreadHandoff, ThemeName, WorkspaceMode } from "./types";
 import { PendingTurnStarts } from "./lib/pendingTurnStarts";
-import { useTaskStore } from "./lib/taskStore";
+import { useTaskStore, type QueuedTurn } from "./lib/taskStore";
 import { friendlyError } from "./lib/errors";
 import { recordError } from "./lib/errorLog";
 import {
@@ -63,7 +63,7 @@ import {
 } from "./lib/github";
 import { useAppUpdater } from "./lib/appUpdater";
 import { usePersistedState, usePersistedStateRef } from "./hooks/usePersistedState";
-import { useTurnRunner } from "./hooks/useTurnRunner";
+import { forgetQueuedDeliveries, useTurnRunner } from "./hooks/useTurnRunner";
 import { useCheckpoints } from "./hooks/useCheckpoints";
 import { useAppShortcuts } from "./hooks/useAppShortcuts";
 import { useThreadHealth } from "./hooks/useThreadHealth";
@@ -84,6 +84,7 @@ import { resolveSystemPrompt } from "./lib/systemPrompt";
 import { providerAccountUsage } from "./lib/providerUsage";
 import { OPENKIWI_COMPLETION_INSTRUCTIONS } from "./lib/completionPrompt";
 import { providerForArchivedThread } from "./lib/threadArchive";
+import { buildProviderHandoffPrompt, sanitizePendingHandoff } from "./lib/providerHandoff";
 import { deleteThreadTurnDurations } from "./lib/turnDurations";
 import { reorderProjects, type ProjectDropPosition } from "./lib/projectOrdering";
 import {
@@ -111,6 +112,7 @@ const OnboardingModal = lazy(() => import("./components/OnboardingModal").then((
 const EMPTY_MESSAGES: ChatMessage[] = [];
 const EMPTY_ACTIVITIES: Activity[] = [];
 const EMPTY_AGENTS: AgentRecord[] = [];
+const EMPTY_QUEUED_TURNS: QueuedTurn[] = [];
 
 const initialProjects = loadStored<Project[]>("kiwi.projects", []);
 const initialWorkspaceMode: WorkspaceMode = loadStored<WorkspaceMode>("kiwi.workspaceMode", initialProjects.length ? "project" : "chat");
@@ -203,6 +205,10 @@ export default function App() {
   const [searchResults, setSearchResults] = useState<Thread[] | null>(null);
   const [pinnedThreadIds, setPinnedThreadIds] = usePersistedState<string[]>("kiwi.pinnedThreads", []);
   const [archivedThreads, persistArchivedThreads] = usePersistedState<ArchivedThread[]>("kiwi.archivedThreads", []);
+  const [threadHandoffs, persistThreadHandoffs] = usePersistedState<Record<string, ThreadHandoff>>("kiwi.threadHandoffs", {});
+  const [pendingHandoff, setPendingHandoff] = usePersistedState<ThreadHandoff | null>("kiwi.pendingHandoff", null, {
+    init: (load) => sanitizePendingHandoff(load()),
+  });
   const [archivedOpen, setArchivedOpen] = useState(false);
   const [renamingThreadId, setRenamingThreadId] = useState<string | null>(null);
   const [threadNameDraft, setThreadNameDraft] = useState("");
@@ -291,7 +297,12 @@ export default function App() {
   // must not install UI state after a mid-flight workspace switch.
   const activeWorkspacePathRef = useRef<string | null>(null);
   activeWorkspacePathRef.current = activeWorkspace ? normalizedProjectPath(activeWorkspace.path) : null;
+  const pendingHandoffForWorkspace = pendingHandoff && activeWorkspace
+    && normalizedProjectPath(pendingHandoff.workspacePath) === normalizedProjectPath(activeWorkspace.path)
+    ? pendingHandoff
+    : null;
   const activeThreadId = activeThread?.id ?? null;
+  const activeThreadHandoff = activeThreadId ? threadHandoffs[activeThreadId] : undefined;
   const activeThreadWorktree = activeThreadId ? threadWorktrees[activeThreadId] : undefined;
   const activeExecutionPath = activeWorkspace
     ? executionPathForThread(activeThreadId, activeWorkspace.path, threadWorktrees)
@@ -313,6 +324,24 @@ export default function App() {
     return { ...resolved, provider: activeProvider, model: modelForProvider(activeProvider, threadModel ?? resolved.model) };
   }, [activeProject, activeProvider, activeThreadId, draftThreadModel, settings, threadModels]);
 
+  useEffect(() => {
+    if (!pendingHandoff || !activeWorkspace || activeThread) return;
+    if (normalizedProjectPath(pendingHandoff.workspacePath) !== normalizedProjectPath(activeWorkspace.path)) {
+      discardDraft(`new:${pendingHandoff.workspacePath}`);
+      setPendingHandoff(null);
+      setDraftThreadProvider(null);
+      setDraftThreadModel(null);
+      setDraftThreadIsolated(false);
+      return;
+    }
+    // Restore the destination choice beside the durable composer draft after
+    // an app restart. Keeping only the text could otherwise send a handoff
+    // through the default provider and lose its provenance.
+    setDraftThreadProvider(pendingHandoff.targetProvider === settings.provider ? null : pendingHandoff.targetProvider);
+    setDraftThreadModel(pendingHandoff.targetProvider === settings.provider ? null : modelForProvider(pendingHandoff.targetProvider, ""));
+    setDraftThreadIsolated(false);
+  }, [activeThread, activeWorkspace, pendingHandoff, setPendingHandoff, settings.provider]);
+
   const terminal = useTerminal({ scrollback: settings.terminalScrollback, permission: effectiveSettings.permission, onError: setError });
   const timelineEmpty = useTaskStore((state) => {
     if (!activeThreadId) return true;
@@ -322,6 +351,7 @@ export default function App() {
   const diff = useTaskStore((state) => (activeThreadId ? (state.tasks[activeThreadId]?.diff ?? "") : ""));
   const agentRecords = useTaskStore((state) => (activeThreadId ? (state.tasks[activeThreadId]?.agents ?? EMPTY_AGENTS) : EMPTY_AGENTS));
   const tokenUsage = useTaskStore((state) => (activeThreadId ? (state.tasks[activeThreadId]?.usage ?? null) : null));
+  const queuedTurns = useTaskStore((state) => (activeThreadId ? (state.tasks[activeThreadId]?.queuedTurns ?? EMPTY_QUEUED_TURNS) : EMPTY_QUEUED_TURNS));
   const taskStatus = useTaskStore((state) => (activeThreadId ? (state.statuses[activeThreadId] ?? "idle") : "idle"));
   const threadTaskStatuses = useTaskStore((state) => state.statuses);
   const running = activeThreadId ? taskStatus === "starting" || taskStatus === "running" : startingDraftTurn;
@@ -1362,13 +1392,13 @@ export default function App() {
     selectThreadRequestRef.current += 1;
     setActiveThread(null);
     useTaskStore.getState().setActiveThread(null);
-    setDraftThreadProvider(null);
-    setDraftThreadModel(null);
+    setDraftThreadProvider(pendingHandoffForWorkspace?.targetProvider === settings.provider ? null : pendingHandoffForWorkspace?.targetProvider ?? null);
+    setDraftThreadModel(pendingHandoffForWorkspace ? modelForProvider(pendingHandoffForWorkspace.targetProvider, "") : null);
     setAttachments([]);
     setThreadSearch("");
     setSearchResults(null);
     if (!activeProject) setStudioOpen(false);
-  }, [activeProject, activeWorkspace, claudeStatus?.available, cursorStatus?.available, loadThreads, runtimeStatus?.available]);
+  }, [activeProject, activeWorkspace, claudeStatus?.available, cursorStatus?.available, loadThreads, pendingHandoffForWorkspace, runtimeStatus?.available, settings.provider]);
 
   // Every surfaced error also lands in the diagnostics ring buffer/audit log.
   useEffect(() => {
@@ -1669,6 +1699,8 @@ export default function App() {
     setDraftThreadProvider(null);
     setDraftThreadModel(null);
     setDraftThreadIsolated(false);
+    if (pendingHandoff) composerRef.current?.setDraft("");
+    setPendingHandoff(null);
     try {
       const isolation = threadWorktreesRef.current[thread.id];
       // Keep the unavailable execution path attached to the task while the
@@ -1765,6 +1797,8 @@ export default function App() {
     setDraftThreadProvider(null);
     setDraftThreadModel(null);
     setDraftThreadIsolated(false);
+    if (pendingHandoff) composerRef.current?.setDraft("");
+    setPendingHandoff(null);
     setError(null);
     requestAnimationFrame(() => composerRef.current?.focus());
   };
@@ -1774,9 +1808,43 @@ export default function App() {
       setError("Stop the running task before starting a thread with another provider.");
       return;
     }
-    if (activeThread && !window.confirm(`Start a new ${providerLabel(provider)} thread?\n\nProvider sessions cannot share conversation state, so this keeps the current thread unchanged and starts a separate thread in the same workspace.`)) {
+    if (activeThread) {
+      if (activeThreadWorktree && activeThreadWorktree.status !== "removed") {
+        setError("Provider handoff is unavailable while this conversation owns an isolated worktree. Apply or merge its changes, remove the worktree, and choose Continue shared before handing it off.");
+        return;
+      }
+      const sourceProvider = providerFromThread(activeThread, settings.provider);
+      const sourceTitle = activeThread.name || activeThread.preview || "Untitled task";
+      if (!window.confirm(`Hand off “${sourceTitle}” from ${providerLabel(sourceProvider)} to ${providerLabel(provider)}?\n\nOpenKiwi will start a separate provider thread in the same workspace with a bounded, visible copy of the conversation. The original thread remains unchanged.`)) return;
+      const task = useTaskStore.getState().tasks[activeThread.id];
+      const handoff: ThreadHandoff = {
+        sourceThreadId: activeThread.id,
+        sourceTitle,
+        sourceProvider,
+        sourceModel: threadModels[activeThread.id] ?? effectiveSettings.model,
+        workspacePath: activeWorkspace?.path ?? activeThread.cwd,
+        targetProvider: provider,
+        createdAt: Date.now(),
+      };
+      const prompt = buildProviderHandoffPrompt({
+        title: sourceTitle,
+        sourceProvider,
+        sourceModel: handoff.sourceModel,
+        workspaceName: activeWorkspace?.name ?? "Workspace",
+        workspacePath: activeWorkspace?.path ?? activeThread.cwd,
+        messages: task?.messages ?? [],
+      });
+      setPendingHandoff(handoff);
+      setActiveThread(null);
+      useTaskStore.getState().setActiveThread(null);
+      setDraftThreadProvider(provider === settings.provider ? null : provider);
+      setDraftThreadModel(provider === settings.provider ? null : modelForProvider(provider, ""));
+      setDraftThreadIsolated(false);
+      setError(null);
+      requestAnimationFrame(() => composerRef.current?.setDraft(prompt));
       return;
     }
+    if (pendingHandoffForWorkspace) setPendingHandoff({ ...pendingHandoffForWorkspace, targetProvider: provider });
     setActiveThread(null);
     useTaskStore.getState().setActiveThread(null);
     setDraftThreadProvider(provider === settings.provider ? null : provider);
@@ -1786,7 +1854,13 @@ export default function App() {
     requestAnimationFrame(() => composerRef.current?.focus());
   };
 
-  const { sendMessage, stopTurn } = useTurnRunner({
+  const handleThreadCreated = useCallback((threadId: string) => {
+    if (!pendingHandoffForWorkspace) return;
+    persistThreadHandoffs((current) => ({ ...current, [threadId]: pendingHandoffForWorkspace }));
+    setPendingHandoff(null);
+  }, [pendingHandoffForWorkspace, persistThreadHandoffs, setPendingHandoff]);
+
+  const { sendMessage, steerMessage, steerQueuedMessage, retryQueuedMessage, removeQueuedMessage, stopTurn } = useTurnRunner({
     activeThread,
     activeWorkspace,
     activeProject,
@@ -1814,6 +1888,7 @@ export default function App() {
     executionPathFor,
     bindThreadToProject,
     rememberThread,
+    onThreadCreated: handleThreadCreated,
     persistThreadModel,
     persistThreadWorktrees,
     beginRunCheckpoint,
@@ -1993,6 +2068,7 @@ export default function App() {
       if (!isLocalSubscriptionThread(thread)) await rpc("thread/archive", { threadId: thread.id });
       if (activeThread?.id === thread.id) newThread();
       forgetThread(thread.id);
+      forgetQueuedDeliveries(thread.id);
       setThreads((current) => current.filter((entry) => entry.id !== thread.id));
       const path = normalizedProjectPath(threadProjectBindingsRef.current?.[thread.id] || thread.cwd);
       const provider = providerFromThread(thread, "openai");
@@ -2067,7 +2143,14 @@ export default function App() {
       deleteThreadTurnDurations(threadId);
       setThreads((current) => current.filter((entry) => entry.id !== threadId));
       persistArchivedThreads((current) => current.filter((entry) => entry.id !== threadId));
+      persistThreadHandoffs((current) => {
+        if (!(threadId in current)) return current;
+        const next = { ...current };
+        delete next[threadId];
+        return next;
+      });
       useTaskStore.getState().removeTask(threadId);
+      forgetQueuedDeliveries(threadId);
       setPinnedThreadIds((current) => (current.includes(threadId) ? current.filter((id) => id !== threadId) : current));
       forgetThreadCheckpoints(threadId);
       const bindings = threadProjectBindingsRef.current ?? {};
@@ -2677,7 +2760,7 @@ export default function App() {
   const runProjectAction = async (action: ProjectAction) => {
     if (!activeProject) return;
     setStudioTab("terminal");
-    terminal.append(`${terminal.outputStore.get() ? "\n" : ""}$ ${action.command}\n`);
+    terminal.append(`${terminal.outputStore.appendedLength() ? "\n" : ""}$ ${action.command}\n`);
     try {
       const result = await executeCommand(["/bin/zsh", "-lc", action.command], activeExecutionPath || activeProject.path, activeThreadWorktree?.gitDir ? [activeThreadWorktree.gitDir] : []);
       terminal.append(`${result.stdout}${result.stderr}\n[exit ${result.exitCode}]\n`);
@@ -3117,6 +3200,17 @@ export default function App() {
                 <GitBranch size={12} /> <span>Isolated</span>
               </button>
             )}
+            {activeThreadHandoff && (
+              <button className="handoff-chip" onClick={() => {
+                // The source can be deleted or pruned out of the sidebar index
+                // long after the handoff; say so instead of doing nothing.
+                const source = knownThreadsRef.current?.[activeThreadHandoff.sourceThreadId];
+                if (source) void selectThread(source);
+                else setError(`The source task “${activeThreadHandoff.sourceTitle}” is no longer available. This thread keeps the context that was handed off.`);
+              }} title={`Open source task: ${activeThreadHandoff.sourceTitle}`}>
+                <GitFork size={12} /> <span>From {providerLabel(activeThreadHandoff.sourceProvider)}</span>
+              </button>
+            )}
             {activeProject && (
               <ProjectPromptControl
                 key={activeProject.id}
@@ -3258,6 +3352,12 @@ export default function App() {
               )}
               {timelineEmpty || !activeThreadId ? (
                 <div className="thread-empty-state">
+                  {pendingHandoffForWorkspace && (
+                    <div className="handoff-draft-banner">
+                      <GitFork size={15} />
+                      <span><strong>Provider handoff ready</strong><small>From {providerLabel(pendingHandoffForWorkspace.sourceProvider)} · review the visible context below, then send it to {providerLabel(pendingHandoffForWorkspace.targetProvider)}.</small></span>
+                    </div>
+                  )}
                   <div className={`empty-state-icon ${activeWorkspace.isChat ? "chat" : ""}`}>{activeWorkspace.isChat ? <MessageSquare size={27} /> : <Bot size={27} />}</div>
                   <h1>{activeWorkspace.isChat ? "Start a normal chat." : "What should we build?"}</h1>
                   <p>{activeWorkspace.isChat ? "This conversation is not attached to any project folder. Ask a question, brainstorm, or work without repository context." : `This thread works inside ${activeProject?.name}. Commands and file changes start in that project folder.`}</p>
@@ -3375,14 +3475,19 @@ export default function App() {
                 ref={composerRef}
                 threadKey={activeThreadId ?? `new:${activeWorkspace.path}`}
                 running={running}
-                steering={Boolean(running && activeThread)}
+                queueing={Boolean(running && activeThread)}
                 dropActive={dropActive}
-                placeholder={running && activeThread ? "Add direction to the running task…" : activeWorkspace.isChat ? "Ask anything — no project folder attached…" : `Ask OpenKiwi to work in ${activeProject?.name ?? "this project"}…`}
+                placeholder={running && activeThread ? "Queue a follow-up for after this run…" : activeWorkspace.isChat ? "Ask anything — no project folder attached…" : `Ask OpenKiwi to work in ${activeProject?.name ?? "this project"}…`}
                 attachments={attachments}
+                queuedTurns={queuedTurns}
                 searchFiles={searchProjectFiles}
                 onRemoveAttachment={(path) => setAttachments((current) => current.filter((entry) => entry.path !== path))}
                 onPasteImages={(items) => void pasteImages(items)}
                 onSend={sendMessage}
+                onSteer={steerMessage}
+                onSteerQueued={(queuedTurnId) => void steerQueuedMessage(queuedTurnId)}
+                onRetryQueued={retryQueuedMessage}
+                onRemoveQueued={removeQueuedMessage}
                 onStop={() => void stopTurn()}
                 modelControls={
                   <>

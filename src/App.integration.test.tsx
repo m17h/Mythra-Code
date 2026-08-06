@@ -441,7 +441,7 @@ describe("workspace switching during thread selection", () => {
     );
     expect(checkpointCall).toBeGreaterThanOrEqual(0);
     expect(turnStartCall).toBeGreaterThan(checkpointCall);
-    expect(screen.getByText("Steering active task")).toBeInTheDocument();
+    expect(screen.getByText("Enter queues")).toBeInTheDocument();
 
     // Navigate to idle thread B while A's start is still pending.
     await user.click(screen.getByText("Beta thread"));
@@ -449,10 +449,10 @@ describe("workspace switching during thread selection", () => {
       expect(useTaskStore.getState().activeThreadId).toBe(THREAD_B.id);
     });
 
-    // B must not present as running or steering just because A is starting.
-    expect(screen.queryByText("Steering active task")).not.toBeInTheDocument();
+    // B must not present as running or queueing just because A is starting.
+    expect(screen.queryByText("Enter queues")).not.toBeInTheDocument();
     const idleComposer = await screen.findByPlaceholderText(/Ask OpenKiwi to work in/);
-    expect(idleComposer).not.toHaveAttribute("placeholder", "Add direction to the running task…");
+    expect(idleComposer).not.toHaveAttribute("placeholder", "Queue a follow-up for after this run…");
 
     // A send from B must start a new turn for B — never steer.
     await user.type(idleComposer, "hello from beta{Enter}");
@@ -487,6 +487,106 @@ describe("workspace switching during thread selection", () => {
     await waitFor(() => {
       expect(useTaskStore.getState().activeThreadId).toBe(THREAD_A.id);
     });
+  });
+
+  it("creates an editable provider handoff draft without changing the source thread", async () => {
+    const user = userEvent.setup();
+    resumeImpl = (params) => ({ thread: { ...THREAD_A, id: String(params.threadId), turns: [] } });
+    await renderApp();
+    const { useTaskStore } = await import("./lib/taskStore");
+
+    await user.click(await screen.findByText("Alpha thread"));
+    await waitFor(() => {
+      expect(useTaskStore.getState().activeThreadId).toBe(THREAD_A.id);
+    });
+    act(() => {
+      useTaskStore.getState().appendUserMessage(THREAD_A.id, {
+        id: "handoff-goal",
+        role: "user",
+        text: "Preserve the current API and finish the queue UI.",
+      });
+    });
+
+    await user.click(screen.getByRole("button", { name: "Thread provider: OpenAI" }));
+    await user.click(screen.getByRole("menuitemradio", { name: /Hand off to Claude/ }));
+
+    const composer = await screen.findByPlaceholderText(/Ask OpenKiwi to work in Alpha/);
+    await waitFor(() => {
+      expect((composer as HTMLTextAreaElement).value).toContain("Continue “Alpha thread”");
+    });
+    expect((composer as HTMLTextAreaElement).value).toContain("Preserve the current API and finish the queue UI.");
+    expect(screen.getByText(/review the visible context below/)).toBeInTheDocument();
+    expect(useTaskStore.getState().activeThreadId).toBeNull();
+    expect(screen.getByText("Alpha thread")).toBeInTheDocument();
+    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining("from OpenAI to Claude"));
+    expect(JSON.parse(localStorage.getItem("kiwi.pendingHandoff") ?? "null")).toMatchObject({
+      sourceThreadId: THREAD_A.id,
+      targetProvider: "claude",
+      workspacePath: PROJECT_A.path,
+    });
+
+    // Abandoning the handoff must clear its persisted new-thread draft so it
+    // cannot reappear later without the target-provider/provenance state.
+    await user.click(screen.getByText("Alpha thread"));
+    await waitFor(() => expect(useTaskStore.getState().activeThreadId).toBe(THREAD_A.id));
+    await user.click(screen.getByRole("button", { name: /New thread/ }));
+    expect(await screen.findByPlaceholderText(/Ask OpenKiwi to work in Alpha/)).toHaveValue("");
+    expect(JSON.parse(localStorage.getItem("kiwi.pendingHandoff") ?? "null")).toBeNull();
+  });
+
+  it("restores an unfinished provider handoff with its destination after restart", async () => {
+    localStorage.setItem("kiwi.pendingHandoff", JSON.stringify({
+      sourceThreadId: THREAD_A.id,
+      sourceTitle: "Alpha thread",
+      sourceProvider: "openai",
+      sourceModel: "gpt-5.6-sol",
+      workspacePath: PROJECT_A.path,
+      targetProvider: "claude",
+      createdAt: 1,
+    }));
+    localStorage.setItem("kiwi.drafts", JSON.stringify({
+      [`new:${PROJECT_A.path}`]: "Continue the restored handoff.",
+    }));
+
+    await renderApp();
+
+    expect(await screen.findByText("Provider handoff ready")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "New thread provider: Claude" })).toBeInTheDocument();
+    expect(await screen.findByPlaceholderText(/Ask OpenKiwi to work in Alpha/)).toHaveValue("Continue the restored handoff.");
+  });
+
+  it("refuses a provider handoff while the source thread owns an isolated worktree", async () => {
+    const user = userEvent.setup();
+    resumeImpl = (params) => ({ thread: { ...THREAD_A, id: String(params.threadId), turns: [] } });
+    localStorage.setItem("kiwi.threadWorktrees", JSON.stringify({
+      [THREAD_A.id]: {
+        threadId: THREAD_A.id,
+        projectId: PROJECT_A.id,
+        projectPath: PROJECT_A.path,
+        path: "/managed/worktrees/alpha",
+        branch: "kiwi/alpha",
+        baseCommit: "head",
+        gitDir: "/projects/alpha/.git",
+        createdAt: 1,
+        status: "active",
+      },
+    }));
+    await renderApp();
+    const { useTaskStore } = await import("./lib/taskStore");
+
+    await user.click(await screen.findByText("Alpha thread"));
+    await waitFor(() => {
+      expect(useTaskStore.getState().activeThreadId).toBe(THREAD_A.id);
+    });
+
+    await user.click(screen.getByRole("button", { name: "Thread provider: OpenAI" }));
+    await user.click(screen.getByRole("menuitemradio", { name: /Hand off to Claude/ }));
+
+    // The handed-off copy would run in the shared project folder, so the
+    // isolated conversation must be resolved before it can be handed off.
+    expect(await screen.findByText(/owns an isolated worktree/)).toBeInTheDocument();
+    expect(window.confirm).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().activeThreadId).toBe(THREAD_A.id);
   });
 
   it("starts an isolated thread in its worktree while keeping it grouped under the project", async () => {

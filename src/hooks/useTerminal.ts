@@ -4,8 +4,25 @@ import { friendlyError } from "../lib/errors";
 import { commandSandbox } from "../lib/turnConfig";
 import type { PermissionMode } from "../types";
 
+/**
+ * Upper bound on a single retained chunk. Keeps the chunk list short (a few
+ * dozen entries even at the largest scrollback) so trimming its head stays
+ * cheap, without ever copying a large buffer.
+ */
+const MAX_CHUNK_LENGTH = 8192;
+
 export interface TerminalOutputStore {
-  get: () => string;
+  /**
+   * Total characters ever appended. Monotonic, so it doubles as the cursor
+   * consumers hand back to `read` and as an "is there any output yet?" check.
+   */
+  appendedLength: () => number;
+  /**
+   * Everything appended after `cursor`, plus the cursor to pass in next time.
+   * A cursor older than the retained window resumes at the oldest retained
+   * character rather than silently returning nothing.
+   */
+  read: (cursor: number) => { text: string; cursor: number };
   subscribe: (listener: () => void) => () => void;
 }
 
@@ -37,12 +54,42 @@ export function useTerminal(options: { scrollback: number; permission: Permissio
   // Output lives outside React state: streamed command output can arrive many
   // times per frame, and routing it through setState re-rendered the entire
   // app per chunk. Consumers (xterm) subscribe and read the buffer directly.
-  const outputRef = useRef("");
+  //
+  // The buffer is a list of arriving chunks rather than one accumulated string.
+  // Appending to a string and re-slicing it to the scrollback limit copied the
+  // whole retained buffer twice per chunk — up to 500k characters each, which
+  // dominated CPU and allocation for any command with substantial output. It
+  // also silently broke display: once the accumulated string saturated the
+  // limit its length stopped changing, so the delta the panel computed from
+  // that length was always empty and no further output ever reached xterm.
+  const chunksRef = useRef<string[]>([]);
+  const retainedRef = useRef(0);
+  const appendedRef = useRef(0);
   const outputListenersRef = useRef(new Set<() => void>());
   const outputStoreRef = useRef<TerminalOutputStore | null>(null);
   if (outputStoreRef.current === null) {
     outputStoreRef.current = {
-      get: () => outputRef.current,
+      appendedLength: () => appendedRef.current,
+      read: (cursor) => {
+        const appended = appendedRef.current;
+        let needed = appended - Math.max(cursor, appended - retainedRef.current);
+        if (needed <= 0) return { text: "", cursor: appended };
+        // Walk back from the newest chunk so the work is proportional to the
+        // delta, not to the retained buffer.
+        const parts: string[] = [];
+        for (let index = chunksRef.current.length - 1; index >= 0 && needed > 0; index -= 1) {
+          const chunk = chunksRef.current[index];
+          if (chunk.length <= needed) {
+            parts.push(chunk);
+            needed -= chunk.length;
+          } else {
+            parts.push(chunk.slice(chunk.length - needed));
+            needed = 0;
+          }
+        }
+        parts.reverse();
+        return { text: parts.join(""), cursor: appended };
+      },
       subscribe: (listener) => {
         outputListenersRef.current.add(listener);
         return () => outputListenersRef.current.delete(listener);
@@ -52,7 +99,32 @@ export function useTerminal(options: { scrollback: number; permission: Permissio
 
   const append = useCallback((text: string) => {
     if (!text) return;
-    outputRef.current = `${outputRef.current}${text}`.slice(-optionsRef.current.scrollback);
+    // Small arrivals extend the newest chunk instead of adding an entry. A PTY
+    // can emit a character at a time (progress spinners, raw-mode programs),
+    // and one array entry per character made both the retained-window trim and
+    // the per-string overhead scale with the character count rather than the
+    // byte count.
+    const chunks = chunksRef.current;
+    const newest = chunks.length ? chunks[chunks.length - 1] : undefined;
+    if (newest !== undefined && newest.length + text.length <= MAX_CHUNK_LENGTH) {
+      chunks[chunks.length - 1] = `${newest}${text}`;
+    } else {
+      chunks.push(text);
+    }
+    retainedRef.current += text.length;
+    appendedRef.current += text.length;
+    const limit = Math.max(1, optionsRef.current.scrollback);
+    while (retainedRef.current > limit) {
+      const oldest = chunksRef.current[0];
+      const excess = retainedRef.current - limit;
+      if (oldest.length <= excess) {
+        chunksRef.current.shift();
+        retainedRef.current -= oldest.length;
+      } else {
+        chunksRef.current[0] = oldest.slice(excess);
+        retainedRef.current = limit;
+      }
+    }
     for (const listener of outputListenersRef.current) listener();
   }, []);
 
@@ -62,7 +134,7 @@ export function useTerminal(options: { scrollback: number; permission: Permissio
     const id = crypto.randomUUID();
     setProcessId(id);
     setRunning(true);
-    append(`${outputRef.current ? "\n" : ""}$ ${trimmed}\n`);
+    append(`${appendedRef.current ? "\n" : ""}$ ${trimmed}\n`);
     setCommand("");
     try {
       const result = await rpc<{ exitCode: number; stdout: string; stderr: string }>("command/exec", {

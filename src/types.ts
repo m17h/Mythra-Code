@@ -179,6 +179,16 @@ export interface ArchivedThread {
   provider?: Provider;
 }
 
+export interface ThreadHandoff {
+  sourceThreadId: string;
+  sourceTitle: string;
+  sourceProvider: Provider;
+  sourceModel: string;
+  workspacePath: string;
+  targetProvider: Provider;
+  createdAt: number;
+}
+
 export interface AppSettings {
   provider: Provider;
   openAiLogo: OpenAILogoStyle;

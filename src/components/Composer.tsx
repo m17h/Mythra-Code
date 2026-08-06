@@ -8,8 +8,9 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { ArrowUp, CircleStop, FileCode2, Paperclip, X } from "lucide-react";
+import { ArrowUp, CircleStop, CornerUpRight, FileCode2, ListPlus, LoaderCircle, Paperclip, RotateCw, Trash2, X } from "lucide-react";
 import { loadStored, storeValue } from "../lib/storage";
+import type { QueuedTurn } from "../lib/taskStore";
 import type { AttachmentRecord } from "./StudioDock";
 
 export interface ComposerHandle {
@@ -49,6 +50,10 @@ function persistDraft(key: string, text: string): void {
   }, 400);
 }
 
+export function discardDraft(key: string): void {
+  persistDraft(key, "");
+}
+
 export function resetDraftStoreForTests(): void {
   draftsCache = null;
   if (draftSaveTimer !== null) window.clearTimeout(draftSaveTimer);
@@ -74,16 +79,27 @@ export function resizeComposerTextarea(textarea: HTMLTextAreaElement): void {
 export const Composer = forwardRef<ComposerHandle, {
   threadKey: string;
   running: boolean;
-  steering: boolean;
+  /**
+   * True only when a started thread is running, which is the one case where a
+   * plain send queues a follow-up and Steer can reach an active turn. A draft
+   * thread whose first turn is still starting is `running` but not `queueing`:
+   * there is no turn to steer and nothing to queue behind yet.
+   */
+  queueing: boolean;
   dropActive: boolean;
   placeholder: string;
   attachments: AttachmentRecord[];
+  queuedTurns?: QueuedTurn[];
   modelControls?: ReactNode;
   controls: ReactNode;
   searchFiles?: (query: string) => Promise<string[]>;
   onRemoveAttachment: (path: string) => void;
   onPasteImages: (items: DataTransferItemList) => void;
   onSend: (text: string) => Promise<boolean>;
+  onSteer: (text: string) => Promise<boolean>;
+  onSteerQueued?: (queuedTurnId: string) => void;
+  onRetryQueued?: (queuedTurnId: string) => void;
+  onRemoveQueued?: (queuedTurnId: string) => void;
   onStop: () => void;
 }>(function Composer(props, ref) {
   const [draft, setDraftState] = useState(() => draftFor(props.threadKey));
@@ -162,16 +178,20 @@ export const Composer = forwardRef<ComposerHandle, {
     });
   }, [closeMentions, draft, setDraft]);
 
-  const send = useCallback(async () => {
+  const send = useCallback(async (mode: "default" | "steer" = "default") => {
     const text = draft.trim();
-    if (!text) return;
+    // The very first thread/start has not returned an id yet, so there is no
+    // durable queue to attach a second message to. Keep the draft in place
+    // until that short startup window closes instead of starting a second
+    // independent thread.
+    if (!text || (props.running && !props.queueing)) return;
     // Capture the sending thread's key: the user may switch threads while the
     // RPC is in flight, and a failed send must restore into the ORIGINAL
     // thread's draft, not whichever thread is now visible.
     const sentFromKey = threadKeyRef.current;
     closeMentions();
     setDraft("");
-    const delivered = await props.onSend(text);
+    const delivered = await (mode === "steer" ? props.onSteer(text) : props.onSend(text));
     if (!delivered) {
       if (threadKeyRef.current === sentFromKey) {
         // Still on the same thread — restore the failed text ahead of anything
@@ -191,7 +211,57 @@ export const Composer = forwardRef<ComposerHandle, {
   }, [closeMentions, draft, props, setDraft]);
 
   return (
-    <div className={`composer ${props.steering ? "steering" : ""} ${props.dropActive ? "drop-target" : ""}`}>
+    <div className={`composer ${props.queueing ? "queueing" : ""} ${props.dropActive ? "drop-target" : ""}`}>
+      {Boolean(props.queuedTurns?.length) && (
+        <div className="queued-turns">
+          <div className="queued-turns-heading">
+            <span><ListPlus size={12} /> Next turns</span>
+            <small>{props.queuedTurns!.length} queued</small>
+          </div>
+          <div className="queued-turns-list" role="list" aria-label="Queued follow-up messages">
+            {props.queuedTurns!.map((queuedTurn, index) => {
+              // Nothing is running once a turn is stopped or fails, so a still
+              // queued follow-up is waiting on the user rather than on a run.
+              const stalled = queuedTurn.status === "queued" && !props.queueing && index === 0;
+              const waitingBehindEarlier = queuedTurn.status === "queued" && !props.queueing && index > 0;
+              return (
+                <div className={`queued-turn ${queuedTurn.status}`} key={queuedTurn.id} role="listitem">
+                  <span className="queued-turn-index">{index + 1}</span>
+                  <span className="queued-turn-copy" title={queuedTurn.text}>
+                    <strong>{queuedTurn.text}</strong>
+                    <small>
+                      {queuedTurn.status === "sending"
+                        ? "Starting now…"
+                        : queuedTurn.status === "failed"
+                          ? queuedTurn.error || "Could not start"
+                          : `${queuedTurn.attachments.length ? `${queuedTurn.attachments.length} attachment${queuedTurn.attachments.length === 1 ? "" : "s"} · ` : ""}${stalled ? "Waiting — start it now or remove it" : waitingBehindEarlier ? "Waiting behind an earlier message" : "Runs after the active turn"}`}
+                    </small>
+                  </span>
+                  {queuedTurn.status === "sending" ? (
+                    <LoaderCircle className="spin" size={13} aria-label="Starting queued turn" />
+                  ) : (
+                    <span className="queued-turn-actions">
+                      {index === 0 && (queuedTurn.status === "failed" || stalled) && props.onRetryQueued && (
+                        <button
+                          onClick={() => props.onRetryQueued?.(queuedTurn.id)}
+                          title={stalled ? "Start this queued turn now" : "Retry queued turn"}
+                          aria-label={`${stalled ? "Start" : "Retry"} queued message ${index + 1}`}
+                        ><RotateCw size={12} /></button>
+                      )}
+                      {props.queueing && props.onSteerQueued && (
+                        <button className="steer-queued" onClick={() => props.onSteerQueued?.(queuedTurn.id)} title="Send this into the active turn now" aria-label={`Steer queued message ${index + 1} now`}><CornerUpRight size={12} /></button>
+                      )}
+                      {props.onRemoveQueued && (
+                        <button className="remove-queued" onClick={() => props.onRemoveQueued?.(queuedTurn.id)} title="Remove queued message" aria-label={`Remove queued message ${index + 1}`}><Trash2 size={12} /></button>
+                      )}
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
       {props.attachments.length > 0 && (
         <div className="composer-attachments" aria-label="Attached context">
           {props.attachments.map((item) => (
@@ -259,7 +329,7 @@ export const Composer = forwardRef<ComposerHandle, {
             }
             if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
               event.preventDefault();
-              void send();
+              void send("default");
             }
           }}
           onBlur={closeMentions}
@@ -271,16 +341,26 @@ export const Composer = forwardRef<ComposerHandle, {
       <div className="composer-toolbar">
         <div className="composer-controls">{props.controls}</div>
         <div className="composer-actions">
-          {props.steering && (
-            <span className="steer-hint" title="The task is running — Enter sends this message as direction to it, not as a new question.">Steering active task</span>
+          {props.queueing && (
+            <span className="queue-hint" title="Enter queues this message as the next turn. Use Steer to change the work already in progress."><ListPlus size={12} /> Enter queues</span>
           )}
           {props.running && (
             <button className="stop-button" onClick={props.onStop} title="Stop the active task (Esc)" aria-label="Stop the active task">
               <CircleStop size={17} />
             </button>
           )}
-          <button className="send-button" onClick={() => void send()} disabled={!draft.trim()} title={props.steering ? "Add direction to the active task" : "Send"}>
-            <ArrowUp size={18} />
+          {props.queueing && (
+            <button className="steer-button" onClick={() => void send("steer")} disabled={!draft.trim()} title="Send this message into the active turn now">
+              <CornerUpRight size={14} /> <span>Steer</span>
+            </button>
+          )}
+          <button
+            className={`send-button ${props.queueing ? "queue-button" : ""}`}
+            onClick={() => void send("default")}
+            disabled={!draft.trim() || (props.running && !props.queueing)}
+            title={props.queueing ? "Queue as the next turn" : props.running ? "Wait for the first turn to start" : "Send"}
+          >
+            {props.queueing ? <><ListPlus size={14} /><span>Queue</span></> : <ArrowUp size={18} />}
           </button>
         </div>
       </div>
