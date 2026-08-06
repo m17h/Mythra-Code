@@ -219,7 +219,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the component and state mod
 
 ## Acknowledgements
 
-OpenKiwi's inbox-style task organization and queued follow-up direction were inspired in part by [T3Code](https://github.com/pingdotgg/t3code) from [T3 Tools](https://t3.gg/). OpenKiwi's implementation was written independently for its own React, Zustand, and Tauri architecture, but T3Code deserves credit for helping demonstrate how natural an inbox-oriented agent experience can feel.
+OpenKiwi did **not** use or copy any source code from [T3Code](https://github.com/pingdotgg/t3code). OpenKiwi's inbox-style threads were designed and implemented independently for its own React, Zustand, and Tauri architecture. We did, however, take product-design inspiration from T3Code's inbox-oriented approach, and we gratefully credit [T3 Tools](https://t3.gg/) for helping demonstrate how natural that experience can feel.
 
 ## Upstream references
 
