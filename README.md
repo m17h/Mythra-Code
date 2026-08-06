@@ -185,7 +185,7 @@ OpenKiwi contains **no telemetry, analytics, or crash reporting**. Network conne
 - Each thread owns independent messages, activities, approvals, child agents, diff, usage, unread state, and lifecycle status.
 - Streaming deltas are batched once per animation frame and routed by `threadId`, so background tasks cannot overwrite the active task.
 - Long transcripts are virtualized and Markdown/terminal code is split into lazy chunks to keep startup and scrolling responsive.
-- While a turn is running, Send steers it with `turn/steer`; Stop interrupts it without disturbing other threads.
+- While a turn is running, Send adds a durable FIFO follow-up by default. A separate action can steer a message into the active turn, and Stop interrupts it without disturbing other threads.
 - Completed background work can raise a native notification. The sidebar shows running and unread state.
 - `⌘K` opens a command palette across commands, projects, and current-scope threads.
 - Scheduled project prompts run while OpenKiwi is open and create normal, inspectable App Server threads.
@@ -216,6 +216,10 @@ npm run release:publish
 `npm run verify` runs ESLint, strict Clippy, TypeScript and Rust checks, unit/integration component tests, and the production web build. `npm run desktop:build` produces only the local `.app` without updater artifacts; it never invokes Tauri's DMG bundler. `npm run release:build` requires publisher-owned signing/notarization credentials, builds the signed update payload, and creates the DMG exclusively through the standalone `create-dmg` command. OpenKiwi does not embed those credentials or bundle Codex.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the component and state model.
+
+## Acknowledgements
+
+OpenKiwi's inbox-style task organization and queued follow-up direction were inspired in part by [T3Code](https://github.com/pingdotgg/t3code) from [T3 Tools](https://t3.gg/). OpenKiwi's implementation was written independently for its own React, Zustand, and Tauri architecture, but T3Code deserves credit for helping demonstrate how natural an inbox-oriented agent experience can feel.
 
 ## Upstream references
 
