@@ -1,4 +1,12 @@
-import type { AppSettings, PromptProfile, ThemeName } from "../types";
+import type { AppSettings, ChildAgentSettings, PromptProfile, ThemeName } from "../types";
+
+/**
+ * Cross-provider delegation is off with an empty roster, so an installation
+ * that never opens the new settings behaves exactly as it did before.
+ * Declared here rather than in `childAgents` to keep that module's dependency
+ * on this one one-directional.
+ */
+export const DEFAULT_CHILD_AGENT_SETTINGS: ChildAgentSettings = { enabled: false, targets: [] };
 
 export const DEFAULT_OPENAI_MODEL = "gpt-5.6-sol";
 export const DEFAULT_CLAUDE_MODEL = "claude-fable-5";
@@ -22,6 +30,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   projectInstructionsEnabled: false,
   subagentsEnabled: false,
   subagentMax: 3,
+  childAgents: DEFAULT_CHILD_AGENT_SETTINGS,
   reasoningEffort: "medium",
   ultra: false,
   serviceTier: null,

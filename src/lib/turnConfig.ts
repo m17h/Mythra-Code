@@ -1,4 +1,5 @@
 import type { CustomAgentProfile, PermissionMode, ScheduleRunSettings } from "../types";
+import type { ChildAgentBridgeLaunch } from "./agentBridge";
 import type { JsonObject } from "./codex";
 import { OPENKIWI_COMPLETION_INSTRUCTIONS } from "./completionPrompt";
 
@@ -34,6 +35,30 @@ export interface ThreadStartOptions {
    *  because nobody is guaranteed to be present to answer them. */
   interactive: boolean;
   additionalWorkspaceRoots?: string[];
+  /**
+   * Cross-provider delegation bridge. Attached only to a root thread, which is
+   * what keeps sub-agent depth at one: a child's runtime is started without it
+   * and therefore has no delegation tools at all.
+   */
+  childAgentBridge?: ChildAgentBridgeLaunch;
+}
+
+/** Registers the OpenKiwi delegation bridge as a per-thread MCP server. */
+export function childAgentMcpConfig(bridge: ChildAgentBridgeLaunch | undefined): JsonObject {
+  if (!bridge) return {};
+  return {
+    mcp_servers: {
+      // Collection returns within 45 seconds, while a cold provider spawn may
+      // legitimately take several minutes. Codex otherwise gives every MCP
+      // tool the same 60-second default timeout.
+      [bridge.name]: {
+        command: bridge.command,
+        args: bridge.args,
+        startup_timeout_sec: 30,
+        tool_timeout_sec: 310,
+      },
+    },
+  };
 }
 
 /**
@@ -42,9 +67,10 @@ export interface ThreadStartOptions {
  * ChatGPT connected-app tools are fetched independently by the runtime and
  * can contain provider-specific schemas that OpenRouter destinations reject.
  */
-export function threadRuntimeConfig(run: ScheduleRunSettings, options: Pick<ThreadStartOptions, "customAgents" | "modelContextWindow"> = {}): JsonObject {
+export function threadRuntimeConfig(run: ScheduleRunSettings, options: Pick<ThreadStartOptions, "customAgents" | "modelContextWindow" | "childAgentBridge"> = {}): JsonObject {
   const contextWindow = Number(options.modelContextWindow);
   return {
+    ...childAgentMcpConfig(options.childAgentBridge),
     project_doc_max_bytes: run.projectInstructionsEnabled ? 32_768 : 0,
     project_doc_fallback_filenames: [],
     developer_instructions: OPENKIWI_COMPLETION_INSTRUCTIONS,
@@ -86,7 +112,7 @@ export function threadResumeParams(
   run: ScheduleRunSettings,
   threadId: string,
   cwd: string,
-  options: Pick<ThreadStartOptions, "customAgents" | "modelContextWindow" | "additionalWorkspaceRoots"> & { excludeTurns?: boolean } = {},
+  options: Pick<ThreadStartOptions, "customAgents" | "modelContextWindow" | "additionalWorkspaceRoots" | "childAgentBridge"> & { excludeTurns?: boolean } = {},
 ): JsonObject {
   return {
     threadId,
@@ -94,10 +120,10 @@ export function threadResumeParams(
     runtimeWorkspaceRoots: [cwd, ...(options.additionalWorkspaceRoots ?? [])],
     developerInstructions: OPENKIWI_COMPLETION_INSTRUCTIONS,
     ...(options.excludeTurns ? { excludeTurns: true } : {}),
-    ...(run.provider === "openrouter" ? {
-      modelProvider: "openrouter",
-      config: threadRuntimeConfig(run, options),
-    } : {}),
+    ...(run.provider === "openrouter" ? { modelProvider: "openrouter" } : {}),
+    ...(run.provider === "openrouter" || options.childAgentBridge
+      ? { config: threadRuntimeConfig(run, options) }
+      : {}),
   };
 }
 

@@ -17,6 +17,8 @@ export interface ProjectOverrides {
   systemPrompt?: string;
   /** Existing projects default to replace; append layers app instructions first. */
   systemPromptMode?: ProjectPromptMode;
+  /** Complete project-local delegation settings; absent means inherit global. */
+  subagents?: ProjectSubagentSettings;
 }
 
 export interface Project {
@@ -126,6 +128,35 @@ export interface CustomAgentProfile {
   enabled: boolean;
 }
 
+/**
+ * One provider/model destination a root agent is allowed to delegate to.
+ * `id` is the only value a model ever writes, so a spawn can never name a
+ * provider/model pair the user did not approve.
+ */
+export interface ChildAgentTarget {
+  id: string;
+  provider: Provider;
+  /** Provider-specific model identity; empty means the provider default. */
+  model: string;
+  label: string;
+  description: string;
+  enabled: boolean;
+  reasoningMode: "inherit" | "fixed" | "agent";
+  reasoningEffort: ReasoningEffort;
+  reasoningMaxEffort: ReasoningEffort;
+}
+
+export interface ChildAgentSettings {
+  enabled: boolean;
+  targets: ChildAgentTarget[];
+}
+
+export interface ProjectSubagentSettings {
+  enabled: boolean;
+  maxConcurrent: number;
+  childAgents: ChildAgentSettings;
+}
+
 export interface ProjectAction {
   id: string;
   name: string;
@@ -201,6 +232,8 @@ export interface AppSettings {
   projectInstructionsEnabled: boolean;
   subagentsEnabled: boolean;
   subagentMax: number;
+  /** Cross-provider delegation. Absent in settings written before 1.5. */
+  childAgents: ChildAgentSettings;
   reasoningEffort: ReasoningEffort;
   ultra: boolean;
   serviceTier: string | null;

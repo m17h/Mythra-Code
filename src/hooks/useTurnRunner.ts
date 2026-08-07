@@ -18,6 +18,8 @@ import {
   type CursorRuntimeStatus,
 } from "../lib/cursor";
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL } from "../lib/appConfig";
+import { cacheChildAgentPolicy, ensureChildAgentBridge, releaseChildAgentSession, type ChildAgentBridgeResult } from "../lib/childAgentSessions";
+import type { ChildAgentLink, ChildAgentPolicy, ChildAgentReadiness } from "../lib/childAgents";
 import { threadResumeParams, threadStartParams, turnStartParams } from "../lib/turnConfig";
 import { buildTurnInput, withoutSentAttachments } from "../lib/turnInput";
 import { optimisticStartedThread, upsertThread } from "../lib/threadList";
@@ -109,7 +111,6 @@ export interface TurnRunnerContext {
   deferredDelivery?: boolean;
   attachments: AttachmentRecord[];
   effectiveSettings: AppSettings;
-  settings: AppSettings;
   customAgents: CustomAgentProfile[];
   openRouterModels: OpenRouterModel[];
   runtimeStatus: CodexRuntimeStatus | null;
@@ -121,6 +122,11 @@ export interface TurnRunnerContext {
   draftThreadIsolated: boolean;
   worktreeBusy: boolean;
   skillsFolder: string;
+  /** Bridge sessions for cross-provider sub-agents, keyed by session id. */
+  childAgentPolicies: Record<string, ChildAgentPolicy>;
+  childAgentLinks: Record<string, ChildAgentLink>;
+  childAgentReadiness: ChildAgentReadiness;
+  persistChildAgentPolicies: SetPersisted<Record<string, ChildAgentPolicy>>;
   threadWorktreesRef: MutableRefObject<Record<string, ThreadWorktreeRecord>>;
   threadProjectBindingsRef: MutableRefObject<Record<string, string> | null>;
   activeWorkspacePathRef: MutableRefObject<string | null>;
@@ -175,9 +181,10 @@ export function useTurnRunner(context: TurnRunnerContext): {
   const deliverMessage = useCallback(async (ctx: TurnRunnerContext, text: string, mode: "turn" | "steer"): Promise<boolean> => {
     const {
       activeThread, activeWorkspace, activeProject, running, attachments, deferredDelivery,
-      effectiveSettings, settings, customAgents, openRouterModels,
+      effectiveSettings, customAgents, openRouterModels,
       runtimeStatus, claudeStatus, cursorStatus, account, openRouterReady,
       workspaceGitInfo, draftThreadIsolated, worktreeBusy, skillsFolder,
+      childAgentPolicies, childAgentLinks, childAgentReadiness, persistChildAgentPolicies,
       threadWorktreesRef, threadProjectBindingsRef, activeWorkspacePathRef,
       pendingTurnStartsRef, skillRuntimeRootRef, cursorSessionIdsRef,
       executionPathFor, bindThreadToProject, rememberThread, onThreadCreated, persistThreadModel,
@@ -316,7 +323,21 @@ export function useTurnRunner(context: TurnRunnerContext): {
     let sentMessageId: string | undefined;
     let provisionalWorktree: CreatedWorktree | undefined;
     let provisionalPersisted = false;
+    let childBridge: ChildAgentBridgeResult | null = null;
     const sentAttachments = [...attachments];
+
+    // The approved cross-provider destinations are captured once, on the first
+    // turn of a thread, and reused verbatim afterwards. Binding them to the
+    // thread id can only happen once the runtime has reported it.
+    const rememberChildAgentPolicy = (threadId: string) => {
+      if (!childBridge) return;
+      const { policy, captured } = childBridge;
+      if (!captured && policy.rootThreadId === threadId) return;
+      const next = { ...policy, rootThreadId: threadId };
+      childBridge = { ...childBridge, policy: next, captured: false };
+      cacheChildAgentPolicy(next);
+      persistChildAgentPolicies((current) => ({ ...current, [next.sessionId]: next }));
+    };
 
     // Shared body of the Claude/Cursor subscription paths: bootstrap the
     // locally-owned thread record, bump its preview, mark the run, take the
@@ -354,6 +375,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         }
       }
       startedThreadId = thread.id;
+      rememberChildAgentPolicy(thread.id);
       const updatedThread = { ...thread, preview: text.slice(0, 140) || thread.preview, updatedAt: Math.floor(Date.now() / 1000) };
       rememberThread(updatedThread);
       if (!workspaceChangedMidSend()) {
@@ -397,6 +419,18 @@ export function useTurnRunner(context: TurnRunnerContext): {
       }
       const isolationGitDir = provisionalWorktree?.gitDir ?? currentIsolation?.gitDir;
       const additionalWorkspaceRoots = isolationGitDir ? [isolationGitDir] : [];
+      childBridge = await ensureChildAgentBridge({
+        threadId: activeThread?.id,
+        policies: childAgentPolicies,
+        links: childAgentLinks,
+        settings: effectiveSettings,
+        permission: effectiveSettings.permission,
+        systemPrompt: effectiveSettings.systemPrompt,
+        projectInstructionsEnabled: effectiveSettings.projectInstructionsEnabled,
+        reasoningEffort: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort,
+        serviceTier: effectiveSettings.serviceTier,
+        readiness: childAgentReadiness,
+      });
       if (effectiveSettings.provider === "claude") {
         if (skillsFolder && !skillRuntimeRootRef.current) await refreshLocalSkills();
         return await runLocalTurn("claude", executionPath, {
@@ -405,7 +439,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
             // presence, so resume detection is unaffected by running after it.
             const canResumeClaude = Boolean(activeThread && useTaskStore.getState().tasks[thread.id]?.messages.some((message) => message.role === "assistant"));
             await saveClaudeTranscript({ thread: updatedThread, messages: useTaskStore.getState().tasks[thread.id]?.messages ?? [], activities: useTaskStore.getState().tasks[thread.id]?.activities ?? [] });
-            const result = await startClaudeTurn({ threadId: thread.id, cwd: executionPath, prompt: text, model: effectiveSettings.model || DEFAULT_CLAUDE_MODEL, effort: settings.ultra ? "ultra" : settings.reasoningEffort, permission: effectiveSettings.permission, systemPrompt: withOpenKiwiCompletionInstructions(effectiveSettings.systemPrompt), resume: canResumeClaude, attachments: sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })), subagentsEnabled: settings.subagentsEnabled, subagentMax: settings.subagentMax, customAgents, skillsPluginPath: skillRuntimeRootRef.current || undefined });
+            const result = await startClaudeTurn({ threadId: thread.id, cwd: executionPath, prompt: text, model: effectiveSettings.model || DEFAULT_CLAUDE_MODEL, effort: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort, permission: effectiveSettings.permission, systemPrompt: withOpenKiwiCompletionInstructions(effectiveSettings.systemPrompt), resume: canResumeClaude, attachments: sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })), subagentsEnabled: effectiveSettings.subagentsEnabled, subagentMax: effectiveSettings.subagentMax, customAgents, skillsPluginPath: skillRuntimeRootRef.current || undefined, childAgentBridgeConfig: childBridge?.launch.configPath });
             return { turnId: result.turnId };
           },
           interrupt: (threadId) => interruptClaudeTurn(threadId),
@@ -422,11 +456,14 @@ export function useTurnRunner(context: TurnRunnerContext): {
               cwd: executionPath,
               prompt: text,
               model: effectiveSettings.model || DEFAULT_CURSOR_MODEL,
-              effort: settings.ultra ? "ultra" : settings.reasoningEffort,
+              effort: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort,
               permission: effectiveSettings.permission,
               systemPrompt: withOpenKiwiCompletionInstructions(effectiveSettings.systemPrompt),
               resumeSessionId: priorSessionId || undefined,
               attachments: sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })),
+              childAgentBridge: childBridge
+                ? { name: childBridge.launch.name, command: childBridge.launch.command, args: childBridge.launch.args }
+                : undefined,
             });
             cursorSessionIdsRef.current[thread.id] = result.cursorSessionId;
             return { turnId: result.turnId };
@@ -441,7 +478,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       let threadId = activeThread?.id;
       startedThreadId = threadId;
       if (!threadId) {
-        const result = await rpc<{ thread: Thread }>("thread/start", threadStartParams(effectiveSettings, executionPath, { serviceName: activeWorkspace.isChat ? "OpenKiwi Chat" : "OpenKiwi", customAgents, modelContextWindow: effectiveSettings.provider === "openrouter" ? openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.context_length : undefined, interactive: true, additionalWorkspaceRoots }));
+        const result = await rpc<{ thread: Thread }>("thread/start", threadStartParams(effectiveSettings, executionPath, { serviceName: activeWorkspace.isChat ? "OpenKiwi Chat" : "OpenKiwi", customAgents, modelContextWindow: effectiveSettings.provider === "openrouter" ? openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.context_length : undefined, interactive: true, additionalWorkspaceRoots, childAgentBridge: childBridge?.launch }));
         const startedThread = optimisticStartedThread(result.thread, text);
         threadId = startedThread.id;
         startedThreadId = threadId;
@@ -461,10 +498,11 @@ export function useTurnRunner(context: TurnRunnerContext): {
           setActiveThread(startedThread);
           useTaskStore.getState().setActiveThread(startedThread.id);
         }
-      } else if (effectiveSettings.provider === "openrouter") {
-        // Re-apply the isolated provider config before every subsequent turn.
-        // This repairs a persisted thread after a compatibility refresh.
-        await rpc("thread/resume", { ...threadResumeParams(effectiveSettings, threadId, executionPath, { customAgents, modelContextWindow: openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.context_length, excludeTurns: true, additionalWorkspaceRoots }), model: effectiveSettings.model });
+      } else if (effectiveSettings.provider === "openrouter" || childBridge) {
+        // OpenRouter always re-sends its isolated config. OpenAI re-sends only
+        // when a live delegation bridge must be reattached after a restart.
+        const resume = threadResumeParams(effectiveSettings, threadId, executionPath, { customAgents, modelContextWindow: openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.context_length, excludeTurns: true, additionalWorkspaceRoots, childAgentBridge: childBridge?.launch });
+        await rpc("thread/resume", effectiveSettings.provider === "openrouter" ? { ...resume, model: effectiveSettings.model } : resume);
       }
 
       if (activeThread?.id === threadId) {
@@ -475,6 +513,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
           setActiveThread(updatedThread);
         }
       }
+      rememberChildAgentPolicy(threadId);
       useTaskStore.getState().ensureTask(threadId, executionPath);
       useTaskStore.getState().setTaskStatus(threadId, "starting");
       if (!pendingStart) pendingStart = pendingTurnStartsRef.current.begin(threadId);
@@ -509,6 +548,9 @@ export function useTurnRunner(context: TurnRunnerContext): {
       // resolved its thread must still clear the "starting" mark applied at
       // the top of this function.
       const failedThreadId = startedThreadId ?? startingThreadId;
+      if (childBridge && !childBridge.policy.rootThreadId && !startedThreadId) {
+        await releaseChildAgentSession(childBridge.policy.sessionId);
+      }
       if (provisionalWorktree && activeProject && !provisionalPersisted) {
         void removeThreadWorktree(
           undefined,

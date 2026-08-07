@@ -26,6 +26,7 @@ function modalProps(overrides: Partial<Parameters<typeof SettingsModal>[0]> = {}
     account: null,
     runtimeStatus: null,
     openRouterReady: false,
+    childAgentReadiness: { codexRuntimeAvailable: true, openAiSignedIn: true, openRouterReady: false, claudeReady: true, cursorReady: false },
     githubStatus: null,
     usageTotals: {
       inputTokens: 0,
@@ -266,5 +267,28 @@ describe("SettingsModal", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Run onboarding" }));
     expect(onOpenOnboarding).toHaveBeenCalledOnce();
+  });
+
+  it("creates and saves a project-specific sub-agent policy", () => {
+    const onProjects = vi.fn();
+    render(<SettingsModal {...modalProps({
+      initialSection: "agents",
+      activeProjectId: "project-1",
+      projects: [{ id: "project-1", name: "Kiwi", path: "/tmp/kiwi" }],
+      onProjects,
+    })} />);
+
+    expect(screen.getByLabelText("Policy for")).toHaveValue("project-1");
+    expect(screen.getByText(/currently inherits the Chats & project defaults policy/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Customize/ }));
+    fireEvent.click(screen.getByRole("switch", { name: "Allow sub-agent spawning" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+
+    expect(onProjects).toHaveBeenCalledWith([
+      expect.objectContaining({
+        id: "project-1",
+        overrides: expect.objectContaining({ subagents: expect.objectContaining({ enabled: true, maxConcurrent: DEFAULT_SETTINGS.subagentMax }) }),
+      }),
+    ]);
   });
 });

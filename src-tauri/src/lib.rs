@@ -30,11 +30,22 @@ use tokio::{
     time::{timeout, timeout_at, Duration, Instant},
 };
 
+mod agents;
 mod cursor;
 mod github;
 mod persistence;
 mod project_git;
 mod skills;
+#[cfg(test)]
+use agents::{
+    bridge_local_response, tokens_match, tool_catalog, validate_targets, validate_tool_call,
+    ChildAgentTarget, AGENT_BRIDGE_SERVER, AGENT_BRIDGE_TOOLS,
+};
+use agents::{
+    child_agent_bridge_config_registered, child_agent_finished, child_agent_respond,
+    child_agent_session_end, child_agent_session_start, purge_stale_agent_bridges,
+    run_agent_bridge, shutdown_agent_bridges_on_exit, ChildAgentState, AGENT_BRIDGE_ARG,
+};
 use cursor::{
     cursor_login, cursor_models, cursor_permission_respond, cursor_runtime_status,
     cursor_turn_active, cursor_turn_interrupt, cursor_turn_kill, cursor_turn_start,
@@ -190,6 +201,10 @@ struct ClaudeTurnOptions {
     subagent_max: usize,
     custom_agents: Vec<ClaudeAgentInput>,
     skills_plugin_path: Option<String>,
+    /// Path to the cross-provider delegation MCP configuration, present only
+    /// for a root thread whose policy allows spawning on other providers.
+    #[serde(default)]
+    child_agent_bridge_config: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1476,6 +1491,7 @@ fn validate_cli_value(value: &str, label: &str) -> Result<(), String> {
 async fn claude_turn_start(
     app: AppHandle,
     state: State<'_, ClaudeState>,
+    agent_state: State<'_, ChildAgentState>,
     options: ClaudeTurnOptions,
 ) -> Result<ClaudeTurnStarted, String> {
     let binary = resolve_claude_binary(&app).await?;
@@ -1597,6 +1613,16 @@ async fn claude_turn_start(
         .filter(|path| Path::new(path).is_dir())
     {
         command.args(["--plugin-dir", plugin_path]);
+    }
+    // The bridge is passed by path, never inline: a `--mcp-config` JSON string
+    // would put the delegation configuration into this process's argv, which
+    // every other local process can read.
+    if let Some(bridge_config) = options.child_agent_bridge_config.as_deref() {
+        if !child_agent_bridge_config_registered(&agent_state, bridge_config).await {
+            return Err("The sub-agent bridge configuration is no longer active.".into());
+        }
+        // Claude merges this server with the user's normal MCP configuration.
+        command.args(["--mcp-config", bridge_config]);
     }
     let mut directories = HashSet::new();
     for attachment in options
@@ -2900,6 +2926,14 @@ pub fn run() {
     // Install Ring before either subsystem creates its first HTTP client.
     let _ = rustls::crypto::ring::default_provider().install_default();
 
+    // Re-invoked as the cross-provider sub-agent bridge: act as a stdio MCP
+    // server and exit without ever constructing the desktop app.
+    let mut arguments = env::args().skip(1);
+    if arguments.next().as_deref() == Some(AGENT_BRIDGE_ARG) {
+        let session = arguments.next().unwrap_or_default();
+        std::process::exit(run_agent_bridge(&session));
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -2914,11 +2948,16 @@ pub fn run() {
             app.manage(StateDb {
                 connection: Arc::new(std::sync::Mutex::new(connection)),
             });
+            // Bridge session material is only meaningful while its backend is
+            // listening, so anything on disk at startup is debris from a
+            // previous run and must not outlive it.
+            purge_stale_agent_bridges(app.handle());
             Ok(())
         })
         .manage(RuntimeState::default())
         .manage(ClaudeState::default())
         .manage(CursorState::default())
+        .manage(ChildAgentState::default())
         .invoke_handler(tauri::generate_handler![
             codex_runtime_status,
             claude_runtime_status,
@@ -2978,6 +3017,10 @@ pub fn run() {
             save_pasted_image,
             has_openrouter_key,
             list_openrouter_models,
+            child_agent_session_start,
+            child_agent_session_end,
+            child_agent_respond,
+            child_agent_finished,
             restart_runtime
         ])
         .build(tauri::generate_context!())
@@ -2990,6 +3033,7 @@ pub fn run() {
                 shutdown_runtime_on_exit(app_handle);
                 shutdown_claude_on_exit(app_handle);
                 shutdown_cursor_on_exit(app_handle);
+                shutdown_agent_bridges_on_exit(app_handle);
             }
         });
 }

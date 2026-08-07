@@ -23,6 +23,11 @@ describe("durable storage", () => {
     expect(DURABLE_STORAGE_KEYS).toContain("kiwi.threadModels");
   });
 
+  it("hydrates frozen child-agent ownership state before the app mounts", () => {
+    expect(DURABLE_STORAGE_KEYS).toContain("kiwi.childAgentPolicies");
+    expect(DURABLE_STORAGE_KEYS).toContain("kiwi.childAgentLinks");
+  });
+
   it("migrates legacy localStorage when SQLite is empty", async () => {
     localStorage.setItem("kiwi.projects", JSON.stringify([{ id: "one" }]));
     invoke.mockResolvedValueOnce(null).mockResolvedValueOnce(undefined);

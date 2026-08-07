@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ScheduleRunSettings } from "../types";
 import { OPENKIWI_COMPLETION_INSTRUCTIONS } from "./completionPrompt";
-import { threadResumeParams, threadRuntimeConfig, threadStartParams } from "./turnConfig";
+import { childAgentMcpConfig, threadResumeParams, threadRuntimeConfig, threadStartParams } from "./turnConfig";
 
 const baseRun: ScheduleRunSettings = {
   provider: "openai",
@@ -63,5 +63,64 @@ describe("OpenRouter runtime isolation", () => {
     expect(start.developerInstructions).toBe(OPENKIWI_COMPLETION_INSTRUCTIONS);
     expect(start.config).toMatchObject({ developer_instructions: OPENKIWI_COMPLETION_INSTRUCTIONS });
     expect(resume.developerInstructions).toBe(OPENKIWI_COMPLETION_INSTRUCTIONS);
+  });
+});
+
+describe("cross-provider sub-agent bridge", () => {
+  const bridge = {
+    name: "openkiwi",
+    command: "/Applications/OpenKiwi.app/Contents/MacOS/openkiwi",
+    args: ["--openkiwi-agent-bridge", "/data/child-agents/abc/session.json"],
+    configPath: "/data/child-agents/abc/mcp.json",
+    toolNames: ["spawn_agent", "agent_status", "collect_agent", "cancel_agent"],
+  };
+
+  it("registers the bridge as a per-thread MCP server", () => {
+    expect(childAgentMcpConfig(bridge)).toEqual({
+      mcp_servers: {
+        openkiwi: {
+          command: bridge.command,
+          args: bridge.args,
+          startup_timeout_sec: 30,
+          tool_timeout_sec: 310,
+        },
+      },
+    });
+  });
+
+  it("adds nothing at all when a thread may not delegate across providers", () => {
+    expect(childAgentMcpConfig(undefined)).toEqual({});
+    expect(threadRuntimeConfig(baseRun)).not.toHaveProperty("mcp_servers");
+    expect(threadStartParams(baseRun, "/tmp/project", { interactive: true }).config).not.toHaveProperty("mcp_servers");
+  });
+
+  it("attaches the bridge to a new thread without disturbing the rest of its configuration", () => {
+    const withBridge = threadStartParams(baseRun, "/tmp/project", { interactive: true, childAgentBridge: bridge });
+    const without = threadStartParams(baseRun, "/tmp/project", { interactive: true });
+    expect(withBridge.config).toMatchObject({ mcp_servers: { openkiwi: { command: bridge.command } } });
+    expect({ ...(withBridge.config as Record<string, unknown>), mcp_servers: undefined })
+      .toEqual({ ...(without.config as Record<string, unknown>), mcp_servers: undefined });
+  });
+
+  it("re-applies the bridge when an OpenRouter thread re-sends its configuration", () => {
+    const params = threadResumeParams({ ...baseRun, provider: "openrouter", model: "x-ai/grok-4.5" }, "thread-1", "/tmp/project", {
+      childAgentBridge: bridge,
+    });
+    expect(params.config).toMatchObject({ mcp_servers: { openkiwi: { args: bridge.args } } });
+  });
+
+  it("re-applies the bridge when an OpenAI thread is resumed after a runtime restart", () => {
+    const params = threadResumeParams(baseRun, "thread-1", "/tmp/project", { childAgentBridge: bridge });
+    expect(params.config).toMatchObject({ mcp_servers: { openkiwi: { args: bridge.args } } });
+    expect(params).not.toHaveProperty("modelProvider");
+  });
+
+  it("leaves the bridge out of a child thread's own configuration", () => {
+    // A child runs with sub-agents off and no bridge, so it has no delegation
+    // surface of its own — the structural half of the depth-one rule.
+    const childRun = { ...baseRun, subagentsEnabled: false, subagentMax: 1 };
+    const config = threadRuntimeConfig(childRun);
+    expect(config).not.toHaveProperty("mcp_servers");
+    expect(config).toMatchObject({ agents: { max_threads: 1, max_depth: 1 }, features: { multi_agent: false } });
   });
 });

@@ -33,8 +33,15 @@ import { friendlyError } from "../lib/errors";
 import { useModalFocus } from "../hooks/useModalFocus";
 import { AnthropicLogo, ClaudeLogo, CodexLogo, CursorDarkAppIcon, CursorLogo, OpenAILogo } from "./BrandLogos";
 import { updateProgress, type AppUpdater } from "../lib/appUpdater";
+import {
+  projectSubagentSettingsFromApp,
+  sanitizeChildAgentSettings,
+  sanitizeProjectSubagentOverrides,
+  type ChildAgentReadiness,
+} from "../lib/childAgents";
 import type { LocalSkill } from "../lib/skills";
 import type { WorkflowDefinition, WorkflowRunRecord } from "../lib/workflows";
+import { ChildAgentRoster } from "./ChildAgentRoster";
 import { HarnessSettings } from "./HarnessSettings";
 import { SkillLibrary } from "./SkillLibrary";
 import type { McpView } from "./StudioDock";
@@ -77,7 +84,7 @@ const SETTINGS_NAV: ReadonlyArray<{
       { id: "github", label: "GitHub", icon: GitFork, detail: "Account connection and repository cloning" },
       { id: "usage", label: "Usage", icon: Gauge, detail: "All-time tokens and API-equivalent inference value" },
       { id: "prompts", label: "Prompts", icon: NotebookPen, detail: "Your complete harness instruction and reusable profiles" },
-      { id: "agents", label: "Agents", icon: UsersRound, detail: "Delegation limits and specialist configurations" },
+      { id: "agents", label: "Sub-agents", icon: UsersRound, detail: "Project policies, destinations, and reasoning control" },
     ],
   },
   {
@@ -110,6 +117,7 @@ export function SettingsModal({
   cursorStatus = null,
   cursorLoginStarting = false,
   openRouterReady,
+  childAgentReadiness,
   githubStatus,
   githubBusy = false,
   usageTotals,
@@ -136,6 +144,7 @@ export function SettingsModal({
   workflows,
   workflowRuns,
   projects,
+  activeProjectId = null,
   skillsFolder,
   skills,
   skillsBusy,
@@ -172,6 +181,8 @@ export function SettingsModal({
   cursorStatus?: CursorRuntimeStatus | null;
   cursorLoginStarting?: boolean;
   openRouterReady: boolean;
+  /** Which providers a cross-provider child could be started on right now. */
+  childAgentReadiness: ChildAgentReadiness;
   githubStatus: GitHubAccountStatus | null;
   githubBusy?: boolean;
   usageTotals: UsageTotals;
@@ -198,6 +209,7 @@ export function SettingsModal({
   workflows: WorkflowDefinition[];
   workflowRuns: WorkflowRunRecord[];
   projects: Project[];
+  activeProjectId?: string | null;
   skillsFolder: string;
   skills: LocalSkill[];
   skillsBusy: boolean;
@@ -224,6 +236,8 @@ export function SettingsModal({
   onOpenOnboarding: () => void;
 }) {
   const [local, setLocal] = useState(settings);
+  const [localProjects, setLocalProjects] = useState(projects);
+  const [agentScope, setAgentScope] = useState<string>(activeProjectId ?? "global");
   const [apiKey, setApiKey] = useState("");
   const [busy, setBusy] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>(initialSection);
@@ -233,7 +247,7 @@ export function SettingsModal({
 
   // Buffered edits (theme, prompt, toggles) are discarded on close — warn
   // before silently throwing away work like a hand-written system prompt.
-  const dirty = open && JSON.stringify(local) !== JSON.stringify(settings);
+  const dirty = open && (JSON.stringify(local) !== JSON.stringify(settings) || JSON.stringify(localProjects) !== JSON.stringify(projects));
   const requestClose = () => {
     if (dirty && !window.confirm("Discard unsaved settings changes?")) return;
     onClose();
@@ -246,10 +260,12 @@ export function SettingsModal({
   useEffect(() => {
     if (open) {
       setLocal(settings);
+      setLocalProjects(projects);
+      setAgentScope(activeProjectId ?? "global");
       onThemePreview(settings.theme);
       setSettingsSection(initialSection);
     }
-  }, [initialSection, onThemePreview, open, settings]);
+  }, [activeProjectId, initialSection, onThemePreview, open, projects, settings]);
 
   useEffect(() => {
     if (open && initialSection === "general" && appUpdater.phase === "available") {
@@ -337,6 +353,38 @@ export function SettingsModal({
       const path = await save({ title: "Export OpenKiwi diagnostics", defaultPath: `openkiwi-diagnostics-${new Date().toISOString().slice(0, 10)}.json`, filters: [{ name: "JSON", extensions: ["json"] }] });
       if (path) await exportDiagnostics(path);
     } catch (reason) { onError(friendlyError(reason)); }
+  };
+
+  const effectiveAgentScope = agentScope === "global" || localProjects.some((project) => project.id === agentScope)
+    ? agentScope
+    : "global";
+  const selectedAgentProject = effectiveAgentScope === "global"
+    ? null
+    : localProjects.find((project) => project.id === effectiveAgentScope) ?? null;
+  const customProjectPolicy = selectedAgentProject?.overrides?.subagents;
+  const agentPolicy = customProjectPolicy ?? projectSubagentSettingsFromApp(local);
+  const updateAgentPolicy = (next: ReturnType<typeof projectSubagentSettingsFromApp>) => {
+    if (!selectedAgentProject) {
+      setLocal({ ...local, subagentsEnabled: next.enabled, subagentMax: next.maxConcurrent, childAgents: next.childAgents });
+      return;
+    }
+    setLocalProjects(localProjects.map((project) => project.id === selectedAgentProject.id
+      ? { ...project, overrides: { ...(project.overrides ?? {}), subagents: next } }
+      : project));
+  };
+  const clearProjectAgentPolicy = () => {
+    if (!selectedAgentProject?.overrides?.subagents) return;
+    setLocalProjects(localProjects.map((project) => {
+      if (project.id !== selectedAgentProject.id) return project;
+      const overrides = { ...(project.overrides ?? {}) };
+      delete overrides.subagents;
+      return { ...project, overrides: Object.keys(overrides).length ? overrides : undefined };
+    }));
+  };
+  const saveSettings = () => {
+    const nextProjects = sanitizeProjectSubagentOverrides(localProjects);
+    onProjects(nextProjects);
+    onSave({ ...local, childAgents: sanitizeChildAgentSettings(local.childAgents), subagentMax: Math.min(24, Math.max(1, local.subagentMax)) });
   };
 
   return (
@@ -455,7 +503,7 @@ export function SettingsModal({
 
           {settingsSection === "tools" && <div className="settings-workspace-link"><div><strong>Live tool controls</strong><small>{workspaceToolsAvailable ? "Inspect skills, connect configured MCP servers, and run project actions in the active workspace." : "Select a project to inspect live skills, MCP servers, and project actions."}</small></div><button className="secondary-button" onClick={onWorkspaceTools} disabled={!workspaceToolsAvailable}><PanelRight size={13} /> Open workspace tools</button></div>}
 
-          {settingsSection === "projects" && <ProjectOverridesSettings projects={projects} onProjects={onProjects} />}
+          {settingsSection === "projects" && <ProjectOverridesSettings projects={localProjects} onProjects={setLocalProjects} />}
 
           {settingsSection === "github" &&
           <GitHubSettings
@@ -510,37 +558,25 @@ export function SettingsModal({
               <div className="settings-icon"><UsersRound size={17} /></div>
               <div><h3>Sub-agents</h3><p>Let the model delegate parallel work to direct child agents. Applies when a new thread starts.</p></div>
             </div>
-            <div className={`agent-settings-card ${local.subagentsEnabled ? "enabled" : ""}`}>
-              <div className="agent-toggle-copy">
-                <strong>Allow sub-agent spawning</strong>
-                <small>{local.subagentsEnabled ? "The model may delegate when it decides that parallel work helps." : "No sub-agent tools are exposed to the model."}</small>
-              </div>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={local.subagentsEnabled}
-                className={`toggle-switch ${local.subagentsEnabled ? "on" : ""}`}
-                onClick={() => setLocal({ ...local, subagentsEnabled: !local.subagentsEnabled })}
-              >
-                <span />
-              </button>
+            <div className="subagent-scope-bar">
+              <label htmlFor="subagent-scope">Policy for</label>
+              <select id="subagent-scope" value={effectiveAgentScope} onChange={(event) => setAgentScope(event.target.value)}>
+                <option value="global">Chats &amp; project defaults</option>
+                {localProjects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+              </select>
+              {selectedAgentProject && (customProjectPolicy
+                ? <button type="button" className="secondary-button" onClick={clearProjectAgentPolicy}><RotateCcw size={12} /> Use defaults</button>
+                : <button type="button" className="secondary-button" onClick={() => updateAgentPolicy(projectSubagentSettingsFromApp(local))}><Plus size={12} /> Customize</button>)}
             </div>
-            <div className={`agent-limit-row ${local.subagentsEnabled ? "" : "disabled"}`}>
-              <div>
-                <strong>{local.provider === "claude" ? "Available specialist agents" : "Maximum concurrent sub-agents"}</strong>
-                <small>{local.provider === "claude" ? "Choose how many enabled custom profiles OpenKiwi exposes. Claude Code manages native concurrency." : "Choose 1–24 active at once per thread, excluding the root agent."}</small>
-              </div>
-              <div className="number-stepper" aria-label={local.provider === "claude" ? "Available Claude specialist agents" : "Maximum concurrent sub-agents"}>
-                <button type="button" onClick={() => setLocal({ ...local, subagentMax: Math.max(1, local.subagentMax - 1) })} disabled={!local.subagentsEnabled || local.subagentMax <= 1}><Minus size={13} /></button>
-                <strong>{local.subagentMax}</strong>
-                <button type="button" onClick={() => setLocal({ ...local, subagentMax: Math.min(24, local.subagentMax + 1) })} disabled={!local.subagentsEnabled || local.subagentMax >= 24}><Plus size={13} /></button>
-              </div>
-            </div>
-            <div className="agent-safety-row">
-              <span><ShieldCheck size={13} /> Inherits permissions</span>
-              <span><Check size={13} /> Direct children only</span>
-              <span><Check size={13} /> Off by default</span>
-            </div>
+            {selectedAgentProject && !customProjectPolicy && (
+              <div className="subagent-inheritance-note"><Check size={13} /> {selectedAgentProject.name} currently inherits the Chats &amp; project defaults policy. Customize it to make project-specific changes.</div>
+            )}
+            <SubagentPolicyEditor
+              policy={agentPolicy}
+              readiness={childAgentReadiness}
+              disabled={Boolean(selectedAgentProject && !customProjectPolicy)}
+              onChange={updateAgentPolicy}
+            />
           </section>}
 
           {settingsSection === "models" &&
@@ -709,9 +745,64 @@ export function SettingsModal({
         <div className="modal-footer">
           {dirty && <span className="unsaved-hint">Unsaved changes</span>}
           <button className="secondary-button" onClick={requestClose}>Cancel</button>
-          <button className="primary-button" onClick={() => onSave({ ...local, subagentMax: Math.min(24, Math.max(1, local.subagentMax)) })}>Save settings</button>
+          <button className="primary-button" onClick={saveSettings}>Save settings</button>
         </div>
       </div>
+    </div>
+  );
+}
+
+function SubagentPolicyEditor({ policy, readiness, disabled, onChange }: {
+  policy: ReturnType<typeof projectSubagentSettingsFromApp>;
+  readiness: ChildAgentReadiness;
+  disabled: boolean;
+  onChange: (next: ReturnType<typeof projectSubagentSettingsFromApp>) => void;
+}) {
+  return (
+    <div className={`subagent-policy-editor ${disabled ? "disabled" : ""}`} inert={disabled ? true : undefined}>
+      <div className={`agent-settings-card ${policy.enabled ? "enabled" : ""}`}>
+        <div className="agent-toggle-copy">
+          <strong>Allow sub-agent spawning</strong>
+          <small>{policy.enabled ? "The model may delegate when it decides that parallel work helps." : "No sub-agent tools are exposed to the model."}</small>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-label="Allow sub-agent spawning"
+          aria-checked={policy.enabled}
+          className={`toggle-switch ${policy.enabled ? "on" : ""}`}
+          onClick={() => onChange({ ...policy, enabled: !policy.enabled })}
+        >
+          <span />
+        </button>
+      </div>
+      <div className={`agent-limit-row ${policy.enabled ? "" : "disabled"}`}>
+        <div>
+          <strong>Maximum concurrent sub-agents</strong>
+          <small>Choose 1–24 active at once per thread, excluding the root agent. This also limits specialist profiles exposed to Claude.</small>
+        </div>
+        <div className="number-stepper" aria-label="Maximum concurrent sub-agents">
+          <button type="button" onClick={() => onChange({ ...policy, maxConcurrent: Math.max(1, policy.maxConcurrent - 1) })} disabled={!policy.enabled || policy.maxConcurrent <= 1}><Minus size={13} /></button>
+          <strong>{policy.maxConcurrent}</strong>
+          <button type="button" onClick={() => onChange({ ...policy, maxConcurrent: Math.min(24, policy.maxConcurrent + 1) })} disabled={!policy.enabled || policy.maxConcurrent >= 24}><Plus size={13} /></button>
+        </div>
+      </div>
+      <div className="agent-safety-row">
+        <span><ShieldCheck size={13} /> Inherits permissions</span>
+        <span><Check size={13} /> Direct children only</span>
+        <span><Check size={13} /> Frozen per thread</span>
+      </div>
+
+      <div className="settings-section-heading child-agent-heading">
+        <div className="settings-icon"><Boxes size={17} /></div>
+        <div><h3>Cross-provider destinations</h3><p>Choose the providers, models, and reasoning authority available to the root agent. Children run through OpenKiwi.</p></div>
+      </div>
+      <ChildAgentRoster
+        value={policy.childAgents}
+        subagentsEnabled={policy.enabled}
+        readiness={readiness}
+        onChange={(childAgents) => onChange({ ...policy, childAgents })}
+      />
     </div>
   );
 }

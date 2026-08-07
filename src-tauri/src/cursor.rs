@@ -20,6 +20,8 @@ use tokio::{
     time::{timeout, Duration},
 };
 
+use crate::agents::{child_agent_bridge_launch_registered, ChildAgentState};
+
 type PendingMap = Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, String>>>>>;
 
 #[derive(Default)]
@@ -79,6 +81,32 @@ pub struct CursorTurnOptions {
     system_prompt: String,
     resume_session_id: Option<String>,
     attachments: Vec<CursorAttachment>,
+    /// Cross-provider delegation bridge, present only for a root thread whose
+    /// policy allows spawning children on other providers.
+    #[serde(default)]
+    child_agent_bridge: Option<ChildAgentBridge>,
+}
+
+#[derive(Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ChildAgentBridge {
+    name: String,
+    command: String,
+    args: Vec<String>,
+}
+
+/// ACP announces MCP servers when the session is created, so the delegation
+/// tools are attached for the whole session or not at all.
+fn acp_mcp_servers(bridge: Option<&ChildAgentBridge>) -> Value {
+    match bridge {
+        Some(bridge) => json!([{
+            "name": bridge.name,
+            "command": bridge.command,
+            "args": bridge.args,
+            "env": [],
+        }]),
+        None => json!([]),
+    }
 }
 
 #[derive(Serialize)]
@@ -671,6 +699,7 @@ async fn cursor_prompt_blocks(options: &CursorTurnOptions) -> Result<Vec<Value>,
 pub async fn cursor_turn_start(
     app: AppHandle,
     state: State<'_, CursorState>,
+    agent_state: State<'_, ChildAgentState>,
     options: CursorTurnOptions,
 ) -> Result<CursorTurnStarted, String> {
     if options.cwd.trim().is_empty() || !Path::new(&options.cwd).is_dir() {
@@ -694,6 +723,18 @@ pub async fn cursor_turn_start(
     {
         return Err("Cursor is already working in this thread".into());
     }
+    if let Some(bridge) = options.child_agent_bridge.as_ref() {
+        if !child_agent_bridge_launch_registered(
+            &agent_state,
+            &bridge.name,
+            &bridge.command,
+            &bridge.args,
+        )
+        .await
+        {
+            return Err("The sub-agent bridge configuration is no longer active.".into());
+        }
+    }
     let turn_id = uuid::Uuid::new_v4().to_string();
     let process = spawn_cursor_process(
         &app,
@@ -716,18 +757,19 @@ pub async fn cursor_turn_start(
 
     let start_result = async {
         initialize_cursor(&process).await?;
+        let mcp_servers = acp_mcp_servers(options.child_agent_bridge.as_ref());
         let setup = if let Some(session_id) = options.resume_session_id.as_deref() {
             process
                 .request(
                     "session/load",
-                    json!({ "sessionId": session_id, "cwd": options.cwd, "mcpServers": [] }),
+                    json!({ "sessionId": session_id, "cwd": options.cwd, "mcpServers": mcp_servers }),
                 )
                 .await?
         } else {
             process
                 .request(
                     "session/new",
-                    json!({ "cwd": options.cwd, "mcpServers": [] }),
+                    json!({ "cwd": options.cwd, "mcpServers": mcp_servers }),
                 )
                 .await?
         };

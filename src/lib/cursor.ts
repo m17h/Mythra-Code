@@ -36,6 +36,11 @@ export interface CursorTurnOptions {
   systemPrompt: string;
   resumeSessionId?: string;
   attachments: Array<{ path: string; kind: "file" | "image" }>;
+  /**
+   * Cross-provider delegation bridge, announced to ACP when the session is
+   * created. Set only for a root thread.
+   */
+  childAgentBridge?: { name: string; command: string; args: string[] };
 }
 
 export interface CursorTranscript {

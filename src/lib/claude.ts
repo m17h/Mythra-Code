@@ -46,6 +46,11 @@ export interface ClaudeTurnOptions {
   subagentMax: number;
   customAgents: CustomAgentProfile[];
   skillsPluginPath?: string;
+  /**
+   * Path to the cross-provider delegation MCP configuration. Set only for a
+   * root thread, so a child Claude process never receives delegation tools.
+   */
+  childAgentBridgeConfig?: string;
 }
 
 export interface ClaudeTranscript {

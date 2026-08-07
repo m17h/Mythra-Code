@@ -7,8 +7,8 @@ import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { Archive, ArchiveRestore, Bot, Check, ChevronDown, Circle, Code2, Command, Download, FileCode2, Folder, FolderOpen, GitBranch, GitFork, LoaderCircle, MessageSquare, Paperclip, PanelRight, PanelLeftClose, PanelLeftOpen, Plus, Pin, PinOff, Pencil, Search, Settings, Shield, ShieldAlert, ShieldCheck, TerminalSquare, Trash2, UsersRound, X } from "lucide-react";
 import { getCodexRuntimeStatus, auditEvent, exportTextFile, getNormalChatWorkspace, hasOpenRouterKey, listOpenRouterModels, respond, restartRuntime, rpc, type CodexRuntimeStatus, type JsonObject } from "./lib/codex";
-import { deleteClaudeTranscript, getClaudeRuntimeStatus, loadClaudeTranscript, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, type ClaudeRuntimeStatus } from "./lib/claude";
-import { deleteCursorTranscript, getCursorRuntimeStatus, listCursorModels, loadCursorTranscript, respondToCursorPermission, saveCursorTranscript, startCursorLogin, type CursorModel, type CursorRuntimeStatus } from "./lib/cursor";
+import { deleteClaudeTranscript, getClaudeRuntimeStatus, interruptClaudeTurn, loadClaudeTranscript, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, type ClaudeRuntimeStatus } from "./lib/claude";
+import { deleteCursorTranscript, getCursorRuntimeStatus, interruptCursorTurn, listCursorModels, loadCursorTranscript, respondToCursorPermission, saveCursorTranscript, startCursorLogin, type CursorModel, type CursorRuntimeStatus } from "./lib/cursor";
 import { loadStored, storeValue } from "./lib/storage";
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_OPENAI_MODEL, DEFAULT_PROMPT_PROFILES, DEFAULT_SETTINGS, THEMES } from "./lib/appConfig";
 import { commandSandbox, threadResumeParams, threadRuntimeConfig } from "./lib/turnConfig";
@@ -86,6 +86,23 @@ import { OPENKIWI_COMPLETION_INSTRUCTIONS } from "./lib/completionPrompt";
 import { providerForArchivedThread } from "./lib/threadArchive";
 import { buildProviderHandoffPrompt, sanitizePendingHandoff } from "./lib/providerHandoff";
 import { deleteThreadTurnDurations } from "./lib/turnDurations";
+import {
+  describeChildAgentRoster,
+  childAgentPolicyForThread,
+  readyChildAgentTargets,
+  projectSubagentSettingsFromApp,
+  sanitizeChildAgentLinks,
+  sanitizeChildAgentPolicies,
+  sanitizeChildAgentSettings,
+  sanitizeProjectSubagentOverrides,
+  settingsWithoutChildDelegation,
+  settingsWithProjectSubagents,
+  type ChildAgentLink,
+  type ChildAgentPolicy,
+  type ChildAgentReadiness,
+} from "./lib/childAgents";
+import { releaseChildAgentSessions } from "./lib/childAgentSessions";
+import { useChildAgents } from "./hooks/useChildAgents";
 import { reorderProjects, type ProjectDropPosition } from "./lib/projectOrdering";
 import {
   deleteCheckpointSnapshot,
@@ -114,14 +131,14 @@ const EMPTY_ACTIVITIES: Activity[] = [];
 const EMPTY_AGENTS: AgentRecord[] = [];
 const EMPTY_QUEUED_TURNS: QueuedTurn[] = [];
 
-const initialProjects = loadStored<Project[]>("kiwi.projects", []);
+const initialProjects = sanitizeProjectSubagentOverrides(loadStored<Project[]>("kiwi.projects", []));
 const initialWorkspaceMode: WorkspaceMode = loadStored<WorkspaceMode>("kiwi.workspaceMode", initialProjects.length ? "project" : "chat");
 const initialKnownThreads = pruneSidebarIndex(loadStored<ThreadSidebarIndex>("kiwi.knownThreads", {}));
 const initialOnboardingVersion = loadStored<number>("kiwi.onboardingVersion", 0);
 const establishedInstall = isEstablishedOpenKiwiInstall({ projects: initialProjects.length, knownThreads: Object.keys(initialKnownThreads).length, hasStoredSettings: localStorage.getItem("kiwi.settings") !== null, hasSkillsFolder: Boolean(loadStored<string>("kiwi.skillsFolder", "")) });
 const initialOnboardingOpen = initialOnboardingVersion < ONBOARDING_VERSION && !establishedInstall;
 const storedSettings = loadStored<Partial<AppSettings>>("kiwi.settings", {});
-const initialSettings: AppSettings = { ...DEFAULT_SETTINGS, ...storedSettings, openAiLogo: storedSettings.openAiLogo === "codex" ? "codex" : "openai", claudeLogo: storedSettings.claudeLogo === "anthropic" ? "anthropic" : "claude", cursorLogo: storedSettings.cursorLogo === "app-dark" ? "app-dark" : "cube", subagentMax: Math.min(24, Math.max(1, Number(storedSettings.subagentMax) || DEFAULT_SETTINGS.subagentMax)), model: modelForProvider(storedSettings.provider ?? DEFAULT_SETTINGS.provider, storedSettings.model ?? DEFAULT_SETTINGS.model), theme: THEMES.some((theme) => theme.id === storedSettings.theme) ? storedSettings.theme! : DEFAULT_SETTINGS.theme, uiScale: Math.min(150, Math.max(80, Number(storedSettings.uiScale) || DEFAULT_SETTINGS.uiScale)) };
+const initialSettings: AppSettings = { ...DEFAULT_SETTINGS, ...storedSettings, openAiLogo: storedSettings.openAiLogo === "codex" ? "codex" : "openai", claudeLogo: storedSettings.claudeLogo === "anthropic" ? "anthropic" : "claude", cursorLogo: storedSettings.cursorLogo === "app-dark" ? "app-dark" : "cube", subagentMax: Math.min(24, Math.max(1, Number(storedSettings.subagentMax) || DEFAULT_SETTINGS.subagentMax)), childAgents: sanitizeChildAgentSettings(storedSettings.childAgents), model: modelForProvider(storedSettings.provider ?? DEFAULT_SETTINGS.provider, storedSettings.model ?? DEFAULT_SETTINGS.model), theme: THEMES.some((theme) => theme.id === storedSettings.theme) ? storedSettings.theme! : DEFAULT_SETTINGS.theme, uiScale: Math.min(150, Math.max(80, Number(storedSettings.uiScale) || DEFAULT_SETTINGS.uiScale)) };
 
 function permissionLabel(mode: PermissionMode): string {
   if (mode === "read-only") return "Read only";
@@ -206,6 +223,10 @@ export default function App() {
   const [pinnedThreadIds, setPinnedThreadIds] = usePersistedState<string[]>("kiwi.pinnedThreads", []);
   const [archivedThreads, persistArchivedThreads] = usePersistedState<ArchivedThread[]>("kiwi.archivedThreads", []);
   const [threadHandoffs, persistThreadHandoffs] = usePersistedState<Record<string, ThreadHandoff>>("kiwi.threadHandoffs", {});
+  // Cross-provider delegation: one frozen policy per bridge session, plus the
+  // parent/child ownership record that outlives a reload.
+  const [childAgentPolicies, persistChildAgentPolicies] = usePersistedState<Record<string, ChildAgentPolicy>>("kiwi.childAgentPolicies", {}, { init: (load) => sanitizeChildAgentPolicies(load()) });
+  const [childAgentLinks, persistChildAgentLinks] = usePersistedState<Record<string, ChildAgentLink>>("kiwi.childAgentLinks", {}, { init: (load) => sanitizeChildAgentLinks(load()) });
   const [pendingHandoff, setPendingHandoff] = usePersistedState<ThreadHandoff | null>("kiwi.pendingHandoff", null, {
     init: (load) => sanitizePendingHandoff(load()),
   });
@@ -312,7 +333,7 @@ export default function App() {
   // are resolved for the active thread (or the unsent new-thread draft).
   const effectiveSettings = useMemo<AppSettings>(() => {
     const overrides = activeProject?.overrides;
-    const resolved = !overrides
+    const projectResolved = !overrides
       ? settings
       : {
           ...settings,
@@ -320,9 +341,13 @@ export default function App() {
           ...(overrides.permission ? { permission: overrides.permission } : {}),
           systemPrompt: resolveSystemPrompt(settings.systemPrompt, overrides.systemPrompt, overrides.systemPromptMode),
         };
+    const projectPolicy = settingsWithProjectSubagents(projectResolved, overrides?.subagents);
     const threadModel = activeThreadId ? threadModels[activeThreadId] : draftThreadModel;
-    return { ...resolved, provider: activeProvider, model: modelForProvider(activeProvider, threadModel ?? resolved.model) };
-  }, [activeProject, activeProvider, activeThreadId, draftThreadModel, settings, threadModels]);
+    const resolved = { ...projectPolicy, provider: activeProvider, model: modelForProvider(activeProvider, threadModel ?? projectPolicy.model) };
+    return activeThreadId && childAgentLinks[activeThreadId]
+      ? settingsWithoutChildDelegation(resolved)
+      : resolved;
+  }, [activeProject, activeProvider, activeThreadId, childAgentLinks, draftThreadModel, settings, threadModels]);
 
   useEffect(() => {
     if (!pendingHandoff || !activeWorkspace || activeThread) return;
@@ -341,6 +366,35 @@ export default function App() {
     setDraftThreadModel(pendingHandoff.targetProvider === settings.provider ? null : modelForProvider(pendingHandoff.targetProvider, ""));
     setDraftThreadIsolated(false);
   }, [activeThread, activeWorkspace, pendingHandoff, setPendingHandoff, settings.provider]);
+
+  // Which providers a cross-provider child could actually be started on right
+  // now. Unusable destinations are filtered out of a thread's policy instead
+  // of failing at the moment the model tries to delegate.
+  const childAgentReadiness = useMemo<ChildAgentReadiness>(() => ({
+    codexRuntimeAvailable: Boolean(runtimeStatus?.available),
+    openAiSignedIn: account?.type === "chatgpt",
+    openRouterReady,
+    claudeReady: Boolean(claudeStatus?.available && claudeStatus.loggedIn),
+    cursorReady: Boolean(cursorStatus?.available && cursorStatus.loggedIn),
+  }), [account?.type, claudeStatus, cursorStatus, openRouterReady, runtimeStatus?.available]);
+
+  // One line for the composer and the thread summary; the roster itself is
+  // edited in Settings so the composer stays uncluttered.
+  const activeChildAgentPolicy = useMemo(
+    () => childAgentPolicyForThread(childAgentPolicies, activeThreadId ?? undefined),
+    [activeThreadId, childAgentPolicies],
+  );
+  const childAgentSummary = useMemo(() => {
+    if (activeThreadId) {
+      return activeChildAgentPolicy
+        ? describeChildAgentRoster({ enabled: true, targets: activeChildAgentPolicy.targets }, childAgentReadiness)
+        : "Cross-provider off";
+    }
+    return describeChildAgentRoster(effectiveSettings.childAgents, childAgentReadiness);
+  }, [activeChildAgentPolicy, activeThreadId, childAgentReadiness, effectiveSettings.childAgents]);
+  const crossProviderReady = effectiveSettings.subagentsEnabled
+    && effectiveSettings.childAgents.enabled
+    && readyChildAgentTargets(effectiveSettings.childAgents, childAgentReadiness).length > 0;
 
   const terminal = useTerminal({ scrollback: settings.terminalScrollback, permission: effectiveSettings.permission, onError: setError });
   const timelineEmpty = useTaskStore((state) => {
@@ -656,6 +710,22 @@ export default function App() {
       if (!persistActiveProjectOverride("permission", permission)) persistSettings({ ...settings, permission });
     },
     [persistActiveProjectOverride, persistSettings, settings],
+  );
+
+  const persistComposerSubagentsEnabled = useCallback(
+    (enabled: boolean) => {
+      if (!activeProject) {
+        persistSettings({ ...settings, subagentsEnabled: enabled });
+        return;
+      }
+      setProjects((current) => current.map((project) => {
+        if (project.id !== activeProject.id) return project;
+        const inherited = projectSubagentSettingsFromApp(settings);
+        const subagents = { ...(project.overrides?.subagents ?? inherited), enabled };
+        return { ...project, overrides: { ...(project.overrides ?? {}), subagents } };
+      }));
+    },
+    [activeProject, persistSettings, setProjects, settings],
   );
 
   const persistActiveProjectPrompt = useCallback(
@@ -1867,7 +1937,6 @@ export default function App() {
     running,
     attachments,
     effectiveSettings,
-    settings,
     customAgents,
     openRouterModels,
     runtimeStatus,
@@ -1879,6 +1948,10 @@ export default function App() {
     draftThreadIsolated,
     worktreeBusy,
     skillsFolder,
+    childAgentPolicies,
+    childAgentLinks,
+    childAgentReadiness,
+    persistChildAgentPolicies,
     threadWorktreesRef,
     threadProjectBindingsRef,
     activeWorkspacePathRef,
@@ -1909,6 +1982,43 @@ export default function App() {
     setAuthRequiredOpen,
     openSettings,
   });
+
+  // Turns the delegation requests a root agent makes into real per-provider
+  // child turns. Children inherit the parent's execution folder and permission
+  // mode; they never receive its conversation or attachments.
+  const { cancelChildAgentsFor } = useChildAgents({
+    policies: childAgentPolicies,
+    links: childAgentLinks,
+    persistChildAgentLinks,
+    openRouterModels,
+    projectPathForThread: (threadId) => threadProjectBindingsRef.current?.[threadId],
+    executionPathFor,
+    isolationGitDirFor: (threadId) => threadWorktreesRef.current[threadId]?.gitDir,
+    serviceNameFor: (threadId) => {
+      const boundPath = threadProjectBindingsRef.current?.[threadId];
+      return boundPath && chatWorkspacePath && normalizedProjectPath(boundPath) === normalizedProjectPath(chatWorkspacePath)
+        ? "OpenKiwi Chat"
+        : "OpenKiwi";
+    },
+    bindThreadToProject,
+    rememberThread,
+    persistThreadModel,
+    setThreads,
+    cursorSessionIdsRef,
+    scheduleClaudeThreadSave,
+    scheduleCursorThreadSave,
+  });
+
+  /**
+   * Stopping a conversation stops the work it started. Without this, pressing
+   * Stop would leave cross-provider children editing the same folder while the
+   * thread that owns them reports itself as stopped.
+   */
+  const stopTurnAndChildren = useCallback(async () => {
+    const rootThreadId = useTaskStore.getState().activeThreadId;
+    await stopTurn();
+    if (rootThreadId) await cancelChildAgentsFor(rootThreadId);
+  }, [cancelChildAgentsFor, stopTurn]);
 
   const retryRuntime = async () => {
     const runtime = await checkRuntime(false);
@@ -2056,6 +2166,27 @@ export default function App() {
     }
   };
 
+  /**
+   * Drop a thread's delegation state. Ending the bridge session first means a
+   * bridge process left behind by a provider CLI can no longer reach the app,
+   * even before its parent process notices the thread is gone.
+   */
+  const forgetChildAgentState = async (threadId: string, dropRecords: boolean) => {
+    await releaseChildAgentSessions(childAgentPolicies, threadId);
+    // Archiving only shuts down the live bridge. Keep the frozen policy and
+    // ownership records so restoring the same thread restores the same powers.
+    if (!dropRecords) return;
+    persistChildAgentPolicies((current) => {
+      const next = Object.fromEntries(Object.entries(current).filter(([, policy]) => policy.rootThreadId !== threadId));
+      return Object.keys(next).length === Object.keys(current).length ? current : next;
+    });
+    persistChildAgentLinks((current) => {
+      const next = Object.fromEntries(Object.entries(current)
+        .filter(([childThreadId, link]) => childThreadId !== threadId && link.rootThreadId !== threadId));
+      return Object.keys(next).length === Object.keys(current).length ? current : next;
+    });
+  };
+
   const archiveThread = async (thread: Thread) => {
     const label = thread.name || thread.preview || "Untitled thread";
     const taskStatus = useTaskStore.getState().statuses[thread.id];
@@ -2066,6 +2197,8 @@ export default function App() {
     if (!window.confirm(`Archive “${label}”?\n\nIt moves to the Archived list in the sidebar, where you can restore or permanently delete it.`)) return;
     try {
       if (!isLocalSubscriptionThread(thread)) await rpc("thread/archive", { threadId: thread.id });
+      await cancelChildAgentsFor(thread.id);
+      await forgetChildAgentState(thread.id, false);
       if (activeThread?.id === thread.id) newThread();
       forgetThread(thread.id);
       forgetQueuedDeliveries(thread.id);
@@ -2137,6 +2270,8 @@ export default function App() {
       else if (provider === "cursor") await deleteCursorTranscript(threadId);
       else await rpc("thread/delete", { threadId });
       delete cursorSessionIdsRef.current[threadId];
+      await cancelChildAgentsFor(threadId);
+      await forgetChildAgentState(threadId, true);
       if (activeThread?.id === threadId) newThread();
       forgetThread(threadId);
       forgetThreadModel(threadId);
@@ -2211,6 +2346,28 @@ export default function App() {
 
   const openAgent = async (threadId: string) => {
     try {
+      // A cross-provider child is an OpenKiwi-owned thread, so its timeline
+      // lives in a local transcript rather than in the Codex runtime.
+      const link = childAgentLinks[threadId];
+      if (link?.provider === "claude" || link?.provider === "cursor") {
+        const transcript = link.provider === "claude"
+          ? await loadClaudeTranscript(threadId)
+          : await loadCursorTranscript(threadId);
+        const logicalPath = threadProjectBindingsRef.current?.[threadId];
+        const fallbackCwd = logicalPath ? executionPathFor(threadId, logicalPath) : activeExecutionPath;
+        const childThread = transcript?.thread
+          ?? knownThreadsRef.current?.[threadId]
+          ?? { id: threadId, name: null, preview: link.title, cwd: fallbackCwd, updatedAt: Math.floor(Date.now() / 1000), modelProvider: link.provider };
+        setActiveThread(childThread);
+        if (transcript) {
+          useTaskStore.getState().hydrateTask(threadId, transcript.messages, transcript.activities, childThread.cwd);
+        } else {
+          useTaskStore.getState().ensureTask(threadId, childThread.cwd);
+        }
+        useTaskStore.getState().setActiveThread(threadId);
+        setStudioOpen(false);
+        return;
+      }
       const result = await rpc<{ thread: Thread }>("thread/read", { threadId, includeTurns: true });
       setActiveThread(result.thread);
       const history = timelineFromTurns(result.thread.turns);
@@ -2223,6 +2380,19 @@ export default function App() {
   };
 
   const stopAgent = async (threadId: string) => {
+    const link = childAgentLinks[threadId];
+    if (link?.provider === "claude" || link?.provider === "cursor") {
+      try {
+        if (link.provider === "claude") await interruptClaudeTurn(threadId);
+        else await interruptCursorTurn(threadId);
+        useTaskStore.getState().setActiveTurn(threadId, undefined);
+        useTaskStore.getState().setTaskStatus(threadId, "interrupted");
+        useTaskStore.getState().upsertAgent(link.rootThreadId, { id: threadId, prompt: link.title, status: "interrupted" });
+      } catch (reason) {
+        setError(friendlyError(reason));
+      }
+      return;
+    }
     const turnId = useTaskStore.getState().tasks[threadId]?.activeTurnId;
     if (!turnId) {
       setError("That sub-agent does not have an active task to stop.");
@@ -2232,7 +2402,8 @@ export default function App() {
       await rpc("turn/interrupt", { threadId, turnId });
       useTaskStore.getState().setActiveTurn(threadId, undefined);
       useTaskStore.getState().setTaskStatus(threadId, "interrupted");
-      if (activeThreadId) useTaskStore.getState().upsertAgent(activeThreadId, { id: threadId, prompt: "Delegated task", status: "interrupted" });
+      const rootThreadId = link?.rootThreadId ?? activeThreadId;
+      if (rootThreadId) useTaskStore.getState().upsertAgent(rootThreadId, { id: threadId, prompt: link?.title ?? "Delegated task", status: "interrupted" });
     } catch (reason) {
       setError(friendlyError(reason));
     }
@@ -2874,7 +3045,7 @@ export default function App() {
     },
     newThread,
     openSettings,
-    stopTurn: () => void stopTurn(),
+    stopTurn: () => void stopTurnAndChildren(),
   });
   useThreadHealth({
     runtimeAvailable: Boolean(runtimeStatus?.available),
@@ -3488,7 +3659,7 @@ export default function App() {
                 onSteerQueued={(queuedTurnId) => void steerQueuedMessage(queuedTurnId)}
                 onRetryQueued={retryQueuedMessage}
                 onRemoveQueued={removeQueuedMessage}
-                onStop={() => void stopTurn()}
+                onStop={() => void stopTurnAndChildren()}
                 modelControls={
                   <>
                     {effectiveSettings.provider === "openai" && <ModelPowerControl model={effectiveSettings.model || DEFAULT_OPENAI_MODEL} effort={settings.reasoningEffort} ultra={settings.ultra} fast={settings.serviceTier === "priority"} runtimeModels={runtimeModels} onModel={persistComposerModel} onEffort={(reasoningEffort: ReasoningEffort) => persistSettings({ ...settings, reasoningEffort, ultra: false })} onUltra={(ultra) => persistSettings({ ...settings, ultra, subagentsEnabled: ultra ? true : settings.subagentsEnabled })} onFast={(fast) => persistSettings({ ...settings, serviceTier: fast ? "priority" : null })} />}
@@ -3542,9 +3713,10 @@ export default function App() {
                         </div>
                       )}
                     </div>
-                    <button className={`toolbar-button agents-button ${settings.subagentsEnabled ? "enabled" : ""}`} onClick={() => persistSettings({ ...settings, subagentsEnabled: !settings.subagentsEnabled })} disabled={Boolean(activeThread)} title={activeThread ? "Sub-agent access is fixed when a thread starts" : "Allow the model to spawn direct sub-agents for this thread"}>
+                    <button className={`toolbar-button agents-button ${effectiveSettings.subagentsEnabled ? "enabled" : ""}`} onClick={() => persistComposerSubagentsEnabled(!effectiveSettings.subagentsEnabled)} disabled={Boolean(activeThread)} title={activeThread ? "Sub-agent access is fixed when a thread starts" : `Allow the model to spawn direct sub-agents for this thread · ${childAgentSummary}. Choose cross-provider destinations in Settings → Sub-agents.`}>
                       <UsersRound size={14} />
-                      {settings.subagentsEnabled ? `Agents: ${settings.subagentMax}` : "Agents off"}
+                      {effectiveSettings.subagentsEnabled ? `Agents: ${effectiveSettings.subagentMax}${crossProviderReady ? " ↗" : ""}` : "Agents off"}
+                      {activeProject?.overrides?.subagents && <em className="project-override-mark">project</em>}
                     </button>
                     <button className={`toolbar-button ${attachments.length ? "has-attachments" : ""}`} onClick={() => void addAttachment()} title="Attach context">
                       <Paperclip size={14} />
@@ -3619,7 +3791,8 @@ export default function App() {
               { label: "AGENTS.md discovery", value: settings.projectInstructionsEnabled ? "enabled · up to 32 KB" : "disabled" },
               { label: "Model", value: effectiveSettings.model || "provider default" },
               { label: "Reasoning", value: settings.ultra ? "ultra" : settings.reasoningEffort },
-              { label: "Sub-agents", value: settings.subagentsEnabled ? `on · max ${settings.subagentMax}` : "off" },
+              { label: "Sub-agents", value: effectiveSettings.subagentsEnabled ? `on · max ${effectiveSettings.subagentMax}` : "off" },
+              { label: "Cross-provider", value: effectiveSettings.subagentsEnabled ? childAgentSummary : "off" },
               { label: "Skills", value: skillsFolder ? `${skills.filter((skill) => skill.enabled).length} enabled · local folder` : "no folder selected" },
               { label: "Permissions", value: permissionLabel(effectiveSettings.permission) },
               { label: "Service tier", value: settings.serviceTier || "standard" },
@@ -3708,6 +3881,7 @@ export default function App() {
         cursorStatus={cursorStatus}
         cursorLoginStarting={cursorLoginStarting}
         openRouterReady={openRouterReady}
+        childAgentReadiness={childAgentReadiness}
         githubStatus={githubStatus}
         githubBusy={githubBusy || githubLoginPending}
         usageTotals={allTimeUsage}
@@ -3747,6 +3921,7 @@ export default function App() {
         workflows={workflows}
         workflowRuns={workflowRuns}
         projects={projects}
+        activeProjectId={workspaceMode === "project" ? activeProjectId : null}
         skillsFolder={skillsFolder}
         skills={skills}
         skillsBusy={skillsBusy}

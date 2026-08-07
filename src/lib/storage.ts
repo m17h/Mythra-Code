@@ -32,6 +32,8 @@ export const DURABLE_STORAGE_KEYS = [
   "kiwi.queuedTurns",
   "kiwi.threadHandoffs",
   "kiwi.pendingHandoff",
+  "kiwi.childAgentPolicies",
+  "kiwi.childAgentLinks",
   "kiwi.onboardingVersion",
 ] as const;
 
@@ -40,7 +42,7 @@ export const DURABLE_STORAGE_KEYS = [
  * migrateStorage. Old installs then upgrade their data instead of loading
  * garbage into the new code.
  */
-export const STORAGE_SCHEMA_VERSION = 10;
+export const STORAGE_SCHEMA_VERSION = 11;
 const nativeWriteQueues = new Map<string, Promise<void>>();
 const NATIVE_PENDING_PREFIX = "kiwi.nativePending.";
 let nativeOperationSequence = 0;
@@ -116,6 +118,8 @@ export function migrateStorage(): void {
   // Version 10 adds durable queued follow-up turns, provider-handoff
   // provenance, and an in-progress handoff draft. These stores are empty by
   // default, so no eager rewrite is required.
+  // Version 11 adds frozen cross-provider delegation policies and parent/child
+  // ownership records. They are optional and likewise need no eager rewrite.
   // All additions are optional and require no eager rewrite of existing records.
   storeValue("kiwi.schemaVersion", STORAGE_SCHEMA_VERSION);
 }

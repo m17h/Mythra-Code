@@ -1,6 +1,30 @@
 use super::*;
 
 #[test]
+fn child_agent_completion_cannot_be_resurrected_by_a_late_spawn_response() {
+    let mut runtime = super::agents::SessionRuntime::default();
+    super::agents::record_finished_child(&mut runtime, "child-fast");
+    super::agents::record_spawned_child(
+        &mut runtime,
+        &serde_json::json!({ "childId": "child-fast", "status": "running" }),
+    );
+    assert!(runtime.known.contains("child-fast"));
+    assert!(!runtime.live.contains("child-fast"));
+    assert!(!runtime.finished.contains("child-fast"));
+}
+
+#[test]
+fn child_agent_terminal_spawn_response_never_takes_a_live_slot() {
+    let mut runtime = super::agents::SessionRuntime::default();
+    super::agents::record_spawned_child(
+        &mut runtime,
+        &serde_json::json!({ "childId": "child-done", "status": "completed" }),
+    );
+    assert!(runtime.known.contains("child-done"));
+    assert!(runtime.live.is_empty());
+}
+
+#[test]
 fn github_repository_parser_accepts_https_and_ssh_but_rejects_other_hosts() {
     assert_eq!(
         parse_github_repository("https://github.com/openai/codex.git"),
@@ -1510,4 +1534,279 @@ fn config_bridge_is_limited_to_mcp_server_settings() {
         &json!({ "keyPath": "approval_policy", "value": "never" }),
     )
     .is_err());
+}
+
+// --- Cross-provider sub-agents ---------------------------------------------
+
+fn child_target(id: &str, provider: &str, model: &str) -> ChildAgentTarget {
+    ChildAgentTarget {
+        id: id.into(),
+        provider: provider.into(),
+        model: model.into(),
+        label: id.into(),
+        description: String::new(),
+        reasoning_mode: "inherit".into(),
+        reasoning_effort: "medium".into(),
+        reasoning_max_effort: "high".into(),
+    }
+}
+
+#[test]
+fn child_agent_destinations_accept_every_supported_provider() {
+    let targets = vec![
+        child_target("terra", "openai", "gpt-5.6-terra"),
+        child_target("grok", "openrouter", "x-ai/grok-4.5"),
+        child_target("reviewer", "claude", "claude-fable-5"),
+        child_target("fast", "cursor", "auto"),
+    ];
+    assert!(validate_targets(&targets).is_ok());
+}
+
+#[test]
+fn child_agent_destinations_reject_names_a_tool_enum_cannot_carry() {
+    for bad in [
+        "",
+        "-leading",
+        "Terra",
+        "has space",
+        "emoji🎯",
+        &"a".repeat(41),
+    ] {
+        assert!(
+            validate_targets(&[child_target(bad, "openai", "gpt-5.6-terra")]).is_err(),
+            "`{bad}` should not be a valid destination name"
+        );
+    }
+}
+
+#[test]
+fn child_agent_destinations_reject_duplicates_unknown_providers_and_oversized_fields() {
+    let duplicate = vec![
+        child_target("terra", "openai", "gpt-5.6-terra"),
+        child_target("terra", "claude", "claude-fable-5"),
+    ];
+    assert!(validate_targets(&duplicate)
+        .unwrap_err()
+        .contains("Duplicate"));
+    assert!(validate_targets(&[child_target("g", "gemini", "pro")])
+        .unwrap_err()
+        .contains("not a provider"));
+    assert!(
+        validate_targets(&[child_target("terra", "openai", &"m".repeat(129))]).is_err(),
+        "an oversized model must be refused when the thread starts"
+    );
+    let too_many: Vec<_> = (0..25)
+        .map(|index| child_target(&format!("agent{index}"), "openai", "gpt-5.6-terra"))
+        .collect();
+    assert!(validate_targets(&too_many).is_err());
+}
+
+#[test]
+fn child_agent_tool_catalog_offers_only_approved_destinations() {
+    let targets = vec![
+        child_target("terra", "openai", "gpt-5.6-terra"),
+        child_target("grok", "openrouter", "x-ai/grok-4.5"),
+    ];
+    let catalog = tool_catalog(&targets);
+    let tools = catalog.as_array().expect("catalog is a list");
+    let names: Vec<&str> = tools
+        .iter()
+        .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+        .collect();
+    assert_eq!(names, AGENT_BRIDGE_TOOLS.to_vec());
+
+    let spawn = &tools[0];
+    let enumeration = spawn["inputSchema"]["properties"]["target"]["enum"]
+        .as_array()
+        .expect("the destination is an enum");
+    assert_eq!(
+        enumeration
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>(),
+        vec!["terra", "grok"]
+    );
+    assert_eq!(
+        spawn["inputSchema"]["required"],
+        json!(["target", "prompt"])
+    );
+    assert_eq!(spawn["inputSchema"]["additionalProperties"], json!(false));
+    // The provider/model pair is described, never accepted as free text.
+    assert!(spawn["inputSchema"]["properties"].get("model").is_none());
+    assert!(spawn["description"]
+        .as_str()
+        .unwrap()
+        .contains("x-ai/grok-4.5"));
+}
+
+#[test]
+fn child_agent_spawn_requires_an_approved_destination_and_a_prompt() {
+    let targets = vec![child_target("terra", "openai", "gpt-5.6-terra")];
+    let none = HashSet::new();
+
+    assert!(validate_tool_call(
+        &targets,
+        &none,
+        "spawn_agent",
+        &json!({ "target": "terra", "prompt": "Refactor the parser." })
+    )
+    .is_ok());
+
+    let rejected = validate_tool_call(
+        &targets,
+        &none,
+        "spawn_agent",
+        &json!({ "target": "gemini-pro", "prompt": "Refactor the parser." }),
+    )
+    .unwrap_err();
+    assert!(rejected.contains("not an approved destination"));
+    assert!(
+        rejected.contains("terra"),
+        "the refusal lists what is allowed"
+    );
+
+    for bad in [
+        json!({ "prompt": "Do it." }),
+        json!({ "target": "terra" }),
+        json!({ "target": "terra", "prompt": "   " }),
+    ] {
+        assert!(validate_tool_call(&targets, &none, "spawn_agent", &bad).is_err());
+    }
+    assert!(validate_tool_call(
+        &targets,
+        &none,
+        "spawn_agent",
+        &json!({ "target": "terra", "prompt": "x".repeat(32_769) })
+    )
+    .is_err());
+    assert!(validate_tool_call(&targets, &none, "spawn_agent", &json!("not an object")).is_err());
+}
+
+#[test]
+fn child_agent_spawn_enforces_user_reasoning_authority_and_ceiling() {
+    let none = HashSet::new();
+    let inherited = child_target("terra", "openai", "gpt-5.6-terra");
+    assert!(validate_tool_call(
+        &[inherited],
+        &none,
+        "spawn_agent",
+        &json!({ "target": "terra", "prompt": "Implement it.", "reasoningEffort": "high" })
+    )
+    .unwrap_err()
+    .contains("Main agent decides"));
+
+    let mut agent_controlled = child_target("reviewer", "claude", "claude-fable-5");
+    agent_controlled.reasoning_mode = "agent".into();
+    agent_controlled.reasoning_max_effort = "high".into();
+    assert!(validate_tool_call(
+        &[agent_controlled.clone()],
+        &none,
+        "spawn_agent",
+        &json!({ "target": "reviewer", "prompt": "Review it.", "reasoningEffort": "high" })
+    )
+    .is_ok());
+    assert!(validate_tool_call(
+        &[agent_controlled],
+        &none,
+        "spawn_agent",
+        &json!({ "target": "reviewer", "prompt": "Review it.", "reasoningEffort": "ultra" })
+    )
+    .unwrap_err()
+    .contains("ceiling"));
+}
+
+#[test]
+fn child_agent_lifecycle_tools_only_reach_this_thread_s_own_children() {
+    let targets = vec![child_target("terra", "openai", "gpt-5.6-terra")];
+    let mut known = HashSet::new();
+    known.insert("child-1".to_string());
+
+    for tool in ["collect_agent", "cancel_agent"] {
+        assert!(
+            validate_tool_call(&targets, &known, tool, &json!({ "childId": "child-1" })).is_ok()
+        );
+        assert!(validate_tool_call(
+            &targets,
+            &known,
+            tool,
+            &json!({ "childId": "someone-elses" })
+        )
+        .unwrap_err()
+        .contains("not spawned from this thread"));
+        assert!(validate_tool_call(&targets, &known, tool, &json!({})).is_err());
+    }
+    // A status call with no id is a request for every child of this thread.
+    assert!(validate_tool_call(&targets, &known, "agent_status", &json!({})).is_ok());
+    assert!(validate_tool_call(
+        &targets,
+        &known,
+        "agent_status",
+        &json!({ "childId": "nope" })
+    )
+    .is_err());
+
+    assert!(validate_tool_call(
+        &targets,
+        &known,
+        "collect_agent",
+        &json!({ "childId": "child-1", "timeoutSeconds": 30 })
+    )
+    .is_ok());
+    for bad in [json!(0), json!(46), json!(9000), json!("soon")] {
+        assert!(validate_tool_call(
+            &targets,
+            &known,
+            "collect_agent",
+            &json!({ "childId": "child-1", "timeoutSeconds": bad })
+        )
+        .is_err());
+    }
+    assert!(validate_tool_call(&targets, &known, "rm_rf", &json!({}))
+        .unwrap_err()
+        .contains("not a sub-agent tool"));
+}
+
+#[test]
+fn bridge_tokens_are_compared_without_leaking_their_length_by_early_exit() {
+    let token = random_hex_token().expect("token");
+    assert!(tokens_match(&token, &token.clone()));
+    assert!(!tokens_match(&token, &token[..token.len() - 1]));
+    assert!(!tokens_match("", "a"));
+    let mut wrong = token.clone();
+    wrong.replace_range(0..1, if token.starts_with('a') { "b" } else { "a" });
+    assert!(!tokens_match(&token, &wrong));
+}
+
+#[test]
+fn bridge_answers_the_mcp_handshake_without_reaching_the_app() {
+    let initialize = bridge_local_response("initialize", Some(&json!(1)))
+        .expect("handled locally")
+        .expect("answered");
+    assert_eq!(
+        initialize["result"]["serverInfo"]["name"],
+        AGENT_BRIDGE_SERVER
+    );
+    assert_eq!(initialize["result"]["protocolVersion"], "2025-06-18");
+    assert!(initialize["result"]["capabilities"]["tools"].is_object());
+
+    assert_eq!(
+        bridge_local_response("ping", Some(&json!("a")))
+            .expect("handled locally")
+            .expect("answered")["result"],
+        json!({})
+    );
+
+    // Notifications must never be answered, or the runtime sees a stray reply.
+    assert!(bridge_local_response("notifications/initialized", None)
+        .expect("handled locally")
+        .is_none());
+
+    // Tool traffic is deliberately left to the networked path.
+    assert!(bridge_local_response("tools/list", Some(&json!(2))).is_none());
+    assert!(bridge_local_response("tools/call", Some(&json!(3))).is_none());
+
+    let unknown = bridge_local_response("resources/read", Some(&json!(4)))
+        .expect("handled locally")
+        .expect("answered");
+    assert_eq!(unknown["error"]["code"], -32601);
 }

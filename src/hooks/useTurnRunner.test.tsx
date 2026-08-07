@@ -25,6 +25,11 @@ const worktrees = vi.hoisted(() => ({
   createThreadWorktree: vi.fn(),
   removeThreadWorktree: vi.fn(),
 }));
+const childSessions = vi.hoisted(() => ({
+  ensureChildAgentBridge: vi.fn(async () => null),
+  cacheChildAgentPolicy: vi.fn(),
+  releaseChildAgentSession: vi.fn(),
+}));
 
 vi.mock("../lib/codex", () => codex);
 vi.mock("../lib/claude", () => claude);
@@ -32,6 +37,10 @@ vi.mock("../lib/cursor", () => cursor);
 vi.mock("../lib/worktrees", async (importOriginal) => ({
   ...await importOriginal<typeof import("../lib/worktrees")>(),
   ...worktrees,
+}));
+vi.mock("../lib/childAgentSessions", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../lib/childAgentSessions")>(),
+  ...childSessions,
 }));
 
 import { forgetQueuedDeliveries, useTurnRunner, type TurnRunnerContext } from "./useTurnRunner";
@@ -54,7 +63,6 @@ function context(overrides: Partial<TurnRunnerContext> = {}): TurnRunnerContext 
     running: false,
     attachments: [],
     effectiveSettings: { ...DEFAULT_SETTINGS, provider: "cursor", model: "grok-4.5" },
-    settings: { ...DEFAULT_SETTINGS, provider: "cursor", model: "grok-4.5" },
     customAgents: [],
     openRouterModels: [],
     runtimeStatus: null,
@@ -74,6 +82,16 @@ function context(overrides: Partial<TurnRunnerContext> = {}): TurnRunnerContext 
     draftThreadIsolated: false,
     worktreeBusy: false,
     skillsFolder: "",
+    childAgentPolicies: {},
+    childAgentLinks: {},
+    childAgentReadiness: {
+      codexRuntimeAvailable: false,
+      openAiSignedIn: false,
+      openRouterReady: false,
+      claudeReady: false,
+      cursorReady: false,
+    },
+    persistChildAgentPolicies: vi.fn(),
     threadWorktreesRef: { current: {} },
     threadProjectBindingsRef: { current: { [CURSOR_THREAD.id]: "/tmp/project" } },
     activeWorkspacePathRef: { current: "/tmp/project" },
@@ -116,6 +134,24 @@ describe("useTurnRunner", () => {
     cursor.saveCursorTranscript.mockResolvedValue(undefined);
     cursor.startCursorTurn.mockResolvedValue({ turnId: "turn-new", cursorSessionId: "session-new" });
     cursor.steerCursorTurn.mockResolvedValue(undefined);
+    childSessions.ensureChildAgentBridge.mockResolvedValue(null);
+  });
+
+  it("uses the effective project sub-agent policy when preparing the bridge", async () => {
+    const effectiveSettings = {
+      ...DEFAULT_SETTINGS,
+      provider: "cursor" as const,
+      model: "grok-4.5",
+      subagentsEnabled: true,
+      subagentMax: 7,
+      childAgents: { enabled: true, targets: [] },
+    };
+    const deps = context({ effectiveSettings });
+    const { result } = renderHook(() => useTurnRunner(deps));
+
+    await act(async () => { await result.current.sendMessage("build it"); });
+
+    expect(childSessions.ensureChildAgentBridge).toHaveBeenCalledWith(expect.objectContaining({ settings: effectiveSettings }));
   });
 
   it("interrupts the active provider turn and records the stopped state", async () => {
