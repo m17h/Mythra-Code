@@ -5,7 +5,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
-import { Archive, ArchiveRestore, Bot, Check, ChevronDown, Circle, Code2, Command, Download, FileCode2, Folder, FolderOpen, GitBranch, GitFork, LoaderCircle, MessageSquare, Paperclip, PanelRight, PanelLeftClose, PanelLeftOpen, Plus, Pin, PinOff, Pencil, Search, Settings, Shield, ShieldAlert, ShieldCheck, TerminalSquare, Trash2, UsersRound, X } from "lucide-react";
+import { Archive, ArchiveRestore, Bot, Check, ChevronDown, Circle, Code2, Command, Download, FileCode2, Folder, FolderOpen, GitBranch, GitFork, LoaderCircle, MessageSquare, Paperclip, PanelRight, PanelLeftClose, PanelLeftOpen, Plus, Pin, PinOff, Pencil, Search, Settings, Shield, ShieldAlert, ShieldCheck, TerminalSquare, Trash2, X } from "lucide-react";
 import { getCodexRuntimeStatus, auditEvent, exportTextFile, getNormalChatWorkspace, hasOpenRouterKey, listOpenRouterModels, respond, restartRuntime, rpc, type CodexRuntimeStatus, type JsonObject } from "./lib/codex";
 import { deleteClaudeTranscript, getClaudeRuntimeStatus, interruptClaudeTurn, loadClaudeTranscript, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, type ClaudeRuntimeStatus } from "./lib/claude";
 import { deleteCursorTranscript, getCursorRuntimeStatus, interruptCursorTurn, listCursorModels, loadCursorTranscript, respondToCursorPermission, saveCursorTranscript, startCursorLogin, type CursorModel, type CursorRuntimeStatus } from "./lib/cursor";
@@ -26,12 +26,13 @@ import { ThreadInboxCard } from "./components/ThreadInboxCard";
 import { ProjectPromptControl } from "./components/ProjectPromptControl";
 import { ApprovalCenter } from "./components/ApprovalCenter";
 import { Composer, discardDraft, type ComposerHandle } from "./components/Composer";
+import { SubAgentCommandCenter, type SubAgentModelOption } from "./components/SubAgentCommandCenter";
 import { CommandPalette } from "./components/CommandPalette";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { SettingsModal } from "./components/SettingsModal";
 import { AuthRequiredModal, RuntimeSetupModal } from "./components/RuntimeModals";
 import type { AgentRecord, AttachmentRecord, McpView, StudioTab } from "./components/StudioDock";
-import type { Account, Activity, AppSettings, ArchivedThread, ChatMessage, CustomAgentProfile, PendingApproval, PermissionMode, Project, ProjectAction, ProjectPromptMode, PromptProfile, Provider, ScheduledTask, ScheduleRunRecord, SettingsSection, Thread, ThreadHandoff, ThemeName, WorkspaceMode } from "./types";
+import type { Account, Activity, AppSettings, ArchivedThread, ChatMessage, CustomAgentProfile, PendingApproval, PermissionMode, Project, ProjectAction, ProjectPromptMode, ProjectSubagentSettings, PromptProfile, Provider, ScheduledTask, ScheduleRunRecord, SettingsSection, Thread, ThreadHandoff, ThemeName, WorkspaceMode } from "./types";
 import { PendingTurnStarts } from "./lib/pendingTurnStarts";
 import { useTaskStore, type QueuedTurn } from "./lib/taskStore";
 import { friendlyError } from "./lib/errors";
@@ -87,9 +88,10 @@ import { providerForArchivedThread } from "./lib/threadArchive";
 import { buildProviderHandoffPrompt, sanitizePendingHandoff } from "./lib/providerHandoff";
 import { deleteThreadTurnDurations } from "./lib/turnDurations";
 import {
+  childAgentModel,
   describeChildAgentRoster,
   childAgentPolicyForThread,
-  readyChildAgentTargets,
+  providerDisplayName,
   projectSubagentSettingsFromApp,
   sanitizeChildAgentLinks,
   sanitizeChildAgentPolicies,
@@ -102,6 +104,7 @@ import {
   type ChildAgentReadiness,
 } from "./lib/childAgents";
 import { releaseChildAgentSessions } from "./lib/childAgentSessions";
+import { collectSubAgentWorkers, type SubAgentWorker } from "./lib/subAgentActivity";
 import { useChildAgents } from "./hooks/useChildAgents";
 import { reorderProjects, type ProjectDropPosition } from "./lib/projectOrdering";
 import {
@@ -392,9 +395,34 @@ export default function App() {
     }
     return describeChildAgentRoster(effectiveSettings.childAgents, childAgentReadiness);
   }, [activeChildAgentPolicy, activeThreadId, childAgentReadiness, effectiveSettings.childAgents]);
-  const crossProviderReady = effectiveSettings.subagentsEnabled
-    && effectiveSettings.childAgents.enabled
-    && readyChildAgentTargets(effectiveSettings.childAgents, childAgentReadiness).length > 0;
+  // The composer's command center edits this shape directly; a started thread
+  // renders it read-only beside the policy it froze.
+  const composerSubagentPolicy = useMemo(
+    () => projectSubagentSettingsFromApp(effectiveSettings),
+    [effectiveSettings],
+  );
+  const subAgentModelCatalogs = useMemo<Partial<Record<Provider, SubAgentModelOption[]>>>(() => ({
+    ...(runtimeModels.length ? {
+      openai: runtimeModels.map((entry) => ({
+        id: entry.model || entry.id,
+        label: entry.displayName || entry.model || entry.id,
+        detail: entry.description || entry.model || entry.id,
+      })),
+    } : {}),
+    ...(cursorModels.length ? {
+      cursor: cursorModels.map((entry) => ({
+        id: entry.id,
+        label: entry.name || entry.id,
+        detail: entry.id,
+      })),
+    } : {}),
+    openrouter: openRouterModels.map((entry) => ({
+      id: entry.id,
+      label: entry.name || entry.id,
+      detail: entry.id,
+      keywords: entry.description,
+    })),
+  }), [cursorModels, openRouterModels, runtimeModels]);
 
   const terminal = useTerminal({ scrollback: settings.terminalScrollback, permission: effectiveSettings.permission, onError: setError });
   const timelineEmpty = useTaskStore((state) => {
@@ -408,6 +436,17 @@ export default function App() {
   const queuedTurns = useTaskStore((state) => (activeThreadId ? (state.tasks[activeThreadId]?.queuedTurns ?? EMPTY_QUEUED_TURNS) : EMPTY_QUEUED_TURNS));
   const taskStatus = useTaskStore((state) => (activeThreadId ? (state.statuses[activeThreadId] ?? "idle") : "idle"));
   const threadTaskStatuses = useTaskStore((state) => state.statuses);
+  // Live crew for the composer panel: OpenKiwi-owned cross-provider children
+  // merged with whatever native agents the root task reported.
+  const subAgentWorkers = useMemo(
+    () => collectSubAgentWorkers({
+      rootThreadId: activeThreadId,
+      links: childAgentLinks,
+      statuses: threadTaskStatuses,
+      agents: agentRecords,
+    }),
+    [activeThreadId, agentRecords, childAgentLinks, threadTaskStatuses],
+  );
   const running = activeThreadId ? taskStatus === "starting" || taskStatus === "running" : startingDraftTurn;
   // Standard approvals for the thread being viewed render inline in its
   // timeline; the modal is reserved for background threads and for complex
@@ -712,18 +751,25 @@ export default function App() {
     [persistActiveProjectOverride, persistSettings, settings],
   );
 
-  const persistComposerSubagentsEnabled = useCallback(
-    (enabled: boolean) => {
+  /**
+   * Write a sub-agent policy edited in the composer back to the scope it came
+   * from: the active project's own override, or the global defaults that Chats
+   * and every uncustomized project inherit.
+   */
+  const persistComposerSubagentPolicy = useCallback(
+    (next: ProjectSubagentSettings) => {
       if (!activeProject) {
-        persistSettings({ ...settings, subagentsEnabled: enabled });
+        persistSettings({
+          ...settings,
+          subagentsEnabled: next.enabled,
+          subagentMax: next.maxConcurrent,
+          childAgents: next.childAgents,
+        });
         return;
       }
-      setProjects((current) => current.map((project) => {
-        if (project.id !== activeProject.id) return project;
-        const inherited = projectSubagentSettingsFromApp(settings);
-        const subagents = { ...(project.overrides?.subagents ?? inherited), enabled };
-        return { ...project, overrides: { ...(project.overrides ?? {}), subagents } };
-      }));
+      setProjects((current) => current.map((project) => (project.id === activeProject.id
+        ? { ...project, overrides: { ...(project.overrides ?? {}), subagents: next } }
+        : project)));
     },
     [activeProject, persistSettings, setProjects, settings],
   );
@@ -1986,7 +2032,7 @@ export default function App() {
   // Turns the delegation requests a root agent makes into real per-provider
   // child turns. Children inherit the parent's execution folder and permission
   // mode; they never receive its conversation or attachments.
-  const { cancelChildAgentsFor } = useChildAgents({
+  const { cancelChildAgentsFor, stopChildAgent } = useChildAgents({
     policies: childAgentPolicies,
     links: childAgentLinks,
     persistChildAgentLinks,
@@ -2008,6 +2054,32 @@ export default function App() {
     scheduleClaudeThreadSave,
     scheduleCursorThreadSave,
   });
+
+  const stopSubAgentWorker = useCallback(async (worker: SubAgentWorker) => {
+    if (!activeThreadId) throw new Error("Open the thread that owns this sub-agent before stopping it.");
+    await stopChildAgent(activeThreadId, worker.id);
+    setTransientStatus(`Stopped ${worker.title}`);
+  }, [activeThreadId, setTransientStatus, stopChildAgent]);
+
+  const replaceSubAgentWorker = useCallback(async (worker: SubAgentWorker, targetId: string) => {
+    if (!activeThreadId) throw new Error("Open the thread that owns this sub-agent before replacing it.");
+    const policy = childAgentPolicyForThread(childAgentPolicies, activeThreadId);
+    const target = policy?.targets.find((entry) => entry.id === targetId);
+    if (!policy || !target) throw new Error("That replacement destination was not approved when this thread started.");
+
+    // Stop first so the old child releases its concurrency slot. The root
+    // performs the replacement spawn through its frozen bridge, which keeps
+    // the backend registry, depth limit, and collect/cancel tools authoritative.
+    await stopChildAgent(activeThreadId, worker.id);
+    const delivered = await steerMessage([
+      "OpenKiwi sub-agent control: replace the sub-agent I just stopped.",
+      `Use the approved \`${target.id}\` destination (${target.label || providerDisplayName(target.provider)} · ${childAgentModel(target) || "provider default"}).`,
+      `Restart the same delegated task: ${worker.title}`,
+      "Spawn a fresh child for that task; do not resume or reuse the stopped child id.",
+    ].join("\n"));
+    if (!delivered) throw new Error("The old sub-agent was stopped, but the replacement instruction could not be delivered to the root agent.");
+    setTransientStatus(`Replacing ${worker.title}`);
+  }, [activeThreadId, childAgentPolicies, setTransientStatus, steerMessage, stopChildAgent]);
 
   /**
    * Stopping a conversation stops the work it started. Without this, pressing
@@ -3713,11 +3785,20 @@ export default function App() {
                         </div>
                       )}
                     </div>
-                    <button className={`toolbar-button agents-button ${effectiveSettings.subagentsEnabled ? "enabled" : ""}`} onClick={() => persistComposerSubagentsEnabled(!effectiveSettings.subagentsEnabled)} disabled={Boolean(activeThread)} title={activeThread ? "Sub-agent access is fixed when a thread starts" : `Allow the model to spawn direct sub-agents for this thread · ${childAgentSummary}. Choose cross-provider destinations in Settings → Sub-agents.`}>
-                      <UsersRound size={14} />
-                      {effectiveSettings.subagentsEnabled ? `Agents: ${effectiveSettings.subagentMax}${crossProviderReady ? " ↗" : ""}` : "Agents off"}
-                      {activeProject?.overrides?.subagents && <em className="project-override-mark">project</em>}
-                    </button>
+                    <SubAgentCommandCenter
+                      policy={composerSubagentPolicy}
+                      capturedPolicy={activeChildAgentPolicy ?? null}
+                      locked={Boolean(activeThread)}
+                      readiness={childAgentReadiness}
+                      workers={subAgentWorkers}
+                      scopeLabel={activeProject ? activeProject.name : "Chats & project defaults"}
+                      projectOverride={Boolean(activeProject?.overrides?.subagents)}
+                      modelCatalogs={subAgentModelCatalogs}
+                      onChange={persistComposerSubagentPolicy}
+                      onOpenSettings={() => openSettings("agents")}
+                      onStopWorker={stopSubAgentWorker}
+                      onReplaceWorker={replaceSubAgentWorker}
+                    />
                     <button className={`toolbar-button ${attachments.length ? "has-attachments" : ""}`} onClick={() => void addAttachment()} title="Attach context">
                       <Paperclip size={14} />
                       {attachments.length ? attachments.length : "Attach"}

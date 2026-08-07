@@ -56,7 +56,7 @@ export function ThreadProviderControl({
 
   const label = providerLabel(provider);
   return (
-    <div className="thread-provider-control" ref={rootRef}>
+    <div className={`thread-provider-control ${open ? "open" : ""}`} ref={rootRef}>
       <button
         className="provider-pill"
         onClick={() => setOpen((value) => !value)}
@@ -70,8 +70,7 @@ export function ThreadProviderControl({
         {model && <small>{model}</small>}
         <ChevronDown size={12} />
       </button>
-      {open && (
-        <div className="thread-provider-menu" role="menu" aria-label="Thread provider">
+      <div className="thread-provider-menu" role="menu" aria-hidden={!open || undefined} aria-label="Thread provider">
           <div className="thread-provider-menu-heading" role="presentation">
             <strong>{threadStarted ? "Thread provider" : "Provider for this thread"}</strong>
             <small>{threadStarted ? "Choose another provider to hand off this conversation in a new linked thread." : "This choice does not change the app default."}</small>
@@ -103,8 +102,7 @@ export function ThreadProviderControl({
             <Settings size={14} />
             <span><strong>Default for new threads</strong><small>{providerLabel(defaultProvider)} · change in Settings</small></span>
           </button>
-        </div>
-      )}
+      </div>
     </div>
   );
 }

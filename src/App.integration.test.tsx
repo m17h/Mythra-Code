@@ -124,6 +124,7 @@ function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
     };
   }
   if (command === "state_read") return null;
+  if (command === "normal_chat_workspace") return "/chats";
   if (command === "workspace_git_info") {
     return workspaceGitInfoImpl();
   }
@@ -696,5 +697,78 @@ describe("workspace switching during thread selection", () => {
       ),
     ).toHaveLength(turnsBefore);
     expect(await screen.findByText(/isolated worktree is unavailable/i)).toBeInTheDocument();
+  });
+});
+
+describe("composer sub-agent command center", () => {
+  async function openCrew(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(await screen.findByRole("button", { name: /Agents/ }));
+    return screen.getByRole("dialog", { name: "Sub-agent command center" });
+  }
+
+  it("writes a project's edits into that project's own sub-agent override", async () => {
+    const user = userEvent.setup();
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: PROJECT_A.name }));
+
+    await openCrew(user);
+    expect(screen.getByText(`Editing ${PROJECT_A.name}`)).toBeInTheDocument();
+    await user.click(screen.getByRole("switch", { name: "Allow sub-agent spawning" }));
+
+    await waitFor(() => {
+      const stored = JSON.parse(localStorage.getItem("kiwi.projects") ?? "[]") as Array<{
+        id: string;
+        overrides?: { subagents?: { enabled: boolean; maxConcurrent: number } };
+      }>;
+      expect(stored.find((project) => project.id === PROJECT_A.id)?.overrides?.subagents)
+        .toMatchObject({ enabled: true, maxConcurrent: 3 });
+      // The sibling project keeps inheriting the global defaults.
+      expect(stored.find((project) => project.id === PROJECT_B.id)?.overrides).toBeUndefined();
+    });
+    expect(JSON.parse(localStorage.getItem("kiwi.settings") ?? "{}").subagentsEnabled ?? false).toBe(false);
+    expect(await screen.findByText("project")).toBeInTheDocument();
+  });
+
+  it("writes edits made in Chats to the global defaults", async () => {
+    const user = userEvent.setup();
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: /Chats/ }));
+
+    await openCrew(user);
+    expect(screen.getByText("Editing Chats & project defaults")).toBeInTheDocument();
+    await user.click(screen.getByRole("switch", { name: "Allow sub-agent spawning" }));
+    await user.click(screen.getByRole("button", { name: "More concurrent sub-agents" }));
+    await user.click(screen.getByRole("button", { name: "Add Claude destination" }));
+
+    await waitFor(() => {
+      const stored = JSON.parse(localStorage.getItem("kiwi.settings") ?? "{}");
+      expect(stored.subagentsEnabled).toBe(true);
+      expect(stored.subagentMax).toBe(4);
+      expect(stored.childAgents).toMatchObject({
+        enabled: true,
+        targets: [expect.objectContaining({ id: "claude", provider: "claude" })],
+      });
+    });
+    const stored = JSON.parse(localStorage.getItem("kiwi.projects") ?? "[]") as Array<{ overrides?: unknown }>;
+    expect(stored.every((project) => project.overrides === undefined)).toBe(true);
+  });
+
+  it("keeps the control usable on a started thread but locks its policy", async () => {
+    const user = userEvent.setup();
+    localStorage.setItem("kiwi.settings", JSON.stringify({ subagentsEnabled: true, subagentMax: 5 }));
+    await renderApp();
+    pendingResume.resolve({ thread: { ...THREAD_A, turns: [] } });
+    await user.click(await screen.findByText("Alpha thread"));
+
+    const control = await screen.findByRole("button", { name: /Agents/ });
+    expect(control).toBeEnabled();
+    await openCrew(user);
+
+    expect(screen.getByText("Locked for this thread")).toBeInTheDocument();
+    expect(screen.getByText(/froze its sub-agent powers when it started/)).toBeInTheDocument();
+    expect(screen.queryByRole("switch", { name: "Allow sub-agent spawning" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "More concurrent sub-agents" })).not.toBeInTheDocument();
+    expect(screen.getByText("This thread captured no cross-provider destinations.")).toBeInTheDocument();
+    expect(JSON.parse(localStorage.getItem("kiwi.settings") ?? "{}").subagentMax).toBe(5);
   });
 });

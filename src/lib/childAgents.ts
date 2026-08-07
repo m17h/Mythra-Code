@@ -1,4 +1,5 @@
 import { DEFAULT_CHILD_AGENT_SETTINGS, DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_OPENAI_MODEL } from "./appConfig";
+import type { TaskStatus } from "./taskStore";
 import type { AppSettings, ChildAgentSettings, ChildAgentTarget, PermissionMode, Project, ProjectSubagentSettings, Provider } from "../types";
 import type { ReasoningEffort } from "../components/ModelPowerControl";
 
@@ -15,6 +16,12 @@ export const CHILD_AGENT_PROVIDERS: Provider[] = ["openai", "openrouter", "claud
 
 /** Mirrors the backend ceiling in `agents.rs`. */
 export const MAX_CHILD_AGENT_TARGETS = 24;
+/**
+ * Most children one thread may run at once. Numerically the same as the
+ * destination ceiling today, but a different rule: a roster of destinations is
+ * a menu, while concurrency is a live budget.
+ */
+export const MAX_SUBAGENT_CONCURRENCY = 24;
 export const CHILD_AGENT_REASONING_EFFORTS: ReasoningEffort[] = ["low", "medium", "high", "xhigh", "max", "ultra"];
 
 export { DEFAULT_CHILD_AGENT_SETTINGS };
@@ -65,6 +72,36 @@ export interface ChildAgentLink {
   createdAt: number;
   /** Persisted once the child settles so reloads never invent an outcome. */
   terminalStatus?: "completed" | "cancelled" | "failed";
+}
+
+/**
+ * Lifecycle word a model reads, kept stable across providers.
+ *
+ * Lives beside the policy rules rather than in the runtime hook so the UI can
+ * describe a child without importing the delegation transport.
+ */
+export function childLifecycle(status: TaskStatus): string {
+  if (status === "completed") return "completed";
+  if (status === "interrupted") return "cancelled";
+  if (status === "error") return "failed";
+  if (status === "starting") return "starting";
+  if (status === "running") return "running";
+  // A persisted link with no in-memory task is from an earlier app process;
+  // no provider turn owned by that process can still hold a live slot.
+  return "completed";
+}
+
+/** Preserve a persisted outcome when no task from this app process exists. */
+export function childLifecycleForLink(link: ChildAgentLink, status: TaskStatus): string {
+  if (status !== "idle") return childLifecycle(status);
+  // An unterminated link from an earlier process cannot still be running. It
+  // was interrupted by that process ending, so cancellation is the only
+  // outcome we can assert without fabricating a successful completion.
+  return link.terminalStatus ?? "cancelled";
+}
+
+export function isChildActive(status: TaskStatus): boolean {
+  return status === "starting" || status === "running";
 }
 
 export function isReasoningEffort(value: unknown): value is ReasoningEffort {
@@ -240,7 +277,7 @@ export function sanitizeProjectSubagentSettings(stored: unknown): ProjectSubagen
   const value = stored as Record<string, unknown>;
   return {
     enabled: value.enabled === true,
-    maxConcurrent: Math.min(24, Math.max(1, Math.floor(Number(value.maxConcurrent)) || 1)),
+    maxConcurrent: Math.min(MAX_SUBAGENT_CONCURRENCY, Math.max(1, Math.floor(Number(value.maxConcurrent)) || 1)),
     childAgents: sanitizeChildAgentSettings(value.childAgents),
   };
 }
@@ -332,7 +369,7 @@ export function childAgentPolicyFor(input: ChildAgentPolicyInput): ChildAgentPol
   return {
     sessionId: input.sessionId,
     rootThreadId: input.rootThreadId ?? "",
-    maxConcurrent: Math.min(24, Math.max(1, Math.floor(input.subagentMax) || 1)),
+    maxConcurrent: Math.min(MAX_SUBAGENT_CONCURRENCY, Math.max(1, Math.floor(input.subagentMax) || 1)),
     permission: input.permission,
     systemPrompt: input.systemPrompt,
     projectInstructionsEnabled: input.projectInstructionsEnabled,
@@ -390,7 +427,7 @@ export function sanitizeChildAgentPolicies(stored: unknown): Record<string, Chil
     result[sessionId] = {
       sessionId,
       rootThreadId: typeof entry.rootThreadId === "string" ? entry.rootThreadId : "",
-      maxConcurrent: Math.min(24, Math.max(1, Math.floor(Number(entry.maxConcurrent)) || 1)),
+      maxConcurrent: Math.min(MAX_SUBAGENT_CONCURRENCY, Math.max(1, Math.floor(Number(entry.maxConcurrent)) || 1)),
       permission: permission === "read-only" || permission === "full" ? permission : "ask",
       systemPrompt: typeof entry.systemPrompt === "string" ? entry.systemPrompt : "",
       projectInstructionsEnabled: entry.projectInstructionsEnabled === true,

@@ -5,7 +5,15 @@ import {
   respondToChildAgentRequest,
   type ChildAgentRequest,
 } from "../lib/agentBridge";
-import { childAgentModel, childAgentReasoningEffort, type ChildAgentLink, type ChildAgentPolicy } from "../lib/childAgents";
+import {
+  childAgentModel,
+  childAgentReasoningEffort,
+  childLifecycle,
+  childLifecycleForLink,
+  isChildActive,
+  type ChildAgentLink,
+  type ChildAgentPolicy,
+} from "../lib/childAgents";
 import { childAgentPolicyForSession } from "../lib/childAgentSessions";
 import { startChildAgentTurn } from "../lib/childRun";
 import { auditEvent, rpc } from "../lib/codex";
@@ -62,30 +70,9 @@ function taskStatusOf(threadId: string): TaskStatus {
   return useTaskStore.getState().statuses[threadId] ?? "idle";
 }
 
-/** Lifecycle word a model reads, kept stable across providers. */
-export function childLifecycle(status: TaskStatus): string {
-  if (status === "completed") return "completed";
-  if (status === "interrupted") return "cancelled";
-  if (status === "error") return "failed";
-  if (status === "starting") return "starting";
-  if (status === "running") return "running";
-  // A persisted link with no in-memory task is from an earlier app process;
-  // no provider turn owned by that process can still hold a live slot.
-  return "completed";
-}
-
-/** Preserve a persisted outcome when no task from this app process exists. */
-export function childLifecycleForLink(link: ChildAgentLink, status: TaskStatus): string {
-  if (status !== "idle") return childLifecycle(status);
-  // An unterminated link from an earlier process cannot still be running. It
-  // was interrupted by that process ending, so cancellation is the only
-  // outcome we can assert without fabricating a successful completion.
-  return link.terminalStatus ?? "cancelled";
-}
-
-export function isChildActive(status: TaskStatus): boolean {
-  return status === "starting" || status === "running";
-}
+// Re-exported from the policy module, where the UI can reach them without
+// pulling in the delegation transport.
+export { childLifecycle, childLifecycleForLink, isChildActive };
 
 /** Children of one bridge session that still hold a concurrency slot. */
 export function activeChildThreadIds(sessionId: string, links: Record<string, ChildAgentLink>): string[] {
@@ -169,6 +156,7 @@ async function interruptChild(link: ChildAgentLink): Promise<void> {
 
 export function useChildAgents(context: ChildAgentContext): {
   cancelChildAgentsFor: (rootThreadId: string) => Promise<void>;
+  stopChildAgent: (rootThreadId: string, childThreadId: string) => Promise<void>;
 } {
   const contextRef = useRef(context);
   contextRef.current = context;
@@ -395,6 +383,47 @@ export function useChildAgents(context: ChildAgentContext): {
     };
   }, [linksIncludingPending]);
 
+  /**
+   * Stop exactly one child from the command center or the model bridge.
+   *
+   * Cross-provider children have a durable ownership link and use their
+   * provider-specific interrupt path. Codex-native children are first-class
+   * runtime threads, so they can be interrupted when their child turn id has
+   * reached the task store. Unknown/native providers fail closed instead of
+   * pretending the work stopped.
+   */
+  const stopChildAgent = useCallback(async (rootThreadId: string, childThreadId: string): Promise<void> => {
+    const ctx = contextRef.current;
+    const taskStore = useTaskStore.getState();
+    const link = linksIncludingPending(ctx.links)[childThreadId];
+    if (link) {
+      if (link.rootThreadId !== rootThreadId) {
+        throw new Error(`\`${childThreadId}\` was not started from this thread.`);
+      }
+      if (!isChildActive(taskStatusOf(childThreadId))) return;
+      await interruptChild(link);
+    } else {
+      const agent = taskStore.tasks[rootThreadId]?.agents.find((entry) => entry.id === childThreadId);
+      if (!agent) throw new Error(`\`${childThreadId}\` was not started from this thread.`);
+      const turnId = taskStore.tasks[childThreadId]?.activeTurnId;
+      if (!turnId) {
+        throw new Error("This provider has not exposed an individual stop control for that sub-agent.");
+      }
+      await rpc("turn/interrupt", { threadId: childThreadId, turnId });
+    }
+
+    taskStore.setActiveTurn(childThreadId, undefined);
+    taskStore.setTaskStatus(childThreadId, "interrupted");
+    const existing = taskStore.tasks[rootThreadId]?.agents.find((entry) => entry.id === childThreadId);
+    taskStore.upsertAgent(rootThreadId, {
+      id: childThreadId,
+      prompt: link?.title ?? existing?.prompt ?? "Delegated task",
+      status: "interrupted",
+      path: existing?.path,
+    });
+    void auditEvent("childAgent.stopped", { rootThreadId, childThreadId, kind: link ? "cross-provider" : "native" });
+  }, [linksIncludingPending]);
+
   const cancelChild = useCallback(async (request: ChildAgentRequest): Promise<Record<string, unknown>> => {
     const ctx = contextRef.current;
     const childId = String(request.arguments.childId ?? "");
@@ -405,13 +434,9 @@ export function useChildAgents(context: ChildAgentContext): {
     if (!isChildActive(taskStatusOf(childId))) {
       return { childId, status: childLifecycleForLink(link, taskStatusOf(childId)), note: "That sub-agent had already finished." };
     }
-    await interruptChild(link);
-    const taskStore = useTaskStore.getState();
-    taskStore.setActiveTurn(childId, undefined);
-    taskStore.setTaskStatus(childId, "interrupted");
-    taskStore.upsertAgent(link.rootThreadId, { id: childId, prompt: link.title, status: "interrupted" });
+    await stopChildAgent(link.rootThreadId, childId);
     return { childId, status: "cancelled" };
-  }, [linksIncludingPending]);
+  }, [linksIncludingPending, stopChildAgent]);
 
   const handleRequest = useCallback(async (request: ChildAgentRequest): Promise<void> => {
     try {
@@ -522,5 +547,5 @@ export function useChildAgents(context: ChildAgentContext): {
     }));
   }, []);
 
-  return { cancelChildAgentsFor };
+  return { cancelChildAgentsFor, stopChildAgent };
 }

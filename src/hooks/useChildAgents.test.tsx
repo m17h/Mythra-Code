@@ -465,6 +465,46 @@ describe("useChildAgents", () => {
       expect(lastResponse()?.[1]).toEqual(expect.objectContaining({ status: "completed" }));
     });
 
+    it("lets the user stop one cross-provider child without stopping its siblings", async () => {
+      persistedLinks = {
+        "child-1": link({ provider: "claude" }),
+        "child-2": link({ childThreadId: "child-2", provider: "cursor" }),
+      };
+      const view = await mount();
+      act(() => {
+        useTaskStore.getState().setTaskStatus("child-1", "running");
+        useTaskStore.getState().setTaskStatus("child-2", "running");
+      });
+      await act(async () => { await view.result.current.stopChildAgent("root-1", "child-1"); });
+      expect(claude.interruptClaudeTurn).toHaveBeenCalledExactlyOnceWith("child-1");
+      expect(cursor.interruptCursorTurn).not.toHaveBeenCalled();
+      expect(useTaskStore.getState().statuses["child-1"]).toBe("interrupted");
+      expect(useTaskStore.getState().statuses["child-2"]).toBe("running");
+    });
+
+    it("interrupts one Codex-native child when the runtime exposed its turn", async () => {
+      const view = await mount();
+      act(() => {
+        useTaskStore.getState().upsertAgent("root-1", { id: "native-1", prompt: "Native task", status: "inProgress" });
+        useTaskStore.getState().ensureTask("native-1", "/tmp/project");
+        useTaskStore.getState().setActiveTurn("native-1", "native-turn");
+        useTaskStore.getState().setTaskStatus("native-1", "running");
+      });
+      await act(async () => { await view.result.current.stopChildAgent("root-1", "native-1"); });
+      expect(codex.rpc).toHaveBeenCalledWith("turn/interrupt", { threadId: "native-1", turnId: "native-turn" });
+      expect(useTaskStore.getState().statuses["native-1"]).toBe("interrupted");
+      expect(useTaskStore.getState().tasks["root-1"].agents[0].status).toBe("interrupted");
+    });
+
+    it("fails closed when a native provider did not expose an individual turn", async () => {
+      const view = await mount();
+      act(() => {
+        useTaskStore.getState().upsertAgent("root-1", { id: "native-1", prompt: "Native task", status: "inProgress" });
+      });
+      await expect(view.result.current.stopChildAgent("root-1", "native-1")).rejects.toThrow(/has not exposed/);
+      expect(codex.rpc).not.toHaveBeenCalled();
+    });
+
     it("rejects a tool the bridge does not implement", async () => {
       const view = await mount();
       await view.send(request({ tool: "delete_everything" as ChildAgentRequest["tool"] }));

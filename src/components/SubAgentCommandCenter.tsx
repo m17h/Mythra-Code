@@ -1,0 +1,758 @@
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { AlertTriangle, ArrowRightLeft, LoaderCircle, Lock, Minus, Plus, Settings2, Square, Trash2, UsersRound, X } from "lucide-react";
+import { ProviderLogo } from "./BrandLogos";
+import { AppSelectMenu, type AppSelectOption } from "./AppSelectMenu";
+import {
+  CHILD_AGENT_PROVIDERS,
+  CHILD_AGENT_REASONING_EFFORTS,
+  MAX_CHILD_AGENT_TARGETS,
+  MAX_SUBAGENT_CONCURRENCY,
+  childAgentModel,
+  childAgentTargetIssue,
+  describeChildAgentReasoning,
+  providerDisplayName,
+  readyChildAgentTargets,
+  uniqueChildAgentId,
+  type ChildAgentPolicy,
+  type ChildAgentReadiness,
+} from "../lib/childAgents";
+import {
+  describeSubAgentActivity,
+  isSubAgentWorkerActive,
+  subAgentStatusLabel,
+  summarizeSubAgentWorkers,
+  type SubAgentWorker,
+} from "../lib/subAgentActivity";
+import type { ChildAgentTarget, ProjectSubagentSettings, Provider } from "../types";
+
+/**
+ * The composer's sub-agent command center.
+ *
+ * A single toolbar control that opens a mini window over the composer: crew
+ * size, the provider/model destinations a root agent may delegate to, the
+ * reasoning authority each destination gets, and the live state of every child
+ * currently working for this thread.
+ *
+ * Two modes, and the difference is a security boundary rather than a
+ * convenience:
+ *
+ * - A fresh draft edits the policy that a thread will freeze when it starts,
+ *   writing through to the global defaults or to the active project override.
+ * - A started thread is locked. Its captured max and destinations are shown
+ *   read-only, because changing them would silently hand a running root agent
+ *   powers it did not start with. Live state stays visible either way.
+ *
+ * The full Settings → Sub-agents screen remains the durable place to manage
+ * destination names, descriptions, and per-project policies; this panel is the
+ * daily-use surface and links there.
+ */
+
+/** The panel is a popover, not a modal: Escape and outside clicks dismiss it. */
+export interface SubAgentCommandCenterProps {
+  /** Editable draft policy, already resolved for the active scope. */
+  policy: ProjectSubagentSettings;
+  /** The frozen policy a started thread carries, when it captured one. */
+  capturedPolicy: ChildAgentPolicy | null;
+  /** True once a thread has started; the policy may no longer be edited. */
+  locked: boolean;
+  readiness: ChildAgentReadiness;
+  workers: SubAgentWorker[];
+  /** "Chats" or the project name — where an edit would be written. */
+  scopeLabel: string;
+  /** The active project already carries its own sub-agent override. */
+  projectOverride: boolean;
+  onChange: (next: ProjectSubagentSettings) => void;
+  onOpenSettings: () => void;
+  /** Live provider catalogs used by the app's own model pickers. */
+  modelCatalogs?: Partial<Record<Provider, SubAgentModelOption[]>>;
+  /** Stop one live child without stopping its root conversation. */
+  onStopWorker?: (worker: SubAgentWorker) => Promise<void>;
+  /** Stop one live child and ask the root to restart its task on a frozen destination. */
+  onReplaceWorker?: (worker: SubAgentWorker, targetId: string) => Promise<void>;
+}
+
+export interface SubAgentModelOption {
+  id: string;
+  label: string;
+  detail?: string;
+  keywords?: string;
+}
+
+/** Stable identity so a locked thread's empty roster never re-triggers memos. */
+const NO_TARGETS: ChildAgentTarget[] = [];
+const PANEL_EXIT_MS = 180;
+
+const BUILTIN_MODEL_CATALOGS: Record<Provider, SubAgentModelOption[]> = {
+  openai: [
+    { id: "gpt-5.6-sol", label: "Sol", detail: "gpt-5.6-sol · detail & polish" },
+    { id: "gpt-5.6-terra", label: "Terra", detail: "gpt-5.6-terra · everyday power" },
+    { id: "gpt-5.6-luna", label: "Luna", detail: "gpt-5.6-luna · fast & focused" },
+  ],
+  claude: [
+    { id: "claude-fable-5", label: "Fable 5", detail: "Frontier coding" },
+    { id: "claude-opus-5", label: "Opus 5", detail: "Deepest reasoning" },
+    { id: "claude-sonnet-5", label: "Sonnet 5", detail: "Balanced power" },
+    { id: "claude-haiku-4-5", label: "Haiku 4.5", detail: "Fast and efficient" },
+  ],
+  cursor: [{ id: "auto", label: "Auto", detail: "Cursor recommended" }],
+  openrouter: [],
+};
+
+const REASONING_MODE_OPTIONS: AppSelectOption[] = [
+  { value: "inherit", label: "Inherit parent", detail: "Use the main agent's level" },
+  { value: "fixed", label: "You set the level", detail: "Always use one chosen level" },
+  { value: "agent", label: "Main agent decides", detail: "Let the root choose within a ceiling" },
+];
+
+const REASONING_LABELS: Record<(typeof CHILD_AGENT_REASONING_EFFORTS)[number], string> = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "Extra high",
+  max: "Maximum",
+  ultra: "Ultra",
+};
+
+const REASONING_OPTIONS: AppSelectOption[] = CHILD_AGENT_REASONING_EFFORTS.map((effort) => ({
+  value: effort,
+  label: REASONING_LABELS[effort],
+}));
+
+function modelOptionsFor(
+  provider: Provider,
+  catalogs: SubAgentCommandCenterProps["modelCatalogs"],
+  selectedModel?: string,
+): AppSelectOption[] {
+  const supplied = catalogs?.[provider];
+  const catalog = supplied?.length ? supplied : BUILTIN_MODEL_CATALOGS[provider];
+  const options: AppSelectOption[] = catalog.map((entry) => ({
+    value: entry.id,
+    label: entry.label,
+    detail: entry.detail ?? entry.id,
+    keywords: entry.keywords,
+    icon: <ProviderLogo provider={provider} size={11} />,
+  }));
+  if (selectedModel && !options.some((option) => option.value === selectedModel)) {
+    options.unshift({
+      value: selectedModel,
+      label: selectedModel,
+      detail: "Previously configured model",
+      icon: <ProviderLogo provider={provider} size={11} />,
+    });
+  }
+  return options;
+}
+
+function targetKey(target: ChildAgentTarget): string {
+  return target.id;
+}
+
+/** A destination named after its provider, deduped against the roster. */
+function newTargetFor(provider: Provider, existing: ChildAgentTarget[]): ChildAgentTarget {
+  const id = uniqueChildAgentId(provider, existing);
+  return {
+    id,
+    provider,
+    model: provider === "cursor" ? "auto" : "",
+    label: providerDisplayName(provider),
+    description: "",
+    enabled: true,
+    reasoningMode: "inherit",
+    reasoningEffort: "medium",
+    reasoningMaxEffort: "high",
+  };
+}
+
+export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
+  const [open, setOpen] = useState(false);
+  const [panelPresent, setPanelPresent] = useState(false);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [replaceWorkerId, setReplaceWorkerId] = useState<string | null>(null);
+  const [workerAction, setWorkerAction] = useState<{ workerId: string; kind: "stop" | "replace" } | null>(null);
+  const [workerActionError, setWorkerActionError] = useState<string | null>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const closeTimerRef = useRef<number | null>(null);
+  const panelId = useId();
+
+  const { policy, capturedPolicy, locked, readiness, workers, onChange } = props;
+  const counts = useMemo(() => summarizeSubAgentWorkers(workers), [workers]);
+  // A locked thread shows exactly what it captured. Without a captured policy
+  // it was started with no delegation bridge at all, so an empty roster is the
+  // truthful answer rather than the roster the user has since configured.
+  const targets = useMemo(
+    () => (locked ? (capturedPolicy?.targets ?? NO_TARGETS) : policy.childAgents.targets),
+    [capturedPolicy, locked, policy.childAgents.targets],
+  );
+  const maxConcurrent = locked ? (capturedPolicy?.maxConcurrent ?? policy.maxConcurrent) : policy.maxConcurrent;
+  // A captured cross-provider policy can only exist when delegation was on.
+  // Prefer that immutable fact over today's draft settings while viewing an
+  // older thread, otherwise a later global/project edit can make a locked
+  // thread incorrectly claim its agent access was off.
+  const delegationOn = locked && capturedPolicy ? true : policy.enabled;
+  const crossProviderOn = locked ? Boolean(capturedPolicy) : policy.childAgents.enabled;
+  const readyCount = useMemo(
+    () => readyChildAgentTargets({ enabled: true, targets }, readiness).length,
+    [readiness, targets],
+  );
+  const enabledCount = targets.filter((target) => target.enabled).length;
+  // A locked thread's rows are readouts, so they should not be greyed out by
+  // whatever the (unrelated) current draft policy happens to say.
+  const dimmed = !locked && !policy.enabled;
+  const crossProviderReady = !locked && policy.enabled && policy.childAgents.enabled && readyCount > 0;
+
+  const clearCloseTimer = useCallback(() => {
+    if (closeTimerRef.current === null) return;
+    window.clearTimeout(closeTimerRef.current);
+    closeTimerRef.current = null;
+  }, []);
+
+  const show = useCallback(() => {
+    clearCloseTimer();
+    setPanelPresent(true);
+    setOpen(true);
+  }, [clearCloseTimer]);
+
+  const finishClose = useCallback(() => {
+    clearCloseTimer();
+    setPanelPresent(false);
+  }, [clearCloseTimer]);
+
+  const close = useCallback(() => {
+    setOpen(false);
+    setExpandedId(null);
+    setReplaceWorkerId(null);
+    setWorkerActionError(null);
+    clearCloseTimer();
+    // CSS animationend normally removes the panel. This fallback also covers
+    // reduced-motion environments and a window losing focus mid-animation.
+    closeTimerRef.current = window.setTimeout(finishClose, PANEL_EXIT_MS);
+  }, [clearCloseTimer, finishClose]);
+
+  useEffect(() => () => clearCloseTimer(), [clearCloseTimer]);
+
+  const stopWorker = useCallback(async (worker: SubAgentWorker) => {
+    if (!props.onStopWorker || workerAction) return;
+    setWorkerActionError(null);
+    setWorkerAction({ workerId: worker.id, kind: "stop" });
+    try {
+      await props.onStopWorker(worker);
+      setReplaceWorkerId(null);
+    } catch (reason) {
+      setWorkerActionError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setWorkerAction(null);
+    }
+  }, [props, workerAction]);
+
+  const replaceWorker = useCallback(async (worker: SubAgentWorker, targetId: string) => {
+    if (!props.onReplaceWorker || workerAction) return;
+    setWorkerActionError(null);
+    setWorkerAction({ workerId: worker.id, kind: "replace" });
+    try {
+      await props.onReplaceWorker(worker, targetId);
+      setReplaceWorkerId(null);
+    } catch (reason) {
+      setWorkerActionError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setWorkerAction(null);
+    }
+  }, [props, workerAction]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) close();
+    };
+    // Capture phase + stopPropagation: Escape closes this panel and never
+    // reaches the app-level handler that stops the running turn.
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      // A nested OpenKiwi select gets the first Escape so it can close without
+      // dismissing the entire command center around it.
+      if (panelRef.current?.querySelector("[data-app-select-open='true']")) return;
+      event.stopPropagation();
+      close();
+      triggerRef.current?.focus();
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown, true);
+    };
+  }, [close, open]);
+
+  // Move focus into the panel on open so keyboard users land inside it, and
+  // keep Tab from escaping into the composer behind it.
+  useEffect(() => {
+    if (!open) return;
+    const panel = panelRef.current;
+    if (!panel) return;
+    panel.querySelector<HTMLElement>("[data-autofocus]")?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Tab") return;
+      const focusable = Array.from(panel.querySelectorAll<HTMLElement>(
+        "button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex='-1'])",
+      ));
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    panel.addEventListener("keydown", onKeyDown);
+    return () => panel.removeEventListener("keydown", onKeyDown);
+  }, [open]);
+
+  const setTargets = useCallback((next: ChildAgentTarget[]) => {
+    onChange({ ...policy, childAgents: { ...policy.childAgents, targets: next } });
+  }, [onChange, policy]);
+
+  const updateTarget = useCallback((id: string, patch: Partial<ChildAgentTarget>) => {
+    setTargets(policy.childAgents.targets.map((target) => (target.id === id ? { ...target, ...patch } : target)));
+  }, [policy.childAgents.targets, setTargets]);
+
+  const addTarget = useCallback((provider: Provider) => {
+    const existing = policy.childAgents.targets;
+    if (existing.length >= MAX_CHILD_AGENT_TARGETS) return;
+    const target = newTargetFor(provider, existing);
+    onChange({
+      ...policy,
+      // Adding a worker is a clear statement of intent; turning the switches on
+      // for the user avoids a destination that silently does nothing.
+      enabled: true,
+      childAgents: { enabled: true, targets: [...existing, target] },
+    });
+    setExpandedId(target.id);
+  }, [onChange, policy]);
+
+  const triggerLabel = counts.active > 0
+    ? `Agents ${counts.active}/${maxConcurrent}`
+    : delegationOn
+      ? `Agents: ${maxConcurrent}${crossProviderReady ? " ↗" : ""}`
+      : "Agents off";
+
+  return (
+    <div className="subagent-control" ref={rootRef}>
+      <button
+        ref={triggerRef}
+        type="button"
+        className={`toolbar-button agents-button ${delegationOn ? "enabled" : ""} ${counts.active > 0 ? "live" : ""}`}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-controls={open ? panelId : undefined}
+        title={locked
+          ? "This thread's sub-agent policy is locked. Open the crew to watch its agents."
+          : "Manage the sub-agent crew for this thread"}
+        onClick={() => (open ? close() : show())}
+      >
+        {counts.active > 0
+          ? <span className="sa-trigger-pulse" aria-hidden="true"><UsersRound size={14} /></span>
+          : <UsersRound size={14} />}
+        {triggerLabel}
+        {locked && <Lock size={11} className="sa-trigger-lock" aria-hidden="true" />}
+        {props.projectOverride && <em className="project-override-mark">project</em>}
+      </button>
+
+      {/* Announced while the panel is closed; the open panel has its own
+          status region and two would read the same line twice. */}
+      {counts.total > 0 && !open && (
+        <span className="sr-only" role="status">{describeSubAgentActivity(counts)}</span>
+      )}
+
+      {panelPresent && (
+        <div
+          id={panelId}
+          ref={panelRef}
+          className={`subagent-panel ${open ? "" : "closing"}`}
+          role="dialog"
+          aria-hidden={!open || undefined}
+          aria-label="Sub-agent command center"
+          onAnimationEnd={(event) => {
+            if (event.target === event.currentTarget && !open) finishClose();
+          }}
+        >
+          <header className="sa-header">
+            <span className="sa-header-mark" aria-hidden="true"><UsersRound size={14} /></span>
+            <span className="sa-header-copy">
+              <strong>Sub-agent crew</strong>
+              <small>{locked ? "Locked for this thread" : `Editing ${props.scopeLabel}`}</small>
+            </span>
+            <button type="button" className="sa-close" onClick={close} aria-label="Close sub-agent command center" data-autofocus>
+              <X size={13} />
+            </button>
+          </header>
+
+          {locked && (
+            <p className="sa-locked-note">
+              <Lock size={12} aria-hidden="true" />
+              <span>
+                This thread froze its sub-agent powers when it started, so they cannot change mid-flight.
+                Adjust the crew before starting a new thread.
+              </span>
+            </p>
+          )}
+
+          <div className="sa-policy">
+            <div className={`sa-row ${delegationOn ? "on" : ""}`}>
+              <span className="sa-row-copy">
+                <strong>Sub-agents</strong>
+                <small>{delegationOn ? "The model may split work across parallel agents." : "No sub-agent tools are exposed."}</small>
+              </span>
+              {locked ? (
+                <span className="sa-readout">{delegationOn ? "On" : "Off"}</span>
+              ) : (
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={policy.enabled}
+                  aria-label="Allow sub-agent spawning"
+                  className={`toggle-switch ${policy.enabled ? "on" : ""}`}
+                  onClick={() => onChange({ ...policy, enabled: !policy.enabled })}
+                >
+                  <span />
+                </button>
+              )}
+            </div>
+
+            <div className={`sa-row ${dimmed ? "muted" : ""}`}>
+              <span className="sa-row-copy">
+                <strong>Parallel limit</strong>
+                <small>
+                  {!locked
+                    ? `How many children may run at once (1–${MAX_SUBAGENT_CONCURRENCY}).`
+                    : capturedPolicy
+                      ? "Captured when this thread started."
+                      : "This thread's budget for its own provider's agents."}
+                </small>
+              </span>
+              {locked ? (
+                <span className="sa-readout">{maxConcurrent}</span>
+              ) : (
+                <div className="number-stepper" aria-label="Maximum concurrent sub-agents">
+                  <button
+                    type="button"
+                    aria-label="Fewer concurrent sub-agents"
+                    disabled={!policy.enabled || policy.maxConcurrent <= 1}
+                    onClick={() => onChange({ ...policy, maxConcurrent: Math.max(1, policy.maxConcurrent - 1) })}
+                  ><Minus size={12} /></button>
+                  <strong key={policy.maxConcurrent} className="sa-flash">{policy.maxConcurrent}</strong>
+                  <button
+                    type="button"
+                    aria-label="More concurrent sub-agents"
+                    disabled={!policy.enabled || policy.maxConcurrent >= MAX_SUBAGENT_CONCURRENCY}
+                    onClick={() => onChange({ ...policy, maxConcurrent: Math.min(MAX_SUBAGENT_CONCURRENCY, policy.maxConcurrent + 1) })}
+                  ><Plus size={12} /></button>
+                </div>
+              )}
+            </div>
+
+            <div className={`sa-row ${dimmed ? "muted" : ""}`}>
+              <span className="sa-row-copy">
+                <strong>Cross-provider</strong>
+                <small>
+                  {!crossProviderOn
+                    ? "Children stay inside this thread's own provider."
+                    : enabledCount === 0
+                      ? "No destinations switched on."
+                      : `${readyCount} of ${enabledCount} destination${enabledCount === 1 ? "" : "s"} ready`}
+                </small>
+              </span>
+              {locked ? (
+                <span className="sa-readout">{crossProviderOn ? "On" : "Off"}</span>
+              ) : (
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={policy.childAgents.enabled}
+                  aria-label="Allow cross-provider sub-agents"
+                  disabled={!policy.enabled}
+                  className={`toggle-switch ${policy.childAgents.enabled && policy.enabled ? "on" : ""}`}
+                  onClick={() => onChange({ ...policy, childAgents: { ...policy.childAgents, enabled: !policy.childAgents.enabled } })}
+                >
+                  <span />
+                </button>
+              )}
+            </div>
+
+            <div className={`sa-crew ${crossProviderOn && !dimmed ? "" : "muted"}`}>
+              <div className="sa-crew-grid" role="list" aria-label="Cross-provider destinations">
+                {targets.map((target) => {
+                  const issue = childAgentTargetIssue(target, readiness);
+                  const expanded = expandedId === target.id;
+                  const busy = workers.some((worker) => worker.targetId === target.id && isSubAgentWorkerActive(worker.status));
+                  const selectedModel = childAgentModel(target);
+                  const modelOptions = modelOptionsFor(target.provider, props.modelCatalogs, selectedModel);
+                  return (
+                    <div
+                      role="listitem"
+                      key={targetKey(target)}
+                      className={`sa-tile ${target.provider} ${target.enabled ? "" : "off"} ${issue && target.enabled ? "issue" : ""} ${busy ? "busy" : ""} ${expanded ? "expanded" : ""}`}
+                    >
+                      <div className="sa-tile-head">
+                        <button
+                          type="button"
+                          className="sa-tile-face"
+                          aria-expanded={locked ? undefined : expanded}
+                          aria-label={locked ? undefined : `Configure ${target.label || target.id}`}
+                          disabled={locked}
+                          onClick={() => setExpandedId(expanded ? null : target.id)}
+                        >
+                          <span className="sa-avatar" aria-hidden="true">
+                            <ProviderLogo provider={target.provider} size={15} />
+                            <svg className="sa-avatar-trace" viewBox="0 0 34 34" focusable="false">
+                              <rect className="sa-avatar-trace-rail" x="1.5" y="1.5" width="31" height="31" rx="8" pathLength="100" />
+                              <rect className="sa-avatar-trace-runner" x="1.5" y="1.5" width="31" height="31" rx="8" pathLength="100" />
+                            </svg>
+                          </span>
+                          <span className="sa-tile-copy">
+                            <strong>{target.label || target.id}</strong>
+                            <small>{childAgentModel(target) || "provider default"}</small>
+                          </span>
+                        </button>
+                        {!locked && (
+                          <button
+                            type="button"
+                            role="switch"
+                            aria-checked={target.enabled}
+                            aria-label={`Enable ${target.label || target.id}`}
+                            className={`sa-tile-switch ${target.enabled ? "on" : ""}`}
+                            onClick={() => updateTarget(target.id, { enabled: !target.enabled })}
+                          ><span /></button>
+                        )}
+                      </div>
+                      {locked && <span className="sa-tile-note">{describeChildAgentReasoning(target)}</span>}
+                      {issue && target.enabled && (
+                        <p className="sa-tile-issue"><AlertTriangle size={11} aria-hidden="true" /> {issue}</p>
+                      )}
+                      {expanded && !locked && (
+                        <div className="sa-tile-config">
+                          <div className="sa-config-field">
+                            <span>Provider</span>
+                            <AppSelectMenu
+                              ariaLabel={`Provider for ${target.id}`}
+                              value={target.provider}
+                              options={CHILD_AGENT_PROVIDERS.map((provider) => ({
+                                value: provider,
+                                label: providerDisplayName(provider),
+                                detail: provider === "openai"
+                                  ? "ChatGPT subscription"
+                                  : provider === "claude"
+                                    ? "Claude Code subscription"
+                                    : provider === "cursor"
+                                      ? "Cursor subscription"
+                                      : "API model routing",
+                                icon: <ProviderLogo provider={provider} size={11} />,
+                              }))}
+                              onChange={(value) => {
+                                const provider = value as Provider;
+                                updateTarget(target.id, {
+                                  provider,
+                                  model: childAgentModel({ provider, model: "" }),
+                                  label: target.label === providerDisplayName(target.provider) ? providerDisplayName(provider) : target.label,
+                                });
+                              }}
+                            />
+                          </div>
+                          <div className="sa-config-field">
+                            <span>Model</span>
+                            <AppSelectMenu
+                              ariaLabel={`Model for ${target.id}`}
+                              value={selectedModel}
+                              options={modelOptions}
+                              placeholder={target.provider === "openrouter" ? "Choose an OpenRouter model" : "Choose a model"}
+                              searchable={modelOptions.length > 8}
+                              emptyMessage={target.provider === "openrouter"
+                                ? "No OpenRouter models are available. Check the API key and refresh in Settings."
+                                : "No models are available for this provider."}
+                              onChange={(model) => updateTarget(target.id, { model })}
+                            />
+                          </div>
+                          <div className="sa-config-field">
+                            <span>Reasoning</span>
+                            <AppSelectMenu
+                              ariaLabel={`Reasoning control for ${target.id}`}
+                              value={target.reasoningMode}
+                              options={REASONING_MODE_OPTIONS}
+                              onChange={(reasoningMode) => updateTarget(target.id, { reasoningMode: reasoningMode as ChildAgentTarget["reasoningMode"] })}
+                            />
+                          </div>
+                          {target.reasoningMode === "fixed" && (
+                            <div className="sa-config-field">
+                              <span>Level</span>
+                              <AppSelectMenu
+                                ariaLabel={`Reasoning level for ${target.id}`}
+                                value={target.reasoningEffort}
+                                options={REASONING_OPTIONS}
+                                onChange={(reasoningEffort) => updateTarget(target.id, { reasoningEffort: reasoningEffort as ChildAgentTarget["reasoningEffort"] })}
+                              />
+                            </div>
+                          )}
+                          {target.reasoningMode === "agent" && (
+                            <div className="sa-config-field">
+                              <span>Ceiling</span>
+                              <AppSelectMenu
+                                ariaLabel={`Maximum reasoning for ${target.id}`}
+                                value={target.reasoningMaxEffort}
+                                options={REASONING_OPTIONS}
+                                onChange={(reasoningMaxEffort) => updateTarget(target.id, { reasoningMaxEffort: reasoningMaxEffort as ChildAgentTarget["reasoningMaxEffort"] })}
+                              />
+                            </div>
+                          )}
+                          <p className="sa-tile-reasoning">{describeChildAgentReasoning(target)}</p>
+                          <button
+                            type="button"
+                            className="sa-tile-remove"
+                            aria-label={`Remove ${target.id}`}
+                            onClick={() => {
+                              setExpandedId(null);
+                              setTargets(policy.childAgents.targets.filter((entry) => entry.id !== target.id));
+                            }}
+                          ><Trash2 size={12} /> Remove</button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+
+                {!locked && targets.length < MAX_CHILD_AGENT_TARGETS && (
+                  <div role="listitem" className="sa-add">
+                    <span>Add a worker</span>
+                    <div className="sa-add-row">
+                      {CHILD_AGENT_PROVIDERS.map((provider) => (
+                        <button
+                          type="button"
+                          key={provider}
+                          aria-label={`Add ${providerDisplayName(provider)} destination`}
+                          title={`Add ${providerDisplayName(provider)}`}
+                          onClick={() => addTarget(provider)}
+                        >
+                          <ProviderLogo provider={provider} size={13} />
+                          <Plus size={10} aria-hidden="true" />
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {targets.length === 0 && (
+                <p className="sa-empty">
+                  {locked
+                    ? "This thread captured no cross-provider destinations."
+                    : "No destinations yet. Add a worker to let the root agent delegate across providers."}
+                </p>
+              )}
+            </div>
+          </div>
+
+          <div className="sa-activity">
+            <div className="sa-activity-head">
+              <strong>Live agents</strong>
+              <span className="sa-counts" role="status">
+                <span key={describeSubAgentActivity(counts)} className="sa-flash">{describeSubAgentActivity(counts)}</span>
+              </span>
+            </div>
+            {workers.length > 0 ? (
+              <ul className="sa-worker-list">
+                {workers.map((worker) => {
+                  const active = isSubAgentWorkerActive(worker.status);
+                  const replacing = replaceWorkerId === worker.id;
+                  const acting = workerAction?.workerId === worker.id;
+                  const replacementTargets = targets.filter((target) => target.enabled && !childAgentTargetIssue(target, readiness));
+                  return (
+                    <li key={worker.id} className={`sa-worker ${worker.status} ${replacing ? "replacing" : ""}`}>
+                      <span className="sa-worker-orb" aria-hidden="true" />
+                      <span className="sa-worker-copy">
+                        <strong title={worker.title}>{worker.title}</strong>
+                        <small>{subAgentStatusLabel(worker.status)} · {worker.detail}</small>
+                      </span>
+                      <span className="sa-worker-end">
+                        {worker.provider && (
+                          <span className="sa-worker-mark" aria-hidden="true"><ProviderLogo provider={worker.provider} size={12} /></span>
+                        )}
+                        {active && props.onReplaceWorker && replacementTargets.length > 0 && (
+                          <button
+                            type="button"
+                            className="sa-worker-action"
+                            aria-expanded={replacing}
+                            aria-label={`Replace ${worker.title}`}
+                            disabled={Boolean(workerAction)}
+                            onClick={() => {
+                              setWorkerActionError(null);
+                              setReplaceWorkerId(replacing ? null : worker.id);
+                            }}
+                          >
+                            <ArrowRightLeft size={10} /> Replace
+                          </button>
+                        )}
+                        {active && props.onStopWorker && (
+                          <button
+                            type="button"
+                            className="sa-worker-action stop"
+                            aria-label={`Stop ${worker.title}`}
+                            disabled={Boolean(workerAction)}
+                            onClick={() => void stopWorker(worker)}
+                          >
+                            {acting && workerAction?.kind === "stop" ? <LoaderCircle className="spin" size={10} /> : <Square size={9} />}
+                            Stop
+                          </button>
+                        )}
+                      </span>
+
+                      {replacing && (
+                        <div className="sa-replace-picker" role="group" aria-label={`Replacement destination for ${worker.title}`}>
+                          <span>
+                            <strong>Replace with</strong>
+                            <small>The root agent will restart the same task.</small>
+                          </span>
+                          <div>
+                            {replacementTargets.map((target) => (
+                              <button
+                                type="button"
+                                key={target.id}
+                                disabled={Boolean(workerAction)}
+                                aria-label={`Replace ${worker.title} with ${target.label || target.id}`}
+                                onClick={() => void replaceWorker(worker, target.id)}
+                              >
+                                {acting && workerAction?.kind === "replace"
+                                  ? <LoaderCircle className="spin" size={11} />
+                                  : <ProviderLogo provider={target.provider} size={11} />}
+                                <span><strong>{target.label || target.id}</strong><small>{childAgentModel(target) || "provider default"}{target.id === worker.targetId ? " · restart" : ""}</small></span>
+                              </button>
+                            ))}
+                            <button type="button" className="cancel" disabled={Boolean(workerAction)} onClick={() => setReplaceWorkerId(null)} aria-label="Cancel replacement">
+                              <X size={11} />
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : (
+              <p className="sa-empty">
+                {locked ? "No sub-agents have run in this thread yet." : "Sub-agents appear here the moment the model delegates."}
+              </p>
+            )}
+            {workerActionError && <p className="sa-worker-error" role="alert"><AlertTriangle size={11} /> {workerActionError}</p>}
+          </div>
+
+          <footer className="sa-footer">
+            <button type="button" className="sa-advanced" onClick={() => { close(); props.onOpenSettings(); }}>
+              <Settings2 size={12} /> Advanced sub-agent settings
+            </button>
+          </footer>
+        </div>
+      )}
+    </div>
+  );
+}
