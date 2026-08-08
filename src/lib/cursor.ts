@@ -66,8 +66,8 @@ export function startCursorTurn(options: CursorTurnOptions): Promise<{ turnId: s
   return invoke("cursor_turn_start", { options });
 }
 
-export async function steerCursorTurn(threadId: string, prompt: string): Promise<void> {
-  await invoke("cursor_turn_steer", { threadId, prompt });
+export async function steerCursorTurn(threadId: string, prompt: string, attachments: CursorTurnOptions["attachments"] = []): Promise<void> {
+  await invoke("cursor_turn_steer", { threadId, prompt, attachments });
 }
 
 export async function interruptCursorTurn(threadId: string): Promise<void> {

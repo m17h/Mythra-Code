@@ -1,6 +1,7 @@
-import { Component, type ReactNode } from "react";
+import { Component, type ErrorInfo, type ReactNode } from "react";
 import { RotateCcw, TriangleAlert } from "lucide-react";
 import { friendlyError } from "../lib/errors";
+import { recordError } from "../lib/errorLog";
 
 interface ErrorBoundaryProps {
   label: string;
@@ -16,6 +17,12 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
 
   static getDerivedStateFromError(error: Error): ErrorBoundaryState {
     return { error };
+  }
+
+  componentDidCatch(error: Error, _info: ErrorInfo) {
+    // Mirror boundary catches into the error log so they surface in
+    // Settings → Diagnostics and exports, not only in this fallback.
+    recordError(`The ${this.props.label} view crashed: ${friendlyError(error)}`);
   }
 
   render() {

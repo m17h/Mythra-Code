@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { compactCompletedTurns, orderedTimelineEntries } from "../components/ChatTimeline";
 import { resetCursorEventStateForTests, routeCursorEvent, type CursorEventContext } from "./cursorEvents";
 import { resetTaskStore, useTaskStore } from "./taskStore";
+import { markProviderStopIntent } from "./providerStopIntent";
 
 const context: CursorEventContext = {
   bindingFor: () => "/tmp/project",
@@ -28,6 +29,28 @@ describe("Cursor event routing", () => {
     const store = useTaskStore.getState();
     store.setTaskStatus("thread-1", "starting");
     store.appendUserMessage("thread-1", { id: "user", role: "user", text: "Review the game" });
+  });
+
+  it("updates running state only on the first streaming event and stays quiet in the background", () => {
+    useTaskStore.getState().ensureTask("foreground");
+    useTaskStore.getState().setActiveThread("foreground");
+    sessionUpdate({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "one" } });
+    const statusesAfterFirst = useTaskStore.getState().statuses;
+    sessionUpdate({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "two" } });
+
+    expect(useTaskStore.getState().statuses).toBe(statusesAfterFirst);
+    expect(context.onStatus).not.toHaveBeenCalled();
+  });
+
+  it("honors explicit stop intent when Cursor exit races ahead of the stopped status write", () => {
+    useTaskStore.getState().setActiveThread("thread-1");
+    sessionUpdate({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "working" } });
+    markProviderStopIntent("thread-1", "turn-1");
+    send({ type: "openkiwi_exit", message: "process ended during kill" });
+
+    expect(useTaskStore.getState().tasks["thread-1"].status).toBe("interrupted");
+    expect(context.onError).not.toHaveBeenCalled();
+    expect(context.onStatus).toHaveBeenCalledWith("Stopped");
   });
 
   it("finalizes Markdown and places the final answer after tool activity", () => {

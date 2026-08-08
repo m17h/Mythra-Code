@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { ExternalLink, MessageSquare, ShieldAlert } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { JsonObject } from "../lib/codex";
+import { friendlyError } from "../lib/errors";
 import type { PendingApproval } from "../types";
 
 type Decision = "accept" | "acceptForSession" | "decline";
@@ -16,9 +17,10 @@ export const APPROVAL_GRACE_MS = 250;
  * after mount keeps the buttons disabled long enough that an approval popping
  * up mid-typing cannot consume a stray Enter/Space already in flight.
  */
-function useDecisionLock(grace = true): { locked: boolean; decide: (action: () => void) => void } {
+function useDecisionLock(grace = true): { locked: boolean; error: string; decide: (action: () => void | Promise<void>) => void } {
   const [submitted, setSubmitted] = useState(false);
   const [settling, setSettling] = useState(grace);
+  const [error, setError] = useState("");
   useEffect(() => {
     if (!grace) return;
     const timer = window.setTimeout(() => setSettling(false), APPROVAL_GRACE_MS);
@@ -27,12 +29,27 @@ function useDecisionLock(grace = true): { locked: boolean; decide: (action: () =
   const locked = submitted || settling;
   return {
     locked,
-    decide: (action: () => void) => {
+    error,
+    decide: (action: () => void | Promise<void>) => {
       if (locked) return;
       setSubmitted(true);
-      action();
+      setError("");
+      const failed = (reason: unknown) => {
+          setError(friendlyError(reason));
+          setSubmitted(false);
+      };
+      try {
+        const pending = action();
+        if (pending) void pending.catch(failed);
+      } catch (reason) {
+        failed(reason);
+      }
     },
   };
+}
+
+function ApprovalResponseError({ error }: { error: string }) {
+  return error ? <div className="approval-response-error" role="alert">{error} You can try again.</div> : null;
 }
 
 function ApprovalButtons({ onDecision, allowSession = true, autoFocusDeny = true, disabled = false, denyLabel = "Deny", acceptLabel = "Allow once", dangerDeny = true }: { onDecision: (value: Decision) => void; allowSession?: boolean; autoFocusDeny?: boolean; disabled?: boolean; denyLabel?: string; acceptLabel?: string; dangerDeny?: boolean }) {
@@ -114,15 +131,16 @@ export function approvalSummary(approval: PendingApproval): { title: string; rea
  * Approval rendered inline in the conversation for the thread the user is
  * looking at — no app-global modal takeover. Buttons do not steal focus.
  */
-export function InlineApprovalCard({ approval, onRespond }: { approval: PendingApproval; onRespond: (value: JsonObject) => void }) {
+export function InlineApprovalCard({ approval, onRespond }: { approval: PendingApproval; onRespond: (value: JsonObject) => void | Promise<void> }) {
   const { title, reason, command } = approvalSummary(approval);
   // Latch only — the inline card never steals focus, so no activation grace.
-  const { locked, decide } = useDecisionLock(false);
+  const { locked, error, decide } = useDecisionLock(false);
   return (
     <div className="inline-approval" role="group" aria-label={title}>
       <div className="inline-approval-head"><ShieldAlert size={14} /><strong>{title}</strong></div>
       <p>{reason}</p>
       {command && <pre className="approval-command">{command}</pre>}
+      <ApprovalResponseError error={error} />
       <ApprovalButtons
         autoFocusDeny={false}
         disabled={locked}
@@ -138,22 +156,22 @@ export function InlineApprovalCard({ approval, onRespond }: { approval: PendingA
 
 interface ApprovalContext { threadLabel?: string; pendingCount?: number }
 
-function StandardApproval({ approval, onRespond, threadLabel, pendingCount }: { approval: PendingApproval; onRespond: (value: JsonObject) => void } & ApprovalContext) {
+function StandardApproval({ approval, onRespond, threadLabel, pendingCount }: { approval: PendingApproval; onRespond: (value: JsonObject) => void | Promise<void> } & ApprovalContext) {
   const { title, reason, command } = approvalSummary(approval);
-  const { locked, decide } = useDecisionLock();
+  const { locked, error, decide } = useDecisionLock();
   const projectSubagents = approval.method === "openkiwi/subagents/change";
-  return <Modal title={title} description={reason} threadLabel={threadLabel} pendingCount={pendingCount}>{command && <pre className="approval-command">{command}</pre>}<ApprovalButtons disabled={locked} allowSession={!projectSubagents} denyLabel={projectSubagents ? "Keep current settings" : "Deny"} acceptLabel={projectSubagents ? "Apply to project" : "Allow once"} dangerDeny={!projectSubagents} onDecision={(decision) => decide(() => onRespond(approvalResponse(approval, decision)))} /></Modal>;
+  return <Modal title={title} description={reason} threadLabel={threadLabel} pendingCount={pendingCount}>{command && <pre className="approval-command">{command}</pre>}<ApprovalResponseError error={error} /><ApprovalButtons disabled={locked} allowSession={!projectSubagents} denyLabel={projectSubagents ? "Keep current settings" : "Deny"} acceptLabel={projectSubagents ? "Apply to project" : "Allow once"} dangerDeny={!projectSubagents} onDecision={(decision) => decide(() => onRespond(approvalResponse(approval, decision)))} /></Modal>;
 }
 
 interface UserQuestion { id: string; header: string; question: string; isSecret?: boolean; options?: Array<{ label: string; description: string }> | null }
 
-function UserInputRequest({ approval, onRespond, threadLabel, pendingCount }: { approval: PendingApproval; onRespond: (value: JsonObject) => void } & ApprovalContext) {
+function UserInputRequest({ approval, onRespond, threadLabel, pendingCount }: { approval: PendingApproval; onRespond: (value: JsonObject) => void | Promise<void> } & ApprovalContext) {
   const questions = (approval.params.questions ?? []) as UserQuestion[];
   // Every question gets an entry up front so untouched ones still reach the
   // submitted payload instead of being silently dropped.
   const [answers, setAnswers] = useState<Record<string, string>>(() => Object.fromEntries(questions.map((question) => [question.id, ""])));
-  const { locked, decide } = useDecisionLock();
-  return <Modal title="The agent needs your input" description="Answer these questions to continue the task." threadLabel={threadLabel} pendingCount={pendingCount}><div className="request-fields">{questions.map((question) => <label key={question.id}><span>{question.header}</span><small>{question.question}</small>{question.options?.length ? <select value={answers[question.id] ?? ""} onChange={(event) => setAnswers((current) => ({ ...current, [question.id]: event.target.value }))}><option value="">Choose…</option>{question.options.map((option, index) => <option key={index} value={option.label}>{option.label} — {option.description}</option>)}</select> : <input type={question.isSecret ? "password" : "text"} value={answers[question.id] ?? ""} onChange={(event) => setAnswers((current) => ({ ...current, [question.id]: event.target.value }))} />}</label>)}</div><div className="approval-actions"><button className="secondary-button danger" disabled={locked} onClick={() => decide(() => onRespond({ answers: {} }))}>Cancel</button><button className="primary-button" disabled={locked} onClick={() => decide(() => onRespond({ answers: Object.fromEntries(Object.entries(answers).map(([id, value]) => [id, { answers: [value] }])) }))}>Continue</button></div></Modal>;
+  const { locked, error, decide } = useDecisionLock();
+  return <Modal title="The agent needs your input" description="Answer these questions to continue the task." threadLabel={threadLabel} pendingCount={pendingCount}><div className="request-fields">{questions.map((question) => <label key={question.id}><span>{question.header}</span><small>{question.question}</small>{question.options?.length ? <select value={answers[question.id] ?? ""} onChange={(event) => setAnswers((current) => ({ ...current, [question.id]: event.target.value }))}><option value="">Choose…</option>{question.options.map((option, index) => <option key={index} value={option.label}>{option.label} — {option.description}</option>)}</select> : <input type={question.isSecret ? "password" : "text"} value={answers[question.id] ?? ""} onChange={(event) => setAnswers((current) => ({ ...current, [question.id]: event.target.value }))} />}</label>)}</div><ApprovalResponseError error={error} /><div className="approval-actions"><button className="secondary-button danger" disabled={locked} onClick={() => decide(() => onRespond({ answers: {} }))}>Cancel</button><button className="primary-button" disabled={locked} onClick={() => decide(() => onRespond({ answers: Object.fromEntries(Object.entries(answers).map(([id, value]) => [id, { answers: [value] }])) }))}>Continue</button></div></Modal>;
 }
 
 interface JsonSchemaProperty { type?: string; title?: string; description?: string; default?: unknown; enum?: unknown[] }
@@ -171,16 +189,16 @@ function submittedFieldValue(value: unknown, field: JsonSchemaProperty): unknown
   return value;
 }
 
-function McpRequest({ approval, onRespond, threadLabel, pendingCount }: { approval: PendingApproval; onRespond: (value: JsonObject) => void } & ApprovalContext) {
+function McpRequest({ approval, onRespond, threadLabel, pendingCount }: { approval: PendingApproval; onRespond: (value: JsonObject) => void | Promise<void> } & ApprovalContext) {
   const mode = String(approval.params.mode ?? "form");
   const message = String(approval.params.message ?? "An MCP server is requesting information.");
   const url = typeof approval.params.url === "string" ? approval.params.url : null;
   const schema = (approval.params.requestedSchema ?? {}) as { properties?: Record<string, JsonSchemaProperty>; required?: string[] };
   const fields = useMemo(() => Object.entries(schema.properties ?? {}), [schema.properties]);
   const [content, setContent] = useState<Record<string, unknown>>(() => Object.fromEntries(fields.map(([key, value]) => [key, value.default ?? ""])));
-  const { locked, decide } = useDecisionLock();
+  const { locked, error, decide } = useDecisionLock();
   const submittedContent = () => Object.fromEntries(fields.map(([key, field]) => [key, submittedFieldValue(content[key], field)]));
-  return <Modal title={`${String(approval.params.serverName ?? "MCP")} needs your input`} description={message} threadLabel={threadLabel} pendingCount={pendingCount}>{url && <button className="elicitation-url" onClick={() => void openUrl(url)}><ExternalLink size={13} /> Open secure request</button>}{mode !== "url" && <div className="request-fields">{fields.map(([key, field]) => <label key={key}><span>{field.title || key}{schema.required?.includes(key) ? " *" : ""}</span>{field.description && <small>{field.description}</small>}{field.type === "boolean" ? <select value={String(content[key] ?? false)} onChange={(event) => setContent((current) => ({ ...current, [key]: event.target.value === "true" }))}><option value="false">No</option><option value="true">Yes</option></select> : field.enum ? <select value={String(content[key] ?? "")} onChange={(event) => setContent((current) => ({ ...current, [key]: event.target.value }))}>{field.enum.map((option) => <option key={String(option)} value={String(option)}>{String(option)}</option>)}</select> : <input type={field.type === "number" || field.type === "integer" ? "number" : "text"} value={String(content[key] ?? "")} onChange={(event) => setContent((current) => ({ ...current, [key]: event.target.value }))} />}</label>)}</div>}<div className="approval-actions"><button className="secondary-button danger" disabled={locked} onClick={() => decide(() => onRespond({ action: "decline", content: null, _meta: null }))}>Decline</button><button className="primary-button" disabled={locked} onClick={() => decide(() => onRespond({ action: "accept", content: mode === "url" ? null : submittedContent(), _meta: null }))}>{mode === "url" ? "I’m done" : "Submit"}</button></div></Modal>;
+  return <Modal title={`${String(approval.params.serverName ?? "MCP")} needs your input`} description={message} threadLabel={threadLabel} pendingCount={pendingCount}>{url && <button className="elicitation-url" onClick={() => void openUrl(url)}><ExternalLink size={13} /> Open secure request</button>}{mode !== "url" && <div className="request-fields">{fields.map(([key, field]) => <label key={key}><span>{field.title || key}{schema.required?.includes(key) ? " *" : ""}</span>{field.description && <small>{field.description}</small>}{field.type === "boolean" ? <select value={String(content[key] ?? false)} onChange={(event) => setContent((current) => ({ ...current, [key]: event.target.value === "true" }))}><option value="false">No</option><option value="true">Yes</option></select> : field.enum ? <select value={String(content[key] ?? "")} onChange={(event) => setContent((current) => ({ ...current, [key]: event.target.value }))}>{field.enum.map((option) => <option key={String(option)} value={String(option)}>{String(option)}</option>)}</select> : <input type={field.type === "number" || field.type === "integer" ? "number" : "text"} value={String(content[key] ?? "")} onChange={(event) => setContent((current) => ({ ...current, [key]: event.target.value }))} />}</label>)}</div>}<ApprovalResponseError error={error} /><div className="approval-actions"><button className="secondary-button danger" disabled={locked} onClick={() => decide(() => onRespond({ action: "decline", content: null, _meta: null }))}>Decline</button><button className="primary-button" disabled={locked} onClick={() => decide(() => onRespond({ action: "accept", content: mode === "url" ? null : submittedContent(), _meta: null }))}>{mode === "url" ? "I’m done" : "Submit"}</button></div></Modal>;
 }
 
 function Modal({ title, description, threadLabel, pendingCount, children }: { title: string; description: string; threadLabel?: string; pendingCount?: number; children: ReactNode }) {
@@ -222,7 +240,7 @@ function Modal({ title, description, threadLabel, pendingCount, children }: { ti
   return <div className="modal-backdrop approval-backdrop"><div ref={modalRef} className="approval-modal" data-approval-modal="" role="alertdialog" aria-modal="true" aria-label={title} tabIndex={-1}><div className="approval-shield"><ShieldAlert size={22} /></div><h2>{title}</h2><p>{description}</p>{threadLabel && <div className="approval-thread-line"><MessageSquare size={12} /> Requested by <strong>{threadLabel}</strong></div>}{children}{pendingCount != null && pendingCount > 0 && <div className="approval-queue-note">{pendingCount} more approval{pendingCount === 1 ? "" : "s"} waiting</div>}</div></div>;
 }
 
-export function ApprovalCenter({ approval, threadLabel, pendingCount, onRespond }: { approval: PendingApproval; threadLabel?: string; pendingCount?: number; onRespond: (value: JsonObject) => void }) {
+export function ApprovalCenter({ approval, threadLabel, pendingCount, onRespond }: { approval: PendingApproval; threadLabel?: string; pendingCount?: number; onRespond: (value: JsonObject) => void | Promise<void> }) {
   const context = { threadLabel, pendingCount };
   if (approval.method === "item/tool/requestUserInput" || approval.method === "cursor/ask_question") return <UserInputRequest approval={approval} onRespond={onRespond} {...context} />;
   if (approval.method === "mcpServer/elicitation/request") return <McpRequest approval={approval} onRespond={onRespond} {...context} />;

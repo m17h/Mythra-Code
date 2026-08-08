@@ -98,6 +98,22 @@ describe("ApprovalCenter", () => {
     expect(onRespond).toHaveBeenCalledTimes(1);
   });
 
+  it("shows a retryable response failure and unlocks the same approval", async () => {
+    const onRespond = vi.fn()
+      .mockRejectedValueOnce(new Error("Runtime connection dropped"))
+      .mockResolvedValueOnce(undefined);
+    render(<InlineApprovalCard approval={approval("execCommandApproval", { command: "npm test" })} onRespond={onRespond} />);
+
+    const allow = screen.getByRole("button", { name: "Allow once" });
+    fireEvent.click(allow);
+    await act(async () => { await Promise.resolve(); });
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Runtime connection dropped");
+    expect(allow).toBeEnabled();
+    fireEvent.click(allow);
+    expect(onRespond).toHaveBeenCalledTimes(2);
+  });
+
   it("submits numeric MCP fields as numbers only when the input is finite", () => {
     const onRespond = vi.fn();
     render(<ApprovalCenter approval={approval("mcpServer/elicitation/request", {

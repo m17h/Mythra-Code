@@ -2,6 +2,7 @@ import type { CursorEvent } from "./cursor";
 import type { JsonObject } from "./codex";
 import type { TokenUsageView } from "../components/StudioDock";
 import { useTaskStore } from "./taskStore";
+import { consumeProviderStopIntent } from "./providerStopIntent";
 
 const activeAssistantSegments = new Map<string, string>();
 const assistantSegmentCounts = new Map<string, number>();
@@ -126,6 +127,14 @@ export interface CursorEventContext {
   onTranscriptChanged: (threadId: string) => void;
 }
 
+function foregroundStatus(ctx: CursorEventContext, threadId: string, status: string): void {
+  if (useTaskStore.getState().activeThreadId === threadId) ctx.onStatus(status);
+}
+
+function foregroundError(ctx: CursorEventContext, threadId: string, message: string): void {
+  if (useTaskStore.getState().activeThreadId === threadId) ctx.onError(message);
+}
+
 export function routeCursorEvent(event: CursorEvent, ctx: CursorEventContext): void {
   const { threadId, turnId } = event;
   const message = object(event.message);
@@ -184,7 +193,7 @@ export function routeCursorEvent(event: CursorEvent, ctx: CursorEventContext): v
     if (!turnAlreadyCompleted) {
       store.setActiveTurn(threadId, turnId);
       store.setTaskStatus(threadId, "running");
-      ctx.onStatus("Working");
+      foregroundStatus(ctx, threadId, "Working");
     }
     store.upsertActivity(threadId, { id, kind: "agent", title: text(params.name) || "Cursor plan", detail: text(params.plan) || text(params.overview), status: "inProgress" });
     ctx.onTranscriptChanged(threadId);
@@ -200,7 +209,7 @@ export function routeCursorEvent(event: CursorEvent, ctx: CursorEventContext): v
     if (!turnAlreadyCompleted) {
       store.setActiveTurn(threadId, turnId);
       store.setTaskStatus(threadId, "running");
-      ctx.onStatus("Working");
+      foregroundStatus(ctx, threadId, "Working");
     }
     store.upsertActivity(threadId, {
       id,
@@ -219,13 +228,14 @@ export function routeCursorEvent(event: CursorEvent, ctx: CursorEventContext): v
   if (message.type === "notification" && message.method === "session/update") {
     const update = object(object(message.params).update);
     const kind = text(update.sessionUpdate);
-    if (!turnAlreadyCompleted) {
+    const currentTask = useTaskStore.getState().tasks[threadId];
+    if (!turnAlreadyCompleted && (currentTask?.activeTurnId !== turnId || currentTask.status !== "running")) {
       // Install the turn before materializing a tool/plan activity. Cursor can
       // emit notifications before session/prompt returns; doing this at the
       // end left the first activity detached from its turn in that race.
       store.setActiveTurn(threadId, turnId);
       store.setTaskStatus(threadId, "running");
-      ctx.onStatus("Working");
+      foregroundStatus(ctx, threadId, "Working");
     }
     if (kind === "agent_message_chunk") {
       // Skip empty/non-text chunks so they cannot open a segment that would
@@ -302,9 +312,11 @@ export function routeCursorEvent(event: CursorEvent, ctx: CursorEventContext): v
     const task = useTaskStore.getState().tasks[threadId];
     const thinking = task?.activities.find((activity) => activity.id === `thinking-${turnId}`);
     if (thinking?.detail) store.upsertActivity(threadId, { ...thinking, status: "completed" });
-    const interrupted = result.stopReason === "cancelled" || task?.status === "interrupted";
+    const interrupted = consumeProviderStopIntent(threadId, turnId)
+      || result.stopReason === "cancelled"
+      || task?.status === "interrupted";
     store.completeTurn(threadId, turnId, interrupted ? "interrupted" : "completed");
-    ctx.onStatus(interrupted ? "Stopped" : "Ready");
+    foregroundStatus(ctx, threadId, interrupted ? "Stopped" : "Ready");
     ctx.onTranscriptChanged(threadId);
     ctx.onTurnCompleted(threadId);
     return;
@@ -316,14 +328,15 @@ export function routeCursorEvent(event: CursorEvent, ctx: CursorEventContext): v
     markTurnCompleted(key);
     turnsWithUsageSnapshots.delete(key);
     const detail = text(message.message) || "Cursor Agent stopped unexpectedly.";
-    const interrupted = useTaskStore.getState().tasks[threadId]?.status === "interrupted";
+    const interrupted = consumeProviderStopIntent(threadId, turnId)
+      || useTaskStore.getState().tasks[threadId]?.status === "interrupted";
     store.completeTurn(threadId, turnId, interrupted ? "interrupted" : "error");
     if (!interrupted) {
       store.setTaskStatus(threadId, "error", detail);
       store.upsertActivity(threadId, { id: `cursor-error-${turnId}`, kind: "warning", title: "Cursor Agent stopped", detail, status: "failed" });
-      ctx.onError(detail);
+      foregroundError(ctx, threadId, detail);
     }
-    ctx.onStatus(interrupted ? "Stopped" : "Task failed");
+    foregroundStatus(ctx, threadId, interrupted ? "Stopped" : "Task failed");
     ctx.onTurnCompleted(threadId);
   }
 }

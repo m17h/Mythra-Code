@@ -62,7 +62,7 @@ describe("workflow definitions", () => {
     const step = item.steps[0];
     if (step.type !== "agent") throw new Error("Expected agent step");
     expect(workflowPrompt(item, step, 0)).toContain("Review the release.");
-    expect(workflowPrompt(item, step, 0)).toContain("$release-review");
+    expect(workflowPrompt(item, step, 0)).toContain("@release-review");
   });
 
   it("normalizes interval timing and labels", () => {

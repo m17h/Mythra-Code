@@ -711,7 +711,7 @@ export function ChatTimeline({
   searchActiveMatch?: number;
   onSearchMatches?: (count: number) => void;
   onEditMessage?: (text: string) => void;
-  onApprovalRespond?: (approval: PendingApproval, result: JsonObject) => void;
+  onApprovalRespond?: (approval: PendingApproval, result: JsonObject) => void | Promise<void>;
 }) {
   const entries = useMemo<TimelineEntry[]>(() => {
     const next = compactCompletedTurns(orderedTimelineEntries(messages, activities), running);

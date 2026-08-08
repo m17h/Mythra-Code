@@ -64,7 +64,7 @@ describe("SkillLibrary", () => {
     const onRename = vi.fn(() => true);
     renderLibrary({ onRename });
 
-    expect(screen.getByText("$review")).toBeInTheDocument();
+    expect(screen.getByText("@review")).toBeInTheDocument();
     expect(screen.getByText(/1 supporting Markdown file/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Rename review" }));
     fireEvent.change(screen.getByRole("textbox", { name: "Invocation name for review.md" }), { target: { value: "careful-review" } });
@@ -73,7 +73,7 @@ describe("SkillLibrary", () => {
   });
 
   it("keeps the rename editor open and the draft intact when the new name is rejected", () => {
-    renderLibrary({ onRename: vi.fn(() => false), error: "Another skill already uses $taken." });
+    renderLibrary({ onRename: vi.fn(() => false), error: "Another skill already uses @taken." });
 
     fireEvent.click(screen.getByRole("button", { name: "Rename review" }));
     const field = screen.getByRole("textbox", { name: "Invocation name for review.md" });
@@ -81,7 +81,7 @@ describe("SkillLibrary", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save skill name" }));
 
     expect(screen.getByRole("textbox", { name: "Invocation name for review.md" })).toHaveValue("taken");
-    expect(screen.getByRole("alert")).toHaveTextContent("Another skill already uses $taken.");
+    expect(screen.getByRole("alert")).toHaveTextContent("Another skill already uses @taken.");
   });
 
   it("toggles a skill without changing its source file", () => {
@@ -128,7 +128,7 @@ describe("SkillLibrary", () => {
 
       fireEvent.change(nameField(), { target: { value: "release check" } });
       expect(create).toBeDisabled();
-      expect(screen.getByText("$release-check")).toBeInTheDocument();
+      expect(screen.getByText("@release-check")).toBeInTheDocument();
 
       fireEvent.change(instructionsField(), { target: { value: "   " } });
       expect(create).toBeDisabled();
@@ -150,7 +150,7 @@ describe("SkillLibrary", () => {
       expect(screen.queryByLabelText("Skill name")).not.toBeInTheDocument();
       expect(screen.queryByLabelText("Instructions")).not.toBeInTheDocument();
       expect(screen.getByRole("status")).toHaveTextContent("Created “release check” in your skills folder.");
-      expect(addButton()).toHaveFocus();
+      await waitFor(() => expect(addButton()).toHaveFocus());
 
       // Reopening starts from a blank editor rather than the previous draft.
       await openComposer();
@@ -287,7 +287,7 @@ describe("SkillLibrary", () => {
       fireEvent.click(screen.getByRole("button", { name: /Create skill/ }));
 
       await waitFor(() => expect(screen.getByLabelText("Search skills")).toHaveValue(""));
-      expect(screen.getByText("$review")).toBeInTheDocument();
+      expect(screen.getByText("@review")).toBeInTheDocument();
     });
   });
 
@@ -297,19 +297,19 @@ describe("SkillLibrary", () => {
       const search = screen.getByLabelText("Search skills");
 
       fireEvent.change(search, { target: { value: "release" } });
-      expect(screen.getByText("$release")).toBeInTheDocument();
-      expect(screen.queryByText("$review")).not.toBeInTheDocument();
+      expect(screen.getByText("@release")).toBeInTheDocument();
+      expect(screen.queryByText("@review")).not.toBeInTheDocument();
       expect(screen.getByText("1 of 2 matching")).toBeInTheDocument();
 
       fireEvent.change(search, { target: { value: "correctness" } });
-      expect(screen.getByText("$review")).toBeInTheDocument();
+      expect(screen.getByText("@review")).toBeInTheDocument();
 
       fireEvent.change(search, { target: { value: "zzz" } });
       expect(screen.getByText(/No skills match “zzz”/)).toBeInTheDocument();
       fireEvent.click(screen.getByRole("button", { name: "Clear search" }));
       expect(search).toHaveValue("");
-      expect(screen.getByText("$review")).toBeInTheDocument();
-      expect(screen.getByText("$release")).toBeInTheDocument();
+      expect(screen.getByText("@review")).toBeInTheDocument();
+      expect(screen.getByText("@release")).toBeInTheDocument();
     });
 
     it("explains an empty folder and still offers import and creation", () => {

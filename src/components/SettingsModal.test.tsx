@@ -326,4 +326,38 @@ describe("SettingsModal", () => {
       }),
     ]);
   });
+
+  it("keeps unsaved drafts and shows a newly cloned project when projects change while open", () => {
+    const props = modalProps({ initialSection: "prompts" });
+    const { rerender } = render(<SettingsModal {...props} />);
+
+    fireEvent.change(screen.getByPlaceholderText("Empty — add your own instructions here"), { target: { value: "Always ship with release notes." } });
+    rerender(<SettingsModal {...props} projects={[{ id: "cloned", name: "Cloned repo", path: "/tmp/cloned" }]} />);
+
+    expect(screen.getByDisplayValue("Always ship with release notes.")).toBeInTheDocument();
+    fireEvent.click(within(screen.getByRole("group", { name: "Workspace" })).getByRole("button", { name: /Projects/ }));
+    expect(screen.getByText("Cloned repo")).toBeInTheDocument();
+  });
+
+  it("keeps unsaved drafts when the saved settings change externally while open", () => {
+    const props = modalProps({ initialSection: "prompts" });
+    const { rerender } = render(<SettingsModal {...props} />);
+
+    fireEvent.change(screen.getByPlaceholderText("Empty — add your own instructions here"), { target: { value: "Draft in progress" } });
+    rerender(<SettingsModal {...props} settings={{ ...DEFAULT_SETTINGS, notificationsEnabled: false }} />);
+
+    expect(screen.getByDisplayValue("Draft in progress")).toBeInTheDocument();
+  });
+
+  it("resets drafts to the incoming props after closing and reopening", () => {
+    const props = modalProps({ initialSection: "prompts" });
+    const { rerender } = render(<SettingsModal {...props} />);
+
+    fireEvent.change(screen.getByPlaceholderText("Empty — add your own instructions here"), { target: { value: "Abandoned draft" } });
+    rerender(<SettingsModal {...props} open={false} />);
+    rerender(<SettingsModal {...props} />);
+
+    expect(screen.queryByDisplayValue("Abandoned draft")).not.toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Empty — add your own instructions here")).toHaveValue(DEFAULT_SETTINGS.systemPrompt);
+  });
 });

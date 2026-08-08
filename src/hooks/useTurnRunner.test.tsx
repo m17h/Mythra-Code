@@ -409,6 +409,24 @@ describe("useTurnRunner", () => {
     expect(deps.setError).toHaveBeenLastCalledWith("steer failed");
   });
 
+  it("sends Cursor steering attachments instead of silently discarding them", async () => {
+    useTaskStore.getState().ensureTask(CURSOR_THREAD.id, CURSOR_THREAD.cwd);
+    const deps = context({
+      running: true,
+      attachments: [{ path: "/tmp/reference.png", name: "reference.png", kind: "image" }],
+    });
+    const { result } = renderHook(() => useTurnRunner(deps));
+
+    await act(async () => { await result.current.steerMessage("match this reference"); });
+
+    expect(cursor.steerCursorTurn).toHaveBeenCalledWith(
+      CURSOR_THREAD.id,
+      "match this reference",
+      [{ path: "/tmp/reference.png", kind: "image" }],
+    );
+    expect(deps.setAttachments).toHaveBeenCalled();
+  });
+
   it("cleans up a failed local-provider start so the thread can retry", async () => {
     cursor.startCursorTurn.mockRejectedValueOnce(new Error("provider unavailable"));
     useTaskStore.getState().ensureTask(CURSOR_THREAD.id, CURSOR_THREAD.cwd);

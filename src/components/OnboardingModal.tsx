@@ -178,10 +178,10 @@ function SkillsStep({ skillsFolder, onChooseSkillsFolder }: { skillsFolder: stri
     <div className="onboarding-skills-layout">
       <div className="onboarding-folder-tree">
         <div><FolderOpen size={15} /><strong>My Skills</strong></div>
-        <span><i />review-code.md <em>$CodeReview</em></span>
-        <span><i />release-app.md <em>$Release</em></span>
+        <span><i />review-code.md <em>@CodeReview</em></span>
+        <span><i />release-app.md <em>@Release</em></span>
         <span><i />design/</span>
-        <span className="nested"><i />SKILL.md <em>$Design</em></span>
+        <span className="nested"><i />SKILL.md <em>@Design</em></span>
         <span className="nested reference"><i />references.md</span>
       </div>
       <div className="onboarding-skill-rules">

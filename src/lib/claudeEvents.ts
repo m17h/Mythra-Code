@@ -2,6 +2,7 @@ import type { ClaudeEvent } from "./claude";
 import type { JsonObject } from "./codex";
 import type { TokenUsageView } from "../components/StudioDock";
 import { useTaskStore } from "./taskStore";
+import { consumeProviderStopIntent } from "./providerStopIntent";
 
 interface ClaudeBlock {
   id: string;
@@ -176,6 +177,14 @@ export interface ClaudeEventContext {
   ) => void;
 }
 
+function foregroundStatus(ctx: ClaudeEventContext, threadId: string, status: string): void {
+  if (useTaskStore.getState().activeThreadId === threadId) ctx.onStatus(status);
+}
+
+function foregroundError(ctx: ClaudeEventContext, threadId: string, message: string): void {
+  if (useTaskStore.getState().activeThreadId === threadId) ctx.onError(message);
+}
+
 export function routeClaudeEvent(
   event: ClaudeEvent,
   ctx: ClaudeEventContext,
@@ -227,7 +236,7 @@ export function routeClaudeEvent(
       assistantIds.set(threadId, text(assistant.id) || `claude-${turnId}`);
       store.setActiveTurn(threadId, turnId);
       store.setTaskStatus(threadId, "running");
-      ctx.onStatus("Working");
+      foregroundStatus(ctx, threadId, "Working");
       return;
     }
     if (streamType === "content_block_start") {
@@ -334,10 +343,11 @@ export function routeClaudeEvent(
     store.flushDeltas();
     recordResultUsage(threadId, turnId, message.usage);
     const subtype = text(message.subtype);
+    const stopRequested = consumeProviderStopIntent(threadId, turnId);
     const alreadyInterrupted =
       useTaskStore.getState().tasks[threadId]?.status === "interrupted";
     const interrupted =
-      alreadyInterrupted || subtype.toLowerCase().includes("interrupt");
+      stopRequested || alreadyInterrupted || subtype.toLowerCase().includes("interrupt");
     const failed =
       !interrupted &&
       (Boolean(message.is_error) || subtype.toLowerCase().startsWith("error"));
@@ -354,15 +364,15 @@ export function routeClaudeEvent(
       interrupted ? "interrupted" : failed ? "error" : "completed",
     );
     if (interrupted) {
-      ctx.onStatus("Stopped");
+      foregroundStatus(ctx, threadId, "Stopped");
     } else if (failed) {
       const error =
         text(message.result) || "Claude could not complete this request.";
       store.setTaskStatus(threadId, "error", error);
-      ctx.onError(error);
-      ctx.onStatus("Task failed");
+      foregroundError(ctx, threadId, error);
+      foregroundStatus(ctx, threadId, "Task failed");
     } else {
-      ctx.onStatus("Ready");
+      foregroundStatus(ctx, threadId, "Ready");
     }
     assistantIds.delete(threadId);
     blocks.delete(threadId);
@@ -378,7 +388,7 @@ export function routeClaudeEvent(
       title: "Claude Code reported an issue",
       detail,
     });
-    ctx.onError(detail);
+    foregroundError(ctx, threadId, detail);
     return;
   }
 
@@ -386,8 +396,8 @@ export function routeClaudeEvent(
     store.flushDeltas();
     // The result event that would clean this up is never coming.
     partialUsage.delete(`${threadId}\0${turnId}`);
-    const interrupted =
-      useTaskStore.getState().tasks[threadId]?.status === "interrupted";
+    const interrupted = consumeProviderStopIntent(threadId, turnId)
+      || useTaskStore.getState().tasks[threadId]?.status === "interrupted";
     const detail =
       text(message.message) ||
       "Claude Code exited before completing the turn.";
@@ -397,7 +407,7 @@ export function routeClaudeEvent(
       interrupted ? "interrupted" : "error",
     );
     if (interrupted) {
-      ctx.onStatus("Stopped");
+      foregroundStatus(ctx, threadId, "Stopped");
     } else {
       store.setTaskStatus(threadId, "error", detail);
       store.upsertActivity(threadId, {
@@ -407,8 +417,8 @@ export function routeClaudeEvent(
         detail,
         status: "failed",
       });
-      ctx.onError(detail);
-      ctx.onStatus("Task failed");
+      foregroundError(ctx, threadId, detail);
+      foregroundStatus(ctx, threadId, "Task failed");
     }
     assistantIds.delete(threadId);
     blocks.delete(threadId);

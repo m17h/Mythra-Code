@@ -150,7 +150,11 @@ export async function ensureChildAgentBridge(
     cacheChildAgentPolicy(policy);
     const launch = await startChildAgentSession(policy, []);
     launches.set(policy.sessionId, launch);
-    return { policy, launch, captured: !stored || existing?.targets.length !== 0 };
+    // The emptied roster serves only this session's bridge. Persisting it over
+    // a stored policy would erase the frozen destinations (and any approved
+    // recapture) that switching delegation back on is documented to restore,
+    // so the policy is captured only when the thread never had one.
+    return { policy, launch, captured: !stored };
   }
 
   // An existing thread with no policy has never run with a cross-provider
@@ -179,7 +183,16 @@ export async function ensureChildAgentBridge(
   cacheChildAgentPolicy(policy);
 
   const cached = launches.get(policy.sessionId);
-  if (cached) return { policy, launch: cached, captured: false };
+  if (cached?.toolNames.includes("spawn_agent")) return { policy, launch: cached, captured: false };
+  // A launch cached while delegation was off carries only the settings
+  // proposal tool. Reusing it would run this turn with a roster visible in the
+  // UI but no way to spawn into it, so — mirroring the check the proposal-only
+  // branch makes in the other direction — it is ended and replaced with a
+  // spawn-capable bridge.
+  if (cached) {
+    await releaseChildAgentSession(policy.sessionId);
+    cacheChildAgentPolicy(policy);
+  }
 
   // Re-seed the children this thread already owns so a session rebuilt after a
   // restart still recognises them for collect/cancel.

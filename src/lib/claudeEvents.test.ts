@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { resetClaudeEventUsageState, routeClaudeEvent, type ClaudeEventContext } from "./claudeEvents";
 import { resetTaskStore, useTaskStore } from "./taskStore";
+import { markProviderStopIntent } from "./providerStopIntent";
 
 const context: ClaudeEventContext = {
   bindingFor: () => "/tmp/project",
@@ -177,6 +178,7 @@ describe("Claude event routing", () => {
   });
 
   it("does not turn a user interruption into a failed or completed task", () => {
+    useTaskStore.getState().setActiveThread("thread-1");
     send({
       type: "stream_event",
       event: { type: "message_start", message: { id: "message-1" } },
@@ -194,6 +196,25 @@ describe("Claude event routing", () => {
     );
     expect(context.onError).not.toHaveBeenCalled();
     expect(context.onStatus).toHaveBeenCalledWith("Stopped");
+  });
+
+  it("honors explicit stop intent when exit races ahead of the stopped status write", () => {
+    useTaskStore.getState().setActiveThread("thread-1");
+    send({ type: "stream_event", event: { type: "message_start", message: { id: "message-1" } } });
+    markProviderStopIntent("thread-1", "turn-1");
+    send({ type: "openkiwi_exit", message: "process ended during kill" });
+
+    expect(useTaskStore.getState().tasks["thread-1"].status).toBe("interrupted");
+    expect(context.onError).not.toHaveBeenCalled();
+    expect(context.onStatus).toHaveBeenCalledWith("Stopped");
+  });
+
+  it("does not let a background thread overwrite the foreground status", () => {
+    useTaskStore.getState().ensureTask("foreground");
+    useTaskStore.getState().setActiveThread("foreground");
+    send({ type: "stream_event", event: { type: "message_start", message: { id: "message-1" } } });
+
+    expect(context.onStatus).not.toHaveBeenCalled();
   });
 
   it("closes a running task when Claude exits without a result", () => {

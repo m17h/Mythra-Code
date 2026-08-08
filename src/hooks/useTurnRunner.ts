@@ -28,6 +28,7 @@ import { buildTurnInput, withoutSentAttachments } from "../lib/turnInput";
 import { optimisticStartedThread, upsertThread } from "../lib/threadList";
 import { useTaskStore } from "../lib/taskStore";
 import { friendlyError } from "../lib/errors";
+import { clearProviderStopIntent, markProviderStopIntent } from "../lib/providerStopIntent";
 import { isClaudeThread, isCursorThread } from "../lib/threadProvider";
 import { withOpenKiwiCompletionInstructions } from "../lib/completionPrompt";
 import {
@@ -257,7 +258,11 @@ export function useTurnRunner(context: TurnRunnerContext): {
           );
           scheduleClaudeThreadSave(activeThread.id);
         } else if (isCursorThread(activeThread)) {
-          await steerCursorTurn(activeThread.id, text);
+          await steerCursorTurn(
+            activeThread.id,
+            text,
+            sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })),
+          );
           scheduleCursorThreadSave(activeThread.id);
         } else {
           await rpc("turn/steer", { threadId: activeThread.id, input: buildTurnInput(text, sentAttachments) });
@@ -422,9 +427,16 @@ export function useTurnRunner(context: TurnRunnerContext): {
       setAttachments((current) => withoutSentAttachments(current, sentAttachments));
       strategy.afterStart?.(thread.id);
       if (pendingTurnStartsRef.current.finish(thread.id, pendingStart) && !completedBeforeStartReturned) {
-        await strategy.hardStop(thread.id);
+        markProviderStopIntent(thread.id, result.turnId);
+        try {
+          await strategy.hardStop(thread.id);
+        } catch (reason) {
+          clearProviderStopIntent(thread.id, result.turnId);
+          throw reason;
+        }
         useTaskStore.getState().setActiveTurn(thread.id, undefined);
         useTaskStore.getState().setTaskStatus(thread.id, "interrupted");
+        clearProviderStopIntent(thread.id, result.turnId);
         setTransientStatus("Stopped");
       }
       return true;
@@ -830,15 +842,19 @@ export function useTurnRunner(context: TurnRunnerContext): {
       }
       return;
     }
+    const localProvider = isClaudeThread(activeThread) || isCursorThread(activeThread);
+    if (localProvider) markProviderStopIntent(activeThread.id, turnId);
     try {
       if (isClaudeThread(activeThread)) await killClaudeTurn(activeThread.id);
       else if (isCursorThread(activeThread)) await killCursorTurn(activeThread.id);
       else await rpc("turn/interrupt", { threadId: activeThread.id, turnId });
       useTaskStore.getState().setActiveTurn(activeThread.id, undefined);
       useTaskStore.getState().setTaskStatus(activeThread.id, "interrupted");
+      if (localProvider) clearProviderStopIntent(activeThread.id, turnId);
       setStartingDraftTurn(false);
       setTransientStatus("Stopped");
     } catch (reason) {
+      if (localProvider) clearProviderStopIntent(activeThread.id, turnId);
       setError(friendlyError(reason));
       throw reason;
     }

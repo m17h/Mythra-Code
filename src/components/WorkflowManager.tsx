@@ -310,7 +310,7 @@ export function WorkflowManager({
           {skills.length > 0 && (
             <div className="workflow-skills">
               <span>Skills available to agent steps</span>
-              <div>{skills.filter((skill) => skill.enabled !== false).map((skill) => <label key={skill.path}><input type="checkbox" checked={draft.skillNames.includes(skill.name)} onChange={() => setDraft({ ...draft, skillNames: draft.skillNames.includes(skill.name) ? draft.skillNames.filter((name) => name !== skill.name) : [...draft.skillNames, skill.name] })} /><code>${skill.name}</code></label>)}</div>
+              <div>{skills.filter((skill) => skill.enabled !== false).map((skill) => <label key={skill.path}><input type="checkbox" checked={draft.skillNames.includes(skill.name)} onChange={() => setDraft({ ...draft, skillNames: draft.skillNames.includes(skill.name) ? draft.skillNames.filter((name) => name !== skill.name) : [...draft.skillNames, skill.name] })} /><code>@{skill.name}</code></label>)}</div>
             </div>
           )}
 

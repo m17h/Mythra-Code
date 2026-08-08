@@ -200,14 +200,14 @@ export function SkillLibrary({
                       onSubmit={(event) => { event.preventDefault(); beginLibraryAction(() => { if (onRename(skill.path, nameDraft)) cancelRename(); }); }}
                       onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); cancelRename(); } }}
                     >
-                      <span aria-hidden="true">$</span>
+                      <span aria-hidden="true">@</span>
                       <input autoFocus value={nameDraft} onChange={(event) => setNameDraft(event.target.value)} aria-label={`Invocation name for ${skill.fileName}`} />
                       <button type="submit" aria-label="Save skill name"><Check size={13} /></button>
                       <button type="button" onClick={cancelRename} aria-label="Cancel skill rename"><X size={13} /></button>
                     </form>
                   ) : (
                     <div className="skill-name-row">
-                      <strong>${skill.name}</strong>
+                      <strong>@{skill.name}</strong>
                       {!skill.enabled && <span className="skill-off-tag">Off</span>}
                     </div>
                   )}
@@ -265,7 +265,7 @@ export function SkillLibrary({
                   spellCheck={false}
                   aria-describedby={`${fieldId}-name-hint`}
                 />
-                <small id={`${fieldId}-name-hint`}>{previewName ? <>Invoked as <code>${previewName}</code></>: "Letters and numbers only — spaces become dashes."}</small>
+                <small id={`${fieldId}-name-hint`}>{previewName ? <>Invoked as <code>@{previewName}</code></>: "Letters and numbers only — spaces become dashes."}</small>
               </div>
 
               <div className="skill-field">

@@ -1304,6 +1304,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .approval-modal > p { margin: 0 0 var(--s-4); max-width: 58ch; color: var(--muted); font-size: var(--fs-ui); line-height: 1.55; text-wrap: pretty; }
 .approval-command { max-height: 190px; overflow: auto; margin: 0 0 var(--s-4); padding: var(--s-3); border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--ink-2); background: var(--field); font: 11px/1.6 var(--font-mono); text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; }
 .approval-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.approval-response-error { margin: 0 0 var(--s-3); padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--red) 24%, transparent); border-radius: var(--r-sm); color: color-mix(in srgb, var(--red) 78%, var(--text)); background: color-mix(in srgb, var(--red) 8%, transparent); font-size: var(--fs-meta); line-height: 1.45; }
 .request-fields { display: flex; flex-direction: column; gap: var(--s-3); margin: 0 0 var(--s-4); text-align: left; }
 .request-fields label { display: flex; flex-direction: column; gap: 5px; }
 .request-fields label > span { color: var(--text); font-size: var(--fs-meta); font-weight: 600; }

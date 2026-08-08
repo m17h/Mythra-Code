@@ -241,7 +241,7 @@ export function workflowPrompt(
 ): string {
   const prompt = interpolateWorkflowText(step.prompt.trim(), variables);
   const skills = workflow.skillNames.length
-    ? `\n\nSkills available for this step: ${workflow.skillNames.map((name) => `$${name}`).join(", ")}. Use them when relevant.`
+    ? `\n\nSkills available for this step: ${workflow.skillNames.map((name) => `@${name}`).join(", ")}. Use them when relevant.`
     : "";
   return `[Workflow: ${workflow.name} · Step ${stepIndex + 1}/${workflow.steps.length}: ${step.name}]\n\n${prompt}${skills}`;
 }

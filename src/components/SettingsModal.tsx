@@ -256,14 +256,50 @@ export function SettingsModal({
     onOpenOnboarding();
   };
 
+  // Snapshot of the props the current drafts were seeded from, so external
+  // updates while the modal is open can tell "user edited this" apart from
+  // "still the value we started with".
+  const draftBaselineRef = useRef({ settings, projects });
+  const wasOpenRef = useRef(false);
   useEffect(() => {
-    if (open) {
+    if (!open) {
+      wasOpenRef.current = false;
+      return;
+    }
+    if (!wasOpenRef.current) {
+      // Seed drafts only on the closed→open transition — reseeding on every
+      // prop change wiped in-progress edits (e.g. cloning a repo from the
+      // GitHub pane updates `projects` and used to discard a drafted prompt).
+      wasOpenRef.current = true;
+      draftBaselineRef.current = { settings, projects };
       setLocal(settings);
       setLocalProjects(projects);
       setAgentScope(activeProjectId ?? "global");
       onThemePreview(settings.theme);
       setSettingsSection(initialSection);
+      return;
     }
+    const baseline = draftBaselineRef.current;
+    if (settings !== baseline.settings) {
+      // Adopt external settings changes only when the draft is untouched, so
+      // the dirty check keeps meaning "you have unsaved edits".
+      setLocal((current) => (JSON.stringify(current) === JSON.stringify(baseline.settings) ? settings : current));
+    }
+    if (projects !== baseline.projects) {
+      // Merge external project changes: new projects appear, removed ones
+      // disappear, and per-project drafts survive only where the user
+      // actually diverged from the snapshot they started editing.
+      const baselineById = new Map(baseline.projects.map((project) => [project.id, project]));
+      setLocalProjects((current) => {
+        const draftsById = new Map(current.map((project) => [project.id, project]));
+        return projects.map((incoming) => {
+          const draft = draftsById.get(incoming.id);
+          const base = baselineById.get(incoming.id);
+          return draft && base && JSON.stringify(draft) !== JSON.stringify(base) ? draft : incoming;
+        });
+      });
+    }
+    draftBaselineRef.current = { settings, projects };
   }, [activeProjectId, initialSection, onThemePreview, open, projects, settings]);
 
   useEffect(() => {

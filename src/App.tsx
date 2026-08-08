@@ -138,6 +138,7 @@ const EMPTY_MESSAGES: ChatMessage[] = [];
 const EMPTY_ACTIVITIES: Activity[] = [];
 const EMPTY_AGENTS: AgentRecord[] = [];
 const EMPTY_QUEUED_TURNS: QueuedTurn[] = [];
+const LOCAL_TRANSCRIPT_SAVE_DEBOUNCE_MS = 900;
 
 const initialProjects = sanitizeProjectSubagentOverrides(loadStored<Project[]>("kiwi.projects", []));
 const initialWorkspaceMode: WorkspaceMode = loadStored<WorkspaceMode>("kiwi.workspaceMode", initialProjects.length ? "project" : "chat");
@@ -172,7 +173,7 @@ function PermissionIcon({ mode, size = 15 }: { mode: PermissionMode; size?: numb
  * Subscribes to the streaming timeline itself so per-frame delta flushes stop
  * at this component boundary instead of re-rendering the entire App.
  */
-function ConversationTimeline({ threadId, running, thinkingLabel, approval, provider, searchQuery, searchActiveMatch, onSearchMatches, onEditMessage, onApprovalRespond }: { threadId: string; running: boolean; thinkingLabel: string; approval: PendingApproval | null; provider: AppSettings["provider"]; searchQuery?: string; searchActiveMatch?: number; onSearchMatches?: (count: number) => void; onEditMessage: (text: string) => void; onApprovalRespond: (approval: PendingApproval, result: JsonObject) => void }) {
+function ConversationTimeline({ threadId, running, thinkingLabel, approval, provider, searchQuery, searchActiveMatch, onSearchMatches, onEditMessage, onApprovalRespond }: { threadId: string; running: boolean; thinkingLabel: string; approval: PendingApproval | null; provider: AppSettings["provider"]; searchQuery?: string; searchActiveMatch?: number; onSearchMatches?: (count: number) => void; onEditMessage: (text: string) => void; onApprovalRespond: (approval: PendingApproval, result: JsonObject) => void | Promise<void> }) {
   const messages = useTaskStore((state) => state.tasks[threadId]?.messages ?? EMPTY_MESSAGES);
   const activities = useTaskStore((state) => state.tasks[threadId]?.activities ?? EMPTY_ACTIVITIES);
   // A thread change must create a fresh virtual scroller so its initial
@@ -303,17 +304,6 @@ export default function App() {
   const cursorSaveTimersRef = useRef(new Map<string, number>());
   const cursorSessionIdsRef = useRef<Record<string, string>>({});
   const permissionControlRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    storeValue("kiwi.workflows", workflows);
-    storeValue(
-      "kiwi.workflowRuns",
-      workflowRuns.map((run) => compactWorkflowRun(run)),
-    );
-    // Persist normalized workflow defaults and recover any run left active by
-    // a previous app exit. Later updates are persisted by their own writers.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   if (threadProjectBindingsRef.current === null) {
     threadProjectBindingsRef.current = loadStored("kiwi.threadProjects", {});
   }
@@ -960,7 +950,7 @@ export default function App() {
       const timer = window.setTimeout(() => {
         claudeSaveTimersRef.current.delete(threadId);
         void persistClaudeThread(threadId).catch(() => {});
-      }, 250);
+      }, LOCAL_TRANSCRIPT_SAVE_DEBOUNCE_MS);
       claudeSaveTimersRef.current.set(threadId, timer);
     },
     [persistClaudeThread],
@@ -988,7 +978,7 @@ export default function App() {
       const timer = window.setTimeout(() => {
         cursorSaveTimersRef.current.delete(threadId);
         void persistCursorThread(threadId).catch(() => {});
-      }, 250);
+      }, LOCAL_TRANSCRIPT_SAVE_DEBOUNCE_MS);
       cursorSaveTimersRef.current.set(threadId, timer);
     },
     [persistCursorThread],
@@ -2407,13 +2397,15 @@ export default function App() {
       // on retry. Resolve it locally so the modal cannot reappear forever.
       // An `openkiwi/` approval has no runtime to retry against at all: the
       // user answered it, and a failure to apply must not trap them in a modal.
-      if (approval.method.startsWith("openkiwi/")
-        || /no longer|not currently running|unknown request|not found|closed/i.test(message)) {
+      const terminal = approval.method.startsWith("openkiwi/")
+        || /no longer|not currently running|unknown request|not found|closed/i.test(message);
+      if (terminal) {
         useTaskStore
           .getState()
           .resolveApproval(approval.threadId, approval.id);
       }
       setError(message);
+      if (!terminal) throw reason instanceof Error ? reason : new Error(message);
     }
   }, [respondToSettingsProposal]);
 
@@ -3275,7 +3267,7 @@ export default function App() {
       return false;
     }
     if (skills.some((skill) => skill.path !== path && skill.name === name)) {
-      setSkillsError(`Another skill already uses $${name}.`);
+      setSkillsError(`Another skill already uses @${name}.`);
       return false;
     }
     const next = { ...skillAliases, [path]: name };
@@ -3916,7 +3908,7 @@ export default function App() {
                       </div>
                     }
                   >
-                    <ConversationTimeline threadId={activeThreadId} running={running} thinkingLabel={activeWorkspace.isChat ? "Thinking in normal chat" : `Working in ${activeProject?.name}`} approval={inlineApproval} provider={effectiveSettings.provider} searchQuery={convSearchOpen ? convSearchQuery : ""} searchActiveMatch={convSearchIndex} onSearchMatches={setConvSearchCount} onEditMessage={editMessageIntoComposer} onApprovalRespond={(approval, result) => void respondToApproval(approval, result)} />
+                    <ConversationTimeline threadId={activeThreadId} running={running} thinkingLabel={activeWorkspace.isChat ? "Thinking in normal chat" : `Working in ${activeProject?.name}`} approval={inlineApproval} provider={effectiveSettings.provider} searchQuery={convSearchOpen ? convSearchQuery : ""} searchActiveMatch={convSearchIndex} onSearchMatches={setConvSearchCount} onEditMessage={editMessageIntoComposer} onApprovalRespond={respondToApproval} />
                   </Suspense>
                 </ErrorBoundary>
               )}
@@ -4284,7 +4276,7 @@ export default function App() {
             return thread?.name || thread?.preview || `thread ${pendingApproval.threadId.slice(0, 8)}`;
           })()}
           pendingCount={pendingApprovalCount - 1}
-          onRespond={(result) => void respondToApproval(pendingApproval, result)}
+          onRespond={(result) => respondToApproval(pendingApproval, result)}
         />
       )}
       <CommandPalette

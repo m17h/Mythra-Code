@@ -317,6 +317,67 @@ describe("ensureChildAgentBridge revoking delegation", () => {
     expect(bridge.startChildAgentSession).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps a saved project's frozen roster intact across a delegation off→on cycle", async () => {
+    const current = policies();
+    bridge.startChildAgentSession.mockResolvedValueOnce(PROPOSAL_LAUNCH);
+    const proposalsOnly = await ensureChildAgentBridge(input({
+      threadId: "thread-1",
+      policies: current,
+      settingsProposalsEnabled: true,
+      settings: { childAgents: CHILD_AGENTS, subagentsEnabled: false, subagentMax: 3 },
+    }));
+    // The emptied policy is for this session only: persisting it would
+    // overwrite the frozen roster the off switch promises to preserve.
+    expect(proposalsOnly?.captured).toBe(false);
+    expect(proposalsOnly?.policy.targets).toEqual([]);
+    expect(proposalsOnly?.launch.toolNames).toEqual(["propose_agent_settings"]);
+
+    const restored = await ensureChildAgentBridge(input({
+      threadId: "thread-1",
+      policies: current,
+      settingsProposalsEnabled: true,
+      // The roster the user has configured since is still not what comes back.
+      settings: { childAgents: { enabled: true, targets: [{ ...TARGET, id: "changed" }] }, subagentsEnabled: true, subagentMax: 9 },
+    }));
+    // The proposal-only launch cached while delegation was off is not reused:
+    // it has no spawn tool, so the thread would show destinations it cannot
+    // reach. A fresh spawn-capable session replaces it.
+    expect(restored?.launch.toolNames).toContain("spawn_agent");
+    expect(restored?.policy.targets.map((entry) => entry.id)).toEqual(["frozen"]);
+    expect(restored?.captured).toBe(false);
+    expect(bridge.startChildAgentSession).toHaveBeenCalledTimes(2);
+    expect(bridge.endChildAgentSession).toHaveBeenCalledWith("session-existing");
+  });
+
+  it("preserves a pending approved roster through the delegation-off window", async () => {
+    const approved = { ...TARGET, id: "approved-reviewer" };
+    const current = {
+      "session-existing": policy({ pendingRecapture: { maxConcurrent: 1, targets: [approved], approvedAt: 99 } }),
+    };
+    bridge.startChildAgentSession.mockResolvedValueOnce(PROPOSAL_LAUNCH);
+    const proposalsOnly = await ensureChildAgentBridge(input({
+      threadId: "thread-1",
+      policies: current,
+      settingsProposalsEnabled: true,
+      settings: { childAgents: CHILD_AGENTS, subagentsEnabled: false, subagentMax: 3 },
+    }));
+    // captured stays false, so the caller never persists the emptied policy —
+    // the stored record, pendingRecapture included, is exactly what it was.
+    expect(proposalsOnly?.captured).toBe(false);
+    expect(current["session-existing"].pendingRecapture?.targets.map((entry) => entry.id)).toEqual(["approved-reviewer"]);
+
+    const restored = await ensureChildAgentBridge(input({
+      threadId: "thread-1",
+      policies: current,
+      settingsProposalsEnabled: true,
+    }));
+    expect(restored?.captured).toBe(true);
+    expect(restored?.policy.pendingRecapture).toBeUndefined();
+    expect(restored?.policy.targets.map((entry) => entry.id)).toEqual(["approved-reviewer"]);
+    expect(restored?.launch.toolNames).toContain("spawn_agent");
+    expect(bridge.startChildAgentSession).toHaveBeenCalledTimes(2);
+  });
+
   it("never hands a child thread a bridge, whatever the settings say", async () => {
     const result = await ensureChildAgentBridge(input({
       threadId: "child-1",
