@@ -648,14 +648,15 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .agents-button { position: relative; }
 .agents-button.live { color: var(--green); background: var(--green-soft); }
 .sa-trigger-content { position: relative; z-index: 1; display: flex; align-items: center; gap: 6px; }
-/* The same moving outline used on an active provider avatar, scaled to the
-   whole toolbar control. It starts invisible and reaches full opacity linearly
-   over exactly two seconds. */
+/* The prompt-bar control uses a quiet, fully lit breathing outline. The moving
+   provider-colored traces inside the crew panel intentionally remain separate. */
 .sa-trigger-trace { position: absolute; inset: -2px; z-index: 0; width: calc(100% + 4px); height: calc(100% + 4px); overflow: visible; opacity: 0; pointer-events: none; animation: sa-trigger-trace-in 2s linear forwards; }
 .sa-trigger-trace rect { fill: none; stroke: var(--green); vector-effect: non-scaling-stroke; }
-.sa-trigger-trace-rail { stroke-width: 1; opacity: .18; }
-.sa-trigger-trace-runner { stroke-width: 1.7; stroke-linecap: round; stroke-dasharray: 18 82; animation: sa-outline-trace 2.35s linear infinite; }
+.sa-trigger-trace-halo { stroke-width: 5; opacity: .1; animation: sa-trigger-breathe-halo 2.8s ease-in-out infinite; }
+.sa-trigger-trace-outline { stroke-width: 1.35; opacity: .7; animation: sa-trigger-breathe-outline 2.8s ease-in-out infinite; }
 @keyframes sa-trigger-trace-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes sa-trigger-breathe-halo { 0%, 100% { opacity: .08; } 50% { opacity: .24; } }
+@keyframes sa-trigger-breathe-outline { 0%, 100% { opacity: .58; } 50% { opacity: 1; } }
 .sa-trigger-lock { color: var(--muted-2); }
 
 .subagent-panel { position: absolute; left: 0; bottom: calc(100% + 8px); z-index: 12; width: max(240px, min(448px, calc(100cqw - 190px))); max-height: min(560px, calc(100vh - 210px)); overflow-y: auto; padding: var(--s-2); border: 1px solid var(--line-strong); border-radius: var(--r-lg); background: var(--panel-2); box-shadow: var(--shadow); transform-origin: bottom left; animation: sa-pop 180ms var(--ease) both; }
@@ -817,9 +818,11 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 
 @media (prefers-reduced-motion: reduce) {
   .subagent-panel, .subagent-panel.closing, .sa-flash, .sa-tile-config, .app-select-menu, .sa-worker.completed, .sa-worker.failed,
-  .sa-avatar-trace-runner, .sa-trigger-trace, .sa-trigger-trace-runner, .sa-worker.working .sa-worker-orb, .sa-worker.starting .sa-worker-orb { animation: none; }
-  .sa-avatar-trace-runner, .sa-trigger-trace-runner { stroke-dasharray: none; opacity: .55; }
+  .sa-avatar-trace-runner, .sa-trigger-trace, .sa-trigger-trace-halo, .sa-trigger-trace-outline, .sa-worker.working .sa-worker-orb, .sa-worker.starting .sa-worker-orb { animation: none; }
+  .sa-avatar-trace-runner { stroke-dasharray: none; opacity: .55; }
   .sa-trigger-trace { opacity: 1; }
+  .sa-trigger-trace-halo { opacity: .12; }
+  .sa-trigger-trace-outline { opacity: .72; }
   .sa-worker.working::after { animation: none; opacity: 0; }
   .sa-replace-picker { animation: none; }
   .sa-add-row button:hover { transform: none; }

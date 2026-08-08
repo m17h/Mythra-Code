@@ -123,6 +123,8 @@ describe("SubAgentCommandCenter trigger", () => {
     expect(trigger()).toHaveTextContent("Agents 1/4");
     expect(trigger().className).toContain("live");
     expect(trigger().querySelector(".sa-trigger-trace")).toBeInTheDocument();
+    expect(trigger().querySelector(".sa-trigger-trace-outline")).toBeInTheDocument();
+    expect(trigger().querySelector(".sa-trigger-trace-runner")).not.toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("1 working · 1 done");
   });
 

@@ -891,7 +891,7 @@ function AllTimeUsageSettings({ totals }: { totals: UsageTotals }) {
         : "All tracked tokens with model metadata have a published price."} Cache-write premiums are included when providers report them; long-context, regional, batch, and priority pricing adjustments are not.</span>
     </div>
     <div className="usage-source-links">
-      <span>Pricing catalog checked July 28, 2026.</span>
+      <span>Pricing refreshes from OpenKiwi's validated catalog each time the app opens. New rates apply only to future usage.</span>
       <button className="secondary-button" onClick={() => void openUrl("https://developers.openai.com/api/docs/models/compare")}><ExternalLink size={12} /> OpenAI pricing</button>
       <button className="secondary-button" onClick={() => void openUrl("https://www.anthropic.com/pricing")}><ExternalLink size={12} /> Anthropic pricing</button>
     </div>

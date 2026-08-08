@@ -27,6 +27,7 @@ export const DURABLE_STORAGE_KEYS = [
   "kiwi.workflowRuns",
   "kiwi.costLedger",
   "kiwi.usageLedger",
+  "kiwi.modelPricingCatalog",
   "kiwi.paneSizes",
   "kiwi.sidebarSplitRatio",
   "kiwi.queuedTurns",
@@ -43,7 +44,7 @@ export const DURABLE_STORAGE_KEYS = [
  * migrateStorage. Old installs then upgrade their data instead of loading
  * garbage into the new code.
  */
-export const STORAGE_SCHEMA_VERSION = 12;
+export const STORAGE_SCHEMA_VERSION = 13;
 const nativeWriteQueues = new Map<string, Promise<void>>();
 const NATIVE_PENDING_PREFIX = "kiwi.nativePending.";
 let nativeOperationSequence = 0;
@@ -125,6 +126,8 @@ export function migrateStorage(): void {
   // runtime thread, and the app-server instance it was applied to, so a
   // renderer reload can still tell a real on/off change from a restarted
   // runtime that is holding nothing at all.
+  // Version 13 adds the last validated model-pricing catalog snapshot so the
+  // app has current forward-looking estimates even when a later launch is offline.
   // All additions are optional and require no eager rewrite of existing records.
   storeValue("kiwi.schemaVersion", STORAGE_SCHEMA_VERSION);
 }

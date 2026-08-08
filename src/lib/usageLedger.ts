@@ -3,8 +3,17 @@ import type { Provider } from "../types";
 import { loadStored, storeValue } from "./storage";
 
 export const USAGE_LEDGER_KEY = "kiwi.usageLedger";
+export const MODEL_PRICING_CATALOG_KEY = "kiwi.modelPricingCatalog";
+export const MODEL_PRICING_CATALOG_URL = "https://raw.githubusercontent.com/m17h/OpenKiwi/main/model-pricing.json";
 const MAX_EVENT_IDS = 100;
 const PERSIST_DELAY_MS = 180;
+const PRICING_REFRESH_TIMEOUT_MS = 8_000;
+/** The published catalog is a few kilobytes. Anything larger is a wrong or
+ * hostile document, so cap the body before handing it to JSON.parse. */
+const MAX_PRICING_CATALOG_BYTES = 256 * 1024;
+/** Providers publish dated snapshot ids (`claude-opus-4-8-20260101`) that bill
+ * at the base model's rate. A version bump like `-5-1` is a different model. */
+const DATED_MODEL_SNAPSHOT = /-\d{6,8}$/;
 
 export interface ModelPricing {
   inputPerMillion: number;
@@ -14,6 +23,19 @@ export interface ModelPricing {
   source: "OpenAI" | "Anthropic" | "OpenRouter";
   asOf: string;
   note?: string;
+}
+
+/** A catalog entry may carry the date its rate stops applying, so a scheduled
+ * reversion (an introductory price ending) still happens on time even if the
+ * published catalog is never edited again. */
+export interface ModelPricingCatalogEntry extends ModelPricing {
+  effectiveUntil?: string;
+}
+
+export interface ModelPricingCatalog {
+  schemaVersion: 1;
+  updatedAt: string;
+  models: Record<string, ModelPricingCatalogEntry>;
 }
 
 export interface ThreadUsageRecord {
@@ -85,6 +107,131 @@ let cachedRaw: string | null | undefined;
 let ledgerDirty = false;
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
 let cachedTotals: UsageTotals | null = null;
+let cachedPricingCatalog: ModelPricingCatalog | null | undefined;
+let cachedPricingRaw: string | null | undefined;
+
+function pricingSource(provider: string): ModelPricing["source"] | null {
+  if (provider === "openai") return "OpenAI";
+  if (provider === "claude") return "Anthropic";
+  return null;
+}
+
+/** JSON `null`, `true`, `""`, and `[]` all coerce to a finite number, so a
+ * numeric type check has to come first or a malformed entry becomes free. */
+function finiteRate(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 100_000 ? value : undefined;
+}
+
+function isCalendarDate(value: unknown): value is string {
+  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(value));
+}
+
+/** Treat the downloaded catalog as untrusted input. A malformed entry is
+ * skipped and a catalog with no usable entries is rejected wholesale. */
+export function parseModelPricingCatalog(value: unknown): ModelPricingCatalog | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as { schemaVersion?: unknown; updatedAt?: unknown; models?: unknown };
+  if (candidate.schemaVersion !== 1 || typeof candidate.updatedAt !== "string" || !Number.isFinite(Date.parse(candidate.updatedAt))) return null;
+  if (!candidate.models || typeof candidate.models !== "object" || Array.isArray(candidate.models)) return null;
+  const models: Record<string, ModelPricingCatalogEntry> = {};
+  for (const [key, raw] of Object.entries(candidate.models)) {
+    const separator = key.indexOf(":");
+    const provider = separator > 0 ? key.slice(0, separator) : "";
+    const model = separator > 0 ? key.slice(separator + 1) : "";
+    const source = pricingSource(provider);
+    if (!source || !model || model.length > 160 || !raw || typeof raw !== "object") continue;
+    const entry = raw as Record<string, unknown>;
+    const inputPerMillion = finiteRate(entry.inputPerMillion);
+    const outputPerMillion = finiteRate(entry.outputPerMillion);
+    if (inputPerMillion === undefined || outputPerMillion === undefined || !isCalendarDate(entry.asOf)) continue;
+    const cachedInputPerMillion = entry.cachedInputPerMillion === undefined ? undefined : finiteRate(entry.cachedInputPerMillion);
+    const cacheWriteInputPerMillion = entry.cacheWriteInputPerMillion === undefined ? undefined : finiteRate(entry.cacheWriteInputPerMillion);
+    if ((entry.cachedInputPerMillion !== undefined && cachedInputPerMillion === undefined)
+      || (entry.cacheWriteInputPerMillion !== undefined && cacheWriteInputPerMillion === undefined)) continue;
+    const effectiveUntil = entry.effectiveUntil;
+    if (effectiveUntil !== undefined && !isCalendarDate(effectiveUntil)) continue;
+    const note = typeof entry.note === "string" && entry.note.length <= 240 ? entry.note : undefined;
+    models[`${provider}:${model}`] = {
+      inputPerMillion,
+      outputPerMillion,
+      cachedInputPerMillion,
+      cacheWriteInputPerMillion,
+      source,
+      asOf: entry.asOf,
+      note,
+      effectiveUntil,
+    };
+  }
+  return Object.keys(models).length ? { schemaVersion: 1, updatedAt: candidate.updatedAt, models } : null;
+}
+
+/** Keyed on the stored string the way `ledger()` is, so a snapshot that lands
+ * after this module first read storage (native hydration, another window) is
+ * picked up instead of latching the first answer forever. */
+function modelPricingCatalog(): ModelPricingCatalog | null {
+  let raw: string | null = null;
+  try {
+    raw = localStorage.getItem(MODEL_PRICING_CATALOG_KEY);
+  } catch {
+    // Privacy-mode storage failures leave the bundled table as the fallback.
+  }
+  if (cachedPricingCatalog !== undefined && raw === cachedPricingRaw) return cachedPricingCatalog;
+  cachedPricingRaw = raw;
+  cachedPricingCatalog = parseModelPricingCatalog(loadStored<unknown>(MODEL_PRICING_CATALOG_KEY, null));
+  return cachedPricingCatalog;
+}
+
+/** Resolve a catalog rate for `model` at time `at`, or undefined so the caller
+ * falls back to the bundled table. */
+function catalogPricing(provider: Provider, model: string, at: Date): ModelPricingCatalogEntry | undefined {
+  const catalog = modelPricingCatalog();
+  if (!catalog) return undefined;
+  const exact = catalog.models[`${provider}:${model}`];
+  const base = model.replace(DATED_MODEL_SNAPSHOT, "");
+  const entry = exact ?? (base === model ? undefined : catalog.models[`${provider}:${base}`]);
+  if (!entry) return undefined;
+  return entry.effectiveUntil && at.getTime() >= Date.parse(entry.effectiveUntil) ? undefined : entry;
+}
+
+export function modelPricingCatalogRevision(): string {
+  return modelPricingCatalog()?.updatedAt ?? "bundled";
+}
+
+/** Refresh once at launch. The last valid snapshot remains available offline;
+ * a stale or malformed response can never replace a newer cached catalog. */
+export async function refreshModelPricingCatalog(
+  fetcher: typeof fetch = fetch,
+  url = MODEL_PRICING_CATALOG_URL,
+): Promise<ModelPricingCatalog | null> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), PRICING_REFRESH_TIMEOUT_MS);
+  try {
+    const separator = url.includes("?") ? "&" : "?";
+    const response = await fetcher(`${url}${separator}openkiwi=${Date.now()}`, {
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`Pricing catalog request failed (${response.status})`);
+    const body = await response.text();
+    if (body.length > MAX_PRICING_CATALOG_BYTES) throw new Error("Pricing catalog response was too large");
+    const parsed = parseModelPricingCatalog(JSON.parse(body));
+    if (!parsed) throw new Error("Pricing catalog response was invalid");
+    const current = modelPricingCatalog();
+    if (current && Date.parse(parsed.updatedAt) < Date.parse(current.updatedAt)) return current;
+    storeValue(MODEL_PRICING_CATALOG_KEY, parsed);
+    cachedPricingCatalog = parsed;
+    try {
+      cachedPricingRaw = localStorage.getItem(MODEL_PRICING_CATALOG_KEY);
+    } catch {
+      // Storage is unavailable; keep the freshly fetched catalog authoritative
+      // for this session rather than re-reading nothing over it.
+      cachedPricingRaw = null;
+    }
+    return parsed;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
 function ledger(): ThreadUsageRecord[] {
   if (cachedLedger && ledgerDirty) return cachedLedger;
@@ -133,6 +280,8 @@ export function resetUsageLedgerCache(): void {
   cachedRaw = undefined;
   cachedTotals = null;
   ledgerDirty = false;
+  cachedPricingCatalog = undefined;
+  cachedPricingRaw = undefined;
 }
 
 function positiveUsageDelta(next: TokenUsageView, previous: TokenUsageView): TokenUsageView {
@@ -268,23 +417,25 @@ export function annotateThreadUsage(
       ?? pricingForModel(metadata.provider, metadata.model)
       ?? (sameModel ? record.pricing : undefined);
     const pricing = samePricing(proposedPricing, record.pricing) ? record.pricing : proposedPricing;
-    const canBackfill = Boolean(pricing)
-      && !record.pricing
-      && (record.pricedTokens ?? 0) === 0
-      && tokensIn(record.usage) > 0;
     const unchanged = record.provider === metadata.provider
       && record.model === metadata.model
       && record.projectPath === metadata.projectPath
       && record.pricing === pricing;
-    if (unchanged && !canBackfill) return record;
+    if (unchanged) return record;
+    // Records written before per-delta cost accumulation carry no frozen total,
+    // so usageTotals recomputes them from whatever rate is on the record. Seal
+    // such a record at its outgoing price before a refreshed rate replaces it,
+    // or a catalog update would silently reprice history.
+    const stale = record.estimatedCost === undefined && tokensIn(record.usage) > 0;
+    const sealedTokens = stale ? tokensIn(record.usage) : 0;
     return {
       ...record,
       ...metadata,
       pricing,
-      ...(canBackfill ? {
-        estimatedCost: estimateUsageCost(record.usage, pricing) ?? 0,
-        pricedTokens: tokensIn(record.usage),
-        unpricedTokens: 0,
+      ...(stale ? {
+        estimatedCost: estimateUsageCost(record.usage, record.pricing) ?? 0,
+        pricedTokens: record.pricing ? sealedTokens : 0,
+        unpricedTokens: record.pricing ? 0 : sealedTokens,
       } : {}),
       updatedAt: Date.now(),
     };
@@ -308,6 +459,8 @@ export function usageForThread(threadId: string): ThreadUsageRecord | null {
 }
 
 export function pricingForModel(provider: Provider, model: string, at = new Date()): ModelPricing | undefined {
+  const refreshed = catalogPricing(provider, model, at);
+  if (refreshed) return refreshed;
   if (provider === "openai") {
     if (model === "gpt-5.6-sol" || model === "gpt-5.6") {
       return { inputPerMillion: 5, cachedInputPerMillion: 0.5, cacheWriteInputPerMillion: 6.25, outputPerMillion: 30, source: "OpenAI", asOf: "2026-07-28" };

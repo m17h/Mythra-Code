@@ -165,7 +165,9 @@ Checkpoint snapshots are stored as hidden local Git refs without moving the proj
 
 ## Privacy and telemetry
 
-OpenKiwi contains **no telemetry, analytics, or crash reporting**. Network connections are limited to the selected model provider, update checks against GitHub Releases, and user-initiated GitHub account or repository actions through the official GitHub CLI. OpenKiwi never injects GitHub credentials into model prompts or project files. Agents with command access can still invoke credential-aware tools such as `git` or `gh`, just as they could in a terminal. Prompts, transcripts, settings, local usage totals, and audit records stay in local storage (SQLite in the app's data directory). Diagnostics leave the machine only when a user explicitly exports them.
+OpenKiwi contains **no telemetry, analytics, or crash reporting**. Network connections are limited to the selected model provider, update and model-pricing catalog checks against the OpenKiwi GitHub repository, and user-initiated GitHub account or repository actions through the official GitHub CLI. OpenKiwi never injects GitHub credentials into model prompts or project files. Agents with command access can still invoke credential-aware tools such as `git` or `gh`, just as they could in a terminal. Prompts, transcripts, settings, local usage totals, and audit records stay in local storage (SQLite in the app's data directory). Diagnostics leave the machine only when a user explicitly exports them.
+
+The small [`model-pricing.json`](model-pricing.json) catalog is fetched once on app launch and validated before it is cached. The request is an unauthenticated `GET` that carries no request body, account, or device identifier, and the last validated snapshot keeps working offline. Updating that file on `main` refreshes future API-equivalent usage estimates without requiring an app release. OpenKiwi accumulates estimated cost at the price active when each token increment is recorded, so a later price change never rewrites historical usage.
 
 ## Security boundaries
 

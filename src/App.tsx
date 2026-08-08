@@ -41,7 +41,9 @@ import {
   annotateThreadUsage,
   estimateUsageCost,
   formatEstimatedCost,
+  modelPricingCatalogRevision,
   pricingForModel,
+  refreshModelPricingCatalog,
   usageForThread,
   usageTotals,
   type ModelPricing,
@@ -293,6 +295,7 @@ export default function App() {
   const [openRouterModels, setOpenRouterModels] = useState<OpenRouterModel[]>([]);
   const [openRouterModelsLoading, setOpenRouterModelsLoading] = useState(false);
   const [openRouterModelsError, setOpenRouterModelsError] = useState("");
+  const [pricingCatalogRevision, setPricingCatalogRevision] = useState(modelPricingCatalogRevision);
   const composerRef = useRef<ComposerHandle>(null);
   const threadSearchRequestRef = useRef(0);
   const pendingTurnStartsRef = useRef(new PendingTurnStarts());
@@ -596,7 +599,7 @@ export default function App() {
       projectPath: activeWorkspace ? normalizedProjectPath(activeWorkspace.path) : undefined,
       pricing: activeOpenRouterPricing ?? pricingForModel(effectiveSettings.provider, effectiveSettings.model),
     });
-  }, [activeOpenRouterPricing, activeThreadId, activeWorkspace, effectiveSettings.model, effectiveSettings.provider, tokenUsage]);
+  }, [activeOpenRouterPricing, activeThreadId, activeWorkspace, effectiveSettings.model, effectiveSettings.provider, pricingCatalogRevision, tokenUsage]);
 
   const activeUsageRecord = activeThreadId ? usageForThread(activeThreadId) : null;
   const activeUsageCost = activeUsageRecord?.estimatedCost
@@ -1544,6 +1547,14 @@ export default function App() {
     void refreshClaudeStatus();
     void refreshCursorStatus();
     void refreshOpenRouterModels();
+    void refreshModelPricingCatalog()
+      .then((catalog) => {
+        if (catalog) setPricingCatalogRevision(catalog.updatedAt);
+      })
+      .catch(() => {
+        // Pricing is advisory and the last validated or bundled snapshot stays
+        // active offline, so a startup network failure should not interrupt chat.
+      });
     void hasOpenRouterKey()
       .then(setOpenRouterReady)
       .catch(() => setOpenRouterReady(false));

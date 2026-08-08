@@ -382,12 +382,12 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
         onClick={() => (open ? close() : show())}
       >
         {/* No viewBox on purpose: the rect is measured in real pixels, so the
-            traced corners stay the button's own radius however wide the label
-            makes it. `pathLength` keeps the dash pattern independent of that. */}
+            glowing corners stay the button's own radius however wide the label
+            makes it. The provider-logo traces inside the panel are separate. */}
         {counts.active > 0 && (
           <svg className="sa-trigger-trace" aria-hidden="true" focusable="false">
-            <rect className="sa-trigger-trace-rail" width="100%" height="100%" rx="9" pathLength="100" />
-            <rect className="sa-trigger-trace-runner" width="100%" height="100%" rx="9" pathLength="100" />
+            <rect className="sa-trigger-trace-halo" width="100%" height="100%" rx="9" />
+            <rect className="sa-trigger-trace-outline" width="100%" height="100%" rx="9" />
           </svg>
         )}
         <span className="sa-trigger-content">
