@@ -72,6 +72,16 @@ export async function restartRuntime(): Promise<void> {
   await invoke("restart_runtime");
 }
 
+/**
+ * Identity of the app-server process that will serve the next RPC, starting
+ * it if necessary. A different value than last time means every thread that
+ * process had loaded is gone, so a plain `thread/resume` will honour
+ * startup-only config again instead of ignoring it.
+ */
+export async function runtimeInstanceId(): Promise<string> {
+  return invoke<string>("runtime_instance");
+}
+
 export async function auditEvent(
   kind: string,
   payload: JsonObject = {},

@@ -26,6 +26,7 @@ describe("durable storage", () => {
   it("hydrates frozen child-agent ownership state before the app mounts", () => {
     expect(DURABLE_STORAGE_KEYS).toContain("kiwi.childAgentPolicies");
     expect(DURABLE_STORAGE_KEYS).toContain("kiwi.childAgentLinks");
+    expect(DURABLE_STORAGE_KEYS).toContain("kiwi.threadSubagentCapabilities");
   });
 
   it("migrates legacy localStorage when SQLite is empty", async () => {

@@ -15,11 +15,21 @@ import type { AppSettings, PermissionMode } from "../types";
 /**
  * Owns the lifetime of a root thread's delegation bridge.
  *
- * A thread's approved destinations are decided exactly once — when its first
- * turn starts — and reused verbatim for every later turn, so a settings change
- * mid-conversation can never silently re-point the children a running plan
- * depends on. Providers that spawn a fresh process per turn (Claude, Cursor)
- * therefore get the same launch descriptor every time.
+ * Two rules, and they pull in different directions on purpose:
+ *
+ * - *Destinations are frozen.* The approved set is decided once — on the first
+ *   turn where cross-provider sub-agents are available — and reused verbatim
+ *   afterwards, so a settings change mid-conversation can never re-point the
+ *   children a running plan depends on. Providers that spawn a fresh process
+ *   per turn (Claude, Cursor) therefore get the same launch descriptor every
+ *   time.
+ * - *The switch is live.* Whether that frozen roster is reachable at all
+ *   follows the current sub-agent settings on every turn. A user who enables
+ *   sub-agents several messages into a conversation gets them on the very next
+ *   run, and a user who switches them off loses them just as promptly — the
+ *   backend session is torn down rather than merely left unmentioned, because
+ *   a provider whose runtime thread outlives a turn still has the bridge
+ *   registered as an MCP server.
  */
 
 /** Launch descriptors for sessions registered during this app session. */
@@ -74,13 +84,32 @@ export interface ChildAgentBridgeResult {
 export async function ensureChildAgentBridge(
   input: ChildAgentBridgeInput,
 ): Promise<ChildAgentBridgeResult | null> {
+  // Depth one, decided before anything the settings could say: a thread that
+  // is itself a child never receives a bridge.
   if (input.threadId && input.links[input.threadId]) return null;
 
   const existing = childAgentPolicyForThread(input.policies, input.threadId);
-  // Delegation capabilities are immutable once a conversation exists. This
-  // also keeps pre-feature threads honest: they never started with the MCP
-  // bridge, so they cannot acquire it silently on a later turn.
-  if (input.threadId && !existing) return null;
+  // The switch is read fresh every turn, in both directions. Switching
+  // sub-agents (or cross-provider delegation) off has to remove the powers a
+  // thread already holds, not just decline to hand out new ones.
+  //
+  // Ending the backend session is the authoritative revocation: it invalidates
+  // the session token, so a bridge process a provider runtime is still holding
+  // open can no longer reach the app even if that runtime never drops its MCP
+  // server registration. The policy record itself is kept, so switching
+  // delegation back on restores the very same frozen destinations. Asking the
+  // backend unconditionally also closes a reload-shaped gap: the renderer can
+  // reload without the Tauri process being replaced, which empties the maps
+  // above while leaving a registered bridge alive in Rust.
+  if (!input.settings.subagentsEnabled || !input.settings.childAgents.enabled) {
+    if (existing) await releaseChildAgentSession(existing.sessionId);
+    return null;
+  }
+
+  // An existing thread with no policy has never run with a cross-provider
+  // roster available — either it predates the feature or the user had that
+  // feature switched off. It may capture one now: the composer shows the
+  // roster it would capture, so nothing is acquired silently.
   const policy = existing ?? childAgentPolicyFor({
     sessionId: (input.newSessionId ?? (() => crypto.randomUUID()))(),
     rootThreadId: input.threadId,

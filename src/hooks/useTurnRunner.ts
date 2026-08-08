@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
-import { rpc, type CodexRuntimeStatus } from "../lib/codex";
+import { rpc, runtimeInstanceId, type CodexRuntimeStatus } from "../lib/codex";
 import {
   interruptClaudeTurn,
   isClaudeThreadBusyError,
@@ -19,7 +19,12 @@ import {
 } from "../lib/cursor";
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL } from "../lib/appConfig";
 import { cacheChildAgentPolicy, ensureChildAgentBridge, releaseChildAgentSession, type ChildAgentBridgeResult } from "../lib/childAgentSessions";
-import type { ChildAgentLink, ChildAgentPolicy, ChildAgentReadiness } from "../lib/childAgents";
+import { childAgentPolicyForThread, type ChildAgentLink, type ChildAgentPolicy, type ChildAgentReadiness } from "../lib/childAgents";
+import {
+  planSubagentCapabilities,
+  recordSubagentCapabilities,
+  subagentCapabilitySignature,
+} from "../lib/threadCapabilities";
 import { threadResumeParams, threadStartParams, turnStartParams } from "../lib/turnConfig";
 import { buildTurnInput, withoutSentAttachments } from "../lib/turnInput";
 import { optimisticStartedThread, upsertThread } from "../lib/threadList";
@@ -139,6 +144,10 @@ export interface TurnRunnerContext {
   onThreadCreated: (threadId: string) => void;
   persistThreadModel: (threadId: string, model: string) => void;
   persistThreadWorktrees: SetPersisted<Record<string, ThreadWorktreeRecord>>;
+  /** Restart the shared Codex app-server between idle turns so startup-only
+   * capability config can be reapplied to an already loaded thread. Resolves
+   * with the identity of the app-server that replaced it. */
+  restartRuntimeForCapabilities: (threadId: string) => Promise<string>;
   beginRunCheckpoint: (threadId: string, workspacePath: string, prompt: string, provider: Provider, model: string) => Promise<string | undefined>;
   discardRunCheckpoint: (threadId: string) => void;
   refreshLocalSkills: () => Promise<unknown>;
@@ -188,7 +197,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       threadWorktreesRef, threadProjectBindingsRef, activeWorkspacePathRef,
       pendingTurnStartsRef, skillRuntimeRootRef, cursorSessionIdsRef,
       executionPathFor, bindThreadToProject, rememberThread, onThreadCreated, persistThreadModel,
-      persistThreadWorktrees, beginRunCheckpoint, discardRunCheckpoint,
+      persistThreadWorktrees, restartRuntimeForCapabilities, beginRunCheckpoint, discardRunCheckpoint,
       refreshLocalSkills, ensureSkillRoots, scheduleClaudeThreadSave, scheduleCursorThreadSave,
       setThreads, setActiveThread, setAttachments, setDraftThreadIsolated,
       setStartingDraftTurn, setError, setStatus, setTransientStatus,
@@ -431,6 +440,18 @@ export function useTurnRunner(context: TurnRunnerContext): {
         serviceTier: effectiveSettings.serviceTier,
         readiness: childAgentReadiness,
       });
+      // A captured cross-provider policy freezes one concurrency budget for
+      // the whole conversation. Use that same budget for provider-native
+      // sub-agents too, so the number displayed by the command center is the
+      // number Claude/Codex actually receives. Threads that never captured a
+      // roster continue to use the live project setting.
+      const capturedPolicy = childAgentPolicyForThread(childAgentPolicies, activeThread?.id);
+      const runtimeSubagentMax = childBridge?.policy.maxConcurrent
+        ?? capturedPolicy?.maxConcurrent
+        ?? effectiveSettings.subagentMax;
+      const runtimeSettings = runtimeSubagentMax === effectiveSettings.subagentMax
+        ? effectiveSettings
+        : { ...effectiveSettings, subagentMax: runtimeSubagentMax };
       if (effectiveSettings.provider === "claude") {
         if (skillsFolder && !skillRuntimeRootRef.current) await refreshLocalSkills();
         return await runLocalTurn("claude", executionPath, {
@@ -439,7 +460,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
             // presence, so resume detection is unaffected by running after it.
             const canResumeClaude = Boolean(activeThread && useTaskStore.getState().tasks[thread.id]?.messages.some((message) => message.role === "assistant"));
             await saveClaudeTranscript({ thread: updatedThread, messages: useTaskStore.getState().tasks[thread.id]?.messages ?? [], activities: useTaskStore.getState().tasks[thread.id]?.activities ?? [] });
-            const result = await startClaudeTurn({ threadId: thread.id, cwd: executionPath, prompt: text, model: effectiveSettings.model || DEFAULT_CLAUDE_MODEL, effort: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort, permission: effectiveSettings.permission, systemPrompt: withOpenKiwiCompletionInstructions(effectiveSettings.systemPrompt), resume: canResumeClaude, attachments: sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })), subagentsEnabled: effectiveSettings.subagentsEnabled, subagentMax: effectiveSettings.subagentMax, customAgents, skillsPluginPath: skillRuntimeRootRef.current || undefined, childAgentBridgeConfig: childBridge?.launch.configPath });
+            const result = await startClaudeTurn({ threadId: thread.id, cwd: executionPath, prompt: text, model: effectiveSettings.model || DEFAULT_CLAUDE_MODEL, effort: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort, permission: effectiveSettings.permission, systemPrompt: withOpenKiwiCompletionInstructions(effectiveSettings.systemPrompt), resume: canResumeClaude, attachments: sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })), subagentsEnabled: effectiveSettings.subagentsEnabled, subagentMax: runtimeSubagentMax, customAgents, skillsPluginPath: skillRuntimeRootRef.current || undefined, childAgentBridgeConfig: childBridge?.launch.configPath });
             return { turnId: result.turnId };
           },
           interrupt: (threadId) => interruptClaudeTurn(threadId),
@@ -475,10 +496,24 @@ export function useTurnRunner(context: TurnRunnerContext): {
 
       await ensureSkillRoots();
       const input = buildTurnInput(text, sentAttachments);
+      // The Codex app server keeps one thread alive across turns and only reads
+      // this config when a thread is started or resumed, so the capabilities it
+      // is holding have to be compared against the ones this turn wants — and
+      // against the app-server identity that was told about them, because a
+      // runtime that has since restarted holds nothing at all.
+      let runtimeInstance = await runtimeInstanceId();
+      const capabilities = subagentCapabilitySignature({
+        subagentsEnabled: effectiveSettings.subagentsEnabled,
+        subagentMax: runtimeSubagentMax,
+        // The same policy receives a new token/config path whenever its bridge
+        // is rebuilt. App-server must be refreshed so it starts that process,
+        // rather than retaining an MCP process holding the revoked old token.
+        bridgeInstanceId: childBridge?.launch.configPath,
+      });
       let threadId = activeThread?.id;
       startedThreadId = threadId;
       if (!threadId) {
-        const result = await rpc<{ thread: Thread }>("thread/start", threadStartParams(effectiveSettings, executionPath, { serviceName: activeWorkspace.isChat ? "OpenKiwi Chat" : "OpenKiwi", customAgents, modelContextWindow: effectiveSettings.provider === "openrouter" ? openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.context_length : undefined, interactive: true, additionalWorkspaceRoots, childAgentBridge: childBridge?.launch }));
+        const result = await rpc<{ thread: Thread }>("thread/start", threadStartParams(runtimeSettings, executionPath, { serviceName: activeWorkspace.isChat ? "OpenKiwi Chat" : "OpenKiwi", customAgents, modelContextWindow: effectiveSettings.provider === "openrouter" ? openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.context_length : undefined, interactive: true, additionalWorkspaceRoots, childAgentBridge: childBridge?.launch }));
         const startedThread = optimisticStartedThread(result.thread, text);
         threadId = startedThread.id;
         startedThreadId = threadId;
@@ -492,17 +527,28 @@ export function useTurnRunner(context: TurnRunnerContext): {
         rememberThread(startedThread);
         onThreadCreated(startedThread.id);
         persistThreadModel(startedThread.id, effectiveSettings.model);
+        recordSubagentCapabilities(startedThread.id, runtimeInstance, capabilities);
         useTaskStore.getState().ensureTask(startedThread.id, executionPath);
         if (!workspaceChangedMidSend()) {
           setThreads((current) => upsertThread(current, startedThread));
           setActiveThread(startedThread);
           useTaskStore.getState().setActiveThread(startedThread.id);
         }
-      } else if (effectiveSettings.provider === "openrouter" || childBridge) {
-        // OpenRouter always re-sends its isolated config. OpenAI re-sends only
-        // when a live delegation bridge must be reattached after a restart.
-        const resume = threadResumeParams(effectiveSettings, threadId, executionPath, { customAgents, modelContextWindow: openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.context_length, excludeTurns: true, additionalWorkspaceRoots, childAgentBridge: childBridge?.launch });
-        await rpc("thread/resume", effectiveSettings.provider === "openrouter" ? { ...resume, model: effectiveSettings.model } : resume);
+      } else {
+        // Startup-only config overrides are intentionally ignored by Codex
+        // when thread/resume rejoins a thread already loaded in app-server.
+        // Refresh the managed runtime between turns before resuming whenever
+        // that runtime is holding this thread with different capabilities.
+        // This keeps the same durable thread/history while making the visible
+        // switch real; a runtime that restarted since then has nothing loaded
+        // and takes the new config from the resume alone.
+        const plan = planSubagentCapabilities(threadId, runtimeInstance, capabilities);
+        if (plan.restartRuntime) runtimeInstance = await restartRuntimeForCapabilities(threadId);
+        if (effectiveSettings.provider === "openrouter" || childBridge || plan.resume) {
+          const resume = threadResumeParams(runtimeSettings, threadId, executionPath, { customAgents, modelContextWindow: openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.context_length, excludeTurns: true, additionalWorkspaceRoots, childAgentBridge: childBridge?.launch, refreshRuntimeConfig: true });
+          await rpc("thread/resume", effectiveSettings.provider === "openrouter" ? { ...resume, model: effectiveSettings.model } : resume);
+          recordSubagentCapabilities(threadId, runtimeInstance, capabilities);
+        }
       }
 
       if (activeThread?.id === threadId) {
@@ -548,7 +594,11 @@ export function useTurnRunner(context: TurnRunnerContext): {
       // resolved its thread must still clear the "starting" mark applied at
       // the top of this function.
       const failedThreadId = startedThreadId ?? startingThreadId;
-      if (childBridge && !childBridge.policy.rootThreadId && !startedThreadId) {
+      // `captured` is cleared the moment the policy is bound to a thread and
+      // persisted. Anything still flagged as captured was registered with the
+      // backend for a turn that never started, so nothing will ever reuse it —
+      // including a policy captured mid-conversation for an existing thread.
+      if (childBridge?.captured) {
         await releaseChildAgentSession(childBridge.policy.sessionId);
       }
       if (provisionalWorktree && activeProject && !provisionalPersisted) {

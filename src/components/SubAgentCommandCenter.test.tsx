@@ -60,7 +60,7 @@ function view(overrides: Partial<SubAgentCommandCenterProps> = {}) {
     <SubAgentCommandCenter
       policy={POLICY}
       capturedPolicy={null}
-      locked={false}
+      mode="open"
       readiness={READY}
       workers={[]}
       scopeLabel="Chats & project defaults"
@@ -131,7 +131,7 @@ describe("SubAgentCommandCenter trigger", () => {
   });
 
   it("stays available on a started thread instead of being disabled", () => {
-    view({ locked: true, capturedPolicy: CAPTURED });
+    view({ mode: "captured", capturedPolicy: CAPTURED });
     expect(trigger()).toBeEnabled();
   });
 });
@@ -368,41 +368,109 @@ describe("SubAgentCommandCenter editing a draft policy", () => {
   });
 });
 
-describe("SubAgentCommandCenter on a started thread", () => {
-  it("shows the captured policy read-only and never offers to change it", async () => {
-    await open({ locked: true, capturedPolicy: CAPTURED });
-    expect(screen.getByText("Locked for this thread")).toBeInTheDocument();
-    expect(screen.getByText(/froze its sub-agent powers when it started/)).toBeInTheDocument();
+describe("SubAgentCommandCenter on a thread that froze a roster", () => {
+  it("shows the captured destinations read-only and never offers to change them", async () => {
+    await open({ mode: "captured", capturedPolicy: CAPTURED });
+    expect(screen.getByText("Destinations locked for this thread")).toBeInTheDocument();
+    expect(screen.getByText(/froze its destinations on the first run where cross-provider sub-agents were available/)).toBeInTheDocument();
     expect(screen.getByText("Frozen reviewer")).toBeInTheDocument();
-    expect(screen.getByText("Captured when this thread started.")).toBeInTheDocument();
+    expect(screen.getByText("Captured on the first run with cross-provider sub-agents.")).toBeInTheDocument();
 
-    expect(screen.queryByRole("switch", { name: "Allow sub-agent spawning" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("switch", { name: "Allow cross-provider sub-agents" })).not.toBeInTheDocument();
     expect(screen.queryByRole("switch", { name: /^Enable / })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "More concurrent sub-agents" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Add / })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Remove / })).not.toBeInTheDocument();
+    expect(screen.queryByText("Reviewer")).not.toBeInTheDocument();
   });
 
   it("shows the captured limit rather than the limit configured since", async () => {
-    await open({ locked: true, capturedPolicy: CAPTURED });
+    await open({ mode: "captured", capturedPolicy: CAPTURED });
     expect(trigger()).toHaveTextContent("Agents: 2");
   });
 
-  it("shows captured delegation as on even if today's draft setting is off", async () => {
+  it("keeps the switches live so a frozen thread can always be switched off", async () => {
+    const { onChange } = await open({ mode: "captured", capturedPolicy: CAPTURED });
+    await userEvent.click(screen.getByRole("switch", { name: "Allow sub-agent spawning" }));
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ enabled: false }));
+
+    onChange.mockClear();
+    await userEvent.click(screen.getByRole("switch", { name: "Allow cross-provider sub-agents" }));
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
+      childAgents: expect.objectContaining({ enabled: false }),
+    }));
+  });
+
+  it("never claims a frozen thread still has agents once they are switched off", async () => {
     await open({
-      locked: true,
+      mode: "captured",
       capturedPolicy: CAPTURED,
       policy: { ...POLICY, enabled: false, childAgents: { enabled: false, targets: [] } },
     });
-    expect(trigger()).toHaveTextContent("Agents: 2");
-    expect(screen.getByText("The model may split work across parallel agents.")).toBeInTheDocument();
-    expect(screen.getAllByText("On")).toHaveLength(2);
+    expect(trigger()).toHaveTextContent("Agents off");
+    expect(screen.getByText("No sub-agent tools are exposed.")).toBeInTheDocument();
+    expect(screen.getByText("Children stay inside this thread's own provider.")).toBeInTheDocument();
   });
 
-  it("reports no destinations for a thread that started without a delegation bridge", async () => {
-    await open({ locked: true, capturedPolicy: null });
-    expect(screen.getByText("This thread captured no cross-provider destinations.")).toBeInTheDocument();
+  it("stops promising cross-provider reach when only cross-provider is switched off", async () => {
+    await open({
+      mode: "captured",
+      capturedPolicy: CAPTURED,
+      policy: { ...POLICY, enabled: true, childAgents: { enabled: false, targets: [REVIEWER] } },
+    });
+    expect(trigger()).toHaveTextContent("Agents: 2");
+    expect(trigger()).not.toHaveTextContent("↗");
+    expect(screen.getByText("Children stay inside this thread's own provider.")).toBeInTheDocument();
+    // The frozen roster is still what would come back, so it stays on show.
+    expect(screen.getByText("Frozen reviewer")).toBeInTheDocument();
+  });
+});
+
+describe("SubAgentCommandCenter enabling sub-agents mid-conversation", () => {
+  it("stays fully editable before a thread has run with cross-provider sub-agents", async () => {
+    const { onChange } = await open({
+      mode: "open",
+      capturedPolicy: null,
+      policy: { enabled: false, maxConcurrent: 2, childAgents: { enabled: false, targets: [] } },
+    });
+    expect(screen.queryByText(/froze its destinations/)).not.toBeInTheDocument();
+    expect(screen.getByText("Editing Chats & project defaults")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("switch", { name: "Allow sub-agent spawning" }));
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ enabled: true }));
+
+    onChange.mockClear();
+    await userEvent.click(screen.getByRole("button", { name: "Add Claude destination" }));
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
+      enabled: true,
+      childAgents: expect.objectContaining({
+        enabled: true,
+        targets: [expect.objectContaining({ id: "claude", provider: "claude" })],
+      }),
+    }));
+  });
+
+  it("marks cross-provider reach as ready the moment it is configured", async () => {
+    view({ mode: "open", capturedPolicy: null });
+    expect(trigger()).toHaveTextContent("Agents: 4 ↗");
+  });
+});
+
+describe("SubAgentCommandCenter inside a sub-agent conversation", () => {
+  const child = { mode: "child" as const, capturedPolicy: null, policy: { enabled: false, maxConcurrent: 1, childAgents: { enabled: false, targets: [] } } };
+
+  it("reports delegation as off and offers no way to turn it on", async () => {
+    await open(child);
+    expect(trigger()).toHaveTextContent("Agents off");
+    expect(screen.getByText(/never starts sub-agents of its own/)).toBeInTheDocument();
+    expect(screen.getAllByText("Off")).toHaveLength(2);
+    expect(screen.queryByRole("switch", { name: "Allow sub-agent spawning" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("switch", { name: "Allow cross-provider sub-agents" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Add / })).not.toBeInTheDocument();
+  });
+
+  it("never shows a roster it could delegate to, whatever is configured globally", async () => {
+    await open({ ...child, policy: POLICY });
+    expect(screen.getByText("A sub-agent has no destinations of its own.")).toBeInTheDocument();
     expect(screen.queryByText("Reviewer")).not.toBeInTheDocument();
   });
 });
@@ -460,7 +528,7 @@ describe("SubAgentCommandCenter live activity", () => {
   });
 
   it("keeps live state visible on a locked thread", async () => {
-    await open({ locked: true, capturedPolicy: CAPTURED, workers: [worker()] });
+    await open({ mode: "captured", capturedPolicy: CAPTURED, workers: [worker()] });
     expect(screen.getByText("Review the diff")).toBeInTheDocument();
   });
 

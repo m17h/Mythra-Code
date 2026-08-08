@@ -112,7 +112,16 @@ export function threadResumeParams(
   run: ScheduleRunSettings,
   threadId: string,
   cwd: string,
-  options: Pick<ThreadStartOptions, "customAgents" | "modelContextWindow" | "additionalWorkspaceRoots" | "childAgentBridge"> & { excludeTurns?: boolean } = {},
+  options: Pick<ThreadStartOptions, "customAgents" | "modelContextWindow" | "additionalWorkspaceRoots" | "childAgentBridge"> & {
+    excludeTurns?: boolean;
+    /**
+     * Re-send the whole runtime config even with no bridge attached. This is
+     * how a freshly loaded Codex thread learns that sub-agents were switched
+     * on — or off — partway through a conversation. A thread already loaded
+     * in app-server requires a managed runtime refresh before this resume.
+     */
+    refreshRuntimeConfig?: boolean;
+  } = {},
 ): JsonObject {
   return {
     threadId,
@@ -121,7 +130,7 @@ export function threadResumeParams(
     developerInstructions: OPENKIWI_COMPLETION_INSTRUCTIONS,
     ...(options.excludeTurns ? { excludeTurns: true } : {}),
     ...(run.provider === "openrouter" ? { modelProvider: "openrouter" } : {}),
-    ...(run.provider === "openrouter" || options.childAgentBridge
+    ...(run.provider === "openrouter" || options.childAgentBridge || options.refreshRuntimeConfig
       ? { config: threadRuntimeConfig(run, options) }
       : {}),
   };

@@ -88,6 +88,12 @@ struct AppServer {
     stdin: Mutex<ChildStdin>,
     child: Arc<Mutex<Child>>,
     pid: Option<u32>,
+    /// Identity of this exact app-server process. A restart — deliberate or
+    /// after a crash — produces a new one, and every thread the old process
+    /// had loaded is gone with it. The webview keys its record of "what this
+    /// thread's runtime was last configured with" on this value, because
+    /// startup-only config is only honoured for a thread that is not loaded.
+    instance: String,
     pending: PendingMap,
     next_id: AtomicI64,
     alive: Arc<AtomicBool>,
@@ -2508,6 +2514,7 @@ async fn spawn_server(app: &AppHandle) -> Result<Arc<AppServer>, String> {
         stdin: Mutex::new(stdin),
         child,
         pid,
+        instance: uuid::Uuid::new_v4().to_string(),
         pending,
         next_id: AtomicI64::new(1),
         alive,
@@ -2843,6 +2850,18 @@ async fn list_openrouter_models() -> Result<Value, String> {
         .map_err(|error| format!("Could not read the OpenRouter model catalog: {error}"))
 }
 
+/// Identity of the app-server that will serve the next RPC, starting it if it
+/// is not running yet. Two calls returning the same value mean the same
+/// process has been up throughout, so the threads it loaded are still loaded
+/// and their startup-only config cannot be changed by `thread/resume` alone.
+#[tauri::command]
+async fn runtime_instance(
+    app: AppHandle,
+    state: State<'_, RuntimeState>,
+) -> Result<String, String> {
+    Ok(ensure_server(&app, &state).await?.instance.clone())
+}
+
 #[tauri::command]
 async fn restart_runtime(app: AppHandle, state: State<'_, RuntimeState>) -> Result<(), String> {
     if let Some(server) = state.server.lock().await.take() {
@@ -3021,6 +3040,7 @@ pub fn run() {
             child_agent_session_end,
             child_agent_respond,
             child_agent_finished,
+            runtime_instance,
             restart_runtime
         ])
         .build(tauri::generate_context!())

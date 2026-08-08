@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Thread } from "./types";
@@ -72,6 +72,8 @@ let pendingResume: Deferred<{ thread: Thread }>;
 let resumeImpl: (params: Record<string, unknown>) => unknown;
 let turnStartImpl: (params: Record<string, unknown>) => unknown;
 let commandExecImpl: (params: Record<string, unknown>) => unknown;
+/** Bumped by every managed app-server restart, real or simulated. */
+let runtimeGeneration: number;
 let workspaceGitInfoImpl: () => unknown;
 let workspaceGitInitializeImpl: () => unknown;
 
@@ -124,6 +126,13 @@ function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
     };
   }
   if (command === "state_read") return null;
+  // Every app-server restart hands back a different identity, which is how the
+  // app knows the threads that process had loaded are gone with it.
+  if (command === "runtime_instance") return `runtime-${runtimeGeneration}`;
+  if (command === "restart_runtime") {
+    runtimeGeneration += 1;
+    return null;
+  }
   if (command === "normal_chat_workspace") return "/chats";
   if (command === "workspace_git_info") {
     return workspaceGitInfoImpl();
@@ -244,6 +253,7 @@ beforeEach(() => {
   resumeImpl = () => pendingResume.promise;
   turnStartImpl = (params) => ({ turn: { id: `turn-${String(params.threadId)}` } });
   commandExecImpl = () => ({ exitCode: 0, stdout: "", stderr: "" });
+  runtimeGeneration = 1;
   workspaceGitInfoImpl = () => ({ isRepo: true, isRoot: true, hasCommit: true, branch: "main", head: "head" });
   workspaceGitInitializeImpl = () => ({
     info: { isRepo: true, isRoot: true, hasCommit: true, branch: "main", head: "new-head" },
@@ -706,6 +716,22 @@ describe("composer sub-agent command center", () => {
     return screen.getByRole("dialog", { name: "Sub-agent command center" });
   }
 
+  /** Params of every app-server call made with one JSON-RPC method. */
+  function codexCalls(method: string): Record<string, unknown>[] {
+    return invokeMock.mock.calls
+      .filter(([command, args]) => command === "codex_rpc" && args?.method === method)
+      .map(([, args]) => (args?.params ?? {}) as Record<string, unknown>);
+  }
+
+  /** The sub-agent policy a project actually persisted for its own threads. */
+  function projectSubagents(projectId: string): unknown {
+    const stored = JSON.parse(localStorage.getItem("kiwi.projects") ?? "[]") as Array<{
+      id: string;
+      overrides?: { subagents?: unknown };
+    }>;
+    return stored.find((project) => project.id === projectId)?.overrides?.subagents;
+  }
+
   it("writes a project's edits into that project's own sub-agent override", async () => {
     const user = userEvent.setup();
     await renderApp();
@@ -753,9 +779,9 @@ describe("composer sub-agent command center", () => {
     expect(stored.every((project) => project.overrides === undefined)).toBe(true);
   });
 
-  it("keeps the control usable on a started thread but locks its policy", async () => {
+  it("lets a conversation already in progress configure sub-agents for its next turn", async () => {
     const user = userEvent.setup();
-    localStorage.setItem("kiwi.settings", JSON.stringify({ subagentsEnabled: true, subagentMax: 5 }));
+    localStorage.setItem("kiwi.settings", JSON.stringify({ subagentsEnabled: false, subagentMax: 5 }));
     await renderApp();
     pendingResume.resolve({ thread: { ...THREAD_A, turns: [] } });
     await user.click(await screen.findByText("Alpha thread"));
@@ -764,11 +790,118 @@ describe("composer sub-agent command center", () => {
     expect(control).toBeEnabled();
     await openCrew(user);
 
-    expect(screen.getByText("Locked for this thread")).toBeInTheDocument();
-    expect(screen.getByText(/froze its sub-agent powers when it started/)).toBeInTheDocument();
-    expect(screen.queryByRole("switch", { name: "Allow sub-agent spawning" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "More concurrent sub-agents" })).not.toBeInTheDocument();
-    expect(screen.getByText("This thread captured no cross-provider destinations.")).toBeInTheDocument();
+    // Nothing was frozen because this thread has never run with a
+    // cross-provider roster available.
+    expect(screen.queryByText(/froze its destinations/)).not.toBeInTheDocument();
+    await user.click(screen.getByRole("switch", { name: "Allow sub-agent spawning" }));
+    await user.click(screen.getByRole("button", { name: "Add Claude destination" }));
+
+    // This thread lives in a project, so the edit lands on that project's own
+    // sub-agent policy — the one its next turn will read.
+    await waitFor(() => {
+      expect(projectSubagents(PROJECT_A.id)).toMatchObject({
+        enabled: true,
+        childAgents: {
+          enabled: true,
+          targets: [expect.objectContaining({ id: "claude", provider: "claude" })],
+        },
+      });
+    });
+  });
+
+  it("locks the destinations of a thread that has already delegated, but not the switch", async () => {
+    const user = userEvent.setup();
+    localStorage.setItem("kiwi.settings", JSON.stringify({
+      subagentsEnabled: true,
+      subagentMax: 5,
+      childAgents: { enabled: true, targets: [{ id: "cursor", provider: "cursor", model: "auto", label: "Cursor", description: "", enabled: true }] },
+    }));
+    localStorage.setItem("kiwi.childAgentPolicies", JSON.stringify({
+      "session-a": {
+        rootThreadId: THREAD_A.id,
+        maxConcurrent: 2,
+        permission: "ask",
+        systemPrompt: "",
+        projectInstructionsEnabled: false,
+        reasoningEffort: "medium",
+        serviceTier: null,
+        targets: [{ id: "frozen", provider: "claude", model: "claude-fable-5", label: "Frozen reviewer", description: "", enabled: true }],
+        capturedAt: 1,
+      },
+    }));
+    await renderApp();
+    pendingResume.resolve({ thread: { ...THREAD_A, turns: [] } });
+    await user.click(await screen.findByText("Alpha thread"));
+    const crew = await openCrew(user);
+
+    expect(screen.getByText(/froze its destinations on the first run where cross-provider sub-agents were available/)).toBeInTheDocument();
+    expect(within(crew).getByText("Frozen reviewer")).toBeInTheDocument();
+    // The destination configured since is not one this thread may reach.
+    expect(within(crew).queryByText("Cursor")).not.toBeInTheDocument();
+    expect(within(crew).queryByRole("button", { name: "More concurrent sub-agents" })).not.toBeInTheDocument();
+    expect(within(crew).queryByRole("button", { name: /^Add / })).not.toBeInTheDocument();
     expect(JSON.parse(localStorage.getItem("kiwi.settings") ?? "{}").subagentMax).toBe(5);
+
+    // Revocation always stays reachable, and reaches the runtime on the next turn.
+    await user.click(screen.getByRole("switch", { name: "Allow sub-agent spawning" }));
+    await waitFor(() => expect(projectSubagents(PROJECT_A.id)).toMatchObject({ enabled: false }));
+  });
+
+  /**
+   * The whole point of the fix, end to end: a conversation that has already
+   * been running gets sub-agents switched on, and its very next message runs
+   * with them — through a runtime that had the thread loaded without them.
+   */
+  it("gives a running conversation the sub-agents it just switched on, on its next message", async () => {
+    const user = userEvent.setup();
+    localStorage.setItem("kiwi.settings", JSON.stringify({ subagentsEnabled: false, subagentMax: 5 }));
+    await renderApp();
+    pendingResume.resolve({ thread: { ...THREAD_A, turns: [] } });
+    await user.click(await screen.findByText("Alpha thread"));
+
+    // Opening the thread loaded it into this app-server with sub-agents off.
+    await waitFor(() => {
+      expect(codexCalls("thread/resume").at(-1)).toMatchObject({
+        threadId: THREAD_A.id,
+        config: { features: { multi_agent: false } },
+      });
+    });
+
+    await openCrew(user);
+    await user.click(screen.getByRole("switch", { name: "Allow sub-agent spawning" }));
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(projectSubagents(PROJECT_A.id)).toMatchObject({ enabled: true }));
+
+    const composer = await screen.findByPlaceholderText(/Ask OpenKiwi to work in/);
+    await user.type(composer, "now split this up{Enter}");
+
+    await waitFor(() => {
+      expect(codexCalls("turn/start").at(-1)).toMatchObject({ threadId: THREAD_A.id });
+    });
+    // Startup-only config is ignored for a thread the app-server already holds,
+    // so the switch is only real if the runtime was replaced first.
+    expect(invokeMock.mock.calls.filter(([command]) => command === "restart_runtime")).toHaveLength(1);
+    expect(codexCalls("thread/resume").at(-1)).toMatchObject({
+      threadId: THREAD_A.id,
+      config: { features: { multi_agent: true }, agents: { max_threads: 5 } },
+    });
+  });
+
+  it("does not disturb the runtime for an ordinary follow-up message", async () => {
+    const user = userEvent.setup();
+    localStorage.setItem("kiwi.settings", JSON.stringify({ subagentsEnabled: true, subagentMax: 5 }));
+    await renderApp();
+    pendingResume.resolve({ thread: { ...THREAD_A, turns: [] } });
+    await user.click(await screen.findByText("Alpha thread"));
+    await waitFor(() => expect(codexCalls("thread/resume")).not.toHaveLength(0));
+
+    const composer = await screen.findByPlaceholderText(/Ask OpenKiwi to work in/);
+    await user.type(composer, "carry on{Enter}");
+
+    await waitFor(() => {
+      expect(codexCalls("turn/start").at(-1)).toMatchObject({ threadId: THREAD_A.id });
+    });
+    expect(invokeMock.mock.calls.some(([command]) => command === "restart_runtime")).toBe(false);
+    expect(codexCalls("thread/resume")).toHaveLength(1);
   });
 });

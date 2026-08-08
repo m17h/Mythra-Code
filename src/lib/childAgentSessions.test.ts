@@ -110,9 +110,36 @@ describe("ensureChildAgentBridge", () => {
     expect(bridge.startChildAgentSession).not.toHaveBeenCalled();
   });
 
-  it("does not retrofit delegation onto a thread that started without it", async () => {
-    expect(await ensureChildAgentBridge(input({ threadId: "pre-feature-thread" }))).toBeNull();
-    expect(bridge.startChildAgentSession).not.toHaveBeenCalled();
+  it("attaches delegation to a thread that started without it, bound to that thread", async () => {
+    const result = await ensureChildAgentBridge(input({ threadId: "started-earlier" }));
+    expect(result).toEqual({
+      policy: expect.objectContaining({ sessionId: "session-1", rootThreadId: "started-earlier" }),
+      launch: LAUNCH,
+      captured: true,
+    });
+    expect(result?.policy.targets.map((entry) => entry.id)).toEqual(["terra"]);
+    expect(bridge.startChildAgentSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("captures the settings live at that moment, not a pre-feature default", async () => {
+    const result = await ensureChildAgentBridge(input({
+      threadId: "started-earlier",
+      permission: "read-only",
+      settings: { childAgents: CHILD_AGENTS, subagentsEnabled: true, subagentMax: 5 },
+    }));
+    expect(result?.policy.permission).toBe("read-only");
+    expect(result?.policy.maxConcurrent).toBe(5);
+  });
+
+  it("re-seeds a mid-conversation session with the children that thread already owns", async () => {
+    await ensureChildAgentBridge(input({
+      threadId: "thread-1",
+      links: { "child-1": link({ sessionId: "session-1" }) },
+    }));
+    expect(bridge.startChildAgentSession).toHaveBeenCalledWith(
+      expect.objectContaining({ rootThreadId: "thread-1" }),
+      ["child-1"],
+    );
   });
 
   it("reuses the policy a thread froze instead of the live settings", async () => {
@@ -144,6 +171,84 @@ describe("ensureChildAgentBridge", () => {
     const second = await ensureChildAgentBridge(input({ threadId: "thread-1", policies }));
     expect(first?.launch).toBe(second?.launch);
     expect(bridge.startChildAgentSession).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("ensureChildAgentBridge revoking delegation", () => {
+  const policies = () => ({ "session-existing": policy() });
+
+  beforeEach(() => {
+    resetChildAgentLaunches();
+    vi.clearAllMocks();
+    bridge.startChildAgentSession.mockResolvedValue(LAUNCH);
+    bridge.endChildAgentSession.mockResolvedValue(undefined);
+  });
+
+  it("tears the live session down when sub-agents are switched off", async () => {
+    const current = policies();
+    await ensureChildAgentBridge(input({ threadId: "thread-1", policies: current }));
+    const result = await ensureChildAgentBridge(input({
+      threadId: "thread-1",
+      policies: current,
+      settings: { childAgents: CHILD_AGENTS, subagentsEnabled: false, subagentMax: 3 },
+    }));
+    expect(result).toBeNull();
+    // Ending the backend session is the revocation: a bridge process a
+    // provider CLI is still holding open can no longer reach the app.
+    expect(bridge.endChildAgentSession).toHaveBeenCalledExactlyOnceWith("session-existing");
+  });
+
+  it("tears the live session down when only cross-provider is switched off", async () => {
+    const current = policies();
+    await ensureChildAgentBridge(input({ threadId: "thread-1", policies: current }));
+    const result = await ensureChildAgentBridge(input({
+      threadId: "thread-1",
+      policies: current,
+      settings: { childAgents: { ...CHILD_AGENTS, enabled: false }, subagentsEnabled: true, subagentMax: 3 },
+    }));
+    expect(result).toBeNull();
+    expect(bridge.endChildAgentSession).toHaveBeenCalledExactlyOnceWith("session-existing");
+  });
+
+  it("still revokes a persisted session after renderer memory was lost", async () => {
+    const result = await ensureChildAgentBridge(input({
+      threadId: "thread-1",
+      policies: policies(),
+      settings: { childAgents: CHILD_AGENTS, subagentsEnabled: false, subagentMax: 3 },
+    }));
+    expect(result).toBeNull();
+    expect(bridge.endChildAgentSession).toHaveBeenCalledExactlyOnceWith("session-existing");
+  });
+
+  it("brings the very same frozen destinations back when it is switched on again", async () => {
+    const current = policies();
+    await ensureChildAgentBridge(input({ threadId: "thread-1", policies: current }));
+    await ensureChildAgentBridge(input({
+      threadId: "thread-1",
+      policies: current,
+      settings: { childAgents: CHILD_AGENTS, subagentsEnabled: false, subagentMax: 3 },
+    }));
+    const restored = await ensureChildAgentBridge(input({
+      threadId: "thread-1",
+      policies: current,
+      // The roster the user has configured since is still not what comes back.
+      settings: { childAgents: { enabled: true, targets: [{ ...TARGET, id: "changed" }] }, subagentsEnabled: true, subagentMax: 9 },
+    }));
+    expect(restored?.policy.targets.map((entry) => entry.id)).toEqual(["frozen"]);
+    expect(restored?.captured).toBe(false);
+    // A fresh session, so the revoked token stays dead.
+    expect(bridge.startChildAgentSession).toHaveBeenCalledTimes(2);
+  });
+
+  it("never hands a child thread a bridge, whatever the settings say", async () => {
+    const result = await ensureChildAgentBridge(input({
+      threadId: "child-1",
+      links: { "child-1": link() },
+      policies: { "session-child": policy({ sessionId: "session-child", rootThreadId: "child-1" }) },
+    }));
+    expect(result).toBeNull();
+    expect(bridge.startChildAgentSession).not.toHaveBeenCalled();
+    expect(bridge.endChildAgentSession).not.toHaveBeenCalled();
   });
 });
 

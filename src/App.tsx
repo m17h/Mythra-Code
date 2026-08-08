@@ -6,7 +6,7 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { Archive, ArchiveRestore, Bot, Check, ChevronDown, Circle, Code2, Command, Download, FileCode2, Folder, FolderOpen, GitBranch, GitFork, LoaderCircle, MessageSquare, Paperclip, PanelRight, PanelLeftClose, PanelLeftOpen, Plus, Pin, PinOff, Pencil, Search, Settings, Shield, ShieldAlert, ShieldCheck, TerminalSquare, Trash2, X } from "lucide-react";
-import { getCodexRuntimeStatus, auditEvent, exportTextFile, getNormalChatWorkspace, hasOpenRouterKey, listOpenRouterModels, respond, restartRuntime, rpc, type CodexRuntimeStatus, type JsonObject } from "./lib/codex";
+import { getCodexRuntimeStatus, auditEvent, exportTextFile, getNormalChatWorkspace, hasOpenRouterKey, listOpenRouterModels, respond, restartRuntime, rpc, runtimeInstanceId, type CodexRuntimeStatus, type JsonObject } from "./lib/codex";
 import { deleteClaudeTranscript, getClaudeRuntimeStatus, interruptClaudeTurn, loadClaudeTranscript, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, type ClaudeRuntimeStatus } from "./lib/claude";
 import { deleteCursorTranscript, getCursorRuntimeStatus, interruptCursorTurn, listCursorModels, loadCursorTranscript, respondToCursorPermission, saveCursorTranscript, startCursorLogin, type CursorModel, type CursorRuntimeStatus } from "./lib/cursor";
 import { loadStored, storeValue } from "./lib/storage";
@@ -26,7 +26,7 @@ import { ThreadInboxCard } from "./components/ThreadInboxCard";
 import { ProjectPromptControl } from "./components/ProjectPromptControl";
 import { ApprovalCenter } from "./components/ApprovalCenter";
 import { Composer, discardDraft, type ComposerHandle } from "./components/Composer";
-import { SubAgentCommandCenter, type SubAgentModelOption } from "./components/SubAgentCommandCenter";
+import { SubAgentCommandCenter, type SubAgentModelOption, type SubAgentPolicyMode } from "./components/SubAgentCommandCenter";
 import { CommandPalette } from "./components/CommandPalette";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { SettingsModal } from "./components/SettingsModal";
@@ -104,6 +104,7 @@ import {
   type ChildAgentReadiness,
 } from "./lib/childAgents";
 import { releaseChildAgentSessions } from "./lib/childAgentSessions";
+import { forgetSubagentCapabilities, seedSubagentCapabilities, subagentCapabilitySignature } from "./lib/threadCapabilities";
 import { collectSubAgentWorkers, type SubAgentWorker } from "./lib/subAgentActivity";
 import { useChildAgents } from "./hooks/useChildAgents";
 import { reorderProjects, type ProjectDropPosition } from "./lib/projectOrdering";
@@ -332,9 +333,10 @@ export default function App() {
     ? executionPathForThread(activeThreadId, activeWorkspace.path, threadWorktrees)
     : "";
   const activeProvider = activeThread ? providerFromThread(activeThread, settings.provider) : (draftThreadProvider ?? settings.provider);
-  // Per-project overrides win over global defaults, while provider and model
-  // are resolved for the active thread (or the unsent new-thread draft).
-  const effectiveSettings = useMemo<AppSettings>(() => {
+  // Resolve project policy independently of the open conversation. Thread
+  // selection needs this unclamped shape: the previously active thread may be
+  // a depth-one child while the thread being opened is a root (or vice versa).
+  const projectSettings = useMemo<AppSettings>(() => {
     const overrides = activeProject?.overrides;
     const projectResolved = !overrides
       ? settings
@@ -344,13 +346,17 @@ export default function App() {
           ...(overrides.permission ? { permission: overrides.permission } : {}),
           systemPrompt: resolveSystemPrompt(settings.systemPrompt, overrides.systemPrompt, overrides.systemPromptMode),
         };
-    const projectPolicy = settingsWithProjectSubagents(projectResolved, overrides?.subagents);
+    return settingsWithProjectSubagents(projectResolved, overrides?.subagents);
+  }, [activeProject, settings]);
+  // Per-project overrides win over global defaults, while provider and model
+  // are resolved for the active thread (or the unsent new-thread draft).
+  const effectiveSettings = useMemo<AppSettings>(() => {
     const threadModel = activeThreadId ? threadModels[activeThreadId] : draftThreadModel;
-    const resolved = { ...projectPolicy, provider: activeProvider, model: modelForProvider(activeProvider, threadModel ?? projectPolicy.model) };
+    const resolved = { ...projectSettings, provider: activeProvider, model: modelForProvider(activeProvider, threadModel ?? projectSettings.model) };
     return activeThreadId && childAgentLinks[activeThreadId]
       ? settingsWithoutChildDelegation(resolved)
       : resolved;
-  }, [activeProject, activeProvider, activeThreadId, childAgentLinks, draftThreadModel, settings, threadModels]);
+  }, [activeProvider, activeThreadId, childAgentLinks, draftThreadModel, projectSettings, threadModels]);
 
   useEffect(() => {
     if (!pendingHandoff || !activeWorkspace || activeThread) return;
@@ -387,14 +393,26 @@ export default function App() {
     () => childAgentPolicyForThread(childAgentPolicies, activeThreadId ?? undefined),
     [activeThreadId, childAgentPolicies],
   );
+  /** This conversation is itself a sub-agent, so it may never delegate. */
+  const activeThreadIsChild = Boolean(activeThreadId && childAgentLinks[activeThreadId]);
+  /**
+   * A thread is only locked once a run has made its cross-provider roster
+   * available. Until then it stays editable, so sub-agents configured partway
+   * through a conversation are usable on its very next turn.
+   */
+  const subagentPolicyMode = useMemo<SubAgentPolicyMode>(() => {
+    if (activeThreadIsChild) return "child";
+    return activeChildAgentPolicy ? "captured" : "open";
+  }, [activeChildAgentPolicy, activeThreadIsChild]);
   const childAgentSummary = useMemo(() => {
-    if (activeThreadId) {
-      return activeChildAgentPolicy
-        ? describeChildAgentRoster({ enabled: true, targets: activeChildAgentPolicy.targets }, childAgentReadiness)
-        : "Cross-provider off";
-    }
-    return describeChildAgentRoster(effectiveSettings.childAgents, childAgentReadiness);
-  }, [activeChildAgentPolicy, activeThreadId, childAgentReadiness, effectiveSettings.childAgents]);
+    // The frozen roster is what a thread would delegate to, but only while the
+    // live switches still expose it — the runtime re-reads those every turn.
+    const roster = activeChildAgentPolicy
+      ? { enabled: effectiveSettings.childAgents.enabled, targets: activeChildAgentPolicy.targets }
+      : effectiveSettings.childAgents;
+    if (!effectiveSettings.subagentsEnabled) return "Cross-provider off";
+    return describeChildAgentRoster(roster, childAgentReadiness);
+  }, [activeChildAgentPolicy, childAgentReadiness, effectiveSettings.childAgents, effectiveSettings.subagentsEnabled]);
   // The composer's command center edits this shape directly; a started thread
   // renders it read-only beside the policy it froze.
   const composerSubagentPolicy = useMemo(
@@ -1536,6 +1554,24 @@ export default function App() {
       suppressRuntimeRecoveryUntilRef.current = Date.now() + 3_000;
     }
   }, []);
+  /**
+   * Replace the app-server so an already loaded thread can be given different
+   * startup-only sub-agent config, and report the identity of the runtime that
+   * took its place. Refuses rather than interrupting somebody else's work:
+   * every thread the old process was running dies with it, and a thread whose
+   * provider is unknown is assumed to be one of them.
+   */
+  const restartRuntimeForCapabilities = useCallback(async (threadId: string) => {
+    const anotherCodexRun = Object.entries(useTaskStore.getState().statuses).some(([candidateId, candidateStatus]) => {
+      if (candidateId === threadId || (candidateStatus !== "starting" && candidateStatus !== "running")) return false;
+      return !isLocalSubscriptionThread(knownThreadsRef.current?.[candidateId]);
+    });
+    if (anotherCodexRun) {
+      throw new Error("Sub-agent settings are ready, but another OpenAI or OpenRouter task is still running. Your message was not sent; try again when that task finishes so OpenKiwi can safely refresh the runtime without interrupting it.");
+    }
+    await deliberateRestartRuntime();
+    return runtimeInstanceId();
+  }, [deliberateRestartRuntime]);
   useEffect(() => {
     let disposed = false;
     let stop: (() => void) | undefined;
@@ -1859,11 +1895,34 @@ export default function App() {
       }
       const provider = providerFromThread(thread, settings.provider);
       const projectModel = activeProject?.overrides?.model ?? settings.model;
-      const threadProviderSettings: AppSettings = { ...effectiveSettings, provider, model: modelForProvider(provider, threadModels[thread.id] ?? projectModel) };
+      const targetSettings: AppSettings = { ...projectSettings, provider, model: modelForProvider(provider, threadModels[thread.id] ?? projectModel) };
+      const threadProviderSettings = childAgentLinks[thread.id]
+        ? settingsWithoutChildDelegation(targetSettings)
+        : targetSettings;
+      // Capture the process identity before resume. If the process disappears
+      // immediately afterwards, preserving its old identity makes the next
+      // turn detect the replacement and resume this thread again. Capturing it
+      // after resume could incorrectly claim the replacement already loaded it.
+      const resumedRuntimeInstance = isolation?.status === "missing" || isolation?.status === "removed"
+        ? null
+        : await runtimeInstanceId().catch(() => null);
       const result = isolation?.status === "missing" || isolation?.status === "removed"
         ? await rpc<{ thread: Thread }>("thread/read", { threadId: thread.id, includeTurns: true })
-        : await rpc<{ thread: Thread }>("thread/resume", threadResumeParams(threadProviderSettings, thread.id, executionPath, { customAgents, modelContextWindow: provider === "openrouter" ? openRouterModels.find((entry) => entry.id === threadProviderSettings.model)?.context_length : undefined, additionalWorkspaceRoots: isolation?.gitDir ? [isolation.gitDir] : [] }));
+        : await rpc<{ thread: Thread }>("thread/resume", threadResumeParams(threadProviderSettings, thread.id, executionPath, { customAgents, modelContextWindow: provider === "openrouter" ? openRouterModels.find((entry) => entry.id === threadProviderSettings.model)?.context_length : undefined, additionalWorkspaceRoots: isolation?.gitDir ? [isolation.gitDir] : [], refreshRuntimeConfig: true }));
       if (selectThreadRequestRef.current !== requestId) return;
+      if (isolation?.status !== "missing" && isolation?.status !== "removed") {
+        // Opening a thread resumes it with the config above, which this
+        // app-server honours only when it did not already have the thread
+        // loaded. No bridge is attached here, so a thread with a captured
+        // cross-provider roster still refreshes the runtime on its next turn.
+        if (resumedRuntimeInstance) {
+          seedSubagentCapabilities(result.thread.id, resumedRuntimeInstance, subagentCapabilitySignature({
+            subagentsEnabled: threadProviderSettings.subagentsEnabled,
+            subagentMax: threadProviderSettings.subagentMax,
+          }));
+        }
+        if (selectThreadRequestRef.current !== requestId) return;
+      }
       if (!threadModels[result.thread.id]) persistThreadModel(result.thread.id, threadProviderSettings.model);
       bindThreadToProject(result.thread.id, activeWorkspace.path);
       rememberThread(result.thread);
@@ -2010,6 +2069,7 @@ export default function App() {
     onThreadCreated: handleThreadCreated,
     persistThreadModel,
     persistThreadWorktrees,
+    restartRuntimeForCapabilities,
     beginRunCheckpoint,
     discardRunCheckpoint,
     refreshLocalSkills,
@@ -2247,7 +2307,12 @@ export default function App() {
     await releaseChildAgentSessions(childAgentPolicies, threadId);
     // Archiving only shuts down the live bridge. Keep the frozen policy and
     // ownership records so restoring the same thread restores the same powers.
+    // Keep the runtime capability record too: app-server may still have the
+    // archived thread loaded, and its old bridge identity is exactly what lets
+    // the first restored turn detect that a refresh is required. Permanent
+    // deletion is the point where every durable record should disappear.
     if (!dropRecords) return;
+    forgetSubagentCapabilities(threadId);
     persistChildAgentPolicies((current) => {
       const next = Object.fromEntries(Object.entries(current).filter(([, policy]) => policy.rootThreadId !== threadId));
       return Object.keys(next).length === Object.keys(current).length ? current : next;
@@ -3788,7 +3853,7 @@ export default function App() {
                     <SubAgentCommandCenter
                       policy={composerSubagentPolicy}
                       capturedPolicy={activeChildAgentPolicy ?? null}
-                      locked={Boolean(activeThread)}
+                      mode={subagentPolicyMode}
                       readiness={childAgentReadiness}
                       workers={subAgentWorkers}
                       scopeLabel={activeProject ? activeProject.name : "Chats & project defaults"}

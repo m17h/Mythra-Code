@@ -5,7 +5,12 @@ import { PendingTurnStarts } from "../lib/pendingTurnStarts";
 import { resetTaskStore, useTaskStore } from "../lib/taskStore";
 import type { Thread } from "../types";
 
-const codex = vi.hoisted(() => ({ rpc: vi.fn() }));
+const codex = vi.hoisted(() => ({
+  rpc: vi.fn(),
+  // Identity of the app-server that will serve the next RPC; a restart makes
+  // this change, which is how a turn knows nothing is loaded any more.
+  runtimeInstanceId: vi.fn(async () => "runtime-1"),
+}));
 const claude = vi.hoisted(() => ({
   interruptClaudeTurn: vi.fn(),
   isClaudeThreadBusyError: vi.fn(() => false),
@@ -26,7 +31,8 @@ const worktrees = vi.hoisted(() => ({
   removeThreadWorktree: vi.fn(),
 }));
 const childSessions = vi.hoisted(() => ({
-  ensureChildAgentBridge: vi.fn(async () => null),
+  // `unknown` so a test can resolve a real bridge result as easily as null.
+  ensureChildAgentBridge: vi.fn(async (): Promise<unknown> => null),
   cacheChildAgentPolicy: vi.fn(),
   releaseChildAgentSession: vi.fn(),
 }));
@@ -43,7 +49,45 @@ vi.mock("../lib/childAgentSessions", async (importOriginal) => ({
   ...childSessions,
 }));
 
+import { forgetSubagentCapabilities } from "../lib/threadCapabilities";
 import { forgetQueuedDeliveries, useTurnRunner, type TurnRunnerContext } from "./useTurnRunner";
+
+const OPENAI_THREAD: Thread = {
+  id: "thread-openai",
+  name: null,
+  preview: "OpenAI thread",
+  cwd: "/tmp/project",
+  updatedAt: 1,
+  modelProvider: "openai",
+};
+
+const BRIDGE_LAUNCH = {
+  name: "openkiwi",
+  command: "/Applications/OpenKiwi.app/Contents/MacOS/openkiwi",
+  args: ["--openkiwi-agent-bridge", "/data/child-agents/abc/session.json"],
+  configPath: "/data/child-agents/abc/mcp.json",
+  toolNames: ["spawn_agent", "agent_status", "collect_agent", "cancel_agent"],
+};
+
+/** What `ensureChildAgentBridge` hands back once a policy is captured. */
+function bridgeResult(overrides: { captured?: boolean; rootThreadId?: string } = {}) {
+  return {
+    policy: {
+      sessionId: "session-1",
+      rootThreadId: overrides.rootThreadId ?? OPENAI_THREAD.id,
+      maxConcurrent: 4,
+      permission: "ask" as const,
+      systemPrompt: "",
+      projectInstructionsEnabled: false,
+      reasoningEffort: "medium" as const,
+      serviceTier: null,
+      targets: [],
+      capturedAt: 1,
+    },
+    launch: BRIDGE_LAUNCH,
+    captured: overrides.captured ?? true,
+  };
+}
 
 const CURSOR_THREAD: Thread = {
   id: "thread-cursor",
@@ -104,6 +148,7 @@ function context(overrides: Partial<TurnRunnerContext> = {}): TurnRunnerContext 
     onThreadCreated: vi.fn(),
     persistThreadModel: vi.fn(),
     persistThreadWorktrees: vi.fn(),
+    restartRuntimeForCapabilities: vi.fn(async () => "runtime-2"),
     beginRunCheckpoint: vi.fn(async () => "checkpoint-1"),
     discardRunCheckpoint: vi.fn(),
     refreshLocalSkills: vi.fn(async () => undefined),
@@ -129,6 +174,7 @@ describe("useTurnRunner", () => {
   beforeEach(() => {
     resetTaskStore();
     forgetQueuedDeliveries();
+    forgetSubagentCapabilities();
     vi.clearAllMocks();
     cursor.interruptCursorTurn.mockResolvedValue(undefined);
     cursor.saveCursorTranscript.mockResolvedValue(undefined);
@@ -375,5 +421,272 @@ describe("useTurnRunner", () => {
     expect(task.status).toBe("completed");
     expect(task.lastCompletedTurnId).toBe("turn-fast");
     expect(cursor.interruptCursorTurn).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The exact bug 1.5.0 shipped: sub-agents configured partway through a
+ * conversation had to reach the very next turn, on every provider, and
+ * switching them back off had to take the powers away just as promptly.
+ */
+describe("useTurnRunner activating sub-agents mid-conversation", () => {
+  function openAiContext(overrides: Partial<TurnRunnerContext> = {}): TurnRunnerContext {
+    return context({
+      activeThread: OPENAI_THREAD,
+      effectiveSettings: { ...DEFAULT_SETTINGS, provider: "openai", model: "gpt-5.6-terra" },
+      runtimeStatus: { available: true, source: "Codex CLI", path: "/usr/local/bin/codex", version: "1", compatible: true, warning: null },
+      account: { type: "chatgpt", email: "test@example.com", planType: "pro" },
+      threadProjectBindingsRef: { current: { [OPENAI_THREAD.id]: "/tmp/project" } },
+      ...overrides,
+    });
+  }
+
+  function resumeCall() {
+    return codex.rpc.mock.calls.find(([method]) => method === "thread/resume");
+  }
+
+  /** Settings for a conversation whose user has just switched sub-agents on. */
+  const ENABLED = { ...DEFAULT_SETTINGS, provider: "openai" as const, model: "gpt-5.6-terra", subagentsEnabled: true, subagentMax: 4 };
+
+  beforeEach(() => {
+    resetTaskStore();
+    forgetQueuedDeliveries();
+    forgetSubagentCapabilities();
+    vi.clearAllMocks();
+    codex.rpc.mockResolvedValue({ turn: { id: "turn-1" } });
+    codex.runtimeInstanceId.mockResolvedValue("runtime-1");
+    claude.saveClaudeTranscript.mockResolvedValue(undefined);
+    claude.startClaudeTurn.mockResolvedValue({ turnId: "turn-claude" });
+    cursor.saveCursorTranscript.mockResolvedValue(undefined);
+    cursor.startCursorTurn.mockResolvedValue({ turnId: "turn-new", cursorSessionId: "session-new" });
+    childSessions.ensureChildAgentBridge.mockResolvedValue(null);
+  });
+
+  it("reattaches the bridge to an existing OpenAI thread on the very next turn", async () => {
+    childSessions.ensureChildAgentBridge.mockResolvedValue(bridgeResult());
+    const deps = openAiContext({ effectiveSettings: ENABLED });
+    const { result } = renderHook(() => useTurnRunner(deps));
+
+    await act(async () => { await result.current.sendMessage("split this up"); });
+
+    const [, params] = resumeCall() ?? [];
+    expect(params).toMatchObject({
+      threadId: OPENAI_THREAD.id,
+      config: {
+        mcp_servers: { openkiwi: { command: BRIDGE_LAUNCH.command, args: BRIDGE_LAUNCH.args } },
+        features: { multi_agent: true },
+      },
+    });
+  });
+
+  it("resumes an existing OpenAI thread when only native sub-agents are switched on", async () => {
+    const deps = openAiContext({ effectiveSettings: ENABLED });
+    const { result } = renderHook(() => useTurnRunner(deps));
+
+    await act(async () => { await result.current.sendMessage("split this up"); });
+
+    const [, params] = resumeCall() ?? [];
+    expect(params).toMatchObject({ config: { features: { multi_agent: true }, agents: { max_threads: 4 } } });
+    expect(params).not.toHaveProperty("config.mcp_servers");
+  });
+
+  it("refreshes the runtime that is already holding this thread with other capabilities", async () => {
+    // First turn teaches this app-server what the thread is configured with.
+    const restartRuntimeForCapabilities = vi.fn(async () => "runtime-2");
+    const { result, rerender } = renderHook(({ deps }) => useTurnRunner(deps), {
+      initialProps: { deps: openAiContext({ restartRuntimeForCapabilities, effectiveSettings: ENABLED }) },
+    });
+    await act(async () => { await result.current.sendMessage("split this up"); });
+    expect(restartRuntimeForCapabilities).not.toHaveBeenCalled();
+
+    // Only a fresh app-server can replace startup-only config on a thread it
+    // has already loaded, so raising the limit has to go through one.
+    codex.rpc.mockClear();
+    rerender({ deps: openAiContext({ restartRuntimeForCapabilities, effectiveSettings: { ...ENABLED, subagentMax: 6 } }) });
+    await act(async () => { await result.current.sendMessage("more of them"); });
+
+    expect(restartRuntimeForCapabilities).toHaveBeenCalledExactlyOnceWith(OPENAI_THREAD.id);
+    expect(resumeCall()?.[1]).toMatchObject({ config: { agents: { max_threads: 6 } } });
+  });
+
+  it("does not interrupt a runtime that has restarted since it was told anything", async () => {
+    const restartRuntimeForCapabilities = vi.fn(async () => "runtime-3");
+    const { result, rerender } = renderHook(({ deps }) => useTurnRunner(deps), {
+      initialProps: { deps: openAiContext({ restartRuntimeForCapabilities, effectiveSettings: ENABLED }) },
+    });
+    await act(async () => { await result.current.sendMessage("split this up"); });
+
+    // Whatever replaced that app-server has nothing loaded, so the resume
+    // below applies the new config on its own.
+    codex.rpc.mockClear();
+    codex.runtimeInstanceId.mockResolvedValue("runtime-2");
+    rerender({ deps: openAiContext({ restartRuntimeForCapabilities, effectiveSettings: { ...ENABLED, subagentMax: 6 } }) });
+    await act(async () => { await result.current.sendMessage("more of them"); });
+
+    expect(restartRuntimeForCapabilities).not.toHaveBeenCalled();
+    expect(resumeCall()?.[1]).toMatchObject({ config: { agents: { max_threads: 6 } } });
+  });
+
+  it("re-applies unchanged capabilities to an app-server that replaced the one told about them", async () => {
+    childSessions.ensureChildAgentBridge.mockResolvedValue(bridgeResult());
+    const { result, rerender } = renderHook(({ deps }) => useTurnRunner(deps), {
+      initialProps: { deps: openAiContext({ effectiveSettings: ENABLED }) },
+    });
+    await act(async () => { await result.current.sendMessage("split this up"); });
+
+    codex.rpc.mockClear();
+    codex.runtimeInstanceId.mockResolvedValue("runtime-2");
+    rerender({ deps: openAiContext({ effectiveSettings: ENABLED }) });
+    await act(async () => { await result.current.sendMessage("keep going"); });
+
+    // The bridge this thread believes it has is not registered anywhere in the
+    // new runtime until it is resumed into it.
+    expect(resumeCall()?.[1]).toMatchObject({
+      config: { mcp_servers: { openkiwi: { args: BRIDGE_LAUNCH.args } } },
+    });
+  });
+
+  it("reloads a disabled thread into a replacement app-server before starting its turn", async () => {
+    const { result, rerender } = renderHook(({ deps }) => useTurnRunner(deps), {
+      initialProps: { deps: openAiContext({ effectiveSettings: ENABLED }) },
+    });
+    await act(async () => { await result.current.sendMessage("split this up"); });
+
+    // A different conversation can replace the shared app-server. This thread
+    // still needs a resume even though its next run wants the neutral config;
+    // otherwise turn/start targets a thread the replacement process has not loaded.
+    codex.rpc.mockClear();
+    codex.runtimeInstanceId.mockResolvedValue("runtime-2");
+    rerender({ deps: openAiContext() });
+    await act(async () => { await result.current.sendMessage("continue without agents"); });
+
+    expect(resumeCall()?.[1]).toMatchObject({
+      threadId: OPENAI_THREAD.id,
+      config: { features: { multi_agent: false } },
+    });
+  });
+
+  it("takes the powers away again when sub-agents are switched off", async () => {
+    const bridged = openAiContext({ effectiveSettings: ENABLED });
+    childSessions.ensureChildAgentBridge.mockResolvedValueOnce(bridgeResult());
+    const { result, rerender } = renderHook(({ deps }) => useTurnRunner(deps), { initialProps: { deps: bridged } });
+    await act(async () => { await result.current.sendMessage("split this up"); });
+
+    codex.rpc.mockClear();
+    childSessions.ensureChildAgentBridge.mockResolvedValue(null);
+    rerender({ deps: openAiContext() });
+    await act(async () => { await result.current.sendMessage("actually, do it yourself"); });
+
+    const [, params] = resumeCall() ?? [];
+    expect(params).toMatchObject({ config: { features: { multi_agent: false } } });
+    expect(params).not.toHaveProperty("config.mcp_servers");
+  });
+
+  it("leaves an unknown pre-feature disabled thread alone", async () => {
+    const restartRuntimeForCapabilities = vi.fn(async () => "runtime-2");
+    const deps = openAiContext({ restartRuntimeForCapabilities });
+    const { result } = renderHook(() => useTurnRunner(deps));
+
+    await act(async () => { await result.current.sendMessage("just answer"); });
+
+    expect(resumeCall()).toBeUndefined();
+    expect(restartRuntimeForCapabilities).not.toHaveBeenCalled();
+    expect(codex.rpc).toHaveBeenCalledWith("turn/start", expect.objectContaining({ threadId: OPENAI_THREAD.id }));
+  });
+
+  it("does not send when another Codex task prevents a safe capability refresh", async () => {
+    const restartRuntimeForCapabilities = vi.fn(async (): Promise<string> => {
+      throw new Error("another OpenAI task is still running");
+    });
+    // Configure the thread once so this app-server is known to be holding it.
+    const { result, rerender } = renderHook(({ deps }) => useTurnRunner(deps), {
+      initialProps: { deps: openAiContext({ restartRuntimeForCapabilities, effectiveSettings: ENABLED }) },
+    });
+    await act(async () => { await result.current.sendMessage("split this up"); });
+
+    codex.rpc.mockClear();
+    childSessions.ensureChildAgentBridge.mockResolvedValue(bridgeResult({ captured: true }));
+    const deps = openAiContext({ restartRuntimeForCapabilities, effectiveSettings: ENABLED });
+    rerender({ deps });
+    await act(async () => { expect(await result.current.sendMessage("now delegate")).toBe(false); });
+
+    expect(codex.rpc).not.toHaveBeenCalledWith("turn/start", expect.anything());
+    expect(childSessions.releaseChildAgentSession).toHaveBeenCalledWith("session-1");
+    expect(deps.setError).toHaveBeenCalledWith("another OpenAI task is still running");
+  });
+
+  it("uses a captured policy's parallel limit for native agents too", async () => {
+    childSessions.ensureChildAgentBridge.mockResolvedValue(bridgeResult());
+    const deps = openAiContext({
+      effectiveSettings: { ...DEFAULT_SETTINGS, provider: "openai", model: "gpt-5.6-terra", subagentsEnabled: true, subagentMax: 12 },
+    });
+    const { result } = renderHook(() => useTurnRunner(deps));
+
+    await act(async () => { await result.current.sendMessage("split this up"); });
+
+    expect(resumeCall()?.[1]).toMatchObject({ config: { agents: { max_threads: 4 } } });
+  });
+
+  it("keeps the captured native limit while cross-provider delegation is switched off", async () => {
+    childSessions.ensureChildAgentBridge.mockResolvedValue(null);
+    const captured = bridgeResult().policy;
+    const deps = openAiContext({
+      childAgentPolicies: { [captured.sessionId]: captured },
+      effectiveSettings: {
+        ...DEFAULT_SETTINGS,
+        provider: "openai",
+        model: "gpt-5.6-terra",
+        subagentsEnabled: true,
+        subagentMax: 12,
+        childAgents: { enabled: false, targets: [] },
+      },
+    });
+    const { result } = renderHook(() => useTurnRunner(deps));
+
+    await act(async () => { await result.current.sendMessage("stay with native agents"); });
+
+    expect(resumeCall()?.[1]).toMatchObject({ config: { agents: { max_threads: 4 } } });
+  });
+
+  it("hands a follow-up Claude turn the bridge its process needs", async () => {
+    childSessions.ensureChildAgentBridge.mockResolvedValue(bridgeResult({ rootThreadId: "thread-claude" }));
+    const claudeThread: Thread = { ...OPENAI_THREAD, id: "thread-claude", modelProvider: "claude" };
+    const deps = openAiContext({
+      activeThread: claudeThread,
+      effectiveSettings: { ...DEFAULT_SETTINGS, provider: "claude", model: "claude-fable-5", subagentsEnabled: true, subagentMax: 4 },
+      claudeStatus: { available: true, loggedIn: true, version: "1", path: "/usr/local/bin/claude", email: null, authMethod: null, subscriptionType: null, warning: null },
+      threadProjectBindingsRef: { current: { "thread-claude": "/tmp/project" } },
+    });
+    const { result } = renderHook(() => useTurnRunner(deps));
+
+    await act(async () => { await result.current.sendMessage("review this"); });
+
+    expect(claude.startClaudeTurn).toHaveBeenCalledWith(expect.objectContaining({
+      childAgentBridgeConfig: BRIDGE_LAUNCH.configPath,
+      subagentsEnabled: true,
+    }));
+  });
+
+  it("hands a follow-up Cursor turn the bridge its process needs", async () => {
+    childSessions.ensureChildAgentBridge.mockResolvedValue(bridgeResult({ rootThreadId: CURSOR_THREAD.id }));
+    const deps = context();
+    const { result } = renderHook(() => useTurnRunner(deps));
+
+    await act(async () => { await result.current.sendMessage("patch this"); });
+
+    expect(cursor.startCursorTurn).toHaveBeenCalledWith(expect.objectContaining({
+      childAgentBridge: { name: BRIDGE_LAUNCH.name, command: BRIDGE_LAUNCH.command, args: BRIDGE_LAUNCH.args },
+    }));
+  });
+
+  it("releases a policy captured for an existing thread whose turn never started", async () => {
+    childSessions.ensureChildAgentBridge.mockResolvedValue(bridgeResult({ captured: true }));
+    codex.rpc.mockRejectedValue(new Error("runtime unavailable"));
+    const deps = openAiContext();
+    const { result } = renderHook(() => useTurnRunner(deps));
+
+    await act(async () => { await result.current.sendMessage("split this up"); });
+
+    expect(childSessions.releaseChildAgentSession).toHaveBeenCalledWith("session-1");
   });
 });

@@ -34,6 +34,7 @@ export const DURABLE_STORAGE_KEYS = [
   "kiwi.pendingHandoff",
   "kiwi.childAgentPolicies",
   "kiwi.childAgentLinks",
+  "kiwi.threadSubagentCapabilities",
   "kiwi.onboardingVersion",
 ] as const;
 
@@ -42,7 +43,7 @@ export const DURABLE_STORAGE_KEYS = [
  * migrateStorage. Old installs then upgrade their data instead of loading
  * garbage into the new code.
  */
-export const STORAGE_SCHEMA_VERSION = 11;
+export const STORAGE_SCHEMA_VERSION = 12;
 const nativeWriteQueues = new Map<string, Promise<void>>();
 const NATIVE_PENDING_PREFIX = "kiwi.nativePending.";
 let nativeOperationSequence = 0;
@@ -120,6 +121,10 @@ export function migrateStorage(): void {
   // default, so no eager rewrite is required.
   // Version 11 adds frozen cross-provider delegation policies and parent/child
   // ownership records. They are optional and likewise need no eager rewrite.
+  // Version 12 records the sub-agent capability config last applied to each
+  // runtime thread, and the app-server instance it was applied to, so a
+  // renderer reload can still tell a real on/off change from a restarted
+  // runtime that is holding nothing at all.
   // All additions are optional and require no eager rewrite of existing records.
   storeValue("kiwi.schemaVersion", STORAGE_SCHEMA_VERSION);
 }
