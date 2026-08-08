@@ -683,17 +683,21 @@ fn config_option_id(setup: &Value, effort: &str) -> Option<(String, Value)> {
     None
 }
 
-async fn cursor_prompt_blocks(options: &CursorTurnOptions) -> Result<Vec<Value>, String> {
-    let mut text = options.prompt.clone();
-    if !options.system_prompt.trim().is_empty() {
+async fn cursor_prompt_blocks_for(
+    prompt: &str,
+    system_prompt: &str,
+    attachments: &[CursorAttachment],
+) -> Result<Vec<Value>, String> {
+    let mut text = prompt.to_string();
+    if !system_prompt.trim().is_empty() {
         text = format!(
             "<openkiwi_instructions>\n{}\n</openkiwi_instructions>\n\n{}",
-            options.system_prompt.trim(),
+            system_prompt.trim(),
             text
         );
     }
     let mut blocks = vec![json!({ "type": "text", "text": text })];
-    for attachment in &options.attachments {
+    for attachment in attachments {
         if attachment.kind == "image" {
             let bytes = super::read_image_attachment(Path::new(&attachment.path)).await?;
             let extension = Path::new(&attachment.path)
@@ -720,6 +724,15 @@ async fn cursor_prompt_blocks(options: &CursorTurnOptions) -> Result<Vec<Value>,
         }
     }
     Ok(blocks)
+}
+
+async fn cursor_prompt_blocks(options: &CursorTurnOptions) -> Result<Vec<Value>, String> {
+    cursor_prompt_blocks_for(
+        &options.prompt,
+        &options.system_prompt,
+        &options.attachments,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -912,6 +925,7 @@ pub async fn cursor_turn_steer(
     state: State<'_, CursorState>,
     thread_id: String,
     prompt: String,
+    attachments: Vec<CursorAttachment>,
 ) -> Result<(), String> {
     let turn = state
         .turns
@@ -927,13 +941,14 @@ pub async fn cursor_turn_steer(
         .clone()
         .ok_or("Cursor session is still starting")?;
     let turn_for_prompt = turn.clone();
+    let blocks = cursor_prompt_blocks_for(&prompt, "", &attachments).await?;
     tauri::async_runtime::spawn(async move {
         if let Err(error) = turn_for_prompt
             .request(
                 "session/prompt",
                 json!({
                     "sessionId": session_id,
-                    "prompt": [{ "type": "text", "text": prompt }]
+                    "prompt": blocks
                 }),
             )
             .await
