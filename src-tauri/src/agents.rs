@@ -1025,7 +1025,7 @@ pub(super) fn bridge_local_response(method: &str, id: Option<&Value>) -> Option<
                 "protocolVersion": "2025-06-18",
                 "capabilities": { "tools": { "listChanged": false } },
                 "serverInfo": { "name": AGENT_BRIDGE_SERVER, "version": env!("CARGO_PKG_VERSION") },
-                "instructions": "OpenKiwi delegation tools. Use spawn_agent to run part of the task on another approved provider/model, then collect_agent to read its result.",
+                "instructions": "OpenKiwi-managed sub-agent delegation. This server is the authoritative delegation route while attached: use spawn_agent to run work on an approved OpenKiwi destination, then agent_status and collect_agent to read its result or cancel_agent to stop it. Do not use provider-native task, team, or agent-spawning tools.",
             }
         }))),
         "ping" => Some(Some(json!({ "jsonrpc": "2.0", "id": id, "result": {} }))),

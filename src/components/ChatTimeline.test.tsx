@@ -203,6 +203,29 @@ describe("ChatTimeline", () => {
     }
   });
 
+  it("applies Markdown formatting while an assistant message is still streaming", async () => {
+    const { rerender } = render(
+      <ChatTimeline
+        messages={[{ id: "answer", role: "assistant", text: "Starting…", timelineOrder: 1, streaming: true }]}
+        activities={[]}
+        running
+        thinkingLabel="Thinking"
+      />,
+    );
+
+    rerender(
+      <ChatTimeline
+        messages={[{ id: "answer", role: "assistant", text: "Starting… **formatted live**", timelineOrder: 1, streaming: true }]}
+        activities={[]}
+        running
+        thinkingLabel="Thinking"
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText("formatted live").tagName).toBe("STRONG"));
+    expect(screen.queryByRole("button", { name: "Copy message" })).not.toBeInTheDocument();
+  });
+
   it("compacts a completed turn to its request, work disclosure, and final answer", () => {
     const entries = compactCompletedTurns(orderedTimelineEntries(
       [

@@ -1493,6 +1493,38 @@ fn validate_cli_value(value: &str, label: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn claude_disallowed_tools(
+    permission: &str,
+    subagents_enabled: bool,
+    openkiwi_delegation: bool,
+) -> Vec<&'static str> {
+    let mut disallowed = Vec::new();
+    if permission == "read-only" {
+        disallowed.extend([
+            "Write",
+            "Edit",
+            "NotebookEdit",
+            "Bash",
+            "WebFetch",
+            "WebSearch",
+        ]);
+    }
+    // An active OpenKiwi bridge is the user's explicit sub-agent crew. Do not
+    // also expose Claude Code's native Task/team surface: two delegation
+    // routes make requests such as "spawn sub-agents" ambiguous and can send
+    // work to Claude-native agents instead of the configured OpenKiwi targets.
+    if !subagents_enabled || openkiwi_delegation {
+        disallowed.extend([
+            "Task",
+            "SendMessage",
+            "TaskCreate",
+            "TaskUpdate",
+            "TeamCreate",
+        ]);
+    }
+    disallowed
+}
+
 #[tauri::command]
 async fn claude_turn_start(
     app: AppHandle,
@@ -1590,26 +1622,11 @@ async fn claude_turn_start(
             ]);
         }
     }
-    let mut disallowed = Vec::new();
-    if options.permission == "read-only" {
-        disallowed.extend([
-            "Write",
-            "Edit",
-            "NotebookEdit",
-            "Bash",
-            "WebFetch",
-            "WebSearch",
-        ]);
-    }
-    if !options.subagents_enabled {
-        disallowed.extend([
-            "Task",
-            "SendMessage",
-            "TaskCreate",
-            "TaskUpdate",
-            "TeamCreate",
-        ]);
-    }
+    let disallowed = claude_disallowed_tools(
+        &options.permission,
+        options.subagents_enabled,
+        options.child_agent_bridge_config.is_some(),
+    );
     if !disallowed.is_empty() {
         command.args(["--disallowedTools", &disallowed.join(",")]);
     }

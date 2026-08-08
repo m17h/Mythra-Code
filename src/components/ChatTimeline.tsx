@@ -1,4 +1,4 @@
-import { Children, isValidElement, memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Children, isValidElement, memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { VirtuosoHandle } from "react-virtuoso";
 import { Check, ChevronRight, Clipboard, FileCode2, ListChecks, Pencil, Sparkles, TerminalSquare, UsersRound } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -265,6 +265,26 @@ function CodePre({ children }: { children?: ReactNode }) {
 const MARKDOWN_COMPONENTS = { pre: CodePre, a: MarkdownLink };
 const REASONING_MARKDOWN_COMPONENTS = { a: MarkdownLink };
 
+const MessageMarkdown = memo(function MessageMarkdown({ text }: { text: string }) {
+  return (
+    <div className="message-text rich-markdown">
+      <Markdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>{text}</Markdown>
+    </div>
+  );
+});
+
+/**
+ * Format assistant output while it is arriving. Deferring the accumulated
+ * text lets React abandon obsolete intermediate parses when tokens arrive
+ * faster than the Markdown tree can be built, while still presenting the
+ * newest completed render instead of falling back to plain text until the
+ * whole response finishes.
+ */
+function StreamingMessageMarkdown({ text }: { text: string }) {
+  const deferredText = useDeferredValue(text);
+  return <MessageMarkdown text={deferredText} />;
+}
+
 const MessageRow = memo(function MessageRow({ message, provider, onEdit }: { message: ChatMessage; provider: Provider; onEdit?: (text: string) => void }) {
   const [copied, copy] = useCopyFeedback();
   return (
@@ -290,16 +310,9 @@ const MessageRow = memo(function MessageRow({ message, provider, onEdit }: { mes
             )}
           </div>
         )}
-        {message.streaming ? (
-          // Re-parsing Markdown over the whole accumulated text on every delta
-          // flush is O(length) per frame; stream as plain text and parse once
-          // on completion instead.
-          <div className="message-text plain-stream">{message.text}</div>
-        ) : (
-          <div className="message-text rich-markdown">
-            <Markdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>{message.text}</Markdown>
-          </div>
-        )}
+        {message.streaming
+          ? <StreamingMessageMarkdown text={message.text} />
+          : <MessageMarkdown text={message.text} />}
         {message.streaming && <span className="stream-caret" />}
       </div>
     </article>

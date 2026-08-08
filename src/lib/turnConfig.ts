@@ -1,7 +1,7 @@
 import type { CustomAgentProfile, PermissionMode, ScheduleRunSettings } from "../types";
 import type { ChildAgentBridgeLaunch } from "./agentBridge";
 import type { JsonObject } from "./codex";
-import { OPENKIWI_COMPLETION_INSTRUCTIONS } from "./completionPrompt";
+import { openKiwiDeveloperInstructions } from "./completionPrompt";
 
 export function commandSandbox(permission: PermissionMode, cwd: string, additionalWritableRoots: string[] = []): JsonObject {
   if (permission === "full") return { type: "dangerFullAccess" };
@@ -69,11 +69,12 @@ export function childAgentMcpConfig(bridge: ChildAgentBridgeLaunch | undefined):
  */
 export function threadRuntimeConfig(run: ScheduleRunSettings, options: Pick<ThreadStartOptions, "customAgents" | "modelContextWindow" | "childAgentBridge"> = {}): JsonObject {
   const contextWindow = Number(options.modelContextWindow);
+  const openKiwiDelegation = Boolean(options.childAgentBridge);
   return {
     ...childAgentMcpConfig(options.childAgentBridge),
     project_doc_max_bytes: run.projectInstructionsEnabled ? 32_768 : 0,
     project_doc_fallback_filenames: [],
-    developer_instructions: OPENKIWI_COMPLETION_INSTRUCTIONS,
+    developer_instructions: openKiwiDeveloperInstructions(openKiwiDelegation),
     model_reasoning_effort: run.ultra ? "ultra" : run.reasoningEffort,
     ...(run.provider === "openrouter" && Number.isFinite(contextWindow) && contextWindow > 0
       ? { model_context_window: Math.floor(contextWindow) }
@@ -84,7 +85,11 @@ export function threadRuntimeConfig(run: ScheduleRunSettings, options: Pick<Thre
       ...customAgentConfig(options.customAgents ?? []),
     },
     features: {
-      multi_agent: run.subagentsEnabled,
+      // When the OpenKiwi bridge is present it is the sole delegation route.
+      // Keeping Codex's native collaboration feature on would expose a second
+      // spawn_agent implementation and make the user's configured crew
+      // ambiguous to the model.
+      multi_agent: run.subagentsEnabled && !openKiwiDelegation,
       ...(run.provider === "openrouter" ? { apps: false, remote_plugin: false } : {}),
     },
     ...(run.provider === "openrouter" ? { apps: { _default: { enabled: false } } } : {}),
@@ -92,13 +97,14 @@ export function threadRuntimeConfig(run: ScheduleRunSettings, options: Pick<Thre
 }
 
 export function threadStartParams(run: ScheduleRunSettings, cwd: string, options: ThreadStartOptions): JsonObject {
+  const developerInstructions = openKiwiDeveloperInstructions(Boolean(options.childAgentBridge));
   const params: JsonObject = {
     cwd,
     runtimeWorkspaceRoots: [cwd, ...(options.additionalWorkspaceRoots ?? [])],
     sandbox: sandboxMode(run.permission),
     approvalPolicy: options.interactive && run.permission === "ask" ? "on-request" : "never",
     baseInstructions: run.systemPrompt,
-    developerInstructions: OPENKIWI_COMPLETION_INSTRUCTIONS,
+    developerInstructions,
     config: threadRuntimeConfig(run, options),
     serviceName: options.serviceName ?? "OpenKiwi",
     serviceTier: run.serviceTier,
@@ -123,11 +129,12 @@ export function threadResumeParams(
     refreshRuntimeConfig?: boolean;
   } = {},
 ): JsonObject {
+  const developerInstructions = openKiwiDeveloperInstructions(Boolean(options.childAgentBridge));
   return {
     threadId,
     cwd,
     runtimeWorkspaceRoots: [cwd, ...(options.additionalWorkspaceRoots ?? [])],
-    developerInstructions: OPENKIWI_COMPLETION_INSTRUCTIONS,
+    developerInstructions,
     ...(options.excludeTurns ? { excludeTurns: true } : {}),
     ...(run.provider === "openrouter" ? { modelProvider: "openrouter" } : {}),
     ...(run.provider === "openrouter" || options.childAgentBridge || options.refreshRuntimeConfig

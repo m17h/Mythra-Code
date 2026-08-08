@@ -1,6 +1,17 @@
 use super::*;
 
 #[test]
+fn claude_uses_openkiwi_as_the_only_subagent_route_when_bridged() {
+    let bridged = claude_disallowed_tools("ask", true, true);
+    assert!(bridged.contains(&"Task"));
+    assert!(bridged.contains(&"TeamCreate"));
+
+    let native_only = claude_disallowed_tools("ask", true, false);
+    assert!(!native_only.contains(&"Task"));
+    assert!(!native_only.contains(&"TeamCreate"));
+}
+
+#[test]
 fn child_agent_completion_cannot_be_resurrected_by_a_late_spawn_response() {
     let mut runtime = super::agents::SessionRuntime::default();
     super::agents::record_finished_child(&mut runtime, "child-fast");
@@ -1788,6 +1799,9 @@ fn bridge_answers_the_mcp_handshake_without_reaching_the_app() {
     );
     assert_eq!(initialize["result"]["protocolVersion"], "2025-06-18");
     assert!(initialize["result"]["capabilities"]["tools"].is_object());
+    assert!(initialize["result"]["instructions"]
+        .as_str()
+        .is_some_and(|instructions| instructions.contains("authoritative delegation route")));
 
     assert_eq!(
         bridge_local_response("ping", Some(&json!("a")))

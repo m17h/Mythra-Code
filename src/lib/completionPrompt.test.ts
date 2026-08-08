@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { OPENKIWI_COMPLETION_INSTRUCTIONS, withOpenKiwiCompletionInstructions } from "./completionPrompt";
+import {
+  OPENKIWI_COMPLETION_INSTRUCTIONS,
+  OPENKIWI_DELEGATION_INSTRUCTIONS,
+  openKiwiDeveloperInstructions,
+  withOpenKiwiCompletionInstructions,
+} from "./completionPrompt";
 
 describe("OpenKiwi completion instructions", () => {
   it("provides a useful completion summary even without a user system prompt", () => {
@@ -10,5 +15,18 @@ describe("OpenKiwi completion instructions", () => {
     expect(withOpenKiwiCompletionInstructions("  Follow the project style.  ")).toBe(
       `Follow the project style.\n\n${OPENKIWI_COMPLETION_INSTRUCTIONS}`,
     );
+  });
+
+  it("makes OpenKiwi the authoritative sub-agent route when its bridge is active", () => {
+    expect(openKiwiDeveloperInstructions(true)).toBe(
+      `${OPENKIWI_COMPLETION_INSTRUCTIONS}\n\n${OPENKIWI_DELEGATION_INSTRUCTIONS}`,
+    );
+    expect(withOpenKiwiCompletionInstructions("Follow the project style.", true)).toBe(
+      `Follow the project style.\n\n${OPENKIWI_COMPLETION_INSTRUCTIONS}\n\n${OPENKIWI_DELEGATION_INSTRUCTIONS}`,
+    );
+  });
+
+  it("does not mention delegation when no OpenKiwi bridge is available", () => {
+    expect(openKiwiDeveloperInstructions(false)).not.toContain(OPENKIWI_DELEGATION_INSTRUCTIONS);
   });
 });

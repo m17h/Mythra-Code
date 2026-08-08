@@ -474,7 +474,7 @@ describe("useTurnRunner activating sub-agents mid-conversation", () => {
       threadId: OPENAI_THREAD.id,
       config: {
         mcp_servers: { openkiwi: { command: BRIDGE_LAUNCH.command, args: BRIDGE_LAUNCH.args } },
-        features: { multi_agent: true },
+        features: { multi_agent: false },
       },
     });
   });
@@ -664,6 +664,7 @@ describe("useTurnRunner activating sub-agents mid-conversation", () => {
     expect(claude.startClaudeTurn).toHaveBeenCalledWith(expect.objectContaining({
       childAgentBridgeConfig: BRIDGE_LAUNCH.configPath,
       subagentsEnabled: true,
+      systemPrompt: expect.stringContaining("OpenKiwi-managed sub-agent delegation is active"),
     }));
   });
 
@@ -676,6 +677,7 @@ describe("useTurnRunner activating sub-agents mid-conversation", () => {
 
     expect(cursor.startCursorTurn).toHaveBeenCalledWith(expect.objectContaining({
       childAgentBridge: { name: BRIDGE_LAUNCH.name, command: BRIDGE_LAUNCH.command, args: BRIDGE_LAUNCH.args },
+      systemPrompt: expect.stringContaining("OpenKiwi-managed sub-agent delegation is active"),
     }));
   });
 

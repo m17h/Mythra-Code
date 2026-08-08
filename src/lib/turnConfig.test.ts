@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ScheduleRunSettings } from "../types";
-import { OPENKIWI_COMPLETION_INSTRUCTIONS } from "./completionPrompt";
+import { OPENKIWI_COMPLETION_INSTRUCTIONS, OPENKIWI_DELEGATION_INSTRUCTIONS } from "./completionPrompt";
 import { childAgentMcpConfig, threadResumeParams, threadRuntimeConfig, threadStartParams } from "./turnConfig";
 
 const baseRun: ScheduleRunSettings = {
@@ -94,12 +94,21 @@ describe("cross-provider sub-agent bridge", () => {
     expect(threadStartParams(baseRun, "/tmp/project", { interactive: true }).config).not.toHaveProperty("mcp_servers");
   });
 
-  it("attaches the bridge to a new thread without disturbing the rest of its configuration", () => {
+  it("attaches the bridge and makes it the sole sub-agent route", () => {
     const withBridge = threadStartParams(baseRun, "/tmp/project", { interactive: true, childAgentBridge: bridge });
     const without = threadStartParams(baseRun, "/tmp/project", { interactive: true });
-    expect(withBridge.config).toMatchObject({ mcp_servers: { openkiwi: { command: bridge.command } } });
-    expect({ ...(withBridge.config as Record<string, unknown>), mcp_servers: undefined })
-      .toEqual({ ...(without.config as Record<string, unknown>), mcp_servers: undefined });
+    expect(withBridge).toMatchObject({
+      developerInstructions: expect.stringContaining(OPENKIWI_DELEGATION_INSTRUCTIONS),
+      config: {
+        developer_instructions: expect.stringContaining(OPENKIWI_DELEGATION_INSTRUCTIONS),
+        mcp_servers: { openkiwi: { command: bridge.command } },
+        features: { multi_agent: false },
+      },
+    });
+    expect(without).toMatchObject({
+      developerInstructions: OPENKIWI_COMPLETION_INSTRUCTIONS,
+      config: { features: { multi_agent: true } },
+    });
   });
 
   it("re-applies the bridge when an OpenRouter thread re-sends its configuration", () => {
@@ -111,7 +120,14 @@ describe("cross-provider sub-agent bridge", () => {
 
   it("re-applies the bridge when an OpenAI thread is resumed after a runtime restart", () => {
     const params = threadResumeParams(baseRun, "thread-1", "/tmp/project", { childAgentBridge: bridge });
-    expect(params.config).toMatchObject({ mcp_servers: { openkiwi: { args: bridge.args } } });
+    expect(params).toMatchObject({
+      developerInstructions: expect.stringContaining(OPENKIWI_DELEGATION_INSTRUCTIONS),
+      config: {
+        developer_instructions: expect.stringContaining(OPENKIWI_DELEGATION_INSTRUCTIONS),
+        mcp_servers: { openkiwi: { args: bridge.args } },
+        features: { multi_agent: false },
+      },
+    });
     expect(params).not.toHaveProperty("modelProvider");
   });
 
