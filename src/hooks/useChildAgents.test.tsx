@@ -12,8 +12,8 @@ const bridge = vi.hoisted(() => ({
 }));
 const childRun = vi.hoisted(() => ({ startChildAgentTurn: vi.fn() }));
 const codex = vi.hoisted(() => ({ rpc: vi.fn(), auditEvent: vi.fn() }));
-const claude = vi.hoisted(() => ({ interruptClaudeTurn: vi.fn(), loadClaudeTranscript: vi.fn() }));
-const cursor = vi.hoisted(() => ({ interruptCursorTurn: vi.fn(), loadCursorTranscript: vi.fn() }));
+const claude = vi.hoisted(() => ({ interruptClaudeTurn: vi.fn(), killClaudeTurn: vi.fn(), loadClaudeTranscript: vi.fn() }));
+const cursor = vi.hoisted(() => ({ interruptCursorTurn: vi.fn(), killCursorTurn: vi.fn(), loadCursorTranscript: vi.fn() }));
 
 vi.mock("../lib/agentBridge", () => bridge);
 vi.mock("../lib/childRun", () => childRun);
@@ -72,6 +72,7 @@ function context(overrides: Partial<ChildAgentContext> = {}): ChildAgentContext 
       persistedLinks = typeof update === "function" ? update(persistedLinks) : update;
     }) as ChildAgentContext["persistChildAgentLinks"],
     openRouterModels: [{ id: "x-ai/grok-4.5", name: "Grok", context_length: 256_000 }],
+    readiness: { codexRuntimeAvailable: true, openAiSignedIn: true, openRouterReady: true, claudeReady: true, cursorReady: true },
     projectPathForThread: () => "/tmp/project",
     executionPathFor: () => "/tmp/project/.worktrees/a",
     isolationGitDirFor: () => "/tmp/project/.git",
@@ -83,6 +84,8 @@ function context(overrides: Partial<ChildAgentContext> = {}): ChildAgentContext 
     cursorSessionIdsRef: { current: {} },
     scheduleClaudeThreadSave: vi.fn(),
     scheduleCursorThreadSave: vi.fn(),
+    projectSubagentSettingsForThread: () => ({ enabled: true, maxConcurrent: 2, childAgents: { enabled: true, targets: TARGETS } }),
+    applyProjectSubagentSettings: vi.fn(),
     ...overrides,
   };
 }
@@ -131,8 +134,10 @@ describe("useChildAgents", () => {
     bridge.respondToChildAgentRequest.mockResolvedValue(undefined);
     bridge.reportChildAgentFinished.mockResolvedValue(undefined);
     claude.interruptClaudeTurn.mockResolvedValue(undefined);
+    claude.killClaudeTurn.mockResolvedValue(undefined);
     claude.loadClaudeTranscript.mockResolvedValue(null);
     cursor.interruptCursorTurn.mockResolvedValue(undefined);
+    cursor.killCursorTurn.mockResolvedValue(undefined);
     cursor.loadCursorTranscript.mockResolvedValue(null);
     codex.rpc.mockResolvedValue({});
     childRun.startChildAgentTurn.mockImplementation(async (target: ChildAgentTarget) => ({
@@ -234,6 +239,98 @@ describe("useChildAgents", () => {
       renderHook(() => useChildAgents(ctx));
       await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
       expect(ctx.cursorSessionIdsRef.current["child-fast"]).toBe("cursor-session");
+    });
+
+    it("queues a project-scoped settings proposal and applies it only after approval", async () => {
+      const applyProjectSubagentSettings = vi.fn();
+      const view = await mount({ applyProjectSubagentSettings });
+      await view.send(request({
+        tool: "propose_agent_settings",
+        arguments: { reason: "Use one reviewer", maxConcurrent: 1 },
+      }));
+
+      const approval = useTaskStore.getState().tasks["root-1"].approvals[0];
+      expect(approval).toMatchObject({ method: "openkiwi/subagents/change", threadId: "root-1" });
+      expect(lastResponse()?.[1]).toMatchObject({ status: "awaiting_user", approved: false });
+      expect(applyProjectSubagentSettings).not.toHaveBeenCalled();
+
+      await act(async () => {
+        await view.result.current.respondToSettingsProposal(approval, { decision: "accept" });
+      });
+      expect(applyProjectSubagentSettings).toHaveBeenCalledWith(
+        "root-1",
+        expect.objectContaining({ maxConcurrent: 1 }),
+      );
+    });
+
+    it("keeps the current settings when the user declines a proposal", async () => {
+      const applyProjectSubagentSettings = vi.fn();
+      const view = await mount({ applyProjectSubagentSettings });
+      await view.send(request({
+        tool: "propose_agent_settings",
+        arguments: { reason: "Use one reviewer", maxConcurrent: 1 },
+      }));
+      const approval = useTaskStore.getState().tasks["root-1"].approvals[0];
+
+      await act(async () => {
+        await view.result.current.respondToSettingsProposal(approval, { decision: "decline" });
+      });
+      expect(applyProjectSubagentSettings).not.toHaveBeenCalled();
+      expect(useTaskStore.getState().tasks["root-1"].activities).toContainEqual(
+        expect.objectContaining({ title: "Sub-agent change declined" }),
+      );
+    });
+
+    it("only requires the destinations a proposal switches on to be ready", async () => {
+      const parked = { ...TARGETS[1], enabled: false };
+      const view = await mount({
+        readiness: { codexRuntimeAvailable: true, openAiSignedIn: true, openRouterReady: true, claudeReady: false, cursorReady: true },
+        projectSubagentSettingsForThread: () => ({
+          enabled: true,
+          maxConcurrent: 2,
+          childAgents: { enabled: true, targets: [TARGETS[0], parked] },
+        }),
+      });
+      await view.send(request({
+        tool: "propose_agent_settings",
+        arguments: { reason: "Raise the parallel limit", maxConcurrent: 4 },
+      }));
+
+      const approval = useTaskStore.getState().tasks["root-1"].approvals[0];
+      expect(approval).toMatchObject({ method: "openkiwi/subagents/change" });
+      // A parked, signed-out destination is neither blocking nor advertised.
+      expect(String(approval.params.command)).not.toContain("Reviewer");
+      expect(lastResponse()?.[1]).toMatchObject({ status: "awaiting_user" });
+    });
+
+    it("allows a safe disable proposal while a saved destination is signed out", async () => {
+      const view = await mount({
+        readiness: { codexRuntimeAvailable: true, openAiSignedIn: false, openRouterReady: true, claudeReady: true, cursorReady: true },
+      });
+      await view.send(request({
+        tool: "propose_agent_settings",
+        arguments: { reason: "Pause all delegated work", enabled: false },
+      }));
+
+      expect(useTaskStore.getState().tasks["root-1"].approvals[0])
+        .toMatchObject({ method: "openkiwi/subagents/change" });
+      expect(lastResponse()?.[1]).toMatchObject({ status: "awaiting_user" });
+    });
+
+    it("refuses to stack a second project change on an unanswered one", async () => {
+      const view = await mount();
+      await view.send(request({
+        tool: "propose_agent_settings",
+        arguments: { reason: "First", maxConcurrent: 1 },
+      }));
+      await view.send(request({
+        requestId: "request-2",
+        tool: "propose_agent_settings",
+        arguments: { reason: "Second", maxConcurrent: 3 },
+      }));
+
+      expect(useTaskStore.getState().tasks["root-1"].approvals).toHaveLength(1);
+      expect(lastResponse()?.[2]).toMatch(/already waiting for the user/);
     });
   });
 
@@ -340,6 +437,68 @@ describe("useChildAgents", () => {
   });
 
   describe("lifecycle", () => {
+    it("returns actionable failure details to the parent agent", async () => {
+      persistedLinks = { "child-1": link() };
+      const view = await mount();
+      act(() => {
+        useTaskStore.getState().ensureTask("child-1");
+        useTaskStore.getState().setTaskStatus("child-1", "error", "Provider connection failed");
+      });
+      await view.send(request({ tool: "agent_status", arguments: { childId: "child-1" } }));
+      expect(lastResponse()?.[1]).toEqual({
+        children: [expect.objectContaining({
+          childId: "child-1",
+          status: "failed",
+          error: "Provider connection failed",
+          retryable: true,
+          recovery: expect.stringContaining("spawn_agent"),
+        })],
+      });
+    });
+
+    it("kills an OpenAI child whose start resolves after global Stop", async () => {
+      let resolveStart!: (value: unknown) => void;
+      childRun.startChildAgentTurn.mockImplementationOnce(() => new Promise((resolve) => { resolveStart = resolve; }));
+      const view = await mount();
+      await view.send(request());
+      await act(async () => { await view.result.current.cancelChildAgentsFor("root-1"); });
+      await act(async () => {
+        resolveStart({
+          thread: childThread("late-child", "openai"),
+          turnId: "late-turn",
+          provider: "openai",
+          model: "gpt-5.6-terra",
+        });
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(codex.rpc).toHaveBeenCalledWith("turn/interrupt", { threadId: "late-child", turnId: "late-turn" });
+      expect(lastResponse()?.[2]).toMatch(/stopped this run/);
+    });
+
+    it("keeps a late child visible when its post-Stop cutoff cannot be confirmed", async () => {
+      let resolveStart!: (value: unknown) => void;
+      childRun.startChildAgentTurn.mockImplementationOnce(() => new Promise((resolve) => { resolveStart = resolve; }));
+      codex.rpc.mockRejectedValueOnce(new Error("runtime did not confirm interrupt"));
+      const view = await mount();
+      await view.send(request());
+      await act(async () => { await view.result.current.cancelChildAgentsFor("root-1"); });
+      await act(async () => {
+        resolveStart({
+          thread: childThread("late-child", "openai"),
+          turnId: "late-turn",
+          provider: "openai",
+          model: "gpt-5.6-terra",
+        });
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(persistedLinks["late-child"]).toEqual(expect.objectContaining({ childThreadId: "late-child" }));
+      expect(useTaskStore.getState().statuses["late-child"]).toBe("running");
+      expect(lastResponse()?.[2]).toMatch(/could not confirm.*cutoff/i);
+    });
+
     it("releases the backend slot exactly once per child", async () => {
       const view = await mount();
       await view.send(request());
@@ -433,14 +592,14 @@ describe("useChildAgents", () => {
     });
 
     it.each([
-      ["claude", () => claude.interruptClaudeTurn],
-      ["cursor", () => cursor.interruptCursorTurn],
-    ])("cancels a %s child through its own runtime", async (provider, interrupt) => {
+      ["claude", () => claude.killClaudeTurn],
+      ["cursor", () => cursor.killCursorTurn],
+    ])("hard-stops a %s child through its own runtime", async (provider, stop) => {
       persistedLinks = { "child-1": link({ provider: provider as ChildAgentLink["provider"] }) };
       const view = await mount();
       act(() => { useTaskStore.getState().setTaskStatus("child-1", "running"); });
       await view.send(request({ tool: "cancel_agent", arguments: { childId: "child-1" } }));
-      expect(interrupt()).toHaveBeenCalledWith("child-1");
+      expect(stop()).toHaveBeenCalledWith("child-1");
       expect(useTaskStore.getState().statuses["child-1"]).toBe("interrupted");
       expect(lastResponse()?.[1]).toEqual({ childId: "child-1", status: "cancelled" });
     });
@@ -476,8 +635,8 @@ describe("useChildAgents", () => {
         useTaskStore.getState().setTaskStatus("child-2", "running");
       });
       await act(async () => { await view.result.current.stopChildAgent("root-1", "child-1"); });
-      expect(claude.interruptClaudeTurn).toHaveBeenCalledExactlyOnceWith("child-1");
-      expect(cursor.interruptCursorTurn).not.toHaveBeenCalled();
+      expect(claude.killClaudeTurn).toHaveBeenCalledExactlyOnceWith("child-1");
+      expect(cursor.killCursorTurn).not.toHaveBeenCalled();
       expect(useTaskStore.getState().statuses["child-1"]).toBe("interrupted");
       expect(useTaskStore.getState().statuses["child-2"]).toBe("running");
     });
@@ -524,9 +683,39 @@ describe("useChildAgents", () => {
         useTaskStore.getState().setTaskStatus("child-3", "completed");
       });
       await act(async () => { await view.result.current.cancelChildAgentsFor("root-1"); });
-      expect(claude.interruptClaudeTurn).toHaveBeenCalledExactlyOnceWith("child-1");
-      expect(cursor.interruptCursorTurn).toHaveBeenCalledExactlyOnceWith("child-2");
+      expect(claude.killClaudeTurn).toHaveBeenCalledExactlyOnceWith("child-1");
+      expect(cursor.killCursorTurn).toHaveBeenCalledExactlyOnceWith("child-2");
       expect(useTaskStore.getState().statuses["child-3"]).toBe("completed");
+    });
+
+    it("does not claim a child stopped when its provider cutoff fails", async () => {
+      persistedLinks = { "child-1": link({ provider: "cursor" }) };
+      cursor.killCursorTurn.mockRejectedValueOnce(new Error("Cursor process would not exit"));
+      const view = await mount();
+      act(() => {
+        useTaskStore.getState().setTaskStatus("child-1", "running");
+        useTaskStore.getState().upsertAgent("root-1", { id: "child-1", prompt: "Review the parser", status: "inProgress" });
+      });
+
+      await expect(view.result.current.cancelChildAgentsFor("root-1"))
+        .rejects.toThrow(/Could not stop .*Cursor process would not exit/);
+      expect(useTaskStore.getState().statuses["child-1"]).toBe("running");
+      expect(useTaskStore.getState().tasks["root-1"].agents[0].status).toBe("inProgress");
+    });
+
+    it("settles provider-native children whatever word their runtime used", async () => {
+      const view = await mount();
+      act(() => {
+        useTaskStore.getState().upsertAgent("root-1", { id: "native-1", prompt: "Queued native", status: "queued" });
+        useTaskStore.getState().upsertAgent("root-1", { id: "native-2", prompt: "Running native", status: "inProgress" });
+        useTaskStore.getState().ensureTask("native-2");
+        useTaskStore.getState().setActiveTurn("native-2", "native-turn");
+      });
+      await act(async () => { await view.result.current.cancelChildAgentsFor("root-1"); });
+
+      expect(codex.rpc).toHaveBeenCalledWith("turn/interrupt", { threadId: "native-2", turnId: "native-turn" });
+      expect(useTaskStore.getState().tasks["root-1"].agents.map((agent) => agent.status))
+        .toEqual(["interrupted", "interrupted"]);
     });
   });
 });

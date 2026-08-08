@@ -9,6 +9,16 @@ describe("task store", () => {
     resetTaskStore();
   });
 
+  it("clears terminal child activity for a new run but keeps active workers stoppable", () => {
+    useTaskStore.getState().upsertAgent("root", { id: "working", prompt: "Work", status: "inProgress" });
+    useTaskStore.getState().upsertAgent("root", { id: "failed", prompt: "Old", status: "failed" });
+    useTaskStore.getState().beginAgentRun("root", 123);
+    expect(useTaskStore.getState().tasks.root.agents).toEqual([
+      expect.objectContaining({ id: "working" }),
+    ]);
+    expect(useTaskStore.getState().tasks.root.agentRunStartedAt).toBe(123);
+  });
+
   it("routes streamed output to the correct thread", () => {
     const store = useTaskStore.getState();
     store.ensureTask("thread-a", "/a");

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   OPENKIWI_COMPLETION_INSTRUCTIONS,
   OPENKIWI_DELEGATION_INSTRUCTIONS,
+  OPENKIWI_SUBAGENT_SETTINGS_INSTRUCTIONS,
   openKiwiDeveloperInstructions,
   withOpenKiwiCompletionInstructions,
 } from "./completionPrompt";
@@ -28,5 +29,11 @@ describe("OpenKiwi completion instructions", () => {
 
   it("does not mention delegation when no OpenKiwi bridge is available", () => {
     expect(openKiwiDeveloperInstructions(false)).not.toContain(OPENKIWI_DELEGATION_INSTRUCTIONS);
+  });
+
+  it("can expose project settings proposals without claiming delegation is active", () => {
+    const instructions = openKiwiDeveloperInstructions(false, true);
+    expect(instructions).toContain(OPENKIWI_SUBAGENT_SETTINGS_INSTRUCTIONS);
+    expect(instructions).not.toContain(OPENKIWI_DELEGATION_INSTRUCTIONS);
   });
 });

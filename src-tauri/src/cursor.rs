@@ -24,6 +24,23 @@ use crate::agents::{child_agent_bridge_launch_registered, ChildAgentState};
 
 type PendingMap = Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, String>>>>>;
 
+/// How long to wait for one ACP reply, or `None` for "as long as the process
+/// lives".
+///
+/// A control handshake that stalls is a wedged agent, so it keeps a short
+/// deadline. The two exceptions are the calls whose duration is the agent's
+/// work rather than ours: `session/prompt` runs the whole turn, and creating or
+/// loading a session also cold-starts every MCP server the session declares —
+/// which, for an OpenKiwi sub-agent crew, means launching the delegation bridge
+/// before Cursor answers.
+pub(super) fn cursor_request_timeout(method: &str) -> Option<Duration> {
+    match method {
+        "session/prompt" => None,
+        "session/new" | "session/load" => Some(Duration::from_secs(180)),
+        _ => Some(Duration::from_secs(45)),
+    }
+}
+
 #[derive(Default)]
 pub struct CursorState {
     turns: Arc<Mutex<HashMap<String, Arc<CursorProcess>>>>,
@@ -135,7 +152,17 @@ impl CursorProcess {
             self.pending.lock().await.remove(&id);
             return Err(error);
         }
-        match timeout(Duration::from_secs(45), receiver).await {
+        // `session/prompt` owns the full agent run, not just an ACP handshake.
+        // It must follow the process lifetime: the reader drains this channel
+        // on EOF, and Stop kills the process, so no arbitrary wall-clock limit
+        // is needed to keep it cancellable.
+        let Some(deadline) = cursor_request_timeout(method) else {
+            return match receiver.await {
+                Ok(result) => result,
+                Err(_) => Err(format!("Cursor Agent dropped its `{method}` response")),
+            };
+        };
+        match timeout(deadline, receiver).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => Err(format!("Cursor Agent dropped its `{method}` response")),
             Err(_) => {
@@ -951,18 +978,19 @@ pub async fn cursor_turn_interrupt(
         .await
 }
 
+/// Force-stop the Cursor process for a thread. Deliberately idempotent, like
+/// its Claude counterpart: Stop means "this thread is not running when I
+/// return", so a turn that already exited is success, not an error the UI has
+/// to show instead of settling the thread.
 #[tauri::command]
 pub async fn cursor_turn_kill(
     state: State<'_, CursorState>,
     thread_id: String,
 ) -> Result<(), String> {
-    let turn = state
-        .turns
-        .lock()
-        .await
-        .remove(&thread_id)
-        .ok_or("Cursor is not currently running in this thread")?;
-    turn.shutdown().await;
+    let turn = state.turns.lock().await.remove(&thread_id);
+    if let Some(turn) = turn {
+        turn.shutdown().await;
+    }
     Ok(())
 }
 

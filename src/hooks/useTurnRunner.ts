@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import { rpc, runtimeInstanceId, type CodexRuntimeStatus } from "../lib/codex";
 import {
-  interruptClaudeTurn,
   isClaudeThreadBusyError,
   killClaudeTurn,
   saveClaudeTranscript,
@@ -10,7 +9,6 @@ import {
   type ClaudeRuntimeStatus,
 } from "../lib/claude";
 import {
-  interruptCursorTurn,
   killCursorTurn,
   saveCursorTranscript,
   startCursorTurn,
@@ -184,6 +182,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
 } {
   const contextRef = useRef(context);
   contextRef.current = context;
+  const draftGenerationRef = useRef(0);
 
   // Returns true when the message was delivered; the Composer restores its
   // draft when it was not.
@@ -315,15 +314,18 @@ export function useTurnRunner(context: TurnRunnerContext): {
     const sendWorkspacePath = normalizedProjectPath(activeWorkspace.path);
     const workspaceChangedMidSend = () => activeWorkspacePathRef.current !== sendWorkspacePath;
     let pendingStart: PendingTurnStart | undefined;
+    let draftGeneration: number | undefined;
     // Mark the start synchronously, before the first await, so Stop and the
     // composer reflect it immediately — and only on the thread actually
     // starting. A send with no active thread yet is tracked by the draft
     // flag until the created thread's own status takes over.
     const startingThreadId = activeThread?.id;
     if (startingThreadId) {
+      useTaskStore.getState().beginAgentRun(startingThreadId);
       useTaskStore.getState().setTaskStatus(startingThreadId, "starting");
       pendingStart = pendingTurnStartsRef.current.begin(startingThreadId);
     } else {
+      draftGeneration = ++draftGenerationRef.current;
       setStartingDraftTurn(true);
     }
     setStatus("Starting");
@@ -359,7 +361,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       strategy: {
         startTurn: (thread: Thread, updatedThread: Thread) => Promise<{ turnId: string }>;
         afterStart?: (threadId: string) => void;
-        interrupt: (threadId: string) => Promise<unknown>;
+        hardStop: (threadId: string) => Promise<unknown>;
       },
     ): Promise<boolean> => {
       let thread = activeThread;
@@ -385,6 +387,15 @@ export function useTurnRunner(context: TurnRunnerContext): {
       }
       startedThreadId = thread.id;
       rememberChildAgentPolicy(thread.id);
+      // Stop landed while this brand-new thread was still being created. The
+      // prompt was never delivered, so report it as undelivered and let the
+      // composer hand the user their text back instead of silently eating it.
+      if (!activeThread && draftGeneration !== draftGenerationRef.current) {
+        useTaskStore.getState().setTaskStatus(thread.id, "interrupted");
+        setStartingDraftTurn(false);
+        setTransientStatus("Stopped");
+        return false;
+      }
       const updatedThread = { ...thread, preview: text.slice(0, 140) || thread.preview, updatedAt: Math.floor(Date.now() / 1000) };
       rememberThread(updatedThread);
       if (!workspaceChangedMidSend()) {
@@ -392,6 +403,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         setActiveThread(updatedThread);
       }
       useTaskStore.getState().ensureTask(thread.id, executionPath);
+      if (!activeThread) useTaskStore.getState().beginAgentRun(thread.id);
       useTaskStore.getState().setTaskStatus(thread.id, "starting");
       if (!pendingStart) pendingStart = pendingTurnStartsRef.current.begin(thread.id);
       await beginRunCheckpoint(thread.id, executionPath, text, effectiveSettings.provider, effectiveSettings.model);
@@ -410,7 +422,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       setAttachments((current) => withoutSentAttachments(current, sentAttachments));
       strategy.afterStart?.(thread.id);
       if (pendingTurnStartsRef.current.finish(thread.id, pendingStart) && !completedBeforeStartReturned) {
-        await strategy.interrupt(thread.id);
+        await strategy.hardStop(thread.id);
         useTaskStore.getState().setActiveTurn(thread.id, undefined);
         useTaskStore.getState().setTaskStatus(thread.id, "interrupted");
         setTransientStatus("Stopped");
@@ -439,6 +451,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         reasoningEffort: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort,
         serviceTier: effectiveSettings.serviceTier,
         readiness: childAgentReadiness,
+        settingsProposalsEnabled: Boolean(activeProject),
       });
       // A captured cross-provider policy freezes one concurrency budget for
       // the whole conversation. Use that same budget for provider-native
@@ -460,10 +473,10 @@ export function useTurnRunner(context: TurnRunnerContext): {
             // presence, so resume detection is unaffected by running after it.
             const canResumeClaude = Boolean(activeThread && useTaskStore.getState().tasks[thread.id]?.messages.some((message) => message.role === "assistant"));
             await saveClaudeTranscript({ thread: updatedThread, messages: useTaskStore.getState().tasks[thread.id]?.messages ?? [], activities: useTaskStore.getState().tasks[thread.id]?.activities ?? [] });
-            const result = await startClaudeTurn({ threadId: thread.id, cwd: executionPath, prompt: text, model: effectiveSettings.model || DEFAULT_CLAUDE_MODEL, effort: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort, permission: effectiveSettings.permission, systemPrompt: withOpenKiwiCompletionInstructions(effectiveSettings.systemPrompt, Boolean(childBridge)), resume: canResumeClaude, attachments: sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })), subagentsEnabled: effectiveSettings.subagentsEnabled, subagentMax: runtimeSubagentMax, customAgents, skillsPluginPath: skillRuntimeRootRef.current || undefined, childAgentBridgeConfig: childBridge?.launch.configPath });
+            const result = await startClaudeTurn({ threadId: thread.id, cwd: executionPath, prompt: text, model: effectiveSettings.model || DEFAULT_CLAUDE_MODEL, effort: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort, permission: effectiveSettings.permission, systemPrompt: withOpenKiwiCompletionInstructions(effectiveSettings.systemPrompt, Boolean(childBridge?.launch.toolNames.includes("spawn_agent")), Boolean(childBridge?.launch.toolNames.includes("propose_agent_settings"))), resume: canResumeClaude, attachments: sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })), subagentsEnabled: effectiveSettings.subagentsEnabled, subagentMax: runtimeSubagentMax, customAgents, skillsPluginPath: skillRuntimeRootRef.current || undefined, childAgentBridgeConfig: childBridge?.launch.configPath });
             return { turnId: result.turnId };
           },
-          interrupt: (threadId) => interruptClaudeTurn(threadId),
+          hardStop: (threadId) => killClaudeTurn(threadId),
         });
       }
 
@@ -479,7 +492,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
               model: effectiveSettings.model || DEFAULT_CURSOR_MODEL,
               effort: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort,
               permission: effectiveSettings.permission,
-              systemPrompt: withOpenKiwiCompletionInstructions(effectiveSettings.systemPrompt, Boolean(childBridge)),
+              systemPrompt: withOpenKiwiCompletionInstructions(effectiveSettings.systemPrompt, Boolean(childBridge?.launch.toolNames.includes("spawn_agent")), Boolean(childBridge?.launch.toolNames.includes("propose_agent_settings"))),
               resumeSessionId: priorSessionId || undefined,
               attachments: sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })),
               childAgentBridge: childBridge
@@ -490,7 +503,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
             return { turnId: result.turnId };
           },
           afterStart: (threadId) => scheduleCursorThreadSave(threadId),
-          interrupt: (threadId) => interruptCursorTurn(threadId),
+          hardStop: (threadId) => killCursorTurn(threadId),
         });
       }
 
@@ -544,7 +557,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         // and takes the new config from the resume alone.
         const plan = planSubagentCapabilities(threadId, runtimeInstance, capabilities);
         if (plan.restartRuntime) runtimeInstance = await restartRuntimeForCapabilities(threadId);
-        if (effectiveSettings.provider === "openrouter" || childBridge || plan.resume) {
+        if (effectiveSettings.provider === "openrouter" || plan.resume) {
           const resume = threadResumeParams(runtimeSettings, threadId, executionPath, { customAgents, modelContextWindow: openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.context_length, excludeTurns: true, additionalWorkspaceRoots, childAgentBridge: childBridge?.launch, refreshRuntimeConfig: true });
           await rpc("thread/resume", effectiveSettings.provider === "openrouter" ? { ...resume, model: effectiveSettings.model } : resume);
           recordSubagentCapabilities(threadId, runtimeInstance, capabilities);
@@ -560,7 +573,15 @@ export function useTurnRunner(context: TurnRunnerContext): {
         }
       }
       rememberChildAgentPolicy(threadId);
+      // See runLocalTurn: a draft stopped before its turn started keeps its text.
+      if (!activeThread && draftGeneration !== draftGenerationRef.current) {
+        useTaskStore.getState().setTaskStatus(threadId, "interrupted");
+        setStartingDraftTurn(false);
+        setTransientStatus("Stopped");
+        return false;
+      }
       useTaskStore.getState().ensureTask(threadId, executionPath);
+      if (!activeThread) useTaskStore.getState().beginAgentRun(threadId);
       useTaskStore.getState().setTaskStatus(threadId, "starting");
       if (!pendingStart) pendingStart = pendingTurnStartsRef.current.begin(threadId);
       await beginRunCheckpoint(threadId, executionPath, text, effectiveSettings.provider, effectiveSettings.model);
@@ -787,7 +808,16 @@ export function useTurnRunner(context: TurnRunnerContext): {
   const stopTurn = useCallback(async () => {
     const ctx = contextRef.current;
     const { activeThread, running, pendingTurnStartsRef, setError, setStatus, setStartingDraftTurn, setTransientStatus } = ctx;
-    if (!activeThread || !running) return;
+    if (!running) return;
+    // A draft send has no thread to interrupt yet, and its runtime call may not
+    // even have been made. Advancing the generation is the cutoff: whichever
+    // point the send has reached, it aborts as soon as it learns its thread id.
+    if (!activeThread) {
+      draftGenerationRef.current += 1;
+      setStartingDraftTurn(false);
+      setTransientStatus("Stopped");
+      return;
+    }
     const turnId = useTaskStore.getState().tasks[activeThread.id]?.activeTurnId;
     if (!turnId) {
       // If this thread's turn/start RPC is still in flight, flag that exact
@@ -801,8 +831,8 @@ export function useTurnRunner(context: TurnRunnerContext): {
       return;
     }
     try {
-      if (isClaudeThread(activeThread)) await interruptClaudeTurn(activeThread.id);
-      else if (isCursorThread(activeThread)) await interruptCursorTurn(activeThread.id);
+      if (isClaudeThread(activeThread)) await killClaudeTurn(activeThread.id);
+      else if (isCursorThread(activeThread)) await killCursorTurn(activeThread.id);
       else await rpc("turn/interrupt", { threadId: activeThread.id, turnId });
       useTaskStore.getState().setActiveTurn(activeThread.id, undefined);
       useTaskStore.getState().setTaskStatus(activeThread.id, "interrupted");
@@ -810,6 +840,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       setTransientStatus("Stopped");
     } catch (reason) {
       setError(friendlyError(reason));
+      throw reason;
     }
   }, []);
 

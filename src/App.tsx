@@ -7,13 +7,13 @@ import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { Archive, ArchiveRestore, Bot, Check, ChevronDown, Circle, Code2, Command, Download, FileCode2, Folder, FolderOpen, GitBranch, GitFork, LoaderCircle, MessageSquare, Paperclip, PanelRight, PanelLeftClose, PanelLeftOpen, Plus, Pin, PinOff, Pencil, Search, Settings, Shield, ShieldAlert, ShieldCheck, TerminalSquare, Trash2, X } from "lucide-react";
 import { getCodexRuntimeStatus, auditEvent, exportTextFile, getNormalChatWorkspace, hasOpenRouterKey, listOpenRouterModels, respond, restartRuntime, rpc, runtimeInstanceId, type CodexRuntimeStatus, type JsonObject } from "./lib/codex";
-import { deleteClaudeTranscript, getClaudeRuntimeStatus, interruptClaudeTurn, loadClaudeTranscript, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, type ClaudeRuntimeStatus } from "./lib/claude";
-import { deleteCursorTranscript, getCursorRuntimeStatus, interruptCursorTurn, listCursorModels, loadCursorTranscript, respondToCursorPermission, saveCursorTranscript, startCursorLogin, type CursorModel, type CursorRuntimeStatus } from "./lib/cursor";
+import { deleteClaudeTranscript, getClaudeRuntimeStatus, loadClaudeTranscript, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, type ClaudeRuntimeStatus } from "./lib/claude";
+import { deleteCursorTranscript, getCursorRuntimeStatus, listCursorModels, loadCursorTranscript, respondToCursorPermission, saveCursorTranscript, startCursorLogin, type CursorModel, type CursorRuntimeStatus } from "./lib/cursor";
 import { loadStored, storeValue } from "./lib/storage";
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_OPENAI_MODEL, DEFAULT_PROMPT_PROFILES, DEFAULT_SETTINGS, THEMES } from "./lib/appConfig";
 import { commandSandbox, threadResumeParams, threadRuntimeConfig } from "./lib/turnConfig";
 import { threadSearchParams, threadsForWorkspace, type ThreadSearchResponse } from "./lib/threadSearch";
-import { countActiveThreadsByWorkspace, filterThreadsForWorkspace, forgetSidebarThread, pruneSidebarIndex, reconcileWorkspaceThreads, rememberSidebarThread, sidebarThread, threadBelongsToWorkspace, upsertThread, type ThreadSidebarIndex } from "./lib/threadList";
+import { countActiveThreadsByWorkspace, filterThreadsByKind, filterThreadsForWorkspace, forgetSidebarThread, pruneSidebarIndex, reconcileWorkspaceThreads, rememberSidebarThread, sidebarThread, threadBelongsToWorkspace, upsertThread, type ThreadSidebarIndex } from "./lib/threadList";
 import { timelineFromTurns } from "./lib/threadTimeline";
 import { buildTranscriptMarkdown } from "./lib/transcript";
 import { RowMenu } from "./components/RowMenu";
@@ -93,6 +93,7 @@ import {
   childAgentPolicyForThread,
   providerDisplayName,
   projectSubagentSettingsFromApp,
+  readyChildAgentTargets,
   sanitizeChildAgentLinks,
   sanitizeChildAgentPolicies,
   sanitizeChildAgentSettings,
@@ -103,7 +104,7 @@ import {
   type ChildAgentPolicy,
   type ChildAgentReadiness,
 } from "./lib/childAgents";
-import { releaseChildAgentSessions } from "./lib/childAgentSessions";
+import { cacheChildAgentPolicy, ensureChildAgentBridge, invalidateChildAgentLaunch, releaseChildAgentSessions } from "./lib/childAgentSessions";
 import { forgetSubagentCapabilities, seedSubagentCapabilities, subagentCapabilitySignature } from "./lib/threadCapabilities";
 import { collectSubAgentWorkers, type SubAgentWorker } from "./lib/subAgentActivity";
 import { useChildAgents } from "./hooks/useChildAgents";
@@ -218,6 +219,7 @@ export default function App() {
   const onboardingExitTimerRef = useRef<number | null>(null);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [threadSearch, setThreadSearch] = useState("");
+  const [threadKindView, setThreadKindView] = useState<"main" | "subagents">("main");
   const [convSearchOpen, setConvSearchOpen] = useState(false);
   const [convSearchQuery, setConvSearchQuery] = useState("");
   const [convSearchIndex, setConvSearchIndex] = useState(0);
@@ -318,6 +320,9 @@ export default function App() {
   const activeProject = workspaceMode === "project" ? selectedProject : null;
   const chatWorkspace = useMemo<Project | null>(() => (chatWorkspacePath ? { id: "openkiwi-normal-chats", name: "Chats", path: chatWorkspacePath, isChat: true } : null), [chatWorkspacePath]);
   const activeWorkspace = workspaceMode === "chat" ? chatWorkspace : activeProject;
+  useEffect(() => {
+    setThreadKindView("main");
+  }, [activeWorkspace?.id]);
   // Current workspace identity for async continuations (sendMessage) that
   // must not install UI state after a mid-flight workspace switch.
   const activeWorkspacePathRef = useRef<string | null>(null);
@@ -393,6 +398,12 @@ export default function App() {
     () => childAgentPolicyForThread(childAgentPolicies, activeThreadId ?? undefined),
     [activeThreadId, childAgentPolicies],
   );
+  // A zero-target policy is the proposal-only control channel used while
+  // delegation is off. It grants no destination authority and therefore must
+  // not make the crew UI look frozen/read-only.
+  const activeDelegationPolicy = activeChildAgentPolicy?.targets.length
+    ? activeChildAgentPolicy
+    : undefined;
   /** This conversation is itself a sub-agent, so it may never delegate. */
   const activeThreadIsChild = Boolean(activeThreadId && childAgentLinks[activeThreadId]);
   /**
@@ -402,17 +413,17 @@ export default function App() {
    */
   const subagentPolicyMode = useMemo<SubAgentPolicyMode>(() => {
     if (activeThreadIsChild) return "child";
-    return activeChildAgentPolicy ? "captured" : "open";
-  }, [activeChildAgentPolicy, activeThreadIsChild]);
+    return activeDelegationPolicy ? "captured" : "open";
+  }, [activeDelegationPolicy, activeThreadIsChild]);
   const childAgentSummary = useMemo(() => {
     // The frozen roster is what a thread would delegate to, but only while the
     // live switches still expose it — the runtime re-reads those every turn.
-    const roster = activeChildAgentPolicy
-      ? { enabled: effectiveSettings.childAgents.enabled, targets: activeChildAgentPolicy.targets }
+    const roster = activeDelegationPolicy
+      ? { enabled: effectiveSettings.childAgents.enabled, targets: activeDelegationPolicy.targets }
       : effectiveSettings.childAgents;
     if (!effectiveSettings.subagentsEnabled) return "Cross-provider off";
     return describeChildAgentRoster(roster, childAgentReadiness);
-  }, [activeChildAgentPolicy, childAgentReadiness, effectiveSettings.childAgents, effectiveSettings.subagentsEnabled]);
+  }, [activeDelegationPolicy, childAgentReadiness, effectiveSettings.childAgents, effectiveSettings.subagentsEnabled]);
   // The composer's command center edits this shape directly; a started thread
   // renders it read-only beside the policy it froze.
   const composerSubagentPolicy = useMemo(
@@ -450,6 +461,7 @@ export default function App() {
   });
   const diff = useTaskStore((state) => (activeThreadId ? (state.tasks[activeThreadId]?.diff ?? "") : ""));
   const agentRecords = useTaskStore((state) => (activeThreadId ? (state.tasks[activeThreadId]?.agents ?? EMPTY_AGENTS) : EMPTY_AGENTS));
+  const agentRunStartedAt = useTaskStore((state) => (activeThreadId ? state.tasks[activeThreadId]?.agentRunStartedAt : undefined));
   const tokenUsage = useTaskStore((state) => (activeThreadId ? (state.tasks[activeThreadId]?.usage ?? null) : null));
   const queuedTurns = useTaskStore((state) => (activeThreadId ? (state.tasks[activeThreadId]?.queuedTurns ?? EMPTY_QUEUED_TURNS) : EMPTY_QUEUED_TURNS));
   const taskStatus = useTaskStore((state) => (activeThreadId ? (state.statuses[activeThreadId] ?? "idle") : "idle"));
@@ -462,8 +474,9 @@ export default function App() {
       links: childAgentLinks,
       statuses: threadTaskStatuses,
       agents: agentRecords,
+      runStartedAt: agentRunStartedAt,
     }),
-    [activeThreadId, agentRecords, childAgentLinks, threadTaskStatuses],
+    [activeThreadId, agentRecords, agentRunStartedAt, childAgentLinks, threadTaskStatuses],
   );
   const running = activeThreadId ? taskStatus === "starting" || taskStatus === "running" : startingDraftTurn;
   // Standard approvals for the thread being viewed render inline in its
@@ -501,10 +514,15 @@ export default function App() {
     if (!activeWorkspace) return [];
     const threadProjectBindings = threadProjectBindingsRef.current ?? {};
     const query = threadSearch.trim().toLowerCase();
-    const merged = filterThreadsForWorkspace(threads, activeWorkspace.path, threadProjectBindings)
+    const merged = filterThreadsByKind(
+      filterThreadsForWorkspace(threads, activeWorkspace.path, threadProjectBindings),
+      childAgentLinks,
+      threadKindView,
+    )
       .filter((thread) => `${thread.name ?? ""} ${thread.preview}`.toLowerCase().includes(query));
     const mergedIds = new Set(merged.map((thread) => thread.id));
     for (const found of filterThreadsForWorkspace(searchResults ?? [], activeWorkspace.path, threadProjectBindings)) {
+      if (!filterThreadsByKind([found], childAgentLinks, threadKindView).length) continue;
       if (!mergedIds.has(found.id)) {
         mergedIds.add(found.id);
         merged.push(found);
@@ -512,7 +530,21 @@ export default function App() {
     }
     const pinned = new Set(pinnedThreadIds);
     return merged.sort((a, b) => Number(pinned.has(b.id)) - Number(pinned.has(a.id)) || b.updatedAt - a.updatedAt);
-  }, [activeWorkspace, pinnedThreadIds, searchResults, threadSearch, threads]);
+  }, [activeWorkspace, childAgentLinks, pinnedThreadIds, searchResults, threadKindView, threadSearch, threads]);
+
+  // Jump-to surfaces are for the user's own conversations. Delegated children
+  // are browsable through the sidebar's Sub-agents view, not mixed into search.
+  const paletteThreads = useMemo(
+    () => filterThreadsByKind(threads, childAgentLinks, "main"),
+    [childAgentLinks, threads],
+  );
+
+  const threadKindCounts = useMemo(() => {
+    if (!activeWorkspace) return { main: 0, subagents: 0 };
+    const scoped = filterThreadsForWorkspace(threads, activeWorkspace.path, threadProjectBindingsRef.current ?? {});
+    const subagents = scoped.filter((thread) => Boolean(childAgentLinks[thread.id])).length;
+    return { main: scoped.length - subagents, subagents };
+  }, [activeWorkspace, childAgentLinks, threads]);
   // @-mention autocomplete searches project files with the same fuzzy RPC the
   // file browser uses. Only available inside a project workspace.
   const activeProjectPath = activeProject ? activeExecutionPath : undefined;
@@ -585,7 +617,10 @@ export default function App() {
 
   // Only offer "Check settings" for failures settings can actually fix.
   const errorSuggestsSettings = useMemo(() => Boolean(error) && /sign in|api key|openrouter|claude|model|settings|runtime|codex|account/i.test(error ?? ""), [error]);
-  const workspaceArchived = useMemo(() => (activeWorkspace ? archivedThreads.filter((record) => record.path === normalizedProjectPath(activeWorkspace.path)) : []), [activeWorkspace, archivedThreads]);
+  const workspaceArchived = useMemo(() => (activeWorkspace ? archivedThreads.filter((record) => (
+    record.path === normalizedProjectPath(activeWorkspace.path)
+    && Boolean(childAgentLinks[record.id]) === (threadKindView === "subagents")
+  )) : []), [activeWorkspace, archivedThreads, childAgentLinks, threadKindView]);
 
   const persistThreadModel = useCallback((threadId: string, model: string) => {
     setThreadModels((current) => (current[threadId] === model ? current : { ...current, [threadId]: model }));
@@ -1601,8 +1636,12 @@ export default function App() {
         // Queued Codex approvals reference request ids the dead process owned.
         // Every response to them would fail after the respawn, leaving an
         // undismissable modal — drop them, and say so in the thread.
+        // `openkiwi/` approvals are answered entirely inside the app, so a
+        // runtime restart must not throw away a decision the user still owes.
         for (const task of Object.values(store.tasks)) {
-          const codexApprovals = task.approvals.filter((approval) => !approval.method.startsWith("claude/") && !approval.method.startsWith("cursor/"));
+          const codexApprovals = task.approvals.filter((approval) => !approval.method.startsWith("claude/")
+            && !approval.method.startsWith("cursor/")
+            && !approval.method.startsWith("openkiwi/"));
           if (!codexApprovals.length || codexApprovals.length !== task.approvals.length) continue;
           store.clearApprovals(task.threadId);
           store.upsertActivity(task.threadId, {
@@ -1904,6 +1943,30 @@ export default function App() {
       const threadProviderSettings = childAgentLinks[thread.id]
         ? settingsWithoutChildDelegation(targetSettings)
         : targetSettings;
+      // Codex keeps a resumed thread loaded in its app-server. Attach the
+      // OpenKiwi bridge during that resume—not one message later—so project
+      // settings proposals are available even while delegation is off and an
+      // ordinary follow-up does not have to restart the runtime just to add
+      // the proposal-only tool.
+      const childBridge = activeProject ? await ensureChildAgentBridge({
+        threadId: thread.id,
+        policies: childAgentPolicies,
+        links: childAgentLinks,
+        settings: threadProviderSettings,
+        permission: threadProviderSettings.permission,
+        systemPrompt: threadProviderSettings.systemPrompt,
+        projectInstructionsEnabled: threadProviderSettings.projectInstructionsEnabled,
+        reasoningEffort: threadProviderSettings.ultra ? "ultra" : threadProviderSettings.reasoningEffort,
+        serviceTier: threadProviderSettings.serviceTier,
+        readiness: childAgentReadiness,
+        settingsProposalsEnabled: true,
+      }) : null;
+      if (selectThreadRequestRef.current !== requestId) return;
+      if (childBridge?.captured) {
+        const policy = { ...childBridge.policy, rootThreadId: thread.id };
+        cacheChildAgentPolicy(policy);
+        persistChildAgentPolicies((current) => ({ ...current, [policy.sessionId]: policy }));
+      }
       // Capture the process identity before resume. If the process disappears
       // immediately afterwards, preserving its old identity makes the next
       // turn detect the replacement and resume this thread again. Capturing it
@@ -1913,17 +1976,16 @@ export default function App() {
         : await runtimeInstanceId().catch(() => null);
       const result = isolation?.status === "missing" || isolation?.status === "removed"
         ? await rpc<{ thread: Thread }>("thread/read", { threadId: thread.id, includeTurns: true })
-        : await rpc<{ thread: Thread }>("thread/resume", threadResumeParams(threadProviderSettings, thread.id, executionPath, { customAgents, modelContextWindow: provider === "openrouter" ? openRouterModels.find((entry) => entry.id === threadProviderSettings.model)?.context_length : undefined, additionalWorkspaceRoots: isolation?.gitDir ? [isolation.gitDir] : [], refreshRuntimeConfig: true }));
+        : await rpc<{ thread: Thread }>("thread/resume", threadResumeParams(threadProviderSettings, thread.id, executionPath, { customAgents, modelContextWindow: provider === "openrouter" ? openRouterModels.find((entry) => entry.id === threadProviderSettings.model)?.context_length : undefined, additionalWorkspaceRoots: isolation?.gitDir ? [isolation.gitDir] : [], childAgentBridge: childBridge?.launch, refreshRuntimeConfig: true }));
       if (selectThreadRequestRef.current !== requestId) return;
       if (isolation?.status !== "missing" && isolation?.status !== "removed") {
-        // Opening a thread resumes it with the config above, which this
-        // app-server honours only when it did not already have the thread
-        // loaded. No bridge is attached here, so a thread with a captured
-        // cross-provider roster still refreshes the runtime on its next turn.
+        // Opening a thread resumes it with the complete capability config,
+        // including the project-control/delegation bridge when applicable.
         if (resumedRuntimeInstance) {
           seedSubagentCapabilities(result.thread.id, resumedRuntimeInstance, subagentCapabilitySignature({
             subagentsEnabled: threadProviderSettings.subagentsEnabled,
             subagentMax: threadProviderSettings.subagentMax,
+            bridgeInstanceId: childBridge?.launch.configPath,
           }));
         }
         if (selectThreadRequestRef.current !== requestId) return;
@@ -2097,11 +2159,52 @@ export default function App() {
   // Turns the delegation requests a root agent makes into real per-provider
   // child turns. Children inherit the parent's execution folder and permission
   // mode; they never receive its conversation or attachments.
-  const { cancelChildAgentsFor, stopChildAgent } = useChildAgents({
+  const applyProposedProjectSubagents = useCallback(async (rootThreadId: string, next: ProjectSubagentSettings) => {
+    const projectPath = threadProjectBindingsRef.current?.[rootThreadId];
+    const project = projects.find((entry) => projectPath
+      && normalizedProjectPath(entry.path) === normalizedProjectPath(projectPath));
+    if (!project) throw new Error("Project sub-agent settings only exist for saved projects, and this conversation is not in one.");
+    setProjects((current) => current.map((entry) => (entry.id === project.id
+      ? { ...entry, overrides: { ...(entry.overrides ?? {}), subagents: next } }
+      : entry)));
+    setTransientStatus(`Sub-agent settings updated for ${project.name}`);
+    // This approval is explicit user authority to refresh the otherwise-frozen
+    // roster. The bridge the running turn is holding stays valid — only the
+    // cached launch is dropped, so the next prompt rebuilds it with the
+    // approved crew and the runtime capability planner reloads that MCP config.
+    // A thread that never captured a policy has nothing frozen to refresh; it
+    // simply captures the approved roster on its next turn.
+    const existing = childAgentPolicyForThread(childAgentPolicies, rootThreadId);
+    if (!existing) return;
+    // Staging an empty roster would promote a policy the backend refuses, so
+    // an approval that leaves nothing to delegate to simply drops any queued
+    // recapture: the live on/off switch already carries that decision.
+    const targets = next.enabled && next.childAgents.enabled
+      ? readyChildAgentTargets(next.childAgents, childAgentReadiness)
+      : [];
+    persistChildAgentPolicies((current) => {
+      const base = { ...(current[existing.sessionId] ?? existing) };
+      delete base.pendingRecapture;
+      if (targets.length) base.pendingRecapture = { maxConcurrent: next.maxConcurrent, targets, approvedAt: Date.now() };
+      return { ...current, [existing.sessionId]: base };
+    });
+    invalidateChildAgentLaunch(existing.sessionId);
+  }, [childAgentPolicies, childAgentReadiness, persistChildAgentPolicies, projects, setProjects, setTransientStatus]);
+
+  const projectSubagentSettingsForThread = useCallback((rootThreadId: string): ProjectSubagentSettings => {
+    const projectPath = threadProjectBindingsRef.current?.[rootThreadId];
+    const project = projects.find((entry) => projectPath
+      && normalizedProjectPath(entry.path) === normalizedProjectPath(projectPath));
+    if (!project) throw new Error("Project sub-agent settings only exist for saved projects, and this conversation is not in one.");
+    return projectSubagentSettingsFromApp(settingsWithProjectSubagents(settings, project.overrides?.subagents));
+  }, [projects, settings]);
+
+  const { cancelChildAgentsFor, respondToSettingsProposal, stopChildAgent } = useChildAgents({
     policies: childAgentPolicies,
     links: childAgentLinks,
     persistChildAgentLinks,
     openRouterModels,
+    readiness: childAgentReadiness,
     projectPathForThread: (threadId) => threadProjectBindingsRef.current?.[threadId],
     executionPathFor,
     isolationGitDirFor: (threadId) => threadWorktreesRef.current[threadId]?.gitDir,
@@ -2118,6 +2221,8 @@ export default function App() {
     cursorSessionIdsRef,
     scheduleClaudeThreadSave,
     scheduleCursorThreadSave,
+    projectSubagentSettingsForThread,
+    applyProjectSubagentSettings: applyProposedProjectSubagents,
   });
 
   const stopSubAgentWorker = useCallback(async (worker: SubAgentWorker) => {
@@ -2153,9 +2258,15 @@ export default function App() {
    */
   const stopTurnAndChildren = useCallback(async () => {
     const rootThreadId = useTaskStore.getState().activeThreadId;
-    await stopTurn();
-    if (rootThreadId) await cancelChildAgentsFor(rootThreadId);
-  }, [cancelChildAgentsFor, stopTurn]);
+    // Dispatch every cutoff before awaiting any provider. One slow runtime must
+    // never delay the other agents from receiving Stop.
+    const results = await Promise.allSettled([
+      stopTurn(),
+      ...(rootThreadId ? [cancelChildAgentsFor(rootThreadId)] : []),
+    ]);
+    const failures = results.flatMap((result) => result.status === "rejected" ? [friendlyError(result.reason)] : []);
+    if (failures.length) setError(`Stop could not confirm every cutoff:\n${failures.join("\n")}`);
+  }, [cancelChildAgentsFor, setError, stopTurn]);
 
   const retryRuntime = async () => {
     const runtime = await checkRuntime(false);
@@ -2253,7 +2364,9 @@ export default function App() {
 
   const respondToApproval = useCallback(async (approval: PendingApproval, result: JsonObject) => {
     try {
-      if (approval.method === "claude/can_use_tool") {
+      if (approval.method === "openkiwi/subagents/change") {
+        await respondToSettingsProposal(approval, result);
+      } else if (approval.method === "claude/can_use_tool") {
         await respondToClaudePermission(approval.threadId, String(approval.id), result);
       } else if (approval.method === "cursor/request_permission" || approval.method === "cursor/ask_question") {
         await respondToCursorPermission(approval.threadId, approval.id, result);
@@ -2267,14 +2380,17 @@ export default function App() {
       // A rejection that says the runtime no longer knows this request (the
       // turn ended, or the process crashed and respawned) can never succeed
       // on retry. Resolve it locally so the modal cannot reappear forever.
-      if (/no longer|not currently running|unknown request|not found|closed/i.test(message)) {
+      // An `openkiwi/` approval has no runtime to retry against at all: the
+      // user answered it, and a failure to apply must not trap them in a modal.
+      if (approval.method.startsWith("openkiwi/")
+        || /no longer|not currently running|unknown request|not found|closed/i.test(message)) {
         useTaskStore
           .getState()
           .resolveApproval(approval.threadId, approval.id);
       }
       setError(message);
     }
-  }, []);
+  }, [respondToSettingsProposal]);
 
   const startThreadRename = (thread: Thread) => {
     setRenamingThreadId(thread.id);
@@ -2521,31 +2637,19 @@ export default function App() {
     }
   };
 
+  /**
+   * The studio dock's per-agent Stop. It shares one cutoff implementation with
+   * the command center and the model's own `cancel_agent`, so a sub-agent can
+   * never be "stopped" in one surface and still running behind another.
+   */
   const stopAgent = async (threadId: string) => {
-    const link = childAgentLinks[threadId];
-    if (link?.provider === "claude" || link?.provider === "cursor") {
-      try {
-        if (link.provider === "claude") await interruptClaudeTurn(threadId);
-        else await interruptCursorTurn(threadId);
-        useTaskStore.getState().setActiveTurn(threadId, undefined);
-        useTaskStore.getState().setTaskStatus(threadId, "interrupted");
-        useTaskStore.getState().upsertAgent(link.rootThreadId, { id: threadId, prompt: link.title, status: "interrupted" });
-      } catch (reason) {
-        setError(friendlyError(reason));
-      }
-      return;
-    }
-    const turnId = useTaskStore.getState().tasks[threadId]?.activeTurnId;
-    if (!turnId) {
-      setError("That sub-agent does not have an active task to stop.");
+    const rootThreadId = childAgentLinks[threadId]?.rootThreadId ?? activeThreadId;
+    if (!rootThreadId) {
+      setError("Open the thread that owns this sub-agent before stopping it.");
       return;
     }
     try {
-      await rpc("turn/interrupt", { threadId, turnId });
-      useTaskStore.getState().setActiveTurn(threadId, undefined);
-      useTaskStore.getState().setTaskStatus(threadId, "interrupted");
-      const rootThreadId = link?.rootThreadId ?? activeThreadId;
-      if (rootThreadId) useTaskStore.getState().upsertAgent(rootThreadId, { id: threadId, prompt: link?.title ?? "Delegated task", status: "interrupted" });
+      await stopChildAgent(rootThreadId, threadId);
     } catch (reason) {
       setError(friendlyError(reason));
     }
@@ -3418,7 +3522,10 @@ export default function App() {
         <div className="sidebar-section threads-section">
           <div className="section-label-row">
             <span className="section-label">Threads</span>
-            {activeWorkspace && threads.length > 0 && <span className="thread-count">{threads.length}</span>}
+            {activeWorkspace && <div className="thread-kind-switch" role="group" aria-label="Thread type">
+              <button className={threadKindView === "main" ? "active" : ""} onClick={() => setThreadKindView("main")} aria-pressed={threadKindView === "main"}>Main <span>{threadKindCounts.main}</span></button>
+              <button className={threadKindView === "subagents" ? "active" : ""} onClick={() => setThreadKindView("subagents")} aria-pressed={threadKindView === "subagents"}>Sub-agents <span>{threadKindCounts.subagents}</span></button>
+            </div>}
           </div>
           {activeWorkspace && (
             <label className="thread-search">
@@ -3473,7 +3580,7 @@ export default function App() {
                 />
               </div>
             ))}
-            {activeWorkspace && !threads.length && <div className="empty-threads">{workspaceMode === "chat" ? "No normal chats yet" : "No threads in this project yet"}</div>}
+            {activeWorkspace && !displayedThreads.length && <div className="empty-threads">{threadKindView === "subagents" ? "No sub-agent threads yet" : workspaceMode === "chat" ? "No normal chats yet" : "No threads in this project yet"}</div>}
           </div>
           {workspaceArchived.length > 0 && (
             <div className="archived-threads">
@@ -3877,7 +3984,7 @@ export default function App() {
                     </div>
                     <SubAgentCommandCenter
                       policy={composerSubagentPolicy}
-                      capturedPolicy={activeChildAgentPolicy ?? null}
+                      capturedPolicy={activeDelegationPolicy ?? null}
                       mode={subagentPolicyMode}
                       readiness={childAgentReadiness}
                       workers={subAgentWorkers}
@@ -4156,7 +4263,7 @@ export default function App() {
       <CommandPalette
         open={commandPaletteOpen}
         projects={projects}
-        threads={threads}
+        threads={paletteThreads}
         workflows={workflows}
         projectActive={Boolean(activeProject)}
         onClose={() => setCommandPaletteOpen(false)}

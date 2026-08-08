@@ -8,24 +8,28 @@ import {
 import {
   childAgentModel,
   childAgentReasoningEffort,
+  childAgentTargetIssue,
   childLifecycle,
   childLifecycleForLink,
   isChildActive,
+  sanitizeProjectSubagentSettings,
+  type ChildAgentReadiness,
   type ChildAgentLink,
   type ChildAgentPolicy,
 } from "../lib/childAgents";
 import { childAgentPolicyForSession } from "../lib/childAgentSessions";
 import { startChildAgentTurn } from "../lib/childRun";
-import { auditEvent, rpc } from "../lib/codex";
-import { interruptClaudeTurn, loadClaudeTranscript } from "../lib/claude";
-import { interruptCursorTurn, loadCursorTranscript } from "../lib/cursor";
+import { auditEvent, rpc, type JsonObject } from "../lib/codex";
+import { killClaudeTurn, loadClaudeTranscript } from "../lib/claude";
+import { killCursorTurn, loadCursorTranscript } from "../lib/cursor";
 import { friendlyError } from "../lib/errors";
+import { isActiveAgentRecord } from "../lib/subAgentActivity";
 import { upsertThread } from "../lib/threadList";
 import { timelineFromTurns } from "../lib/threadTimeline";
 import { useTaskStore, type TaskStatus } from "../lib/taskStore";
 import type { OpenRouterModel } from "../components/OpenRouterModelControl";
 import type { SetPersisted } from "./usePersistedState";
-import type { Thread } from "../types";
+import type { PendingApproval, ProjectSubagentSettings, Thread } from "../types";
 
 /**
  * Routes the delegation requests a root agent makes through the OpenKiwi
@@ -51,6 +55,7 @@ export interface ChildAgentContext {
   links: Record<string, ChildAgentLink>;
   persistChildAgentLinks: SetPersisted<Record<string, ChildAgentLink>>;
   openRouterModels: OpenRouterModel[];
+  readiness: ChildAgentReadiness;
   /** Logical project path a thread is bound to, before worktree resolution. */
   projectPathForThread: (threadId: string) => string | undefined;
   executionPathFor: (threadId: string | null | undefined, logicalPath: string) => string;
@@ -64,6 +69,8 @@ export interface ChildAgentContext {
   cursorSessionIdsRef: MutableRefObject<Record<string, string>>;
   scheduleClaudeThreadSave: (threadId: string) => void;
   scheduleCursorThreadSave: (threadId: string) => void;
+  projectSubagentSettingsForThread: (rootThreadId: string) => ProjectSubagentSettings;
+  applyProjectSubagentSettings: (rootThreadId: string, settings: ProjectSubagentSettings) => void | Promise<void>;
 }
 
 function taskStatusOf(threadId: string): TaskStatus {
@@ -140,23 +147,38 @@ export function waitForChildTerminalStatus(threadId: string, timeoutMs: number):
   });
 }
 
-async function interruptChild(link: ChildAgentLink): Promise<void> {
-  if (link.provider === "claude") {
-    await interruptClaudeTurn(link.childThreadId);
+/**
+ * Cut a child off now.
+ *
+ * Stop is a promise to the user, so the subscription providers get a process
+ * kill rather than a cooperative interrupt a wedged CLI could ignore; both
+ * kill commands are idempotent, so a child that already exited settles quietly.
+ * Codex-hosted children are real runtime threads, and `turn/interrupt` is the
+ * only cutoff their runtime exposes.
+ */
+async function hardStopChild(provider: ChildAgentLink["provider"], childThreadId: string, turnId?: string): Promise<void> {
+  if (provider === "claude") {
+    await killClaudeTurn(childThreadId);
     return;
   }
-  if (link.provider === "cursor") {
-    await interruptCursorTurn(link.childThreadId);
+  if (provider === "cursor") {
+    await killCursorTurn(childThreadId);
     return;
   }
-  const turnId = useTaskStore.getState().tasks[link.childThreadId]?.activeTurnId;
-  if (!turnId) throw new Error("That sub-agent does not have an active task to stop.");
-  await rpc("turn/interrupt", { threadId: link.childThreadId, turnId });
+  const activeTurnId = turnId ?? useTaskStore.getState().tasks[childThreadId]?.activeTurnId;
+  if (!activeTurnId) throw new Error("That sub-agent does not have an active task to stop.");
+  await rpc("turn/interrupt", { threadId: childThreadId, turnId: activeTurnId });
+}
+
+function cutoffAlreadySettled(reason: unknown): boolean {
+  return /not currently running|no active task|unknown (?:thread|turn)|not found|already (?:finished|stopped|completed)|connection closed/i
+    .test(friendlyError(reason));
 }
 
 export function useChildAgents(context: ChildAgentContext): {
   cancelChildAgentsFor: (rootThreadId: string) => Promise<void>;
   stopChildAgent: (rootThreadId: string, childThreadId: string) => Promise<void>;
+  respondToSettingsProposal: (approval: PendingApproval, result: JsonObject) => Promise<void>;
 } {
   const contextRef = useRef(context);
   contextRef.current = context;
@@ -171,6 +193,9 @@ export function useChildAgents(context: ChildAgentContext): {
   const pendingChildrenRef = useRef<Map<string, Set<string>>>(new Map());
   /** Links written by a spawn response before React has rendered persistence. */
   const pendingLinksRef = useRef<Map<string, ChildAgentLink>>(new Map());
+  /** Monotonic per-root stop generation. A child whose provider start resolves
+   * after Stop was pressed is killed before it can escape into the background. */
+  const stopGenerationRef = useRef<Map<string, number>>(new Map());
 
   const linksIncludingPending = useCallback((links: Record<string, ChildAgentLink>): Record<string, ChildAgentLink> => {
     if (!pendingLinksRef.current.size) return links;
@@ -196,8 +221,7 @@ export function useChildAgents(context: ChildAgentContext): {
       ...(pending ?? []),
     ]);
     const nativeActive = (useTaskStore.getState().tasks[rootThreadId]?.agents ?? []).filter((agent) => (
-      !crossProviderIds.has(agent.id)
-      && ["starting", "started", "running", "working", "inProgress"].includes(agent.status)
+      !crossProviderIds.has(agent.id) && isActiveAgentRecord(agent.status)
     )).length;
     return activeChildThreadIds(sessionId, links).length + (pending?.size ?? 0) + nativeActive;
   }, []);
@@ -228,6 +252,7 @@ export function useChildAgents(context: ChildAgentContext): {
     );
 
     const reservation = `pending-${crypto.randomUUID()}`;
+    const stopGeneration = stopGenerationRef.current.get(rootThreadId) ?? 0;
     const active = reservedChildCount(policy.sessionId, rootThreadId, currentLinks);
     if (active >= policy.maxConcurrent) {
       throw new Error(
@@ -266,6 +291,7 @@ export function useChildAgents(context: ChildAgentContext): {
     pendingChildrenRef.current.set(policy.sessionId, pending);
 
     const childThreadId = result.thread.id;
+    const stoppedWhileStarting = (stopGenerationRef.current.get(rootThreadId) ?? 0) !== stopGeneration;
     ctx.bindThreadToProject(childThreadId, logicalPath);
     ctx.rememberThread(result.thread);
     ctx.setThreads((current) => upsertThread(current, result.thread));
@@ -324,6 +350,28 @@ export function useChildAgents(context: ChildAgentContext): {
       childThreadId,
     }, rootThreadId);
 
+    // Stop landed while the provider was still starting this child. Install
+    // the ownership record before the cutoff so a provider failure can never
+    // leave invisible work editing the project. Only claim success after the
+    // provider confirms the hard cutoff; otherwise the still-live child stays
+    // in the roster for the user to see and retry stopping.
+    if (stoppedWhileStarting) {
+      try {
+        if (isChildActive(taskStatusOf(childThreadId))) {
+          await hardStopChild(target.provider, childThreadId, result.turnId);
+          taskStore.setActiveTurn(childThreadId, undefined);
+          taskStore.setTaskStatus(childThreadId, "interrupted");
+          taskStore.upsertAgent(rootThreadId, { id: childThreadId, prompt: title, status: "interrupted" });
+          const interrupted = { ...link, terminalStatus: "cancelled" as const };
+          pendingLinksRef.current.set(childThreadId, interrupted);
+          ctx.persistChildAgentLinks((current) => ({ ...current, [childThreadId]: interrupted }));
+        }
+      } catch (reason) {
+        throw new Error(`The run was stopped, but OpenKiwi could not confirm the ${target.label || target.id} sub-agent cutoff: ${friendlyError(reason)}. It remains visible in Live agents so you can stop it again.`);
+      }
+      throw new Error("The user stopped this run while the sub-agent was starting.");
+    }
+
     return {
       childId: childThreadId,
       target: target.id,
@@ -341,15 +389,24 @@ export function useChildAgents(context: ChildAgentContext): {
     const links = Object.values(linksIncludingPending(ctx.links)).filter((link) => link.sessionId === request.sessionId
       && (!childId || link.childThreadId === childId));
     return {
-      children: links.map((link) => ({
-        childId: link.childThreadId,
-        target: link.targetId,
-        provider: link.provider,
-        model: link.model,
-        reasoningEffort: link.reasoningEffort,
-        title: link.title,
-        status: childLifecycleForLink(link, taskStatusOf(link.childThreadId)),
-      })),
+      children: links.map((link) => {
+        const status = childLifecycleForLink(link, taskStatusOf(link.childThreadId));
+        const error = useTaskStore.getState().tasks[link.childThreadId]?.error;
+        return {
+          childId: link.childThreadId,
+          target: link.targetId,
+          provider: link.provider,
+          model: link.model,
+          reasoningEffort: link.reasoningEffort,
+          title: link.title,
+          status,
+          ...(error ? { error } : {}),
+          ...(status === "failed" ? {
+            retryable: true,
+            recovery: "Inspect the error, then use spawn_agent with a corrected self-contained prompt or another approved destination. Collect the replacement before finishing.",
+          } : {}),
+        };
+      }),
     };
   }, [linksIncludingPending]);
 
@@ -380,6 +437,10 @@ export function useChildAgents(context: ChildAgentContext): {
       result: text,
       truncated,
       ...(useTaskStore.getState().tasks[childId]?.error ? { error: useTaskStore.getState().tasks[childId]?.error } : {}),
+      ...(lifecycle === "failed" ? {
+        retryable: true,
+        recovery: "Retry this work with spawn_agent using a corrected self-contained prompt or another approved destination, then collect the replacement before finishing.",
+      } : {}),
     };
   }, [linksIncludingPending]);
 
@@ -401,7 +462,7 @@ export function useChildAgents(context: ChildAgentContext): {
         throw new Error(`\`${childThreadId}\` was not started from this thread.`);
       }
       if (!isChildActive(taskStatusOf(childThreadId))) return;
-      await interruptChild(link);
+      await hardStopChild(link.provider, childThreadId);
     } else {
       const agent = taskStore.tasks[rootThreadId]?.agents.find((entry) => entry.id === childThreadId);
       if (!agent) throw new Error(`\`${childThreadId}\` was not started from this thread.`);
@@ -438,6 +499,118 @@ export function useChildAgents(context: ChildAgentContext): {
     return { childId, status: "cancelled" };
   }, [linksIncludingPending, stopChildAgent]);
 
+  const proposeSettings = useCallback((request: ChildAgentRequest): Record<string, unknown> => {
+    const ctx = contextRef.current;
+    const policy = childAgentPolicyForSession(ctx.policies, request.sessionId);
+    if (!policy?.rootThreadId) throw new Error("This thread is not attached to a project sub-agent policy.");
+    const current = ctx.projectSubagentSettingsForThread(policy.rootThreadId);
+    const proposedEnabled = typeof request.arguments.enabled === "boolean" ? request.arguments.enabled : current.enabled;
+    const proposedCrossProvider = typeof request.arguments.crossProviderEnabled === "boolean"
+      ? request.arguments.crossProviderEnabled
+      : current.childAgents.enabled;
+    const rawTargets = Array.isArray(request.arguments.targets)
+      ? request.arguments.targets.map((target) => ({ ...(target as Record<string, unknown>), enabled: true }))
+      : current.childAgents.targets;
+    const next = sanitizeProjectSubagentSettings({
+      enabled: proposedEnabled,
+      maxConcurrent: request.arguments.maxConcurrent ?? current.maxConcurrent,
+      childAgents: { enabled: proposedEnabled && proposedCrossProvider, targets: rawTargets },
+    });
+    if (!next) throw new Error("The proposed project sub-agent settings were invalid.");
+    // Only the destinations this proposal would actually switch on have to be
+    // usable. A project that keeps a signed-out destination parked and
+    // disabled must not block an unrelated change to the parallel limit.
+    const proposedCrew = next.childAgents.targets.filter((target) => target.enabled);
+    if (next.enabled && next.childAgents.enabled) {
+      for (const target of proposedCrew) {
+        const issue = childAgentTargetIssue(target, ctx.readiness);
+        if (issue) throw new Error(`The proposed \`${target.id}\` destination is not ready: ${issue}`);
+      }
+    }
+    if (next.childAgents.enabled && !proposedCrew.length) {
+      throw new Error("A cross-provider crew needs at least one enabled destination. Propose `crossProviderEnabled: false` instead if you want to switch it off.");
+    }
+    // One project change can be in front of the user at a time. Without this a
+    // model that re-proposes on every tool result would bury the approval it
+    // is waiting for under its own retries.
+    const outstanding = (useTaskStore.getState().tasks[policy.rootThreadId]?.approvals ?? [])
+      .some((approval) => approval.method === "openkiwi/subagents/change");
+    if (outstanding) {
+      throw new Error("A sub-agent settings change is already waiting for the user. Continue with the approved crew until they answer it.");
+    }
+
+    const approvalId = `openkiwi-subagents-${request.requestId}`;
+    // The reason is the one free-text field a model controls in this dialog.
+    // Collapsing its whitespace keeps it a single explanatory line, so it
+    // cannot be laid out to imitate the settings block below it.
+    const reason = String(request.arguments.reason ?? "").replace(/\s+/g, " ").trim().slice(0, 400);
+    const crew = proposedCrew
+      .map((target) => {
+        const reasoning = target.reasoningMode === "fixed"
+          ? `fixed ${target.reasoningEffort}`
+          : target.reasoningMode === "agent"
+            ? `agent decides up to ${target.reasoningMaxEffort}`
+            : "inherits parent";
+        return `${target.label || target.id}: ${target.provider} / ${childAgentModel(target) || "provider default"} / ${reasoning}`;
+      })
+      .join("\n") || "No cross-provider destinations";
+    useTaskStore.getState().enqueueApproval({
+      id: approvalId,
+      method: "openkiwi/subagents/change",
+      threadId: policy.rootThreadId,
+      receivedAt: Date.now(),
+      params: {
+        title: "Update this project's sub-agents?",
+        reason: reason || "The agent requested a project sub-agent crew change.",
+        // Everything below the reason is written by OpenKiwi from the
+        // sanitized settings, so the model cannot dress up what it is asking
+        // for — including how long the change lasts.
+        command: [
+          "Scope: this project's saved settings, from your next message onward",
+          `Sub-agents: ${next.enabled ? "on" : "off"}`,
+          `Cross-provider: ${next.childAgents.enabled ? "on" : "off"}`,
+          `Parallel limit: ${next.maxConcurrent}`,
+          crew,
+        ].join("\n"),
+        settings: next,
+      },
+    });
+    return {
+      approved: false,
+      status: "awaiting_user",
+      proposalId: approvalId,
+      note: "OpenKiwi is asking the user to approve this project change. Do not claim it was applied; continue only with the destinations already approved for this turn.",
+    };
+  }, []);
+
+  /**
+   * Apply a project sub-agent change the user just approved. The proposal is
+   * re-sanitized here rather than trusted from the queued approval, so the only
+   * thing the model ever influenced is what the user was shown.
+   */
+  const respondToSettingsProposal = useCallback(async (approval: PendingApproval, result: JsonObject): Promise<void> => {
+    const decision = String(result.decision ?? "decline");
+    const approved = decision === "accept" || decision === "acceptForSession" || decision === "approved" || decision === "approved_for_session";
+    const note = (title: string, detail: string) => useTaskStore.getState().upsertActivity(approval.threadId, {
+      id: `subagent-settings-${approval.id}`,
+      kind: approved ? "agent" : "warning",
+      title,
+      detail,
+      status: "completed",
+    });
+    if (!approved) {
+      note("Sub-agent change declined", "This project keeps its current sub-agent crew, parallel limit, and switches.");
+      return;
+    }
+    const next = sanitizeProjectSubagentSettings(approval.params.settings);
+    if (!next) throw new Error("This sub-agent settings proposal is no longer valid.");
+    await contextRef.current.applyProjectSubagentSettings(approval.threadId, next);
+    note(
+      "Sub-agent change applied to this project",
+      "The current turn keeps the crew it started with. Your next message runs with the approved settings.",
+    );
+  }, []);
+
   const handleRequest = useCallback(async (request: ChildAgentRequest): Promise<void> => {
     try {
       let result: Record<string, unknown>;
@@ -445,6 +618,7 @@ export function useChildAgents(context: ChildAgentContext): {
       else if (request.tool === "agent_status") result = reportStatus(request);
       else if (request.tool === "collect_agent") result = await collectChild(request);
       else if (request.tool === "cancel_agent") result = await cancelChild(request);
+      else if (request.tool === "propose_agent_settings") result = await proposeSettings(request);
       else throw new Error(`\`${request.tool}\` is not a sub-agent tool.`);
       await respondToChildAgentRequest(request.requestId, result);
     } catch (reason) {
@@ -454,7 +628,7 @@ export function useChildAgents(context: ChildAgentContext): {
       // the parent model can read why and choose a different destination.
       await respondToChildAgentRequest(request.requestId, null, message).catch(() => undefined);
     }
-  }, [cancelChild, collectChild, reportStatus, spawnChild]);
+  }, [cancelChild, collectChild, proposeSettings, reportStatus, spawnChild]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -533,19 +707,51 @@ export function useChildAgents(context: ChildAgentContext): {
 
   const cancelChildAgentsFor = useCallback(async (rootThreadId: string): Promise<void> => {
     const ctx = contextRef.current;
-    const running = Object.values(ctx.links).filter((link) => link.rootThreadId === rootThreadId
+    stopGenerationRef.current.set(rootThreadId, (stopGenerationRef.current.get(rootThreadId) ?? 0) + 1);
+    const taskStore = useTaskStore.getState();
+    const allLinks = linksIncludingPending(ctx.links);
+    const running = Object.values(allLinks).filter((link) => link.rootThreadId === rootThreadId
       && isChildActive(taskStatusOf(link.childThreadId)));
-    await Promise.all(running.map(async (link) => {
-      try {
-        await interruptChild(link);
-      } catch {
-        // The child may already be gone; its status is settled below either way.
-      }
-      const taskStore = useTaskStore.getState();
-      taskStore.setActiveTurn(link.childThreadId, undefined);
-      taskStore.setTaskStatus(link.childThreadId, "interrupted");
-    }));
-  }, []);
+    const ownedIds = new Set(Object.values(allLinks)
+      .filter((link) => link.rootThreadId === rootThreadId)
+      .map((link) => link.childThreadId));
+    const native = (taskStore.tasks[rootThreadId]?.agents ?? []).filter((agent) => (
+      !ownedIds.has(agent.id) && isActiveAgentRecord(agent.status)
+    ));
+    // Every cutoff is dispatched in one pass. Waiting for the cross-provider
+    // children before even asking the native ones to stop would make Stop as
+    // slow as the slowest runtime in the fleet.
+    const results = await Promise.allSettled([
+      ...running.map(async (link) => {
+        try {
+          await hardStopChild(link.provider, link.childThreadId);
+        } catch (reason) {
+          if (!cutoffAlreadySettled(reason)) throw new Error(`Could not stop ${link.title}: ${friendlyError(reason)}`);
+        }
+        taskStore.setActiveTurn(link.childThreadId, undefined);
+        taskStore.setTaskStatus(link.childThreadId, "interrupted");
+        taskStore.upsertAgent(rootThreadId, { id: link.childThreadId, prompt: link.title, status: "interrupted" });
+      }),
+      // Provider-native children have no cross-provider ownership link, but if
+      // their runtime exposed a turn id we can still cut them off independently.
+      // The rest die with the parent process the composer's Stop kills.
+      ...native.map(async (agent) => {
+        const turnId = useTaskStore.getState().tasks[agent.id]?.activeTurnId;
+        if (turnId) {
+          try {
+            await rpc("turn/interrupt", { threadId: agent.id, turnId });
+          } catch (reason) {
+            if (!cutoffAlreadySettled(reason)) throw new Error(`Could not stop ${agent.prompt || "native sub-agent"}: ${friendlyError(reason)}`);
+          }
+        }
+        taskStore.setActiveTurn(agent.id, undefined);
+        taskStore.setTaskStatus(agent.id, "interrupted");
+        taskStore.upsertAgent(rootThreadId, { ...agent, status: "interrupted" });
+      }),
+    ]);
+    const failures = results.flatMap((result) => result.status === "rejected" ? [friendlyError(result.reason)] : []);
+    if (failures.length) throw new Error(failures.join("\n"));
+  }, [linksIncludingPending]);
 
-  return { cancelChildAgentsFor, stopChildAgent };
+  return { cancelChildAgentsFor, respondToSettingsProposal, stopChildAgent };
 }

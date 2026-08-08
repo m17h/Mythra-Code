@@ -69,12 +69,13 @@ export function childAgentMcpConfig(bridge: ChildAgentBridgeLaunch | undefined):
  */
 export function threadRuntimeConfig(run: ScheduleRunSettings, options: Pick<ThreadStartOptions, "customAgents" | "modelContextWindow" | "childAgentBridge"> = {}): JsonObject {
   const contextWindow = Number(options.modelContextWindow);
-  const openKiwiDelegation = Boolean(options.childAgentBridge);
+  const openKiwiDelegation = Boolean(options.childAgentBridge?.toolNames.includes("spawn_agent"));
+  const openKiwiSettings = Boolean(options.childAgentBridge?.toolNames.includes("propose_agent_settings"));
   return {
     ...childAgentMcpConfig(options.childAgentBridge),
     project_doc_max_bytes: run.projectInstructionsEnabled ? 32_768 : 0,
     project_doc_fallback_filenames: [],
-    developer_instructions: openKiwiDeveloperInstructions(openKiwiDelegation),
+    developer_instructions: openKiwiDeveloperInstructions(openKiwiDelegation, openKiwiSettings),
     model_reasoning_effort: run.ultra ? "ultra" : run.reasoningEffort,
     ...(run.provider === "openrouter" && Number.isFinite(contextWindow) && contextWindow > 0
       ? { model_context_window: Math.floor(contextWindow) }
@@ -97,7 +98,10 @@ export function threadRuntimeConfig(run: ScheduleRunSettings, options: Pick<Thre
 }
 
 export function threadStartParams(run: ScheduleRunSettings, cwd: string, options: ThreadStartOptions): JsonObject {
-  const developerInstructions = openKiwiDeveloperInstructions(Boolean(options.childAgentBridge));
+  const developerInstructions = openKiwiDeveloperInstructions(
+    Boolean(options.childAgentBridge?.toolNames.includes("spawn_agent")),
+    Boolean(options.childAgentBridge?.toolNames.includes("propose_agent_settings")),
+  );
   const params: JsonObject = {
     cwd,
     runtimeWorkspaceRoots: [cwd, ...(options.additionalWorkspaceRoots ?? [])],
@@ -129,7 +133,10 @@ export function threadResumeParams(
     refreshRuntimeConfig?: boolean;
   } = {},
 ): JsonObject {
-  const developerInstructions = openKiwiDeveloperInstructions(Boolean(options.childAgentBridge));
+  const developerInstructions = openKiwiDeveloperInstructions(
+    Boolean(options.childAgentBridge?.toolNames.includes("spawn_agent")),
+    Boolean(options.childAgentBridge?.toolNames.includes("propose_agent_settings")),
+  );
   return {
     threadId,
     cwd,

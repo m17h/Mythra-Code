@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   collectSubAgentWorkers,
   describeSubAgentActivity,
+  isActiveAgentRecord,
   isSubAgentWorkerActive,
   subAgentStatusLabel,
   summarizeSubAgentWorkers,
@@ -60,6 +61,20 @@ describe("workerStatusFromAgentRecord", () => {
     expect(workerStatusFromAgentRecord("percolating")).toBe("idle");
     expect(isSubAgentWorkerActive(workerStatusFromAgentRecord("percolating"))).toBe(false);
   });
+});
+
+describe("isActiveAgentRecord", () => {
+  // The run boundary, the concurrency budget, and Stop all read this, so every
+  // word a provider might use for live work has to agree across the three.
+  it.each(["starting", "pending", "queued", "running", "working", "inProgress", "inprogress"])(
+    "treats %s as live work",
+    (status) => expect(isActiveAgentRecord(status)).toBe(true),
+  );
+
+  it.each(["completed", "failed", "cancelled", "interrupted", "something-else"])(
+    "treats %s as settled",
+    (status) => expect(isActiveAgentRecord(status)).toBe(false),
+  );
 });
 
 describe("collectSubAgentWorkers", () => {
@@ -125,6 +140,30 @@ describe("collectSubAgentWorkers", () => {
     const workers = collectSubAgentWorkers({ rootThreadId: "root-1", links: links(link()), statuses, agents });
     expect(workers).toHaveLength(1);
     expect(workers[0].kind).toBe("cross-provider");
+  });
+
+  it("does not let a late mirrored result from the previous run reappear", () => {
+    const old = link({ childThreadId: "old-child", createdAt: 100 });
+    const agents: AgentRecord[] = [{ id: "old-child", prompt: "Old task", status: "failed" }];
+    expect(collectSubAgentWorkers({
+      rootThreadId: "root-1",
+      links: links(old),
+      statuses: { "old-child": "error" },
+      agents,
+      runStartedAt: 200,
+    })).toEqual([]);
+  });
+
+  it("keeps an older child visible when it is still actively editing", () => {
+    const old = link({ childThreadId: "old-child", createdAt: 100 });
+    const workers = collectSubAgentWorkers({
+      rootThreadId: "root-1",
+      links: links(old),
+      statuses: { "old-child": "running" },
+      agents: [],
+      runStartedAt: 200,
+    });
+    expect(workers).toEqual([expect.objectContaining({ id: "old-child", status: "working" })]);
   });
 
   it("keeps live work at the top and settles terminal work below it", () => {

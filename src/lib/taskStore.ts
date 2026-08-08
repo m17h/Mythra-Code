@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type { Activity, ChatMessage, PendingApproval, Turn } from "../types";
 import type { AgentRecord, TokenUsageView } from "../components/StudioDock";
 import type { AttachmentRecord } from "../components/StudioDock";
+import { isActiveAgentRecord } from "./subAgentActivity";
 import { durationForTurn, recordTurnDuration } from "./turnDurations";
 import { recordCumulativeUsage, recordUsageDelta, resetUsageLedgerCache, usageForThread, USAGE_LEDGER_KEY } from "./usageLedger";
 import { loadStored, removeStoredValue, storeValue } from "./storage";
@@ -102,6 +103,9 @@ export interface ThreadTaskState {
   approvals: PendingApproval[];
   queuedTurns: QueuedTurn[];
   agents: AgentRecord[];
+  /** Only child activity created at or after this root turn belongs in the
+   * live crew panel. A new user prompt advances this boundary. */
+  agentRunStartedAt?: number;
   diff: string;
   usage: TokenUsageView | null;
   unread: boolean;
@@ -130,6 +134,7 @@ interface TaskStoreState {
   setUsage: (threadId: string, usage: TokenUsageView | null) => void;
   addUsage: (threadId: string, usage: TokenUsageView, eventId?: string) => void;
   upsertAgent: (threadId: string, agent: AgentRecord) => void;
+  beginAgentRun: (threadId: string, startedAt?: number) => void;
   enqueueApproval: (approval: PendingApproval) => void;
   resolveApproval: (threadId: string, approvalId: string | number) => void;
   clearApprovals: (threadId: string) => void;
@@ -473,6 +478,16 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     const exists = task.agents.some((entry) => entry.id === agent.id);
     const agents = exists ? task.agents.map((entry) => entry.id === agent.id ? { ...entry, ...agent } : entry) : [...task.agents, agent];
     return { tasks: { ...state.tasks, [threadId]: { ...task, agents, updatedAt: Date.now() } } };
+  }),
+  beginAgentRun: (threadId, startedAt = Date.now()) => set((state) => {
+    const task = state.tasks[threadId] ?? emptyTask(threadId);
+    const activeAgents = task.agents.filter((agent) => isActiveAgentRecord(agent.status));
+    return {
+      tasks: {
+        ...state.tasks,
+        [threadId]: { ...task, agents: activeAgents, agentRunStartedAt: startedAt, updatedAt: Date.now() },
+      },
+    };
   }),
   enqueueApproval: (approval) => set((state) => {
     const task = state.tasks[approval.threadId] ?? emptyTask(approval.threadId);

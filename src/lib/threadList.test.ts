@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Thread } from "../types";
 import {
   countActiveThreadsByWorkspace,
+  filterThreadsByKind,
   filterThreadsForWorkspace,
   forgetSidebarThread,
   optimisticStartedThread,
@@ -60,6 +61,14 @@ describe("thread sidebar list", () => {
     const beta = makeThread("beta", { cwd: "/projects/beta" });
 
     expect(filterThreadsForWorkspace([alpha, beta], "/projects/beta", {})).toEqual([beta]);
+  });
+
+  it("keeps sub-agent threads in a separate inbox view", () => {
+    const main = makeThread("main");
+    const child = makeThread("child");
+    const links = { child: { rootThreadId: "main" } };
+    expect(filterThreadsByKind([main, child], links, "main")).toEqual([main]);
+    expect(filterThreadsByKind([main, child], links, "subagents")).toEqual([child]);
   });
 
   it("uses working statuses and persisted bindings for project counts", () => {

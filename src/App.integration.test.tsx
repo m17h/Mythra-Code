@@ -201,6 +201,20 @@ function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
     };
   }
   if (command === "checkpoint_delete") return null;
+  if (command === "child_agent_session_start") {
+    const options = (args?.options ?? {}) as { targets?: unknown[]; sessionId?: string };
+    const delegation = Boolean(options.targets?.length);
+    return {
+      name: "openkiwi",
+      command: "/Applications/OpenKiwi.app/Contents/MacOS/openkiwi",
+      args: ["--openkiwi-agent-bridge", `/tmp/${options.sessionId ?? "session"}.json`],
+      configPath: `/tmp/${options.sessionId ?? "session"}.mcp.json`,
+      toolNames: delegation
+        ? ["spawn_agent", "agent_status", "collect_agent", "cancel_agent", "propose_agent_settings"]
+        : ["propose_agent_settings"],
+    };
+  }
+  if (command === "child_agent_session_end" || command === "child_agent_finished" || command === "child_agent_respond") return null;
   if (command === "has_openrouter_key") return false;
   if (command === "codex_rpc") {
     const method = args?.method as string;

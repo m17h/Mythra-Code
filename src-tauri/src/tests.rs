@@ -1651,6 +1651,18 @@ fn child_agent_tool_catalog_offers_only_approved_destinations() {
 }
 
 #[test]
+fn child_agent_empty_roster_exposes_only_project_settings_proposals() {
+    let catalog = tool_catalog(&[]);
+    let names = catalog
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+        .collect::<Vec<_>>();
+    assert_eq!(names, vec!["propose_agent_settings"]);
+}
+
+#[test]
 fn child_agent_spawn_requires_an_approved_destination_and_a_prompt() {
     let targets = vec![child_target("terra", "openai", "gpt-5.6-terra")];
     let none = HashSet::new();
@@ -1691,6 +1703,61 @@ fn child_agent_spawn_requires_an_approved_destination_and_a_prompt() {
     )
     .is_err());
     assert!(validate_tool_call(&targets, &none, "spawn_agent", &json!("not an object")).is_err());
+}
+
+#[test]
+fn child_agent_settings_proposals_require_a_reason_and_validate_the_roster() {
+    let targets = vec![child_target("terra", "openai", "gpt-5.6-terra")];
+    let none = HashSet::new();
+    assert!(validate_tool_call(
+        &targets,
+        &none,
+        "propose_agent_settings",
+        &json!({
+            "reason": "Use a focused reviewer.",
+            "maxConcurrent": 2,
+            "crossProviderEnabled": true,
+            "targets": [{
+                "id": "reviewer", "provider": "claude", "model": "claude-fable-5",
+                "label": "Reviewer", "description": "Review changes",
+                "reasoningMode": "fixed", "reasoningEffort": "high",
+                "reasoningMaxEffort": "high"
+            }]
+        })
+    ).is_ok());
+    assert!(validate_tool_call(&targets, &none, "propose_agent_settings", &json!({})).is_err());
+    assert!(validate_tool_call(
+        &targets,
+        &none,
+        "propose_agent_settings",
+        &json!({ "reason": "Bad limit", "maxConcurrent": 25 })
+    ).is_err());
+}
+
+#[test]
+fn cursor_agent_prompt_uses_process_lifetime_instead_of_control_timeout() {
+    use crate::cursor::cursor_request_timeout;
+    use std::time::Duration;
+
+    assert_eq!(cursor_request_timeout("session/prompt"), None);
+    // Session setup cold-starts the delegation bridge as an MCP server, so it
+    // needs far more headroom than a control handshake.
+    assert_eq!(
+        cursor_request_timeout("session/new"),
+        Some(Duration::from_secs(180))
+    );
+    assert_eq!(
+        cursor_request_timeout("session/load"),
+        Some(Duration::from_secs(180))
+    );
+    assert_eq!(
+        cursor_request_timeout("session/set_model"),
+        Some(Duration::from_secs(45))
+    );
+    assert_eq!(
+        cursor_request_timeout("initialize"),
+        Some(Duration::from_secs(45))
+    );
 }
 
 #[test]

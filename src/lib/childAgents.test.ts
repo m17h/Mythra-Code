@@ -3,6 +3,7 @@ import { DEFAULT_SETTINGS } from "./appConfig";
 import {
   DEFAULT_CHILD_AGENT_SETTINGS,
   MAX_CHILD_AGENT_TARGETS,
+  MAX_SUBAGENT_CONCURRENCY,
   childAgentModel,
   childAgentPolicyFor,
   childAgentPolicyForThread,
@@ -258,10 +259,14 @@ describe("persistence and migration", () => {
       "session-2": { rootThreadId: "thread-2", maxConcurrent: 500, permission: "full", targets: [] },
       "": { targets: [{ id: "terra", provider: "openai" }] },
     });
-    expect(Object.keys(restored)).toEqual(["session-1"]);
+    expect(Object.keys(restored)).toEqual(["session-1", "session-2"]);
     expect(restored["session-1"]).toMatchObject({
       sessionId: "session-1", rootThreadId: "thread-1", maxConcurrent: 2, permission: "ask",
       systemPrompt: "", projectInstructionsEnabled: false, reasoningEffort: "medium", serviceTier: null, capturedAt: 0,
+    });
+    expect(restored["session-2"]).toMatchObject({
+      sessionId: "session-2", rootThreadId: "thread-2", maxConcurrent: MAX_SUBAGENT_CONCURRENCY,
+      permission: "full", targets: [],
     });
   });
 

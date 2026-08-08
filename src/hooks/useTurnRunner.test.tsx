@@ -176,7 +176,7 @@ describe("useTurnRunner", () => {
     forgetQueuedDeliveries();
     forgetSubagentCapabilities();
     vi.clearAllMocks();
-    cursor.interruptCursorTurn.mockResolvedValue(undefined);
+    cursor.killCursorTurn.mockResolvedValue(undefined);
     cursor.saveCursorTranscript.mockResolvedValue(undefined);
     cursor.startCursorTurn.mockResolvedValue({ turnId: "turn-new", cursorSessionId: "session-new" });
     cursor.steerCursorTurn.mockResolvedValue(undefined);
@@ -200,7 +200,7 @@ describe("useTurnRunner", () => {
     expect(childSessions.ensureChildAgentBridge).toHaveBeenCalledWith(expect.objectContaining({ settings: effectiveSettings }));
   });
 
-  it("interrupts the active provider turn and records the stopped state", async () => {
+  it("hard-stops the active provider turn and records the stopped state", async () => {
     useTaskStore.getState().ensureTask(CURSOR_THREAD.id, CURSOR_THREAD.cwd);
     useTaskStore.getState().setActiveTurn(CURSOR_THREAD.id, "turn-live");
     useTaskStore.getState().setTaskStatus(CURSOR_THREAD.id, "running");
@@ -209,9 +209,35 @@ describe("useTurnRunner", () => {
 
     await act(async () => result.current.stopTurn());
 
-    expect(cursor.interruptCursorTurn).toHaveBeenCalledWith(CURSOR_THREAD.id);
+    expect(cursor.killCursorTurn).toHaveBeenCalledWith(CURSOR_THREAD.id);
     expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]?.activeTurnId).toBeUndefined();
     expect(useTaskStore.getState().statuses[CURSOR_THREAD.id]).toBe("interrupted");
+    expect(deps.setTransientStatus).toHaveBeenCalledWith("Stopped");
+  });
+
+  it("cuts off a draft send that Stop reaches before its first turn starts", async () => {
+    let releaseBridge!: (value: unknown) => void;
+    childSessions.ensureChildAgentBridge.mockImplementationOnce(
+      () => new Promise((resolve) => { releaseBridge = resolve; }),
+    );
+    const deps = context({ activeThread: null, running: false });
+    const { result } = renderHook(() => useTurnRunner(deps));
+
+    let delivered: boolean | undefined;
+    await act(async () => {
+      const sent = result.current.sendMessage("build it").then((value) => { delivered = value; });
+      await Promise.resolve();
+      // What `setStartingDraftTurn(true)` does in the app: the composer now
+      // reports a running draft turn, which is the state Stop reads.
+      deps.running = true;
+      await result.current.stopTurn();
+      releaseBridge(null);
+      await sent;
+    });
+
+    expect(cursor.startCursorTurn).not.toHaveBeenCalled();
+    // Undelivered, so the composer hands the user their prompt back.
+    expect(delivered).toBe(false);
     expect(deps.setTransientStatus).toHaveBeenCalledWith("Stopped");
   });
 
@@ -223,7 +249,7 @@ describe("useTurnRunner", () => {
     await act(async () => result.current.stopTurn());
 
     expect(deps.setStatus).toHaveBeenCalledWith("Stopping");
-    expect(cursor.interruptCursorTurn).not.toHaveBeenCalled();
+    expect(cursor.killCursorTurn).not.toHaveBeenCalled();
     expect(deps.pendingTurnStartsRef.current.finish(CURSOR_THREAD.id, pending)).toBe(true);
   });
 
@@ -239,7 +265,7 @@ describe("useTurnRunner", () => {
     await act(async () => result.current.stopTurn());
 
     expect(result.current.stopTurn).toBe(stop);
-    expect(cursor.interruptCursorTurn).toHaveBeenCalledWith(CURSOR_THREAD.id);
+    expect(cursor.killCursorTurn).toHaveBeenCalledWith(CURSOR_THREAD.id);
   });
 
   it("queues a running-task message by default without steering", async () => {
@@ -420,7 +446,7 @@ describe("useTurnRunner", () => {
     expect(task.activeTurnId).toBeUndefined();
     expect(task.status).toBe("completed");
     expect(task.lastCompletedTurnId).toBe("turn-fast");
-    expect(cursor.interruptCursorTurn).not.toHaveBeenCalled();
+    expect(cursor.killCursorTurn).not.toHaveBeenCalled();
   });
 });
 

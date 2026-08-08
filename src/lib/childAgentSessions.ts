@@ -43,6 +43,12 @@ export function resetChildAgentLaunches(): void {
   activePolicies.clear();
 }
 
+/** Queue a fresh launch for the next root turn without revoking the bridge
+ * that the currently-running parent still needs to collect its children. */
+export function invalidateChildAgentLaunch(sessionId: string): void {
+  launches.delete(sessionId);
+}
+
 export function cacheChildAgentPolicy(policy: ChildAgentPolicy): void {
   activePolicies.set(policy.sessionId, policy);
 }
@@ -66,6 +72,8 @@ export interface ChildAgentBridgeInput {
   reasoningEffort: ChildAgentPolicy["reasoningEffort"];
   serviceTier: string | null;
   readiness: ChildAgentReadiness;
+  /** Saved projects keep a proposal-only bridge even while delegation is off. */
+  settingsProposalsEnabled?: boolean;
   newSessionId?: () => string;
 }
 
@@ -88,7 +96,19 @@ export async function ensureChildAgentBridge(
   // is itself a child never receives a bridge.
   if (input.threadId && input.links[input.threadId]) return null;
 
-  const existing = childAgentPolicyForThread(input.policies, input.threadId);
+  const stored = childAgentPolicyForThread(input.policies, input.threadId);
+  // A roster the user explicitly approved replaces the frozen one — but only
+  // when it still has somewhere to send work. An empty approved roster would
+  // otherwise be promoted into a policy the backend rejects, turning the next
+  // prompt into a failed turn instead of a thread without delegation.
+  const recapture = stored?.pendingRecapture?.targets.length ? stored.pendingRecapture : undefined;
+  const existing = recapture ? {
+    ...stored!,
+    maxConcurrent: recapture.maxConcurrent,
+    targets: recapture.targets,
+    capturedAt: recapture.approvedAt,
+    pendingRecapture: undefined,
+  } : stored;
   // The switch is read fresh every turn, in both directions. Switching
   // sub-agents (or cross-provider delegation) off has to remove the powers a
   // thread already holds, not just decline to hand out new ones.
@@ -101,16 +121,43 @@ export async function ensureChildAgentBridge(
   // backend unconditionally also closes a reload-shaped gap: the renderer can
   // reload without the Tauri process being replaced, which empties the maps
   // above while leaving a registered bridge alive in Rust.
-  if (!input.settings.subagentsEnabled || !input.settings.childAgents.enabled) {
-    if (existing) await releaseChildAgentSession(existing.sessionId);
-    return null;
+  const delegationEnabled = input.settings.subagentsEnabled && input.settings.childAgents.enabled;
+  if (!delegationEnabled) {
+    if (!input.settingsProposalsEnabled) {
+      if (existing) await releaseChildAgentSession(existing.sessionId);
+      return null;
+    }
+    const policy: ChildAgentPolicy = {
+      ...(existing ?? {
+        sessionId: (input.newSessionId ?? (() => crypto.randomUUID()))(),
+        rootThreadId: input.threadId ?? "",
+        maxConcurrent: Math.max(1, input.settings.subagentMax),
+        permission: input.permission,
+        systemPrompt: input.systemPrompt,
+        projectInstructionsEnabled: input.projectInstructionsEnabled,
+        reasoningEffort: input.reasoningEffort,
+        serviceTier: input.serviceTier,
+        capturedAt: Date.now(),
+      }),
+      targets: [],
+    };
+    cacheChildAgentPolicy(policy);
+    const cached = launches.get(policy.sessionId);
+    if (cached?.toolNames.length === 1 && cached.toolNames[0] === "propose_agent_settings") {
+      return { policy, launch: cached, captured: !stored };
+    }
+    if (cached || existing) await releaseChildAgentSession(policy.sessionId);
+    cacheChildAgentPolicy(policy);
+    const launch = await startChildAgentSession(policy, []);
+    launches.set(policy.sessionId, launch);
+    return { policy, launch, captured: !stored || existing?.targets.length !== 0 };
   }
 
   // An existing thread with no policy has never run with a cross-provider
   // roster available — either it predates the feature or the user had that
   // feature switched off. It may capture one now: the composer shows the
   // roster it would capture, so nothing is acquired silently.
-  const policy = existing ?? childAgentPolicyFor({
+  const livePolicy = childAgentPolicyFor({
     sessionId: (input.newSessionId ?? (() => crypto.randomUUID()))(),
     rootThreadId: input.threadId,
     childAgents: input.settings.childAgents,
@@ -123,6 +170,11 @@ export async function ensureChildAgentBridge(
     serviceTier: input.serviceTier,
     readiness: input.readiness,
   });
+  // A proposal-only policy captured no delegation authority. Once the user
+  // enables a real crew, capture the live approved roster into that session.
+  const policy = existing?.targets.length ? existing : livePolicy && existing
+    ? { ...livePolicy, sessionId: existing.sessionId, rootThreadId: existing.rootThreadId }
+    : livePolicy;
   if (!policy) return null;
   cacheChildAgentPolicy(policy);
 
@@ -136,7 +188,7 @@ export async function ensureChildAgentBridge(
     .map((link) => link.childThreadId);
   const launch = await startChildAgentSession(policy, knownChildren);
   launches.set(policy.sessionId, launch);
-  return { policy, launch, captured: !existing };
+  return { policy, launch, captured: !stored || Boolean(recapture) };
 }
 
 /** Tear down every bridge session belonging to a thread. */

@@ -65,8 +65,14 @@ const TOOL_SPAWN: &str = "spawn_agent";
 const TOOL_STATUS: &str = "agent_status";
 const TOOL_COLLECT: &str = "collect_agent";
 const TOOL_CANCEL: &str = "cancel_agent";
-pub(super) const AGENT_BRIDGE_TOOLS: [&str; 4] =
-    [TOOL_SPAWN, TOOL_STATUS, TOOL_COLLECT, TOOL_CANCEL];
+const TOOL_PROPOSE_SETTINGS: &str = "propose_agent_settings";
+pub(super) const AGENT_BRIDGE_TOOLS: [&str; 5] = [
+    TOOL_SPAWN,
+    TOOL_STATUS,
+    TOOL_COLLECT,
+    TOOL_CANCEL,
+    TOOL_PROPOSE_SETTINGS,
+];
 
 /// How long the backend waits for the webview to answer a delegation request.
 /// A cold provider start can take longer than an MCP client's own tool wait.
@@ -452,7 +458,7 @@ pub(super) fn tool_catalog(targets: &[ChildAgentTarget]) -> Value {
         "description": format!("Which approved destination runs this child.\n{roster}"),
     });
 
-    json!([
+    let catalog = json!([
         {
             "name": TOOL_SPAWN,
             "title": "Spawn a sub-agent",
@@ -520,7 +526,53 @@ pub(super) fn tool_catalog(targets: &[ChildAgentTarget]) -> Value {
                 "additionalProperties": false,
             },
         },
-    ])
+        {
+            "name": TOOL_PROPOSE_SETTINGS,
+            "title": "Propose project sub-agent settings",
+            "description": "Queue a user approval prompt for changing this project's OpenKiwi sub-agent crew. This returns as soon as the prompt is queued, not when it is approved: never claim the change was applied. Approved changes update project defaults for subsequent runs; the current turn's security-frozen destination list does not change mid-flight.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "reason": { "type": "string", "description": "Short explanation of why this project needs the change." },
+                    "enabled": { "type": "boolean" },
+                    "crossProviderEnabled": { "type": "boolean" },
+                    "maxConcurrent": { "type": "integer", "minimum": 1, "maximum": MAX_CONCURRENT_CEILING },
+                    "targets": {
+                        "type": "array",
+                        "maxItems": MAX_TARGETS,
+                        "description": "Optional full replacement crew. Omit to keep the current crew.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": { "type": "string" },
+                                "provider": { "type": "string", "enum": agent_bridge_providers() },
+                                "model": { "type": "string" },
+                                "label": { "type": "string" },
+                                "description": { "type": "string" },
+                                "reasoningMode": { "type": "string", "enum": ["inherit", "fixed", "agent"] },
+                                "reasoningEffort": { "type": "string", "enum": REASONING_EFFORTS },
+                                "reasoningMaxEffort": { "type": "string", "enum": REASONING_EFFORTS },
+                            },
+                            "required": ["id", "provider", "model", "label", "reasoningMode"],
+                            "additionalProperties": false,
+                        },
+                    },
+                },
+                "required": ["reason"],
+                "additionalProperties": false,
+            },
+        },
+    ]);
+    if targets.is_empty() {
+        return Value::Array(
+            catalog.as_array().expect("tool catalog is an array")
+                .iter()
+                .filter(|tool| tool.get("name").and_then(Value::as_str) == Some(TOOL_PROPOSE_SETTINGS))
+                .cloned()
+                .collect(),
+        );
+    }
+    catalog
 }
 
 /// Reject a malformed or out-of-policy call before any thread is started.
@@ -621,6 +673,34 @@ pub(super) fn validate_tool_call(
                         return Err("`timeoutSeconds` must be between 1 and 45.".into());
                     }
                 }
+            }
+            Ok(())
+        }
+        TOOL_PROPOSE_SETTINGS => {
+            let reason = text("reason").trim();
+            if reason.is_empty() || reason.len() > 400 {
+                return Err("`reason` is required and limited to 400 bytes.".into());
+            }
+            if let Some(enabled) = object.get("enabled") {
+                if !enabled.is_boolean() {
+                    return Err("`enabled` must be true or false.".into());
+                }
+            }
+            if let Some(enabled) = object.get("crossProviderEnabled") {
+                if !enabled.is_boolean() {
+                    return Err("`crossProviderEnabled` must be true or false.".into());
+                }
+            }
+            if let Some(max) = object.get("maxConcurrent") {
+                let max = max.as_u64().ok_or_else(|| "`maxConcurrent` must be an integer.".to_string())?;
+                if !(1..=MAX_CONCURRENT_CEILING as u64).contains(&max) {
+                    return Err(format!("`maxConcurrent` must be between 1 and {MAX_CONCURRENT_CEILING}."));
+                }
+            }
+            if let Some(targets) = object.get("targets") {
+                let targets: Vec<ChildAgentTarget> = serde_json::from_value(targets.clone())
+                    .map_err(|error| format!("The proposed crew is invalid: {error}"))?;
+                validate_targets(&targets)?;
             }
             Ok(())
         }
@@ -821,9 +901,6 @@ pub(super) async fn child_agent_session_start(
     if options.session_id.trim().is_empty() || options.session_id.len() > 64 {
         return Err("A sub-agent session needs a session identity.".into());
     }
-    if options.targets.is_empty() {
-        return Err("Approve at least one cross-provider destination first.".into());
-    }
     validate_targets(&options.targets)?;
     let max_concurrent = options.max_concurrent.clamp(1, MAX_CONCURRENT_CEILING);
 
@@ -858,10 +935,11 @@ pub(super) async fn child_agent_session_start(
         command: executable.clone(),
         args: vec![AGENT_BRIDGE_ARG.to_string(), session_argument.clone()],
         config_path: directory.join("mcp.json").to_string_lossy().to_string(),
-        tool_names: AGENT_BRIDGE_TOOLS
-            .iter()
-            .map(|tool| (*tool).to_string())
-            .collect(),
+        tool_names: if options.targets.is_empty() {
+            vec![TOOL_PROPOSE_SETTINGS.to_string()]
+        } else {
+            AGENT_BRIDGE_TOOLS.iter().map(|tool| (*tool).to_string()).collect()
+        },
     };
     let mcp_config = json!({
         "mcpServers": {
@@ -1025,7 +1103,7 @@ pub(super) fn bridge_local_response(method: &str, id: Option<&Value>) -> Option<
                 "protocolVersion": "2025-06-18",
                 "capabilities": { "tools": { "listChanged": false } },
                 "serverInfo": { "name": AGENT_BRIDGE_SERVER, "version": env!("CARGO_PKG_VERSION") },
-                "instructions": "OpenKiwi-managed sub-agent delegation. This server is the authoritative delegation route while attached: use spawn_agent to run work on an approved OpenKiwi destination, then agent_status and collect_agent to read its result or cancel_agent to stop it. Do not use provider-native task, team, or agent-spawning tools.",
+                "instructions": "OpenKiwi project sub-agent controls. Use propose_agent_settings when the user asks to change this project's crew, even when delegation is currently off; never claim a proposed change was applied until the user approves it. When spawn_agent is available, it is the authoritative delegation route: collect every child result, recover a failed child at most twice, and do not use provider-native task, team, or agent-spawning tools.",
             }
         }))),
         "ping" => Some(Some(json!({ "jsonrpc": "2.0", "id": id, "result": {} }))),

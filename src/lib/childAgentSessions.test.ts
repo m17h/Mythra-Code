@@ -27,6 +27,11 @@ const LAUNCH: ChildAgentBridgeLaunch = {
   toolNames: ["spawn_agent", "agent_status", "collect_agent", "cancel_agent"],
 };
 
+const PROPOSAL_LAUNCH: ChildAgentBridgeLaunch = {
+  ...LAUNCH,
+  toolNames: ["propose_agent_settings"],
+};
+
 const TARGET: ChildAgentTarget = { id: "terra", provider: "openai", model: "gpt-5.6-terra", label: "Terra", description: "", enabled: true, reasoningMode: "inherit", reasoningEffort: "medium", reasoningMaxEffort: "high" };
 const CHILD_AGENTS: ChildAgentSettings = { enabled: true, targets: [TARGET] };
 
@@ -110,6 +115,44 @@ describe("ensureChildAgentBridge", () => {
     expect(bridge.startChildAgentSession).not.toHaveBeenCalled();
   });
 
+  it("keeps only project settings proposals available when delegation is off", async () => {
+    bridge.startChildAgentSession.mockResolvedValueOnce(PROPOSAL_LAUNCH);
+    const result = await ensureChildAgentBridge(input({
+      threadId: "thread-1",
+      settingsProposalsEnabled: true,
+      settings: { childAgents: CHILD_AGENTS, subagentsEnabled: false, subagentMax: 3 },
+    }));
+
+    expect(result).toEqual({
+      policy: expect.objectContaining({ sessionId: "session-1", rootThreadId: "thread-1", targets: [] }),
+      launch: PROPOSAL_LAUNCH,
+      captured: true,
+    });
+    expect(bridge.startChildAgentSession).toHaveBeenCalledWith(
+      expect.objectContaining({ targets: [] }),
+      [],
+    );
+  });
+
+  it("upgrades a proposal-only session to the approved live crew when enabled", async () => {
+    const proposalOnly = policy({ targets: [] });
+    const result = await ensureChildAgentBridge(input({
+      threadId: "thread-1",
+      settingsProposalsEnabled: true,
+      policies: { "session-existing": proposalOnly },
+    }));
+
+    expect(result?.policy).toEqual(expect.objectContaining({
+      sessionId: "session-existing",
+      rootThreadId: "thread-1",
+      targets: [TARGET],
+    }));
+    expect(bridge.startChildAgentSession).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "session-existing", targets: [TARGET] }),
+      [],
+    );
+  });
+
   it("attaches delegation to a thread that started without it, bound to that thread", async () => {
     const result = await ensureChildAgentBridge(input({ threadId: "started-earlier" }));
     expect(result).toEqual({
@@ -154,6 +197,40 @@ describe("ensureChildAgentBridge", () => {
     expect(result?.captured).toBe(false);
     expect(result?.policy.targets.map((entry) => entry.id)).toEqual(["frozen"]);
     expect(result?.policy.maxConcurrent).toBe(2);
+  });
+
+  it("promotes an explicitly approved pending roster on the next bridge start", async () => {
+    const approved = { ...TARGET, id: "approved-reviewer", provider: "claude" as const, model: "claude-fable-5" };
+    const staged = policy({
+      pendingRecapture: { maxConcurrent: 1, targets: [approved], approvedAt: 99 },
+    });
+    const result = await ensureChildAgentBridge(input({
+      threadId: "thread-1",
+      policies: { "session-existing": staged },
+    }));
+    expect(result?.captured).toBe(true);
+    expect(result?.policy.pendingRecapture).toBeUndefined();
+    expect(result?.policy.maxConcurrent).toBe(1);
+    expect(result?.policy.targets.map((entry) => entry.id)).toEqual(["approved-reviewer"]);
+    expect(bridge.startChildAgentSession).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "session-existing", targets: [approved] }),
+      [],
+    );
+  });
+
+  it("ignores an approved roster that no longer has a usable destination", async () => {
+    const staged = policy({
+      pendingRecapture: { maxConcurrent: 1, targets: [], approvedAt: 99 },
+    });
+    const result = await ensureChildAgentBridge(input({
+      threadId: "thread-1",
+      policies: { "session-existing": staged },
+    }));
+    // Promoting an empty roster would build a policy the backend refuses,
+    // turning the next prompt into a failed turn.
+    expect(result?.captured).toBe(false);
+    expect(result?.policy.maxConcurrent).toBe(2);
+    expect(result?.policy.targets.map((entry) => entry.id)).toEqual(["frozen"]);
   });
 
   it("re-seeds the children a resumed thread already owns", async () => {

@@ -35,7 +35,7 @@ function useDecisionLock(grace = true): { locked: boolean; decide: (action: () =
   };
 }
 
-function ApprovalButtons({ onDecision, allowSession = true, autoFocusDeny = true, disabled = false }: { onDecision: (value: Decision) => void; allowSession?: boolean; autoFocusDeny?: boolean; disabled?: boolean }) {
+function ApprovalButtons({ onDecision, allowSession = true, autoFocusDeny = true, disabled = false, denyLabel = "Deny", acceptLabel = "Allow once", dangerDeny = true }: { onDecision: (value: Decision) => void; allowSession?: boolean; autoFocusDeny?: boolean; disabled?: boolean; denyLabel?: string; acceptLabel?: string; dangerDeny?: boolean }) {
   const denyRef = useRef<HTMLButtonElement>(null);
   // Deny is the safe default focus target, but only once the activation grace
   // has passed — a disabled button cannot take focus, and focusing it earlier
@@ -45,7 +45,7 @@ function ApprovalButtons({ onDecision, allowSession = true, autoFocusDeny = true
     const active = document.activeElement;
     if (active === null || active === document.body || active.getAttribute("role") === "alertdialog") denyRef.current?.focus();
   }, [autoFocusDeny, disabled]);
-  return <div className="approval-actions"><button ref={denyRef} className="secondary-button danger" disabled={disabled} onClick={() => onDecision("decline")}>Deny</button>{allowSession && <button className="secondary-button" disabled={disabled} onClick={() => onDecision("acceptForSession")}>Allow for session</button>}<button className="primary-button" disabled={disabled} onClick={() => onDecision("accept")}>Allow once</button></div>;
+  return <div className="approval-actions"><button ref={denyRef} className={`secondary-button${dangerDeny ? " danger" : ""}`} disabled={disabled} onClick={() => onDecision("decline")}>{denyLabel}</button>{allowSession && <button className="secondary-button" disabled={disabled} onClick={() => onDecision("acceptForSession")}>Allow for session</button>}<button className="primary-button" disabled={disabled} onClick={() => onDecision("accept")}>{acceptLabel}</button></div>;
 }
 
 /** Maps a button decision onto the wire format each approval method expects. */
@@ -85,6 +85,13 @@ export function approvalResponse(approval: PendingApproval, decision: Decision):
 }
 
 export function approvalSummary(approval: PendingApproval): { title: string; reason: string; command: string } {
+  if (approval.method === "openkiwi/subagents/change") {
+    return {
+      title: String(approval.params.title ?? "Update this project's sub-agents?"),
+      reason: String(approval.params.reason ?? "The agent requested a project sub-agent crew change."),
+      command: String(approval.params.command ?? ""),
+    };
+  }
   if (approval.method === "claude/can_use_tool") {
     const input = (approval.params.input ?? {}) as JsonObject;
     return {
@@ -116,7 +123,15 @@ export function InlineApprovalCard({ approval, onRespond }: { approval: PendingA
       <div className="inline-approval-head"><ShieldAlert size={14} /><strong>{title}</strong></div>
       <p>{reason}</p>
       {command && <pre className="approval-command">{command}</pre>}
-      <ApprovalButtons autoFocusDeny={false} disabled={locked} onDecision={(decision) => decide(() => onRespond(approvalResponse(approval, decision)))} />
+      <ApprovalButtons
+        autoFocusDeny={false}
+        disabled={locked}
+        allowSession={approval.method !== "openkiwi/subagents/change"}
+        denyLabel={approval.method === "openkiwi/subagents/change" ? "Keep current settings" : "Deny"}
+        acceptLabel={approval.method === "openkiwi/subagents/change" ? "Apply to project" : "Allow once"}
+        dangerDeny={approval.method !== "openkiwi/subagents/change"}
+        onDecision={(decision) => decide(() => onRespond(approvalResponse(approval, decision)))}
+      />
     </div>
   );
 }
@@ -126,7 +141,8 @@ interface ApprovalContext { threadLabel?: string; pendingCount?: number }
 function StandardApproval({ approval, onRespond, threadLabel, pendingCount }: { approval: PendingApproval; onRespond: (value: JsonObject) => void } & ApprovalContext) {
   const { title, reason, command } = approvalSummary(approval);
   const { locked, decide } = useDecisionLock();
-  return <Modal title={title} description={reason} threadLabel={threadLabel} pendingCount={pendingCount}>{command && <pre className="approval-command">{command}</pre>}<ApprovalButtons disabled={locked} onDecision={(decision) => decide(() => onRespond(approvalResponse(approval, decision)))} /></Modal>;
+  const projectSubagents = approval.method === "openkiwi/subagents/change";
+  return <Modal title={title} description={reason} threadLabel={threadLabel} pendingCount={pendingCount}>{command && <pre className="approval-command">{command}</pre>}<ApprovalButtons disabled={locked} allowSession={!projectSubagents} denyLabel={projectSubagents ? "Keep current settings" : "Deny"} acceptLabel={projectSubagents ? "Apply to project" : "Allow once"} dangerDeny={!projectSubagents} onDecision={(decision) => decide(() => onRespond(approvalResponse(approval, decision)))} /></Modal>;
 }
 
 interface UserQuestion { id: string; header: string; question: string; isSecret?: boolean; options?: Array<{ label: string; description: string }> | null }

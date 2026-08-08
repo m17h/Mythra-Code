@@ -56,6 +56,13 @@ export interface ChildAgentPolicy {
   serviceTier: string | null;
   targets: ChildAgentTarget[];
   capturedAt: number;
+  /** User-approved roster queued while the current root turn is still using
+   * the frozen policy. Promoted atomically when the next turn builds a bridge. */
+  pendingRecapture?: {
+    maxConcurrent: number;
+    targets: ChildAgentTarget[];
+    approvedAt: number;
+  };
 }
 
 /** Parent/child ownership, persisted so it survives a reload. */
@@ -421,9 +428,14 @@ export function sanitizeChildAgentPolicies(stored: unknown): Record<string, Chil
     if (!sessionId.trim() || sessionId.length > 64 || !candidate || typeof candidate !== "object") continue;
     const entry = candidate as Record<string, unknown>;
     const targets = sanitizeChildAgentSettings({ enabled: true, targets: entry.targets }).targets;
-    if (!targets.length) continue;
     const permission = entry.permission;
     const reasoningEffort = entry.reasoningEffort;
+    const pendingCandidate = entry.pendingRecapture && typeof entry.pendingRecapture === "object"
+      ? entry.pendingRecapture as Record<string, unknown>
+      : null;
+    const pendingTargets = pendingCandidate
+      ? sanitizeChildAgentSettings({ enabled: true, targets: pendingCandidate.targets }).targets
+      : [];
     result[sessionId] = {
       sessionId,
       rootThreadId: typeof entry.rootThreadId === "string" ? entry.rootThreadId : "",
@@ -438,6 +450,13 @@ export function sanitizeChildAgentPolicies(stored: unknown): Record<string, Chil
       serviceTier: typeof entry.serviceTier === "string" ? entry.serviceTier : null,
       targets,
       capturedAt: Number(entry.capturedAt) || 0,
+      ...(pendingCandidate && pendingTargets.length ? {
+        pendingRecapture: {
+          maxConcurrent: Math.min(MAX_SUBAGENT_CONCURRENCY, Math.max(1, Math.floor(Number(pendingCandidate.maxConcurrent)) || 1)),
+          targets: pendingTargets,
+          approvedAt: Number(pendingCandidate.approvedAt) || 0,
+        },
+      } : {}),
     };
   }
   return result;

@@ -92,6 +92,17 @@ export function workerStatusFromAgentRecord(status: string): SubAgentWorkerStatu
   return "idle";
 }
 
+/**
+ * Whether a provider-native agent record still counts as live work.
+ *
+ * Single source of truth on purpose: the run boundary, the concurrency budget,
+ * and Stop all have to agree about which records are running, or a record can
+ * survive a Stop that never reached it or hold a slot nothing will release.
+ */
+export function isActiveAgentRecord(status: string): boolean {
+  return isSubAgentWorkerActive(workerStatusFromAgentRecord(status));
+}
+
 export function subAgentStatusLabel(status: SubAgentWorkerStatus): string {
   if (status === "working") return "Working";
   if (status === "starting") return "Starting";
@@ -115,6 +126,9 @@ export interface SubAgentWorkerInput {
   statuses: Record<string, TaskStatus>;
   /** Agent records the root task collected, including native delegation. */
   agents: AgentRecord[];
+  /** Hide durable children from earlier root turns without deleting their
+   * ownership records or their separately browsable threads. */
+  runStartedAt?: number;
 }
 
 /**
@@ -132,14 +146,18 @@ export function collectSubAgentWorkers(input: SubAgentWorkerInput): SubAgentWork
 
   for (const link of Object.values(input.links)) {
     if (link.rootThreadId !== rootThreadId) continue;
+    // Claim the mirrored agent id even when this durable link belongs to an
+    // earlier run; otherwise a late terminal update can masquerade as a new
+    // provider-native agent after the run boundary advances.
     owned.add(link.childThreadId);
+    const lifecycle = childLifecycleForLink(link, input.statuses[link.childThreadId] ?? "idle");
+    if (input.runStartedAt !== undefined && link.createdAt < input.runStartedAt
+      && lifecycle !== "running" && lifecycle !== "starting") continue;
     const model = childAgentModel(link);
     workers.push({
       id: link.childThreadId,
       kind: "cross-provider",
-      status: workerStatusFromLifecycle(
-        childLifecycleForLink(link, input.statuses[link.childThreadId] ?? "idle"),
-      ),
+      status: workerStatusFromLifecycle(lifecycle),
       title: link.title || "Delegated task",
       targetId: link.targetId,
       provider: link.provider,
