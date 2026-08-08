@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS } from "../lib/appConfig";
 import type { AppUpdater } from "../lib/appUpdater";
@@ -267,6 +267,41 @@ describe("SettingsModal", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Run onboarding" }));
     expect(onOpenOnboarding).toHaveBeenCalledOnce();
+  });
+
+  it("opens the skill creation editor on demand and closes it again after a successful create", async () => {
+    const onCreateSkill = vi.fn(async () => true);
+    render(<SettingsModal {...modalProps({
+      initialSection: "skills",
+      skillsFolder: "/skills",
+      onCreateSkill,
+    })} />);
+
+    expect(screen.queryByLabelText("Skill name")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Add a new skill" }));
+
+    fireEvent.change(screen.getByLabelText("Skill name"), { target: { value: "release-check" } });
+    fireEvent.change(screen.getByLabelText("Instructions"), { target: { value: "Verify the release notes." } });
+    fireEvent.click(screen.getByRole("button", { name: /Create skill/ }));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Add a new skill" })).toBeInTheDocument());
+    expect(onCreateSkill).toHaveBeenCalledWith("release-check", "Verify the release notes.");
+    expect(screen.queryByLabelText("Skill name")).not.toBeInTheDocument();
+  });
+
+  it("lets Escape dismiss the open skill editor before it can close Settings", () => {
+    const onClose = vi.fn();
+    render(<SettingsModal {...modalProps({ initialSection: "skills", skillsFolder: "/skills", onClose })} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Add a new skill" }));
+    fireEvent.change(screen.getByLabelText("Skill name"), { target: { value: "half-typed" } });
+    fireEvent.keyDown(screen.getByLabelText("Skill name"), { key: "Escape" });
+
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Add a new skill" })).toBeInTheDocument();
+
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledOnce();
   });
 
   it("creates and saves a project-specific sub-agent policy", () => {

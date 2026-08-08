@@ -73,7 +73,7 @@ import { useClaudeEvents } from "./hooks/useClaudeEvents";
 import { useCursorEvents } from "./hooks/useCursorEvents";
 import { useScheduler } from "./hooks/useScheduler";
 import { useTerminal } from "./hooks/useTerminal";
-import { usePaneResize } from "./hooks/usePaneResize";
+import { PANE_BOUNDS, usePaneResize } from "./hooks/usePaneResize";
 import { useSidebarSplitResize } from "./hooks/useSidebarSplitResize";
 import { useWorkflowEngine } from "./hooks/useWorkflowEngine";
 import { isEstablishedOpenKiwiInstall, ONBOARDING_EXIT_MS, ONBOARDING_VERSION } from "./lib/onboarding";
@@ -812,8 +812,13 @@ export default function App() {
     [activeProject, setProjects],
   );
 
-  const { paneSizes, startPaneResize } = usePaneResize((settings.uiScale || 100) / 100);
-  const { splitRatio: sidebarSplitRatio, startSidebarSplitResize, resizeSidebarSplitWithKeyboard } = useSidebarSplitResize();
+  const { paneSizes, shellRef, startPaneResize, resizePaneWithKeyboard } = usePaneResize((settings.uiScale || 100) / 100);
+  const {
+    splitRatio: sidebarSplitRatio,
+    sidebarSectionsRef,
+    startSidebarSplitResize,
+    resizeSidebarSplitWithKeyboard,
+  } = useSidebarSplitResize((settings.uiScale || 100) / 100);
 
   // Confirmation statuses like "Stopped" used to persist in the topbar forever.
   const transientStatusTimerRef = useRef<number | null>(null);
@@ -3267,7 +3272,7 @@ export default function App() {
   });
 
   return (
-    <div className="app-shell" data-theme={previewTheme ?? settings.theme} data-openai-logo={settings.openAiLogo} data-claude-logo={settings.claudeLogo} data-cursor-logo={settings.cursorLogo} style={{ zoom: (settings.uiScale || 100) / 100 }}>
+    <div ref={shellRef} className="app-shell" data-theme={previewTheme ?? settings.theme} data-openai-logo={settings.openAiLogo} data-claude-logo={settings.claudeLogo} data-cursor-logo={settings.cursorLogo} style={{ zoom: (settings.uiScale || 100) / 100 }}>
       {successToast && (
         <div className="app-toast success" role="status" aria-live="polite">
           <span className="app-toast-icon"><Check size={14} strokeWidth={2.5} /></span>
@@ -3281,8 +3286,25 @@ export default function App() {
           is inert so keyboard and assistive-tech focus cannot reach it. The
           studio dock and remaining modals are covered by the full-screen
           backdrop and each dialog's own focus containment. */}
-      <aside inert={settingsOpen || onboardingOpen ? true : undefined} className={`sidebar ${sidebarOpen ? "open" : "closed"}`} style={sidebarOpen ? { flexBasis: paneSizes.sidebar, width: paneSizes.sidebar } : undefined}>
-        {sidebarOpen && <div className="pane-resize sidebar-resize" onPointerDown={startPaneResize("sidebar")} role="separator" aria-orientation="vertical" aria-label="Resize sidebar" />}
+      {/* Width comes from --sidebar-width on the shell, not an inline style:
+          a drag writes that property directly so the edge tracks the pointer
+          without rendering the app, and an unrelated render mid-drag cannot
+          snap the sidebar back to the last committed width. */}
+      <aside inert={settingsOpen || onboardingOpen ? true : undefined} className={`sidebar ${sidebarOpen ? "open" : "closed"}`}>
+        {sidebarOpen && (
+          <div
+            className="pane-resize sidebar-resize"
+            onPointerDown={startPaneResize("sidebar")}
+            onKeyDown={resizePaneWithKeyboard("sidebar")}
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize sidebar"
+            aria-valuemin={PANE_BOUNDS.sidebar.min}
+            aria-valuemax={PANE_BOUNDS.sidebar.max}
+            aria-valuenow={Math.round(paneSizes.sidebar)}
+            tabIndex={0}
+          />
+        )}
         <div className="sidebar-brand">
           <div className="brand-mark">
             <img src="/openkiwi-logo.png" alt="" />
@@ -3299,8 +3321,11 @@ export default function App() {
           <kbd>⌘N</kbd>
         </button>
 
-        <div className="sidebar-sections">
-        <div className="sidebar-section workspaces-section" style={{ flexBasis: `${sidebarSplitRatio * 100}%` }}>
+        {/* Same arrangement as the sidebar edge: the split lives in
+            --sidebar-split on this container, written directly while dragging
+            and committed to React once on release. */}
+        <div className="sidebar-sections" ref={sidebarSectionsRef}>
+        <div className="sidebar-section workspaces-section">
           <div className="section-label-row">
             <span className="section-label">Workspaces</span>
             <button className="icon-button tiny" onClick={addProject} title="Add project" aria-label="Add project">
@@ -3889,8 +3914,9 @@ export default function App() {
         <Suspense fallback={null}>
           <StudioDock
             open={studioOpen && Boolean(activeProject)}
-            width={paneSizes.dock}
             onResizeStart={startPaneResize("dock")}
+            onResizeKeyDown={resizePaneWithKeyboard("dock")}
+            resizeValue={paneSizes.dock}
             tab={studioTab}
             projectName={activeProject?.name}
             projectPath={activeExecutionPath || activeProject?.path}

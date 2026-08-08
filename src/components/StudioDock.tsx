@@ -36,6 +36,7 @@ import {
 import { FileBrowser } from "./FileBrowser";
 import { XtermPanel } from "./XtermPanel";
 import type { ProjectAction } from "../types";
+import { PANE_BOUNDS } from "../hooks/usePaneResize";
 import type { TerminalOutputStore } from "../hooks/useTerminal";
 import type { WorkflowDefinition, WorkflowRunRecord } from "../lib/workflows";
 import {
@@ -100,8 +101,14 @@ function PanelHeader({ icon: Icon, title, subtitle, onClose }: { icon: typeof Co
 
 export function StudioDock(props: {
   open: boolean;
-  width?: number;
+  /**
+   * The dock's width is published by the app shell as --dock-width so a drag
+   * can move the edge without re-rendering this tree. These props only carry
+   * the separator's behaviour and its announced value.
+   */
   onResizeStart?: (event: React.PointerEvent) => void;
+  onResizeKeyDown?: (event: React.KeyboardEvent) => void;
+  resizeValue?: number;
   tab: StudioTab;
   projectName?: string;
   projectPath?: string;
@@ -227,11 +234,24 @@ export function StudioDock(props: {
   // When the dock is closed, skip all panel work (diff parsing, xterm,
   // file browser) — it re-rendered fully even while hidden.
   if (!renderContent) {
-    return <aside className="studio-dock closed" style={props.width ? { "--dock-width": `${props.width}px` } as React.CSSProperties : undefined} aria-label="Project workspace tools" aria-hidden inert />;
+    return <aside className="studio-dock closed" aria-label="Project workspace tools" aria-hidden inert />;
   }
   return (
-    <aside className={`studio-dock ${props.open ? "open" : "closed"}`} style={props.width ? { "--dock-width": `${props.width}px` } as React.CSSProperties : undefined} aria-label="Project workspace tools" aria-hidden={!props.open} inert={!props.open ? true : undefined}>
-      {props.onResizeStart && <div className="pane-resize dock-resize" onPointerDown={props.onResizeStart} role="separator" aria-orientation="vertical" aria-label="Resize workspace tools" />}
+    <aside className={`studio-dock ${props.open ? "open" : "closed"}`} aria-label="Project workspace tools" aria-hidden={!props.open} inert={!props.open ? true : undefined}>
+      {props.onResizeStart && (
+        <div
+          className="pane-resize dock-resize"
+          onPointerDown={props.onResizeStart}
+          onKeyDown={props.onResizeKeyDown}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize workspace tools"
+          aria-valuemin={PANE_BOUNDS.dock.min}
+          aria-valuemax={PANE_BOUNDS.dock.max}
+          aria-valuenow={props.resizeValue === undefined ? undefined : Math.round(props.resizeValue)}
+          tabIndex={0}
+        />
+      )}
       <nav className="studio-tabs" aria-label="Workspace tools">
         {TABS.map(({ id, label, icon: Icon }) => <button key={id} className={props.tab === id ? "active" : ""} onClick={() => props.onTab(id)} title={label} aria-label={`${label} workspace tool`} aria-current={props.tab === id ? "page" : undefined}><Icon size={16} /><span>{label}</span></button>)}
       </nav>

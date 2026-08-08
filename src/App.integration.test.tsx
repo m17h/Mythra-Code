@@ -335,6 +335,43 @@ describe("workspace switching during thread selection", () => {
     });
   });
 
+  it("tracks the pointer live while dragging the sidebar edge", async () => {
+    await renderApp();
+    const shell = document.querySelector(".app-shell") as HTMLElement;
+    const sidebar = document.querySelector("aside.sidebar") as HTMLElement;
+    const separator = screen.getByRole("separator", { name: "Resize sidebar" });
+
+    expect(shell.style.getPropertyValue("--sidebar-width")).toBe("260px");
+    // The pane must not be sized by an inline style, or a render landing
+    // mid-drag would snap it back to the last committed width.
+    expect(sidebar.getAttribute("style")).toBeNull();
+
+    fireEvent.pointerDown(separator, { clientX: 260, button: 0 });
+    fireEvent.pointerMove(window, { clientX: 300 });
+    // The edge has already moved, before anything reached React or storage.
+    expect(shell.style.getPropertyValue("--sidebar-width")).toBe("300px");
+    expect(document.body).toHaveAttribute("data-pane-resizing", "sidebar");
+    expect(localStorage.getItem("kiwi.paneSizes")).toBeNull();
+
+    fireEvent.pointerUp(window);
+    expect(separator).toHaveAttribute("aria-valuenow", "300");
+    expect(document.body).not.toHaveAttribute("data-pane-resizing");
+    expect(JSON.parse(localStorage.getItem("kiwi.paneSizes") ?? "{}").sidebar).toBe(300);
+  });
+
+  it("resizes the sidebar from the keyboard", async () => {
+    await renderApp();
+    const shell = document.querySelector(".app-shell") as HTMLElement;
+    const separator = screen.getByRole("separator", { name: "Resize sidebar" });
+
+    separator.focus();
+    fireEvent.keyDown(separator, { key: "ArrowRight" });
+
+    expect(shell.style.getPropertyValue("--sidebar-width")).toBe("276px");
+    expect(separator).toHaveAttribute("aria-valuenow", "276");
+    expect(JSON.parse(localStorage.getItem("kiwi.paneSizes") ?? "{}").sidebar).toBe(276);
+  });
+
   it("resizes and persists the Projects/Threads divider", async () => {
     await renderApp();
     const separator = screen.getByRole("separator", { name: "Resize projects and threads" });
@@ -343,11 +380,16 @@ describe("workspace switching during thread selection", () => {
       height: 600,
     } as DOMRect);
 
+    const sections = document.querySelector(".sidebar-sections") as HTMLElement;
+    expect(sections.style.getPropertyValue("--sidebar-split")).toBe("30%");
+
     fireEvent.pointerDown(separator, { clientY: 280 });
     fireEvent.pointerMove(window, { clientY: 500 });
+    expect(sections.style.getPropertyValue("--sidebar-split")).toBe("66.67%");
     fireEvent.pointerUp(window);
 
     expect(separator).toHaveAttribute("aria-valuenow", "67");
+    expect(sections.style.getPropertyValue("--sidebar-split")).toBe("66.67%");
     expect(JSON.parse(localStorage.getItem("kiwi.sidebarSplitRatio") ?? "0")).toBeCloseTo(2 / 3);
   });
 

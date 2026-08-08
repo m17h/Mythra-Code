@@ -38,8 +38,18 @@ export function XtermPanel({
     terminal.open(hostRef.current);
     fit.fit();
     const data = terminal.onData((value) => onInput(value));
+    // Dragging the dock edge changes this host's box every frame, but the
+    // grid only changes every few pixels. Reporting unchanged dimensions sent
+    // one PTY resize round-trip per frame for no effect, so the callback fires
+    // only when the cell grid actually moves. The sentinel start makes the
+    // first observation — the initial size — always report.
+    let lastCols = -1;
+    let lastRows = -1;
     const resize = new ResizeObserver(() => {
       fit.fit();
+      if (terminal.cols === lastCols && terminal.rows === lastRows) return;
+      lastCols = terminal.cols;
+      lastRows = terminal.rows;
       onResize(terminal.cols, terminal.rows);
     });
     resize.observe(hostRef.current);

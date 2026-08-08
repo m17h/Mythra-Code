@@ -7,7 +7,6 @@ vi.mock("./XtermPanel", () => ({ XtermPanel: () => null }));
 function dockProps(open: boolean): Parameters<typeof StudioDock>[0] {
   return {
     open,
-    width: 430,
     tab: "review",
     activeThread: false,
     diff: "",
