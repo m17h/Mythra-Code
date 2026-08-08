@@ -541,6 +541,9 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .rich-markdown h3 { font-size: 1.04em; }
 .rich-markdown h4 { font-size: 1em; }
 .rich-markdown hr { margin: 1.4em 0; border: 0; border-top: 1px solid var(--line); }
+/* An unconstrained Markdown image resizes its row the moment it finishes
+   loading, which moves the transcript under a reader who has scrolled up. */
+.rich-markdown img { max-width: 100%; height: auto; }
 .rich-markdown a { color: var(--info); text-decoration-color: color-mix(in srgb, var(--info) 40%, transparent); text-underline-offset: 2px; }
 .rich-markdown a:hover { text-decoration-color: currentColor; }
 .rich-markdown blockquote { padding-left: var(--s-3); border-left: 2px solid var(--line-strong); color: var(--muted); }

@@ -584,6 +584,110 @@ const VIRTUOSO_COMPONENTS = { Header: TimelineHeader, Footer: TimelineFooter };
 
 const NO_SEARCH_MATCHES: number[] = [];
 
+/**
+ * One rendered row, where on screen it was last seen, and how tall the
+ * transcript was at that moment. Screen position is the invariant to restore;
+ * the height is only there to tell a plain scroll apart from a scroll that
+ * arrived alongside a resize.
+ */
+export type TimelineScrollAnchor = { contentHeight: number; index: string; top: number };
+
+/** The topmost row that is at least partly on screen. */
+export function readTimelineAnchor(scroller: HTMLElement): TimelineScrollAnchor | null {
+  const viewportTop = scroller.getBoundingClientRect().top;
+  for (const row of Array.from(scroller.querySelectorAll<HTMLElement>("[data-item-index]"))) {
+    const rect = row.getBoundingClientRect();
+    if (rect.bottom <= viewportTop) continue;
+    const index = row.dataset.itemIndex;
+    if (index === undefined) continue;
+    return { contentHeight: scroller.scrollHeight, index, top: rect.top - viewportTop };
+  }
+  return null;
+}
+
+/**
+ * How far the anchored row moved on screen since it was read. Zero whenever
+ * the virtualizer's own compensation already covered a resize, so applying
+ * this only ever supplies the corrections it missed.
+ */
+export function timelineAnchorDrift(scroller: HTMLElement, anchor: TimelineScrollAnchor): number {
+  const row = scroller.querySelector<HTMLElement>(`[data-item-index="${CSS.escape(anchor.index)}"]`);
+  if (!row) return 0;
+  return row.getBoundingClientRect().top - scroller.getBoundingClientRect().top - anchor.top;
+}
+
+/**
+ * Scroll anchoring for the virtualized transcript.
+ *
+ * react-virtuoso sizes rows it has never rendered at the size of the row it
+ * measured most recently. Transcript rows differ by an order of magnitude — a
+ * one-line activity row against a screen-tall Markdown answer — so the first
+ * time the user scrolls up through a region, real heights replace those
+ * guesses and the content above the viewport changes height by hundreds of
+ * pixels at a time. Virtuoso compensates for some of those corrections and
+ * drops others; every dropped one shoves the transcript down the screen
+ * mid-gesture, which is the rapid jitter that shows up on a long thread.
+ *
+ * So re-anchor: remember one row near the top of the viewport, and after any
+ * layout pass that moved it on screen without a scroll having asked for it,
+ * put it back. Rows resizing after mount — Markdown reflow, a late web font,
+ * an image finishing — land on the same path.
+ *
+ * Only while the user is away from the bottom. At the bottom, `followOutput`
+ * and the initial positioning own the scroll offset, and this must not enter
+ * a tug of war with them over a streaming answer.
+ */
+export function attachTimelineScrollAnchor(
+  scroller: HTMLElement,
+  isEnabled: () => boolean,
+): () => void {
+  let anchor: TimelineScrollAnchor | null = null;
+  let correcting = false;
+  const settle = () => {
+    if (correcting) return;
+    if (!isEnabled()) {
+      anchor = null;
+      return;
+    }
+    correcting = true;
+    try {
+      const drift = anchor ? timelineAnchorDrift(scroller, anchor) : 0;
+      // Sub-pixel differences are rounding in the measured rects, not motion.
+      if (Math.abs(drift) >= 1) scroller.scrollTop += drift;
+      anchor = readTimelineAnchor(scroller);
+    } finally {
+      correcting = false;
+    }
+  };
+  /**
+   * Scrolling moves the anchored row on screen on purpose, so the ordinary
+   * response is to re-read it and treat the new position as the truth — that
+   * covers the reader's own gesture, a search jump, and the virtualizer's
+   * compensation for a resize it did handle.
+   *
+   * Unless the content changed size in between. Reading `top` forces layout,
+   * so a scroll delivered in the same frame as a row resize would otherwise
+   * measure the moved position and quietly adopt the shift as intended.
+   */
+  const onScroll = () => {
+    if (anchor && scroller.scrollHeight !== anchor.contentHeight) settle();
+    else anchor = isEnabled() ? readTimelineAnchor(scroller) : null;
+  };
+
+  scroller.addEventListener("scroll", onScroll, { passive: true });
+  // Row sizes are corrected during layout, so the observer — which runs after
+  // layout and before paint — is the last moment a shift can be undone without
+  // the user seeing it. Setting scrollTop resizes nothing, so this cannot feed
+  // itself a second notification.
+  const list = scroller.querySelector<HTMLElement>('[data-testid="virtuoso-item-list"]');
+  const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(settle);
+  if (list) observer?.observe(list);
+  return () => {
+    scroller.removeEventListener("scroll", onScroll);
+    observer?.disconnect();
+  };
+}
+
 export function ChatTimeline({
   messages,
   activities,
@@ -657,18 +761,42 @@ export function ChatTimeline({
   // a user who reaches for the transcript inside the settle window is not
   // pulled back down by the next measurement pass.
   const detachScrollIntentRef = useRef<(() => void) | null>(null);
+  // Anchoring is for a user who has deliberately left the bottom. While the
+  // transcript is pinned to its newest entry, `followOutput` and the initial
+  // positioning own the scroll offset.
+  const atBottomRef = useRef(true);
+  const anchoringEnabled = useCallback(
+    () => !atBottomRef.current && !initialPositionPendingRef.current,
+    [],
+  );
   const attachScrollIntent = useCallback((scroller: HTMLElement | Window | null) => {
     detachScrollIntentRef.current?.();
     detachScrollIntentRef.current = null;
     if (!scroller) return;
-    const cancel = () => endInitialPositioning();
-    scroller.addEventListener("wheel", cancel, { passive: true });
-    scroller.addEventListener("touchmove", cancel, { passive: true });
-    detachScrollIntentRef.current = () => {
-      scroller.removeEventListener("wheel", cancel);
-      scroller.removeEventListener("touchmove", cancel);
+    const cancelWheel = (event: Event) => {
+      endInitialPositioning();
+      // Virtuoso reports `atBottom=false` from the resulting scroll event, but
+      // that is one event too late when a resumed transcript has only just
+      // hydrated. Enable anchoring before the first upward layout pass so the
+      // initial batch of size corrections cannot produce one large lurch.
+      if (!(event instanceof WheelEvent) || event.deltaY < 0) atBottomRef.current = false;
     };
-  }, [endInitialPositioning]);
+    const cancelTouch = () => {
+      endInitialPositioning();
+      atBottomRef.current = false;
+    };
+    scroller.addEventListener("wheel", cancelWheel, { passive: true });
+    scroller.addEventListener("touchmove", cancelTouch, { passive: true });
+    const detachAnchor = scroller instanceof Window ? undefined : attachTimelineScrollAnchor(scroller, anchoringEnabled);
+    detachScrollIntentRef.current = () => {
+      scroller.removeEventListener("wheel", cancelWheel);
+      scroller.removeEventListener("touchmove", cancelTouch);
+      detachAnchor?.();
+    };
+  }, [anchoringEnabled, endInitialPositioning]);
+  const trackAtBottom = useCallback((atBottom: boolean) => {
+    atBottomRef.current = atBottom;
+  }, []);
   useEffect(
     () => () => {
       detachScrollIntentRef.current?.();
@@ -725,6 +853,7 @@ export function ChatTimeline({
       components={VIRTUOSO_COMPONENTS}
       initialTopMostItemIndex={INITIAL_TIMELINE_POSITION}
       followOutput={followTimelineOutput}
+      atBottomStateChange={trackAtBottom}
       totalListHeightChanged={restoreInitialBottom}
       increaseViewportBy={{ top: 500, bottom: 800 }}
       // Keys are derived from item ids, never from the row index: the thinking
