@@ -13,6 +13,7 @@ import {
   describeChildAgentRoster,
   isValidChildAgentId,
   normalizeChildAgentId,
+  projectSubagentSettingsFromApp,
   readyChildAgentTargets,
   sanitizeChildAgentIdInput,
   sanitizeChildAgentLinks,
@@ -307,6 +308,43 @@ describe("project sub-agent policies", () => {
       maxConcurrent: 24,
       childAgents: { enabled: true, targets: [expect.objectContaining({ id: "terra" })] },
     });
+  });
+
+  it("repairs a saved project whose crew is larger than its parallel limit", () => {
+    const restored = sanitizeProjectSubagentSettings({
+      enabled: true,
+      maxConcurrent: 1,
+      childAgents: { enabled: true, targets: [target({ id: "one" }), target({ id: "two" }), target({ id: "three" })] },
+    });
+    expect(restored?.maxConcurrent).toBe(3);
+  });
+
+  it("counts every worker shown in the crew, including parked destinations", () => {
+    const parked = sanitizeProjectSubagentSettings({
+      enabled: true,
+      maxConcurrent: 1,
+      childAgents: {
+        enabled: true,
+        targets: [target({ id: "one" }), target({ id: "two", enabled: false }), target({ id: "three", enabled: false })],
+      },
+    });
+    expect(parked?.maxConcurrent).toBe(3);
+
+    const crossProviderOff = sanitizeProjectSubagentSettings({
+      enabled: true,
+      maxConcurrent: 2,
+      childAgents: { enabled: false, targets: [target({ id: "one" }), target({ id: "two" }), target({ id: "three" })] },
+    });
+    expect(crossProviderOff?.maxConcurrent).toBe(3);
+  });
+
+  it("never lets an unreadable parallel limit escape as NaN", () => {
+    expect(projectSubagentSettingsFromApp({
+      subagentsEnabled: true,
+      subagentMax: Number.NaN,
+      childAgents: { enabled: true, targets: [target({ id: "one" }), target({ id: "two" })] },
+    }).maxConcurrent).toBe(2);
+    expect(sanitizeProjectSubagentSettings({ enabled: true, maxConcurrent: "lots", childAgents: DEFAULT_CHILD_AGENT_SETTINGS })?.maxConcurrent).toBe(1);
   });
 
   it("overrides only sub-agent fields and otherwise inherits app settings", () => {

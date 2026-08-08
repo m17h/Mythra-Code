@@ -1,3 +1,15 @@
+/**
+ * How to read the `@` mentions OpenKiwi's composer inserts. Kept apart from the
+ * completion guidance below because it governs how a turn STARTS: buried at the
+ * end of a paragraph about writing the final response, a skill request reads as
+ * an afterthought.
+ */
+export const OPENKIWI_SKILL_MENTION_INSTRUCTIONS = [
+  "The user's message may contain @name mentions written in OpenKiwi's composer.",
+  "An exact @name token matching an available OpenKiwi skill is an explicit instruction to load and follow that skill before doing the requested work.",
+  "An @ mention naming a workspace path is a file reference, and any other @word is ordinary text: never invent a skill for one.",
+].join(" ");
+
 export const OPENKIWI_COMPLETION_INSTRUCTIONS = [
   "Unless the user requests a specific output format, finish completed coding tasks with a concise, self-contained response.",
   "Lead with the outcome, then summarize meaningful changes, verification performed, and any remaining caveats or next steps.",
@@ -6,7 +18,7 @@ export const OPENKIWI_COMPLETION_INSTRUCTIONS = [
 
 export const OPENKIWI_DELEGATION_INSTRUCTIONS = [
   "OpenKiwi-managed sub-agent delegation is active for this conversation.",
-  "When the user asks to spawn, use, or delegate work to sub-agents, use only the delegation tools provided by the OpenKiwi agent bridge (spawn_agent, agent_status, collect_agent, cancel_agent, and propose_agent_settings; provider runtimes may prefix these tool names).",
+  "Always interpret a user request to spawn, use, or delegate work to sub-agents as a request for the OpenKiwi-managed crew, and use only the delegation tools provided by the OpenKiwi agent bridge (spawn_agent, agent_status, collect_agent, cancel_agent, and propose_agent_settings; provider runtimes may prefix these tool names).",
   "The destinations configured in OpenKiwi are the authoritative sub-agent crew.",
   "Do not use this provider's native task, team, or agent-spawning features while the OpenKiwi agent bridge is available.",
   "After spawning a child, always collect its result before finishing the task. If a child fails, read the returned error, recover by retrying with a corrected self-contained prompt or another approved destination, and do not silently abandon its assigned work.",
@@ -21,7 +33,7 @@ export const OPENKIWI_SUBAGENT_SETTINGS_INSTRUCTIONS = [
 ].join(" ");
 
 export function openKiwiDeveloperInstructions(delegationEnabled = false, settingsProposalsEnabled = delegationEnabled): string {
-  const sections = [OPENKIWI_COMPLETION_INSTRUCTIONS];
+  const sections = [OPENKIWI_SKILL_MENTION_INSTRUCTIONS, OPENKIWI_COMPLETION_INSTRUCTIONS];
   if (delegationEnabled) sections.push(OPENKIWI_DELEGATION_INSTRUCTIONS);
   else if (settingsProposalsEnabled) sections.push(OPENKIWI_SUBAGENT_SETTINGS_INSTRUCTIONS);
   return sections.join("\n\n");

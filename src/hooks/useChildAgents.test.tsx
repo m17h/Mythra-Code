@@ -259,7 +259,9 @@ describe("useChildAgents", () => {
       });
       expect(applyProjectSubagentSettings).toHaveBeenCalledWith(
         "root-1",
-        expect.objectContaining({ maxConcurrent: 1 }),
+        // The existing four-worker crew is retained, so the project invariant
+        // repairs the requested limit instead of saving an impossible 1/4 setup.
+        expect.objectContaining({ maxConcurrent: 4 }),
       );
     });
 

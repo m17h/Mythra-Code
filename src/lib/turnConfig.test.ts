@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { ScheduleRunSettings } from "../types";
-import { OPENKIWI_COMPLETION_INSTRUCTIONS, OPENKIWI_DELEGATION_INSTRUCTIONS } from "./completionPrompt";
+import { OPENKIWI_DELEGATION_INSTRUCTIONS, openKiwiDeveloperInstructions } from "./completionPrompt";
+
+/** Skill-mention plus completion guidance: what every turn carries. */
+const BASE_INSTRUCTIONS = openKiwiDeveloperInstructions(false);
 import { childAgentMcpConfig, threadResumeParams, threadRuntimeConfig, threadStartParams } from "./turnConfig";
 
 const baseRun: ScheduleRunSettings = {
@@ -60,9 +63,9 @@ describe("OpenRouter runtime isolation", () => {
     const start = threadStartParams(baseRun, "/tmp/project", { interactive: true });
     const resume = threadResumeParams(baseRun, "thread-1", "/tmp/project");
 
-    expect(start.developerInstructions).toBe(OPENKIWI_COMPLETION_INSTRUCTIONS);
-    expect(start.config).toMatchObject({ developer_instructions: OPENKIWI_COMPLETION_INSTRUCTIONS });
-    expect(resume.developerInstructions).toBe(OPENKIWI_COMPLETION_INSTRUCTIONS);
+    expect(start.developerInstructions).toBe(BASE_INSTRUCTIONS);
+    expect(start.config).toMatchObject({ developer_instructions: BASE_INSTRUCTIONS });
+    expect(resume.developerInstructions).toBe(BASE_INSTRUCTIONS);
   });
 });
 
@@ -106,7 +109,7 @@ describe("cross-provider sub-agent bridge", () => {
       },
     });
     expect(without).toMatchObject({
-      developerInstructions: OPENKIWI_COMPLETION_INSTRUCTIONS,
+      developerInstructions: BASE_INSTRUCTIONS,
       config: { features: { multi_agent: true } },
     });
   });

@@ -278,14 +278,27 @@ export function sanitizeChildAgentSettings(stored: unknown): ChildAgentSettings 
   return { enabled: value.enabled === true, targets };
 }
 
+/** How many workers are configured in the crew window, enabled or parked. */
+export function childAgentCrewSize(childAgents: ChildAgentSettings): number {
+  return childAgents.targets.length;
+}
+
+/** A configured crew can never be larger than the number of children allowed. */
+export function crewSafeConcurrency(requested: unknown, childAgents: ChildAgentSettings): number {
+  const floor = Math.max(1, childAgentCrewSize(childAgents));
+  const asked = Math.floor(Number(requested)) || floor;
+  return Math.min(MAX_SUBAGENT_CONCURRENCY, Math.max(floor, asked));
+}
+
 /** Sanitize an optional project-local policy; null means inherit global. */
 export function sanitizeProjectSubagentSettings(stored: unknown): ProjectSubagentSettings | null {
   if (!stored || typeof stored !== "object") return null;
   const value = stored as Record<string, unknown>;
+  const childAgents = sanitizeChildAgentSettings(value.childAgents);
   return {
     enabled: value.enabled === true,
-    maxConcurrent: Math.min(MAX_SUBAGENT_CONCURRENCY, Math.max(1, Math.floor(Number(value.maxConcurrent)) || 1)),
-    childAgents: sanitizeChildAgentSettings(value.childAgents),
+    maxConcurrent: crewSafeConcurrency(value.maxConcurrent, childAgents),
+    childAgents,
   };
 }
 
@@ -293,10 +306,11 @@ export function projectSubagentSettingsFromApp(settings: Pick<
   AppSettings,
   "subagentsEnabled" | "subagentMax" | "childAgents"
 >): ProjectSubagentSettings {
+  const childAgents = sanitizeChildAgentSettings(settings.childAgents);
   return {
     enabled: settings.subagentsEnabled,
-    maxConcurrent: settings.subagentMax,
-    childAgents: sanitizeChildAgentSettings(settings.childAgents),
+    maxConcurrent: crewSafeConcurrency(settings.subagentMax, childAgents),
+    childAgents,
   };
 }
 

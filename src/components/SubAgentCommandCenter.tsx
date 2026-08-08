@@ -7,8 +7,10 @@ import {
   CHILD_AGENT_REASONING_EFFORTS,
   MAX_CHILD_AGENT_TARGETS,
   MAX_SUBAGENT_CONCURRENCY,
+  childAgentCrewSize,
   childAgentModel,
   childAgentTargetIssue,
+  crewSafeConcurrency,
   describeChildAgentReasoning,
   providerDisplayName,
   readyChildAgentTargets,
@@ -216,6 +218,10 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
     [readiness, targets],
   );
   const enabledCount = targets.filter((target) => target.enabled).length;
+  // Every worker shown in the crew counts. This keeps the configuration honest:
+  // a limit of three can never coexist with four destination cards.
+  const crewFloor = Math.max(1, childAgentCrewSize({ enabled: crossProviderOn, targets }));
+  const atCrewFloor = policy.maxConcurrent <= crewFloor;
   const dimmed = !delegationOn;
   const crossProviderReady = delegationOn && crossProviderOn && readyCount > 0;
 
@@ -340,12 +346,15 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
     const existing = policy.childAgents.targets;
     if (existing.length >= MAX_CHILD_AGENT_TARGETS) return;
     const target = newTargetFor(provider, existing);
+    const nextTargets = [...existing, target];
     onChange({
       ...policy,
       // Adding a worker is a clear statement of intent; turning the switches on
-      // for the user avoids a destination that silently does nothing.
+      // for the user avoids a destination that silently does nothing. A crew
+      // can never be larger than its parallel limit, so grow the limit with it.
       enabled: true,
-      childAgents: { enabled: true, targets: [...existing, target] },
+      maxConcurrent: crewSafeConcurrency(policy.maxConcurrent, { enabled: true, targets: nextTargets }),
+      childAgents: { enabled: true, targets: nextTargets },
     });
     setExpandedId(target.id);
   }, [onChange, policy]);
@@ -372,12 +381,21 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
             : "Manage the sub-agent crew for this thread"}
         onClick={() => (open ? close() : show())}
       >
-        {counts.active > 0
-          ? <span className="sa-trigger-pulse" aria-hidden="true"><UsersRound size={14} /></span>
-          : <UsersRound size={14} />}
-        {triggerLabel}
-        {!editable && <Lock size={11} className="sa-trigger-lock" aria-hidden="true" />}
-        {props.projectOverride && <em className="project-override-mark">project</em>}
+        {/* No viewBox on purpose: the rect is measured in real pixels, so the
+            traced corners stay the button's own radius however wide the label
+            makes it. `pathLength` keeps the dash pattern independent of that. */}
+        {counts.active > 0 && (
+          <svg className="sa-trigger-trace" aria-hidden="true" focusable="false">
+            <rect className="sa-trigger-trace-rail" width="100%" height="100%" rx="9" pathLength="100" />
+            <rect className="sa-trigger-trace-runner" width="100%" height="100%" rx="9" pathLength="100" />
+          </svg>
+        )}
+        <span className="sa-trigger-content">
+          <UsersRound size={14} aria-hidden="true" />
+          {triggerLabel}
+          {!editable && <Lock size={11} className="sa-trigger-lock" aria-hidden="true" />}
+          {props.projectOverride && <em className="project-override-mark">project</em>}
+        </span>
       </button>
 
       {/* Announced while the panel is closed; the open panel has its own
@@ -475,8 +493,11 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
                   <button
                     type="button"
                     aria-label="Fewer concurrent sub-agents"
-                    disabled={!policy.enabled || policy.maxConcurrent <= 1}
-                    onClick={() => onChange({ ...policy, maxConcurrent: Math.max(1, policy.maxConcurrent - 1) })}
+                    title={atCrewFloor
+                      ? `The limit cannot drop below the ${crewFloor} configured worker${crewFloor === 1 ? "" : "s"} in this crew.`
+                      : "Fewer concurrent sub-agents"}
+                    disabled={!policy.enabled || atCrewFloor}
+                    onClick={() => onChange({ ...policy, maxConcurrent: Math.max(crewFloor, policy.maxConcurrent - 1) })}
                   ><Minus size={12} /></button>
                   <strong key={policy.maxConcurrent} className="sa-flash">{policy.maxConcurrent}</strong>
                   <button

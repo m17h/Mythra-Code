@@ -80,7 +80,7 @@ describe("Composer", () => {
     const onSteer = vi.fn(async () => true);
     render(<Composer {...composerProps({ running: true, queueing: true, onSend, onSteer })} />);
     expect(screen.getByText("Enter queues")).toBeInTheDocument();
-    expect(screen.getByLabelText("Stop the active task")).toBeInTheDocument();
+    expect(screen.getByLabelText("Stop the active task and its sub-agents")).toBeInTheDocument();
     const textarea = screen.getByPlaceholderText("Ask anything");
     fireEvent.change(textarea, { target: { value: "next task" } });
     fireEvent.keyDown(textarea, { key: "Enter" });
@@ -97,7 +97,7 @@ describe("Composer", () => {
     // the running chrome must not promise either or start a second thread.
     const onSend = vi.fn(async () => true);
     render(<Composer {...composerProps({ running: true, queueing: false, onSend })} />);
-    expect(screen.getByLabelText("Stop the active task")).toBeInTheDocument();
+    expect(screen.getByLabelText("Stop the active task and its sub-agents")).toBeInTheDocument();
     expect(screen.queryByText("Enter queues")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Steer" })).not.toBeInTheDocument();
     const textarea = screen.getByPlaceholderText("Ask anything");
@@ -155,5 +155,106 @@ describe("Composer", () => {
     Object.defineProperty(textarea, "scrollHeight", { configurable: true, value: 260 });
     fireEvent.change(textarea, { target: { value: "An even longer prompt that needs more room than the expanded composer allows." } });
     expect(textarea).toHaveStyle({ height: `${COMPOSER_INPUT_MAX_HEIGHT}px`, overflowY: "auto" });
+  });
+
+  it("opens enabled skills on @, filters them, and inserts a blue skill token", async () => {
+    render(<Composer {...composerProps({
+      skills: [
+        { name: "release-check", description: "Verify a release" },
+        { name: "hatch-pet", description: "Build an animated pet" },
+      ],
+    })} />);
+    const textarea = screen.getByPlaceholderText("Ask anything");
+    fireEvent.change(textarea, { target: { value: "Use @" } });
+    expect(screen.getByRole("listbox", { name: "Mention suggestions" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /release-check/i })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /hatch-pet/i })).toBeInTheDocument();
+
+    fireEvent.change(textarea, { target: { value: "Use @hat" } });
+    expect(screen.queryByRole("option", { name: /release-check/i })).not.toBeInTheDocument();
+    fireEvent.mouseDown(screen.getByRole("option", { name: /hatch-pet/i }));
+
+    expect(textarea).toHaveValue("Use @hatch-pet ");
+    expect(document.querySelector(".composer-skill-token")).toHaveTextContent("@hatch-pet");
+    expect(textarea).toHaveClass("has-skill-mentions");
+  });
+
+  it("keeps @file autocomplete alongside skill suggestions after typing", async () => {
+    const searchFiles = vi.fn(async () => ["src/hatch.ts"]);
+    render(<Composer {...composerProps({ skills: [{ name: "hatch-pet" }], searchFiles })} />);
+    const textarea = screen.getByPlaceholderText("Ask anything");
+    fireEvent.change(textarea, { target: { value: "Check @hat" } });
+    await waitFor(() => expect(searchFiles).toHaveBeenCalledWith("hat"));
+    await waitFor(() => expect(screen.getByRole("option", { name: /src\/hatch.ts/i })).toBeInTheDocument());
+    expect(screen.getByRole("option", { name: /hatch-pet/i })).toBeInTheDocument();
+  });
+
+  it("treats @ as a mention only at the start of a word", async () => {
+    const onSend = vi.fn(async () => true);
+    render(<Composer {...composerProps({ skills: [{ name: "hatch-pet" }], onSend })} />);
+    const textarea = screen.getByPlaceholderText("Ask anything");
+
+    fireEvent.change(textarea, { target: { value: "mail me at morgan@hat" } });
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(document.querySelector(".composer-skill-token")).toBeNull();
+    // Enter still sends rather than accepting a suggestion the user never saw.
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith("mail me at morgan@hat"));
+  });
+
+  it("keeps a mention anchored to its leading space when accepted", () => {
+    render(<Composer {...composerProps({ skills: [{ name: "hatch-pet" }] })} />);
+    const textarea = screen.getByPlaceholderText("Ask anything");
+    fireEvent.change(textarea, { target: { value: "please run @hat" } });
+    fireEvent.mouseDown(screen.getByRole("option", { name: /hatch-pet/i }));
+    expect(textarea).toHaveValue("please run @hatch-pet ");
+  });
+
+  it("announces the highlighted suggestion to assistive tech", () => {
+    render(<Composer {...composerProps({ skills: [{ name: "release-check" }, { name: "hatch-pet" }] })} />);
+    const textarea = screen.getByPlaceholderText("Ask anything");
+    expect(textarea).toHaveAttribute("aria-expanded", "false");
+
+    fireEvent.change(textarea, { target: { value: "Use @" } });
+    const listbox = screen.getByRole("listbox", { name: "Mention suggestions" });
+    expect(textarea).toHaveAttribute("aria-expanded", "true");
+    expect(textarea).toHaveAttribute("aria-controls", listbox.id);
+    const [first, second] = screen.getAllByRole("option");
+    expect(textarea).toHaveAttribute("aria-activedescendant", first.id);
+
+    fireEvent.keyDown(textarea, { key: "ArrowDown" });
+    expect(textarea).toHaveAttribute("aria-activedescendant", second.id);
+  });
+
+  it("keeps the menu closed when a dismissed query's file search lands late", async () => {
+    // The debounced lookup from the last keystroke must not resurrect a menu
+    // the user escaped, nor one that accepting a suggestion just closed.
+    const searchFiles = vi.fn(async () => ["src/hatch.ts"]);
+    render(<Composer {...composerProps({ skills: [{ name: "hatch-pet" }], searchFiles })} />);
+    const textarea = screen.getByPlaceholderText("Ask anything");
+
+    fireEvent.change(textarea, { target: { value: "Check @hat" } });
+    expect(screen.getByRole("listbox", { name: "Mention suggestions" })).toBeInTheDocument();
+    fireEvent.keyDown(textarea, { key: "Escape" });
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(searchFiles).not.toHaveBeenCalled();
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+  });
+
+  it("keeps Stop available while children outlive their parent turn", () => {
+    const onStop = vi.fn();
+    render(<Composer {...composerProps({ running: false, childrenRunning: true, onStop })} />);
+    const stop = screen.getByLabelText("Stop the sub-agents still running for this thread");
+    fireEvent.click(stop);
+    expect(onStop).toHaveBeenCalledOnce();
+    // Nothing is running here, so the composer still accepts a new message.
+    expect(screen.queryByText("Enter queues")).not.toBeInTheDocument();
+  });
+
+  it("offers no Stop when neither the turn nor any child is live", () => {
+    render(<Composer {...composerProps({ running: false, childrenRunning: false })} />);
+    expect(screen.queryByRole("button", { name: /^Stop the/ })).not.toBeInTheDocument();
   });
 });

@@ -35,7 +35,6 @@ import { AnthropicLogo, ClaudeLogo, CodexLogo, CursorDarkAppIcon, CursorLogo, Op
 import { updateProgress, type AppUpdater } from "../lib/appUpdater";
 import {
   projectSubagentSettingsFromApp,
-  sanitizeChildAgentSettings,
   sanitizeProjectSubagentOverrides,
   type ChildAgentReadiness,
 } from "../lib/childAgents";
@@ -383,8 +382,9 @@ export function SettingsModal({
   };
   const saveSettings = () => {
     const nextProjects = sanitizeProjectSubagentOverrides(localProjects);
+    const normalizedSubagents = projectSubagentSettingsFromApp(local);
     onProjects(nextProjects);
-    onSave({ ...local, childAgents: sanitizeChildAgentSettings(local.childAgents), subagentMax: Math.min(24, Math.max(1, local.subagentMax)) });
+    onSave({ ...local, childAgents: normalizedSubagents.childAgents, subagentMax: normalizedSubagents.maxConcurrent });
   };
 
   return (

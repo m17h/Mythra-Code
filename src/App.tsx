@@ -83,7 +83,7 @@ import { isClaudeThread, isCursorThread, isLocalSubscriptionThread, modelForProv
 import { basename, normalizedProjectPath } from "./lib/paths";
 import { resolveSystemPrompt } from "./lib/systemPrompt";
 import { providerAccountUsage } from "./lib/providerUsage";
-import { OPENKIWI_COMPLETION_INSTRUCTIONS } from "./lib/completionPrompt";
+import { openKiwiDeveloperInstructions } from "./lib/completionPrompt";
 import { providerForArchivedThread } from "./lib/threadArchive";
 import { buildProviderHandoffPrompt, sanitizePendingHandoff } from "./lib/providerHandoff";
 import { deleteThreadTurnDurations } from "./lib/turnDurations";
@@ -91,6 +91,7 @@ import {
   childAgentModel,
   describeChildAgentRoster,
   childAgentPolicyForThread,
+  crewSafeConcurrency,
   providerDisplayName,
   projectSubagentSettingsFromApp,
   readyChildAgentTargets,
@@ -106,7 +107,7 @@ import {
 } from "./lib/childAgents";
 import { cacheChildAgentPolicy, ensureChildAgentBridge, invalidateChildAgentLaunch, releaseChildAgentSessions } from "./lib/childAgentSessions";
 import { forgetSubagentCapabilities, seedSubagentCapabilities, subagentCapabilitySignature } from "./lib/threadCapabilities";
-import { collectSubAgentWorkers, type SubAgentWorker } from "./lib/subAgentActivity";
+import { collectSubAgentWorkers, isSubAgentWorkerActive, type SubAgentWorker } from "./lib/subAgentActivity";
 import { useChildAgents } from "./hooks/useChildAgents";
 import { reorderProjects, type ProjectDropPosition } from "./lib/projectOrdering";
 import {
@@ -143,7 +144,8 @@ const initialOnboardingVersion = loadStored<number>("kiwi.onboardingVersion", 0)
 const establishedInstall = isEstablishedOpenKiwiInstall({ projects: initialProjects.length, knownThreads: Object.keys(initialKnownThreads).length, hasStoredSettings: localStorage.getItem("kiwi.settings") !== null, hasSkillsFolder: Boolean(loadStored<string>("kiwi.skillsFolder", "")) });
 const initialOnboardingOpen = initialOnboardingVersion < ONBOARDING_VERSION && !establishedInstall;
 const storedSettings = loadStored<Partial<AppSettings>>("kiwi.settings", {});
-const initialSettings: AppSettings = { ...DEFAULT_SETTINGS, ...storedSettings, openAiLogo: storedSettings.openAiLogo === "codex" ? "codex" : "openai", claudeLogo: storedSettings.claudeLogo === "anthropic" ? "anthropic" : "claude", cursorLogo: storedSettings.cursorLogo === "app-dark" ? "app-dark" : "cube", subagentMax: Math.min(24, Math.max(1, Number(storedSettings.subagentMax) || DEFAULT_SETTINGS.subagentMax)), childAgents: sanitizeChildAgentSettings(storedSettings.childAgents), model: modelForProvider(storedSettings.provider ?? DEFAULT_SETTINGS.provider, storedSettings.model ?? DEFAULT_SETTINGS.model), theme: THEMES.some((theme) => theme.id === storedSettings.theme) ? storedSettings.theme! : DEFAULT_SETTINGS.theme, uiScale: Math.min(150, Math.max(80, Number(storedSettings.uiScale) || DEFAULT_SETTINGS.uiScale)) };
+const initialChildAgents = sanitizeChildAgentSettings(storedSettings.childAgents);
+const initialSettings: AppSettings = { ...DEFAULT_SETTINGS, ...storedSettings, openAiLogo: storedSettings.openAiLogo === "codex" ? "codex" : "openai", claudeLogo: storedSettings.claudeLogo === "anthropic" ? "anthropic" : "claude", cursorLogo: storedSettings.cursorLogo === "app-dark" ? "app-dark" : "cube", subagentMax: crewSafeConcurrency(Number(storedSettings.subagentMax) || DEFAULT_SETTINGS.subagentMax, initialChildAgents), childAgents: initialChildAgents, model: modelForProvider(storedSettings.provider ?? DEFAULT_SETTINGS.provider, storedSettings.model ?? DEFAULT_SETTINGS.model), theme: THEMES.some((theme) => theme.id === storedSettings.theme) ? storedSettings.theme! : DEFAULT_SETTINGS.theme, uiScale: Math.min(150, Math.max(80, Number(storedSettings.uiScale) || DEFAULT_SETTINGS.uiScale)) };
 
 function permissionLabel(mode: PermissionMode): string {
   if (mode === "read-only") return "Read only";
@@ -479,6 +481,14 @@ export default function App() {
     [activeThreadId, agentRecords, agentRunStartedAt, childAgentLinks, threadTaskStatuses],
   );
   const running = activeThreadId ? taskStatus === "starting" || taskStatus === "running" : startingDraftTurn;
+  // A root turn can end — normally, or by failing — while children it spawned
+  // are still editing the folder. Stop has to stay reachable for exactly that
+  // window, or the only cutoff left would be one worker at a time inside the
+  // crew panel.
+  const childrenRunning = useMemo(
+    () => subAgentWorkers.some((worker) => isSubAgentWorkerActive(worker.status)),
+    [subAgentWorkers],
+  );
   // Standard approvals for the thread being viewed render inline in its
   // timeline; the modal is reserved for background threads and for complex
   // input/elicitation forms.
@@ -559,6 +569,10 @@ export default function App() {
         .slice(0, 8);
     };
   }, [activeProjectPath]);
+  const composerSkills = useMemo(
+    () => skills.filter((skill) => skill.enabled).map((skill) => ({ name: skill.name, description: skill.description })),
+    [skills],
+  );
 
   const activeOpenRouterPricing = useMemo<ModelPricing | undefined>(() => {
     if (effectiveSettings.provider !== "openrouter") return undefined;
@@ -2665,7 +2679,7 @@ export default function App() {
     }
     try {
       await ensureSkillRoots();
-      const result = await rpc<{ thread: Thread }>("thread/fork", { threadId: checkpoint?.threadId ?? activeThread.id, lastTurnId: checkpoint?.turnId, cwd: activeWorkspace?.path, runtimeWorkspaceRoots: activeWorkspace ? [activeWorkspace.path] : undefined, model: effectiveSettings.model, modelProvider: effectiveSettings.provider === "openrouter" ? "openrouter" : undefined, config: threadRuntimeConfig(effectiveSettings, { customAgents, modelContextWindow: effectiveSettings.provider === "openrouter" ? openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.context_length : undefined }), baseInstructions: effectiveSettings.systemPrompt, developerInstructions: OPENKIWI_COMPLETION_INSTRUCTIONS });
+      const result = await rpc<{ thread: Thread }>("thread/fork", { threadId: checkpoint?.threadId ?? activeThread.id, lastTurnId: checkpoint?.turnId, cwd: activeWorkspace?.path, runtimeWorkspaceRoots: activeWorkspace ? [activeWorkspace.path] : undefined, model: effectiveSettings.model, modelProvider: effectiveSettings.provider === "openrouter" ? "openrouter" : undefined, config: threadRuntimeConfig(effectiveSettings, { customAgents, modelContextWindow: effectiveSettings.provider === "openrouter" ? openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.context_length : undefined }), baseInstructions: effectiveSettings.systemPrompt, developerInstructions: openKiwiDeveloperInstructions(false) });
       if (activeWorkspace) bindThreadToProject(result.thread.id, activeWorkspace.path);
       rememberThread(result.thread);
       persistThreadModel(result.thread.id, effectiveSettings.model);
@@ -3280,7 +3294,7 @@ export default function App() {
   }, [setScheduledTasks]);
 
   useAppShortcuts({
-    running: Boolean(running && activeThread),
+    running: Boolean((running || childrenRunning) && activeThread),
     modalOpen: onboardingOpen || settingsOpen || commandPaletteOpen || runtimeSetupOpen || authRequiredOpen || Boolean(pendingApproval) || permissionOpen,
     commandPaletteOpen,
     threadOpen: Boolean(activeThreadId),
@@ -3915,12 +3929,14 @@ export default function App() {
                 ref={composerRef}
                 threadKey={activeThreadId ?? `new:${activeWorkspace.path}`}
                 running={running}
+                childrenRunning={childrenRunning}
                 queueing={Boolean(running && activeThread)}
                 dropActive={dropActive}
                 placeholder={running && activeThread ? "Queue a follow-up for after this run…" : activeWorkspace.isChat ? "Ask anything — no project folder attached…" : `Ask OpenKiwi to work in ${activeProject?.name ?? "this project"}…`}
                 attachments={attachments}
                 queuedTurns={queuedTurns}
                 searchFiles={searchProjectFiles}
+                skills={composerSkills}
                 onRemoveAttachment={(path) => setAttachments((current) => current.filter((entry) => entry.path !== path))}
                 onPasteImages={(items) => void pasteImages(items)}
                 onSend={sendMessage}

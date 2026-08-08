@@ -2,13 +2,15 @@ import {
   forwardRef,
   useCallback,
   useEffect,
+  useId,
   useImperativeHandle,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
 } from "react";
-import { ArrowUp, CircleStop, CornerUpRight, FileCode2, ListPlus, LoaderCircle, Paperclip, RotateCw, Trash2, X } from "lucide-react";
+import { ArrowUp, CircleStop, CornerUpRight, FileCode2, ListPlus, LoaderCircle, Paperclip, RotateCw, Sparkles, Trash2, X } from "lucide-react";
 import { loadStored, storeValue } from "../lib/storage";
 import type { QueuedTurn } from "../lib/taskStore";
 import type { AttachmentRecord } from "./StudioDock";
@@ -60,7 +62,20 @@ export function resetDraftStoreForTests(): void {
   draftSaveTimer = null;
 }
 
-const MENTION_PATTERN = /@([\w./-]*)$/;
+// A mention only starts a word. Without that anchor a bare `@` typed inside an
+// email address opens the skill launcher, and the next Enter would insert a
+// skill instead of sending the message.
+const MENTION_PATTERN = /(^|\s)@([\w./-]*)$/;
+const SKILL_TOKEN_PATTERN = /(^|\s)@([a-z0-9][a-z0-9-]*)/gi;
+
+export interface ComposerSkill {
+  name: string;
+  description?: string;
+}
+
+type MentionResult =
+  | { kind: "skill"; value: string; label: string; detail?: string }
+  | { kind: "file"; value: string; label: string; detail?: undefined };
 
 export const COMPOSER_INPUT_MIN_HEIGHT = 68;
 export const COMPOSER_INPUT_MAX_HEIGHT = COMPOSER_INPUT_MIN_HEIGHT * 2;
@@ -80,6 +95,11 @@ export const Composer = forwardRef<ComposerHandle, {
   threadKey: string;
   running: boolean;
   /**
+   * Children spawned by this thread are still live even though its own turn is
+   * not. Stop stays offered so the crew can always be cut off from one place.
+   */
+  childrenRunning?: boolean;
+  /**
    * True only when a started thread is running, which is the one case where a
    * plain send queues a follow-up and Steer can reach an active turn. A draft
    * thread whose first turn is still starting is `running` but not `queueing`:
@@ -93,6 +113,7 @@ export const Composer = forwardRef<ComposerHandle, {
   modelControls?: ReactNode;
   controls: ReactNode;
   searchFiles?: (query: string) => Promise<string[]>;
+  skills?: ComposerSkill[];
   onRemoveAttachment: (path: string) => void;
   onPasteImages: (items: DataTransferItemList) => void;
   onSend: (text: string) => Promise<boolean>;
@@ -103,13 +124,17 @@ export const Composer = forwardRef<ComposerHandle, {
   onStop: () => void;
 }>(function Composer(props, ref) {
   const [draft, setDraftState] = useState(() => draftFor(props.threadKey));
-  const [mentions, setMentions] = useState<{ open: boolean; results: string[]; index: number }>({ open: false, results: [], index: 0 });
+  const [mentions, setMentions] = useState<{ open: boolean; results: MentionResult[]; index: number }>({ open: false, results: [], index: 0 });
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const highlightRef = useRef<HTMLDivElement>(null);
   const threadKeyRef = useRef(props.threadKey);
   const mentionRequestRef = useRef(0);
   const mentionTimerRef = useRef<number | null>(null);
   const searchFilesRef = useRef(props.searchFiles);
   searchFilesRef.current = props.searchFiles;
+  const skillsRef = useRef(props.skills ?? []);
+  skillsRef.current = props.skills ?? [];
+  const mentionMenuId = useId();
 
   useEffect(() => () => {
     if (mentionTimerRef.current !== null) window.clearTimeout(mentionTimerRef.current);
@@ -142,33 +167,66 @@ export const Composer = forwardRef<ComposerHandle, {
     focus: () => textareaRef.current?.focus(),
   }), [setDraft]);
 
-  const closeMentions = useCallback(() => setMentions({ open: false, results: [], index: 0 }), []);
+  // Dismissing also abandons the file lookup already in flight. Without that,
+  // the debounced search from the last keystroke resolves a moment later and
+  // re-opens a menu the user just escaped, or that accepting a skill closed.
+  const closeMentions = useCallback(() => {
+    mentionRequestRef.current += 1;
+    if (mentionTimerRef.current !== null) {
+      window.clearTimeout(mentionTimerRef.current);
+      mentionTimerRef.current = null;
+    }
+    setMentions({ open: false, results: [], index: 0 });
+  }, []);
 
   const updateMentions = useCallback((text: string, caret: number) => {
     const match = MENTION_PATTERN.exec(text.slice(0, caret));
-    if (!match || !searchFilesRef.current) {
+    if (!match) {
       closeMentions();
       return;
     }
-    const query = match[1];
+    const query = match[2];
+    const normalizedQuery = query.toLowerCase();
+    const skillResults: MentionResult[] = skillsRef.current
+      .filter((skill) => !normalizedQuery
+        || skill.name.toLowerCase().includes(normalizedQuery)
+        || skill.description?.toLowerCase().includes(normalizedQuery))
+      .sort((left, right) => {
+        const leftStarts = left.name.toLowerCase().startsWith(normalizedQuery);
+        const rightStarts = right.name.toLowerCase().startsWith(normalizedQuery);
+        return Number(rightStarts) - Number(leftStarts) || left.name.localeCompare(right.name);
+      })
+      .slice(0, 8)
+      .map((skill) => ({ kind: "skill", value: skill.name, label: skill.name, detail: skill.description }));
     const requestId = ++mentionRequestRef.current;
     if (mentionTimerRef.current !== null) window.clearTimeout(mentionTimerRef.current);
+    setMentions({ open: skillResults.length > 0, results: skillResults, index: 0 });
+    // An empty @ is the skill launcher. File lookup remains available once the
+    // user starts typing, preserving the existing @file workflow.
+    if (!query.trim() || !searchFilesRef.current) return;
     mentionTimerRef.current = window.setTimeout(() => {
       mentionTimerRef.current = null;
       if (mentionRequestRef.current !== requestId) return;
       searchFilesRef.current?.(query)
         .then((results) => {
           if (mentionRequestRef.current !== requestId) return;
-          setMentions({ open: results.length > 0, results: results.slice(0, 8), index: 0 });
+          const fileResults: MentionResult[] = results.slice(0, 8).map((path) => ({ kind: "file", value: path, label: path }));
+          const combined = [...skillResults, ...fileResults].slice(0, 12);
+          setMentions({ open: combined.length > 0, results: combined, index: 0 });
         })
-        .catch(() => closeMentions());
+        // A failed lookup falls back to the skills alone — unless this query was
+        // superseded or dismissed, in which case it must stay closed.
+        .catch(() => {
+          if (mentionRequestRef.current !== requestId) return;
+          setMentions({ open: skillResults.length > 0, results: skillResults, index: 0 });
+        });
     }, 150);
   }, [closeMentions]);
 
-  const insertMention = useCallback((path: string) => {
+  const insertMention = useCallback((result: MentionResult) => {
     const textarea = textareaRef.current;
     const caret = textarea?.selectionStart ?? draft.length;
-    const before = draft.slice(0, caret).replace(MENTION_PATTERN, `@${path} `);
+    const before = draft.slice(0, caret).replace(MENTION_PATTERN, (_match, lead: string) => `${lead}@${result.value} `);
     const next = `${before}${draft.slice(caret)}`;
     setDraft(next);
     closeMentions();
@@ -177,6 +235,28 @@ export const Composer = forwardRef<ComposerHandle, {
       textarea?.setSelectionRange(before.length, before.length);
     });
   }, [closeMentions, draft, setDraft]);
+
+  // Blue @skill tokens are painted by a mirror layer behind a transparent
+  // textarea, so this runs on every keystroke: only recompute when the text or
+  // the installed skills actually change.
+  const skills = props.skills;
+  const { highlightedDraft, hasSkillMentions } = useMemo(() => {
+    const skillNames = new Set((skills ?? []).map((skill) => skill.name.toLowerCase()));
+    const parts: ReactNode[] = [];
+    let offset = 0;
+    if (skillNames.size) {
+      for (const match of draft.matchAll(SKILL_TOKEN_PATTERN)) {
+        const index = (match.index ?? 0) + match[1].length;
+        const token = `@${match[2]}`;
+        if (!skillNames.has(match[2].toLowerCase())) continue;
+        parts.push(draft.slice(offset, index));
+        parts.push(<span className="composer-skill-token" key={`${index}:${token}`}>{token}</span>);
+        offset = index + token.length;
+      }
+    }
+    parts.push(draft.slice(offset));
+    return { highlightedDraft: parts, hasSkillMentions: offset > 0 };
+  }, [draft, skills]);
 
   const send = useCallback(async (mode: "default" | "steer" = "default") => {
     const text = draft.trim();
@@ -275,26 +355,41 @@ export const Composer = forwardRef<ComposerHandle, {
       )}
       <div className="composer-input-wrap">
         {mentions.open && (
-          <div className="mention-menu" role="listbox" aria-label="File suggestions">
-            {mentions.results.map((path, index) => (
+          <div className="mention-menu" id={mentionMenuId} role="listbox" aria-label="Mention suggestions">
+            {mentions.results.map((result, index) => (
               <button
-                key={path}
+                key={`${result.kind}:${result.value}`}
+                id={`${mentionMenuId}-${index}`}
                 role="option"
                 aria-selected={index === mentions.index}
-                className={index === mentions.index ? "active" : ""}
+                className={`${index === mentions.index ? "active" : ""} ${result.kind}`}
                 onMouseDown={(event) => {
                   event.preventDefault();
-                  insertMention(path);
+                  insertMention(result);
                 }}
               >
-                <FileCode2 size={12} />
-                <span>{path}</span>
+                {result.kind === "skill" ? <Sparkles size={12} /> : <FileCode2 size={12} />}
+                <span className="mention-result-copy">
+                  <strong>{result.label}</strong>
+                  {result.detail && <small>{result.detail}</small>}
+                </span>
+                <em>{result.kind === "skill" ? "Skill" : "File"}</em>
               </button>
             ))}
           </div>
         )}
+        {hasSkillMentions && (
+          <div ref={highlightRef} className="composer-input-highlight" aria-hidden="true">{highlightedDraft}</div>
+        )}
         <textarea
           ref={textareaRef}
+          className={hasSkillMentions ? "has-skill-mentions" : undefined}
+          // The @ menu is an inline listbox the textarea drives, so the active
+          // option has to be announced from here — it never takes focus itself.
+          aria-autocomplete="list"
+          aria-expanded={mentions.open}
+          aria-controls={mentions.open ? mentionMenuId : undefined}
+          aria-activedescendant={mentions.open ? `${mentionMenuId}-${mentions.index}` : undefined}
           value={draft}
           onChange={(event) => {
             setDraft(event.target.value);
@@ -304,6 +399,12 @@ export const Composer = forwardRef<ComposerHandle, {
             if (Array.from(event.clipboardData.items).some((item) => item.type.startsWith("image/"))) {
               event.preventDefault();
               props.onPasteImages(event.clipboardData.items);
+            }
+          }}
+          onScroll={(event) => {
+            if (highlightRef.current) {
+              highlightRef.current.scrollTop = event.currentTarget.scrollTop;
+              highlightRef.current.scrollLeft = event.currentTarget.scrollLeft;
             }
           }}
           onKeyDown={(event) => {
@@ -344,8 +445,13 @@ export const Composer = forwardRef<ComposerHandle, {
           {props.queueing && (
             <span className="queue-hint" title="Enter queues this message as the next turn. Use Steer to change the work already in progress."><ListPlus size={12} /> Enter queues</span>
           )}
-          {props.running && (
-            <button className="stop-button" onClick={props.onStop} title="Stop the active task (Esc)" aria-label="Stop the active task">
+          {(props.running || props.childrenRunning) && (
+            <button
+              className="stop-button"
+              onClick={props.onStop}
+              title={props.running ? "Stop the active task and its sub-agents (Esc)" : "Stop the sub-agents still running for this thread (Esc)"}
+              aria-label={props.running ? "Stop the active task and its sub-agents" : "Stop the sub-agents still running for this thread"}
+            >
               <CircleStop size={17} />
             </button>
           )}

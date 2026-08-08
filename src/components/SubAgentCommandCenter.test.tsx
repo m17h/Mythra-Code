@@ -122,7 +122,13 @@ describe("SubAgentCommandCenter trigger", () => {
     view({ workers: [worker(), worker({ id: "child-2", status: "completed" })] });
     expect(trigger()).toHaveTextContent("Agents 1/4");
     expect(trigger().className).toContain("live");
+    expect(trigger().querySelector(".sa-trigger-trace")).toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("1 working · 1 done");
+  });
+
+  it("does not render the activity outline when no child is active", () => {
+    view({ workers: [worker({ status: "completed" })] });
+    expect(trigger().querySelector(".sa-trigger-trace")).not.toBeInTheDocument();
   });
 
   it("marks a project-scoped policy", () => {
@@ -279,6 +285,38 @@ describe("SubAgentCommandCenter editing a draft policy", () => {
         targets: [expect.objectContaining({ id: "cursor" }), expect.objectContaining({ id: "cursor-2" })],
       }),
     }));
+  });
+
+  it("automatically grows the parallel limit when a worker makes the crew larger", async () => {
+    const { onChange } = await open({
+      policy: { ...POLICY, maxConcurrent: 2, childAgents: { enabled: true, targets: [REVIEWER, BUILDER] } },
+    });
+    await userEvent.click(screen.getByRole("button", { name: "Add Cursor destination" }));
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
+      maxConcurrent: 3,
+      childAgents: expect.objectContaining({ targets: expect.arrayContaining([expect.objectContaining({ provider: "cursor" })]) }),
+    }));
+  });
+
+  it("does not let the parallel limit fall below the configured crew size", async () => {
+    await open({
+      policy: { ...POLICY, maxConcurrent: 2, childAgents: { enabled: true, targets: [REVIEWER, BUILDER] } },
+    });
+    expect(screen.getByRole("button", { name: "Fewer concurrent sub-agents" })).toBeDisabled();
+  });
+
+  it("counts parked destinations when holding the configured crew floor", async () => {
+    await open({
+      policy: { ...POLICY, maxConcurrent: 2, childAgents: { enabled: true, targets: [REVIEWER, { ...BUILDER, enabled: false }] } },
+    });
+    expect(screen.getByRole("button", { name: "Fewer concurrent sub-agents" })).toBeDisabled();
+  });
+
+  it("keeps the configured crew floor when cross-provider is switched off", async () => {
+    await open({
+      policy: { ...POLICY, maxConcurrent: 2, childAgents: { enabled: false, targets: [REVIEWER, BUILDER] } },
+    });
+    expect(screen.getByRole("button", { name: "Fewer concurrent sub-agents" })).toBeDisabled();
   });
 
   it("reveals provider, model, and reasoning controls for a destination", async () => {
