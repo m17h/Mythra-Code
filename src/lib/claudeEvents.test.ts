@@ -209,6 +209,20 @@ describe("Claude event routing", () => {
     expect(context.onStatus).toHaveBeenCalledWith("Stopped");
   });
 
+  it("does not disguise a recovered provider exit as a user stop", () => {
+    useTaskStore.getState().setActiveThread("thread-1");
+    send({ type: "stream_event", event: { type: "message_start", message: { id: "message-1" } } });
+    useTaskStore.getState().setTaskStatus("thread-1", "interrupted");
+    send({ type: "openkiwi_exit", message: "MCP request ended unexpectedly" });
+
+    expect(useTaskStore.getState().tasks["thread-1"]).toMatchObject({
+      status: "error",
+      error: "MCP request ended unexpectedly",
+    });
+    expect(context.onError).toHaveBeenCalledWith("MCP request ended unexpectedly");
+    expect(context.onStatus).toHaveBeenCalledWith("Task failed");
+  });
+
   it("does not let a background thread overwrite the foreground status", () => {
     useTaskStore.getState().ensureTask("foreground");
     useTaskStore.getState().setActiveThread("foreground");

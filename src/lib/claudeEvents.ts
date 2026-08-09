@@ -396,8 +396,11 @@ export function routeClaudeEvent(
     store.flushDeltas();
     // The result event that would clean this up is never coming.
     partialUsage.delete(`${threadId}\0${turnId}`);
-    const interrupted = consumeProviderStopIntent(threadId, turnId)
-      || useTaskStore.getState().tasks[threadId]?.status === "interrupted";
+    // Only an explicit provider stop intent makes an exit a user stop. A
+    // health reconciliation can race with the backend's exit event and mark
+    // the task terminal first; treating that recovered state as user intent
+    // hides the real crash and leaves the user with a misleading "Stopped".
+    const interrupted = consumeProviderStopIntent(threadId, turnId);
     const detail =
       text(message.message) ||
       "Claude Code exited before completing the turn.";

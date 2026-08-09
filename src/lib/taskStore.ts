@@ -396,7 +396,17 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       : task.messages;
     const activities = completedTurnId
       ? task.activities.map((activity) => activity.turnId === completedTurnId
-        ? { ...activity, turnStatus, turnDurationMs: turnDurationMs ?? activity.turnDurationMs }
+        ? {
+            ...activity,
+            // A provider can disappear while a tool card is awaiting its
+            // result. The turn is terminal, so that card must not keep
+            // claiming it is live after the composer has returned to idle.
+            status: activity.status === "inProgress"
+              ? (status === "completed" ? "completed" : "failed")
+              : activity.status,
+            turnStatus,
+            turnDurationMs: turnDurationMs ?? activity.turnDurationMs,
+          }
         : activity)
       : task.activities;
     return {

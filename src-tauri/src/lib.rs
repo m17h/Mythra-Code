@@ -1816,17 +1816,21 @@ async fn claude_turn_start(
             flush_deltas(&mut delta_buffer, &stdout_app);
             if message.get("type").and_then(Value::as_str) == Some("result") {
                 saw_result = true;
+                // Publish the terminal event before making the backend turn
+                // look inactive. Otherwise a foreground health check can race
+                // into this gap and misclassify a normal result as a vanished
+                // provider process.
+                emit_claude_event(&stdout_app, &stdout_thread, &stdout_turn, message).await;
                 // Stream-input mode deliberately waits for another user
                 // message. OpenKiwi uses one process per turn so the next
                 // turn can resume from the persisted Claude session.
                 remove_claude_turn_if_current(&turns, &stdout_thread, &stdout_runtime).await;
                 stdout_runtime.close_input().await;
+                continue;
             }
             emit_claude_event(&stdout_app, &stdout_thread, &stdout_turn, message).await;
         }
         flush_deltas(&mut delta_buffer, &stdout_app);
-        alive.store(false, Ordering::Release);
-        remove_claude_turn_if_current(&turns, &stdout_thread, &stdout_runtime).await;
         // Reap the completed child so repeated Claude turns cannot accumulate
         // zombie processes during a long-running OpenKiwi session. Bounded
         // like the Codex reaper: a child that closed stdout but refuses to
@@ -1872,6 +1876,12 @@ async fn claude_turn_start(
             )
             .await;
         }
+        // Keep the turn visible as active until its terminal event has been
+        // emitted. This closes the recovery race where the UI saw an inactive
+        // process first, called it interrupted, and then suppressed the real
+        // unexpected-exit error.
+        alive.store(false, Ordering::Release);
+        remove_claude_turn_if_current(&turns, &stdout_thread, &stdout_runtime).await;
     });
 
     Ok(ClaudeTurnStarted { turn_id })

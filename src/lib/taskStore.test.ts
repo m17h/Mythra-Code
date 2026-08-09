@@ -58,6 +58,20 @@ describe("task store", () => {
     expect(useTaskStore.getState().statuses["thread-a"]).toBe("completed");
   });
 
+  it("terminalizes an unfinished tool card when its provider turn ends", () => {
+    const store = useTaskStore.getState();
+    store.ensureTask("thread-a");
+    store.setActiveTurn("thread-a", "turn-a");
+    store.upsertActivity("thread-a", { id: "collect", kind: "command", title: "collect_agent", status: "inProgress" });
+
+    store.completeTurn("thread-a", "turn-a", "error");
+
+    expect(useTaskStore.getState().tasks["thread-a"].activities[0]).toMatchObject({
+      status: "failed",
+      turnStatus: "failed",
+    });
+  });
+
   it("batches reasoning deltas and keeps them separate by thread", () => {
     const store = useTaskStore.getState();
     store.queueReasoningDelta("thread-a", "reasoning", "summary", "summary");

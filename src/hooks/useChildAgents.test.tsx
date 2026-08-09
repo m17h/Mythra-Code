@@ -150,6 +150,16 @@ describe("useChildAgents", () => {
   });
 
   describe("routing", () => {
+    it("keeps one bridge listener while live child state rerenders", async () => {
+      const view = await mount();
+      expect(bridge.onChildAgentRequest).toHaveBeenCalledTimes(1);
+
+      await view.rerender({ links: { "child-1": link() } });
+      await view.rerender({ links: { "child-1": link({ terminalStatus: "completed" }) } });
+
+      expect(bridge.onChildAgentRequest).toHaveBeenCalledTimes(1);
+    });
+
     it.each([
       ["terra", "openai", "gpt-5.6-terra"],
       ["reviewer", "claude", "claude-fable-5"],

@@ -630,10 +630,18 @@ export function useChildAgents(context: ChildAgentContext): {
     }
   }, [cancelChild, collectChild, proposeSettings, reportStatus, spawnChild]);
 
+  // Tauri events are fire-and-forget. Re-subscribing this listener whenever a
+  // child changes state creates a small window with no receiver at all; a tool
+  // call emitted in that window then waits until the backend relay timeout and
+  // can strand the parent provider inside `collect_agent`. Keep one listener
+  // for the lifetime of the hook and route it through the newest callback.
+  const handleRequestRef = useRef(handleRequest);
+  handleRequestRef.current = handleRequest;
+
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     let cancelled = false;
-    void onChildAgentRequest((request) => { void handleRequest(request); })
+    void onChildAgentRequest((request) => { void handleRequestRef.current(request); })
       .then((dispose) => {
         if (cancelled) dispose();
         else unlisten = dispose;
@@ -643,7 +651,7 @@ export function useChildAgents(context: ChildAgentContext): {
       cancelled = true;
       unlisten?.();
     };
-  }, [handleRequest]);
+  }, []);
 
   // Once React sees a just-created persisted link, the temporary mirror is no
   // longer needed. Keeping the mirror until then makes spawn → collect/status

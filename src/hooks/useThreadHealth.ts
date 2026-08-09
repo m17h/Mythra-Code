@@ -18,14 +18,21 @@ export function terminalTurnStatus(turn: Turn | undefined): TaskStatus | null {
 
 function recordRecoveredStatus(threadId: string, task: ThreadTaskState, status: TaskStatus): void {
   const store = useTaskStore.getState();
+  const current = store.tasks[threadId];
+  if (!current || current.activeTurnId !== task.activeTurnId
+    || (current.status !== "starting" && current.status !== "running")) return;
   store.completeTurn(threadId, task.activeTurnId, status);
+  const localExit = status === "error";
+  const detail = localExit
+    ? "The local provider process ended without a final response. OpenKiwi closed the unfinished turn so it can be retried instead of leaving a false running state."
+    : "OpenKiwi reconciled this thread after its final provider event was missed.";
+  if (localExit) store.setTaskStatus(threadId, "error", detail);
   store.upsertActivity(threadId, {
     id: `thread-health-${Date.now()}`,
     kind: "warning",
     title: "Thread status recovered",
-    detail: status === "interrupted"
-      ? "The local provider process ended without reporting a final turn status. OpenKiwi marked the turn as interrupted instead of assuming it succeeded."
-      : "OpenKiwi reconciled this thread after its final provider event was missed.",
+    detail,
+    ...(localExit ? { status: "failed" } : {}),
   });
 }
 
@@ -57,11 +64,11 @@ export function useThreadHealth(context: ThreadHealthContext): void {
           if (!thread) continue;
           try {
             if (isClaudeThread(thread)) {
-              if (!await isClaudeTurnActive(task.threadId)) recordRecoveredStatus(task.threadId, task, "interrupted");
+              if (!await isClaudeTurnActive(task.threadId)) recordRecoveredStatus(task.threadId, task, "error");
               continue;
             }
             if (isCursorThread(thread)) {
-              if (!await isCursorTurnActive(task.threadId)) recordRecoveredStatus(task.threadId, task, "interrupted");
+              if (!await isCursorTurnActive(task.threadId)) recordRecoveredStatus(task.threadId, task, "error");
               continue;
             }
             if (!contextRef.current.runtimeAvailable) continue;

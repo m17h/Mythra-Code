@@ -50,17 +50,33 @@ describe("useThreadHealth", () => {
     expect(terminalTurnStatus({ id: "4", items: [], status: "inProgress" })).toBeNull();
   });
 
-  it("safely interrupts a local-provider thread after its process disappears", async () => {
+  it("reports an error when a local-provider process disappears without a final event", async () => {
     cursor.isCursorTurnActive.mockResolvedValue(false);
     makeStaleWorkingTask(CURSOR_THREAD.id);
     renderHook(() => useThreadHealth({ runtimeAvailable: false, threadFor: () => CURSOR_THREAD }));
 
     act(() => fireEvent.focus(window));
 
-    await waitFor(() => expect(useTaskStore.getState().statuses[CURSOR_THREAD.id]).toBe("interrupted"));
+    await waitFor(() => expect(useTaskStore.getState().statuses[CURSOR_THREAD.id]).toBe("error"));
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]?.error).toMatch(/ended without a final response/);
     expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]?.activities.at(-1)).toMatchObject({
       title: "Thread status recovered",
+      status: "failed",
     });
+  });
+
+  it("does not overwrite a turn that completed while the health probe was pending", async () => {
+    let resolveActive: ((active: boolean) => void) | undefined;
+    cursor.isCursorTurnActive.mockImplementation(() => new Promise<boolean>((resolve) => { resolveActive = resolve; }));
+    makeStaleWorkingTask(CURSOR_THREAD.id, "turn-live");
+    renderHook(() => useThreadHealth({ runtimeAvailable: false, threadFor: () => CURSOR_THREAD }));
+    await waitFor(() => expect(cursor.isCursorTurnActive).toHaveBeenCalled());
+
+    useTaskStore.getState().completeTurn(CURSOR_THREAD.id, "turn-live", "completed");
+    resolveActive?.(false);
+    await act(async () => { await Promise.resolve(); });
+
+    expect(useTaskStore.getState().statuses[CURSOR_THREAD.id]).toBe("completed");
   });
 
   it("leaves a live Codex turn alone and applies its eventual terminal state", async () => {
