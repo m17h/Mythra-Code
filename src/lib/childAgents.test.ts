@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_SETTINGS } from "./appConfig";
 import {
+  childAgentLinksAfterThreadDeletion,
   DEFAULT_CHILD_AGENT_SETTINGS,
   MAX_CHILD_AGENT_TARGETS,
   MAX_SUBAGENT_CONCURRENCY,
@@ -282,6 +283,25 @@ describe("persistence and migration", () => {
     expect(Object.keys(restored)).toEqual(["child-1"]);
     expect(restored["child-1"].sessionId).toBe("session-1");
     expect(restored["child-1"].terminalStatus).toBe("failed");
+  });
+
+  it("keeps surviving children classified when their parent is deleted", () => {
+    const links = sanitizeChildAgentLinks({
+      "child-1": { rootThreadId: "root-1", sessionId: "session-1", targetId: "terra", provider: "openai", model: "gpt-5.6-terra", title: "One", createdAt: 1 },
+      "child-2": { rootThreadId: "root-1", sessionId: "session-1", targetId: "terra", provider: "openai", model: "gpt-5.6-terra", title: "Two", createdAt: 2, terminalStatus: "completed" },
+    });
+
+    expect(childAgentLinksAfterThreadDeletion(links, "root-1")).toBe(links);
+    expect(Object.keys(childAgentLinksAfterThreadDeletion(links, "root-1"))).toEqual(["child-1", "child-2"]);
+  });
+
+  it("removes only the classification record of a deleted child", () => {
+    const links = sanitizeChildAgentLinks({
+      "child-1": { rootThreadId: "root-1", sessionId: "session-1", targetId: "terra", provider: "openai", model: "gpt-5.6-terra", title: "One", createdAt: 1 },
+      "child-2": { rootThreadId: "root-1", sessionId: "session-1", targetId: "terra", provider: "openai", model: "gpt-5.6-terra", title: "Two", createdAt: 2 },
+    });
+
+    expect(Object.keys(childAgentLinksAfterThreadDeletion(links, "child-1"))).toEqual(["child-2"]);
   });
 });
 

@@ -90,6 +90,7 @@ import { providerForArchivedThread } from "./lib/threadArchive";
 import { buildProviderHandoffPrompt, sanitizePendingHandoff } from "./lib/providerHandoff";
 import { deleteThreadTurnDurations } from "./lib/turnDurations";
 import {
+  childAgentLinksAfterThreadDeletion,
   childAgentModel,
   describeChildAgentRoster,
   childAgentPolicyForThread,
@@ -2447,19 +2448,17 @@ export default function App() {
     // ownership records so restoring the same thread restores the same powers.
     // Keep the runtime capability record too: app-server may still have the
     // archived thread loaded, and its old bridge identity is exactly what lets
-    // the first restored turn detect that a refresh is required. Permanent
-    // deletion is the point where every durable record should disappear.
+    // the first restored turn detect that a refresh is required.
     if (!dropRecords) return;
     forgetSubagentCapabilities(threadId);
     persistChildAgentPolicies((current) => {
       const next = Object.fromEntries(Object.entries(current).filter(([, policy]) => policy.rootThreadId !== threadId));
       return Object.keys(next).length === Object.keys(current).length ? current : next;
     });
-    persistChildAgentLinks((current) => {
-      const next = Object.fromEntries(Object.entries(current)
-        .filter(([childThreadId, link]) => childThreadId !== threadId && link.rootThreadId !== threadId));
-      return Object.keys(next).length === Object.keys(current).length ? current : next;
-    });
+    // A deleted root's surviving children still need their ownership records
+    // to stay in the Sub-agents inbox. Only deleting the child itself removes
+    // that classification record.
+    persistChildAgentLinks((current) => childAgentLinksAfterThreadDeletion(current, threadId));
   };
 
   const archiveThread = async (thread: Thread) => {

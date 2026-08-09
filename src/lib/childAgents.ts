@@ -515,6 +515,23 @@ export function sanitizeChildAgentLinks(stored: unknown): Record<string, ChildAg
   return result;
 }
 
+/**
+ * Remove ownership only when the deleted conversation is itself a child.
+ *
+ * Deleting a root thread must not erase the classification of child
+ * conversations that still exist. Their link remains useful as durable
+ * sidebar metadata even though its former parent can no longer collect it.
+ */
+export function childAgentLinksAfterThreadDeletion(
+  links: Record<string, ChildAgentLink>,
+  deletedThreadId: string,
+): Record<string, ChildAgentLink> {
+  if (!links[deletedThreadId]) return links;
+  const next = { ...links };
+  delete next[deletedThreadId];
+  return next;
+}
+
 /** One-line summary for the composer and settings, e.g. "3 destinations". */
 export function describeChildAgentRoster(
   settings: ChildAgentSettings,
