@@ -1,4 +1,4 @@
-import { Children, isValidElement, memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Children, isValidElement, memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { VirtuosoHandle } from "react-virtuoso";
 import { Check, ChevronRight, Clipboard, FileCode2, ListChecks, Pencil, Sparkles, TerminalSquare, UsersRound } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -565,6 +565,21 @@ export function followTimelineOutput(atBottom: boolean): "auto" | false {
 }
 
 export const INITIAL_TIMELINE_POSITION = { index: "LAST", align: "end" } as const;
+/**
+ * Hoisted rather than inlined so Virtuoso sees one stable object across the
+ * re-render every streamed frame causes.
+ */
+const TIMELINE_VIEWPORT_BUFFER = { top: 500, bottom: 800 } as const;
+/**
+ * Beyond this point, variable-height virtualization costs more than it saves.
+ * A completed turn is usually three compact rows, so this is roughly 120
+ * turns. Keeping those rows mounted gives long, old threads truly native
+ * scrolling: no estimates are replaced mid-gesture and no scroll correction
+ * can fight macOS trackpad momentum.
+ */
+export const NATIVE_TIMELINE_THRESHOLD = 360;
+/** Raw history can be huge even when completed work compacts to a few rows. */
+export const NATIVE_TIMELINE_SOURCE_THRESHOLD = 500;
 
 function TimelineFooter() {
   return <div className="timeline-bottom-space" aria-hidden="true" />;
@@ -591,6 +606,16 @@ const NO_SEARCH_MATCHES: number[] = [];
  * arrived alongside a resize.
  */
 export type TimelineScrollAnchor = { contentHeight: number; index: string; top: number };
+
+export type TimelineScrollAnchorHandle = {
+  /** Capture the visible row before a wheel/touch gesture can move it. */
+  prime: () => void;
+  /** Release an anchor before an intentional programmatic jump. */
+  clear: () => void;
+  /** Reconcile any virtual-layout change against the captured row. */
+  settle: () => void;
+  detach: () => void;
+};
 
 /** The topmost row that is at least partly on screen. */
 export function readTimelineAnchor(scroller: HTMLElement): TimelineScrollAnchor | null {
@@ -640,9 +665,25 @@ export function timelineAnchorDrift(scroller: HTMLElement, anchor: TimelineScrol
 export function attachTimelineScrollAnchor(
   scroller: HTMLElement,
   isEnabled: () => boolean,
-): () => void {
+): TimelineScrollAnchorHandle {
   let anchor: TimelineScrollAnchor | null = null;
   let correcting = false;
+  let userScrollPending = false;
+  const capture = () => {
+    anchor = isEnabled() ? readTimelineAnchor(scroller) : null;
+  };
+  const prime = () => {
+    // Only read the DOM when there is nothing to fall back on — the anchor the
+    // last scroll or settle left behind is already current, and re-reading it
+    // forces a layout on every wheel event of a gesture that fires dozens per
+    // second, right after the virtualizer has dirtied the tree.
+    if (!anchor) capture();
+    // The next native scroll event belongs to the gesture that captured this
+    // anchor. It must always win, even if Virtuoso also changed its estimated
+    // total height in the same frame; otherwise fast scrolling gets corrected
+    // backwards until the new rows finish measuring.
+    userScrollPending = anchor !== null;
+  };
   const settle = () => {
     if (correcting) return;
     if (!isEnabled()) {
@@ -668,10 +709,15 @@ export function attachTimelineScrollAnchor(
    * Unless the content changed size in between. Reading `top` forces layout,
    * so a scroll delivered in the same frame as a row resize would otherwise
    * measure the moved position and quietly adopt the shift as intended.
-   */
+  */
   const onScroll = () => {
+    if (userScrollPending) {
+      userScrollPending = false;
+      capture();
+      return;
+    }
     if (anchor && scroller.scrollHeight !== anchor.contentHeight) settle();
-    else anchor = isEnabled() ? readTimelineAnchor(scroller) : null;
+    else capture();
   };
 
   scroller.addEventListener("scroll", onScroll, { passive: true });
@@ -680,12 +726,191 @@ export function attachTimelineScrollAnchor(
   // the user seeing it. Setting scrollTop resizes nothing, so this cannot feed
   // itself a second notification.
   const list = scroller.querySelector<HTMLElement>('[data-testid="virtuoso-item-list"]');
-  const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(settle);
-  if (list) observer?.observe(list);
-  return () => {
-    scroller.removeEventListener("scroll", onScroll);
-    observer?.disconnect();
+  const resizeObserver = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(settle);
+  // Virtuoso corrects unseen-row estimates primarily by rewriting paddingTop,
+  // paddingBottom, and marginTop on the item list. Those move every visible
+  // row but do not necessarily resize the list's content box, so a plain
+  // ResizeObserver misses exactly the first-scroll correction we care about.
+  // Style mutations are delivered after the virtualizer commits and before
+  // paint, which gives the anchor one reliable chance to cancel drift. Rows
+  // being added and removed is deliberately not watched: that always changes
+  // the list's height, so the ResizeObserver already reports it, and childList
+  // fires several times a frame during a fast scroll for no added coverage.
+  const mutationObserver = typeof MutationObserver === "undefined" ? null : new MutationObserver(settle);
+  if (list) {
+    resizeObserver?.observe(list);
+    mutationObserver?.observe(list, { attributes: true, attributeFilter: ["style"] });
+  }
+  return {
+    prime,
+    clear: () => { anchor = null; userScrollPending = false; },
+    settle,
+    detach: () => {
+      scroller.removeEventListener("scroll", onScroll);
+      resizeObserver?.disconnect();
+      mutationObserver?.disconnect();
+    },
   };
+}
+
+function TimelineEntryContent({
+  activeEntryIndex,
+  entry,
+  index,
+  onApprovalRespond,
+  onEditMessage,
+  provider,
+  searchQuery,
+}: {
+  activeEntryIndex: number;
+  entry: TimelineEntry;
+  index: number;
+  onApprovalRespond?: (approval: PendingApproval, result: JsonObject) => void | Promise<void>;
+  onEditMessage?: (text: string) => void;
+  provider: Provider;
+  searchQuery?: string;
+}) {
+  const hitClass = index === activeEntryIndex ? " search-hit" : "";
+  if (entry.kind === "message") {
+    return <div className={`timeline-entry timeline-entry-message${hitClass}`}><MessageRow message={entry.value} provider={provider} onEdit={onEditMessage} /></div>;
+  }
+  if (entry.kind === "activity") {
+    return <div className={`timeline-entry timeline-entry-activity${hitClass}`}><ActivityRow activity={entry.value} /></div>;
+  }
+  if (entry.kind === "commands") {
+    return <div className={`timeline-entry timeline-entry-disclosure${hitClass}`}><CommandDisclosure commands={entry.value} /></div>;
+  }
+  if (entry.kind === "files") {
+    return <div className={`timeline-entry timeline-entry-disclosure${hitClass}`}><FileDisclosure files={entry.value} /></div>;
+  }
+  if (entry.kind === "work") {
+    return <div className={`timeline-entry timeline-entry-disclosure${hitClass}`}><CompletedWorkDisclosure entries={entry.value} reveal={index === activeEntryIndex && Boolean(searchQuery?.trim())} /></div>;
+  }
+  if (entry.kind === "approval") {
+    return (
+      <div className="timeline-entry timeline-entry-approval">
+        <InlineApprovalCard approval={entry.value} onRespond={(result) => onApprovalRespond?.(entry.value, result)} />
+      </div>
+    );
+  }
+  return (
+    <div className="timeline-entry timeline-entry-disclosure">
+      <ReasoningDisclosure detail="" inProgress label={entry.label} />
+    </div>
+  );
+}
+
+/**
+ * Large completed transcripts use the browser's ordinary scroll container.
+ * Their compact rows are cheap enough to keep mounted, while doing so removes
+ * the height-estimation feedback loop that makes a fast trackpad gesture stall
+ * at the same boundaries every time.
+ */
+function NativeTimeline({
+  activeEntryIndex,
+  entries,
+  onApprovalRespond,
+  onEditMessage,
+  provider,
+  searchQuery,
+}: {
+  activeEntryIndex: number;
+  entries: TimelineEntry[];
+  onApprovalRespond?: (approval: PendingApproval, result: JsonObject) => void | Promise<void>;
+  onEditMessage?: (text: string) => void;
+  provider: Provider;
+  searchQuery?: string;
+}) {
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const atBottomRef = useRef(true);
+  const initialPositioningRef = useRef(true);
+  const initialPositionTimerRef = useRef<number | null>(null);
+  const scrollToBottom = useCallback(() => {
+    const scroller = scrollerRef.current;
+    if (scroller) scroller.scrollTop = scroller.scrollHeight;
+  }, []);
+  const endInitialPositioning = useCallback(() => {
+    initialPositioningRef.current = false;
+    if (initialPositionTimerRef.current !== null) {
+      window.clearTimeout(initialPositionTimerRef.current);
+      initialPositionTimerRef.current = null;
+    }
+  }, []);
+
+  useLayoutEffect(() => {
+    if (initialPositioningRef.current || atBottomRef.current) scrollToBottom();
+  }, [entries, scrollToBottom]);
+
+  useEffect(() => {
+    initialPositionTimerRef.current = window.setTimeout(endInitialPositioning, 500);
+    return () => {
+      if (initialPositionTimerRef.current !== null) window.clearTimeout(initialPositionTimerRef.current);
+    };
+  }, [endInitialPositioning]);
+
+  useEffect(() => {
+    const content = contentRef.current;
+    if (!content || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      if (initialPositioningRef.current || atBottomRef.current) scrollToBottom();
+    });
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [scrollToBottom]);
+
+  useEffect(() => {
+    if (activeEntryIndex < 0) return;
+    const target = contentRef.current?.querySelector<HTMLElement>(`[data-entry-index="${activeEntryIndex}"]`);
+    if (!target) return;
+    // Search owns the viewport once it jumps to a match. Leaving the initial
+    // bottom-settle window alive lets a late Markdown measurement immediately
+    // pull a large transcript back to the end and hide the selected result.
+    endInitialPositioning();
+    atBottomRef.current = false;
+    target.scrollIntoView({ block: "center" });
+  }, [activeEntryIndex, endInitialPositioning]);
+
+  return (
+    <div
+      ref={scrollerRef}
+      className="timeline virtual-timeline native-timeline"
+      data-native-timeline="true"
+      onScroll={(event) => {
+        if (initialPositioningRef.current) return;
+        const scroller = event.currentTarget;
+        atBottomRef.current = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 4;
+      }}
+      onWheel={(event) => {
+        if (event.deltaY < 0) {
+          endInitialPositioning();
+          atBottomRef.current = false;
+        }
+      }}
+      onTouchMove={() => {
+        endInitialPositioning();
+        atBottomRef.current = false;
+      }}
+    >
+      <TimelineHeader />
+      <div ref={contentRef} className="native-timeline-list">
+        {entries.map((entry, index) => (
+          <div data-entry-index={index} key={entry.kind === "thinking" ? "thinking" : entry.kind === "approval" ? `approval-${entry.value.id}` : entry.kind === "work" ? `work-${entry.value[0] ? workItemId(entry.value[0]) ?? index : index}` : entry.kind === "commands" || entry.kind === "files" ? `${entry.kind}-${entry.value[0]?.id ?? index}` : `${entry.kind}-${entry.value.id}`}>
+            <TimelineEntryContent
+              activeEntryIndex={activeEntryIndex}
+              entry={entry}
+              index={index}
+              onApprovalRespond={onApprovalRespond}
+              onEditMessage={onEditMessage}
+              provider={provider}
+              searchQuery={searchQuery}
+            />
+          </div>
+        ))}
+      </div>
+      <TimelineFooter />
+    </div>
+  );
 }
 
 export function ChatTimeline({
@@ -761,6 +986,7 @@ export function ChatTimeline({
   // a user who reaches for the transcript inside the settle window is not
   // pulled back down by the next measurement pass.
   const detachScrollIntentRef = useRef<(() => void) | null>(null);
+  const timelineAnchorRef = useRef<TimelineScrollAnchorHandle | null>(null);
   // Anchoring is for a user who has deliberately left the bottom. While the
   // transcript is pinned to its newest entry, `followOutput` and the initial
   // positioning own the scroll offset.
@@ -772,7 +998,10 @@ export function ChatTimeline({
   const attachScrollIntent = useCallback((scroller: HTMLElement | Window | null) => {
     detachScrollIntentRef.current?.();
     detachScrollIntentRef.current = null;
+    timelineAnchorRef.current = null;
     if (!scroller) return;
+    const anchorHandle = scroller instanceof Window ? null : attachTimelineScrollAnchor(scroller, anchoringEnabled);
+    timelineAnchorRef.current = anchorHandle;
     const cancelWheel = (event: Event) => {
       endInitialPositioning();
       // Virtuoso reports `atBottom=false` from the resulting scroll event, but
@@ -780,18 +1009,23 @@ export function ChatTimeline({
       // hydrated. Enable anchoring before the first upward layout pass so the
       // initial batch of size corrections cannot produce one large lurch.
       if (!(event instanceof WheelEvent) || event.deltaY < 0) atBottomRef.current = false;
+      anchorHandle?.prime();
     };
+    // touchmove, not touchstart: a tap is how the reader opens a disclosure or
+    // presses a button, and treating that as leaving the bottom stops the
+    // transcript following the streaming answer they are still watching.
     const cancelTouch = () => {
       endInitialPositioning();
       atBottomRef.current = false;
+      anchorHandle?.prime();
     };
     scroller.addEventListener("wheel", cancelWheel, { passive: true });
     scroller.addEventListener("touchmove", cancelTouch, { passive: true });
-    const detachAnchor = scroller instanceof Window ? undefined : attachTimelineScrollAnchor(scroller, anchoringEnabled);
     detachScrollIntentRef.current = () => {
       scroller.removeEventListener("wheel", cancelWheel);
       scroller.removeEventListener("touchmove", cancelTouch);
-      detachAnchor?.();
+      anchorHandle?.detach();
+      if (timelineAnchorRef.current === anchorHandle) timelineAnchorRef.current = null;
     };
   }, [anchoringEnabled, endInitialPositioning]);
   const trackAtBottom = useCallback((atBottom: boolean) => {
@@ -842,8 +1076,28 @@ export function ChatTimeline({
     ? matchIndices[((searchActiveMatch ?? 0) % matchIndices.length + matchIndices.length) % matchIndices.length]
     : -1;
   useEffect(() => {
-    if (activeEntryIndex >= 0) virtuosoRef.current?.scrollToIndex({ index: activeEntryIndex, align: "center" });
+    if (activeEntryIndex >= 0) {
+      // Search navigation is a deliberate jump. Drop the reader anchor first
+      // so the virtual window's style rewrite cannot be mistaken for drift.
+      timelineAnchorRef.current?.clear();
+      virtuosoRef.current?.scrollToIndex({ index: activeEntryIndex, align: "center" });
+    }
   }, [activeEntryIndex]);
+  if (
+    entries.length > NATIVE_TIMELINE_THRESHOLD
+    || messages.length + activities.length > NATIVE_TIMELINE_SOURCE_THRESHOLD
+  ) {
+    return (
+      <NativeTimeline
+        activeEntryIndex={activeEntryIndex}
+        entries={entries}
+        onApprovalRespond={onApprovalRespond}
+        onEditMessage={onEditMessage}
+        provider={provider}
+        searchQuery={searchQuery}
+      />
+    );
+  }
   return (
     <Virtuoso
       ref={virtuosoRef}
@@ -855,7 +1109,7 @@ export function ChatTimeline({
       followOutput={followTimelineOutput}
       atBottomStateChange={trackAtBottom}
       totalListHeightChanged={restoreInitialBottom}
-      increaseViewportBy={{ top: 500, bottom: 800 }}
+      increaseViewportBy={TIMELINE_VIEWPORT_BUFFER}
       // Keys are derived from item ids, never from the row index: the thinking
       // row sits last and its index shifts as work arrives, and two compacted
       // turns whose first item carries no timelineOrder used to collide on
@@ -868,36 +1122,17 @@ export function ChatTimeline({
         : entry.kind === "commands" || entry.kind === "files"
           ? `${entry.kind}-${entry.value[0]?.id ?? index}`
           : `${entry.kind}-${entry.value.id}`}
-      itemContent={(index, entry) => {
-        const hitClass = index === activeEntryIndex ? " search-hit" : "";
-        if (entry.kind === "message") {
-          return <div className={`timeline-entry timeline-entry-message${hitClass}`}><MessageRow message={entry.value} provider={provider} onEdit={onEditMessage} /></div>;
-        }
-        if (entry.kind === "activity") {
-          return <div className={`timeline-entry timeline-entry-activity${hitClass}`}><ActivityRow activity={entry.value} /></div>;
-        }
-        if (entry.kind === "commands") {
-          return <div className={`timeline-entry timeline-entry-disclosure${hitClass}`}><CommandDisclosure commands={entry.value} /></div>;
-        }
-        if (entry.kind === "files") {
-          return <div className={`timeline-entry timeline-entry-disclosure${hitClass}`}><FileDisclosure files={entry.value} /></div>;
-        }
-        if (entry.kind === "work") {
-          return <div className={`timeline-entry timeline-entry-disclosure${hitClass}`}><CompletedWorkDisclosure entries={entry.value} reveal={index === activeEntryIndex && Boolean(searchQuery?.trim())} /></div>;
-        }
-        if (entry.kind === "approval") {
-          return (
-            <div className="timeline-entry timeline-entry-approval">
-              <InlineApprovalCard approval={entry.value} onRespond={(result) => onApprovalRespond?.(entry.value, result)} />
-            </div>
-          );
-        }
-        return (
-          <div className="timeline-entry timeline-entry-disclosure">
-            <ReasoningDisclosure detail="" inProgress label={entry.label} />
-          </div>
-        );
-      }}
+      itemContent={(index, entry) => (
+        <TimelineEntryContent
+          activeEntryIndex={activeEntryIndex}
+          entry={entry}
+          index={index}
+          onApprovalRespond={onApprovalRespond}
+          onEditMessage={onEditMessage}
+          provider={provider}
+          searchQuery={searchQuery}
+        />
+      )}
     />
   );
 }

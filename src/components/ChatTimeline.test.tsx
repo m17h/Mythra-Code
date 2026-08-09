@@ -27,7 +27,43 @@ vi.mock("react-virtuoso", async () => {
   };
 });
 
-import { ActivityRow, ChatTimeline, CommandDisclosure, CompletedWorkDisclosure, FileDisclosure, INITIAL_TIMELINE_POSITION, ReasoningDisclosure, compactCompletedTurns, followTimelineOutput, formatCompletedDuration, orderedTimelineEntries, type WorkItemEntry } from "./ChatTimeline";
+import { ActivityRow, ChatTimeline, CommandDisclosure, CompletedWorkDisclosure, FileDisclosure, INITIAL_TIMELINE_POSITION, NATIVE_TIMELINE_SOURCE_THRESHOLD, NATIVE_TIMELINE_THRESHOLD, ReasoningDisclosure, compactCompletedTurns, followTimelineOutput, formatCompletedDuration, orderedTimelineEntries, type WorkItemEntry } from "./ChatTimeline";
+import { installResizeObservers } from "../test/virtualLayout";
+
+/** Mirrors the shape of the old thread that exposed the production stall. */
+function oldLongThread(): { messages: Array<{
+  id: string;
+  role: "user" | "assistant";
+  text: string;
+  timelineOrder: number;
+  turnId: string;
+  turnStatus: "completed";
+}>; activities: Array<{
+  id: string;
+  kind: "command";
+  title: string;
+  timelineOrder: number;
+  turnId: string;
+  turnStatus: "completed";
+}> } {
+  const messages = [];
+  const activities = [];
+  let order = 1;
+  for (let turn = 0; turn < 23; turn += 1) {
+    const stamp = { turnId: `old-turn-${turn}`, turnStatus: "completed" as const };
+    const messageCount = turn === 0 ? 14 : 13;
+    const activityCount = turn < 18 ? 78 : 77;
+    messages.push({ id: `old-user-${turn}`, role: "user" as const, text: `Request ${turn}`, timelineOrder: order++, ...stamp });
+    for (let index = 0; index < messageCount - 2; index += 1) {
+      messages.push({ id: `old-update-${turn}-${index}`, role: "assistant" as const, text: `Update ${turn}.${index}`, timelineOrder: order++, ...stamp });
+    }
+    for (let index = 0; index < activityCount; index += 1) {
+      activities.push({ id: `old-activity-${turn}-${index}`, kind: "command" as const, title: `Command ${turn}.${index}`, timelineOrder: order++, ...stamp });
+    }
+    messages.push({ id: `old-answer-${turn}`, role: "assistant" as const, text: `Answer ${turn}`, timelineOrder: order++, ...stamp });
+  }
+  return { activities, messages };
+}
 
 describe("ChatTimeline", () => {
   it("places command activity between the messages that surround it", () => {
@@ -133,6 +169,126 @@ describe("ChatTimeline", () => {
 
   it("opens a newly mounted conversation at its latest entry", () => {
     expect(INITIAL_TIMELINE_POSITION).toEqual({ index: "LAST", align: "end" });
+  });
+
+  it("uses native scrolling for very long completed transcripts", () => {
+    virtuosoProps.current = null;
+    const messages = Array.from({ length: NATIVE_TIMELINE_THRESHOLD + 1 }, (_, index) => ({
+      id: `message-${index}`,
+      role: "assistant" as const,
+      text: `Answer ${index}`,
+      timelineOrder: index + 1,
+    }));
+
+    const { container } = render(
+      <ChatTimeline messages={messages} activities={[]} running={false} thinkingLabel="Thinking" />,
+    );
+
+    expect(container.querySelector('[data-native-timeline="true"]')).toBeInTheDocument();
+    expect(virtuosoProps.current).toBeNull();
+  });
+
+  it("uses 69 stable native rows for the old 2,089-record thread shape", () => {
+    virtuosoProps.current = null;
+    const { activities, messages } = oldLongThread();
+
+    expect(messages).toHaveLength(300);
+    expect(activities).toHaveLength(1789);
+    expect(messages.length + activities.length).toBeGreaterThan(NATIVE_TIMELINE_SOURCE_THRESHOLD);
+
+    const { container } = render(
+      <ChatTimeline messages={messages} activities={activities} running={false} thinkingLabel="Thinking" />,
+    );
+
+    expect(container.querySelector('[data-native-timeline="true"]')).toBeInTheDocument();
+    expect(container.querySelectorAll("[data-entry-index]")).toHaveLength(69);
+    expect(virtuosoProps.current).toBeNull();
+  });
+
+  it("does not let late height measurements undo native search navigation", () => {
+    const resize = installResizeObservers();
+    const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = vi.fn();
+    try {
+      const { activities, messages } = oldLongThread();
+      const { container } = render(
+        <ChatTimeline
+          messages={messages}
+          activities={activities}
+          running={false}
+          thinkingLabel="Thinking"
+          searchQuery="Request 0"
+          searchActiveMatch={0}
+        />,
+      );
+      const scroller = container.querySelector<HTMLElement>('[data-native-timeline="true"]')!;
+      let scrollTop = 7_500;
+      const writes: number[] = [];
+      Object.defineProperties(scroller, {
+        clientHeight: { configurable: true, value: 600 },
+        scrollHeight: { configurable: true, value: 10_000 },
+        scrollTop: {
+          configurable: true,
+          get: () => scrollTop,
+          set: (value: number) => { writes.push(value); scrollTop = value; },
+        },
+      });
+
+      writes.length = 0;
+      resize.flush();
+
+      expect(HTMLElement.prototype.scrollIntoView).toHaveBeenCalledWith({ block: "center" });
+      expect(writes).toEqual([]);
+    } finally {
+      HTMLElement.prototype.scrollIntoView = originalScrollIntoView;
+      resize.uninstall();
+    }
+  });
+
+  it("never writes against a fast native scroll through the old thread shape", () => {
+    const resize = installResizeObservers();
+    try {
+      const history = oldLongThread();
+      const { container, rerender } = render(
+        <ChatTimeline messages={history.messages} activities={history.activities} running={false} thinkingLabel="Thinking" />,
+      );
+      const scroller = container.querySelector<HTMLElement>('[data-native-timeline="true"]')!;
+      let scrollTop = 0;
+      const writes: number[] = [];
+      Object.defineProperties(scroller, {
+        clientHeight: { configurable: true, value: 600 },
+        scrollHeight: { configurable: true, value: 10_000 },
+        scrollTop: {
+          configurable: true,
+          get: () => scrollTop,
+          set: (value: number) => { writes.push(value); scrollTop = value; },
+        },
+      });
+
+      // A hydrated old thread is positioned at its real bottom once its
+      // records arrive, regardless of its final Markdown height.
+      rerender(
+        <ChatTimeline messages={[...history.messages]} activities={history.activities} running={false} thinkingLabel="Thinking" />,
+      );
+      expect(writes.at(-1)).toBe(10_000);
+
+      // From the first upward wheel event onward, scrollTop belongs solely to
+      // the browser/user. Repeated scroll and resize frames approximate a fast
+      // trackpad fling through content whose Markdown is still settling.
+      fireEvent.wheel(scroller, { deltaY: -120 });
+      scrollTop = 9_000;
+      writes.length = 0;
+      for (let frame = 0; frame < 500; frame += 1) {
+        scrollTop = Math.max(0, scrollTop - 18);
+        fireEvent.scroll(scroller);
+        resize.flush();
+      }
+
+      expect(scrollTop).toBe(0);
+      expect(writes).toEqual([]);
+    } finally {
+      resize.uninstall();
+    }
   });
 
   it("moves to the latest entry when an asynchronously resumed transcript first arrives", () => {

@@ -520,6 +520,8 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .message-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .virtual-timeline { height: 100%; direction: rtl; }
 .virtual-timeline [data-testid="virtuoso-item-list"] { direction: ltr; }
+.native-timeline { overflow-x: hidden; overflow-y: auto; overflow-anchor: auto; }
+.native-timeline-list { direction: ltr; }
 .timeline-entry { display: flow-root; width: min(var(--measure), calc(100% - 64px)); margin-inline: auto; }
 .timeline-entry-message { padding-bottom: var(--s-6); }
 .timeline-entry-activity { padding-bottom: 6px; }

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "OpenKiwi Local Dev",
+  "identifier": "com.kiwi.harness.localdev",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "OpenKiwi Local Dev",
+        "width": 1380,
+        "height": 900,
+        "minWidth": 980,
+        "minHeight": 680,
+        "decorations": true,
+        "transparent": false,
+        "center": true
+      }
+    ]
+  },
+  "bundle": {
+    "createUpdaterArtifacts": false
+  }
+}

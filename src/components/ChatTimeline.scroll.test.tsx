@@ -248,6 +248,32 @@ describe("ChatTimeline scroll stability", () => {
     }
   });
 
+  it("keeps following a streaming answer after the reader taps the transcript", async () => {
+    vi.useFakeTimers();
+    const kit = harness();
+    try {
+      const { rerender } = render(<ChatTimeline messages={transcript(120)} activities={[]} running thinkingLabel="Thinking" />);
+      await kit.frame(20);
+
+      // Opening a disclosure or pressing a button is a touchstart with no
+      // touchmove behind it, and is not the reader leaving the bottom.
+      scroller().dispatchEvent(new Event("touchstart", { bubbles: true }));
+      await kit.frame();
+
+      for (let appended = 1; appended <= 5; appended += 1) {
+        await act(async () => {
+          rerender(<ChatTimeline messages={transcript(120 + appended)} activities={[]} running thinkingLabel="Thinking" />);
+        });
+        await kit.frame(4);
+      }
+
+      const element = scroller();
+      expect(element.scrollTop).toBe(element.scrollHeight - VIEWPORT);
+    } finally {
+      kit.teardown();
+    }
+  });
+
   it("leaves a reader who scrolled up where they are when new output arrives", async () => {
     vi.useFakeTimers();
     const kit = harness();
@@ -394,12 +420,12 @@ describe("timeline scroll anchor", () => {
     const resize = installResizeObservers();
     try {
       const { element, moveRow } = anchorFixture();
-      const detach = attachTimelineScrollAnchor(element, () => true);
+      const handle = attachTimelineScrollAnchor(element, () => true);
       element.dispatchEvent(new Event("scroll"));
       moveRow(340);
       resize.flush();
       expect(element.scrollTop).toBe(240);
-      detach();
+      handle.detach();
     } finally {
       resize.uninstall();
     }
@@ -409,7 +435,7 @@ describe("timeline scroll anchor", () => {
     const resize = installResizeObservers();
     try {
       const { element, moveRow } = anchorFixture();
-      const detach = attachTimelineScrollAnchor(element, () => true);
+      const handle = attachTimelineScrollAnchor(element, () => true);
       element.dispatchEvent(new Event("scroll"));
       // The reader scrolls up: the row legitimately moves down the screen.
       element.scrollTop = -50;
@@ -417,7 +443,7 @@ describe("timeline scroll anchor", () => {
       element.dispatchEvent(new Event("scroll"));
       resize.flush();
       expect(element.scrollTop).toBe(-50);
-      detach();
+      handle.detach();
     } finally {
       resize.uninstall();
     }
@@ -427,7 +453,7 @@ describe("timeline scroll anchor", () => {
     const resize = installResizeObservers();
     try {
       const { element, growRowAbove } = anchorFixture();
-      const detach = attachTimelineScrollAnchor(element, () => true);
+      const handle = attachTimelineScrollAnchor(element, () => true);
       element.dispatchEvent(new Event("scroll"));
       growRowAbove(240);
       // A scroll delivered after the resize but before the observer runs must
@@ -436,7 +462,7 @@ describe("timeline scroll anchor", () => {
       expect(element.scrollTop).toBe(240);
       resize.flush();
       expect(element.scrollTop).toBe(240);
-      detach();
+      handle.detach();
     } finally {
       resize.uninstall();
     }
@@ -446,12 +472,12 @@ describe("timeline scroll anchor", () => {
     const resize = installResizeObservers();
     try {
       const { element, moveRow } = anchorFixture();
-      const detach = attachTimelineScrollAnchor(element, () => false);
+      const handle = attachTimelineScrollAnchor(element, () => false);
       element.dispatchEvent(new Event("scroll"));
       moveRow(340);
       resize.flush();
       expect(element.scrollTop).toBe(0);
-      detach();
+      handle.detach();
     } finally {
       resize.uninstall();
     }
@@ -461,12 +487,80 @@ describe("timeline scroll anchor", () => {
     const resize = installResizeObservers();
     try {
       const { element, moveRow } = anchorFixture();
-      const detach = attachTimelineScrollAnchor(element, () => true);
+      const handle = attachTimelineScrollAnchor(element, () => true);
       element.dispatchEvent(new Event("scroll"));
-      detach();
+      handle.detach();
       moveRow(340);
       resize.flush();
       expect(element.scrollTop).toBe(0);
+    } finally {
+      resize.uninstall();
+    }
+  });
+  it("captures the first upward gesture before virtual padding can move the viewport", async () => {
+    const resize = installResizeObservers();
+    try {
+      const { element, growRowAbove } = anchorFixture();
+      let enabled = false;
+      const handle = attachTimelineScrollAnchor(element, () => enabled);
+
+      // The transcript starts pinned to the bottom. The wheel listener flips
+      // anchoring on and primes it before the native scroll event arrives.
+      enabled = true;
+      handle.prime();
+      growRowAbove(240);
+      const list = element.querySelector<HTMLElement>('[data-testid="virtuoso-item-list"]')!;
+      list.style.paddingTop = "240px";
+      await act(async () => { await Promise.resolve(); });
+
+      expect(element.scrollTop).toBe(240);
+      handle.detach();
+    } finally {
+      resize.uninstall();
+    }
+  });
+
+  it("never corrects a primed user scroll backwards while row estimates change", async () => {
+    const resize = installResizeObservers();
+    try {
+      const { element, growRowAbove, moveRow } = anchorFixture();
+      const handle = attachTimelineScrollAnchor(element, () => true);
+      handle.prime();
+
+      // A real upward gesture moves this row down 50px while a newly rendered
+      // row above it simultaneously adds 240px to the virtual height. The old
+      // content-height heuristic treated the whole event as drift and undid
+      // the user's wheel movement, which made fast scrolling appear stuck.
+      element.scrollTop = -50;
+      growRowAbove(240);
+      moveRow(390);
+      element.dispatchEvent(new Event("scroll"));
+      expect(element.scrollTop).toBe(-50);
+
+      const list = element.querySelector<HTMLElement>('[data-testid="virtuoso-item-list"]')!;
+      list.style.paddingTop = "240px";
+      await act(async () => { await Promise.resolve(); });
+      expect(element.scrollTop).toBe(-50);
+      handle.detach();
+    } finally {
+      resize.uninstall();
+    }
+  });
+
+  it("does not correct an intentional jump after its anchor is cleared", async () => {
+    const resize = installResizeObservers();
+    try {
+      const { element, growRowAbove } = anchorFixture();
+      const handle = attachTimelineScrollAnchor(element, () => true);
+      handle.prime();
+      handle.clear();
+      growRowAbove(240);
+      const list = element.querySelector<HTMLElement>('[data-testid="virtuoso-item-list"]')!;
+      list.style.paddingTop = "240px";
+      await act(async () => { await Promise.resolve(); });
+
+      expect(element.scrollTop).toBe(0);
+      handle.detach();
     } finally {
       resize.uninstall();
     }
