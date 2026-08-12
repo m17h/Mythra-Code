@@ -9,6 +9,7 @@ export const DURABLE_STORAGE_KEYS = [
   "kiwi.threadWorktrees",
   "kiwi.knownThreads",
   "kiwi.threadModels",
+  "kiwi.threadReasoning",
   "kiwi.turnDurations",
   "kiwi.checkpoints",
   "kiwi.checkpointHeads",
@@ -44,7 +45,7 @@ export const DURABLE_STORAGE_KEYS = [
  * migrateStorage. Old installs then upgrade their data instead of loading
  * garbage into the new code.
  */
-export const STORAGE_SCHEMA_VERSION = 13;
+export const STORAGE_SCHEMA_VERSION = 14;
 const nativeWriteQueues = new Map<string, Promise<void>>();
 const NATIVE_PENDING_PREFIX = "kiwi.nativePending.";
 let nativeOperationSequence = 0;
@@ -128,7 +129,20 @@ export function migrateStorage(): void {
   // runtime that is holding nothing at all.
   // Version 13 adds the last validated model-pricing catalog snapshot so the
   // app has current forward-looking estimates even when a later launch is offline.
-  // All additions are optional and require no eager rewrite of existing records.
+  // Version 14 adds per-thread reasoning and removes the three legacy bundled
+  // prompt profiles. User-created profiles and the currently selected prompt
+  // text are preserved.
+  if (stored < 14) {
+    const legacyProfileIds = new Set(["empty", "concise", "reviewer"]);
+    const profiles = loadStored<Array<{ id?: string; builtIn?: boolean }>>("kiwi.promptProfiles", []);
+    const userProfiles = profiles.filter((profile) => !profile.builtIn && !legacyProfileIds.has(profile.id ?? ""));
+    if (userProfiles.length !== profiles.length) storeValue("kiwi.promptProfiles", userProfiles);
+    const settings = loadStored<Record<string, unknown>>("kiwi.settings", {});
+    if (legacyProfileIds.has(String(settings.promptProfileId ?? ""))) {
+      storeValue("kiwi.settings", { ...settings, promptProfileId: "" });
+    }
+  }
+  // All other additions are optional and require no eager rewrite of existing records.
   storeValue("kiwi.schemaVersion", STORAGE_SCHEMA_VERSION);
 }
 

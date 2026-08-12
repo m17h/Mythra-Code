@@ -4,7 +4,7 @@ const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 
-import { DURABLE_STORAGE_KEYS, STORAGE_SCHEMA_VERSION, flushPendingStateWrites, hydrateNativeStorage, loadStored, removeStoredValue, storeValue } from "./storage";
+import { DURABLE_STORAGE_KEYS, STORAGE_SCHEMA_VERSION, flushPendingStateWrites, hydrateNativeStorage, loadStored, migrateStorage, removeStoredValue, storeValue } from "./storage";
 
 describe("durable storage", () => {
   beforeEach(async () => {
@@ -21,6 +21,23 @@ describe("durable storage", () => {
 
   it("keeps per-thread model choices in durable storage", () => {
     expect(DURABLE_STORAGE_KEYS).toContain("kiwi.threadModels");
+    expect(DURABLE_STORAGE_KEYS).toContain("kiwi.threadReasoning");
+  });
+
+  it("removes legacy bundled prompt profiles without deleting user profiles or active prompt text", async () => {
+    localStorage.setItem("kiwi.schemaVersion", "13");
+    localStorage.setItem("kiwi.promptProfiles", JSON.stringify([
+      { id: "concise", name: "Concise builder", prompt: "Bundled", builtIn: true },
+      { id: "mine", name: "Mine", prompt: "User prompt" },
+    ]));
+    localStorage.setItem("kiwi.settings", JSON.stringify({ promptProfileId: "concise", systemPrompt: "Keep this active text" }));
+    invoke.mockResolvedValue(undefined);
+
+    migrateStorage();
+
+    expect(loadStored("kiwi.promptProfiles", [])).toEqual([{ id: "mine", name: "Mine", prompt: "User prompt" }]);
+    expect(loadStored<Record<string, unknown>>("kiwi.settings", {})).toMatchObject({ promptProfileId: "", systemPrompt: "Keep this active text" });
+    await flushPendingStateWrites();
   });
 
   it("hydrates frozen child-agent ownership state before the app mounts", () => {

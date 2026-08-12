@@ -114,7 +114,14 @@ export interface PromptProfile {
   id: string;
   name: string;
   prompt: string;
-  builtIn?: boolean;
+  /** Optional provider layers were added after the original global-only profiles. */
+  codexPrompt?: string;
+  claudePrompt?: string;
+}
+
+export interface ThreadReasoning {
+  reasoningEffort: ReasoningEffort;
+  ultra: boolean;
 }
 
 export interface CustomAgentProfile {
@@ -227,7 +234,12 @@ export interface AppSettings {
   cursorLogo: CursorLogoStyle;
   model: string;
   permission: PermissionMode;
+  /** Global OpenKiwi instructions, applied before any subscription-specific layer. */
   systemPrompt: string;
+  /** Additional instructions for ChatGPT/Codex subscription threads. */
+  codexSystemPrompt: string;
+  /** Additional instructions for Claude Code subscription threads. */
+  claudeSystemPrompt: string;
   promptProfileId: string;
   projectInstructionsEnabled: boolean;
   subagentsEnabled: boolean;

@@ -1,7 +1,8 @@
-import type { CustomAgentProfile, PermissionMode, ScheduleRunSettings } from "../types";
+import type { AppSettings, CustomAgentProfile, PermissionMode, ScheduleRunSettings } from "../types";
 import type { ChildAgentBridgeLaunch } from "./agentBridge";
 import type { JsonObject } from "./codex";
 import { openKiwiDeveloperInstructions } from "./completionPrompt";
+import { resolveProviderSystemPrompt } from "./systemPrompt";
 
 export function commandSandbox(permission: PermissionMode, cwd: string, additionalWritableRoots: string[] = []): JsonObject {
   if (permission === "full") return { type: "dangerFullAccess" };
@@ -163,12 +164,19 @@ export function turnStartParams(run: ScheduleRunSettings, threadId: string, cwd:
   };
 }
 
-export function scheduleRunSnapshot(settings: ScheduleRunSettings): ScheduleRunSettings {
+export function scheduleRunSnapshot(
+  settings: ScheduleRunSettings & Partial<Pick<AppSettings, "codexSystemPrompt" | "claudeSystemPrompt">>,
+): ScheduleRunSettings {
   return {
     provider: settings.provider,
     model: settings.model,
     permission: settings.permission,
-    systemPrompt: settings.systemPrompt,
+    systemPrompt: resolveProviderSystemPrompt(
+      settings.systemPrompt,
+      settings.provider,
+      settings.codexSystemPrompt,
+      settings.claudeSystemPrompt,
+    ),
     projectInstructionsEnabled: settings.projectInstructionsEnabled,
     subagentsEnabled: settings.subagentsEnabled,
     subagentMax: settings.subagentMax,

@@ -68,6 +68,7 @@ export interface ChildAgentBridgeInput {
   settings: Pick<AppSettings, "childAgents" | "subagentsEnabled" | "subagentMax">;
   permission: PermissionMode;
   systemPrompt: string;
+  providerSystemPrompts?: Partial<Record<"openai" | "claude", string>>;
   projectInstructionsEnabled: boolean;
   reasoningEffort: ChildAgentPolicy["reasoningEffort"];
   serviceTier: string | null;
@@ -134,6 +135,7 @@ export async function ensureChildAgentBridge(
         maxConcurrent: Math.max(1, input.settings.subagentMax),
         permission: input.permission,
         systemPrompt: input.systemPrompt,
+        ...(input.providerSystemPrompts ? { providerSystemPrompts: { ...input.providerSystemPrompts } } : {}),
         projectInstructionsEnabled: input.projectInstructionsEnabled,
         reasoningEffort: input.reasoningEffort,
         serviceTier: input.serviceTier,
@@ -169,6 +171,7 @@ export async function ensureChildAgentBridge(
     subagentMax: input.settings.subagentMax,
     permission: input.permission,
     systemPrompt: input.systemPrompt,
+    providerSystemPrompts: input.providerSystemPrompts,
     projectInstructionsEnabled: input.projectInstructionsEnabled,
     reasoningEffort: input.reasoningEffort,
     serviceTier: input.serviceTier,

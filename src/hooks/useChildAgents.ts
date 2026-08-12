@@ -29,7 +29,7 @@ import { timelineFromTurns } from "../lib/threadTimeline";
 import { useTaskStore, type TaskStatus } from "../lib/taskStore";
 import type { OpenRouterModel } from "../components/OpenRouterModelControl";
 import type { SetPersisted } from "./usePersistedState";
-import type { PendingApproval, ProjectSubagentSettings, Thread } from "../types";
+import type { PendingApproval, ProjectSubagentSettings, Thread, ThreadReasoning } from "../types";
 
 /**
  * Routes the delegation requests a root agent makes through the OpenKiwi
@@ -65,6 +65,7 @@ export interface ChildAgentContext {
   bindThreadToProject: (threadId: string, projectPath: string) => void;
   rememberThread: (thread: Thread) => void;
   persistThreadModel: (threadId: string, model: string) => void;
+  persistThreadReasoning: (threadId: string, reasoning: ThreadReasoning) => void;
   setThreads: Dispatch<SetStateAction<Thread[]>>;
   cursorSessionIdsRef: MutableRefObject<Record<string, string>>;
   scheduleClaudeThreadSave: (threadId: string) => void;
@@ -250,6 +251,9 @@ export function useChildAgents(context: ChildAgentContext): {
       policy.reasoningEffort,
       request.arguments.reasoningEffort,
     );
+    const targetSystemPrompt = target.provider === "openai" || target.provider === "claude"
+      ? policy.providerSystemPrompts?.[target.provider]
+      : undefined;
 
     const reservation = `pending-${crypto.randomUUID()}`;
     const stopGeneration = stopGenerationRef.current.get(rootThreadId) ?? 0;
@@ -274,7 +278,7 @@ export function useChildAgents(context: ChildAgentContext): {
         policy,
         executionPath,
         additionalWorkspaceRoots: gitDir ? [gitDir] : [],
-        systemPrompt: policy.systemPrompt,
+        systemPrompt: targetSystemPrompt ?? policy.systemPrompt,
         projectInstructionsEnabled: policy.projectInstructionsEnabled,
         reasoningEffort,
         serviceTier: policy.serviceTier,
@@ -296,6 +300,7 @@ export function useChildAgents(context: ChildAgentContext): {
     ctx.rememberThread(result.thread);
     ctx.setThreads((current) => upsertThread(current, result.thread));
     ctx.persistThreadModel(childThreadId, result.model);
+    ctx.persistThreadReasoning(childThreadId, { reasoningEffort, ultra: false });
     if (result.cursorSessionId) ctx.cursorSessionIdsRef.current[childThreadId] = result.cursorSessionId;
 
     const taskStore = useTaskStore.getState();

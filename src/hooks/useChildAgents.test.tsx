@@ -36,6 +36,7 @@ const POLICY: ChildAgentPolicy = {
   maxConcurrent: 2,
   permission: "read-only",
   systemPrompt: "Be careful.",
+  providerSystemPrompts: { openai: "Global then Codex", claude: "Global then Claude" },
   projectInstructionsEnabled: false,
   reasoningEffort: "medium",
   serviceTier: null,
@@ -80,6 +81,7 @@ function context(overrides: Partial<ChildAgentContext> = {}): ChildAgentContext 
     bindThreadToProject: vi.fn(),
     rememberThread: vi.fn(),
     persistThreadModel: vi.fn(),
+    persistThreadReasoning: vi.fn(),
     setThreads: vi.fn(),
     cursorSessionIdsRef: { current: {} },
     scheduleClaudeThreadSave: vi.fn(),
@@ -224,6 +226,8 @@ describe("useChildAgents", () => {
       expect(store.tasks["child-terra"].workspacePath).toBe("/tmp/project/.worktrees/a");
       expect(store.tasks["child-terra"].messages[0]).toMatchObject({ role: "user", text: "Refactor the parser." });
       expect(ctx.persistThreadModel).toHaveBeenCalledWith("child-terra", "gpt-5.6-terra");
+      expect(ctx.persistThreadReasoning).toHaveBeenCalledWith("child-terra", { reasoningEffort: "medium", ultra: false });
+      expect(childRun.startChildAgentTurn.mock.calls[0][2].systemPrompt).toBe("Global then Codex");
     });
 
     it("does not resurrect a child whose completion beat the start response", async () => {

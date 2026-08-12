@@ -128,7 +128,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .app-shell[data-theme="daylight"] .studio-header { background: rgba(239,241,236,.94); }
 .app-shell[data-theme="daylight"] .studio-actions button { color: #4f584f; background: transparent; }
 .app-shell[data-theme="daylight"] .studio-actions button:hover:not(:disabled) { background: rgba(0,0,0,.045); }
-.app-shell[data-theme="daylight"] .studio-list-row:hover, .app-shell[data-theme="daylight"] .workflow-card:hover, .app-shell[data-theme="daylight"] .manager-list > div:hover, .app-shell[data-theme="daylight"] .theme-card:hover, .app-shell[data-theme="daylight"] .provider-card:hover, .app-shell[data-theme="daylight"] .profile-grid > button:hover { background: rgba(0,0,0,.04); }
+.app-shell[data-theme="daylight"] .studio-list-row:hover, .app-shell[data-theme="daylight"] .workflow-card:hover, .app-shell[data-theme="daylight"] .manager-list > div:hover, .app-shell[data-theme="daylight"] .theme-card:hover, .app-shell[data-theme="daylight"] .provider-card:hover, .app-shell[data-theme="daylight"] .profile-card:hover { background: rgba(0,0,0,.04); }
 .app-shell[data-theme="daylight"] .palette-results > button.active, .app-shell[data-theme="daylight"] .palette-group > button.active, .app-shell[data-theme="daylight"] .mention-menu button.active, .app-shell[data-theme="daylight"] .mention-menu button:hover { background: rgba(0,0,0,.06); }
 .app-shell[data-theme="daylight"] .palette-results > button > span, .app-shell[data-theme="daylight"] .palette-group > button > span { background: rgba(0,0,0,.05); }
 .app-shell[data-theme="daylight"] .settings-nav button.active, .app-shell[data-theme="daylight"] .thread-row-wrap.active, .app-shell[data-theme="daylight"] .studio-tabs button.active { background: rgba(0,0,0,.06); }
@@ -1082,6 +1082,21 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .prompt-editor { width: 100%; resize: vertical; min-height: 118px; padding: var(--s-3); border: 1px solid var(--line); border-radius: var(--r-md); outline: 0; color: var(--text); background: var(--field); font: 11px/1.6 var(--font-mono); transition: border-color var(--t-fast) ease, box-shadow var(--t-fast) ease; }
 .prompt-editor:focus { border-color: var(--green-line); box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 9%, transparent); }
 .prompt-editor::placeholder { color: var(--muted-2); }
+.prompt-file-notice { display: grid; grid-template-columns: 18px minmax(0,1fr); align-items: start; gap: var(--s-2); margin-bottom: var(--s-4); padding: var(--s-3); border: 1px solid color-mix(in srgb, var(--info) 25%, var(--line)); border-radius: var(--r-md); color: var(--muted); background: color-mix(in srgb, var(--info) 6%, transparent); }
+.prompt-file-notice > svg { margin-top: 1px; color: var(--info); }
+.prompt-file-notice p { margin: 0; font-size: var(--fs-meta); line-height: 1.55; }
+.prompt-file-notice strong { color: var(--ink-2); font-weight: 600; }
+.prompt-file-notice code { color: var(--ink-2); font: .95em var(--font-mono); }
+.prompt-guidance-control { min-height: 55px; display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); margin-bottom: var(--s-4); padding: var(--s-3); border: 1px solid var(--line); border-radius: var(--r-md); background: rgba(255,255,255,.012); }
+.prompt-guidance-control > span { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.prompt-guidance-control strong { color: var(--ink-2); font-size: var(--fs-ui); font-weight: 600; }
+.prompt-guidance-control small { color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.4; }
+.prompt-layer-field { display: flex; min-width: 0; flex-direction: column; gap: 7px; }
+.prompt-layer-field > span { display: flex; flex-direction: column; gap: 2px; }
+.prompt-layer-field strong { color: var(--ink-2); font-size: var(--fs-ui); font-weight: 600; }
+.prompt-layer-field small { color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.4; }
+.provider-prompt-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-3); margin-top: var(--s-3); }
+.provider-prompt-grid .prompt-editor { min-height: 96px; }
 .prompt-audit-row { display: flex; flex-wrap: wrap; gap: 13px; margin-top: 9px; color: #707770; font-size: var(--fs-micro); }
 .prompt-audit-row span { display: flex; align-items: center; gap: 4px; }
 .prompt-audit-row svg { color: var(--green); }
@@ -1105,6 +1120,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .agent-safety-row { display: flex; flex-wrap: wrap; gap: 13px; margin-top: 9px; color: #707770; font-size: var(--fs-micro); }
 .agent-safety-row span { display: flex; align-items: center; gap: 4px; }
 .agent-safety-row svg { color: var(--info); }
+.child-agent-heading { margin-top: var(--s-5); }
 .provider-cards { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; }
 .provider-card { display: grid; grid-template-columns: 32px minmax(0, 1fr) 18px; align-items: center; gap: var(--s-3); min-height: 64px; padding: var(--s-3); border: 1px solid var(--line); border-radius: var(--r-md); color: var(--muted); background: rgba(255,255,255,.014); text-align: left; cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
 .provider-card:hover { color: var(--ink-2); border-color: var(--line-strong); background: rgba(255,255,255,.035); }
@@ -1202,9 +1218,12 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
   transform: scale(1.35);
 }
 .profile-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 6px; }
-.profile-grid > button { min-height: 50px; display: grid; grid-template-columns: minmax(0,1fr) 15px; align-items: center; gap: var(--s-1); padding: 10px; border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--muted); background: rgba(255,255,255,.014); text-align: left; cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
-.profile-grid > button:hover { color: var(--ink-2); border-color: var(--line-strong); background: rgba(255,255,255,.035); }
-.profile-grid > button.selected { color: var(--text); border-color: color-mix(in srgb,var(--green) 30%,var(--line)); background: var(--green-soft); }
+.profile-card { position: relative; min-width: 0; min-height: 56px; display: grid; grid-template-columns: minmax(0, 1fr) 28px; align-items: stretch; overflow: hidden; border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--muted); background: rgba(255,255,255,.014); transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
+.profile-card:hover { color: var(--ink-2); border-color: var(--line-strong); background: rgba(255,255,255,.035); }
+.profile-card.selected { color: var(--text); border-color: color-mix(in srgb,var(--green) 30%,var(--line)); background: var(--green-soft); }
+.profile-apply { min-width: 0; display: grid; grid-template-columns: minmax(0,1fr) 15px; align-items: center; gap: var(--s-1); padding: 10px; border: 0; color: inherit; background: transparent; text-align: left; cursor: pointer; }
+.profile-delete { width: 28px; display: grid; place-items: center; padding: 0; border: 0; border-left: 1px solid var(--line); color: var(--muted-2); background: transparent; cursor: pointer; }
+.profile-delete:hover { color: var(--red); background: color-mix(in srgb, var(--red) 8%, transparent); }
 .profile-grid button > span, .manager-list > div > span, .compact-note > span, .behavior-grid > div > span, .diagnostic-card > span { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .profile-grid strong, .manager-list strong, .compact-note strong, .behavior-grid strong, .diagnostic-card strong { color: var(--ink-2); font-size: var(--fs-ui); font-weight: 600; }
 .profile-grid small, .manager-list small, .compact-note small, .behavior-grid small, .diagnostic-card small { overflow: hidden; color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.4; white-space: nowrap; text-overflow: ellipsis; }
@@ -1260,7 +1279,9 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .schedule-create textarea { grid-column: 1 / -1; }
 .schedule-create button { grid-column: 1 / -1; }
 .compact-note { display: grid; grid-template-columns: 23px minmax(0,1fr); align-items: center; gap: 7px; color: var(--green); }
+.mcp-controls-note { margin-top: var(--s-5); }
 .behavior-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.behavior-grid-single { grid-template-columns: 1fr; }
 .behavior-grid > div, .diagnostic-card { min-height: 55px; display: flex; align-items: center; justify-content: space-between; gap: 9px; padding: 9px; border: 1px solid var(--line); border-radius: 8px; background: rgba(255,255,255,.012); }
 .runtime-field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 7px; }
 .runtime-field-grid label { display: flex; flex-direction: column; gap: 5px; color: var(--muted); font-size: var(--fs-meta); }
@@ -1973,7 +1994,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
   .child-agent-reasoning > span, .child-agent-reasoning > small { grid-column: 1 / -1; }
   .settings-nav button > svg:last-child { display: none; }
   .settings-content { padding: 16px; }
-  .theme-grid, .behavior-grid, .runtime-field-grid, .provider-cards { grid-template-columns: 1fr; }
+  .theme-grid, .behavior-grid, .runtime-field-grid, .provider-cards, .provider-prompt-grid { grid-template-columns: 1fr; }
   .profile-grid { grid-template-columns: 1fr 1fr; }
   .inline-create.two, .schedule-create { grid-template-columns: 1fr; }
   .schedule-create textarea, .schedule-create button { grid-column: 1; }

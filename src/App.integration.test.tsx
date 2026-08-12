@@ -556,6 +556,38 @@ describe("workspace switching during thread selection", () => {
     });
   });
 
+  it("restores each thread's remembered reasoning level when switching conversations", async () => {
+    const user = userEvent.setup();
+    localStorage.setItem("kiwi.threadReasoning", JSON.stringify({
+      [THREAD_A.id]: { reasoningEffort: "low", ultra: false },
+      [THREAD_B.id]: { reasoningEffort: "high", ultra: false },
+    }));
+    resumeImpl = (params) => ({
+      thread: {
+        ...(String(params.threadId) === THREAD_B.id ? THREAD_B : THREAD_A),
+        id: String(params.threadId),
+        turns: [],
+      },
+    });
+    await renderApp();
+
+    await user.click(await screen.findByText("Alpha thread"));
+    await waitFor(() => expect(screen.getByRole("slider", { name: "Reasoning effort" })).toHaveValue("0"));
+
+    await user.click(await screen.findByText("Beta thread"));
+    await waitFor(() => expect(screen.getByRole("slider", { name: "Reasoning effort" })).toHaveValue("2"));
+
+    fireEvent.change(screen.getByRole("slider", { name: "Reasoning effort" }), { target: { value: "3" } });
+    await waitFor(() => {
+      expect(JSON.parse(localStorage.getItem("kiwi.threadReasoning") ?? "{}")[THREAD_B.id])
+        .toEqual({ reasoningEffort: "xhigh", ultra: false });
+    });
+    await user.click(screen.getByText("Alpha thread"));
+    await waitFor(() => expect(screen.getByRole("slider", { name: "Reasoning effort" })).toHaveValue("0"));
+    await user.click(screen.getByText("Beta thread"));
+    await waitFor(() => expect(screen.getByRole("slider", { name: "Reasoning effort" })).toHaveValue("3"));
+  });
+
   it("creates an editable provider handoff draft without changing the source thread", async () => {
     const user = userEvent.setup();
     resumeImpl = (params) => ({ thread: { ...THREAD_A, id: String(params.threadId), turns: [] } });

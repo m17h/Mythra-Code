@@ -51,6 +51,9 @@ export interface ChildAgentPolicy {
   /** Runtime choices are frozen too, so a background root never inherits the
    * settings of whichever conversation happens to be visible when it spawns. */
   systemPrompt: string;
+  /** Fully composed prompt for subscription destinations. Legacy policies
+   * fall back to the root's frozen systemPrompt. */
+  providerSystemPrompts?: Partial<Record<"openai" | "claude", string>>;
   projectInstructionsEnabled: boolean;
   reasoningEffort: ReasoningEffort;
   serviceTier: string | null;
@@ -370,6 +373,7 @@ export interface ChildAgentPolicyInput {
   subagentMax: number;
   permission: PermissionMode;
   systemPrompt: string;
+  providerSystemPrompts?: Partial<Record<"openai" | "claude", string>>;
   projectInstructionsEnabled: boolean;
   reasoningEffort: ReasoningEffort;
   serviceTier: string | null;
@@ -393,6 +397,7 @@ export function childAgentPolicyFor(input: ChildAgentPolicyInput): ChildAgentPol
     maxConcurrent: Math.min(MAX_SUBAGENT_CONCURRENCY, Math.max(1, Math.floor(input.subagentMax) || 1)),
     permission: input.permission,
     systemPrompt: input.systemPrompt,
+    ...(input.providerSystemPrompts ? { providerSystemPrompts: { ...input.providerSystemPrompts } } : {}),
     projectInstructionsEnabled: input.projectInstructionsEnabled,
     reasoningEffort: input.reasoningEffort,
     serviceTier: input.serviceTier,
@@ -456,6 +461,12 @@ export function sanitizeChildAgentPolicies(stored: unknown): Record<string, Chil
       maxConcurrent: Math.min(MAX_SUBAGENT_CONCURRENCY, Math.max(1, Math.floor(Number(entry.maxConcurrent)) || 1)),
       permission: permission === "read-only" || permission === "full" ? permission : "ask",
       systemPrompt: typeof entry.systemPrompt === "string" ? entry.systemPrompt : "",
+      ...(entry.providerSystemPrompts && typeof entry.providerSystemPrompts === "object" ? {
+        providerSystemPrompts: Object.fromEntries(
+          Object.entries(entry.providerSystemPrompts as Record<string, unknown>)
+            .filter(([provider, prompt]) => (provider === "openai" || provider === "claude") && typeof prompt === "string"),
+        ) as Partial<Record<"openai" | "claude", string>>,
+      } : {}),
       projectInstructionsEnabled: entry.projectInstructionsEnabled === true,
       reasoningEffort: reasoningEffort === "low" || reasoningEffort === "medium" || reasoningEffort === "high"
         || reasoningEffort === "xhigh" || reasoningEffort === "max" || reasoningEffort === "ultra"

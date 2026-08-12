@@ -17,7 +17,7 @@ import { countActiveThreadsByWorkspace, filterThreadsByKind, filterThreadsForWor
 import { timelineFromTurns } from "./lib/threadTimeline";
 import { buildTranscriptMarkdown } from "./lib/transcript";
 import { RowMenu } from "./components/RowMenu";
-import { type ReasoningEffort, ModelPowerControl, type RuntimeModel } from "./components/ModelPowerControl";
+import { ModelPowerControl, type RuntimeModel } from "./components/ModelPowerControl";
 import { OpenRouterModelControl, type OpenRouterModel } from "./components/OpenRouterModelControl";
 import { ClaudeModelControl } from "./components/ClaudeModelControl";
 import { CursorModelControl } from "./components/CursorModelControl";
@@ -32,7 +32,7 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { SettingsModal } from "./components/SettingsModal";
 import { AuthRequiredModal, RuntimeSetupModal } from "./components/RuntimeModals";
 import type { AgentRecord, AttachmentRecord, McpView, StudioTab } from "./components/StudioDock";
-import type { Account, Activity, AppSettings, ArchivedThread, ChatMessage, CustomAgentProfile, PendingApproval, PermissionMode, Project, ProjectAction, ProjectPromptMode, ProjectSubagentSettings, PromptProfile, Provider, ScheduledTask, ScheduleRunRecord, SettingsSection, Thread, ThreadHandoff, ThemeName, WorkspaceMode } from "./types";
+import type { Account, Activity, AppSettings, ArchivedThread, ChatMessage, CustomAgentProfile, PendingApproval, PermissionMode, Project, ProjectAction, ProjectPromptMode, ProjectSubagentSettings, PromptProfile, Provider, ScheduledTask, ScheduleRunRecord, SettingsSection, Thread, ThreadHandoff, ThreadReasoning, ThemeName, WorkspaceMode } from "./types";
 import { PendingTurnStarts } from "./lib/pendingTurnStarts";
 import { useTaskStore, type QueuedTurn } from "./lib/taskStore";
 import { friendlyError } from "./lib/errors";
@@ -83,7 +83,7 @@ import { createLocalSkill, importLocalSkills, normalizeSkillName, resolveLocalSk
 import { compactWorkflowRun, normalizeWorkflows, recoverWorkflowRuns, type WorkflowDefinition, type WorkflowRunRecord } from "./lib/workflows";
 import { isClaudeThread, isCursorThread, isLocalSubscriptionThread, modelForProvider, providerFromThread } from "./lib/threadProvider";
 import { basename, normalizedProjectPath } from "./lib/paths";
-import { resolveSystemPrompt } from "./lib/systemPrompt";
+import { resolveProviderSystemPrompt, resolveSystemPrompt } from "./lib/systemPrompt";
 import { providerAccountUsage } from "./lib/providerUsage";
 import { openKiwiDeveloperInstructions } from "./lib/completionPrompt";
 import { providerForArchivedThread } from "./lib/threadArchive";
@@ -197,6 +197,7 @@ export default function App() {
   const [startingDraftTurn, setStartingDraftTurn] = useState(false);
   const [settings, persistSettings] = usePersistedState<AppSettings>("kiwi.settings", DEFAULT_SETTINGS, { init: () => initialSettings });
   const [threadModels, setThreadModels] = usePersistedState<Record<string, string>>("kiwi.threadModels", {});
+  const [threadReasoning, setThreadReasoning] = usePersistedState<Record<string, ThreadReasoning>>("kiwi.threadReasoning", {});
   const [draftThreadProvider, setDraftThreadProvider] = useState<Provider | null>(null);
   const [draftThreadModel, setDraftThreadModel] = useState<string | null>(null);
   const [draftThreadIsolated, setDraftThreadIsolated] = useState(false);
@@ -345,19 +346,36 @@ export default function App() {
           ...settings,
           ...(overrides.model ? { model: overrides.model } : {}),
           ...(overrides.permission ? { permission: overrides.permission } : {}),
-          systemPrompt: resolveSystemPrompt(settings.systemPrompt, overrides.systemPrompt, overrides.systemPromptMode),
         };
     return settingsWithProjectSubagents(projectResolved, overrides?.subagents);
   }, [activeProject, settings]);
+  const subscriptionSystemPrompts = useMemo(() => {
+    const resolveFor = (provider: "openai" | "claude") => resolveSystemPrompt(
+      resolveProviderSystemPrompt(projectSettings.systemPrompt, provider, projectSettings.codexSystemPrompt, projectSettings.claudeSystemPrompt),
+      activeProject?.overrides?.systemPrompt,
+      activeProject?.overrides?.systemPromptMode,
+    );
+    return { openai: resolveFor("openai"), claude: resolveFor("claude") };
+  }, [activeProject, projectSettings]);
   // Per-project overrides win over global defaults, while provider and model
   // are resolved for the active thread (or the unsent new-thread draft).
   const effectiveSettings = useMemo<AppSettings>(() => {
     const threadModel = activeThreadId ? threadModels[activeThreadId] : draftThreadModel;
-    const resolved = { ...projectSettings, provider: activeProvider, model: modelForProvider(activeProvider, threadModel ?? projectSettings.model) };
+    const rememberedReasoning = activeThreadId ? threadReasoning[activeThreadId] : undefined;
+    const providerPrompt = activeProvider === "openai" || activeProvider === "claude"
+      ? subscriptionSystemPrompts[activeProvider]
+      : resolveSystemPrompt(projectSettings.systemPrompt, activeProject?.overrides?.systemPrompt, activeProject?.overrides?.systemPromptMode);
+    const resolved = {
+      ...projectSettings,
+      provider: activeProvider,
+      model: modelForProvider(activeProvider, threadModel ?? projectSettings.model),
+      systemPrompt: providerPrompt,
+      ...(rememberedReasoning ?? {}),
+    };
     return activeThreadId && childAgentLinks[activeThreadId]
       ? settingsWithoutChildDelegation(resolved)
       : resolved;
-  }, [activeProvider, activeThreadId, childAgentLinks, draftThreadModel, projectSettings, threadModels]);
+  }, [activeProject, activeProvider, activeThreadId, childAgentLinks, draftThreadModel, projectSettings, subscriptionSystemPrompts, threadModels, threadReasoning]);
 
   useEffect(() => {
     if (!pendingHandoff || !activeWorkspace || activeThread) return;
@@ -634,6 +652,15 @@ export default function App() {
     setThreadModels((current) => (current[threadId] === model ? current : { ...current, [threadId]: model }));
   }, [setThreadModels]);
 
+  const persistThreadReasoning = useCallback((threadId: string, reasoning: ThreadReasoning) => {
+    setThreadReasoning((current) => {
+      const existing = current[threadId];
+      return existing?.reasoningEffort === reasoning.reasoningEffort && existing.ultra === reasoning.ultra
+        ? current
+        : { ...current, [threadId]: reasoning };
+    });
+  }, [setThreadReasoning]);
+
   const executionPathFor = useCallback((threadId: string | null | undefined, logicalPath: string) => (
     executionPathForThread(threadId, logicalPath, threadWorktreesRef.current)
   ), [threadWorktreesRef]);
@@ -783,6 +810,15 @@ export default function App() {
     });
   }, [setThreadModels]);
 
+  const forgetThreadReasoning = useCallback((threadId: string) => {
+    setThreadReasoning((current) => {
+      if (!(threadId in current)) return current;
+      const next = { ...current };
+      delete next[threadId];
+      return next;
+    });
+  }, [setThreadReasoning]);
+
   const persistActiveProjectOverride = useCallback(
     <K extends keyof NonNullable<Project["overrides"]>>(key: K, value: NonNullable<Project["overrides"]>[K]) => {
       if (!activeProject?.overrides?.[key]) return false;
@@ -804,6 +840,23 @@ export default function App() {
     },
     [activeThreadId, draftThreadProvider, persistActiveProjectOverride, persistSettings, persistThreadModel, settings],
   );
+
+  const persistComposerReasoning = useCallback((reasoningEffort: ThreadReasoning["reasoningEffort"]) => {
+    if (activeThreadId) {
+      persistThreadReasoning(activeThreadId, { reasoningEffort, ultra: false });
+    } else {
+      persistSettings({ ...settings, reasoningEffort, ultra: false });
+    }
+  }, [activeThreadId, persistSettings, persistThreadReasoning, settings]);
+
+  const persistComposerUltra = useCallback((ultra: boolean) => {
+    if (activeThreadId) {
+      persistThreadReasoning(activeThreadId, { reasoningEffort: effectiveSettings.reasoningEffort, ultra });
+      if (ultra && !settings.subagentsEnabled) persistSettings({ ...settings, subagentsEnabled: true });
+    } else {
+      persistSettings({ ...settings, ultra, subagentsEnabled: ultra ? true : settings.subagentsEnabled });
+    }
+  }, [activeThreadId, effectiveSettings.reasoningEffort, persistSettings, persistThreadReasoning, settings]);
 
   const persistComposerPermission = useCallback(
     (permission: PermissionMode) => {
@@ -1955,7 +2008,16 @@ export default function App() {
       }
       const provider = providerFromThread(thread, settings.provider);
       const projectModel = activeProject?.overrides?.model ?? settings.model;
-      const targetSettings: AppSettings = { ...projectSettings, provider, model: modelForProvider(provider, threadModels[thread.id] ?? projectModel) };
+      const providerPrompt = provider === "openai" || provider === "claude"
+        ? subscriptionSystemPrompts[provider]
+        : resolveSystemPrompt(projectSettings.systemPrompt, activeProject?.overrides?.systemPrompt, activeProject?.overrides?.systemPromptMode);
+      const targetSettings: AppSettings = {
+        ...projectSettings,
+        provider,
+        model: modelForProvider(provider, threadModels[thread.id] ?? projectModel),
+        systemPrompt: providerPrompt,
+        ...(threadReasoning[thread.id] ?? {}),
+      };
       const threadProviderSettings = childAgentLinks[thread.id]
         ? settingsWithoutChildDelegation(targetSettings)
         : targetSettings;
@@ -1971,6 +2033,7 @@ export default function App() {
         settings: threadProviderSettings,
         permission: threadProviderSettings.permission,
         systemPrompt: threadProviderSettings.systemPrompt,
+        providerSystemPrompts: subscriptionSystemPrompts,
         projectInstructionsEnabled: threadProviderSettings.projectInstructionsEnabled,
         reasoningEffort: threadProviderSettings.ultra ? "ultra" : threadProviderSettings.reasoningEffort,
         serviceTier: threadProviderSettings.serviceTier,
@@ -2125,6 +2188,7 @@ export default function App() {
     running,
     attachments,
     effectiveSettings,
+    subscriptionSystemPrompts,
     customAgents,
     openRouterModels,
     runtimeStatus,
@@ -2151,6 +2215,7 @@ export default function App() {
     rememberThread,
     onThreadCreated: handleThreadCreated,
     persistThreadModel,
+    persistThreadReasoning,
     persistThreadWorktrees,
     restartRuntimeForCapabilities,
     beginRunCheckpoint,
@@ -2233,6 +2298,7 @@ export default function App() {
     bindThreadToProject,
     rememberThread,
     persistThreadModel,
+    persistThreadReasoning,
     setThreads,
     cursorSessionIdsRef,
     scheduleClaudeThreadSave,
@@ -2549,6 +2615,7 @@ export default function App() {
       if (activeThread?.id === threadId) newThread();
       forgetThread(threadId);
       forgetThreadModel(threadId);
+      forgetThreadReasoning(threadId);
       deleteThreadTurnDurations(threadId);
       setThreads((current) => current.filter((entry) => entry.id !== threadId));
       persistArchivedThreads((current) => current.filter((entry) => entry.id !== threadId));
@@ -2685,6 +2752,7 @@ export default function App() {
       if (activeWorkspace) bindThreadToProject(result.thread.id, activeWorkspace.path);
       rememberThread(result.thread);
       persistThreadModel(result.thread.id, effectiveSettings.model);
+      persistThreadReasoning(result.thread.id, { reasoningEffort: effectiveSettings.reasoningEffort, ultra: effectiveSettings.ultra });
       setActiveThread(result.thread);
       const history = timelineFromTurns(result.thread.turns);
       useTaskStore.getState().hydrateTask(result.thread.id, history.messages, history.activities, activeWorkspace?.path);
@@ -3673,7 +3741,7 @@ export default function App() {
                 projectName={activeProject.name}
                 projectPrompt={activeProject.overrides?.systemPrompt}
                 promptMode={activeProject.overrides?.systemPromptMode ?? "replace"}
-                appPrompt={settings.systemPrompt}
+                appPrompt={resolveProviderSystemPrompt(settings.systemPrompt, effectiveSettings.provider, settings.codexSystemPrompt, settings.claudeSystemPrompt)}
                 provider={effectiveSettings.provider}
                 threadStarted={Boolean(activeThread)}
                 onSave={persistActiveProjectPrompt}
@@ -3949,24 +4017,24 @@ export default function App() {
                 onStop={() => void stopTurnAndChildren()}
                 modelControls={
                   <>
-                    {effectiveSettings.provider === "openai" && <ModelPowerControl model={effectiveSettings.model || DEFAULT_OPENAI_MODEL} effort={settings.reasoningEffort} ultra={settings.ultra} fast={settings.serviceTier === "priority"} runtimeModels={runtimeModels} onModel={persistComposerModel} onEffort={(reasoningEffort: ReasoningEffort) => persistSettings({ ...settings, reasoningEffort, ultra: false })} onUltra={(ultra) => persistSettings({ ...settings, ultra, subagentsEnabled: ultra ? true : settings.subagentsEnabled })} onFast={(fast) => persistSettings({ ...settings, serviceTier: fast ? "priority" : null })} />}
+                    {effectiveSettings.provider === "openai" && <ModelPowerControl model={effectiveSettings.model || DEFAULT_OPENAI_MODEL} effort={effectiveSettings.reasoningEffort} ultra={effectiveSettings.ultra} fast={settings.serviceTier === "priority"} runtimeModels={runtimeModels} onModel={persistComposerModel} onEffort={persistComposerReasoning} onUltra={persistComposerUltra} onFast={(fast) => persistSettings({ ...settings, serviceTier: fast ? "priority" : null })} />}
                     {effectiveSettings.provider === "openrouter" && (
                       <OpenRouterModelControl
                         model={effectiveSettings.model}
-                        effort={settings.reasoningEffort}
+                        effort={effectiveSettings.reasoningEffort}
                         models={openRouterModels}
                         loading={openRouterModelsLoading}
                         error={openRouterModelsError}
                         onModel={(model) => {
                           persistComposerModel(model);
-                          if (settings.ultra) persistSettings({ ...settings, ultra: false });
+                          if (effectiveSettings.ultra) persistComposerReasoning(effectiveSettings.reasoningEffort);
                         }}
-                        onEffort={(reasoningEffort) => persistSettings({ ...settings, reasoningEffort, ultra: false })}
+                        onEffort={persistComposerReasoning}
                         onRefresh={() => void refreshOpenRouterModels()}
                       />
                     )}
-                    {effectiveSettings.provider === "claude" && <ClaudeModelControl model={effectiveSettings.model || DEFAULT_CLAUDE_MODEL} effort={settings.reasoningEffort} onModel={(model) => persistComposerModel(model)} onEffort={(reasoningEffort) => persistSettings({ ...settings, reasoningEffort, ultra: false })} />}
-                    {effectiveSettings.provider === "cursor" && <CursorModelControl model={effectiveSettings.model || DEFAULT_CURSOR_MODEL} models={cursorModels} effort={settings.reasoningEffort} loading={cursorModelsLoading} onRefresh={() => void refreshCursorModels()} onModel={(model) => persistComposerModel(model)} onEffort={(reasoningEffort) => persistSettings({ ...settings, reasoningEffort, ultra: false })} />}
+                    {effectiveSettings.provider === "claude" && <ClaudeModelControl model={effectiveSettings.model || DEFAULT_CLAUDE_MODEL} effort={effectiveSettings.reasoningEffort} onModel={(model) => persistComposerModel(model)} onEffort={persistComposerReasoning} />}
+                    {effectiveSettings.provider === "cursor" && <CursorModelControl model={effectiveSettings.model || DEFAULT_CURSOR_MODEL} models={cursorModels} effort={effectiveSettings.reasoningEffort} loading={cursorModelsLoading} onRefresh={() => void refreshCursorModels()} onModel={(model) => persistComposerModel(model)} onEffort={persistComposerReasoning} />}
                   </>
                 }
                 controls={
@@ -4083,11 +4151,11 @@ export default function App() {
             githubRepoName={githubRepoName}
             githubRepoVisibility={githubRepoVisibility}
             promptAudit={[
-              { label: "Base instruction", value: effectiveSettings.systemPrompt ? `${activeProject?.overrides?.systemPrompt ? (activeProject.overrides.systemPromptMode === "append" && settings.systemPrompt.trim() ? "app + project" : "project") : "app"} · ${effectiveSettings.systemPrompt.length} chars` : "empty" },
+              { label: "Base instruction", value: effectiveSettings.systemPrompt ? `${activeProject?.overrides?.systemPrompt ? (activeProject.overrides.systemPromptMode === "append" ? "OpenKiwi + project" : "project") : "OpenKiwi"} · ${effectiveSettings.systemPrompt.length} chars` : "empty" },
               { label: "Developer instruction", value: "empty" },
               { label: "AGENTS.md discovery", value: settings.projectInstructionsEnabled ? "enabled · up to 32 KB" : "disabled" },
               { label: "Model", value: effectiveSettings.model || "provider default" },
-              { label: "Reasoning", value: settings.ultra ? "ultra" : settings.reasoningEffort },
+              { label: "Reasoning", value: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort },
               { label: "Sub-agents", value: effectiveSettings.subagentsEnabled ? `on · max ${effectiveSettings.subagentMax}` : "off" },
               { label: "Cross-provider", value: effectiveSettings.subagentsEnabled ? childAgentSummary : "off" },
               { label: "Skills", value: skillsFolder ? `${skills.filter((skill) => skill.enabled).length} enabled · local folder` : "no folder selected" },

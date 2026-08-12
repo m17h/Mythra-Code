@@ -26,7 +26,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   model: DEFAULT_OPENAI_MODEL,
   permission: "ask",
   systemPrompt: "",
-  promptProfileId: "empty",
+  codexSystemPrompt: "",
+  claudeSystemPrompt: "",
+  promptProfileId: "",
   projectInstructionsEnabled: false,
   subagentsEnabled: false,
   subagentMax: 3,
@@ -40,8 +42,5 @@ export const DEFAULT_SETTINGS: AppSettings = {
   uiScale: 100,
 };
 
-export const DEFAULT_PROMPT_PROFILES: PromptProfile[] = [
-  { id: "empty", name: "Empty", prompt: "", builtIn: true },
-  { id: "concise", name: "Concise builder", prompt: "Be concise, make progress autonomously, verify important changes, and clearly report results.", builtIn: true },
-  { id: "reviewer", name: "Careful reviewer", prompt: "Prioritize correctness, security, and maintainability. Inspect evidence before conclusions and flag uncertainty explicitly.", builtIn: true },
-];
+/** OpenKiwi ships no opinions as profiles; every saved profile belongs to the user. */
+export const DEFAULT_PROMPT_PROFILES: PromptProfile[] = [];

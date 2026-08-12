@@ -339,6 +339,73 @@ describe("SettingsModal", () => {
     expect(screen.getByText("Cloned repo")).toBeInTheDocument();
   });
 
+  it("saves separate global, Codex subscription, and Claude subscription prompts", () => {
+    const onSave = vi.fn();
+    render(<SettingsModal {...modalProps({ initialSection: "prompts", onSave })} />);
+
+    fireEvent.change(screen.getByPlaceholderText("Empty — add your own instructions here"), { target: { value: "Global rules" } });
+    fireEvent.change(screen.getByPlaceholderText("Optional Codex-specific instructions"), { target: { value: "Codex rules" } });
+    fireEvent.change(screen.getByPlaceholderText("Optional Claude-specific instructions"), { target: { value: "Claude rules" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
+      systemPrompt: "Global rules",
+      codexSystemPrompt: "Codex rules",
+      claudeSystemPrompt: "Claude rules",
+    }));
+  });
+
+  it("explains that global provider instruction files are not inherited", () => {
+    render(<SettingsModal {...modalProps({ initialSection: "prompts" })} />);
+
+    const notice = screen.getByRole("note");
+    expect(notice).toHaveTextContent("Global instruction files are not inherited");
+    expect(notice).toHaveTextContent("CLAUDE.md");
+    expect(notice).toHaveTextContent("AGENTS.md");
+    expect(notice).toHaveTextContent("do not affect OpenKiwi");
+    expect(notice).toHaveTextContent("Project-level AGENTS.md files can still be discovered");
+  });
+
+  it("controls project AGENTS.md discovery from Prompt settings", () => {
+    const onSave = vi.fn();
+    render(<SettingsModal {...modalProps({ initialSection: "prompts", onSave })} />);
+
+    const toggle = screen.getByRole("switch", { name: "Project AGENTS.md discovery" });
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ projectInstructionsEnabled: true }));
+  });
+
+  it("starts with no built-in prompt profiles", () => {
+    render(<SettingsModal {...modalProps({ initialSection: "prompts", profiles: [] })} />);
+
+    expect(screen.getByText("No prompt profiles yet")).toBeInTheDocument();
+    expect(screen.queryByText("Concise builder")).not.toBeInTheDocument();
+    expect(screen.queryByText("Careful reviewer")).not.toBeInTheDocument();
+  });
+
+  it("applies all three layers from a user-created prompt profile", () => {
+    const onSave = vi.fn();
+    render(<SettingsModal {...modalProps({
+      initialSection: "prompts",
+      onSave,
+      profiles: [{ id: "mine", name: "My profile", prompt: "Global saved", codexPrompt: "Codex saved", claudePrompt: "Claude saved" }],
+    })} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /^My profile/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
+      promptProfileId: "mine",
+      systemPrompt: "Global saved",
+      codexSystemPrompt: "Codex saved",
+      claudeSystemPrompt: "Claude saved",
+    }));
+  });
+
   it("keeps unsaved drafts when the saved settings change externally while open", () => {
     const props = modalProps({ initialSection: "prompts" });
     const { rerender } = render(<SettingsModal {...props} />);

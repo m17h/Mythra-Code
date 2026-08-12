@@ -52,7 +52,13 @@ export function HarnessSettings({ section, settings, profiles, agents, actions, 
 
   const saveProfile = () => {
     if (!profileName.trim()) return;
-    const profile: PromptProfile = { id: crypto.randomUUID(), name: profileName.trim(), prompt: settings.systemPrompt };
+    const profile: PromptProfile = {
+      id: crypto.randomUUID(),
+      name: profileName.trim(),
+      prompt: settings.systemPrompt,
+      codexPrompt: settings.codexSystemPrompt,
+      claudePrompt: settings.claudeSystemPrompt,
+    };
     onProfiles([...profiles, profile]);
     onSettings({ ...settings, promptProfileId: profile.id });
     setProfileName("");
@@ -61,9 +67,24 @@ export function HarnessSettings({ section, settings, profiles, agents, actions, 
   return <>
     {section === "prompts" &&
     <section className="settings-section">
-      <div className="settings-section-heading"><div className="settings-icon"><NotebookPen size={17} /></div><div><h3>Prompt profiles</h3><p>Switch your complete harness-level instruction without hidden text.</p></div></div>
-      <div className="profile-grid">{profiles.map((profile) => <button key={profile.id} className={settings.promptProfileId === profile.id ? "selected" : ""} onClick={() => onSettings({ ...settings, promptProfileId: profile.id, systemPrompt: profile.prompt })}><span><strong>{profile.name}</strong><small>{profile.prompt ? `${profile.prompt.length} characters` : "Empty prompt"}</small></span>{settings.promptProfileId === profile.id && <Check size={13} />}</button>)}</div>
-      <div className="inline-create"><input value={profileName} onChange={(event) => setProfileName(event.target.value)} placeholder="Profile name" /><button onClick={saveProfile} disabled={!profileName.trim()}><Save size={12} /> Save current prompt</button></div>
+      <div className="settings-section-heading"><div className="settings-icon"><NotebookPen size={17} /></div><div><h3>Prompt profiles</h3><p>Save and switch complete global, Codex, and Claude prompt sets. OpenKiwi includes no built-in profiles.</p></div></div>
+      {profiles.length ? (
+        <div className="profile-grid">{profiles.map((profile) => {
+          const characters = profile.prompt.length + (profile.codexPrompt?.length ?? 0) + (profile.claudePrompt?.length ?? 0);
+          return <div key={profile.id} className={`profile-card ${settings.promptProfileId === profile.id ? "selected" : ""}`}>
+            <button className="profile-apply" onClick={() => onSettings({ ...settings, promptProfileId: profile.id, systemPrompt: profile.prompt, codexSystemPrompt: profile.codexPrompt ?? "", claudeSystemPrompt: profile.claudePrompt ?? "" })}>
+              <span><strong>{profile.name}</strong><small>{characters ? `${characters} characters across all layers` : "Empty prompt set"}</small></span>
+              {settings.promptProfileId === profile.id && <Check size={13} />}
+            </button>
+            <button className="profile-delete" aria-label={`Delete ${profile.name}`} onClick={() => {
+              if (!window.confirm(`Delete the prompt profile “${profile.name}”?`)) return;
+              onProfiles(profiles.filter((item) => item.id !== profile.id));
+              if (settings.promptProfileId === profile.id) onSettings({ ...settings, promptProfileId: "" });
+            }}><Trash2 size={12} /></button>
+          </div>;
+        })}</div>
+      ) : <div className="compact-note"><NotebookPen size={14} /><span><strong>No prompt profiles yet</strong><small>Configure the prompt layers above, then save your first custom profile.</small></span></div>}
+      <div className="inline-create"><input value={profileName} onChange={(event) => setProfileName(event.target.value)} placeholder="Profile name" /><button onClick={saveProfile} disabled={!profileName.trim()}><Save size={12} /> Save current prompts</button></div>
     </section>}
 
     {section === "agents" &&
@@ -151,7 +172,7 @@ export function HarnessSettings({ section, settings, profiles, agents, actions, 
       )}
       <div className="inline-create two"><input value={mcpName} onChange={(event) => setMcpName(event.target.value)} placeholder="Server name" /><input value={mcpCommand} onChange={(event) => setMcpCommand(event.target.value)} placeholder="Command, for example: npx -y package" /><button disabled={!mcpName.trim() || !mcpCommand.trim()} onClick={() => { const parts = mcpCommand.trim().split(/\s+/); setMcpStatus("Saving…"); void rpc("config/value/write", { keyPath: `mcp_servers.${mcpName.trim().replace(/[^a-zA-Z0-9_-]/g, "-")}`, value: { command: parts[0], args: parts.slice(1) }, mergeStrategy: "upsert" }).then(() => rpc("config/mcpServer/reload")).then(() => { setMcpStatus("Connected. Open Workspace tools → Tools to inspect it."); setMcpName(""); setMcpCommand(""); onMcpChanged?.(); }).catch((reason) => setMcpStatus(friendlyError(reason))); }}><Plus size={12} /> Add</button></div>
       {mcpStatus && <div className="manager-status">{mcpStatus}</div>}
-      <div className="compact-note"><Wrench size={14} /><span><strong>MCP controls</strong><small>Complete MCP OAuth from Workspace tools → Tools. Manage local Markdown workflows in the dedicated Skills section.</small></span></div>
+      <div className="compact-note mcp-controls-note"><Wrench size={14} /><span><strong>MCP controls</strong><small>Complete MCP OAuth from Workspace tools → Tools. Manage local Markdown workflows in the dedicated Skills section.</small></span></div>
     </section>}
   </>;
 }

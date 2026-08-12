@@ -43,7 +43,7 @@ import { PendingTurnStarts, type PendingTurnStart } from "../lib/pendingTurnStar
 import type { SetPersisted } from "./usePersistedState";
 import type { OpenRouterModel } from "../components/OpenRouterModelControl";
 import type { AttachmentRecord } from "../components/StudioDock";
-import type { Account, AppSettings, CustomAgentProfile, Project, Provider, SettingsSection, Thread, Turn } from "../types";
+import type { Account, AppSettings, CustomAgentProfile, Project, Provider, SettingsSection, Thread, ThreadReasoning, Turn } from "../types";
 
 const queuedDeliveries = new Map<string, { threadId: string; context: TurnRunnerContext }>();
 const activeQueuedDeliveries = new Set<string>();
@@ -115,6 +115,7 @@ export interface TurnRunnerContext {
   deferredDelivery?: boolean;
   attachments: AttachmentRecord[];
   effectiveSettings: AppSettings;
+  subscriptionSystemPrompts: Record<"openai" | "claude", string>;
   customAgents: CustomAgentProfile[];
   openRouterModels: OpenRouterModel[];
   runtimeStatus: CodexRuntimeStatus | null;
@@ -142,6 +143,7 @@ export interface TurnRunnerContext {
   rememberThread: (thread: Thread) => void;
   onThreadCreated: (threadId: string) => void;
   persistThreadModel: (threadId: string, model: string) => void;
+  persistThreadReasoning: (threadId: string, reasoning: ThreadReasoning) => void;
   persistThreadWorktrees: SetPersisted<Record<string, ThreadWorktreeRecord>>;
   /** Restart the shared Codex app-server between idle turns so startup-only
    * capability config can be reapplied to an already loaded thread. Resolves
@@ -190,13 +192,13 @@ export function useTurnRunner(context: TurnRunnerContext): {
   const deliverMessage = useCallback(async (ctx: TurnRunnerContext, text: string, mode: "turn" | "steer"): Promise<boolean> => {
     const {
       activeThread, activeWorkspace, activeProject, running, attachments, deferredDelivery,
-      effectiveSettings, customAgents, openRouterModels,
+      effectiveSettings, subscriptionSystemPrompts, customAgents, openRouterModels,
       runtimeStatus, claudeStatus, cursorStatus, account, openRouterReady,
       workspaceGitInfo, draftThreadIsolated, worktreeBusy, skillsFolder,
       childAgentPolicies, childAgentLinks, childAgentReadiness, persistChildAgentPolicies,
       threadWorktreesRef, threadProjectBindingsRef, activeWorkspacePathRef,
       pendingTurnStartsRef, skillRuntimeRootRef, cursorSessionIdsRef,
-      executionPathFor, bindThreadToProject, rememberThread, onThreadCreated, persistThreadModel,
+      executionPathFor, bindThreadToProject, rememberThread, onThreadCreated, persistThreadModel, persistThreadReasoning,
       persistThreadWorktrees, restartRuntimeForCapabilities, beginRunCheckpoint, discardRunCheckpoint,
       refreshLocalSkills, ensureSkillRoots, scheduleClaudeThreadSave, scheduleCursorThreadSave,
       setThreads, setActiveThread, setAttachments, setDraftThreadIsolated,
@@ -383,6 +385,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         rememberThread(thread);
         onThreadCreated(thread.id);
         persistThreadModel(thread.id, effectiveSettings.model);
+        persistThreadReasoning(thread.id, { reasoningEffort: effectiveSettings.reasoningEffort, ultra: effectiveSettings.ultra });
         useTaskStore.getState().ensureTask(thread.id, executionPath);
         if (!workspaceChangedMidSend()) {
           setThreads((current) => upsertThread(current, thread!));
@@ -459,6 +462,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         settings: effectiveSettings,
         permission: effectiveSettings.permission,
         systemPrompt: effectiveSettings.systemPrompt,
+        providerSystemPrompts: subscriptionSystemPrompts,
         projectInstructionsEnabled: effectiveSettings.projectInstructionsEnabled,
         reasoningEffort: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort,
         serviceTier: effectiveSettings.serviceTier,
@@ -552,6 +556,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         rememberThread(startedThread);
         onThreadCreated(startedThread.id);
         persistThreadModel(startedThread.id, effectiveSettings.model);
+        persistThreadReasoning(startedThread.id, { reasoningEffort: effectiveSettings.reasoningEffort, ultra: effectiveSettings.ultra });
         recordSubagentCapabilities(startedThread.id, runtimeInstance, capabilities);
         useTaskStore.getState().ensureTask(startedThread.id, executionPath);
         if (!workspaceChangedMidSend()) {

@@ -10,6 +10,7 @@ import {
   FolderCog,
   Gauge,
   GitFork,
+  Info,
   KeyRound,
   LoaderCircle,
   Minus,
@@ -496,18 +497,51 @@ export function SettingsModal({
           <section className="settings-section">
             <div className="settings-section-heading">
               <div className="settings-icon"><NotebookPen size={17} /></div>
-              <div><h3>Instruction prompt</h3><p>Sent as the thread’s complete base instruction. Empty means OpenKiwi supplies no base prompt.</p></div>
+              <div><h3>System prompts</h3><p>OpenKiwi applies the global layer first, followed by the selected subscription’s own layer.</p></div>
             </div>
-            <textarea
-              className="prompt-editor"
-              value={local.systemPrompt}
-              onChange={(event) => setLocal({ ...local, systemPrompt: event.target.value })}
-              placeholder="Empty — add your own instructions here"
-              rows={7}
-            />
+            <div className="prompt-file-notice" role="note">
+              <Info size={16} />
+              <p><strong>Global instruction files are not inherited.</strong> Your global <code>CLAUDE.md</code> and <code>AGENTS.md</code> do not affect OpenKiwi. Add those instructions to the prompt fields below instead. Project-level <code>AGENTS.md</code> files can still be discovered when that setting is enabled.</p>
+            </div>
+            <div className="prompt-guidance-control">
+              <span><strong>Project AGENTS.md discovery</strong><small>Allow AGENTS.md guidance from the active project for its threads (up to 32 KB).</small></span>
+              <button type="button" role="switch" aria-label="Project AGENTS.md discovery" aria-checked={local.projectInstructionsEnabled} className={`toggle-switch ${local.projectInstructionsEnabled ? "on" : ""}`} onClick={() => setLocal({ ...local, projectInstructionsEnabled: !local.projectInstructionsEnabled })}><span /></button>
+            </div>
+            <label className="prompt-layer-field">
+              <span><strong>Global OpenKiwi prompt</strong><small>Used by every provider.</small></span>
+              <textarea
+                className="prompt-editor"
+                value={local.systemPrompt}
+                onChange={(event) => setLocal({ ...local, systemPrompt: event.target.value })}
+                placeholder="Empty — add your own instructions here"
+                rows={5}
+              />
+            </label>
+            <div className="provider-prompt-grid">
+              <label className="prompt-layer-field">
+                <span><strong>Codex subscription prompt</strong><small>Appended after the global prompt for ChatGPT subscription threads.</small></span>
+                <textarea
+                  className="prompt-editor"
+                  value={local.codexSystemPrompt}
+                  onChange={(event) => setLocal({ ...local, codexSystemPrompt: event.target.value })}
+                  placeholder="Optional Codex-specific instructions"
+                  rows={4}
+                />
+              </label>
+              <label className="prompt-layer-field">
+                <span><strong>Claude Code subscription prompt</strong><small>Appended after the global prompt for Claude subscription threads.</small></span>
+                <textarea
+                  className="prompt-editor"
+                  value={local.claudeSystemPrompt}
+                  onChange={(event) => setLocal({ ...local, claudeSystemPrompt: event.target.value })}
+                  placeholder="Optional Claude-specific instructions"
+                  rows={4}
+                />
+              </label>
+            </div>
             <div className="prompt-audit-row">
-              <span><Check size={13} /> Base prompt visible</span>
-              <span><Check size={13} /> Developer prompt empty</span>
+              <span><Check size={13} /> Global layer first</span>
+              <span><Check size={13} /> Subscription layer second</span>
               <span><Check size={13} /> AGENTS.md discovery {local.projectInstructionsEnabled ? "enabled" : "disabled"}</span>
             </div>
           </section>}
@@ -578,9 +612,8 @@ export function SettingsModal({
 
           {settingsSection === "general" &&
           <section className="settings-section">
-            <div className="settings-section-heading"><div className="settings-icon"><Wrench size={17} /></div><div><h3>Runtime behavior</h3><p>Control project guidance, background alerts, service tier, and terminal memory.</p></div></div>
-            <div className="behavior-grid">
-              <div><span><strong>AGENTS.md discovery</strong><small>Allow AGENTS.md guidance for project threads (up to 32 KB).</small></span><button type="button" role="switch" aria-checked={local.projectInstructionsEnabled} className={`toggle-switch ${local.projectInstructionsEnabled ? "on" : ""}`} onClick={() => setLocal({ ...local, projectInstructionsEnabled: !local.projectInstructionsEnabled })}><span /></button></div>
+            <div className="settings-section-heading"><div className="settings-icon"><Wrench size={17} /></div><div><h3>Runtime behavior</h3><p>Control background alerts, service tier, and terminal memory.</p></div></div>
+            <div className="behavior-grid behavior-grid-single">
               <div><span><strong>Desktop notifications</strong><small>Notify when a background task finishes.</small></span><button type="button" role="switch" aria-checked={local.notificationsEnabled} className={`toggle-switch ${local.notificationsEnabled ? "on" : ""}`} onClick={() => setLocal({ ...local, notificationsEnabled: !local.notificationsEnabled })}><span /></button></div>
             </div>
             <div className="runtime-field-grid"><label><span>OpenAI service tier</span><select value={local.serviceTier ?? ""} onChange={(event) => setLocal({ ...local, serviceTier: event.target.value || null })}><option value="">Standard</option><option value="priority">Fast / priority</option></select></label><label><span>Terminal scrollback</span><select value={local.terminalScrollback} onChange={(event) => setLocal({ ...local, terminalScrollback: Number(event.target.value) })}><option value={25000}>25k characters</option><option value={100000}>100k characters</option><option value={500000}>500k characters</option></select></label><label><span>UI size</span><select value={local.uiScale ?? 100} onChange={(event) => setLocal({ ...local, uiScale: Number(event.target.value) })}><option value={90}>Compact (90%)</option><option value={100}>Default (100%)</option><option value={110}>Comfortable (110%)</option><option value={125}>Large (125%)</option></select></label></div>

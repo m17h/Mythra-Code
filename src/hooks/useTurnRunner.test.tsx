@@ -107,6 +107,7 @@ function context(overrides: Partial<TurnRunnerContext> = {}): TurnRunnerContext 
     running: false,
     attachments: [],
     effectiveSettings: { ...DEFAULT_SETTINGS, provider: "cursor", model: "grok-4.5" },
+    subscriptionSystemPrompts: { openai: "Codex instructions", claude: "Claude instructions" },
     customAgents: [],
     openRouterModels: [],
     runtimeStatus: null,
@@ -147,6 +148,7 @@ function context(overrides: Partial<TurnRunnerContext> = {}): TurnRunnerContext 
     rememberThread: vi.fn(),
     onThreadCreated: vi.fn(),
     persistThreadModel: vi.fn(),
+    persistThreadReasoning: vi.fn(),
     persistThreadWorktrees: vi.fn(),
     restartRuntimeForCapabilities: vi.fn(async () => "runtime-2"),
     beginRunCheckpoint: vi.fn(async () => "checkpoint-1"),
@@ -198,6 +200,18 @@ describe("useTurnRunner", () => {
     await act(async () => { await result.current.sendMessage("build it"); });
 
     expect(childSessions.ensureChildAgentBridge).toHaveBeenCalledWith(expect.objectContaining({ settings: effectiveSettings }));
+  });
+
+  it("captures the selected reasoning level when a draft becomes a thread", async () => {
+    const deps = context({
+      activeThread: null,
+      effectiveSettings: { ...DEFAULT_SETTINGS, provider: "cursor", model: "auto", reasoningEffort: "high", ultra: false },
+    });
+    const { result } = renderHook(() => useTurnRunner(deps));
+
+    await act(async () => { await result.current.sendMessage("build it"); });
+
+    expect(deps.persistThreadReasoning).toHaveBeenCalledWith(expect.any(String), { reasoningEffort: "high", ultra: false });
   });
 
   it("hard-stops the active provider turn and records the stopped state", async () => {
