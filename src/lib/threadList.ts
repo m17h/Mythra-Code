@@ -26,6 +26,10 @@ export function filterThreadsForWorkspace(
 
 export type ThreadKindView = "main" | "subagents";
 
+export function isSubAgentThread(thread: Thread, childLinks: Record<string, unknown>): boolean {
+  return Boolean(childLinks[thread.id]) || Boolean(thread.parentThreadId) || thread.threadSource === "subagent";
+}
+
 /** Keep OpenKiwi child work browsable without mixing it into the user's main inbox. */
 export function filterThreadsByKind(
   threads: Thread[],
@@ -33,7 +37,7 @@ export function filterThreadsByKind(
   kind: ThreadKindView,
 ): Thread[] {
   const wantsChild = kind === "subagents";
-  return threads.filter((thread) => Boolean(childLinks[thread.id]) === wantsChild);
+  return threads.filter((thread) => isSubAgentThread(thread, childLinks) === wantsChild);
 }
 
 export function countActiveThreadsByWorkspace(

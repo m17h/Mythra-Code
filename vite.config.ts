@@ -11,6 +11,9 @@ export default defineConfig({
     environment: "jsdom",
     setupFiles: ["./src/test/setup.ts"],
     restoreMocks: true,
+    // Timer-heavy virtual-scroll tests can starve under Vitest's default
+    // one-worker-per-core fan-out and then contaminate later fake-timer tests.
+    maxWorkers: 2,
   },
   clearScreen: false,
   server: {

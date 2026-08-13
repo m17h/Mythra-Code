@@ -105,6 +105,15 @@ describe("ensureChildAgentBridge", () => {
     expect(bridge.startChildAgentSession).not.toHaveBeenCalled();
   });
 
+  it("also depth-limits provider-native children stored outside bridge ownership", async () => {
+    const result = await ensureChildAgentBridge(input({
+      threadId: "native-child",
+      isChildThread: true,
+    }));
+    expect(result).toBeNull();
+    expect(bridge.startChildAgentSession).not.toHaveBeenCalled();
+  });
+
   it("stays out of the way when the feature is off", async () => {
     expect(await ensureChildAgentBridge(input({
       settings: { childAgents: CHILD_AGENTS, subagentsEnabled: false, subagentMax: 3 },

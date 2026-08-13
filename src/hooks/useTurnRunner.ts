@@ -130,6 +130,8 @@ export interface TurnRunnerContext {
   /** Bridge sessions for cross-provider sub-agents, keyed by session id. */
   childAgentPolicies: Record<string, ChildAgentPolicy>;
   childAgentLinks: Record<string, ChildAgentLink>;
+  /** True for both OpenKiwi bridge children and provider-native children. */
+  activeThreadIsChild?: boolean;
   childAgentReadiness: ChildAgentReadiness;
   persistChildAgentPolicies: SetPersisted<Record<string, ChildAgentPolicy>>;
   threadWorktreesRef: MutableRefObject<Record<string, ThreadWorktreeRecord>>;
@@ -195,7 +197,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       effectiveSettings, subscriptionSystemPrompts, customAgents, openRouterModels,
       runtimeStatus, claudeStatus, cursorStatus, account, openRouterReady,
       workspaceGitInfo, draftThreadIsolated, worktreeBusy, skillsFolder,
-      childAgentPolicies, childAgentLinks, childAgentReadiness, persistChildAgentPolicies,
+      childAgentPolicies, childAgentLinks, activeThreadIsChild, childAgentReadiness, persistChildAgentPolicies,
       threadWorktreesRef, threadProjectBindingsRef, activeWorkspacePathRef,
       pendingTurnStartsRef, skillRuntimeRootRef, cursorSessionIdsRef,
       executionPathFor, bindThreadToProject, rememberThread, onThreadCreated, persistThreadModel, persistThreadReasoning,
@@ -459,6 +461,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         threadId: activeThread?.id,
         policies: childAgentPolicies,
         links: childAgentLinks,
+        isChildThread: Boolean(activeThread && activeThreadIsChild),
         settings: effectiveSettings,
         permission: effectiveSettings.permission,
         systemPrompt: effectiveSettings.systemPrompt,
@@ -489,7 +492,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
             // presence, so resume detection is unaffected by running after it.
             const canResumeClaude = Boolean(activeThread && useTaskStore.getState().tasks[thread.id]?.messages.some((message) => message.role === "assistant"));
             await saveClaudeTranscript({ thread: updatedThread, messages: useTaskStore.getState().tasks[thread.id]?.messages ?? [], activities: useTaskStore.getState().tasks[thread.id]?.activities ?? [] });
-            const result = await startClaudeTurn({ threadId: thread.id, cwd: executionPath, prompt: text, model: effectiveSettings.model || DEFAULT_CLAUDE_MODEL, effort: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort, permission: effectiveSettings.permission, systemPrompt: withOpenKiwiCompletionInstructions(effectiveSettings.systemPrompt, Boolean(childBridge?.launch.toolNames.includes("spawn_agent")), Boolean(childBridge?.launch.toolNames.includes("propose_agent_settings"))), resume: canResumeClaude, attachments: sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })), subagentsEnabled: effectiveSettings.subagentsEnabled, subagentMax: runtimeSubagentMax, customAgents, skillsPluginPath: skillRuntimeRootRef.current || undefined, childAgentBridgeConfig: childBridge?.launch.configPath });
+            const result = await startClaudeTurn({ threadId: thread.id, cwd: executionPath, prompt: text, model: effectiveSettings.model || DEFAULT_CLAUDE_MODEL, effort: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort, permission: effectiveSettings.permission, systemPrompt: withOpenKiwiCompletionInstructions(effectiveSettings.systemPrompt, Boolean(childBridge?.launch.toolNames.includes("spawn_agent")), Boolean(childBridge?.launch.toolNames.includes("propose_agent_settings"))), resume: canResumeClaude, attachments: sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })), subagentMax: runtimeSubagentMax, customAgents, skillsPluginPath: skillRuntimeRootRef.current || undefined, childAgentBridgeConfig: childBridge?.launch.configPath });
             return { turnId: result.turnId };
           },
           hardStop: (threadId) => killClaudeTurn(threadId),
@@ -532,7 +535,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       // runtime that has since restarted holds nothing at all.
       let runtimeInstance = await runtimeInstanceId();
       const capabilities = subagentCapabilitySignature({
-        subagentsEnabled: effectiveSettings.subagentsEnabled,
+        subagentsEnabled: Boolean(childBridge?.launch.toolNames.includes("spawn_agent")),
         subagentMax: runtimeSubagentMax,
         // The same policy receives a new token/config path whenever its bridge
         // is rebuilt. App-server must be refreshed so it starts that process,

@@ -51,6 +51,7 @@ describe("workerStatusFromAgentRecord", () => {
     expect(workerStatusFromAgentRecord("inProgress")).toBe("working");
     expect(workerStatusFromAgentRecord("started")).toBe("working");
     expect(workerStatusFromAgentRecord("working")).toBe("working");
+    expect(workerStatusFromAgentRecord("interacted")).toBe("working");
     expect(workerStatusFromAgentRecord("starting")).toBe("starting");
     expect(workerStatusFromAgentRecord("completed")).toBe("completed");
     expect(workerStatusFromAgentRecord("interrupted")).toBe("cancelled");
@@ -66,7 +67,7 @@ describe("workerStatusFromAgentRecord", () => {
 describe("isActiveAgentRecord", () => {
   // The run boundary, the concurrency budget, and Stop all read this, so every
   // word a provider might use for live work has to agree across the three.
-  it.each(["starting", "pending", "queued", "running", "working", "inProgress", "inprogress"])(
+  it.each(["starting", "pending", "queued", "running", "working", "interacted", "inProgress", "inprogress"])(
     "treats %s as live work",
     (status) => expect(isActiveAgentRecord(status)).toBe(true),
   );

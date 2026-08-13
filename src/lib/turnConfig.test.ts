@@ -24,7 +24,7 @@ describe("OpenRouter runtime isolation", () => {
     const config = threadRuntimeConfig({ ...baseRun, provider: "openrouter", model: "google/test" }, { modelContextWindow: 1_000_000 });
     expect(config).toMatchObject({
       model_context_window: 1_000_000,
-      features: { multi_agent: true, apps: false, remote_plugin: false },
+      features: { multi_agent: false, apps: false, remote_plugin: false },
       apps: { _default: { enabled: false } },
     });
     expect(config).not.toHaveProperty("features.shell_tool");
@@ -34,7 +34,7 @@ describe("OpenRouter runtime isolation", () => {
     const config = threadRuntimeConfig(baseRun, { modelContextWindow: 1_000_000 });
     expect(config).not.toHaveProperty("model_context_window");
     expect(config).not.toHaveProperty("apps");
-    expect(config.features).toEqual({ multi_agent: true });
+    expect(config.features).toEqual({ multi_agent: false });
   });
 
   it("applies the isolation to new OpenRouter threads", () => {
@@ -110,7 +110,7 @@ describe("cross-provider sub-agent bridge", () => {
     });
     expect(without).toMatchObject({
       developerInstructions: BASE_INSTRUCTIONS,
-      config: { features: { multi_agent: true } },
+      config: { features: { multi_agent: false } },
     });
   });
 

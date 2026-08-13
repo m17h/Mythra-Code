@@ -17,6 +17,7 @@ function makeContext(overrides: Partial<CodexEventContext> = {}): CodexEventCont
     onAccountUpdated: vi.fn(),
     onLoginFailed: vi.fn(),
     onProviderToolCompatibilityError: vi.fn(),
+    onNativeAgentDiscovered: vi.fn(),
     ...overrides,
   };
 }
@@ -144,6 +145,21 @@ describe("routeCodexEvent", () => {
     const ctx = makeContext();
     routeCodexEvent({ method: "guardianWarning", params: { threadId: "thread-w", message: "careful" } }, ctx);
     expect(useTaskStore.getState().tasks["thread-w"]?.activities[0]?.title).toBe("careful");
+  });
+
+  it("keeps interacted native agents live and discovers their durable child threads", () => {
+    const ctx = makeContext({ bindingFor: () => "/workspace" });
+    routeCodexEvent({
+      method: "item/completed",
+      params: {
+        threadId: "root",
+        item: { id: "activity-1", type: "subAgentActivity", kind: "interacted", agentThreadId: "child", agentPath: "/root/worker" },
+      },
+    }, ctx);
+
+    expect(useTaskStore.getState().tasks.root.agents).toContainEqual(expect.objectContaining({ id: "child", status: "interacted" }));
+    expect(useTaskStore.getState().tasks.child.workspacePath).toBe("/workspace");
+    expect(ctx.onNativeAgentDiscovered).toHaveBeenCalledWith("root", "child", { path: "/root/worker" });
   });
 
   it("keeps fallback model metadata warnings in diagnostics instead of the chat", () => {

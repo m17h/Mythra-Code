@@ -1,14 +1,13 @@
 use super::*;
 
 #[test]
-fn claude_uses_openkiwi_as_the_only_subagent_route_when_bridged() {
-    let bridged = claude_disallowed_tools("ask", true, true);
-    assert!(bridged.contains(&"Task"));
-    assert!(bridged.contains(&"TeamCreate"));
-
-    let native_only = claude_disallowed_tools("ask", true, false);
-    assert!(!native_only.contains(&"Task"));
-    assert!(!native_only.contains(&"TeamCreate"));
+fn claude_always_uses_openkiwi_as_its_only_subagent_route() {
+    let disallowed = claude_disallowed_tools("ask");
+    assert!(disallowed.contains(&"Task"));
+    assert!(disallowed.contains(&"SendMessage"));
+    assert!(disallowed.contains(&"TaskCreate"));
+    assert!(disallowed.contains(&"TaskUpdate"));
+    assert!(disallowed.contains(&"TeamCreate"));
 }
 
 #[test]
@@ -1538,13 +1537,11 @@ fn config_bridge_is_limited_to_mcp_server_settings() {
     assert!(validate_rpc_params(
         "config/value/write",
         &json!({ "keyPath": "mcp_servers.example", "value": null }),
-    )
-    .is_ok());
+    ).is_ok());
     assert!(validate_rpc_params(
         "config/value/write",
         &json!({ "keyPath": "approval_policy", "value": "never" }),
-    )
-    .is_err());
+    ).is_err());
 }
 
 // --- Cross-provider sub-agents ---------------------------------------------
@@ -1618,7 +1615,7 @@ fn child_agent_tool_catalog_offers_only_approved_destinations() {
         child_target("terra", "openai", "gpt-5.6-terra"),
         child_target("grok", "openrouter", "x-ai/grok-4.5"),
     ];
-    let catalog = tool_catalog(&targets);
+    let catalog = tool_catalog(&targets, 2);
     let tools = catalog.as_array().expect("catalog is a list");
     let names: Vec<&str> = tools
         .iter()
@@ -1648,11 +1645,19 @@ fn child_agent_tool_catalog_offers_only_approved_destinations() {
         .as_str()
         .unwrap()
         .contains("x-ai/grok-4.5"));
+    assert!(spawn["description"]
+        .as_str()
+        .unwrap()
+        .contains("At most 2 child agents may run concurrently"));
+    assert!(spawn["description"]
+        .as_str()
+        .unwrap()
+        .contains("only permitted sub-agent system"));
 }
 
 #[test]
 fn child_agent_empty_roster_exposes_only_project_settings_proposals() {
-    let catalog = tool_catalog(&[]);
+    let catalog = tool_catalog(&[], 1);
     let names = catalog
         .as_array()
         .unwrap()
@@ -1724,14 +1729,16 @@ fn child_agent_settings_proposals_require_a_reason_and_validate_the_roster() {
                 "reasoningMaxEffort": "high"
             }]
         })
-    ).is_ok());
+    )
+    .is_ok());
     assert!(validate_tool_call(&targets, &none, "propose_agent_settings", &json!({})).is_err());
     assert!(validate_tool_call(
         &targets,
         &none,
         "propose_agent_settings",
         &json!({ "reason": "Bad limit", "maxConcurrent": 25 })
-    ).is_err());
+    )
+    .is_err());
 }
 
 #[test]

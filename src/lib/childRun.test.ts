@@ -81,10 +81,10 @@ describe("startChildAgentTurn", () => {
       permission: "read-only",
       resume: false,
       attachments: [],
-      subagentsEnabled: false,
       subagentMax: 1,
       customAgents: [],
     }));
+    expect(claude.startClaudeTurn.mock.calls[0][0]).not.toHaveProperty("subagentsEnabled");
     expect(claude.startClaudeTurn.mock.calls[0][0]).not.toHaveProperty("childAgentBridgeConfig");
     expect(result.provider).toBe("claude");
     expect(result.thread.modelProvider).toBe("claude");

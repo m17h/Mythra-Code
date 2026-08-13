@@ -81,7 +81,7 @@ export function workerStatusFromLifecycle(lifecycle: string): SubAgentWorkerStat
 export function workerStatusFromAgentRecord(status: string): SubAgentWorkerStatus {
   const value = status.trim().toLowerCase();
   if (value === "starting" || value === "pending" || value === "queued") return "starting";
-  if (value === "started" || value === "running" || value === "working" || value === "inprogress") return "working";
+  if (value === "started" || value === "running" || value === "working" || value === "interacted" || value === "inprogress") return "working";
   if (value === "completed" || value === "complete" || value === "done" || value === "success" || value === "succeeded") {
     return "completed";
   }

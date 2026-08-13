@@ -40,6 +40,13 @@ export interface Thread {
   updatedAt: number;
   modelProvider: string;
   turns?: Turn[];
+  /** Codex app-server metadata for provider-native collaboration children. */
+  parentThreadId?: string | null;
+  threadSource?: string;
+  agentNickname?: string | null;
+  agentRole?: string | null;
+  agentPath?: string | null;
+  canAcceptDirectInput?: boolean;
 }
 
 export interface Turn {

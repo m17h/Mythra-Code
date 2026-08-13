@@ -105,9 +105,10 @@ export function planSubagentCapabilities(
   if (record && record.instance !== runtimeInstance) {
     return { restartRuntime: false, resume: true };
   }
-  // An unknown pre-feature thread is already usable with the app-managed
-  // neutral defaults. Non-neutral capabilities still need an explicit resume.
-  if (!record) return signature === NEUTRAL ? UNCHANGED : { restartRuntime: false, resume: true };
+  // An unknown pre-feature thread may already be loaded in this long-lived
+  // process. A resume alone can silently ignore non-neutral startup config,
+  // so refresh before granting delegation. Neutral matches managed defaults.
+  if (!record) return signature === NEUTRAL ? UNCHANGED : { restartRuntime: true, resume: true };
   if (record.signature === signature) return UNCHANGED;
   return { restartRuntime: true, resume: true };
 }

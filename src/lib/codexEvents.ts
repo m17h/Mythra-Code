@@ -105,6 +105,7 @@ export interface CodexEventContext {
   onAccountUpdated: () => void;
   onLoginFailed: (message: string) => void;
   onProviderToolCompatibilityError: (threadId: string) => void;
+  onNativeAgentDiscovered: (rootThreadId: string, childThreadId: string, details: { prompt?: string; path?: string }) => void;
 }
 
 export function handleThreadItem(threadId: string, item: ThreadItem, ctx: CodexEventContext): void {
@@ -161,6 +162,7 @@ export function handleThreadItem(threadId: string, item: ThreadItem, ctx: CodexE
     if (item.receiverThreadIds?.length) {
       for (const childThreadId of item.receiverThreadIds) {
         taskStore.upsertAgent(threadId, { id: childThreadId, prompt: item.prompt ?? "Delegated task", status: item.status ?? "inProgress" });
+        ctx.onNativeAgentDiscovered(threadId, childThreadId, { prompt: item.prompt ?? undefined });
         taskStore.ensureTask(childThreadId, ctx.bindingFor(threadId));
       }
     }
@@ -177,6 +179,8 @@ export function handleThreadItem(threadId: string, item: ThreadItem, ctx: CodexE
     });
     if (item.agentThreadId) {
       taskStore.upsertAgent(threadId, { id: item.agentThreadId, prompt: "Delegated task", status: item.kind ?? "working", path: item.agentPath });
+      ctx.onNativeAgentDiscovered(threadId, item.agentThreadId, { path: item.agentPath });
+      taskStore.ensureTask(item.agentThreadId, ctx.bindingFor(threadId));
     }
   }
 }

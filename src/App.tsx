@@ -13,7 +13,7 @@ import { loadStored, storeValue } from "./lib/storage";
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_OPENAI_MODEL, DEFAULT_PROMPT_PROFILES, DEFAULT_SETTINGS, THEMES } from "./lib/appConfig";
 import { commandSandbox, threadResumeParams, threadRuntimeConfig } from "./lib/turnConfig";
 import { threadSearchParams, threadsForWorkspace, type ThreadSearchResponse } from "./lib/threadSearch";
-import { countActiveThreadsByWorkspace, filterThreadsByKind, filterThreadsForWorkspace, forgetSidebarThread, pruneSidebarIndex, reconcileWorkspaceThreads, rememberSidebarThread, sidebarThread, threadBelongsToWorkspace, upsertThread, type ThreadSidebarIndex } from "./lib/threadList";
+import { countActiveThreadsByWorkspace, filterThreadsByKind, filterThreadsForWorkspace, forgetSidebarThread, isSubAgentThread, pruneSidebarIndex, reconcileWorkspaceThreads, rememberSidebarThread, sidebarThread, threadBelongsToWorkspace, upsertThread, type ThreadSidebarIndex } from "./lib/threadList";
 import { timelineFromTurns } from "./lib/threadTimeline";
 import { buildTranscriptMarkdown } from "./lib/transcript";
 import { RowMenu } from "./components/RowMenu";
@@ -109,7 +109,8 @@ import {
   type ChildAgentReadiness,
 } from "./lib/childAgents";
 import { cacheChildAgentPolicy, ensureChildAgentBridge, invalidateChildAgentLaunch, releaseChildAgentSessions } from "./lib/childAgentSessions";
-import { forgetSubagentCapabilities, seedSubagentCapabilities, subagentCapabilitySignature } from "./lib/threadCapabilities";
+import { forgetSubagentCapabilities, planSubagentCapabilities, recordSubagentCapabilities, subagentCapabilitySignature } from "./lib/threadCapabilities";
+import { nativeAgentLinkFromThread, nativeAgentLinksAfterThreadDeletion, sanitizeNativeAgentLinks, type NativeAgentLink } from "./lib/nativeAgentLinks";
 import { collectSubAgentWorkers, isSubAgentWorkerActive, type SubAgentWorker } from "./lib/subAgentActivity";
 import { useChildAgents } from "./hooks/useChildAgents";
 import { reorderProjects, type ProjectDropPosition } from "./lib/projectOrdering";
@@ -240,6 +241,7 @@ export default function App() {
   // parent/child ownership record that outlives a reload.
   const [childAgentPolicies, persistChildAgentPolicies] = usePersistedState<Record<string, ChildAgentPolicy>>("kiwi.childAgentPolicies", {}, { init: (load) => sanitizeChildAgentPolicies(load()) });
   const [childAgentLinks, persistChildAgentLinks] = usePersistedState<Record<string, ChildAgentLink>>("kiwi.childAgentLinks", {}, { init: (load) => sanitizeChildAgentLinks(load()) });
+  const [nativeAgentLinks, persistNativeAgentLinks] = usePersistedState<Record<string, NativeAgentLink>>("kiwi.nativeAgentLinks", {}, { init: (load) => sanitizeNativeAgentLinks(load()) });
   const [pendingHandoff, setPendingHandoff] = usePersistedState<ThreadHandoff | null>("kiwi.pendingHandoff", null, {
     init: (load) => sanitizePendingHandoff(load()),
   });
@@ -329,6 +331,10 @@ export default function App() {
     ? pendingHandoff
     : null;
   const activeThreadId = activeThread?.id ?? null;
+  const childThreadLinks = useMemo<Record<string, unknown>>(
+    () => ({ ...nativeAgentLinks, ...childAgentLinks }),
+    [childAgentLinks, nativeAgentLinks],
+  );
   const activeThreadHandoff = activeThreadId ? threadHandoffs[activeThreadId] : undefined;
   const activeThreadWorktree = activeThreadId ? threadWorktrees[activeThreadId] : undefined;
   const activeExecutionPath = activeWorkspace
@@ -372,10 +378,10 @@ export default function App() {
       systemPrompt: providerPrompt,
       ...(rememberedReasoning ?? {}),
     };
-    return activeThreadId && childAgentLinks[activeThreadId]
+    return activeThread && isSubAgentThread(activeThread, childThreadLinks)
       ? settingsWithoutChildDelegation(resolved)
       : resolved;
-  }, [activeProject, activeProvider, activeThreadId, childAgentLinks, draftThreadModel, projectSettings, subscriptionSystemPrompts, threadModels, threadReasoning]);
+  }, [activeProject, activeProvider, activeThread, activeThreadId, childThreadLinks, draftThreadModel, projectSettings, subscriptionSystemPrompts, threadModels, threadReasoning]);
 
   useEffect(() => {
     if (!pendingHandoff || !activeWorkspace || activeThread) return;
@@ -419,7 +425,7 @@ export default function App() {
     ? activeChildAgentPolicy
     : undefined;
   /** This conversation is itself a sub-agent, so it may never delegate. */
-  const activeThreadIsChild = Boolean(activeThreadId && childAgentLinks[activeThreadId]);
+  const activeThreadIsChild = Boolean(activeThread && isSubAgentThread(activeThread, childThreadLinks));
   /**
    * A thread is only locked once a run has made its cross-provider roster
    * available. Until then it stays editable, so sub-agents configured partway
@@ -538,13 +544,13 @@ export default function App() {
     const query = threadSearch.trim().toLowerCase();
     const merged = filterThreadsByKind(
       filterThreadsForWorkspace(threads, activeWorkspace.path, threadProjectBindings),
-      childAgentLinks,
+      childThreadLinks,
       threadKindView,
     )
       .filter((thread) => `${thread.name ?? ""} ${thread.preview}`.toLowerCase().includes(query));
     const mergedIds = new Set(merged.map((thread) => thread.id));
     for (const found of filterThreadsForWorkspace(searchResults ?? [], activeWorkspace.path, threadProjectBindings)) {
-      if (!filterThreadsByKind([found], childAgentLinks, threadKindView).length) continue;
+      if (!filterThreadsByKind([found], childThreadLinks, threadKindView).length) continue;
       if (!mergedIds.has(found.id)) {
         mergedIds.add(found.id);
         merged.push(found);
@@ -552,21 +558,21 @@ export default function App() {
     }
     const pinned = new Set(pinnedThreadIds);
     return merged.sort((a, b) => Number(pinned.has(b.id)) - Number(pinned.has(a.id)) || b.updatedAt - a.updatedAt);
-  }, [activeWorkspace, childAgentLinks, pinnedThreadIds, searchResults, threadKindView, threadSearch, threads]);
+  }, [activeWorkspace, childThreadLinks, pinnedThreadIds, searchResults, threadKindView, threadSearch, threads]);
 
   // Jump-to surfaces are for the user's own conversations. Delegated children
   // are browsable through the sidebar's Sub-agents view, not mixed into search.
   const paletteThreads = useMemo(
-    () => filterThreadsByKind(threads, childAgentLinks, "main"),
-    [childAgentLinks, threads],
+    () => filterThreadsByKind(threads, childThreadLinks, "main"),
+    [childThreadLinks, threads],
   );
 
   const threadKindCounts = useMemo(() => {
     if (!activeWorkspace) return { main: 0, subagents: 0 };
     const scoped = filterThreadsForWorkspace(threads, activeWorkspace.path, threadProjectBindingsRef.current ?? {});
-    const subagents = scoped.filter((thread) => Boolean(childAgentLinks[thread.id])).length;
+    const subagents = scoped.filter((thread) => isSubAgentThread(thread, childThreadLinks)).length;
     return { main: scoped.length - subagents, subagents };
-  }, [activeWorkspace, childAgentLinks, threads]);
+  }, [activeWorkspace, childThreadLinks, threads]);
   // @-mention autocomplete searches project files with the same fuzzy RPC the
   // file browser uses. Only available inside a project workspace.
   const activeProjectPath = activeProject ? activeExecutionPath : undefined;
@@ -645,8 +651,8 @@ export default function App() {
   const errorSuggestsSettings = useMemo(() => Boolean(error) && /sign in|api key|openrouter|claude|model|settings|runtime|codex|account/i.test(error ?? ""), [error]);
   const workspaceArchived = useMemo(() => (activeWorkspace ? archivedThreads.filter((record) => (
     record.path === normalizedProjectPath(activeWorkspace.path)
-    && Boolean(childAgentLinks[record.id]) === (threadKindView === "subagents")
-  )) : []), [activeWorkspace, archivedThreads, childAgentLinks, threadKindView]);
+    && Boolean(childThreadLinks[record.id]) === (threadKindView === "subagents")
+  )) : []), [activeWorkspace, archivedThreads, childThreadLinks, threadKindView]);
 
   const persistThreadModel = useCallback((threadId: string, model: string) => {
     setThreadModels((current) => (current[threadId] === model ? current : { ...current, [threadId]: model }));
@@ -1138,6 +1144,23 @@ export default function App() {
           cursor = result.nextCursor ?? null;
           if (!cursor) break;
         }
+        // Newer Codex app-servers expose native collaboration ownership on
+        // thread/list. Capture it before workspace filtering because a child
+        // may execute in a managed worktree while belonging to its root's
+        // logical project.
+        const discoveredNativeLinks: Record<string, NativeAgentLink> = {};
+        for (const thread of allThreads) {
+          const link = nativeAgentLinkFromThread(thread);
+          if (!link) continue;
+          discoveredNativeLinks[link.childThreadId] = link;
+          const rootPath = threadProjectBindingsRef.current?.[link.rootThreadId]
+            ?? knownThreadsRef.current?.[link.rootThreadId]?.cwd
+            ?? project.path;
+          bindThreadToProject(link.childThreadId, rootPath);
+        }
+        if (Object.keys(discoveredNativeLinks).length) {
+          persistNativeAgentLinks((current) => ({ ...current, ...discoveredNativeLinks }));
+        }
         const projectPath = normalizedProjectPath(project.path);
         const runtimeThreads = allThreads.filter((thread) => {
           const boundPath = threadProjectBindingsRef.current?.[thread.id];
@@ -1156,7 +1179,7 @@ export default function App() {
         setError(friendlyError(reason));
       }
     },
-    [runtimeStatus?.available],
+    [bindThreadToProject, persistNativeAgentLinks, runtimeStatus?.available],
   );
 
   const refreshAccount = useCallback(async () => {
@@ -1374,6 +1397,42 @@ export default function App() {
     onProviderToolCompatibilityError: (threadId) => {
       const thread = threads.find((entry) => entry.id === threadId) ?? knownThreadsRef.current?.[threadId];
       if (providerFromThread(thread, "openai") === "openrouter") providerRepairThreadsRef.current.add(threadId);
+    },
+    onNativeAgentDiscovered: (rootThreadId, childThreadId, details) => {
+      if (!childThreadId || childThreadId === rootThreadId) return;
+      const now = Date.now();
+      const rootThread = threads.find((entry) => entry.id === rootThreadId) ?? knownThreadsRef.current?.[rootThreadId];
+      const existingThread = threads.find((entry) => entry.id === childThreadId) ?? knownThreadsRef.current?.[childThreadId];
+      const logicalPath = threadProjectBindingsRef.current?.[rootThreadId] ?? rootThread?.cwd;
+      const title = details.prompt?.trim()
+        || details.path?.split("/").filter(Boolean).at(-1)?.replaceAll("_", " ")
+        || existingThread?.preview
+        || "Delegated task";
+      persistNativeAgentLinks((current) => {
+        const existing = current[childThreadId];
+        const link: NativeAgentLink = {
+          childThreadId,
+          rootThreadId,
+          title: existing?.title || title,
+          ...(details.path || existing?.path ? { path: details.path || existing?.path } : {}),
+          createdAt: existing?.createdAt ?? now,
+        };
+        return { ...current, [childThreadId]: link };
+      });
+      if (logicalPath) bindThreadToProject(childThreadId, logicalPath);
+      const childThread: Thread = {
+        id: childThreadId,
+        name: existingThread?.name ?? null,
+        preview: existingThread?.preview || title,
+        cwd: existingThread?.cwd || rootThread?.cwd || logicalPath || "",
+        updatedAt: Math.max(existingThread?.updatedAt ?? 0, Math.floor(now / 1000)),
+        modelProvider: existingThread?.modelProvider || rootThread?.modelProvider || "openai",
+        parentThreadId: rootThreadId,
+        threadSource: "subagent",
+        agentPath: details.path || existingThread?.agentPath,
+      };
+      rememberThread(childThread);
+      setThreads((current) => upsertThread(current, childThread));
     },
     onApprovalRequested: (threadId) => {
       if (!settings.notificationsEnabled || useTaskStore.getState().activeThreadId === threadId) return;
@@ -2018,7 +2077,8 @@ export default function App() {
         systemPrompt: providerPrompt,
         ...(threadReasoning[thread.id] ?? {}),
       };
-      const threadProviderSettings = childAgentLinks[thread.id]
+      const threadIsChild = Boolean(childThreadLinks[thread.id]) || isSubAgentThread(thread, childThreadLinks);
+      const threadProviderSettings = threadIsChild
         ? settingsWithoutChildDelegation(targetSettings)
         : targetSettings;
       // Codex keeps a resumed thread loaded in its app-server. Attach the
@@ -2030,6 +2090,7 @@ export default function App() {
         threadId: thread.id,
         policies: childAgentPolicies,
         links: childAgentLinks,
+        isChildThread: threadIsChild,
         settings: threadProviderSettings,
         permission: threadProviderSettings.permission,
         systemPrompt: threadProviderSettings.systemPrompt,
@@ -2046,26 +2107,51 @@ export default function App() {
         cacheChildAgentPolicy(policy);
         persistChildAgentPolicies((current) => ({ ...current, [policy.sessionId]: policy }));
       }
+      const resumedSubagentMax = childBridge?.policy.maxConcurrent
+        ?? childAgentPolicyForThread(childAgentPolicies, thread.id)?.maxConcurrent
+        ?? threadProviderSettings.subagentMax;
+      const resumedSettings = resumedSubagentMax === threadProviderSettings.subagentMax
+        ? threadProviderSettings
+        : { ...threadProviderSettings, subagentMax: resumedSubagentMax };
       // Capture the process identity before resume. If the process disappears
       // immediately afterwards, preserving its old identity makes the next
       // turn detect the replacement and resume this thread again. Capturing it
       // after resume could incorrectly claim the replacement already loaded it.
-      const resumedRuntimeInstance = isolation?.status === "missing" || isolation?.status === "removed"
+      let resumedRuntimeInstance = isolation?.status === "missing" || isolation?.status === "removed"
         ? null
         : await runtimeInstanceId().catch(() => null);
-      const result = isolation?.status === "missing" || isolation?.status === "removed"
+      const capabilitySignature = subagentCapabilitySignature({
+        subagentsEnabled: Boolean(childBridge?.launch.toolNames.includes("spawn_agent")),
+        subagentMax: resumedSubagentMax,
+        bridgeInstanceId: childBridge?.launch.configPath,
+      });
+      let capabilityRefreshDeferred = false;
+      if (resumedRuntimeInstance) {
+        const capabilityPlan = planSubagentCapabilities(thread.id, resumedRuntimeInstance, capabilitySignature);
+        if (capabilityPlan.restartRuntime) {
+          try {
+            resumedRuntimeInstance = await restartRuntimeForCapabilities(thread.id);
+          } catch (reason) {
+            // Navigation must remain available while another task is running.
+            // Read the durable transcript without claiming startup config was
+            // applied; the next send will retry the guarded refresh.
+            if (/another OpenAI or OpenRouter task is still running/i.test(friendlyError(reason))) {
+              capabilityRefreshDeferred = true;
+            } else {
+              throw reason;
+            }
+          }
+        }
+      }
+      const result = isolation?.status === "missing" || isolation?.status === "removed" || capabilityRefreshDeferred
         ? await rpc<{ thread: Thread }>("thread/read", { threadId: thread.id, includeTurns: true })
-        : await rpc<{ thread: Thread }>("thread/resume", threadResumeParams(threadProviderSettings, thread.id, executionPath, { customAgents, modelContextWindow: provider === "openrouter" ? openRouterModels.find((entry) => entry.id === threadProviderSettings.model)?.context_length : undefined, additionalWorkspaceRoots: isolation?.gitDir ? [isolation.gitDir] : [], childAgentBridge: childBridge?.launch, refreshRuntimeConfig: true }));
+        : await rpc<{ thread: Thread }>("thread/resume", threadResumeParams(resumedSettings, thread.id, executionPath, { customAgents, modelContextWindow: provider === "openrouter" ? openRouterModels.find((entry) => entry.id === resumedSettings.model)?.context_length : undefined, additionalWorkspaceRoots: isolation?.gitDir ? [isolation.gitDir] : [], childAgentBridge: childBridge?.launch, refreshRuntimeConfig: true }));
       if (selectThreadRequestRef.current !== requestId) return;
-      if (isolation?.status !== "missing" && isolation?.status !== "removed") {
+      if (isolation?.status !== "missing" && isolation?.status !== "removed" && !capabilityRefreshDeferred) {
         // Opening a thread resumes it with the complete capability config,
         // including the project-control/delegation bridge when applicable.
         if (resumedRuntimeInstance) {
-          seedSubagentCapabilities(result.thread.id, resumedRuntimeInstance, subagentCapabilitySignature({
-            subagentsEnabled: threadProviderSettings.subagentsEnabled,
-            subagentMax: threadProviderSettings.subagentMax,
-            bridgeInstanceId: childBridge?.launch.configPath,
-          }));
+          recordSubagentCapabilities(result.thread.id, resumedRuntimeInstance, capabilitySignature);
         }
         if (selectThreadRequestRef.current !== requestId) return;
       }
@@ -2202,6 +2288,7 @@ export default function App() {
     skillsFolder,
     childAgentPolicies,
     childAgentLinks,
+    activeThreadIsChild,
     childAgentReadiness,
     persistChildAgentPolicies,
     threadWorktreesRef,
@@ -2525,6 +2612,7 @@ export default function App() {
     // to stay in the Sub-agents inbox. Only deleting the child itself removes
     // that classification record.
     persistChildAgentLinks((current) => childAgentLinksAfterThreadDeletion(current, threadId));
+    persistNativeAgentLinks((current) => nativeAgentLinksAfterThreadDeletion(current, threadId));
   };
 
   const archiveThread = async (thread: Thread) => {
@@ -2710,6 +2798,13 @@ export default function App() {
         return;
       }
       const result = await rpc<{ thread: Thread }>("thread/read", { threadId, includeTurns: true });
+      const nativeLink = nativeAgentLinks[threadId];
+      const logicalPath = threadProjectBindingsRef.current?.[threadId]
+        ?? (nativeLink ? threadProjectBindingsRef.current?.[nativeLink.rootThreadId] : undefined)
+        ?? activeWorkspace?.path;
+      if (logicalPath) bindThreadToProject(result.thread.id, logicalPath);
+      rememberThread(result.thread);
+      setThreads((current) => upsertThread(current, result.thread));
       setActiveThread(result.thread);
       const history = timelineFromTurns(result.thread.turns);
       useTaskStore.getState().hydrateTask(result.thread.id, history.messages, history.activities, result.thread.cwd);
@@ -2726,7 +2821,7 @@ export default function App() {
    * never be "stopped" in one surface and still running behind another.
    */
   const stopAgent = async (threadId: string) => {
-    const rootThreadId = childAgentLinks[threadId]?.rootThreadId ?? activeThreadId;
+    const rootThreadId = childAgentLinks[threadId]?.rootThreadId ?? nativeAgentLinks[threadId]?.rootThreadId ?? activeThreadId;
     if (!rootThreadId) {
       setError("Open the thread that owns this sub-agent before stopping it.");
       return;

@@ -43,9 +43,9 @@ describe("planSubagentCapabilities", () => {
     expect(planSubagentCapabilities("thread-1", RUNTIME, OFF)).toEqual(NOTHING);
   });
 
-  it("resumes an unknown thread that now wants sub-agents, without restarting anything", () => {
-    expect(planSubagentCapabilities("thread-1", RUNTIME, ON)).toEqual(RESUME_ONLY);
-    expect(planSubagentCapabilities("thread-1", RUNTIME, BRIDGED)).toEqual(RESUME_ONLY);
+  it("refreshes an unknown loaded thread before granting sub-agent powers", () => {
+    expect(planSubagentCapabilities("thread-1", RUNTIME, ON)).toEqual(REFRESH);
+    expect(planSubagentCapabilities("thread-1", RUNTIME, BRIDGED)).toEqual(REFRESH);
   });
 
   it("stops asking once this runtime has been told", () => {
@@ -83,13 +83,13 @@ describe("planSubagentCapabilities", () => {
 
   it("tracks each thread separately", () => {
     recordSubagentCapabilities("thread-1", RUNTIME, ON);
-    expect(planSubagentCapabilities("thread-2", RUNTIME, ON)).toEqual(RESUME_ONLY);
+    expect(planSubagentCapabilities("thread-2", RUNTIME, ON)).toEqual(REFRESH);
   });
 
   it("re-evaluates a thread whose runtime state was discarded", () => {
     recordSubagentCapabilities("thread-1", RUNTIME, ON);
     forgetSubagentCapabilities("thread-1");
-    expect(planSubagentCapabilities("thread-1", RUNTIME, ON)).toEqual(RESUME_ONLY);
+    expect(planSubagentCapabilities("thread-1", RUNTIME, ON)).toEqual(REFRESH);
   });
 });
 
@@ -145,9 +145,9 @@ describe("durable capability records", () => {
       "thread-4": { instance: RUNTIME, signature: ON },
     }));
     const reloaded = await reloadModule();
-    expect(reloaded.planSubagentCapabilities("thread-1", RUNTIME, ON)).toEqual(RESUME_ONLY);
-    expect(reloaded.planSubagentCapabilities("thread-2", RUNTIME, ON)).toEqual(RESUME_ONLY);
-    expect(reloaded.planSubagentCapabilities("thread-3", RUNTIME, ON)).toEqual(RESUME_ONLY);
+    expect(reloaded.planSubagentCapabilities("thread-1", RUNTIME, ON)).toEqual(REFRESH);
+    expect(reloaded.planSubagentCapabilities("thread-2", RUNTIME, ON)).toEqual(REFRESH);
+    expect(reloaded.planSubagentCapabilities("thread-3", RUNTIME, ON)).toEqual(REFRESH);
     expect(reloaded.planSubagentCapabilities("thread-4", RUNTIME, ON)).toEqual(NOTHING);
   });
 });

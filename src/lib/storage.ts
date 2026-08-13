@@ -36,6 +36,7 @@ export const DURABLE_STORAGE_KEYS = [
   "kiwi.pendingHandoff",
   "kiwi.childAgentPolicies",
   "kiwi.childAgentLinks",
+  "kiwi.nativeAgentLinks",
   "kiwi.threadSubagentCapabilities",
   "kiwi.onboardingVersion",
 ] as const;
@@ -45,7 +46,7 @@ export const DURABLE_STORAGE_KEYS = [
  * migrateStorage. Old installs then upgrade their data instead of loading
  * garbage into the new code.
  */
-export const STORAGE_SCHEMA_VERSION = 14;
+export const STORAGE_SCHEMA_VERSION = 15;
 const nativeWriteQueues = new Map<string, Promise<void>>();
 const NATIVE_PENDING_PREFIX = "kiwi.nativePending.";
 let nativeOperationSequence = 0;
@@ -142,6 +143,8 @@ export function migrateStorage(): void {
       storeValue("kiwi.settings", { ...settings, promptProfileId: "" });
     }
   }
+  // Version 15 persists provider-native sub-agent ownership so their durable
+  // Codex threads remain browsable and depth-limited after a renderer reload.
   // All other additions are optional and require no eager rewrite of existing records.
   storeValue("kiwi.schemaVersion", STORAGE_SCHEMA_VERSION);
 }

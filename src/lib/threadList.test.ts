@@ -71,6 +71,13 @@ describe("thread sidebar list", () => {
     expect(filterThreadsByKind([main, child], links, "subagents")).toEqual([child]);
   });
 
+  it("recognizes native Codex children even before a durable ownership link is restored", () => {
+    const main = makeThread("main");
+    const nativeChild = makeThread("native-child", { parentThreadId: "main", threadSource: "subagent" });
+    expect(filterThreadsByKind([main, nativeChild], {}, "main")).toEqual([main]);
+    expect(filterThreadsByKind([main, nativeChild], {}, "subagents")).toEqual([nativeChild]);
+  });
+
   it("uses working statuses and persisted bindings for project counts", () => {
     const shared = makeThread("shared", { cwd: "/projects/alpha" });
     const isolated = makeThread("isolated", { cwd: "/managed/worktrees/isolated" });

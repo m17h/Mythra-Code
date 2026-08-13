@@ -97,7 +97,6 @@ export async function startChildAgentTurn(
       systemPrompt,
       resume: false,
       attachments: [],
-      subagentsEnabled: false,
       subagentMax: 1,
       customAgents: [],
     });

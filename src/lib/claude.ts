@@ -42,7 +42,6 @@ export interface ClaudeTurnOptions {
   systemPrompt: string;
   resume: boolean;
   attachments: ClaudeAttachment[];
-  subagentsEnabled: boolean;
   subagentMax: number;
   customAgents: CustomAgentProfile[];
   skillsPluginPath?: string;

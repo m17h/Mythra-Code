@@ -284,6 +284,47 @@ beforeEach(() => {
 });
 
 describe("workspace switching during thread selection", () => {
+  it("keeps a persisted native Codex child in the Sub-agents inbox and depth-limits it", async () => {
+    const user = userEvent.setup();
+    const nativeChild: Thread = {
+      id: "native-child",
+      name: "Native child",
+      preview: "Review the implementation",
+      cwd: PROJECT_A.path,
+      updatedAt: THREAD_B.updatedAt + 1,
+      modelProvider: "openai",
+      parentThreadId: THREAD_A.id,
+      threadSource: "subagent",
+    };
+    localStorage.setItem("kiwi.knownThreads", JSON.stringify({ [nativeChild.id]: nativeChild }));
+    localStorage.setItem("kiwi.threadProjects", JSON.stringify({ [nativeChild.id]: PROJECT_A.path }));
+    localStorage.setItem("kiwi.nativeAgentLinks", JSON.stringify({
+      [nativeChild.id]: {
+        childThreadId: nativeChild.id,
+        rootThreadId: THREAD_A.id,
+        title: nativeChild.preview,
+        createdAt: nativeChild.updatedAt * 1000,
+      },
+    }));
+    resumeImpl = (params) => ({ thread: { ...nativeChild, id: String(params.threadId), turns: [] } });
+
+    await renderApp();
+    expect(screen.queryByText("Native child")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Sub-agents/ }));
+    await user.click(await screen.findByText("Native child"));
+
+    await waitFor(() => {
+      const resumeCalls = invokeMock.mock.calls
+        .filter(([command, args]) => command === "codex_rpc" && args?.method === "thread/resume")
+        .map(([, args]) => args?.params as Record<string, unknown>);
+      expect(resumeCalls.at(-1)).toMatchObject({
+        threadId: nativeChild.id,
+        config: { features: { multi_agent: false } },
+      });
+    });
+    expect(invokeMock.mock.calls.some(([command]) => command === "child_agent_session_start")).toBe(false);
+  });
+
   it("initializes a plain project before offering an isolated worktree", async () => {
     workspaceGitInfoImpl = () => ({
       isRepo: false,
@@ -492,6 +533,12 @@ describe("workspace switching during thread selection", () => {
     });
     await renderApp();
     const { useTaskStore } = await import("./lib/taskStore");
+
+    // Prime both durable threads before one becomes busy. This mirrors a user
+    // revisiting established conversations and keeps this test focused on
+    // per-thread run state rather than the one-time capability migration.
+    await user.click(await screen.findByText("Beta thread"));
+    await waitFor(() => expect(useTaskStore.getState().activeThreadId).toBe(THREAD_B.id));
 
     // Open thread A and send — its turn/start stays in flight.
     await user.click(await screen.findByText("Alpha thread"));
@@ -942,7 +989,14 @@ describe("composer sub-agent command center", () => {
    */
   it("gives a running conversation the sub-agents it just switched on, on its next message", async () => {
     const user = userEvent.setup();
-    localStorage.setItem("kiwi.settings", JSON.stringify({ subagentsEnabled: false, subagentMax: 5 }));
+    localStorage.setItem("kiwi.settings", JSON.stringify({
+      subagentsEnabled: false,
+      subagentMax: 5,
+      childAgents: {
+        enabled: true,
+        targets: [{ id: "managed-openai", provider: "openai", model: "gpt-5.6-terra", label: "Managed OpenAI", description: "", enabled: true, reasoningMode: "inherit", reasoningEffort: "medium", reasoningMaxEffort: "high" }],
+      },
+    }));
     await renderApp();
     pendingResume.resolve({ thread: { ...THREAD_A, turns: [] } });
     await user.click(await screen.findByText("Alpha thread"));
@@ -954,6 +1008,7 @@ describe("composer sub-agent command center", () => {
         config: { features: { multi_agent: false } },
       });
     });
+    const restartsAfterOpen = invokeMock.mock.calls.filter(([command]) => command === "restart_runtime").length;
 
     await openCrew(user);
     await user.click(screen.getByRole("switch", { name: "Allow sub-agent spawning" }));
@@ -968,10 +1023,14 @@ describe("composer sub-agent command center", () => {
     });
     // Startup-only config is ignored for a thread the app-server already holds,
     // so the switch is only real if the runtime was replaced first.
-    expect(invokeMock.mock.calls.filter(([command]) => command === "restart_runtime")).toHaveLength(1);
+    expect(invokeMock.mock.calls.filter(([command]) => command === "restart_runtime")).toHaveLength(restartsAfterOpen + 1);
     expect(codexCalls("thread/resume").at(-1)).toMatchObject({
       threadId: THREAD_A.id,
-      config: { features: { multi_agent: true }, agents: { max_threads: 5 } },
+      config: {
+        features: { multi_agent: false },
+        agents: { max_threads: 5 },
+        mcp_servers: { openkiwi: expect.anything() },
+      },
     });
   });
 
@@ -982,6 +1041,7 @@ describe("composer sub-agent command center", () => {
     pendingResume.resolve({ thread: { ...THREAD_A, turns: [] } });
     await user.click(await screen.findByText("Alpha thread"));
     await waitFor(() => expect(codexCalls("thread/resume")).not.toHaveLength(0));
+    const restartsAfterOpen = invokeMock.mock.calls.filter(([command]) => command === "restart_runtime").length;
 
     const composer = await screen.findByPlaceholderText(/Ask OpenKiwi to work in/);
     await user.type(composer, "carry on{Enter}");
@@ -989,7 +1049,7 @@ describe("composer sub-agent command center", () => {
     await waitFor(() => {
       expect(codexCalls("turn/start").at(-1)).toMatchObject({ threadId: THREAD_A.id });
     });
-    expect(invokeMock.mock.calls.some(([command]) => command === "restart_runtime")).toBe(false);
+    expect(invokeMock.mock.calls.filter(([command]) => command === "restart_runtime")).toHaveLength(restartsAfterOpen);
     expect(codexCalls("thread/resume")).toHaveLength(1);
   });
 });

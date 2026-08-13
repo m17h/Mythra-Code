@@ -203,7 +203,6 @@ struct ClaudeTurnOptions {
     system_prompt: String,
     resume: bool,
     attachments: Vec<ClaudeAttachment>,
-    subagents_enabled: bool,
     subagent_max: usize,
     custom_agents: Vec<ClaudeAgentInput>,
     skills_plugin_path: Option<String>,
@@ -1493,11 +1492,7 @@ fn validate_cli_value(value: &str, label: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn claude_disallowed_tools(
-    permission: &str,
-    subagents_enabled: bool,
-    openkiwi_delegation: bool,
-) -> Vec<&'static str> {
+fn claude_disallowed_tools(permission: &str) -> Vec<&'static str> {
     let mut disallowed = Vec::new();
     if permission == "read-only" {
         disallowed.extend([
@@ -1509,19 +1504,16 @@ fn claude_disallowed_tools(
             "WebSearch",
         ]);
     }
-    // An active OpenKiwi bridge is the user's explicit sub-agent crew. Do not
-    // also expose Claude Code's native Task/team surface: two delegation
-    // routes make requests such as "spawn sub-agents" ambiguous and can send
-    // work to Claude-native agents instead of the configured OpenKiwi targets.
-    if !subagents_enabled || openkiwi_delegation {
-        disallowed.extend([
-            "Task",
-            "SendMessage",
-            "TaskCreate",
-            "TaskUpdate",
-            "TeamCreate",
-        ]);
-    }
+    // OpenKiwi is the sole delegation authority. Claude's native Task/team
+    // surface bypasses the approved roster, concurrency budget, ownership
+    // records, and child inbox, so it is never exposed from OpenKiwi.
+    disallowed.extend([
+        "Task",
+        "SendMessage",
+        "TaskCreate",
+        "TaskUpdate",
+        "TeamCreate",
+    ]);
     disallowed
 }
 
@@ -1622,11 +1614,7 @@ async fn claude_turn_start(
             ]);
         }
     }
-    let disallowed = claude_disallowed_tools(
-        &options.permission,
-        options.subagents_enabled,
-        options.child_agent_bridge_config.is_some(),
-    );
+    let disallowed = claude_disallowed_tools(&options.permission);
     if !disallowed.is_empty() {
         command.args(["--disallowedTools", &disallowed.join(",")]);
     }

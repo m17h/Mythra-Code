@@ -65,6 +65,8 @@ export interface ChildAgentBridgeInput {
   threadId?: string;
   policies: Record<string, ChildAgentPolicy>;
   links: Record<string, ChildAgentLink>;
+  /** Includes provider-native ownership, which is stored separately from bridge links. */
+  isChildThread?: boolean;
   settings: Pick<AppSettings, "childAgents" | "subagentsEnabled" | "subagentMax">;
   permission: PermissionMode;
   systemPrompt: string;
@@ -95,7 +97,7 @@ export async function ensureChildAgentBridge(
 ): Promise<ChildAgentBridgeResult | null> {
   // Depth one, decided before anything the settings could say: a thread that
   // is itself a child never receives a bridge.
-  if (input.threadId && input.links[input.threadId]) return null;
+  if (input.isChildThread || (input.threadId && input.links[input.threadId])) return null;
 
   const stored = childAgentPolicyForThread(input.policies, input.threadId);
   // A roster the user explicitly approved replaces the frozen one — but only

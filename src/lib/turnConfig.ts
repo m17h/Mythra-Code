@@ -87,11 +87,11 @@ export function threadRuntimeConfig(run: ScheduleRunSettings, options: Pick<Thre
       ...customAgentConfig(options.customAgents ?? []),
     },
     features: {
-      // When the OpenKiwi bridge is present it is the sole delegation route.
-      // Keeping Codex's native collaboration feature on would expose a second
-      // spawn_agent implementation and make the user's configured crew
-      // ambiguous to the model.
-      multi_agent: run.subagentsEnabled && !openKiwiDelegation,
+      // OpenKiwi is the only delegation authority. Provider-native spawning
+      // bypasses the user's approved destinations, frozen concurrency budget,
+      // ownership records, and child inbox. With no managed destination the
+      // model receives no spawning route at all.
+      multi_agent: false,
       ...(run.provider === "openrouter" ? { apps: false, remote_plugin: false } : {}),
     },
     ...(run.provider === "openrouter" ? { apps: { _default: { enabled: false } } } : {}),

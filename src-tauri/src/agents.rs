@@ -419,7 +419,7 @@ pub(super) fn tokens_match(left: &str, right: &str) -> bool {
 /// The MCP tool catalog for one session. The `target` enum is exactly the set
 /// of destinations the user approved when this root thread started, so the
 /// model chooses a provider/model pair by name and can never invent one.
-pub(super) fn tool_catalog(targets: &[ChildAgentTarget]) -> Value {
+pub(super) fn tool_catalog(targets: &[ChildAgentTarget], max_concurrent: usize) -> Value {
     let ids: Vec<Value> = targets
         .iter()
         .map(|target| Value::String(target.id.clone()))
@@ -457,13 +457,16 @@ pub(super) fn tool_catalog(targets: &[ChildAgentTarget]) -> Value {
         "enum": ids,
         "description": format!("Which approved destination runs this child.\n{roster}"),
     });
+    let child_plural = if max_concurrent == 1 { "" } else { "s" };
 
     let catalog = json!([
         {
             "name": TOOL_SPAWN,
             "title": "Spawn a sub-agent",
             "description": format!(
-                "Start a child agent on one of the destinations OpenKiwi approved for this thread. \
+                "OpenKiwi is the only permitted sub-agent system for this thread; provider-native task, team, and agent spawning is not allowed. \
+                 Start a child agent on one of the destinations OpenKiwi approved for this thread. \
+                 At most {max_concurrent} child agent{child_plural} may run concurrently. \
                  The child runs in the same workspace with the same permission policy, reports into the \
                  same conversation, and returns immediately with an id — use `{TOOL_COLLECT}` to wait for its result.\n\nDestinations:\n{roster}"
             ),
@@ -832,7 +835,7 @@ async fn handle_bridge_request(
     match request.method.as_str() {
         "describe" => json_response(
             StatusCode::OK,
-            json!({ "ok": true, "result": { "tools": tool_catalog(&session.targets) } }),
+            json!({ "ok": true, "result": { "tools": tool_catalog(&session.targets, session.max_concurrent) } }),
         ),
         "call" => match dispatch_tool(&state, &session, &request.tool, request.arguments).await {
             Ok(result) => json_response(StatusCode::OK, json!({ "ok": true, "result": result })),
