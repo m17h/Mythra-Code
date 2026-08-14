@@ -95,6 +95,9 @@ if (windowsBuildInfo.commit !== releaseCommit) {
 if (windowsBuildInfo.platform !== windowsPlatform || windowsBuildInfo.architecture !== "x64") {
   throw new Error(`Windows build platform mismatch: expected ${windowsPlatform}/x64.`);
 }
+if (windowsBuildInfo.peSubsystem !== "WindowsGui") {
+  throw new Error("Windows build is not marked as a Windows GUI executable; rebuilding is required to prevent a background terminal window.");
+}
 if (windowsBuildInfo.installer !== windowsInstallerName || windowsBuildInfo.signature !== `${windowsInstallerName}.sig`) {
   throw new Error("Windows build provenance names do not match the expected release artifacts.");
 }

@@ -140,6 +140,20 @@ if ((Get-Item -LiteralPath $signaturePath).Length -le 0) {
   throw "The Windows updater signature is empty."
 }
 
+$peBytes = [System.IO.File]::ReadAllBytes($binaryPath)
+if ($peBytes.Length -lt 256) {
+  throw "Native Windows executable is too small to contain a valid PE header."
+}
+$peHeaderOffset = [BitConverter]::ToInt32($peBytes, 0x3c)
+$subsystemOffset = $peHeaderOffset + 24 + 68
+if ($peHeaderOffset -lt 0 -or $subsystemOffset + 2 -gt $peBytes.Length) {
+  throw "Native Windows executable has an invalid PE header."
+}
+$peSubsystem = [BitConverter]::ToUInt16($peBytes, $subsystemOffset)
+if ($peSubsystem -ne 2) {
+  throw "Native Windows executable uses PE subsystem $peSubsystem instead of Windows GUI (2); it would open a background terminal window."
+}
+
 $versionInfo = (Get-Item -LiteralPath $installerPath).VersionInfo
 if ([string]$versionInfo.ProductVersion -ne $version -or [string]$versionInfo.FileVersion -ne $version) {
   throw "Installer version mismatch: expected $version, product=$($versionInfo.ProductVersion), file=$($versionInfo.FileVersion)."
@@ -183,6 +197,7 @@ $buildInfo = [ordered]@{
   signature = "$installerName.sig"
   sha256 = $sha256
   authenticodeStatus = $authenticodeStatus
+  peSubsystem = "WindowsGui"
   builtAt = [DateTime]::UtcNow.ToString("o")
   dirty = [bool]$dirtyTree
 }

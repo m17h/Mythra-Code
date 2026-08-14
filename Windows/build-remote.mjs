@@ -91,7 +91,12 @@ for (const name of [installerName, `${installerName}.sig`, "build-info.json"]) {
 }
 
 const buildInfo = JSON.parse(readFileSync(resolve(output, "build-info.json"), "utf8").replace(/^\uFEFF/, ""));
-if (buildInfo.version !== version || buildInfo.commit !== head || buildInfo.platform !== "windows-x86_64") {
+if (
+  buildInfo.version !== version ||
+  buildInfo.commit !== head ||
+  buildInfo.platform !== "windows-x86_64" ||
+  buildInfo.peSubsystem !== "WindowsGui"
+) {
   throw new Error("The downloaded Windows build provenance does not match this release commit and version.");
 }
 if (buildInfo.authenticodeStatus !== "Valid" && !allowUnsigned) {

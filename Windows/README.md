@@ -45,7 +45,8 @@ $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = "password from secure storage"
 
 Use `-AllowUnsigned` only when the release has explicitly approved an unsigned
 Windows installer. The script runs the complete verification suite, builds the
-x64 NSIS setup executable, performs a launch smoke test, validates version and
+x64 NSIS setup executable, verifies that it uses the Windows GUI subsystem so
+no terminal window appears, performs a launch smoke test, validates version and
 signature metadata, and stages:
 
 - `OpenKiwi_<version>_x64-setup.exe`
