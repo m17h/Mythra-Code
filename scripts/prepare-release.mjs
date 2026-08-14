@@ -84,7 +84,7 @@ requireSuccess("spctl", ["--assess", "--type", "open", "--context", "context:pri
 const bundledVersion = requireSuccess("plutil", ["-extract", "CFBundleShortVersionString", "raw", resolve(appSource, "Contents/Info.plist")], "Bundle version check");
 if (bundledVersion !== version) throw new Error(`Bundle version mismatch: expected ${version}, found ${bundledVersion}`);
 
-const windowsBuildInfo = JSON.parse(readFileSync(windowsBuildInfoSource, "utf8"));
+const windowsBuildInfo = JSON.parse(readFileSync(windowsBuildInfoSource, "utf8").replace(/^\uFEFF/, ""));
 const releaseCommit = requireSuccess("git", ["rev-parse", "HEAD"], "Release commit check");
 if (windowsBuildInfo.version !== version) {
   throw new Error(`Windows build version mismatch: expected ${version}, found ${windowsBuildInfo.version ?? "unknown"}.`);

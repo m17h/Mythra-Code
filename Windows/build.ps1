@@ -112,7 +112,8 @@ if ($certificateThumbprint) {
       }
     }
   }
-  $signingConfig | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $signingConfigPath -Encoding utf8
+  $utf8WithoutBom = [System.Text.UTF8Encoding]::new($false)
+  [System.IO.File]::WriteAllText($signingConfigPath, ($signingConfig | ConvertTo-Json -Depth 4), $utf8WithoutBom)
   $tauriArguments += @("--config", $signingConfigPath)
 }
 
@@ -185,7 +186,8 @@ $buildInfo = [ordered]@{
   builtAt = [DateTime]::UtcNow.ToString("o")
   dirty = [bool]$dirtyTree
 }
-$buildInfo | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $outputDirectory "build-info.json") -Encoding utf8
+$utf8WithoutBom = [System.Text.UTF8Encoding]::new($false)
+[System.IO.File]::WriteAllText((Join-Path $outputDirectory "build-info.json"), ($buildInfo | ConvertTo-Json), $utf8WithoutBom)
 
 Write-Output "Prepared OpenKiwi $version Windows release assets in $outputDirectory"
 Get-ChildItem -LiteralPath $outputDirectory | Sort-Object Name | ForEach-Object { Write-Output "- $($_.Name)" }
