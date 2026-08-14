@@ -18,6 +18,7 @@ $bundleDirectory = Join-Path $repoRoot "src-tauri\target\release\bundle\nsis"
 $binaryPath = Join-Path $repoRoot "src-tauri\target\release\openkiwi.exe"
 $outputDirectory = Join-Path $PSScriptRoot "latest"
 $signingConfigPath = Join-Path $env:TEMP "OpenKiwi-tauri-windows-signing-$PID.json"
+Set-Location -LiteralPath $repoRoot
 
 function Invoke-Checked {
   param(
