@@ -48,19 +48,29 @@ describe("usage ledger", () => {
   });
 
   it("rebaselines a lower resumed Codex snapshot without shrinking totals", () => {
-    recordCumulativeUsage("thread", usage(100, 20));
-    recordCumulativeUsage("thread", usage(10, 5));
+    recordCumulativeUsage("thread", { ...usage(100, 20), contextTokens: 90 });
+    recordCumulativeUsage("thread", { ...usage(10, 5), contextTokens: 12 });
     expect(usageForThread("thread")?.usage).toMatchObject({
       inputTokens: 100,
       outputTokens: 20,
-      contextTokens: 15,
+      contextTokens: 12,
     });
 
-    recordCumulativeUsage("thread", usage(30, 12));
+    recordCumulativeUsage("thread", { ...usage(30, 12), contextTokens: 35 });
     expect(usageForThread("thread")?.usage).toMatchObject({
       inputTokens: 120,
       outputTokens: 27,
-      contextTokens: 42,
+      contextTokens: 35,
+    });
+  });
+
+  it("keeps latest context occupancy separate from cumulative billed usage", () => {
+    recordCumulativeUsage("thread", { ...usage(100_000, 8_000), contextTokens: 20_000, contextWindow: 200_000 });
+    recordCumulativeUsage("thread", { ...usage(140_000, 10_000), contextTokens: 25_000, contextWindow: 200_000 });
+    expect(usageForThread("thread")?.usage).toMatchObject({
+      totalTokens: 150_000,
+      contextTokens: 25_000,
+      contextWindow: 200_000,
     });
   });
 

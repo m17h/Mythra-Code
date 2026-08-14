@@ -46,7 +46,7 @@ export const DURABLE_STORAGE_KEYS = [
  * migrateStorage. Old installs then upgrade their data instead of loading
  * garbage into the new code.
  */
-export const STORAGE_SCHEMA_VERSION = 15;
+export const STORAGE_SCHEMA_VERSION = 16;
 const nativeWriteQueues = new Map<string, Promise<void>>();
 const NATIVE_PENDING_PREFIX = "kiwi.nativePending.";
 let nativeOperationSequence = 0;
@@ -145,6 +145,27 @@ export function migrateStorage(): void {
   }
   // Version 15 persists provider-native sub-agent ownership so their durable
   // Codex threads remain browsable and depth-limited after a renderer reload.
+  // Version 16 stops treating cumulative provider usage as current context.
+  // The old field cannot be distinguished from a real latest-request value,
+  // so clear only that derived value and preserve the full token/cost ledger.
+  if (stored < 16) {
+    const records = loadStored<Array<Record<string, unknown>>>("kiwi.usageLedger", []);
+    if (Array.isArray(records) && records.length) {
+      const withoutLegacyContext = (value: unknown): unknown => {
+        if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+        const next = { ...(value as Record<string, unknown>) };
+        delete next.contextTokens;
+        return next;
+      };
+      storeValue("kiwi.usageLedger", records.map((record) => ({
+        ...record,
+        usage: withoutLegacyContext(record.usage),
+        ...(record.cumulativeSnapshot === undefined
+          ? {}
+          : { cumulativeSnapshot: withoutLegacyContext(record.cumulativeSnapshot) }),
+      })));
+    }
+  }
   // All other additions are optional and require no eager rewrite of existing records.
   storeValue("kiwi.schemaVersion", STORAGE_SCHEMA_VERSION);
 }

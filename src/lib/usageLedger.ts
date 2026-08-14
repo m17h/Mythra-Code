@@ -371,7 +371,7 @@ export function recordCumulativeUsage(threadId: string, usage: TokenUsageView): 
     return {
       ...record,
       ...withCostDelta(record, delta),
-      usage: addUsage(record.usage, delta, nextSnapshot.contextWindow, nextSnapshot.totalTokens),
+      usage: addUsage(record.usage, delta, nextSnapshot.contextWindow, nextSnapshot.contextTokens),
       cumulativeSnapshot: nextSnapshot,
       updatedAt: Date.now(),
     };

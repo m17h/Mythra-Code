@@ -2,6 +2,7 @@ import { childAgentModel, childLifecycleForLink, providerDisplayName, type Child
 import type { TaskStatus } from "./taskStore";
 import type { AgentRecord } from "../components/StudioDock";
 import type { Provider } from "../types";
+import { decodeHtmlEntities } from "./text";
 
 /**
  * The live sub-agent picture the composer's command center renders.
@@ -158,7 +159,7 @@ export function collectSubAgentWorkers(input: SubAgentWorkerInput): SubAgentWork
       id: link.childThreadId,
       kind: "cross-provider",
       status: workerStatusFromLifecycle(lifecycle),
-      title: link.title || "Delegated task",
+      title: decodeHtmlEntities(link.title || "Delegated task"),
       targetId: link.targetId,
       provider: link.provider,
       model,
@@ -173,7 +174,7 @@ export function collectSubAgentWorkers(input: SubAgentWorkerInput): SubAgentWork
       id: agent.id,
       kind: "native",
       status: workerStatusFromAgentRecord(agent.status),
-      title: agent.prompt || "Delegated task",
+      title: decodeHtmlEntities(agent.prompt || "Delegated task"),
       detail: agent.path || "Same provider as this thread",
       // Native records carry no timestamp; ordering falls back to their id.
       createdAt: 0,

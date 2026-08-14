@@ -245,10 +245,18 @@ export function routeCodexEvent(event: CodexEvent, ctx: CodexEventContext): void
     return;
   }
   if (method === "thread/tokenUsage/updated") {
-    const usage = params.tokenUsage as { total?: Partial<TokenUsageView>; modelContextWindow?: number | null } | undefined;
+    const usage = params.tokenUsage as {
+      total?: Partial<TokenUsageView>;
+      last?: Partial<TokenUsageView>;
+      modelContextWindow?: number | null;
+    } | undefined;
     if (usage?.total) {
       useTaskStore.getState().setUsage(eventThreadId, {
         totalTokens: Number(usage.total.totalTokens ?? 0),
+        // `total` is cumulative billing usage and repeatedly counts the same
+        // conversation prefix. `last` is the latest model request and is the
+        // runtime's current-context signal.
+        contextTokens: usage.last ? Number(usage.last.totalTokens ?? 0) : undefined,
         inputTokens: Number(usage.total.inputTokens ?? 0),
         cachedInputTokens: Number(usage.total.cachedInputTokens ?? 0),
         cacheWriteInputTokens: Number(usage.total.cacheWriteInputTokens ?? 0),

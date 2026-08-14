@@ -9,6 +9,7 @@ import type { Activity, ChatMessage, PendingApproval, Provider } from "../types"
 import type { JsonObject } from "../lib/codex";
 import { InlineApprovalCard } from "./ApprovalCenter";
 import { ProviderLogo } from "./BrandLogos";
+import { decodeHtmlEntities } from "../lib/text";
 
 export type WorkItemEntry =
   | { kind: "message"; value: ChatMessage }
@@ -326,6 +327,8 @@ export const ActivityRow = memo(function ActivityRow({ activity }: { activity: A
   }
 
   const expandable = Boolean(activity.detail) && activity.kind === "command";
+  const displayTitle = activity.kind === "agent" ? decodeHtmlEntities(activity.title) : activity.title;
+  const displayDetail = activity.kind === "agent" && activity.detail ? decodeHtmlEntities(activity.detail) : activity.detail;
   const Icon = activity.kind === "command"
     ? TerminalSquare
     : activity.kind === "file"
@@ -344,10 +347,10 @@ export const ActivityRow = memo(function ActivityRow({ activity }: { activity: A
             aria-expanded={expanded}
           >
             <ChevronRight className="activity-chevron" size={12} />
-            <span>{activity.title}</span>
+            <span>{displayTitle}</span>
           </button>
-        ) : <span>{activity.title}</span>}
-        {activity.detail && (!expandable || expanded) && <pre>{activity.detail.slice(-1200)}</pre>}
+        ) : <span>{displayTitle}</span>}
+        {displayDetail && (!expandable || expanded) && <pre>{displayDetail.slice(-1200)}</pre>}
       </div>
       {activity.status && <small>{activity.status}</small>}
     </div>

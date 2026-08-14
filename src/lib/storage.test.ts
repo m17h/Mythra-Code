@@ -46,6 +46,27 @@ describe("durable storage", () => {
     expect(DURABLE_STORAGE_KEYS).toContain("kiwi.threadSubagentCapabilities");
   });
 
+  it("clears legacy cumulative context pressure without losing usage history", async () => {
+    localStorage.setItem("kiwi.schemaVersion", "15");
+    localStorage.setItem("kiwi.usageLedger", JSON.stringify([{
+      threadId: "thread-1",
+      usage: { totalTokens: 500_000, inputTokens: 480_000, outputTokens: 20_000, contextTokens: 500_000, contextWindow: 200_000 },
+      cumulativeSnapshot: { totalTokens: 500_000, inputTokens: 480_000, outputTokens: 20_000, contextTokens: 500_000, contextWindow: 200_000 },
+      estimatedCost: 4.25,
+      updatedAt: 1,
+    }]));
+    invoke.mockResolvedValue(undefined);
+
+    migrateStorage();
+
+    const records = loadStored<Array<Record<string, unknown>>>("kiwi.usageLedger", []);
+    expect(records[0]).toMatchObject({ threadId: "thread-1", estimatedCost: 4.25 });
+    expect(records[0].usage).toMatchObject({ totalTokens: 500_000, contextWindow: 200_000 });
+    expect(records[0].usage).not.toHaveProperty("contextTokens");
+    expect(records[0].cumulativeSnapshot).not.toHaveProperty("contextTokens");
+    await flushPendingStateWrites();
+  });
+
   it("migrates legacy localStorage when SQLite is empty", async () => {
     localStorage.setItem("kiwi.projects", JSON.stringify([{ id: "one" }]));
     invoke.mockResolvedValueOnce(null).mockResolvedValueOnce(undefined);

@@ -147,6 +147,40 @@ describe("routeCodexEvent", () => {
     expect(useTaskStore.getState().tasks["thread-w"]?.activities[0]?.title).toBe("careful");
   });
 
+  it("separates cumulative Codex usage from the latest request's context pressure", () => {
+    const ctx = makeContext();
+    routeCodexEvent({
+      method: "thread/tokenUsage/updated",
+      params: {
+        threadId: "thread-usage",
+        tokenUsage: {
+          total: { totalTokens: 100_000, inputTokens: 92_000, outputTokens: 8_000, cachedInputTokens: 80_000 },
+          last: { totalTokens: 20_000, inputTokens: 19_000, outputTokens: 1_000, cachedInputTokens: 18_000 },
+          modelContextWindow: 200_000,
+        },
+      },
+    }, ctx);
+    routeCodexEvent({
+      method: "thread/tokenUsage/updated",
+      params: {
+        threadId: "thread-usage",
+        tokenUsage: {
+          total: { totalTokens: 140_000, inputTokens: 130_000, outputTokens: 10_000, cachedInputTokens: 110_000 },
+          last: { totalTokens: 25_000, inputTokens: 24_000, outputTokens: 1_000, cachedInputTokens: 22_000 },
+          modelContextWindow: 200_000,
+        },
+      },
+    }, ctx);
+
+    expect(useTaskStore.getState().tasks["thread-usage"].usage).toMatchObject({
+      totalTokens: 140_000,
+      inputTokens: 130_000,
+      outputTokens: 10_000,
+      contextTokens: 25_000,
+      contextWindow: 200_000,
+    });
+  });
+
   it("keeps interacted native agents live and discovers their durable child threads", () => {
     const ctx = makeContext({ bindingFor: () => "/workspace" });
     routeCodexEvent({

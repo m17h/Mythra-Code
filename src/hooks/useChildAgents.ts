@@ -24,6 +24,7 @@ import { killClaudeTurn, loadClaudeTranscript } from "../lib/claude";
 import { killCursorTurn, loadCursorTranscript } from "../lib/cursor";
 import { friendlyError } from "../lib/errors";
 import { isActiveAgentRecord } from "../lib/subAgentActivity";
+import { decodeHtmlEntities } from "../lib/text";
 import { upsertThread } from "../lib/threadList";
 import { timelineFromTurns } from "../lib/threadTimeline";
 import { useTaskStore, type TaskStatus } from "../lib/taskStore";
@@ -245,7 +246,7 @@ export function useChildAgents(context: ChildAgentContext): {
     }
     const prompt = String(request.arguments.prompt ?? "").trim();
     if (!prompt) throw new Error("`prompt` is required.");
-    const title = String(request.arguments.title ?? "").trim() || prompt.slice(0, 80);
+    const title = decodeHtmlEntities(String(request.arguments.title ?? "").trim() || prompt.slice(0, 80));
     const reasoningEffort = childAgentReasoningEffort(
       target,
       policy.reasoningEffort,

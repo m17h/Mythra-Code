@@ -85,6 +85,7 @@ import { isClaudeThread, isCursorThread, isLocalSubscriptionThread, modelForProv
 import { basename, normalizedProjectPath } from "./lib/paths";
 import { resolveProviderSystemPrompt, resolveSystemPrompt } from "./lib/systemPrompt";
 import { providerAccountUsage } from "./lib/providerUsage";
+import { contextUsagePercent } from "./lib/contextUsage";
 import { openKiwiDeveloperInstructions } from "./lib/completionPrompt";
 import { providerForArchivedThread } from "./lib/threadArchive";
 import { buildProviderHandoffPrompt, sanitizePendingHandoff } from "./lib/providerHandoff";
@@ -483,6 +484,7 @@ export default function App() {
   const agentRecords = useTaskStore((state) => (activeThreadId ? (state.tasks[activeThreadId]?.agents ?? EMPTY_AGENTS) : EMPTY_AGENTS));
   const agentRunStartedAt = useTaskStore((state) => (activeThreadId ? state.tasks[activeThreadId]?.agentRunStartedAt : undefined));
   const tokenUsage = useTaskStore((state) => (activeThreadId ? (state.tasks[activeThreadId]?.usage ?? null) : null));
+  const contextPercent = contextUsagePercent(tokenUsage);
   const queuedTurns = useTaskStore((state) => (activeThreadId ? (state.tasks[activeThreadId]?.queuedTurns ?? EMPTY_QUEUED_TURNS) : EMPTY_QUEUED_TURNS));
   const taskStatus = useTaskStore((state) => (activeThreadId ? (state.statuses[activeThreadId] ?? "idle") : "idle"));
   const threadTaskStatuses = useTaskStore((state) => state.statuses);
@@ -4186,10 +4188,10 @@ export default function App() {
               />
               <div className="composer-caption">
                 OpenKiwi can make mistakes. Review commands and changes before shipping.
-                {tokenUsage?.contextWindow ? (
-                  <span className={`context-meter ${(tokenUsage.contextTokens ?? tokenUsage.totalTokens) / tokenUsage.contextWindow > 0.8 ? "warn" : ""}`}>
+                {contextPercent !== null ? (
+                  <span className={`context-meter ${contextPercent > 80 ? "warn" : ""}`}>
                     {" "}
-                    · Context {Math.min(100, Math.round(((tokenUsage.contextTokens ?? tokenUsage.totalTokens) / tokenUsage.contextWindow) * 100))}% used{costEstimate ? ` · ${costEstimate}` : ""}
+                    · Context {Math.round(contextPercent)}% used{costEstimate ? ` · ${costEstimate}` : ""}
                   </span>
                 ) : null}
               </div>

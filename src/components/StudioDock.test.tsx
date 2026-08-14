@@ -152,6 +152,27 @@ describe("StudioDock", () => {
     expect(metrics?.lastElementChild).toHaveTextContent("Reasoning");
   });
 
+  it("does not present cumulative tokens as context pressure when a provider omits current occupancy", () => {
+    const { container } = render(
+      <StudioDock
+        {...dockProps(true)}
+        tab="usage"
+        usage={{
+          totalTokens: 180_000,
+          inputTokens: 160_000,
+          cachedInputTokens: 0,
+          outputTokens: 20_000,
+          reasoningOutputTokens: 0,
+          contextWindow: 200_000,
+        }}
+      />,
+    );
+
+    expect(screen.queryByText(/% of context/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Compact before the limit/)).not.toBeInTheDocument();
+    expect(container.querySelector(".usage-hero > i")).not.toBeInTheDocument();
+  });
+
   it("offers reversible full-state actions for an automatic checkpoint", () => {
     const onCheckpointRestore = vi.fn();
     const onCheckpointAccept = vi.fn();

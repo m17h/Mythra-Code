@@ -66,6 +66,19 @@ function oldLongThread(): { messages: Array<{
 }
 
 describe("ChatTimeline", () => {
+  it("renders entity-escaped sub-agent labels as plain text", () => {
+    render(<ActivityRow activity={{
+      id: "child-agent-1",
+      kind: "agent",
+      title: "Spawned Cursor sub-agent",
+      detail: "cursor · grok-4.6\nStory &amp; content audit",
+      status: "inProgress",
+    }} />);
+
+    expect(screen.getByText(/Story & content audit/)).toBeInTheDocument();
+    expect(screen.queryByText(/&amp;/)).not.toBeInTheDocument();
+  });
+
   it("places command activity between the messages that surround it", () => {
     const entries = orderedTimelineEntries(
       [

@@ -39,6 +39,7 @@ import type { ProjectAction } from "../types";
 import { PANE_BOUNDS } from "../hooks/usePaneResize";
 import type { TerminalOutputStore } from "../hooks/useTerminal";
 import type { WorkflowDefinition, WorkflowRunRecord } from "../lib/workflows";
+import { contextUsagePercent } from "../lib/contextUsage";
 import {
   checkpointIsRestorable,
   checkpointStatusLabel,
@@ -206,6 +207,7 @@ export function StudioDock(props: {
     return () => window.clearTimeout(timer);
   }, [props.open]);
   const renderContent = props.open || contentMounted;
+  const contextPercent = contextUsagePercent(props.usage);
   const diffSections = useMemo(() => {
     if (!renderContent || !props.diff) return [];
     const sections: Array<{ path: string; text: string; additions: number; deletions: number }> = [];
@@ -437,18 +439,18 @@ export function StudioDock(props: {
         {props.tab === "usage" && <>
           <PanelHeader icon={Gauge} title="Usage & audit" subtitle="Cumulative thread totals, context pressure, and visible request fields" onClose={props.onClose} />
           <div className="studio-actions"><button onClick={props.onRefreshUsage}><RefreshCw size={13} /> Refresh</button><button onClick={props.onCompact} disabled={!props.activeThread} title="Summarize older turns to free context in this thread"><Shrink size={13} /> Compact context</button></div>
-          {props.usage?.contextWindow && (props.usage.contextTokens ?? props.usage.totalTokens) / props.usage.contextWindow >= 0.7 ? (
-            <div className="history-warning"><ShieldCheck size={13} /> This thread has used {Math.min(100, Math.round(((props.usage.contextTokens ?? props.usage.totalTokens) / props.usage.contextWindow) * 100))}% of its context window. Compact before the limit if responses begin losing older detail.</div>
+          {contextPercent !== null && contextPercent >= 70 ? (
+            <div className="history-warning"><ShieldCheck size={13} /> This thread has used {Math.round(contextPercent)}% of its context window. Compact before the limit if responses begin losing older detail.</div>
           ) : null}
           <div className="usage-hero">
             <span>Thread tokens</span>
             <strong>{props.usage?.totalTokens.toLocaleString() ?? "—"}</strong>
             <small>
               Cumulative in this thread
-              {props.usage?.contextWindow ? ` · ${Math.min(100, Math.round(((props.usage.contextTokens ?? props.usage.totalTokens) / props.usage.contextWindow) * 100))}% of context` : ""}
+              {contextPercent !== null ? ` · ${Math.round(contextPercent)}% of context` : ""}
               {props.costEstimate ? ` · ${props.costEstimate}` : ""}
             </small>
-            {props.usage?.contextWindow ? <i style={{ width: `${Math.min(100, ((props.usage.contextTokens ?? props.usage.totalTokens) / props.usage.contextWindow) * 100)}%` }} /> : null}
+            {contextPercent !== null ? <i style={{ width: `${contextPercent}%` }} /> : null}
           </div>
           <div className="metric-grid usage-token-metrics"><div><strong>{props.usage?.inputTokens.toLocaleString() ?? "—"}</strong><span>Input</span></div><div><strong>{props.usage?.outputTokens.toLocaleString() ?? "—"}</strong><span>Output</span></div><div className="usage-reasoning-metric"><strong>{props.usage?.reasoningOutputTokens.toLocaleString() ?? "—"}</strong><span>Reasoning</span></div></div>
           {props.usage && (props.usage.cachedInputTokens > 0 || (props.usage.cacheWriteInputTokens ?? 0) > 0) ? (

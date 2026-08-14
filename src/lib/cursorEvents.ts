@@ -109,6 +109,9 @@ function usageView(value: unknown): TokenUsageView | null {
   if (!inputTokens && !outputTokens) return null;
   return {
     totalTokens: number(usage.totalTokens ?? usage.total_tokens) || inputTokens + outputTokens,
+    contextTokens: typeof (usage.contextTokens ?? usage.context_tokens) === "number"
+      ? number(usage.contextTokens ?? usage.context_tokens)
+      : undefined,
     inputTokens,
     cachedInputTokens: number(usage.cachedInputTokens ?? usage.cached_input_tokens),
     cacheWriteInputTokens: 0,

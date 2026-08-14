@@ -230,6 +230,21 @@ describe("useChildAgents", () => {
       expect(childRun.startChildAgentTurn.mock.calls[0][2].systemPrompt).toBe("Global then Codex");
     });
 
+    it("stores model-supplied sub-agent titles as plain text", async () => {
+      const view = await mount();
+      await view.send(request({
+        arguments: {
+          target: "terra",
+          prompt: "Audit the story and content systems.",
+          title: "Story &amp; content audit",
+        },
+      }));
+
+      expect(persistedLinks["child-terra"].title).toBe("Story & content audit");
+      expect(useTaskStore.getState().tasks["root-1"].agents[0].prompt).toBe("Story & content audit");
+      expect(useTaskStore.getState().tasks["root-1"].activities[0].detail).toContain("Story & content audit");
+    });
+
     it("does not resurrect a child whose completion beat the start response", async () => {
       childRun.startChildAgentTurn.mockImplementationOnce(async (target: ChildAgentTarget) => {
         useTaskStore.getState().ensureTask("child-terra", "/tmp/project/.worktrees/a");

@@ -99,6 +99,19 @@ describe("collectSubAgentWorkers", () => {
     });
   });
 
+  it("decodes entity-escaped titles from persisted and native workers", () => {
+    const workers = collectSubAgentWorkers({
+      rootThreadId: "root-1",
+      links: links(link({ title: "Story &amp; content audit" })),
+      statuses,
+      agents: [{ id: "native-1", prompt: "Economy &#38; progression audit", status: "working" }],
+    });
+    expect(workers.map((worker) => worker.title)).toEqual([
+      "Story & content audit",
+      "Economy & progression audit",
+    ]);
+  });
+
   it("ignores children belonging to a different root thread", () => {
     const workers = collectSubAgentWorkers({
       rootThreadId: "root-1",
