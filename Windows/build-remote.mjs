@@ -31,7 +31,9 @@ if (head !== remoteHead) throw new Error(`HEAD ${head} is not the pushed origin/
 const defaultKeyPath = resolve(homedir(), ".tauri/openkiwi-updater.key");
 const keySetting = process.env.TAURI_SIGNING_PRIVATE_KEY || defaultKeyPath;
 const privateKey = existsSync(keySetting) ? readFileSync(keySetting, "utf8") : keySetting;
-if (!privateKey.includes("untrusted comment")) throw new Error("The Tauri updater private key is unavailable.");
+if (!privateKey.trim() || privateKey.length < 64 || privateKey.includes("\0")) {
+  throw new Error("The Tauri updater private key is unavailable or invalid.");
+}
 
 let signingPassword = process.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD;
 if (!signingPassword) {
