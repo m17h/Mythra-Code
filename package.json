@@ -15,6 +15,7 @@
     "desktop:build": "tauri build --bundles app --config src-tauri/tauri.local.conf.json",
     "version:bump": "node scripts/bump-version.mjs",
     "release:build": "node scripts/build-release.mjs",
+    "release:windows": "node Windows/build-remote.mjs",
     "release:prepare": "node scripts/prepare-release.mjs",
     "release:publish": "node scripts/publish-release.mjs",
     "check": "tsc --noEmit && cargo check --manifest-path src-tauri/Cargo.toml",

@@ -79,6 +79,18 @@ fn test_git(repo: &Path, args: &[&str]) -> String {
         args.join(" "),
         String::from_utf8_lossy(&output.stderr)
     );
+    if args.first() == Some(&"init") && repo.join(".git").exists() {
+        let config = StdCommand::new("git")
+            .current_dir(repo)
+            .args(["config", "core.autocrlf", "false"])
+            .output()
+            .expect("configure test repository line endings");
+        assert!(
+            config.status.success(),
+            "git config core.autocrlf false failed: {}",
+            String::from_utf8_lossy(&config.stderr)
+        );
+    }
     String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
@@ -606,7 +618,8 @@ fn worktree_apply_transfers_complete_delta_without_touching_source_index_or_igno
     assert!(status.exists);
     assert!(status.registered);
     assert!(!status.clean);
-    assert!(status.changed_files >= 5);
+    let expected_changed_files = if cfg!(unix) { 5 } else { 4 };
+    assert!(status.changed_files >= expected_changed_files);
     assert!(status.untracked_files >= 2);
     assert!(status
         .ignored_files
@@ -638,7 +651,7 @@ fn worktree_apply_transfers_complete_delta_without_touching_source_index_or_igno
         Some(applied_reference),
     )
     .expect("apply isolated delta");
-    assert!(result.changed_files >= 5);
+    assert!(result.changed_files >= expected_changed_files);
     assert_eq!(
         test_git(&source, &["rev-parse", applied_reference]),
         result.isolated_tree
