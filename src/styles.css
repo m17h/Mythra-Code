@@ -13,6 +13,7 @@
   --panel-2: #30353b;
   --panel-3: #393f46;
   --field: #262a2f;
+  --menu-surface: #30353b;
 
   /* ---- Hairlines. Borders carry the structure here, not shadows. ---- */
   --line: rgba(255, 255, 255, 0.068);
@@ -90,7 +91,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,.2); background-clip: content-box; }
 
 .app-shell { display: flex; height: 100%; overflow: hidden; color: var(--text); background: var(--bg); font-size: var(--fs-ui); letter-spacing: var(--track-tight); transition: color 260ms ease, background 260ms ease; }
-.app-shell[data-theme="daylight"] { --bg: #f4f5f2; --sidebar: #ebede8; --panel: #ffffff; --panel-2: #f1f2ee; --panel-3: #e2e5de; --line: rgba(25,35,20,.11); --line-strong: rgba(25,35,20,.19); --muted: #58615a; --muted-2: #61695f; /* 5.2:1 on --bg, 4.8:1 on --sidebar */ --text: #1c211b; --green: #3e8e22; --green-soft: rgba(62,142,34,.11); --orange: #a8621a; --red: #c04742; --shadow: 0 22px 70px rgba(55,65,45,.18); --topbar: rgba(244,245,242,.86); --field: #ffffff; }
+.app-shell[data-theme="daylight"] { --bg: #f4f5f2; --sidebar: #ebede8; --panel: #ffffff; --panel-2: #f1f2ee; --panel-3: #e2e5de; --line: rgba(25,35,20,.11); --line-strong: rgba(25,35,20,.19); --muted: #58615a; --muted-2: #61695f; /* 5.2:1 on --bg, 4.8:1 on --sidebar */ --text: #1c211b; --green: #3e8e22; --green-soft: rgba(62,142,34,.11); --orange: #a8621a; --red: #c04742; --shadow: 0 22px 70px rgba(55,65,45,.18); --topbar: rgba(244,245,242,.86); --field: #ffffff; --menu-surface: #ffffff; }
 /* Daylight overrides the semantic tokens inherited from the OpenKiwi palette. */
 .app-shell[data-theme="daylight"] {
   --ink-2: #3c443c; --line-quiet: rgba(25,35,20,.06); --green-line: rgba(62,142,34,.3); --info: #14639f;
@@ -698,6 +699,9 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 /* Each destination is a recognisable worker: the provider's own mark on its
    own chip, with a quieter version of that hue tinting the expanded tile. */
 .sa-tile { --sa-accent: #a9b6a0; --sa-avatar-bg: #1a1d18; --sa-avatar-ink: #ffffff; position: relative; display: flex; flex-direction: column; gap: 5px; padding: 7px; border: 1px solid var(--line); border-radius: var(--r-md); background: rgba(255,255,255,.02); transition: border-color var(--t-fast) ease, background var(--t-fast) ease; }
+/* An open menu must lift its whole grid item. Otherwise later destination
+   cards paint above the menu and look as though they show through it. */
+.sa-tile:has(.app-select.open) { z-index: 20; }
 .sa-tile.openrouter { --sa-accent: #b993f5; --sa-avatar-bg: #b993f5; --sa-avatar-ink: #16111d; }
 .sa-tile.claude { --sa-accent: #dd8b6a; --sa-avatar-bg: #d97757; --sa-avatar-ink: #ffffff; }
 .sa-tile.cursor { --sa-accent: #d9d8d3; --sa-avatar-bg: #edecec; --sa-avatar-ink: #26251e; }
@@ -751,8 +755,10 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .app-select-value strong, .app-select-value small, .app-select-option-copy strong, .app-select-option-copy small { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .app-select-value strong { color: var(--ink-2); font-size: var(--fs-micro); font-weight: 560; }
 .app-select-value small { color: var(--muted-2); font-size: 8.5px; }
-.app-select-menu { position: absolute; z-index: 140; top: calc(100% + 4px); left: 0; width: max(100%, 210px); overflow: hidden; padding: 4px; border: 1px solid var(--line-strong); border-radius: var(--r-md); background: var(--panel-2); box-shadow: var(--shadow); transform-origin: top left; animation: sa-select-pop 130ms var(--ease) both; }
-@keyframes sa-select-pop { from { opacity: 0; transform: translateY(-3px) scale(.985); } to { opacity: 1; transform: none; } }
+.app-select-menu { position: absolute; z-index: 140; top: calc(100% + 4px); left: 0; width: max(100%, 210px); overflow: hidden; padding: 4px; border: 1px solid var(--line-strong); border-radius: var(--r-md); background: var(--menu-surface); box-shadow: var(--shadow); transform-origin: top left; animation: sa-select-pop 130ms var(--ease) both; }
+/* Animate geometry only: fading the entire element also fades its supposedly
+   opaque surface and exposes controls behind it during the transition. */
+@keyframes sa-select-pop { from { transform: translateY(-3px) scale(.985); } to { transform: none; } }
 .app-select-search { height: 31px; display: grid; grid-template-columns: 15px minmax(0, 1fr); align-items: center; gap: 5px; margin-bottom: 4px; padding: 0 7px; border: 1px solid var(--line); border-radius: var(--r-xs); color: var(--muted-2); background: rgba(0,0,0,.16); }
 .app-select-search input { min-width: 0; height: 100%; padding: 0; border: 0; outline: 0; color: var(--text); background: transparent; font-size: var(--fs-micro); }
 .app-select-search input::placeholder { color: var(--muted-2); }
