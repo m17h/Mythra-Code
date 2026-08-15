@@ -66,6 +66,8 @@ use persistence::{
     state_write, StateDb,
 };
 use process_launch::{background_command, background_std_command};
+#[cfg(windows)]
+use process_launch::interactive_command;
 #[cfg(test)]
 use project_git::*;
 use project_git::{
@@ -827,6 +829,7 @@ wire_api = "responses"
     Ok(())
 }
 
+#[cfg(not(windows))]
 fn find_on_path(program: &str) -> Option<PathBuf> {
     env::var_os("PATH").and_then(|path| {
         env::split_paths(&path)
@@ -835,9 +838,73 @@ fn find_on_path(program: &str) -> Option<PathBuf> {
     })
 }
 
+/// Windows command discovery must honor registered app execution aliases.
+/// Looking only for `PATH\\program.exe` misses packaged apps, while `where.exe`
+/// uses the same resolution rules as a Windows terminal. Provider-specific npm
+/// shims are resolved to their native binaries separately so user prompt text
+/// never has to pass through `cmd.exe` parsing.
+#[cfg(windows)]
+fn find_on_path(program: &str) -> Option<PathBuf> {
+    let output = background_std_command("where.exe")
+        .arg(program)
+        .output()
+        .ok()?;
+    output.status.success().then_some(())?;
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(PathBuf::from)
+        .find(|candidate| candidate.is_file())
+}
+
 fn push_candidate(candidates: &mut Vec<PathBuf>, candidate: PathBuf) {
     if !candidates.contains(&candidate) {
         candidates.push(candidate);
+    }
+}
+
+#[cfg(windows)]
+fn push_windows_npm_codex_candidates(candidates: &mut Vec<PathBuf>) {
+    let Some(app_data) = env::var_os("APPDATA").map(PathBuf::from) else {
+        return;
+    };
+    let package = app_data.join("npm/node_modules/@openai/codex");
+    for (platform_package, target) in [
+        ("codex-win32-x64", "x86_64-pc-windows-msvc"),
+        ("codex-win32-arm64", "aarch64-pc-windows-msvc"),
+    ] {
+        push_candidate(
+            candidates,
+            package
+                .join("node_modules/@openai")
+                .join(platform_package)
+                .join("vendor")
+                .join(target)
+                .join("codex/codex.exe"),
+        );
+        push_candidate(
+            candidates,
+            package.join("vendor").join(target).join("codex/codex.exe"),
+        );
+    }
+}
+
+#[cfg(windows)]
+fn push_windows_npm_claude_candidates(candidates: &mut Vec<PathBuf>) {
+    let Some(app_data) = env::var_os("APPDATA").map(PathBuf::from) else {
+        return;
+    };
+    let package = app_data.join("npm/node_modules/@anthropic-ai/claude-code");
+    push_candidate(candidates, package.join("bin/claude.exe"));
+    for platform_package in ["claude-code-win32-x64", "claude-code-win32-arm64"] {
+        push_candidate(
+            candidates,
+            package
+                .join("node_modules/@anthropic-ai")
+                .join(platform_package)
+                .join("claude.exe"),
+        );
     }
 }
 
@@ -880,6 +947,9 @@ async fn resolve_codex_binary(app: &AppHandle) -> Result<PathBuf, String> {
         });
     }
 
+    #[cfg(windows)]
+    push_windows_npm_codex_candidates(&mut candidates);
+
     if let Some(candidate) = find_on_path(executable_name) {
         push_candidate(&mut candidates, candidate);
     }
@@ -902,7 +972,9 @@ async fn resolve_codex_binary(app: &AppHandle) -> Result<PathBuf, String> {
         );
         for relative in [
             ".local/bin/codex",
+            ".local/bin/codex.exe",
             ".cargo/bin/codex",
+            ".cargo/bin/codex.exe",
             ".npm-global/bin/codex",
             ".bun/bin/codex",
             ".volta/bin/codex",
@@ -911,6 +983,16 @@ async fn resolve_codex_binary(app: &AppHandle) -> Result<PathBuf, String> {
         }
     }
 
+    #[cfg(windows)]
+    for candidate in candidates.into_iter().filter(|candidate| candidate.is_file()) {
+        // `where.exe` can expose protected WindowsApps resource paths that
+        // exist but cannot be launched directly. Accept only a runtime that
+        // successfully executes, then the later app-server spawn is reliable.
+        if runtime_version(&candidate).await.is_some() {
+            return Ok(candidate);
+        }
+    }
+    #[cfg(not(windows))]
     if let Some(candidate) = candidates.into_iter().find(|candidate| candidate.is_file()) {
         return Ok(candidate);
     }
@@ -984,13 +1066,13 @@ async fn codex_runtime_status(app: AppHandle) -> CodexRuntimeStatus {
                 compatible,
             }
         }
-        Err(_) => CodexRuntimeStatus {
+        Err(error) => CodexRuntimeStatus {
             available: false,
             source: None,
             path: None,
             version: None,
             compatible: false,
-            warning: None,
+            warning: Some(error),
         },
     }
 }
@@ -1009,6 +1091,8 @@ async fn resolve_claude_binary(app: &AppHandle) -> Result<PathBuf, String> {
     }
 
     let mut candidates = Vec::new();
+    #[cfg(windows)]
+    push_windows_npm_claude_candidates(&mut candidates);
     if let Some(candidate) = find_on_path(executable_name) {
         push_candidate(&mut candidates, candidate);
     }
@@ -1020,6 +1104,7 @@ async fn resolve_claude_binary(app: &AppHandle) -> Result<PathBuf, String> {
     if let Ok(home) = app.path().home_dir() {
         for relative in [
             ".local/bin/claude",
+            ".local/bin/claude.exe",
             ".npm-global/bin/claude",
             ".bun/bin/claude",
             ".volta/bin/claude",
@@ -1027,6 +1112,13 @@ async fn resolve_claude_binary(app: &AppHandle) -> Result<PathBuf, String> {
             push_candidate(&mut candidates, home.join(relative));
         }
     }
+    #[cfg(windows)]
+    for candidate in candidates.into_iter().filter(|candidate| candidate.is_file()) {
+        if runtime_version(&candidate).await.is_some() {
+            return Ok(candidate);
+        }
+    }
+    #[cfg(not(windows))]
     if let Some(candidate) = candidates.into_iter().find(|candidate| candidate.is_file()) {
         return Ok(candidate);
     }
@@ -1037,8 +1129,7 @@ async fn resolve_claude_binary(app: &AppHandle) -> Result<PathBuf, String> {
     Err("OpenKiwi could not find Claude Code. Install Claude Code, sign in with `claude auth login`, then try again. Advanced users can set OPENKIWI_CLAUDE_PATH.".into())
 }
 
-fn subscription_only_command(path: &Path) -> Command {
-    let mut command = background_command(path);
+fn configure_claude_subscription(command: &mut Command) {
     command
         .env_remove("ANTHROPIC_API_KEY")
         .env_remove("ANTHROPIC_AUTH_TOKEN")
@@ -1063,6 +1154,11 @@ fn subscription_only_command(path: &Path) -> Command {
         .env_remove("VERTEX_REGION_CLAUDE_3_5_SONNET")
         .env("COLUMNS", "1000")
         .env("NO_COLOR", "1");
+}
+
+fn subscription_only_command(path: &Path) -> Command {
+    let mut command = background_command(path);
+    configure_claude_subscription(&mut command);
     command
 }
 
@@ -1094,17 +1190,20 @@ fn parse_claude_auth_status(stdout: &[u8]) -> Option<Value> {
 async fn read_claude_runtime_status(app: &AppHandle) -> ClaudeRuntimeStatus {
     let warning = claude_credential_override_present()
     .then(|| "OpenKiwi ignores Anthropic credential, proxy, and hosted-provider environment overrides for Claude subscription sessions, so this provider uses only your Claude Code login.".to_string());
-    let Ok(path) = resolve_claude_binary(app).await else {
-        return ClaudeRuntimeStatus {
-            available: false,
-            path: None,
-            version: None,
-            logged_in: false,
-            auth_method: None,
-            email: None,
-            subscription_type: None,
-            warning,
-        };
+    let path = match resolve_claude_binary(app).await {
+        Ok(path) => path,
+        Err(error) => {
+            return ClaudeRuntimeStatus {
+                available: false,
+                path: None,
+                version: None,
+                logged_in: false,
+                auth_method: None,
+                email: None,
+                subscription_type: None,
+                warning: Some(error),
+            };
+        }
     };
 
     let version = runtime_version(&path).await;
@@ -1189,7 +1288,24 @@ async fn claude_login(app: AppHandle) -> Result<(), String> {
                 .into()
         })
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        let mut command = interactive_command(&path);
+        configure_claude_subscription(&mut command);
+        command
+            .args(["auth", "login"])
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| {
+                format!(
+                    "Could not open Claude Code sign-in in a Windows terminal: {error}. Run `claude auth login` yourself, then refresh Claude status."
+                )
+            })
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = path;
         Err("Run `claude auth login` in a terminal, then refresh Claude status in OpenKiwi.".into())

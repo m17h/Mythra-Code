@@ -1,7 +1,7 @@
 {
   "name": "openkiwi",
   "private": true,
-  "version": "1.6.3",
+  "version": "1.6.4",
   "type": "module",
   "engines": {
     "node": ">=20.19.0"
@@ -12,7 +12,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "desktop": "tauri dev --config src-tauri/tauri.dev.conf.json",
-    "desktop:build": "tauri build --bundles app --config src-tauri/tauri.local.conf.json",
+    "desktop:build": "tauri build --no-bundle --config src-tauri/tauri.local.conf.json",
     "version:bump": "node scripts/bump-version.mjs",
     "release:build": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File Windows/build.ps1",
     "release:windows": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File Windows/build.ps1",
@@ -21,9 +21,10 @@
     "test": "vitest",
     "test:run": "vitest run",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "verify:windows-repo": "node scripts/verify-windows-repository.mjs",
     "lint": "eslint src --max-warnings 0",
     "lint:rust": "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings",
-    "verify": "npm run lint && npm run lint:rust && npm run check && npm run test:run && npm run test:rust && npm run build"
+    "verify": "npm run verify:windows-repo && npm run lint && npm run lint:rust && npm run check && npm run test:run && npm run test:rust && npm run build"
   },
   "dependencies": {
     "@tauri-apps/api": "2.11.1",

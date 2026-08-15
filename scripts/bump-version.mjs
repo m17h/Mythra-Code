@@ -51,7 +51,7 @@ function rewriteVersion(path, pattern) {
 }
 
 rewriteVersion(cargoManifestPath, /(^\[package\][\s\S]*?^version\s*=\s*")[^"]+("$)/m);
-rewriteVersion(cargoLockPath, /(\[\[package\]\]\nname = "openkiwi"\nversion = ")[^"]+("\n)/);
+rewriteVersion(cargoLockPath, /(\[\[package\]\]\r?\nname = "openkiwi"\r?\nversion = ")[^"]+("\r?\n)/);
 
 console.log(`OpenKiwi ${current} → ${version}`);
 console.log("Updated package.json, package-lock.json, tauri.conf.json, Cargo.toml, and Cargo.lock.");
