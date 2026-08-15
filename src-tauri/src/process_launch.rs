@@ -4,6 +4,8 @@ use tokio::process::Command;
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+#[cfg(windows)]
+const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
 
 /// Build an asynchronous child-process command that cannot create a console
 /// window on Windows. OpenKiwi is a GUI application, but most of the tools it
@@ -21,6 +23,17 @@ pub(crate) fn background_command(program: impl AsRef<OsStr>) -> Command {
     {
         Command::new(program)
     }
+}
+
+/// Build a command for an interactive provider login. Windows GUI processes
+/// do not own a console, so an OAuth-capable CLI needs a new visible console
+/// for prompts and browser-flow diagnostics. Other platforms keep their
+/// existing terminal-specific login launchers.
+#[cfg(windows)]
+pub(crate) fn interactive_command(program: impl AsRef<OsStr>) -> Command {
+    let mut command = Command::new(program);
+    command.creation_flags(CREATE_NEW_CONSOLE);
+    command
 }
 
 /// Synchronous counterpart to [`background_command`] for Git and process-tree

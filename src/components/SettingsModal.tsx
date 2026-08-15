@@ -682,7 +682,7 @@ export function SettingsModal({
               <div className="credential-panel">
                 <div>
                   <strong>{account?.type === "chatgpt" ? account.email || "ChatGPT account" : "ChatGPT subscription"}</strong>
-                  <small>{account?.type === "chatgpt" ? `${account.planType ?? "ChatGPT"} plan connected` : runtimeStatus?.available ? `Official browser sign-in · ${runtimeStatus.source} detected` : "Codex CLI or ChatGPT for macOS required"}</small>
+                  <small>{account?.type === "chatgpt" ? `${account.planType ?? "ChatGPT"} plan connected` : runtimeStatus?.available ? `Official browser sign-in · ${runtimeStatus.source} detected` : "Codex CLI for Windows required"}</small>
                 </div>
                 {account?.type === "chatgpt" ? (
                   <button className="secondary-button" onClick={() => void signOut()} disabled={busy}>Sign out</button>
@@ -709,7 +709,7 @@ export function SettingsModal({
                   <strong>{claudeStatus?.loggedIn ? claudeStatus.email || "Claude subscription" : "Claude Code subscription"}</strong>
                   <small>{claudeStatus?.loggedIn
                     ? `${claudeStatus.subscriptionType || claudeStatus.authMethod || "Claude"} plan connected · ${claudeStatus.version || "Claude Code"}`
-                    : claudeStatus?.available ? "Claude Code detected · sign in to continue" : "Claude Code must be installed first"}</small>
+                    : claudeStatus?.warning || (claudeStatus?.available ? "Claude Code detected · sign in to continue" : "Claude Code must be installed first")}</small>
                 </div>
                 {claudeStatus?.loggedIn ? (
                   <span className="connected-badge"><Check size={12} /> Connected</span>
@@ -728,7 +728,7 @@ export function SettingsModal({
                   <strong>{cursorStatus?.loggedIn ? cursorStatus.email || "Cursor subscription" : "Cursor Agent subscription"}</strong>
                   <small>{cursorStatus?.loggedIn
                     ? `${cursorStatus.subscriptionType || "Cursor"} plan connected · ${cursorStatus.version || "Cursor Agent"}`
-                    : cursorStatus?.available ? "Cursor Agent detected · sign in to continue" : "Cursor Agent must be installed first"}</small>
+                    : cursorStatus?.warning || (cursorStatus?.available ? "Cursor Agent detected · sign in to continue" : "Cursor Agent must be installed in WSL first")}</small>
                 </div>
                 {cursorStatus?.loggedIn ? (
                   <span className="connected-badge"><Check size={12} /> Connected</span>

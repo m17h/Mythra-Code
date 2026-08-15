@@ -1,5 +1,4 @@
 import { Check, Download, ExternalLink, KeyRound, LoaderCircle, RotateCcw, ShieldCheck, TerminalSquare, X } from "lucide-react";
-import { OpenAILogo } from "./BrandLogos";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
 export function RuntimeSetupModal({
@@ -21,16 +20,12 @@ export function RuntimeSetupModal({
         <div className="runtime-setup-copy">
           <span className="runtime-eyebrow">One-time setup</span>
           <h2 id="runtime-setup-title">Connect the Codex runtime</h2>
-          <p>OpenKiwi uses Codex App Server locally for ChatGPT subscription sign-in, OpenRouter, tools, approvals, and threads. Install either option below—never both.</p>
+          <p>OpenKiwi uses Codex App Server locally for ChatGPT subscription sign-in, OpenRouter, tools, approvals, and threads. Install Codex CLI for Windows to continue.</p>
         </div>
         <div className="runtime-options">
           <div className="runtime-option recommended">
             <span className="runtime-option-icon"><Download size={17} /></span>
             <div><strong>Codex CLI <em>Recommended</em></strong><small>The dependable cross-platform option and easiest runtime to keep current.</small></div>
-          </div>
-          <div className="runtime-option">
-            <span className="runtime-option-icon chatgpt"><OpenAILogo size={17} /></span>
-            <div><strong>ChatGPT for macOS</strong><small>Already includes a usable Codex runtime. OpenKiwi detects it automatically.</small></div>
           </div>
         </div>
         <div className="runtime-note"><Check size={13} /> Your ChatGPT login still happens in the official browser flow and remains isolated to OpenKiwi.</div>
