@@ -1087,6 +1087,6 @@ function UpdateSettings({ appUpdater }: { appUpdater: AppUpdater }) {
         )}
       </div>
     </div>
-    <div className="update-trust-row"><ShieldCheck size={14} /><span><strong>Verified release channel</strong><small>Manifest and packages come from github.com/m17h/OpenKiwi and must match OpenKiwi’s embedded updater key.</small></span></div>
+    <div className="update-trust-row"><ShieldCheck size={14} /><span><strong>Verified release channel</strong><small>Manifest and packages come from github.com/m17h/OpenKiwi-Windows and must match OpenKiwi’s embedded updater key.</small></span></div>
   </section>;
 }

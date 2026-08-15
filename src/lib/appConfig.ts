@@ -11,7 +11,7 @@ export const DEFAULT_CHILD_AGENT_SETTINGS: ChildAgentSettings = { enabled: false
 export const DEFAULT_OPENAI_MODEL = "gpt-5.6-sol";
 export const DEFAULT_CLAUDE_MODEL = "claude-fable-5";
 export const DEFAULT_CURSOR_MODEL = "auto";
-export const RELEASE_NOTES_URL = "https://github.com/m17h/OpenKiwi/releases/latest";
+export const RELEASE_NOTES_URL = "https://github.com/m17h/OpenKiwi-Windows/releases/latest";
 
 export const THEMES: Array<{ id: ThemeName; name: string; description: string; swatches: [string, string, string] }> = [
   { id: "kiwi", name: "OpenKiwi", description: "Deep graphite with electric green", swatches: ["#1e2024", "#292d32", "#a7e26f"] },

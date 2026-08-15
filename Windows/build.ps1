@@ -16,7 +16,8 @@ $packagePath = Join-Path $repoRoot "package.json"
 $tauriConfigPath = Join-Path $repoRoot "src-tauri\tauri.conf.json"
 $bundleDirectory = Join-Path $repoRoot "src-tauri\target\release\bundle\nsis"
 $binaryPath = Join-Path $repoRoot "src-tauri\target\release\openkiwi.exe"
-$outputDirectory = Join-Path $PSScriptRoot "latest"
+$outputDirectory = Join-Path $repoRoot "RELEASE ASSETS"
+$releaseRepository = "m17h/OpenKiwi-Windows"
 $signingConfigPath = Join-Path $env:TEMP "OpenKiwi-tauri-windows-signing-$PID.json"
 Set-Location -LiteralPath $repoRoot
 
@@ -38,6 +39,21 @@ if (-not [Environment]::Is64BitOperatingSystem) {
 if (-not (Test-Path $packagePath) -or -not (Test-Path $tauriConfigPath)) {
   throw "Run Windows/build.ps1 from an OpenKiwi checkout."
 }
+
+# Clear the previous release before starting. This prevents a failed build from
+# leaving stale artifacts that could be mistaken for the current release.
+if (-not (Test-Path -LiteralPath $outputDirectory)) {
+  New-Item -ItemType Directory -Path $outputDirectory | Out-Null
+}
+$resolvedRepoRoot = [System.IO.Path]::GetFullPath($repoRoot).TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
+$resolvedOutputDirectory = [System.IO.Path]::GetFullPath($outputDirectory).TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
+if (-not $resolvedOutputDirectory.StartsWith($resolvedRepoRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+  throw "Refusing to clear release assets outside the repository: $resolvedOutputDirectory"
+}
+Get-ChildItem -LiteralPath $outputDirectory -Force |
+  Where-Object { $_.Name -ne "README.md" } |
+  Remove-Item -Recurse -Force
+
 if (-not $env:TAURI_SIGNING_PRIVATE_KEY) {
   throw "TAURI_SIGNING_PRIVATE_KEY is required to sign the Windows updater artifact."
 }
@@ -180,10 +196,6 @@ if (-not $SkipLaunchSmoke) {
   }
 }
 
-if (Test-Path $outputDirectory) {
-  Remove-Item -LiteralPath $outputDirectory -Recurse -Force
-}
-New-Item -ItemType Directory -Path $outputDirectory | Out-Null
 Copy-Item -LiteralPath $installerPath -Destination (Join-Path $outputDirectory $installerName)
 Copy-Item -LiteralPath $signaturePath -Destination (Join-Path $outputDirectory "$installerName.sig")
 
@@ -203,6 +215,20 @@ $buildInfo = [ordered]@{
 }
 $utf8WithoutBom = [System.Text.UTF8Encoding]::new($false)
 [System.IO.File]::WriteAllText((Join-Path $outputDirectory "build-info.json"), ($buildInfo | ConvertTo-Json), $utf8WithoutBom)
+
+$updaterSignature = (Get-Content -LiteralPath $signaturePath -Raw).Trim()
+$releaseManifest = [ordered]@{
+  version = $version
+  notes = "OpenKiwi for Windows $version"
+  pub_date = [DateTime]::UtcNow.ToString("o")
+  platforms = [ordered]@{
+    "windows-x86_64" = [ordered]@{
+      signature = $updaterSignature
+      url = "https://github.com/$releaseRepository/releases/download/v$version/$installerName"
+    }
+  }
+}
+[System.IO.File]::WriteAllText((Join-Path $outputDirectory "latest.json"), ($releaseManifest | ConvertTo-Json -Depth 5), $utf8WithoutBom)
 
 Write-Output "Prepared OpenKiwi $version Windows release assets in $outputDirectory"
 Get-ChildItem -LiteralPath $outputDirectory | Sort-Object Name | ForEach-Object { Write-Output "- $($_.Name)" }

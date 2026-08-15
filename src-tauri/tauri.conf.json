@@ -23,7 +23,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost https://raw.githubusercontent.com/m17h/OpenKiwi/; img-src 'self' asset: http://asset.localhost data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'"
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost https://raw.githubusercontent.com/m17h/OpenKiwi-Windows/; img-src 'self' asset: http://asset.localhost data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'"
     }
   },
   "bundle": {
@@ -46,7 +46,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEREMjg0NDc1QTlCN0Q0OEYKUldTUDFMZXBkVVFvM1NHa21BajdjbXN5ZStISEhIeWlEbW00NDN2VHZCWmZjc3FpTmNwWG81UHQK",
       "endpoints": [
-        "https://github.com/m17h/OpenKiwi/releases/latest/download/latest.json"
+        "https://github.com/m17h/OpenKiwi-Windows/releases/latest/download/latest.json"
       ]
     }
   }

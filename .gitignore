@@ -1,8 +1,8 @@
 node_modules/
 dist/
 src-tauri/target/
-/release-assets/
-/Windows/latest/
+/RELEASE ASSETS/*
+!/RELEASE ASSETS/README.md
 .DS_Store
 *.log
 .env

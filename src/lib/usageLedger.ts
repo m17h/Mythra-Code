@@ -4,7 +4,7 @@ import { loadStored, storeValue } from "./storage";
 
 export const USAGE_LEDGER_KEY = "kiwi.usageLedger";
 export const MODEL_PRICING_CATALOG_KEY = "kiwi.modelPricingCatalog";
-export const MODEL_PRICING_CATALOG_URL = "https://raw.githubusercontent.com/m17h/OpenKiwi/main/model-pricing.json";
+export const MODEL_PRICING_CATALOG_URL = "https://raw.githubusercontent.com/m17h/OpenKiwi-Windows/main/model-pricing.json";
 const MAX_EVENT_IDS = 100;
 const PERSIST_DELAY_MS = 180;
 const PRICING_REFRESH_TIMEOUT_MS = 8_000;

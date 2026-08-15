@@ -194,28 +194,28 @@ The small [`model-pricing.json`](model-pricing.json) catalog is fetched once on 
 
 ## In-app updates and releases
 
-OpenKiwi checks the public [`m17h/OpenKiwi` GitHub Releases](https://github.com/m17h/OpenKiwi/releases) channel shortly after launch. **Settings → Updates** also provides a manual check. When a newer signed version exists, the user can review its notes, download it with progress feedback, install it, and restart into the new version without leaving the app.
+OpenKiwi for Windows checks the public [`m17h/OpenKiwi-Windows` GitHub Releases](https://github.com/m17h/OpenKiwi-Windows/releases) channel shortly after launch. **Settings → Updates** also provides a manual check. When a newer signed version exists, the user can review its notes, download it with progress feedback, install it, and restart into the new version without leaving the app.
 
 Both `latest.json` and the platform update bundle are hosted as GitHub Release assets. The app embeds only the updater public key and rejects artifacts that do not carry a valid matching signature. The private updater key is not part of this repository.
 
-Publisher workflow:
+Windows publisher workflow:
 
-```bash
+```powershell
 # Keep all version declarations synchronized (patch, minor, major, or exact version)
 npm run version:bump -- patch
 
-# With Apple notarization variables available, build and stage the latest assets
+# Build, validate, sign, and stage the Windows assets in RELEASE ASSETS/
 npm run release:build
 
-# Publish release-assets/latest as the public GitHub Release
+# After pushing the commit and passing Windows CI, publish to OpenKiwi-Windows
 npm run release:publish
 ```
 
-`release-assets/` is intentionally ignored by Git. It holds only the current local staging payload and optional `release-notes.md`. On Morgan's release Mac, the encrypted updater key lives at `~/.tauri/openkiwi-updater.key` and its password lives in macOS Keychain. Back up that key securely: installed copies cannot trust future updates if it is lost.
+`RELEASE ASSETS/` holds only the current local Windows staging payload. Every new release build removes the previous generated assets before it begins. The private updater key is not part of this repository. Back it up securely: installed copies cannot trust future updates if it is lost.
 
 ## Verification and release notes
 
-`npm run verify` runs ESLint, strict Clippy, TypeScript and Rust checks, unit/integration component tests, and the production web build. `npm run desktop:build` produces only the local `.app` without updater artifacts; it never invokes Tauri's DMG bundler. `npm run release:build` requires publisher-owned signing/notarization credentials, builds the signed update payload, and creates the DMG exclusively through the standalone `create-dmg` command. OpenKiwi does not embed those credentials or bundle Codex.
+`npm run verify` runs ESLint, strict Clippy, TypeScript and Rust checks, unit/integration component tests, and the production web build. `npm run desktop:build` produces a local contributor build without updater artifacts. `npm run release:build` requires the publisher-owned updater signing key and validates the x64 NSIS installer, updater signature, Authenticode status, version, provenance, and launch behavior. OpenKiwi does not embed signing credentials or bundle Codex.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the component and state model.
 

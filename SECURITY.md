@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Only the latest released version of OpenKiwi receives security fixes. The in-app updater (Settings → Updates) delivers them; releases are published at <https://github.com/m17h/OpenKiwi/releases>.
+Only the latest released version of OpenKiwi for Windows receives security fixes. The in-app updater (Settings → Updates) delivers them; Windows releases are published at <https://github.com/m17h/OpenKiwi-Windows/releases>.
 
 ## Reporting a vulnerability
 
