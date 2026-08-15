@@ -56,8 +56,8 @@ While editing:
 
 - Add or update focused tests for behavioral changes.
 - Keep secrets out of files, logs, commits, fixtures, and command output.
-- Do not weaken updater-signing, Authenticode, provenance, hash, CI, or launch
-  checks to make a build pass.
+- Do not weaken updater-signing, provenance, hash, CI, or launch checks to make
+  a build pass. Windows installers are intentionally not Authenticode-signed.
 - Do not commit generated files from `RELEASE ASSETS/`, `dist/`, or
   `src-tauri/target/`.
 
@@ -76,7 +76,7 @@ After editing:
   installed application directory.
 - Test local builds by launching them from the repository build output only.
 - Validate installation and upgrades through the same published installer or
-  signed in-app updater flow that normal Windows users receive.
+  updater-signed in-app flow that normal Windows users receive.
 
 Documentation-only changes do not require the full build suite, but still need
 diff review and link/command verification.
@@ -104,10 +104,10 @@ release files:
 staging and must not be committed.
 
 Use `npm run release:build` to run the Windows verification and release build.
-It requires the Tauri updater signing credentials and the approved
-Authenticode policy. Use `npm run release:publish` only after the exact build
-commit is pushed and Windows CI passes. Never bypass its commit, signature,
-hash, provenance, repository-target, or CI checks.
+It requires the Windows-only Tauri updater signing credentials and produces an
+intentionally unsigned Windows installer. Use `npm run release:publish` only
+after the exact build commit is pushed and Windows CI passes. Never bypass its
+commit, updater-signature, hash, provenance, repository-target, or CI checks.
 
 ## Git discipline
 

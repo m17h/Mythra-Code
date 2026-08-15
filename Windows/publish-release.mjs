@@ -66,8 +66,8 @@ if (!updaterSignature || platformEntry?.signature !== updaterSignature || platfo
 if (buildInfo.sha256 !== installerDigest) {
   throw new Error(`Installer SHA-256 mismatch: build-info=${buildInfo.sha256}, actual=${installerDigest}`);
 }
-if (buildInfo.authenticodeStatus !== "Valid" && process.env.OPENKIWI_ALLOW_UNSIGNED_WINDOWS !== "1") {
-  throw new Error(`Installer Authenticode status is ${buildInfo.authenticodeStatus}. Set OPENKIWI_ALLOW_UNSIGNED_WINDOWS=1 only for an explicitly approved unsigned release.`);
+if (buildInfo.authenticodeStatus !== "NotSigned") {
+  throw new Error(`OpenKiwi Windows installers must be intentionally unsigned; found Authenticode status ${buildInfo.authenticodeStatus}.`);
 }
 
 checked("gh", ["auth", "status"], "GitHub authentication check");

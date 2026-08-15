@@ -2,7 +2,6 @@
 param(
   [string]$ExpectedCommit = "",
   [switch]$AllowDirty,
-  [switch]$AllowUnsigned,
   [switch]$SkipInstall,
   [switch]$SkipVerify,
   [switch]$SkipLaunchSmoke
@@ -18,7 +17,8 @@ $bundleDirectory = Join-Path $repoRoot "src-tauri\target\release\bundle\nsis"
 $binaryPath = Join-Path $repoRoot "src-tauri\target\release\openkiwi.exe"
 $outputDirectory = Join-Path $repoRoot "RELEASE ASSETS"
 $releaseRepository = "m17h/OpenKiwi-Windows"
-$signingConfigPath = Join-Path $env:TEMP "OpenKiwi-tauri-windows-signing-$PID.json"
+$defaultUpdaterKeyPath = Join-Path $env:USERPROFILE ".tauri\openkiwi-windows-updater.key"
+$defaultUpdaterPasswordPath = Join-Path $env:USERPROFILE ".tauri\openkiwi-windows-updater-password.xml"
 Set-Location -LiteralPath $repoRoot
 
 function Invoke-Checked {
@@ -54,11 +54,23 @@ Get-ChildItem -LiteralPath $outputDirectory -Force |
   Where-Object { $_.Name -ne "README.md" } |
   Remove-Item -Recurse -Force
 
+if (-not $env:TAURI_SIGNING_PRIVATE_KEY -and (Test-Path -LiteralPath $defaultUpdaterKeyPath -PathType Leaf)) {
+  $env:TAURI_SIGNING_PRIVATE_KEY = $defaultUpdaterKeyPath
+}
+if (-not $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD -and (Test-Path -LiteralPath $defaultUpdaterPasswordPath -PathType Leaf)) {
+  $secureUpdaterPassword = Import-Clixml -LiteralPath $defaultUpdaterPasswordPath
+  $passwordPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureUpdaterPassword)
+  try {
+    $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($passwordPointer)
+  } finally {
+    [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($passwordPointer)
+  }
+}
 if (-not $env:TAURI_SIGNING_PRIVATE_KEY) {
-  throw "TAURI_SIGNING_PRIVATE_KEY is required to sign the Windows updater artifact."
+  throw "The Windows updater key is unavailable. Expected secure key storage at $defaultUpdaterKeyPath or TAURI_SIGNING_PRIVATE_KEY."
 }
 if (-not $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD) {
-  throw "TAURI_SIGNING_PRIVATE_KEY_PASSWORD is required to sign the Windows updater artifact."
+  throw "The Windows updater key password is unavailable. Expected the DPAPI vault at $defaultUpdaterPasswordPath or TAURI_SIGNING_PRIVATE_KEY_PASSWORD."
 }
 
 $package = Get-Content -LiteralPath $packagePath -Raw | ConvertFrom-Json
@@ -97,52 +109,12 @@ if (-not $SkipVerify) {
   Invoke-Checked -Command $npm -Arguments @("run", "verify")
 }
 
-$certificateThumbprint = [string]$env:OPENKIWI_WINDOWS_CERTIFICATE_THUMBPRINT
-if (-not $certificateThumbprint) {
-  $availableCertificates = @(
-    Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert -ErrorAction SilentlyContinue |
-      Where-Object { $_.HasPrivateKey -and $_.NotAfter -gt [DateTime]::Now }
-  )
-  if ($availableCertificates.Count -eq 1) {
-    $certificateThumbprint = [string]$availableCertificates[0].Thumbprint
-  } elseif ($availableCertificates.Count -gt 1) {
-    throw "Multiple valid code-signing certificates are installed. Set OPENKIWI_WINDOWS_CERTIFICATE_THUMBPRINT to select one."
-  }
-}
-if (-not $certificateThumbprint -and -not $AllowUnsigned) {
-  throw "No trusted Authenticode code-signing certificate is available. Install one or rerun only with an explicitly approved -AllowUnsigned override."
-}
-
 $tauriArguments = @("tauri", "build", "--bundles", "nsis")
-if ($certificateThumbprint) {
-  $certificate = Get-ChildItem "Cert:\CurrentUser\My\$certificateThumbprint" -ErrorAction SilentlyContinue
-  if (-not $certificate -or -not $certificate.HasPrivateKey -or $certificate.NotAfter -le [DateTime]::Now) {
-    throw "The selected Authenticode certificate is missing, expired, or lacks its private key."
-  }
-  $signingConfig = [ordered]@{
-    bundle = [ordered]@{
-      windows = [ordered]@{
-        certificateThumbprint = $certificateThumbprint
-        digestAlgorithm = "sha256"
-        timestampUrl = if ($env:OPENKIWI_WINDOWS_TIMESTAMP_URL) { $env:OPENKIWI_WINDOWS_TIMESTAMP_URL } else { "http://timestamp.digicert.com" }
-      }
-    }
-  }
-  $utf8WithoutBom = [System.Text.UTF8Encoding]::new($false)
-  [System.IO.File]::WriteAllText($signingConfigPath, ($signingConfig | ConvertTo-Json -Depth 4), $utf8WithoutBom)
-  $tauriArguments += @("--config", $signingConfigPath)
-}
 
 if (Test-Path $bundleDirectory) {
   Remove-Item -LiteralPath $bundleDirectory -Recurse -Force
 }
-try {
-  Invoke-Checked -Command $npx -Arguments $tauriArguments
-} finally {
-  if (Test-Path -LiteralPath $signingConfigPath) {
-    Remove-Item -LiteralPath $signingConfigPath -Force
-  }
-}
+Invoke-Checked -Command $npx -Arguments $tauriArguments
 
 $installerName = "OpenKiwi_${version}_x64-setup.exe"
 $installerPath = Join-Path $bundleDirectory $installerName
@@ -177,8 +149,8 @@ if ([string]$versionInfo.ProductVersion -ne $version -or [string]$versionInfo.Fi
 
 $authenticode = Get-AuthenticodeSignature -LiteralPath $installerPath
 $authenticodeStatus = [string]$authenticode.Status
-if ($authenticodeStatus -ne "Valid" -and -not $AllowUnsigned) {
-  throw "The Windows installer is not Authenticode-signed (status: $authenticodeStatus). Install a trusted code-signing certificate or rerun only with an explicitly approved -AllowUnsigned override."
+if ($authenticodeStatus -ne "NotSigned") {
+  throw "OpenKiwi Windows installers are intentionally unsigned, but Authenticode reported status: $authenticodeStatus."
 }
 
 if (-not $SkipLaunchSmoke) {
@@ -232,6 +204,4 @@ $releaseManifest = [ordered]@{
 
 Write-Output "Prepared OpenKiwi $version Windows release assets in $outputDirectory"
 Get-ChildItem -LiteralPath $outputDirectory | Sort-Object Name | ForEach-Object { Write-Output "- $($_.Name)" }
-if ($authenticodeStatus -ne "Valid") {
-  Write-Warning "The installer is updater-signed but not Authenticode-signed. Windows SmartScreen may show Unknown publisher."
-}
+Write-Warning "The installer is updater-signed but intentionally not Authenticode-signed. Windows SmartScreen may show Unknown publisher."

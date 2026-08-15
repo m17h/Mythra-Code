@@ -10,13 +10,15 @@ MacBook in its own repository.
 Run PowerShell from a clean checkout:
 
 ```powershell
-$env:TAURI_SIGNING_PRIVATE_KEY = "path or content of the updater private key"
-$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = "password from secure storage"
 npm run release:windows
 ```
 
-You can also invoke `./Windows/build.ps1` directly. Use `-AllowUnsigned` only
-when the release has explicitly approved an unsigned Windows installer.
+You can also invoke `./Windows/build.ps1` directly. On the publisher's Windows
+account, the encrypted updater key defaults to
+`~/.tauri/openkiwi-windows-updater.key`, and its password is loaded from the
+Windows DPAPI-protected
+`~/.tauri/openkiwi-windows-updater-password.xml`. Environment variables remain
+available as an override for another secure publisher setup.
 
 At the start of every release build, the script deletes the previous generated
 files from the repository-root `RELEASE ASSETS/` directory. This happens before
@@ -25,8 +27,8 @@ look current. The tracked `RELEASE ASSETS/README.md` is preserved.
 
 The script runs the complete verification suite, builds the x64 NSIS setup
 executable, verifies that it uses the Windows GUI subsystem so no terminal
-window appears, performs a launch smoke test, validates version and signature
-metadata, and stages only the current release's:
+window appears, performs a launch smoke test, validates version and updater
+signature metadata, and stages only the current release's:
 
 - `OpenKiwi_<version>_x64-setup.exe`
 - `OpenKiwi_<version>_x64-setup.exe.sig`
@@ -41,16 +43,11 @@ publish these assets to that repository with:
 npm run release:publish
 ```
 
-## Signing
+## Signing policy
 
-Until a trusted Authenticode certificate is installed, an unsigned build
-requires the explicit `-AllowUnsigned` switch. Unsigned installers still need a
-valid Tauri updater signature, but Windows SmartScreen will identify their
-publisher as unknown. Do not remove the override requirement; install a trusted
-Authenticode certificate instead.
-
-When one valid code-signing certificate with a private key exists in
-`Cert:\CurrentUser\My`, the build selects it automatically. If more than one is
-installed, set `OPENKIWI_WINDOWS_CERTIFICATE_THUMBPRINT` to the intended
-certificate. `OPENKIWI_WINDOWS_TIMESTAMP_URL` can override the default trusted
-timestamp service.
+OpenKiwi for Windows installers are intentionally not Authenticode-signed.
+Windows SmartScreen may therefore identify the publisher as unknown. The Tauri
+updater artifact still carries a Windows-repository-specific cryptographic
+signature so installed copies can verify that an update was produced by this
+release process. This updater signature is independent of Windows publisher
+signing.

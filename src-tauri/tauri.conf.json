@@ -44,7 +44,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEREMjg0NDc1QTlCN0Q0OEYKUldTUDFMZXBkVVFvM1NHa21BajdjbXN5ZStISEhIeWlEbW00NDN2VHZCWmZjc3FpTmNwWG81UHQK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEZCQkJFRjhDNjQzNTRFNEQKUldSTlRqVmtqTys3K3lMbkdUbkM4WWgxUCtENHJMbFdRaHRMYTdaTm9oemp4T1dyQkxRZGx0WjAK",
       "endpoints": [
         "https://github.com/m17h/OpenKiwi-Windows/releases/latest/download/latest.json"
       ]

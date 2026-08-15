@@ -40,7 +40,7 @@ cargo check --manifest-path src-tauri/Cargo.toml
 npm run desktop:build
 ```
 
-`desktop:build` is the contributor/local build and deliberately skips update artifacts. Published releases use the signed release workflow described below.
+`desktop:build` is the contributor/local build and deliberately skips update artifacts. Published releases use the updater-signed release workflow described below; Windows installers themselves are intentionally not Authenticode-signed.
 
 ## Provider setup
 
@@ -218,7 +218,7 @@ npm run release:publish
 
 ## Verification and release notes
 
-`npm run verify` runs ESLint, strict Clippy, TypeScript and Rust checks, unit/integration component tests, and the production web build. `npm run desktop:build` produces a local contributor build without updater artifacts. `npm run release:build` requires the publisher-owned updater signing key and validates the x64 NSIS installer, updater signature, Authenticode status, version, provenance, and launch behavior. OpenKiwi does not embed signing credentials or bundle Codex.
+`npm run verify` runs ESLint, strict Clippy, TypeScript and Rust checks, unit/integration component tests, and the production web build. `npm run desktop:build` produces a local contributor build without updater artifacts. `npm run release:build` requires the publisher-owned Windows updater key and validates the x64 NSIS installer, updater signature, intentionally unsigned Authenticode status, version, provenance, and launch behavior. OpenKiwi does not embed signing credentials or bundle Codex.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the component and state model.
 
