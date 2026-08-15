@@ -4,7 +4,7 @@ use std::{
     ffi::OsString,
     fs,
     path::{Path, PathBuf},
-    process::{Command as StdCommand, Stdio},
+    process::Stdio,
     sync::{
         atomic::{AtomicBool, AtomicI64, Ordering},
         Arc,
@@ -34,6 +34,7 @@ mod agents;
 mod cursor;
 mod github;
 mod persistence;
+mod process_launch;
 mod project_git;
 mod skills;
 #[cfg(test)]
@@ -64,6 +65,7 @@ use persistence::{
     lock_state_db, open_state_db, shared_state_db, state_db_path, state_delete, state_read,
     state_write, StateDb,
 };
+use process_launch::{background_command, background_std_command};
 #[cfg(test)]
 use project_git::*;
 use project_git::{
@@ -123,20 +125,20 @@ struct RuntimeState {
 fn kill_process_tree(pid: u32) {
     #[cfg(unix)]
     {
-        let killed_group = StdCommand::new("kill")
+        let killed_group = background_std_command("kill")
             .args(["-9", "--", &format!("-{pid}")])
             .status()
             .map(|status| status.success())
             .unwrap_or(false);
         if !killed_group {
-            let _ = StdCommand::new("kill")
+            let _ = background_std_command("kill")
                 .args(["-9", &pid.to_string()])
                 .status();
         }
     }
     #[cfg(windows)]
     {
-        let _ = StdCommand::new("taskkill")
+        let _ = background_std_command("taskkill")
             .args(["/PID", &pid.to_string(), "/T", "/F"])
             .status();
     }
@@ -842,7 +844,7 @@ fn push_candidate(candidates: &mut Vec<PathBuf>, candidate: PathBuf) {
 #[cfg(target_os = "macos")]
 async fn find_with_login_shell(program: &str) -> Option<PathBuf> {
     let shell = env::var_os("SHELL").unwrap_or_else(|| OsString::from("/bin/zsh"));
-    let output = Command::new(shell)
+    let output = background_command(shell)
         .args(["-lc", &format!("command -v {}", program)])
         .stdin(Stdio::null())
         .stderr(Stdio::null())
@@ -935,7 +937,7 @@ fn runtime_source(path: &Path) -> &'static str {
 }
 
 async fn runtime_version(path: &Path) -> Option<String> {
-    let output = Command::new(path)
+    let output = background_command(path)
         .arg("--version")
         .stdin(Stdio::null())
         .stderr(Stdio::null())
@@ -1036,7 +1038,7 @@ async fn resolve_claude_binary(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 fn subscription_only_command(path: &Path) -> Command {
-    let mut command = Command::new(path);
+    let mut command = background_command(path);
     command
         .env_remove("ANTHROPIC_API_KEY")
         .env_remove("ANTHROPIC_AUTH_TOKEN")
@@ -1162,7 +1164,7 @@ async fn claude_login(app: AppHandle) -> Result<(), String> {
     {
         let escaped = path.to_string_lossy().replace('\'', "'\"'\"'");
         let login_command = format!("'{}' auth login", escaped);
-        let status = Command::new("/usr/bin/osascript")
+        let status = background_command("/usr/bin/osascript")
             .args([
                 "-e",
                 "on run argv",
@@ -2323,7 +2325,7 @@ async fn spawn_server(app: &AppHandle) -> Result<Arc<AppServer>, String> {
     let codex_binary = resolve_codex_binary(app).await?;
     let home = app.path().home_dir().ok();
 
-    let mut command = Command::new(&codex_binary);
+    let mut command = background_command(&codex_binary);
     command
         .arg("app-server")
         .env("CODEX_HOME", &codex_home)

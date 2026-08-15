@@ -3,12 +3,14 @@ use std::{
     env, fs,
     io::Write,
     path::{Path, PathBuf},
-    process::{Command as StdCommand, Stdio},
+    process::Stdio,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
+
+use crate::process_launch::background_std_command;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -123,7 +125,7 @@ pub(super) fn run_git(
     args: &[&str],
     index_file: Option<&Path>,
 ) -> Result<std::process::Output, String> {
-    let mut command = StdCommand::new("git");
+    let mut command = background_std_command("git");
     command
         .current_dir(cwd)
         .args(args)
@@ -145,7 +147,7 @@ pub(super) fn run_git_with_input(
     index_file: Option<&Path>,
     input: &[u8],
 ) -> Result<std::process::Output, String> {
-    let mut command = StdCommand::new("git");
+    let mut command = background_std_command("git");
     command
         .current_dir(cwd)
         .args(args)
@@ -272,7 +274,7 @@ pub(super) fn capture_checkpoint_snapshot(
     let repo = checkpoint_repo(cwd)?;
     let (tree, file_count) = current_worktree_tree(&repo)?;
     let result = (|| {
-        let mut commit = StdCommand::new("git");
+        let mut commit = background_std_command("git");
         commit
             .current_dir(&repo)
             .args(["commit-tree", &tree, "-m", label])

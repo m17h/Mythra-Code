@@ -15,12 +15,13 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    process::{Child, ChildStdin, Command},
+    process::{Child, ChildStdin},
     sync::{oneshot, Mutex},
     time::{timeout, Duration},
 };
 
 use crate::agents::{child_agent_bridge_launch_registered, ChildAgentState};
+use crate::process_launch::background_command;
 
 type PendingMap = Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, String>>>>>;
 
@@ -265,7 +266,7 @@ async fn read_cursor_runtime_status(app: &AppHandle) -> CursorRuntimeStatus {
             warning: None,
         };
     };
-    let output = Command::new(&path)
+    let output = background_command(&path)
         .arg("about")
         .env("NO_COLOR", "1")
         .stdin(Stdio::null())
@@ -318,7 +319,7 @@ pub async fn cursor_login(app: AppHandle) -> Result<(), String> {
     {
         let escaped = path.to_string_lossy().replace('\'', "'\"'\"'");
         let login_command = format!("'{}' login", escaped);
-        let status = Command::new("/usr/bin/osascript")
+        let status = background_command("/usr/bin/osascript")
             .args([
                 "-e",
                 "on run argv",
@@ -376,7 +377,7 @@ async fn spawn_cursor_process(
     event_context: Option<(String, String, String)>,
 ) -> Result<Arc<CursorProcess>, String> {
     let binary = resolve_cursor_binary(app).await?;
-    let mut command = Command::new(&binary);
+    let mut command = background_command(&binary);
     command
         .arg("acp")
         .current_dir(cwd)

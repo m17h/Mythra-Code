@@ -1,4 +1,5 @@
 use super::*;
+use std::process::Command as StdCommand;
 
 #[test]
 fn claude_always_uses_openkiwi_as_its_only_subagent_route() {
@@ -1347,6 +1348,27 @@ fn openrouter_schema_sanitizer_drops_required_without_properties() {
     let mut schema = json!({ "type": "object", "required": ["ghost"] });
     assert_eq!(sanitize_json_schema(&mut schema), 1);
     assert!(schema.get("required").is_none());
+}
+
+#[test]
+fn production_processes_use_the_no_console_command_builders() {
+    let source_directory = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+    for entry in std::fs::read_dir(&source_directory).expect("read Rust source directory") {
+        let path = entry.expect("read Rust source entry").path();
+        if path.extension().and_then(|value| value.to_str()) != Some("rs") {
+            continue;
+        }
+        let name = path.file_name().and_then(|value| value.to_str());
+        if matches!(name, Some("process_launch.rs" | "tests.rs")) {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path).expect("read Rust source file");
+        assert!(
+            !source.contains("Command::new(") && !source.contains("StdCommand::new("),
+            "{} bypasses the Windows no-console process builders",
+            path.display()
+        );
+    }
 }
 
 #[test]

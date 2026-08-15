@@ -3,9 +3,8 @@ use std::{env, path::PathBuf, process::Stdio};
 use serde::Serialize;
 use serde_json::Value;
 use tauri::{AppHandle, Manager};
-use tokio::process::Command;
-
 use super::{find_on_path, find_with_login_shell, git_stdout, optional_git_stdout, push_candidate};
+use crate::process_launch::background_command;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -85,7 +84,7 @@ pub(super) async fn github_status(app: AppHandle) -> GitHubAccountStatus {
             };
         }
     };
-    let version = Command::new(&path)
+    let version = background_command(&path)
         .arg("--version")
         .stdin(Stdio::null())
         .output()
@@ -102,7 +101,7 @@ pub(super) async fn github_status(app: AppHandle) -> GitHubAccountStatus {
             })
         })
         .filter(|value| !value.is_empty());
-    let auth = Command::new(&path)
+    let auth = background_command(&path)
         .args(["auth", "status", "--hostname", "github.com"])
         .stdin(Stdio::null())
         .output()
@@ -126,7 +125,7 @@ pub(super) async fn github_status(app: AppHandle) -> GitHubAccountStatus {
             error,
         };
     }
-    let user = Command::new(&path)
+    let user = background_command(&path)
         .args(["api", "user"])
         .stdin(Stdio::null())
         .output()
@@ -178,7 +177,7 @@ pub(super) async fn github_login(app: AppHandle) -> Result<(), String> {
             "'{}' auth login --hostname github.com --git-protocol https --web",
             escaped
         );
-        let status = Command::new("/usr/bin/osascript")
+        let status = background_command("/usr/bin/osascript")
             .args([
                 "-e",
                 "on run argv",
@@ -344,7 +343,7 @@ pub(super) async fn github_create_repository(
     } else {
         "--private"
     };
-    let output = Command::new(path)
+    let output = background_command(path)
         .args([
             "repo",
             "create",
@@ -391,7 +390,7 @@ pub(super) async fn github_clone_repository(
     if !parent.is_dir() {
         return Err("The clone destination's parent folder does not exist.".into());
     }
-    let output = Command::new(path)
+    let output = background_command(path)
         .args(["repo", "clone", &url, &destination])
         .stdin(Stdio::null())
         .output()
