@@ -147,8 +147,28 @@ if ([string]$versionInfo.ProductVersion -ne $version -or [string]$versionInfo.Fi
   throw "Installer version mismatch: expected $version, product=$($versionInfo.ProductVersion), file=$($versionInfo.FileVersion)."
 }
 
-$authenticode = Get-AuthenticodeSignature -LiteralPath $installerPath
-$authenticodeStatus = [string]$authenticode.Status
+$installerBytes = [System.IO.File]::ReadAllBytes($installerPath)
+if ($installerBytes.Length -lt 256) {
+  throw "The Windows installer is too small to contain a valid PE header."
+}
+$installerPeOffset = [BitConverter]::ToInt32($installerBytes, 0x3c)
+$optionalHeaderOffset = $installerPeOffset + 24
+if ($installerPeOffset -lt 0 -or $optionalHeaderOffset + 2 -gt $installerBytes.Length) {
+  throw "The Windows installer has an invalid PE header."
+}
+$optionalHeaderMagic = [BitConverter]::ToUInt16($installerBytes, $optionalHeaderOffset)
+$dataDirectoryOffset = switch ($optionalHeaderMagic) {
+  0x10b { $optionalHeaderOffset + 96 }
+  0x20b { $optionalHeaderOffset + 112 }
+  default { throw "The Windows installer has unsupported PE optional-header magic 0x$($optionalHeaderMagic.ToString('x'))." }
+}
+$certificateDirectoryOffset = $dataDirectoryOffset + (4 * 8)
+if ($certificateDirectoryOffset + 8 -gt $installerBytes.Length) {
+  throw "The Windows installer has an incomplete PE certificate-table directory."
+}
+$certificateTableAddress = [BitConverter]::ToUInt32($installerBytes, $certificateDirectoryOffset)
+$certificateTableSize = [BitConverter]::ToUInt32($installerBytes, $certificateDirectoryOffset + 4)
+$authenticodeStatus = if ($certificateTableAddress -eq 0 -and $certificateTableSize -eq 0) { "NotSigned" } else { "Signed" }
 if ($authenticodeStatus -ne "NotSigned") {
   throw "OpenKiwi Windows installers are intentionally unsigned, but Authenticode reported status: $authenticodeStatus."
 }
