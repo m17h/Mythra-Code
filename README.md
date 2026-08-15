@@ -1,12 +1,15 @@
-# OpenKiwi
+# OpenKiwi for Windows
+
+> [!IMPORTANT]
+> This is the official **Windows version** of OpenKiwi. The original macOS version is developed and released separately in [m17h/OpenKiwi](https://github.com/m17h/OpenKiwi).
 
 OpenKiwi is a fast, local-first desktop coding harness with a user-owned instruction prompt. It supports OpenAI through an official ChatGPT subscription sign-in flow, Claude through the locally installed Claude Code CLI, Cursor subscription models (including Grok when entitled) through Cursor Agent, and OpenRouter through a user-supplied API key.
 
-**Platform support:** packaged OpenKiwi releases currently target **macOS on Apple silicon** only. Intel Macs, Windows, and Linux are not supported yet; the update feed publishes only a `darwin-aarch64` bundle.
+**Platform support:** this repository's packaged releases target **64-bit Windows** only, and its update feed publishes only a `windows-x86_64` bundle. macOS downloads, source, and release instructions live in [OpenKiwi](https://github.com/m17h/OpenKiwi). 32-bit Windows and Linux are not supported.
 
 This repository contains a runnable desktop coding environment: normal chats, folder-bound project threads, concurrent background tasks, steering and interruption, three permission modes, typed approvals and user-input requests, an explicit empty-by-default instruction prompt, opt-in harness-level sub-agents, prompt/agent profiles, multi-step agent workflows, animated model controls, and an integrated workspace studio.
 
-Download it here: https://www.morgangermani.com/projects/openkiwi
+Download the Windows version from [GitHub Releases](https://github.com/m17h/OpenKiwi-Windows/releases/latest).
 
 ## Why this architecture
 
@@ -19,19 +22,19 @@ Download it here: https://www.morgangermani.com/projects/openkiwi
 
 Requirements:
 
-- macOS on Apple silicon (the supported release platform)
+- 64-bit Windows (the supported release platform)
 - Node.js 20.19 or newer
-- Rust stable
-- A recent Codex runtime (the Codex CLI or ChatGPT for macOS), Claude Code CLI, and/or Cursor Agent — each provider needs only its own runtime
+- Rust stable with the MSVC toolchain
+- A recent Codex CLI, Claude Code CLI, and/or Cursor Agent — each provider needs only its own runtime
 
-```bash
+```powershell
 npm install
 npm run desktop
 ```
 
 Useful checks:
 
-```bash
+```powershell
 npm run build
 cargo check --manifest-path src-tauri/Cargo.toml
 npm run desktop:build
@@ -47,7 +50,7 @@ Open **Settings → OpenAI → Sign in**. OpenKiwi starts the official Codex bro
 
 OpenKiwi blocks OpenAI turns until that sign-in completes. Attempting to send while signed out preserves the draft and opens a dedicated authentication dialog rather than issuing an unauthorized request.
 
-OpenKiwi checks for the Codex CLI first and also recognizes the runtime included with ChatGPT for macOS. If neither is available, it opens a guided setup dialog with the official installation guide and a retry action. Only one of the two installations is needed.
+OpenKiwi checks for `codex.exe` on the Windows `PATH` and also supports an explicit `OPENKIWI_CODEX_PATH`. If the runtime is unavailable, it opens a guided setup dialog with the official installation guide and a retry action.
 
 ### Claude
 
@@ -101,7 +104,7 @@ The new-thread button, thread-list heading, top bar, empty state, and composer a
 
 Before the first message in a Git project, the user can choose **Shared project** or **Isolated worktree**. Isolation gives the thread its own app-managed linked worktree and private `openkiwi/*` branch while keeping it grouped under the original project. Every model turn, terminal command, file search, diff, Git action, and checkpoint for that thread runs against the isolated path; the shared folder is not added as a writable model root.
 
-The Studio exposes the worktree's status and actions to apply its complete non-ignored delta into the shared folder, merge a clean committed branch, reveal it in Finder, recreate a missing worktree from its branch, or clean it up. Apply first creates a shared-folder safety checkpoint and preserves the user's branch, `HEAD`, staging index, and ignored files. Cleanup identifies untracked and ignored worktree-only files before requiring destructive confirmation. OpenKiwi also warns before two active shared-folder threads are allowed to edit the same project concurrently.
+The Studio exposes the worktree's status and actions to apply its complete non-ignored delta into the shared folder, merge a clean committed branch, reveal it in File Explorer, recreate a missing worktree from its branch, or clean it up. Apply first creates a shared-folder safety checkpoint and preserves the user's branch, `HEAD`, staging index, and ignored files. Cleanup identifies untracked and ignored worktree-only files before requiring destructive confirmation. OpenKiwi also warns before two active shared-folder threads are allowed to edit the same project concurrently.
 
 ## Sub-agents
 
@@ -189,7 +192,7 @@ The small [`model-pricing.json`](model-pricing.json) catalog is fetched once on 
 - Long transcripts are virtualized and Markdown/terminal code is split into lazy chunks to keep startup and scrolling responsive.
 - While a turn is running, Send adds a durable FIFO follow-up by default. A separate action can steer a message into the active turn, and Stop interrupts it without disturbing other threads.
 - Completed background work can raise a native notification. The sidebar shows running and unread state.
-- `⌘K` opens a command palette across commands, projects, and current-scope threads.
+- `Ctrl+K` opens a command palette across commands, projects, and current-scope threads.
 - Scheduled project prompts run while OpenKiwi is open and create normal, inspectable App Server threads.
 
 ## In-app updates and releases
