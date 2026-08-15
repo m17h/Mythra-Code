@@ -69,6 +69,15 @@ After editing:
   when appropriate.
 - Require the Windows GitHub Actions Verify workflow to pass before publishing.
 
+## Dogfooding installed updates
+
+- Treat the installed OpenKiwi application as a normal end-user installation.
+- Never replace, overwrite, or copy a locally built `openkiwi.exe` into the
+  installed application directory.
+- Test local builds by launching them from the repository build output only.
+- Validate installation and upgrades through the same published installer or
+  signed in-app updater flow that normal Windows users receive.
+
 Documentation-only changes do not require the full build suite, but still need
 diff review and link/command verification.
 
