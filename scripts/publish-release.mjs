@@ -12,6 +12,23 @@ if (!existsSync(buildInfoPath)) throw new Error("The staged release has no build
 const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
 const packageVersion = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")).version;
 const tag = `v${manifest.version}`;
+const platformKeys = Object.keys(manifest.platforms || {});
+if (platformKeys.length !== 1 || !/^darwin-(aarch64|x86_64)$/.test(platformKeys[0])) {
+  throw new Error(`OpenKiwi macOS releases require exactly one darwin platform in latest.json; found: ${platformKeys.join(", ") || "none"}.`);
+}
+const macArch = platformKeys[0].slice("darwin-".length);
+const expectedAssetNames = [
+  "OpenKiwi-icon.png",
+  `OpenKiwi_${manifest.version}_${macArch}.app.tar.gz`,
+  `OpenKiwi_${manifest.version}_${macArch}.dmg`,
+  "build-info.txt",
+  "latest.json",
+  "release-notes.md",
+].sort();
+const stagedAssetNames = readdirSync(output).sort();
+if (JSON.stringify(stagedAssetNames) !== JSON.stringify(expectedAssetNames)) {
+  throw new Error(`The staged release is not the exact macOS-only asset set.\nExpected: ${expectedAssetNames.join(", ")}\nFound: ${stagedAssetNames.join(", ")}`);
+}
 // release-notes.md is deliberately included: the runbook requires the notes
 // both as the release body and as a downloadable asset.
 const assets = readdirSync(output).map((name) => resolve(output, name));

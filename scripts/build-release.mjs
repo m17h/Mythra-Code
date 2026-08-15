@@ -5,13 +5,8 @@ import { spawnSync } from "node:child_process";
 
 const root = resolve(import.meta.dirname, "..");
 const version = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")).version;
-const windowsInstaller = resolve(root, `Windows/latest/OpenKiwi_${version}_x64-setup.exe`);
-const windowsSignature = `${windowsInstaller}.sig`;
-const windowsBuildInfo = resolve(root, "Windows/latest/build-info.json");
-for (const path of [windowsInstaller, windowsSignature, windowsBuildInfo]) {
-  if (!existsSync(path)) {
-    throw new Error(`Windows release artifact not found at ${path}. Run npm run release:windows before the macOS release build.`);
-  }
+if (process.platform !== "darwin") {
+  throw new Error("This repository releases only the original macOS version of OpenKiwi. Use m17h/OpenKiwi-Windows for Windows builds.");
 }
 
 // A release binary must be traceable to a commit: refuse to build from a
@@ -177,4 +172,4 @@ const buildInfo = [
 ];
 writeFileSync(resolve(root, "release-assets/latest/build-info.txt"), `${buildInfo.join("\n")}\n`);
 
-console.log(`OpenKiwi ${version} macOS and Windows assets are signed for updates and staged for publishing.`);
+console.log(`OpenKiwi ${version} macOS assets are signed for updates and staged for publishing.`);

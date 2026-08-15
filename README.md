@@ -1,8 +1,11 @@
 # OpenKiwi
 
+> [!IMPORTANT]
+> This is the original **macOS version** of OpenKiwi. The Windows version is developed and released separately in [m17h/OpenKiwi-Windows](https://github.com/m17h/OpenKiwi-Windows).
+
 OpenKiwi is a fast, local-first desktop coding harness with a user-owned instruction prompt. It supports OpenAI through an official ChatGPT subscription sign-in flow, Claude through the locally installed Claude Code CLI, Cursor subscription models (including Grok when entitled) through Cursor Agent, and OpenRouter through a user-supplied API key.
 
-**Platform support:** packaged OpenKiwi releases currently target **macOS on Apple silicon** only. Intel Macs, Windows, and Linux are not supported yet; the update feed publishes only a `darwin-aarch64` bundle.
+**Platform support:** this repository's packaged releases target **macOS on Apple silicon** only, and its update feed publishes only a `darwin-aarch64` bundle. Windows downloads, source, and release instructions live in [OpenKiwi-Windows](https://github.com/m17h/OpenKiwi-Windows). Intel Macs and Linux are not supported.
 
 This repository contains a runnable desktop coding environment: normal chats, folder-bound project threads, concurrent background tasks, steering and interruption, three permission modes, typed approvals and user-input requests, an explicit empty-by-default instruction prompt, opt-in harness-level sub-agents, prompt/agent profiles, multi-step agent workflows, animated model controls, and an integrated workspace studio.
 
