@@ -3603,7 +3603,7 @@ export default function App() {
         <button className="new-thread-button" onClick={newThread} disabled={!activeWorkspace} title={activeWorkspace?.isChat ? "Start a chat without a project folder" : activeProject ? `Start a thread in ${activeProject.name}` : "Select a workspace first"}>
           <Plus size={16} />
           <span>New thread</span>
-          <kbd>⌘N</kbd>
+          <kbd>Ctrl+N</kbd>
         </button>
 
         {/* Same arrangement as the sidebar edge: the split lives in
@@ -3855,7 +3855,7 @@ export default function App() {
             <button className="command-palette-trigger" onClick={() => setCommandPaletteOpen(true)} aria-label="Open command palette">
               <Command size={13} />
               <span>Search</span>
-              <kbd>⌘K</kbd>
+              <kbd>Ctrl+K</kbd>
             </button>
             <div className="runtime-status">
               {running ? <LoaderCircle className="spin" size={13} /> : <Circle size={8} fill="currentColor" />}

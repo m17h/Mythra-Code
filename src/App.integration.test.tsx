@@ -284,6 +284,14 @@ beforeEach(() => {
 });
 
 describe("workspace switching during thread selection", () => {
+  it("shows Windows shortcut labels for new threads and search", async () => {
+    await renderApp();
+
+    expect(screen.getByText("Ctrl+N").closest("button")).toHaveClass("new-thread-button");
+    expect(screen.getByRole("button", { name: "Open command palette" })).toHaveTextContent("Ctrl+K");
+    expect(screen.queryByText(/⌘/)).not.toBeInTheDocument();
+  });
+
   it("keeps a persisted native Codex child in the Sub-agents inbox and depth-limits it", async () => {
     const user = userEvent.setup();
     const nativeChild: Thread = {

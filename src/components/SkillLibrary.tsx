@@ -116,7 +116,7 @@ export function SkillLibrary({
       closeComposer();
       return;
     }
-    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+    if (event.key === "Enter" && event.ctrlKey) {
       event.preventDefault();
       void submitCreate();
     }
@@ -278,7 +278,7 @@ export function SkillLibrary({
                   placeholder="Describe when to use this skill and the steps the model should follow…"
                   aria-describedby={`${fieldId}-instructions-hint`}
                 />
-                <small id={`${fieldId}-instructions-hint`}>Enter starts a new line. Press ⌘/Ctrl + Enter to create.</small>
+                <small id={`${fieldId}-instructions-hint`}>Enter starts a new line. Press Ctrl+Enter to create.</small>
               </div>
 
               {inlineCreateError && <p className="skill-create-error" role="alert">{inlineCreateError}</p>}

@@ -233,7 +233,7 @@ describe("SkillLibrary", () => {
       expect(instructionsField()).toHaveValue("");
     });
 
-    it("does not submit on a bare Enter in the instructions field but does on Cmd+Enter", async () => {
+    it("does not submit on a bare Enter in the instructions field but does on Ctrl+Enter", async () => {
       const onCreate = vi.fn(async () => true);
       renderLibrary({ onCreate });
 
@@ -242,17 +242,17 @@ describe("SkillLibrary", () => {
       fireEvent.keyDown(instructionsField(), { key: "Enter" });
       expect(onCreate).not.toHaveBeenCalled();
 
-      fireEvent.keyDown(instructionsField(), { key: "Enter", metaKey: true });
+      fireEvent.keyDown(instructionsField(), { key: "Enter", ctrlKey: true });
       await waitFor(() => expect(onCreate).toHaveBeenCalledOnce());
     });
 
-    it("ignores Cmd+Enter while the form is incomplete", async () => {
+    it("ignores Ctrl+Enter while the form is incomplete", async () => {
       const onCreate = vi.fn(async () => true);
       renderLibrary({ onCreate });
 
       await openComposer();
       fireEvent.change(nameField(), { target: { value: "release check" } });
-      fireEvent.keyDown(nameField(), { key: "Enter", metaKey: true });
+      fireEvent.keyDown(nameField(), { key: "Enter", ctrlKey: true });
       expect(onCreate).not.toHaveBeenCalled();
     });
 
