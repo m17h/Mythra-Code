@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    env,
+    env, fs,
     path::{Path, PathBuf},
     process::Stdio,
     sync::{
@@ -224,6 +224,12 @@ fn field_after_label(output: &str, label: &str) -> Option<String> {
 enum CursorRuntime {
     Native(PathBuf),
     #[cfg(windows)]
+    WindowsNode {
+        launcher: PathBuf,
+        node: PathBuf,
+        script: PathBuf,
+    },
+    #[cfg(windows)]
     Wsl(String),
 }
 
@@ -231,6 +237,8 @@ impl CursorRuntime {
     fn is_wsl(&self) -> bool {
         match self {
             Self::Native(_) => false,
+            #[cfg(windows)]
+            Self::WindowsNode { .. } => false,
             #[cfg(windows)]
             Self::Wsl(_) => true,
         }
@@ -240,6 +248,8 @@ impl CursorRuntime {
         match self {
             Self::Native(path) => path.to_string_lossy().into_owned(),
             #[cfg(windows)]
+            Self::WindowsNode { launcher, .. } => launcher.to_string_lossy().into_owned(),
+            #[cfg(windows)]
             Self::Wsl(path) => format!("WSL: {path}"),
         }
     }
@@ -248,6 +258,15 @@ impl CursorRuntime {
         match self {
             Self::Native(path) => {
                 let mut command = background_command(path);
+                if let Some(cwd) = cwd {
+                    command.current_dir(cwd);
+                }
+                command
+            }
+            #[cfg(windows)]
+            Self::WindowsNode { node, script, .. } => {
+                let mut command = background_command(node);
+                command.arg(script);
                 if let Some(cwd) = cwd {
                     command.current_dir(cwd);
                 }
@@ -269,6 +288,11 @@ impl CursorRuntime {
     fn interactive(&self) -> tokio::process::Command {
         match self {
             Self::Native(path) => interactive_command(path),
+            Self::WindowsNode { node, script, .. } => {
+                let mut command = interactive_command(node);
+                command.arg(script);
+                command
+            }
             Self::Wsl(path) => {
                 let mut command = interactive_command("wsl.exe");
                 command.args(["--exec", path]);
@@ -327,6 +351,49 @@ async fn resolve_cursor_in_wsl() -> Option<CursorRuntime> {
         .map(|path| CursorRuntime::Wsl(path.to_string()))
 }
 
+#[cfg(windows)]
+fn push_windows_cursor_candidates_at(candidates: &mut Vec<PathBuf>, local_app_data: &Path) {
+    let install_root = local_app_data.join("cursor-agent");
+    // Cursor's official native Windows installer does not ship the CLI with
+    // the desktop editor. It installs these launchers separately and updates
+    // the user's PATH, which an already-running GUI process may not inherit.
+    // Checking the documented install root makes detection immediate and
+    // reliable after installation without restarting Windows.
+    super::push_candidate(candidates, install_root.join("agent.exe"));
+    super::push_candidate(candidates, install_root.join("cursor-agent.exe"));
+}
+
+#[cfg(windows)]
+fn resolve_windows_cursor_install_at(local_app_data: &Path) -> Option<CursorRuntime> {
+    let install_root = local_app_data.join("cursor-agent");
+    for executable in ["agent.exe", "cursor-agent.exe"] {
+        let path = install_root.join(executable);
+        if path.is_file() {
+            return Some(CursorRuntime::Native(path));
+        }
+    }
+
+    // The current native installer ships cmd/PowerShell launchers backed by a
+    // private Node runtime. Launching the payload directly preserves ACP's
+    // stdin/stdout transport and avoids cmd.exe quoting or console windows.
+    let mut versions = fs::read_dir(install_root.join("versions"))
+        .ok()?
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .collect::<Vec<_>>();
+    versions.sort_by_key(|entry| std::cmp::Reverse(entry.file_name()));
+    versions.into_iter().find_map(|entry| {
+        let version = entry.path();
+        let node = version.join("node.exe");
+        let script = version.join("index.js");
+        (node.is_file() && script.is_file()).then(|| CursorRuntime::WindowsNode {
+            launcher: install_root.join("agent.cmd"),
+            node,
+            script,
+        })
+    })
+}
+
 async fn resolve_cursor_runtime(app: &AppHandle) -> Result<CursorRuntime, String> {
     if let Some(override_path) = env::var_os("OPENKIWI_CURSOR_PATH") {
         let override_path = PathBuf::from(override_path);
@@ -343,6 +410,13 @@ async fn resolve_cursor_runtime(app: &AppHandle) -> Result<CursorRuntime, String
         &["agent", "cursor-agent"]
     };
     let mut candidates = Vec::new();
+    #[cfg(windows)]
+    if let Some(local_app_data) = env::var_os("LOCALAPPDATA").map(PathBuf::from) {
+        push_windows_cursor_candidates_at(&mut candidates, &local_app_data);
+        if let Some(runtime) = resolve_windows_cursor_install_at(&local_app_data) {
+            return Ok(runtime);
+        }
+    }
     for name in executable_names {
         if let Some(candidate) = super::find_on_path(name) {
             super::push_candidate(&mut candidates, candidate);
@@ -373,7 +447,7 @@ async fn resolve_cursor_runtime(app: &AppHandle) -> Result<CursorRuntime, String
         return Ok(runtime);
     }
     #[cfg(windows)]
-    return Err("OpenKiwi could not find Cursor Agent. Cursor supports Windows through WSL: install Cursor Agent inside your default WSL distribution, then sign in with `cursor-agent login`.".into());
+    return Err("OpenKiwi could not find Cursor Agent. The Cursor desktop editor and Cursor Agent CLI are separate installs. Install the official native Windows CLI, then return here to sign in.".into());
     #[cfg(not(windows))]
     Err("OpenKiwi could not find Cursor Agent. Install it from cursor.com/docs/cli, then sign in with `cursor-agent login`.".into())
 }
@@ -1289,5 +1363,42 @@ mod tests {
             cursor_runtime_path(r"C:\Users\Person\Project", false).as_deref(),
             Ok(r"C:\Users\Person\Project")
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn includes_official_native_windows_cursor_install_paths() {
+        let mut candidates = Vec::new();
+        push_windows_cursor_candidates_at(
+            &mut candidates,
+            Path::new(r"C:\Users\Person\AppData\Local"),
+        );
+        assert_eq!(
+            candidates,
+            vec![
+                PathBuf::from(r"C:\Users\Person\AppData\Local\cursor-agent\agent.exe"),
+                PathBuf::from(r"C:\Users\Person\AppData\Local\cursor-agent\cursor-agent.exe"),
+            ]
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolves_current_native_windows_cursor_node_payload() {
+        let local_app_data =
+            env::temp_dir().join(format!("openkiwi-cursor-{}", uuid::Uuid::new_v4()));
+        let version = local_app_data.join("cursor-agent/versions/2026.08.11-e8db854");
+        fs::create_dir_all(&version).unwrap();
+        fs::write(version.join("node.exe"), b"test").unwrap();
+        fs::write(version.join("index.js"), b"test").unwrap();
+        fs::write(local_app_data.join("cursor-agent/agent.cmd"), b"test").unwrap();
+
+        let runtime = resolve_windows_cursor_install_at(&local_app_data).unwrap();
+        assert_eq!(
+            PathBuf::from(runtime.display_path()),
+            local_app_data.join("cursor-agent/agent.cmd")
+        );
+
+        fs::remove_dir_all(local_app_data).unwrap();
     }
 }

@@ -1296,6 +1296,22 @@ fn runtime_compatibility_accepts_tested_contract() {
     assert!(!runtime_is_compatible("codex-cli 0.144.9"));
 }
 
+#[cfg(windows)]
+#[test]
+fn codex_candidates_include_current_and_legacy_npm_layouts() {
+    let app_data = PathBuf::from(r"C:\Users\Person\AppData\Roaming");
+    let mut candidates = Vec::new();
+    push_windows_npm_codex_candidates_at(&mut candidates, &app_data);
+
+    let package = app_data.join(r"npm\node_modules\@openai\codex");
+    assert!(candidates.contains(&package.join(
+        r"node_modules\@openai\codex-win32-x64\vendor\x86_64-pc-windows-msvc\bin\codex.exe"
+    )));
+    assert!(candidates.contains(&package.join(
+        r"node_modules\@openai\codex-win32-x64\vendor\x86_64-pc-windows-msvc\codex\codex.exe"
+    )));
+}
+
 #[test]
 fn claude_auth_status_tolerates_terminal_wrapping() {
     let wrapped = br#"{

@@ -865,28 +865,37 @@ fn push_candidate(candidates: &mut Vec<PathBuf>, candidate: PathBuf) {
 }
 
 #[cfg(windows)]
-fn push_windows_npm_codex_candidates(candidates: &mut Vec<PathBuf>) {
-    let Some(app_data) = env::var_os("APPDATA").map(PathBuf::from) else {
-        return;
-    };
+fn push_windows_npm_codex_candidates_at(candidates: &mut Vec<PathBuf>, app_data: &Path) {
     let package = app_data.join("npm/node_modules/@openai/codex");
     for (platform_package, target) in [
         ("codex-win32-x64", "x86_64-pc-windows-msvc"),
         ("codex-win32-arm64", "aarch64-pc-windows-msvc"),
     ] {
+        let vendor = package
+            .join("node_modules/@openai")
+            .join(platform_package)
+            .join("vendor")
+            .join(target);
+        // Current Codex npm packages place the native executable in `bin`.
+        // Keep the older layout as a fallback so existing installations keep
+        // working when OpenKiwi is launched from Explorer with a stale PATH.
+        push_candidate(candidates, vendor.join("bin/codex.exe"));
+        push_candidate(candidates, vendor.join("codex/codex.exe"));
         push_candidate(
             candidates,
-            package
-                .join("node_modules/@openai")
-                .join(platform_package)
-                .join("vendor")
-                .join(target)
-                .join("codex/codex.exe"),
+            package.join("vendor").join(target).join("bin/codex.exe"),
         );
         push_candidate(
             candidates,
             package.join("vendor").join(target).join("codex/codex.exe"),
         );
+    }
+}
+
+#[cfg(windows)]
+fn push_windows_npm_codex_candidates(candidates: &mut Vec<PathBuf>) {
+    if let Some(app_data) = env::var_os("APPDATA").map(PathBuf::from) {
+        push_windows_npm_codex_candidates_at(candidates, &app_data);
     }
 }
 

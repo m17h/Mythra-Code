@@ -2508,7 +2508,7 @@ export default function App() {
   const beginCursorLogin = async () => {
     if (!cursorStatus?.available) {
       openSettings("models");
-      setError("Install Cursor Agent in WSL first, then return here to sign in.");
+      setError("Install the official Cursor Agent CLI for Windows first, then return here to sign in.");
       return;
     }
     setCursorLoginStarting(true);

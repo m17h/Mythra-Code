@@ -728,7 +728,7 @@ export function SettingsModal({
                   <strong>{cursorStatus?.loggedIn ? cursorStatus.email || "Cursor subscription" : "Cursor Agent subscription"}</strong>
                   <small>{cursorStatus?.loggedIn
                     ? `${cursorStatus.subscriptionType || "Cursor"} plan connected · ${cursorStatus.version || "Cursor Agent"}`
-                    : cursorStatus?.warning || (cursorStatus?.available ? "Cursor Agent detected · sign in to continue" : "Cursor Agent must be installed in WSL first")}</small>
+                    : cursorStatus?.warning || (cursorStatus?.available ? "Cursor Agent detected · sign in to continue" : "Cursor Agent CLI must be installed first")}</small>
                 </div>
                 {cursorStatus?.loggedIn ? (
                   <span className="connected-badge"><Check size={12} /> Connected</span>
