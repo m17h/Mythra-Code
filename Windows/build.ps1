@@ -191,7 +191,14 @@ if (-not $SkipLaunchSmoke) {
 Copy-Item -LiteralPath $installerPath -Destination (Join-Path $outputDirectory $installerName)
 Copy-Item -LiteralPath $signaturePath -Destination (Join-Path $outputDirectory "$installerName.sig")
 
-$sha256 = (Get-FileHash -LiteralPath $installerPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$installerStream = [System.IO.File]::OpenRead($installerPath)
+$sha256Algorithm = [System.Security.Cryptography.SHA256]::Create()
+try {
+  $sha256 = ([BitConverter]::ToString($sha256Algorithm.ComputeHash($installerStream))).Replace("-", "").ToLowerInvariant()
+} finally {
+  $sha256Algorithm.Dispose()
+  $installerStream.Dispose()
+}
 $buildInfo = [ordered]@{
   version = $version
   commit = $head
