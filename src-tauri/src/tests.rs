@@ -1457,6 +1457,71 @@ fn local_skill_scan_uses_top_level_markdown_and_nested_skill_packages() {
 }
 
 #[test]
+fn local_skill_deletion_only_removes_a_detected_source_file() {
+    let root = skill_test_directory("skill-delete");
+    fs::create_dir_all(root.join("references")).unwrap();
+    let source = root.join("review.md");
+    let supporting = root.join("references/details.md");
+    fs::write(&source, "# Review\n\nReview changes carefully.\n").unwrap();
+    fs::write(&supporting, "# Details\n\nKeep this supporting file.\n").unwrap();
+
+    delete_local_skill_source(&root, &source).unwrap();
+    assert!(!source.exists());
+    assert!(supporting.exists());
+
+    let error = delete_local_skill_source(&root, &supporting).unwrap_err();
+    assert!(error.contains("not a detected OpenKiwi skill"));
+    assert!(supporting.exists());
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn local_skill_deletion_rejects_other_folders_and_keeps_package_support_files() {
+    let root = skill_test_directory("skill-delete-package");
+    let outside = skill_test_directory("skill-delete-outside");
+    fs::create_dir_all(root.join("packaged")).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+    let package_source = root.join("packaged/SKILL.md");
+    let package_support = root.join("packaged/guide.md");
+    let outside_source = outside.join("outside.md");
+    fs::write(&package_source, "# Package\n\nRun the package.\n").unwrap();
+    fs::write(&package_support, "# Guide\n\nKeep this file.\n").unwrap();
+    fs::write(&outside_source, "# Outside\n\nDo not delete.\n").unwrap();
+
+    let error = delete_local_skill_source(&root, &outside_source).unwrap_err();
+    assert!(error.contains("not a Markdown file in the skills folder"));
+    assert!(outside_source.exists());
+
+    delete_local_skill_source(&root, &package_source).unwrap();
+    assert!(!package_source.exists());
+    assert!(package_support.exists());
+    assert!(root.join("packaged").is_dir());
+
+    fs::remove_dir_all(root).unwrap();
+    fs::remove_dir_all(outside).unwrap();
+}
+
+#[test]
+fn local_skill_scan_fingerprint_changes_when_instructions_change() {
+    let root = skill_test_directory("skill-fingerprint");
+    fs::create_dir_all(&root).unwrap();
+    let source = root.join("review.md");
+    fs::write(&source, "# Review\n\nFirst instructions.\n").unwrap();
+    let first = scan_local_skills(&root).unwrap()[0]
+        .content_fingerprint
+        .clone();
+
+    fs::write(&source, "# Review\n\nSecond instructions.\n").unwrap();
+    let second = scan_local_skills(&root).unwrap()[0]
+        .content_fingerprint
+        .clone();
+    assert_ne!(first, second);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn skill_runtime_bridge_preserves_app_name_body_and_markdown_references() {
     let root = skill_test_directory("skill-runtime-source");
     let runtime = skill_test_directory("skill-runtime-output");

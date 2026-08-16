@@ -288,7 +288,10 @@ describe("workspace switching during thread selection", () => {
     await renderApp();
 
     expect(screen.getByText("Ctrl+N").closest("button")).toHaveClass("new-thread-button");
-    expect(screen.getByRole("button", { name: "Open command palette" })).toHaveTextContent("Ctrl+K");
+    const searchButton = screen.getByRole("button", { name: "Open command palette" });
+    expect(searchButton).toHaveTextContent("Ctrl+K");
+    expect(searchButton.querySelector(".lucide-command")).toBeNull();
+    expect(searchButton.querySelector(".lucide-search")).not.toBeNull();
     expect(screen.queryByText(/⌘/)).not.toBeInTheDocument();
   });
 

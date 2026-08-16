@@ -855,7 +855,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .modal-backdrop { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 30px; background: rgba(2,3,4,.68); backdrop-filter: blur(7px); }
 .settings-backdrop { opacity: 0; visibility: hidden; pointer-events: none; transition: opacity 210ms ease, visibility 0s linear 300ms, backdrop-filter 260ms ease; }
 .settings-backdrop.open { opacity: 1; visibility: visible; pointer-events: auto; transition-delay: 0s; }
-.settings-modal { width: min(920px, 100%); height: min(720px, calc(100vh - 60px)); max-height: calc(100vh - 40px); display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--line-strong); border-radius: var(--r-xl); background: var(--panel); box-shadow: var(--shadow); opacity: 0; transform: translateY(22px) scale(.965); filter: saturate(.72); transition: opacity 190ms ease, transform 300ms cubic-bezier(.2,.86,.24,1), filter 260ms ease, background 260ms ease; }
+.settings-modal { position: relative; width: min(920px, 100%); height: min(720px, calc(100vh - 60px)); max-height: calc(100vh - 40px); display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--line-strong); border-radius: var(--r-xl); background: var(--panel); box-shadow: var(--shadow); opacity: 0; transform: translateY(22px) scale(.965); filter: saturate(.72); transition: opacity 190ms ease, transform 300ms cubic-bezier(.2,.86,.24,1), filter 260ms ease, background 260ms ease; }
 .settings-backdrop.open .settings-modal { opacity: 1; transform: translateY(0) scale(1); filter: saturate(1); }
 .settings-backdrop.closed .settings-modal { transform: translateY(14px) scale(.975); }
 .runtime-setup-backdrop { z-index: 70; opacity: 0; visibility: hidden; pointer-events: none; transition: opacity 210ms ease, visibility 0s linear 280ms; }
@@ -1890,6 +1890,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .skill-card-actions { display: flex; align-items: center; gap: 2px; }
 .skill-card-actions button, .skill-name-editor button { width: 26px; height: 26px; display: grid; place-items: center; border: 0; border-radius: var(--r-xs); color: var(--muted-2); background: transparent; cursor: pointer; transition: color var(--t-fast) ease, background var(--t-fast) ease; }
 .skill-card-actions button:hover, .skill-name-editor button:hover { color: var(--green); background: var(--green-soft); }
+.skill-card-actions .danger-icon-button:hover { color: var(--red); background: color-mix(in srgb, var(--red) 9%, transparent); }
 .skill-name-editor { display: grid; grid-template-columns: auto minmax(0,1fr) auto auto; align-items: center; gap: var(--s-1); color: var(--green); }
 .skill-name-editor > span { font: 600 var(--fs-meta) var(--font-mono); }
 .skill-name-editor input { min-width: 0; height: 26px; padding: 0 var(--s-2); border: 1px solid var(--green-line); border-radius: var(--r-xs); outline: none; color: var(--text); background: var(--field); font: 500 var(--fs-meta) var(--font-mono); }
@@ -1898,6 +1899,12 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .skill-empty-state strong { color: var(--ink-2); font-size: var(--fs-ui); font-weight: 600; }
 .skill-empty-state small { max-width: 46ch; font-size: var(--fs-meta); line-height: 1.6; }
 .skill-empty-state .secondary-button { margin-top: var(--s-1); }
+.skill-removed-group { display: flex; flex-direction: column; gap: var(--s-2); padding-top: var(--s-2); border-top: 1px solid var(--line); }
+.skill-removed-list { display: flex; flex-direction: column; gap: var(--s-2); margin: 0; padding: 0; list-style: none; }
+.skill-removed-list li { display: flex; align-items: center; gap: var(--s-3); padding: var(--s-2) var(--s-3); border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--line-quiet); }
+.skill-removed-list li > span { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.skill-removed-list strong { color: var(--ink-2); font: 600 var(--fs-meta) var(--font-mono); }
+.skill-removed-list small { overflow: hidden; color: var(--muted-2); font: var(--fs-meta) var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
 
 /* Creation is progressive disclosure: one quiet button until asked for, then
    a bordered editor that owns the same footprint. */
@@ -1924,6 +1931,15 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .skill-notes { display: flex; flex-direction: column; gap: var(--s-2); margin: 0; padding: var(--s-3); border: 1px solid var(--line); border-radius: var(--r-md); list-style: none; }
 .skill-notes li { display: grid; grid-template-columns: 16px minmax(0,1fr); gap: var(--s-2); align-items: start; color: var(--muted); font-size: var(--fs-meta); line-height: 1.55; }
 .skill-notes svg { margin-top: 2px; color: var(--green); }
+.skill-remove-backdrop { position: absolute; inset: 0; z-index: 4; display: grid; place-items: center; padding: var(--s-5); background: rgba(2,3,4,.7); backdrop-filter: blur(5px); }
+.skill-remove-dialog { width: min(480px, 100%); display: grid; grid-template-columns: auto minmax(0,1fr); gap: var(--s-3); padding: var(--s-5); border: 1px solid color-mix(in srgb, var(--red) 28%, var(--line)); border-radius: var(--r-lg); background: var(--panel); box-shadow: var(--shadow); }
+.skill-remove-icon { width: 34px; height: 34px; display: grid; place-items: center; border-radius: var(--r-sm); color: var(--red); background: color-mix(in srgb, var(--red) 9%, transparent); }
+.skill-remove-copy { min-width: 0; }
+.skill-remove-copy h4 { margin: 0 0 var(--s-2); color: var(--text); font-size: var(--fs-heading); }
+.skill-remove-copy p { margin: 0; color: var(--muted); font-size: var(--fs-ui); line-height: 1.55; }
+.skill-remove-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--s-2); margin-top: var(--s-2); }
+.skill-remove-actions .danger-button { min-height: var(--ctl-md); display: inline-flex; align-items: center; justify-content: center; gap: var(--s-2); padding: 0 var(--s-3); border: 1px solid color-mix(in srgb, var(--red) 34%, transparent); border-radius: var(--r-sm); color: #fff; background: color-mix(in srgb, var(--red) 82%, #531f28); font-size: var(--fs-meta); font-weight: 600; cursor: pointer; }
+.skill-remove-actions button:disabled { opacity: .55; cursor: default; }
 .manager-status.error { color: #e79b9b; border-color: rgba(227,103,103,.18); background: rgba(227,103,103,.05); }
 /* Section label: the dock's only structural heading, so it must read as one. */
 .rate-card span, .panel-label { color: var(--muted-2); font-size: var(--fs-micro); font-weight: 650; text-transform: uppercase; letter-spacing: var(--track-caps); }

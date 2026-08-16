@@ -79,7 +79,8 @@ use project_git::{
 #[cfg(test)]
 use skills::*;
 use skills::{
-    local_skills_create, local_skills_import, local_skills_scan, local_skills_sync,
+    local_skills_create, local_skills_delete, local_skills_import, local_skills_scan,
+    local_skills_sync,
     normalize_skill_name,
 };
 
@@ -3171,6 +3172,7 @@ pub fn run() {
             local_skills_sync,
             local_skills_import,
             local_skills_create,
+            local_skills_delete,
             normal_chat_workspace,
             codex_rpc,
             codex_respond,

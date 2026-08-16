@@ -147,6 +147,7 @@ export function SettingsModal({
   activeProjectId = null,
   skillsFolder,
   skills,
+  removedSkills,
   skillsBusy,
   skillsError,
   mcpServers,
@@ -168,6 +169,8 @@ export function SettingsModal({
   onCreateSkill,
   onRenameSkill,
   onToggleSkill,
+  onRemoveSkill,
+  onRestoreSkill,
   onOpenOnboarding,
 }: {
   open: boolean;
@@ -212,6 +215,7 @@ export function SettingsModal({
   activeProjectId?: string | null;
   skillsFolder: string;
   skills: LocalSkill[];
+  removedSkills: LocalSkill[];
   skillsBusy: boolean;
   skillsError: string;
   mcpServers?: McpView[];
@@ -228,11 +232,13 @@ export function SettingsModal({
   scheduleRuns?: ScheduleRunRecord[];
   onOpenRun?: (threadId: string) => void;
   onChooseSkillsFolder: () => void;
-  onRefreshSkills: () => void;
+  onRefreshSkills: (silent?: boolean) => Promise<void> | void;
   onImportSkills: () => void;
   onCreateSkill: (name: string, instructions: string) => Promise<boolean>;
   onRenameSkill: (path: string, name: string) => boolean;
   onToggleSkill: (path: string) => void;
+  onRemoveSkill: (path: string, deleteSource: boolean) => Promise<boolean>;
+  onRestoreSkill: (path: string) => Promise<boolean>;
   onOpenOnboarding: () => void;
 }) {
   const [local, setLocal] = useState(settings);
@@ -244,6 +250,8 @@ export function SettingsModal({
   const [cloneUrl, setCloneUrl] = useState("");
   const [cloneFolder, setCloneFolder] = useState("");
   const githubRefreshRequestedRef = useRef(false);
+  const skillsRefreshRef = useRef(onRefreshSkills);
+  skillsRefreshRef.current = onRefreshSkills;
 
   // Buffered edits (theme, prompt, toggles) are discarded on close — warn
   // before silently throwing away work like a hand-written system prompt.
@@ -320,6 +328,37 @@ export function SettingsModal({
     }
   }, [onGitHubRefresh, open, settingsSection]);
 
+  useEffect(() => {
+    if (!open || settingsSection !== "skills" || !skillsFolder) return;
+    let disposed = false;
+    let inFlight = false;
+    const refresh = async (silent: boolean) => {
+      if (disposed || inFlight) return;
+      inFlight = true;
+      try {
+        await skillsRefreshRef.current(silent);
+      } finally {
+        inFlight = false;
+      }
+    };
+    void refresh(false);
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === "visible") void refresh(true);
+    }, 2_000);
+    const onFocus = () => void refresh(true);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") void refresh(true);
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      disposed = true;
+      window.clearInterval(interval);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [open, settingsSection, skillsFolder]);
+
   const dialogRef = useRef<HTMLDivElement>(null);
   useModalFocus(dialogRef, open);
 
@@ -330,7 +369,7 @@ export function SettingsModal({
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       // An approval modal stacked above Settings owns Escape while present.
-      if (document.querySelector("[data-approval-modal]")) return;
+      if (document.querySelector("[data-approval-modal], [data-skill-remove-modal]")) return;
       requestCloseRef.current();
     };
     document.addEventListener("keydown", onKeyDown);
@@ -598,6 +637,7 @@ export function SettingsModal({
           {settingsSection === "skills" && <SkillLibrary
             folder={skillsFolder}
             skills={skills}
+            removedSkills={removedSkills}
             busy={skillsBusy}
             error={skillsError}
             onChooseFolder={onChooseSkillsFolder}
@@ -606,6 +646,8 @@ export function SettingsModal({
             onCreate={onCreateSkill}
             onRename={onRenameSkill}
             onToggle={onToggleSkill}
+            onRemove={onRemoveSkill}
+            onRestore={onRestoreSkill}
           />}
 
           {settingsSection === "updates" && <UpdateSettings appUpdater={appUpdater} />}

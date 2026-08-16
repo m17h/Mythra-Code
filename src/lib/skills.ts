@@ -7,6 +7,7 @@ export interface LocalSkillFile {
   defaultName: string;
   description: string;
   supportingMarkdownCount: number;
+  contentFingerprint?: string;
 }
 
 export interface LocalSkill extends LocalSkillFile {
@@ -34,9 +35,10 @@ export function resolveLocalSkills(
   files: LocalSkillFile[],
   aliases: Record<string, string>,
   disabledPaths: string[],
+  removedPaths: string[] = [],
 ): LocalSkill[] {
   const used = new Set<string>();
-  return files.map((file) => {
+  return files.filter((file) => !removedPaths.includes(file.path)).map((file) => {
     const requested = normalizeSkillName(aliases[file.path] || file.defaultName) || "skill";
     let name = requested;
     let suffix = 2;
@@ -69,4 +71,8 @@ export async function importLocalSkills(folder: string, paths: string[]): Promis
 
 export async function createLocalSkill(folder: string, name: string, instructions: string): Promise<string> {
   return invoke<string>("local_skills_create", { folder, name, instructions });
+}
+
+export async function deleteLocalSkill(folder: string, path: string): Promise<void> {
+  return invoke<void>("local_skills_delete", { folder, path });
 }

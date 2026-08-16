@@ -61,6 +61,7 @@ function modalProps(overrides: Partial<Parameters<typeof SettingsModal>[0]> = {}
     projects: [],
     skillsFolder: "",
     skills: [],
+    removedSkills: [],
     skillsBusy: false,
     skillsError: "",
     workspaceToolsAvailable: false,
@@ -77,6 +78,8 @@ function modalProps(overrides: Partial<Parameters<typeof SettingsModal>[0]> = {}
     onCreateSkill: vi.fn(async () => true),
     onRenameSkill: vi.fn(() => true),
     onToggleSkill: vi.fn(),
+    onRemoveSkill: vi.fn(async () => true),
+    onRestoreSkill: vi.fn(async () => true),
     onProjects: vi.fn(),
     onOpenOnboarding: vi.fn(),
     ...overrides,
@@ -159,6 +162,25 @@ describe("SettingsModal", () => {
     expect(screen.getByText("@morgan")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Clone a repository" })).toBeInTheDocument();
     expect(onGitHubRefresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("rescans skills when the pane opens and when the app regains focus", async () => {
+    const onRefreshSkills = vi.fn(async () => undefined);
+    const props = modalProps({
+      initialSection: "skills",
+      skillsFolder: "C:\\Users\\Morgan\\Skills",
+      onRefreshSkills,
+    });
+    const { rerender } = render(<SettingsModal {...props} />);
+
+    await waitFor(() => expect(onRefreshSkills).toHaveBeenCalledWith(false));
+    window.dispatchEvent(new Event("focus"));
+    await waitFor(() => expect(onRefreshSkills).toHaveBeenCalledWith(true));
+
+    const callsBeforeClose = onRefreshSkills.mock.calls.length;
+    rerender(<SettingsModal {...props} open={false} />);
+    window.dispatchEvent(new Event("focus"));
+    expect(onRefreshSkills).toHaveBeenCalledTimes(callsBeforeClose);
   });
 
   it("shows cumulative all-time token and API-equivalent usage", () => {

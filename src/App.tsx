@@ -5,7 +5,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
-import { Archive, ArchiveRestore, Bot, Check, ChevronDown, Circle, Code2, Command, Download, FileCode2, Folder, FolderOpen, GitBranch, GitFork, LoaderCircle, MessageSquare, Paperclip, PanelRight, PanelLeftClose, PanelLeftOpen, Plus, Pin, PinOff, Pencil, Search, Settings, Shield, ShieldAlert, ShieldCheck, TerminalSquare, Trash2, X } from "lucide-react";
+import { Archive, ArchiveRestore, Bot, Check, ChevronDown, Circle, Code2, Download, FileCode2, Folder, FolderOpen, GitBranch, GitFork, LoaderCircle, MessageSquare, Paperclip, PanelRight, PanelLeftClose, PanelLeftOpen, Plus, Pin, PinOff, Pencil, Search, Settings, Shield, ShieldAlert, ShieldCheck, TerminalSquare, Trash2, X } from "lucide-react";
 import { getCodexRuntimeStatus, auditEvent, exportTextFile, getNormalChatWorkspace, hasOpenRouterKey, listOpenRouterModels, respond, restartRuntime, rpc, runtimeInstanceId, type CodexRuntimeStatus, type JsonObject } from "./lib/codex";
 import { deleteClaudeTranscript, getClaudeRuntimeStatus, loadClaudeTranscript, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, type ClaudeRuntimeStatus } from "./lib/claude";
 import { deleteCursorTranscript, getCursorRuntimeStatus, listCursorModels, loadCursorTranscript, respondToCursorPermission, saveCursorTranscript, startCursorLogin, type CursorModel, type CursorRuntimeStatus } from "./lib/cursor";
@@ -79,7 +79,7 @@ import { PANE_BOUNDS, usePaneResize } from "./hooks/usePaneResize";
 import { useSidebarSplitResize } from "./hooks/useSidebarSplitResize";
 import { useWorkflowEngine } from "./hooks/useWorkflowEngine";
 import { isEstablishedOpenKiwiInstall, ONBOARDING_EXIT_MS, ONBOARDING_VERSION } from "./lib/onboarding";
-import { createLocalSkill, importLocalSkills, normalizeSkillName, resolveLocalSkills, scanLocalSkills, syncLocalSkills, type LocalSkill, type LocalSkillFile } from "./lib/skills";
+import { createLocalSkill, deleteLocalSkill, importLocalSkills, normalizeSkillName, resolveLocalSkills, scanLocalSkills, syncLocalSkills, type LocalSkill, type LocalSkillFile } from "./lib/skills";
 import { compactWorkflowRun, normalizeWorkflows, recoverWorkflowRuns, type WorkflowDefinition, type WorkflowRunRecord } from "./lib/workflows";
 import { isClaudeThread, isCursorThread, isLocalSubscriptionThread, modelForProvider, providerFromThread } from "./lib/threadProvider";
 import { basename, normalizedProjectPath } from "./lib/paths";
@@ -282,10 +282,18 @@ export default function App() {
   const [skillFiles, setSkillFiles] = useState<LocalSkillFile[]>([]);
   const [skillAliases, setSkillAliases] = usePersistedState<Record<string, string>>("kiwi.skillAliases", {});
   const [disabledSkillPaths, setDisabledSkillPaths] = usePersistedState<string[]>("kiwi.disabledSkills", []);
+  const [removedSkillPaths, setRemovedSkillPaths] = usePersistedState<string[]>("kiwi.removedSkills", []);
   const [skills, setSkills] = useState<LocalSkill[]>([]);
   const [skillsBusy, setSkillsBusy] = useState(false);
   const [skillsError, setSkillsError] = useState("");
   const skillRuntimeRootRef = useRef("");
+  const skillFilesRef = useRef<LocalSkillFile[]>([]);
+  const skillScanSequenceRef = useRef(0);
+  const skillsBusyCountRef = useRef(0);
+  const removedSkills = useMemo(
+    () => resolveLocalSkills(skillFiles.filter((file) => removedSkillPaths.includes(file.path)), skillAliases, disabledSkillPaths),
+    [disabledSkillPaths, removedSkillPaths, skillAliases, skillFiles],
+  );
   const [mcpServers, setMcpServers] = useState<McpView[]>([]);
   const [gitOutput, setGitOutput] = useState("");
   const [gitCommitMessage, setGitCommitMessage] = useState("");
@@ -1243,54 +1251,94 @@ export default function App() {
   }, []);
 
   const prepareLocalSkills = useCallback(
-    async (folder: string, files: LocalSkillFile[], aliases: Record<string, string>, disabled: string[]) => {
-      const resolved = resolveLocalSkills(files, aliases, disabled);
-      setSkills(resolved);
+    async (folder: string, files: LocalSkillFile[], aliases: Record<string, string>, disabled: string[], removed: string[]) => {
+      const resolved = resolveLocalSkills(files, aliases, disabled, removed);
       if (!folder) {
+        setSkills(resolved);
         skillRuntimeRootRef.current = "";
         if (runtimeStatus?.available) await rpc("skills/extraRoots/set", { extraRoots: [] });
         return resolved;
       }
       const runtimeRoot = await syncLocalSkills(folder, resolved);
-      skillRuntimeRootRef.current = runtimeRoot;
       if (runtimeStatus?.available) {
         await rpc("skills/extraRoots/set", { extraRoots: [runtimeRoot] });
       }
+      skillRuntimeRootRef.current = runtimeRoot;
+      setSkills(resolved);
       return resolved;
     },
     [runtimeStatus?.available],
   );
 
   const refreshLocalSkills = useCallback(
-    async (folder = skillsFolder, aliases = skillAliases, disabled = disabledSkillPaths) => {
+    async (
+      folder = skillsFolder,
+      aliases = skillAliases,
+      disabled = disabledSkillPaths,
+      removed = removedSkillPaths,
+      silent = false,
+    ) => {
+      const scanSequence = ++skillScanSequenceRef.current;
       if (!folder) {
+        skillFilesRef.current = [];
         setSkillFiles([]);
         setSkills([]);
         setSkillsError("");
-        return prepareLocalSkills("", [], aliases, disabled);
+        return prepareLocalSkills("", [], aliases, disabled, removed);
       }
-      setSkillsBusy(true);
-      setSkillsError("");
+      if (!silent) {
+        skillsBusyCountRef.current += 1;
+        setSkillsBusy(true);
+        setSkillsError("");
+      }
       try {
         const files = await scanLocalSkills(folder);
+        // Folder polling, focus refreshes, and explicit deletion can overlap.
+        // Only the newest scan may publish state or rebuild the model runtime.
+        if (scanSequence !== skillScanSequenceRef.current) return [];
+        const unchanged = JSON.stringify(files) === JSON.stringify(skillFilesRef.current);
+        setSkillsError("");
+        if (silent && unchanged) return resolveLocalSkills(files, aliases, disabled, removed);
+        skillFilesRef.current = files;
         setSkillFiles(files);
-        return await prepareLocalSkills(folder, files, aliases, disabled);
+        return await prepareLocalSkills(folder, files, aliases, disabled, removed);
       } catch (reason) {
+        // Editors, sync clients, and antivirus can briefly lock Markdown on
+        // Windows. Background refreshes keep the last known-good library and
+        // runtime instead of tearing every skill down for a transient error.
+        if (scanSequence !== skillScanSequenceRef.current || silent) return [];
         setSkillsError(friendlyError(reason));
+        skillFilesRef.current = [];
         setSkillFiles([]);
         setSkills([]);
         try {
-          await prepareLocalSkills("", [], aliases, disabled);
+          await prepareLocalSkills("", [], aliases, disabled, removed);
         } catch {
           /* Keep the scan error as the useful message. */
         }
         return [];
       } finally {
-        setSkillsBusy(false);
+        if (!silent) {
+          skillsBusyCountRef.current = Math.max(0, skillsBusyCountRef.current - 1);
+          if (skillsBusyCountRef.current === 0) setSkillsBusy(false);
+        }
       }
     },
-    [disabledSkillPaths, prepareLocalSkills, skillAliases, skillsFolder],
+    [disabledSkillPaths, prepareLocalSkills, removedSkillPaths, skillAliases, skillsFolder],
   );
+
+  useEffect(() => {
+    if (!skillsFolder) return;
+    const refresh = () => {
+      if (document.visibilityState === "visible") void refreshLocalSkills(skillsFolder, skillAliases, disabledSkillPaths, removedSkillPaths, true);
+    };
+    const interval = window.setInterval(refresh, 5_000);
+    window.addEventListener("focus", refresh);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refresh);
+    };
+  }, [disabledSkillPaths, refreshLocalSkills, removedSkillPaths, skillAliases, skillsFolder]);
 
   const refreshTools = useCallback(
     async (workspace: Project | null) => {
@@ -3391,7 +3439,7 @@ export default function App() {
     const selected = await open({ directory: true, multiple: false, title: "Choose your OpenKiwi skills folder" });
     if (!selected || Array.isArray(selected)) return;
     setSkillsFolder(selected);
-    await refreshLocalSkills(selected, skillAliases, disabledSkillPaths);
+    await refreshLocalSkills(selected, skillAliases, disabledSkillPaths, removedSkillPaths);
   };
 
   const importSkills = async () => {
@@ -3402,8 +3450,10 @@ export default function App() {
     setSkillsBusy(true);
     setSkillsError("");
     try {
-      await importLocalSkills(skillsFolder, paths);
-      await refreshLocalSkills();
+      const imported = await importLocalSkills(skillsFolder, paths);
+      const nextRemoved = removedSkillPaths.filter((path) => !imported.includes(path));
+      if (nextRemoved.length !== removedSkillPaths.length) setRemovedSkillPaths(nextRemoved);
+      await refreshLocalSkills(skillsFolder, skillAliases, disabledSkillPaths, nextRemoved);
     } catch (reason) {
       setSkillsError(friendlyError(reason));
     } finally {
@@ -3415,8 +3465,10 @@ export default function App() {
     if (!skillsFolder) return false;
     setSkillsError("");
     try {
-      await createLocalSkill(skillsFolder, name, instructions);
-      await refreshLocalSkills();
+      const createdPath = await createLocalSkill(skillsFolder, name, instructions);
+      const nextRemoved = removedSkillPaths.filter((path) => path !== createdPath);
+      if (nextRemoved.length !== removedSkillPaths.length) setRemovedSkillPaths(nextRemoved);
+      await refreshLocalSkills(skillsFolder, skillAliases, disabledSkillPaths, nextRemoved);
       return true;
     } catch (reason) {
       setSkillsError(friendlyError(reason));
@@ -3436,7 +3488,7 @@ export default function App() {
     }
     const next = { ...skillAliases, [path]: name };
     setSkillAliases(next);
-    setSkills(resolveLocalSkills(skillFiles, next, disabledSkillPaths));
+    setSkills(resolveLocalSkills(skillFiles, next, disabledSkillPaths, removedSkillPaths));
     setSkillsError("");
     return true;
   };
@@ -3444,7 +3496,45 @@ export default function App() {
   const toggleSkill = (path: string) => {
     const next = disabledSkillPaths.includes(path) ? disabledSkillPaths.filter((candidate) => candidate !== path) : [...disabledSkillPaths, path];
     setDisabledSkillPaths(next);
-    setSkills(resolveLocalSkills(skillFiles, skillAliases, next));
+    setSkills(resolveLocalSkills(skillFiles, skillAliases, next, removedSkillPaths));
+  };
+
+  const restoreSkill = async (path: string): Promise<boolean> => {
+    const nextRemoved = removedSkillPaths.filter((candidate) => candidate !== path);
+    setRemovedSkillPaths(nextRemoved);
+    setSkillsError("");
+    try {
+      await refreshLocalSkills(skillsFolder, skillAliases, disabledSkillPaths, nextRemoved);
+      return true;
+    } catch (reason) {
+      setSkillsError(friendlyError(reason));
+      return false;
+    }
+  };
+
+  const removeSkill = async (path: string, deleteSource: boolean): Promise<boolean> => {
+    if (!skillsFolder) return false;
+    setSkillsError("");
+    try {
+      if (deleteSource) await deleteLocalSkill(skillsFolder, path);
+      const nextRemoved = deleteSource
+        ? removedSkillPaths.filter((candidate) => candidate !== path)
+        : [...new Set([...removedSkillPaths, path])];
+      const nextDisabled = deleteSource
+        ? disabledSkillPaths.filter((candidate) => candidate !== path)
+        : disabledSkillPaths;
+      const nextAliases = deleteSource
+        ? Object.fromEntries(Object.entries(skillAliases).filter(([candidate]) => candidate !== path))
+        : skillAliases;
+      setRemovedSkillPaths(nextRemoved);
+      setDisabledSkillPaths(nextDisabled);
+      setSkillAliases(nextAliases);
+      await refreshLocalSkills(skillsFolder, nextAliases, nextDisabled, nextRemoved);
+      return true;
+    } catch (reason) {
+      setSkillsError(friendlyError(reason));
+      return false;
+    }
   };
 
   const connectMcp = async (server: McpView) => {
@@ -3853,7 +3943,7 @@ export default function App() {
               </button>
             )}
             <button className="command-palette-trigger" onClick={() => setCommandPaletteOpen(true)} aria-label="Open command palette">
-              <Command size={13} />
+              <Search size={13} aria-hidden="true" />
               <span>Search</span>
               <kbd>Ctrl+K</kbd>
             </button>
@@ -4386,6 +4476,7 @@ export default function App() {
         activeProjectId={workspaceMode === "project" ? activeProjectId : null}
         skillsFolder={skillsFolder}
         skills={skills}
+        removedSkills={removedSkills}
         skillsBusy={skillsBusy}
         skillsError={skillsError}
         mcpServers={mcpServers}
@@ -4408,11 +4499,13 @@ export default function App() {
           void openAgent(threadId);
         }}
         onChooseSkillsFolder={() => void chooseSkillsFolder()}
-        onRefreshSkills={() => void refreshLocalSkills()}
+        onRefreshSkills={(silent = false) => refreshLocalSkills(skillsFolder, skillAliases, disabledSkillPaths, removedSkillPaths, silent).then(() => undefined)}
         onImportSkills={() => void importSkills()}
         onCreateSkill={createSkill}
         onRenameSkill={renameSkill}
         onToggleSkill={toggleSkill}
+        onRemoveSkill={removeSkill}
+        onRestoreSkill={restoreSkill}
         onOpenOnboarding={() => {
           closeSettings();
           openOnboarding();

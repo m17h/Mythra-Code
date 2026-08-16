@@ -1,7 +1,7 @@
 {
   "name": "openkiwi",
   "private": true,
-  "version": "1.6.5",
+  "version": "1.6.6",
   "type": "module",
   "engines": {
     "node": ">=20.19.0"

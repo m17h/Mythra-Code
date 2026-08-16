@@ -32,6 +32,7 @@ function renderLibrary(overrides: Partial<Parameters<typeof SkillLibrary>[0]> = 
   const props: Parameters<typeof SkillLibrary>[0] = {
     folder: "/skills",
     skills: [skill],
+    removedSkills: [],
     busy: false,
     error: "",
     onChooseFolder: vi.fn(),
@@ -40,6 +41,8 @@ function renderLibrary(overrides: Partial<Parameters<typeof SkillLibrary>[0]> = 
     onCreate: vi.fn(async () => true),
     onRename: vi.fn(() => true),
     onToggle: vi.fn(),
+    onRemove: vi.fn(async () => true),
+    onRestore: vi.fn(async () => true),
     ...overrides,
   };
   return { props, ...render(<SkillLibrary {...props} />) };
@@ -106,6 +109,61 @@ describe("SkillLibrary", () => {
     expect(revealItemInDir).toHaveBeenCalledWith("/skills");
     fireEvent.click(screen.getByRole("button", { name: "Show review in folder" }));
     expect(revealItemInDir).toHaveBeenCalledWith("/skills/review.md");
+  });
+
+  it("asks whether to keep or delete the source when removing a skill", async () => {
+    const onRemove = vi.fn(async () => true);
+    renderLibrary({ onRemove });
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove review" }));
+    const dialog = screen.getByRole("alertdialog", { name: "Remove @review?" });
+    expect(dialog).toHaveTextContent("Choose whether to leave review.md in your skills folder or permanently delete that source file too. Other package and supporting files are always kept.");
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Remove from OpenKiwi" }));
+    await waitFor(() => expect(onRemove).toHaveBeenCalledWith("/skills/review.md", false));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+  });
+
+  it("only deletes the source after the destructive confirmation", async () => {
+    const onRemove = vi.fn(async () => true);
+    renderLibrary({ onRemove });
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove review" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete source file too" }));
+
+    await waitFor(() => expect(onRemove).toHaveBeenCalledWith("/skills/review.md", true));
+  });
+
+  it("keeps the removal choice open when the operation fails", async () => {
+    renderLibrary({ onRemove: vi.fn(async () => false) });
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove review" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove from OpenKiwi" }));
+
+    await waitFor(() => expect(screen.getByRole("alertdialog", { name: "Remove @review?" })).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+  });
+
+  it("shows app-only removals and lets the user restore them", async () => {
+    const onRestore = vi.fn(async () => true);
+    renderLibrary({ skills: [], removedSkills: [skill], onRestore });
+
+    expect(screen.getByText("Removed from OpenKiwi")).toBeInTheDocument();
+    expect(screen.getByText("1 kept on disk")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Restore" }));
+    await waitFor(() => expect(onRestore).toHaveBeenCalledWith("/skills/review.md"));
+  });
+
+  it("traps focus inside the removal dialog", () => {
+    renderLibrary();
+    fireEvent.click(screen.getByRole("button", { name: "Remove review" }));
+
+    const cancel = screen.getByRole("button", { name: "Cancel" });
+    const destructive = screen.getByRole("button", { name: "Delete source file too" });
+    expect(cancel).toHaveFocus();
+    destructive.focus();
+    fireEvent.keyDown(destructive, { key: "Tab" });
+    expect(cancel).toHaveFocus();
   });
 
   describe("creation editor", () => {
