@@ -80,7 +80,24 @@ type MentionResult =
 export const COMPOSER_INPUT_MIN_HEIGHT = 68;
 export const COMPOSER_INPUT_MAX_HEIGHT = COMPOSER_INPUT_MIN_HEIGHT * 2;
 
-export function resizeComposerTextarea(textarea: HTMLTextAreaElement): void {
+export function syncComposerHighlight(
+  textarea: HTMLTextAreaElement,
+  highlight: HTMLDivElement | null,
+): void {
+  if (!highlight) return;
+  highlight.scrollTop = textarea.scrollTop;
+  highlight.scrollLeft = textarea.scrollLeft;
+  // A classic scrollbar consumes some of the textarea's content width while
+  // the absolutely positioned mirror has no scrollbar of its own. Match that
+  // gutter so both layers wrap at the same column on every platform.
+  const scrollbarGutter = Math.max(0, textarea.offsetWidth - textarea.clientWidth);
+  highlight.style.setProperty("--composer-scrollbar-gutter", `${scrollbarGutter}px`);
+}
+
+export function resizeComposerTextarea(
+  textarea: HTMLTextAreaElement,
+  highlight: HTMLDivElement | null = null,
+): void {
   textarea.style.height = "auto";
   const contentHeight = textarea.scrollHeight;
   const height = Math.min(
@@ -89,6 +106,7 @@ export function resizeComposerTextarea(textarea: HTMLTextAreaElement): void {
   );
   textarea.style.height = `${height}px`;
   textarea.style.overflowY = contentHeight > COMPOSER_INPUT_MAX_HEIGHT ? "auto" : "hidden";
+  syncComposerHighlight(textarea, highlight);
 }
 
 export const Composer = forwardRef<ComposerHandle, {
@@ -139,10 +157,6 @@ export const Composer = forwardRef<ComposerHandle, {
   useEffect(() => () => {
     if (mentionTimerRef.current !== null) window.clearTimeout(mentionTimerRef.current);
   }, []);
-
-  useLayoutEffect(() => {
-    if (textareaRef.current) resizeComposerTextarea(textareaRef.current);
-  }, [draft, props.threadKey]);
 
   const setDraft = useCallback((text: string) => {
     setDraftState(text);
@@ -236,9 +250,9 @@ export const Composer = forwardRef<ComposerHandle, {
     });
   }, [closeMentions, draft, setDraft]);
 
-  // Blue @skill tokens are painted by a mirror layer behind a transparent
-  // textarea, so this runs on every keystroke: only recompute when the text or
-  // the installed skills actually change.
+  // Blue @skill tokens are painted by a pointer-free overlay while the native
+  // textarea remains visible. Editing and caret placement therefore never
+  // depend on the overlay being pixel-perfect.
   const skills = props.skills;
   const { highlightedDraft, hasSkillMentions } = useMemo(() => {
     const skillNames = new Set((skills ?? []).map((skill) => skill.name.toLowerCase()));
@@ -255,8 +269,17 @@ export const Composer = forwardRef<ComposerHandle, {
       }
     }
     parts.push(draft.slice(offset));
+    // A block with pre-wrap otherwise omits the empty visual line after a
+    // trailing newline, while a textarea keeps it. This sentinel exists only
+    // in the aria-hidden overlay and is never added to the submitted draft.
+    parts.push("\u200b");
     return { highlightedDraft: parts, hasSkillMentions: offset > 0 };
   }, [draft, skills]);
+
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current;
+    if (textarea) resizeComposerTextarea(textarea, highlightRef.current);
+  }, [draft, hasSkillMentions, props.threadKey]);
 
   const send = useCallback(async (mode: "default" | "steer" = "default") => {
     const text = draft.trim();
@@ -402,10 +425,7 @@ export const Composer = forwardRef<ComposerHandle, {
             }
           }}
           onScroll={(event) => {
-            if (highlightRef.current) {
-              highlightRef.current.scrollTop = event.currentTarget.scrollTop;
-              highlightRef.current.scrollLeft = event.currentTarget.scrollLeft;
-            }
+            syncComposerHighlight(event.currentTarget, highlightRef.current);
           }}
           onKeyDown={(event) => {
             if (mentions.open) {

@@ -157,6 +157,55 @@ describe("Composer", () => {
     expect(textarea).toHaveStyle({ height: `${COMPOSER_INPUT_MAX_HEIGHT}px`, overflowY: "auto" });
   });
 
+  it("mounts a long prompt's mention overlay at the textarea's current scroll position and width", () => {
+    render(<Composer {...composerProps({ skills: [{ name: "hatch-pet" }] })} />);
+    const textarea = screen.getByPlaceholderText("Ask anything");
+    Object.defineProperties(textarea, {
+      scrollHeight: { configurable: true, value: 260 },
+      offsetWidth: { configurable: true, value: 400 },
+      clientWidth: { configurable: true, value: 390 },
+    });
+    textarea.scrollTop = 72;
+    textarea.scrollLeft = 3;
+
+    fireEvent.change(textarea, {
+      target: { value: `${"A long prompt line. ".repeat(20)}Use @hatch-pet` },
+    });
+
+    const highlight = document.querySelector<HTMLDivElement>(".composer-input-highlight");
+    expect(highlight).not.toBeNull();
+    expect(highlight!.scrollTop).toBe(72);
+    expect(highlight!.scrollLeft).toBe(3);
+    expect(highlight!.style.getPropertyValue("--composer-scrollbar-gutter")).toBe("10px");
+  });
+
+  it("keeps the mention overlay synchronized when the textarea scrolls", () => {
+    render(<Composer {...composerProps({ skills: [{ name: "hatch-pet" }] })} />);
+    const textarea = screen.getByPlaceholderText("Ask anything");
+    fireEvent.change(textarea, { target: { value: "Use @hatch-pet in this long prompt" } });
+    const highlight = document.querySelector<HTMLDivElement>(".composer-input-highlight");
+    expect(highlight).not.toBeNull();
+
+    textarea.scrollTop = 45;
+    textarea.scrollLeft = 2;
+    fireEvent.scroll(textarea);
+
+    expect(highlight!.scrollTop).toBe(45);
+    expect(highlight!.scrollLeft).toBe(2);
+  });
+
+  it("keeps the overlay's trailing empty line out of the submitted draft", async () => {
+    const onSend = vi.fn(async () => true);
+    render(<Composer {...composerProps({ skills: [{ name: "hatch-pet" }], onSend })} />);
+    const textarea = screen.getByPlaceholderText("Ask anything");
+    fireEvent.change(textarea, { target: { value: "Use @hatch-pet\n" } });
+
+    const highlight = document.querySelector<HTMLDivElement>(".composer-input-highlight");
+    expect(highlight?.textContent?.endsWith("\u200b")).toBe(true);
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith("Use @hatch-pet"));
+  });
+
   it("opens enabled skills on @, filters them, and inserts a blue skill token", async () => {
     render(<Composer {...composerProps({
       skills: [
