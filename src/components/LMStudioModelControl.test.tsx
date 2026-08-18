@@ -53,4 +53,13 @@ describe("LMStudioModelControl", () => {
     fireEvent.click(screen.getByRole("button", { name: "Refresh LM Studio model catalog" }));
     expect(onRefresh).toHaveBeenCalledOnce();
   });
+
+  it("accepts a model identifier that is not present in the catalog", () => {
+    const onModel = vi.fn();
+    render(<LMStudioModelControl model="" models={[]} effort="medium" loading={false} error="" onRefresh={vi.fn()} onModel={onModel} onEffort={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "LM Studio model: not selected" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Search LM Studio models" }), { target: { value: "my-org/custom-model" } });
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Use model identifier/ }));
+    expect(onModel).toHaveBeenCalledWith("my-org/custom-model");
+  });
 });

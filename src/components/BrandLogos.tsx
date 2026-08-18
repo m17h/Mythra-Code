@@ -1,5 +1,5 @@
 import { useId } from "react";
-import { Route, Server } from "lucide-react";
+import { Route } from "lucide-react";
 import type { Provider } from "../types";
 
 /**
@@ -9,6 +9,11 @@ import type { Provider } from "../types";
  */
 
 type LogoProps = { size?: number; className?: string };
+
+/** Official LM Studio color app icon from LM Studio's public brand kit. */
+export function LmStudioLogo({ size = 16, className }: LogoProps) {
+  return <img className={className} width={size} height={size} src="/lm-studio-icon.svg" alt="" aria-hidden="true" draggable={false} />;
+}
 
 export function ClaudeLogo({ size = 16, className }: LogoProps) {
   return (
@@ -140,6 +145,6 @@ export function ProviderLogo({ provider, size = 16, className }: LogoProps & { p
       </span>
     );
   }
-  if (provider === "lmstudio") return <Server size={size} className={className} />;
+  if (provider === "lmstudio") return <LmStudioLogo size={size} className={className} />;
   return <Route size={size} className={className} />;
 }

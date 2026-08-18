@@ -68,6 +68,18 @@ export async function listOpenRouterModels<T>(): Promise<T> {
   return invoke<T>("list_openrouter_models");
 }
 
+export async function saveLmStudioKey(apiKey: string): Promise<void> {
+  await invoke("save_lmstudio_key", { apiKey });
+}
+
+export async function hasLmStudioKey(): Promise<boolean> {
+  return invoke<boolean>("has_lmstudio_key");
+}
+
+export async function listLmStudioModels<T>(baseUrl: string): Promise<T> {
+  return invoke<T>("list_lmstudio_models", { baseUrl });
+}
+
 export async function restartRuntime(): Promise<void> {
   await invoke("restart_runtime");
 }

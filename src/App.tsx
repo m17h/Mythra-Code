@@ -6,11 +6,11 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { Archive, ArchiveRestore, Bot, Check, ChevronDown, Circle, Code2, Download, FileCode2, Folder, FolderOpen, GitBranch, GitFork, LoaderCircle, MessageSquare, Paperclip, PanelRight, PanelLeftClose, PanelLeftOpen, Plus, Pin, PinOff, Pencil, Search, Settings, Shield, ShieldAlert, ShieldCheck, TerminalSquare, Trash2, X } from "lucide-react";
-import { getCodexRuntimeStatus, auditEvent, exportTextFile, getNormalChatWorkspace, hasOpenRouterKey, listOpenRouterModels, respond, restartRuntime, rpc, runtimeInstanceId, type CodexRuntimeStatus, type JsonObject } from "./lib/codex";
+import { getCodexRuntimeStatus, auditEvent, exportTextFile, getNormalChatWorkspace, hasLmStudioKey, hasOpenRouterKey, listOpenRouterModels, respond, restartRuntime, rpc, runtimeInstanceId, type CodexRuntimeStatus, type JsonObject } from "./lib/codex";
 import { deleteClaudeTranscript, getClaudeRuntimeStatus, loadClaudeTranscript, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, type ClaudeRuntimeStatus } from "./lib/claude";
 import { deleteCursorTranscript, getCursorRuntimeStatus, listCursorModels, loadCursorTranscript, respondToCursorPermission, saveCursorTranscript, startCursorLogin, type CursorModel, type CursorRuntimeStatus } from "./lib/cursor";
 import { loadStored, storeValue } from "./lib/storage";
-import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_OPENAI_MODEL, DEFAULT_PROMPT_PROFILES, DEFAULT_SETTINGS, THEMES } from "./lib/appConfig";
+import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_PROMPT_PROFILES, DEFAULT_SETTINGS, THEMES } from "./lib/appConfig";
 import { commandSandbox, threadResumeParams, threadRuntimeConfig } from "./lib/turnConfig";
 import { threadSearchParams, threadsForWorkspace, type ThreadSearchResponse } from "./lib/threadSearch";
 import { countActiveThreadsByWorkspace, filterThreadsByKind, filterThreadsForWorkspace, forgetSidebarThread, isSubAgentThread, pruneSidebarIndex, reconcileWorkspaceThreads, rememberSidebarThread, sidebarThread, threadBelongsToWorkspace, upsertThread, type ThreadSidebarIndex } from "./lib/threadList";
@@ -153,7 +153,7 @@ const establishedInstall = isEstablishedOpenKiwiInstall({ projects: initialProje
 const initialOnboardingOpen = initialOnboardingVersion < ONBOARDING_VERSION && !establishedInstall;
 const storedSettings = loadStored<Partial<AppSettings>>("kiwi.settings", {});
 const initialChildAgents = sanitizeChildAgentSettings(storedSettings.childAgents);
-const initialSettings: AppSettings = { ...DEFAULT_SETTINGS, ...storedSettings, openAiLogo: storedSettings.openAiLogo === "codex" ? "codex" : "openai", claudeLogo: storedSettings.claudeLogo === "anthropic" ? "anthropic" : "claude", cursorLogo: storedSettings.cursorLogo === "app-dark" ? "app-dark" : "cube", subagentMax: crewSafeConcurrency(Number(storedSettings.subagentMax) || DEFAULT_SETTINGS.subagentMax, initialChildAgents), childAgents: initialChildAgents, model: modelForProvider(storedSettings.provider ?? DEFAULT_SETTINGS.provider, storedSettings.model ?? DEFAULT_SETTINGS.model), theme: THEMES.some((theme) => theme.id === storedSettings.theme) ? storedSettings.theme! : DEFAULT_SETTINGS.theme, uiScale: Math.min(150, Math.max(80, Number(storedSettings.uiScale) || DEFAULT_SETTINGS.uiScale)) };
+const initialSettings: AppSettings = { ...DEFAULT_SETTINGS, ...storedSettings, openAiLogo: storedSettings.openAiLogo === "codex" ? "codex" : "openai", claudeLogo: storedSettings.claudeLogo === "anthropic" ? "anthropic" : "claude", cursorLogo: storedSettings.cursorLogo === "app-dark" ? "app-dark" : "cube", subagentMax: crewSafeConcurrency(Number(storedSettings.subagentMax) || DEFAULT_SETTINGS.subagentMax, initialChildAgents), childAgents: initialChildAgents, model: modelForProvider(storedSettings.provider ?? DEFAULT_SETTINGS.provider, storedSettings.model ?? DEFAULT_SETTINGS.model), lmStudioBaseUrl: storedSettings.lmStudioBaseUrl?.trim() || DEFAULT_LM_STUDIO_BASE_URL, theme: THEMES.some((theme) => theme.id === storedSettings.theme) ? storedSettings.theme! : DEFAULT_SETTINGS.theme, uiScale: Math.min(150, Math.max(80, Number(storedSettings.uiScale) || DEFAULT_SETTINGS.uiScale)) };
 
 function permissionLabel(mode: PermissionMode): string {
   if (mode === "read-only") return "Read only";
@@ -277,6 +277,7 @@ export default function App() {
   const knownThreadsRef = useRef<ThreadSidebarIndex | null>(null);
   const providerRepairThreadsRef = useRef(new Set<string>());
   const [openRouterReady, setOpenRouterReady] = useState(false);
+  const [lmStudioTokenStored, setLmStudioTokenStored] = useState(false);
   const [studioOpen, setStudioOpen] = useState(false);
   const [studioTab, setStudioTab] = useState<StudioTab>("review");
   const [attachments, setAttachments] = useState<AttachmentRecord[]>([]);
@@ -649,6 +650,8 @@ export default function App() {
   );
   const costEstimate = !tokenUsage
     ? ""
+    : effectiveSettings.provider === "lmstudio"
+      ? "Local inference · no API charge"
     : activeUsageCost === null || activeUsageIsUnpriced
       ? "Price unavailable for this model"
       : `≈ ${formatEstimatedCost(activeUsageCost)} ${activeUsageRecord?.pricing?.source === "OpenRouter" ? "estimated spend" : "API-equivalent"}${activeUsageRecord?.unpricedTokens ? " · partial estimate" : ""}`;
@@ -1254,16 +1257,18 @@ export default function App() {
     }
   }, []);
 
-  const refreshLMStudioModels = useCallback(async () => {
+  const refreshLMStudioModels = useCallback(async (baseUrl: string) => {
     setLMStudioModelsLoading(true);
     setLMStudioModelsError("");
     try {
-      const models = await listLMStudioModels();
+      const models = await listLMStudioModels(baseUrl);
       setLMStudioModels(models);
       if (!models.length) setLMStudioModelsError("LM Studio is connected, but it did not report any models");
+      return models;
     } catch (reason) {
       setLMStudioModels([]);
       setLMStudioModelsError(friendlyError(reason));
+      return [];
     } finally {
       setLMStudioModelsLoading(false);
     }
@@ -1729,7 +1734,6 @@ export default function App() {
     void refreshClaudeStatus();
     void refreshCursorStatus();
     void refreshOpenRouterModels();
-    void refreshLMStudioModels();
     void refreshModelPricingCatalog()
       .then((catalog) => {
         if (catalog) setPricingCatalogRevision(catalog.updatedAt);
@@ -1741,7 +1745,14 @@ export default function App() {
     void hasOpenRouterKey()
       .then(setOpenRouterReady)
       .catch(() => setOpenRouterReady(false));
+    void hasLmStudioKey()
+      .then(setLmStudioTokenStored)
+      .catch(() => setLmStudioTokenStored(false));
   }, [checkRuntime, refreshAccount, refreshClaudeStatus, refreshCursorStatus, refreshLMStudioModels, refreshModels, refreshOpenRouterModels, refreshUsage]);
+
+  useEffect(() => {
+    void refreshLMStudioModels(settings.lmStudioBaseUrl);
+  }, [refreshLMStudioModels, settings.lmStudioBaseUrl]);
 
   // Cursor sign-in (at startup or later) refreshes only the Cursor model
   // list, never the whole startup sequence above.
@@ -2225,7 +2236,7 @@ export default function App() {
       }
       const result = isolation?.status === "missing" || isolation?.status === "removed" || capabilityRefreshDeferred
         ? await rpc<{ thread: Thread }>("thread/read", { threadId: thread.id, includeTurns: true })
-        : await rpc<{ thread: Thread }>("thread/resume", threadResumeParams(resumedSettings, thread.id, executionPath, { customAgents, modelContextWindow: provider === "openrouter" ? openRouterModels.find((entry) => entry.id === resumedSettings.model)?.context_length : undefined, additionalWorkspaceRoots: isolation?.gitDir ? [isolation.gitDir] : [], childAgentBridge: childBridge?.launch, refreshRuntimeConfig: true }));
+        : await rpc<{ thread: Thread }>("thread/resume", threadResumeParams(resumedSettings, thread.id, executionPath, { customAgents, modelContextWindow: provider === "openrouter" ? openRouterModels.find((entry) => entry.id === resumedSettings.model)?.context_length : provider === "lmstudio" ? lmStudioModels.find((entry) => entry.id === resumedSettings.model)?.maxContextLength : undefined, additionalWorkspaceRoots: isolation?.gitDir ? [isolation.gitDir] : [], childAgentBridge: childBridge?.launch, refreshRuntimeConfig: true }));
       if (selectThreadRequestRef.current !== requestId) return;
       if (isolation?.status !== "missing" && isolation?.status !== "removed" && !capabilityRefreshDeferred) {
         // Opening a thread resumes it with the complete capability config,
@@ -2357,6 +2368,7 @@ export default function App() {
     subscriptionSystemPrompts,
     customAgents,
     openRouterModels,
+    lmStudioModels,
     runtimeStatus,
     claudeStatus,
     cursorStatus,
@@ -2453,6 +2465,8 @@ export default function App() {
     links: childAgentLinks,
     persistChildAgentLinks,
     openRouterModels,
+    lmStudioModels,
+    lmStudioBaseUrl: settings.lmStudioBaseUrl,
     readiness: childAgentReadiness,
     projectPathForThread: (threadId) => threadProjectBindingsRef.current?.[threadId],
     executionPathFor,
@@ -2924,7 +2938,7 @@ export default function App() {
     }
     try {
       await ensureSkillRoots();
-      const result = await rpc<{ thread: Thread }>("thread/fork", { threadId: checkpoint?.threadId ?? activeThread.id, lastTurnId: checkpoint?.turnId, cwd: activeWorkspace?.path, runtimeWorkspaceRoots: activeWorkspace ? [activeWorkspace.path] : undefined, model: effectiveSettings.model, modelProvider: effectiveSettings.provider === "openrouter" || effectiveSettings.provider === "lmstudio" ? effectiveSettings.provider : undefined, config: threadRuntimeConfig(effectiveSettings, { customAgents, modelContextWindow: effectiveSettings.provider === "openrouter" ? openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.context_length : undefined }), baseInstructions: effectiveSettings.systemPrompt, developerInstructions: openKiwiDeveloperInstructions(false) });
+      const result = await rpc<{ thread: Thread }>("thread/fork", { threadId: checkpoint?.threadId ?? activeThread.id, lastTurnId: checkpoint?.turnId, cwd: activeWorkspace?.path, runtimeWorkspaceRoots: activeWorkspace ? [activeWorkspace.path] : undefined, model: effectiveSettings.model, modelProvider: effectiveSettings.provider === "openrouter" || effectiveSettings.provider === "lmstudio" ? effectiveSettings.provider : undefined, config: threadRuntimeConfig(effectiveSettings, { customAgents, modelContextWindow: effectiveSettings.provider === "openrouter" ? openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.context_length : effectiveSettings.provider === "lmstudio" ? lmStudioModels.find((entry) => entry.id === effectiveSettings.model)?.maxContextLength : undefined }), baseInstructions: effectiveSettings.systemPrompt, developerInstructions: openKiwiDeveloperInstructions(false) });
       if (activeWorkspace) bindThreadToProject(result.thread.id, activeWorkspace.path);
       rememberThread(result.thread);
       persistThreadModel(result.thread.id, effectiveSettings.model);
@@ -3622,6 +3636,7 @@ export default function App() {
     chatGptConnected: account?.type === "chatgpt",
     openRouterReady,
     lmStudioReady,
+    lmStudioModels,
     customAgents,
     ensureSkillRoots,
     bindThreadToProject,
@@ -3672,6 +3687,7 @@ export default function App() {
     chatGptConnected: account?.type === "chatgpt",
     openRouterReady,
     lmStudioReady,
+    lmStudioModels,
     ensureSkillRoots,
     bindThreadToProject,
     onThreadStarted: (project) => {
@@ -4260,7 +4276,7 @@ export default function App() {
                         effort={effectiveSettings.reasoningEffort}
                         loading={lmStudioModelsLoading}
                         error={lmStudioModelsError}
-                        onRefresh={() => void refreshLMStudioModels()}
+                        onRefresh={() => void refreshLMStudioModels(settings.lmStudioBaseUrl)}
                         onModel={persistComposerModel}
                         onEffort={persistComposerReasoning}
                       />
@@ -4439,7 +4455,7 @@ export default function App() {
               if (effectiveSettings.provider === "claude") void refreshClaudeStatus();
               else if (effectiveSettings.provider === "cursor") void Promise.all([refreshCursorStatus(), refreshCursorModels()]);
               else if (effectiveSettings.provider === "openrouter") void hasOpenRouterKey().then(setOpenRouterReady).catch(() => setOpenRouterReady(false));
-              else if (effectiveSettings.provider === "lmstudio") void refreshLMStudioModels();
+              else if (effectiveSettings.provider === "lmstudio") void refreshLMStudioModels(settings.lmStudioBaseUrl);
               else void refreshUsage();
             }}
             onCompact={() => void compactThread()}
@@ -4480,9 +4496,9 @@ export default function App() {
         cursorLoginStarting={cursorLoginStarting}
         openRouterReady={openRouterReady}
         lmStudioReady={lmStudioReady}
-        lmStudioModelCount={lmStudioModels.length}
-        lmStudioLoading={lmStudioModelsLoading}
-        lmStudioError={lmStudioModelsError}
+        lmStudioTokenStored={lmStudioTokenStored}
+        lmStudioModels={lmStudioModels}
+        lmStudioModelsError={lmStudioModelsError}
         childAgentReadiness={childAgentReadiness}
         githubStatus={githubStatus}
         githubBusy={githubBusy || githubLoginPending}
@@ -4513,6 +4529,7 @@ export default function App() {
         }}
         onOpenRouterChange={setOpenRouterReady}
         onLMStudioRefresh={refreshLMStudioModels}
+        onLMStudioTokenChange={setLmStudioTokenStored}
         onGitHubSignIn={beginGitHubLogin}
         onGitHubRefresh={refreshGitHubAccount}
         onGitHubClone={cloneGitHubProject}

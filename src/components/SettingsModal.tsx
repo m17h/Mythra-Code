@@ -20,20 +20,20 @@ import {
   Play,
   Plus,
   RotateCcw,
-  Server,
   ShieldCheck,
   Sparkles,
   UsersRound,
   Wrench,
   X,
 } from "lucide-react";
-import { exportDiagnostics, recentAuditRows, rpc, saveOpenRouterKey, type AuditRow, type CodexRuntimeStatus } from "../lib/codex";
+import { exportDiagnostics, recentAuditRows, rpc, saveLmStudioKey, saveOpenRouterKey, type AuditRow, type CodexRuntimeStatus } from "../lib/codex";
 import type { ClaudeRuntimeStatus } from "../lib/claude";
 import type { CursorRuntimeStatus } from "../lib/cursor";
-import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_OPENAI_MODEL, DEFAULT_SETTINGS, RELEASE_NOTES_URL, THEMES } from "../lib/appConfig";
+import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_SETTINGS, RELEASE_NOTES_URL, THEMES } from "../lib/appConfig";
 import { friendlyError } from "../lib/errors";
 import { useModalFocus } from "../hooks/useModalFocus";
-import { AnthropicLogo, ClaudeLogo, CodexLogo, CursorDarkAppIcon, CursorLogo, OpenAILogo } from "./BrandLogos";
+import { AnthropicLogo, ClaudeLogo, CodexLogo, CursorDarkAppIcon, CursorLogo, LmStudioLogo, OpenAILogo } from "./BrandLogos";
+import type { LMStudioModel } from "../lib/lmStudio";
 import { updateProgress, type AppUpdater } from "../lib/appUpdater";
 import {
   projectSubagentSettingsFromApp,
@@ -119,9 +119,9 @@ export function SettingsModal({
   cursorLoginStarting = false,
   openRouterReady,
   lmStudioReady = false,
-  lmStudioModelCount = 0,
-  lmStudioLoading = false,
-  lmStudioError = "",
+  lmStudioTokenStored = false,
+  lmStudioModels = [],
+  lmStudioModelsError = "",
   childAgentReadiness,
   githubStatus,
   githubBusy = false,
@@ -138,7 +138,8 @@ export function SettingsModal({
   onRuntimeRequired,
   onWorkspaceTools,
   onOpenRouterChange,
-  onLMStudioRefresh = async () => {},
+  onLMStudioRefresh = async () => [],
+  onLMStudioTokenChange = () => {},
   onGitHubSignIn,
   onGitHubRefresh,
   onGitHubClone,
@@ -191,9 +192,9 @@ export function SettingsModal({
   cursorLoginStarting?: boolean;
   openRouterReady: boolean;
   lmStudioReady?: boolean;
-  lmStudioModelCount?: number;
-  lmStudioLoading?: boolean;
-  lmStudioError?: string;
+  lmStudioTokenStored?: boolean;
+  lmStudioModels?: LMStudioModel[];
+  lmStudioModelsError?: string;
   /** Which providers a cross-provider child could be started on right now. */
   childAgentReadiness: ChildAgentReadiness;
   githubStatus: GitHubAccountStatus | null;
@@ -211,7 +212,8 @@ export function SettingsModal({
   onRuntimeRequired: () => void;
   onWorkspaceTools: () => void;
   onOpenRouterChange: (ready: boolean) => void;
-  onLMStudioRefresh?: () => Promise<void>;
+  onLMStudioRefresh?: (baseUrl: string) => Promise<LMStudioModel[]>;
+  onLMStudioTokenChange?: (stored: boolean) => void;
   onGitHubSignIn: () => Promise<void>;
   onGitHubRefresh: () => Promise<void>;
   onGitHubClone: (url: string, folderName: string) => Promise<boolean>;
@@ -256,6 +258,8 @@ export function SettingsModal({
   const [localProjects, setLocalProjects] = useState(projects);
   const [agentScope, setAgentScope] = useState<string>(activeProjectId ?? "global");
   const [apiKey, setApiKey] = useState("");
+  const [lmStudioToken, setLmStudioToken] = useState("");
+  const [lmStudioConnectionMessage, setLmStudioConnectionMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>(initialSection);
   const [cloneUrl, setCloneUrl] = useState("");
@@ -424,6 +428,38 @@ export function SettingsModal({
       onOpenRouterChange(true);
     } catch (reason) {
       onError(friendlyError(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const storeLmStudioToken = async (remove = false) => {
+    if (!remove && !lmStudioToken.trim()) return;
+    setBusy(true);
+    setLmStudioConnectionMessage("");
+    try {
+      await saveLmStudioKey(remove ? "" : lmStudioToken);
+      setLmStudioToken("");
+      onLMStudioTokenChange(!remove);
+      setLmStudioConnectionMessage(remove ? "API token removed." : "API token stored securely.");
+      await onLMStudioRefresh(local.lmStudioBaseUrl);
+    } catch (reason) {
+      onError(friendlyError(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const testLmStudioConnection = async () => {
+    setBusy(true);
+    setLmStudioConnectionMessage("");
+    try {
+      const models = await onLMStudioRefresh(local.lmStudioBaseUrl);
+      setLmStudioConnectionMessage(models.length
+        ? `Connected · ${models.length} model${models.length === 1 ? "" : "s"} available.`
+        : "No models were returned. Load a model or enable Just-in-Time loading in LM Studio.");
+    } catch (reason) {
+      setLmStudioConnectionMessage(friendlyError(reason));
     } finally {
       setBusy(false);
     }
@@ -718,9 +754,9 @@ export function SettingsModal({
                 <span><strong>OpenRouter</strong><small>Responses-compatible model routing</small></span>
                 {local.provider === "openrouter" && <Check size={16} />}
               </button>
-              <button className={`provider-card ${local.provider === "lmstudio" ? "selected" : ""}`} onClick={() => setLocal({ ...local, provider: "lmstudio", model: local.provider === "lmstudio" ? local.model : "", ultra: false })}>
-                <span className="provider-logo lmstudio"><Server size={17} /></span>
-                <span><strong>LM Studio</strong><small>Local models running on this PC</small></span>
+              <button className={`provider-card ${local.provider === "lmstudio" ? "selected" : ""}`} onClick={() => setLocal({ ...local, provider: "lmstudio", model: local.provider === "lmstudio" ? local.model : (lmStudioModels[0]?.id ?? ""), ultra: false })}>
+                <span className="provider-logo lmstudio"><LmStudioLogo size={18} /></span>
+                <span><strong>LM Studio</strong><small>Local models through your LM Studio server</small></span>
                 {local.provider === "lmstudio" && <Check size={16} />}
               </button>
               <button className={`provider-card ${local.provider === "claude" ? "selected" : ""}`} onClick={() => setLocal({ ...local, provider: "claude", model: local.provider === "claude" ? (local.model || DEFAULT_CLAUDE_MODEL) : DEFAULT_CLAUDE_MODEL, ultra: false })}>
@@ -762,17 +798,28 @@ export function SettingsModal({
                 </div>
               </div>
             ) : local.provider === "lmstudio" ? (
-              <div className="credential-panel">
-                <span className="provider-logo lmstudio"><Server size={17} /></span>
-                <div>
-                  <strong>LM Studio local server</strong>
-                  <small>{lmStudioReady
-                    ? `${lmStudioModelCount} model${lmStudioModelCount === 1 ? "" : "s"} available at localhost:1234`
-                    : lmStudioError || "Start the local server in LM Studio, then refresh"}</small>
+              <div className="credential-panel stacked">
+                <div className="credential-status">
+                  <div>
+                    <strong>LM Studio local server</strong>
+                    <small>{lmStudioReady ? `${lmStudioModels.length} model${lmStudioModels.length === 1 ? "" : "s"} available` : lmStudioModelsError || "Start the server from LM Studio’s Developer tab"}</small>
+                  </div>
+                  {lmStudioReady && <span className="connected-badge"><Check size={12} /> Connected</span>}
                 </div>
-                {lmStudioReady && <span className="connected-badge"><Check size={12} /> Connected</span>}
-                <button className="icon-button" onClick={() => void onLMStudioRefresh()} title="Refresh LM Studio connection" aria-label="Refresh LM Studio connection" disabled={lmStudioLoading}>{lmStudioLoading ? <LoaderCircle className="spin" size={14} /> : <RotateCcw size={14} />}</button>
-                {!lmStudioReady && <button className="secondary-button" onClick={() => void openUrl("https://lmstudio.ai/docs/developer/rest/quickstart")}>Setup guide</button>}
+                <label className="field-label">
+                  <span>Server URL</span>
+                  <input value={local.lmStudioBaseUrl} onChange={(event) => setLocal({ ...local, lmStudioBaseUrl: event.target.value })} placeholder={DEFAULT_LM_STUDIO_BASE_URL} spellCheck={false} />
+                  <small>OpenKiwi uses LM Studio’s OpenAI-compatible Responses API. Keep the default for a server on this PC.</small>
+                </label>
+                <div className="key-input-row">
+                  <input type="password" value={lmStudioToken} onChange={(event) => setLmStudioToken(event.target.value)} placeholder={lmStudioTokenStored ? "Token stored in Windows Credential Manager" : "Optional API token"} />
+                  <button className="secondary-button" onClick={() => void storeLmStudioToken()} disabled={!lmStudioToken.trim() || busy}>Save token</button>
+                  {lmStudioTokenStored && <button className="secondary-button" onClick={() => void storeLmStudioToken(true)} disabled={busy}>Remove</button>}
+                </div>
+                <div className="credential-status">
+                  <small>{lmStudioConnectionMessage || "Authentication is optional for the default localhost server. Use a token for authenticated or network-accessible servers."}</small>
+                  <button className="secondary-button" onClick={() => void testLmStudioConnection()} disabled={busy}>{busy ? <LoaderCircle className="spin" size={13} /> : <RotateCcw size={13} />} Test connection</button>
+                </div>
               </div>
             ) : local.provider === "claude" ? (
               <div className="credential-panel">

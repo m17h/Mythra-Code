@@ -16,7 +16,6 @@ import {
   ShieldAlert,
   ShieldCheck,
   Sparkles,
-  Server,
   TerminalSquare,
   WandSparkles,
   X,
@@ -26,7 +25,7 @@ import type { ClaudeRuntimeStatus } from "../lib/claude";
 import type { CursorRuntimeStatus } from "../lib/cursor";
 import type { Account, SettingsSection } from "../types";
 import { useModalFocus } from "../hooks/useModalFocus";
-import { ClaudeLogo, CursorLogo, OpenAILogo } from "./BrandLogos";
+import { ClaudeLogo, CursorLogo, LmStudioLogo, OpenAILogo } from "./BrandLogos";
 
 const CODEX_INSTALL_URL = "https://learn.chatgpt.com/docs/codex/cli";
 const OPENROUTER_KEYS_URL = "https://openrouter.ai/settings/keys";
@@ -125,7 +124,7 @@ function ProviderStep({ runtimeStatus, claudeStatus, cursorStatus, account, open
       </article>
 
       <article className="onboarding-provider-card lmstudio">
-        <div className="onboarding-card-title"><span><Server size={18} /></span><div><strong>LM Studio</strong><small>Local models on this PC</small></div></div>
+        <div className="onboarding-card-title"><span><LmStudioLogo size={18} /></span><div><strong>LM Studio</strong><small>Local models on this PC</small></div></div>
         <ol>
           <li><b>1</b><span>Install <strong>LM Studio</strong> and download a tool-capable model.</span></li>
           <li><b>2</b><span>Start the local server in the Developer tab or run <strong>lms server start</strong>.</span></li>

@@ -181,6 +181,8 @@ export interface ProjectAction {
 export interface ScheduleRunSettings {
   provider: Provider;
   model: string;
+  /** OpenAI-compatible Responses endpoint exposed by LM Studio. */
+  lmStudioBaseUrl?: string;
   permission: PermissionMode;
   systemPrompt: string;
   projectInstructionsEnabled: boolean;
@@ -240,6 +242,8 @@ export interface AppSettings {
   claudeLogo: ClaudeLogoStyle;
   cursorLogo: CursorLogoStyle;
   model: string;
+  /** OpenAI-compatible Responses endpoint exposed by LM Studio. */
+  lmStudioBaseUrl: string;
   permission: PermissionMode;
   /** Global OpenKiwi instructions, applied before any subscription-specific layer. */
   systemPrompt: string;

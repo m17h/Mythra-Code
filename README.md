@@ -72,9 +72,9 @@ OpenRouter's Responses API is currently beta, so compatibility can change upstre
 
 ### LM Studio
 
-Install [LM Studio](https://lmstudio.ai/), download a tool-capable model, and start its local server from LM Studio's Developer tab or with `lms server start`. Open **Settings → Models & accounts**, choose **LM Studio**, and refresh the connection. OpenKiwi discovers the live LLM catalog from `http://localhost:1234/api/v1/models`; choose one of those models beneath the composer before sending. Embedding models are excluded, and the model picker marks LLMs that LM Studio reports as trained for tool use.
+Install [LM Studio](https://lmstudio.ai/), download a tool-capable model, and start its local server from LM Studio's Developer tab or with `lms server start`. Open **Settings → Models & accounts**, choose **LM Studio**, and test the default `http://127.0.0.1:1234/v1` connection. OpenKiwi discovers the richer native LLM catalog first, excludes embedding models, and retains context-window, tool-use, and reasoning metadata. You can also enter a custom model identifier or point OpenKiwi at LM Studio on another trusted machine.
 
-LM Studio turns run through Codex's built-in `lmstudio` provider and its Responses-compatible endpoint. That keeps the normal OpenKiwi coding tools, approvals, sandbox, threads, handoffs, workflows, and optional sub-agent destinations available while inference stays on the user's PC. The initial integration intentionally uses LM Studio's standard local address and no-auth local-server mode.
+Authentication is optional for the default localhost server. If LM Studio authentication is enabled, store its token in Settings; OpenKiwi keeps it in Windows Credential Manager and exposes it only to the local App Server child process. LM Studio turns retain OpenKiwi's normal permissions, coding tools, MCP servers, threads, handoffs, workflows, schedules, and managed cross-provider sub-agents while inference stays on the configured machine.
 
 ## Prompt transparency
 

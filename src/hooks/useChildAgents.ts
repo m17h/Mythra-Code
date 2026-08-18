@@ -29,6 +29,7 @@ import { upsertThread } from "../lib/threadList";
 import { timelineFromTurns } from "../lib/threadTimeline";
 import { useTaskStore, type TaskStatus } from "../lib/taskStore";
 import type { OpenRouterModel } from "../components/OpenRouterModelControl";
+import type { LMStudioModel } from "../lib/lmStudio";
 import type { SetPersisted } from "./usePersistedState";
 import type { PendingApproval, ProjectSubagentSettings, Thread, ThreadReasoning } from "../types";
 
@@ -56,6 +57,8 @@ export interface ChildAgentContext {
   links: Record<string, ChildAgentLink>;
   persistChildAgentLinks: SetPersisted<Record<string, ChildAgentLink>>;
   openRouterModels: OpenRouterModel[];
+  lmStudioModels?: LMStudioModel[];
+  lmStudioBaseUrl?: string;
   readiness: ChildAgentReadiness;
   /** Logical project path a thread is bound to, before worktree resolution. */
   projectPathForThread: (threadId: string) => string | undefined;
@@ -284,9 +287,12 @@ export function useChildAgents(context: ChildAgentContext): {
         reasoningEffort,
         serviceTier: policy.serviceTier,
         serviceName: ctx.serviceNameFor(rootThreadId),
-        openRouterContextWindow: target.provider === "openrouter"
+        modelContextWindow: target.provider === "openrouter"
           ? ctx.openRouterModels.find((entry) => entry.id === childAgentModel(target))?.context_length
-          : undefined,
+          : target.provider === "lmstudio"
+            ? ctx.lmStudioModels?.find((entry) => entry.id === childAgentModel(target))?.maxContextLength
+            : undefined,
+        lmStudioBaseUrl: ctx.lmStudioBaseUrl,
       });
     } finally {
       pending.delete(reservation);

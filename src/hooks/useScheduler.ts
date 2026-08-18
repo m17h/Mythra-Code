@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef } from "react";
 import { auditEvent, rpc } from "../lib/codex";
 import { useTaskStore } from "../lib/taskStore";
 import { scheduleRunSnapshot, threadStartParams, turnStartParams } from "../lib/turnConfig";
+import type { LMStudioModel } from "../lib/lmStudio";
 import type { AppSettings, Project, ScheduleRunRecord, ScheduleRunSettings, ScheduledTask, Thread } from "../types";
 
 export interface SchedulerDeps {
@@ -13,6 +14,7 @@ export interface SchedulerDeps {
   chatGptConnected: boolean;
   openRouterReady: boolean;
   lmStudioReady?: boolean;
+  lmStudioModels?: LMStudioModel[];
   ensureSkillRoots: () => Promise<void>;
   bindThreadToProject: (threadId: string, projectPath: string) => void;
   onThreadStarted: (project: Project) => void;
@@ -81,6 +83,9 @@ export function useScheduler(deps: SchedulerDeps): void {
       await current.ensureSkillRoots();
       const started = await rpc<{ thread: Thread }>("thread/start", threadStartParams(run, project.path, {
         serviceName: "OpenKiwi",
+        modelContextWindow: run.provider === "lmstudio"
+          ? current.lmStudioModels?.find((entry) => entry.id === run.model)?.maxContextLength
+          : undefined,
         interactive: false,
       }));
       startedThreadId = started.thread.id;

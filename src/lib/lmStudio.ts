@@ -1,6 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
-
-export const LM_STUDIO_SERVER_URL = "http://localhost:1234";
+import { listLmStudioModels } from "./codex";
 
 export type LMStudioReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -29,6 +27,18 @@ interface LMStudioCatalogModel {
   };
 }
 
+interface LMStudioCompatibleModel {
+  id?: string;
+  name?: string;
+  owned_by?: string;
+  context_length?: number;
+  trained_for_tool_use?: boolean;
+  reasoning?: {
+    allowed_options?: string[];
+    default?: string;
+  } | null;
+}
+
 const REASONING_EFFORTS = new Set<LMStudioReasoningEffort>(["low", "medium", "high", "xhigh", "max"]);
 
 function reasoningEffort(value: unknown): LMStudioReasoningEffort | undefined {
@@ -37,9 +47,27 @@ function reasoningEffort(value: unknown): LMStudioReasoningEffort | undefined {
     : undefined;
 }
 
-export async function listLMStudioModels(): Promise<LMStudioModel[]> {
-  const result = await invoke<{ models?: LMStudioCatalogModel[] }>("list_lm_studio_models");
-  return (result.models ?? [])
+export async function listLMStudioModels(baseUrl: string): Promise<LMStudioModel[]> {
+  const result = await listLmStudioModels<{ data?: LMStudioCompatibleModel[]; models?: LMStudioCatalogModel[] }>(baseUrl);
+  const compatible = (result.data ?? [])
+    .filter((model) => typeof model.id === "string" && model.id.trim().length > 0)
+    .map((model) => {
+      const id = model.id!.trim();
+      const reasoningEfforts = (model.reasoning?.allowed_options ?? [])
+        .map(reasoningEffort)
+        .filter((effort): effort is LMStudioReasoningEffort => Boolean(effort));
+      const defaultReasoningEffort = reasoningEffort(model.reasoning?.default);
+      return {
+        id,
+        displayName: model.name?.trim() || id,
+        publisher: model.owned_by?.trim() || "LM Studio",
+        ...(typeof model.context_length === "number" && model.context_length > 0 ? { maxContextLength: model.context_length } : {}),
+        trainedForToolUse: Boolean(model.trained_for_tool_use),
+        reasoningEfforts,
+        ...(defaultReasoningEffort ? { defaultReasoningEffort } : {}),
+      };
+    });
+  const native = (result.models ?? [])
     .filter((model) => model.type === "llm" && typeof model.key === "string" && model.key.trim().length > 0)
     .map((model) => {
       const id = model.key!.trim();
@@ -58,6 +86,6 @@ export async function listLMStudioModels(): Promise<LMStudioModel[]> {
         reasoningEfforts,
         ...(defaultReasoningEffort ? { defaultReasoningEffort } : {}),
       };
-    })
-    .sort((left, right) => left.id.localeCompare(right.id));
+    });
+  return [...compatible, ...native].sort((left, right) => left.id.localeCompare(right.id));
 }

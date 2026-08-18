@@ -953,7 +953,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .onboarding-card-title > span { width: 33px; height: 33px; display: grid; place-items: center; border-radius: 9px; color: #79d7a6; background: rgba(121,215,166,.08); }
 .onboarding-provider-card.openai .onboarding-card-title > span { color: #fff; background: #1a1d18; }
 .onboarding-provider-card.openrouter .onboarding-card-title > span { color: #c39bff; background: rgba(195,155,255,.09); }
-.onboarding-provider-card.lmstudio .onboarding-card-title > span { color: #102421; background: #75d5c7; }
+.onboarding-provider-card.lmstudio .onboarding-card-title > span { background: transparent; }
 .onboarding-provider-card.claude .onboarding-card-title > span { color: #fff; background: #d97757; }
 .onboarding-card-title > div { display: flex; flex-direction: column; gap: 2px; }
 .onboarding-card-title strong { font-size: var(--fs-ui); font-weight: 620; }
@@ -1485,8 +1485,9 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 /* OpenRouter model rail */
 .openrouter-control { --router-accent: #b993f5; --router-fill: 0%; position: relative; z-index: 8; display: grid; grid-template-columns: minmax(280px, 1.08fr) minmax(245px, .92fr); gap: var(--s-3); align-items: center; margin: 0 10px var(--s-1); padding: var(--s-2); overflow: visible; border: 1px solid var(--line); border-radius: var(--r-lg); background: rgba(255,255,255,.014); box-shadow: none; }
 .openrouter-control.lmstudio-control { --router-accent: #75d5c7; }
-.lmstudio-logo { color: #102421 !important; background: #75d5c7 !important; }
-.provider-mark.lmstudio, .provider-logo.lmstudio, .thread-card-provider.lmstudio, .message-avatar.provider-lmstudio { color: #102421; background: #75d5c7; }
+.lmstudio-logo { background: transparent !important; }
+.provider-mark.lmstudio, .provider-logo.lmstudio, .thread-card-provider.lmstudio, .message-avatar.provider-lmstudio { background: transparent; }
+.lmstudio-logo img, .provider-logo.lmstudio img, .provider-mark.lmstudio img, .thread-card-provider.lmstudio img, .message-avatar.provider-lmstudio img, .sa-tile.lmstudio img { border-radius: 22%; }
 .lmstudio-model-menu { width: min(620px, calc(100vw - 42px)); }
 .openrouter-control.claude-control { --router-accent: #dd8b6a; }
 .claude-control .openrouter-trigger { border-color: var(--line); background: var(--field); }

@@ -42,6 +42,7 @@ import { normalizedProjectPath } from "../lib/paths";
 import { PendingTurnStarts, type PendingTurnStart } from "../lib/pendingTurnStarts";
 import type { SetPersisted } from "./usePersistedState";
 import type { OpenRouterModel } from "../components/OpenRouterModelControl";
+import type { LMStudioModel } from "../lib/lmStudio";
 import type { AttachmentRecord } from "../components/StudioDock";
 import type { Account, AppSettings, CustomAgentProfile, Project, Provider, SettingsSection, Thread, ThreadReasoning, Turn } from "../types";
 
@@ -118,6 +119,7 @@ export interface TurnRunnerContext {
   subscriptionSystemPrompts: Record<"openai" | "claude", string>;
   customAgents: CustomAgentProfile[];
   openRouterModels: OpenRouterModel[];
+  lmStudioModels?: LMStudioModel[];
   runtimeStatus: CodexRuntimeStatus | null;
   claudeStatus: ClaudeRuntimeStatus | null;
   cursorStatus: CursorRuntimeStatus | null;
@@ -195,7 +197,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
   const deliverMessage = useCallback(async (ctx: TurnRunnerContext, text: string, mode: "turn" | "steer"): Promise<boolean> => {
     const {
       activeThread, activeWorkspace, activeProject, running, attachments, deferredDelivery,
-      effectiveSettings, subscriptionSystemPrompts, customAgents, openRouterModels,
+      effectiveSettings, subscriptionSystemPrompts, customAgents, openRouterModels, lmStudioModels = [],
       runtimeStatus, claudeStatus, cursorStatus, account, openRouterReady, lmStudioReady,
       workspaceGitInfo, draftThreadIsolated, worktreeBusy, skillsFolder,
       childAgentPolicies, childAgentLinks, activeThreadIsChild, childAgentReadiness, persistChildAgentPolicies,
@@ -258,6 +260,11 @@ export function useTurnRunner(context: TurnRunnerContext): {
       setError("Choose an LM Studio model before starting this thread.");
       return false;
     }
+    const modelContextWindow = effectiveSettings.provider === "openrouter"
+      ? openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.context_length
+      : effectiveSettings.provider === "lmstudio"
+        ? lmStudioModels.find((entry) => entry.id === effectiveSettings.model)?.maxContextLength
+        : undefined;
     if (mode === "steer" && running && activeThread) {
       const sentAttachments = [...attachments];
       setError(null);
@@ -555,7 +562,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       let threadId = activeThread?.id;
       startedThreadId = threadId;
       if (!threadId) {
-        const result = await rpc<{ thread: Thread }>("thread/start", threadStartParams(runtimeSettings, executionPath, { serviceName: activeWorkspace.isChat ? "OpenKiwi Chat" : "OpenKiwi", customAgents, modelContextWindow: effectiveSettings.provider === "openrouter" ? openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.context_length : undefined, interactive: true, additionalWorkspaceRoots, childAgentBridge: childBridge?.launch }));
+        const result = await rpc<{ thread: Thread }>("thread/start", threadStartParams(runtimeSettings, executionPath, { serviceName: activeWorkspace.isChat ? "OpenKiwi Chat" : "OpenKiwi", customAgents, modelContextWindow, interactive: true, additionalWorkspaceRoots, childAgentBridge: childBridge?.launch }));
         const startedThread = optimisticStartedThread(result.thread, text);
         threadId = startedThread.id;
         startedThreadId = threadId;
@@ -588,7 +595,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         const plan = planSubagentCapabilities(threadId, runtimeInstance, capabilities);
         if (plan.restartRuntime) runtimeInstance = await restartRuntimeForCapabilities(threadId);
         if (effectiveSettings.provider === "openrouter" || effectiveSettings.provider === "lmstudio" || plan.resume) {
-          const resume = threadResumeParams(runtimeSettings, threadId, executionPath, { customAgents, modelContextWindow: openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.context_length, excludeTurns: true, additionalWorkspaceRoots, childAgentBridge: childBridge?.launch, refreshRuntimeConfig: true });
+          const resume = threadResumeParams(runtimeSettings, threadId, executionPath, { customAgents, modelContextWindow, excludeTurns: true, additionalWorkspaceRoots, childAgentBridge: childBridge?.launch, refreshRuntimeConfig: true });
           await rpc("thread/resume", effectiveSettings.provider === "openrouter" || effectiveSettings.provider === "lmstudio" ? { ...resume, model: effectiveSettings.model } : resume);
           recordSubagentCapabilities(threadId, runtimeInstance, capabilities);
         }

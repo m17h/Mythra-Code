@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { Check, ChevronDown, Gauge, LoaderCircle, RefreshCw, Search, Server } from "lucide-react";
+import { Check, ChevronDown, Gauge, LoaderCircle, RefreshCw, Search } from "lucide-react";
 import type { LMStudioModel, LMStudioReasoningEffort } from "../lib/lmStudio";
 import type { ReasoningEffort } from "./ModelPowerControl";
+import { LmStudioLogo } from "./BrandLogos";
 
 const EFFORTS: Array<{ value: LMStudioReasoningEffort; label: string }> = [
   { value: "low", label: "Low" },
@@ -40,6 +41,8 @@ export function LMStudioModelControl({
     `${entry.id} ${entry.displayName} ${entry.publisher}`.toLowerCase().includes(normalizedQuery)
   )), [models, normalizedQuery]);
   const selectedModel = models.find((entry) => entry.id === model);
+  const customModel = query.trim();
+  const canUseCustom = Boolean(customModel) && !models.some((entry) => entry.id.toLowerCase() === normalizedQuery);
   const availableEfforts = selectedModel?.reasoningEfforts.length
     ? EFFORTS.filter((entry) => selectedModel.reasoningEfforts.includes(entry.value))
     : EFFORTS;
@@ -84,11 +87,11 @@ export function LMStudioModelControl({
     <div className="openrouter-control lmstudio-control" ref={rootRef} style={{ "--router-fill": `${fill}%` } as CSSProperties}>
       <div className={`openrouter-picker ${open ? "open" : ""}`}>
         <button type="button" className="openrouter-trigger" aria-haspopup="menu" aria-expanded={open} aria-label={`LM Studio model: ${model || "not selected"}`} onClick={() => setOpen((value) => !value)}>
-          <span className="openrouter-logo lmstudio-logo"><Server size={14} /></span>
+          <span className="openrouter-logo lmstudio-logo"><LmStudioLogo size={15} /></span>
           <span className="openrouter-trigger-copy">
             <small>LM Studio local model</small>
             <strong>{selectedModel?.displayName || model || "Choose a local model"}</strong>
-            <em>{models.length ? `${models.length} model${models.length === 1 ? "" : "s"} from localhost:1234` : "Start the LM Studio local server"}</em>
+            <em>{models.length ? `${models.length} model${models.length === 1 ? "" : "s"} from your LM Studio server` : "Start the LM Studio local server"}</em>
           </span>
           <ChevronDown size={15} />
         </button>
@@ -101,10 +104,10 @@ export function LMStudioModelControl({
                 event.preventDefault();
                 optionRefs.current.find((item) => item?.isConnected)?.focus();
               }
-            }} placeholder="Search downloaded models…" />
+            }} placeholder="Search or enter a model identifier…" />
             <button type="button" onClick={onRefresh} title="Refresh local models" aria-label="Refresh LM Studio model catalog" disabled={loading}>{loading ? <LoaderCircle className="spin" size={13} /> : <RefreshCw size={13} />}</button>
           </div>
-          <div className="openrouter-menu-meta"><span>{normalizedQuery ? `${filtered.length} matches` : `${models.length} available`}</span><small>localhost:1234</small></div>
+          <div className="openrouter-menu-meta"><span>{normalizedQuery ? `${filtered.length} matches` : `${models.length} available`}</span><small>Local server catalog</small></div>
           <div className="openrouter-options" role="menu" aria-label="LM Studio model selector">
             {filtered.map((entry, entryIndex) => (
               <button type="button" role="menuitemradio" aria-checked={entry.id === model} aria-label={entry.id} className={entry.id === model ? "selected" : ""} key={entry.id} ref={(node) => { optionRefs.current[entryIndex] = node; }} onKeyDown={(event) => {
@@ -113,12 +116,13 @@ export function LMStudioModelControl({
                 if (event.key === "ArrowDown") { event.preventDefault(); enabled[(index + 1) % enabled.length]?.focus(); }
                 if (event.key === "ArrowUp") { event.preventDefault(); (index <= 0 ? searchRef.current : enabled[index - 1])?.focus(); }
               }} onClick={() => selectModel(entry)}>
-                <span className="openrouter-provider-mark lmstudio-logo"><Server size={13} /></span>
+                <span className="openrouter-provider-mark lmstudio-logo"><LmStudioLogo size={13} /></span>
                 <span><strong>{entry.displayName}</strong><small>{entry.id} · {entry.trainedForToolUse ? "Tool use" : "No tool-use training"}</small></span>
                 {entry.id === model && <Check size={13} />}
               </button>
             ))}
-            {!loading && filtered.length === 0 && <div className="openrouter-empty"><strong>{error ? "LM Studio is not connected" : "No matching models"}</strong><span>{error || "Download or load a model in LM Studio, then refresh this list."}</span></div>}
+            {canUseCustom && <button type="button" role="menuitemradio" aria-checked={false} className="custom-model-option" onClick={() => { onModel(customModel); setQuery(""); setOpen(false); }}><span className="openrouter-provider-mark">+</span><span><strong>Use model identifier</strong><small>{customModel}</small></span></button>}
+            {!loading && filtered.length === 0 && !canUseCustom && <div className="openrouter-empty"><strong>{error ? "LM Studio is not connected" : "No matching models"}</strong><span>{error || "Download or load a model in LM Studio, then refresh this list."}</span></div>}
           </div>
         </div>
       </div>

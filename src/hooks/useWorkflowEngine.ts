@@ -3,6 +3,7 @@ import { auditEvent, rpc } from "../lib/codex";
 import { friendlyError } from "../lib/errors";
 import { useTaskStore, type TaskStatus } from "../lib/taskStore";
 import { commandSandbox, threadStartParams, turnStartParams } from "../lib/turnConfig";
+import type { LMStudioModel } from "../lib/lmStudio";
 import {
   interpolateWorkflowText,
   nextWorkflowFailureAt,
@@ -191,6 +192,7 @@ interface WorkflowEngineDeps {
   chatGptConnected: boolean;
   openRouterReady: boolean;
   lmStudioReady?: boolean;
+  lmStudioModels?: LMStudioModel[];
   customAgents: CustomAgentProfile[];
   ensureSkillRoots: () => Promise<void>;
   bindThreadToProject: (threadId: string, projectPath: string) => void;
@@ -316,6 +318,9 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
       const started = await rpc<{ thread: Thread }>("thread/start", threadStartParams(workflow.run, project.path, {
         serviceName: `OpenKiwi Workflow: ${workflow.name}`,
         customAgents: current.customAgents,
+        modelContextWindow: workflow.run.provider === "lmstudio"
+          ? current.lmStudioModels?.find((entry) => entry.id === workflow.run.model)?.maxContextLength
+          : undefined,
         interactive: source === "manual",
       }));
       threadId = started.thread.id;

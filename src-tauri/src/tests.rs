@@ -2014,3 +2014,44 @@ fn bridge_answers_the_mcp_handshake_without_reaching_the_app() {
         .expect("answered");
     assert_eq!(unknown["error"]["code"], -32601);
 }
+
+#[test]
+fn lmstudio_urls_are_normalized_without_accepting_embedded_credentials() {
+    assert_eq!(
+        normalize_lmstudio_base_url("http://127.0.0.1:1234")
+            .expect("valid local URL")
+            .as_str(),
+        "http://127.0.0.1:1234/v1"
+    );
+    assert_eq!(
+        normalize_lmstudio_base_url("https://studio.example.test/openkiwi/v1/")
+            .expect("valid reverse proxy URL")
+            .as_str(),
+        "https://studio.example.test/openkiwi/v1"
+    );
+    assert!(normalize_lmstudio_base_url("file:///tmp/socket").is_err());
+    assert!(normalize_lmstudio_base_url("http://user:secret@127.0.0.1:1234/v1").is_err());
+    assert!(normalize_lmstudio_base_url("http://127.0.0.1:1234/v1?token=secret").is_err());
+}
+
+#[test]
+fn lmstudio_catalog_exposes_only_language_models_and_coding_capabilities() {
+    let catalog = normalize_lmstudio_model_catalog(&json!({
+        "models": [
+            {
+                "type": "llm",
+                "key": "qwen/local-coder",
+                "display_name": "Local Coder",
+                "publisher": "qwen",
+                "max_context_length": 65536,
+                "capabilities": { "trained_for_tool_use": true, "reasoning": { "default": "high" } }
+            },
+            { "type": "embedding", "key": "nomic/embed", "display_name": "Embed" }
+        ]
+    }))
+    .expect("native LM Studio catalog");
+    assert_eq!(catalog["data"].as_array().map(Vec::len), Some(1));
+    assert_eq!(catalog["data"][0]["id"], "qwen/local-coder");
+    assert_eq!(catalog["data"][0]["context_length"], 65536);
+    assert_eq!(catalog["data"][0]["trained_for_tool_use"], true);
+}

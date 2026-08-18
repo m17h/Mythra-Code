@@ -27,7 +27,7 @@ describe("LM Studio model discovery", () => {
       },
     ] });
 
-    await expect(listLMStudioModels()).resolves.toEqual([
+    await expect(listLMStudioModels("http://127.0.0.1:1234/v1")).resolves.toEqual([
       {
         id: "a-model",
         displayName: "A Model",
@@ -45,6 +45,6 @@ describe("LM Studio model discovery", () => {
         reasoningEfforts: [],
       },
     ]);
-    expect(invoke).toHaveBeenCalledWith("list_lm_studio_models");
+    expect(invoke).toHaveBeenCalledWith("list_lmstudio_models", { baseUrl: "http://127.0.0.1:1234/v1" });
   });
 });
