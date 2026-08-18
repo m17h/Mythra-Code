@@ -81,6 +81,16 @@ After editing:
 Documentation-only changes do not require the full build suite, but still need
 diff review and link/command verification.
 
+## Explicit release authorization
+
+Never change the application version, create or replace release assets, run
+`npm run release:build`, run `npm run release:publish`, or create, edit, or
+delete a release or release tag unless the user's current request explicitly
+asks to **run `BUILD.md`**. A request for a feature, fix, major update, release
+planning, or release readiness is not authorization to version, build, tag, or
+publish anything. When the user explicitly asks to run `BUILD.md`, follow that
+file exactly and use only the version the user specifies.
+
 ## Windows release assets
 
 All new Windows release assets must be staged in the repository-root
