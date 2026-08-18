@@ -89,8 +89,8 @@ const MAX_TARGETS: usize = 24;
 /// sub-agent maximum the composer already enforces.
 const MAX_CONCURRENT_CEILING: usize = 24;
 
-pub(super) fn agent_bridge_providers() -> [&'static str; 4] {
-    ["openai", "openrouter", "claude", "cursor"]
+pub(super) fn agent_bridge_providers() -> [&'static str; 5] {
+    ["openai", "openrouter", "lmstudio", "claude", "cursor"]
 }
 
 /// One pre-approved provider/model destination a root agent may delegate to.

@@ -4,7 +4,7 @@ import { OPENKIWI_DELEGATION_INSTRUCTIONS, openKiwiDeveloperInstructions } from 
 
 /** Skill-mention plus completion guidance: what every turn carries. */
 const BASE_INSTRUCTIONS = openKiwiDeveloperInstructions(false);
-import { childAgentMcpConfig, threadResumeParams, threadRuntimeConfig, threadStartParams } from "./turnConfig";
+import { childAgentMcpConfig, normalizeLmStudioBaseUrl, threadResumeParams, threadRuntimeConfig, threadStartParams } from "./turnConfig";
 
 const baseRun: ScheduleRunSettings = {
   provider: "openai",
@@ -66,6 +66,43 @@ describe("OpenRouter runtime isolation", () => {
     expect(start.developerInstructions).toBe(BASE_INSTRUCTIONS);
     expect(start.config).toMatchObject({ developer_instructions: BASE_INSTRUCTIONS });
     expect(resume.developerInstructions).toBe(BASE_INSTRUCTIONS);
+  });
+});
+
+describe("LM Studio provider configuration", () => {
+  it("normalizes server roots to the OpenAI-compatible v1 endpoint", () => {
+    expect(normalizeLmStudioBaseUrl("http://127.0.0.1:1234")).toBe("http://127.0.0.1:1234/v1");
+    expect(normalizeLmStudioBaseUrl("http://localhost:1234/v1/")).toBe("http://localhost:1234/v1");
+  });
+
+  it("registers LM Studio as a Responses provider without connected apps", () => {
+    const run = { ...baseRun, provider: "lmstudio" as const, model: "qwen/local", lmStudioBaseUrl: "http://127.0.0.1:1234" };
+    const start = threadStartParams(run, "/tmp/project", { interactive: true, modelContextWindow: 262_144 });
+    expect(start).toMatchObject({
+      model: "qwen/local",
+      modelProvider: "lmstudio",
+      config: {
+        model_providers: {
+          lmstudio: {
+            name: "LM Studio",
+            base_url: "http://127.0.0.1:1234/v1",
+            env_key: "LMSTUDIO_API_KEY",
+            wire_api: "responses",
+          },
+        },
+        features: { apps: false, remote_plugin: false },
+        apps: { _default: { enabled: false } },
+        model_context_window: 262_144,
+      },
+    });
+  });
+
+  it("reapplies the provider configuration when a local thread resumes", () => {
+    const run = { ...baseRun, provider: "lmstudio" as const, model: "local-model", lmStudioBaseUrl: "http://mac-studio.local:1234/v1" };
+    expect(threadResumeParams(run, "thread-local", "/tmp/project")).toMatchObject({
+      modelProvider: "lmstudio",
+      config: { model_providers: { lmstudio: { base_url: "http://mac-studio.local:1234/v1" } } },
+    });
   });
 });
 

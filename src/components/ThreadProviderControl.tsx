@@ -8,6 +8,7 @@ const PROVIDERS: Array<{ id: Provider; label: string; detail: string }> = [
   { id: "claude", label: "Claude", detail: "Claude Code subscription" },
   { id: "cursor", label: "Cursor", detail: "Cursor subscription models" },
   { id: "openrouter", label: "OpenRouter", detail: "API model routing" },
+  { id: "lmstudio", label: "LM Studio", detail: "Local models on your computer" },
 ];
 
 function providerLabel(provider: Provider): string {

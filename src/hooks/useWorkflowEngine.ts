@@ -3,6 +3,7 @@ import { auditEvent, rpc } from "../lib/codex";
 import { friendlyError } from "../lib/errors";
 import { useTaskStore, type TaskStatus } from "../lib/taskStore";
 import { commandSandbox, threadStartParams, turnStartParams } from "../lib/turnConfig";
+import type { LmStudioModel } from "../components/LmStudioModelControl";
 import {
   interpolateWorkflowText,
   nextWorkflowFailureAt,
@@ -190,6 +191,8 @@ interface WorkflowEngineDeps {
   runtimeAvailable: boolean;
   chatGptConnected: boolean;
   openRouterReady: boolean;
+  lmStudioReady?: boolean;
+  lmStudioModels?: LmStudioModel[];
   customAgents: CustomAgentProfile[];
   ensureSkillRoots: () => Promise<void>;
   bindThreadToProject: (threadId: string, projectPath: string) => void;
@@ -222,9 +225,12 @@ function workflowPreflight(
   if (workflow.run.provider === "openrouter" && !current.openRouterReady) {
     return { ready: false, retryWhenReady: true, message: "Add an OpenRouter API key before running this workflow." };
   }
+  if (workflow.run.provider === "lmstudio" && !current.lmStudioReady) {
+    return { ready: false, retryWhenReady: true, message: "Start LM Studio, load the workflow model, and refresh the local server connection." };
+  }
   if (workflow.run.provider === "claude" || workflow.run.provider === "cursor") {
     const provider = workflow.run.provider === "cursor" ? "Cursor" : "Claude";
-    return { ready: false, retryWhenReady: false, message: `${provider} workflows are not enabled yet. Run these steps from a ${provider} project thread, or save the workflow with OpenAI/OpenRouter.` };
+    return { ready: false, retryWhenReady: false, message: `${provider} workflows are not enabled yet. Run these steps from a ${provider} project thread, or save the workflow with OpenAI, OpenRouter, or LM Studio.` };
   }
   return { ready: true, workflow, project };
 }
@@ -312,6 +318,9 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
       const started = await rpc<{ thread: Thread }>("thread/start", threadStartParams(workflow.run, project.path, {
         serviceName: `OpenKiwi Workflow: ${workflow.name}`,
         customAgents: current.customAgents,
+        modelContextWindow: workflow.run.provider === "lmstudio"
+          ? current.lmStudioModels?.find((entry) => entry.id === workflow.run.model)?.context_length
+          : undefined,
         interactive: source === "manual",
       }));
       threadId = started.thread.id;

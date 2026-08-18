@@ -112,6 +112,7 @@ const BUILTIN_MODEL_CATALOGS: Record<Provider, SubAgentModelOption[]> = {
   ],
   cursor: [{ id: "auto", label: "Auto", detail: "Cursor recommended" }],
   openrouter: [],
+  lmstudio: [],
 };
 
 const REASONING_MODE_OPTIONS: AppSelectOption[] = [
@@ -604,6 +605,8 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
                                     ? "Claude Code subscription"
                                     : provider === "cursor"
                                       ? "Cursor subscription"
+                                      : provider === "lmstudio"
+                                        ? "Local LM Studio server"
                                       : "API model routing",
                                 icon: <ProviderLogo provider={provider} size={11} />,
                               }))}
@@ -623,10 +626,12 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
                               ariaLabel={`Model for ${target.id}`}
                               value={selectedModel}
                               options={modelOptions}
-                              placeholder={target.provider === "openrouter" ? "Choose an OpenRouter model" : "Choose a model"}
+                              placeholder={target.provider === "openrouter" ? "Choose an OpenRouter model" : target.provider === "lmstudio" ? "Choose an LM Studio model" : "Choose a model"}
                               searchable={modelOptions.length > 8}
                               emptyMessage={target.provider === "openrouter"
                                 ? "No OpenRouter models are available. Check the API key and refresh in Settings."
+                                : target.provider === "lmstudio"
+                                  ? "No LM Studio models are available. Start the server and refresh in Settings."
                                 : "No models are available for this provider."}
                               onChange={(model) => updateTarget(target.id, { model })}
                             />

@@ -6,11 +6,12 @@ const INITIAL_GOAL_BUDGET = 4_000;
 function providerName(provider: Provider): string {
   if (provider === "openai") return "OpenAI";
   if (provider === "openrouter") return "OpenRouter";
+  if (provider === "lmstudio") return "LM Studio";
   if (provider === "claude") return "Claude";
   return "Cursor";
 }
 
-const PROVIDERS = new Set<Provider>(["openai", "openrouter", "claude", "cursor"]);
+const PROVIDERS = new Set<Provider>(["openai", "openrouter", "lmstudio", "claude", "cursor"]);
 
 export function sanitizePendingHandoff(value: unknown): ThreadHandoff | null {
   if (!value || typeof value !== "object") return null;

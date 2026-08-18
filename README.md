@@ -3,7 +3,7 @@
 > [!IMPORTANT]
 > This is the original **macOS version** of OpenKiwi. The Windows version is developed and released separately in [m17h/OpenKiwi-Windows](https://github.com/m17h/OpenKiwi-Windows).
 
-OpenKiwi is a fast, local-first desktop coding harness with a user-owned instruction prompt. It supports OpenAI through an official ChatGPT subscription sign-in flow, Claude through the locally installed Claude Code CLI, Cursor subscription models (including Grok when entitled) through Cursor Agent, and OpenRouter through a user-supplied API key.
+OpenKiwi is a fast, local-first desktop coding harness with a user-owned instruction prompt. It supports OpenAI through an official ChatGPT subscription sign-in flow, Claude through the locally installed Claude Code CLI, Cursor subscription models (including Grok when entitled) through Cursor Agent, OpenRouter through a user-supplied API key, and local models served by LM Studio.
 
 **Platform support:** this repository's packaged releases target **macOS on Apple silicon** only, and its update feed publishes only a `darwin-aarch64` bundle. Windows downloads, source, and release instructions live in [OpenKiwi-Windows](https://github.com/m17h/OpenKiwi-Windows). Intel Macs and Linux are not supported.
 
@@ -16,7 +16,7 @@ Download it here: https://www.morgangermani.com/projects/openkiwi
 - **Tauri 2** keeps the native shell small and puts filesystem/process access behind Rust.
 - **React + TypeScript** makes a polished, responsive thread UI straightforward.
 - **Codex App Server** is the official open-source protocol for rich Codex clients. It provides ChatGPT sign-in, thread persistence, streaming, approvals, sandboxing, and model-provider support.
-- **OpenRouter** is configured as a Responses-compatible model provider, so both providers use one event and tool model.
+- **OpenRouter and LM Studio** are configured as Responses-compatible model providers, so local and hosted routes use one event and tool model.
 
 ## Run it
 
@@ -25,7 +25,7 @@ Requirements:
 - macOS on Apple silicon (the supported release platform)
 - Node.js 20.19 or newer
 - Rust stable
-- A recent Codex runtime (the Codex CLI or ChatGPT for macOS), Claude Code CLI, and/or Cursor Agent — each provider needs only its own runtime
+- A recent Codex runtime (the Codex CLI or ChatGPT for macOS), Claude Code CLI, Cursor Agent, and/or LM Studio — each provider needs only its own runtime
 
 ```bash
 npm install
@@ -56,7 +56,7 @@ OpenKiwi checks for the Codex CLI first and also recognizes the runtime included
 
 OpenKiwi drives the locally installed [Claude Code CLI](https://claude.com/claude-code) directly. Open **Settings → Models & accounts**, pick Claude, and sign in through the CLI's own browser flow — OpenKiwi never sees or stores Anthropic credentials. To keep usage on the signed-in subscription, OpenKiwi launches each turn with API-key/Bedrock/Vertex environment overrides scrubbed and warns when such overrides are present.
 
-Each Claude thread runs one CLI process per turn with `--session-id`/`--resume`, so conversations persist and resume across app restarts. OpenKiwi's permission modes map to the CLI's permission system: *Ask to act* routes every tool request through OpenKiwi's approval UI over stdio; *Read only* disables editing and shell tools; *Full access* passes `bypassPermissions`. The CLI runs with `--setting-sources ""`, so a user's personal Claude Code settings, hooks, and allowlists do not silently apply inside OpenKiwi, and the project-instructions toggle currently governs Codex/OpenRouter `AGENTS.md` loading only.
+Each Claude thread runs one CLI process per turn with `--session-id`/`--resume`, so conversations persist and resume across app restarts. OpenKiwi's permission modes map to the CLI's permission system: *Ask to act* routes every tool request through OpenKiwi's approval UI over stdio; *Read only* disables editing and shell tools; *Full access* passes `bypassPermissions`. The CLI runs with `--setting-sources ""`, so a user's personal Claude Code settings, hooks, and allowlists do not silently apply inside OpenKiwi, and the project-instructions toggle governs Codex-based OpenAI, OpenRouter, and LM Studio `AGENTS.md` loading.
 
 Selected OpenKiwi skills and custom sub-agents are bridged to Claude through a generated local plugin directory. Model and reasoning-effort choices are sent as real CLI flags per turn.
 
@@ -69,6 +69,12 @@ Open **Settings → Models & accounts**, pick Cursor, and sign in with Cursor Ag
 Open **Settings → OpenRouter** and save an API key. The composer then exposes a searchable picker backed by OpenRouter's live tool-capable model catalog, plus direct `provider/model` entry for new or private slugs. OpenKiwi stores the key in the operating system credential store and exposes it only to the local App Server child process.
 
 OpenRouter's Responses API is currently beta, so compatibility can change upstream.
+
+### LM Studio
+
+Start LM Studio's local server, then open **Settings → Models & accounts**, choose LM Studio, and test the default `http://127.0.0.1:1234/v1` connection. OpenKiwi discovers language models from LM Studio's live catalog, excludes embedding-only models when the native catalog is available, and carries each model's reported context window and tool-use capability into the composer and thread runtime. You can also enter a different HTTP(S) server URL for LM Studio on another trusted machine.
+
+Authentication is optional for the default localhost server. If LM Studio authentication is enabled, store its token in Settings; OpenKiwi keeps it in the macOS Keychain and exposes it only to the local App Server child process. LM Studio turns still use OpenKiwi's normal permissions, tools, MCP servers, workflows, schedules, and managed cross-provider sub-agents.
 
 ## Prompt transparency
 
@@ -235,3 +241,6 @@ OpenKiwi did **not** use or copy any source code from [T3Code](https://github.co
 - [OpenAI Codex open-source repository](https://github.com/openai/codex)
 - [OpenRouter authentication](https://openrouter.ai/docs/api/reference/authentication)
 - [OpenRouter Responses API](https://openrouter.ai/docs/api/reference/responses/overview)
+- [LM Studio local server](https://lmstudio.ai/docs/developer/core/server)
+- [LM Studio OpenAI-compatible endpoints](https://lmstudio.ai/docs/developer/openai-compat)
+- [LM Studio Codex integration](https://lmstudio.ai/docs/integrations/codex)

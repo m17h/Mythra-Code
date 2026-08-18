@@ -1,9 +1,8 @@
-import { Children, isValidElement, memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import type { VirtuosoHandle } from "react-virtuoso";
-import { Check, ChevronRight, Clipboard, FileCode2, ListChecks, Pencil, Sparkles, TerminalSquare, UsersRound } from "lucide-react";
+import { Children, isValidElement, memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { LegendList, type LegendListRef } from "@legendapp/list/react";
+import { Check, ChevronDown, ChevronRight, Clipboard, FileCode2, ListChecks, Pencil, Sparkles, TerminalSquare, UsersRound } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import Markdown from "react-markdown";
-import { Virtuoso } from "react-virtuoso";
 import remarkGfm from "remark-gfm";
 import type { Activity, ChatMessage, PendingApproval, Provider } from "../types";
 import type { JsonObject } from "../lib/codex";
@@ -563,198 +562,64 @@ export const CompletedWorkDisclosure = memo(function CompletedWorkDisclosure({ e
   );
 }, (previous, next) => (previous.reveal ?? false) === (next.reveal ?? false) && sameWorkItems(previous.entries, next.entries));
 
-export function followTimelineOutput(atBottom: boolean): "auto" | false {
-  return atBottom ? "auto" : false;
+export const TIMELINE_FOLLOW_REARM_THRESHOLD_PX = 40;
+
+export type TimelineScrollMode = "following-end" | "free-scrolling";
+
+export type TimelineEndState = {
+  isAtEnd?: boolean;
+  contentLength?: number;
+  scroll?: number;
+  scrollLength?: number;
+};
+
+/**
+ * Legend List's broad "near end" state spans part of a viewport. Re-arming
+ * follow in that region makes the next streamed chunk yank a reader back to
+ * the bottom. Only the hard end or this deliberately small pixel band counts.
+ */
+export function resolveTimelineIsAtEnd(state: TimelineEndState | undefined): boolean | undefined {
+  if (!state) return undefined;
+  if (state.isAtEnd) return true;
+  const { contentLength, scroll, scrollLength } = state;
+  if (contentLength === undefined || scroll === undefined || scrollLength === undefined) {
+    return state.isAtEnd;
+  }
+  return contentLength - scroll - scrollLength <= TIMELINE_FOLLOW_REARM_THRESHOLD_PX;
 }
 
-export const INITIAL_TIMELINE_POSITION = { index: "LAST", align: "end" } as const;
-/**
- * Hoisted rather than inlined so Virtuoso sees one stable object across the
- * re-render every streamed frame causes.
- */
-const TIMELINE_VIEWPORT_BUFFER = { top: 500, bottom: 800 } as const;
-/**
- * Beyond this point, variable-height virtualization costs more than it saves.
- * A completed turn is usually three compact rows, so this is roughly 120
- * turns. Keeping those rows mounted gives long, old threads truly native
- * scrolling: no estimates are replaced mid-gesture and no scroll correction
- * can fight macOS trackpad momentum.
- */
-export const NATIVE_TIMELINE_THRESHOLD = 360;
-/** Raw history can be huge even when completed work compacts to a few rows. */
-export const NATIVE_TIMELINE_SOURCE_THRESHOLD = 500;
+export function shouldCancelTimelineFollowForWheel(deltaY: number, contentOverflows: boolean): boolean {
+  return deltaY < 0 && contentOverflows;
+}
+
+const TIMELINE_MAINTAIN_SCROLL_AT_END = {
+  animated: false,
+  on: {
+    dataChange: true,
+    footerLayout: true,
+    itemLayout: true,
+    layout: true,
+  },
+} as const;
+
+const TIMELINE_MAINTAIN_VISIBLE_CONTENT = {
+  data: true,
+  size: true,
+} as const;
 
 function TimelineFooter() {
   return <div className="timeline-bottom-space" aria-hidden="true" />;
 }
 
 /**
- * Top inset must be a real header item: Virtuoso positions its item list with
- * inline padding for virtualization, which overrides any CSS padding — so a
- * stylesheet inset silently never applied and the first message sat flush
- * against the top edge.
+ * The top inset is a real list item so virtualization measurements include it
+ * and the first message never lands flush against the window edge.
  */
 function TimelineHeader() {
   return <div className="timeline-top-space" aria-hidden="true" />;
 }
 
-const VIRTUOSO_COMPONENTS = { Header: TimelineHeader, Footer: TimelineFooter };
-
 const NO_SEARCH_MATCHES: number[] = [];
-
-/**
- * One rendered row, where on screen it was last seen, and how tall the
- * transcript was at that moment. Screen position is the invariant to restore;
- * the height is only there to tell a plain scroll apart from a scroll that
- * arrived alongside a resize.
- */
-export type TimelineScrollAnchor = { contentHeight: number; index: string; top: number };
-
-export type TimelineScrollAnchorHandle = {
-  /** Capture the visible row before a wheel/touch gesture can move it. */
-  prime: () => void;
-  /** Release an anchor before an intentional programmatic jump. */
-  clear: () => void;
-  /** Reconcile any virtual-layout change against the captured row. */
-  settle: () => void;
-  detach: () => void;
-};
-
-/** The topmost row that is at least partly on screen. */
-export function readTimelineAnchor(scroller: HTMLElement): TimelineScrollAnchor | null {
-  const viewportTop = scroller.getBoundingClientRect().top;
-  for (const row of Array.from(scroller.querySelectorAll<HTMLElement>("[data-item-index]"))) {
-    const rect = row.getBoundingClientRect();
-    if (rect.bottom <= viewportTop) continue;
-    const index = row.dataset.itemIndex;
-    if (index === undefined) continue;
-    return { contentHeight: scroller.scrollHeight, index, top: rect.top - viewportTop };
-  }
-  return null;
-}
-
-/**
- * How far the anchored row moved on screen since it was read. Zero whenever
- * the virtualizer's own compensation already covered a resize, so applying
- * this only ever supplies the corrections it missed.
- */
-export function timelineAnchorDrift(scroller: HTMLElement, anchor: TimelineScrollAnchor): number {
-  const row = scroller.querySelector<HTMLElement>(`[data-item-index="${CSS.escape(anchor.index)}"]`);
-  if (!row) return 0;
-  return row.getBoundingClientRect().top - scroller.getBoundingClientRect().top - anchor.top;
-}
-
-/**
- * Scroll anchoring for the virtualized transcript.
- *
- * react-virtuoso sizes rows it has never rendered at the size of the row it
- * measured most recently. Transcript rows differ by an order of magnitude — a
- * one-line activity row against a screen-tall Markdown answer — so the first
- * time the user scrolls up through a region, real heights replace those
- * guesses and the content above the viewport changes height by hundreds of
- * pixels at a time. Virtuoso compensates for some of those corrections and
- * drops others; every dropped one shoves the transcript down the screen
- * mid-gesture, which is the rapid jitter that shows up on a long thread.
- *
- * So re-anchor: remember one row near the top of the viewport, and after any
- * layout pass that moved it on screen without a scroll having asked for it,
- * put it back. Rows resizing after mount — Markdown reflow, a late web font,
- * an image finishing — land on the same path.
- *
- * Only while the user is away from the bottom. At the bottom, `followOutput`
- * and the initial positioning own the scroll offset, and this must not enter
- * a tug of war with them over a streaming answer.
- */
-export function attachTimelineScrollAnchor(
-  scroller: HTMLElement,
-  isEnabled: () => boolean,
-): TimelineScrollAnchorHandle {
-  let anchor: TimelineScrollAnchor | null = null;
-  let correcting = false;
-  let userScrollPending = false;
-  const capture = () => {
-    anchor = isEnabled() ? readTimelineAnchor(scroller) : null;
-  };
-  const prime = () => {
-    // Only read the DOM when there is nothing to fall back on — the anchor the
-    // last scroll or settle left behind is already current, and re-reading it
-    // forces a layout on every wheel event of a gesture that fires dozens per
-    // second, right after the virtualizer has dirtied the tree.
-    if (!anchor) capture();
-    // The next native scroll event belongs to the gesture that captured this
-    // anchor. It must always win, even if Virtuoso also changed its estimated
-    // total height in the same frame; otherwise fast scrolling gets corrected
-    // backwards until the new rows finish measuring.
-    userScrollPending = anchor !== null;
-  };
-  const settle = () => {
-    if (correcting) return;
-    if (!isEnabled()) {
-      anchor = null;
-      return;
-    }
-    correcting = true;
-    try {
-      const drift = anchor ? timelineAnchorDrift(scroller, anchor) : 0;
-      // Sub-pixel differences are rounding in the measured rects, not motion.
-      if (Math.abs(drift) >= 1) scroller.scrollTop += drift;
-      anchor = readTimelineAnchor(scroller);
-    } finally {
-      correcting = false;
-    }
-  };
-  /**
-   * Scrolling moves the anchored row on screen on purpose, so the ordinary
-   * response is to re-read it and treat the new position as the truth — that
-   * covers the reader's own gesture, a search jump, and the virtualizer's
-   * compensation for a resize it did handle.
-   *
-   * Unless the content changed size in between. Reading `top` forces layout,
-   * so a scroll delivered in the same frame as a row resize would otherwise
-   * measure the moved position and quietly adopt the shift as intended.
-  */
-  const onScroll = () => {
-    if (userScrollPending) {
-      userScrollPending = false;
-      capture();
-      return;
-    }
-    if (anchor && scroller.scrollHeight !== anchor.contentHeight) settle();
-    else capture();
-  };
-
-  scroller.addEventListener("scroll", onScroll, { passive: true });
-  // Row sizes are corrected during layout, so the observer — which runs after
-  // layout and before paint — is the last moment a shift can be undone without
-  // the user seeing it. Setting scrollTop resizes nothing, so this cannot feed
-  // itself a second notification.
-  const list = scroller.querySelector<HTMLElement>('[data-testid="virtuoso-item-list"]');
-  const resizeObserver = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(settle);
-  // Virtuoso corrects unseen-row estimates primarily by rewriting paddingTop,
-  // paddingBottom, and marginTop on the item list. Those move every visible
-  // row but do not necessarily resize the list's content box, so a plain
-  // ResizeObserver misses exactly the first-scroll correction we care about.
-  // Style mutations are delivered after the virtualizer commits and before
-  // paint, which gives the anchor one reliable chance to cancel drift. Rows
-  // being added and removed is deliberately not watched: that always changes
-  // the list's height, so the ResizeObserver already reports it, and childList
-  // fires several times a frame during a fast scroll for no added coverage.
-  const mutationObserver = typeof MutationObserver === "undefined" ? null : new MutationObserver(settle);
-  if (list) {
-    resizeObserver?.observe(list);
-    mutationObserver?.observe(list, { attributes: true, attributeFilter: ["style"] });
-  }
-  return {
-    prime,
-    clear: () => { anchor = null; userScrollPending = false; },
-    settle,
-    detach: () => {
-      scroller.removeEventListener("scroll", onScroll);
-      resizeObserver?.disconnect();
-      mutationObserver?.disconnect();
-    },
-  };
-}
 
 function TimelineEntryContent({
   activeEntryIndex,
@@ -803,117 +668,16 @@ function TimelineEntryContent({
   );
 }
 
-/**
- * Large completed transcripts use the browser's ordinary scroll container.
- * Their compact rows are cheap enough to keep mounted, while doing so removes
- * the height-estimation feedback loop that makes a fast trackpad gesture stall
- * at the same boundaries every time.
- */
-function NativeTimeline({
-  activeEntryIndex,
-  entries,
-  onApprovalRespond,
-  onEditMessage,
-  provider,
-  searchQuery,
-}: {
-  activeEntryIndex: number;
-  entries: TimelineEntry[];
-  onApprovalRespond?: (approval: PendingApproval, result: JsonObject) => void | Promise<void>;
-  onEditMessage?: (text: string) => void;
-  provider: Provider;
-  searchQuery?: string;
-}) {
-  const scrollerRef = useRef<HTMLDivElement>(null);
-  const contentRef = useRef<HTMLDivElement>(null);
-  const atBottomRef = useRef(true);
-  const initialPositioningRef = useRef(true);
-  const initialPositionTimerRef = useRef<number | null>(null);
-  const scrollToBottom = useCallback(() => {
-    const scroller = scrollerRef.current;
-    if (scroller) scroller.scrollTop = scroller.scrollHeight;
-  }, []);
-  const endInitialPositioning = useCallback(() => {
-    initialPositioningRef.current = false;
-    if (initialPositionTimerRef.current !== null) {
-      window.clearTimeout(initialPositionTimerRef.current);
-      initialPositionTimerRef.current = null;
-    }
-  }, []);
+export function timelineEntryKey(entry: TimelineEntry, index: number): string {
+  if (entry.kind === "thinking") return "thinking";
+  if (entry.kind === "work") return `work-${(entry.value[0] && workItemId(entry.value[0])) ?? index}`;
+  if (entry.kind === "commands" || entry.kind === "files") return `${entry.kind}-${entry.value[0]?.id ?? index}`;
+  return `${entry.kind}-${entry.value.id}`;
+}
 
-  useLayoutEffect(() => {
-    if (initialPositioningRef.current || atBottomRef.current) scrollToBottom();
-  }, [entries, scrollToBottom]);
-
-  useEffect(() => {
-    initialPositionTimerRef.current = window.setTimeout(endInitialPositioning, 500);
-    return () => {
-      if (initialPositionTimerRef.current !== null) window.clearTimeout(initialPositionTimerRef.current);
-    };
-  }, [endInitialPositioning]);
-
-  useEffect(() => {
-    const content = contentRef.current;
-    if (!content || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(() => {
-      if (initialPositioningRef.current || atBottomRef.current) scrollToBottom();
-    });
-    observer.observe(content);
-    return () => observer.disconnect();
-  }, [scrollToBottom]);
-
-  useEffect(() => {
-    if (activeEntryIndex < 0) return;
-    const target = contentRef.current?.querySelector<HTMLElement>(`[data-entry-index="${activeEntryIndex}"]`);
-    if (!target) return;
-    // Search owns the viewport once it jumps to a match. Leaving the initial
-    // bottom-settle window alive lets a late Markdown measurement immediately
-    // pull a large transcript back to the end and hide the selected result.
-    endInitialPositioning();
-    atBottomRef.current = false;
-    target.scrollIntoView({ block: "center" });
-  }, [activeEntryIndex, endInitialPositioning]);
-
-  return (
-    <div
-      ref={scrollerRef}
-      className="timeline virtual-timeline native-timeline"
-      data-native-timeline="true"
-      onScroll={(event) => {
-        if (initialPositioningRef.current) return;
-        const scroller = event.currentTarget;
-        atBottomRef.current = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 4;
-      }}
-      onWheel={(event) => {
-        if (event.deltaY < 0) {
-          endInitialPositioning();
-          atBottomRef.current = false;
-        }
-      }}
-      onTouchMove={() => {
-        endInitialPositioning();
-        atBottomRef.current = false;
-      }}
-    >
-      <TimelineHeader />
-      <div ref={contentRef} className="native-timeline-list">
-        {entries.map((entry, index) => (
-          <div data-entry-index={index} key={entry.kind === "thinking" ? "thinking" : entry.kind === "approval" ? `approval-${entry.value.id}` : entry.kind === "work" ? `work-${entry.value[0] ? workItemId(entry.value[0]) ?? index : index}` : entry.kind === "commands" || entry.kind === "files" ? `${entry.kind}-${entry.value[0]?.id ?? index}` : `${entry.kind}-${entry.value.id}`}>
-            <TimelineEntryContent
-              activeEntryIndex={activeEntryIndex}
-              entry={entry}
-              index={index}
-              onApprovalRespond={onApprovalRespond}
-              onEditMessage={onEditMessage}
-              provider={provider}
-              searchQuery={searchQuery}
-            />
-          </div>
-        ))}
-      </div>
-      <TimelineFooter />
-    </div>
-  );
+function timelineEntryType(entry: TimelineEntry): string {
+  if (entry.kind === "message") return `message:${entry.value.role}`;
+  return entry.kind;
 }
 
 export function ChatTimeline({
@@ -950,105 +714,132 @@ export function ChatTimeline({
     return next;
   }, [activities, approval, messages, running, thinkingLabel]);
 
-  // In-conversation search: matches are entry indices; the active match is
-  // scrolled into view and highlighted.
-  const virtuosoRef = useRef<VirtuosoHandle>(null);
-  // A resumed thread can mount while its transcript RPC is still empty. In
-  // that case Virtuoso consumes initialTopMostItemIndex before there is an
-  // item to position. Markdown and virtualization measurements can also make
-  // a tall final answer grow over several layout passes, so keep restoring the
-  // bottom across the layout passes that follow the first rendered entry.
-  const initialPositionPendingRef = useRef(true);
-  const initialPositionSettleTimerRef = useRef<number | null>(null);
-  const endInitialPositioning = useCallback(() => {
-    initialPositionPendingRef.current = false;
-    if (initialPositionSettleTimerRef.current !== null) {
-      window.clearTimeout(initialPositionSettleTimerRef.current);
-      initialPositionSettleTimerRef.current = null;
-    }
+  const listRef = useRef<LegendListRef | null>(null);
+  const scrollModeRef = useRef<TimelineScrollMode>("following-end");
+  const userNavigationGenerationRef = useRef(0);
+  const liveFollowGenerationRef = useRef<number | null>(0);
+  const pointerNavigationPendingRef = useRef(false);
+  const [liveFollowEnabled, setLiveFollowEnabled] = useState(true);
+  const [showScrollToLatest, setShowScrollToLatest] = useState(false);
+
+  const cancelLiveFollowForUserNavigation = useCallback(() => {
+    pointerNavigationPendingRef.current = false;
+    userNavigationGenerationRef.current += 1;
+    liveFollowGenerationRef.current = null;
+    scrollModeRef.current = "free-scrolling";
+    setLiveFollowEnabled(false);
+    setShowScrollToLatest(true);
   }, []);
-  const restoreInitialBottom = useCallback(() => {
-    if (!initialPositionPendingRef.current || entries.length === 0) return;
-    // A final Markdown message can be taller than the viewport. Scrolling to
-    // its item index may align its top while it is still being measured;
-    // scrolling the scroller itself to an intentionally oversized offset
-    // clamps to the true bottom regardless of the final item's height.
-    virtuosoRef.current?.scrollTo({ top: Number.MAX_SAFE_INTEGER, behavior: "auto" });
-    // The settle window is armed once, from the first restore, and is never
-    // extended. Restarting it per call kept it open for the whole of a
-    // streaming turn — deltas flush every animation frame, so the list height
-    // never stayed still for long enough to close it — and every one of those
-    // height changes then forced the scroller back to the bottom, overriding
-    // followOutput's decision not to follow and pinning the user there.
-    if (initialPositionSettleTimerRef.current === null) {
-      initialPositionSettleTimerRef.current = window.setTimeout(endInitialPositioning, 300);
-    }
-  }, [endInitialPositioning, entries.length]);
-  useEffect(restoreInitialBottom, [restoreInitialBottom]);
-  // Any deliberate scroll gesture ends the initial positioning immediately, so
-  // a user who reaches for the transcript inside the settle window is not
-  // pulled back down by the next measurement pass.
-  const detachScrollIntentRef = useRef<(() => void) | null>(null);
-  const timelineAnchorRef = useRef<TimelineScrollAnchorHandle | null>(null);
-  // Anchoring is for a user who has deliberately left the bottom. While the
-  // transcript is pinned to its newest entry, `followOutput` and the initial
-  // positioning own the scroll offset.
-  const atBottomRef = useRef(true);
-  const anchoringEnabled = useCallback(
-    () => !atBottomRef.current && !initialPositionPendingRef.current,
-    [],
-  );
-  const attachScrollIntent = useCallback((scroller: HTMLElement | Window | null) => {
-    detachScrollIntentRef.current?.();
-    detachScrollIntentRef.current = null;
-    timelineAnchorRef.current = null;
-    if (!scroller) return;
-    const anchorHandle = scroller instanceof Window ? null : attachTimelineScrollAnchor(scroller, anchoringEnabled);
-    timelineAnchorRef.current = anchorHandle;
-    const cancelWheel = (event: Event) => {
-      endInitialPositioning();
-      // Virtuoso reports `atBottom=false` from the resulting scroll event, but
-      // that is one event too late when a resumed transcript has only just
-      // hydrated. Enable anchoring before the first upward layout pass so the
-      // initial batch of size corrections cannot produce one large lurch.
-      if (!(event instanceof WheelEvent) || event.deltaY < 0) atBottomRef.current = false;
-      anchorHandle?.prime();
-    };
-    // touchmove, not touchstart: a tap is how the reader opens a disclosure or
-    // presses a button, and treating that as leaving the bottom stops the
-    // transcript following the streaming answer they are still watching.
-    const cancelTouch = () => {
-      endInitialPositioning();
-      atBottomRef.current = false;
-      anchorHandle?.prime();
-    };
-    scroller.addEventListener("wheel", cancelWheel, { passive: true });
-    scroller.addEventListener("touchmove", cancelTouch, { passive: true });
-    detachScrollIntentRef.current = () => {
-      scroller.removeEventListener("wheel", cancelWheel);
-      scroller.removeEventListener("touchmove", cancelTouch);
-      anchorHandle?.detach();
-      if (timelineAnchorRef.current === anchorHandle) timelineAnchorRef.current = null;
-    };
-  }, [anchoringEnabled, endInitialPositioning]);
-  const trackAtBottom = useCallback((atBottom: boolean) => {
-    atBottomRef.current = atBottom;
+
+  const scrollToLatest = useCallback((animated = false) => {
+    scrollModeRef.current = "following-end";
+    liveFollowGenerationRef.current = userNavigationGenerationRef.current;
+    setLiveFollowEnabled(true);
+    setShowScrollToLatest(false);
+    requestAnimationFrame(() => {
+      void listRef.current?.scrollToEnd({ animated });
+    });
   }, []);
-  useEffect(
-    () => () => {
-      detachScrollIntentRef.current?.();
-      detachScrollIntentRef.current = null;
-      if (initialPositionSettleTimerRef.current !== null) {
-        window.clearTimeout(initialPositionSettleTimerRef.current);
-      }
-    },
-    [],
-  );
+
+  const handleScroll = useCallback(() => {
+    const atEnd = resolveTimelineIsAtEnd(listRef.current?.getState());
+    if (atEnd === undefined) return;
+    if (atEnd) {
+      scrollModeRef.current = "following-end";
+      liveFollowGenerationRef.current = userNavigationGenerationRef.current;
+      setLiveFollowEnabled(true);
+      setShowScrollToLatest(false);
+      return;
+    }
+    if (pointerNavigationPendingRef.current) {
+      cancelLiveFollowForUserNavigation();
+      return;
+    }
+    // A streamed layout can briefly report that the viewport trails the end
+    // before Legend List applies its follow adjustment. Do not interpret that
+    // transient state as user navigation; gestures clear this generation first.
+    if (liveFollowGenerationRef.current === userNavigationGenerationRef.current) {
+      setShowScrollToLatest(false);
+      return;
+    }
+    scrollModeRef.current = "free-scrolling";
+    setShowScrollToLatest(true);
+  }, [cancelLiveFollowForUserNavigation]);
+
+  useEffect(() => {
+    let frame: number | null = null;
+    let detach: (() => void) | null = null;
+    const attach = (remainingAttempts: number) => {
+      frame = requestAnimationFrame(() => {
+        frame = null;
+        const scroller = listRef.current?.getScrollableNode();
+        if (!scroller) {
+          if (remainingAttempts > 0) attach(remainingAttempts - 1);
+          return;
+        }
+        const contentOverflows = () => scroller.scrollHeight > scroller.clientHeight + 1;
+        const viewportIsAwayFromEnd = () => resolveTimelineIsAtEnd(listRef.current?.getState()) === false;
+        const onWheel = (event: WheelEvent) => {
+          if (shouldCancelTimelineFollowForWheel(event.deltaY, contentOverflows())) {
+            cancelLiveFollowForUserNavigation();
+          }
+        };
+        const onTouchMove = () => {
+          if (contentOverflows()) pointerNavigationPendingRef.current = true;
+          if (viewportIsAwayFromEnd()) cancelLiveFollowForUserNavigation();
+        };
+        const onPointerDown = (event: PointerEvent) => {
+          if (event.button !== 0 || !contentOverflows()) return;
+          pointerNavigationPendingRef.current = true;
+          if (viewportIsAwayFromEnd()) {
+            cancelLiveFollowForUserNavigation();
+          }
+        };
+        const clearPointerNavigation = () => {
+          pointerNavigationPendingRef.current = false;
+        };
+        const onKeyDown = (event: KeyboardEvent) => {
+          if (
+            (
+              event.key === "PageUp"
+              || event.key === "Home"
+              || event.key === "ArrowUp"
+              || (event.shiftKey && (event.key === " " || event.key === "Spacebar"))
+            )
+            && contentOverflows()
+          ) {
+            cancelLiveFollowForUserNavigation();
+          }
+        };
+        scroller.addEventListener("wheel", onWheel, { passive: true });
+        scroller.addEventListener("touchmove", onTouchMove, { passive: true });
+        scroller.addEventListener("pointerdown", onPointerDown, { passive: true });
+        scroller.addEventListener("keydown", onKeyDown);
+        scroller.ownerDocument.addEventListener("pointerup", clearPointerNavigation);
+        scroller.ownerDocument.addEventListener("pointercancel", clearPointerNavigation);
+        scroller.ownerDocument.addEventListener("touchend", clearPointerNavigation);
+        scroller.ownerDocument.addEventListener("touchcancel", clearPointerNavigation);
+        detach = () => {
+          scroller.removeEventListener("wheel", onWheel);
+          scroller.removeEventListener("touchmove", onTouchMove);
+          scroller.removeEventListener("pointerdown", onPointerDown);
+          scroller.removeEventListener("keydown", onKeyDown);
+          scroller.ownerDocument.removeEventListener("pointerup", clearPointerNavigation);
+          scroller.ownerDocument.removeEventListener("pointercancel", clearPointerNavigation);
+          scroller.ownerDocument.removeEventListener("touchend", clearPointerNavigation);
+          scroller.ownerDocument.removeEventListener("touchcancel", clearPointerNavigation);
+        };
+      });
+    };
+    attach(12);
+    return () => {
+      if (frame !== null) cancelAnimationFrame(frame);
+      detach?.();
+    };
+  }, [cancelLiveFollowForUserNavigation]);
+
   const matchIndices = useMemo(() => {
     const query = searchQuery?.trim().toLowerCase();
-    // A shared constant, not a fresh literal: with no active search this memo
-    // re-runs on every streamed frame, and a new array each time would re-fire
-    // the onSearchMatches effect below for the whole turn.
     if (!query) return NO_SEARCH_MATCHES;
     const hits: number[] = [];
     entries.forEach((entry, index) => {
@@ -1079,63 +870,57 @@ export function ChatTimeline({
     ? matchIndices[((searchActiveMatch ?? 0) % matchIndices.length + matchIndices.length) % matchIndices.length]
     : -1;
   useEffect(() => {
-    if (activeEntryIndex >= 0) {
-      // Search navigation is a deliberate jump. Drop the reader anchor first
-      // so the virtual window's style rewrite cannot be mistaken for drift.
-      timelineAnchorRef.current?.clear();
-      virtuosoRef.current?.scrollToIndex({ index: activeEntryIndex, align: "center" });
-    }
-  }, [activeEntryIndex]);
-  if (
-    entries.length > NATIVE_TIMELINE_THRESHOLD
-    || messages.length + activities.length > NATIVE_TIMELINE_SOURCE_THRESHOLD
-  ) {
-    return (
-      <NativeTimeline
-        activeEntryIndex={activeEntryIndex}
-        entries={entries}
-        onApprovalRespond={onApprovalRespond}
-        onEditMessage={onEditMessage}
-        provider={provider}
-        searchQuery={searchQuery}
-      />
-    );
-  }
-  return (
-    <Virtuoso
-      ref={virtuosoRef}
-      className="timeline virtual-timeline"
-      scrollerRef={attachScrollIntent}
-      data={entries}
-      components={VIRTUOSO_COMPONENTS}
-      initialTopMostItemIndex={INITIAL_TIMELINE_POSITION}
-      followOutput={followTimelineOutput}
-      atBottomStateChange={trackAtBottom}
-      totalListHeightChanged={restoreInitialBottom}
-      increaseViewportBy={TIMELINE_VIEWPORT_BUFFER}
-      // Keys are derived from item ids, never from the row index: the thinking
-      // row sits last and its index shifts as work arrives, and two compacted
-      // turns whose first item carries no timelineOrder used to collide on
-      // Number.MAX_SAFE_INTEGER. Either one makes Virtuoso remount a row and
-      // re-measure it from zero height mid-scroll.
-      computeItemKey={(index, entry) => entry.kind === "thinking"
-        ? "thinking"
-        : entry.kind === "work"
-          ? `work-${(entry.value[0] && workItemId(entry.value[0])) ?? index}`
-        : entry.kind === "commands" || entry.kind === "files"
-          ? `${entry.kind}-${entry.value[0]?.id ?? index}`
-          : `${entry.kind}-${entry.value.id}`}
-      itemContent={(index, entry) => (
-        <TimelineEntryContent
-          activeEntryIndex={activeEntryIndex}
-          entry={entry}
-          index={index}
-          onApprovalRespond={onApprovalRespond}
-          onEditMessage={onEditMessage}
-          provider={provider}
-          searchQuery={searchQuery}
-        />
-      )}
+    if (activeEntryIndex < 0) return;
+    cancelLiveFollowForUserNavigation();
+    void listRef.current?.scrollToIndex({
+      index: activeEntryIndex,
+      animated: false,
+      viewPosition: 0.5,
+    });
+  }, [activeEntryIndex, cancelLiveFollowForUserNavigation]);
+
+  const renderItem = useCallback(({ item, index }: { item: TimelineEntry; index: number }) => (
+    <TimelineEntryContent
+      activeEntryIndex={activeEntryIndex}
+      entry={item}
+      index={index}
+      onApprovalRespond={onApprovalRespond}
+      onEditMessage={onEditMessage}
+      provider={provider}
+      searchQuery={searchQuery}
     />
+  ), [activeEntryIndex, onApprovalRespond, onEditMessage, provider, searchQuery]);
+
+  return (
+    <div className="timeline-shell" data-scroll-mode={scrollModeRef.current}>
+      <LegendList<TimelineEntry>
+        ref={listRef}
+        className="timeline legend-timeline"
+        data={entries}
+        keyExtractor={timelineEntryKey}
+        getItemType={timelineEntryType}
+        renderItem={renderItem}
+        estimatedItemSize={120}
+        showsHorizontalScrollIndicator={false}
+        initialScrollAtEnd
+        maintainScrollAtEnd={liveFollowEnabled ? TIMELINE_MAINTAIN_SCROLL_AT_END : false}
+        maintainVisibleContentPosition={TIMELINE_MAINTAIN_VISIBLE_CONTENT}
+        onScroll={handleScroll}
+        tabIndex={0}
+        ListHeaderComponent={<TimelineHeader />}
+        ListFooterComponent={<TimelineFooter />}
+      />
+      {showScrollToLatest && (
+        <button
+          type="button"
+          className="timeline-scroll-latest"
+          onClick={() => scrollToLatest(true)}
+          aria-label="Scroll to latest message"
+        >
+          <ChevronDown size={14} />
+          Scroll to latest
+        </button>
+      )}
+    </div>
   );
 }

@@ -42,6 +42,11 @@ describe("BrandLogos", () => {
     expect(container.querySelector(".cursor-dark-logo-option")).toHaveAttribute("src", "/cursor-app-icon-dark.png");
   });
 
+  it("uses LM Studio's official app icon for its provider mark", () => {
+    const { container } = render(<ProviderLogo provider="lmstudio" />);
+    expect(container.querySelector("img")).toHaveAttribute("src", "/lm-studio-icon.svg");
+  });
+
   it("renders the Anthropic AI monogram as a self-contained vector", () => {
     const { container } = render(<AnthropicLogo />);
     expect(container.querySelector("svg")).toHaveAttribute("fill", "currentColor");

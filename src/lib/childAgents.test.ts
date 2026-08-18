@@ -32,6 +32,7 @@ const EVERYTHING_READY: ChildAgentReadiness = {
   codexRuntimeAvailable: true,
   openAiSignedIn: true,
   openRouterReady: true,
+  lmStudioReady: true,
   claudeReady: true,
   cursorReady: true,
 };
@@ -40,6 +41,7 @@ const NOTHING_READY: ChildAgentReadiness = {
   codexRuntimeAvailable: false,
   openAiSignedIn: false,
   openRouterReady: false,
+  lmStudioReady: false,
   claudeReady: false,
   cursorReady: false,
 };
@@ -85,6 +87,7 @@ describe("destination models", () => {
     expect(childAgentModel({ provider: "openai", model: "" })).toBe("gpt-5.6-sol");
     // OpenRouter has no default: a fully qualified model is mandatory.
     expect(childAgentModel({ provider: "openrouter", model: "" })).toBe("");
+    expect(childAgentModel({ provider: "lmstudio", model: "" })).toBe("");
   });
 
   it("keeps an explicitly chosen model", () => {
@@ -97,6 +100,7 @@ describe("destination readiness", () => {
     for (const entry of [
       target({ provider: "openai", model: "gpt-5.6-terra" }),
       target({ provider: "openrouter", model: "x-ai/grok-4.5" }),
+      target({ provider: "lmstudio", model: "qwen/local-coder" }),
       target({ provider: "claude", model: "claude-fable-5" }),
       target({ provider: "cursor", model: "auto" }),
     ]) {
@@ -111,6 +115,8 @@ describe("destination readiness", () => {
       .toMatch(/Claude model/);
     expect(childAgentTargetIssue(target({ provider: "openai", model: "x-ai/grok-4.5" }), EVERYTHING_READY))
       .toMatch(/not addressable/);
+    expect(childAgentTargetIssue(target({ provider: "lmstudio", model: "" }), EVERYTHING_READY))
+      .toMatch(/Choose a model/);
   });
 
   it("reports the missing sign-in for each provider", () => {
@@ -118,6 +124,8 @@ describe("destination readiness", () => {
       .toMatch(/Sign in to ChatGPT/);
     expect(childAgentTargetIssue(target({ provider: "openrouter", model: "x-ai/grok-4.5" }), { ...EVERYTHING_READY, openRouterReady: false }))
       .toMatch(/OpenRouter API key/);
+    expect(childAgentTargetIssue(target({ provider: "lmstudio", model: "qwen/local-coder" }), { ...EVERYTHING_READY, lmStudioReady: false }))
+      .toMatch(/LM Studio/);
     expect(childAgentTargetIssue(target({ provider: "claude", model: "claude-fable-5" }), { ...EVERYTHING_READY, claudeReady: false }))
       .toMatch(/Claude Code/);
     expect(childAgentTargetIssue(target({ provider: "cursor", model: "auto" }), { ...EVERYTHING_READY, cursorReady: false }))

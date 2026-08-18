@@ -3,6 +3,27 @@ import type { ChildAgentBridgeLaunch } from "./agentBridge";
 import type { JsonObject } from "./codex";
 import { openKiwiDeveloperInstructions } from "./completionPrompt";
 import { resolveProviderSystemPrompt } from "./systemPrompt";
+import { DEFAULT_LM_STUDIO_BASE_URL } from "./appConfig";
+
+export function normalizeLmStudioBaseUrl(value: string | null | undefined): string {
+  const trimmed = value?.trim().replace(/\/+$/, "") || DEFAULT_LM_STUDIO_BASE_URL;
+  return /\/v1$/i.test(trimmed) ? trimmed : `${trimmed}/v1`;
+}
+
+function lmStudioProviderConfig(run: ScheduleRunSettings): JsonObject {
+  if (run.provider !== "lmstudio") return {};
+  return {
+    model_providers: {
+      lmstudio: {
+        name: "LM Studio",
+        base_url: normalizeLmStudioBaseUrl(run.lmStudioBaseUrl),
+        env_key: "LMSTUDIO_API_KEY",
+        env_key_instructions: "Configure the optional LM Studio API token in OpenKiwi Settings.",
+        wire_api: "responses",
+      },
+    },
+  };
+}
 
 export function commandSandbox(permission: PermissionMode, cwd: string, additionalWritableRoots: string[] = []): JsonObject {
   if (permission === "full") return { type: "dangerFullAccess" };
@@ -74,11 +95,12 @@ export function threadRuntimeConfig(run: ScheduleRunSettings, options: Pick<Thre
   const openKiwiSettings = Boolean(options.childAgentBridge?.toolNames.includes("propose_agent_settings"));
   return {
     ...childAgentMcpConfig(options.childAgentBridge),
+    ...lmStudioProviderConfig(run),
     project_doc_max_bytes: run.projectInstructionsEnabled ? 32_768 : 0,
     project_doc_fallback_filenames: [],
     developer_instructions: openKiwiDeveloperInstructions(openKiwiDelegation, openKiwiSettings),
     model_reasoning_effort: run.ultra ? "ultra" : run.reasoningEffort,
-    ...(run.provider === "openrouter" && Number.isFinite(contextWindow) && contextWindow > 0
+    ...((run.provider === "openrouter" || run.provider === "lmstudio") && Number.isFinite(contextWindow) && contextWindow > 0
       ? { model_context_window: Math.floor(contextWindow) }
       : {}),
     agents: {
@@ -92,9 +114,9 @@ export function threadRuntimeConfig(run: ScheduleRunSettings, options: Pick<Thre
       // ownership records, and child inbox. With no managed destination the
       // model receives no spawning route at all.
       multi_agent: false,
-      ...(run.provider === "openrouter" ? { apps: false, remote_plugin: false } : {}),
+      ...(run.provider === "openrouter" || run.provider === "lmstudio" ? { apps: false, remote_plugin: false } : {}),
     },
-    ...(run.provider === "openrouter" ? { apps: { _default: { enabled: false } } } : {}),
+    ...(run.provider === "openrouter" || run.provider === "lmstudio" ? { apps: { _default: { enabled: false } } } : {}),
   };
 }
 
@@ -115,7 +137,7 @@ export function threadStartParams(run: ScheduleRunSettings, cwd: string, options
     serviceTier: run.serviceTier,
   };
   if (run.model.trim()) params.model = run.model.trim();
-  if (run.provider === "openrouter") params.modelProvider = "openrouter";
+  if (run.provider === "openrouter" || run.provider === "lmstudio") params.modelProvider = run.provider;
   return params;
 }
 
@@ -144,8 +166,8 @@ export function threadResumeParams(
     runtimeWorkspaceRoots: [cwd, ...(options.additionalWorkspaceRoots ?? [])],
     developerInstructions,
     ...(options.excludeTurns ? { excludeTurns: true } : {}),
-    ...(run.provider === "openrouter" ? { modelProvider: "openrouter" } : {}),
-    ...(run.provider === "openrouter" || options.childAgentBridge || options.refreshRuntimeConfig
+    ...(run.provider === "openrouter" || run.provider === "lmstudio" ? { modelProvider: run.provider } : {}),
+    ...(run.provider === "openrouter" || run.provider === "lmstudio" || options.childAgentBridge || options.refreshRuntimeConfig
       ? { config: threadRuntimeConfig(run, options) }
       : {}),
   };
@@ -170,6 +192,7 @@ export function scheduleRunSnapshot(
   return {
     provider: settings.provider,
     model: settings.model,
+    lmStudioBaseUrl: normalizeLmStudioBaseUrl(settings.lmStudioBaseUrl),
     permission: settings.permission,
     systemPrompt: resolveProviderSystemPrompt(
       settings.systemPrompt,

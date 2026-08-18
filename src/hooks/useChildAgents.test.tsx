@@ -192,7 +192,7 @@ describe("useChildAgents", () => {
     it("passes the OpenRouter context window through for an OpenRouter destination", async () => {
       const view = await mount();
       await view.send(request({ arguments: { target: "grok", prompt: "Do the work." } }));
-      expect(childRun.startChildAgentTurn.mock.calls[0][2].openRouterContextWindow).toBe(256_000);
+      expect(childRun.startChildAgentTurn.mock.calls[0][2].modelContextWindow).toBe(256_000);
     });
 
     it("uses an agent-selected reasoning level within the frozen user ceiling", async () => {

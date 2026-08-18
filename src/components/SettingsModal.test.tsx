@@ -84,6 +84,15 @@ function modalProps(overrides: Partial<Parameters<typeof SettingsModal>[0]> = {}
 }
 
 describe("SettingsModal", () => {
+  it("offers LM Studio as a local model provider", () => {
+    render(<SettingsModal {...modalProps({ initialSection: "models" })} />);
+
+    expect(screen.getByRole("button", { name: /LM Studio/ })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /LM Studio/ }));
+    expect(screen.getByText("LM Studio local server")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("http://127.0.0.1:1234/v1")).toBeInTheDocument();
+  });
+
   it("organizes every settings destination into a labeled navigation group", () => {
     render(<SettingsModal {...modalProps()} />);
 

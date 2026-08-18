@@ -31,8 +31,10 @@ export interface ChildRunContext {
   reasoningEffort: ReasoningEffort;
   serviceTier: string | null;
   serviceName: string;
-  /** Context window for an OpenRouter destination, when known. */
-  openRouterContextWindow?: number;
+  /** Context window reported by the destination's model catalog, when known. */
+  modelContextWindow?: number;
+  /** Current LM Studio Responses endpoint used by local-model destinations. */
+  lmStudioBaseUrl?: string;
 }
 
 export interface ChildRunResult {
@@ -52,6 +54,7 @@ export function childRunSettings(target: ChildAgentTarget, context: ChildRunCont
   return {
     provider: target.provider,
     model: childAgentModel(target),
+    lmStudioBaseUrl: context.lmStudioBaseUrl,
     permission: context.policy.permission,
     systemPrompt: context.systemPrompt,
     projectInstructionsEnabled: context.projectInstructionsEnabled,
@@ -129,7 +132,7 @@ export async function startChildAgentTurn(
   const started = await rpc<{ thread: Thread }>("thread/start", threadStartParams(run, context.executionPath, {
     serviceName: context.serviceName,
     customAgents: [],
-    modelContextWindow: target.provider === "openrouter" ? context.openRouterContextWindow : undefined,
+    modelContextWindow: context.modelContextWindow,
     interactive: true,
     additionalWorkspaceRoots: context.additionalWorkspaceRoots,
   }));

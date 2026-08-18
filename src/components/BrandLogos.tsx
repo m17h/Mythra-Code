@@ -10,6 +10,11 @@ import type { Provider } from "../types";
 
 type LogoProps = { size?: number; className?: string };
 
+/** Official LM Studio color app icon from LM Studio's public brand kit. */
+export function LmStudioLogo({ size = 16, className }: LogoProps) {
+  return <img className={className} width={size} height={size} src="/lm-studio-icon.svg" alt="" aria-hidden="true" draggable={false} />;
+}
+
 export function ClaudeLogo({ size = 16, className }: LogoProps) {
   return (
     <svg
@@ -130,6 +135,7 @@ export function CursorProviderLogo({ size = 16, className }: LogoProps) {
 }
 
 export function ProviderLogo({ provider, size = 16, className }: LogoProps & { provider: Provider }) {
+  if (provider === "lmstudio") return <LmStudioLogo size={size} className={className} />;
   if (provider === "cursor") return <CursorProviderLogo size={size} className={className} />;
   if (provider === "claude") return <ClaudeProviderLogo size={size} className={className} />;
   if (provider === "openai") {

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef } from "react";
 import { auditEvent, rpc } from "../lib/codex";
 import { useTaskStore } from "../lib/taskStore";
 import { scheduleRunSnapshot, threadStartParams, turnStartParams } from "../lib/turnConfig";
+import type { LmStudioModel } from "../components/LmStudioModelControl";
 import type { AppSettings, Project, ScheduleRunRecord, ScheduleRunSettings, ScheduledTask, Thread } from "../types";
 
 export interface SchedulerDeps {
@@ -12,6 +13,8 @@ export interface SchedulerDeps {
   runtimeAvailable: boolean;
   chatGptConnected: boolean;
   openRouterReady: boolean;
+  lmStudioReady?: boolean;
+  lmStudioModels?: LmStudioModel[];
   ensureSkillRoots: () => Promise<void>;
   bindThreadToProject: (threadId: string, projectPath: string) => void;
   onThreadStarted: (project: Project) => void;
@@ -52,7 +55,7 @@ export function useScheduler(deps: SchedulerDeps): void {
       return;
     }
     if (run.provider === "claude" || run.provider === "cursor") {
-      const error = `${run.provider === "cursor" ? "Cursor" : "Claude"} scheduled tasks are not enabled yet. Use an OpenAI or OpenRouter schedule.`;
+      const error = `${run.provider === "cursor" ? "Cursor" : "Claude"} scheduled tasks are not enabled yet. Use an OpenAI, OpenRouter, or LM Studio schedule.`;
       current.updateSchedule(scheduled.id, (item) => ({
         ...item,
         nextRunAt: Date.now() + item.intervalMinutes * 60_000,
@@ -72,6 +75,7 @@ export function useScheduler(deps: SchedulerDeps): void {
     if (!current.runtimeAvailable) return;
     if (run.provider === "openai" && !current.chatGptConnected) return;
     if (run.provider === "openrouter" && !current.openRouterReady) return;
+    if (run.provider === "lmstudio" && !current.lmStudioReady) return;
     runningRef.current.add(scheduled.id);
     let startedThreadId: string | undefined;
     let turnStarted = false;
@@ -79,6 +83,9 @@ export function useScheduler(deps: SchedulerDeps): void {
       await current.ensureSkillRoots();
       const started = await rpc<{ thread: Thread }>("thread/start", threadStartParams(run, project.path, {
         serviceName: "OpenKiwi",
+        modelContextWindow: run.provider === "lmstudio"
+          ? current.lmStudioModels?.find((entry) => entry.id === run.model)?.context_length
+          : undefined,
         interactive: false,
       }));
       startedThreadId = started.thread.id;

@@ -175,10 +175,12 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .app-shell[data-theme="daylight"] .model-menu-option.terra { --option-accent: #3e8e22; }
 .app-shell[data-theme="daylight"] .model-menu-option.luna { --option-accent: #1668a8; }
 .app-shell[data-theme="daylight"] .openrouter-control { --router-accent: #7a56be; }
+.app-shell[data-theme="daylight"] .openrouter-control.lmstudio-control { --router-accent: #16856c; }
 .app-shell[data-theme="daylight"] .openrouter-control.claude-control { --router-accent: #b75f42; }
 .app-shell[data-theme="daylight"] .model-orb, .app-shell[data-theme="daylight"] .menu-model-orb, .app-shell[data-theme="daylight"] .openrouter-logo { color: #ffffff; }
 .app-shell[data-theme="daylight"] .provider-logo { background: #eceee8; }
 .app-shell[data-theme="daylight"] .provider-logo.openrouter { color: #7a56be; }
+.app-shell[data-theme="daylight"] .provider-logo.lmstudio { color: #16856c; }
 .app-shell[data-theme="daylight"] .provider-logo.claude { color: #fff; background: #d97757; }
 .app-shell[data-theme="daylight"] .provider-logo.cursor { color: #26251e; background: #edecec; }
 .app-shell[data-theme="daylight"] .provider-card { color: #4c544c; }
@@ -311,6 +313,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .thread-card-provider.claude { border-color: rgba(217,119,87,.38); color: #fff; background: #d97757; }
 .thread-card-provider.openai { color: #fff; background: #1a1d18; }
 .thread-card-provider.openrouter { color: #b9a0ff; background: rgba(122,86,190,.12); }
+.thread-card-provider.lmstudio { border-color: transparent; background: transparent; }
 .thread-card-provider.cursor { border-color: rgba(237,236,236,.35); color: #26251e; background: #edecec; }
 .app-shell[data-theme="daylight"] .thread-card-provider.openrouter { color: #7a56be; }
 .thread-card-status { display: inline-flex; align-items: center; gap: 4px; min-width: 0; margin-left: auto; color: var(--muted-2); font-size: var(--fs-meta); font-weight: 610; white-space: nowrap; font-variant-numeric: tabular-nums; }
@@ -410,6 +413,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .provider-mark { width: 22px; height: 22px; display: grid; place-items: center; flex: 0 0 auto; border-radius: var(--r-xs); color: #fff; background: #1a1d18; }
 .provider-mark.claude { background: #d97757; }
 .provider-mark.openrouter { color: #d6b3ff; background: rgba(126,75,178,.25); }
+.provider-mark.lmstudio { background: transparent; }
 .provider-mark.cursor { color: #26251e; background: #edecec; }
 .thread-provider-menu { position: absolute; z-index: 130; top: calc(100% + 7px); right: 0; width: 300px; padding: var(--s-1); border: 1px solid var(--line-strong); border-radius: var(--r-lg); background: var(--panel-2); box-shadow: var(--shadow); opacity: 0; visibility: hidden; transform: translateY(-6px) scale(.972); transform-origin: top right; pointer-events: none; transition: opacity 180ms var(--ease), visibility 0s linear 180ms, transform 180ms var(--ease); }
 .thread-provider-control.open .thread-provider-menu { opacity: 1; visibility: visible; transform: none; pointer-events: auto; transition: opacity 180ms var(--ease), visibility 0s, transform 180ms var(--ease); }
@@ -427,6 +431,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .thread-provider-default > svg { justify-self: center; color: var(--muted-2); }
 .provider-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 3px rgba(167,226,111,.08); }
 .provider-dot.openrouter { background: #c798f4; box-shadow: 0 0 0 3px rgba(199,152,244,.08); }
+.provider-dot.lmstudio { background: #75d5c7; box-shadow: 0 0 0 3px rgba(117,213,199,.09); }
 .provider-dot.claude { background: #df8a68; box-shadow: 0 0 0 3px rgba(223,138,104,.1); }
 .provider-dot.cursor { background: #d6d5d2; box-shadow: 0 0 0 3px rgba(214,213,210,.1); }
 .provider-default-note { margin: var(--s-3) 0 var(--s-4); padding: 0 var(--s-1); color: var(--muted); font-size: var(--fs-meta); line-height: 1.5; }
@@ -512,6 +517,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .message-avatar.provider-claude { background: #d97757; color: #fff; }
 .message-avatar.provider-openai { background: #0f120d; color: #fff; }
 .message-avatar.provider-cursor { color: #26251e; background: #edecec; }
+.message-avatar.provider-lmstudio { background: transparent; }
 .message-avatar.provider-openai .codex-logo-option {
   transform: scale(1.35);
   transform-origin: center;
@@ -519,19 +525,21 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .app-shell[data-theme="daylight"] .message-avatar.provider-openai { background: #1a1d18; }
 .message-body { min-width: 0; color: var(--ink-2); font-size: var(--fs-body); line-height: 1.68; letter-spacing: -.005em; text-wrap: pretty; }
 .message-text { white-space: pre-wrap; overflow-wrap: anywhere; }
-.virtual-timeline { height: 100%; direction: rtl; }
-.virtual-timeline [data-testid="virtuoso-item-list"] { direction: ltr; }
-.native-timeline { overflow-x: hidden; overflow-y: auto; overflow-anchor: auto; }
-.native-timeline-list { direction: ltr; }
+.timeline-shell { position: relative; width: 100%; height: 100%; min-height: 0; }
+.legend-timeline { height: 100%; overflow-x: hidden; overscroll-behavior-y: contain; overflow-anchor: none; }
+.legend-timeline:focus { outline: none; }
+.timeline-scroll-latest { position: absolute; right: 50%; bottom: 82px; z-index: 12; display: flex; align-items: center; gap: 5px; min-height: 30px; padding: 0 11px; transform: translateX(50%); border: 1px solid var(--line-strong); border-radius: 999px; color: var(--text); background: color-mix(in srgb, var(--panel) 94%, transparent); box-shadow: var(--elev-2); font: inherit; font-size: var(--fs-meta); font-weight: 650; cursor: pointer; backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
+.timeline-scroll-latest:hover { border-color: color-mix(in srgb, var(--green) 48%, var(--line-strong)); background: color-mix(in srgb, var(--panel) 88%, var(--green) 12%); }
+.timeline-scroll-latest:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
 .timeline-entry { display: flow-root; width: min(var(--measure), calc(100% - 64px)); margin-inline: auto; }
 .timeline-entry-message { padding-bottom: var(--s-6); }
 .timeline-entry-activity { padding-bottom: 6px; }
 .timeline-entry-disclosure, .timeline-entry-approval { padding-bottom: var(--s-3); }
 .timeline-top-space { height: var(--s-8); direction: ltr; }
 .timeline-bottom-space { height: 72px; direction: ltr; }
-.virtual-timeline .message, .virtual-timeline .activity-row, .virtual-timeline .reasoning-disclosure { margin-left: 0; margin-right: 0; }
-.virtual-timeline .activity-row { margin: 0 0 0 38px; }
-.virtual-timeline .reasoning-disclosure { margin: 0 0 0 38px; }
+.legend-timeline .message, .legend-timeline .activity-row, .legend-timeline .reasoning-disclosure { margin-left: 0; margin-right: 0; }
+.legend-timeline .activity-row { margin: 0 0 0 38px; }
+.legend-timeline .reasoning-disclosure { margin: 0 0 0 38px; }
 .rich-markdown { white-space: normal; }
 .rich-markdown > :first-child { margin-top: 0; }
 .rich-markdown > :last-child { margin-bottom: 0; }
@@ -705,6 +713,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
    cards paint above the menu and look as though they show through it. */
 .sa-tile:has(.app-select.open) { z-index: 20; }
 .sa-tile.openrouter { --sa-accent: #b993f5; --sa-avatar-bg: #b993f5; --sa-avatar-ink: #16111d; }
+.sa-tile.lmstudio { --sa-accent: #75d5c7; --sa-avatar-bg: transparent; --sa-avatar-ink: #fff; }
 .sa-tile.claude { --sa-accent: #dd8b6a; --sa-avatar-bg: #d97757; --sa-avatar-ink: #ffffff; }
 .sa-tile.cursor { --sa-accent: #d9d8d3; --sa-avatar-bg: #edecec; --sa-avatar-ink: #26251e; }
 .sa-tile.expanded { grid-column: 1 / -1; border-color: color-mix(in srgb, var(--sa-accent) 34%, var(--line-strong)); background: color-mix(in srgb, var(--sa-accent) 6%, transparent); }
@@ -948,11 +957,13 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .onboarding-provider-card.openai { border-color: color-mix(in srgb, #79d7a6 17%, var(--line)); }
 .onboarding-provider-card.openrouter { border-color: color-mix(in srgb, #c39bff 19%, var(--line)); }
 .onboarding-provider-card.claude { border-color: color-mix(in srgb, #df8a68 20%, var(--line)); }
+.onboarding-provider-card.lmstudio { border-color: color-mix(in srgb, #75d5c7 22%, var(--line)); }
 .onboarding-card-title { display: flex; align-items: center; gap: 9px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
 .onboarding-card-title > span { width: 33px; height: 33px; display: grid; place-items: center; border-radius: 9px; color: #79d7a6; background: rgba(121,215,166,.08); }
 .onboarding-provider-card.openai .onboarding-card-title > span { color: #fff; background: #1a1d18; }
 .onboarding-provider-card.openrouter .onboarding-card-title > span { color: #c39bff; background: rgba(195,155,255,.09); }
 .onboarding-provider-card.claude .onboarding-card-title > span { color: #fff; background: #d97757; }
+.onboarding-provider-card.lmstudio .onboarding-card-title > span { background: transparent; }
 .onboarding-card-title > div { display: flex; flex-direction: column; gap: 2px; }
 .onboarding-card-title strong { font-size: var(--fs-ui); font-weight: 620; }
 .onboarding-card-title small { color: var(--muted-2); font-size: var(--fs-micro); }
@@ -1139,6 +1150,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .provider-logo { width: 30px; height: 30px; display: grid; place-items: center; border-radius: var(--r-sm); background: var(--panel-3); }
 .provider-logo.openai { color: #fff; background: #1a1d18; }
 .provider-logo.openrouter { color: #c798f4; }
+.provider-logo.lmstudio { background: transparent; }
 .provider-logo.claude { color: #fff; background: #d97757; }
 .provider-logo.cursor { color: #26251e; background: #edecec; }
 .provider-logo.cursor.app-dark { overflow: hidden; color: #fff; background: #11100d; }
@@ -1482,6 +1494,11 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 
 /* OpenRouter model rail */
 .openrouter-control { --router-accent: #b993f5; --router-fill: 0%; position: relative; z-index: 8; display: grid; grid-template-columns: minmax(280px, 1.08fr) minmax(245px, .92fr); gap: var(--s-3); align-items: center; margin: 0 10px var(--s-1); padding: var(--s-2); overflow: visible; border: 1px solid var(--line); border-radius: var(--r-lg); background: rgba(255,255,255,.014); box-shadow: none; }
+.openrouter-control.lmstudio-control { --router-accent: #75d5c7; }
+.lmstudio-logo { background: transparent !important; }
+.lmstudio-logo img, .provider-logo.lmstudio img, .provider-mark.lmstudio img, .thread-card-provider.lmstudio img, .message-avatar.provider-lmstudio img, .sa-tile.lmstudio img { border-radius: 22%; }
+.lmstudio-model-menu { width: min(620px, calc(100vw - 42px)); }
+.lmstudio-control .openrouter-catalog-warning { color: #75d5c7; background: rgba(117,213,199,.055); }
 .openrouter-control.claude-control { --router-accent: #dd8b6a; }
 .claude-control .openrouter-trigger { border-color: var(--line); background: var(--field); }
 .claude-control .openrouter-trigger:hover, .claude-control .openrouter-picker.open .openrouter-trigger { border-color: color-mix(in srgb, var(--router-accent) 34%, var(--line-strong)); background: color-mix(in srgb, var(--router-accent) 5%, var(--field)); }

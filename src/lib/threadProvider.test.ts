@@ -6,6 +6,7 @@ describe("thread provider resolution", () => {
   it("uses the provider recorded on an existing thread", () => {
     expect(providerFromThread({ modelProvider: "claude" }, "openai")).toBe("claude");
     expect(providerFromThread({ modelProvider: "openrouter" }, "openai")).toBe("openrouter");
+    expect(providerFromThread({ modelProvider: "lmstudio" }, "openai")).toBe("lmstudio");
     expect(providerFromThread({ modelProvider: "cursor" }, "openai")).toBe("cursor");
   });
 
@@ -19,6 +20,8 @@ describe("thread provider resolution", () => {
     expect(modelForProvider("openai", "anthropic/claude-sonnet")).toBe(DEFAULT_OPENAI_MODEL);
     expect(modelForProvider("openrouter", "gpt-5.6-sol")).toBe("");
     expect(modelForProvider("openrouter", "anthropic/claude-sonnet")).toBe("anthropic/claude-sonnet");
+    expect(modelForProvider("lmstudio", "qwen/local-coder")).toBe("qwen/local-coder");
+    expect(modelForProvider("lmstudio", "local-coder")).toBe("local-coder");
     expect(modelForProvider("cursor", "")).toBe(DEFAULT_CURSOR_MODEL);
     expect(modelForProvider("cursor", "cursor-grok-4.5")).toBe("cursor-grok-4.5");
   });

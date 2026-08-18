@@ -109,11 +109,12 @@ describe("startChildAgentTurn", () => {
   it.each([
     ["openai", "gpt-5.6-terra", undefined],
     ["openrouter", "x-ai/grok-4.5", "openrouter"],
+    ["lmstudio", "qwen/local-coder", "lmstudio"],
   ])("starts an app-server %s child in the parent's folder", async (provider, model, modelProvider) => {
     const result = await startChildAgentTurn(
       target({ provider: provider as ChildAgentTarget["provider"], model }),
       "Do the work.",
-      context({ openRouterContextWindow: 256_000 }),
+      context({ modelContextWindow: 256_000, lmStudioBaseUrl: "http://127.0.0.1:1234/v1" }),
     );
 
     const [, startParams] = codex.rpc.mock.calls[0];
@@ -125,6 +126,12 @@ describe("startChildAgentTurn", () => {
       config: { agents: { max_threads: 1, max_depth: 1 }, features: { multi_agent: false } },
     });
     expect(startParams.modelProvider).toBe(modelProvider);
+    if (provider === "lmstudio") {
+      expect(startParams.config).toMatchObject({
+        model_context_window: 256_000,
+        model_providers: { lmstudio: { base_url: "http://127.0.0.1:1234/v1", wire_api: "responses" } },
+      });
+    }
     expect(startParams.config).not.toHaveProperty("mcp_servers");
 
     const [turnMethod, turnParams] = codex.rpc.mock.calls[1];

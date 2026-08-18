@@ -13,7 +13,7 @@ React webview
           │ Tauri IPC (allowlisted commands)
           ▼
 Rust desktop host
-  ├─ OS credential store (OpenRouter key)
+  ├─ OS credential store (OpenRouter key + optional LM Studio token)
   ├─ isolated OpenKiwi app-data/Codex home
   ├─ SQLite/WAL state + audit history
   ├─ JSON-RPC request correlation + timeouts
@@ -27,7 +27,7 @@ Codex App Server
   ├─ sandbox + approval enforcement
   ├─ opt-in direct child-agent orchestration
   ├─ coding tool loop
-  └─ OpenAI or OpenRouter Responses transport
+  └─ OpenAI, OpenRouter, or LM Studio Responses transport
 ```
 
 Cursor subscription threads bypass App Server and use Cursor Agent's ACP stdio transport.
@@ -42,6 +42,8 @@ The control plane and execution plane remain separate. The React view never laun
 | UI settings, profiles, actions, schedules, and visible prompt | UI/native host | SQLite, with localStorage as immediate cache |
 | OpenRouter API key | Native host | OS credential store |
 | OpenRouter model catalog | Native host | Live tool-capable `/api/v1/models` response |
+| LM Studio API token (optional) | Native host | OS credential store |
+| LM Studio model catalog | Native host | Live `/api/v1/models`, with `/v1/models` compatibility fallback |
 | ChatGPT login | App Server | OpenKiwi-specific `CODEX_HOME` credential storage |
 | Cursor login and model catalog | Cursor Agent | Cursor's browser login and `cursor/list_available_models` ACP extension |
 | Threads and rollout history | App Server | OpenKiwi-specific `CODEX_HOME` |
@@ -148,6 +150,12 @@ wire_api = "responses"
 ```
 
 The key comes from the OS credential store and is added only to the App Server child environment. Saving or replacing the key restarts App Server so the child receives the new credential. At runtime the host also injects a loopback proxy as the provider `base_url`; the proxy holds the real bearer key, whitelists request headers, and sanitizes tool JSON schemas that OpenRouter destinations reject.
+
+### LM Studio
+
+LM Studio is a custom App Server provider using `wire_api = "responses"` and the user-configured server URL (default `http://127.0.0.1:1234/v1`). The native host queries LM Studio's richer `/api/v1/models` catalog first so the UI can exclude embedding models and retain context-window, reasoning, and tool-use metadata; older servers fall back to the OpenAI-compatible `/v1/models` endpoint.
+
+An optional API token is stored in the OS credential store and passed only to the local App Server child as `LMSTUDIO_API_KEY`; unauthenticated localhost servers receive LM Studio's conventional placeholder token. Connected-app tools are disabled for the provider, while OpenKiwi's shell, files, permissions, MCP servers, workflows, schedules, and managed sub-agent bridge remain available. The catalog's reported context window is injected into root, resumed, forked, automated, and sub-agent threads.
 
 ### Cursor
 

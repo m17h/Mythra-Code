@@ -25,13 +25,14 @@ import type { ClaudeRuntimeStatus } from "../lib/claude";
 import type { CursorRuntimeStatus } from "../lib/cursor";
 import type { Account, SettingsSection } from "../types";
 import { useModalFocus } from "../hooks/useModalFocus";
-import { ClaudeLogo, CursorLogo, OpenAILogo } from "./BrandLogos";
+import { ClaudeLogo, CursorLogo, LmStudioLogo, OpenAILogo } from "./BrandLogos";
 
 const CODEX_INSTALL_URL = "https://learn.chatgpt.com/docs/codex/cli";
 const OPENROUTER_KEYS_URL = "https://openrouter.ai/settings/keys";
 const OPENROUTER_GUIDE_URL = "https://openrouter.ai/docs/quickstart";
 const CLAUDE_INSTALL_URL = "https://docs.anthropic.com/en/docs/claude-code/setup";
 const CURSOR_INSTALL_URL = "https://cursor.com/docs/cli/installation";
+const LM_STUDIO_SERVER_URL = "https://lmstudio.ai/docs/developer/core/server";
 
 const STEPS = [
   { id: "welcome", label: "Welcome", icon: Sparkles },
@@ -46,12 +47,13 @@ function StatusPill({ ready, children }: { ready: boolean; children: ReactNode }
   return <span className={`onboarding-status ${ready ? "ready" : "waiting"}`}><i />{children}</span>;
 }
 
-function ProviderStep({ runtimeStatus, claudeStatus, cursorStatus, account, openRouterReady }: {
+function ProviderStep({ runtimeStatus, claudeStatus, cursorStatus, account, openRouterReady, lmStudioReady }: {
   runtimeStatus: CodexRuntimeStatus | null;
   claudeStatus: ClaudeRuntimeStatus | null;
   cursorStatus: CursorRuntimeStatus | null;
   account: Account | null;
   openRouterReady: boolean;
+  lmStudioReady: boolean;
 }) {
   const runtimeReady = Boolean(runtimeStatus?.available);
   const chatGptReady = account?.type === "chatgpt";
@@ -59,7 +61,7 @@ function ProviderStep({ runtimeStatus, claudeStatus, cursorStatus, account, open
     <div className="onboarding-copy">
       <span className="onboarding-eyebrow">Choose your provider</span>
       <h2>Connect the models you want to use.</h2>
-      <p>Subscription providers use their official local coding runtime and browser login. OpenRouter uses the API key you provide through OpenKiwi.</p>
+      <p>Subscription providers use their official local coding runtime and browser login. OpenRouter uses your API key, while LM Studio runs models from your own local server.</p>
     </div>
     <div className="onboarding-provider-grid">
       <article className="onboarding-provider-card openai">
@@ -120,8 +122,22 @@ function ProviderStep({ runtimeStatus, claudeStatus, cursorStatus, account, open
           <button className="onboarding-link-button" onClick={() => void openUrl(OPENROUTER_GUIDE_URL)}><ExternalLink size={12} /> Quickstart</button>
         </div>
       </article>
+
+      <article className="onboarding-provider-card lmstudio">
+        <div className="onboarding-card-title"><span><LmStudioLogo size={18} /></span><div><strong>LM Studio</strong><small>Models running on your machine</small></div></div>
+        <ol>
+          <li><b>1</b><span>Install LM Studio, download a coding-capable model, and start its <strong>Local Server</strong>.</span></li>
+          <li><b>2</b><span>Choose LM Studio in <strong>Settings → Models & accounts</strong>. The default server is <code>127.0.0.1:1234</code>.</span></li>
+          <li><b>3</b><span>Test the connection, then choose a discovered model beneath the composer.</span></li>
+        </ol>
+        <div className="onboarding-card-footer">
+          <StatusPill ready={runtimeReady}>{runtimeReady ? "Runtime ready" : "Codex runtime needed"}</StatusPill>
+          <StatusPill ready={lmStudioReady}>{lmStudioReady ? "Local server connected" : "Start local server"}</StatusPill>
+        </div>
+        <button className="onboarding-link-button" onClick={() => void openUrl(LM_STUDIO_SERVER_URL)}><ExternalLink size={12} /> LM Studio server guide</button>
+      </article>
     </div>
-    <div className="onboarding-note"><ShieldCheck size={14} /><span>OpenKiwi never asks you to paste a subscription password. ChatGPT, Claude, and Cursor use their official local login; OpenRouter uses the API key you provide.</span></div>
+    <div className="onboarding-note"><ShieldCheck size={14} /><span>OpenKiwi never asks you to paste a subscription password. ChatGPT, Claude, and Cursor use their official local login; OpenRouter uses your API key; LM Studio uses its local server and an optional token.</span></div>
   </div>;
 }
 
@@ -198,16 +214,17 @@ function SkillsStep({ skillsFolder, onChooseSkillsFolder }: { skillsFolder: stri
   </div>;
 }
 
-function ReadyStep({ runtimeStatus, claudeStatus, cursorStatus, account, openRouterReady, skillsFolder, onDestination }: {
+function ReadyStep({ runtimeStatus, claudeStatus, cursorStatus, account, openRouterReady, lmStudioReady, skillsFolder, onDestination }: {
   runtimeStatus: CodexRuntimeStatus | null;
   claudeStatus: ClaudeRuntimeStatus | null;
   cursorStatus: CursorRuntimeStatus | null;
   account: Account | null;
   openRouterReady: boolean;
+  lmStudioReady: boolean;
   skillsFolder: string;
   onDestination: (destination: "models" | "project" | "chat") => void;
 }) {
-  const providerReady = account?.type === "chatgpt" || claudeStatus?.loggedIn || cursorStatus?.loggedIn || openRouterReady;
+  const providerReady = account?.type === "chatgpt" || claudeStatus?.loggedIn || cursorStatus?.loggedIn || openRouterReady || lmStudioReady;
   const runtimeReady = runtimeStatus?.available || claudeStatus?.available || cursorStatus?.available;
   return <div className="onboarding-page ready-page">
     <div className="onboarding-ready-mark"><Check size={28} /></div>
@@ -218,7 +235,7 @@ function ReadyStep({ runtimeStatus, claudeStatus, cursorStatus, account, openRou
     </div>
     <div className="onboarding-checklist">
       <div className={runtimeReady ? "done" : ""}><span>{runtimeReady ? <Check size={13} /> : <TerminalSquare size={13} />}</span><strong>Local runtime</strong><small>{runtimeStatus?.available ? `${runtimeStatus.source ?? "Codex"} detected` : claudeStatus?.available ? "Claude Code detected" : cursorStatus?.available ? "Cursor Agent detected" : "Install a provider runtime"}</small></div>
-      <div className={providerReady ? "done" : ""}><span>{providerReady ? <Check size={13} /> : <KeyRound size={13} />}</span><strong>Model provider</strong><small>{account?.type === "chatgpt" ? "ChatGPT connected" : claudeStatus?.loggedIn ? "Claude connected" : cursorStatus?.loggedIn ? "Cursor connected" : openRouterReady ? "OpenRouter connected" : "Connect in Settings"}</small></div>
+      <div className={providerReady ? "done" : ""}><span>{providerReady ? <Check size={13} /> : <KeyRound size={13} />}</span><strong>Model provider</strong><small>{account?.type === "chatgpt" ? "ChatGPT connected" : claudeStatus?.loggedIn ? "Claude connected" : cursorStatus?.loggedIn ? "Cursor connected" : openRouterReady ? "OpenRouter connected" : lmStudioReady ? "LM Studio connected" : "Connect in Settings"}</small></div>
       <div className={skillsFolder ? "done" : "optional"}><span>{skillsFolder ? <Check size={13} /> : <Boxes size={13} />}</span><strong>Skills folder</strong><small>{skillsFolder ? "Ready" : "Optional · set up later"}</small></div>
     </div>
     <div className="onboarding-destinations">
@@ -236,6 +253,7 @@ export function OnboardingModal({
   cursorStatus = null,
   account,
   openRouterReady,
+  lmStudioReady = false,
   skillsFolder,
   onComplete,
   onOpenSettings,
@@ -249,6 +267,7 @@ export function OnboardingModal({
   cursorStatus?: CursorRuntimeStatus | null;
   account: Account | null;
   openRouterReady: boolean;
+  lmStudioReady?: boolean;
   skillsFolder: string;
   onComplete: () => void;
   onOpenSettings: (section: SettingsSection) => void;
@@ -299,11 +318,11 @@ export function OnboardingModal({
     </div>
     <div className="onboarding-time"><i /><span>About two minutes</span><i /></div>
   </div>;
-  else if (step.id === "providers") content = <ProviderStep runtimeStatus={runtimeStatus} claudeStatus={claudeStatus} cursorStatus={cursorStatus} account={account} openRouterReady={openRouterReady} />;
+  else if (step.id === "providers") content = <ProviderStep runtimeStatus={runtimeStatus} claudeStatus={claudeStatus} cursorStatus={cursorStatus} account={account} openRouterReady={openRouterReady} lmStudioReady={lmStudioReady} />;
   else if (step.id === "workspaces") content = <WorkspacesStep />;
   else if (step.id === "controls") content = <ControlsStep />;
   else if (step.id === "skills") content = <SkillsStep skillsFolder={skillsFolder} onChooseSkillsFolder={onChooseSkillsFolder} />;
-  else content = <ReadyStep runtimeStatus={runtimeStatus} claudeStatus={claudeStatus} cursorStatus={cursorStatus} account={account} openRouterReady={openRouterReady} skillsFolder={skillsFolder} onDestination={destination} />;
+  else content = <ReadyStep runtimeStatus={runtimeStatus} claudeStatus={claudeStatus} cursorStatus={cursorStatus} account={account} openRouterReady={openRouterReady} lmStudioReady={lmStudioReady} skillsFolder={skillsFolder} onDestination={destination} />;
 
   return <div className={`modal-backdrop onboarding-backdrop ${open ? "open" : "closed"}`} aria-hidden={!open} inert={!open ? true : undefined}>
     <div ref={dialogRef} className="onboarding-modal" role="dialog" aria-modal="true" aria-label="OpenKiwi onboarding">

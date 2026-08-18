@@ -12,7 +12,7 @@ import type { ReasoningEffort } from "../components/ModelPowerControl";
  * migration rules can be exercised without a runtime.
  */
 
-export const CHILD_AGENT_PROVIDERS: Provider[] = ["openai", "openrouter", "claude", "cursor"];
+export const CHILD_AGENT_PROVIDERS: Provider[] = ["openai", "openrouter", "lmstudio", "claude", "cursor"];
 
 /** Mirrors the backend ceiling in `agents.rs`. */
 export const MAX_CHILD_AGENT_TARGETS = 24;
@@ -31,6 +31,7 @@ export interface ChildAgentReadiness {
   codexRuntimeAvailable: boolean;
   openAiSignedIn: boolean;
   openRouterReady: boolean;
+  lmStudioReady?: boolean;
   claudeReady: boolean;
   cursorReady: boolean;
 }
@@ -144,6 +145,7 @@ export function describeChildAgentReasoning(target: ChildAgentTarget): string {
 
 export function providerDisplayName(provider: Provider): string {
   if (provider === "openrouter") return "OpenRouter";
+  if (provider === "lmstudio") return "LM Studio";
   if (provider === "claude") return "Claude";
   if (provider === "cursor") return "Cursor";
   return "OpenAI";
@@ -205,6 +207,7 @@ export function childAgentModel(target: Pick<ChildAgentTarget, "provider" | "mod
   if (target.provider === "claude") return DEFAULT_CLAUDE_MODEL;
   if (target.provider === "cursor") return DEFAULT_CURSOR_MODEL;
   if (target.provider === "openrouter") return "";
+  if (target.provider === "lmstudio") return "";
   return DEFAULT_OPENAI_MODEL;
 }
 
@@ -222,17 +225,21 @@ export function childAgentTargetIssue(
   if (target.provider === "openrouter" && !model.includes("/")) {
     return "OpenRouter needs a fully qualified model, for example `x-ai/grok-4.5`.";
   }
+  if (target.provider === "lmstudio" && !model) {
+    return "Choose a model available from the LM Studio server.";
+  }
   if (target.provider === "claude" && !model.startsWith("claude-")) {
     return "Claude Code only accepts Claude model identities.";
   }
   if (target.provider === "openai" && (model.includes("/") || model.startsWith("claude-"))) {
     return "That model is not addressable through the OpenAI provider.";
   }
-  if (target.provider === "openai" || target.provider === "openrouter") {
+  if (target.provider === "openai" || target.provider === "openrouter" || target.provider === "lmstudio") {
     if (!readiness.codexRuntimeAvailable) return "The OpenAI runtime is not installed.";
   }
   if (target.provider === "openai" && !readiness.openAiSignedIn) return "Sign in to ChatGPT first.";
   if (target.provider === "openrouter" && !readiness.openRouterReady) return "Add an OpenRouter API key first.";
+  if (target.provider === "lmstudio" && !readiness.lmStudioReady) return "Start LM Studio's local server and refresh its models first.";
   if (target.provider === "claude" && !readiness.claudeReady) return "Install and sign in to Claude Code first.";
   if (target.provider === "cursor" && !readiness.cursorReady) return "Install and sign in to Cursor Agent first.";
   return null;
@@ -562,4 +569,5 @@ export const SUGGESTED_CHILD_AGENT_TARGETS: Array<Omit<ChildAgentTarget, "enable
   { id: "claude", provider: "claude", model: "", label: "Claude Code", description: "Careful review, long-context reasoning, and test writing.", reasoningMode: "inherit", reasoningEffort: "medium", reasoningMaxEffort: "high" },
   { id: "cursor", provider: "cursor", model: "auto", label: "Cursor", description: "Fast in-repo edits through the Cursor subscription.", reasoningMode: "inherit", reasoningEffort: "medium", reasoningMaxEffort: "high" },
   { id: "openrouter", provider: "openrouter", model: "", label: "OpenRouter", description: "A specific third-party model routed through OpenRouter.", reasoningMode: "inherit", reasoningEffort: "medium", reasoningMaxEffort: "high" },
+  { id: "lmstudio", provider: "lmstudio", model: "", label: "LM Studio", description: "A local model served from LM Studio on this computer.", reasoningMode: "inherit", reasoningEffort: "medium", reasoningMaxEffort: "high" },
 ];

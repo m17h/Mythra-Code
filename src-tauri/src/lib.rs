@@ -83,6 +83,7 @@ use skills::{
 
 const KEYRING_SERVICE: &str = "com.kiwi.harness";
 const OPENROUTER_ACCOUNT: &str = "openrouter-api-key";
+const LMSTUDIO_ACCOUNT: &str = "lmstudio-api-key";
 
 type PendingMap = Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, String>>>>>;
 
@@ -433,6 +434,77 @@ async fn openrouter_key() -> Option<String> {
     .await
     .ok()
     .flatten()
+}
+
+async fn lmstudio_key() -> Option<String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let entry = keyring::Entry::new(KEYRING_SERVICE, LMSTUDIO_ACCOUNT).ok()?;
+        entry
+            .get_password()
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+fn normalize_lmstudio_base_url(value: &str) -> Result<reqwest::Url, String> {
+    let trimmed = value.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return Err("Enter the LM Studio server URL, for example http://127.0.0.1:1234/v1".into());
+    }
+    let normalized = if trimmed.to_ascii_lowercase().ends_with("/v1") {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed}/v1")
+    };
+    let mut url = reqwest::Url::parse(&normalized)
+        .map_err(|_| "The LM Studio server URL is not valid.".to_string())?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err("The LM Studio server URL must use http or https.".into());
+    }
+    if !url.username().is_empty() || url.password().is_some() || url.query().is_some() || url.fragment().is_some() {
+        return Err("The LM Studio server URL cannot contain credentials, a query, or a fragment.".into());
+    }
+    if url.host_str().is_none() {
+        return Err("The LM Studio server URL must include a host.".into());
+    }
+    url.set_query(None);
+    url.set_fragment(None);
+    Ok(url)
+}
+
+fn lmstudio_native_models_url(base_url: &reqwest::Url) -> reqwest::Url {
+    let mut url = base_url.clone();
+    let base_path = url.path().trim_end_matches('/');
+    let prefix = base_path.strip_suffix("/v1").unwrap_or(base_path);
+    url.set_path(&format!("{prefix}/api/v1/models"));
+    url
+}
+
+fn normalize_lmstudio_model_catalog(value: &Value) -> Option<Value> {
+    let models = value.get("models")?.as_array()?;
+    let data = models
+        .iter()
+        .filter(|model| model.get("type").and_then(Value::as_str) == Some("llm"))
+        .filter_map(|model| {
+            let id = model.get("key").and_then(Value::as_str)?.trim();
+            if id.is_empty() {
+                return None;
+            }
+            Some(json!({
+                "id": id,
+                "object": "model",
+                "name": model.get("display_name").and_then(Value::as_str).unwrap_or(id),
+                "owned_by": model.get("publisher").and_then(Value::as_str).unwrap_or("LM Studio"),
+                "context_length": model.get("max_context_length").and_then(Value::as_u64),
+                "trained_for_tool_use": model.pointer("/capabilities/trained_for_tool_use").and_then(Value::as_bool),
+                "reasoning": model.pointer("/capabilities/reasoning").cloned(),
+            }))
+        })
+        .collect::<Vec<_>>();
+    Some(json!({ "object": "list", "data": data }))
 }
 
 fn random_hex_token() -> Result<String, String> {
@@ -2346,6 +2418,13 @@ async fn spawn_server(app: &AppHandle) -> Result<Arc<AppServer>, String> {
         openrouter_proxy_url = Some(proxy_url);
         openrouter_proxy_task = Some(task);
     }
+    // LM Studio accepts the conventional `lm-studio` placeholder when local
+    // authentication is disabled. If the user enabled API tokens, the real
+    // token lives only in Keychain and this child-process environment.
+    command.env(
+        "LMSTUDIO_API_KEY",
+        lmstudio_key().await.unwrap_or_else(|| "lm-studio".into()),
+    );
     // The proxy base URL embeds a secret path token, so it is written into
     // the 0600 app-managed config.toml rather than passed as a `-c` CLI
     // override, which any local process could read via `ps`.
@@ -2845,6 +2924,85 @@ async fn has_openrouter_key() -> bool {
 }
 
 #[tauri::command]
+async fn save_lmstudio_key(
+    app: AppHandle,
+    state: State<'_, RuntimeState>,
+    api_key: String,
+) -> Result<(), String> {
+    let trimmed = api_key.trim().to_string();
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let entry = keyring::Entry::new(KEYRING_SERVICE, LMSTUDIO_ACCOUNT)
+            .map_err(|error| format!("Could not open the OS credential store: {error}"))?;
+        if trimmed.is_empty() {
+            match entry.delete_credential() {
+                Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+                Err(error) => Err(format!("Could not remove the LM Studio token: {error}")),
+            }
+        } else {
+            entry
+                .set_password(&trimmed)
+                .map_err(|error| format!("Could not save the LM Studio token: {error}"))
+        }
+    })
+    .await
+    .map_err(|error| format!("Credential task failed: {error}"))??;
+
+    if let Some(server) = state.server.lock().await.take() {
+        server.shutdown().await;
+    }
+    let _ = ensure_server(&app, &state).await?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn has_lmstudio_key() -> bool {
+    lmstudio_key().await.is_some()
+}
+
+#[tauri::command]
+async fn list_lmstudio_models(base_url: String) -> Result<Value, String> {
+    let base_url = normalize_lmstudio_base_url(&base_url)?;
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(4))
+        .timeout(Duration::from_secs(12))
+        .build()
+        .map_err(|error| format!("Could not create the LM Studio client: {error}"))?;
+    let token = lmstudio_key().await.unwrap_or_else(|| "lm-studio".into());
+    let native = client
+        .get(lmstudio_native_models_url(&base_url))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .ok()
+        .and_then(|response| response.error_for_status().ok());
+    if let Some(response) = native {
+        if let Ok(value) = response.json::<Value>().await {
+            if let Some(catalog) = normalize_lmstudio_model_catalog(&value) {
+                return Ok(catalog);
+            }
+        }
+    }
+
+    // Older LM Studio builds may not expose the native v1 catalog yet. Their
+    // OpenAI-compatible model list is still sufficient for model selection,
+    // although it cannot distinguish embedding models or expose capabilities.
+    let mut compatibility_url = base_url;
+    let path = format!("{}/models", compatibility_url.path().trim_end_matches('/'));
+    compatibility_url.set_path(&path);
+    client
+        .get(compatibility_url)
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(|error| format!("Could not reach LM Studio. Start its local server and check the URL: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("LM Studio rejected the model request: {error}"))?
+        .json::<Value>()
+        .await
+        .map_err(|error| format!("Could not read LM Studio's model catalog: {error}"))
+}
+
+#[tauri::command]
 async fn list_openrouter_models() -> Result<Value, String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(20))
@@ -3050,9 +3208,12 @@ pub fn run() {
             codex_rpc,
             codex_respond,
             save_openrouter_key,
+            save_lmstudio_key,
             save_pasted_image,
             has_openrouter_key,
+            has_lmstudio_key,
             list_openrouter_models,
+            list_lmstudio_models,
             child_agent_session_start,
             child_agent_session_end,
             child_agent_respond,
