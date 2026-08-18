@@ -5,6 +5,11 @@ import { OPENKIWI_DELEGATION_INSTRUCTIONS, openKiwiDeveloperInstructions } from 
 /** Skill-mention plus completion guidance: what every turn carries. */
 const BASE_INSTRUCTIONS = openKiwiDeveloperInstructions(false);
 import { childAgentMcpConfig, normalizeLmStudioBaseUrl, threadResumeParams, threadRuntimeConfig, threadStartParams } from "./turnConfig";
+import { LM_STUDIO_CODEX_PROVIDER_ID } from "./appConfig";
+import { codexModelProviderId, providerFromThread } from "./threadProvider";
+
+/** Provider ids Codex ships built in and refuses to let a config override. */
+const CODEX_RESERVED_PROVIDER_IDS = ["openai", "lmstudio", "ollama", "amazon-bedrock"];
 
 const baseRun: ScheduleRunSettings = {
   provider: "openai",
@@ -80,10 +85,10 @@ describe("LM Studio provider configuration", () => {
     const start = threadStartParams(run, "/tmp/project", { interactive: true, modelContextWindow: 262_144 });
     expect(start).toMatchObject({
       model: "qwen/local",
-      modelProvider: "lmstudio",
+      modelProvider: LM_STUDIO_CODEX_PROVIDER_ID,
       config: {
         model_providers: {
-          lmstudio: {
+          [LM_STUDIO_CODEX_PROVIDER_ID]: {
             name: "LM Studio",
             base_url: "http://127.0.0.1:1234/v1",
             env_key: "LMSTUDIO_API_KEY",
@@ -100,9 +105,46 @@ describe("LM Studio provider configuration", () => {
   it("reapplies the provider configuration when a local thread resumes", () => {
     const run = { ...baseRun, provider: "lmstudio" as const, model: "local-model", lmStudioBaseUrl: "http://mac-studio.local:1234/v1" };
     expect(threadResumeParams(run, "thread-local", "/tmp/project")).toMatchObject({
-      modelProvider: "lmstudio",
-      config: { model_providers: { lmstudio: { base_url: "http://mac-studio.local:1234/v1" } } },
+      modelProvider: LM_STUDIO_CODEX_PROVIDER_ID,
+      config: { model_providers: { [LM_STUDIO_CODEX_PROVIDER_ID]: { base_url: "http://mac-studio.local:1234/v1" } } },
     });
+  });
+
+  /**
+   * Codex fails the whole config load with "model_providers contains reserved
+   * built-in provider IDs" when any generated entry shadows a built-in. Nothing
+   * OpenKiwi writes into `model_providers` or `modelProvider` may use one.
+   */
+  it("never names a reserved Codex built-in provider in the generated config", () => {
+    const runs: ScheduleRunSettings[] = [
+      { ...baseRun, provider: "lmstudio", model: "qwen/local", lmStudioBaseUrl: "http://127.0.0.1:1234" },
+      { ...baseRun, provider: "openrouter", model: "x-ai/grok-4.5" },
+      { ...baseRun, provider: "openai", model: "gpt-5.6-luna" },
+    ];
+    for (const run of runs) {
+      for (const params of [
+        threadStartParams(run, "/tmp/project", { interactive: true }),
+        threadResumeParams(run, "thread-1", "/tmp/project", { refreshRuntimeConfig: true }),
+      ]) {
+        const config = params.config as { model_providers?: Record<string, unknown> } | undefined;
+        for (const id of Object.keys(config?.model_providers ?? {})) {
+          expect(CODEX_RESERVED_PROVIDER_IDS).not.toContain(id);
+        }
+        if (params.modelProvider !== undefined) {
+          expect(CODEX_RESERVED_PROVIDER_IDS).not.toContain(params.modelProvider);
+        }
+      }
+    }
+  });
+
+  it("keeps `lmstudio` as the app-facing identity while renaming only the Codex id", () => {
+    expect(codexModelProviderId("lmstudio")).toBe(LM_STUDIO_CODEX_PROVIDER_ID);
+    expect(codexModelProviderId("openrouter")).toBe("openrouter");
+    expect(codexModelProviderId("openai")).toBeUndefined();
+    // A thread the runtime reports back under the private id is still LM Studio,
+    // and threads persisted before the rename keep resolving too.
+    expect(providerFromThread({ modelProvider: LM_STUDIO_CODEX_PROVIDER_ID }, "openai")).toBe("lmstudio");
+    expect(providerFromThread({ modelProvider: "lmstudio" }, "openai")).toBe("lmstudio");
   });
 });
 

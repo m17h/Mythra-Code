@@ -12,6 +12,17 @@ export const DEFAULT_OPENAI_MODEL = "gpt-5.6-sol";
 export const DEFAULT_CLAUDE_MODEL = "claude-fable-5";
 export const DEFAULT_CURSOR_MODEL = "auto";
 export const DEFAULT_LM_STUDIO_BASE_URL = "http://127.0.0.1:1234/v1";
+
+/**
+ * Codex config provider id OpenKiwi registers its LM Studio destination under.
+ *
+ * Codex reserves `lmstudio` (alongside `openai`, `ollama`, and `amazon-bedrock`)
+ * as a built-in provider and rejects any `model_providers` entry that shadows a
+ * built-in id — which fails the entire config load, not just the one provider.
+ * `lmstudio` stays OpenKiwi's app-facing provider identity everywhere else; only
+ * the generated Codex config uses this private id.
+ */
+export const LM_STUDIO_CODEX_PROVIDER_ID = "lmstudio_openkiwi";
 export const RELEASE_NOTES_URL = "https://github.com/m17h/OpenKiwi/releases/latest";
 
 export const THEMES: Array<{ id: ThemeName; name: string; description: string; swatches: [string, string, string] }> = [

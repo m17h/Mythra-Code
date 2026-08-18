@@ -3,7 +3,8 @@ import type { ChildAgentBridgeLaunch } from "./agentBridge";
 import type { JsonObject } from "./codex";
 import { openKiwiDeveloperInstructions } from "./completionPrompt";
 import { resolveProviderSystemPrompt } from "./systemPrompt";
-import { DEFAULT_LM_STUDIO_BASE_URL } from "./appConfig";
+import { DEFAULT_LM_STUDIO_BASE_URL, LM_STUDIO_CODEX_PROVIDER_ID } from "./appConfig";
+import { codexModelProviderId } from "./threadProvider";
 
 export function normalizeLmStudioBaseUrl(value: string | null | undefined): string {
   const trimmed = value?.trim().replace(/\/+$/, "") || DEFAULT_LM_STUDIO_BASE_URL;
@@ -14,7 +15,8 @@ function lmStudioProviderConfig(run: ScheduleRunSettings): JsonObject {
   if (run.provider !== "lmstudio") return {};
   return {
     model_providers: {
-      lmstudio: {
+      // Never key this on the app's `lmstudio` id — Codex reserves it.
+      [LM_STUDIO_CODEX_PROVIDER_ID]: {
         name: "LM Studio",
         base_url: normalizeLmStudioBaseUrl(run.lmStudioBaseUrl),
         env_key: "LMSTUDIO_API_KEY",
@@ -137,7 +139,8 @@ export function threadStartParams(run: ScheduleRunSettings, cwd: string, options
     serviceTier: run.serviceTier,
   };
   if (run.model.trim()) params.model = run.model.trim();
-  if (run.provider === "openrouter" || run.provider === "lmstudio") params.modelProvider = run.provider;
+  const modelProvider = codexModelProviderId(run.provider);
+  if (modelProvider) params.modelProvider = modelProvider;
   return params;
 }
 
@@ -166,7 +169,7 @@ export function threadResumeParams(
     runtimeWorkspaceRoots: [cwd, ...(options.additionalWorkspaceRoots ?? [])],
     developerInstructions,
     ...(options.excludeTurns ? { excludeTurns: true } : {}),
-    ...(run.provider === "openrouter" || run.provider === "lmstudio" ? { modelProvider: run.provider } : {}),
+    ...(codexModelProviderId(run.provider) ? { modelProvider: codexModelProviderId(run.provider) } : {}),
     ...(run.provider === "openrouter" || run.provider === "lmstudio" || options.childAgentBridge || options.refreshRuntimeConfig
       ? { config: threadRuntimeConfig(run, options) }
       : {}),
