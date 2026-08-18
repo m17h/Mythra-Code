@@ -1,568 +1,277 @@
-import { act, render } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { ChatTimeline, attachTimelineScrollAnchor, readTimelineAnchor, timelineAnchorDrift } from "./ChatTimeline";
-import type { Activity, ChatMessage } from "../types";
-import { installResizeObservers, installVirtualLayout } from "../test/virtualLayout";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ChatMessage } from "../types";
+
+const { legendListProps, legendListState, scrollToEnd, scrollToIndex } = vi.hoisted(() => ({
+  legendListProps: { current: null as Record<string, unknown> | null },
+  legendListState: {
+    current: { isAtEnd: true, contentLength: 3000, scroll: 2400, scrollLength: 600 },
+  },
+  scrollToEnd: vi.fn(() => Promise.resolve()),
+  scrollToIndex: vi.fn(() => Promise.resolve()),
+}));
 
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn() }));
 
-const VIEWPORT = 600;
-const HEADER = 24;
-const FOOTER = 72;
+vi.mock("@legendapp/list/react", async () => {
+  const React = await import("react");
+  return {
+    LegendList: React.forwardRef(function MockLegendList(
+      props: {
+        data?: unknown[];
+        renderItem?: (args: { item: unknown; index: number }) => React.ReactNode;
+        keyExtractor?: (item: unknown, index: number) => string;
+        onScroll?: () => void;
+        ListHeaderComponent?: React.ReactNode;
+        ListFooterComponent?: React.ReactNode;
+      },
+      ref: React.ForwardedRef<unknown>,
+    ) {
+      const scrollerRef = React.useRef<HTMLDivElement>(null);
+      React.useImperativeHandle(ref, () => ({
+        getScrollableNode: () => scrollerRef.current,
+        getState: () => legendListState.current,
+        scrollToEnd,
+        scrollToIndex,
+      }));
+      legendListProps.current = props;
+      return (
+        <div ref={scrollerRef} data-testid="timeline-scroller" onScroll={props.onScroll}>
+          {props.ListHeaderComponent}
+          {props.data?.map((entry, index) => (
+            <div key={props.keyExtractor?.(entry, index) ?? index}>
+              {props.renderItem?.({ item: entry, index })}
+            </div>
+          ))}
+          {props.ListFooterComponent}
+        </div>
+      );
+    }),
+  };
+});
 
-/** Extra height a row picked up after it was first measured, keyed by row index. */
-const grown = new Map<number, number>();
+import {
+  ChatTimeline,
+  TIMELINE_FOLLOW_REARM_THRESHOLD_PX,
+  resolveTimelineIsAtEnd,
+  shouldCancelTimelineFollowForWheel,
+} from "./ChatTimeline";
 
-/**
- * Row heights that swing by an order of magnitude between neighbours, the way
- * a real transcript does: a one-line activity row against a screen-tall
- * Markdown answer. Uniform rows cannot reproduce this bug at all — the
- * virtualizer's guess for an unmeasured row is only ever wrong when its
- * neighbours disagree about how tall a row is.
- */
-const heightFor = (index: number) => (grown.get(index) ?? 0) + 60 + (index % 11) * 40;
-
-/** Completed turns, so the timeline compacts each one into request / work / answer. */
-function completedTurns(turns: number): { messages: ChatMessage[]; activities: Activity[] } {
-  const messages: ChatMessage[] = [];
-  const activities: Activity[] = [];
-  for (let turn = 0; turn < turns; turn += 1) {
-    const stamp = { turnId: `turn-${turn}`, turnStatus: "completed" as const };
-    const base = turn * 5;
-    messages.push({ id: `u-${turn}`, role: "user", text: `Ask ${turn}`, timelineOrder: base + 1, ...stamp });
-    activities.push({ id: `c-${turn}`, kind: "command", title: `npm test ${turn}`, detail: "ok", timelineOrder: base + 2, ...stamp });
-    messages.push({ id: `p-${turn}`, role: "assistant", text: `Working ${turn}`, timelineOrder: base + 3, ...stamp });
-    activities.push({ id: `f-${turn}`, kind: "file", title: `src/file-${turn}.ts`, timelineOrder: base + 4, ...stamp });
-    messages.push({ id: `a-${turn}`, role: "assistant", text: `Answer ${turn}`, timelineOrder: base + 5, ...stamp });
-  }
-  return { activities, messages };
-}
-
-function transcript(count: number): ChatMessage[] {
+function transcript(count: number, streaming = false): ChatMessage[] {
   return Array.from({ length: count }, (_, index) => ({
-    id: `m-${index}`,
+    id: `message-${index}`,
     role: "assistant" as const,
     text: `Answer ${index}`,
     timelineOrder: index + 1,
+    streaming: streaming && index === count - 1,
   }));
 }
 
-function harness() {
-  const resize = installResizeObservers();
-  const layout = installVirtualLayout({ viewportHeight: VIEWPORT, itemHeight: heightFor, headerHeight: HEADER, footerHeight: FOOTER });
-  return {
-    layout,
-    /**
-     * One browser frame in the order the browser runs it: queued scroll
-     * events, then animation-frame work (the virtualizer measures and React
-     * commits), then layout, then resize observers — which is the last point
-     * anything can move before the frame is painted.
-     */
-    async frame(count = 1) {
-      for (let index = 0; index < count; index += 1) {
-        await act(async () => {
-          layout.frame();
-          await vi.advanceTimersByTimeAsync(20);
-          resize.flush();
-        });
-      }
-    },
-    teardown() {
-      layout.uninstall();
-      resize.uninstall();
-    },
-  };
+function renderTimeline(messages = transcript(60, true)) {
+  return render(
+    <ChatTimeline
+      messages={messages}
+      activities={[]}
+      running
+      thinkingLabel="Thinking"
+    />,
+  );
 }
 
-function scroller(): HTMLElement {
-  const element = document.querySelector<HTMLElement>("[data-virtuoso-scroller]");
-  if (!element) throw new Error("no scroller");
-  return element;
-}
-
-function renderedIndices(): number[] {
-  return Array.from(document.querySelectorAll<HTMLElement>("[data-item-index]")).map((row) => Number(row.dataset.itemIndex));
-}
-
-/** Where a row sits on screen, or null when it is not currently rendered. */
-function rowTop(index: number): number | null {
-  const row = document.querySelector<HTMLElement>(`[data-item-index="${index}"]`);
-  if (!row) return null;
-  return row.getBoundingClientRect().top - scroller().getBoundingClientRect().top;
-}
-
-function topVisibleRow(): number | undefined {
-  return renderedIndices().find((index) => {
-    const top = rowTop(index);
-    return top !== null && top + heightFor(index) > 0;
+async function attachGestureListeners() {
+  await vi.runAllTimersAsync();
+  const scroller = screen.getByTestId("timeline-scroller");
+  Object.defineProperties(scroller, {
+    clientHeight: { configurable: true, value: 600 },
+    scrollHeight: { configurable: true, value: 3000 },
   });
+  return scroller;
 }
 
-describe("ChatTimeline scroll stability", () => {
+describe("ChatTimeline streaming scroll state", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    legendListProps.current = null;
+    legendListState.current = {
+      isAtEnd: true,
+      contentLength: 3000,
+      scroll: 2400,
+      scrollLength: 600,
+    };
+    scrollToEnd.mockClear();
+    scrollToIndex.mockClear();
+  });
+
   afterEach(() => {
     vi.useRealTimers();
-    grown.clear();
   });
 
-  it("holds the transcript still while the user scrolls up through rows it has never measured", async () => {
-    vi.useFakeTimers();
-    const kit = harness();
-    try {
-      render(<ChatTimeline messages={transcript(300)} activities={[]} running={false} thinkingLabel="Thinking" />);
-      await kit.frame(20);
-
-      let worstDrift = 0;
-      let driftFrames = 0;
-      for (let step = 0; step < 200; step += 1) {
-        const probe = topVisibleRow();
-        const before = probe === undefined ? null : rowTop(probe);
-        scroller().dispatchEvent(new WheelEvent("wheel", { deltaY: -50 }));
-        scroller().scrollTop -= 50;
-        await kit.frame();
-        const after = probe === undefined ? null : rowTop(probe);
-        if (before === null || after === null) continue;
-        // Scrolling up by 50px moves the row 50px down the screen. Anything
-        // else is the transcript lurching under the reader.
-        const drift = Math.abs(after - (before + 50));
-        if (drift >= 1) driftFrames += 1;
-        worstDrift = Math.max(worstDrift, drift);
-      }
-
-      expect(driftFrames).toBe(0);
-      expect(worstDrift).toBeLessThan(1);
-    } finally {
-      kit.teardown();
-    }
+  it("uses a strict pixel band to re-arm streaming follow", () => {
+    expect(TIMELINE_FOLLOW_REARM_THRESHOLD_PX).toBe(40);
+    expect(resolveTimelineIsAtEnd({
+      isAtEnd: false,
+      contentLength: 2000,
+      scroll: 1160,
+      scrollLength: 800,
+    })).toBe(true);
+    expect(resolveTimelineIsAtEnd({
+      isAtEnd: false,
+      contentLength: 2000,
+      scroll: 900,
+      scrollLength: 800,
+    })).toBe(false);
+    expect(resolveTimelineIsAtEnd({ isAtEnd: true })).toBe(true);
+    expect(resolveTimelineIsAtEnd(undefined)).toBeUndefined();
   });
 
-  it("holds still through a transcript of compacted turns", async () => {
-    vi.useFakeTimers();
-    const kit = harness();
-    try {
-      const { activities, messages } = completedTurns(100);
-      render(<ChatTimeline messages={messages} activities={activities} running={false} thinkingLabel="Thinking" />);
-      await kit.frame(20);
-
-      let worstDrift = 0;
-      for (let step = 0; step < 150; step += 1) {
-        const probe = topVisibleRow();
-        const before = probe === undefined ? null : rowTop(probe);
-        scroller().dispatchEvent(new WheelEvent("wheel", { deltaY: -50 }));
-        scroller().scrollTop -= 50;
-        await kit.frame();
-        const after = probe === undefined ? null : rowTop(probe);
-        if (before === null || after === null) continue;
-        worstDrift = Math.max(worstDrift, Math.abs(after - (before + 50)));
-      }
-
-      expect(worstDrift).toBeLessThan(1);
-    } finally {
-      kit.teardown();
-    }
+  it("only treats an upward wheel over scrollable content as leaving live follow", () => {
+    expect(shouldCancelTimelineFollowForWheel(-1, true)).toBe(true);
+    expect(shouldCancelTimelineFollowForWheel(1, true)).toBe(false);
+    expect(shouldCancelTimelineFollowForWheel(-1, false)).toBe(false);
   });
 
-  it("opens a long transcript at its newest entry", async () => {
-    vi.useFakeTimers();
-    const kit = harness();
-    try {
-      render(<ChatTimeline messages={transcript(300)} activities={[]} running={false} thinkingLabel="Thinking" />);
-      await kit.frame(20);
+  it("gives an upward wheel gesture authority over streaming follow", async () => {
+    renderTimeline();
+    const scroller = await attachGestureListeners();
 
-      expect(renderedIndices()).toContain(299);
-      const element = scroller();
-      expect(element.scrollTop).toBe(element.scrollHeight - VIEWPORT);
-    } finally {
-      kit.teardown();
-    }
+    fireEvent.wheel(scroller, { deltaY: -120 });
+
+    expect(legendListProps.current?.maintainScrollAtEnd).toBe(false);
+    expect(screen.getByRole("button", { name: "Scroll to latest message" })).toBeInTheDocument();
   });
 
-  it("moves to the newest entry when an asynchronously resumed transcript arrives", async () => {
-    vi.useFakeTimers();
-    const kit = harness();
-    try {
-      const { rerender } = render(<ChatTimeline messages={[]} activities={[]} running={false} thinkingLabel="Thinking" />);
-      await kit.frame(2);
-      await act(async () => {
-        rerender(<ChatTimeline messages={transcript(300)} activities={[]} running={false} thinkingLabel="Thinking" />);
-      });
-      await kit.frame(20);
+  it("does not break follow for a downward wheel at the live edge", async () => {
+    renderTimeline();
+    const scroller = await attachGestureListeners();
 
-      expect(renderedIndices()).toContain(299);
-      const element = scroller();
-      expect(element.scrollTop).toBe(element.scrollHeight - VIEWPORT);
-    } finally {
-      kit.teardown();
-    }
+    fireEvent.wheel(scroller, { deltaY: 120 });
+
+    expect(legendListProps.current?.maintainScrollAtEnd).toEqual(expect.objectContaining({ animated: false }));
+    expect(screen.queryByRole("button", { name: "Scroll to latest message" })).not.toBeInTheDocument();
   });
 
-  it("stays stable when the reader scrolls as soon as a resumed transcript appears", async () => {
-    vi.useFakeTimers();
-    const kit = harness();
-    try {
-      const { rerender } = render(<ChatTimeline messages={[]} activities={[]} running={false} thinkingLabel="Thinking" />);
-      await kit.frame(2);
-      await act(async () => {
-        rerender(<ChatTimeline messages={transcript(300)} activities={[]} running={false} thinkingLabel="Thinking" />);
-      });
-      // Let Virtuoso render the bottom window, but deliberately begin reading
-      // before the initial 300ms measurement-settle window has elapsed.
-      await kit.frame(2);
+  it("does not mistake a transient streaming layout gap for user navigation", async () => {
+    renderTimeline();
+    const scroller = await attachGestureListeners();
+    legendListState.current = {
+      isAtEnd: false,
+      contentLength: 3050,
+      scroll: 2400,
+      scrollLength: 600,
+    };
 
-      let worstDrift = 0;
-      for (let step = 0; step < 80; step += 1) {
-        const probe = topVisibleRow();
-        const before = probe === undefined ? null : rowTop(probe);
-        scroller().dispatchEvent(new WheelEvent("wheel", { deltaY: -50 }));
-        scroller().scrollTop -= 50;
-        await kit.frame();
-        const after = probe === undefined ? null : rowTop(probe);
-        if (before === null || after === null) continue;
-        worstDrift = Math.max(worstDrift, Math.abs(after - (before + 50)));
-      }
+    fireEvent.scroll(scroller);
 
-      expect(worstDrift).toBeLessThan(1);
-    } finally {
-      kit.teardown();
-    }
+    expect(legendListProps.current?.maintainScrollAtEnd).toEqual(expect.objectContaining({ animated: false }));
+    expect(screen.queryByRole("button", { name: "Scroll to latest message" })).not.toBeInTheDocument();
   });
 
-  it("keeps following a streaming answer while the reader is at the bottom", async () => {
-    vi.useFakeTimers();
-    const kit = harness();
-    try {
-      const { rerender } = render(<ChatTimeline messages={transcript(120)} activities={[]} running thinkingLabel="Thinking" />);
-      await kit.frame(20);
+  it("re-arms follow only after a free-scrolling reader reaches the bottom band", async () => {
+    renderTimeline();
+    const scroller = await attachGestureListeners();
+    fireEvent.wheel(scroller, { deltaY: -120 });
 
-      for (let appended = 1; appended <= 5; appended += 1) {
-        await act(async () => {
-          rerender(<ChatTimeline messages={transcript(120 + appended)} activities={[]} running thinkingLabel="Thinking" />);
-        });
-        await kit.frame(4);
-      }
+    legendListState.current = {
+      isAtEnd: false,
+      contentLength: 3000,
+      scroll: 2365,
+      scrollLength: 600,
+    };
+    fireEvent.scroll(scroller);
 
-      expect(renderedIndices()).toContain(124);
-      const element = scroller();
-      expect(element.scrollTop).toBe(element.scrollHeight - VIEWPORT);
-    } finally {
-      kit.teardown();
-    }
+    expect(legendListProps.current?.maintainScrollAtEnd).toEqual(expect.objectContaining({ animated: false }));
+    expect(screen.queryByRole("button", { name: "Scroll to latest message" })).not.toBeInTheDocument();
   });
 
-  it("keeps following a streaming answer after the reader taps the transcript", async () => {
-    vi.useFakeTimers();
-    const kit = harness();
-    try {
-      const { rerender } = render(<ChatTimeline messages={transcript(120)} activities={[]} running thinkingLabel="Thinking" />);
-      await kit.frame(20);
+  it("supports Page Up as manual navigation and a deliberate jump back to latest", async () => {
+    renderTimeline();
+    const scroller = await attachGestureListeners();
+    fireEvent.keyDown(scroller, { key: "PageUp" });
 
-      // Opening a disclosure or pressing a button is a touchstart with no
-      // touchmove behind it, and is not the reader leaving the bottom.
-      scroller().dispatchEvent(new Event("touchstart", { bubbles: true }));
-      await kit.frame();
+    expect(legendListProps.current?.maintainScrollAtEnd).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Scroll to latest message" }));
+    await vi.runAllTimersAsync();
 
-      for (let appended = 1; appended <= 5; appended += 1) {
-        await act(async () => {
-          rerender(<ChatTimeline messages={transcript(120 + appended)} activities={[]} running thinkingLabel="Thinking" />);
-        });
-        await kit.frame(4);
-      }
-
-      const element = scroller();
-      expect(element.scrollTop).toBe(element.scrollHeight - VIEWPORT);
-    } finally {
-      kit.teardown();
-    }
+    expect(scrollToEnd).toHaveBeenCalledWith({ animated: true });
+    expect(legendListProps.current?.maintainScrollAtEnd).toEqual(expect.objectContaining({ animated: false }));
   });
 
-  it("leaves a reader who scrolled up where they are when new output arrives", async () => {
-    vi.useFakeTimers();
-    const kit = harness();
-    try {
-      const { rerender } = render(<ChatTimeline messages={transcript(120)} activities={[]} running thinkingLabel="Thinking" />);
-      await kit.frame(20);
+  it("supports Shift+Space as manual upward navigation", async () => {
+    renderTimeline();
+    const scroller = await attachGestureListeners();
 
-      for (let step = 0; step < 40; step += 1) {
-        scroller().dispatchEvent(new WheelEvent("wheel", { deltaY: -50 }));
-        scroller().scrollTop -= 50;
-        await kit.frame();
-      }
-      const probe = topVisibleRow()!;
-      const before = rowTop(probe)!;
-      const offsetBefore = scroller().scrollTop;
+    fireEvent.keyDown(scroller, { key: " ", code: "Space", shiftKey: true });
 
-      for (let appended = 1; appended <= 5; appended += 1) {
-        await act(async () => {
-          rerender(<ChatTimeline messages={transcript(120 + appended)} activities={[]} running thinkingLabel="Thinking" />);
-        });
-        await kit.frame(4);
-      }
-
-      expect(rowTop(probe)).toBe(before);
-      expect(scroller().scrollTop).toBe(offsetBefore);
-    } finally {
-      kit.teardown();
-    }
+    expect(legendListProps.current?.maintainScrollAtEnd).toBe(false);
+    expect(screen.getByRole("button", { name: "Scroll to latest message" })).toBeInTheDocument();
   });
 
-  it("does not move the reader when a row above them grows after it was measured", async () => {
-    vi.useFakeTimers();
-    const kit = harness();
-    try {
-      render(<ChatTimeline messages={transcript(300)} activities={[]} running={false} thinkingLabel="Thinking" />);
-      await kit.frame(20);
-      for (let step = 0; step < 40; step += 1) {
-        scroller().dispatchEvent(new WheelEvent("wheel", { deltaY: -50 }));
-        scroller().scrollTop -= 50;
-        await kit.frame();
-      }
+  it("waits for pointer-driven scrolling before leaving live follow", async () => {
+    renderTimeline();
+    const scroller = await attachGestureListeners();
 
-      const rendered = renderedIndices();
-      const probe = topVisibleRow()!;
-      const above = rendered.find((index) => index < probe);
-      expect(above).toBeDefined();
-      const before = rowTop(probe)!;
+    fireEvent.pointerDown(scroller, { button: 0 });
+    expect(legendListProps.current?.maintainScrollAtEnd).toEqual(expect.objectContaining({ animated: false }));
+    expect(screen.queryByRole("button", { name: "Scroll to latest message" })).not.toBeInTheDocument();
 
-      // A late Markdown reflow, web font, or image finishing: a row that was
-      // already measured is suddenly 200px taller.
-      grown.set(above!, 200);
-      await kit.frame(3);
+    legendListState.current = {
+      isAtEnd: false,
+      contentLength: 3000,
+      scroll: 2100,
+      scrollLength: 600,
+    };
+    fireEvent.scroll(scroller);
 
-      expect(rowTop(probe)).toBe(before);
-    } finally {
-      kit.teardown();
-    }
+    expect(legendListProps.current?.maintainScrollAtEnd).toBe(false);
+    expect(screen.getByRole("button", { name: "Scroll to latest message" })).toBeInTheDocument();
   });
 
-  it("brings a search match on screen and leaves it there", async () => {
-    vi.useFakeTimers();
-    const kit = harness();
-    try {
-      const messages = transcript(300);
-      messages[40] = { ...messages[40], text: "the needle we are looking for" };
-      const { rerender } = render(
-        <ChatTimeline messages={messages} activities={[]} running={false} thinkingLabel="Thinking" />,
-      );
-      await kit.frame(20);
+  it("recognizes selection auto-scroll that starts on timeline content", async () => {
+    renderTimeline();
+    const scroller = await attachGestureListeners();
 
-      await act(async () => {
-        rerender(
-          <ChatTimeline messages={messages} activities={[]} running={false} thinkingLabel="Thinking" searchQuery="needle" searchActiveMatch={0} />,
-        );
-      });
-      await kit.frame(10);
+    fireEvent.pointerDown(screen.getByText("Answer 59"), { button: 0 });
+    legendListState.current = {
+      isAtEnd: false,
+      contentLength: 3000,
+      scroll: 2100,
+      scrollLength: 600,
+    };
+    fireEvent.scroll(scroller);
 
-      expect(renderedIndices()).toContain(40);
-      const top = rowTop(40)!;
-      expect(top).toBeGreaterThan(-heightFor(40));
-      expect(top).toBeLessThan(VIEWPORT);
-
-      // The anchor must not drag the match back off screen on later layout passes.
-      await kit.frame(10);
-      expect(rowTop(40)).toBe(top);
-    } finally {
-      kit.teardown();
-    }
+    expect(legendListProps.current?.maintainScrollAtEnd).toBe(false);
+    expect(screen.getByRole("button", { name: "Scroll to latest message" })).toBeInTheDocument();
   });
-});
 
-describe("timeline scroll anchor", () => {
-  function anchorFixture() {
-    document.body.innerHTML = `
-      <div data-virtuoso-scroller="true" id="scroller">
-        <div data-testid="virtuoso-item-list">
-          <div data-item-index="7" id="row7"></div>
-        </div>
-      </div>`;
-    const element = document.getElementById("scroller") as HTMLElement;
-    const row = document.getElementById("row7") as HTMLElement;
-    let scrollTop = 0;
-    Object.defineProperty(element, "scrollTop", {
+  it("never writes raw scrollTop while streamed rows change", async () => {
+    const messages = transcript(60, true);
+    const { rerender } = renderTimeline(messages);
+    const scroller = await attachGestureListeners();
+    let scrollTop = 1200;
+    const writes: number[] = [];
+    Object.defineProperty(scroller, "scrollTop", {
       configurable: true,
       get: () => scrollTop,
-      set: (value: number) => { scrollTop = value; },
+      set: (value: number) => {
+        writes.push(value);
+        scrollTop = value;
+      },
     });
-    element.getBoundingClientRect = () => ({ bottom: 600, height: 600, top: 0 }) as DOMRect;
-    let rowTopValue = 100;
-    let contentHeight = 4000;
-    row.getBoundingClientRect = () => ({ bottom: rowTopValue + 40, height: 40, top: rowTopValue }) as DOMRect;
-    Object.defineProperty(element, "scrollHeight", { configurable: true, get: () => contentHeight });
-    return {
-      element,
-      // A row growing moves everything below it and makes the content taller,
-      // exactly as a late Markdown reflow or image does.
-      growRowAbove: (by: number) => { rowTopValue += by; contentHeight += by; },
-      moveRow: (top: number) => { rowTopValue = top; },
-      row,
-    };
-  }
+    fireEvent.wheel(scroller, { deltaY: -120 });
 
-  it("anchors on the topmost row that is still on screen", () => {
-    const { element } = anchorFixture();
-    expect(readTimelineAnchor(element)).toEqual({ contentHeight: 4000, index: "7", top: 100 });
-  });
+    rerender(
+      <ChatTimeline
+        messages={messages.map((message, index) => index === messages.length - 1
+          ? { ...message, text: `${message.text} more streamed output` }
+          : message)}
+        activities={[]}
+        running
+        thinkingLabel="Thinking"
+      />,
+    );
+    fireEvent.scroll(scroller);
 
-  it("reports no drift when nothing moved, and the offset when it did", () => {
-    const { element, moveRow } = anchorFixture();
-    const anchor = readTimelineAnchor(element)!;
-    expect(timelineAnchorDrift(element, anchor)).toBe(0);
-    moveRow(340);
-    expect(timelineAnchorDrift(element, anchor)).toBe(240);
-  });
-
-  it("reports no drift once the anchored row has been unmounted", () => {
-    const { element, row } = anchorFixture();
-    const anchor = readTimelineAnchor(element)!;
-    row.remove();
-    expect(timelineAnchorDrift(element, anchor)).toBe(0);
-  });
-
-  it("puts a row that moved without a scroll back where it was", () => {
-    const resize = installResizeObservers();
-    try {
-      const { element, moveRow } = anchorFixture();
-      const handle = attachTimelineScrollAnchor(element, () => true);
-      element.dispatchEvent(new Event("scroll"));
-      moveRow(340);
-      resize.flush();
-      expect(element.scrollTop).toBe(240);
-      handle.detach();
-    } finally {
-      resize.uninstall();
-    }
-  });
-
-  it("accepts a scroll as the new resting position instead of correcting it away", () => {
-    const resize = installResizeObservers();
-    try {
-      const { element, moveRow } = anchorFixture();
-      const handle = attachTimelineScrollAnchor(element, () => true);
-      element.dispatchEvent(new Event("scroll"));
-      // The reader scrolls up: the row legitimately moves down the screen.
-      element.scrollTop = -50;
-      moveRow(150);
-      element.dispatchEvent(new Event("scroll"));
-      resize.flush();
-      expect(element.scrollTop).toBe(-50);
-      handle.detach();
-    } finally {
-      resize.uninstall();
-    }
-  });
-
-  it("does not adopt a shift as intended when a scroll lands in the same frame as it", () => {
-    const resize = installResizeObservers();
-    try {
-      const { element, growRowAbove } = anchorFixture();
-      const handle = attachTimelineScrollAnchor(element, () => true);
-      element.dispatchEvent(new Event("scroll"));
-      growRowAbove(240);
-      // A scroll delivered after the resize but before the observer runs must
-      // not quietly re-anchor on the moved position.
-      element.dispatchEvent(new Event("scroll"));
-      expect(element.scrollTop).toBe(240);
-      resize.flush();
-      expect(element.scrollTop).toBe(240);
-      handle.detach();
-    } finally {
-      resize.uninstall();
-    }
-  });
-
-  it("stays out of the way while the transcript is pinned to its newest entry", () => {
-    const resize = installResizeObservers();
-    try {
-      const { element, moveRow } = anchorFixture();
-      const handle = attachTimelineScrollAnchor(element, () => false);
-      element.dispatchEvent(new Event("scroll"));
-      moveRow(340);
-      resize.flush();
-      expect(element.scrollTop).toBe(0);
-      handle.detach();
-    } finally {
-      resize.uninstall();
-    }
-  });
-
-  it("stops correcting once detached", () => {
-    const resize = installResizeObservers();
-    try {
-      const { element, moveRow } = anchorFixture();
-      const handle = attachTimelineScrollAnchor(element, () => true);
-      element.dispatchEvent(new Event("scroll"));
-      handle.detach();
-      moveRow(340);
-      resize.flush();
-      expect(element.scrollTop).toBe(0);
-    } finally {
-      resize.uninstall();
-    }
-  });
-  it("captures the first upward gesture before virtual padding can move the viewport", async () => {
-    const resize = installResizeObservers();
-    try {
-      const { element, growRowAbove } = anchorFixture();
-      let enabled = false;
-      const handle = attachTimelineScrollAnchor(element, () => enabled);
-
-      // The transcript starts pinned to the bottom. The wheel listener flips
-      // anchoring on and primes it before the native scroll event arrives.
-      enabled = true;
-      handle.prime();
-      growRowAbove(240);
-      const list = element.querySelector<HTMLElement>('[data-testid="virtuoso-item-list"]')!;
-      list.style.paddingTop = "240px";
-      await act(async () => { await Promise.resolve(); });
-
-      expect(element.scrollTop).toBe(240);
-      handle.detach();
-    } finally {
-      resize.uninstall();
-    }
-  });
-
-  it("never corrects a primed user scroll backwards while row estimates change", async () => {
-    const resize = installResizeObservers();
-    try {
-      const { element, growRowAbove, moveRow } = anchorFixture();
-      const handle = attachTimelineScrollAnchor(element, () => true);
-      handle.prime();
-
-      // A real upward gesture moves this row down 50px while a newly rendered
-      // row above it simultaneously adds 240px to the virtual height. The old
-      // content-height heuristic treated the whole event as drift and undid
-      // the user's wheel movement, which made fast scrolling appear stuck.
-      element.scrollTop = -50;
-      growRowAbove(240);
-      moveRow(390);
-      element.dispatchEvent(new Event("scroll"));
-      expect(element.scrollTop).toBe(-50);
-
-      const list = element.querySelector<HTMLElement>('[data-testid="virtuoso-item-list"]')!;
-      list.style.paddingTop = "240px";
-      await act(async () => { await Promise.resolve(); });
-      expect(element.scrollTop).toBe(-50);
-      handle.detach();
-    } finally {
-      resize.uninstall();
-    }
-  });
-
-  it("does not correct an intentional jump after its anchor is cleared", async () => {
-    const resize = installResizeObservers();
-    try {
-      const { element, growRowAbove } = anchorFixture();
-      const handle = attachTimelineScrollAnchor(element, () => true);
-      handle.prime();
-      handle.clear();
-      growRowAbove(240);
-      const list = element.querySelector<HTMLElement>('[data-testid="virtuoso-item-list"]')!;
-      list.style.paddingTop = "240px";
-      await act(async () => { await Promise.resolve(); });
-
-      expect(element.scrollTop).toBe(0);
-      handle.detach();
-    } finally {
-      resize.uninstall();
-    }
+    expect(writes).toEqual([]);
+    expect(scrollTop).toBe(1200);
   });
 });

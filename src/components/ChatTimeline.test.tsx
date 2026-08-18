@@ -4,31 +4,53 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn() }));
 
-const { scrollToBottom, virtuosoProps } = vi.hoisted(() => ({
-  scrollToBottom: vi.fn(),
-  virtuosoProps: { current: null as { totalListHeightChanged?: () => void } | null },
+const { legendListProps, legendListState, scrollToEnd, scrollToIndex } = vi.hoisted(() => ({
+  legendListProps: { current: null as Record<string, unknown> | null },
+  legendListState: {
+    current: { isAtEnd: true, contentLength: 1000, scroll: 400, scrollLength: 600 },
+  },
+  scrollToEnd: vi.fn(() => Promise.resolve()),
+  scrollToIndex: vi.fn(() => Promise.resolve()),
 }));
 
-vi.mock("react-virtuoso", async () => {
+vi.mock("@legendapp/list/react", async () => {
   const React = await import("react");
   return {
-    Virtuoso: React.forwardRef(function MockVirtuoso(
+    LegendList: React.forwardRef(function MockLegendList(
       props: {
         data?: unknown[];
-        itemContent?: (index: number, entry: unknown) => React.ReactNode;
-        totalListHeightChanged?: () => void;
+        renderItem?: (args: { item: unknown; index: number }) => React.ReactNode;
+        keyExtractor?: (item: unknown, index: number) => string;
+        onScroll?: () => void;
+        ListHeaderComponent?: React.ReactNode;
+        ListFooterComponent?: React.ReactNode;
       },
-      ref: React.ForwardedRef<{ scrollTo: typeof scrollToBottom }>,
+      ref: React.ForwardedRef<unknown>,
     ) {
-      React.useImperativeHandle(ref, () => ({ scrollTo: scrollToBottom }));
-      virtuosoProps.current = props;
-      return <div>{props.data?.map((entry, index) => <div key={index}>{props.itemContent?.(index, entry)}</div>)}</div>;
+      const scrollerRef = React.useRef<HTMLDivElement>(null);
+      React.useImperativeHandle(ref, () => ({
+        getScrollableNode: () => scrollerRef.current,
+        getState: () => legendListState.current,
+        scrollToEnd,
+        scrollToIndex,
+      }));
+      legendListProps.current = props;
+      return (
+        <div ref={scrollerRef} data-testid="legend-list" onScroll={props.onScroll}>
+          {props.ListHeaderComponent}
+          {props.data?.map((entry, index) => (
+            <div key={props.keyExtractor?.(entry, index) ?? index} data-entry-index={index}>
+              {props.renderItem?.({ item: entry, index })}
+            </div>
+          ))}
+          {props.ListFooterComponent}
+        </div>
+      );
     }),
   };
 });
 
-import { ActivityRow, ChatTimeline, CommandDisclosure, CompletedWorkDisclosure, FileDisclosure, INITIAL_TIMELINE_POSITION, NATIVE_TIMELINE_SOURCE_THRESHOLD, NATIVE_TIMELINE_THRESHOLD, ReasoningDisclosure, compactCompletedTurns, followTimelineOutput, formatCompletedDuration, orderedTimelineEntries, type WorkItemEntry } from "./ChatTimeline";
-import { installResizeObservers } from "../test/virtualLayout";
+import { ActivityRow, ChatTimeline, CommandDisclosure, CompletedWorkDisclosure, FileDisclosure, ReasoningDisclosure, compactCompletedTurns, formatCompletedDuration, orderedTimelineEntries, type WorkItemEntry } from "./ChatTimeline";
 
 /** Mirrors the shape of the old thread that exposed the production stall. */
 function oldLongThread(): { messages: Array<{
@@ -175,137 +197,43 @@ describe("ChatTimeline", () => {
     expect(screen.getByText(/Reading the relevant files/)).toBeInTheDocument();
   });
 
-  it("follows appended output without stacking smooth scroll animations", () => {
-    expect(followTimelineOutput(true)).toBe("auto");
-    expect(followTimelineOutput(false)).toBe(false);
-  });
-
-  it("opens a newly mounted conversation at its latest entry", () => {
-    expect(INITIAL_TIMELINE_POSITION).toEqual({ index: "LAST", align: "end" });
-  });
-
-  it("uses native scrolling for very long completed transcripts", () => {
-    virtuosoProps.current = null;
-    const messages = Array.from({ length: NATIVE_TIMELINE_THRESHOLD + 1 }, (_, index) => ({
-      id: `message-${index}`,
-      role: "assistant" as const,
-      text: `Answer ${index}`,
-      timelineOrder: index + 1,
-    }));
-
-    const { container } = render(
-      <ChatTimeline messages={messages} activities={[]} running={false} thinkingLabel="Thinking" />,
+  it("delegates initial positioning and streaming follow to Legend List", () => {
+    render(
+      <ChatTimeline
+        messages={[{ id: "answer", role: "assistant", text: "Working", timelineOrder: 1, streaming: true }]}
+        activities={[]}
+        running
+        thinkingLabel="Thinking"
+      />,
     );
 
-    expect(container.querySelector('[data-native-timeline="true"]')).toBeInTheDocument();
-    expect(virtuosoProps.current).toBeNull();
+    expect(legendListProps.current).toMatchObject({
+      initialScrollAtEnd: true,
+      estimatedItemSize: 120,
+      showsHorizontalScrollIndicator: false,
+      maintainScrollAtEnd: {
+        animated: false,
+        on: { dataChange: true, footerLayout: true, itemLayout: true, layout: true },
+      },
+      maintainVisibleContentPosition: { data: true, size: true },
+    });
   });
 
-  it("uses 69 stable native rows for the old 2,089-record thread shape", () => {
-    virtuosoProps.current = null;
+  it("uses one stable virtualized list for the old 2,089-record thread shape", () => {
     const { activities, messages } = oldLongThread();
 
     expect(messages).toHaveLength(300);
     expect(activities).toHaveLength(1789);
-    expect(messages.length + activities.length).toBeGreaterThan(NATIVE_TIMELINE_SOURCE_THRESHOLD);
-
-    const { container } = render(
+    render(
       <ChatTimeline messages={messages} activities={activities} running={false} thinkingLabel="Thinking" />,
     );
 
-    expect(container.querySelector('[data-native-timeline="true"]')).toBeInTheDocument();
-    expect(container.querySelectorAll("[data-entry-index]")).toHaveLength(69);
-    expect(virtuosoProps.current).toBeNull();
+    const data = legendListProps.current?.data as unknown[];
+    expect(data).toHaveLength(69);
+    expect(screen.getByTestId("legend-list")).toBeInTheDocument();
   });
 
-  it("does not let late height measurements undo native search navigation", () => {
-    const resize = installResizeObservers();
-    const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
-    HTMLElement.prototype.scrollIntoView = vi.fn();
-    try {
-      const { activities, messages } = oldLongThread();
-      const { container } = render(
-        <ChatTimeline
-          messages={messages}
-          activities={activities}
-          running={false}
-          thinkingLabel="Thinking"
-          searchQuery="Request 0"
-          searchActiveMatch={0}
-        />,
-      );
-      const scroller = container.querySelector<HTMLElement>('[data-native-timeline="true"]')!;
-      let scrollTop = 7_500;
-      const writes: number[] = [];
-      Object.defineProperties(scroller, {
-        clientHeight: { configurable: true, value: 600 },
-        scrollHeight: { configurable: true, value: 10_000 },
-        scrollTop: {
-          configurable: true,
-          get: () => scrollTop,
-          set: (value: number) => { writes.push(value); scrollTop = value; },
-        },
-      });
-
-      writes.length = 0;
-      resize.flush();
-
-      expect(HTMLElement.prototype.scrollIntoView).toHaveBeenCalledWith({ block: "center" });
-      expect(writes).toEqual([]);
-    } finally {
-      HTMLElement.prototype.scrollIntoView = originalScrollIntoView;
-      resize.uninstall();
-    }
-  });
-
-  it("never writes against a fast native scroll through the old thread shape", () => {
-    const resize = installResizeObservers();
-    try {
-      const history = oldLongThread();
-      const { container, rerender } = render(
-        <ChatTimeline messages={history.messages} activities={history.activities} running={false} thinkingLabel="Thinking" />,
-      );
-      const scroller = container.querySelector<HTMLElement>('[data-native-timeline="true"]')!;
-      let scrollTop = 0;
-      const writes: number[] = [];
-      Object.defineProperties(scroller, {
-        clientHeight: { configurable: true, value: 600 },
-        scrollHeight: { configurable: true, value: 10_000 },
-        scrollTop: {
-          configurable: true,
-          get: () => scrollTop,
-          set: (value: number) => { writes.push(value); scrollTop = value; },
-        },
-      });
-
-      // A hydrated old thread is positioned at its real bottom once its
-      // records arrive, regardless of its final Markdown height.
-      rerender(
-        <ChatTimeline messages={[...history.messages]} activities={history.activities} running={false} thinkingLabel="Thinking" />,
-      );
-      expect(writes.at(-1)).toBe(10_000);
-
-      // From the first upward wheel event onward, scrollTop belongs solely to
-      // the browser/user. Repeated scroll and resize frames approximate a fast
-      // trackpad fling through content whose Markdown is still settling.
-      fireEvent.wheel(scroller, { deltaY: -120 });
-      scrollTop = 9_000;
-      writes.length = 0;
-      for (let frame = 0; frame < 500; frame += 1) {
-        scrollTop = Math.max(0, scrollTop - 18);
-        fireEvent.scroll(scroller);
-        resize.flush();
-      }
-
-      expect(scrollTop).toBe(0);
-      expect(writes).toEqual([]);
-    } finally {
-      resize.uninstall();
-    }
-  });
-
-  it("moves to the latest entry when an asynchronously resumed transcript first arrives", () => {
-    scrollToBottom.mockClear();
+  it("uses the virtualizer for asynchronously resumed transcripts", () => {
     const { rerender } = render(
       <ChatTimeline messages={[]} activities={[]} running={false} thinkingLabel="Thinking" />,
     );
@@ -322,51 +250,35 @@ describe("ChatTimeline", () => {
       />,
     );
 
-    expect(scrollToBottom).toHaveBeenCalledWith({ top: Number.MAX_SAFE_INTEGER, behavior: "auto" });
+    expect(legendListProps.current).toMatchObject({
+      initialScrollAtEnd: true,
+      maintainScrollAtEnd: expect.any(Object),
+    });
+    expect((legendListProps.current?.data as unknown[])).toHaveLength(2);
   });
 
-  it("reinforces the latest-entry position when a populated transcript mounts", () => {
-    scrollToBottom.mockClear();
-    render(
-      <ChatTimeline
-        messages={[
-          { id: "first", role: "user", text: "Start", timelineOrder: 1 },
-          { id: "latest", role: "assistant", text: "Finished", timelineOrder: 2 },
-        ]}
-        activities={[]}
-        running={false}
-        thinkingLabel="Thinking"
-      />,
-    );
-
-    expect(scrollToBottom).toHaveBeenCalledWith({ top: Number.MAX_SAFE_INTEGER, behavior: "auto" });
-  });
-
-  it("stops restoring the bottom once the settle window closes, however often the height changes", () => {
+  it("treats search navigation as manual navigation", async () => {
     vi.useFakeTimers();
     try {
-      scrollToBottom.mockClear();
+      scrollToIndex.mockClear();
       render(
         <ChatTimeline
-          messages={[{ id: "answer", role: "assistant", text: "Working", timelineOrder: 1, streaming: true }]}
+          messages={[
+            { id: "first", role: "user", text: "Find this needle", timelineOrder: 1 },
+            { id: "latest", role: "assistant", text: "Finished", timelineOrder: 2 },
+          ]}
           activities={[]}
-          running
+          running={false}
           thinkingLabel="Thinking"
+          searchQuery="needle"
+          searchActiveMatch={0}
         />,
       );
-      expect(scrollToBottom).toHaveBeenCalledTimes(1);
+      await vi.runAllTimersAsync();
 
-      // A streaming turn changes the measured height faster than the settle
-      // window: the window must still close instead of being pushed back.
-      for (let frame = 0; frame < 40; frame += 1) {
-        vi.advanceTimersByTime(16);
-        virtuosoProps.current?.totalListHeightChanged?.();
-      }
-
-      expect(scrollToBottom.mock.calls.length).toBeLessThan(25);
-      const settled = scrollToBottom.mock.calls.length;
-      virtuosoProps.current?.totalListHeightChanged?.();
-      expect(scrollToBottom).toHaveBeenCalledTimes(settled);
+      expect(scrollToIndex).toHaveBeenCalledWith({ index: 0, animated: false, viewPosition: 0.5 });
+      expect(legendListProps.current?.maintainScrollAtEnd).toBe(false);
+      expect(screen.getByRole("button", { name: "Scroll to latest message" })).toBeInTheDocument();
     } finally {
       vi.useRealTimers();
     }
