@@ -8,6 +8,7 @@ vi.mock("./claude", () => claude);
 vi.mock("./cursor", () => cursor);
 
 import { childRunSettings, startChildAgentTurn, type ChildRunContext } from "./childRun";
+import { LM_STUDIO_RUNTIME_PROVIDER_ID } from "./providerIds";
 import type { ChildAgentPolicy } from "./childAgents";
 import type { ChildAgentTarget } from "../types";
 
@@ -109,7 +110,7 @@ describe("startChildAgentTurn", () => {
   it.each([
     ["openai", "gpt-5.6-terra", undefined],
     ["openrouter", "x-ai/grok-4.5", "openrouter"],
-    ["lmstudio", "local/qwen3-coder", "lmstudio"],
+    ["lmstudio", "local/qwen3-coder", LM_STUDIO_RUNTIME_PROVIDER_ID],
   ])("starts an app-server %s child in the parent's folder", async (provider, model, modelProvider) => {
     const result = await startChildAgentTurn(
       target({ provider: provider as ChildAgentTarget["provider"], model }),
@@ -129,7 +130,7 @@ describe("startChildAgentTurn", () => {
     if (provider === "lmstudio") {
       expect(startParams.config).toMatchObject({
         model_context_window: 256_000,
-        model_providers: { lmstudio: { base_url: "http://127.0.0.1:1234/v1", wire_api: "responses" } },
+        model_providers: { [LM_STUDIO_RUNTIME_PROVIDER_ID]: { base_url: "http://127.0.0.1:1234/v1", wire_api: "responses" } },
       });
     }
     expect(startParams.config).not.toHaveProperty("mcp_servers");

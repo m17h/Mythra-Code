@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_OPENAI_MODEL } from "./appConfig";
 import { modelForProvider, providerFromThread } from "./threadProvider";
+import { LM_STUDIO_RUNTIME_PROVIDER_ID } from "./providerIds";
 
 describe("thread provider resolution", () => {
   it("uses the provider recorded on an existing thread", () => {
     expect(providerFromThread({ modelProvider: "claude" }, "openai")).toBe("claude");
     expect(providerFromThread({ modelProvider: "openrouter" }, "openai")).toBe("openrouter");
     expect(providerFromThread({ modelProvider: "lmstudio" }, "openai")).toBe("lmstudio");
+    expect(providerFromThread({ modelProvider: LM_STUDIO_RUNTIME_PROVIDER_ID }, "openai")).toBe("lmstudio");
     expect(providerFromThread({ modelProvider: "cursor" }, "openai")).toBe("cursor");
   });
 

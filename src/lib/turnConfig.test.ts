@@ -5,6 +5,7 @@ import { OPENKIWI_DELEGATION_INSTRUCTIONS, openKiwiDeveloperInstructions } from 
 /** Skill-mention plus completion guidance: what every turn carries. */
 const BASE_INSTRUCTIONS = openKiwiDeveloperInstructions(false);
 import { childAgentMcpConfig, normalizeLmStudioBaseUrl, threadResumeParams, threadRuntimeConfig, threadStartParams } from "./turnConfig";
+import { LM_STUDIO_RUNTIME_PROVIDER_ID } from "./providerIds";
 
 const baseRun: ScheduleRunSettings = {
   provider: "openai",
@@ -85,18 +86,19 @@ describe("LM Studio runtime routing", () => {
   it("routes new and resumed threads through the configured LM Studio Responses provider", () => {
     expect(threadStartParams(lmStudioRun, "/tmp/project", { interactive: true })).toMatchObject({
       model: "lmstudio-community/qwen3-coder",
-      modelProvider: "lmstudio",
+      modelProvider: LM_STUDIO_RUNTIME_PROVIDER_ID,
       config: {
-        model_providers: { lmstudio: { base_url: "http://127.0.0.1:1234/v1", env_key: "LMSTUDIO_API_KEY", wire_api: "responses" } },
+        model_providers: { [LM_STUDIO_RUNTIME_PROVIDER_ID]: { base_url: "http://127.0.0.1:1234/v1", env_key: "LMSTUDIO_API_KEY", wire_api: "responses" } },
         features: { apps: false, remote_plugin: false },
         apps: { _default: { enabled: false } },
       },
     });
     expect(threadResumeParams(lmStudioRun, "thread-local", "/tmp/project")).toMatchObject({
       threadId: "thread-local",
-      modelProvider: "lmstudio",
+      modelProvider: LM_STUDIO_RUNTIME_PROVIDER_ID,
       config: { features: { apps: false, remote_plugin: false } },
     });
+    expect(threadRuntimeConfig(lmStudioRun)).not.toHaveProperty("model_providers.lmstudio");
   });
 });
 

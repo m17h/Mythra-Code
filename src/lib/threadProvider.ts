@@ -1,8 +1,10 @@
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_MODEL, DEFAULT_OPENAI_MODEL } from "./appConfig";
 import type { Provider, Thread } from "../types";
+import { LM_STUDIO_RUNTIME_PROVIDER_ID } from "./providerIds";
 
 export function providerFromThread(thread: Pick<Thread, "modelProvider"> | null | undefined, fallback: Provider): Provider {
   const provider = thread?.modelProvider?.toLowerCase();
+  if (provider === LM_STUDIO_RUNTIME_PROVIDER_ID) return "lmstudio";
   if (provider === "claude" || provider === "cursor" || provider === "openrouter" || provider === "lmstudio" || provider === "openai") return provider;
   return fallback;
 }

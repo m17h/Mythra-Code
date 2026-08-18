@@ -4,6 +4,7 @@ import type { JsonObject } from "./codex";
 import { openKiwiDeveloperInstructions } from "./completionPrompt";
 import { resolveProviderSystemPrompt } from "./systemPrompt";
 import { DEFAULT_LM_STUDIO_BASE_URL } from "./appConfig";
+import { LM_STUDIO_RUNTIME_PROVIDER_ID, runtimeModelProviderId } from "./providerIds";
 
 export function normalizeLmStudioBaseUrl(value: string | null | undefined): string {
   const trimmed = value?.trim().replace(/\/+$/, "") || DEFAULT_LM_STUDIO_BASE_URL;
@@ -14,7 +15,7 @@ function lmStudioProviderConfig(run: ScheduleRunSettings): JsonObject {
   if (run.provider !== "lmstudio") return {};
   return {
     model_providers: {
-      lmstudio: {
+      [LM_STUDIO_RUNTIME_PROVIDER_ID]: {
         name: "LM Studio",
         base_url: normalizeLmStudioBaseUrl(run.lmStudioBaseUrl),
         env_key: "LMSTUDIO_API_KEY",
@@ -137,7 +138,8 @@ export function threadStartParams(run: ScheduleRunSettings, cwd: string, options
     serviceTier: run.serviceTier,
   };
   if (run.model.trim()) params.model = run.model.trim();
-  if (run.provider === "openrouter" || run.provider === "lmstudio") params.modelProvider = run.provider;
+  const modelProvider = runtimeModelProviderId(run.provider);
+  if (modelProvider) params.modelProvider = modelProvider;
   return params;
 }
 
@@ -160,13 +162,14 @@ export function threadResumeParams(
     Boolean(options.childAgentBridge?.toolNames.includes("spawn_agent")),
     Boolean(options.childAgentBridge?.toolNames.includes("propose_agent_settings")),
   );
+  const modelProvider = runtimeModelProviderId(run.provider);
   return {
     threadId,
     cwd,
     runtimeWorkspaceRoots: [cwd, ...(options.additionalWorkspaceRoots ?? [])],
     developerInstructions,
     ...(options.excludeTurns ? { excludeTurns: true } : {}),
-    ...(run.provider === "openrouter" || run.provider === "lmstudio" ? { modelProvider: run.provider } : {}),
+    ...(modelProvider ? { modelProvider } : {}),
     ...(run.provider === "openrouter" || run.provider === "lmstudio" || options.childAgentBridge || options.refreshRuntimeConfig
       ? { config: threadRuntimeConfig(run, options) }
       : {}),
