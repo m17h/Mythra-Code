@@ -21,6 +21,7 @@ import { ModelPowerControl, type RuntimeModel } from "./components/ModelPowerCon
 import { OpenRouterModelControl, type OpenRouterModel } from "./components/OpenRouterModelControl";
 import { ClaudeModelControl } from "./components/ClaudeModelControl";
 import { CursorModelControl } from "./components/CursorModelControl";
+import { LMStudioModelControl } from "./components/LMStudioModelControl";
 import { ThreadProviderControl } from "./components/ThreadProviderControl";
 import { ThreadInboxCard } from "./components/ThreadInboxCard";
 import { ProjectPromptControl } from "./components/ProjectPromptControl";
@@ -82,6 +83,7 @@ import { isEstablishedOpenKiwiInstall, ONBOARDING_EXIT_MS, ONBOARDING_VERSION } 
 import { createLocalSkill, deleteLocalSkill, importLocalSkills, normalizeSkillName, resolveLocalSkills, scanLocalSkills, syncLocalSkills, type LocalSkill, type LocalSkillFile } from "./lib/skills";
 import { compactWorkflowRun, normalizeWorkflows, recoverWorkflowRuns, type WorkflowDefinition, type WorkflowRunRecord } from "./lib/workflows";
 import { isClaudeThread, isCursorThread, isLocalSubscriptionThread, modelForProvider, providerFromThread } from "./lib/threadProvider";
+import { listLMStudioModels, type LMStudioModel } from "./lib/lmStudio";
 import { basename, normalizedProjectPath } from "./lib/paths";
 import { resolveProviderSystemPrompt, resolveSystemPrompt } from "./lib/systemPrompt";
 import { providerAccountUsage } from "./lib/providerUsage";
@@ -161,6 +163,7 @@ function permissionLabel(mode: PermissionMode): string {
 
 function providerLabel(provider: AppSettings["provider"]): string {
   if (provider === "openrouter") return "OpenRouter";
+  if (provider === "lmstudio") return "LM Studio";
   if (provider === "claude") return "Claude";
   if (provider === "cursor") return "Cursor";
   return "OpenAI";
@@ -309,6 +312,10 @@ export default function App() {
   const [openRouterModels, setOpenRouterModels] = useState<OpenRouterModel[]>([]);
   const [openRouterModelsLoading, setOpenRouterModelsLoading] = useState(false);
   const [openRouterModelsError, setOpenRouterModelsError] = useState("");
+  const [lmStudioModels, setLMStudioModels] = useState<LMStudioModel[]>([]);
+  const [lmStudioModelsLoading, setLMStudioModelsLoading] = useState(false);
+  const [lmStudioModelsError, setLMStudioModelsError] = useState("");
+  const lmStudioReady = lmStudioModels.length > 0 && !lmStudioModelsError;
   const [pricingCatalogRevision, setPricingCatalogRevision] = useState(modelPricingCatalogRevision);
   const composerRef = useRef<ComposerHandle>(null);
   const threadSearchRequestRef = useRef(0);
@@ -417,9 +424,10 @@ export default function App() {
     codexRuntimeAvailable: Boolean(runtimeStatus?.available),
     openAiSignedIn: account?.type === "chatgpt",
     openRouterReady,
+    lmStudioReady,
     claudeReady: Boolean(claudeStatus?.available && claudeStatus.loggedIn),
     cursorReady: Boolean(cursorStatus?.available && cursorStatus.loggedIn),
-  }), [account?.type, claudeStatus, cursorStatus, openRouterReady, runtimeStatus?.available]);
+  }), [account?.type, claudeStatus, cursorStatus, lmStudioReady, openRouterReady, runtimeStatus?.available]);
 
   // One line for the composer and the thread summary; the roster itself is
   // edited in Settings so the composer stays uncluttered.
@@ -480,7 +488,12 @@ export default function App() {
       detail: entry.id,
       keywords: entry.description,
     })),
-  }), [cursorModels, openRouterModels, runtimeModels]);
+    lmstudio: lmStudioModels.map((entry) => ({
+      id: entry.id,
+      label: entry.id,
+      detail: `${entry.publisher}${entry.trainedForToolUse ? " · tool use" : ""}`,
+    })),
+  }), [cursorModels, lmStudioModels, openRouterModels, runtimeModels]);
 
   const terminal = useTerminal({ scrollback: settings.terminalScrollback, permission: effectiveSettings.permission, onError: setError });
   const timelineEmpty = useTaskStore((state) => {
@@ -654,11 +667,12 @@ export default function App() {
       claudeStatus,
       cursorStatus,
       openRouterReady,
+      lmStudioReady,
     });
-  }, [claudeStatus, cursorStatus, effectiveSettings.provider, openRouterReady, rateSummary]);
+  }, [claudeStatus, cursorStatus, effectiveSettings.provider, lmStudioReady, openRouterReady, rateSummary]);
 
   // Only offer "Check settings" for failures settings can actually fix.
-  const errorSuggestsSettings = useMemo(() => Boolean(error) && /sign in|api key|openrouter|claude|model|settings|runtime|codex|account/i.test(error ?? ""), [error]);
+  const errorSuggestsSettings = useMemo(() => Boolean(error) && /sign in|api key|openrouter|lm studio|claude|model|settings|runtime|codex|account/i.test(error ?? ""), [error]);
   const workspaceArchived = useMemo(() => (activeWorkspace ? archivedThreads.filter((record) => (
     record.path === normalizedProjectPath(activeWorkspace.path)
     && Boolean(childThreadLinks[record.id]) === (threadKindView === "subagents")
@@ -1240,6 +1254,21 @@ export default function App() {
     }
   }, []);
 
+  const refreshLMStudioModels = useCallback(async () => {
+    setLMStudioModelsLoading(true);
+    setLMStudioModelsError("");
+    try {
+      const models = await listLMStudioModels();
+      setLMStudioModels(models);
+      if (!models.length) setLMStudioModelsError("LM Studio is connected, but it did not report any models");
+    } catch (reason) {
+      setLMStudioModels([]);
+      setLMStudioModelsError(friendlyError(reason));
+    } finally {
+      setLMStudioModelsLoading(false);
+    }
+  }, []);
+
   const refreshUsage = useCallback(async () => {
     try {
       const result = await rpc<{ rateLimits?: { primary?: { usedPercent?: number; resetsAt?: number } } }>("account/rateLimits/read");
@@ -1700,6 +1729,7 @@ export default function App() {
     void refreshClaudeStatus();
     void refreshCursorStatus();
     void refreshOpenRouterModels();
+    void refreshLMStudioModels();
     void refreshModelPricingCatalog()
       .then((catalog) => {
         if (catalog) setPricingCatalogRevision(catalog.updatedAt);
@@ -1711,7 +1741,7 @@ export default function App() {
     void hasOpenRouterKey()
       .then(setOpenRouterReady)
       .catch(() => setOpenRouterReady(false));
-  }, [checkRuntime, refreshAccount, refreshClaudeStatus, refreshCursorStatus, refreshModels, refreshOpenRouterModels, refreshUsage]);
+  }, [checkRuntime, refreshAccount, refreshClaudeStatus, refreshCursorStatus, refreshLMStudioModels, refreshModels, refreshOpenRouterModels, refreshUsage]);
 
   // Cursor sign-in (at startup or later) refreshes only the Cursor model
   // list, never the whole startup sequence above.
@@ -1785,7 +1815,7 @@ export default function App() {
       return !isLocalSubscriptionThread(knownThreadsRef.current?.[candidateId]);
     });
     if (anotherCodexRun) {
-      throw new Error("Sub-agent settings are ready, but another OpenAI or OpenRouter task is still running. Your message was not sent; try again when that task finishes so OpenKiwi can safely refresh the runtime without interrupting it.");
+      throw new Error("Sub-agent settings are ready, but another OpenAI, OpenRouter, or LM Studio task is still running. Your message was not sent; try again when that task finishes so OpenKiwi can safely refresh the runtime without interrupting it.");
     }
     await deliberateRestartRuntime();
     return runtimeInstanceId();
@@ -2185,7 +2215,7 @@ export default function App() {
             // Navigation must remain available while another task is running.
             // Read the durable transcript without claiming startup config was
             // applied; the next send will retry the guarded refresh.
-            if (/another OpenAI or OpenRouter task is still running/i.test(friendlyError(reason))) {
+            if (/another OpenAI, OpenRouter, or LM Studio task is still running/i.test(friendlyError(reason))) {
               capabilityRefreshDeferred = true;
             } else {
               throw reason;
@@ -2332,6 +2362,7 @@ export default function App() {
     cursorStatus,
     account,
     openRouterReady,
+    lmStudioReady,
     workspaceGitInfo,
     draftThreadIsolated,
     worktreeBusy,
@@ -2798,7 +2829,7 @@ export default function App() {
   const startReview = async () => {
     if (!activeThread) return;
     if (isLocalSubscriptionThread(activeThread)) {
-      setError(`Inline Studio review is currently available for OpenAI and OpenRouter threads. Ask ${providerLabel(providerFromThread(activeThread, settings.provider))} to review the project in the conversation instead.`);
+      setError(`Inline Studio review is currently available for OpenAI, OpenRouter, and LM Studio threads. Ask ${providerLabel(providerFromThread(activeThread, settings.provider))} to review the project in the conversation instead.`);
       return;
     }
     try {
@@ -2812,7 +2843,7 @@ export default function App() {
   const compactThread = async () => {
     if (!activeThread) return;
     if (isLocalSubscriptionThread(activeThread)) {
-      setError(`${providerLabel(providerFromThread(activeThread, settings.provider))} manages its own context compaction. OpenKiwi’s manual compact action is available for OpenAI and OpenRouter threads.`);
+      setError(`${providerLabel(providerFromThread(activeThread, settings.provider))} manages its own context compaction. OpenKiwi’s manual compact action is available for OpenAI, OpenRouter, and LM Studio threads.`);
       return;
     }
     try {
@@ -2893,7 +2924,7 @@ export default function App() {
     }
     try {
       await ensureSkillRoots();
-      const result = await rpc<{ thread: Thread }>("thread/fork", { threadId: checkpoint?.threadId ?? activeThread.id, lastTurnId: checkpoint?.turnId, cwd: activeWorkspace?.path, runtimeWorkspaceRoots: activeWorkspace ? [activeWorkspace.path] : undefined, model: effectiveSettings.model, modelProvider: effectiveSettings.provider === "openrouter" ? "openrouter" : undefined, config: threadRuntimeConfig(effectiveSettings, { customAgents, modelContextWindow: effectiveSettings.provider === "openrouter" ? openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.context_length : undefined }), baseInstructions: effectiveSettings.systemPrompt, developerInstructions: openKiwiDeveloperInstructions(false) });
+      const result = await rpc<{ thread: Thread }>("thread/fork", { threadId: checkpoint?.threadId ?? activeThread.id, lastTurnId: checkpoint?.turnId, cwd: activeWorkspace?.path, runtimeWorkspaceRoots: activeWorkspace ? [activeWorkspace.path] : undefined, model: effectiveSettings.model, modelProvider: effectiveSettings.provider === "openrouter" || effectiveSettings.provider === "lmstudio" ? effectiveSettings.provider : undefined, config: threadRuntimeConfig(effectiveSettings, { customAgents, modelContextWindow: effectiveSettings.provider === "openrouter" ? openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.context_length : undefined }), baseInstructions: effectiveSettings.systemPrompt, developerInstructions: openKiwiDeveloperInstructions(false) });
       if (activeWorkspace) bindThreadToProject(result.thread.id, activeWorkspace.path);
       rememberThread(result.thread);
       persistThreadModel(result.thread.id, effectiveSettings.model);
@@ -3590,6 +3621,7 @@ export default function App() {
     runtimeAvailable: Boolean(runtimeStatus?.available),
     chatGptConnected: account?.type === "chatgpt",
     openRouterReady,
+    lmStudioReady,
     customAgents,
     ensureSkillRoots,
     bindThreadToProject,
@@ -3639,6 +3671,7 @@ export default function App() {
     runtimeAvailable: Boolean(runtimeStatus?.available),
     chatGptConnected: account?.type === "chatgpt",
     openRouterReady,
+    lmStudioReady,
     ensureSkillRoots,
     bindThreadToProject,
     onThreadStarted: (project) => {
@@ -4220,6 +4253,18 @@ export default function App() {
                         onRefresh={() => void refreshOpenRouterModels()}
                       />
                     )}
+                    {effectiveSettings.provider === "lmstudio" && (
+                      <LMStudioModelControl
+                        model={effectiveSettings.model}
+                        models={lmStudioModels}
+                        effort={effectiveSettings.reasoningEffort}
+                        loading={lmStudioModelsLoading}
+                        error={lmStudioModelsError}
+                        onRefresh={() => void refreshLMStudioModels()}
+                        onModel={persistComposerModel}
+                        onEffort={persistComposerReasoning}
+                      />
+                    )}
                     {effectiveSettings.provider === "claude" && <ClaudeModelControl model={effectiveSettings.model || DEFAULT_CLAUDE_MODEL} effort={effectiveSettings.reasoningEffort} onModel={(model) => persistComposerModel(model)} onEffort={persistComposerReasoning} />}
                     {effectiveSettings.provider === "cursor" && <CursorModelControl model={effectiveSettings.model || DEFAULT_CURSOR_MODEL} models={cursorModels} effort={effectiveSettings.reasoningEffort} loading={cursorModelsLoading} onRefresh={() => void refreshCursorModels()} onModel={(model) => persistComposerModel(model)} onEffort={persistComposerReasoning} />}
                   </>
@@ -4394,6 +4439,7 @@ export default function App() {
               if (effectiveSettings.provider === "claude") void refreshClaudeStatus();
               else if (effectiveSettings.provider === "cursor") void Promise.all([refreshCursorStatus(), refreshCursorModels()]);
               else if (effectiveSettings.provider === "openrouter") void hasOpenRouterKey().then(setOpenRouterReady).catch(() => setOpenRouterReady(false));
+              else if (effectiveSettings.provider === "lmstudio") void refreshLMStudioModels();
               else void refreshUsage();
             }}
             onCompact={() => void compactThread()}
@@ -4433,6 +4479,10 @@ export default function App() {
         cursorStatus={cursorStatus}
         cursorLoginStarting={cursorLoginStarting}
         openRouterReady={openRouterReady}
+        lmStudioReady={lmStudioReady}
+        lmStudioModelCount={lmStudioModels.length}
+        lmStudioLoading={lmStudioModelsLoading}
+        lmStudioError={lmStudioModelsError}
         childAgentReadiness={childAgentReadiness}
         githubStatus={githubStatus}
         githubBusy={githubBusy || githubLoginPending}
@@ -4462,6 +4512,7 @@ export default function App() {
           openStudio("tools");
         }}
         onOpenRouterChange={setOpenRouterReady}
+        onLMStudioRefresh={refreshLMStudioModels}
         onGitHubSignIn={beginGitHubLogin}
         onGitHubRefresh={refreshGitHubAccount}
         onGitHubClone={cloneGitHubProject}
@@ -4514,7 +4565,7 @@ export default function App() {
 
       {onboardingMounted && (
         <Suspense fallback={null}>
-          <OnboardingModal open={onboardingOpen} runtimeStatus={runtimeStatus} claudeStatus={claudeStatus} cursorStatus={cursorStatus} account={account} openRouterReady={openRouterReady} skillsFolder={skillsFolder} onComplete={completeOnboarding} onOpenSettings={(section) => openSettings(section)} onChooseSkillsFolder={() => void chooseSkillsFolder()} onAddProject={() => void addProject()} onStartChat={startNormalChat} />
+          <OnboardingModal open={onboardingOpen} runtimeStatus={runtimeStatus} claudeStatus={claudeStatus} cursorStatus={cursorStatus} account={account} openRouterReady={openRouterReady} lmStudioReady={lmStudioReady} skillsFolder={skillsFolder} onComplete={completeOnboarding} onOpenSettings={(section) => openSettings(section)} onChooseSkillsFolder={() => void chooseSkillsFolder()} onAddProject={() => void addProject()} onStartChat={startNormalChat} />
         </Suspense>
       )}
 

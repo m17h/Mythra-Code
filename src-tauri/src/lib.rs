@@ -86,6 +86,7 @@ use skills::{
 
 const KEYRING_SERVICE: &str = "com.kiwi.harness";
 const OPENROUTER_ACCOUNT: &str = "openrouter-api-key";
+const LM_STUDIO_MODELS_URL: &str = "http://localhost:1234/api/v1/models";
 
 type PendingMap = Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, String>>>>>;
 
@@ -2993,6 +2994,29 @@ async fn list_openrouter_models() -> Result<Value, String> {
         .map_err(|error| format!("Could not read the OpenRouter model catalog: {error}"))
 }
 
+#[tauri::command]
+async fn list_lm_studio_models() -> Result<Value, String> {
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(3))
+        .timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|error| format!("Could not create the LM Studio connection client: {error}"))?;
+    client
+        .get(LM_STUDIO_MODELS_URL)
+        .send()
+        .await
+        .map_err(|error| {
+            format!(
+                "Could not reach LM Studio at http://localhost:1234. Start its local server and try again: {error}"
+            )
+        })?
+        .error_for_status()
+        .map_err(|error| format!("LM Studio rejected the model catalog request: {error}"))?
+        .json::<Value>()
+        .await
+        .map_err(|error| format!("Could not read the LM Studio model catalog: {error}"))
+}
+
 /// Identity of the app-server that will serve the next RPC, starting it if it
 /// is not running yet. Two calls returning the same value mean the same
 /// process has been up throughout, so the threads it loaded are still loaded
@@ -3180,6 +3204,7 @@ pub fn run() {
             save_pasted_image,
             has_openrouter_key,
             list_openrouter_models,
+            list_lm_studio_models,
             child_agent_session_start,
             child_agent_session_end,
             child_agent_respond,

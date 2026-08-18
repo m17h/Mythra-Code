@@ -123,6 +123,7 @@ export interface TurnRunnerContext {
   cursorStatus: CursorRuntimeStatus | null;
   account: Account | null;
   openRouterReady: boolean;
+  lmStudioReady?: boolean;
   workspaceGitInfo: WorkspaceGitInfo | null;
   draftThreadIsolated: boolean;
   worktreeBusy: boolean;
@@ -195,7 +196,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
     const {
       activeThread, activeWorkspace, activeProject, running, attachments, deferredDelivery,
       effectiveSettings, subscriptionSystemPrompts, customAgents, openRouterModels,
-      runtimeStatus, claudeStatus, cursorStatus, account, openRouterReady,
+      runtimeStatus, claudeStatus, cursorStatus, account, openRouterReady, lmStudioReady,
       workspaceGitInfo, draftThreadIsolated, worktreeBusy, skillsFolder,
       childAgentPolicies, childAgentLinks, activeThreadIsChild, childAgentReadiness, persistChildAgentPolicies,
       threadWorktreesRef, threadProjectBindingsRef, activeWorkspacePathRef,
@@ -234,6 +235,11 @@ export function useTurnRunner(context: TurnRunnerContext): {
       setError("Add an OpenRouter API key before using OpenRouter.");
       return false;
     }
+    if (effectiveSettings.provider === "lmstudio" && !lmStudioReady) {
+      openSettings("models");
+      setError("Start the LM Studio local server and load at least one model before using LM Studio.");
+      return false;
+    }
     if (effectiveSettings.provider === "claude" && (!claudeStatus?.available || !claudeStatus.loggedIn)) {
       openSettings("models");
       setError(claudeStatus?.available ? "Sign in to Claude Code before using your Claude subscription." : "Install Claude Code, then sign in before using the Claude provider.");
@@ -246,6 +252,10 @@ export function useTurnRunner(context: TurnRunnerContext): {
     }
     if (effectiveSettings.provider === "openrouter" && !effectiveSettings.model.trim()) {
       setError("Choose an OpenRouter model before starting this thread.");
+      return false;
+    }
+    if (effectiveSettings.provider === "lmstudio" && !effectiveSettings.model.trim()) {
+      setError("Choose an LM Studio model before starting this thread.");
       return false;
     }
     if (mode === "steer" && running && activeThread) {
@@ -577,9 +587,9 @@ export function useTurnRunner(context: TurnRunnerContext): {
         // and takes the new config from the resume alone.
         const plan = planSubagentCapabilities(threadId, runtimeInstance, capabilities);
         if (plan.restartRuntime) runtimeInstance = await restartRuntimeForCapabilities(threadId);
-        if (effectiveSettings.provider === "openrouter" || plan.resume) {
+        if (effectiveSettings.provider === "openrouter" || effectiveSettings.provider === "lmstudio" || plan.resume) {
           const resume = threadResumeParams(runtimeSettings, threadId, executionPath, { customAgents, modelContextWindow: openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.context_length, excludeTurns: true, additionalWorkspaceRoots, childAgentBridge: childBridge?.launch, refreshRuntimeConfig: true });
-          await rpc("thread/resume", effectiveSettings.provider === "openrouter" ? { ...resume, model: effectiveSettings.model } : resume);
+          await rpc("thread/resume", effectiveSettings.provider === "openrouter" || effectiveSettings.provider === "lmstudio" ? { ...resume, model: effectiveSettings.model } : resume);
           recordSubagentCapabilities(threadId, runtimeInstance, capabilities);
         }
       }

@@ -92,9 +92,9 @@ export function threadRuntimeConfig(run: ScheduleRunSettings, options: Pick<Thre
       // ownership records, and child inbox. With no managed destination the
       // model receives no spawning route at all.
       multi_agent: false,
-      ...(run.provider === "openrouter" ? { apps: false, remote_plugin: false } : {}),
+      ...(run.provider === "openrouter" || run.provider === "lmstudio" ? { apps: false, remote_plugin: false } : {}),
     },
-    ...(run.provider === "openrouter" ? { apps: { _default: { enabled: false } } } : {}),
+    ...(run.provider === "openrouter" || run.provider === "lmstudio" ? { apps: { _default: { enabled: false } } } : {}),
   };
 }
 
@@ -115,7 +115,7 @@ export function threadStartParams(run: ScheduleRunSettings, cwd: string, options
     serviceTier: run.serviceTier,
   };
   if (run.model.trim()) params.model = run.model.trim();
-  if (run.provider === "openrouter") params.modelProvider = "openrouter";
+  if (run.provider === "openrouter" || run.provider === "lmstudio") params.modelProvider = run.provider;
   return params;
 }
 
@@ -144,8 +144,8 @@ export function threadResumeParams(
     runtimeWorkspaceRoots: [cwd, ...(options.additionalWorkspaceRoots ?? [])],
     developerInstructions,
     ...(options.excludeTurns ? { excludeTurns: true } : {}),
-    ...(run.provider === "openrouter" ? { modelProvider: "openrouter" } : {}),
-    ...(run.provider === "openrouter" || options.childAgentBridge || options.refreshRuntimeConfig
+    ...(run.provider === "openrouter" || run.provider === "lmstudio" ? { modelProvider: run.provider } : {}),
+    ...(run.provider === "openrouter" || run.provider === "lmstudio" || options.childAgentBridge || options.refreshRuntimeConfig
       ? { config: threadRuntimeConfig(run, options) }
       : {}),
   };

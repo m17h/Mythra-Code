@@ -190,6 +190,7 @@ interface WorkflowEngineDeps {
   runtimeAvailable: boolean;
   chatGptConnected: boolean;
   openRouterReady: boolean;
+  lmStudioReady?: boolean;
   customAgents: CustomAgentProfile[];
   ensureSkillRoots: () => Promise<void>;
   bindThreadToProject: (threadId: string, projectPath: string) => void;
@@ -222,9 +223,12 @@ function workflowPreflight(
   if (workflow.run.provider === "openrouter" && !current.openRouterReady) {
     return { ready: false, retryWhenReady: true, message: "Add an OpenRouter API key before running this workflow." };
   }
+  if (workflow.run.provider === "lmstudio" && !current.lmStudioReady) {
+    return { ready: false, retryWhenReady: true, message: "Start LM Studio, load a model, and refresh its connection before running this workflow." };
+  }
   if (workflow.run.provider === "claude" || workflow.run.provider === "cursor") {
     const provider = workflow.run.provider === "cursor" ? "Cursor" : "Claude";
-    return { ready: false, retryWhenReady: false, message: `${provider} workflows are not enabled yet. Run these steps from a ${provider} project thread, or save the workflow with OpenAI/OpenRouter.` };
+    return { ready: false, retryWhenReady: false, message: `${provider} workflows are not enabled yet. Run these steps from a ${provider} project thread, or save the workflow with OpenAI, OpenRouter, or LM Studio.` };
   }
   return { ready: true, workflow, project };
 }
@@ -640,7 +644,7 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
     check();
     const timer = window.setInterval(check, 30_000);
     return () => window.clearInterval(timer);
-  }, [runWorkflow, deps.runtimeAvailable, deps.chatGptConnected, deps.openRouterReady]);
+  }, [runWorkflow, deps.runtimeAvailable, deps.chatGptConnected, deps.lmStudioReady, deps.openRouterReady]);
 
   return { runWorkflow, stopWorkflow };
 }

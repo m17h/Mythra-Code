@@ -20,6 +20,7 @@ import {
   Play,
   Plus,
   RotateCcw,
+  Server,
   ShieldCheck,
   Sparkles,
   UsersRound,
@@ -117,6 +118,10 @@ export function SettingsModal({
   cursorStatus = null,
   cursorLoginStarting = false,
   openRouterReady,
+  lmStudioReady = false,
+  lmStudioModelCount = 0,
+  lmStudioLoading = false,
+  lmStudioError = "",
   childAgentReadiness,
   githubStatus,
   githubBusy = false,
@@ -133,6 +138,7 @@ export function SettingsModal({
   onRuntimeRequired,
   onWorkspaceTools,
   onOpenRouterChange,
+  onLMStudioRefresh = async () => {},
   onGitHubSignIn,
   onGitHubRefresh,
   onGitHubClone,
@@ -184,6 +190,10 @@ export function SettingsModal({
   cursorStatus?: CursorRuntimeStatus | null;
   cursorLoginStarting?: boolean;
   openRouterReady: boolean;
+  lmStudioReady?: boolean;
+  lmStudioModelCount?: number;
+  lmStudioLoading?: boolean;
+  lmStudioError?: string;
   /** Which providers a cross-provider child could be started on right now. */
   childAgentReadiness: ChildAgentReadiness;
   githubStatus: GitHubAccountStatus | null;
@@ -201,6 +211,7 @@ export function SettingsModal({
   onRuntimeRequired: () => void;
   onWorkspaceTools: () => void;
   onOpenRouterChange: (ready: boolean) => void;
+  onLMStudioRefresh?: () => Promise<void>;
   onGitHubSignIn: () => Promise<void>;
   onGitHubRefresh: () => Promise<void>;
   onGitHubClone: (url: string, folderName: string) => Promise<boolean>;
@@ -707,6 +718,11 @@ export function SettingsModal({
                 <span><strong>OpenRouter</strong><small>Responses-compatible model routing</small></span>
                 {local.provider === "openrouter" && <Check size={16} />}
               </button>
+              <button className={`provider-card ${local.provider === "lmstudio" ? "selected" : ""}`} onClick={() => setLocal({ ...local, provider: "lmstudio", model: local.provider === "lmstudio" ? local.model : "", ultra: false })}>
+                <span className="provider-logo lmstudio"><Server size={17} /></span>
+                <span><strong>LM Studio</strong><small>Local models running on this PC</small></span>
+                {local.provider === "lmstudio" && <Check size={16} />}
+              </button>
               <button className={`provider-card ${local.provider === "claude" ? "selected" : ""}`} onClick={() => setLocal({ ...local, provider: "claude", model: local.provider === "claude" ? (local.model || DEFAULT_CLAUDE_MODEL) : DEFAULT_CLAUDE_MODEL, ultra: false })}>
                 <span className={`provider-logo claude${local.claudeLogo === "anthropic" ? " anthropic-mark" : ""}`}>{local.claudeLogo === "anthropic" ? <AnthropicLogo size={17} /> : <ClaudeLogo size={17} />}</span>
                 <span><strong>Claude</strong><small>Official Claude Code subscription login</small></span>
@@ -744,6 +760,19 @@ export function SettingsModal({
                   <input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="sk-or-v1-…" />
                   <button className="secondary-button" onClick={() => void storeKey()} disabled={!apiKey.trim() || busy}>Save key</button>
                 </div>
+              </div>
+            ) : local.provider === "lmstudio" ? (
+              <div className="credential-panel">
+                <span className="provider-logo lmstudio"><Server size={17} /></span>
+                <div>
+                  <strong>LM Studio local server</strong>
+                  <small>{lmStudioReady
+                    ? `${lmStudioModelCount} model${lmStudioModelCount === 1 ? "" : "s"} available at localhost:1234`
+                    : lmStudioError || "Start the local server in LM Studio, then refresh"}</small>
+                </div>
+                {lmStudioReady && <span className="connected-badge"><Check size={12} /> Connected</span>}
+                <button className="icon-button" onClick={() => void onLMStudioRefresh()} title="Refresh LM Studio connection" aria-label="Refresh LM Studio connection" disabled={lmStudioLoading}>{lmStudioLoading ? <LoaderCircle className="spin" size={14} /> : <RotateCcw size={14} />}</button>
+                {!lmStudioReady && <button className="secondary-button" onClick={() => void openUrl("https://lmstudio.ai/docs/developer/rest/quickstart")}>Setup guide</button>}
               </div>
             ) : local.provider === "claude" ? (
               <div className="credential-panel">
@@ -790,9 +819,9 @@ export function SettingsModal({
                 value={local.model}
                 onChange={(event) => setLocal({ ...local, model: event.target.value })}
                 readOnly={local.provider !== "openrouter"}
-                placeholder={local.provider === "openrouter" ? "e.g. anthropic/claude-sonnet-4" : local.provider === "claude" ? "Select a Claude model below the composer" : local.provider === "cursor" ? "Select Grok 4.5 or another Cursor model below the composer" : "Select Sol, Terra, or Luna below the composer"}
+                placeholder={local.provider === "openrouter" ? "e.g. anthropic/claude-sonnet-4" : local.provider === "lmstudio" ? "Select a local model below the composer" : local.provider === "claude" ? "Select a Claude model below the composer" : local.provider === "cursor" ? "Select Grok 4.5 or another Cursor model below the composer" : "Select Sol, Terra, or Luna below the composer"}
               />
-              <small>{local.provider === "openrouter" ? "Use the searchable picker beneath the composer, or enter any valid provider/model slug here." : local.provider === "claude" ? "Use the Claude selector beneath the composer. Availability follows your signed-in Claude Code subscription." : local.provider === "cursor" ? "Use the Cursor selector beneath the composer. Its live catalog comes from your signed-in Cursor subscription." : "Use the animated selector beneath the composer. Availability follows the signed-in ChatGPT account."}</small>
+              <small>{local.provider === "openrouter" ? "Use the searchable picker beneath the composer, or enter any valid provider/model slug here." : local.provider === "lmstudio" ? "Use the local model selector beneath the composer. Its catalog comes directly from the LM Studio server on this PC." : local.provider === "claude" ? "Use the Claude selector beneath the composer. Availability follows your signed-in Claude Code subscription." : local.provider === "cursor" ? "Use the Cursor selector beneath the composer. Its live catalog comes from your signed-in Cursor subscription." : "Use the animated selector beneath the composer. Availability follows the signed-in ChatGPT account."}</small>
             </label>
 
             <div className="provider-logo-settings">

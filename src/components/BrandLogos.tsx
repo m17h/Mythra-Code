@@ -1,5 +1,5 @@
 import { useId } from "react";
-import { Route } from "lucide-react";
+import { Route, Server } from "lucide-react";
 import type { Provider } from "../types";
 
 /**
@@ -140,5 +140,6 @@ export function ProviderLogo({ provider, size = 16, className }: LogoProps & { p
       </span>
     );
   }
+  if (provider === "lmstudio") return <Server size={size} className={className} />;
   return <Route size={size} className={className} />;
 }

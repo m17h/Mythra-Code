@@ -173,6 +173,28 @@ function context(overrides: Partial<TurnRunnerContext> = {}): TurnRunnerContext 
 }
 
 describe("useTurnRunner", () => {
+  it("preserves the draft and opens settings when LM Studio is not ready", async () => {
+    const setError = vi.fn();
+    const openSettings = vi.fn();
+    const deps = context({
+      activeThread: null,
+      effectiveSettings: { ...DEFAULT_SETTINGS, provider: "lmstudio", model: "local-model" },
+      runtimeStatus: { available: true, source: "Codex CLI", path: "codex", version: "test", compatible: true, warning: null },
+      lmStudioReady: false,
+      setError,
+      openSettings,
+    });
+    const { result } = renderHook(() => useTurnRunner(deps));
+
+    let delivered = true;
+    await act(async () => { delivered = await result.current.sendMessage("work locally"); });
+
+    expect(delivered).toBe(false);
+    expect(openSettings).toHaveBeenCalledWith("models");
+    expect(setError).toHaveBeenCalledWith(expect.stringContaining("Start the LM Studio local server"));
+    expect(codex.rpc).not.toHaveBeenCalled();
+  });
+
   beforeEach(() => {
     resetTaskStore();
     forgetQueuedDeliveries();

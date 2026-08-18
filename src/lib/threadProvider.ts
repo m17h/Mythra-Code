@@ -1,9 +1,9 @@
-import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_OPENAI_MODEL } from "./appConfig";
+import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_MODEL, DEFAULT_OPENAI_MODEL } from "./appConfig";
 import type { Provider, Thread } from "../types";
 
 export function providerFromThread(thread: Pick<Thread, "modelProvider"> | null | undefined, fallback: Provider): Provider {
   const provider = thread?.modelProvider?.toLowerCase();
-  if (provider === "claude" || provider === "cursor" || provider === "openrouter" || provider === "openai") return provider;
+  if (provider === "claude" || provider === "cursor" || provider === "openrouter" || provider === "lmstudio" || provider === "openai") return provider;
   return fallback;
 }
 
@@ -24,5 +24,6 @@ export function modelForProvider(provider: Provider, model: string | null | unde
   if (provider === "claude") return candidate.startsWith("claude-") ? candidate : DEFAULT_CLAUDE_MODEL;
   if (provider === "cursor") return candidate || DEFAULT_CURSOR_MODEL;
   if (provider === "openrouter") return candidate.includes("/") ? candidate : "";
+  if (provider === "lmstudio") return candidate || DEFAULT_LM_STUDIO_MODEL;
   return candidate && !candidate.includes("/") && !candidate.startsWith("claude-") ? candidate : DEFAULT_OPENAI_MODEL;
 }

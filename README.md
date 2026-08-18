@@ -3,7 +3,7 @@
 > [!IMPORTANT]
 > This is the official **Windows version** of OpenKiwi. The original macOS version is developed and released separately in [m17h/OpenKiwi](https://github.com/m17h/OpenKiwi).
 
-OpenKiwi is a fast, local-first desktop coding harness with a user-owned instruction prompt. It supports OpenAI through an official ChatGPT subscription sign-in flow, Claude through the locally installed Claude Code CLI, Cursor subscription models (including Grok when entitled) through Cursor Agent, and OpenRouter through a user-supplied API key.
+OpenKiwi is a fast, local-first desktop coding harness with a user-owned instruction prompt. It supports OpenAI through an official ChatGPT subscription sign-in flow, Claude through the locally installed Claude Code CLI, Cursor subscription models (including Grok when entitled) through Cursor Agent, OpenRouter through a user-supplied API key, and local models served by LM Studio.
 
 **Platform support:** this repository's packaged releases target **64-bit Windows** only, and its update feed publishes only a `windows-x86_64` bundle. macOS downloads, source, and release instructions live in [OpenKiwi](https://github.com/m17h/OpenKiwi). 32-bit Windows and Linux are not supported.
 
@@ -16,7 +16,7 @@ Download the Windows version from [GitHub Releases](https://github.com/m17h/Open
 - **Tauri 2** keeps the native shell small and puts filesystem/process access behind Rust.
 - **React + TypeScript** makes a polished, responsive thread UI straightforward.
 - **Codex App Server** is the official open-source protocol for rich Codex clients. It provides ChatGPT sign-in, thread persistence, streaming, approvals, sandboxing, and model-provider support.
-- **OpenRouter** is configured as a Responses-compatible model provider, so both providers use one event and tool model.
+- **OpenRouter and LM Studio** use Codex's Responses-compatible provider layer, so remote and local models retain OpenKiwi's thread, tool, approval, and sandbox surfaces.
 
 ## Run it
 
@@ -25,7 +25,7 @@ Requirements:
 - 64-bit Windows (the supported release platform)
 - Node.js 20.19 or newer
 - Rust stable with the MSVC toolchain
-- A recent Codex CLI, Claude Code CLI, and/or Cursor Agent — each provider needs only its own runtime
+- A recent Codex CLI, Claude Code CLI, Cursor Agent, and/or LM Studio — each provider needs only its own runtime
 
 ```powershell
 npm install
@@ -69,6 +69,12 @@ Open **Settings → Models & accounts**, pick Cursor, and sign in with Cursor Ag
 Open **Settings → OpenRouter** and save an API key. The composer then exposes a searchable picker backed by OpenRouter's live tool-capable model catalog, plus direct `provider/model` entry for new or private slugs. OpenKiwi stores the key in the operating system credential store and exposes it only to the local App Server child process.
 
 OpenRouter's Responses API is currently beta, so compatibility can change upstream.
+
+### LM Studio
+
+Install [LM Studio](https://lmstudio.ai/), download a tool-capable model, and start its local server from LM Studio's Developer tab or with `lms server start`. Open **Settings → Models & accounts**, choose **LM Studio**, and refresh the connection. OpenKiwi discovers the live LLM catalog from `http://localhost:1234/api/v1/models`; choose one of those models beneath the composer before sending. Embedding models are excluded, and the model picker marks LLMs that LM Studio reports as trained for tool use.
+
+LM Studio turns run through Codex's built-in `lmstudio` provider and its Responses-compatible endpoint. That keeps the normal OpenKiwi coding tools, approvals, sandbox, threads, handoffs, workflows, and optional sub-agent destinations available while inference stays on the user's PC. The initial integration intentionally uses LM Studio's standard local address and no-auth local-server mode.
 
 ## Prompt transparency
 
@@ -144,7 +150,7 @@ When OpenAI subscription auth is selected, the composer exposes the current GPT-
 - **Terra** (`gpt-5.6-terra`) uses light green and is the everyday workhorse.
 - **Luna** (`gpt-5.6-luna`) uses light blue and favors clear, fast, repeatable work.
 
-When OpenRouter is selected, the composer uses a compact searchable catalog with provider, context-window, and reasoning-capability metadata. A separate five-level reasoning slider is persisted and forwarded with thread and turn requests when the selected route supports reasoning.
+When OpenRouter is selected, the composer uses a compact searchable catalog with provider, context-window, and reasoning-capability metadata. LM Studio gets a matching searchable picker populated directly from its local server. A separate five-level reasoning slider is persisted and forwarded with thread and turn requests when the selected model supports reasoning.
 - The reasoning rail maps Light, Medium, High, Extra High, and Max to the runtime's supported reasoning-effort values.
 - The **Ultra** lever maps to Ultra reasoning, explicitly enables sub-agent access, and switches the control into an animated purple powered-up state. Account and model eligibility still come from App Server's model catalog.
 
@@ -235,3 +241,4 @@ OpenKiwi did **not** use or copy any source code from [T3Code](https://github.co
 - [OpenAI Codex open-source repository](https://github.com/openai/codex)
 - [OpenRouter authentication](https://openrouter.ai/docs/api/reference/authentication)
 - [OpenRouter Responses API](https://openrouter.ai/docs/api/reference/responses/overview)
+- [LM Studio OpenAI-compatible endpoints](https://lmstudio.ai/docs/developer/openai-compat)

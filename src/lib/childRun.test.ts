@@ -109,6 +109,7 @@ describe("startChildAgentTurn", () => {
   it.each([
     ["openai", "gpt-5.6-terra", undefined],
     ["openrouter", "x-ai/grok-4.5", "openrouter"],
+    ["lmstudio", "local/qwen3-coder", "lmstudio"],
   ])("starts an app-server %s child in the parent's folder", async (provider, model, modelProvider) => {
     const result = await startChildAgentTurn(
       target({ provider: provider as ChildAgentTarget["provider"], model }),

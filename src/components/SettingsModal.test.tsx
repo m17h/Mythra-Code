@@ -164,6 +164,22 @@ describe("SettingsModal", () => {
     expect(onGitHubRefresh).toHaveBeenCalledTimes(1);
   });
 
+  it("shows LM Studio connection status and refreshes its local catalog", () => {
+    const onLMStudioRefresh = vi.fn(async () => undefined);
+    render(<SettingsModal {...modalProps({
+      initialSection: "models",
+      lmStudioReady: true,
+      lmStudioModelCount: 2,
+      onLMStudioRefresh,
+    })} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /LM Studio.*Local models running on this PC/ }));
+    expect(screen.getByText("2 models available at localhost:1234")).toBeInTheDocument();
+    expect(screen.getByText("Connected", { selector: ".connected-badge" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Refresh LM Studio connection" }));
+    expect(onLMStudioRefresh).toHaveBeenCalledOnce();
+  });
+
   it("rescans skills when the pane opens and when the app regains focus", async () => {
     const onRefreshSkills = vi.fn(async () => undefined);
     const props = modalProps({

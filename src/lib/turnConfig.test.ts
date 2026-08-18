@@ -69,6 +69,27 @@ describe("OpenRouter runtime isolation", () => {
   });
 });
 
+describe("LM Studio runtime routing", () => {
+  const lmStudioRun: ScheduleRunSettings = {
+    ...baseRun,
+    provider: "lmstudio",
+    model: "lmstudio-community/qwen3-coder",
+  };
+
+  it("routes new and resumed threads through Codex's built-in LM Studio provider", () => {
+    expect(threadStartParams(lmStudioRun, "/tmp/project", { interactive: true })).toMatchObject({
+      model: "lmstudio-community/qwen3-coder",
+      modelProvider: "lmstudio",
+      config: { features: { apps: false, remote_plugin: false }, apps: { _default: { enabled: false } } },
+    });
+    expect(threadResumeParams(lmStudioRun, "thread-local", "/tmp/project")).toMatchObject({
+      threadId: "thread-local",
+      modelProvider: "lmstudio",
+      config: { features: { apps: false, remote_plugin: false } },
+    });
+  });
+});
+
 describe("cross-provider sub-agent bridge", () => {
   const bridge = {
     name: "openkiwi",

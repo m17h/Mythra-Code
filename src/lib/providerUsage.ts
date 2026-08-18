@@ -14,6 +14,7 @@ export function providerAccountUsage(
     claudeStatus: ClaudeRuntimeStatus | null;
     cursorStatus?: CursorRuntimeStatus | null;
     openRouterReady: boolean;
+    lmStudioReady?: boolean;
   },
 ): AccountUsageView {
   if (provider === "claude") {
@@ -35,6 +36,12 @@ export function providerAccountUsage(
     return {
       label: "OpenRouter usage",
       summary: options.openRouterReady ? "Pay as you go · tracked spend appears below" : "Add an OpenRouter API key to track spend",
+    };
+  }
+  if (provider === "lmstudio") {
+    return {
+      label: "LM Studio local inference",
+      summary: options.lmStudioReady ? "Connected locally · no provider billing" : "Start the LM Studio local server to connect",
     };
   }
   return { label: "OpenAI subscription", summary: options.openAiRateSummary || "Sign in to view live limits" };

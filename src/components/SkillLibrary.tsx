@@ -189,7 +189,7 @@ export function SkillLibrary({
     <section className="settings-section skill-library-section">
       <div className="settings-section-heading settings-heading-with-action">
         <div className="settings-icon"><Boxes size={17} /></div>
-        <div><h3>Local skill library</h3><p>Markdown workflows that OpenKiwi exposes by name to both OpenAI and OpenRouter models.</p></div>
+        <div><h3>Local skill library</h3><p>Markdown workflows that OpenKiwi exposes by name to OpenAI, OpenRouter, and LM Studio models.</p></div>
         {folder && <button className="secondary-button" onClick={() => beginLibraryAction(onRefresh)} disabled={busy}>{busy ? <LoaderCircle className="spin" size={12} /> : <RefreshCw size={12} />} Rescan</button>}
       </div>
 

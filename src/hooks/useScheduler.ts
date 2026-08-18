@@ -12,6 +12,7 @@ export interface SchedulerDeps {
   runtimeAvailable: boolean;
   chatGptConnected: boolean;
   openRouterReady: boolean;
+  lmStudioReady?: boolean;
   ensureSkillRoots: () => Promise<void>;
   bindThreadToProject: (threadId: string, projectPath: string) => void;
   onThreadStarted: (project: Project) => void;
@@ -52,7 +53,7 @@ export function useScheduler(deps: SchedulerDeps): void {
       return;
     }
     if (run.provider === "claude" || run.provider === "cursor") {
-      const error = `${run.provider === "cursor" ? "Cursor" : "Claude"} scheduled tasks are not enabled yet. Use an OpenAI or OpenRouter schedule.`;
+      const error = `${run.provider === "cursor" ? "Cursor" : "Claude"} scheduled tasks are not enabled yet. Use an OpenAI, OpenRouter, or LM Studio schedule.`;
       current.updateSchedule(scheduled.id, (item) => ({
         ...item,
         nextRunAt: Date.now() + item.intervalMinutes * 60_000,
@@ -72,6 +73,7 @@ export function useScheduler(deps: SchedulerDeps): void {
     if (!current.runtimeAvailable) return;
     if (run.provider === "openai" && !current.chatGptConnected) return;
     if (run.provider === "openrouter" && !current.openRouterReady) return;
+    if (run.provider === "lmstudio" && !current.lmStudioReady) return;
     runningRef.current.add(scheduled.id);
     let startedThreadId: string | undefined;
     let turnStarted = false;

@@ -947,11 +947,13 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .onboarding-provider-card { min-width: 0; display: flex; flex-direction: column; padding: 15px; border: 1px solid var(--line); border-radius: 13px; background: color-mix(in srgb, var(--panel-2) 68%, transparent); }
 .onboarding-provider-card.openai { border-color: color-mix(in srgb, #79d7a6 17%, var(--line)); }
 .onboarding-provider-card.openrouter { border-color: color-mix(in srgb, #c39bff 19%, var(--line)); }
+.onboarding-provider-card.lmstudio { border-color: color-mix(in srgb, #75d5c7 22%, var(--line)); }
 .onboarding-provider-card.claude { border-color: color-mix(in srgb, #df8a68 20%, var(--line)); }
 .onboarding-card-title { display: flex; align-items: center; gap: 9px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
 .onboarding-card-title > span { width: 33px; height: 33px; display: grid; place-items: center; border-radius: 9px; color: #79d7a6; background: rgba(121,215,166,.08); }
 .onboarding-provider-card.openai .onboarding-card-title > span { color: #fff; background: #1a1d18; }
 .onboarding-provider-card.openrouter .onboarding-card-title > span { color: #c39bff; background: rgba(195,155,255,.09); }
+.onboarding-provider-card.lmstudio .onboarding-card-title > span { color: #102421; background: #75d5c7; }
 .onboarding-provider-card.claude .onboarding-card-title > span { color: #fff; background: #d97757; }
 .onboarding-card-title > div { display: flex; flex-direction: column; gap: 2px; }
 .onboarding-card-title strong { font-size: var(--fs-ui); font-weight: 620; }
@@ -1482,6 +1484,10 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 
 /* OpenRouter model rail */
 .openrouter-control { --router-accent: #b993f5; --router-fill: 0%; position: relative; z-index: 8; display: grid; grid-template-columns: minmax(280px, 1.08fr) minmax(245px, .92fr); gap: var(--s-3); align-items: center; margin: 0 10px var(--s-1); padding: var(--s-2); overflow: visible; border: 1px solid var(--line); border-radius: var(--r-lg); background: rgba(255,255,255,.014); box-shadow: none; }
+.openrouter-control.lmstudio-control { --router-accent: #75d5c7; }
+.lmstudio-logo { color: #102421 !important; background: #75d5c7 !important; }
+.provider-mark.lmstudio, .provider-logo.lmstudio, .thread-card-provider.lmstudio, .message-avatar.provider-lmstudio { color: #102421; background: #75d5c7; }
+.lmstudio-model-menu { width: min(620px, calc(100vw - 42px)); }
 .openrouter-control.claude-control { --router-accent: #dd8b6a; }
 .claude-control .openrouter-trigger { border-color: var(--line); background: var(--field); }
 .claude-control .openrouter-trigger:hover, .claude-control .openrouter-picker.open .openrouter-trigger { border-color: color-mix(in srgb, var(--router-accent) 34%, var(--line-strong)); background: color-mix(in srgb, var(--router-accent) 5%, var(--field)); }
