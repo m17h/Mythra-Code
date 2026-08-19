@@ -135,4 +135,54 @@ describe("ChatTimeline virtualized layout", () => {
     expect(scroller).not.toBeNull();
     expect(scroller!.scrollHeight).toBeGreaterThan(scroller!.clientHeight);
   });
+
+  it("repositions the following prompt when a streamed answer grows", async () => {
+    const message = (text: string, streaming = false): ChatMessage[] => [
+      COMPLETED_TURN[0],
+      { ...COMPLETED_TURN[1], text, streaming, turnStatus: streaming ? "inProgress" : "completed" },
+    ];
+    const view = render(<Shell messages={message(LONG_ANSWER.slice(0, 240), true)} running />);
+    await settle();
+    for (const size of [500, 900, 1400, LONG_ANSWER.length]) {
+      view.rerender(<Shell messages={message(LONG_ANSWER.slice(0, size), true)} running />);
+      await new Promise((resolve) => setTimeout(resolve, 180));
+    }
+    view.rerender(<Shell messages={message(LONG_ANSWER, false)} running={false} />);
+    await settle();
+    view.rerender(<Shell messages={FOLLOW_UP_TURN} running />);
+    await settle();
+    expect(overlaps(positionedRows())).toEqual([]);
+  });
+
+  it("keeps a queued prompt below an answer while that answer grows", async () => {
+    const queued = (text: string): ChatMessage[] => [
+      COMPLETED_TURN[0],
+      { ...COMPLETED_TURN[1], text, streaming: true, turnStatus: "inProgress" },
+      { ...FOLLOW_UP_TURN[2], turnStatus: "inProgress" },
+    ];
+    const view = render(<Shell messages={queued(LONG_ANSWER.slice(0, 240))} running />);
+    await settle();
+    for (const size of [500, 900, 1400, LONG_ANSWER.length]) {
+      view.rerender(<Shell messages={queued(LONG_ANSWER.slice(0, size))} running />);
+      await new Promise((resolve) => setTimeout(resolve, 180));
+    }
+    await settle();
+    expect(overlaps(positionedRows())).toEqual([]);
+  });
+
+  it("keeps the newest prompt below a long completed transcript", async () => {
+    const messages: ChatMessage[] = [];
+    const activities: Activity[] = [];
+    for (let i = 0; i < 24; i += 1) {
+      messages.push({ id: `u${i}`, role: "user", text: `request ${i}`, timelineOrder: i * 3 + 1, turnId: `t${i}`, turnStatus: "completed" });
+      activities.push({ id: `c${i}`, kind: "command", title: `command ${i}`, detail: "ok", status: "completed", timelineOrder: i * 3 + 2, turnId: `t${i}`, turnStatus: "completed" });
+      messages.push({ id: `a${i}`, role: "assistant", text: `${LONG_ANSWER}\n\nTurn ${i}`, timelineOrder: i * 3 + 3, turnId: `t${i}`, turnStatus: "completed", turnDurationMs: 120_000 });
+    }
+    const view = render(<Shell messages={messages} running={false} />);
+    await settle();
+    const followUp = [...messages, { id: "u-last", role: "user" as const, text: FOLLOW_UP, timelineOrder: 999, turnId: "t-last", turnStatus: "inProgress" as const }];
+    view.rerender(<Shell messages={followUp} running />);
+    await settle();
+    expect(overlaps(positionedRows())).toEqual([]);
+  });
 });

@@ -215,7 +215,11 @@ describe("ChatTimeline", () => {
         animated: false,
         on: { dataChange: true, footerLayout: true, itemLayout: true, layout: true },
       },
-      maintainVisibleContentPosition: { data: true, size: true },
+      // Chat transcripts append at the tail. Data anchoring is intentionally
+      // disabled because it races the tail follow pass while a streamed row
+      // is changing height; size anchoring still keeps an off-screen reader's
+      // viewport stable when Markdown reflows.
+      maintainVisibleContentPosition: { data: false, size: true },
     });
   });
 

@@ -1,4 +1,4 @@
-import { Children, isValidElement, memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Children, isValidElement, memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import { Check, ChevronDown, ChevronRight, Clipboard, FileCode2, ListChecks, Pencil, Sparkles, TerminalSquare, UsersRound } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -602,8 +602,13 @@ const TIMELINE_MAINTAIN_SCROLL_AT_END = {
   },
 } as const;
 
+// Transcript updates append at the tail. Let maintainScrollAtEnd own that
+// path instead of asking MVCP to anchor every data mutation as well: during a
+// streamed Markdown resize those two corrections can race and leave the next
+// row at an old offset. Size anchoring remains enabled for readers who have
+// scrolled up while content above them reflows.
 const TIMELINE_MAINTAIN_VISIBLE_CONTENT = {
-  data: true,
+  data: false,
   size: true,
 } as const;
 
@@ -627,6 +632,7 @@ function TimelineEntryContent({
   index,
   onApprovalRespond,
   onEditMessage,
+  onMeasure,
   provider,
   searchQuery,
 }: {
@@ -635,38 +641,80 @@ function TimelineEntryContent({
   index: number;
   onApprovalRespond?: (approval: PendingApproval, result: JsonObject) => void | Promise<void>;
   onEditMessage?: (text: string) => void;
+  onMeasure?: (itemKey: string, height: number, width: number) => void;
   provider: Provider;
   searchQuery?: string;
 }) {
   const hitClass = index === activeEntryIndex ? " search-hit" : "";
+  const itemKey = timelineEntryKey(entry, index);
+  const measured = (className: string, content: ReactNode) => (
+    <MeasuredTimelineEntry itemKey={itemKey} className={className} onMeasure={onMeasure}>
+      {content}
+    </MeasuredTimelineEntry>
+  );
   if (entry.kind === "message") {
-    return <div className={`timeline-entry timeline-entry-message${hitClass}`}><MessageRow message={entry.value} provider={provider} onEdit={onEditMessage} /></div>;
+    return measured(`timeline-entry timeline-entry-message${hitClass}`, <MessageRow message={entry.value} provider={provider} onEdit={onEditMessage} />);
   }
   if (entry.kind === "activity") {
-    return <div className={`timeline-entry timeline-entry-activity${hitClass}`}><ActivityRow activity={entry.value} /></div>;
+    return measured(`timeline-entry timeline-entry-activity${hitClass}`, <ActivityRow activity={entry.value} />);
   }
   if (entry.kind === "commands") {
-    return <div className={`timeline-entry timeline-entry-disclosure${hitClass}`}><CommandDisclosure commands={entry.value} /></div>;
+    return measured(`timeline-entry timeline-entry-disclosure${hitClass}`, <CommandDisclosure commands={entry.value} />);
   }
   if (entry.kind === "files") {
-    return <div className={`timeline-entry timeline-entry-disclosure${hitClass}`}><FileDisclosure files={entry.value} /></div>;
+    return measured(`timeline-entry timeline-entry-disclosure${hitClass}`, <FileDisclosure files={entry.value} />);
   }
   if (entry.kind === "work") {
-    return <div className={`timeline-entry timeline-entry-disclosure${hitClass}`}><CompletedWorkDisclosure entries={entry.value} reveal={index === activeEntryIndex && Boolean(searchQuery?.trim())} /></div>;
+    return measured(`timeline-entry timeline-entry-disclosure${hitClass}`, <CompletedWorkDisclosure entries={entry.value} reveal={index === activeEntryIndex && Boolean(searchQuery?.trim())} />);
   }
   if (entry.kind === "approval") {
-    return (
-      <div className="timeline-entry timeline-entry-approval">
-        <InlineApprovalCard approval={entry.value} onRespond={(result) => onApprovalRespond?.(entry.value, result)} />
-      </div>
+    return measured(
+      "timeline-entry timeline-entry-approval",
+      <InlineApprovalCard approval={entry.value} onRespond={(result) => onApprovalRespond?.(entry.value, result)} />,
     );
   }
-  return (
-    <div className="timeline-entry timeline-entry-disclosure">
-      <ReasoningDisclosure detail="" inProgress label={entry.label} />
-    </div>
-  );
+  return measured("timeline-entry timeline-entry-disclosure", <ReasoningDisclosure detail="" inProgress label={entry.label} />);
 }
+
+/**
+ * Markdown and streamed activity content can grow after Legend List's own
+ * layout pass. Report the outer row's current size explicitly so positions
+ * below it are recalculated before a newly appended prompt can overlap it.
+ */
+const MeasuredTimelineEntry = memo(function MeasuredTimelineEntry({
+  children,
+  className,
+  itemKey,
+  onMeasure,
+}: {
+  children: ReactNode;
+  className: string;
+  itemKey: string;
+  onMeasure?: (itemKey: string, height: number, width: number) => void;
+}) {
+  const elementRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const element = elementRef.current;
+    if (!element || !onMeasure) return;
+    let lastHeight = -1;
+    let lastWidth = -1;
+    const report = () => {
+      const rect = element.getBoundingClientRect();
+      const height = Math.ceil(rect.height);
+      const width = Math.ceil(rect.width);
+      if (height === lastHeight && width === lastWidth) return;
+      lastHeight = height;
+      lastWidth = width;
+      if (height > 0 && width > 0) onMeasure(itemKey, height, width);
+    };
+    report();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(report);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [itemKey, onMeasure]);
+  return <div ref={elementRef} className={className}>{children}</div>;
+});
 
 export function timelineEntryKey(entry: TimelineEntry, index: number): string {
   if (entry.kind === "thinking") return "thinking";
@@ -879,6 +927,10 @@ export function ChatTimeline({
     });
   }, [activeEntryIndex, cancelLiveFollowForUserNavigation]);
 
+  const reportTimelineEntrySize = useCallback((itemKey: string, height: number, width: number) => {
+    listRef.current?.setItemSize(itemKey, { height, width });
+  }, []);
+
   const renderItem = useCallback(({ item, index }: { item: TimelineEntry; index: number }) => (
     <TimelineEntryContent
       activeEntryIndex={activeEntryIndex}
@@ -886,10 +938,11 @@ export function ChatTimeline({
       index={index}
       onApprovalRespond={onApprovalRespond}
       onEditMessage={onEditMessage}
+      onMeasure={reportTimelineEntrySize}
       provider={provider}
       searchQuery={searchQuery}
     />
-  ), [activeEntryIndex, onApprovalRespond, onEditMessage, provider, searchQuery]);
+  ), [activeEntryIndex, onApprovalRespond, onEditMessage, provider, reportTimelineEntrySize, searchQuery]);
 
   return (
     <div className="timeline-shell" data-scroll-mode={scrollModeRef.current}>
