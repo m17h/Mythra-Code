@@ -1,4 +1,4 @@
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 
 // This file runs under Node, but the project deliberately avoids depending on
@@ -11,6 +11,9 @@ export default defineConfig({
     environment: "jsdom",
     setupFiles: ["./src/test/setup.ts"],
     restoreMocks: true,
+    // Real-browser layout specs need genuine measurement, which jsdom cannot
+    // provide. They run under vitest.browser.config.ts instead.
+    exclude: [...configDefaults.exclude, "src/**/*.browser.test.{ts,tsx}"],
     // Timer-heavy virtual-scroll tests can starve under Vitest's default
     // one-worker-per-core fan-out and then contaminate later fake-timer tests.
     maxWorkers: 2,

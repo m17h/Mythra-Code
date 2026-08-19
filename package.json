@@ -1,7 +1,7 @@
 {
   "name": "openkiwi",
   "private": true,
-  "version": "1.7.1",
+  "version": "1.7.2",
   "type": "module",
   "engines": {
     "node": ">=20.19.0"
@@ -20,13 +20,14 @@
     "check": "tsc --noEmit && cargo check --manifest-path src-tauri/Cargo.toml",
     "test": "vitest",
     "test:run": "vitest run",
+    "test:browser": "vitest run --config vitest.browser.config.ts",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
     "lint": "eslint src --max-warnings 0",
     "lint:rust": "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings",
-    "verify": "npm run lint && npm run lint:rust && npm run check && npm run test:run && npm run test:rust && npm run build"
+    "verify": "npm run lint && npm run lint:rust && npm run check && npm run test:run && npm run test:browser && npm run test:rust && npm run build"
   },
   "dependencies": {
-    "@legendapp/list": "3.3.5",
+    "@legendapp/list": "3.3.7",
     "@tauri-apps/api": "2.11.1",
     "@tauri-apps/plugin-dialog": "2.7.1",
     "@tauri-apps/plugin-notification": "^2.3.3",
@@ -55,9 +56,12 @@
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "6.0.3",
+    "@vitest/browser": "^4.1.11",
+    "@vitest/browser-playwright": "^4.1.11",
     "eslint": "^9.39.5",
     "eslint-plugin-react-hooks": "^7.1.1",
     "jsdom": "^29.1.1",
+    "playwright": "^1.62.1",
     "typescript": "7.0.2",
     "vite": "8.1.5",
     "vitest": "^4.1.10"
