@@ -4,52 +4,6 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn() }));
 
-const { legendListProps, legendListState, scrollToEnd, scrollToIndex } = vi.hoisted(() => ({
-  legendListProps: { current: null as Record<string, unknown> | null },
-  legendListState: {
-    current: { isAtEnd: true, contentLength: 1000, scroll: 400, scrollLength: 600 },
-  },
-  scrollToEnd: vi.fn(() => Promise.resolve()),
-  scrollToIndex: vi.fn(() => Promise.resolve()),
-}));
-
-vi.mock("@legendapp/list/react", async () => {
-  const React = await import("react");
-  return {
-    LegendList: React.forwardRef(function MockLegendList(
-      props: {
-        data?: unknown[];
-        renderItem?: (args: { item: unknown; index: number }) => React.ReactNode;
-        keyExtractor?: (item: unknown, index: number) => string;
-        onScroll?: () => void;
-        ListHeaderComponent?: React.ReactNode;
-        ListFooterComponent?: React.ReactNode;
-      },
-      ref: React.ForwardedRef<unknown>,
-    ) {
-      const scrollerRef = React.useRef<HTMLDivElement>(null);
-      React.useImperativeHandle(ref, () => ({
-        getScrollableNode: () => scrollerRef.current,
-        getState: () => legendListState.current,
-        scrollToEnd,
-        scrollToIndex,
-      }));
-      legendListProps.current = props;
-      return (
-        <div ref={scrollerRef} data-testid="legend-list" onScroll={props.onScroll}>
-          {props.ListHeaderComponent}
-          {props.data?.map((entry, index) => (
-            <div key={props.keyExtractor?.(entry, index) ?? index} data-entry-index={index}>
-              {props.renderItem?.({ item: entry, index })}
-            </div>
-          ))}
-          {props.ListFooterComponent}
-        </div>
-      );
-    }),
-  };
-});
-
 import { ActivityRow, ChatTimeline, CommandDisclosure, CompletedWorkDisclosure, FileDisclosure, ReasoningDisclosure, compactCompletedTurns, formatCompletedDuration, orderedTimelineEntries, type WorkItemEntry } from "./ChatTimeline";
 
 /** Mirrors the shape of the old thread that exposed the production stall. */
@@ -197,8 +151,8 @@ describe("ChatTimeline", () => {
     expect(screen.getByText(/Reading the relevant files/)).toBeInTheDocument();
   });
 
-  it("delegates initial positioning and streaming follow to Legend List", () => {
-    render(
+  it("renders streaming output in ordinary document flow", () => {
+    const { container } = render(
       <ChatTimeline
         messages={[{ id: "answer", role: "assistant", text: "Working", timelineOrder: 1, streaming: true }]}
         activities={[]}
@@ -207,23 +161,12 @@ describe("ChatTimeline", () => {
       />,
     );
 
-    expect(legendListProps.current).toMatchObject({
-      initialScrollAtEnd: true,
-      estimatedItemSize: 120,
-      showsHorizontalScrollIndicator: false,
-      maintainScrollAtEnd: {
-        animated: false,
-        on: { dataChange: true, footerLayout: true, itemLayout: true, layout: true },
-      },
-      // Chat transcripts append at the tail. Data anchoring is intentionally
-      // disabled because it races the tail follow pass while a streamed row
-      // is changing height; size anchoring still keeps an off-screen reader's
-      // viewport stable when Markdown reflows.
-      maintainVisibleContentPosition: { data: false, size: true },
-    });
+    expect(screen.getByTestId("timeline-scroller")).toHaveAttribute("data-flow-timeline", "true");
+    expect(container.querySelectorAll(".timeline-entry")).toHaveLength(1);
+    expect(container.querySelector("[style*='position: absolute']")).toBeNull();
   });
 
-  it("uses one stable virtualized list for the old 2,089-record thread shape", () => {
+  it("compacts the old 2,089-record thread shape to a manageable flow transcript", () => {
     const { activities, messages } = oldLongThread();
 
     expect(messages).toHaveLength(300);
@@ -232,12 +175,11 @@ describe("ChatTimeline", () => {
       <ChatTimeline messages={messages} activities={activities} running={false} thinkingLabel="Thinking" />,
     );
 
-    const data = legendListProps.current?.data as unknown[];
-    expect(data).toHaveLength(69);
-    expect(screen.getByTestId("legend-list")).toBeInTheDocument();
+    expect(document.querySelectorAll(".timeline-entry")).toHaveLength(69);
+    expect(screen.getByTestId("timeline-scroller")).toHaveAttribute("data-flow-timeline", "true");
   });
 
-  it("uses the virtualizer for asynchronously resumed transcripts", () => {
+  it("hydrates an existing completed transcript into the same flow container", () => {
     const { rerender } = render(
       <ChatTimeline messages={[]} activities={[]} running={false} thinkingLabel="Thinking" />,
     );
@@ -254,17 +196,14 @@ describe("ChatTimeline", () => {
       />,
     );
 
-    expect(legendListProps.current).toMatchObject({
-      initialScrollAtEnd: true,
-      maintainScrollAtEnd: expect.any(Object),
-    });
-    expect((legendListProps.current?.data as unknown[])).toHaveLength(2);
+    expect(screen.getByTestId("timeline-scroller")).toHaveAttribute("data-flow-timeline", "true");
+    expect(document.querySelectorAll(".timeline-entry")).toHaveLength(2);
   });
 
-  it("treats search navigation as manual navigation", async () => {
-    vi.useFakeTimers();
-    try {
-      scrollToIndex.mockClear();
+  it("treats search navigation as manual navigation", () => {
+      const scrollIntoView = vi.fn();
+      const original = HTMLElement.prototype.scrollIntoView;
+      HTMLElement.prototype.scrollIntoView = scrollIntoView;
       render(
         <ChatTimeline
           messages={[
@@ -278,14 +217,9 @@ describe("ChatTimeline", () => {
           searchActiveMatch={0}
         />,
       );
-      await vi.runAllTimersAsync();
-
-      expect(scrollToIndex).toHaveBeenCalledWith({ index: 0, animated: false, viewPosition: 0.5 });
-      expect(legendListProps.current?.maintainScrollAtEnd).toBe(false);
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: "center" });
       expect(screen.getByRole("button", { name: "Scroll to latest message" })).toBeInTheDocument();
-    } finally {
-      vi.useRealTimers();
-    }
+      HTMLElement.prototype.scrollIntoView = original;
   });
 
   it("applies Markdown formatting while an assistant message is still streaming", async () => {

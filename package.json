@@ -27,7 +27,6 @@
     "verify": "npm run lint && npm run lint:rust && npm run check && npm run test:run && npm run test:browser && npm run test:rust && npm run build"
   },
   "dependencies": {
-    "@legendapp/list": "3.3.7",
     "@tauri-apps/api": "2.11.1",
     "@tauri-apps/plugin-dialog": "2.7.1",
     "@tauri-apps/plugin-notification": "^2.3.3",

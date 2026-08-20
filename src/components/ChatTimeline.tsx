@@ -1,5 +1,4 @@
 import { Children, isValidElement, memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import { Check, ChevronDown, ChevronRight, Clipboard, FileCode2, ListChecks, Pencil, Sparkles, TerminalSquare, UsersRound } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import Markdown from "react-markdown";
@@ -564,62 +563,15 @@ export const CompletedWorkDisclosure = memo(function CompletedWorkDisclosure({ e
 
 export const TIMELINE_FOLLOW_REARM_THRESHOLD_PX = 40;
 
-export type TimelineScrollMode = "following-end" | "free-scrolling";
-
-export type TimelineEndState = {
-  isAtEnd?: boolean;
-  contentLength?: number;
-  scroll?: number;
-  scrollLength?: number;
-};
-
-/**
- * Legend List's broad "near end" state spans part of a viewport. Re-arming
- * follow in that region makes the next streamed chunk yank a reader back to
- * the bottom. Only the hard end or this deliberately small pixel band counts.
- */
-export function resolveTimelineIsAtEnd(state: TimelineEndState | undefined): boolean | undefined {
-  if (!state) return undefined;
-  if (state.isAtEnd) return true;
-  const { contentLength, scroll, scrollLength } = state;
-  if (contentLength === undefined || scroll === undefined || scrollLength === undefined) {
-    return state.isAtEnd;
-  }
-  return contentLength - scroll - scrollLength <= TIMELINE_FOLLOW_REARM_THRESHOLD_PX;
-}
-
 export function shouldCancelTimelineFollowForWheel(deltaY: number, contentOverflows: boolean): boolean {
   return deltaY < 0 && contentOverflows;
 }
-
-const TIMELINE_MAINTAIN_SCROLL_AT_END = {
-  animated: false,
-  on: {
-    dataChange: true,
-    footerLayout: true,
-    itemLayout: true,
-    layout: true,
-  },
-} as const;
-
-// Transcript updates append at the tail. Let maintainScrollAtEnd own that
-// path instead of asking MVCP to anchor every data mutation as well: during a
-// streamed Markdown resize those two corrections can race and leave the next
-// row at an old offset. Size anchoring remains enabled for readers who have
-// scrolled up while content above them reflows.
-const TIMELINE_MAINTAIN_VISIBLE_CONTENT = {
-  data: false,
-  size: true,
-} as const;
 
 function TimelineFooter() {
   return <div className="timeline-bottom-space" aria-hidden="true" />;
 }
 
-/**
- * The top inset is a real list item so virtualization measurements include it
- * and the first message never lands flush against the window edge.
- */
+/** The top inset keeps the first message clear of the window edge. */
 function TimelineHeader() {
   return <div className="timeline-top-space" aria-hidden="true" />;
 }
@@ -632,7 +584,6 @@ function TimelineEntryContent({
   index,
   onApprovalRespond,
   onEditMessage,
-  onMeasure,
   provider,
   searchQuery,
 }: {
@@ -641,95 +592,34 @@ function TimelineEntryContent({
   index: number;
   onApprovalRespond?: (approval: PendingApproval, result: JsonObject) => void | Promise<void>;
   onEditMessage?: (text: string) => void;
-  onMeasure?: (itemKey: string, height: number, width: number) => void;
   provider: Provider;
   searchQuery?: string;
 }) {
   const hitClass = index === activeEntryIndex ? " search-hit" : "";
-  const itemKey = timelineEntryKey(entry, index);
-  const measured = (className: string, content: ReactNode) => (
-    <MeasuredTimelineEntry itemKey={itemKey} className={className} onMeasure={onMeasure}>
-      {content}
-    </MeasuredTimelineEntry>
-  );
+  const row = (className: string, content: ReactNode) => <div className={className}>{content}</div>;
   if (entry.kind === "message") {
-    return measured(`timeline-entry timeline-entry-message${hitClass}`, <MessageRow message={entry.value} provider={provider} onEdit={onEditMessage} />);
+    return row(`timeline-entry timeline-entry-message${hitClass}`, <MessageRow message={entry.value} provider={provider} onEdit={onEditMessage} />);
   }
   if (entry.kind === "activity") {
-    return measured(`timeline-entry timeline-entry-activity${hitClass}`, <ActivityRow activity={entry.value} />);
+    return row(`timeline-entry timeline-entry-activity${hitClass}`, <ActivityRow activity={entry.value} />);
   }
   if (entry.kind === "commands") {
-    return measured(`timeline-entry timeline-entry-disclosure${hitClass}`, <CommandDisclosure commands={entry.value} />);
+    return row(`timeline-entry timeline-entry-disclosure${hitClass}`, <CommandDisclosure commands={entry.value} />);
   }
   if (entry.kind === "files") {
-    return measured(`timeline-entry timeline-entry-disclosure${hitClass}`, <FileDisclosure files={entry.value} />);
+    return row(`timeline-entry timeline-entry-disclosure${hitClass}`, <FileDisclosure files={entry.value} />);
   }
   if (entry.kind === "work") {
-    return measured(`timeline-entry timeline-entry-disclosure${hitClass}`, <CompletedWorkDisclosure entries={entry.value} reveal={index === activeEntryIndex && Boolean(searchQuery?.trim())} />);
+    return row(`timeline-entry timeline-entry-disclosure${hitClass}`, <CompletedWorkDisclosure entries={entry.value} reveal={index === activeEntryIndex && Boolean(searchQuery?.trim())} />);
   }
   if (entry.kind === "approval") {
-    return measured(
+    return row(
       "timeline-entry timeline-entry-approval",
       <InlineApprovalCard approval={entry.value} onRespond={(result) => onApprovalRespond?.(entry.value, result)} />,
     );
   }
-  return measured("timeline-entry timeline-entry-disclosure", <ReasoningDisclosure detail="" inProgress label={entry.label} />);
+  return row("timeline-entry timeline-entry-disclosure", <ReasoningDisclosure detail="" inProgress label={entry.label} />);
 }
-
-/**
- * Markdown and streamed activity content can grow after Legend List's own
- * layout pass. Report the outer row's current size explicitly so positions
- * below it are recalculated before a newly appended prompt can overlap it.
- */
-const MeasuredTimelineEntry = memo(function MeasuredTimelineEntry({
-  children,
-  className,
-  itemKey,
-  onMeasure,
-}: {
-  children: ReactNode;
-  className: string;
-  itemKey: string;
-  onMeasure?: (itemKey: string, height: number, width: number) => void;
-}) {
-  const elementRef = useRef<HTMLDivElement>(null);
-  useLayoutEffect(() => {
-    const element = elementRef.current;
-    if (!element || !onMeasure) return;
-    let firstConfirmationFrame: number | null = null;
-    let finalConfirmationFrame: number | null = null;
-    const report = () => {
-      const rect = element.getBoundingClientRect();
-      const height = Math.ceil(rect.height);
-      const width = Math.ceil(rect.width);
-      if (height > 0 && width > 0) onMeasure(itemKey, height, width);
-    };
-    const reportAndConfirm = () => {
-      report();
-      if (firstConfirmationFrame !== null) cancelAnimationFrame(firstConfirmationFrame);
-      if (finalConfirmationFrame !== null) cancelAnimationFrame(finalConfirmationFrame);
-      firstConfirmationFrame = requestAnimationFrame(() => {
-        firstConfirmationFrame = null;
-        finalConfirmationFrame = requestAnimationFrame(() => {
-          finalConfirmationFrame = null;
-          // Legend List also measures its recycled outer container. Re-report
-          // after that pipeline's deferred web pass so an older outer rect
-          // cannot be the last writer for this key.
-          report();
-        });
-      });
-    };
-    reportAndConfirm();
-    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(reportAndConfirm);
-    observer?.observe(element);
-    return () => {
-      observer?.disconnect();
-      if (firstConfirmationFrame !== null) cancelAnimationFrame(firstConfirmationFrame);
-      if (finalConfirmationFrame !== null) cancelAnimationFrame(finalConfirmationFrame);
-    };
-  }, [itemKey, onMeasure]);
-  return <div ref={elementRef} className={className}>{children}</div>;
-});
 
 export function timelineEntryKey(entry: TimelineEntry, index: number): string {
   if (entry.kind === "thinking") return "thinking";
@@ -738,35 +628,25 @@ export function timelineEntryKey(entry: TimelineEntry, index: number): string {
   return `${entry.kind}-${entry.value.id}`;
 }
 
-function timelineEntryType(entry: TimelineEntry): string {
-  if (entry.kind === "message") return `message:${entry.value.role}`;
-  return entry.kind;
-}
-
 /**
- * Live model output is deliberately rendered in ordinary document flow.
+ * The complete transcript is deliberately rendered in ordinary document flow.
  *
- * Legend List absolutely positions every item from its measured height. That
- * is ideal for a settled transcript, but a streamed Markdown row can finalize,
- * compact, and gain a following user prompt in one update. WKWebView can then
- * retain the old height for the assistant row and paint the newer (higher
- * z-index) prompt through its final paragraphs. Normal flow makes that class
- * of overlap impossible while keeping virtualization for settled history.
+ * Absolute virtualized rows can retain a stale height in WKWebView both while
+ * streaming and while hydrating an existing thread. A following prompt then
+ * paints through the previous answer. Compaction reduces even the historical
+ * 2,089-record fixture to 69 rows, so normal flow is fast enough and removes
+ * the stale-coordinate failure mode instead of trying to time measurements.
  */
-function LiveFlowTimeline({
-  allowVirtualize,
+function FlowTimeline({
   activeEntryIndex,
   entries,
-  onLayoutSettled,
   onApprovalRespond,
   onEditMessage,
   provider,
   searchQuery,
 }: {
-  allowVirtualize: boolean;
   activeEntryIndex: number;
   entries: TimelineEntry[];
-  onLayoutSettled: () => void;
   onApprovalRespond?: (approval: PendingApproval, result: JsonObject) => void | Promise<void>;
   onEditMessage?: (text: string) => void;
   provider: Provider;
@@ -775,23 +655,25 @@ function LiveFlowTimeline({
   const scrollerRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const followingEndRef = useRef(true);
-  const [isAtEnd, setIsAtEnd] = useState(true);
+  const pointerNavigationPendingRef = useRef(false);
   const [showScrollToLatest, setShowScrollToLatest] = useState(false);
 
   const scrollToLatest = useCallback((behavior: ScrollBehavior = "auto") => {
     const scroller = scrollerRef.current;
     if (!scroller) return;
     followingEndRef.current = true;
-    setIsAtEnd(true);
     setShowScrollToLatest(false);
-    scroller.scrollTo({ top: scroller.scrollHeight, behavior });
+    if (typeof scroller.scrollTo === "function") {
+      scroller.scrollTo({ top: scroller.scrollHeight, behavior });
+    } else {
+      scroller.scrollTop = scroller.scrollHeight;
+    }
   }, []);
 
   const stopFollowing = useCallback(() => {
     const scroller = scrollerRef.current;
     if (!scroller || scroller.scrollHeight <= scroller.clientHeight + 1) return;
     followingEndRef.current = false;
-    setIsAtEnd(false);
     setShowScrollToLatest(true);
   }, []);
 
@@ -810,62 +692,59 @@ function LiveFlowTimeline({
   }, [scrollToLatest]);
 
   useEffect(() => {
+    const clearPointerNavigation = () => {
+      pointerNavigationPendingRef.current = false;
+    };
+    document.addEventListener("pointerup", clearPointerNavigation);
+    document.addEventListener("pointercancel", clearPointerNavigation);
+    document.addEventListener("touchend", clearPointerNavigation);
+    document.addEventListener("touchcancel", clearPointerNavigation);
+    return () => {
+      document.removeEventListener("pointerup", clearPointerNavigation);
+      document.removeEventListener("pointercancel", clearPointerNavigation);
+      document.removeEventListener("touchend", clearPointerNavigation);
+      document.removeEventListener("touchcancel", clearPointerNavigation);
+    };
+  }, []);
+
+  useEffect(() => {
     if (activeEntryIndex < 0) return;
     followingEndRef.current = false;
-    setIsAtEnd(false);
     setShowScrollToLatest(true);
     contentRef.current
       ?.querySelector<HTMLElement>(`[data-entry-index="${activeEntryIndex}"]`)
-      ?.scrollIntoView({ block: "center" });
+      ?.scrollIntoView?.({ block: "center" });
   }, [activeEntryIndex]);
-
-  useEffect(() => {
-    if (!allowVirtualize || !isAtEnd) return;
-    let frame: number | null = null;
-    let previousHeight = -1;
-    let stableFrames = 0;
-    const check = () => {
-      const content = contentRef.current;
-      if (!content || !followingEndRef.current) return;
-      const height = content.getBoundingClientRect().height;
-      if (Math.abs(height - previousHeight) < 0.5) stableFrames += 1;
-      else stableFrames = 0;
-      previousHeight = height;
-      if (stableFrames >= 2) {
-        onLayoutSettled();
-        return;
-      }
-      frame = requestAnimationFrame(check);
-    };
-    frame = requestAnimationFrame(check);
-    return () => {
-      if (frame !== null) cancelAnimationFrame(frame);
-    };
-  }, [allowVirtualize, entries, isAtEnd, onLayoutSettled]);
 
   return (
     <div className="timeline-shell" data-scroll-mode={followingEndRef.current ? "following-end" : "free-scrolling"}>
       <div
         ref={scrollerRef}
-        className="timeline live-flow-timeline"
-        data-live-flow-timeline="true"
+        className="timeline flow-timeline"
+        data-flow-timeline="true"
+        data-testid="timeline-scroller"
         tabIndex={0}
         onScroll={(event) => {
           const scroller = event.currentTarget;
           const atEnd = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= TIMELINE_FOLLOW_REARM_THRESHOLD_PX;
           if (atEnd) {
             followingEndRef.current = true;
-            setIsAtEnd(true);
             setShowScrollToLatest(false);
+          } else if (pointerNavigationPendingRef.current) {
+            stopFollowing();
           } else if (!followingEndRef.current) {
-            setIsAtEnd(false);
             setShowScrollToLatest(true);
           }
         }}
         onWheel={(event) => {
-          if (event.deltaY < 0) stopFollowing();
+          if (shouldCancelTimelineFollowForWheel(event.deltaY, event.currentTarget.scrollHeight > event.currentTarget.clientHeight + 1)) stopFollowing();
         }}
         onTouchMove={stopFollowing}
+        onPointerDown={(event) => {
+          if (event.button === 0 && event.currentTarget.scrollHeight > event.currentTarget.clientHeight + 1) {
+            pointerNavigationPendingRef.current = true;
+          }
+        }}
         onKeyDown={(event) => {
           if (
             event.key === "PageUp"
@@ -878,7 +757,7 @@ function LiveFlowTimeline({
         }}
       >
         <TimelineHeader />
-        <div ref={contentRef} className="live-flow-timeline-list">
+        <div ref={contentRef} className="flow-timeline-list">
           {entries.map((entry, index) => (
             <div data-entry-index={index} key={timelineEntryKey(entry, index)}>
               <TimelineEntryContent
@@ -944,154 +823,6 @@ export function ChatTimeline({
     return next;
   }, [activities, approval, messages, running, thinkingLabel]);
 
-  // Keep the live-flow renderer mounted after completion until the final
-  // compacted Markdown has a stable measured height. If the reader scrolled
-  // up, LiveFlowTimeline deliberately postpones the handoff until they return
-  // to the end, preserving their reading position across renderer changes.
-  const hasUserAfterAssistant = useMemo(() => {
-    let sawAssistant = false;
-    for (const entry of entries) {
-      if (entry.kind !== "message") continue;
-      if (entry.value.role === "assistant") sawAssistant = true;
-      else if (sawAssistant) return true;
-    }
-    return false;
-  }, [entries]);
-  const requiresLiveFlow = running && hasUserAfterAssistant;
-  const [liveFlowSettling, setLiveFlowSettling] = useState(requiresLiveFlow);
-  useEffect(() => {
-    if (requiresLiveFlow) {
-      setLiveFlowSettling(true);
-    }
-  }, [requiresLiveFlow]);
-  const useLiveFlow = requiresLiveFlow || liveFlowSettling;
-  const finishLiveFlowLayout = useCallback(() => setLiveFlowSettling(false), []);
-
-  const listRef = useRef<LegendListRef | null>(null);
-  const scrollModeRef = useRef<TimelineScrollMode>("following-end");
-  const userNavigationGenerationRef = useRef(0);
-  const liveFollowGenerationRef = useRef<number | null>(0);
-  const pointerNavigationPendingRef = useRef(false);
-  const [liveFollowEnabled, setLiveFollowEnabled] = useState(true);
-  const [showScrollToLatest, setShowScrollToLatest] = useState(false);
-
-  const cancelLiveFollowForUserNavigation = useCallback(() => {
-    pointerNavigationPendingRef.current = false;
-    userNavigationGenerationRef.current += 1;
-    liveFollowGenerationRef.current = null;
-    scrollModeRef.current = "free-scrolling";
-    setLiveFollowEnabled(false);
-    setShowScrollToLatest(true);
-  }, []);
-
-  const scrollToLatest = useCallback((animated = false) => {
-    scrollModeRef.current = "following-end";
-    liveFollowGenerationRef.current = userNavigationGenerationRef.current;
-    setLiveFollowEnabled(true);
-    setShowScrollToLatest(false);
-    requestAnimationFrame(() => {
-      void listRef.current?.scrollToEnd({ animated });
-    });
-  }, []);
-
-  const handleScroll = useCallback(() => {
-    const atEnd = resolveTimelineIsAtEnd(listRef.current?.getState());
-    if (atEnd === undefined) return;
-    if (atEnd) {
-      scrollModeRef.current = "following-end";
-      liveFollowGenerationRef.current = userNavigationGenerationRef.current;
-      setLiveFollowEnabled(true);
-      setShowScrollToLatest(false);
-      return;
-    }
-    if (pointerNavigationPendingRef.current) {
-      cancelLiveFollowForUserNavigation();
-      return;
-    }
-    // A streamed layout can briefly report that the viewport trails the end
-    // before Legend List applies its follow adjustment. Do not interpret that
-    // transient state as user navigation; gestures clear this generation first.
-    if (liveFollowGenerationRef.current === userNavigationGenerationRef.current) {
-      setShowScrollToLatest(false);
-      return;
-    }
-    scrollModeRef.current = "free-scrolling";
-    setShowScrollToLatest(true);
-  }, [cancelLiveFollowForUserNavigation]);
-
-  useEffect(() => {
-    if (useLiveFlow) return;
-    let frame: number | null = null;
-    let detach: (() => void) | null = null;
-    const attach = (remainingAttempts: number) => {
-      frame = requestAnimationFrame(() => {
-        frame = null;
-        const scroller = listRef.current?.getScrollableNode();
-        if (!scroller) {
-          if (remainingAttempts > 0) attach(remainingAttempts - 1);
-          return;
-        }
-        const contentOverflows = () => scroller.scrollHeight > scroller.clientHeight + 1;
-        const viewportIsAwayFromEnd = () => resolveTimelineIsAtEnd(listRef.current?.getState()) === false;
-        const onWheel = (event: WheelEvent) => {
-          if (shouldCancelTimelineFollowForWheel(event.deltaY, contentOverflows())) {
-            cancelLiveFollowForUserNavigation();
-          }
-        };
-        const onTouchMove = () => {
-          if (contentOverflows()) pointerNavigationPendingRef.current = true;
-          if (viewportIsAwayFromEnd()) cancelLiveFollowForUserNavigation();
-        };
-        const onPointerDown = (event: PointerEvent) => {
-          if (event.button !== 0 || !contentOverflows()) return;
-          pointerNavigationPendingRef.current = true;
-          if (viewportIsAwayFromEnd()) {
-            cancelLiveFollowForUserNavigation();
-          }
-        };
-        const clearPointerNavigation = () => {
-          pointerNavigationPendingRef.current = false;
-        };
-        const onKeyDown = (event: KeyboardEvent) => {
-          if (
-            (
-              event.key === "PageUp"
-              || event.key === "Home"
-              || event.key === "ArrowUp"
-              || (event.shiftKey && (event.key === " " || event.key === "Spacebar"))
-            )
-            && contentOverflows()
-          ) {
-            cancelLiveFollowForUserNavigation();
-          }
-        };
-        scroller.addEventListener("wheel", onWheel, { passive: true });
-        scroller.addEventListener("touchmove", onTouchMove, { passive: true });
-        scroller.addEventListener("pointerdown", onPointerDown, { passive: true });
-        scroller.addEventListener("keydown", onKeyDown);
-        scroller.ownerDocument.addEventListener("pointerup", clearPointerNavigation);
-        scroller.ownerDocument.addEventListener("pointercancel", clearPointerNavigation);
-        scroller.ownerDocument.addEventListener("touchend", clearPointerNavigation);
-        scroller.ownerDocument.addEventListener("touchcancel", clearPointerNavigation);
-        detach = () => {
-          scroller.removeEventListener("wheel", onWheel);
-          scroller.removeEventListener("touchmove", onTouchMove);
-          scroller.removeEventListener("pointerdown", onPointerDown);
-          scroller.removeEventListener("keydown", onKeyDown);
-          scroller.ownerDocument.removeEventListener("pointerup", clearPointerNavigation);
-          scroller.ownerDocument.removeEventListener("pointercancel", clearPointerNavigation);
-          scroller.ownerDocument.removeEventListener("touchend", clearPointerNavigation);
-          scroller.ownerDocument.removeEventListener("touchcancel", clearPointerNavigation);
-        };
-      });
-    };
-    attach(12);
-    return () => {
-      if (frame !== null) cancelAnimationFrame(frame);
-      detach?.();
-    };
-  }, [cancelLiveFollowForUserNavigation, useLiveFlow]);
-
   const matchIndices = useMemo(() => {
     const query = searchQuery?.trim().toLowerCase();
     if (!query) return NO_SEARCH_MATCHES;
@@ -1123,78 +854,14 @@ export function ChatTimeline({
   const activeEntryIndex = matchIndices.length
     ? matchIndices[((searchActiveMatch ?? 0) % matchIndices.length + matchIndices.length) % matchIndices.length]
     : -1;
-  useEffect(() => {
-    if (activeEntryIndex < 0) return;
-    cancelLiveFollowForUserNavigation();
-    void listRef.current?.scrollToIndex({
-      index: activeEntryIndex,
-      animated: false,
-      viewPosition: 0.5,
-    });
-  }, [activeEntryIndex, cancelLiveFollowForUserNavigation, useLiveFlow]);
-
-  const reportTimelineEntrySize = useCallback((itemKey: string, height: number, width: number) => {
-    listRef.current?.setItemSize(itemKey, { height, width });
-  }, []);
-
-  const renderItem = useCallback(({ item, index }: { item: TimelineEntry; index: number }) => (
-    <TimelineEntryContent
+  return (
+    <FlowTimeline
       activeEntryIndex={activeEntryIndex}
-      entry={item}
-      index={index}
+      entries={entries}
       onApprovalRespond={onApprovalRespond}
       onEditMessage={onEditMessage}
-      onMeasure={reportTimelineEntrySize}
       provider={provider}
       searchQuery={searchQuery}
     />
-  ), [activeEntryIndex, onApprovalRespond, onEditMessage, provider, reportTimelineEntrySize, searchQuery]);
-
-  if (useLiveFlow) {
-    return (
-      <LiveFlowTimeline
-        allowVirtualize={!requiresLiveFlow}
-        activeEntryIndex={activeEntryIndex}
-        entries={entries}
-        onLayoutSettled={finishLiveFlowLayout}
-        onApprovalRespond={onApprovalRespond}
-        onEditMessage={onEditMessage}
-        provider={provider}
-        searchQuery={searchQuery}
-      />
-    );
-  }
-
-  return (
-    <div className="timeline-shell" data-scroll-mode={scrollModeRef.current}>
-      <LegendList<TimelineEntry>
-        ref={listRef}
-        className="timeline legend-timeline"
-        data={entries}
-        keyExtractor={timelineEntryKey}
-        getItemType={timelineEntryType}
-        renderItem={renderItem}
-        estimatedItemSize={120}
-        showsHorizontalScrollIndicator={false}
-        initialScrollAtEnd
-        maintainScrollAtEnd={liveFollowEnabled ? TIMELINE_MAINTAIN_SCROLL_AT_END : false}
-        maintainVisibleContentPosition={TIMELINE_MAINTAIN_VISIBLE_CONTENT}
-        onScroll={handleScroll}
-        tabIndex={0}
-        ListHeaderComponent={<TimelineHeader />}
-        ListFooterComponent={<TimelineFooter />}
-      />
-      {showScrollToLatest && (
-        <button
-          type="button"
-          className="timeline-scroll-latest"
-          onClick={() => scrollToLatest(true)}
-          aria-label="Scroll to latest message"
-        >
-          <ChevronDown size={14} />
-          Scroll to latest
-        </button>
-      )}
-    </div>
   );
 }

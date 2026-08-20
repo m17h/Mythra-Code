@@ -7,12 +7,9 @@ import "../styles.css";
 /**
  * The only regression test in the suite that exercises real browser layout.
  *
- * Every other timeline test replaces Legend List with a plain div, and jsdom has
- * no layout engine, so neither can observe row positions at all. Legend List
- * lays settled rows out as `position: absolute; top: <offset>` with an
- * increasing z-index. Live output instead uses ordinary document flow because
- * an under-reserved streamed row otherwise lets the next prompt draw on top of
- * it. These tests cover both renderers.
+ * jsdom has no layout engine, so it cannot observe row positions. OpenKiwi now
+ * uses one ordinary-flow transcript for both hydrated history and live output;
+ * these tests enforce that structural invariant and exercise real row geometry.
  *
  * The failure only appears once the transcript actually overflows its viewport,
  * so the shell below is deliberately short.
@@ -72,9 +69,9 @@ function Shell({ messages, running }: { messages: ChatMessage[]; running: boolea
 
 type PositionedRow = { top: number; height: number; text: string };
 
-/** Measure the visible row content regardless of whether its parent is virtualized or in flow. */
+/** Measure the visible row content in the real flow scroller. */
 function positionedRows(): PositionedRow[] {
-  const scroller = document.querySelector(".legend-timeline, .live-flow-timeline");
+  const scroller = document.querySelector(".flow-timeline");
   if (!scroller) throw new Error("timeline scroller not found");
   return Array.from(scroller.querySelectorAll<HTMLElement>(".timeline-entry"))
     .map((element) => ({
@@ -118,7 +115,7 @@ describe("ChatTimeline browser layout", () => {
 
     const after = positionedRows();
 
-    expect(document.querySelector("[data-live-flow-timeline='true']")).not.toBeNull();
+    expect(document.querySelector("[data-flow-timeline='true']")).not.toBeNull();
     expect(after.length).toBeGreaterThan(before.length);
     expect(overlaps(after)).toEqual([]);
   });
@@ -127,7 +124,7 @@ describe("ChatTimeline browser layout", () => {
     render(<Shell messages={FOLLOW_UP_TURN} running />);
     await settle();
 
-    const scroller = document.querySelector<HTMLElement>(".legend-timeline, .live-flow-timeline");
+    const scroller = document.querySelector<HTMLElement>(".flow-timeline");
     expect(scroller).not.toBeNull();
     expect(scroller!.scrollHeight).toBeGreaterThan(scroller!.clientHeight);
   });
@@ -165,7 +162,7 @@ describe("ChatTimeline browser layout", () => {
 
     // The runtime can deliver the final Markdown, completed-turn compaction,
     // and the optimistic next prompt in one React update. There is no settled
-    // completed-answer frame for the virtualizer to measure in between.
+    // completed-answer frame for the timeline to render in between.
     view.rerender(<Shell messages={FOLLOW_UP_TURN} running />);
     await settle();
 
@@ -186,26 +183,31 @@ describe("ChatTimeline browser layout", () => {
     view.rerender(<Shell messages={FOLLOW_UP_TURN} running />);
     await settle();
 
-    expect(document.querySelector("[data-live-flow-timeline='true']")).not.toBeNull();
+    expect(document.querySelector("[data-flow-timeline='true']")).not.toBeNull();
     expect(overlaps(positionedRows())).toEqual([]);
   });
 
-  it("returns to a non-overlapping virtualized transcript after live layout stabilizes", async () => {
-    const view = render(<Shell messages={FOLLOW_UP_TURN} running />);
-    await settle();
-    expect(document.querySelector("[data-live-flow-timeline='true']")).not.toBeNull();
-
-    view.rerender(<Shell messages={FOLLOW_UP_TURN} running={false} />);
+  it("hydrates an idle existing thread without introducing absolute row coordinates", async () => {
+    const view = render(<Shell messages={[]} running={false} />);
     await settle();
 
-    expect(document.querySelector(".legend-timeline")).not.toBeNull();
+    // Existing threads hydrate in one store update after selection. This is
+    // the exact path shown in the 1.7.4 regression screenshot.
+    view.rerender(<Shell messages={FOLLOW_UP_TURN.map((message) => ({ ...message, turnStatus: "completed" }))} running={false} />);
+    await settle();
+
+    const scroller = document.querySelector<HTMLElement>(".flow-timeline");
+    expect(scroller).not.toBeNull();
     expect(overlaps(positionedRows())).toEqual([]);
+    for (const entry of scroller!.querySelectorAll<HTMLElement>(".timeline-entry")) {
+      expect(getComputedStyle(entry).position).toBe("static");
+    }
   });
 
-  it("does not switch renderers while the reader is scrolled above the live end", async () => {
+  it("preserves the same flow scroller while the reader is above the live end", async () => {
     const view = render(<Shell messages={FOLLOW_UP_TURN} running />);
     await settle();
-    const liveScroller = document.querySelector<HTMLElement>(".live-flow-timeline");
+    const liveScroller = document.querySelector<HTMLElement>(".flow-timeline");
     expect(liveScroller).not.toBeNull();
 
     fireEvent.wheel(liveScroller!, { deltaY: -120 });
@@ -213,12 +215,12 @@ describe("ChatTimeline browser layout", () => {
     fireEvent.scroll(liveScroller!);
     view.rerender(<Shell messages={FOLLOW_UP_TURN} running={false} />);
     await new Promise((resolve) => setTimeout(resolve, 150));
-    expect(document.querySelector("[data-live-flow-timeline='true']")).not.toBeNull();
+    expect(document.querySelector("[data-flow-timeline='true']")).not.toBeNull();
 
     liveScroller!.scrollTop = liveScroller!.scrollHeight;
     fireEvent.scroll(liveScroller!);
     await settle();
-    expect(document.querySelector(".legend-timeline")).not.toBeNull();
+    expect(document.querySelector(".flow-timeline")).not.toBeNull();
   });
 
   it("keeps a queued prompt below an answer while that answer grows", async () => {
