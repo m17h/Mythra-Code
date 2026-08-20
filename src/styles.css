@@ -526,8 +526,9 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .message-body { min-width: 0; color: var(--ink-2); font-size: var(--fs-body); line-height: 1.68; letter-spacing: -.005em; text-wrap: pretty; }
 .message-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .timeline-shell { position: relative; width: 100%; height: 100%; min-height: 0; }
-.legend-timeline { height: 100%; overflow-x: hidden; overscroll-behavior-y: contain; overflow-anchor: none; }
-.legend-timeline:focus { outline: none; }
+.legend-timeline, .live-flow-timeline { height: 100%; overflow-x: hidden; overscroll-behavior-y: contain; overflow-anchor: none; }
+.live-flow-timeline { overflow-y: auto; }
+.legend-timeline:focus, .live-flow-timeline:focus { outline: none; }
 .timeline-scroll-latest { position: absolute; right: 50%; bottom: 82px; z-index: 12; display: flex; align-items: center; gap: 5px; min-height: 30px; padding: 0 11px; transform: translateX(50%); border: 1px solid var(--line-strong); border-radius: 999px; color: var(--text); background: color-mix(in srgb, var(--panel) 94%, transparent); box-shadow: var(--elev-2); font: inherit; font-size: var(--fs-meta); font-weight: 650; cursor: pointer; backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
 .timeline-scroll-latest:hover { border-color: color-mix(in srgb, var(--green) 48%, var(--line-strong)); background: color-mix(in srgb, var(--panel) 88%, var(--green) 12%); }
 .timeline-scroll-latest:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
@@ -537,9 +538,10 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .timeline-entry-disclosure, .timeline-entry-approval { padding-bottom: var(--s-3); }
 .timeline-top-space { height: var(--s-8); direction: ltr; }
 .timeline-bottom-space { height: 72px; direction: ltr; }
-.legend-timeline .message, .legend-timeline .activity-row, .legend-timeline .reasoning-disclosure { margin-left: 0; margin-right: 0; }
-.legend-timeline .activity-row { margin: 0 0 0 38px; }
-.legend-timeline .reasoning-disclosure { margin: 0 0 0 38px; }
+.legend-timeline .message, .legend-timeline .activity-row, .legend-timeline .reasoning-disclosure,
+.live-flow-timeline .message, .live-flow-timeline .activity-row, .live-flow-timeline .reasoning-disclosure { margin-left: 0; margin-right: 0; }
+.legend-timeline .activity-row, .live-flow-timeline .activity-row { margin: 0 0 0 38px; }
+.legend-timeline .reasoning-disclosure, .live-flow-timeline .reasoning-disclosure { margin: 0 0 0 38px; }
 .rich-markdown { white-space: normal; }
 .rich-markdown > :first-child { margin-top: 0; }
 .rich-markdown > :last-child { margin-bottom: 0; }

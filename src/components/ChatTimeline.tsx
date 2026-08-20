@@ -696,22 +696,37 @@ const MeasuredTimelineEntry = memo(function MeasuredTimelineEntry({
   useLayoutEffect(() => {
     const element = elementRef.current;
     if (!element || !onMeasure) return;
-    let lastHeight = -1;
-    let lastWidth = -1;
+    let firstConfirmationFrame: number | null = null;
+    let finalConfirmationFrame: number | null = null;
     const report = () => {
       const rect = element.getBoundingClientRect();
       const height = Math.ceil(rect.height);
       const width = Math.ceil(rect.width);
-      if (height === lastHeight && width === lastWidth) return;
-      lastHeight = height;
-      lastWidth = width;
       if (height > 0 && width > 0) onMeasure(itemKey, height, width);
     };
-    report();
-    if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(report);
-    observer.observe(element);
-    return () => observer.disconnect();
+    const reportAndConfirm = () => {
+      report();
+      if (firstConfirmationFrame !== null) cancelAnimationFrame(firstConfirmationFrame);
+      if (finalConfirmationFrame !== null) cancelAnimationFrame(finalConfirmationFrame);
+      firstConfirmationFrame = requestAnimationFrame(() => {
+        firstConfirmationFrame = null;
+        finalConfirmationFrame = requestAnimationFrame(() => {
+          finalConfirmationFrame = null;
+          // Legend List also measures its recycled outer container. Re-report
+          // after that pipeline's deferred web pass so an older outer rect
+          // cannot be the last writer for this key.
+          report();
+        });
+      });
+    };
+    reportAndConfirm();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(reportAndConfirm);
+    observer?.observe(element);
+    return () => {
+      observer?.disconnect();
+      if (firstConfirmationFrame !== null) cancelAnimationFrame(firstConfirmationFrame);
+      if (finalConfirmationFrame !== null) cancelAnimationFrame(finalConfirmationFrame);
+    };
   }, [itemKey, onMeasure]);
   return <div ref={elementRef} className={className}>{children}</div>;
 });
@@ -726,6 +741,173 @@ export function timelineEntryKey(entry: TimelineEntry, index: number): string {
 function timelineEntryType(entry: TimelineEntry): string {
   if (entry.kind === "message") return `message:${entry.value.role}`;
   return entry.kind;
+}
+
+/**
+ * Live model output is deliberately rendered in ordinary document flow.
+ *
+ * Legend List absolutely positions every item from its measured height. That
+ * is ideal for a settled transcript, but a streamed Markdown row can finalize,
+ * compact, and gain a following user prompt in one update. WKWebView can then
+ * retain the old height for the assistant row and paint the newer (higher
+ * z-index) prompt through its final paragraphs. Normal flow makes that class
+ * of overlap impossible while keeping virtualization for settled history.
+ */
+function LiveFlowTimeline({
+  allowVirtualize,
+  activeEntryIndex,
+  entries,
+  onLayoutSettled,
+  onApprovalRespond,
+  onEditMessage,
+  provider,
+  searchQuery,
+}: {
+  allowVirtualize: boolean;
+  activeEntryIndex: number;
+  entries: TimelineEntry[];
+  onLayoutSettled: () => void;
+  onApprovalRespond?: (approval: PendingApproval, result: JsonObject) => void | Promise<void>;
+  onEditMessage?: (text: string) => void;
+  provider: Provider;
+  searchQuery?: string;
+}) {
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const followingEndRef = useRef(true);
+  const [isAtEnd, setIsAtEnd] = useState(true);
+  const [showScrollToLatest, setShowScrollToLatest] = useState(false);
+
+  const scrollToLatest = useCallback((behavior: ScrollBehavior = "auto") => {
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+    followingEndRef.current = true;
+    setIsAtEnd(true);
+    setShowScrollToLatest(false);
+    scroller.scrollTo({ top: scroller.scrollHeight, behavior });
+  }, []);
+
+  const stopFollowing = useCallback(() => {
+    const scroller = scrollerRef.current;
+    if (!scroller || scroller.scrollHeight <= scroller.clientHeight + 1) return;
+    followingEndRef.current = false;
+    setIsAtEnd(false);
+    setShowScrollToLatest(true);
+  }, []);
+
+  useLayoutEffect(() => {
+    if (followingEndRef.current) scrollToLatest();
+  }, [entries, scrollToLatest]);
+
+  useEffect(() => {
+    const content = contentRef.current;
+    if (!content || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      if (followingEndRef.current) scrollToLatest();
+    });
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [scrollToLatest]);
+
+  useEffect(() => {
+    if (activeEntryIndex < 0) return;
+    followingEndRef.current = false;
+    setIsAtEnd(false);
+    setShowScrollToLatest(true);
+    contentRef.current
+      ?.querySelector<HTMLElement>(`[data-entry-index="${activeEntryIndex}"]`)
+      ?.scrollIntoView({ block: "center" });
+  }, [activeEntryIndex]);
+
+  useEffect(() => {
+    if (!allowVirtualize || !isAtEnd) return;
+    let frame: number | null = null;
+    let previousHeight = -1;
+    let stableFrames = 0;
+    const check = () => {
+      const content = contentRef.current;
+      if (!content || !followingEndRef.current) return;
+      const height = content.getBoundingClientRect().height;
+      if (Math.abs(height - previousHeight) < 0.5) stableFrames += 1;
+      else stableFrames = 0;
+      previousHeight = height;
+      if (stableFrames >= 2) {
+        onLayoutSettled();
+        return;
+      }
+      frame = requestAnimationFrame(check);
+    };
+    frame = requestAnimationFrame(check);
+    return () => {
+      if (frame !== null) cancelAnimationFrame(frame);
+    };
+  }, [allowVirtualize, entries, isAtEnd, onLayoutSettled]);
+
+  return (
+    <div className="timeline-shell" data-scroll-mode={followingEndRef.current ? "following-end" : "free-scrolling"}>
+      <div
+        ref={scrollerRef}
+        className="timeline live-flow-timeline"
+        data-live-flow-timeline="true"
+        tabIndex={0}
+        onScroll={(event) => {
+          const scroller = event.currentTarget;
+          const atEnd = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= TIMELINE_FOLLOW_REARM_THRESHOLD_PX;
+          if (atEnd) {
+            followingEndRef.current = true;
+            setIsAtEnd(true);
+            setShowScrollToLatest(false);
+          } else if (!followingEndRef.current) {
+            setIsAtEnd(false);
+            setShowScrollToLatest(true);
+          }
+        }}
+        onWheel={(event) => {
+          if (event.deltaY < 0) stopFollowing();
+        }}
+        onTouchMove={stopFollowing}
+        onKeyDown={(event) => {
+          if (
+            event.key === "PageUp"
+            || event.key === "Home"
+            || event.key === "ArrowUp"
+            || (event.shiftKey && (event.key === " " || event.key === "Spacebar"))
+          ) {
+            stopFollowing();
+          }
+        }}
+      >
+        <TimelineHeader />
+        <div ref={contentRef} className="live-flow-timeline-list">
+          {entries.map((entry, index) => (
+            <div data-entry-index={index} key={timelineEntryKey(entry, index)}>
+              <TimelineEntryContent
+                activeEntryIndex={activeEntryIndex}
+                entry={entry}
+                index={index}
+                onApprovalRespond={onApprovalRespond}
+                onEditMessage={onEditMessage}
+                provider={provider}
+                searchQuery={searchQuery}
+              />
+            </div>
+          ))}
+        </div>
+        <TimelineFooter />
+      </div>
+      {showScrollToLatest && (
+        <button
+          type="button"
+          className="timeline-scroll-latest"
+          onClick={() => scrollToLatest("smooth")}
+          aria-label="Scroll to latest message"
+        >
+          <ChevronDown size={14} />
+          Scroll to latest
+        </button>
+      )}
+    </div>
+  );
 }
 
 export function ChatTimeline({
@@ -761,6 +943,29 @@ export function ChatTimeline({
     if (approval) next.push({ kind: "approval", value: approval });
     return next;
   }, [activities, approval, messages, running, thinkingLabel]);
+
+  // Keep the live-flow renderer mounted after completion until the final
+  // compacted Markdown has a stable measured height. If the reader scrolled
+  // up, LiveFlowTimeline deliberately postpones the handoff until they return
+  // to the end, preserving their reading position across renderer changes.
+  const hasUserAfterAssistant = useMemo(() => {
+    let sawAssistant = false;
+    for (const entry of entries) {
+      if (entry.kind !== "message") continue;
+      if (entry.value.role === "assistant") sawAssistant = true;
+      else if (sawAssistant) return true;
+    }
+    return false;
+  }, [entries]);
+  const requiresLiveFlow = running && hasUserAfterAssistant;
+  const [liveFlowSettling, setLiveFlowSettling] = useState(requiresLiveFlow);
+  useEffect(() => {
+    if (requiresLiveFlow) {
+      setLiveFlowSettling(true);
+    }
+  }, [requiresLiveFlow]);
+  const useLiveFlow = requiresLiveFlow || liveFlowSettling;
+  const finishLiveFlowLayout = useCallback(() => setLiveFlowSettling(false), []);
 
   const listRef = useRef<LegendListRef | null>(null);
   const scrollModeRef = useRef<TimelineScrollMode>("following-end");
@@ -815,6 +1020,7 @@ export function ChatTimeline({
   }, [cancelLiveFollowForUserNavigation]);
 
   useEffect(() => {
+    if (useLiveFlow) return;
     let frame: number | null = null;
     let detach: (() => void) | null = null;
     const attach = (remainingAttempts: number) => {
@@ -884,7 +1090,7 @@ export function ChatTimeline({
       if (frame !== null) cancelAnimationFrame(frame);
       detach?.();
     };
-  }, [cancelLiveFollowForUserNavigation]);
+  }, [cancelLiveFollowForUserNavigation, useLiveFlow]);
 
   const matchIndices = useMemo(() => {
     const query = searchQuery?.trim().toLowerCase();
@@ -925,7 +1131,7 @@ export function ChatTimeline({
       animated: false,
       viewPosition: 0.5,
     });
-  }, [activeEntryIndex, cancelLiveFollowForUserNavigation]);
+  }, [activeEntryIndex, cancelLiveFollowForUserNavigation, useLiveFlow]);
 
   const reportTimelineEntrySize = useCallback((itemKey: string, height: number, width: number) => {
     listRef.current?.setItemSize(itemKey, { height, width });
@@ -943,6 +1149,21 @@ export function ChatTimeline({
       searchQuery={searchQuery}
     />
   ), [activeEntryIndex, onApprovalRespond, onEditMessage, provider, reportTimelineEntrySize, searchQuery]);
+
+  if (useLiveFlow) {
+    return (
+      <LiveFlowTimeline
+        allowVirtualize={!requiresLiveFlow}
+        activeEntryIndex={activeEntryIndex}
+        entries={entries}
+        onLayoutSettled={finishLiveFlowLayout}
+        onApprovalRespond={onApprovalRespond}
+        onEditMessage={onEditMessage}
+        provider={provider}
+        searchQuery={searchQuery}
+      />
+    );
+  }
 
   return (
     <div className="timeline-shell" data-scroll-mode={scrollModeRef.current}>
