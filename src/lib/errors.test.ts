@@ -9,7 +9,7 @@ describe("friendlyError", () => {
 
   it("turns missing runtime failures into setup guidance", () => {
     expect(friendlyError("Could not start codex app-server: No such file or directory"))
-      .toMatch(/Codex runtime.*Install Codex CLI/i);
+      .toBe("The Codex runtime could not be found. Install the official Codex CLI, then try again.");
   });
 
   it("removes noisy transport prefixes from unknown errors", () => {

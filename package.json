@@ -12,7 +12,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "desktop": "tauri dev --config src-tauri/tauri.dev.conf.json",
-    "desktop:build": "tauri build --no-bundle --config src-tauri/tauri.local.conf.json",
+    "desktop:build": "node scripts/desktop-build.mjs",
     "version:bump": "node scripts/bump-version.mjs",
     "release:build": "node scripts/release-dispatch.mjs build",
     "release:publish": "node scripts/release-dispatch.mjs publish",
