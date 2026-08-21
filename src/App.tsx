@@ -7,7 +7,7 @@ import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { Archive, ArchiveRestore, Bot, Check, ChevronDown, Circle, Code2, Download, FileCode2, Folder, FolderOpen, GitBranch, GitFork, LoaderCircle, MessageSquare, Paperclip, PanelRight, PanelLeftClose, PanelLeftOpen, Plus, Pin, PinOff, Pencil, Search, Settings, Shield, ShieldAlert, ShieldCheck, TerminalSquare, Trash2, X } from "lucide-react";
 import { getCodexRuntimeStatus, auditEvent, exportTextFile, getNormalChatWorkspace, hasLmStudioKey, hasOpenRouterKey, listOpenRouterModels, respond, restartRuntime, rpc, runtimeInstanceId, type CodexRuntimeStatus, type JsonObject } from "./lib/codex";
-import { deleteClaudeTranscript, getClaudeRuntimeStatus, loadClaudeTranscript, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, type ClaudeRuntimeStatus } from "./lib/claude";
+import { deleteClaudeTranscript, getClaudeRateLimits, getClaudeRuntimeStatus, loadClaudeTranscript, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, type ClaudeRuntimeStatus } from "./lib/claude";
 import { deleteCursorTranscript, getCursorRuntimeStatus, listCursorModels, loadCursorTranscript, respondToCursorPermission, saveCursorTranscript, startCursorLogin, type CursorModel, type CursorRuntimeStatus } from "./lib/cursor";
 import { loadStored, storeValue } from "./lib/storage";
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_PROMPT_PROFILES, DEFAULT_SETTINGS, THEMES } from "./lib/appConfig";
@@ -86,7 +86,7 @@ import { isClaudeThread, isCursorThread, isLocalSubscriptionThread, modelForProv
 import { listLMStudioModels, type LMStudioModel } from "./lib/lmStudio";
 import { basename, normalizedProjectPath } from "./lib/paths";
 import { resolveProviderSystemPrompt, resolveSystemPrompt } from "./lib/systemPrompt";
-import { providerAccountUsage } from "./lib/providerUsage";
+import { parseCodexRateLimits, providerAccountUsage, sanitizeUsageDisplay, type ProviderRateLimits } from "./lib/providerUsage";
 import { contextUsagePercent } from "./lib/contextUsage";
 import { openKiwiDeveloperInstructions } from "./lib/completionPrompt";
 import { runtimeModelProviderId } from "./lib/providerIds";
@@ -155,7 +155,7 @@ const establishedInstall = isEstablishedOpenKiwiInstall({ projects: initialProje
 const initialOnboardingOpen = initialOnboardingVersion < ONBOARDING_VERSION && !establishedInstall;
 const storedSettings = loadStored<Partial<AppSettings>>("kiwi.settings", {});
 const initialChildAgents = sanitizeChildAgentSettings(storedSettings.childAgents);
-const initialSettings: AppSettings = { ...DEFAULT_SETTINGS, ...storedSettings, openAiLogo: storedSettings.openAiLogo === "codex" ? "codex" : "openai", claudeLogo: storedSettings.claudeLogo === "anthropic" ? "anthropic" : "claude", cursorLogo: storedSettings.cursorLogo === "app-dark" ? "app-dark" : "cube", subagentMax: crewSafeConcurrency(Number(storedSettings.subagentMax) || DEFAULT_SETTINGS.subagentMax, initialChildAgents), childAgents: initialChildAgents, model: modelForProvider(storedSettings.provider ?? DEFAULT_SETTINGS.provider, storedSettings.model ?? DEFAULT_SETTINGS.model), lmStudioBaseUrl: storedSettings.lmStudioBaseUrl?.trim() || DEFAULT_LM_STUDIO_BASE_URL, theme: THEMES.some((theme) => theme.id === storedSettings.theme) ? storedSettings.theme! : DEFAULT_SETTINGS.theme, uiScale: Math.min(150, Math.max(80, Number(storedSettings.uiScale) || DEFAULT_SETTINGS.uiScale)) };
+const initialSettings: AppSettings = { ...DEFAULT_SETTINGS, ...storedSettings, openAiLogo: storedSettings.openAiLogo === "codex" ? "codex" : "openai", claudeLogo: storedSettings.claudeLogo === "anthropic" ? "anthropic" : "claude", cursorLogo: storedSettings.cursorLogo === "app-dark" ? "app-dark" : "cube", subagentMax: crewSafeConcurrency(Number(storedSettings.subagentMax) || DEFAULT_SETTINGS.subagentMax, initialChildAgents), childAgents: initialChildAgents, model: modelForProvider(storedSettings.provider ?? DEFAULT_SETTINGS.provider, storedSettings.model ?? DEFAULT_SETTINGS.model), lmStudioBaseUrl: storedSettings.lmStudioBaseUrl?.trim() || DEFAULT_LM_STUDIO_BASE_URL, theme: THEMES.some((theme) => theme.id === storedSettings.theme) ? storedSettings.theme! : DEFAULT_SETTINGS.theme, uiScale: Math.min(150, Math.max(80, Number(storedSettings.uiScale) || DEFAULT_SETTINGS.uiScale)), usageDisplay: sanitizeUsageDisplay(storedSettings.usageDisplay) };
 
 function permissionLabel(mode: PermissionMode): string {
   if (mode === "read-only") return "Read only";
@@ -283,7 +283,9 @@ export default function App() {
   const [studioOpen, setStudioOpen] = useState(false);
   const [studioTab, setStudioTab] = useState<StudioTab>("review");
   const [attachments, setAttachments] = useState<AttachmentRecord[]>([]);
-  const [rateSummary, setRateSummary] = useState("");
+  const [openAiRateLimits, setOpenAiRateLimits] = useState<ProviderRateLimits | null>(null);
+  const [openAiRateLimitsRead, setOpenAiRateLimitsRead] = useState(false);
+  const [claudeRateLimits, setClaudeRateLimits] = useState<ProviderRateLimits | null>(null);
   const [skillsFolder, setSkillsFolder] = usePersistedState<string>("kiwi.skillsFolder", "");
   const [skillFiles, setSkillFiles] = useState<LocalSkillFile[]>([]);
   const [skillAliases, setSkillAliases] = usePersistedState<Record<string, string>>("kiwi.skillAliases", {});
@@ -685,13 +687,16 @@ export default function App() {
 
   const accountUsageView = useMemo(() => {
     return providerAccountUsage(effectiveSettings.provider, {
-      openAiRateSummary: rateSummary,
+      openAiRateLimits,
+      openAiRateLimitsRead,
       claudeStatus,
+      claudeRateLimits,
       cursorStatus,
       openRouterReady,
       lmStudioReady,
+      usageDisplay: settings.usageDisplay,
     });
-  }, [claudeStatus, cursorStatus, effectiveSettings.provider, lmStudioReady, openRouterReady, rateSummary]);
+  }, [claudeRateLimits, claudeStatus, cursorStatus, effectiveSettings.provider, lmStudioReady, openAiRateLimits, openAiRateLimitsRead, openRouterReady, settings.usageDisplay]);
 
   // Only offer "Check settings" for failures settings can actually fix.
   const errorSuggestsSettings = useMemo(() => Boolean(error) && /sign in|api key|openrouter|lm studio|claude|model|settings|runtime|codex|account/i.test(error ?? ""), [error]);
@@ -1156,10 +1161,16 @@ export default function App() {
     try {
       const result = await getClaudeRuntimeStatus();
       setClaudeStatus(result);
+      if (result.loggedIn) {
+        setClaudeRateLimits(await getClaudeRateLimits().catch(() => null));
+      } else {
+        setClaudeRateLimits(null);
+      }
       return result;
     } catch (reason) {
       const result: ClaudeRuntimeStatus = { available: false, path: null, version: null, loggedIn: false, authMethod: null, email: null, subscriptionType: null, warning: null };
       setClaudeStatus(result);
+      setClaudeRateLimits(null);
       setError(friendlyError(reason));
       return result;
     }
@@ -1343,11 +1354,12 @@ export default function App() {
 
   const refreshUsage = useCallback(async () => {
     try {
-      const result = await rpc<{ rateLimits?: { primary?: { usedPercent?: number; resetsAt?: number } } }>("account/rateLimits/read");
-      const primary = result.rateLimits?.primary;
-      setRateSummary(primary ? `${Math.round(primary.usedPercent ?? 0)}% used${primary.resetsAt ? ` · resets ${new Date(primary.resetsAt * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : ""}` : "No active limit window");
+      const result = await rpc<unknown>("account/rateLimits/read");
+      setOpenAiRateLimits(parseCodexRateLimits(result));
+      setOpenAiRateLimitsRead(true);
     } catch {
-      setRateSummary("");
+      setOpenAiRateLimits(null);
+      setOpenAiRateLimitsRead(false);
     }
   }, []);
 
@@ -1538,7 +1550,10 @@ export default function App() {
     onStatus: setStatus,
     onError: setError,
     onAuthRequired: () => setAuthRequiredOpen(true),
-    onRateSummary: setRateSummary,
+    onRateLimits: (limits) => {
+      setOpenAiRateLimits(limits);
+      setOpenAiRateLimitsRead(true);
+    },
     onTerminalOutput: terminal.append,
     onAccountUpdated: () => void refreshAccount(),
     onLoginFailed: (message) => {

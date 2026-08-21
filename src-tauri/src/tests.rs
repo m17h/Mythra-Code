@@ -12,6 +12,48 @@ fn claude_always_uses_openkiwi_as_its_only_subagent_route() {
 }
 
 #[test]
+fn claude_usage_normalizes_subscription_windows_without_credentials() {
+    let usage = parse_claude_usage_result(
+        "You are currently using your subscription to power your Claude Code usage\n\
+         \n\
+         Current session: 5% used · resets Aug 21 at 11:29pm (America/New_York)\n\
+         Current week (all models): 29% used · resets Aug 23 at 5:59pm (America/New_York)\n\
+         Current week (Fable): 120% used",
+    );
+    assert_eq!(
+        usage,
+        ClaudeUsageLimits {
+            windows: vec![
+                ClaudeUsageWindow {
+                    label: "5h".into(),
+                    used_percent: 5.0,
+                    reset_label: Some("Aug 21 at 11:29pm (America/New_York)".into()),
+                },
+                ClaudeUsageWindow {
+                    label: "Weekly".into(),
+                    used_percent: 29.0,
+                    reset_label: Some("Aug 23 at 5:59pm (America/New_York)".into()),
+                },
+                ClaudeUsageWindow {
+                    label: "Weekly Fable".into(),
+                    used_percent: 100.0,
+                    reset_label: None,
+                },
+            ],
+        }
+    );
+}
+
+#[test]
+fn claude_usage_skips_missing_or_malformed_windows() {
+    assert!(parse_claude_usage_result(
+        "Current session: unknown% used\nCurrent month: 20% used\nCurrent week (all models): unavailable"
+    )
+    .windows
+    .is_empty());
+}
+
+#[test]
 fn child_agent_completion_cannot_be_resurrected_by_a_late_spawn_response() {
     let mut runtime = super::agents::SessionRuntime::default();
     super::agents::record_finished_child(&mut runtime, "child-fast");

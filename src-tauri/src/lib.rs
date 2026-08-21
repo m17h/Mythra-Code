@@ -180,6 +180,22 @@ struct ClaudeRuntimeStatus {
     warning: Option<String>,
 }
 
+#[derive(Serialize, PartialEq, Debug)]
+#[serde(rename_all = "camelCase")]
+struct ClaudeUsageWindow {
+    label: String,
+    used_percent: f64,
+    /// Claude Code formats the reset in the user's own timezone. Keep that
+    /// official display text instead of guessing at a locale-specific date.
+    reset_label: Option<String>,
+}
+
+#[derive(Serialize, PartialEq, Debug)]
+#[serde(rename_all = "camelCase")]
+struct ClaudeUsageLimits {
+    windows: Vec<ClaudeUsageWindow>,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ClaudeAttachment {
@@ -1285,6 +1301,82 @@ fn parse_claude_auth_status(stdout: &[u8]) -> Option<Value> {
             .collect::<String>();
         serde_json::from_str(&compact).ok()
     })
+}
+
+fn parse_claude_usage_result(result: &str) -> ClaudeUsageLimits {
+    let windows = result
+        .lines()
+        .filter_map(|line| {
+            let (title, details) = line.trim().split_once(": ")?;
+            let label = match title {
+                "Current session" => "5h".to_string(),
+                "Current week (all models)" => "Weekly".to_string(),
+                title if title.starts_with("Current week (") && title.ends_with(')') => format!(
+                    "Weekly {}",
+                    title
+                        .strip_prefix("Current week (")
+                        .and_then(|value| value.strip_suffix(')'))
+                        .unwrap_or("model")
+                ),
+                _ => return None,
+            };
+            let (percent, reset) = details.split_once("% used")?;
+            let used_percent = percent.trim().parse::<f64>().ok()?.clamp(0.0, 100.0);
+            let reset_label = reset
+                .split_once("resets ")
+                .map(|(_, value)| value.trim().to_string())
+                .filter(|value| !value.is_empty());
+            Some(ClaudeUsageWindow {
+                label,
+                used_percent,
+                reset_label,
+            })
+        })
+        .collect();
+    ClaudeUsageLimits { windows }
+}
+
+#[tauri::command]
+async fn claude_usage(app: AppHandle) -> Result<ClaudeUsageLimits, String> {
+    let path = resolve_claude_binary(&app).await?;
+    let output = timeout(
+        Duration::from_secs(10),
+        subscription_only_command(&path)
+            .args([
+                "--setting-sources",
+                "",
+                "-p",
+                "/usage",
+                "--output-format",
+                "json",
+                "--no-session-persistence",
+                "--max-turns",
+                "1",
+                "--model",
+                "haiku",
+            ])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .map_err(|_| "Claude Code usage timed out".to_string())?
+    .map_err(|error| format!("Could not start Claude Code usage: {error}"))?;
+    if !output.status.success() {
+        return Err("Claude Code could not read subscription usage".into());
+    }
+    let envelope = parse_claude_auth_status(&output.stdout)
+        .ok_or_else(|| "Claude Code returned an unsupported usage response".to_string())?;
+    let result = envelope
+        .get("result")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Claude Code returned no subscription usage".to_string())?;
+    let usage = parse_claude_usage_result(result);
+    if usage.windows.is_empty() {
+        return Err("Claude Code returned no active usage windows".into());
+    }
+    Ok(usage)
 }
 
 async fn read_claude_runtime_status(app: &AppHandle) -> ClaudeRuntimeStatus {
@@ -3296,6 +3388,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             codex_runtime_status,
             claude_runtime_status,
+            claude_usage,
             claude_login,
             cursor_runtime_status,
             cursor_login,

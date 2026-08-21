@@ -1,6 +1,8 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { STUDIO_DOCK_EXIT_MS, StudioDock } from "./StudioDock";
+import { providerAccountUsage } from "../lib/providerUsage";
+import type { UsageDisplayMode } from "../types";
 
 vi.mock("./XtermPanel", () => ({ XtermPanel: () => null }));
 
@@ -125,6 +127,25 @@ describe("StudioDock", () => {
     expect(screen.getByText("Claude subscription")).toBeInTheDocument();
     expect(screen.getByText(/Max plan connected/)).toBeInTheDocument();
     expect(screen.queryByText("25% used")).not.toBeInTheDocument();
+  });
+
+  it("renders the active provider quota in whichever direction the user chose", () => {
+    const limits = { windows: [{ label: "5h", usedPercent: 42, resetsAt: null }] };
+    const view = (usageDisplay: UsageDisplayMode) => providerAccountUsage("openai", {
+      openAiRateLimits: limits,
+      openAiRateLimitsRead: true,
+      claudeStatus: null,
+      openRouterReady: false,
+      usageDisplay,
+    });
+
+    const { rerender } = render(<StudioDock {...dockProps(true)} tab="usage" accountUsage={view("remaining")} />);
+    expect(screen.getByText("58% left")).toBeInTheDocument();
+    expect(screen.queryByText("42% used")).not.toBeInTheDocument();
+
+    rerender(<StudioDock {...dockProps(true)} tab="usage" accountUsage={view("consumed")} />);
+    expect(screen.getByText("42% used")).toBeInTheDocument();
+    expect(screen.queryByText("58% left")).not.toBeInTheDocument();
   });
 
   it("uses current context pressure instead of cumulative thread history", () => {

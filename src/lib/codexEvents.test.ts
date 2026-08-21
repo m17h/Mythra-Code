@@ -10,7 +10,7 @@ function makeContext(overrides: Partial<CodexEventContext> = {}): CodexEventCont
     onStatus: vi.fn(),
     onError: vi.fn(),
     onAuthRequired: vi.fn(),
-    onRateSummary: vi.fn(),
+    onRateLimits: vi.fn(),
     onTerminalOutput: vi.fn(),
     onTurnCompleted: vi.fn(),
     onApprovalRequested: vi.fn(),
@@ -32,6 +32,20 @@ describe("routeCodexEvent", () => {
     useTaskStore.getState().flushDeltas();
     expect(useTaskStore.getState().tasks["thread-b"]?.messages[0]?.text).toBe("hello");
     expect(useTaskStore.getState().tasks["thread-active"]?.messages ?? []).toHaveLength(0);
+  });
+
+  it("normalizes a pushed rate limit update through the shared parser", () => {
+    const ctx = makeContext();
+    routeCodexEvent({ method: "account/rateLimits/updated", params: { rateLimits: { primary: { usedPercent: 42, windowMinutes: 300, resetsAt: 1_800_000_000 } } } }, ctx);
+    expect(ctx.onRateLimits).toHaveBeenCalledWith({
+      windows: [{ label: "5h", usedPercent: 42, resetsAt: 1_800_000_000 }],
+    });
+  });
+
+  it("ignores a rate limit update that carries no window", () => {
+    const ctx = makeContext();
+    routeCodexEvent({ method: "account/rateLimits/updated", params: { rateLimits: {} } }, ctx);
+    expect(ctx.onRateLimits).not.toHaveBeenCalled();
   });
 
   it("streams model thinking into a collapsed reasoning activity and prefers full content", () => {

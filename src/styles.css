@@ -174,17 +174,21 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .app-shell[data-theme="daylight"] .model-menu-option.sol { --option-accent: #b06b1e; }
 .app-shell[data-theme="daylight"] .model-menu-option.terra { --option-accent: #3e8e22; }
 .app-shell[data-theme="daylight"] .model-menu-option.luna { --option-accent: #1668a8; }
-.app-shell[data-theme="daylight"] .openrouter-control { --router-accent: #7a56be; }
+.app-shell[data-theme="daylight"] .openrouter-control { --router-accent: #7624f4; }
 .app-shell[data-theme="daylight"] .openrouter-control.lmstudio-control { --router-accent: #16856c; }
 .app-shell[data-theme="daylight"] .openrouter-control.claude-control { --router-accent: #b75f42; }
 .app-shell[data-theme="daylight"] .model-orb, .app-shell[data-theme="daylight"] .menu-model-orb, .app-shell[data-theme="daylight"] .openrouter-logo { color: #ffffff; }
 .app-shell[data-theme="daylight"] .provider-logo { background: #eceee8; }
-.app-shell[data-theme="daylight"] .provider-logo.openrouter { color: #7a56be; }
+.app-shell[data-theme="daylight"] .provider-logo.openrouter { color: #7624f4; }
 .app-shell[data-theme="daylight"] .provider-logo.lmstudio { color: #16856c; }
 .app-shell[data-theme="daylight"] .provider-logo.claude { color: #fff; background: #d97757; }
 .app-shell[data-theme="daylight"] .provider-logo.cursor { color: #26251e; background: #edecec; }
+.app-shell[data-theme="daylight"] .provider-mark.openrouter { color: #7624f4; background: rgba(118,36,244,.07); }
+.app-shell[data-theme="daylight"] .sa-tile.openrouter { --sa-accent: #7624f4; --sa-avatar-bg: rgba(118,36,244,.07); --sa-avatar-ink: #7624f4; }
+.app-shell[data-theme="daylight"] .onboarding-provider-card.openrouter { border-color: color-mix(in srgb, #7624f4 19%, var(--line)); }
+.app-shell[data-theme="daylight"] .onboarding-provider-card.openrouter .onboarding-card-title > span { color: #7624f4; background: rgba(118,36,244,.07); }
 .app-shell[data-theme="daylight"] .provider-card { color: #4c544c; }
-.app-shell[data-theme="daylight"] .provider-dot.openrouter { background: #7a56be; box-shadow: 0 0 0 3px rgba(122,86,190,.12); }
+.app-shell[data-theme="daylight"] .provider-dot.openrouter { background: #7624f4; box-shadow: 0 0 0 3px rgba(118,36,244,.12); }
 .app-shell[data-theme="daylight"] .provider-dot.claude { background: #b75f42; box-shadow: 0 0 0 3px rgba(183,95,66,.12); }
 .app-shell[data-theme="daylight"] .provider-dot.cursor { background: #595954; box-shadow: 0 0 0 3px rgba(89,89,84,.12); }
 .app-shell[data-theme="daylight"] .file-preview { background: #f7f8f5; }
@@ -312,10 +316,10 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .thread-card-provider { display: grid; flex: 0 0 auto; width: 19px; height: 19px; place-items: center; border: 1px solid var(--line); border-radius: 6px; color: var(--ink-2); background: color-mix(in srgb, var(--text) 5%, transparent); }
 .thread-card-provider.claude { border-color: rgba(217,119,87,.38); color: #fff; background: #d97757; }
 .thread-card-provider.openai { color: #fff; background: #1a1d18; }
-.thread-card-provider.openrouter { color: #b9a0ff; background: rgba(122,86,190,.12); }
+.thread-card-provider.openrouter { color: #c8ff00; background: rgba(200,255,0,.08); }
 .thread-card-provider.lmstudio { border-color: transparent; background: transparent; }
 .thread-card-provider.cursor { border-color: rgba(237,236,236,.35); color: #26251e; background: #edecec; }
-.app-shell[data-theme="daylight"] .thread-card-provider.openrouter { color: #7a56be; }
+.app-shell[data-theme="daylight"] .thread-card-provider.openrouter { color: #7624f4; background: rgba(118,36,244,.07); }
 .thread-card-status { display: inline-flex; align-items: center; gap: 4px; min-width: 0; margin-left: auto; color: var(--muted-2); font-size: var(--fs-meta); font-weight: 610; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .thread-card-status.working { color: var(--info); }
 .thread-card-status.approval { color: var(--orange); }
@@ -412,7 +416,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .thread-provider-control { position: relative; }
 .provider-mark { width: 22px; height: 22px; display: grid; place-items: center; flex: 0 0 auto; border-radius: var(--r-xs); color: #fff; background: #1a1d18; }
 .provider-mark.claude { background: #d97757; }
-.provider-mark.openrouter { color: #d6b3ff; background: rgba(126,75,178,.25); }
+.provider-mark.openrouter { color: #c8ff00; background: rgba(200,255,0,.08); }
 .provider-mark.lmstudio { background: transparent; }
 .provider-mark.cursor { color: #26251e; background: #edecec; }
 .thread-provider-menu { position: absolute; z-index: 130; top: calc(100% + 7px); right: 0; width: 300px; padding: var(--s-1); border: 1px solid var(--line-strong); border-radius: var(--r-lg); background: var(--panel-2); box-shadow: var(--shadow); opacity: 0; visibility: hidden; transform: translateY(-6px) scale(.972); transform-origin: top right; pointer-events: none; transition: opacity 180ms var(--ease), visibility 0s linear 180ms, transform 180ms var(--ease); }
@@ -430,7 +434,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .thread-provider-menu .thread-provider-default { min-height: 47px; grid-template-columns: 24px minmax(0,1fr); margin-top: var(--s-1); border-top: 1px solid var(--line); border-radius: 0 0 var(--r-sm) var(--r-sm); }
 .thread-provider-default > svg { justify-self: center; color: var(--muted-2); }
 .provider-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 3px rgba(167,226,111,.08); }
-.provider-dot.openrouter { background: #c798f4; box-shadow: 0 0 0 3px rgba(199,152,244,.08); }
+.provider-dot.openrouter { background: #c8ff00; box-shadow: 0 0 0 3px rgba(200,255,0,.08); }
 .provider-dot.lmstudio { background: #75d5c7; box-shadow: 0 0 0 3px rgba(117,213,199,.09); }
 .provider-dot.claude { background: #df8a68; box-shadow: 0 0 0 3px rgba(223,138,104,.1); }
 .provider-dot.cursor { background: #d6d5d2; box-shadow: 0 0 0 3px rgba(214,213,210,.1); }
@@ -712,7 +716,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 /* An open menu must lift its whole grid item. Otherwise later destination
    cards paint above the menu and look as though they show through it. */
 .sa-tile:has(.app-select.open) { z-index: 20; }
-.sa-tile.openrouter { --sa-accent: #b993f5; --sa-avatar-bg: #b993f5; --sa-avatar-ink: #16111d; }
+.sa-tile.openrouter { --sa-accent: #c8ff00; --sa-avatar-bg: rgba(200,255,0,.08); --sa-avatar-ink: #c8ff00; }
 .sa-tile.lmstudio { --sa-accent: #75d5c7; --sa-avatar-bg: transparent; --sa-avatar-ink: #fff; }
 .sa-tile.claude { --sa-accent: #dd8b6a; --sa-avatar-bg: #d97757; --sa-avatar-ink: #ffffff; }
 .sa-tile.cursor { --sa-accent: #d9d8d3; --sa-avatar-bg: #edecec; --sa-avatar-ink: #26251e; }
@@ -955,14 +959,14 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .onboarding-provider-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; margin-top: 20px; }
 .onboarding-provider-card { min-width: 0; display: flex; flex-direction: column; padding: 15px; border: 1px solid var(--line); border-radius: 13px; background: color-mix(in srgb, var(--panel-2) 68%, transparent); }
 .onboarding-provider-card.openai { border-color: color-mix(in srgb, #79d7a6 17%, var(--line)); }
-.onboarding-provider-card.openrouter { border-color: color-mix(in srgb, #c39bff 19%, var(--line)); }
+.onboarding-provider-card.openrouter { border-color: color-mix(in srgb, #c8ff00 19%, var(--line)); }
 .onboarding-provider-card.lmstudio { border-color: color-mix(in srgb, #75d5c7 22%, var(--line)); }
 .onboarding-provider-card.claude { border-color: color-mix(in srgb, #df8a68 20%, var(--line)); }
 .onboarding-provider-card.lmstudio { border-color: color-mix(in srgb, #75d5c7 22%, var(--line)); }
 .onboarding-card-title { display: flex; align-items: center; gap: 9px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
 .onboarding-card-title > span { width: 33px; height: 33px; display: grid; place-items: center; border-radius: 9px; color: #79d7a6; background: rgba(121,215,166,.08); }
 .onboarding-provider-card.openai .onboarding-card-title > span { color: #fff; background: #1a1d18; }
-.onboarding-provider-card.openrouter .onboarding-card-title > span { color: #c39bff; background: rgba(195,155,255,.09); }
+.onboarding-provider-card.openrouter .onboarding-card-title > span { color: #c8ff00; background: rgba(200,255,0,.08); }
 .onboarding-provider-card.lmstudio .onboarding-card-title > span { background: transparent; }
 .onboarding-provider-card.claude .onboarding-card-title > span { color: #fff; background: #d97757; }
 .onboarding-provider-card.lmstudio .onboarding-card-title > span { background: transparent; }
@@ -1151,7 +1155,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .provider-card small { color: var(--muted-2); font-size: var(--fs-micro); }
 .provider-logo { width: 30px; height: 30px; display: grid; place-items: center; border-radius: var(--r-sm); background: var(--panel-3); }
 .provider-logo.openai { color: #fff; background: #1a1d18; }
-.provider-logo.openrouter { color: #c798f4; }
+.provider-logo.openrouter { color: #c8ff00; }
 .provider-logo.lmstudio { background: transparent; }
 .provider-logo.claude { color: #fff; background: #d97757; }
 .provider-logo.cursor { color: #26251e; background: #edecec; }
@@ -1200,6 +1204,17 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .field-label input:focus, .key-input-row input:focus { border-color: var(--green-line); box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 9%, transparent); }
 /* Fields are focus-ringed by their own border treatment — no doubled outline. */
 .field-label input:focus-visible, .key-input-row input:focus-visible, .prompt-editor:focus-visible, .thread-search input:focus-visible, .palette-search input:focus-visible, .composer textarea:focus-visible { outline: none; }
+.usage-display-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-2); }
+.usage-display-options > button { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) 16px; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-md); color: var(--muted); background: rgba(255,255,255,.014); text-align: left; cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
+.usage-display-options > button:hover { color: var(--ink-2); border-color: var(--line-strong); background: rgba(255,255,255,.035); }
+.usage-display-options > button.selected { color: var(--text); border-color: var(--green-line); background: var(--green-soft); }
+.usage-display-options > button > span { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.usage-display-options strong { color: inherit; font-size: var(--fs-ui); font-weight: 600; }
+.usage-display-options small { color: var(--muted-2); font-size: var(--fs-micro); line-height: 1.45; }
+.usage-display-options > button > svg { color: var(--green); }
+.usage-display-preview { display: flex; align-items: center; gap: 8px; margin-top: var(--s-3); color: var(--muted-2); font-size: var(--fs-meta); }
+.usage-display-preview > svg { flex: none; }
+
 .provider-logo-settings { display: grid; gap: var(--s-3); margin-top: var(--s-4); padding-top: var(--s-4); border-top: 1px solid var(--line); }
 .provider-logo-settings > div:first-child { display: flex; flex-direction: column; gap: 3px; }
 .provider-logo-settings > div:first-child > strong { color: var(--ink-2); font-size: var(--fs-ui); font-weight: 620; }
@@ -1495,7 +1510,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 }
 
 /* OpenRouter model rail */
-.openrouter-control { --router-accent: #b993f5; --router-fill: 0%; position: relative; z-index: 8; display: grid; grid-template-columns: minmax(280px, 1.08fr) minmax(245px, .92fr); gap: var(--s-3); align-items: center; margin: 0 10px var(--s-1); padding: var(--s-2); overflow: visible; border: 1px solid var(--line); border-radius: var(--r-lg); background: rgba(255,255,255,.014); box-shadow: none; }
+.openrouter-control { --router-accent: #c8ff00; --router-fill: 0%; position: relative; z-index: 8; display: grid; grid-template-columns: minmax(280px, 1.08fr) minmax(245px, .92fr); gap: var(--s-3); align-items: center; margin: 0 10px var(--s-1); padding: var(--s-2); overflow: visible; border: 1px solid var(--line); border-radius: var(--r-lg); background: rgba(255,255,255,.014); box-shadow: none; }
 .openrouter-control.lmstudio-control { --router-accent: #75d5c7; }
 .lmstudio-logo { background: transparent !important; }
 .provider-mark.lmstudio, .provider-logo.lmstudio, .thread-card-provider.lmstudio, .message-avatar.provider-lmstudio { background: transparent; }
@@ -1513,6 +1528,8 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .openrouter-trigger { width: 100%; height: 46px; display: grid; grid-template-columns: 26px minmax(0,1fr) 16px; align-items: center; gap: var(--s-2); padding: 0 10px; border: 1px solid var(--line); border-radius: var(--r-md); color: var(--text); background: var(--field); box-shadow: none; cursor: pointer; text-align: left; transition: border-color var(--t-mid) ease, background var(--t-mid) ease; }
 .openrouter-trigger:hover, .openrouter-picker.open .openrouter-trigger { border-color: color-mix(in srgb, var(--router-accent) 34%, var(--line-strong)); background: color-mix(in srgb, var(--router-accent) 5%, var(--field)); box-shadow: none; }
 .openrouter-logo { width: 24px; height: 24px; display: grid; place-items: center; border-radius: var(--r-xs); color: #16111d; background: var(--router-accent); box-shadow: none; }
+.openrouter-logo.openrouter-brand-logo { color: #c8ff00; background: rgba(200,255,0,.08); }
+.app-shell[data-theme="daylight"] .openrouter-logo.openrouter-brand-logo { color: #7624f4; background: rgba(118,36,244,.07); }
 .cursor-control { --router-accent: #edecec; --router-accent-2: #b9b8b3; }
 .cursor-logo { color: #26251e !important; background: #edecec !important; }
 .cursor-model-menu { width: min(720px, calc(100vw - 42px)); max-height: min(590px, calc(100vh - 150px)); padding: 8px; }

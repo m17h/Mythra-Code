@@ -236,6 +236,13 @@ export interface ThreadHandoff {
   createdAt: number;
 }
 
+/**
+ * How a provider quota is spoken about in the UI. Providers report how much of
+ * a window has been consumed; "remaining" flips that for people who think in
+ * terms of what they have left.
+ */
+export type UsageDisplayMode = "remaining" | "consumed";
+
 export interface AppSettings {
   provider: Provider;
   openAiLogo: OpenAILogoStyle;
@@ -264,4 +271,6 @@ export interface AppSettings {
   notificationsEnabled: boolean;
   terminalScrollback: number;
   uiScale: number;
+  /** Direction provider quota percentages are shown in. Absent before 1.7.6. */
+  usageDisplay: UsageDisplayMode;
 }

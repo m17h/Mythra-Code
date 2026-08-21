@@ -32,7 +32,7 @@ import type { CursorRuntimeStatus } from "../lib/cursor";
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_SETTINGS, RELEASE_NOTES_URL, THEMES } from "../lib/appConfig";
 import { friendlyError } from "../lib/errors";
 import { useModalFocus } from "../hooks/useModalFocus";
-import { AnthropicLogo, ClaudeLogo, CodexLogo, CursorDarkAppIcon, CursorLogo, LmStudioLogo, OpenAILogo } from "./BrandLogos";
+import { AnthropicLogo, ClaudeLogo, CodexLogo, CursorDarkAppIcon, CursorLogo, LmStudioLogo, OpenAILogo, OpenRouterLogo } from "./BrandLogos";
 import type { LMStudioModel } from "../lib/lmStudio";
 import { updateProgress, type AppUpdater } from "../lib/appUpdater";
 import {
@@ -60,7 +60,9 @@ import type {
   ScheduleRunRecord,
   ThemeName,
   SettingsSection,
+  UsageDisplayMode,
 } from "../types";
+import { usagePercentLabel } from "../lib/providerUsage";
 
 /**
  * Single source of truth for the settings navigation: the rail, the pane
@@ -679,7 +681,10 @@ export function SettingsModal({
             }}
           />}
 
-          {settingsSection === "usage" && <AllTimeUsageSettings totals={usageTotals} />}
+          {settingsSection === "usage" && <>
+            <UsageDisplaySettings value={local.usageDisplay} onChange={(usageDisplay) => setLocal({ ...local, usageDisplay })} />
+            <AllTimeUsageSettings totals={usageTotals} />
+          </>}
 
           {settingsSection === "skills" && <SkillLibrary
             folder={skillsFolder}
@@ -750,7 +755,7 @@ export function SettingsModal({
                 {local.provider === "openai" && <Check size={16} />}
               </button>
               <button className={`provider-card ${local.provider === "openrouter" ? "selected" : ""}`} onClick={() => setLocal({ ...local, provider: "openrouter", model: local.provider === "openrouter" ? local.model : "", ultra: false })}>
-                <span className="provider-logo openrouter"><RotateCcw size={17} /></span>
+                <span className="provider-logo openrouter"><OpenRouterLogo size={18} /></span>
                 <span><strong>OpenRouter</strong><small>Responses-compatible model routing</small></span>
                 {local.provider === "openrouter" && <Check size={16} />}
               </button>
@@ -1050,6 +1055,41 @@ function GitHubSettings({
       <button className="primary-button" disabled={!status?.authenticated || busy || !cloneUrl.trim() || !cloneFolder.trim()} onClick={() => void onClone()}>{busy ? <LoaderCircle className="spin" size={13} /> : <Download size={13} />} Choose location and clone</button>
     </section>
   </>;
+}
+
+const USAGE_DISPLAY_OPTIONS: ReadonlyArray<{ id: UsageDisplayMode; label: string; detail: string }> = [
+  { id: "remaining", label: "Percentage remaining", detail: "Counts down what is still available in each limit window." },
+  { id: "consumed", label: "Percentage consumed", detail: "Counts up what has already been used in each limit window." },
+];
+
+function UsageDisplaySettings({ value, onChange }: { value: UsageDisplayMode; onChange: (value: UsageDisplayMode) => void }) {
+  return <section className="settings-section">
+    <div className="settings-section-heading">
+      <div className="settings-icon"><Gauge size={17} /></div>
+      <div>
+        <h3>Provider quota display</h3>
+        <p id="usage-display-help">Choose the direction OpenKiwi reads subscription limits in. The choice applies everywhere a live provider quota appears — the usage card in the studio dock, OpenAI/Codex rate limits, and Claude Code rate limits — including each window&rsquo;s length and reset time.</p>
+      </div>
+    </div>
+    <div className="usage-display-options" role="radiogroup" aria-label="Provider quota display" aria-describedby="usage-display-help">
+      {USAGE_DISPLAY_OPTIONS.map((option) => (
+        <button
+          key={option.id}
+          type="button"
+          role="radio"
+          aria-checked={value === option.id}
+          className={value === option.id ? "selected" : ""}
+          onClick={() => onChange(option.id)}
+        >
+          <span><strong>{option.label}</strong><small>{option.detail}</small></span>
+          {value === option.id && <Check size={14} />}
+        </button>
+      ))}
+    </div>
+    {/* Rendered through the same helper the live cards use, so the example can
+        never describe a format the app does not actually produce. */}
+    <div className="usage-display-preview"><Gauge size={13} /><span>Example · 5h window {usagePercentLabel(42, value)}</span></div>
+  </section>;
 }
 
 function AllTimeUsageSettings({ totals }: { totals: UsageTotals }) {

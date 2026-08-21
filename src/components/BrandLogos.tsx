@@ -1,14 +1,30 @@
 import { useId } from "react";
-import { Route } from "lucide-react";
 import type { Provider } from "../types";
 
 /**
  * Official provider wordless marks, drawn as inline paths. Claude stays white
  * inside its orange brand tile in every theme; OpenAI stays white inside its
- * dark tile. OpenRouter uses the same routing mark as its model control.
+ * dark tile. OpenRouter uses its official wordless brand glyph.
  */
 
 type LogoProps = { size?: number; className?: string };
+
+/** Official OpenRouter v2 glyph from https://openrouter.ai/brand. */
+export function OpenRouterLogo({ size = 16, className }: LogoProps) {
+  return (
+    <svg
+      className={className}
+      width={size}
+      height={size}
+      viewBox="0 0 401.4 293.7"
+      fill="currentColor"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M303.9475 17.19926c42.79734 0 77.48933 34.69327 77.48933 77.48933s-34.69199 77.48933-77.48933 77.48933l76.86166 76.86244c9.76367 9.76313 2.84903 26.45667-10.95697 26.45667H148.96884c-71.32686 0-129.14889-57.82202-129.14889-129.14889S77.64197 17.19926 148.96884 17.19926H303.9475ZM148.96884 68.85881c-42.79607 0-77.48933 34.69327-77.48933 77.48933s34.69327 77.48933 77.48933 77.48933 77.48933-34.69327 77.48933-77.48933-34.69327-77.48933-77.48933-77.48933Z" />
+    </svg>
+  );
+}
 
 /** Official LM Studio color app icon from LM Studio's public brand kit. */
 export function LmStudioLogo({ size = 16, className }: LogoProps) {
@@ -138,6 +154,7 @@ export function ProviderLogo({ provider, size = 16, className }: LogoProps & { p
   if (provider === "lmstudio") return <LmStudioLogo size={size} className={className} />;
   if (provider === "cursor") return <CursorProviderLogo size={size} className={className} />;
   if (provider === "claude") return <ClaudeProviderLogo size={size} className={className} />;
+  if (provider === "openrouter") return <OpenRouterLogo size={size} className={className} />;
   if (provider === "openai") {
     return (
       <span className={`openai-logo-choice${className ? ` ${className}` : ""}`} style={{ width: size, height: size }}>
@@ -146,5 +163,5 @@ export function ProviderLogo({ provider, size = 16, className }: LogoProps & { p
       </span>
     );
   }
-  return <Route size={size} className={className} />;
+  return null;
 }

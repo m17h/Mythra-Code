@@ -9,6 +9,7 @@ import type {
 } from "../types";
 import type { ReasoningEffort } from "../components/ModelPowerControl";
 import type { JsonObject } from "./codex";
+import { clampUsedPercent, type ProviderRateLimits } from "./providerUsage";
 
 export interface ClaudeRuntimeStatus {
   available: boolean;
@@ -19,6 +20,27 @@ export interface ClaudeRuntimeStatus {
   email: string | null;
   subscriptionType: string | null;
   warning: string | null;
+}
+
+interface ClaudeUsagePayload {
+  windows?: Array<{
+    label?: unknown;
+    usedPercent?: unknown;
+    resetLabel?: unknown;
+  }>;
+}
+
+export function parseClaudeUsageLimits(payload: ClaudeUsagePayload | null | undefined): ProviderRateLimits | null {
+  const windows = (payload?.windows ?? []).flatMap((window) => {
+    if (typeof window.label !== "string" || window.usedPercent === undefined) return [];
+    return [{
+      label: window.label,
+      usedPercent: clampUsedPercent(window.usedPercent),
+      resetsAt: null,
+      resetLabel: typeof window.resetLabel === "string" && window.resetLabel.trim() ? window.resetLabel.trim() : null,
+    }];
+  });
+  return windows.length ? { windows } : null;
 }
 
 export interface ClaudeEvent {
@@ -60,6 +82,10 @@ export interface ClaudeTranscript {
 
 export async function getClaudeRuntimeStatus(): Promise<ClaudeRuntimeStatus> {
   return invoke<ClaudeRuntimeStatus>("claude_runtime_status");
+}
+
+export async function getClaudeRateLimits(): Promise<ProviderRateLimits | null> {
+  return parseClaudeUsageLimits(await invoke<ClaudeUsagePayload>("claude_usage"));
 }
 
 export async function startClaudeLogin(): Promise<void> {

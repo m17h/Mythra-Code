@@ -87,6 +87,11 @@ function modalProps(overrides: Partial<Parameters<typeof SettingsModal>[0]> = {}
 }
 
 describe("SettingsModal", () => {
+  it("uses the official OpenRouter glyph in provider settings", () => {
+    const { container } = render(<SettingsModal {...modalProps({ initialSection: "models" })} />);
+    expect(container.querySelector(".provider-logo.openrouter svg")).toHaveAttribute("viewBox", "0 0 401.4 293.7");
+  });
+
   it("offers LM Studio as a local model provider", () => {
     render(<SettingsModal {...modalProps({ initialSection: "models" })} />);
 
@@ -209,6 +214,40 @@ describe("SettingsModal", () => {
     rerender(<SettingsModal {...props} open={false} />);
     window.dispatchEvent(new Event("focus"));
     expect(onRefreshSkills).toHaveBeenCalledTimes(callsBeforeClose);
+  });
+
+  it("defaults the quota display to percentage remaining and explains its reach", () => {
+    render(<SettingsModal {...modalProps({ initialSection: "usage" })} />);
+
+    const group = screen.getByRole("radiogroup", { name: "Provider quota display" });
+    expect(within(group).getByRole("radio", { name: /Percentage remaining/ })).toHaveAttribute("aria-checked", "true");
+    expect(within(group).getByRole("radio", { name: /Percentage consumed/ })).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByText(/OpenAI\/Codex rate limits, and Claude Code rate limits/)).toBeInTheDocument();
+    expect(screen.getByText(/reset time/)).toBeInTheDocument();
+    expect(screen.getByText("Example · 5h window 58% left")).toBeInTheDocument();
+  });
+
+  it("saves the consumed direction and previews it before saving", () => {
+    const onSave = vi.fn();
+    render(<SettingsModal {...modalProps({ initialSection: "usage", onSave })} />);
+
+    fireEvent.click(screen.getByRole("radio", { name: /Percentage consumed/ }));
+    expect(screen.getByRole("radio", { name: /Percentage consumed/ })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("radio", { name: /Percentage remaining/ })).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByText("Example · 5h window 42% used")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ usageDisplay: "consumed" }));
+  });
+
+  it("preselects a previously saved consumed preference", () => {
+    render(<SettingsModal {...modalProps({
+      initialSection: "usage",
+      settings: { ...DEFAULT_SETTINGS, usageDisplay: "consumed" },
+    })} />);
+
+    expect(screen.getByRole("radio", { name: /Percentage consumed/ })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByText("Example · 5h window 42% used")).toBeInTheDocument();
   });
 
   it("shows cumulative all-time token and API-equivalent usage", () => {

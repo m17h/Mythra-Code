@@ -25,7 +25,7 @@ import type { ClaudeRuntimeStatus } from "../lib/claude";
 import type { CursorRuntimeStatus } from "../lib/cursor";
 import type { Account, SettingsSection } from "../types";
 import { useModalFocus } from "../hooks/useModalFocus";
-import { ClaudeLogo, CursorLogo, LmStudioLogo, OpenAILogo } from "./BrandLogos";
+import { ClaudeLogo, CursorLogo, LmStudioLogo, OpenAILogo, OpenRouterLogo } from "./BrandLogos";
 
 const CODEX_INSTALL_URL = "https://learn.chatgpt.com/docs/codex/cli";
 const OPENROUTER_KEYS_URL = "https://openrouter.ai/settings/keys";
@@ -107,7 +107,7 @@ function ProviderStep({ runtimeStatus, claudeStatus, cursorStatus, account, open
       </article>
 
       <article className="onboarding-provider-card openrouter">
-        <div className="onboarding-card-title"><span><Bot size={18} /></span><div><strong>OpenRouter</strong><small>One key, broad model catalog</small></div></div>
+        <div className="onboarding-card-title"><span><OpenRouterLogo size={18} /></span><div><strong>OpenRouter</strong><small>One key, broad model catalog</small></div></div>
         <ol>
           <li><b>1</b><span>Create or sign in to OpenRouter, add credits if your chosen model requires them, and create an <strong>API key</strong>.</span></li>
           <li><b>2</b><span>Paste the key in <strong>Settings → Models & accounts</strong>. It is stored in your OS credential store.</span></li>
