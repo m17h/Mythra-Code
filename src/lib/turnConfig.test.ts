@@ -25,7 +25,7 @@ describe("OpenRouter runtime isolation", () => {
     const config = threadRuntimeConfig({ ...baseRun, provider: "openrouter", model: "google/test" }, { modelContextWindow: 1_000_000 });
     expect(config).toMatchObject({
       model_context_window: 1_000_000,
-      features: { multi_agent: false, apps: false, remote_plugin: false },
+      features: { multi_agent: false, multi_agent_v2: false, apps: false, remote_plugin: false },
       apps: { _default: { enabled: false } },
     });
     expect(config).not.toHaveProperty("features.shell_tool");
@@ -35,7 +35,7 @@ describe("OpenRouter runtime isolation", () => {
     const config = threadRuntimeConfig(baseRun, { modelContextWindow: 1_000_000 });
     expect(config).not.toHaveProperty("model_context_window");
     expect(config).not.toHaveProperty("apps");
-    expect(config.features).toEqual({ multi_agent: false });
+    expect(config.features).toEqual({ multi_agent: false, multi_agent_v2: false });
   });
 
   it("applies the isolation to new OpenRouter threads", () => {
@@ -138,12 +138,12 @@ describe("cross-provider sub-agent bridge", () => {
       config: {
         developer_instructions: expect.stringContaining(OPENKIWI_DELEGATION_INSTRUCTIONS),
         mcp_servers: { openkiwi: { command: bridge.command } },
-        features: { multi_agent: false },
+        features: { multi_agent: false, multi_agent_v2: false },
       },
     });
     expect(without).toMatchObject({
       developerInstructions: BASE_INSTRUCTIONS,
-      config: { features: { multi_agent: false } },
+      config: { features: { multi_agent: false, multi_agent_v2: false } },
     });
   });
 
@@ -161,7 +161,7 @@ describe("cross-provider sub-agent bridge", () => {
       config: {
         developer_instructions: expect.stringContaining(OPENKIWI_DELEGATION_INSTRUCTIONS),
         mcp_servers: { openkiwi: { args: bridge.args } },
-        features: { multi_agent: false },
+        features: { multi_agent: false, multi_agent_v2: false },
       },
     });
     expect(params).not.toHaveProperty("modelProvider");
@@ -173,6 +173,33 @@ describe("cross-provider sub-agent bridge", () => {
     const childRun = { ...baseRun, subagentsEnabled: false, subagentMax: 1 };
     const config = threadRuntimeConfig(childRun);
     expect(config).not.toHaveProperty("mcp_servers");
-    expect(config).toMatchObject({ agents: { max_threads: 1, max_depth: 1 }, features: { multi_agent: false } });
+    expect(config).toMatchObject({ agents: { max_threads: 1, max_depth: 1 }, features: { multi_agent: false, multi_agent_v2: false } });
+  });
+
+  it("never hands the native agent runtime a parallel budget of its own", () => {
+    // `subagentMax` is the OpenKiwi bridge's budget and the bridge enforces it
+    // per spawn. Mirroring it into `agents.max_threads` gave Codex a second,
+    // independent budget stacked on top, so a root configured for two children
+    // could reach four workers.
+    for (const subagentMax of [1, 2, 3, 24]) {
+      const config = threadRuntimeConfig({ ...baseRun, subagentMax });
+      expect(config).toMatchObject({
+        agents: { max_threads: 1, max_depth: 1 },
+        features: { multi_agent: false, multi_agent_v2: false },
+      });
+    }
+  });
+
+  it("keeps both native delegation generations off on every start and resume", () => {
+    const start = threadStartParams(baseRun, "/work", { interactive: true });
+    const resume = threadResumeParams(baseRun, "thread-1", "/work", { refreshRuntimeConfig: true });
+    for (const params of [start, resume]) {
+      expect(params).toMatchObject({
+        config: {
+          agents: { max_threads: 1, max_depth: 1 },
+          features: { multi_agent: false, multi_agent_v2: false },
+        },
+      });
+    }
   });
 });

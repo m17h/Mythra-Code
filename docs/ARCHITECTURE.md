@@ -92,15 +92,16 @@ Merging is available only when both worktrees are clean and isolated work has be
 
 ## Sub-agent contract
 
-OpenKiwi starts its private App Server with multi-agent support explicitly disabled, overriding the upstream default. A new thread can opt in through its config override:
+OpenKiwi starts its private App Server with multi-agent support explicitly disabled, overriding the upstream default, and every thread keeps it that way. The OpenKiwi bridge, registered as a per-thread MCP server, is the only spawning authority:
 
-- `features.multi_agent` mirrors the visible UI toggle;
-- `agents.max_threads` is the exact concurrent child-agent limit selected by the user;
-- `agents.max_depth = 1` permits only direct children;
-- each child inherits the parent thread's sandbox and approval policy;
+- `features.multi_agent` and `features.multi_agent_v2` are pinned off on every thread, both generations of Codex's native team runtime. Provider-native spawning would bypass the user's approved destinations, the frozen concurrency budget, the durable ownership records, and the child inbox;
+- `agents.max_threads = 1` and `agents.max_depth = 1` pin the native runtime. This is **not** the user's limit: the parallel limit the user picks is the bridge's budget, enforced per spawn in `useChildAgents`, and mirroring it here would hand the native runtime a second independent budget stacked on the bridge's;
+- the parallel limit counts children only, never the root; it may be lower than the enabled destination roster but never higher, so two configured workers can never produce an unnamed third child;
+- each child inherits the parent thread's folder, sandbox, and approval policy, and receives no bridge of its own;
+- ownership records are durable and acyclic: a self, reversed, or cyclic claim is refused rather than recorded, so a root conversation can never be reclassified into the Sub-agents inbox;
 - no app-authored delegation instruction is added to the visible base or developer prompts.
 
-The webview renders collaboration tool calls and child activity as structured timeline events. The Agent Studio can read child histories and interrupt individual children; the underlying App Server remains the owner of lifecycle and concurrency enforcement.
+The webview renders collaboration tool calls and child activity as structured timeline events. The composer's Live agents panel lists every worker with its task, state, provider, model, and an action to open its own conversation. The Agent Studio can read child histories and interrupt individual children.
 
 ## Studio protocol map
 

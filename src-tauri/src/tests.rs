@@ -1179,7 +1179,7 @@ command = \"docs-server\"
 
 [agents]
 max_threads = 8
-max_depth = 1
+max_depth = 3
 
 [model_providers.openrouter]
 name = \"OpenRouter\"
@@ -1192,13 +1192,16 @@ base_url = \"https://openrouter.ai/api/v1\"
     assert!(updated.contains("project_doc_max_bytes = 0"));
     assert!(updated.contains("cli_auth_credentials_store = \"keyring\""));
     assert!(updated.contains("max_threads = 1"));
-    assert!(updated.contains("\n[features]\nmulti_agent = false"));
+    // The OpenKiwi bridge is the only spawning authority, so a drifted native
+    // depth is pulled back to one alongside the thread ceiling.
+    assert!(updated.contains("max_depth = 1"));
+    assert!(!updated.contains("max_depth = 3"));
+    assert!(updated.contains("\n[features]\nmulti_agent = false\nmulti_agent_v2 = false"));
     assert!(updated.contains("base_url = \"http://127.0.0.1:9999/secret-token\""));
     // …while user content is preserved verbatim.
     assert!(updated.contains("model_provider = \"openrouter\""));
     assert!(updated.contains("[mcp_servers.docs]"));
     assert!(updated.contains("command = \"docs-server\""));
-    assert!(updated.contains("max_depth = 1"));
     assert!(updated.contains("name = \"OpenRouter\""));
 
     // A file that already matches is left untouched.

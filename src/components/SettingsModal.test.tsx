@@ -363,7 +363,7 @@ describe("SettingsModal", () => {
     expect(onProjects).toHaveBeenCalledWith([
       expect.objectContaining({
         id: "project-1",
-        overrides: expect.objectContaining({ subagents: expect.objectContaining({ enabled: true, maxConcurrent: DEFAULT_SETTINGS.subagentMax }) }),
+        overrides: expect.objectContaining({ subagents: expect.objectContaining({ enabled: true, maxConcurrent: 1 }) }),
       }),
     ]);
   });

@@ -288,9 +288,10 @@ describe("useChildAgents", () => {
       });
       expect(applyProjectSubagentSettings).toHaveBeenCalledWith(
         "root-1",
-        // The existing four-worker crew is retained, so the project invariant
-        // repairs the requested limit instead of saving an impossible 1/4 setup.
-        expect.objectContaining({ maxConcurrent: 4 }),
+        // The roster is a menu and the limit is a budget: keeping four
+        // destinations available while allowing one at a time is a legitimate
+        // request, and the number the user approves is the number they get.
+        expect.objectContaining({ maxConcurrent: 1 }),
       );
     });
 
@@ -421,6 +422,25 @@ describe("useChildAgents", () => {
       await view.send(request({ requestId: "r1", arguments: { target: "terra", prompt: "One." } }));
       await view.send(request({ requestId: "r2", arguments: { target: "reviewer", prompt: "Two." } }));
       expect(childRun.startChildAgentTurn).toHaveBeenCalledTimes(1);
+      expect(lastResponse()?.[2]).toMatch(/configured maximum/);
+    });
+
+    it("does not let the root itself consume a slot in its own budget", async () => {
+      // A runtime that reports the root thread as one of its own agents would
+      // otherwise leave a limit of two delivering only one real child.
+      useTaskStore.getState().upsertAgent("root-1", {
+        id: "root-1",
+        prompt: "Delegated task",
+        status: "inProgress",
+      });
+      const view = await mount();
+      await view.send(request({ requestId: "r1", arguments: { target: "terra", prompt: "One." } }));
+      await view.rerender({});
+      await view.send(request({ requestId: "r2", arguments: { target: "reviewer", prompt: "Two." } }));
+      await view.rerender({});
+      await view.send(request({ requestId: "r3", arguments: { target: "grok", prompt: "Three." } }));
+
+      expect(childRun.startChildAgentTurn).toHaveBeenCalledTimes(2);
       expect(lastResponse()?.[2]).toMatch(/configured maximum/);
     });
 

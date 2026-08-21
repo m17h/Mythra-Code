@@ -13,7 +13,7 @@ import { loadStored, storeValue } from "./lib/storage";
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_PROMPT_PROFILES, DEFAULT_SETTINGS, THEMES } from "./lib/appConfig";
 import { commandSandbox, threadResumeParams, threadRuntimeConfig } from "./lib/turnConfig";
 import { threadSearchParams, threadsForWorkspace, type ThreadSearchResponse } from "./lib/threadSearch";
-import { countActiveThreadsByWorkspace, filterThreadsByKind, filterThreadsForWorkspace, forgetSidebarThread, isSubAgentThread, pruneSidebarIndex, reconcileWorkspaceThreads, rememberSidebarThread, sidebarThread, threadBelongsToWorkspace, upsertThread, type ThreadSidebarIndex } from "./lib/threadList";
+import { countActiveThreadsByWorkspace, filterThreadsByKind, filterThreadsForWorkspace, forgetSidebarThread, isSubAgentThread, pruneSidebarIndex, reconcileWorkspaceThreads, rememberSidebarThread, repairRootThreadMetadata, sidebarThread, threadBelongsToWorkspace, upsertThread, type ThreadSidebarIndex } from "./lib/threadList";
 import { timelineFromTurns } from "./lib/threadTimeline";
 import { buildTranscriptMarkdown } from "./lib/transcript";
 import { RowMenu } from "./components/RowMenu";
@@ -35,7 +35,7 @@ import { AuthRequiredModal, RuntimeSetupModal } from "./components/RuntimeModals
 import type { AgentRecord, AttachmentRecord, McpView, StudioTab } from "./components/StudioDock";
 import type { Account, Activity, AppSettings, ArchivedThread, ChatMessage, CustomAgentProfile, PendingApproval, PermissionMode, Project, ProjectAction, ProjectPromptMode, ProjectSubagentSettings, PromptProfile, Provider, ScheduledTask, ScheduleRunRecord, SettingsSection, Thread, ThreadHandoff, ThreadReasoning, ThemeName, WorkspaceMode } from "./types";
 import { PendingTurnStarts } from "./lib/pendingTurnStarts";
-import { useTaskStore, type QueuedTurn } from "./lib/taskStore";
+import { isAssistantOutputActive, useTaskStore, type QueuedTurn } from "./lib/taskStore";
 import { friendlyError } from "./lib/errors";
 import { recordError } from "./lib/errorLog";
 import {
@@ -114,7 +114,7 @@ import {
 } from "./lib/childAgents";
 import { cacheChildAgentPolicy, ensureChildAgentBridge, invalidateChildAgentLaunch, releaseChildAgentSessions } from "./lib/childAgentSessions";
 import { forgetSubagentCapabilities, planSubagentCapabilities, recordSubagentCapabilities, subagentCapabilitySignature } from "./lib/threadCapabilities";
-import { nativeAgentLinkFromThread, nativeAgentLinksAfterThreadDeletion, sanitizeNativeAgentLinks, type NativeAgentLink } from "./lib/nativeAgentLinks";
+import { canOwnThread, nativeAgentLinkFromThread, nativeAgentLinksAfterThreadDeletion, sanitizeNativeAgentLinks, type NativeAgentLink, type OwnershipLinks } from "./lib/nativeAgentLinks";
 import { collectSubAgentWorkers, isSubAgentWorkerActive, type SubAgentWorker } from "./lib/subAgentActivity";
 import { useChildAgents } from "./hooks/useChildAgents";
 import { reorderProjects, type ProjectDropPosition } from "./lib/projectOrdering";
@@ -349,10 +349,18 @@ export default function App() {
     ? pendingHandoff
     : null;
   const activeThreadId = activeThread?.id ?? null;
-  const childThreadLinks = useMemo<Record<string, unknown>>(
+  // The whole durable ownership graph, both generations. Inbox classification
+  // and the cycle guards below have to see every record: a root proved by a
+  // cross-provider link must not be reclassified by a native one, or the
+  // reverse.
+  const childThreadLinks = useMemo<OwnershipLinks>(
     () => ({ ...nativeAgentLinks, ...childAgentLinks }),
     [childAgentLinks, nativeAgentLinks],
   );
+  const childThreadLinksRef = useRef(childThreadLinks);
+  childThreadLinksRef.current = childThreadLinks;
+  const childAgentLinksRef = useRef(childAgentLinks);
+  childAgentLinksRef.current = childAgentLinks;
   const activeThreadHandoff = activeThreadId ? threadHandoffs[activeThreadId] : undefined;
   const activeThreadWorktree = activeThreadId ? threadWorktrees[activeThreadId] : undefined;
   const activeExecutionPath = activeWorkspace
@@ -510,6 +518,9 @@ export default function App() {
   const contextPercent = contextUsagePercent(tokenUsage);
   const queuedTurns = useTaskStore((state) => (activeThreadId ? (state.tasks[activeThreadId]?.queuedTurns ?? EMPTY_QUEUED_TURNS) : EMPTY_QUEUED_TURNS));
   const taskStatus = useTaskStore((state) => (activeThreadId ? (state.statuses[activeThreadId] ?? "idle") : "idle"));
+  const assistantOutputActive = useTaskStore((state) => (
+    activeThreadId ? isAssistantOutputActive(state.tasks[activeThreadId]) : false
+  ));
   const threadTaskStatuses = useTaskStore((state) => state.statuses);
   // Live crew for the composer panel: OpenKiwi-owned cross-provider children
   // merged with whatever native agents the root task reported.
@@ -520,8 +531,14 @@ export default function App() {
       statuses: threadTaskStatuses,
       agents: agentRecords,
       runStartedAt: agentRunStartedAt,
+      // A provider-native child runs inside this thread's own runtime, so the
+      // row names this thread's provider and model rather than leaving the
+      // user with a bare id and a status word.
+      nativeLinks: nativeAgentLinks,
+      nativeProvider: activeProvider,
+      nativeModel: effectiveSettings.model,
     }),
-    [activeThreadId, agentRecords, agentRunStartedAt, childAgentLinks, threadTaskStatuses],
+    [activeProvider, activeThreadId, agentRecords, agentRunStartedAt, childAgentLinks, effectiveSettings.model, nativeAgentLinks, threadTaskStatuses],
   );
   const running = activeThreadId ? taskStatus === "starting" || taskStatus === "running" : startingDraftTurn;
   // A root turn can end — normally, or by failing — while children it spawned
@@ -1021,6 +1038,34 @@ export default function App() {
     storeValue("kiwi.knownThreads", next);
   }, []);
 
+  // Repair old poisoned root records while ownership proof still exists. The
+  // corrected record is written back, so removing the root's final child later
+  // cannot reveal stale child metadata and move the main conversation again.
+  useEffect(() => {
+    const remembered = knownThreadsRef.current ?? {};
+    let rememberedChanged = false;
+    const nextRemembered: ThreadSidebarIndex = {};
+    for (const [threadId, thread] of Object.entries(remembered)) {
+      const repaired = repairRootThreadMetadata(thread, childThreadLinks);
+      nextRemembered[threadId] = repaired;
+      if (repaired !== thread) rememberedChanged = true;
+    }
+    if (rememberedChanged) {
+      knownThreadsRef.current = nextRemembered;
+      storeValue("kiwi.knownThreads", nextRemembered);
+    }
+    setThreads((current) => {
+      let listChanged = false;
+      const repaired = current.map((thread) => {
+        const next = repairRootThreadMetadata(thread, childThreadLinks);
+        if (next !== thread) listChanged = true;
+        return next;
+      });
+      return listChanged ? repaired : current;
+    });
+    setActiveThread((current) => current ? repairRootThreadMetadata(current, childThreadLinks) : current);
+  }, [childThreadLinks]);
+
   const persistClaudeThread = useCallback(
     (threadId: string) => {
       const task = useTaskStore.getState().tasks[threadId];
@@ -1177,17 +1222,37 @@ export default function App() {
         // may execute in a managed worktree while belonging to its root's
         // logical project.
         const discoveredNativeLinks: Record<string, NativeAgentLink> = {};
+        // Ownership claims are checked against the graph OpenKiwi already has,
+        // plus the ones accepted from this same page. A runtime that reports a
+        // root's own parent — or a cycle through one — must not be able to move
+        // an established root conversation into the Sub-agents inbox.
+        const ownershipGraph: OwnershipLinks = { ...childThreadLinksRef.current };
+        const listedRootIds = new Set<string>();
+        for (const thread of allThreads) {
+          if (nativeAgentLinkFromThread(thread)) continue;
+          listedRootIds.add(thread.id);
+          // thread/list is authoritative for provider-native ownership. Remove
+          // only a stale native claim; an OpenKiwi bridge link remains proof
+          // that a cross-provider child belongs in the child inbox.
+          if (!childAgentLinksRef.current[thread.id]) delete ownershipGraph[thread.id];
+        }
         for (const thread of allThreads) {
           const link = nativeAgentLinkFromThread(thread);
           if (!link) continue;
+          if (!canOwnThread(ownershipGraph, link.rootThreadId, link.childThreadId)) continue;
+          ownershipGraph[link.childThreadId] = link;
           discoveredNativeLinks[link.childThreadId] = link;
           const rootPath = threadProjectBindingsRef.current?.[link.rootThreadId]
             ?? knownThreadsRef.current?.[link.rootThreadId]?.cwd
             ?? project.path;
           bindThreadToProject(link.childThreadId, rootPath);
         }
-        if (Object.keys(discoveredNativeLinks).length) {
-          persistNativeAgentLinks((current) => ({ ...current, ...discoveredNativeLinks }));
+        if (listedRootIds.size || Object.keys(discoveredNativeLinks).length) {
+          persistNativeAgentLinks((current) => {
+            const next = { ...current };
+            for (const threadId of listedRootIds) delete next[threadId];
+            return sanitizeNativeAgentLinks({ ...next, ...discoveredNativeLinks });
+          });
         }
         const projectPath = normalizedProjectPath(project.path);
         const runtimeThreads = allThreads.filter((thread) => {
@@ -1484,7 +1549,17 @@ export default function App() {
       if (providerFromThread(thread, "openai") === "openrouter") providerRepairThreadsRef.current.add(threadId);
     },
     onNativeAgentDiscovered: (rootThreadId, childThreadId, details) => {
-      if (!childThreadId || childThreadId === rootThreadId) return;
+      // Ownership is durable and it decides which inbox a conversation lives
+      // in. A self, reversed, or cyclic claim is refused outright rather than
+      // recorded, because writing `parentThreadId` onto a root thread record
+      // would move the user's main conversation into the Sub-agents inbox and
+      // keep it there across reloads.
+      if (!canOwnThread(childThreadLinksRef.current, rootThreadId, childThreadId)) {
+        if (childThreadId && childThreadId !== rootThreadId) {
+          void auditEvent("nativeAgent.ownershipRejected", { rootThreadId, childThreadId }).catch(() => {});
+        }
+        return;
+      }
       const now = Date.now();
       const rootThread = threads.find((entry) => entry.id === rootThreadId) ?? knownThreadsRef.current?.[rootThreadId];
       const existingThread = threads.find((entry) => entry.id === childThreadId) ?? knownThreadsRef.current?.[childThreadId];
@@ -1494,6 +1569,9 @@ export default function App() {
         || existingThread?.preview
         || "Delegated task";
       persistNativeAgentLinks((current) => {
+        // Re-check against the newest persisted graph: two discoveries can be
+        // dispatched before either state update renders.
+        if (!canOwnThread({ ...current, ...childAgentLinks }, rootThreadId, childThreadId)) return current;
         const existing = current[childThreadId];
         const link: NativeAgentLink = {
           childThreadId,
@@ -2489,6 +2567,27 @@ export default function App() {
     projectSubagentSettingsForThread,
     applyProjectSubagentSettings: applyProposedProjectSubagents,
   });
+
+  /**
+   * Open one worker's own conversation.
+   *
+   * Every sub-agent — cross-provider or provider-native — is a real thread, so
+   * the row's Open action is the same thread selection the sidebar performs.
+   * The thread record may not have reached the sidebar list yet for a child
+   * that has only just been discovered, so the remembered index is consulted
+   * too, and a genuinely unresolvable id reports why instead of doing nothing.
+   */
+  const openSubAgentWorker = useCallback(async (worker: SubAgentWorker) => {
+    const thread = threads.find((entry) => entry.id === worker.id)
+      ?? knownThreadsRef.current?.[worker.id];
+    if (!thread) {
+      throw new Error("OpenKiwi does not have this sub-agent's conversation yet. It appears in the Sub-agents inbox once its provider reports the thread.");
+    }
+    await selectThread(thread);
+  // selectThread is redeclared every render and is not a dependency-stable
+  // callback; the thread list is what this actually reads.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [threads]);
 
   const stopSubAgentWorker = useCallback(async (worker: SubAgentWorker) => {
     if (!activeThreadId) throw new Error("Open the thread that owns this sub-agent before stopping it.");
@@ -4239,6 +4338,7 @@ export default function App() {
                 running={running}
                 childrenRunning={childrenRunning}
                 queueing={Boolean(running && activeThread)}
+                canSteer={Boolean(activeThread && taskStatus === "running" && !assistantOutputActive)}
                 dropActive={dropActive}
                 placeholder={running && activeThread ? "Queue a follow-up for after this run…" : activeWorkspace.isChat ? "Ask anything — no project folder attached…" : `Ask OpenKiwi to work in ${activeProject?.name ?? "this project"}…`}
                 attachments={attachments}
@@ -4329,6 +4429,7 @@ export default function App() {
                       modelCatalogs={subAgentModelCatalogs}
                       onChange={persistComposerSubagentPolicy}
                       onOpenSettings={() => openSettings("agents")}
+                      onOpenWorker={openSubAgentWorker}
                       onStopWorker={stopSubAgentWorker}
                       onReplaceWorker={replaceSubAgentWorker}
                     />

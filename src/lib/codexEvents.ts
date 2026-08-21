@@ -161,6 +161,10 @@ export function handleThreadItem(threadId: string, item: ThreadItem, ctx: CodexE
     });
     if (item.receiverThreadIds?.length) {
       for (const childThreadId of item.receiverThreadIds) {
+        // A runtime that names the thread itself as its own receiver would
+        // otherwise add the root to its own worker list, where it holds a
+        // concurrency slot and shows up in Live agents as a third agent.
+        if (!childThreadId || childThreadId === threadId) continue;
         taskStore.upsertAgent(threadId, { id: childThreadId, prompt: item.prompt ?? "Delegated task", status: item.status ?? "inProgress" });
         ctx.onNativeAgentDiscovered(threadId, childThreadId, { prompt: item.prompt ?? undefined });
         taskStore.ensureTask(childThreadId, ctx.bindingFor(threadId));
@@ -177,7 +181,7 @@ export function handleThreadItem(threadId: string, item: ThreadItem, ctx: CodexE
       detail: item.agentPath || item.agentThreadId,
       status: item.kind,
     });
-    if (item.agentThreadId) {
+    if (item.agentThreadId && item.agentThreadId !== threadId) {
       taskStore.upsertAgent(threadId, { id: item.agentThreadId, prompt: "Delegated task", status: item.kind ?? "working", path: item.agentPath });
       ctx.onNativeAgentDiscovered(threadId, item.agentThreadId, { path: item.agentPath });
       taskStore.ensureTask(item.agentThreadId, ctx.bindingFor(threadId));

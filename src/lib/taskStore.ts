@@ -88,6 +88,13 @@ function persistQueuedTurns(threadId: string, entries: QueuedTurn[]): void {
 export interface ThreadTaskState {
   threadId: string;
   activeTurnId?: string;
+  /**
+   * The active turn has entered user-facing assistant output. This stays
+   * latched after the last text delta so the item-completed/turn-completed
+   * gap cannot briefly make steering available again. A genuinely new tool
+   * or reasoning item clears it because the turn has returned to active work.
+   */
+  assistantOutputTurnId?: string;
   /** First optimistic entry waiting for the runtime to return its turn id. */
   pendingTurnStartOrder?: number;
   /** Wall-clock anchor for the sidebar's live "Working" duration. */
@@ -111,6 +118,15 @@ export interface ThreadTaskState {
   unread: boolean;
   error?: string;
   updatedAt: number;
+}
+
+/** Steering is unsafe while the active turn is presenting its response. */
+export function isAssistantOutputActive(task: ThreadTaskState | undefined): boolean {
+  return Boolean(
+    task?.status === "running"
+    && task.activeTurnId
+    && task.assistantOutputTurnId === task.activeTurnId,
+  );
 }
 
 interface TaskStoreState {
@@ -273,6 +289,24 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     };
   }),
   queueAssistantDelta: (threadId, itemId, delta) => {
+    // Delta text is frame-batched below, but the steering lock must become
+    // authoritative synchronously. Otherwise a click in that frame can still
+    // reach turn/steer even though final output has already started arriving.
+    if (delta) {
+      const task = get().tasks[threadId];
+      if (task?.activeTurnId && task.assistantOutputTurnId !== task.activeTurnId) {
+        set((state) => {
+          const current = state.tasks[threadId];
+          if (!current?.activeTurnId || current.assistantOutputTurnId === current.activeTurnId) return state;
+          return {
+            tasks: {
+              ...state.tasks,
+              [threadId]: { ...current, assistantOutputTurnId: current.activeTurnId, updatedAt: Date.now() },
+            },
+          };
+        });
+      }
+    }
     const byItem = pendingDeltas.get(threadId) ?? new Map<string, string>();
     byItem.set(itemId, `${byItem.get(itemId) ?? ""}${delta}`);
     pendingDeltas.set(threadId, byItem);
@@ -280,6 +314,24 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
   },
   queueReasoningDelta: (threadId, itemId, delta, source) => {
     const key = `${threadId}\0${itemId}`;
+    const current = get().tasks[threadId];
+    const reasoningAlreadyKnown = reasoningStreams.has(key)
+      || Boolean(current?.activities.some((activity) => (
+        activity.id === itemId
+        && (!current.activeTurnId || !activity.turnId || activity.turnId === current.activeTurnId)
+      )));
+    if (delta && !reasoningAlreadyKnown && current?.activeTurnId && current.assistantOutputTurnId === current.activeTurnId) {
+      set((state) => {
+        const task = state.tasks[threadId];
+        if (!task || task.assistantOutputTurnId !== task.activeTurnId) return state;
+        return {
+          tasks: {
+            ...state.tasks,
+            [threadId]: { ...task, assistantOutputTurnId: undefined, updatedAt: Date.now() },
+          },
+        };
+      });
+    }
     const stream = reasoningStreams.get(key) ?? { summary: "", content: "" };
     stream[source] = `${stream[source]}${delta}`;
     reasoningStreams.set(key, stream);
@@ -349,7 +401,14 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     const messages = exists
       ? task.messages.map((entry) => entry.id === message.id ? { ...message, streaming: false, turnId: message.turnId ?? entry.turnId ?? task.activeTurnId, turnStatus: message.turnStatus ?? entry.turnStatus, timelineOrder: entry.timelineOrder } : entry)
       : [...task.messages, withTimelineOrder({ ...message, streaming: false, turnId: message.turnId ?? task.activeTurnId })];
-    return { tasks: { ...state.tasks, [threadId]: { ...task, messages, unread: state.activeThreadId !== threadId, updatedAt: Date.now() } } };
+    const messageTurnId = message.turnId ?? task.activeTurnId;
+    const assistantOutputTurnId = task.status === "running"
+      && message.role === "assistant"
+      && Boolean(message.text)
+      && messageTurnId === task.activeTurnId
+      ? task.activeTurnId
+      : task.assistantOutputTurnId;
+    return { tasks: { ...state.tasks, [threadId]: { ...task, messages, assistantOutputTurnId, unread: state.activeThreadId !== threadId, updatedAt: Date.now() } } };
     });
   },
   upsertActivity: (threadId, activity) => {
@@ -357,10 +416,18 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     set((state) => {
       const task = state.tasks[threadId] ?? emptyTask(threadId);
       const exists = task.activities.some((entry) => entry.id === activity.id);
+      const activityTurnId = activity.turnId ?? task.activeTurnId;
       const activities = exists
         ? task.activities.map((entry) => entry.id === activity.id ? { ...activity, turnId: activity.turnId ?? entry.turnId ?? task.activeTurnId, turnStatus: activity.turnStatus ?? entry.turnStatus, timelineOrder: entry.timelineOrder } : entry)
         : [...task.activities, withTimelineOrder({ ...activity, turnId: activity.turnId ?? task.activeTurnId })];
-      return { tasks: { ...state.tasks, [threadId]: { ...task, activities, unread: state.activeThreadId !== threadId, updatedAt: Date.now() } } };
+      const beginsNewWork = !exists
+        && activity.kind !== "warning"
+        && activity.status !== "completed"
+        && activity.status !== "failed";
+      const assistantOutputTurnId = beginsNewWork && activityTurnId === task.assistantOutputTurnId
+        ? undefined
+        : task.assistantOutputTurnId;
+      return { tasks: { ...state.tasks, [threadId]: { ...task, activities, assistantOutputTurnId, unread: state.activeThreadId !== threadId, updatedAt: Date.now() } } };
     });
   },
   setActiveTurn: (threadId, turnId) => set((state) => {
@@ -372,7 +439,10 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     const activities = threshold === undefined
       ? task.activities
       : task.activities.map((activity) => !activity.turnId && (activity.timelineOrder ?? -1) >= threshold ? { ...activity, turnId } : activity);
-    return { tasks: { ...state.tasks, [threadId]: { ...task, activeTurnId: turnId, pendingTurnStartOrder: turnId ? undefined : task.pendingTurnStartOrder, messages, activities, updatedAt: Date.now() } } };
+    const assistantOutputTurnId = turnId && task.assistantOutputTurnId === turnId
+      ? task.assistantOutputTurnId
+      : undefined;
+    return { tasks: { ...state.tasks, [threadId]: { ...task, activeTurnId: turnId, assistantOutputTurnId, pendingTurnStartOrder: turnId ? undefined : task.pendingTurnStartOrder, messages, activities, updatedAt: Date.now() } } };
   }),
   completeTurn: (threadId, turnId, status) => set((state) => {
     const task = state.tasks[threadId] ?? emptyTask(threadId);
@@ -417,6 +487,9 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
           messages,
           activities,
           activeTurnId: task.activeTurnId === turnId || !turnId ? undefined : task.activeTurnId,
+          assistantOutputTurnId: completedTurnId === task.assistantOutputTurnId
+            ? undefined
+            : task.assistantOutputTurnId,
           pendingTurnStartOrder: newerTurnActive ? task.pendingTurnStartOrder : undefined,
           workingStartedAt: newerTurnActive ? task.workingStartedAt : undefined,
           pendingTurnDurationMs: newerTurnActive ? task.pendingTurnDurationMs : undefined,
@@ -459,6 +532,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
           ...task,
           status,
           error,
+          assistantOutputTurnId: isWorking ? task.assistantOutputTurnId : undefined,
           pendingTurnStartOrder: task.pendingTurnStartOrder ?? latestPendingUser,
           workingStartedAt: isWorking ? (wasWorking ? task.workingStartedAt ?? Date.now() : Date.now()) : undefined,
           pendingTurnDurationMs,

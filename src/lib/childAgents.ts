@@ -1,4 +1,5 @@
 import { DEFAULT_CHILD_AGENT_SETTINGS, DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_OPENAI_MODEL } from "./appConfig";
+import { canOwnThread } from "./nativeAgentLinks";
 import type { TaskStatus } from "./taskStore";
 import type { AppSettings, ChildAgentSettings, ChildAgentTarget, PermissionMode, Project, ProjectSubagentSettings, Provider } from "../types";
 import type { ReasoningEffort } from "../components/ModelPowerControl";
@@ -293,11 +294,34 @@ export function childAgentCrewSize(childAgents: ChildAgentSettings): number {
   return childAgents.targets.length;
 }
 
-/** A configured crew can never be larger than the number of children allowed. */
+/**
+ * The live budget: how many children may run at once, never counting the root.
+ *
+ * Deliberately independent of how many destinations are configured. A roster is
+ * a menu the model chooses from; the budget is what it may hold open at once,
+ * and the two are different rules. Flooring the budget at the roster size made
+ * a limit of 2 impossible to express for anyone with three destinations
+ * available — the stepper refused to go below 3 and the frozen policy really
+ * did allow a third child.
+ *
+ * An unreadable value fails closed at 1 rather than inheriting a crew size.
+ */
+export function safeSubagentConcurrency(requested: unknown): number {
+  const asked = Math.floor(Number(requested));
+  if (!Number.isFinite(asked) || asked < 1) return 1;
+  return Math.min(MAX_SUBAGENT_CONCURRENCY, asked);
+}
+
+/**
+ * Clamp the live budget to the enabled crew the user can actually see.
+ *
+ * The user may keep more destinations available than they run concurrently,
+ * but two configured workers must never retain a stale/default budget of three
+ * and allow an unnamed extra child to appear.
+ */
 export function crewSafeConcurrency(requested: unknown, childAgents: ChildAgentSettings): number {
-  const floor = Math.max(1, childAgentCrewSize(childAgents));
-  const asked = Math.floor(Number(requested)) || floor;
-  return Math.min(MAX_SUBAGENT_CONCURRENCY, Math.max(floor, asked));
+  const enabledCrew = childAgents.targets.filter((target) => target.enabled).length;
+  return Math.min(safeSubagentConcurrency(requested), Math.max(1, enabledCrew));
 }
 
 /** Sanitize an optional project-local policy; null means inherit global. */
@@ -401,7 +425,7 @@ export function childAgentPolicyFor(input: ChildAgentPolicyInput): ChildAgentPol
   return {
     sessionId: input.sessionId,
     rootThreadId: input.rootThreadId ?? "",
-    maxConcurrent: Math.min(MAX_SUBAGENT_CONCURRENCY, Math.max(1, Math.floor(input.subagentMax) || 1)),
+    maxConcurrent: crewSafeConcurrency(input.subagentMax, { enabled: true, targets }),
     permission: input.permission,
     systemPrompt: input.systemPrompt,
     ...(input.providerSystemPrompts ? { providerSystemPrompts: { ...input.providerSystemPrompts } } : {}),
@@ -465,7 +489,7 @@ export function sanitizeChildAgentPolicies(stored: unknown): Record<string, Chil
     result[sessionId] = {
       sessionId,
       rootThreadId: typeof entry.rootThreadId === "string" ? entry.rootThreadId : "",
-      maxConcurrent: Math.min(MAX_SUBAGENT_CONCURRENCY, Math.max(1, Math.floor(Number(entry.maxConcurrent)) || 1)),
+      maxConcurrent: crewSafeConcurrency(entry.maxConcurrent, { enabled: true, targets }),
       permission: permission === "read-only" || permission === "full" ? permission : "ask",
       systemPrompt: typeof entry.systemPrompt === "string" ? entry.systemPrompt : "",
       ...(entry.providerSystemPrompts && typeof entry.providerSystemPrompts === "object" ? {
@@ -484,7 +508,7 @@ export function sanitizeChildAgentPolicies(stored: unknown): Record<string, Chil
       capturedAt: Number(entry.capturedAt) || 0,
       ...(pendingCandidate && pendingTargets.length ? {
         pendingRecapture: {
-          maxConcurrent: Math.min(MAX_SUBAGENT_CONCURRENCY, Math.max(1, Math.floor(Number(pendingCandidate.maxConcurrent)) || 1)),
+          maxConcurrent: crewSafeConcurrency(pendingCandidate.maxConcurrent, { enabled: true, targets: pendingTargets }),
           targets: pendingTargets,
           approvedAt: Number(pendingCandidate.approvedAt) || 0,
         },
@@ -515,6 +539,10 @@ export function sanitizeChildAgentLinks(stored: unknown): Record<string, ChildAg
     const sessionId = sanitizeText(entry.sessionId, 64);
     const targetId = sanitizeText(entry.targetId, 40);
     if (!sessionId || !isValidChildAgentId(targetId)) continue;
+    // Ownership must stay acyclic here too: this map is half of the graph that
+    // decides which conversations are roots, so a self or reversed record would
+    // let a true root be reclassified into the Sub-agents inbox.
+    if (!canOwnThread(result, entry.rootThreadId, childThreadId)) continue;
     result[childThreadId] = {
       childThreadId,
       rootThreadId: entry.rootThreadId,

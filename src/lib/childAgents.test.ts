@@ -9,6 +9,7 @@ import {
   childAgentPolicyFor,
   childAgentPolicyForThread,
   childAgentReasoningEffort,
+  crewSafeConcurrency,
   childAgentSessionOptions,
   childAgentTargetIssue,
   describeChildAgentRoster,
@@ -16,6 +17,7 @@ import {
   normalizeChildAgentId,
   projectSubagentSettingsFromApp,
   readyChildAgentTargets,
+  safeSubagentConcurrency,
   sanitizeChildAgentIdInput,
   sanitizeChildAgentLinks,
   sanitizeChildAgentPolicies,
@@ -174,7 +176,7 @@ describe("policy capture", () => {
     })).toBeNull();
   });
 
-  it("freezes the destinations, the budget, and the inherited permission mode", () => {
+  it("freezes destinations, caps the budget to the visible crew, and inherits permission", () => {
     const policy = childAgentPolicyFor({
       sessionId: "s1", rootThreadId: "thread-1", childAgents: settings, subagentsEnabled: true,
       subagentMax: 2, permission: "read-only", readiness: EVERYTHING_READY, now: 1234, ...runtime,
@@ -182,7 +184,7 @@ describe("policy capture", () => {
     expect(policy).toEqual({
       sessionId: "s1",
       rootThreadId: "thread-1",
-      maxConcurrent: 2,
+      maxConcurrent: 1,
       permission: "read-only",
       ...runtime,
       targets: [target()],
@@ -194,13 +196,13 @@ describe("policy capture", () => {
     settings.targets[0].model = "gpt-5.6-terra";
   });
 
-  it("clamps the concurrency budget to the supported range", () => {
+  it("clamps the concurrency budget to the supported range and visible crew", () => {
     const build = (subagentMax: number) => childAgentPolicyFor({
       sessionId: "s1", childAgents: settings, subagentsEnabled: true, subagentMax,
       permission: "ask", readiness: EVERYTHING_READY, ...runtime,
     })?.maxConcurrent;
     expect(build(0)).toBe(1);
-    expect(build(99)).toBe(24);
+    expect(build(99)).toBe(1);
   });
 
   it("finds the policy a thread already owns and ignores unattached sessions", () => {
@@ -221,7 +223,7 @@ describe("policy capture", () => {
     })!;
     expect(childAgentSessionOptions(policy, ["child-1"])).toEqual({
       sessionId: "s1",
-      maxConcurrent: 3,
+      maxConcurrent: 1,
       knownChildren: ["child-1"],
       targets: [{ id: "sonnet", provider: "claude", model: "claude-fable-5", label: "Terra", description: "", reasoningMode: "inherit", reasoningEffort: "medium", reasoningMaxEffort: "high" }],
     });
@@ -272,11 +274,11 @@ describe("persistence and migration", () => {
     });
     expect(Object.keys(restored)).toEqual(["session-1", "session-2"]);
     expect(restored["session-1"]).toMatchObject({
-      sessionId: "session-1", rootThreadId: "thread-1", maxConcurrent: 2, permission: "ask",
+      sessionId: "session-1", rootThreadId: "thread-1", maxConcurrent: 1, permission: "ask",
       systemPrompt: "", projectInstructionsEnabled: false, reasoningEffort: "medium", serviceTier: null, capturedAt: 0,
     });
     expect(restored["session-2"]).toMatchObject({
-      sessionId: "session-2", rootThreadId: "thread-2", maxConcurrent: MAX_SUBAGENT_CONCURRENCY,
+      sessionId: "session-2", rootThreadId: "thread-2", maxConcurrent: 1,
       permission: "full", targets: [],
     });
   });
@@ -330,41 +332,83 @@ describe("child reasoning policy", () => {
   });
 });
 
+describe("cross-provider ownership records", () => {
+  const record = (childThreadId: string, rootThreadId: string) => ({
+    childThreadId,
+    rootThreadId,
+    sessionId: "session-1",
+    targetId: "terra",
+    provider: "openai",
+    model: "gpt-5.6-terra",
+    title: "Work",
+    createdAt: 1,
+  });
+
+  it("drops self and reversed records so a root can never be reclassified", () => {
+    expect(sanitizeChildAgentLinks({ a: record("a", "a") })).toEqual({});
+    const restored = sanitizeChildAgentLinks({
+      child: record("child", "root"),
+      root: record("root", "child"),
+    });
+    expect(Object.keys(restored)).toEqual(["child"]);
+  });
+});
+
 describe("project sub-agent policies", () => {
   it("sanitizes a complete project policy", () => {
     expect(sanitizeProjectSubagentSettings({ enabled: true, maxConcurrent: 100, childAgents: { enabled: true, targets: [target()] } })).toMatchObject({
       enabled: true,
-      maxConcurrent: 24,
+      maxConcurrent: 1,
       childAgents: { enabled: true, targets: [expect.objectContaining({ id: "terra" })] },
     });
   });
 
-  it("repairs a saved project whose crew is larger than its parallel limit", () => {
+  it("keeps the parallel limit the user chose, however many destinations exist", () => {
+    // The roster is a menu; the limit is a budget. A crew of three with a
+    // limit of two means the model picks two of the three to run at a time.
     const restored = sanitizeProjectSubagentSettings({
+      enabled: true,
+      maxConcurrent: 2,
+      childAgents: { enabled: true, targets: [target({ id: "one" }), target({ id: "two" }), target({ id: "three" })] },
+    });
+    expect(restored?.maxConcurrent).toBe(2);
+
+    const single = sanitizeProjectSubagentSettings({
       enabled: true,
       maxConcurrent: 1,
       childAgents: { enabled: true, targets: [target({ id: "one" }), target({ id: "two" }), target({ id: "three" })] },
     });
-    expect(restored?.maxConcurrent).toBe(3);
+    expect(single?.maxConcurrent).toBe(1);
   });
 
-  it("counts every worker shown in the crew, including parked destinations", () => {
-    const parked = sanitizeProjectSubagentSettings({
-      enabled: true,
-      maxConcurrent: 1,
+  it("carries a chosen limit of two through the app-settings projection", () => {
+    expect(projectSubagentSettingsFromApp({
+      subagentsEnabled: true,
+      subagentMax: 2,
       childAgents: {
         enabled: true,
-        targets: [target({ id: "one" }), target({ id: "two", enabled: false }), target({ id: "three", enabled: false })],
+        targets: [target({ id: "one" }), target({ id: "two" }), target({ id: "three" })],
       },
-    });
-    expect(parked?.maxConcurrent).toBe(3);
+    }).maxConcurrent).toBe(2);
+  });
 
-    const crossProviderOff = sanitizeProjectSubagentSettings({
-      enabled: true,
-      maxConcurrent: 2,
-      childAgents: { enabled: false, targets: [target({ id: "one" }), target({ id: "two" }), target({ id: "three" })] },
-    });
-    expect(crossProviderOff?.maxConcurrent).toBe(3);
+  it("clamps the parallel limit to 1–24 and fails closed on nonsense", () => {
+    expect(safeSubagentConcurrency(2)).toBe(2);
+    expect(safeSubagentConcurrency(2.9)).toBe(2);
+    expect(safeSubagentConcurrency(0)).toBe(1);
+    expect(safeSubagentConcurrency(-4)).toBe(1);
+    expect(safeSubagentConcurrency(100)).toBe(MAX_SUBAGENT_CONCURRENCY);
+    expect(safeSubagentConcurrency(Number.NaN)).toBe(1);
+    expect(safeSubagentConcurrency("lots")).toBe(1);
+    expect(safeSubagentConcurrency(undefined)).toBe(1);
+  });
+
+  it("never lets the live budget exceed the enabled crew", () => {
+    const crew = { enabled: true, targets: [target({ id: "one" }), target({ id: "two" })] };
+    expect(crewSafeConcurrency(3, crew)).toBe(2);
+    expect(crewSafeConcurrency(1, crew)).toBe(1);
+    expect(crewSafeConcurrency(3, { ...crew, targets: [crew.targets[0], { ...crew.targets[1], enabled: false }] })).toBe(1);
+    expect(crewSafeConcurrency(3, { enabled: true, targets: [] })).toBe(1);
   });
 
   it("never lets an unreadable parallel limit escape as NaN", () => {
@@ -372,8 +416,25 @@ describe("project sub-agent policies", () => {
       subagentsEnabled: true,
       subagentMax: Number.NaN,
       childAgents: { enabled: true, targets: [target({ id: "one" }), target({ id: "two" })] },
-    }).maxConcurrent).toBe(2);
+    }).maxConcurrent).toBe(1);
     expect(sanitizeProjectSubagentSettings({ enabled: true, maxConcurrent: "lots", childAgents: DEFAULT_CHILD_AGENT_SETTINGS })?.maxConcurrent).toBe(1);
+  });
+
+  it("freezes the exact limit the user chose into a thread policy", () => {
+    const policy = childAgentPolicyFor({
+      sessionId: "s1",
+      childAgents: { enabled: true, targets: [target({ id: "one" }), target({ id: "two" }), target({ id: "three" })] },
+      subagentsEnabled: true,
+      subagentMax: 2,
+      permission: "ask",
+      systemPrompt: "",
+      projectInstructionsEnabled: false,
+      reasoningEffort: "medium",
+      serviceTier: null,
+      readiness: EVERYTHING_READY,
+    });
+    expect(policy?.maxConcurrent).toBe(2);
+    expect(policy?.targets).toHaveLength(3);
   });
 
   it("overrides only sub-agent fields and otherwise inherits app settings", () => {
@@ -382,7 +443,7 @@ describe("project sub-agent policies", () => {
       maxConcurrent: 7,
       childAgents: { enabled: true, targets: [target({ id: "reviewer" })] },
     });
-    expect(next).toMatchObject({ subagentsEnabled: true, subagentMax: 7 });
+    expect(next).toMatchObject({ subagentsEnabled: true, subagentMax: 1 });
     expect(next.childAgents.targets[0].id).toBe("reviewer");
     expect(next.provider).toBe(DEFAULT_SETTINGS.provider);
   });

@@ -756,8 +756,14 @@ fn managed_runtime_config(openrouter_base_url: &str) -> Vec<(&'static str, &'sta
     vec![
         ("", "cli_auth_credentials_store", "\"keyring\"".into()),
         ("", "project_doc_max_bytes", "0".into()),
+        // The OpenKiwi bridge is the only spawning authority, so the native
+        // agent runtime is pinned to a single non-nesting thread. Depth is
+        // re-asserted alongside the thread ceiling: a stale or hand-edited
+        // `max_depth` would otherwise let native delegation nest below a child.
         ("agents", "max_threads", "1".into()),
+        ("agents", "max_depth", "1".into()),
         ("features", "multi_agent", "false".into()),
+        ("features", "multi_agent_v2", "false".into()),
         ("model_providers.openrouter", "base_url", base_url),
     ]
 }
@@ -811,7 +817,18 @@ fn reconcile_config_toml(existing: &str, managed: &[(&str, &str, String)]) -> Op
                         }
                     }
                     None => {
-                        lines.insert(start, desired);
+                        // Append at the end of the section rather than the
+                        // top, so several managed keys in one section keep the
+                        // order they are declared in above. Inserting at the
+                        // top reversed them, which is how `multi_agent_v2`
+                        // landed before `multi_agent` in a freshly written
+                        // `[features]`. Trailing blank separator lines are
+                        // stepped over so the key stays inside its section.
+                        let mut insert_at = section_end.min(lines.len());
+                        while insert_at > start && lines[insert_at - 1].trim().is_empty() {
+                            insert_at -= 1;
+                        }
+                        lines.insert(insert_at, desired);
                         changed = true;
                     }
                 }
@@ -874,6 +891,7 @@ max_depth = 1
 
 [features]
 multi_agent = false
+multi_agent_v2 = false
 
 [model_providers.openrouter]
 name = "OpenRouter"

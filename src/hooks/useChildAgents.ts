@@ -89,7 +89,9 @@ export { childLifecycle, childLifecycleForLink, isChildActive };
 /** Children of one bridge session that still hold a concurrency slot. */
 export function activeChildThreadIds(sessionId: string, links: Record<string, ChildAgentLink>): string[] {
   return Object.values(links)
-    .filter((link) => link.sessionId === sessionId && isChildActive(taskStatusOf(link.childThreadId)))
+    .filter((link) => link.sessionId === sessionId
+      && link.childThreadId !== link.rootThreadId
+      && isChildActive(taskStatusOf(link.childThreadId)))
     .map((link) => link.childThreadId);
 }
 
@@ -225,8 +227,11 @@ export function useChildAgents(context: ChildAgentContext): {
       ...Object.values(links).filter((link) => link.sessionId === sessionId).map((link) => link.childThreadId),
       ...(pending ?? []),
     ]);
+    // The budget counts children, never the root. A runtime that reported the
+    // root as one of its own agents would otherwise burn a slot the user's
+    // limit was meant to give to real delegated work.
     const nativeActive = (useTaskStore.getState().tasks[rootThreadId]?.agents ?? []).filter((agent) => (
-      !crossProviderIds.has(agent.id) && isActiveAgentRecord(agent.status)
+      agent.id !== rootThreadId && !crossProviderIds.has(agent.id) && isActiveAgentRecord(agent.status)
     )).length;
     return activeChildThreadIds(sessionId, links).length + (pending?.size ?? 0) + nativeActive;
   }, []);

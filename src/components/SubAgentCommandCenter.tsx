@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { AlertTriangle, ArrowRightLeft, LoaderCircle, Lock, Minus, Plus, Settings2, Square, Trash2, UsersRound, X } from "lucide-react";
+import { AlertTriangle, ArrowRightLeft, LoaderCircle, Lock, Minus, Plus, Settings2, Square, SquareArrowOutUpRight, Trash2, UsersRound, X } from "lucide-react";
 import { ProviderLogo } from "./BrandLogos";
 import { AppSelectMenu, type AppSelectOption } from "./AppSelectMenu";
 import {
@@ -81,6 +81,8 @@ export interface SubAgentCommandCenterProps {
   onOpenSettings: () => void;
   /** Live provider catalogs used by the app's own model pickers. */
   modelCatalogs?: Partial<Record<Provider, SubAgentModelOption[]>>;
+  /** Open a child's own conversation, live or finished, in the main view. */
+  onOpenWorker?: (worker: SubAgentWorker) => Promise<void>;
   /** Stop one live child without stopping its root conversation. */
   onStopWorker?: (worker: SubAgentWorker) => Promise<void>;
   /** Stop one live child and ask the root to restart its task on a frozen destination. */
@@ -185,7 +187,7 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
   const [panelPresent, setPanelPresent] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [replaceWorkerId, setReplaceWorkerId] = useState<string | null>(null);
-  const [workerAction, setWorkerAction] = useState<{ workerId: string; kind: "stop" | "replace" } | null>(null);
+  const [workerAction, setWorkerAction] = useState<{ workerId: string; kind: "stop" | "replace" | "open" } | null>(null);
   const [workerActionError, setWorkerActionError] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -219,10 +221,11 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
     [readiness, targets],
   );
   const enabledCount = targets.filter((target) => target.enabled).length;
-  // Every worker shown in the crew counts. This keeps the configuration honest:
-  // a limit of three can never coexist with four destination cards.
-  const crewFloor = Math.max(1, childAgentCrewSize({ enabled: crossProviderOn, targets }));
-  const atCrewFloor = policy.maxConcurrent <= crewFloor;
+  // The roster is a menu and the limit is a budget. A crew of five destinations
+  // with a limit of two is a legitimate configuration: the model picks two of
+  // the five to run at a time.
+  const crewSize = childAgentCrewSize({ enabled: crossProviderOn, targets });
+  const crewCeiling = Math.max(1, enabledCount);
   const dimmed = !delegationOn;
   const crossProviderReady = delegationOn && crossProviderOn && readyCount > 0;
 
@@ -255,6 +258,22 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
   }, [clearCloseTimer, finishClose]);
 
   useEffect(() => () => clearCloseTimer(), [clearCloseTimer]);
+
+  const openWorker = useCallback(async (worker: SubAgentWorker) => {
+    if (!props.onOpenWorker || workerAction) return;
+    setWorkerActionError(null);
+    setWorkerAction({ workerId: worker.id, kind: "open" });
+    try {
+      await props.onOpenWorker(worker);
+      // The child's conversation is now in front of the user; leaving the
+      // command center open over it would cover what they asked to see.
+      close();
+    } catch (reason) {
+      setWorkerActionError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setWorkerAction(null);
+    }
+  }, [close, props, workerAction]);
 
   const stopWorker = useCallback(async (worker: SubAgentWorker) => {
     if (!props.onStopWorker || workerAction) return;
@@ -336,7 +355,12 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
   }, [open]);
 
   const setTargets = useCallback((next: ChildAgentTarget[]) => {
-    onChange({ ...policy, childAgents: { ...policy.childAgents, targets: next } });
+    const childAgents = { ...policy.childAgents, targets: next };
+    onChange({
+      ...policy,
+      maxConcurrent: crewSafeConcurrency(policy.maxConcurrent, childAgents),
+      childAgents,
+    });
   }, [onChange, policy]);
 
   const updateTarget = useCallback((id: string, patch: Partial<ChildAgentTarget>) => {
@@ -348,14 +372,23 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
     if (existing.length >= MAX_CHILD_AGENT_TARGETS) return;
     const target = newTargetFor(provider, existing);
     const nextTargets = [...existing, target];
+    const currentEnabledCrew = Math.max(1, existing.filter((entry) => entry.enabled).length);
+    const nextChildAgents = { enabled: true, targets: nextTargets };
+    // Grow only when the limit was following the crew size. If the user had
+    // deliberately chosen a smaller budget, adding another available
+    // destination must preserve that choice.
+    const requestedMax = policy.maxConcurrent === currentEnabledCrew
+      ? currentEnabledCrew + 1
+      : policy.maxConcurrent;
     onChange({
       ...policy,
       // Adding a worker is a clear statement of intent; turning the switches on
-      // for the user avoids a destination that silently does nothing. A crew
-      // can never be larger than its parallel limit, so grow the limit with it.
+      // for the user avoids a destination that silently does nothing. The
+      // parallel limit is left alone: adding a destination widens the menu, and
+      // only a limit already tracking crew size grows with it.
       enabled: true,
-      maxConcurrent: crewSafeConcurrency(policy.maxConcurrent, { enabled: true, targets: nextTargets }),
-      childAgents: { enabled: true, targets: nextTargets },
+      maxConcurrent: crewSafeConcurrency(requestedMax, nextChildAgents),
+      childAgents: nextChildAgents,
     });
     setExpandedId(target.id);
   }, [onChange, policy]);
@@ -481,7 +514,9 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
                 <strong>Parallel limit</strong>
                 <small>
                   {editable
-                    ? `How many children may run at once (1–${MAX_SUBAGENT_CONCURRENCY}).`
+                    ? crewSize > 0
+                      ? `How many children may run at once (1–${MAX_SUBAGENT_CONCURRENCY}), chosen from ${crewSize} destination${crewSize === 1 ? "" : "s"}.`
+                      : `How many children may run at once (1–${MAX_SUBAGENT_CONCURRENCY}).`
                     : frozen
                       ? "Captured on the first run with cross-provider sub-agents."
                       : "A sub-agent works alone."}
@@ -494,18 +529,16 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
                   <button
                     type="button"
                     aria-label="Fewer concurrent sub-agents"
-                    title={atCrewFloor
-                      ? `The limit cannot drop below the ${crewFloor} configured worker${crewFloor === 1 ? "" : "s"} in this crew.`
-                      : "Fewer concurrent sub-agents"}
-                    disabled={!policy.enabled || atCrewFloor}
-                    onClick={() => onChange({ ...policy, maxConcurrent: Math.max(crewFloor, policy.maxConcurrent - 1) })}
+                    title="Fewer concurrent sub-agents"
+                    disabled={!policy.enabled || policy.maxConcurrent <= 1}
+                    onClick={() => onChange({ ...policy, maxConcurrent: Math.max(1, policy.maxConcurrent - 1) })}
                   ><Minus size={12} /></button>
                   <strong key={policy.maxConcurrent} className="sa-flash">{policy.maxConcurrent}</strong>
                   <button
                     type="button"
                     aria-label="More concurrent sub-agents"
-                    disabled={!policy.enabled || policy.maxConcurrent >= MAX_SUBAGENT_CONCURRENCY}
-                    onClick={() => onChange({ ...policy, maxConcurrent: Math.min(MAX_SUBAGENT_CONCURRENCY, policy.maxConcurrent + 1) })}
+                    disabled={!policy.enabled || policy.maxConcurrent >= crewCeiling}
+                    onClick={() => onChange({ ...policy, maxConcurrent: Math.min(crewCeiling, policy.maxConcurrent + 1) })}
                   ><Plus size={12} /></button>
                 </div>
               )}
@@ -735,11 +768,26 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
                       <span className="sa-worker-orb" aria-hidden="true" />
                       <span className="sa-worker-copy">
                         <strong title={worker.title}>{worker.title}</strong>
-                        <small>{subAgentStatusLabel(worker.status)} · {worker.detail}</small>
+                        <small title={worker.detail}>{subAgentStatusLabel(worker.status)} · {worker.detail}</small>
                       </span>
                       <span className="sa-worker-end">
                         {worker.provider && (
                           <span className="sa-worker-mark" aria-hidden="true"><ProviderLogo provider={worker.provider} size={12} /></span>
+                        )}
+                        {props.onOpenWorker && (
+                          <button
+                            type="button"
+                            className="sa-worker-action"
+                            aria-label={`Open ${worker.title}`}
+                            title="Open this sub-agent's own conversation"
+                            disabled={Boolean(workerAction)}
+                            onClick={() => void openWorker(worker)}
+                          >
+                            {acting && workerAction?.kind === "open"
+                              ? <LoaderCircle className="spin" size={10} />
+                              : <SquareArrowOutUpRight size={10} />}
+                            Open
+                          </button>
                         )}
                         {active && props.onReplaceWorker && replacementTargets.length > 0 && (
                           <button

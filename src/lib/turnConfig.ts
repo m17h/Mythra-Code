@@ -105,7 +105,13 @@ export function threadRuntimeConfig(run: ScheduleRunSettings, options: Pick<Thre
       ? { model_context_window: Math.floor(contextWindow) }
       : {}),
     agents: {
-      max_threads: run.subagentMax,
+      // Not `run.subagentMax`. That number is the OpenKiwi bridge's budget and
+      // the bridge enforces it itself, per spawn, against its own ownership
+      // records. Handing the same number to Codex's native agent runtime gave
+      // the model a second independent budget stacked on top of the bridge's,
+      // so a thread configured for two children could reach four workers. This
+      // matches the ceiling the managed `config.toml` already pins.
+      max_threads: 1,
       max_depth: 1,
       ...customAgentConfig(options.customAgents ?? []),
     },
@@ -115,6 +121,10 @@ export function threadRuntimeConfig(run: ScheduleRunSettings, options: Pick<Thre
       // ownership records, and child inbox. With no managed destination the
       // model receives no spawning route at all.
       multi_agent: false,
+      // Codex 0.147 split its native team runtime into a second feature flag.
+      // Keep both generations off so OpenKiwi's approved bridge remains the
+      // only delegation authority (and child threads cannot spawn children).
+      multi_agent_v2: false,
       ...(run.provider === "openrouter" || run.provider === "lmstudio" ? { apps: false, remote_plugin: false } : {}),
     },
     ...(run.provider === "openrouter" || run.provider === "lmstudio" ? { apps: { _default: { enabled: false } } } : {}),

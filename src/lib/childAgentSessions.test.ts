@@ -173,14 +173,14 @@ describe("ensureChildAgentBridge", () => {
     expect(bridge.startChildAgentSession).toHaveBeenCalledTimes(1);
   });
 
-  it("captures the settings live at that moment, not a pre-feature default", async () => {
+  it("captures live settings while capping the budget to the visible crew", async () => {
     const result = await ensureChildAgentBridge(input({
       threadId: "started-earlier",
       permission: "read-only",
       settings: { childAgents: CHILD_AGENTS, subagentsEnabled: true, subagentMax: 5 },
     }));
     expect(result?.policy.permission).toBe("read-only");
-    expect(result?.policy.maxConcurrent).toBe(5);
+    expect(result?.policy.maxConcurrent).toBe(1);
   });
 
   it("re-seeds a mid-conversation session with the children that thread already owns", async () => {

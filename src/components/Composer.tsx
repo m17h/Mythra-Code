@@ -106,6 +106,9 @@ export const Composer = forwardRef<ComposerHandle, {
    * there is no turn to steer and nothing to queue behind yet.
    */
   queueing: boolean;
+  /** Queue remains available while this is false, but no message may be
+   * inserted into the active turn while its user-facing response is active. */
+  canSteer: boolean;
   dropActive: boolean;
   placeholder: string;
   attachments: AttachmentRecord[];
@@ -328,7 +331,7 @@ export const Composer = forwardRef<ComposerHandle, {
                           aria-label={`${stalled ? "Start" : "Retry"} queued message ${index + 1}`}
                         ><RotateCw size={12} /></button>
                       )}
-                      {props.queueing && props.onSteerQueued && (
+                      {props.queueing && props.canSteer && props.onSteerQueued && (
                         <button className="steer-queued" onClick={() => props.onSteerQueued?.(queuedTurn.id)} title="Send this into the active turn now" aria-label={`Steer queued message ${index + 1} now`}><CornerUpRight size={12} /></button>
                       )}
                       {props.onRemoveQueued && (
@@ -456,7 +459,14 @@ export const Composer = forwardRef<ComposerHandle, {
             </button>
           )}
           {props.queueing && (
-            <button className="steer-button" onClick={() => void send("steer")} disabled={!draft.trim()} title="Send this message into the active turn now">
+            <button
+              className="steer-button"
+              onClick={() => void send("steer")}
+              disabled={!props.canSteer || !draft.trim()}
+              title={props.canSteer
+                ? "Send this message into the active turn now"
+                : "The model is finishing its response. Queue this message as the next turn instead."}
+            >
               <CornerUpRight size={14} /> <span>Steer</span>
             </button>
           )}

@@ -336,6 +336,86 @@ describe("workspace switching during thread selection", () => {
     expect(invokeMock.mock.calls.some(([command]) => command === "child_agent_session_start")).toBe(false);
   });
 
+  it("keeps the root conversation in the main inbox when storage claims it is its own child's child", async () => {
+    // A reversed ownership record plus the matching thread metadata is exactly
+    // the durable state that used to move the user's main conversation into the
+    // Sub-agents inbox and keep it there across reloads.
+    const user = userEvent.setup();
+    const poisonedRoot: Thread = {
+      ...THREAD_A,
+      parentThreadId: "native-child",
+      threadSource: "subagent",
+    };
+    const nativeChild: Thread = {
+      id: "native-child",
+      name: "Native child",
+      preview: "Review the implementation",
+      cwd: PROJECT_A.path,
+      updatedAt: THREAD_B.updatedAt + 1,
+      modelProvider: "openai",
+      parentThreadId: THREAD_A.id,
+      threadSource: "subagent",
+    };
+    localStorage.setItem("kiwi.knownThreads", JSON.stringify({
+      [poisonedRoot.id]: poisonedRoot,
+      [nativeChild.id]: nativeChild,
+    }));
+    localStorage.setItem("kiwi.threadProjects", JSON.stringify({
+      [poisonedRoot.id]: PROJECT_A.path,
+      [nativeChild.id]: PROJECT_A.path,
+    }));
+    localStorage.setItem("kiwi.nativeAgentLinks", JSON.stringify({
+      [nativeChild.id]: {
+        childThreadId: nativeChild.id,
+        rootThreadId: THREAD_A.id,
+        title: nativeChild.preview,
+        createdAt: nativeChild.updatedAt * 1000,
+      },
+      [poisonedRoot.id]: {
+        childThreadId: poisonedRoot.id,
+        rootThreadId: nativeChild.id,
+        title: "Reversed",
+        createdAt: nativeChild.updatedAt * 1000,
+      },
+    }));
+
+    await renderApp();
+    // The root owns a child, so it is a root however its own record reads.
+    expect(await screen.findByText("Alpha thread")).toBeInTheDocument();
+    expect(screen.queryByText("Native child")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /Sub-agents/ }));
+    expect(await screen.findByText("Native child")).toBeInTheDocument();
+    expect(screen.queryByText("Alpha thread")).not.toBeInTheDocument();
+
+    await waitFor(() => {
+      const remembered = JSON.parse(localStorage.getItem("kiwi.knownThreads") ?? "{}") as Record<string, Thread>;
+      expect(remembered[THREAD_A.id]).not.toHaveProperty("parentThreadId");
+      expect(remembered[THREAD_A.id]).not.toHaveProperty("threadSource");
+    });
+  });
+
+  it("drops a stale native child claim when thread/list identifies that thread as a root", async () => {
+    localStorage.setItem("kiwi.knownThreads", JSON.stringify({
+      [THREAD_A.id]: { ...THREAD_A, parentThreadId: "missing-child", threadSource: "subagent" },
+    }));
+    localStorage.setItem("kiwi.nativeAgentLinks", JSON.stringify({
+      [THREAD_A.id]: {
+        childThreadId: THREAD_A.id,
+        rootThreadId: "missing-child",
+        title: "Stale reversed claim",
+        createdAt: 1,
+      },
+    }));
+
+    await renderApp();
+    expect(await screen.findByText("Alpha thread")).toBeInTheDocument();
+    await waitFor(() => {
+      const links = JSON.parse(localStorage.getItem("kiwi.nativeAgentLinks") ?? "{}") as Record<string, unknown>;
+      expect(links).not.toHaveProperty(THREAD_A.id);
+    });
+  });
+
   it("initializes a plain project before offering an isolated worktree", async () => {
     workspaceGitInfoImpl = () => ({
       isRepo: false,
@@ -596,6 +676,38 @@ describe("workspace switching during thread selection", () => {
     ).toBe(false);
     // Thread A is still starting, untouched by any of this.
     expect(useTaskStore.getState().statuses[THREAD_A.id]).toBe("starting");
+  });
+
+  it("keeps follow-ups queueable but disables steering while final output is arriving", async () => {
+    const user = userEvent.setup();
+    resumeImpl = (params) => ({ thread: { ...THREAD_A, id: String(params.threadId), turns: [] } });
+    await renderApp();
+    const { useTaskStore } = await import("./lib/taskStore");
+
+    await user.click(await screen.findByText("Alpha thread"));
+    await waitFor(() => expect(useTaskStore.getState().activeThreadId).toBe(THREAD_A.id));
+
+    act(() => {
+      const store = useTaskStore.getState();
+      store.setActiveTurn(THREAD_A.id, "turn-final");
+      store.setTaskStatus(THREAD_A.id, "running");
+      // Do not flush: the steering lock must beat the frame-batched text.
+      store.queueAssistantDelta(THREAD_A.id, "answer", "Finishing the response");
+    });
+
+    expect(await screen.findByText("Enter queues")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Steer" })).toBeDisabled();
+
+    const composer = screen.getByPlaceholderText(/Queue a follow-up for after this run/);
+    await user.type(composer, "ask this next{Enter}");
+    await waitFor(() => {
+      expect(useTaskStore.getState().tasks[THREAD_A.id]?.queuedTurns).toEqual([
+        expect.objectContaining({ text: "ask this next", status: "queued" }),
+      ]);
+    });
+    expect(
+      invokeMock.mock.calls.some(([command, args]) => command === "codex_rpc" && args?.method === "turn/steer"),
+    ).toBe(false);
   });
 
   it("still opens the selected thread when no workspace switch happens", async () => {
@@ -893,7 +1005,7 @@ describe("composer sub-agent command center", () => {
         overrides?: { subagents?: { enabled: boolean; maxConcurrent: number } };
       }>;
       expect(stored.find((project) => project.id === PROJECT_A.id)?.overrides?.subagents)
-        .toMatchObject({ enabled: true, maxConcurrent: 3 });
+        .toMatchObject({ enabled: true, maxConcurrent: 1 });
       // The sibling project keeps inheriting the global defaults.
       expect(stored.find((project) => project.id === PROJECT_B.id)?.overrides).toBeUndefined();
     });
@@ -915,7 +1027,7 @@ describe("composer sub-agent command center", () => {
     await waitFor(() => {
       const stored = JSON.parse(localStorage.getItem("kiwi.settings") ?? "{}");
       expect(stored.subagentsEnabled).toBe(true);
-      expect(stored.subagentMax).toBe(4);
+      expect(stored.subagentMax).toBe(1);
       expect(stored.childAgents).toMatchObject({
         enabled: true,
         targets: [expect.objectContaining({ id: "claude", provider: "claude" })],
@@ -1038,8 +1150,11 @@ describe("composer sub-agent command center", () => {
     expect(codexCalls("thread/resume").at(-1)).toMatchObject({
       threadId: THREAD_A.id,
       config: {
-        features: { multi_agent: false },
-        agents: { max_threads: 5 },
+        features: { multi_agent: false, multi_agent_v2: false },
+        // The user's limit of five rides on the OpenKiwi bridge below, never on
+        // Codex's own agent runtime, which stays pinned so the bridge remains
+        // the only spawning authority.
+        agents: { max_threads: 1, max_depth: 1 },
         mcp_servers: { openkiwi: expect.anything() },
       },
     });

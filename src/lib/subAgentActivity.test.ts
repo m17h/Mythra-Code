@@ -149,6 +149,69 @@ describe("collectSubAgentWorkers", () => {
     })]);
   });
 
+  it("gives a native worker the root's own provider and model, and its real task", () => {
+    const agents: AgentRecord[] = [{ id: "native-1", prompt: "Delegated task", status: "inProgress" }];
+    const workers = collectSubAgentWorkers({
+      rootThreadId: "root-1",
+      links: {},
+      statuses: {},
+      agents,
+      nativeLinks: { "native-1": { childThreadId: "native-1", rootThreadId: "root-1", title: "Port the parser", createdAt: 4_000 } },
+      nativeProvider: "openai",
+      nativeModel: "gpt-5.6-terra",
+    });
+    expect(workers).toEqual([expect.objectContaining({
+      id: "native-1",
+      kind: "native",
+      status: "working",
+      title: "Port the parser",
+      provider: "openai",
+      model: "gpt-5.6-terra",
+      detail: "OpenAI · gpt-5.6-terra",
+      createdAt: 4_000,
+    })]);
+  });
+
+  it("keeps a native worktree path after the provider and model, not instead of them", () => {
+    const agents: AgentRecord[] = [{ id: "native-1", prompt: "Write tests", status: "inProgress", path: "/managed/worktrees/native-1" }];
+    const workers = collectSubAgentWorkers({
+      rootThreadId: "root-1",
+      links: {},
+      statuses: {},
+      agents,
+      nativeProvider: "openai",
+      nativeModel: "gpt-5.6-terra",
+    });
+    expect(workers[0].detail).toBe("OpenAI · gpt-5.6-terra · /managed/worktrees/native-1");
+  });
+
+  it("never lists the root thread as one of its own workers", () => {
+    // A reversed ownership record and a self-referential agent record are both
+    // runtime artifacts; either one would otherwise burn a concurrency slot and
+    // show the user's own conversation as a third agent.
+    const workers = collectSubAgentWorkers({
+      rootThreadId: "root-1",
+      links: links(link({ childThreadId: "root-1" })),
+      statuses: { "root-1": "running" },
+      agents: [{ id: "root-1", prompt: "Delegated task", status: "inProgress" }],
+    });
+    expect(workers).toEqual([]);
+    expect(summarizeSubAgentWorkers(workers).active).toBe(0);
+  });
+
+  it("counts exactly the configured number of children, excluding the root", () => {
+    const workers = collectSubAgentWorkers({
+      rootThreadId: "root-1",
+      links: links(
+        link({ childThreadId: "child-1", createdAt: 1_000 }),
+        link({ childThreadId: "child-2", createdAt: 2_000 }),
+      ),
+      statuses: { "root-1": "running", "child-1": "running", "child-2": "running" },
+      agents: [{ id: "root-1", prompt: "Delegated task", status: "inProgress" }],
+    });
+    expect(summarizeSubAgentWorkers(workers).active).toBe(2);
+  });
+
   it("does not count a cross-provider child twice when it is mirrored onto the root", () => {
     const agents: AgentRecord[] = [{ id: "child-1", prompt: "Review the diff", status: "inProgress" }];
     const workers = collectSubAgentWorkers({ rootThreadId: "root-1", links: links(link()), statuses, agents });

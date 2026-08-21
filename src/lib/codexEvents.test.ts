@@ -196,6 +196,31 @@ describe("routeCodexEvent", () => {
     expect(ctx.onNativeAgentDiscovered).toHaveBeenCalledWith("root", "child", { path: "/root/worker" });
   });
 
+  it("never records the root thread as one of its own sub-agents", () => {
+    // A runtime that names the thread itself as the delegation receiver would
+    // otherwise put the root in its own worker list, where it holds a slot in
+    // the user's parallel budget and renders as an extra agent.
+    const ctx = makeContext({ bindingFor: () => "/workspace" });
+    routeCodexEvent({
+      method: "item/completed",
+      params: {
+        threadId: "root",
+        item: { id: "activity-1", type: "subAgentActivity", kind: "started", agentThreadId: "root", agentPath: "/root" },
+      },
+    }, ctx);
+    routeCodexEvent({
+      method: "item/completed",
+      params: {
+        threadId: "root",
+        item: { id: "activity-2", type: "collabAgentToolCall", tool: "spawnAgent", prompt: "Split the work", status: "inProgress", receiverThreadIds: ["root", "child"] },
+      },
+    }, ctx);
+
+    expect(useTaskStore.getState().tasks.root.agents.map((agent) => agent.id)).toEqual(["child"]);
+    expect(ctx.onNativeAgentDiscovered).toHaveBeenCalledTimes(1);
+    expect(ctx.onNativeAgentDiscovered).toHaveBeenCalledWith("root", "child", { prompt: "Split the work" });
+  });
+
   it("keeps fallback model metadata warnings in diagnostics instead of the chat", () => {
     const ctx = makeContext();
     routeCodexEvent({ method: "warning", params: { threadId: "thread-w", message: "Model metadata for `vendor/new-model` not found. Defaulting to fallback metadata; this can degrade performance." } }, ctx);
