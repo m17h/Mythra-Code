@@ -40,8 +40,8 @@ export function providerAccountUsage(
   }
   if (provider === "lmstudio") {
     return {
-      label: "LM Studio",
-      summary: options.lmStudioReady ? "Local server connected · inference runs on your configured machine" : "Start LM Studio and load a model",
+      label: "LM Studio local inference",
+      summary: options.lmStudioReady ? "Connected locally · inference runs on your computer with no provider billing" : "Start LM Studio and load a model",
     };
   }
   return { label: "OpenAI subscription", summary: options.openAiRateSummary || "Sign in to view live limits" };

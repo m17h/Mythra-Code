@@ -22,10 +22,10 @@ describe("useAppShortcuts", () => {
     const deps = context();
     renderHook(() => useAppShortcuts(deps));
 
-    fireEvent.keyDown(document.body, { key: "k", metaKey: true });
-    fireEvent.keyDown(document.body, { key: "f", metaKey: true });
-    fireEvent.keyDown(document.body, { key: "n", metaKey: true });
-    fireEvent.keyDown(document.body, { key: ",", metaKey: true });
+    fireEvent.keyDown(document.body, { key: "k", ctrlKey: true });
+    fireEvent.keyDown(document.body, { key: "f", ctrlKey: true });
+    fireEvent.keyDown(document.body, { key: "n", ctrlKey: true });
+    fireEvent.keyDown(document.body, { key: ",", ctrlKey: true });
 
     expect(deps.toggleCommandPalette).toHaveBeenCalledOnce();
     expect(deps.openConversationSearch).toHaveBeenCalledOnce();
@@ -50,9 +50,9 @@ describe("useAppShortcuts", () => {
     const deps = context({ modalOpen: true });
     renderHook(() => useAppShortcuts(deps));
 
-    fireEvent.keyDown(document.body, { key: "k", metaKey: true });
-    fireEvent.keyDown(document.body, { key: "n", metaKey: true });
-    fireEvent.keyDown(document.body, { key: ",", metaKey: true });
+    fireEvent.keyDown(document.body, { key: "k", ctrlKey: true });
+    fireEvent.keyDown(document.body, { key: "n", ctrlKey: true });
+    fireEvent.keyDown(document.body, { key: ",", ctrlKey: true });
     fireEvent.keyDown(document.body, { key: "Escape" });
 
     expect(deps.toggleCommandPalette).not.toHaveBeenCalled();
@@ -61,12 +61,23 @@ describe("useAppShortcuts", () => {
     expect(deps.stopTurn).not.toHaveBeenCalled();
   });
 
-  it("lets Command-K close the command palette", () => {
+  it("lets Ctrl-K close the command palette", () => {
     const deps = context({ modalOpen: true, commandPaletteOpen: true });
     renderHook(() => useAppShortcuts(deps));
 
-    fireEvent.keyDown(document.body, { key: "k", metaKey: true });
+    fireEvent.keyDown(document.body, { key: "k", ctrlKey: true });
     expect(deps.toggleCommandPalette).toHaveBeenCalledOnce();
+  });
+
+  it("does not treat the Windows key as an app shortcut modifier", () => {
+    const deps = context();
+    renderHook(() => useAppShortcuts(deps));
+
+    fireEvent.keyDown(document.body, { key: "k", metaKey: true });
+    fireEvent.keyDown(document.body, { key: "n", metaKey: true });
+
+    expect(deps.toggleCommandPalette).not.toHaveBeenCalled();
+    expect(deps.newThread).not.toHaveBeenCalled();
   });
 
   it("uses fresh state and yields to a component that already handled the key", () => {

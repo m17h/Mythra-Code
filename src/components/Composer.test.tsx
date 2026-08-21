@@ -10,6 +10,7 @@ function composerProps(overrides: Partial<Parameters<typeof Composer>[0]> = {}):
     threadKey: "thread-a",
     running: false,
     queueing: false,
+    canSteer: true,
     dropActive: false,
     placeholder: "Ask anything",
     attachments: [],
@@ -116,6 +117,32 @@ describe("Composer", () => {
     createdAt: 0,
     status: "queued" as const,
   };
+
+  it("keeps Queue available but disables every steering action while the response is being written", async () => {
+    const onSend = vi.fn(async () => true);
+    const onSteer = vi.fn(async () => true);
+    const onSteerQueued = vi.fn();
+    render(<Composer {...composerProps({
+      running: true,
+      queueing: true,
+      canSteer: false,
+      queuedTurns: [QUEUED],
+      onSend,
+      onSteer,
+      onSteerQueued,
+    })} />);
+
+    expect(screen.getByText("Enter queues")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Steer" })).toBeDisabled();
+    expect(screen.queryByLabelText("Steer queued message 1 now")).not.toBeInTheDocument();
+
+    const textarea = screen.getByPlaceholderText("Ask anything");
+    fireEvent.change(textarea, { target: { value: "follow up after this" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith("follow up after this"));
+    expect(onSteer).not.toHaveBeenCalled();
+    expect(onSteerQueued).not.toHaveBeenCalled();
+  });
 
   it("says a queued turn runs next while a task is running", () => {
     render(<Composer {...composerProps({ running: true, queueing: true, queuedTurns: [QUEUED], onRetryQueued: vi.fn(), onSteerQueued: vi.fn() })} />);

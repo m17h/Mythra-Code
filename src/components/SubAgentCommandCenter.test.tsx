@@ -36,7 +36,7 @@ const BUILDER: ChildAgentTarget = {
 
 const POLICY: ProjectSubagentSettings = {
   enabled: true,
-  maxConcurrent: 4,
+  maxConcurrent: 1,
   childAgents: { enabled: true, targets: [REVIEWER] },
 };
 
@@ -101,7 +101,7 @@ function worker(overrides: Partial<SubAgentWorker> = {}): SubAgentWorker {
 describe("SubAgentCommandCenter trigger", () => {
   it("summarizes the crew size while closed", () => {
     view();
-    expect(trigger()).toHaveTextContent("Agents: 4");
+    expect(trigger()).toHaveTextContent("Agents: 1");
     expect(trigger()).toHaveAttribute("aria-expanded", "false");
     expect(trigger()).toHaveAttribute("aria-haspopup", "dialog");
   });
@@ -120,7 +120,7 @@ describe("SubAgentCommandCenter trigger", () => {
 
   it("shows a live count and an announced status while children work", () => {
     view({ workers: [worker(), worker({ id: "child-2", status: "completed" })] });
-    expect(trigger()).toHaveTextContent("Agents 1/4");
+    expect(trigger()).toHaveTextContent("Agents 1/1");
     expect(trigger().className).toContain("live");
     expect(trigger().querySelector(".sa-trigger-trace")).toBeInTheDocument();
     expect(trigger().querySelector(".sa-trigger-trace-outline")).toBeInTheDocument();
@@ -224,21 +224,40 @@ describe("SubAgentCommandCenter editing a draft policy", () => {
   });
 
   it("raises and lowers the parallel limit within 1–24", async () => {
-    const { onChange } = await open();
+    const targets = [REVIEWER, BUILDER, { ...REVIEWER, id: "third" }, { ...REVIEWER, id: "fourth" }, { ...REVIEWER, id: "fifth" }];
+    const { onChange } = await open({ policy: { ...POLICY, maxConcurrent: 4, childAgents: { enabled: true, targets } } });
     await userEvent.click(screen.getByRole("button", { name: "More concurrent sub-agents" }));
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ maxConcurrent: 5 }));
     await userEvent.click(screen.getByRole("button", { name: "Fewer concurrent sub-agents" }));
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ maxConcurrent: 3 }));
   });
 
-  it("disables the upper bound at twenty-four", async () => {
-    await open({ policy: { ...POLICY, maxConcurrent: 24 } });
+  it("disables the upper bound at the enabled crew size", async () => {
+    await open();
     expect(screen.getByRole("button", { name: "More concurrent sub-agents" })).toBeDisabled();
   });
 
   it("disables the lower bound at one", async () => {
     await open({ policy: { ...POLICY, maxConcurrent: 1 } });
     expect(screen.getByRole("button", { name: "Fewer concurrent sub-agents" })).toBeDisabled();
+  });
+
+  it("lets a limit of two coexist with a larger roster of destinations", async () => {
+    // The roster is a menu and the limit is a budget. Refusing to go below the
+    // number of destinations made a limit of 2 impossible to express, and the
+    // frozen policy really did allow a third child.
+    const { onChange } = await open({
+      policy: {
+        enabled: true,
+        maxConcurrent: 3,
+        childAgents: { enabled: true, targets: [REVIEWER, BUILDER, { ...REVIEWER, id: "third", label: "Third" }] },
+      },
+    });
+    const fewer = screen.getByRole("button", { name: "Fewer concurrent sub-agents" });
+    expect(fewer).toBeEnabled();
+    await userEvent.click(fewer);
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ maxConcurrent: 2 }));
+    expect(screen.getByText(/chosen from 3 destinations/)).toBeInTheDocument();
   });
 
   it("toggles cross-provider delegation", async () => {
@@ -269,7 +288,7 @@ describe("SubAgentCommandCenter editing a draft policy", () => {
     await userEvent.click(screen.getByRole("button", { name: "Add OpenRouter destination" }));
     expect(onChange).toHaveBeenCalledWith({
       enabled: true,
-      maxConcurrent: 2,
+      maxConcurrent: 1,
       childAgents: {
         enabled: true,
         targets: [expect.objectContaining({ id: "openrouter", provider: "openrouter", label: "OpenRouter", enabled: true })],
@@ -289,7 +308,7 @@ describe("SubAgentCommandCenter editing a draft policy", () => {
     }));
   });
 
-  it("automatically grows the parallel limit when a worker makes the crew larger", async () => {
+  it("grows a limit that was tracking the enabled crew", async () => {
     const { onChange } = await open({
       policy: { ...POLICY, maxConcurrent: 2, childAgents: { enabled: true, targets: [REVIEWER, BUILDER] } },
     });
@@ -300,25 +319,28 @@ describe("SubAgentCommandCenter editing a draft policy", () => {
     }));
   });
 
-  it("does not let the parallel limit fall below the configured crew size", async () => {
-    await open({
+  it("lets the parallel limit go below the configured crew size", async () => {
+    const { onChange } = await open({
       policy: { ...POLICY, maxConcurrent: 2, childAgents: { enabled: true, targets: [REVIEWER, BUILDER] } },
     });
-    expect(screen.getByRole("button", { name: "Fewer concurrent sub-agents" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "Fewer concurrent sub-agents" }));
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ maxConcurrent: 1 }));
   });
 
-  it("counts parked destinations when holding the configured crew floor", async () => {
-    await open({
+  it("does not count parked destinations toward the parallel limit", async () => {
+    const { onChange } = await open({
       policy: { ...POLICY, maxConcurrent: 2, childAgents: { enabled: true, targets: [REVIEWER, { ...BUILDER, enabled: false }] } },
     });
-    expect(screen.getByRole("button", { name: "Fewer concurrent sub-agents" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "Fewer concurrent sub-agents" }));
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ maxConcurrent: 1 }));
   });
 
-  it("keeps the configured crew floor when cross-provider is switched off", async () => {
-    await open({
+  it("still allows a lower limit when cross-provider is switched off", async () => {
+    const { onChange } = await open({
       policy: { ...POLICY, maxConcurrent: 2, childAgents: { enabled: false, targets: [REVIEWER, BUILDER] } },
     });
-    expect(screen.getByRole("button", { name: "Fewer concurrent sub-agents" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "Fewer concurrent sub-agents" }));
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ maxConcurrent: 1 }));
   });
 
   it("reveals provider, model, and reasoning controls for a destination", async () => {
@@ -491,7 +513,7 @@ describe("SubAgentCommandCenter enabling sub-agents mid-conversation", () => {
 
   it("marks cross-provider reach as ready the moment it is configured", async () => {
     view({ mode: "open", capturedPolicy: null });
-    expect(trigger()).toHaveTextContent("Agents: 4 ↗");
+    expect(trigger()).toHaveTextContent("Agents: 1 ↗");
   });
 });
 
@@ -600,5 +622,50 @@ describe("SubAgentCommandCenter live activity", () => {
     });
     expect(screen.queryByRole("button", { name: /^Stop / })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Replace / })).not.toBeInTheDocument();
+  });
+
+  it("names each worker's task, state, provider and model on its row", async () => {
+    await open({
+      workers: [
+        worker(),
+        worker({
+          id: "native-1",
+          kind: "native",
+          status: "starting",
+          title: "Port the parser",
+          provider: "openai",
+          model: "gpt-5.6-terra",
+          detail: "OpenAI · gpt-5.6-terra",
+          targetId: undefined,
+        }),
+      ],
+    });
+    expect(screen.getByText("Review the diff")).toBeInTheDocument();
+    expect(screen.getByText("Working · Claude · claude-fable-5")).toBeInTheDocument();
+    expect(screen.getByText("Port the parser")).toBeInTheDocument();
+    expect(screen.getByText("Starting · OpenAI · gpt-5.6-terra")).toBeInTheDocument();
+  });
+
+  it("opens a worker's own conversation, live or settled, and closes the panel", async () => {
+    const onOpenWorker = vi.fn().mockResolvedValue(undefined);
+    const live = worker();
+    const done = worker({ id: "child-2", title: "Finished audit", status: "completed" });
+    await open({ workers: [live, done], onOpenWorker });
+    expect(screen.getByRole("button", { name: "Open Finished audit" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Open Review the diff" }));
+    await waitFor(() => expect(onOpenWorker).toHaveBeenCalledWith(live));
+    await waitFor(() => expect(trigger()).toHaveAttribute("aria-expanded", "false"));
+  });
+
+  it("reports why a worker's conversation could not be opened", async () => {
+    const onOpenWorker = vi.fn().mockRejectedValue(new Error("No conversation yet."));
+    await open({ workers: [worker()], onOpenWorker });
+    await userEvent.click(screen.getByRole("button", { name: "Open Review the diff" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("No conversation yet.");
+  });
+
+  it("omits the open action when the host offers no way to select a thread", async () => {
+    await open({ workers: [worker()] });
+    expect(screen.queryByRole("button", { name: /^Open / })).not.toBeInTheDocument();
   });
 });

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_OPENAI_MODEL } from "./appConfig";
+import { LM_STUDIO_RUNTIME_PROVIDER_ID } from "./providerIds";
 import { modelForProvider, providerFromThread } from "./threadProvider";
 
 describe("thread provider resolution", () => {
@@ -7,6 +8,9 @@ describe("thread provider resolution", () => {
     expect(providerFromThread({ modelProvider: "claude" }, "openai")).toBe("claude");
     expect(providerFromThread({ modelProvider: "openrouter" }, "openai")).toBe("openrouter");
     expect(providerFromThread({ modelProvider: "lmstudio" }, "openai")).toBe("lmstudio");
+    expect(providerFromThread({ modelProvider: "lmstudio_openkiwi" }, "openai")).toBe("lmstudio");
+    expect(providerFromThread({ modelProvider: "openkiwi-lmstudio" }, "openai")).toBe("lmstudio");
+    expect(providerFromThread({ modelProvider: LM_STUDIO_RUNTIME_PROVIDER_ID }, "openai")).toBe("lmstudio");
     expect(providerFromThread({ modelProvider: "cursor" }, "openai")).toBe("cursor");
   });
 
@@ -20,8 +24,9 @@ describe("thread provider resolution", () => {
     expect(modelForProvider("openai", "anthropic/claude-sonnet")).toBe(DEFAULT_OPENAI_MODEL);
     expect(modelForProvider("openrouter", "gpt-5.6-sol")).toBe("");
     expect(modelForProvider("openrouter", "anthropic/claude-sonnet")).toBe("anthropic/claude-sonnet");
-    expect(modelForProvider("lmstudio", "qwen/local-coder")).toBe("qwen/local-coder");
-    expect(modelForProvider("lmstudio", "local-coder")).toBe("local-coder");
+    expect(modelForProvider("lmstudio", "lmstudio-community/qwen3-coder")).toBe("lmstudio-community/qwen3-coder");
+    expect(modelForProvider("lmstudio", "gpt-oss-20b")).toBe("gpt-oss-20b");
+    expect(modelForProvider("lmstudio", "")).toBe("");
     expect(modelForProvider("cursor", "")).toBe(DEFAULT_CURSOR_MODEL);
     expect(modelForProvider("cursor", "cursor-grok-4.5")).toBe("cursor-grok-4.5");
   });

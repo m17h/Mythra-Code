@@ -1,5 +1,7 @@
 use std::{
+    collections::hash_map::DefaultHasher,
     fs,
+    hash::{Hash, Hasher},
     path::{Path, PathBuf},
 };
 
@@ -15,6 +17,7 @@ pub(super) struct LocalSkillFile {
     pub(super) default_name: String,
     pub(super) description: String,
     pub(super) supporting_markdown_count: usize,
+    pub(super) content_fingerprint: String,
 }
 
 #[derive(Deserialize)]
@@ -233,6 +236,11 @@ pub(super) fn scan_local_skills(folder: &Path) -> Result<Vec<LocalSkillFile>, St
             .unwrap_or("skill.md")
             .to_string();
         let supporting_markdown_count = count_markdown_references(&content, &path, folder);
+        // This fingerprint is compared only within the running renderer; it
+        // is deliberately not persisted because DefaultHasher is not a stable
+        // cross-version file identity.
+        let mut content_hasher = DefaultHasher::new();
+        content.hash(&mut content_hasher);
         skills.push(LocalSkillFile {
             path: path.to_string_lossy().into_owned(),
             relative_path: path
@@ -244,6 +252,7 @@ pub(super) fn scan_local_skills(folder: &Path) -> Result<Vec<LocalSkillFile>, St
             default_name: skill_default_name(&path),
             description: skill_description(&content, &file_name),
             supporting_markdown_count,
+            content_fingerprint: format!("{:016x}", content_hasher.finish()),
         });
     }
     skills.sort_by(|left, right| {
@@ -604,4 +613,41 @@ pub(super) async fn local_skills_create(
     })
     .await
     .map_err(|error| format!("Skill creation failed: {error}"))?
+}
+
+pub(super) fn delete_local_skill_source(folder: &Path, source: &Path) -> Result<(), String> {
+    let folder = folder
+        .canonicalize()
+        .map_err(|error| format!("Could not open the skills folder: {error}"))?;
+    let source = source
+        .canonicalize()
+        .map_err(|error| format!("Could not open the skill source: {error}"))?;
+    if !source.starts_with(&folder) || !source.is_file() || !is_markdown(&source) {
+        return Err("The selected skill source is not a Markdown file in the skills folder.".into());
+    }
+
+    // Only files the scanner recognizes as actual skills may be deleted. This
+    // prevents a forged renderer request from deleting arbitrary supporting
+    // Markdown elsewhere in the selected tree.
+    let recognized = scan_local_skills(&folder)?.into_iter().any(|skill| {
+        PathBuf::from(skill.path)
+            .canonicalize()
+            .is_ok_and(|candidate| candidate == source)
+    });
+    if !recognized {
+        return Err("The selected file is not a detected OpenKiwi skill.".into());
+    }
+
+    fs::remove_file(&source)
+        .map_err(|error| format!("Could not delete {}: {error}", source.display()))
+}
+
+#[tauri::command]
+pub(super) async fn local_skills_delete(folder: String, path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let folder = canonical_skill_folder(&folder)?;
+        delete_local_skill_source(&folder, Path::new(&path))
+    })
+    .await
+    .map_err(|error| format!("Skill deletion failed: {error}"))?
 }

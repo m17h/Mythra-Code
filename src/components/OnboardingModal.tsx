@@ -67,7 +67,7 @@ function ProviderStep({ runtimeStatus, claudeStatus, cursorStatus, account, open
       <article className="onboarding-provider-card openai">
         <div className="onboarding-card-title"><span><OpenAILogo size={18} /></span><div><strong>ChatGPT subscription</strong><small>OpenAI authentication</small></div></div>
         <ol>
-          <li><b>1</b><span>Install <strong>Codex CLI</strong> (recommended) or ChatGPT for macOS. OpenKiwi detects the runtime automatically.</span></li>
+          <li><b>1</b><span>Install the official <strong>Codex CLI</strong>. OpenKiwi detects the runtime automatically.</span></li>
           <li><b>2</b><span>Open <strong>Settings → Models & accounts</strong> and choose OpenAI.</span></li>
           <li><b>3</b><span>Select <strong>Sign in</strong>. The official ChatGPT flow opens in your browser.</span></li>
         </ol>
