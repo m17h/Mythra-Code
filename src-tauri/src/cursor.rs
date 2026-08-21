@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    env, fs,
+    env,
     path::{Path, PathBuf},
     process::Stdio,
     sync::{
@@ -8,6 +8,8 @@ use std::{
         Arc,
     },
 };
+#[cfg(windows)]
+use std::fs;
 
 use base64::Engine;
 use serde::{Deserialize, Serialize};
