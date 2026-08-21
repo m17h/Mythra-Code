@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { uploadPlatformDraft } from "./release-draft.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const output = resolve(root, "release-assets/latest");
@@ -76,28 +77,12 @@ if (process.argv.includes("--skip-ci-check")) {
   }
 }
 
-const view = spawnSync("gh", ["release", "view", tag, "--repo", "m17h/OpenKiwi", "--json", "targetCommitish"], { encoding: "utf8" });
-if (view.status === 0) {
-  const existingTarget = JSON.parse(view.stdout || "{}").targetCommitish;
-  if (existingTarget !== target) {
-    throw new Error(`The existing ${tag} release points to ${existingTarget || "an unknown target"}, not the current commit ${target}.\nBump the app version and build a new release instead of replacing another commit's published assets.`);
-  }
-}
-if (view.status !== 0) {
-  // Create as a draft so updater clients can never observe a half-uploaded
-  // release; it is flipped to published+latest only after every upload lands.
-  const create = spawnSync("gh", ["release", "create", tag, ...assets, "--repo", "m17h/OpenKiwi", "--title", `OpenKiwi ${manifest.version}`, "--notes-file", notes, "--draft", "--target", target], { cwd: root, stdio: "inherit" });
-  if (create.status !== 0) process.exit(create.status ?? 1);
-} else {
-  const upload = spawnSync("gh", ["release", "upload", tag, ...assets, "--clobber", "--repo", "m17h/OpenKiwi"], { cwd: root, stdio: "inherit" });
-  if (upload.status !== 0) process.exit(upload.status ?? 1);
-}
-
-const edit = spawnSync("gh", ["release", "edit", tag, "--repo", "m17h/OpenKiwi", "--title", `OpenKiwi ${manifest.version}`, "--notes-file", notes, "--draft=false", "--latest"], { cwd: root, stdio: "inherit" });
-if (edit.status !== 0) process.exit(edit.status ?? 1);
-
-// Keep local tags in sync with the tag GitHub just created for the release.
-const fetchTags = spawnSync("git", ["fetch", "--tags"], { cwd: root, stdio: "inherit" });
-if (fetchTags.status !== 0) console.warn("Warning: git fetch --tags failed; local tags may lag behind the published release.");
-
-console.log(`Published ${tag} to https://github.com/m17h/OpenKiwi/releases/tag/${tag}`);
+uploadPlatformDraft({
+  root,
+  repository: "m17h/OpenKiwi",
+  tag,
+  target,
+  manifest,
+  assetPaths: assets,
+  notesFile: notes,
+});

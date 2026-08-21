@@ -3,8 +3,8 @@ import type { ChildAgentBridgeLaunch } from "./agentBridge";
 import type { JsonObject } from "./codex";
 import { openKiwiDeveloperInstructions } from "./completionPrompt";
 import { resolveProviderSystemPrompt } from "./systemPrompt";
-import { DEFAULT_LM_STUDIO_BASE_URL, LM_STUDIO_CODEX_PROVIDER_ID } from "./appConfig";
-import { codexModelProviderId } from "./threadProvider";
+import { DEFAULT_LM_STUDIO_BASE_URL } from "./appConfig";
+import { LM_STUDIO_RUNTIME_PROVIDER_ID, runtimeModelProviderId } from "./providerIds";
 
 export function normalizeLmStudioBaseUrl(value: string | null | undefined): string {
   const trimmed = value?.trim().replace(/\/+$/, "") || DEFAULT_LM_STUDIO_BASE_URL;
@@ -16,7 +16,7 @@ function lmStudioProviderConfig(run: ScheduleRunSettings): JsonObject {
   return {
     model_providers: {
       // Never key this on the app's `lmstudio` id — Codex reserves it.
-      [LM_STUDIO_CODEX_PROVIDER_ID]: {
+      [LM_STUDIO_RUNTIME_PROVIDER_ID]: {
         name: "LM Studio",
         base_url: normalizeLmStudioBaseUrl(run.lmStudioBaseUrl),
         env_key: "LMSTUDIO_API_KEY",
@@ -106,7 +106,13 @@ export function threadRuntimeConfig(run: ScheduleRunSettings, options: Pick<Thre
       ? { model_context_window: Math.floor(contextWindow) }
       : {}),
     agents: {
-      max_threads: run.subagentMax,
+      // Not `run.subagentMax`. That number is the OpenKiwi bridge's budget and
+      // the bridge enforces it itself, per spawn, against its own ownership
+      // records. Handing the same number to Codex's native agent runtime gave
+      // the model a second independent budget stacked on top of the bridge's,
+      // so a thread configured for two children could reach four workers. This
+      // matches the ceiling the managed `config.toml` already pins.
+      max_threads: 1,
       max_depth: 1,
       ...customAgentConfig(options.customAgents ?? []),
     },
@@ -116,6 +122,10 @@ export function threadRuntimeConfig(run: ScheduleRunSettings, options: Pick<Thre
       // ownership records, and child inbox. With no managed destination the
       // model receives no spawning route at all.
       multi_agent: false,
+      // Codex 0.147 split its native team runtime into a second feature flag.
+      // Keep both generations off so OpenKiwi's approved bridge remains the
+      // only delegation authority (and child threads cannot spawn children).
+      multi_agent_v2: false,
       ...(run.provider === "openrouter" || run.provider === "lmstudio" ? { apps: false, remote_plugin: false } : {}),
     },
     ...(run.provider === "openrouter" || run.provider === "lmstudio" ? { apps: { _default: { enabled: false } } } : {}),
@@ -139,7 +149,7 @@ export function threadStartParams(run: ScheduleRunSettings, cwd: string, options
     serviceTier: run.serviceTier,
   };
   if (run.model.trim()) params.model = run.model.trim();
-  const modelProvider = codexModelProviderId(run.provider);
+  const modelProvider = runtimeModelProviderId(run.provider);
   if (modelProvider) params.modelProvider = modelProvider;
   return params;
 }
@@ -163,13 +173,14 @@ export function threadResumeParams(
     Boolean(options.childAgentBridge?.toolNames.includes("spawn_agent")),
     Boolean(options.childAgentBridge?.toolNames.includes("propose_agent_settings")),
   );
+  const modelProvider = runtimeModelProviderId(run.provider);
   return {
     threadId,
     cwd,
     runtimeWorkspaceRoots: [cwd, ...(options.additionalWorkspaceRoots ?? [])],
     developerInstructions,
     ...(options.excludeTurns ? { excludeTurns: true } : {}),
-    ...(codexModelProviderId(run.provider) ? { modelProvider: codexModelProviderId(run.provider) } : {}),
+    ...(modelProvider ? { modelProvider } : {}),
     ...(run.provider === "openrouter" || run.provider === "lmstudio" || options.childAgentBridge || options.refreshRuntimeConfig
       ? { config: threadRuntimeConfig(run, options) }
       : {}),

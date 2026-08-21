@@ -5,23 +5,23 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
-import { Archive, ArchiveRestore, Bot, Check, ChevronDown, Circle, Code2, Command, Download, FileCode2, Folder, FolderOpen, GitBranch, GitFork, LoaderCircle, MessageSquare, Paperclip, PanelRight, PanelLeftClose, PanelLeftOpen, Plus, Pin, PinOff, Pencil, Search, Settings, Shield, ShieldAlert, ShieldCheck, TerminalSquare, Trash2, X } from "lucide-react";
-import { getCodexRuntimeStatus, auditEvent, exportTextFile, getNormalChatWorkspace, hasLmStudioKey, hasOpenRouterKey, listLmStudioModels, listOpenRouterModels, respond, restartRuntime, rpc, runtimeInstanceId, type CodexRuntimeStatus, type JsonObject } from "./lib/codex";
+import { Archive, ArchiveRestore, Bot, Check, ChevronDown, Circle, Code2, Download, FileCode2, Folder, FolderOpen, GitBranch, GitFork, LoaderCircle, MessageSquare, Paperclip, PanelRight, PanelLeftClose, PanelLeftOpen, Plus, Pin, PinOff, Pencil, Search, Settings, Shield, ShieldAlert, ShieldCheck, TerminalSquare, Trash2, X } from "lucide-react";
+import { getCodexRuntimeStatus, auditEvent, exportTextFile, getNormalChatWorkspace, hasLmStudioKey, hasOpenRouterKey, listOpenRouterModels, respond, restartRuntime, rpc, runtimeInstanceId, type CodexRuntimeStatus, type JsonObject } from "./lib/codex";
 import { deleteClaudeTranscript, getClaudeRuntimeStatus, loadClaudeTranscript, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, type ClaudeRuntimeStatus } from "./lib/claude";
 import { deleteCursorTranscript, getCursorRuntimeStatus, listCursorModels, loadCursorTranscript, respondToCursorPermission, saveCursorTranscript, startCursorLogin, type CursorModel, type CursorRuntimeStatus } from "./lib/cursor";
 import { loadStored, storeValue } from "./lib/storage";
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_PROMPT_PROFILES, DEFAULT_SETTINGS, THEMES } from "./lib/appConfig";
 import { commandSandbox, threadResumeParams, threadRuntimeConfig } from "./lib/turnConfig";
 import { threadSearchParams, threadsForWorkspace, type ThreadSearchResponse } from "./lib/threadSearch";
-import { countActiveThreadsByWorkspace, filterThreadsByKind, filterThreadsForWorkspace, forgetSidebarThread, isSubAgentThread, pruneSidebarIndex, reconcileWorkspaceThreads, rememberSidebarThread, sidebarThread, threadBelongsToWorkspace, upsertThread, type ThreadSidebarIndex } from "./lib/threadList";
+import { countActiveThreadsByWorkspace, filterThreadsByKind, filterThreadsForWorkspace, forgetSidebarThread, isSubAgentThread, pruneSidebarIndex, reconcileWorkspaceThreads, rememberSidebarThread, repairRootThreadMetadata, sidebarThread, threadBelongsToWorkspace, upsertThread, type ThreadSidebarIndex } from "./lib/threadList";
 import { timelineFromTurns } from "./lib/threadTimeline";
 import { buildTranscriptMarkdown } from "./lib/transcript";
 import { RowMenu } from "./components/RowMenu";
 import { ModelPowerControl, type RuntimeModel } from "./components/ModelPowerControl";
 import { OpenRouterModelControl, type OpenRouterModel } from "./components/OpenRouterModelControl";
-import { LmStudioModelControl, type LmStudioModel } from "./components/LmStudioModelControl";
 import { ClaudeModelControl } from "./components/ClaudeModelControl";
 import { CursorModelControl } from "./components/CursorModelControl";
+import { LMStudioModelControl } from "./components/LMStudioModelControl";
 import { ThreadProviderControl } from "./components/ThreadProviderControl";
 import { ThreadInboxCard } from "./components/ThreadInboxCard";
 import { ProjectPromptControl } from "./components/ProjectPromptControl";
@@ -35,7 +35,7 @@ import { AuthRequiredModal, RuntimeSetupModal } from "./components/RuntimeModals
 import type { AgentRecord, AttachmentRecord, McpView, StudioTab } from "./components/StudioDock";
 import type { Account, Activity, AppSettings, ArchivedThread, ChatMessage, CustomAgentProfile, PendingApproval, PermissionMode, Project, ProjectAction, ProjectPromptMode, ProjectSubagentSettings, PromptProfile, Provider, ScheduledTask, ScheduleRunRecord, SettingsSection, Thread, ThreadHandoff, ThreadReasoning, ThemeName, WorkspaceMode } from "./types";
 import { PendingTurnStarts } from "./lib/pendingTurnStarts";
-import { useTaskStore, type QueuedTurn } from "./lib/taskStore";
+import { isAssistantOutputActive, useTaskStore, type QueuedTurn } from "./lib/taskStore";
 import { friendlyError } from "./lib/errors";
 import { recordError } from "./lib/errorLog";
 import {
@@ -80,14 +80,17 @@ import { PANE_BOUNDS, usePaneResize } from "./hooks/usePaneResize";
 import { useSidebarSplitResize } from "./hooks/useSidebarSplitResize";
 import { useWorkflowEngine } from "./hooks/useWorkflowEngine";
 import { isEstablishedOpenKiwiInstall, ONBOARDING_EXIT_MS, ONBOARDING_VERSION } from "./lib/onboarding";
-import { createLocalSkill, importLocalSkills, normalizeSkillName, resolveLocalSkills, scanLocalSkills, syncLocalSkills, type LocalSkill, type LocalSkillFile } from "./lib/skills";
+import { createLocalSkill, deleteLocalSkill, importLocalSkills, normalizeSkillName, resolveLocalSkills, scanLocalSkills, syncLocalSkills, type LocalSkill, type LocalSkillFile } from "./lib/skills";
 import { compactWorkflowRun, normalizeWorkflows, recoverWorkflowRuns, type WorkflowDefinition, type WorkflowRunRecord } from "./lib/workflows";
-import { codexModelProviderId, isClaudeThread, isCursorThread, isLocalSubscriptionThread, modelForProvider, providerFromThread } from "./lib/threadProvider";
+import { isClaudeThread, isCursorThread, isLocalSubscriptionThread, modelForProvider, providerFromThread } from "./lib/threadProvider";
+import { listLMStudioModels, type LMStudioModel } from "./lib/lmStudio";
 import { basename, normalizedProjectPath } from "./lib/paths";
 import { resolveProviderSystemPrompt, resolveSystemPrompt } from "./lib/systemPrompt";
 import { providerAccountUsage } from "./lib/providerUsage";
 import { contextUsagePercent } from "./lib/contextUsage";
 import { openKiwiDeveloperInstructions } from "./lib/completionPrompt";
+import { runtimeModelProviderId } from "./lib/providerIds";
+import { primaryModifierLabel } from "./lib/platform";
 import { providerForArchivedThread } from "./lib/threadArchive";
 import { buildProviderHandoffPrompt, sanitizePendingHandoff } from "./lib/providerHandoff";
 import { deleteThreadTurnDurations } from "./lib/turnDurations";
@@ -112,7 +115,7 @@ import {
 } from "./lib/childAgents";
 import { cacheChildAgentPolicy, ensureChildAgentBridge, invalidateChildAgentLaunch, releaseChildAgentSessions } from "./lib/childAgentSessions";
 import { forgetSubagentCapabilities, planSubagentCapabilities, recordSubagentCapabilities, subagentCapabilitySignature } from "./lib/threadCapabilities";
-import { nativeAgentLinkFromThread, nativeAgentLinksAfterThreadDeletion, sanitizeNativeAgentLinks, type NativeAgentLink } from "./lib/nativeAgentLinks";
+import { canOwnThread, nativeAgentLinkFromThread, nativeAgentLinksAfterThreadDeletion, sanitizeNativeAgentLinks, type NativeAgentLink, type OwnershipLinks } from "./lib/nativeAgentLinks";
 import { collectSubAgentWorkers, isSubAgentWorkerActive, type SubAgentWorker } from "./lib/subAgentActivity";
 import { useChildAgents } from "./hooks/useChildAgents";
 import { reorderProjects, type ProjectDropPosition } from "./lib/projectOrdering";
@@ -276,7 +279,6 @@ export default function App() {
   const knownThreadsRef = useRef<ThreadSidebarIndex | null>(null);
   const providerRepairThreadsRef = useRef(new Set<string>());
   const [openRouterReady, setOpenRouterReady] = useState(false);
-  const [lmStudioReady, setLmStudioReady] = useState(false);
   const [lmStudioTokenStored, setLmStudioTokenStored] = useState(false);
   const [studioOpen, setStudioOpen] = useState(false);
   const [studioTab, setStudioTab] = useState<StudioTab>("review");
@@ -286,10 +288,18 @@ export default function App() {
   const [skillFiles, setSkillFiles] = useState<LocalSkillFile[]>([]);
   const [skillAliases, setSkillAliases] = usePersistedState<Record<string, string>>("kiwi.skillAliases", {});
   const [disabledSkillPaths, setDisabledSkillPaths] = usePersistedState<string[]>("kiwi.disabledSkills", []);
+  const [removedSkillPaths, setRemovedSkillPaths] = usePersistedState<string[]>("kiwi.removedSkills", []);
   const [skills, setSkills] = useState<LocalSkill[]>([]);
   const [skillsBusy, setSkillsBusy] = useState(false);
   const [skillsError, setSkillsError] = useState("");
   const skillRuntimeRootRef = useRef("");
+  const skillFilesRef = useRef<LocalSkillFile[]>([]);
+  const skillScanSequenceRef = useRef(0);
+  const skillsBusyCountRef = useRef(0);
+  const removedSkills = useMemo(
+    () => resolveLocalSkills(skillFiles.filter((file) => removedSkillPaths.includes(file.path)), skillAliases, disabledSkillPaths),
+    [disabledSkillPaths, removedSkillPaths, skillAliases, skillFiles],
+  );
   const [mcpServers, setMcpServers] = useState<McpView[]>([]);
   const [gitOutput, setGitOutput] = useState("");
   const [gitCommitMessage, setGitCommitMessage] = useState("");
@@ -305,9 +315,10 @@ export default function App() {
   const [openRouterModels, setOpenRouterModels] = useState<OpenRouterModel[]>([]);
   const [openRouterModelsLoading, setOpenRouterModelsLoading] = useState(false);
   const [openRouterModelsError, setOpenRouterModelsError] = useState("");
-  const [lmStudioModels, setLmStudioModels] = useState<LmStudioModel[]>([]);
-  const [lmStudioModelsLoading, setLmStudioModelsLoading] = useState(false);
-  const [lmStudioModelsError, setLmStudioModelsError] = useState("");
+  const [lmStudioModels, setLMStudioModels] = useState<LMStudioModel[]>([]);
+  const [lmStudioModelsLoading, setLMStudioModelsLoading] = useState(false);
+  const [lmStudioModelsError, setLMStudioModelsError] = useState("");
+  const lmStudioReady = lmStudioModels.length > 0 && !lmStudioModelsError;
   const [pricingCatalogRevision, setPricingCatalogRevision] = useState(modelPricingCatalogRevision);
   const composerRef = useRef<ComposerHandle>(null);
   const threadSearchRequestRef = useRef(0);
@@ -339,10 +350,18 @@ export default function App() {
     ? pendingHandoff
     : null;
   const activeThreadId = activeThread?.id ?? null;
-  const childThreadLinks = useMemo<Record<string, unknown>>(
+  // The whole durable ownership graph, both generations. Inbox classification
+  // and the cycle guards below have to see every record: a root proved by a
+  // cross-provider link must not be reclassified by a native one, or the
+  // reverse.
+  const childThreadLinks = useMemo<OwnershipLinks>(
     () => ({ ...nativeAgentLinks, ...childAgentLinks }),
     [childAgentLinks, nativeAgentLinks],
   );
+  const childThreadLinksRef = useRef(childThreadLinks);
+  childThreadLinksRef.current = childThreadLinks;
+  const childAgentLinksRef = useRef(childAgentLinks);
+  childAgentLinksRef.current = childAgentLinks;
   const activeThreadHandoff = activeThreadId ? threadHandoffs[activeThreadId] : undefined;
   const activeThreadWorktree = activeThreadId ? threadWorktrees[activeThreadId] : undefined;
   const activeExecutionPath = activeWorkspace
@@ -482,8 +501,8 @@ export default function App() {
     })),
     lmstudio: lmStudioModels.map((entry) => ({
       id: entry.id,
-      label: entry.name || entry.id,
-      detail: `${entry.id}${entry.trained_for_tool_use ? " · tools" : ""}`,
+      label: entry.id,
+      detail: `${entry.publisher}${entry.trainedForToolUse ? " · tool use" : ""}`,
     })),
   }), [cursorModels, lmStudioModels, openRouterModels, runtimeModels]);
 
@@ -500,6 +519,9 @@ export default function App() {
   const contextPercent = contextUsagePercent(tokenUsage);
   const queuedTurns = useTaskStore((state) => (activeThreadId ? (state.tasks[activeThreadId]?.queuedTurns ?? EMPTY_QUEUED_TURNS) : EMPTY_QUEUED_TURNS));
   const taskStatus = useTaskStore((state) => (activeThreadId ? (state.statuses[activeThreadId] ?? "idle") : "idle"));
+  const assistantOutputActive = useTaskStore((state) => (
+    activeThreadId ? isAssistantOutputActive(state.tasks[activeThreadId]) : false
+  ));
   const threadTaskStatuses = useTaskStore((state) => state.statuses);
   // Live crew for the composer panel: OpenKiwi-owned cross-provider children
   // merged with whatever native agents the root task reported.
@@ -510,8 +532,14 @@ export default function App() {
       statuses: threadTaskStatuses,
       agents: agentRecords,
       runStartedAt: agentRunStartedAt,
+      // A provider-native child runs inside this thread's own runtime, so the
+      // row names this thread's provider and model rather than leaving the
+      // user with a bare id and a status word.
+      nativeLinks: nativeAgentLinks,
+      nativeProvider: activeProvider,
+      nativeModel: effectiveSettings.model,
     }),
-    [activeThreadId, agentRecords, agentRunStartedAt, childAgentLinks, threadTaskStatuses],
+    [activeProvider, activeThreadId, agentRecords, agentRunStartedAt, childAgentLinks, effectiveSettings.model, nativeAgentLinks, threadTaskStatuses],
   );
   const running = activeThreadId ? taskStatus === "starting" || taskStatus === "running" : startingDraftTurn;
   // A root turn can end — normally, or by failing — while children it spawned
@@ -666,7 +694,7 @@ export default function App() {
   }, [claudeStatus, cursorStatus, effectiveSettings.provider, lmStudioReady, openRouterReady, rateSummary]);
 
   // Only offer "Check settings" for failures settings can actually fix.
-  const errorSuggestsSettings = useMemo(() => Boolean(error) && /sign in|api key|openrouter|lm studio|lmstudio|claude|model|settings|runtime|codex|account/i.test(error ?? ""), [error]);
+  const errorSuggestsSettings = useMemo(() => Boolean(error) && /sign in|api key|openrouter|lm studio|claude|model|settings|runtime|codex|account/i.test(error ?? ""), [error]);
   const workspaceArchived = useMemo(() => (activeWorkspace ? archivedThreads.filter((record) => (
     record.path === normalizedProjectPath(activeWorkspace.path)
     && Boolean(childThreadLinks[record.id]) === (threadKindView === "subagents")
@@ -1011,6 +1039,34 @@ export default function App() {
     storeValue("kiwi.knownThreads", next);
   }, []);
 
+  // Repair old poisoned root records while ownership proof still exists. The
+  // corrected record is written back, so removing the root's final child later
+  // cannot reveal stale child metadata and move the main conversation again.
+  useEffect(() => {
+    const remembered = knownThreadsRef.current ?? {};
+    let rememberedChanged = false;
+    const nextRemembered: ThreadSidebarIndex = {};
+    for (const [threadId, thread] of Object.entries(remembered)) {
+      const repaired = repairRootThreadMetadata(thread, childThreadLinks);
+      nextRemembered[threadId] = repaired;
+      if (repaired !== thread) rememberedChanged = true;
+    }
+    if (rememberedChanged) {
+      knownThreadsRef.current = nextRemembered;
+      storeValue("kiwi.knownThreads", nextRemembered);
+    }
+    setThreads((current) => {
+      let listChanged = false;
+      const repaired = current.map((thread) => {
+        const next = repairRootThreadMetadata(thread, childThreadLinks);
+        if (next !== thread) listChanged = true;
+        return next;
+      });
+      return listChanged ? repaired : current;
+    });
+    setActiveThread((current) => current ? repairRootThreadMetadata(current, childThreadLinks) : current);
+  }, [childThreadLinks]);
+
   const persistClaudeThread = useCallback(
     (threadId: string) => {
       const task = useTaskStore.getState().tasks[threadId];
@@ -1167,17 +1223,37 @@ export default function App() {
         // may execute in a managed worktree while belonging to its root's
         // logical project.
         const discoveredNativeLinks: Record<string, NativeAgentLink> = {};
+        // Ownership claims are checked against the graph OpenKiwi already has,
+        // plus the ones accepted from this same page. A runtime that reports a
+        // root's own parent — or a cycle through one — must not be able to move
+        // an established root conversation into the Sub-agents inbox.
+        const ownershipGraph: OwnershipLinks = { ...childThreadLinksRef.current };
+        const listedRootIds = new Set<string>();
+        for (const thread of allThreads) {
+          if (nativeAgentLinkFromThread(thread)) continue;
+          listedRootIds.add(thread.id);
+          // thread/list is authoritative for provider-native ownership. Remove
+          // only a stale native claim; an OpenKiwi bridge link remains proof
+          // that a cross-provider child belongs in the child inbox.
+          if (!childAgentLinksRef.current[thread.id]) delete ownershipGraph[thread.id];
+        }
         for (const thread of allThreads) {
           const link = nativeAgentLinkFromThread(thread);
           if (!link) continue;
+          if (!canOwnThread(ownershipGraph, link.rootThreadId, link.childThreadId)) continue;
+          ownershipGraph[link.childThreadId] = link;
           discoveredNativeLinks[link.childThreadId] = link;
           const rootPath = threadProjectBindingsRef.current?.[link.rootThreadId]
             ?? knownThreadsRef.current?.[link.rootThreadId]?.cwd
             ?? project.path;
           bindThreadToProject(link.childThreadId, rootPath);
         }
-        if (Object.keys(discoveredNativeLinks).length) {
-          persistNativeAgentLinks((current) => ({ ...current, ...discoveredNativeLinks }));
+        if (listedRootIds.size || Object.keys(discoveredNativeLinks).length) {
+          persistNativeAgentLinks((current) => {
+            const next = { ...current };
+            for (const threadId of listedRootIds) delete next[threadId];
+            return sanitizeNativeAgentLinks({ ...next, ...discoveredNativeLinks });
+          });
         }
         const projectPath = normalizedProjectPath(project.path);
         const runtimeThreads = allThreads.filter((thread) => {
@@ -1248,26 +1324,20 @@ export default function App() {
     }
   }, []);
 
-  const refreshLmStudioModels = useCallback(async (baseUrl: string) => {
-    setLmStudioModelsLoading(true);
-    setLmStudioModelsError("");
+  const refreshLMStudioModels = useCallback(async (baseUrl: string) => {
+    setLMStudioModelsLoading(true);
+    setLMStudioModelsError("");
     try {
-      const result = await listLmStudioModels<{ data?: LmStudioModel[] }>(baseUrl);
-      const models = (result.data ?? [])
-        .filter((entry) => typeof entry.id === "string" && entry.id.trim())
-        .sort((a, b) => a.id.localeCompare(b.id));
-      setLmStudioModels(models);
-      setLmStudioReady(models.length > 0);
-      if (!models.length) setLmStudioModelsError("LM Studio returned no models. Load a model or enable Just-in-Time loading.");
+      const models = await listLMStudioModels(baseUrl);
+      setLMStudioModels(models);
+      if (!models.length) setLMStudioModelsError("LM Studio is connected, but it did not report any models");
       return models;
     } catch (reason) {
-      const message = friendlyError(reason);
-      setLmStudioModels([]);
-      setLmStudioReady(false);
-      setLmStudioModelsError(message);
+      setLMStudioModels([]);
+      setLMStudioModelsError(friendlyError(reason));
       return [];
     } finally {
-      setLmStudioModelsLoading(false);
+      setLMStudioModelsLoading(false);
     }
   }, []);
 
@@ -1282,54 +1352,94 @@ export default function App() {
   }, []);
 
   const prepareLocalSkills = useCallback(
-    async (folder: string, files: LocalSkillFile[], aliases: Record<string, string>, disabled: string[]) => {
-      const resolved = resolveLocalSkills(files, aliases, disabled);
-      setSkills(resolved);
+    async (folder: string, files: LocalSkillFile[], aliases: Record<string, string>, disabled: string[], removed: string[]) => {
+      const resolved = resolveLocalSkills(files, aliases, disabled, removed);
       if (!folder) {
+        setSkills(resolved);
         skillRuntimeRootRef.current = "";
         if (runtimeStatus?.available) await rpc("skills/extraRoots/set", { extraRoots: [] });
         return resolved;
       }
       const runtimeRoot = await syncLocalSkills(folder, resolved);
-      skillRuntimeRootRef.current = runtimeRoot;
       if (runtimeStatus?.available) {
         await rpc("skills/extraRoots/set", { extraRoots: [runtimeRoot] });
       }
+      skillRuntimeRootRef.current = runtimeRoot;
+      setSkills(resolved);
       return resolved;
     },
     [runtimeStatus?.available],
   );
 
   const refreshLocalSkills = useCallback(
-    async (folder = skillsFolder, aliases = skillAliases, disabled = disabledSkillPaths) => {
+    async (
+      folder = skillsFolder,
+      aliases = skillAliases,
+      disabled = disabledSkillPaths,
+      removed = removedSkillPaths,
+      silent = false,
+    ) => {
+      const scanSequence = ++skillScanSequenceRef.current;
       if (!folder) {
+        skillFilesRef.current = [];
         setSkillFiles([]);
         setSkills([]);
         setSkillsError("");
-        return prepareLocalSkills("", [], aliases, disabled);
+        return prepareLocalSkills("", [], aliases, disabled, removed);
       }
-      setSkillsBusy(true);
-      setSkillsError("");
+      if (!silent) {
+        skillsBusyCountRef.current += 1;
+        setSkillsBusy(true);
+        setSkillsError("");
+      }
       try {
         const files = await scanLocalSkills(folder);
+        // Folder polling, focus refreshes, and explicit deletion can overlap.
+        // Only the newest scan may publish state or rebuild the model runtime.
+        if (scanSequence !== skillScanSequenceRef.current) return [];
+        const unchanged = JSON.stringify(files) === JSON.stringify(skillFilesRef.current);
+        setSkillsError("");
+        if (silent && unchanged) return resolveLocalSkills(files, aliases, disabled, removed);
+        skillFilesRef.current = files;
         setSkillFiles(files);
-        return await prepareLocalSkills(folder, files, aliases, disabled);
+        return await prepareLocalSkills(folder, files, aliases, disabled, removed);
       } catch (reason) {
+        // Editors, sync clients, and antivirus can briefly lock Markdown on
+        // Windows. Background refreshes keep the last known-good library and
+        // runtime instead of tearing every skill down for a transient error.
+        if (scanSequence !== skillScanSequenceRef.current || silent) return [];
         setSkillsError(friendlyError(reason));
+        skillFilesRef.current = [];
         setSkillFiles([]);
         setSkills([]);
         try {
-          await prepareLocalSkills("", [], aliases, disabled);
+          await prepareLocalSkills("", [], aliases, disabled, removed);
         } catch {
           /* Keep the scan error as the useful message. */
         }
         return [];
       } finally {
-        setSkillsBusy(false);
+        if (!silent) {
+          skillsBusyCountRef.current = Math.max(0, skillsBusyCountRef.current - 1);
+          if (skillsBusyCountRef.current === 0) setSkillsBusy(false);
+        }
       }
     },
-    [disabledSkillPaths, prepareLocalSkills, skillAliases, skillsFolder],
+    [disabledSkillPaths, prepareLocalSkills, removedSkillPaths, skillAliases, skillsFolder],
   );
+
+  useEffect(() => {
+    if (!skillsFolder) return;
+    const refresh = () => {
+      if (document.visibilityState === "visible") void refreshLocalSkills(skillsFolder, skillAliases, disabledSkillPaths, removedSkillPaths, true);
+    };
+    const interval = window.setInterval(refresh, 5_000);
+    window.addEventListener("focus", refresh);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refresh);
+    };
+  }, [disabledSkillPaths, refreshLocalSkills, removedSkillPaths, skillAliases, skillsFolder]);
 
   const refreshTools = useCallback(
     async (workspace: Project | null) => {
@@ -1440,7 +1550,17 @@ export default function App() {
       if (providerFromThread(thread, "openai") === "openrouter") providerRepairThreadsRef.current.add(threadId);
     },
     onNativeAgentDiscovered: (rootThreadId, childThreadId, details) => {
-      if (!childThreadId || childThreadId === rootThreadId) return;
+      // Ownership is durable and it decides which inbox a conversation lives
+      // in. A self, reversed, or cyclic claim is refused outright rather than
+      // recorded, because writing `parentThreadId` onto a root thread record
+      // would move the user's main conversation into the Sub-agents inbox and
+      // keep it there across reloads.
+      if (!canOwnThread(childThreadLinksRef.current, rootThreadId, childThreadId)) {
+        if (childThreadId && childThreadId !== rootThreadId) {
+          void auditEvent("nativeAgent.ownershipRejected", { rootThreadId, childThreadId }).catch(() => {});
+        }
+        return;
+      }
       const now = Date.now();
       const rootThread = threads.find((entry) => entry.id === rootThreadId) ?? knownThreadsRef.current?.[rootThreadId];
       const existingThread = threads.find((entry) => entry.id === childThreadId) ?? knownThreadsRef.current?.[childThreadId];
@@ -1450,6 +1570,9 @@ export default function App() {
         || existingThread?.preview
         || "Delegated task";
       persistNativeAgentLinks((current) => {
+        // Re-check against the newest persisted graph: two discoveries can be
+        // dispatched before either state update renders.
+        if (!canOwnThread({ ...current, ...childAgentLinks }, rootThreadId, childThreadId)) return current;
         const existing = current[childThreadId];
         const link: NativeAgentLink = {
           childThreadId,
@@ -1705,11 +1828,11 @@ export default function App() {
     void hasLmStudioKey()
       .then(setLmStudioTokenStored)
       .catch(() => setLmStudioTokenStored(false));
-  }, [checkRuntime, refreshAccount, refreshClaudeStatus, refreshCursorStatus, refreshModels, refreshOpenRouterModels, refreshUsage]);
+  }, [checkRuntime, refreshAccount, refreshClaudeStatus, refreshCursorStatus, refreshLMStudioModels, refreshModels, refreshOpenRouterModels, refreshUsage]);
 
   useEffect(() => {
-    void refreshLmStudioModels(settings.lmStudioBaseUrl);
-  }, [refreshLmStudioModels, settings.lmStudioBaseUrl]);
+    void refreshLMStudioModels(settings.lmStudioBaseUrl);
+  }, [refreshLMStudioModels, settings.lmStudioBaseUrl]);
 
   // Cursor sign-in (at startup or later) refreshes only the Cursor model
   // list, never the whole startup sequence above.
@@ -2044,7 +2167,7 @@ export default function App() {
       setError(`Remove the ${isolatedCount} isolated worktree${isolatedCount === 1 ? "" : "s"} in this project from the Worktrees workspace tab before removing the project from OpenKiwi.`);
       return;
     }
-    const confirmed = window.confirm(`Remove “${project.name}” from OpenKiwi?\n\nIts folder and every file inside it will remain untouched on your Mac.`);
+    const confirmed = window.confirm(`Remove “${project.name}” from OpenKiwi?\n\nIts folder and every file inside it will remain untouched on your computer.`);
     if (!confirmed) return;
     const next = projects.filter((entry) => entry.id !== project.id);
     setProjects(next);
@@ -2193,7 +2316,7 @@ export default function App() {
       }
       const result = isolation?.status === "missing" || isolation?.status === "removed" || capabilityRefreshDeferred
         ? await rpc<{ thread: Thread }>("thread/read", { threadId: thread.id, includeTurns: true })
-        : await rpc<{ thread: Thread }>("thread/resume", threadResumeParams(resumedSettings, thread.id, executionPath, { customAgents, modelContextWindow: provider === "openrouter" ? openRouterModels.find((entry) => entry.id === resumedSettings.model)?.context_length : provider === "lmstudio" ? lmStudioModels.find((entry) => entry.id === resumedSettings.model)?.context_length : undefined, additionalWorkspaceRoots: isolation?.gitDir ? [isolation.gitDir] : [], childAgentBridge: childBridge?.launch, refreshRuntimeConfig: true }));
+        : await rpc<{ thread: Thread }>("thread/resume", threadResumeParams(resumedSettings, thread.id, executionPath, { customAgents, modelContextWindow: provider === "openrouter" ? openRouterModels.find((entry) => entry.id === resumedSettings.model)?.context_length : provider === "lmstudio" ? lmStudioModels.find((entry) => entry.id === resumedSettings.model)?.maxContextLength : undefined, additionalWorkspaceRoots: isolation?.gitDir ? [isolation.gitDir] : [], childAgentBridge: childBridge?.launch, refreshRuntimeConfig: true }));
       if (selectThreadRequestRef.current !== requestId) return;
       if (isolation?.status !== "missing" && isolation?.status !== "removed" && !capabilityRefreshDeferred) {
         // Opening a thread resumes it with the complete capability config,
@@ -2446,6 +2569,27 @@ export default function App() {
     applyProjectSubagentSettings: applyProposedProjectSubagents,
   });
 
+  /**
+   * Open one worker's own conversation.
+   *
+   * Every sub-agent — cross-provider or provider-native — is a real thread, so
+   * the row's Open action is the same thread selection the sidebar performs.
+   * The thread record may not have reached the sidebar list yet for a child
+   * that has only just been discovered, so the remembered index is consulted
+   * too, and a genuinely unresolvable id reports why instead of doing nothing.
+   */
+  const openSubAgentWorker = useCallback(async (worker: SubAgentWorker) => {
+    const thread = threads.find((entry) => entry.id === worker.id)
+      ?? knownThreadsRef.current?.[worker.id];
+    if (!thread) {
+      throw new Error("OpenKiwi does not have this sub-agent's conversation yet. It appears in the Sub-agents inbox once its provider reports the thread.");
+    }
+    await selectThread(thread);
+  // selectThread is redeclared every render and is not a dependency-stable
+  // callback; the thread list is what this actually reads.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [threads]);
+
   const stopSubAgentWorker = useCallback(async (worker: SubAgentWorker) => {
     if (!activeThreadId) throw new Error("Open the thread that owns this sub-agent before stopping it.");
     await stopChildAgent(activeThreadId, worker.id);
@@ -2558,7 +2702,7 @@ export default function App() {
   const beginCursorLogin = async () => {
     if (!cursorStatus?.available) {
       openSettings("models");
-      setError("Install Cursor Agent first, then return here to sign in.");
+      setError("Install the official Cursor Agent CLI first, then return here to sign in.");
       return;
     }
     setCursorLoginStarting(true);
@@ -2895,7 +3039,8 @@ export default function App() {
     }
     try {
       await ensureSkillRoots();
-      const result = await rpc<{ thread: Thread }>("thread/fork", { threadId: checkpoint?.threadId ?? activeThread.id, lastTurnId: checkpoint?.turnId, cwd: activeWorkspace?.path, runtimeWorkspaceRoots: activeWorkspace ? [activeWorkspace.path] : undefined, model: effectiveSettings.model, modelProvider: codexModelProviderId(effectiveSettings.provider), config: threadRuntimeConfig(effectiveSettings, { customAgents, modelContextWindow: effectiveSettings.provider === "openrouter" ? openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.context_length : effectiveSettings.provider === "lmstudio" ? lmStudioModels.find((entry) => entry.id === effectiveSettings.model)?.context_length : undefined }), baseInstructions: effectiveSettings.systemPrompt, developerInstructions: openKiwiDeveloperInstructions(false) });
+      const modelProvider = runtimeModelProviderId(effectiveSettings.provider);
+      const result = await rpc<{ thread: Thread }>("thread/fork", { threadId: checkpoint?.threadId ?? activeThread.id, lastTurnId: checkpoint?.turnId, cwd: activeWorkspace?.path, runtimeWorkspaceRoots: activeWorkspace ? [activeWorkspace.path] : undefined, model: effectiveSettings.model, ...(modelProvider ? { modelProvider } : {}), config: threadRuntimeConfig(effectiveSettings, { customAgents, modelContextWindow: effectiveSettings.provider === "openrouter" ? openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.context_length : effectiveSettings.provider === "lmstudio" ? lmStudioModels.find((entry) => entry.id === effectiveSettings.model)?.maxContextLength : undefined }), baseInstructions: effectiveSettings.systemPrompt, developerInstructions: openKiwiDeveloperInstructions(false) });
       if (activeWorkspace) bindThreadToProject(result.thread.id, activeWorkspace.path);
       rememberThread(result.thread);
       persistThreadModel(result.thread.id, effectiveSettings.model);
@@ -3441,7 +3586,7 @@ export default function App() {
     const selected = await open({ directory: true, multiple: false, title: "Choose your OpenKiwi skills folder" });
     if (!selected || Array.isArray(selected)) return;
     setSkillsFolder(selected);
-    await refreshLocalSkills(selected, skillAliases, disabledSkillPaths);
+    await refreshLocalSkills(selected, skillAliases, disabledSkillPaths, removedSkillPaths);
   };
 
   const importSkills = async () => {
@@ -3452,8 +3597,10 @@ export default function App() {
     setSkillsBusy(true);
     setSkillsError("");
     try {
-      await importLocalSkills(skillsFolder, paths);
-      await refreshLocalSkills();
+      const imported = await importLocalSkills(skillsFolder, paths);
+      const nextRemoved = removedSkillPaths.filter((path) => !imported.includes(path));
+      if (nextRemoved.length !== removedSkillPaths.length) setRemovedSkillPaths(nextRemoved);
+      await refreshLocalSkills(skillsFolder, skillAliases, disabledSkillPaths, nextRemoved);
     } catch (reason) {
       setSkillsError(friendlyError(reason));
     } finally {
@@ -3465,8 +3612,10 @@ export default function App() {
     if (!skillsFolder) return false;
     setSkillsError("");
     try {
-      await createLocalSkill(skillsFolder, name, instructions);
-      await refreshLocalSkills();
+      const createdPath = await createLocalSkill(skillsFolder, name, instructions);
+      const nextRemoved = removedSkillPaths.filter((path) => path !== createdPath);
+      if (nextRemoved.length !== removedSkillPaths.length) setRemovedSkillPaths(nextRemoved);
+      await refreshLocalSkills(skillsFolder, skillAliases, disabledSkillPaths, nextRemoved);
       return true;
     } catch (reason) {
       setSkillsError(friendlyError(reason));
@@ -3486,7 +3635,7 @@ export default function App() {
     }
     const next = { ...skillAliases, [path]: name };
     setSkillAliases(next);
-    setSkills(resolveLocalSkills(skillFiles, next, disabledSkillPaths));
+    setSkills(resolveLocalSkills(skillFiles, next, disabledSkillPaths, removedSkillPaths));
     setSkillsError("");
     return true;
   };
@@ -3494,7 +3643,45 @@ export default function App() {
   const toggleSkill = (path: string) => {
     const next = disabledSkillPaths.includes(path) ? disabledSkillPaths.filter((candidate) => candidate !== path) : [...disabledSkillPaths, path];
     setDisabledSkillPaths(next);
-    setSkills(resolveLocalSkills(skillFiles, skillAliases, next));
+    setSkills(resolveLocalSkills(skillFiles, skillAliases, next, removedSkillPaths));
+  };
+
+  const restoreSkill = async (path: string): Promise<boolean> => {
+    const nextRemoved = removedSkillPaths.filter((candidate) => candidate !== path);
+    setRemovedSkillPaths(nextRemoved);
+    setSkillsError("");
+    try {
+      await refreshLocalSkills(skillsFolder, skillAliases, disabledSkillPaths, nextRemoved);
+      return true;
+    } catch (reason) {
+      setSkillsError(friendlyError(reason));
+      return false;
+    }
+  };
+
+  const removeSkill = async (path: string, deleteSource: boolean): Promise<boolean> => {
+    if (!skillsFolder) return false;
+    setSkillsError("");
+    try {
+      if (deleteSource) await deleteLocalSkill(skillsFolder, path);
+      const nextRemoved = deleteSource
+        ? removedSkillPaths.filter((candidate) => candidate !== path)
+        : [...new Set([...removedSkillPaths, path])];
+      const nextDisabled = deleteSource
+        ? disabledSkillPaths.filter((candidate) => candidate !== path)
+        : disabledSkillPaths;
+      const nextAliases = deleteSource
+        ? Object.fromEntries(Object.entries(skillAliases).filter(([candidate]) => candidate !== path))
+        : skillAliases;
+      setRemovedSkillPaths(nextRemoved);
+      setDisabledSkillPaths(nextDisabled);
+      setSkillAliases(nextAliases);
+      await refreshLocalSkills(skillsFolder, nextAliases, nextDisabled, nextRemoved);
+      return true;
+    } catch (reason) {
+      setSkillsError(friendlyError(reason));
+      return false;
+    }
   };
 
   const connectMcp = async (server: McpView) => {
@@ -3657,7 +3844,7 @@ export default function App() {
         <button className="new-thread-button" onClick={newThread} disabled={!activeWorkspace} title={activeWorkspace?.isChat ? "Start a chat without a project folder" : activeProject ? `Start a thread in ${activeProject.name}` : "Select a workspace first"}>
           <Plus size={16} />
           <span>New thread</span>
-          <kbd>⌘N</kbd>
+          <kbd>{primaryModifierLabel()}+N</kbd>
         </button>
 
         {/* Same arrangement as the sidebar edge: the split lives in
@@ -3907,9 +4094,9 @@ export default function App() {
               </button>
             )}
             <button className="command-palette-trigger" onClick={() => setCommandPaletteOpen(true)} aria-label="Open command palette">
-              <Command size={13} />
+              <Search size={13} aria-hidden="true" />
               <span>Search</span>
-              <kbd>⌘K</kbd>
+              <kbd>{primaryModifierLabel()}+K</kbd>
             </button>
             <div className="runtime-status">
               {running ? <LoaderCircle className="spin" size={13} /> : <Circle size={8} fill="currentColor" />}
@@ -4152,6 +4339,7 @@ export default function App() {
                 running={running}
                 childrenRunning={childrenRunning}
                 queueing={Boolean(running && activeThread)}
+                canSteer={Boolean(activeThread && taskStatus === "running" && !assistantOutputActive)}
                 dropActive={dropActive}
                 placeholder={running && activeThread ? "Queue a follow-up for after this run…" : activeWorkspace.isChat ? "Ask anything — no project folder attached…" : `Ask OpenKiwi to work in ${activeProject?.name ?? "this project"}…`}
                 attachments={attachments}
@@ -4185,18 +4373,15 @@ export default function App() {
                       />
                     )}
                     {effectiveSettings.provider === "lmstudio" && (
-                      <LmStudioModelControl
+                      <LMStudioModelControl
                         model={effectiveSettings.model}
-                        effort={effectiveSettings.reasoningEffort}
                         models={lmStudioModels}
+                        effort={effectiveSettings.reasoningEffort}
                         loading={lmStudioModelsLoading}
                         error={lmStudioModelsError}
-                        onModel={(model) => {
-                          persistComposerModel(model);
-                          if (effectiveSettings.ultra) persistComposerReasoning(effectiveSettings.reasoningEffort);
-                        }}
+                        onRefresh={() => void refreshLMStudioModels(settings.lmStudioBaseUrl)}
+                        onModel={persistComposerModel}
                         onEffort={persistComposerReasoning}
-                        onRefresh={() => void refreshLmStudioModels(settings.lmStudioBaseUrl)}
                       />
                     )}
                     {effectiveSettings.provider === "claude" && <ClaudeModelControl model={effectiveSettings.model || DEFAULT_CLAUDE_MODEL} effort={effectiveSettings.reasoningEffort} onModel={(model) => persistComposerModel(model)} onEffort={persistComposerReasoning} />}
@@ -4245,6 +4430,7 @@ export default function App() {
                       modelCatalogs={subAgentModelCatalogs}
                       onChange={persistComposerSubagentPolicy}
                       onOpenSettings={() => openSettings("agents")}
+                      onOpenWorker={openSubAgentWorker}
                       onStopWorker={stopSubAgentWorker}
                       onReplaceWorker={replaceSubAgentWorker}
                     />
@@ -4373,7 +4559,7 @@ export default function App() {
               if (effectiveSettings.provider === "claude") void refreshClaudeStatus();
               else if (effectiveSettings.provider === "cursor") void Promise.all([refreshCursorStatus(), refreshCursorModels()]);
               else if (effectiveSettings.provider === "openrouter") void hasOpenRouterKey().then(setOpenRouterReady).catch(() => setOpenRouterReady(false));
-              else if (effectiveSettings.provider === "lmstudio") void refreshLmStudioModels(settings.lmStudioBaseUrl);
+              else if (effectiveSettings.provider === "lmstudio") void refreshLMStudioModels(settings.lmStudioBaseUrl);
               else void refreshUsage();
             }}
             onCompact={() => void compactThread()}
@@ -4446,8 +4632,8 @@ export default function App() {
           openStudio("tools");
         }}
         onOpenRouterChange={setOpenRouterReady}
-        onLmStudioRefresh={refreshLmStudioModels}
-        onLmStudioTokenChange={setLmStudioTokenStored}
+        onLMStudioRefresh={refreshLMStudioModels}
+        onLMStudioTokenChange={setLmStudioTokenStored}
         onGitHubSignIn={beginGitHubLogin}
         onGitHubRefresh={refreshGitHubAccount}
         onGitHubClone={cloneGitHubProject}
@@ -4462,6 +4648,7 @@ export default function App() {
         activeProjectId={workspaceMode === "project" ? activeProjectId : null}
         skillsFolder={skillsFolder}
         skills={skills}
+        removedSkills={removedSkills}
         skillsBusy={skillsBusy}
         skillsError={skillsError}
         mcpServers={mcpServers}
@@ -4484,11 +4671,13 @@ export default function App() {
           void openAgent(threadId);
         }}
         onChooseSkillsFolder={() => void chooseSkillsFolder()}
-        onRefreshSkills={() => void refreshLocalSkills()}
+        onRefreshSkills={(silent = false) => refreshLocalSkills(skillsFolder, skillAliases, disabledSkillPaths, removedSkillPaths, silent).then(() => undefined)}
         onImportSkills={() => void importSkills()}
         onCreateSkill={createSkill}
         onRenameSkill={renameSkill}
         onToggleSkill={toggleSkill}
+        onRemoveSkill={removeSkill}
+        onRestoreSkill={restoreSkill}
         onOpenOnboarding={() => {
           closeSettings();
           openOnboarding();

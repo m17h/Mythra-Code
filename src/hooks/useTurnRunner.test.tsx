@@ -173,6 +173,28 @@ function context(overrides: Partial<TurnRunnerContext> = {}): TurnRunnerContext 
 }
 
 describe("useTurnRunner", () => {
+  it("preserves the draft and opens settings when LM Studio is not ready", async () => {
+    const setError = vi.fn();
+    const openSettings = vi.fn();
+    const deps = context({
+      activeThread: null,
+      effectiveSettings: { ...DEFAULT_SETTINGS, provider: "lmstudio", model: "local-model" },
+      runtimeStatus: { available: true, source: "Codex CLI", path: "codex", version: "test", compatible: true, warning: null },
+      lmStudioReady: false,
+      setError,
+      openSettings,
+    });
+    const { result } = renderHook(() => useTurnRunner(deps));
+
+    let delivered = true;
+    await act(async () => { delivered = await result.current.sendMessage("work locally"); });
+
+    expect(delivered).toBe(false);
+    expect(openSettings).toHaveBeenCalledWith("models");
+    expect(setError).toHaveBeenCalledWith(expect.stringContaining("Start the LM Studio local server"));
+    expect(codex.rpc).not.toHaveBeenCalled();
+  });
+
   beforeEach(() => {
     resetTaskStore();
     forgetQueuedDeliveries();
@@ -412,6 +434,8 @@ describe("useTurnRunner", () => {
   it("removes an optimistic steering message when explicit Cursor steering fails", async () => {
     cursor.steerCursorTurn.mockRejectedValueOnce(new Error("steer failed"));
     useTaskStore.getState().ensureTask(CURSOR_THREAD.id, CURSOR_THREAD.cwd);
+    useTaskStore.getState().setActiveTurn(CURSOR_THREAD.id, "turn-live");
+    useTaskStore.getState().setTaskStatus(CURSOR_THREAD.id, "running");
     const deps = context({ running: true });
     const { result } = renderHook(() => useTurnRunner(deps));
 
@@ -425,6 +449,8 @@ describe("useTurnRunner", () => {
 
   it("sends Cursor steering attachments instead of silently discarding them", async () => {
     useTaskStore.getState().ensureTask(CURSOR_THREAD.id, CURSOR_THREAD.cwd);
+    useTaskStore.getState().setActiveTurn(CURSOR_THREAD.id, "turn-live");
+    useTaskStore.getState().setTaskStatus(CURSOR_THREAD.id, "running");
     const deps = context({
       running: true,
       attachments: [{ path: "/tmp/reference.png", name: "reference.png", kind: "image" }],
@@ -439,6 +465,34 @@ describe("useTurnRunner", () => {
       [{ path: "/tmp/reference.png", kind: "image" }],
     );
     expect(deps.setAttachments).toHaveBeenCalled();
+  });
+
+  it("turns a stale steer into a queued follow-up as soon as assistant output starts", async () => {
+    const store = useTaskStore.getState();
+    store.ensureTask(CURSOR_THREAD.id, CURSOR_THREAD.cwd);
+    store.setActiveTurn(CURSOR_THREAD.id, "turn-live");
+    store.setTaskStatus(CURSOR_THREAD.id, "running");
+    store.queueAssistantDelta(CURSOR_THREAD.id, "answer", "Final answer");
+    const deps = context({
+      running: true,
+      attachments: [{ path: "/tmp/reference.png", name: "reference.png", kind: "image" }],
+    });
+    const { result } = renderHook(() => useTurnRunner(deps));
+
+    let delivered = false;
+    await act(async () => { delivered = await result.current.steerMessage("one more thing"); });
+
+    expect(delivered).toBe(true);
+    expect(cursor.steerCursorTurn).not.toHaveBeenCalled();
+    expect(cursor.startCursorTurn).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]?.queuedTurns).toEqual([
+      expect.objectContaining({
+        text: "one more thing",
+        status: "queued",
+        attachments: [{ path: "/tmp/reference.png", name: "reference.png", kind: "image" }],
+      }),
+    ]);
+    expect(deps.setTransientStatus).toHaveBeenCalledWith("Message queued for the next turn");
   });
 
   it("cleans up a failed local-provider start so the thread can retry", async () => {
@@ -567,7 +621,13 @@ describe("useTurnRunner activating sub-agents mid-conversation", () => {
     await act(async () => { await result.current.sendMessage("more of them"); });
 
     expect(restartRuntimeForCapabilities).toHaveBeenCalledExactlyOnceWith(OPENAI_THREAD.id);
-    expect(resumeCall()?.[1]).toMatchObject({ config: { agents: { max_threads: 6 } } });
+    // The raised limit belongs to the OpenKiwi bridge, which enforces it per
+    // spawn. It is deliberately not mirrored into Codex's own agent runtime,
+    // which would otherwise get a second budget stacked on the bridge's.
+    expect(resumeCall()?.[1]).toMatchObject({ config: { agents: { max_threads: 1, max_depth: 1 } } });
+    expect(childSessions.ensureChildAgentBridge).toHaveBeenLastCalledWith(
+      expect.objectContaining({ settings: expect.objectContaining({ subagentMax: 6 }) }),
+    );
   });
 
   it("does not interrupt a runtime that has restarted since it was told anything", async () => {
@@ -588,7 +648,10 @@ describe("useTurnRunner activating sub-agents mid-conversation", () => {
     await act(async () => { await result.current.sendMessage("more of them"); });
 
     expect(restartRuntimeForCapabilities).not.toHaveBeenCalled();
-    expect(resumeCall()?.[1]).toMatchObject({ config: { agents: { max_threads: 6 } } });
+    expect(resumeCall()?.[1]).toMatchObject({ config: { agents: { max_threads: 1, max_depth: 1 } } });
+    expect(childSessions.ensureChildAgentBridge).toHaveBeenLastCalledWith(
+      expect.objectContaining({ settings: expect.objectContaining({ subagentMax: 6 }) }),
+    );
   });
 
   it("re-applies unchanged capabilities to an app-server that replaced the one told about them", async () => {
@@ -680,7 +743,9 @@ describe("useTurnRunner activating sub-agents mid-conversation", () => {
     expect(deps.setError).toHaveBeenCalledWith("another OpenAI task is still running");
   });
 
-  it("uses a captured policy's parallel limit for managed agents", async () => {
+  it("never gives the native agent runtime a budget of its own, whatever the user picked", async () => {
+    // The bridge is the only spawning authority, so a high managed limit must
+    // not turn into native parallelism the bridge cannot see or count.
     childSessions.ensureChildAgentBridge.mockResolvedValue(bridgeResult());
     const deps = openAiContext({
       effectiveSettings: { ...DEFAULT_SETTINGS, provider: "openai", model: "gpt-5.6-terra", subagentsEnabled: true, subagentMax: 12 },
@@ -689,7 +754,12 @@ describe("useTurnRunner activating sub-agents mid-conversation", () => {
 
     await act(async () => { await result.current.sendMessage("split this up"); });
 
-    expect(resumeCall()?.[1]).toMatchObject({ config: { agents: { max_threads: 4 } } });
+    expect(resumeCall()?.[1]).toMatchObject({
+      config: {
+        agents: { max_threads: 1, max_depth: 1 },
+        features: { multi_agent: false, multi_agent_v2: false },
+      },
+    });
   });
 
   it("does not revive a native route from an old captured policy when managed delegation is off", async () => {

@@ -1,5 +1,6 @@
 import type { Thread } from "../types";
 import type { TaskStatus } from "./taskStore";
+import { ownsChildren, type OwnershipLinks } from "./nativeAgentLinks";
 
 export type ThreadSidebarIndex = Record<string, Thread>;
 
@@ -26,14 +27,56 @@ export function filterThreadsForWorkspace(
 
 export type ThreadKindView = "main" | "subagents";
 
-export function isSubAgentThread(thread: Thread, childLinks: Record<string, unknown>): boolean {
-  return Boolean(childLinks[thread.id]) || Boolean(thread.parentThreadId) || thread.threadSource === "subagent";
+/**
+ * Remove child-only metadata from a thread that the durable graph proves is a
+ * root. Persisting this repair matters: otherwise deleting its final child can
+ * expose the old poisoned `parentThreadId` and move the root back into the
+ * Sub-agents inbox.
+ */
+export function repairRootThreadMetadata(thread: Thread, childLinks: OwnershipLinks): Thread {
+  if (!ownsChildren(childLinks, thread.id)) return thread;
+  const hasChildMetadata = Boolean(
+    thread.parentThreadId
+    || thread.threadSource === "subagent"
+    || thread.agentNickname
+    || thread.agentRole
+    || thread.agentPath,
+  );
+  if (!hasChildMetadata) return thread;
+  const {
+    parentThreadId: _parentThreadId,
+    agentNickname: _agentNickname,
+    agentRole: _agentRole,
+    agentPath: _agentPath,
+    ...withoutAgentMetadata
+  } = thread;
+  if (withoutAgentMetadata.threadSource !== "subagent") return withoutAgentMetadata;
+  const { threadSource: _threadSource, ...root } = withoutAgentMetadata;
+  return root;
+}
+
+/**
+ * Which inbox a conversation belongs in.
+ *
+ * OpenKiwi's own durable ownership records outrank whatever a provider reports
+ * on the thread itself: a conversation that owns children is a root, full stop,
+ * and depth is capped at one. Without that precedence a single reversed or
+ * self-referential runtime event could move the user's main conversation into
+ * the Sub-agents inbox permanently, because `parentThreadId` is persisted on
+ * the thread record and would keep answering yes forever after.
+ */
+export function isSubAgentThread(thread: Thread, childLinks: OwnershipLinks): boolean {
+  if (ownsChildren(childLinks, thread.id)) return false;
+  if (childLinks[thread.id]) return true;
+  // A thread reported as its own parent is a runtime artifact, not a child.
+  if (thread.parentThreadId && thread.parentThreadId !== thread.id) return true;
+  return thread.threadSource === "subagent";
 }
 
 /** Keep OpenKiwi child work browsable without mixing it into the user's main inbox. */
 export function filterThreadsByKind(
   threads: Thread[],
-  childLinks: Record<string, unknown>,
+  childLinks: OwnershipLinks,
   kind: ThreadKindView,
 ): Thread[] {
   const wantsChild = kind === "subagents";

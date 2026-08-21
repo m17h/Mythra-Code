@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { primaryModifierPressed } from "../lib/platform";
 
 export interface AppShortcutContext {
   modalOpen: boolean;
@@ -37,25 +38,25 @@ export function useAppShortcuts(context: AppShortcutContext): void {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return;
       const current = contextRef.current;
-      const meta = event.metaKey || event.ctrlKey;
+      const shortcutModifier = primaryModifierPressed(event);
       const key = event.key.toLowerCase();
-      if (meta && key === "k" && (!current.modalOpen || current.commandPaletteOpen)) {
+      if (shortcutModifier && key === "k" && (!current.modalOpen || current.commandPaletteOpen)) {
         event.preventDefault();
         current.toggleCommandPalette();
         return;
       }
       if (current.modalOpen) return;
-      if (meta && key === "f" && current.threadOpen) {
+      if (shortcutModifier && key === "f" && current.threadOpen) {
         event.preventDefault();
         current.openConversationSearch();
         return;
       }
-      if (meta && key === "n") {
+      if (shortcutModifier && key === "n") {
         event.preventDefault();
         current.newThread();
         return;
       }
-      if (meta && event.key === ",") {
+      if (shortcutModifier && event.key === ",") {
         event.preventDefault();
         current.openSettings();
         return;

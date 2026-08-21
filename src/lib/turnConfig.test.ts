@@ -5,7 +5,7 @@ import { OPENKIWI_DELEGATION_INSTRUCTIONS, openKiwiDeveloperInstructions } from 
 /** Skill-mention plus completion guidance: what every turn carries. */
 const BASE_INSTRUCTIONS = openKiwiDeveloperInstructions(false);
 import { childAgentMcpConfig, normalizeLmStudioBaseUrl, threadResumeParams, threadRuntimeConfig, threadStartParams } from "./turnConfig";
-import { LM_STUDIO_CODEX_PROVIDER_ID } from "./appConfig";
+import { LM_STUDIO_RUNTIME_PROVIDER_ID } from "./providerIds";
 import { codexModelProviderId, providerFromThread } from "./threadProvider";
 
 /** Provider ids Codex ships built in and refuses to let a config override. */
@@ -29,7 +29,7 @@ describe("OpenRouter runtime isolation", () => {
     const config = threadRuntimeConfig({ ...baseRun, provider: "openrouter", model: "google/test" }, { modelContextWindow: 1_000_000 });
     expect(config).toMatchObject({
       model_context_window: 1_000_000,
-      features: { multi_agent: false, apps: false, remote_plugin: false },
+      features: { multi_agent: false, multi_agent_v2: false, apps: false, remote_plugin: false },
       apps: { _default: { enabled: false } },
     });
     expect(config).not.toHaveProperty("features.shell_tool");
@@ -39,7 +39,7 @@ describe("OpenRouter runtime isolation", () => {
     const config = threadRuntimeConfig(baseRun, { modelContextWindow: 1_000_000 });
     expect(config).not.toHaveProperty("model_context_window");
     expect(config).not.toHaveProperty("apps");
-    expect(config.features).toEqual({ multi_agent: false });
+    expect(config.features).toEqual({ multi_agent: false, multi_agent_v2: false });
   });
 
   it("applies the isolation to new OpenRouter threads", () => {
@@ -85,10 +85,10 @@ describe("LM Studio provider configuration", () => {
     const start = threadStartParams(run, "/tmp/project", { interactive: true, modelContextWindow: 262_144 });
     expect(start).toMatchObject({
       model: "qwen/local",
-      modelProvider: LM_STUDIO_CODEX_PROVIDER_ID,
+      modelProvider: LM_STUDIO_RUNTIME_PROVIDER_ID,
       config: {
         model_providers: {
-          [LM_STUDIO_CODEX_PROVIDER_ID]: {
+          [LM_STUDIO_RUNTIME_PROVIDER_ID]: {
             name: "LM Studio",
             base_url: "http://127.0.0.1:1234/v1",
             env_key: "LMSTUDIO_API_KEY",
@@ -105,8 +105,8 @@ describe("LM Studio provider configuration", () => {
   it("reapplies the provider configuration when a local thread resumes", () => {
     const run = { ...baseRun, provider: "lmstudio" as const, model: "local-model", lmStudioBaseUrl: "http://mac-studio.local:1234/v1" };
     expect(threadResumeParams(run, "thread-local", "/tmp/project")).toMatchObject({
-      modelProvider: LM_STUDIO_CODEX_PROVIDER_ID,
-      config: { model_providers: { [LM_STUDIO_CODEX_PROVIDER_ID]: { base_url: "http://mac-studio.local:1234/v1" } } },
+      modelProvider: LM_STUDIO_RUNTIME_PROVIDER_ID,
+      config: { model_providers: { [LM_STUDIO_RUNTIME_PROVIDER_ID]: { base_url: "http://mac-studio.local:1234/v1" } } },
     });
   });
 
@@ -138,12 +138,12 @@ describe("LM Studio provider configuration", () => {
   });
 
   it("keeps `lmstudio` as the app-facing identity while renaming only the Codex id", () => {
-    expect(codexModelProviderId("lmstudio")).toBe(LM_STUDIO_CODEX_PROVIDER_ID);
+    expect(codexModelProviderId("lmstudio")).toBe(LM_STUDIO_RUNTIME_PROVIDER_ID);
     expect(codexModelProviderId("openrouter")).toBe("openrouter");
     expect(codexModelProviderId("openai")).toBeUndefined();
     // A thread the runtime reports back under the private id is still LM Studio,
     // and threads persisted before the rename keep resolving too.
-    expect(providerFromThread({ modelProvider: LM_STUDIO_CODEX_PROVIDER_ID }, "openai")).toBe("lmstudio");
+    expect(providerFromThread({ modelProvider: LM_STUDIO_RUNTIME_PROVIDER_ID }, "openai")).toBe("lmstudio");
     expect(providerFromThread({ modelProvider: "lmstudio" }, "openai")).toBe("lmstudio");
   });
 });
@@ -184,12 +184,12 @@ describe("cross-provider sub-agent bridge", () => {
       config: {
         developer_instructions: expect.stringContaining(OPENKIWI_DELEGATION_INSTRUCTIONS),
         mcp_servers: { openkiwi: { command: bridge.command } },
-        features: { multi_agent: false },
+        features: { multi_agent: false, multi_agent_v2: false },
       },
     });
     expect(without).toMatchObject({
       developerInstructions: BASE_INSTRUCTIONS,
-      config: { features: { multi_agent: false } },
+      config: { features: { multi_agent: false, multi_agent_v2: false } },
     });
   });
 
@@ -207,7 +207,7 @@ describe("cross-provider sub-agent bridge", () => {
       config: {
         developer_instructions: expect.stringContaining(OPENKIWI_DELEGATION_INSTRUCTIONS),
         mcp_servers: { openkiwi: { args: bridge.args } },
-        features: { multi_agent: false },
+        features: { multi_agent: false, multi_agent_v2: false },
       },
     });
     expect(params).not.toHaveProperty("modelProvider");
@@ -219,6 +219,33 @@ describe("cross-provider sub-agent bridge", () => {
     const childRun = { ...baseRun, subagentsEnabled: false, subagentMax: 1 };
     const config = threadRuntimeConfig(childRun);
     expect(config).not.toHaveProperty("mcp_servers");
-    expect(config).toMatchObject({ agents: { max_threads: 1, max_depth: 1 }, features: { multi_agent: false } });
+    expect(config).toMatchObject({ agents: { max_threads: 1, max_depth: 1 }, features: { multi_agent: false, multi_agent_v2: false } });
+  });
+
+  it("never hands the native agent runtime a parallel budget of its own", () => {
+    // `subagentMax` is the OpenKiwi bridge's budget and the bridge enforces it
+    // per spawn. Mirroring it into `agents.max_threads` gave Codex a second,
+    // independent budget stacked on top, so a root configured for two children
+    // could reach four workers.
+    for (const subagentMax of [1, 2, 3, 24]) {
+      const config = threadRuntimeConfig({ ...baseRun, subagentMax });
+      expect(config).toMatchObject({
+        agents: { max_threads: 1, max_depth: 1 },
+        features: { multi_agent: false, multi_agent_v2: false },
+      });
+    }
+  });
+
+  it("keeps both native delegation generations off on every start and resume", () => {
+    const start = threadStartParams(baseRun, "/work", { interactive: true });
+    const resume = threadResumeParams(baseRun, "thread-1", "/work", { refreshRuntimeConfig: true });
+    for (const params of [start, resume]) {
+      expect(params).toMatchObject({
+        config: {
+          agents: { max_threads: 1, max_depth: 1 },
+          features: { multi_agent: false, multi_agent_v2: false },
+        },
+      });
+    }
   });
 });

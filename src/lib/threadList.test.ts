@@ -8,6 +8,7 @@ import {
   optimisticStartedThread,
   reconcileWorkspaceThreads,
   rememberSidebarThread,
+  repairRootThreadMetadata,
   upsertThread,
 } from "./threadList";
 
@@ -76,6 +77,42 @@ describe("thread sidebar list", () => {
     const nativeChild = makeThread("native-child", { parentThreadId: "main", threadSource: "subagent" });
     expect(filterThreadsByKind([main, nativeChild], {}, "main")).toEqual([main]);
     expect(filterThreadsByKind([main, nativeChild], {}, "subagents")).toEqual([nativeChild]);
+  });
+
+  it("keeps a thread that owns children in the main inbox despite reversed thread metadata", () => {
+    // The runtime stamped the root's own thread record as a sub-agent of one of
+    // its children. That metadata is persisted and would answer yes forever
+    // after, so OpenKiwi's ownership records outrank it: a thread that owns
+    // children is a root, and the user's main conversation stays put.
+    const main = makeThread("main", { parentThreadId: "child", threadSource: "subagent" });
+    const child = makeThread("child");
+    const links = { child: { rootThreadId: "main" } };
+    expect(filterThreadsByKind([main, child], links, "main")).toEqual([main]);
+    expect(filterThreadsByKind([main, child], links, "subagents")).toEqual([child]);
+  });
+
+  it("never classifies a thread reported as its own parent", () => {
+    const main = makeThread("main", { parentThreadId: "main" });
+    expect(filterThreadsByKind([main], {}, "main")).toEqual([main]);
+    expect(filterThreadsByKind([main], {}, "subagents")).toEqual([]);
+  });
+
+  it("strips poisoned child metadata from a proven root before its last link disappears", () => {
+    const poisoned = makeThread("main", {
+      parentThreadId: "child",
+      threadSource: "subagent",
+      agentNickname: "wrong",
+      agentRole: "worker",
+      agentPath: "/wrong/path",
+    });
+    const repaired = repairRootThreadMetadata(poisoned, { child: { rootThreadId: "main" } });
+    expect(repaired).not.toBe(poisoned);
+    expect(repaired).not.toHaveProperty("parentThreadId");
+    expect(repaired).not.toHaveProperty("threadSource");
+    expect(repaired).not.toHaveProperty("agentNickname");
+    expect(repaired).not.toHaveProperty("agentRole");
+    expect(repaired).not.toHaveProperty("agentPath");
+    expect(filterThreadsByKind([repaired], {}, "main")).toEqual([repaired]);
   });
 
   it("uses working statuses and persisted bindings for project counts", () => {

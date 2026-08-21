@@ -1,11 +1,11 @@
 # OpenKiwi
 
 > [!IMPORTANT]
-> This is the original **macOS version** of OpenKiwi. The Windows version is developed and released separately in [m17h/OpenKiwi-Windows](https://github.com/m17h/OpenKiwi-Windows).
+> This is the canonical OpenKiwi source repository for both macOS and Windows.
 
 OpenKiwi is a fast, local-first desktop coding harness with a user-owned instruction prompt. It supports OpenAI through an official ChatGPT subscription sign-in flow, Claude through the locally installed Claude Code CLI, Cursor subscription models (including Grok when entitled) through Cursor Agent, OpenRouter through a user-supplied API key, and local models served by LM Studio.
 
-**Platform support:** this repository's packaged releases target **macOS on Apple silicon** only, and its update feed publishes only a `darwin-aarch64` bundle. Windows downloads, source, and release instructions live in [OpenKiwi-Windows](https://github.com/m17h/OpenKiwi-Windows). Intel Macs and Linux are not supported.
+**Platform support:** packaged releases target **macOS on Apple silicon** and **Windows x64**. Both platforms are published under the same version and GitHub release. Intel Macs and Linux are not supported.
 
 This repository contains a runnable desktop coding environment: normal chats, folder-bound project threads, concurrent background tasks, steering and interruption, three permission modes, typed approvals and user-input requests, an explicit empty-by-default instruction prompt, opt-in harness-level sub-agents, prompt/agent profiles, multi-step agent workflows, animated model controls, and an integrated workspace studio.
 
@@ -22,7 +22,7 @@ Download it here: https://www.morgangermani.com/projects/openkiwi
 
 Requirements:
 
-- macOS on Apple silicon (the supported release platform)
+- macOS on Apple silicon or Windows x64
 - Node.js 20.19 or newer
 - Rust stable
 - A recent Codex runtime (the Codex CLI or ChatGPT for macOS), Claude Code CLI, Cursor Agent, and/or LM Studio — each provider needs only its own runtime
@@ -74,7 +74,7 @@ OpenRouter's Responses API is currently beta, so compatibility can change upstre
 
 Start LM Studio's local server, then open **Settings → Models & accounts**, choose LM Studio, and test the default `http://127.0.0.1:1234/v1` connection. OpenKiwi discovers language models from LM Studio's live catalog, excludes embedding-only models when the native catalog is available, and carries each model's reported context window and tool-use capability into the composer and thread runtime. You can also enter a different HTTP(S) server URL for LM Studio on another trusted machine.
 
-Authentication is optional for the default localhost server. If LM Studio authentication is enabled, store its token in Settings; OpenKiwi keeps it in the macOS Keychain and exposes it only to the local App Server child process. LM Studio turns still use OpenKiwi's normal permissions, tools, MCP servers, workflows, schedules, and managed cross-provider sub-agents.
+Authentication is optional for the default localhost server. If LM Studio authentication is enabled, store its token in Settings; OpenKiwi keeps it in the operating system credential store and exposes it only to the local App Server child process. LM Studio turns still use OpenKiwi's normal permissions, tools, MCP servers, workflows, schedules, and managed cross-provider sub-agents.
 
 ## Prompt transparency
 
@@ -198,7 +198,7 @@ The small [`model-pricing.json`](model-pricing.json) catalog is fetched once on 
 - Long transcripts are virtualized and Markdown/terminal code is split into lazy chunks to keep startup and scrolling responsive.
 - While a turn is running, Send adds a durable FIFO follow-up by default. A separate action can steer a message into the active turn, and Stop interrupts it without disturbing other threads.
 - Completed background work can raise a native notification. The sidebar shows running and unread state.
-- `⌘K` opens a command palette across commands, projects, and current-scope threads.
+- `⌘K` on macOS or `Ctrl+K` on Windows opens a command palette across commands, projects, and current-scope threads.
 - Scheduled project prompts run while OpenKiwi is open and create normal, inspectable App Server threads.
 
 ## In-app updates and releases
@@ -207,24 +207,27 @@ OpenKiwi checks the public [`m17h/OpenKiwi` GitHub Releases](https://github.com/
 
 Both `latest.json` and the platform update bundle are hosted as GitHub Release assets. The app embeds only the updater public key and rejects artifacts that do not carry a valid matching signature. The private updater key is not part of this repository.
 
-Publisher workflow:
+Publisher workflow (run each native build on its matching operating system):
 
 ```bash
 # Keep all version declarations synchronized (patch, minor, major, or exact version)
 npm run version:bump -- patch
 
-# With Apple notarization variables available, build and stage the latest assets
+# Dispatch to the macOS or Windows native builder
 npm run release:build
 
-# Publish release-assets/latest as the public GitHub Release
+# Attach this platform's assets to the matching draft release
 npm run release:publish
+
+# After both native machines have uploaded their assets, publish the combined release
+npm run release:finalize
 ```
 
-`release-assets/` is intentionally ignored by Git. It holds only the current local staging payload and optional `release-notes.md`. On Morgan's release Mac, the encrypted updater key lives at `~/.tauri/openkiwi-updater.key` and its password lives in macOS Keychain. Back up that key securely: installed copies cannot trust future updates if it is lost.
+macOS stages artifacts in `release-assets/`; Windows stages them in `RELEASE ASSETS/`. Both directories are intentionally ignored by Git. Each platform publisher merges its updater entry into one draft `latest.json`; finalization refuses to publish until both platform entries and artifact sets are present. Each platform retains its existing updater signing key, and both artifact sets belong to the same `vX.Y.Z` GitHub release. Back up both keys securely: installed copies cannot trust future updates if their platform key is lost.
 
 ## Verification and release notes
 
-`npm run verify` runs ESLint, strict Clippy, TypeScript and Rust checks, unit/integration component tests, and the production web build. `npm run desktop:build` produces only the local `.app` without updater artifacts; it never invokes Tauri's DMG bundler. `npm run release:build` requires publisher-owned signing/notarization credentials, builds the signed update payload, and creates the DMG exclusively through the standalone `create-dmg` command. OpenKiwi does not embed those credentials or bundle Codex.
+`npm run verify` runs release-configuration checks, ESLint, strict Clippy, TypeScript and Rust checks, unit/integration component tests, browser timeline tests, and the production web build on both macOS and Windows CI. `npm run desktop:build` is a local non-release build. `npm run release:build` dispatches to the native platform builder and requires that platform's publisher-owned credentials. OpenKiwi does not embed those credentials or bundle Codex.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the component and state model.
 

@@ -3,7 +3,7 @@ import { auditEvent, rpc } from "../lib/codex";
 import { friendlyError } from "../lib/errors";
 import { useTaskStore, type TaskStatus } from "../lib/taskStore";
 import { commandSandbox, threadStartParams, turnStartParams } from "../lib/turnConfig";
-import type { LmStudioModel } from "../components/LmStudioModelControl";
+import type { LMStudioModel } from "../lib/lmStudio";
 import {
   interpolateWorkflowText,
   nextWorkflowFailureAt,
@@ -192,7 +192,7 @@ interface WorkflowEngineDeps {
   chatGptConnected: boolean;
   openRouterReady: boolean;
   lmStudioReady?: boolean;
-  lmStudioModels?: LmStudioModel[];
+  lmStudioModels?: LMStudioModel[];
   customAgents: CustomAgentProfile[];
   ensureSkillRoots: () => Promise<void>;
   bindThreadToProject: (threadId: string, projectPath: string) => void;
@@ -226,7 +226,7 @@ function workflowPreflight(
     return { ready: false, retryWhenReady: true, message: "Add an OpenRouter API key before running this workflow." };
   }
   if (workflow.run.provider === "lmstudio" && !current.lmStudioReady) {
-    return { ready: false, retryWhenReady: true, message: "Start LM Studio, load the workflow model, and refresh the local server connection." };
+    return { ready: false, retryWhenReady: true, message: "Start LM Studio, load a model, and refresh its connection before running this workflow." };
   }
   if (workflow.run.provider === "claude" || workflow.run.provider === "cursor") {
     const provider = workflow.run.provider === "cursor" ? "Cursor" : "Claude";
@@ -319,7 +319,7 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
         serviceName: `OpenKiwi Workflow: ${workflow.name}`,
         customAgents: current.customAgents,
         modelContextWindow: workflow.run.provider === "lmstudio"
-          ? current.lmStudioModels?.find((entry) => entry.id === workflow.run.model)?.context_length
+          ? current.lmStudioModels?.find((entry) => entry.id === workflow.run.model)?.maxContextLength
           : undefined,
         interactive: source === "manual",
       }));
@@ -649,7 +649,7 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
     check();
     const timer = window.setInterval(check, 30_000);
     return () => window.clearInterval(timer);
-  }, [runWorkflow, deps.runtimeAvailable, deps.chatGptConnected, deps.openRouterReady]);
+  }, [runWorkflow, deps.runtimeAvailable, deps.chatGptConnected, deps.lmStudioReady, deps.openRouterReady]);
 
   return { runWorkflow, stopWorkflow };
 }

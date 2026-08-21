@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { resetTaskStore, sanitizeStoredQueuedTurns, useTaskStore } from "./taskStore";
+import { isAssistantOutputActive, resetTaskStore, sanitizeStoredQueuedTurns, useTaskStore } from "./taskStore";
 import { durationForTurn, resetTurnDurationsForTests } from "./turnDurations";
 
 describe("task store", () => {
@@ -56,6 +56,41 @@ describe("task store", () => {
     store.completeTurn("thread-a", undefined, "completed");
     expect(useTaskStore.getState().statuses).not.toBe(statuses);
     expect(useTaskStore.getState().statuses["thread-a"]).toBe("completed");
+  });
+
+  it("locks steering synchronously through final message completion and releases it at real work or turn completion", () => {
+    const store = useTaskStore.getState();
+    store.ensureTask("thread-a", "/a");
+    store.setActiveTurn("thread-a", "turn-a");
+    store.setTaskStatus("thread-a", "running");
+    store.upsertActivity("thread-a", { id: "earlier-tool", kind: "command", title: "npm test", status: "inProgress" });
+    store.queueReasoningDelta("thread-a", "earlier-reasoning", "Initial thought", "content");
+    store.flushDeltas();
+
+    store.queueAssistantDelta("thread-a", "answer", "Writing the final answer");
+    expect(isAssistantOutputActive(useTaskStore.getState().tasks["thread-a"])).toBe(true);
+    expect(useTaskStore.getState().tasks["thread-a"].messages).toEqual([]);
+
+    store.flushDeltas();
+    store.completeMessage("thread-a", { id: "answer", role: "assistant", text: "Writing the final answer" });
+    expect(isAssistantOutputActive(useTaskStore.getState().tasks["thread-a"])).toBe(true);
+
+    // A late update to work that began before the response is not a new work
+    // boundary and must not flash Steer back on over the final answer.
+    store.upsertActivity("thread-a", { id: "earlier-tool", kind: "command", title: "npm test", status: "completed" });
+    expect(isAssistantOutputActive(useTaskStore.getState().tasks["thread-a"])).toBe(true);
+    store.queueReasoningDelta("thread-a", "earlier-reasoning", " late detail", "content");
+    expect(isAssistantOutputActive(useTaskStore.getState().tasks["thread-a"])).toBe(true);
+    store.upsertActivity("thread-a", { id: "late-warning", kind: "warning", title: "Runtime warning" });
+    expect(isAssistantOutputActive(useTaskStore.getState().tasks["thread-a"])).toBe(true);
+
+    store.upsertActivity("thread-a", { id: "later-tool", kind: "command", title: "npm run build", status: "inProgress" });
+    expect(isAssistantOutputActive(useTaskStore.getState().tasks["thread-a"])).toBe(false);
+
+    store.queueAssistantDelta("thread-a", "answer-2", "Now actually finishing");
+    expect(isAssistantOutputActive(useTaskStore.getState().tasks["thread-a"])).toBe(true);
+    store.completeTurn("thread-a", "turn-a", "completed");
+    expect(isAssistantOutputActive(useTaskStore.getState().tasks["thread-a"])).toBe(false);
   });
 
   it("terminalizes an unfinished tool card when its provider turn ends", () => {

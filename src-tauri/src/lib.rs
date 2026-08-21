@@ -66,6 +66,8 @@ use persistence::{
     state_write, StateDb,
 };
 use process_launch::{background_command, background_std_command};
+#[cfg(windows)]
+use process_launch::interactive_command;
 #[cfg(test)]
 use project_git::*;
 use project_git::{
@@ -77,7 +79,8 @@ use project_git::{
 #[cfg(test)]
 use skills::*;
 use skills::{
-    local_skills_create, local_skills_import, local_skills_scan, local_skills_sync,
+    local_skills_create, local_skills_delete, local_skills_import, local_skills_scan,
+    local_skills_sync,
     normalize_skill_name,
 };
 
@@ -753,8 +756,14 @@ fn managed_runtime_config(openrouter_base_url: &str) -> Vec<(&'static str, &'sta
     vec![
         ("", "cli_auth_credentials_store", "\"keyring\"".into()),
         ("", "project_doc_max_bytes", "0".into()),
+        // The OpenKiwi bridge is the only spawning authority, so the native
+        // agent runtime is pinned to a single non-nesting thread. Depth is
+        // re-asserted alongside the thread ceiling: a stale or hand-edited
+        // `max_depth` would otherwise let native delegation nest below a child.
         ("agents", "max_threads", "1".into()),
+        ("agents", "max_depth", "1".into()),
         ("features", "multi_agent", "false".into()),
+        ("features", "multi_agent_v2", "false".into()),
         ("model_providers.openrouter", "base_url", base_url),
     ]
 }
@@ -808,7 +817,18 @@ fn reconcile_config_toml(existing: &str, managed: &[(&str, &str, String)]) -> Op
                         }
                     }
                     None => {
-                        lines.insert(start, desired);
+                        // Append at the end of the section rather than the
+                        // top, so several managed keys in one section keep the
+                        // order they are declared in above. Inserting at the
+                        // top reversed them, which is how `multi_agent_v2`
+                        // landed before `multi_agent` in a freshly written
+                        // `[features]`. Trailing blank separator lines are
+                        // stepped over so the key stays inside its section.
+                        let mut insert_at = section_end.min(lines.len());
+                        while insert_at > start && lines[insert_at - 1].trim().is_empty() {
+                            insert_at -= 1;
+                        }
+                        lines.insert(insert_at, desired);
                         changed = true;
                     }
                 }
@@ -871,6 +891,7 @@ max_depth = 1
 
 [features]
 multi_agent = false
+multi_agent_v2 = false
 
 [model_providers.openrouter]
 name = "OpenRouter"
@@ -899,6 +920,7 @@ wire_api = "responses"
     Ok(())
 }
 
+#[cfg(not(windows))]
 fn find_on_path(program: &str) -> Option<PathBuf> {
     env::var_os("PATH").and_then(|path| {
         env::split_paths(&path)
@@ -907,9 +929,82 @@ fn find_on_path(program: &str) -> Option<PathBuf> {
     })
 }
 
+/// Windows command discovery must honor registered app execution aliases.
+/// Looking only for `PATH\\program.exe` misses packaged apps, while `where.exe`
+/// uses the same resolution rules as a Windows terminal. Provider-specific npm
+/// shims are resolved to their native binaries separately so user prompt text
+/// never has to pass through `cmd.exe` parsing.
+#[cfg(windows)]
+fn find_on_path(program: &str) -> Option<PathBuf> {
+    let output = background_std_command("where.exe")
+        .arg(program)
+        .output()
+        .ok()?;
+    output.status.success().then_some(())?;
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(PathBuf::from)
+        .find(|candidate| candidate.is_file())
+}
+
 fn push_candidate(candidates: &mut Vec<PathBuf>, candidate: PathBuf) {
     if !candidates.contains(&candidate) {
         candidates.push(candidate);
+    }
+}
+
+#[cfg(windows)]
+fn push_windows_npm_codex_candidates_at(candidates: &mut Vec<PathBuf>, app_data: &Path) {
+    let package = app_data.join("npm/node_modules/@openai/codex");
+    for (platform_package, target) in [
+        ("codex-win32-x64", "x86_64-pc-windows-msvc"),
+        ("codex-win32-arm64", "aarch64-pc-windows-msvc"),
+    ] {
+        let vendor = package
+            .join("node_modules/@openai")
+            .join(platform_package)
+            .join("vendor")
+            .join(target);
+        // Current Codex npm packages place the native executable in `bin`.
+        // Keep the older layout as a fallback so existing installations keep
+        // working when OpenKiwi is launched from Explorer with a stale PATH.
+        push_candidate(candidates, vendor.join("bin/codex.exe"));
+        push_candidate(candidates, vendor.join("codex/codex.exe"));
+        push_candidate(
+            candidates,
+            package.join("vendor").join(target).join("bin/codex.exe"),
+        );
+        push_candidate(
+            candidates,
+            package.join("vendor").join(target).join("codex/codex.exe"),
+        );
+    }
+}
+
+#[cfg(windows)]
+fn push_windows_npm_codex_candidates(candidates: &mut Vec<PathBuf>) {
+    if let Some(app_data) = env::var_os("APPDATA").map(PathBuf::from) {
+        push_windows_npm_codex_candidates_at(candidates, &app_data);
+    }
+}
+
+#[cfg(windows)]
+fn push_windows_npm_claude_candidates(candidates: &mut Vec<PathBuf>) {
+    let Some(app_data) = env::var_os("APPDATA").map(PathBuf::from) else {
+        return;
+    };
+    let package = app_data.join("npm/node_modules/@anthropic-ai/claude-code");
+    push_candidate(candidates, package.join("bin/claude.exe"));
+    for platform_package in ["claude-code-win32-x64", "claude-code-win32-arm64"] {
+        push_candidate(
+            candidates,
+            package
+                .join("node_modules/@anthropic-ai")
+                .join(platform_package)
+                .join("claude.exe"),
+        );
     }
 }
 
@@ -952,6 +1047,9 @@ async fn resolve_codex_binary(app: &AppHandle) -> Result<PathBuf, String> {
         });
     }
 
+    #[cfg(windows)]
+    push_windows_npm_codex_candidates(&mut candidates);
+
     if let Some(candidate) = find_on_path(executable_name) {
         push_candidate(&mut candidates, candidate);
     }
@@ -974,7 +1072,9 @@ async fn resolve_codex_binary(app: &AppHandle) -> Result<PathBuf, String> {
         );
         for relative in [
             ".local/bin/codex",
+            ".local/bin/codex.exe",
             ".cargo/bin/codex",
+            ".cargo/bin/codex.exe",
             ".npm-global/bin/codex",
             ".bun/bin/codex",
             ".volta/bin/codex",
@@ -983,6 +1083,16 @@ async fn resolve_codex_binary(app: &AppHandle) -> Result<PathBuf, String> {
         }
     }
 
+    #[cfg(windows)]
+    for candidate in candidates.into_iter().filter(|candidate| candidate.is_file()) {
+        // `where.exe` can expose protected WindowsApps resource paths that
+        // exist but cannot be launched directly. Accept only a runtime that
+        // successfully executes, then the later app-server spawn is reliable.
+        if runtime_version(&candidate).await.is_some() {
+            return Ok(candidate);
+        }
+    }
+    #[cfg(not(windows))]
     if let Some(candidate) = candidates.into_iter().find(|candidate| candidate.is_file()) {
         return Ok(candidate);
     }
@@ -1056,13 +1166,13 @@ async fn codex_runtime_status(app: AppHandle) -> CodexRuntimeStatus {
                 compatible,
             }
         }
-        Err(_) => CodexRuntimeStatus {
+        Err(error) => CodexRuntimeStatus {
             available: false,
             source: None,
             path: None,
             version: None,
             compatible: false,
-            warning: None,
+            warning: Some(error),
         },
     }
 }
@@ -1081,6 +1191,8 @@ async fn resolve_claude_binary(app: &AppHandle) -> Result<PathBuf, String> {
     }
 
     let mut candidates = Vec::new();
+    #[cfg(windows)]
+    push_windows_npm_claude_candidates(&mut candidates);
     if let Some(candidate) = find_on_path(executable_name) {
         push_candidate(&mut candidates, candidate);
     }
@@ -1092,6 +1204,7 @@ async fn resolve_claude_binary(app: &AppHandle) -> Result<PathBuf, String> {
     if let Ok(home) = app.path().home_dir() {
         for relative in [
             ".local/bin/claude",
+            ".local/bin/claude.exe",
             ".npm-global/bin/claude",
             ".bun/bin/claude",
             ".volta/bin/claude",
@@ -1099,6 +1212,13 @@ async fn resolve_claude_binary(app: &AppHandle) -> Result<PathBuf, String> {
             push_candidate(&mut candidates, home.join(relative));
         }
     }
+    #[cfg(windows)]
+    for candidate in candidates.into_iter().filter(|candidate| candidate.is_file()) {
+        if runtime_version(&candidate).await.is_some() {
+            return Ok(candidate);
+        }
+    }
+    #[cfg(not(windows))]
     if let Some(candidate) = candidates.into_iter().find(|candidate| candidate.is_file()) {
         return Ok(candidate);
     }
@@ -1109,8 +1229,7 @@ async fn resolve_claude_binary(app: &AppHandle) -> Result<PathBuf, String> {
     Err("OpenKiwi could not find Claude Code. Install Claude Code, sign in with `claude auth login`, then try again. Advanced users can set OPENKIWI_CLAUDE_PATH.".into())
 }
 
-fn subscription_only_command(path: &Path) -> Command {
-    let mut command = background_command(path);
+fn configure_claude_subscription(command: &mut Command) {
     command
         .env_remove("ANTHROPIC_API_KEY")
         .env_remove("ANTHROPIC_AUTH_TOKEN")
@@ -1135,6 +1254,11 @@ fn subscription_only_command(path: &Path) -> Command {
         .env_remove("VERTEX_REGION_CLAUDE_3_5_SONNET")
         .env("COLUMNS", "1000")
         .env("NO_COLOR", "1");
+}
+
+fn subscription_only_command(path: &Path) -> Command {
+    let mut command = background_command(path);
+    configure_claude_subscription(&mut command);
     command
 }
 
@@ -1166,17 +1290,20 @@ fn parse_claude_auth_status(stdout: &[u8]) -> Option<Value> {
 async fn read_claude_runtime_status(app: &AppHandle) -> ClaudeRuntimeStatus {
     let warning = claude_credential_override_present()
     .then(|| "OpenKiwi ignores Anthropic credential, proxy, and hosted-provider environment overrides for Claude subscription sessions, so this provider uses only your Claude Code login.".to_string());
-    let Ok(path) = resolve_claude_binary(app).await else {
-        return ClaudeRuntimeStatus {
-            available: false,
-            path: None,
-            version: None,
-            logged_in: false,
-            auth_method: None,
-            email: None,
-            subscription_type: None,
-            warning,
-        };
+    let path = match resolve_claude_binary(app).await {
+        Ok(path) => path,
+        Err(error) => {
+            return ClaudeRuntimeStatus {
+                available: false,
+                path: None,
+                version: None,
+                logged_in: false,
+                auth_method: None,
+                email: None,
+                subscription_type: None,
+                warning: Some(error),
+            };
+        }
     };
 
     let version = runtime_version(&path).await;
@@ -1261,7 +1388,24 @@ async fn claude_login(app: AppHandle) -> Result<(), String> {
                 .into()
         })
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        let mut command = interactive_command(&path);
+        configure_claude_subscription(&mut command);
+        command
+            .args(["auth", "login"])
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| {
+                format!(
+                    "Could not open Claude Code sign-in in a Windows terminal: {error}. Run `claude auth login` yourself, then refresh Claude status."
+                )
+            })
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = path;
         Err("Run `claude auth login` in a terminal, then refresh Claude status in OpenKiwi.".into())
@@ -2960,6 +3104,29 @@ async fn has_lmstudio_key() -> bool {
 }
 
 #[tauri::command]
+async fn list_openrouter_models() -> Result<Value, String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|error| format!("Could not create the OpenRouter catalog client: {error}"))?;
+    let mut request = client
+        .get("https://openrouter.ai/api/v1/models?supported_parameters=tools&limit=1000")
+        .header("X-Title", "OpenKiwi");
+    if let Some(key) = openrouter_key().await {
+        request = request.bearer_auth(key);
+    }
+    request
+        .send()
+        .await
+        .map_err(|error| format!("Could not reach the OpenRouter model catalog: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("OpenRouter rejected the model catalog request: {error}"))?
+        .json::<Value>()
+        .await
+        .map_err(|error| format!("Could not read the OpenRouter model catalog: {error}"))
+}
+
+#[tauri::command]
 async fn list_lmstudio_models(base_url: String) -> Result<Value, String> {
     let base_url = normalize_lmstudio_base_url(&base_url)?;
     let client = reqwest::Client::builder()
@@ -2983,9 +3150,6 @@ async fn list_lmstudio_models(base_url: String) -> Result<Value, String> {
         }
     }
 
-    // Older LM Studio builds may not expose the native v1 catalog yet. Their
-    // OpenAI-compatible model list is still sufficient for model selection,
-    // although it cannot distinguish embedding models or expose capabilities.
     let mut compatibility_url = base_url;
     let path = format!("{}/models", compatibility_url.path().trim_end_matches('/'));
     compatibility_url.set_path(&path);
@@ -3000,29 +3164,6 @@ async fn list_lmstudio_models(base_url: String) -> Result<Value, String> {
         .json::<Value>()
         .await
         .map_err(|error| format!("Could not read LM Studio's model catalog: {error}"))
-}
-
-#[tauri::command]
-async fn list_openrouter_models() -> Result<Value, String> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(20))
-        .build()
-        .map_err(|error| format!("Could not create the OpenRouter catalog client: {error}"))?;
-    let mut request = client
-        .get("https://openrouter.ai/api/v1/models?supported_parameters=tools&limit=1000")
-        .header("X-Title", "OpenKiwi");
-    if let Some(key) = openrouter_key().await {
-        request = request.bearer_auth(key);
-    }
-    request
-        .send()
-        .await
-        .map_err(|error| format!("Could not reach the OpenRouter model catalog: {error}"))?
-        .error_for_status()
-        .map_err(|error| format!("OpenRouter rejected the model catalog request: {error}"))?
-        .json::<Value>()
-        .await
-        .map_err(|error| format!("Could not read the OpenRouter model catalog: {error}"))
 }
 
 /// Identity of the app-server that will serve the next RPC, starting it if it
@@ -3204,6 +3345,7 @@ pub fn run() {
             local_skills_sync,
             local_skills_import,
             local_skills_create,
+            local_skills_delete,
             normal_chat_workspace,
             codex_rpc,
             codex_respond,

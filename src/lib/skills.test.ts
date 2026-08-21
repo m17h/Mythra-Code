@@ -35,4 +35,14 @@ describe("local skills", () => {
     expect(skills.map((skill) => skill.name)).toEqual(["deploy", "deploy-2"]);
     expect(skills.map((skill) => skill.path)).toEqual(["/skills/a.md", "/skills/b.md"]);
   });
+
+  it("omits app-only removals while leaving their source files untouched", () => {
+    const skills = resolveLocalSkills(
+      [file("/skills/review.md", "review"), file("/skills/release.md", "release")],
+      {},
+      [],
+      ["/skills/review.md"],
+    );
+    expect(skills.map((skill) => skill.path)).toEqual(["/skills/release.md"]);
+  });
 });

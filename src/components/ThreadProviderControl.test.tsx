@@ -23,4 +23,14 @@ describe("ThreadProviderControl", () => {
     expect(screen.getByRole("menuitem", { name: /Default for new threads/ })).toBeInTheDocument();
     expect(screen.getByText("OpenAI · change in Settings")).toBeInTheDocument();
   });
+
+  it("offers LM Studio as a local provider", () => {
+    const onProvider = vi.fn();
+    render(<ThreadProviderControl provider="openai" model="gpt-5.6-sol" defaultProvider="openai" threadStarted={false} onProvider={onProvider} onDefaultSettings={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "New thread provider: OpenAI" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /LM Studio/ }));
+
+    expect(onProvider).toHaveBeenCalledWith("lmstudio");
+  });
 });

@@ -28,9 +28,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": [
-      "app"
-    ],
+    "targets": ["app"],
     "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
@@ -45,9 +43,7 @@
   "plugins": {
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEREMjg0NDc1QTlCN0Q0OEYKUldTUDFMZXBkVVFvM1NHa21BajdjbXN5ZStISEhIeWlEbW00NDN2VHZCWmZjc3FpTmNwWG81UHQK",
-      "endpoints": [
-        "https://github.com/m17h/OpenKiwi/releases/latest/download/latest.json"
-      ]
+      "endpoints": ["https://github.com/m17h/OpenKiwi/releases/latest/download/latest.json"]
     }
   }
 }

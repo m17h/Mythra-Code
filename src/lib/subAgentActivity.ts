@@ -1,4 +1,5 @@
 import { childAgentModel, childLifecycleForLink, providerDisplayName, type ChildAgentLink } from "./childAgents";
+import type { NativeAgentLink } from "./nativeAgentLinks";
 import type { TaskStatus } from "./taskStore";
 import type { AgentRecord } from "../components/StudioDock";
 import type { Provider } from "../types";
@@ -130,6 +131,18 @@ export interface SubAgentWorkerInput {
   /** Hide durable children from earlier root turns without deleting their
    * ownership records or their separately browsable threads. */
   runStartedAt?: number;
+  /** Durable ownership for provider-native children, which carries the task
+   * title and spawn time their bare agent records do not. */
+  nativeLinks?: Record<string, NativeAgentLink>;
+  /** A native child runs inside the root's own provider, so the root's
+   * provider and model are what the row should name. */
+  nativeProvider?: Provider;
+  nativeModel?: string;
+}
+
+/** A filesystem-looking `agent.path`, which is not a provider/model summary. */
+function isPathLike(value: string): boolean {
+  return value.includes("/") || value.includes("\\");
 }
 
 /**
@@ -147,6 +160,9 @@ export function collectSubAgentWorkers(input: SubAgentWorkerInput): SubAgentWork
 
   for (const link of Object.values(input.links)) {
     if (link.rootThreadId !== rootThreadId) continue;
+    // A reversed or self-referential ownership record must never make the root
+    // one of its own workers, where it would occupy a slot in its own budget.
+    if (link.childThreadId === rootThreadId) continue;
     // Claim the mirrored agent id even when this durable link belongs to an
     // earlier run; otherwise a late terminal update can masquerade as a new
     // provider-native agent after the run boundary advances.
@@ -169,15 +185,33 @@ export function collectSubAgentWorkers(input: SubAgentWorkerInput): SubAgentWork
   }
 
   for (const agent of input.agents) {
-    if (owned.has(agent.id)) continue;
+    if (owned.has(agent.id) || agent.id === rootThreadId) continue;
+    // A bare native record is only an id and a status word. The durable link
+    // OpenKiwi wrote when it discovered this child carries the actual task and
+    // when it started, so a native row reads as informatively as an owned one.
+    const nativeLink = input.nativeLinks?.[agent.id];
+    const model = input.nativeModel?.trim();
+    const providerLabel = input.nativeProvider
+      ? `${providerDisplayName(input.nativeProvider)} · ${model || "provider default"}`
+      : "Same provider as this thread";
+    // `agent.path` is a worktree location for a native child but a
+    // provider/model summary for a mirrored cross-provider one. Only the
+    // latter belongs on the identity line; a folder goes after it.
+    const detail = agent.path && !isPathLike(agent.path)
+      ? agent.path
+      : agent.path
+        ? `${providerLabel} · ${agent.path}`
+        : providerLabel;
     workers.push({
       id: agent.id,
       kind: "native",
       status: workerStatusFromAgentRecord(agent.status),
-      title: decodeHtmlEntities(agent.prompt || "Delegated task"),
-      detail: agent.path || "Same provider as this thread",
-      // Native records carry no timestamp; ordering falls back to their id.
-      createdAt: 0,
+      title: decodeHtmlEntities(nativeLink?.title || agent.prompt || "Delegated task"),
+      ...(input.nativeProvider ? { provider: input.nativeProvider } : {}),
+      ...(model ? { model } : {}),
+      detail,
+      // Native records carry no timestamp of their own; the durable link does.
+      createdAt: nativeLink?.createdAt ?? 0,
     });
   }
 

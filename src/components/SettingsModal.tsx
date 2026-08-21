@@ -33,6 +33,7 @@ import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL,
 import { friendlyError } from "../lib/errors";
 import { useModalFocus } from "../hooks/useModalFocus";
 import { AnthropicLogo, ClaudeLogo, CodexLogo, CursorDarkAppIcon, CursorLogo, LmStudioLogo, OpenAILogo } from "./BrandLogos";
+import type { LMStudioModel } from "../lib/lmStudio";
 import { updateProgress, type AppUpdater } from "../lib/appUpdater";
 import {
   projectSubagentSettingsFromApp,
@@ -46,7 +47,6 @@ import { HarnessSettings } from "./HarnessSettings";
 import { SkillLibrary } from "./SkillLibrary";
 import type { McpView } from "./StudioDock";
 import type { GitHubAccountStatus } from "../lib/github";
-import type { LmStudioModel } from "./LmStudioModelControl";
 import { formatEstimatedCost, type UsageTotals } from "../lib/usageLedger";
 import type {
   Account,
@@ -138,8 +138,8 @@ export function SettingsModal({
   onRuntimeRequired,
   onWorkspaceTools,
   onOpenRouterChange,
-  onLmStudioRefresh = async () => [],
-  onLmStudioTokenChange = () => {},
+  onLMStudioRefresh = async () => [],
+  onLMStudioTokenChange = () => {},
   onGitHubSignIn,
   onGitHubRefresh,
   onGitHubClone,
@@ -154,6 +154,7 @@ export function SettingsModal({
   activeProjectId = null,
   skillsFolder,
   skills,
+  removedSkills,
   skillsBusy,
   skillsError,
   mcpServers,
@@ -175,6 +176,8 @@ export function SettingsModal({
   onCreateSkill,
   onRenameSkill,
   onToggleSkill,
+  onRemoveSkill,
+  onRestoreSkill,
   onOpenOnboarding,
 }: {
   open: boolean;
@@ -190,7 +193,7 @@ export function SettingsModal({
   openRouterReady: boolean;
   lmStudioReady?: boolean;
   lmStudioTokenStored?: boolean;
-  lmStudioModels?: LmStudioModel[];
+  lmStudioModels?: LMStudioModel[];
   lmStudioModelsError?: string;
   /** Which providers a cross-provider child could be started on right now. */
   childAgentReadiness: ChildAgentReadiness;
@@ -209,8 +212,8 @@ export function SettingsModal({
   onRuntimeRequired: () => void;
   onWorkspaceTools: () => void;
   onOpenRouterChange: (ready: boolean) => void;
-  onLmStudioRefresh?: (baseUrl: string) => Promise<LmStudioModel[]>;
-  onLmStudioTokenChange?: (stored: boolean) => void;
+  onLMStudioRefresh?: (baseUrl: string) => Promise<LMStudioModel[]>;
+  onLMStudioTokenChange?: (stored: boolean) => void;
   onGitHubSignIn: () => Promise<void>;
   onGitHubRefresh: () => Promise<void>;
   onGitHubClone: (url: string, folderName: string) => Promise<boolean>;
@@ -225,6 +228,7 @@ export function SettingsModal({
   activeProjectId?: string | null;
   skillsFolder: string;
   skills: LocalSkill[];
+  removedSkills: LocalSkill[];
   skillsBusy: boolean;
   skillsError: string;
   mcpServers?: McpView[];
@@ -241,11 +245,13 @@ export function SettingsModal({
   scheduleRuns?: ScheduleRunRecord[];
   onOpenRun?: (threadId: string) => void;
   onChooseSkillsFolder: () => void;
-  onRefreshSkills: () => void;
+  onRefreshSkills: (silent?: boolean) => Promise<void> | void;
   onImportSkills: () => void;
   onCreateSkill: (name: string, instructions: string) => Promise<boolean>;
   onRenameSkill: (path: string, name: string) => boolean;
   onToggleSkill: (path: string) => void;
+  onRemoveSkill: (path: string, deleteSource: boolean) => Promise<boolean>;
+  onRestoreSkill: (path: string) => Promise<boolean>;
   onOpenOnboarding: () => void;
 }) {
   const [local, setLocal] = useState(settings);
@@ -259,6 +265,8 @@ export function SettingsModal({
   const [cloneUrl, setCloneUrl] = useState("");
   const [cloneFolder, setCloneFolder] = useState("");
   const githubRefreshRequestedRef = useRef(false);
+  const skillsRefreshRef = useRef(onRefreshSkills);
+  skillsRefreshRef.current = onRefreshSkills;
 
   // Buffered edits (theme, prompt, toggles) are discarded on close — warn
   // before silently throwing away work like a hand-written system prompt.
@@ -335,6 +343,37 @@ export function SettingsModal({
     }
   }, [onGitHubRefresh, open, settingsSection]);
 
+  useEffect(() => {
+    if (!open || settingsSection !== "skills" || !skillsFolder) return;
+    let disposed = false;
+    let inFlight = false;
+    const refresh = async (silent: boolean) => {
+      if (disposed || inFlight) return;
+      inFlight = true;
+      try {
+        await skillsRefreshRef.current(silent);
+      } finally {
+        inFlight = false;
+      }
+    };
+    void refresh(false);
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === "visible") void refresh(true);
+    }, 2_000);
+    const onFocus = () => void refresh(true);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") void refresh(true);
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      disposed = true;
+      window.clearInterval(interval);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [open, settingsSection, skillsFolder]);
+
   const dialogRef = useRef<HTMLDivElement>(null);
   useModalFocus(dialogRef, open);
 
@@ -345,7 +384,7 @@ export function SettingsModal({
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       // An approval modal stacked above Settings owns Escape while present.
-      if (document.querySelector("[data-approval-modal]")) return;
+      if (document.querySelector("[data-approval-modal], [data-skill-remove-modal]")) return;
       requestCloseRef.current();
     };
     document.addEventListener("keydown", onKeyDown);
@@ -401,9 +440,9 @@ export function SettingsModal({
     try {
       await saveLmStudioKey(remove ? "" : lmStudioToken);
       setLmStudioToken("");
-      onLmStudioTokenChange(!remove);
+      onLMStudioTokenChange(!remove);
       setLmStudioConnectionMessage(remove ? "API token removed." : "API token stored securely.");
-      await onLmStudioRefresh(local.lmStudioBaseUrl);
+      await onLMStudioRefresh(local.lmStudioBaseUrl);
     } catch (reason) {
       onError(friendlyError(reason));
     } finally {
@@ -415,10 +454,10 @@ export function SettingsModal({
     setBusy(true);
     setLmStudioConnectionMessage("");
     try {
-      const models = await onLmStudioRefresh(local.lmStudioBaseUrl);
+      const models = await onLMStudioRefresh(local.lmStudioBaseUrl);
       setLmStudioConnectionMessage(models.length
         ? `Connected · ${models.length} model${models.length === 1 ? "" : "s"} available.`
-        : "No models were returned. Check the connection status above, load a model, or enable Just-in-Time loading.");
+        : "No models were returned. Load a model or enable Just-in-Time loading in LM Studio.");
     } catch (reason) {
       setLmStudioConnectionMessage(friendlyError(reason));
     } finally {
@@ -645,6 +684,7 @@ export function SettingsModal({
           {settingsSection === "skills" && <SkillLibrary
             folder={skillsFolder}
             skills={skills}
+            removedSkills={removedSkills}
             busy={skillsBusy}
             error={skillsError}
             onChooseFolder={onChooseSkillsFolder}
@@ -653,6 +693,8 @@ export function SettingsModal({
             onCreate={onCreateSkill}
             onRename={onRenameSkill}
             onToggle={onToggleSkill}
+            onRemove={onRemoveSkill}
+            onRestore={onRestoreSkill}
           />}
 
           {settingsSection === "updates" && <UpdateSettings appUpdater={appUpdater} />}
@@ -734,7 +776,7 @@ export function SettingsModal({
               <div className="credential-panel">
                 <div>
                   <strong>{account?.type === "chatgpt" ? account.email || "ChatGPT account" : "ChatGPT subscription"}</strong>
-                  <small>{account?.type === "chatgpt" ? `${account.planType ?? "ChatGPT"} plan connected` : runtimeStatus?.available ? `Official browser sign-in · ${runtimeStatus.source} detected` : "Codex CLI or ChatGPT for macOS required"}</small>
+                  <small>{account?.type === "chatgpt" ? `${account.planType ?? "ChatGPT"} plan connected` : runtimeStatus?.available ? `Official browser sign-in · ${runtimeStatus.source} detected` : "Codex CLI required"}</small>
                 </div>
                 {account?.type === "chatgpt" ? (
                   <button className="secondary-button" onClick={() => void signOut()} disabled={busy}>Sign out</button>
@@ -767,10 +809,10 @@ export function SettingsModal({
                 <label className="field-label">
                   <span>Server URL</span>
                   <input value={local.lmStudioBaseUrl} onChange={(event) => setLocal({ ...local, lmStudioBaseUrl: event.target.value })} placeholder={DEFAULT_LM_STUDIO_BASE_URL} spellCheck={false} />
-                  <small>OpenKiwi uses LM Studio’s OpenAI-compatible Responses API. Keep the default for a server on this Mac.</small>
+                  <small>OpenKiwi uses LM Studio’s OpenAI-compatible Responses API. Keep the default for a server on this computer.</small>
                 </label>
                 <div className="key-input-row">
-                  <input type="password" value={lmStudioToken} onChange={(event) => setLmStudioToken(event.target.value)} placeholder={lmStudioTokenStored ? "Token stored in Keychain" : "Optional API token"} />
+                  <input type="password" value={lmStudioToken} onChange={(event) => setLmStudioToken(event.target.value)} placeholder={lmStudioTokenStored ? "Token stored in the OS credential store" : "Optional API token"} />
                   <button className="secondary-button" onClick={() => void storeLmStudioToken()} disabled={!lmStudioToken.trim() || busy}>Save token</button>
                   {lmStudioTokenStored && <button className="secondary-button" onClick={() => void storeLmStudioToken(true)} disabled={busy}>Remove</button>}
                 </div>
@@ -785,7 +827,7 @@ export function SettingsModal({
                   <strong>{claudeStatus?.loggedIn ? claudeStatus.email || "Claude subscription" : "Claude Code subscription"}</strong>
                   <small>{claudeStatus?.loggedIn
                     ? `${claudeStatus.subscriptionType || claudeStatus.authMethod || "Claude"} plan connected · ${claudeStatus.version || "Claude Code"}`
-                    : claudeStatus?.available ? "Claude Code detected · sign in to continue" : "Claude Code must be installed first"}</small>
+                    : claudeStatus?.warning || (claudeStatus?.available ? "Claude Code detected · sign in to continue" : "Claude Code must be installed first")}</small>
                 </div>
                 {claudeStatus?.loggedIn ? (
                   <span className="connected-badge"><Check size={12} /> Connected</span>
@@ -804,7 +846,7 @@ export function SettingsModal({
                   <strong>{cursorStatus?.loggedIn ? cursorStatus.email || "Cursor subscription" : "Cursor Agent subscription"}</strong>
                   <small>{cursorStatus?.loggedIn
                     ? `${cursorStatus.subscriptionType || "Cursor"} plan connected · ${cursorStatus.version || "Cursor Agent"}`
-                    : cursorStatus?.available ? "Cursor Agent detected · sign in to continue" : "Cursor Agent must be installed first"}</small>
+                    : cursorStatus?.warning || (cursorStatus?.available ? "Cursor Agent detected · sign in to continue" : "Cursor Agent CLI must be installed first")}</small>
                 </div>
                 {cursorStatus?.loggedIn ? (
                   <span className="connected-badge"><Check size={12} /> Connected</span>
@@ -823,10 +865,10 @@ export function SettingsModal({
               <input
                 value={local.model}
                 onChange={(event) => setLocal({ ...local, model: event.target.value })}
-                readOnly={local.provider !== "openrouter" && local.provider !== "lmstudio"}
-                placeholder={local.provider === "openrouter" ? "e.g. anthropic/claude-sonnet-4" : local.provider === "lmstudio" ? "Choose a model from the LM Studio server" : local.provider === "claude" ? "Select a Claude model below the composer" : local.provider === "cursor" ? "Select Grok 4.5 or another Cursor model below the composer" : "Select Sol, Terra, or Luna below the composer"}
+                readOnly={local.provider !== "openrouter"}
+                placeholder={local.provider === "openrouter" ? "e.g. anthropic/claude-sonnet-4" : local.provider === "lmstudio" ? "Select a local model below the composer" : local.provider === "claude" ? "Select a Claude model below the composer" : local.provider === "cursor" ? "Select Grok 4.5 or another Cursor model below the composer" : "Select Sol, Terra, or Luna below the composer"}
               />
-              <small>{local.provider === "openrouter" ? "Use the searchable picker beneath the composer, or enter any valid provider/model slug here." : local.provider === "lmstudio" ? "Use the searchable picker beneath the composer. The catalog comes directly from the configured LM Studio server." : local.provider === "claude" ? "Use the Claude selector beneath the composer. Availability follows your signed-in Claude Code subscription." : local.provider === "cursor" ? "Use the Cursor selector beneath the composer. Its live catalog comes from your signed-in Cursor subscription." : "Use the animated selector beneath the composer. Availability follows the signed-in ChatGPT account."}</small>
+              <small>{local.provider === "openrouter" ? "Use the searchable picker beneath the composer, or enter any valid provider/model slug here." : local.provider === "lmstudio" ? "Use the local model selector beneath the composer. Its catalog comes directly from the LM Studio server on this computer." : local.provider === "claude" ? "Use the Claude selector beneath the composer. Availability follows your signed-in Claude Code subscription." : local.provider === "cursor" ? "Use the Cursor selector beneath the composer. Its live catalog comes from your signed-in Cursor subscription." : "Use the animated selector beneath the composer. Availability follows the signed-in ChatGPT account."}</small>
             </label>
 
             <div className="provider-logo-settings">
@@ -1163,6 +1205,6 @@ function UpdateSettings({ appUpdater }: { appUpdater: AppUpdater }) {
         )}
       </div>
     </div>
-    <div className="update-trust-row"><ShieldCheck size={14} /><span><strong>Verified release channel</strong><small>Manifest and packages come from github.com/m17h/OpenKiwi and must match OpenKiwi’s embedded updater key.</small></span></div>
+    <div className="update-trust-row"><ShieldCheck size={14} /><span><strong>Verified release channel</strong><small>Manifest and packages come from github.com/m17h/OpenKiwi and must match the updater key for this platform.</small></span></div>
   </section>;
 }

@@ -26,7 +26,7 @@ import {
 import { threadResumeParams, threadStartParams, turnStartParams } from "../lib/turnConfig";
 import { buildTurnInput, withoutSentAttachments } from "../lib/turnInput";
 import { optimisticStartedThread, upsertThread } from "../lib/threadList";
-import { useTaskStore } from "../lib/taskStore";
+import { isAssistantOutputActive, useTaskStore } from "../lib/taskStore";
 import { friendlyError } from "../lib/errors";
 import { clearProviderStopIntent, markProviderStopIntent } from "../lib/providerStopIntent";
 import { isClaudeThread, isCursorThread } from "../lib/threadProvider";
@@ -42,7 +42,7 @@ import { normalizedProjectPath } from "../lib/paths";
 import { PendingTurnStarts, type PendingTurnStart } from "../lib/pendingTurnStarts";
 import type { SetPersisted } from "./usePersistedState";
 import type { OpenRouterModel } from "../components/OpenRouterModelControl";
-import type { LmStudioModel } from "../components/LmStudioModelControl";
+import type { LMStudioModel } from "../lib/lmStudio";
 import type { AttachmentRecord } from "../components/StudioDock";
 import type { Account, AppSettings, CustomAgentProfile, Project, Provider, SettingsSection, Thread, ThreadReasoning, Turn } from "../types";
 
@@ -119,7 +119,7 @@ export interface TurnRunnerContext {
   subscriptionSystemPrompts: Record<"openai" | "claude", string>;
   customAgents: CustomAgentProfile[];
   openRouterModels: OpenRouterModel[];
-  lmStudioModels?: LmStudioModel[];
+  lmStudioModels?: LMStudioModel[];
   runtimeStatus: CodexRuntimeStatus | null;
   claudeStatus: ClaudeRuntimeStatus | null;
   cursorStatus: CursorRuntimeStatus | null;
@@ -239,7 +239,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
     }
     if (effectiveSettings.provider === "lmstudio" && !lmStudioReady) {
       openSettings("models");
-      setError("Start the LM Studio local server, load a model, and refresh the connection before using LM Studio.");
+      setError("Start the LM Studio local server and load at least one model before using LM Studio.");
       return false;
     }
     if (effectiveSettings.provider === "claude" && (!claudeStatus?.available || !claudeStatus.loggedIn)) {
@@ -263,7 +263,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
     const modelContextWindow = effectiveSettings.provider === "openrouter"
       ? openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.context_length
       : effectiveSettings.provider === "lmstudio"
-        ? lmStudioModels.find((entry) => entry.id === effectiveSettings.model)?.context_length
+        ? lmStudioModels.find((entry) => entry.id === effectiveSettings.model)?.maxContextLength
         : undefined;
     if (mode === "steer" && running && activeThread) {
       const sentAttachments = [...attachments];
@@ -779,40 +779,61 @@ export function useTurnRunner(context: TurnRunnerContext): {
     if (activeThreadId) void pumpQueuedThread(activeThreadId);
   }, [activeThreadId, pumpQueuedThread]);
 
+  const queueFollowUp = useCallback((ctx: TurnRunnerContext, text: string): boolean => {
+    const thread = ctx.activeThread;
+    if (!thread) return false;
+    const sentAttachments = [...ctx.attachments];
+    const queuedTurn = useTaskStore.getState().enqueueTurn(thread.id, text, sentAttachments);
+    queuedDeliveries.set(queuedTurn.id, {
+      threadId: thread.id,
+      context: queuedDeliveryContext(ctx, thread.id, sentAttachments),
+    });
+    ctx.setAttachments((current) => withoutSentAttachments(current, sentAttachments));
+    ctx.setError(null);
+    ctx.setTransientStatus("Message queued for the next turn");
+
+    // Completion may have landed immediately before this enqueue, after the
+    // status subscriber already had its chance to pump. Re-check after the
+    // durable entry exists so this race cannot strand the follow-up.
+    const status = useTaskStore.getState().tasks[thread.id]?.status;
+    if (status !== "starting" && status !== "running") {
+      queueMicrotask(() => { void pumpQueuedThread(thread.id); });
+    }
+    return true;
+  }, [pumpQueuedThread]);
+
   const sendMessage = useCallback(async (text: string): Promise<boolean> => {
     const ctx = contextRef.current;
     if (!text || !ctx.activeWorkspace) return false;
     if (ctx.running && !ctx.activeThread) return false;
-    if (ctx.running && ctx.activeThread) {
-      const sentAttachments = [...ctx.attachments];
-      const queuedTurn = useTaskStore.getState().enqueueTurn(ctx.activeThread.id, text, sentAttachments);
-      queuedDeliveries.set(queuedTurn.id, {
-        threadId: ctx.activeThread.id,
-        context: queuedDeliveryContext(ctx, ctx.activeThread.id, sentAttachments),
-      });
-      ctx.setAttachments((current) => withoutSentAttachments(current, sentAttachments));
-      ctx.setError(null);
-      ctx.setTransientStatus("Message queued for the next turn");
-      return true;
-    }
+    if (ctx.running && ctx.activeThread) return queueFollowUp(ctx, text);
     return deliverMessage(ctx, text, "turn");
-  }, [deliverMessage]);
+  }, [deliverMessage, queueFollowUp]);
 
   const steerMessage = useCallback(async (text: string): Promise<boolean> => {
     const ctx = contextRef.current;
     if (ctx.running && !ctx.activeThread) return false;
-    return deliverMessage(ctx, text, ctx.running && ctx.activeThread ? "steer" : "turn");
-  }, [deliverMessage]);
+    const task = ctx.activeThread ? useTaskStore.getState().tasks[ctx.activeThread.id] : undefined;
+    if (ctx.activeThread && task?.status === "starting") return queueFollowUp(ctx, text);
+    if (ctx.activeThread && task?.status === "running") {
+      if (isAssistantOutputActive(task)) return queueFollowUp(ctx, text);
+      return deliverMessage({ ...ctx, running: true }, text, "steer");
+    }
+    if (ctx.activeThread && ctx.running && !task) return deliverMessage(ctx, text, "steer");
+    return deliverMessage({ ...ctx, running: false }, text, "turn");
+  }, [deliverMessage, queueFollowUp]);
 
   const steerQueuedMessage = useCallback(async (queuedTurnId: string): Promise<void> => {
     const ctx = contextRef.current;
     const threadId = ctx.activeThread?.id;
-    if (!threadId || !ctx.running) return;
-    const queuedTurn = useTaskStore.getState().tasks[threadId]?.queuedTurns.find((entry) => entry.id === queuedTurnId);
+    if (!threadId) return;
+    const task = useTaskStore.getState().tasks[threadId];
+    if (task?.status !== "running" || isAssistantOutputActive(task)) return;
+    const queuedTurn = task.queuedTurns.find((entry) => entry.id === queuedTurnId);
     if (!queuedTurn || queuedTurn.status === "sending") return;
     useTaskStore.getState().setQueuedTurnStatus(threadId, queuedTurn.id, "sending");
     const delivered = await deliverMessage(
-      { ...ctx, attachments: queuedTurn.attachments, setAttachments: () => undefined },
+      { ...ctx, running: true, attachments: queuedTurn.attachments, setAttachments: () => undefined },
       queuedTurn.text,
       "steer",
     );

@@ -1179,7 +1179,7 @@ command = \"docs-server\"
 
 [agents]
 max_threads = 8
-max_depth = 1
+max_depth = 3
 
 [model_providers.openrouter]
 name = \"OpenRouter\"
@@ -1192,13 +1192,16 @@ base_url = \"https://openrouter.ai/api/v1\"
     assert!(updated.contains("project_doc_max_bytes = 0"));
     assert!(updated.contains("cli_auth_credentials_store = \"keyring\""));
     assert!(updated.contains("max_threads = 1"));
-    assert!(updated.contains("\n[features]\nmulti_agent = false"));
+    // The OpenKiwi bridge is the only spawning authority, so a drifted native
+    // depth is pulled back to one alongside the thread ceiling.
+    assert!(updated.contains("max_depth = 1"));
+    assert!(!updated.contains("max_depth = 3"));
+    assert!(updated.contains("\n[features]\nmulti_agent = false\nmulti_agent_v2 = false"));
     assert!(updated.contains("base_url = \"http://127.0.0.1:9999/secret-token\""));
     // …while user content is preserved verbatim.
     assert!(updated.contains("model_provider = \"openrouter\""));
     assert!(updated.contains("[mcp_servers.docs]"));
     assert!(updated.contains("command = \"docs-server\""));
-    assert!(updated.contains("max_depth = 1"));
     assert!(updated.contains("name = \"OpenRouter\""));
 
     // A file that already matches is left untouched.
@@ -1294,6 +1297,22 @@ fn initialize_negotiates_fields_used_by_project_threads() {
 fn runtime_compatibility_accepts_tested_contract() {
     assert!(runtime_is_compatible("codex-cli 0.145.0-alpha.18"));
     assert!(!runtime_is_compatible("codex-cli 0.144.9"));
+}
+
+#[cfg(windows)]
+#[test]
+fn codex_candidates_include_current_and_legacy_npm_layouts() {
+    let app_data = PathBuf::from(r"C:\Users\Person\AppData\Roaming");
+    let mut candidates = Vec::new();
+    push_windows_npm_codex_candidates_at(&mut candidates, &app_data);
+
+    let package = app_data.join(r"npm\node_modules\@openai\codex");
+    assert!(candidates.contains(&package.join(
+        r"node_modules\@openai\codex-win32-x64\vendor\x86_64-pc-windows-msvc\bin\codex.exe"
+    )));
+    assert!(candidates.contains(&package.join(
+        r"node_modules\@openai\codex-win32-x64\vendor\x86_64-pc-windows-msvc\codex\codex.exe"
+    )));
 }
 
 #[test]
@@ -1436,6 +1455,71 @@ fn local_skill_scan_uses_top_level_markdown_and_nested_skill_packages() {
             .supporting_markdown_count
             >= 1
     );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn local_skill_deletion_only_removes_a_detected_source_file() {
+    let root = skill_test_directory("skill-delete");
+    fs::create_dir_all(root.join("references")).unwrap();
+    let source = root.join("review.md");
+    let supporting = root.join("references/details.md");
+    fs::write(&source, "# Review\n\nReview changes carefully.\n").unwrap();
+    fs::write(&supporting, "# Details\n\nKeep this supporting file.\n").unwrap();
+
+    delete_local_skill_source(&root, &source).unwrap();
+    assert!(!source.exists());
+    assert!(supporting.exists());
+
+    let error = delete_local_skill_source(&root, &supporting).unwrap_err();
+    assert!(error.contains("not a detected OpenKiwi skill"));
+    assert!(supporting.exists());
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn local_skill_deletion_rejects_other_folders_and_keeps_package_support_files() {
+    let root = skill_test_directory("skill-delete-package");
+    let outside = skill_test_directory("skill-delete-outside");
+    fs::create_dir_all(root.join("packaged")).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+    let package_source = root.join("packaged/SKILL.md");
+    let package_support = root.join("packaged/guide.md");
+    let outside_source = outside.join("outside.md");
+    fs::write(&package_source, "# Package\n\nRun the package.\n").unwrap();
+    fs::write(&package_support, "# Guide\n\nKeep this file.\n").unwrap();
+    fs::write(&outside_source, "# Outside\n\nDo not delete.\n").unwrap();
+
+    let error = delete_local_skill_source(&root, &outside_source).unwrap_err();
+    assert!(error.contains("not a Markdown file in the skills folder"));
+    assert!(outside_source.exists());
+
+    delete_local_skill_source(&root, &package_source).unwrap();
+    assert!(!package_source.exists());
+    assert!(package_support.exists());
+    assert!(root.join("packaged").is_dir());
+
+    fs::remove_dir_all(root).unwrap();
+    fs::remove_dir_all(outside).unwrap();
+}
+
+#[test]
+fn local_skill_scan_fingerprint_changes_when_instructions_change() {
+    let root = skill_test_directory("skill-fingerprint");
+    fs::create_dir_all(&root).unwrap();
+    let source = root.join("review.md");
+    fs::write(&source, "# Review\n\nFirst instructions.\n").unwrap();
+    let first = scan_local_skills(&root).unwrap()[0]
+        .content_fingerprint
+        .clone();
+
+    fs::write(&source, "# Review\n\nSecond instructions.\n").unwrap();
+    let second = scan_local_skills(&root).unwrap()[0]
+        .content_fingerprint
+        .clone();
+    assert_ne!(first, second);
 
     fs::remove_dir_all(root).unwrap();
 }

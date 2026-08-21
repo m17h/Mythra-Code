@@ -1,0 +1,9 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEZCQkJFRjhDNjQzNTRFNEQKUldSTlRqVmtqTys3K3lMbkdUbkM4WWgxUCtENHJMbFdRaHRMYTdaTm9oemp4T1dyQkxRZGx0WjAK",
+      "endpoints": ["https://github.com/m17h/OpenKiwi/releases/latest/download/latest.json"]
+    }
+  }
+}

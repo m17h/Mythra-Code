@@ -1,24 +1,13 @@
-import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_OPENAI_MODEL, LM_STUDIO_CODEX_PROVIDER_ID } from "./appConfig";
+import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_OPENAI_MODEL } from "./appConfig";
+import { isLmStudioProviderId, runtimeModelProviderId } from "./providerIds";
 import type { Provider, Thread } from "../types";
 
-/**
- * The provider id the generated Codex config uses, or undefined for threads
- * that run on Codex's own default provider. Only LM Studio is renamed: Codex
- * treats `lmstudio` as a reserved built-in, so OpenKiwi registers its own
- * destination under {@link LM_STUDIO_CODEX_PROVIDER_ID}.
- */
-export function codexModelProviderId(provider: Provider): string | undefined {
-  if (provider === "lmstudio") return LM_STUDIO_CODEX_PROVIDER_ID;
-  if (provider === "openrouter") return "openrouter";
-  return undefined;
-}
+export const codexModelProviderId = runtimeModelProviderId;
 
 export function providerFromThread(thread: Pick<Thread, "modelProvider"> | null | undefined, fallback: Provider): Provider {
   const provider = thread?.modelProvider?.toLowerCase();
-  // Threads started by the runtime report the Codex-side id; threads persisted
-  // before the rename still carry the bare `lmstudio`. Both are LM Studio.
-  if (provider === LM_STUDIO_CODEX_PROVIDER_ID) return "lmstudio";
-  if (provider === "claude" || provider === "cursor" || provider === "openrouter" || provider === "lmstudio" || provider === "openai") return provider;
+  if (isLmStudioProviderId(provider)) return "lmstudio";
+  if (provider === "claude" || provider === "cursor" || provider === "openrouter" || provider === "openai") return provider;
   return fallback;
 }
 

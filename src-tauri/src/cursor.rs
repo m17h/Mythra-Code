@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    env,
+    env, fs,
     path::{Path, PathBuf},
     process::Stdio,
     sync::{
@@ -22,6 +22,8 @@ use tokio::{
 
 use crate::agents::{child_agent_bridge_launch_registered, ChildAgentState};
 use crate::process_launch::background_command;
+#[cfg(windows)]
+use crate::process_launch::interactive_command;
 
 type PendingMap = Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, String>>>>>;
 
@@ -57,6 +59,7 @@ struct CursorProcess {
     alive: Arc<AtomicBool>,
     session_id: Mutex<Option<String>>,
     turn_id: Option<String>,
+    wsl: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -115,15 +118,18 @@ pub struct ChildAgentBridge {
 
 /// ACP announces MCP servers when the session is created, so the delegation
 /// tools are attached for the whole session or not at all.
-fn acp_mcp_servers(bridge: Option<&ChildAgentBridge>) -> Value {
+fn acp_mcp_servers(bridge: Option<&ChildAgentBridge>, wsl: bool) -> Result<Value, String> {
     match bridge {
-        Some(bridge) => json!([{
-            "name": bridge.name,
-            "command": bridge.command,
-            "args": bridge.args,
-            "env": [],
-        }]),
-        None => json!([]),
+        Some(bridge) => {
+            let command = cursor_runtime_path(&bridge.command, wsl)?;
+            Ok(json!([{
+                "name": bridge.name,
+                "command": command,
+                "args": bridge.args,
+                "env": [],
+            }]))
+        }
+        None => Ok(json!([])),
     }
 }
 
@@ -209,16 +215,191 @@ fn field_after_label(output: &str, label: &str) -> Option<String> {
     output.lines().find_map(|line| {
         let trimmed = line.trim();
         let value = trimmed.strip_prefix(label)?.trim();
+        let value = value.strip_prefix(':').unwrap_or(value).trim();
         (!value.is_empty()).then(|| value.to_string())
     })
 }
 
-async fn resolve_cursor_binary(app: &AppHandle) -> Result<PathBuf, String> {
+#[derive(Clone, Debug)]
+enum CursorRuntime {
+    Native(PathBuf),
+    #[cfg(windows)]
+    WindowsNode {
+        launcher: PathBuf,
+        node: PathBuf,
+        script: PathBuf,
+    },
+    #[cfg(windows)]
+    Wsl(String),
+}
+
+impl CursorRuntime {
+    fn is_wsl(&self) -> bool {
+        match self {
+            Self::Native(_) => false,
+            #[cfg(windows)]
+            Self::WindowsNode { .. } => false,
+            #[cfg(windows)]
+            Self::Wsl(_) => true,
+        }
+    }
+
+    fn display_path(&self) -> String {
+        match self {
+            Self::Native(path) => path.to_string_lossy().into_owned(),
+            #[cfg(windows)]
+            Self::WindowsNode { launcher, .. } => launcher.to_string_lossy().into_owned(),
+            #[cfg(windows)]
+            Self::Wsl(path) => format!("WSL: {path}"),
+        }
+    }
+
+    fn background(&self, cwd: Option<&Path>) -> tokio::process::Command {
+        match self {
+            Self::Native(path) => {
+                let mut command = background_command(path);
+                if let Some(cwd) = cwd {
+                    command.current_dir(cwd);
+                }
+                command
+            }
+            #[cfg(windows)]
+            Self::WindowsNode { node, script, .. } => {
+                let mut command = background_command(node);
+                command.arg(script);
+                if let Some(cwd) = cwd {
+                    command.current_dir(cwd);
+                }
+                command
+            }
+            #[cfg(windows)]
+            Self::Wsl(path) => {
+                let mut command = background_command("wsl.exe");
+                if let Some(cwd) = cwd {
+                    command.arg("--cd").arg(cwd);
+                }
+                command.args(["--exec", path]);
+                command
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    fn interactive(&self) -> tokio::process::Command {
+        match self {
+            Self::Native(path) => interactive_command(path),
+            Self::WindowsNode { node, script, .. } => {
+                let mut command = interactive_command(node);
+                command.arg(script);
+                command
+            }
+            Self::Wsl(path) => {
+                let mut command = interactive_command("wsl.exe");
+                command.args(["--exec", path]);
+                command
+            }
+        }
+    }
+}
+
+/// Translate a host path before handing it to a Linux Cursor process. WSL's
+/// `--cd` understands Windows paths, but ACP payloads and MCP launch records
+/// are interpreted by the Linux process itself and therefore require `/mnt/*`.
+fn cursor_runtime_path(path: &str, wsl: bool) -> Result<String, String> {
+    if !wsl || path.starts_with('/') {
+        return Ok(path.to_string());
+    }
+    #[cfg(windows)]
+    {
+        let bytes = path.as_bytes();
+        if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+            let drive = (bytes[0] as char).to_ascii_lowercase();
+            let rest = path[2..].replace('\\', "/");
+            return Ok(format!("/mnt/{drive}/{}", rest.trim_start_matches('/')));
+        }
+        Err(format!(
+            "Cursor Agent in WSL cannot access the Windows path `{path}`. Use a folder on a local Windows drive."
+        ))
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(path.to_string())
+    }
+}
+
+#[cfg(windows)]
+async fn resolve_cursor_in_wsl() -> Option<CursorRuntime> {
+    let output = background_command("wsl.exe")
+        .args([
+            "--exec",
+            "sh",
+            "-lc",
+            "command -v cursor-agent || command -v agent",
+        ])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with('/'))
+        .map(|path| CursorRuntime::Wsl(path.to_string()))
+}
+
+#[cfg(windows)]
+fn push_windows_cursor_candidates_at(candidates: &mut Vec<PathBuf>, local_app_data: &Path) {
+    let install_root = local_app_data.join("cursor-agent");
+    // Cursor's official native Windows installer does not ship the CLI with
+    // the desktop editor. It installs these launchers separately and updates
+    // the user's PATH, which an already-running GUI process may not inherit.
+    // Checking the documented install root makes detection immediate and
+    // reliable after installation without restarting Windows.
+    super::push_candidate(candidates, install_root.join("agent.exe"));
+    super::push_candidate(candidates, install_root.join("cursor-agent.exe"));
+}
+
+#[cfg(windows)]
+fn resolve_windows_cursor_install_at(local_app_data: &Path) -> Option<CursorRuntime> {
+    let install_root = local_app_data.join("cursor-agent");
+    for executable in ["agent.exe", "cursor-agent.exe"] {
+        let path = install_root.join(executable);
+        if path.is_file() {
+            return Some(CursorRuntime::Native(path));
+        }
+    }
+
+    // The current native installer ships cmd/PowerShell launchers backed by a
+    // private Node runtime. Launching the payload directly preserves ACP's
+    // stdin/stdout transport and avoids cmd.exe quoting or console windows.
+    let mut versions = fs::read_dir(install_root.join("versions"))
+        .ok()?
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .collect::<Vec<_>>();
+    versions.sort_by_key(|entry| std::cmp::Reverse(entry.file_name()));
+    versions.into_iter().find_map(|entry| {
+        let version = entry.path();
+        let node = version.join("node.exe");
+        let script = version.join("index.js");
+        (node.is_file() && script.is_file()).then(|| CursorRuntime::WindowsNode {
+            launcher: install_root.join("agent.cmd"),
+            node,
+            script,
+        })
+    })
+}
+
+async fn resolve_cursor_runtime(app: &AppHandle) -> Result<CursorRuntime, String> {
     if let Some(override_path) = env::var_os("OPENKIWI_CURSOR_PATH") {
         let override_path = PathBuf::from(override_path);
         return override_path
             .is_file()
-            .then_some(override_path)
+            .then_some(CursorRuntime::Native(override_path))
             .ok_or_else(|| {
                 "OPENKIWI_CURSOR_PATH does not point to a Cursor Agent executable.".into()
             });
@@ -229,6 +410,13 @@ async fn resolve_cursor_binary(app: &AppHandle) -> Result<PathBuf, String> {
         &["agent", "cursor-agent"]
     };
     let mut candidates = Vec::new();
+    #[cfg(windows)]
+    if let Some(local_app_data) = env::var_os("LOCALAPPDATA").map(PathBuf::from) {
+        push_windows_cursor_candidates_at(&mut candidates, &local_app_data);
+        if let Some(runtime) = resolve_windows_cursor_install_at(&local_app_data) {
+            return Ok(runtime);
+        }
+    }
     for name in executable_names {
         if let Some(candidate) = super::find_on_path(name) {
             super::push_candidate(&mut candidates, candidate);
@@ -237,36 +425,50 @@ async fn resolve_cursor_binary(app: &AppHandle) -> Result<PathBuf, String> {
     if let Ok(home) = app.path().home_dir() {
         for relative in [
             ".local/bin/agent",
+            ".local/bin/agent.exe",
             ".local/bin/cursor-agent",
+            ".local/bin/cursor-agent.exe",
             ".cursor/bin/agent",
+            ".cursor/bin/agent.exe",
         ] {
             super::push_candidate(&mut candidates, home.join(relative));
         }
     }
     if let Some(candidate) = candidates.into_iter().find(|candidate| candidate.is_file()) {
-        return Ok(candidate);
+        return Ok(CursorRuntime::Native(candidate));
     }
     for name in executable_names {
         if let Some(candidate) = super::find_with_login_shell(name).await {
-            return Ok(candidate);
+            return Ok(CursorRuntime::Native(candidate));
         }
     }
-    Err("OpenKiwi could not find Cursor Agent. Install it from cursor.com/docs/cli, then sign in with `agent login`.".into())
+    #[cfg(windows)]
+    if let Some(runtime) = resolve_cursor_in_wsl().await {
+        return Ok(runtime);
+    }
+    #[cfg(windows)]
+    return Err("OpenKiwi could not find Cursor Agent. The Cursor desktop editor and Cursor Agent CLI are separate installs. Install the official native Windows CLI, then return here to sign in.".into());
+    #[cfg(not(windows))]
+    Err("OpenKiwi could not find Cursor Agent. Install it from cursor.com/docs/cli, then sign in with `cursor-agent login`.".into())
 }
 
 async fn read_cursor_runtime_status(app: &AppHandle) -> CursorRuntimeStatus {
-    let Ok(path) = resolve_cursor_binary(app).await else {
-        return CursorRuntimeStatus {
-            available: false,
-            path: None,
-            version: None,
-            logged_in: false,
-            email: None,
-            subscription_type: None,
-            warning: None,
-        };
+    let runtime = match resolve_cursor_runtime(app).await {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            return CursorRuntimeStatus {
+                available: false,
+                path: None,
+                version: None,
+                logged_in: false,
+                email: None,
+                subscription_type: None,
+                warning: Some(error),
+            };
+        }
     };
-    let output = background_command(&path)
+    let output = runtime
+        .background(None)
         .arg("about")
         .env("NO_COLOR", "1")
         .stdin(Stdio::null())
@@ -289,7 +491,7 @@ async fn read_cursor_runtime_status(app: &AppHandle) -> CursorRuntimeStatus {
         .is_some_and(|value| !value.eq_ignore_ascii_case("not logged in"));
     CursorRuntimeStatus {
         available: true,
-        path: Some(path.to_string_lossy().into_owned()),
+        path: Some(runtime.display_path()),
         version: field_after_label(&plain, "CLI Version")
             .or_else(|| field_after_label(&plain, "Version")),
         logged_in,
@@ -314,9 +516,10 @@ pub async fn cursor_runtime_status(
 
 #[tauri::command]
 pub async fn cursor_login(app: AppHandle) -> Result<(), String> {
-    let path = resolve_cursor_binary(&app).await?;
+    let runtime = resolve_cursor_runtime(&app).await?;
     #[cfg(target_os = "macos")]
     {
+        let CursorRuntime::Native(path) = runtime;
         let escaped = path.to_string_lossy().replace('\'', "'\"'\"'");
         let login_command = format!("'{}' login", escaped);
         let status = background_command("/usr/bin/osascript")
@@ -344,10 +547,26 @@ pub async fn cursor_login(app: AppHandle) -> Result<(), String> {
                 .into()
         })
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
     {
-        let _ = path;
-        Err("Run `agent login` in a terminal, then refresh Cursor status.".into())
+        runtime
+            .interactive()
+            .arg("login")
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| {
+                format!(
+                    "Could not open Cursor sign-in in a Windows terminal: {error}. Run `cursor-agent login` in WSL, then refresh Cursor status."
+                )
+            })
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        let _ = runtime;
+        Err("Run `cursor-agent login` in a terminal, then refresh Cursor status.".into())
     }
 }
 
@@ -376,11 +595,10 @@ async fn spawn_cursor_process(
     cwd: &Path,
     event_context: Option<(String, String, String)>,
 ) -> Result<Arc<CursorProcess>, String> {
-    let binary = resolve_cursor_binary(app).await?;
-    let mut command = background_command(&binary);
+    let runtime = resolve_cursor_runtime(app).await?;
+    let mut command = runtime.background(Some(cwd));
     command
         .arg("acp")
-        .current_dir(cwd)
         .env("NO_COLOR", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -393,7 +611,7 @@ async fn spawn_cursor_process(
     let mut child = command.spawn().map_err(|error| {
         format!(
             "Could not start Cursor Agent at `{}`: {error}",
-            binary.display()
+            runtime.display_path()
         )
     })?;
     let stdin = Arc::new(Mutex::new(
@@ -422,6 +640,7 @@ async fn spawn_cursor_process(
         turn_id: event_context
             .as_ref()
             .map(|(_, turn_id, _)| turn_id.clone()),
+        wsl: runtime.is_wsl(),
     });
 
     let app_for_reader = app.clone();
@@ -688,6 +907,7 @@ async fn cursor_prompt_blocks_for(
     prompt: &str,
     system_prompt: &str,
     attachments: &[CursorAttachment],
+    wsl: bool,
 ) -> Result<Vec<Value>, String> {
     let mut text = prompt.to_string();
     if !system_prompt.trim().is_empty() {
@@ -699,6 +919,7 @@ async fn cursor_prompt_blocks_for(
     }
     let mut blocks = vec![json!({ "type": "text", "text": text })];
     for attachment in attachments {
+        let runtime_path = cursor_runtime_path(&attachment.path, wsl)?;
         if attachment.kind == "image" {
             let bytes = super::read_image_attachment(Path::new(&attachment.path)).await?;
             let extension = Path::new(&attachment.path)
@@ -715,23 +936,27 @@ async fn cursor_prompt_blocks_for(
             blocks.push(json!({
                 "type": "image", "mimeType": mime,
                 "data": base64::engine::general_purpose::STANDARD.encode(bytes),
-                "uri": format!("file://{}", attachment.path)
+                "uri": format!("file://{runtime_path}")
             }));
         } else {
             blocks.push(json!({
                 "type": "resource_link", "name": Path::new(&attachment.path).file_name().and_then(|value| value.to_str()).unwrap_or("attachment"),
-                "uri": format!("file://{}", attachment.path)
+                "uri": format!("file://{runtime_path}")
             }));
         }
     }
     Ok(blocks)
 }
 
-async fn cursor_prompt_blocks(options: &CursorTurnOptions) -> Result<Vec<Value>, String> {
+async fn cursor_prompt_blocks(
+    options: &CursorTurnOptions,
+    wsl: bool,
+) -> Result<Vec<Value>, String> {
     cursor_prompt_blocks_for(
         &options.prompt,
         &options.system_prompt,
         &options.attachments,
+        wsl,
     )
     .await
 }
@@ -798,19 +1023,20 @@ pub async fn cursor_turn_start(
 
     let start_result = async {
         initialize_cursor(&process).await?;
-        let mcp_servers = acp_mcp_servers(options.child_agent_bridge.as_ref());
+        let mcp_servers = acp_mcp_servers(options.child_agent_bridge.as_ref(), process.wsl)?;
+        let runtime_cwd = cursor_runtime_path(&options.cwd, process.wsl)?;
         let setup = if let Some(session_id) = options.resume_session_id.as_deref() {
             process
                 .request(
                     "session/load",
-                    json!({ "sessionId": session_id, "cwd": options.cwd, "mcpServers": mcp_servers }),
+                    json!({ "sessionId": session_id, "cwd": runtime_cwd, "mcpServers": mcp_servers }),
                 )
                 .await?
         } else {
             process
                 .request(
                     "session/new",
-                    json!({ "cwd": options.cwd, "mcpServers": mcp_servers }),
+                    json!({ "cwd": runtime_cwd, "mcpServers": mcp_servers }),
                 )
                 .await?
         };
@@ -850,7 +1076,7 @@ pub async fn cursor_turn_start(
                 )
                 .await;
         }
-        let blocks = cursor_prompt_blocks(&options).await?;
+        let blocks = cursor_prompt_blocks(&options, process.wsl).await?;
         Ok::<_, String>((session_id, blocks))
     }
     .await;
@@ -942,7 +1168,7 @@ pub async fn cursor_turn_steer(
         .clone()
         .ok_or("Cursor session is still starting")?;
     let turn_for_prompt = turn.clone();
-    let blocks = cursor_prompt_blocks_for(&prompt, "", &attachments).await?;
+    let blocks = cursor_prompt_blocks_for(&prompt, "", &attachments, turn.wsl).await?;
     tauri::async_runtime::spawn(async move {
         if let Err(error) = turn_for_prompt
             .request(
@@ -1083,6 +1309,10 @@ mod tests {
             field_after_label(output, "User Email").as_deref(),
             Some("person@example.com")
         );
+        assert_eq!(
+            field_after_label("User Email: person@example.com", "User Email").as_deref(),
+            Some("person@example.com")
+        );
     }
 
     #[test]
@@ -1120,5 +1350,55 @@ mod tests {
         let setup =
             json!({ "configOptions": [{ "id": "model", "category": "model", "type": "select" }] });
         assert_eq!(model_config_id(&setup).as_deref(), Some("model"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn translates_windows_paths_for_cursor_in_wsl() {
+        assert_eq!(
+            cursor_runtime_path(r"C:\Users\Person\Project\file.rs", true).as_deref(),
+            Ok("/mnt/c/Users/Person/Project/file.rs")
+        );
+        assert_eq!(
+            cursor_runtime_path(r"C:\Users\Person\Project", false).as_deref(),
+            Ok(r"C:\Users\Person\Project")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn includes_official_native_windows_cursor_install_paths() {
+        let mut candidates = Vec::new();
+        push_windows_cursor_candidates_at(
+            &mut candidates,
+            Path::new(r"C:\Users\Person\AppData\Local"),
+        );
+        assert_eq!(
+            candidates,
+            vec![
+                PathBuf::from(r"C:\Users\Person\AppData\Local\cursor-agent\agent.exe"),
+                PathBuf::from(r"C:\Users\Person\AppData\Local\cursor-agent\cursor-agent.exe"),
+            ]
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolves_current_native_windows_cursor_node_payload() {
+        let local_app_data =
+            env::temp_dir().join(format!("openkiwi-cursor-{}", uuid::Uuid::new_v4()));
+        let version = local_app_data.join("cursor-agent/versions/2026.08.11-e8db854");
+        fs::create_dir_all(&version).unwrap();
+        fs::write(version.join("node.exe"), b"test").unwrap();
+        fs::write(version.join("index.js"), b"test").unwrap();
+        fs::write(local_app_data.join("cursor-agent/agent.cmd"), b"test").unwrap();
+
+        let runtime = resolve_windows_cursor_install_at(&local_app_data).unwrap();
+        assert_eq!(
+            PathBuf::from(runtime.display_path()),
+            local_app_data.join("cursor-agent/agent.cmd")
+        );
+
+        fs::remove_dir_all(local_app_data).unwrap();
     }
 }
