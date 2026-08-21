@@ -28,6 +28,7 @@ const windowsBuild = readText("Windows/build.ps1");
 const windowsPublish = readText("Windows/publish-release.mjs");
 const usageLedger = readText("src/lib/usageLedger.ts");
 const appConfig = readText("src/lib/appConfig.ts");
+const desktopBuild = readText("scripts/desktop-build.mjs");
 const packageScripts = pkg.scripts || {};
 
 assert(pkg.version === base.version, "package.json and the base Tauri config must have the same version.");
@@ -44,6 +45,10 @@ assert(windowsPublish.includes(`const REPOSITORY = "${canonicalRepo}"`), "The Wi
 assert(usageLedger.includes(pricingUrl), "The usage ledger pricing catalog must use the canonical repository.");
 assert(appConfig.includes(`github.com/${canonicalRepo}`), "Application release links must use the canonical repository.");
 assert(packageScripts["release:finalize"] === "node scripts/finalize-release.mjs", "The combined release finalizer is not configured.");
+assert(packageScripts["desktop:build"] === "node scripts/desktop-build.mjs", "The cross-platform local desktop builder is not configured.");
+assert(desktopBuild.includes('["--bundles", "app"]'), "The local macOS builder must produce an app bundle.");
+assert(desktopBuild.includes('["--no-bundle"]'), "The local Windows builder must produce an unbundled executable.");
+assert(desktopBuild.includes('spawnSync("codesign"'), "The local macOS app bundle must receive a complete code signature.");
 
 const paths = ["src", "scripts", "Windows", "README.md", "SECURITY.md", "AGENTS.md"];
 for (const path of paths) {

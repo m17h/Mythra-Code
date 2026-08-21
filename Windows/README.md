@@ -26,8 +26,9 @@ The builder:
 - stages generated files in `RELEASE ASSETS/`.
 
 The default local signing key paths remain
-`~/.tauri/openkiwi-windows.key` and
-`~/.tauri/openkiwi-windows.key.password`. Environment variables may override
+`~/.tauri/openkiwi-windows-updater.key` and
+`~/.tauri/openkiwi-windows-updater-password.xml`. The password file is a
+PowerShell CLIXML export of a `SecureString`. Environment variables may override
 those paths as documented by Tauri.
 
 ## Publish

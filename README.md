@@ -227,7 +227,7 @@ macOS stages artifacts in `release-assets/`; Windows stages them in `RELEASE ASS
 
 ## Verification and release notes
 
-`npm run verify` runs release-configuration checks, ESLint, strict Clippy, TypeScript and Rust checks, unit/integration component tests, browser timeline tests, and the production web build on both macOS and Windows CI. `npm run desktop:build` is a local non-release build. `npm run release:build` dispatches to the native platform builder and requires that platform's publisher-owned credentials. OpenKiwi does not embed those credentials or bundle Codex.
+`npm run verify` runs release-configuration checks, ESLint, strict Clippy, TypeScript and Rust checks, unit/integration component tests, browser timeline tests, and the production web build on both macOS and Windows CI. `npm run desktop:build` produces a local `.app` on macOS and an unbundled executable on Windows without creating release artifacts. `npm run release:build` dispatches to the native platform builder and requires that platform's publisher-owned credentials. OpenKiwi does not embed those credentials or bundle Codex.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the component and state model.
 
