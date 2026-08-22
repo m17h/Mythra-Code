@@ -26,6 +26,7 @@ function dockProps(open: boolean): Parameters<typeof StudioDock>[0] {
     gitCommitMessage: "",
     gitCommitSuccess: "",
     gitCommitBusy: false,
+    gitRepositoryReady: true,
     githubAuthenticated: false,
     githubRepoStatus: null,
     githubRepoError: "",
@@ -380,5 +381,24 @@ describe("StudioDock", () => {
     expect(onGitAction).toHaveBeenCalledWith("commit");
     expect(screen.getByText("Committed successfully")).toBeInTheDocument();
     expect(screen.getByText(/Polish the Git panel/)).toBeInTheDocument();
+  });
+
+  it("disables local Git mutations until the project has a repository", () => {
+    render(
+      <StudioDock
+        {...dockProps(true)}
+        tab="git"
+        gitRepositoryReady={false}
+        githubAuthenticated
+        githubRemoteInput="https://github.com/owner/repo.git"
+        githubRepoName="repo"
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Commit all changes locally" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Stage all" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Revert all Git changes" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Attach remote" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
   });
 });

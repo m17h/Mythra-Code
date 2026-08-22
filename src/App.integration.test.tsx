@@ -622,6 +622,40 @@ describe("workspace switching during thread selection", () => {
     expect(await screen.findByText(/“Polish the Git panel” was saved/)).toBeInTheDocument();
   });
 
+  it("does not show a finished commit under a project selected while it was running", async () => {
+    const user = userEvent.setup();
+    const pendingCommit = deferred<{ exitCode: number; stdout: string; stderr: string }>();
+    commandExecImpl = (params) => {
+      const command = params.command as string[];
+      if (command[1] === "commit") return pendingCommit.promise;
+      return { exitCode: 0, stdout: "", stderr: "" };
+    };
+    await renderApp();
+
+    await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
+    await user.click(await screen.findByRole("button", { name: "Git workspace tool" }));
+    await user.type(screen.getByLabelText(/Commit message/i), "Commit Alpha changes");
+    await user.click(screen.getByRole("button", { name: "Commit all changes locally" }));
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("codex_rpc", expect.objectContaining({
+        method: "command/exec",
+        params: expect.objectContaining({ command: ["git", "commit", "-m", "Commit Alpha changes"] }),
+      }));
+    });
+
+    await user.click(screen.getByRole("button", { name: PROJECT_B.name }));
+    expect(screen.getByLabelText(/Commit message/i)).toHaveValue("");
+
+    await act(async () => {
+      pendingCommit.resolve({ exitCode: 0, stdout: "[main abc1234] Commit Alpha changes\n", stderr: "" });
+      await pendingCommit.promise;
+    });
+
+    expect(screen.queryByText("Committed successfully")).not.toBeInTheDocument();
+    expect(screen.queryByText("Changes committed locally")).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/Commit message/i)).toHaveValue("");
+  });
+
   it("does not install a thread whose resume settles after switching workspaces", async () => {
     const user = userEvent.setup();
     await renderApp();
@@ -796,6 +830,41 @@ describe("workspace switching during thread selection", () => {
     await waitFor(() => expect(screen.getByRole("slider", { name: "Reasoning effort" })).toHaveValue("0"));
     await user.click(screen.getByText("Beta thread"));
     await waitFor(() => expect(screen.getByRole("slider", { name: "Reasoning effort" })).toHaveValue("3"));
+  });
+
+  it("recovers safely from malformed and legacy Ultra reasoning storage", async () => {
+    const user = userEvent.setup();
+    localStorage.setItem("kiwi.settings", JSON.stringify({ reasoningEffort: "not-a-level", ultra: true }));
+    localStorage.setItem("kiwi.threadReasoning", JSON.stringify({
+      [THREAD_A.id]: null,
+      [THREAD_B.id]: { reasoningEffort: "ultra", ultra: true },
+      broken: { reasoningEffort: 42, ultra: true },
+    }));
+    resumeImpl = (params) => ({
+      thread: {
+        ...(String(params.threadId) === THREAD_B.id ? THREAD_B : THREAD_A),
+        id: String(params.threadId),
+        turns: [],
+      },
+    });
+    await renderApp();
+
+    await user.click(await screen.findByText("Alpha thread"));
+    await waitFor(() => expect(screen.getByRole("slider", { name: "Reasoning effort" })).toHaveValue("1"));
+    expect(screen.queryByRole("switch", { name: /Ultra/i })).not.toBeInTheDocument();
+
+    await user.click(await screen.findByText("Beta thread"));
+    await waitFor(() => expect(screen.getByRole("slider", { name: "Reasoning effort" })).toHaveValue("4"));
+  });
+
+  it("defaults safely when the entire saved reasoning map is null", async () => {
+    const user = userEvent.setup();
+    localStorage.setItem("kiwi.threadReasoning", "null");
+    resumeImpl = (params) => ({ thread: { ...THREAD_A, id: String(params.threadId), turns: [] } });
+    await renderApp();
+
+    await user.click(await screen.findByText("Alpha thread"));
+    await waitFor(() => expect(screen.getByRole("slider", { name: "Reasoning effort" })).toHaveValue("1"));
   });
 
   it("creates an editable provider handoff draft without changing the source thread", async () => {

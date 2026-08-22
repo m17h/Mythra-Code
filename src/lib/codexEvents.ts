@@ -99,7 +99,7 @@ export interface CodexEventContext {
   onStatus: (status: string) => void;
   onError: (message: string) => void;
   onAuthRequired: () => void;
-  onRateLimits: (limits: ProviderRateLimits) => void;
+  onRateLimits: (limits: ProviderRateLimits | null) => void;
   onTerminalOutput: (delta: string) => void;
   onTurnCompleted: (threadId: string, turn: Turn | null) => void;
   onApprovalRequested: (threadId: string) => void;
@@ -278,9 +278,10 @@ export function routeCodexEvent(event: CodexEvent, ctx: CodexEventContext): void
   }
   if (method === "account/rateLimits/updated") {
     // Same payload as `account/rateLimits/read`, so the push path and the poll
-    // path normalize through one parser and render identically.
-    const limits = parseCodexRateLimits(params);
-    if (limits) ctx.onRateLimits(limits);
+    // path normalize through one parser and render identically. A valid update
+    // with no windows must also clear the previous quota instead of leaving a
+    // stale percentage on screen.
+    ctx.onRateLimits(parseCodexRateLimits(params));
     return;
   }
   if (method === "turn/started") {

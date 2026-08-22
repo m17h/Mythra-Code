@@ -115,7 +115,7 @@ export function formatResetTime(resetsAt: number | null | undefined, now = Date.
 export function compactResetLabel(value: string): string {
   return value
     .trim()
-    .replace(/\s+\([A-Za-z_]+\/[A-Za-z_]+\)\s*$/, "")
+    .replace(/\s+\((?:[A-Za-z_+-]+\/)+[A-Za-z_+-]+\)\s*$/, "")
     .replace(/\s+at\s+/i, " · ")
     .replace(/(\d)\s*(am|pm)\b/gi, (_, digit: string, period: string) => `${digit} ${period.toUpperCase()}`);
 }

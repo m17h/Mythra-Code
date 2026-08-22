@@ -147,6 +147,27 @@ const EMPTY_AGENTS: AgentRecord[] = [];
 const EMPTY_QUEUED_TURNS: QueuedTurn[] = [];
 const LOCAL_TRANSCRIPT_SAVE_DEBOUNCE_MS = 900;
 const DEFAULT_GIT_COMMIT_MESSAGE = "Update project files";
+const COMPOSER_REASONING_EFFORTS: ThreadReasoning["reasoningEffort"][] = ["low", "medium", "high", "xhigh", "max"];
+
+function sanitizeComposerReasoningEffort(
+  value: unknown,
+  fallback: ThreadReasoning["reasoningEffort"] = DEFAULT_SETTINGS.reasoningEffort,
+): ThreadReasoning["reasoningEffort"] {
+  if (value === "ultra") return "max";
+  return COMPOSER_REASONING_EFFORTS.includes(value as ThreadReasoning["reasoningEffort"])
+    ? value as ThreadReasoning["reasoningEffort"]
+    : fallback;
+}
+
+function sanitizeThreadReasoningRecords(value: unknown): Record<string, ThreadReasoning> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value).flatMap(([threadId, reasoning]) => {
+    if (!reasoning || typeof reasoning !== "object") return [];
+    const rawEffort = (reasoning as Partial<ThreadReasoning>).reasoningEffort;
+    if (typeof rawEffort !== "string" || (rawEffort !== "ultra" && !COMPOSER_REASONING_EFFORTS.includes(rawEffort as ThreadReasoning["reasoningEffort"]))) return [];
+    return [[threadId, { reasoningEffort: sanitizeComposerReasoningEffort(rawEffort), ultra: false }]];
+  }));
+}
 
 const initialProjects = sanitizeProjectSubagentOverrides(loadStored<Project[]>("kiwi.projects", []));
 const initialWorkspaceMode: WorkspaceMode = loadStored<WorkspaceMode>("kiwi.workspaceMode", initialProjects.length ? "project" : "chat");
@@ -156,7 +177,7 @@ const establishedInstall = isEstablishedOpenKiwiInstall({ projects: initialProje
 const initialOnboardingOpen = initialOnboardingVersion < ONBOARDING_VERSION && !establishedInstall;
 const storedSettings = loadStored<Partial<AppSettings>>("kiwi.settings", {});
 const initialChildAgents = sanitizeChildAgentSettings(storedSettings.childAgents);
-const initialSettings: AppSettings = { ...DEFAULT_SETTINGS, ...storedSettings, openAiLogo: storedSettings.openAiLogo === "codex" ? "codex" : "openai", claudeLogo: storedSettings.claudeLogo === "anthropic" ? "anthropic" : "claude", cursorLogo: storedSettings.cursorLogo === "app-dark" ? "app-dark" : "cube", subagentMax: crewSafeConcurrency(Number(storedSettings.subagentMax) || DEFAULT_SETTINGS.subagentMax, initialChildAgents), childAgents: initialChildAgents, model: modelForProvider(storedSettings.provider ?? DEFAULT_SETTINGS.provider, storedSettings.model ?? DEFAULT_SETTINGS.model), reasoningEffort: storedSettings.reasoningEffort === "ultra" ? "max" : (storedSettings.reasoningEffort ?? DEFAULT_SETTINGS.reasoningEffort), ultra: false, lmStudioBaseUrl: storedSettings.lmStudioBaseUrl?.trim() || DEFAULT_LM_STUDIO_BASE_URL, theme: THEMES.some((theme) => theme.id === storedSettings.theme) ? storedSettings.theme! : DEFAULT_SETTINGS.theme, uiScale: Math.min(150, Math.max(80, Number(storedSettings.uiScale) || DEFAULT_SETTINGS.uiScale)), usageDisplay: sanitizeUsageDisplay(storedSettings.usageDisplay) };
+const initialSettings: AppSettings = { ...DEFAULT_SETTINGS, ...storedSettings, openAiLogo: storedSettings.openAiLogo === "codex" ? "codex" : "openai", claudeLogo: storedSettings.claudeLogo === "anthropic" ? "anthropic" : "claude", cursorLogo: storedSettings.cursorLogo === "app-dark" ? "app-dark" : "cube", subagentMax: crewSafeConcurrency(Number(storedSettings.subagentMax) || DEFAULT_SETTINGS.subagentMax, initialChildAgents), childAgents: initialChildAgents, model: modelForProvider(storedSettings.provider ?? DEFAULT_SETTINGS.provider, storedSettings.model ?? DEFAULT_SETTINGS.model), reasoningEffort: sanitizeComposerReasoningEffort(storedSettings.reasoningEffort), ultra: false, lmStudioBaseUrl: storedSettings.lmStudioBaseUrl?.trim() || DEFAULT_LM_STUDIO_BASE_URL, theme: THEMES.some((theme) => theme.id === storedSettings.theme) ? storedSettings.theme! : DEFAULT_SETTINGS.theme, uiScale: Math.min(150, Math.max(80, Number(storedSettings.uiScale) || DEFAULT_SETTINGS.uiScale)), usageDisplay: sanitizeUsageDisplay(storedSettings.usageDisplay) };
 
 function permissionLabel(mode: PermissionMode): string {
   if (mode === "read-only") return "Read only";
@@ -206,10 +227,7 @@ export default function App() {
   const [settings, persistSettings] = usePersistedState<AppSettings>("kiwi.settings", DEFAULT_SETTINGS, { init: () => initialSettings });
   const [threadModels, setThreadModels] = usePersistedState<Record<string, string>>("kiwi.threadModels", {});
   const [threadReasoning, setThreadReasoning] = usePersistedState<Record<string, ThreadReasoning>>("kiwi.threadReasoning", {}, {
-    init: (load) => Object.fromEntries(Object.entries(load()).map(([threadId, reasoning]) => [threadId, {
-      reasoningEffort: reasoning.reasoningEffort === "ultra" ? "max" : reasoning.reasoningEffort,
-      ultra: false,
-    }])),
+    init: (load) => sanitizeThreadReasoningRecords(load()),
   });
   const [draftThreadProvider, setDraftThreadProvider] = useState<Provider | null>(null);
   const [draftThreadModel, setDraftThreadModel] = useState<string | null>(null);
@@ -313,10 +331,12 @@ export default function App() {
   const [gitCommitMessage, setGitCommitMessage] = useState("");
   const [gitCommitSuccess, setGitCommitSuccess] = useState("");
   const [gitCommitBusy, setGitCommitBusy] = useState(false);
+  const gitProjectSequenceRef = useRef(0);
   const [githubStatus, setGithubStatus] = useState<GitHubAccountStatus | null>(null);
   const [githubBusy, setGithubBusy] = useState(false);
   const [githubLoginPending, setGithubLoginPending] = useState(false);
   const [githubRepoStatus, setGithubRepoStatus] = useState<GitHubRepoStatus | null>(null);
+  const githubRepoRefreshSequenceRef = useRef(0);
   const [githubRepoError, setGithubRepoError] = useState("");
   const [githubRemoteInput, setGithubRemoteInput] = useState("");
   const [githubRepoName, setGithubRepoName] = useState("");
@@ -414,7 +434,7 @@ export default function App() {
       model: modelForProvider(activeProvider, threadModel ?? projectSettings.model),
       systemPrompt: providerPrompt,
       ...(rememberedReasoning ?? {}),
-      reasoningEffort: rememberedReasoning?.reasoningEffort === "ultra" ? "max" : (rememberedReasoning?.reasoningEffort ?? (projectSettings.reasoningEffort === "ultra" ? "max" : projectSettings.reasoningEffort)),
+      reasoningEffort: sanitizeComposerReasoningEffort(rememberedReasoning?.reasoningEffort ?? projectSettings.reasoningEffort),
       ultra: false,
     };
     return activeThread && isSubAgentThread(activeThread, childThreadLinks)
@@ -3370,22 +3390,30 @@ export default function App() {
   }, []);
 
   const refreshGitHubRepo = useCallback(async (cwd = activeExecutionPath || activeProject?.path || "") => {
+    const refreshSequence = ++githubRepoRefreshSequenceRef.current;
     if (!cwd) {
       setGithubRepoStatus(null);
       setGithubRepoError("");
       return;
     }
     try {
-      setGithubRepoStatus(await getGitHubRepoStatus(cwd));
+      const next = await getGitHubRepoStatus(cwd);
+      if (githubRepoRefreshSequenceRef.current !== refreshSequence) return;
+      setGithubRepoStatus(next);
       setGithubRepoError("");
     } catch (reason) {
+      if (githubRepoRefreshSequenceRef.current !== refreshSequence) return;
       setGithubRepoStatus(null);
       setGithubRepoError(friendlyError(reason));
     }
   }, [activeExecutionPath, activeProject?.path]);
 
   useEffect(() => {
+    gitProjectSequenceRef.current += 1;
     void refreshGitHubRepo();
+    setGitOutput("");
+    setGitCommitMessage("");
+    setGitCommitBusy(false);
     setGithubRemoteInput("");
     setGithubRepoName(activeProject?.name.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") ?? "");
     setGitCommitSuccess("");
@@ -3399,6 +3427,8 @@ export default function App() {
       return;
     }
     const commandPath = activeExecutionPath || activeProject.path;
+    const projectSequence = gitProjectSequenceRef.current;
+    const isCurrentProject = () => gitProjectSequenceRef.current === projectSequence;
     const gitRoots = activeThreadWorktree?.gitDir ? [activeThreadWorktree.gitDir] : [];
     const pushCommand = gitPushCommand(githubRepoStatus);
     const pushCompletionNote = async () => {
@@ -3410,9 +3440,10 @@ export default function App() {
       }
     };
     const showPushOutput = (output: string) => {
+      if (!isCurrentProject()) return;
       setGitOutput(output);
       void pushCompletionNote().then((note) => {
-        if (!note) return;
+        if (!note || !isCurrentProject()) return;
         setGitOutput((current) => current === output ? `${output}\n\n${note}` : current);
       });
     };
@@ -3429,23 +3460,28 @@ export default function App() {
       try {
         const stage = await executeCommand(stageCommand, commandPath, gitRoots);
         if (stage.exitCode !== 0) {
-          setGitOutput(`$ ${stageCommand.join(" ")}\n${stage.stdout}${stage.stderr}\n[exit ${stage.exitCode}]`);
+          if (isCurrentProject()) setGitOutput(`$ ${stageCommand.join(" ")}\n${stage.stdout}${stage.stderr}\n[exit ${stage.exitCode}]`);
           return;
         }
         const commit = await executeCommand(commitCommand, commandPath, gitRoots);
         if (commit.exitCode !== 0) {
-          setGitOutput(`$ ${stageCommand.join(" ")}\n${stage.stdout}${stage.stderr}\n[exit ${stage.exitCode}]\n\n$ ${commitCommand.join(" ")}\n${commit.stdout}${commit.stderr}\n[exit ${commit.exitCode}]`);
+          if (isCurrentProject()) setGitOutput(`$ ${stageCommand.join(" ")}\n${stage.stdout}${stage.stderr}\n[exit ${stage.exitCode}]\n\n$ ${commitCommand.join(" ")}\n${commit.stdout}${commit.stderr}\n[exit ${commit.exitCode}]`);
           return;
         }
-        setGitCommitMessage("");
-        setGitCommitSuccess(`“${commitMessage}” was saved to this repository.`);
+        const commitResultIsVisible = isCurrentProject();
+        if (commitResultIsVisible) {
+          setGitCommitMessage("");
+          setGitCommitSuccess(`“${commitMessage}” was saved to this repository.`);
+        }
         if (action === "commit") {
+          if (!commitResultIsVisible) return;
           setGitOutput(`$ ${stageCommand.join(" ")}\n${stage.stdout}${stage.stderr}\n[exit ${stage.exitCode}]\n\n$ ${commitCommand.join(" ")}\n${commit.stdout}${commit.stderr}\n[exit ${commit.exitCode}]`);
           showSuccessToast("Changes committed locally");
           void refreshGitHubRepo(commandPath);
           return;
         }
         const push = await executeCommand(pushCommand!, commandPath, gitRoots);
+        if (!isCurrentProject()) return;
         const output = `$ ${stageCommand.join(" ")}\n${stage.stdout}${stage.stderr}\n[exit ${stage.exitCode}]\n\n$ ${commitCommand.join(" ")}\n${commit.stdout}${commit.stderr}\n[exit ${commit.exitCode}]\n\n$ ${pushCommand!.join(" ")}\n${push.stdout}${push.stderr}\n[exit ${push.exitCode}]`;
         if (push.exitCode === 0) {
           showPushOutput(output);
@@ -3456,9 +3492,9 @@ export default function App() {
           showSuccessToast("Changes committed locally; GitHub push needs attention");
         }
       } catch (reason) {
-        setGitOutput(friendlyError(reason));
+        if (isCurrentProject()) setGitOutput(friendlyError(reason));
       } finally {
-        setGitCommitBusy(false);
+        if (isCurrentProject()) setGitCommitBusy(false);
       }
       return;
     }
@@ -3485,6 +3521,7 @@ export default function App() {
     }
     try {
       const result = await executeCommand(command, commandPath, gitRoots);
+      if (!isCurrentProject()) return;
       const combined = `${result.stdout}${result.stderr || ""}`;
       const output = combined.includes("not a git repository")
         ? "This project folder is not a Git repository yet. Initialize Git from the terminal to enable these workflows."
@@ -3494,7 +3531,7 @@ export default function App() {
       if (action === "diff" && activeThreadId) useTaskStore.getState().setDiff(activeThreadId, result.stdout);
       if (result.exitCode === 0) void refreshGitHubRepo(commandPath);
     } catch (reason) {
-      setGitOutput(friendlyError(reason));
+      if (isCurrentProject()) setGitOutput(friendlyError(reason));
     }
   };
 
@@ -4554,6 +4591,7 @@ export default function App() {
             gitCommitMessage={gitCommitMessage}
             gitCommitSuccess={gitCommitSuccess}
             gitCommitBusy={gitCommitBusy}
+            gitRepositoryReady={Boolean(githubRepoStatus?.isRepo)}
             githubAuthenticated={Boolean(githubStatus?.authenticated)}
             githubRepoStatus={githubRepoStatus}
             githubRepoError={githubRepoError}

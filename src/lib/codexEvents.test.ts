@@ -42,10 +42,10 @@ describe("routeCodexEvent", () => {
     });
   });
 
-  it("ignores a rate limit update that carries no window", () => {
+  it("clears stale rate limits when an update carries no active window", () => {
     const ctx = makeContext();
     routeCodexEvent({ method: "account/rateLimits/updated", params: { rateLimits: {} } }, ctx);
-    expect(ctx.onRateLimits).not.toHaveBeenCalled();
+    expect(ctx.onRateLimits).toHaveBeenCalledWith(null);
   });
 
   it("streams model thinking into a collapsed reasoning activity and prefers full content", () => {

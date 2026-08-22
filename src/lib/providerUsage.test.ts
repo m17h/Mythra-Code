@@ -144,6 +144,8 @@ describe("rate limit window formatting", () => {
   it("compacts a provider-local reset label for the quota card", () => {
     expect(compactResetLabel("Aug 21 at 11:29pm (America/New_York)"))
       .toBe("Aug 21 · 11:29 PM");
+    expect(compactResetLabel("Aug 21 at 11:29pm (America/Argentina/Buenos_Aires)"))
+      .toBe("Aug 21 · 11:29 PM");
   });
 
   it("labels windows only when more than one is reported", () => {
