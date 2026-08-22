@@ -154,12 +154,22 @@ function finalizeTool(threadId: string, block: ClaudeBlock): void {
   } catch {
     input = { input: block.input };
   }
+  const kind = activityKind(block.name);
   useTaskStore.getState().upsertActivity(threadId, {
     id: block.id,
-    kind: activityKind(block.name),
+    kind,
     title: activityTitle(block.name, input),
     detail: activityDetail(input),
     status: "inProgress",
+    ...(/^task$/i.test(block.name) ? {
+      agent: {
+        action: "spawn" as const,
+        provider: "claude" as const,
+        model: text(input.model) || undefined,
+        task: text(input.description) || text(input.prompt) || undefined,
+        count: 1,
+      },
+    } : {}),
   });
 }
 

@@ -1,6 +1,8 @@
 use std::{
     collections::HashSet,
-    env, fs,
+    env,
+    ffi::{OsStr, OsString},
+    fs,
     io::Write,
     path::{Path, PathBuf},
     process::Stdio,
@@ -120,19 +122,82 @@ pub(super) fn checkpoint_ref(id: &str, phase: &str) -> Result<String, String> {
     Ok(format!("refs/openkiwi/checkpoints/{id}/{phase}"))
 }
 
+/// GUI apps on macOS do not inherit the shell PATH. Git itself remains
+/// available at `/usr/bin/git`, but filters launched by Git (notably Git LFS
+/// installed by Homebrew) then disappear. Preserve every inherited entry and
+/// add the native package-manager locations Git filters commonly use.
+pub(super) fn git_runtime_path(current: Option<&OsStr>, home: Option<&Path>) -> Option<OsString> {
+    #[cfg(not(unix))]
+    let _ = home;
+    let mut directories: Vec<PathBuf> = Vec::new();
+    let mut add = |path: PathBuf| {
+        if !directories.contains(&path) {
+            directories.push(path);
+        }
+    };
+    if let Some(current) = current {
+        for directory in env::split_paths(current) {
+            add(directory);
+        }
+    }
+    #[cfg(unix)]
+    {
+        if let Some(home) = home {
+            add(home.join(".local/bin"));
+            add(home.join(".cargo/bin"));
+        }
+        for directory in [
+            "/opt/homebrew/bin",
+            "/opt/homebrew/sbin",
+            "/usr/local/bin",
+            "/usr/local/sbin",
+            "/opt/local/bin",
+            "/opt/local/sbin",
+            "/usr/bin",
+            "/bin",
+            "/usr/sbin",
+            "/sbin",
+        ] {
+            add(PathBuf::from(directory));
+        }
+    }
+    if directories.is_empty() {
+        None
+    } else {
+        env::join_paths(directories).ok()
+    }
+}
+
+pub(super) fn git_command_for(
+    cwd: &Path,
+    current_path: Option<&OsStr>,
+    home: Option<&Path>,
+) -> std::process::Command {
+    let mut command = background_std_command("git");
+    command
+        .current_dir(cwd)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_COMMON_DIR")
+        .env_remove("GIT_INDEX_FILE");
+    if let Some(path) = git_runtime_path(current_path, home) {
+        command.env("PATH", path);
+    }
+    command
+}
+
+fn git_command(cwd: &Path) -> std::process::Command {
+    let home = env::var_os("HOME").map(PathBuf::from);
+    git_command_for(cwd, env::var_os("PATH").as_deref(), home.as_deref())
+}
+
 pub(super) fn run_git(
     cwd: &Path,
     args: &[&str],
     index_file: Option<&Path>,
 ) -> Result<std::process::Output, String> {
-    let mut command = background_std_command("git");
-    command
-        .current_dir(cwd)
-        .args(args)
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_COMMON_DIR")
-        .env_remove("GIT_INDEX_FILE");
+    let mut command = git_command(cwd);
+    command.args(args);
     if let Some(index_file) = index_file {
         command.env("GIT_INDEX_FILE", index_file);
     }
@@ -147,14 +212,9 @@ pub(super) fn run_git_with_input(
     index_file: Option<&Path>,
     input: &[u8],
 ) -> Result<std::process::Output, String> {
-    let mut command = background_std_command("git");
+    let mut command = git_command(cwd);
     command
-        .current_dir(cwd)
         .args(args)
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_COMMON_DIR")
-        .env_remove("GIT_INDEX_FILE")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -274,9 +334,8 @@ pub(super) fn capture_checkpoint_snapshot(
     let repo = checkpoint_repo(cwd)?;
     let (tree, file_count) = current_worktree_tree(&repo)?;
     let result = (|| {
-        let mut commit = background_std_command("git");
+        let mut commit = git_command(&repo);
         commit
-            .current_dir(&repo)
             .args(["commit-tree", &tree, "-m", label])
             .env("GIT_AUTHOR_NAME", "OpenKiwi Checkpoints")
             .env("GIT_AUTHOR_EMAIL", "checkpoints@openkiwi.local")

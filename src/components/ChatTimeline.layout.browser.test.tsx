@@ -48,14 +48,14 @@ const FOLLOW_UP_TURN: ChatMessage[] = [
 const VIEWPORT_HEIGHT = 900;
 const COMPOSER_HEIGHT = 150;
 
-function Shell({ messages, running }: { messages: ChatMessage[]; running: boolean }) {
+function Shell({ messages, running, activities = COMPLETED_ACTIVITIES }: { messages: ChatMessage[]; running: boolean; activities?: Activity[] }) {
   return (
     <div className="app-shell" data-theme="kiwi" style={{ height: VIEWPORT_HEIGHT, display: "flex", flexDirection: "column" }}>
       <div className="main-panel" style={{ flex: 1, minHeight: 0 }}>
         <div style={{ flex: 1, minHeight: 0 }}>
           <ChatTimeline
             messages={messages}
-            activities={COMPLETED_ACTIVITIES}
+            activities={activities}
             running={running}
             thinkingLabel="Working"
             provider="claude"
@@ -100,6 +100,36 @@ function overlaps(rows: PositionedRow[]): string[] {
 const settle = () => new Promise((resolve) => { setTimeout(resolve, 600); });
 
 describe("ChatTimeline browser layout", () => {
+  it("aligns a Relay card with neighbouring timeline activity and keeps its height stable", async () => {
+    const relay: Activity = {
+      id: "relay",
+      kind: "agent",
+      title: "Spawned Claude sub-agent",
+      status: "inProgress",
+      timelineOrder: 2,
+      turnId: "turn-relay",
+      agent: { action: "spawn", provider: "claude", model: "claude-opus-5", task: "Audit the native bridge" },
+    };
+    const activities: Activity[] = [
+      { id: "warning", kind: "warning", title: "Baseline checked", timelineOrder: 1, turnId: "turn-relay" },
+      relay,
+    ];
+    const view = render(<Shell messages={[]} activities={activities} running={false} />);
+    await settle();
+
+    const ordinary = document.querySelector<HTMLElement>(".activity-row");
+    const working = document.querySelector<HTMLElement>(".subagent-relay-card");
+    expect(ordinary).not.toBeNull();
+    expect(working).not.toBeNull();
+    expect(Math.round(working!.getBoundingClientRect().left)).toBe(Math.round(ordinary!.getBoundingClientRect().left));
+    const workingHeight = Math.round(working!.getBoundingClientRect().height);
+
+    view.rerender(<Shell messages={[]} activities={[activities[0], { ...relay, status: "completed" }]} running={false} />);
+    await settle();
+    const completed = document.querySelector<HTMLElement>(".subagent-relay-card");
+    expect(Math.round(completed!.getBoundingClientRect().height)).toBe(workingHeight);
+  });
+
   it("never draws a row on top of the row above it after a prompt is appended", async () => {
     const view = render(<Shell messages={COMPLETED_TURN} running={false} />);
     await settle();

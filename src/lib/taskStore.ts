@@ -471,7 +471,9 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
             // A provider can disappear while a tool card is awaiting its
             // result. The turn is terminal, so that card must not keep
             // claiming it is live after the composer has returned to idle.
-            status: activity.status === "inProgress"
+            // Spawn cards are different: their child thread owns a separate
+            // lifecycle and may legitimately outlive the parent's turn.
+            status: activity.status === "inProgress" && !(activity.kind === "agent" && activity.agent?.action === "spawn")
               ? (status === "completed" ? "completed" : "failed")
               : activity.status,
             turnStatus,

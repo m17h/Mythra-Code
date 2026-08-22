@@ -40,4 +40,26 @@ describe("timelineFromTurns", () => {
 
     expect(snapshot.messages.map((message) => message.turnStatus)).toEqual(["interrupted", "interrupted"]);
   });
+
+  it("restores structured spawn metadata for the animated dispatch card", () => {
+    const snapshot = timelineFromTurns([{ id: "turn-1", items: [{
+      id: "spawn",
+      type: "collabAgentToolCall",
+      tool: "spawnAgent",
+      prompt: "Audit the updater",
+      status: "inProgress",
+      receiverThreadIds: ["child"],
+    }] }]);
+
+    expect(snapshot.activities[0]).toMatchObject({
+      id: "spawn",
+      kind: "agent",
+      status: "inProgress",
+      agent: {
+        action: "spawn",
+        provider: "openai",
+        task: "Audit the updater",
+      },
+    });
+  });
 });

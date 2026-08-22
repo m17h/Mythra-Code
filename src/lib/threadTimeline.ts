@@ -33,11 +33,32 @@ function activityFromItem(item: ThreadItem, id: string, timelineOrder: number, t
       wait: "Wait for sub-agents",
       closeAgent: "Close sub-agent",
     };
-    return { id, kind: "agent", title: titles[item.tool ?? ""] ?? "Sub-agent activity", detail: item.prompt ?? undefined, status: item.status, timelineOrder, turnId, turnStatus };
+    const actions = {
+      spawnAgent: "spawn",
+      sendInput: "sendInput",
+      resumeAgent: "resume",
+      wait: "wait",
+      closeAgent: "close",
+    } as const;
+    return {
+      id,
+      kind: "agent",
+      title: titles[item.tool ?? ""] ?? "Sub-agent activity",
+      detail: item.prompt ?? undefined,
+      status: item.status,
+      agent: {
+        action: item.tool ? actions[item.tool] : "status",
+        provider: "openai",
+        task: item.prompt ?? undefined,
+      },
+      timelineOrder,
+      turnId,
+      turnStatus,
+    };
   }
   if (item.type === "subAgentActivity") {
     const action = item.kind === "started" ? "started" : item.kind === "interrupted" ? "interrupted" : "working";
-    return { id, kind: "agent", title: `Sub-agent ${action}`, detail: item.agentPath || item.agentThreadId, status: item.kind, timelineOrder, turnId, turnStatus };
+    return { id, kind: "agent", title: `Sub-agent ${action}`, detail: item.agentPath || item.agentThreadId, status: item.kind, agent: { action: "status", provider: "openai" }, timelineOrder, turnId, turnStatus };
   }
   return null;
 }

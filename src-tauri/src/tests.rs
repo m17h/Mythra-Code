@@ -138,6 +138,120 @@ fn test_git(repo: &Path, args: &[&str]) -> String {
 }
 
 #[test]
+fn git_runtime_path_preserves_inherited_entries_and_adds_filter_locations() {
+    let inherited_dir = env::temp_dir().join("openkiwi-inherited-git-tools");
+    let inherited = env::join_paths([&inherited_dir]).expect("inherited PATH");
+    let home = env::temp_dir().join("openkiwi-git-runtime-home");
+    let runtime =
+        git_runtime_path(Some(inherited.as_os_str()), Some(&home)).expect("Git runtime PATH");
+    let directories = env::split_paths(&runtime).collect::<Vec<_>>();
+
+    assert_eq!(directories.first(), Some(&inherited_dir));
+    #[cfg(unix)]
+    {
+        assert!(directories.contains(&home.join(".local/bin")));
+        assert!(directories.contains(&PathBuf::from("/opt/homebrew/bin")));
+        assert!(directories.contains(&PathBuf::from("/usr/local/bin")));
+        assert_eq!(
+            directories
+                .iter()
+                .filter(|path| path.as_path() == Path::new("/usr/bin"))
+                .count(),
+            1,
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn git_runtime_path_finds_a_filter_outside_a_gui_style_minimal_path() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let home = env::temp_dir().join(format!(
+        "openkiwi-git-filter-path-test-{}",
+        uuid::Uuid::new_v4()
+    ));
+    let user_bin = home.join(".local/bin");
+    fs::create_dir_all(&user_bin).expect("create user bin");
+    let filter = user_bin.join("openkiwi-test-git-filter");
+    fs::write(&filter, "#!/bin/sh\nexit 0\n").expect("write fake filter");
+    let mut permissions = fs::metadata(&filter)
+        .expect("filter metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&filter, permissions).expect("make fake filter executable");
+
+    let minimal = env::join_paths([PathBuf::from("/usr/bin"), PathBuf::from("/bin")])
+        .expect("minimal GUI PATH");
+    let runtime =
+        git_runtime_path(Some(minimal.as_os_str()), Some(&home)).expect("augmented Git PATH");
+    let output = StdCommand::new("openkiwi-test-git-filter")
+        .env("PATH", runtime)
+        .output()
+        .expect("resolve fake Git filter through augmented PATH");
+
+    assert!(output.status.success());
+    fs::remove_dir_all(&home).expect("remove filter fixture");
+}
+
+#[cfg(unix)]
+#[test]
+fn checkpoint_git_command_runs_a_required_filter_with_a_gui_style_path() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = env::temp_dir().join(format!(
+        "openkiwi-checkpoint-filter-test-{}",
+        uuid::Uuid::new_v4()
+    ));
+    let repo = root.join("project");
+    let home = root.join("home");
+    let user_bin = home.join(".local/bin");
+    fs::create_dir_all(&repo).expect("create project");
+    fs::create_dir_all(&user_bin).expect("create user bin");
+    test_git(&repo, &["init", "-b", "main"]);
+    test_git(
+        &repo,
+        &[
+            "config",
+            "filter.openkiwi-test.clean",
+            "openkiwi-test-filter",
+        ],
+    );
+    test_git(&repo, &["config", "filter.openkiwi-test.required", "true"]);
+    fs::write(
+        repo.join(".gitattributes"),
+        "*.filtered filter=openkiwi-test\n",
+    )
+    .expect("write attributes");
+    fs::write(repo.join("asset.filtered"), "checkpoint content\n").expect("write filtered file");
+    let filter = user_bin.join("openkiwi-test-filter");
+    fs::write(&filter, "#!/bin/sh\n/bin/cat\n").expect("write fake filter");
+    let mut permissions = fs::metadata(&filter)
+        .expect("filter metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&filter, permissions).expect("make fake filter executable");
+
+    let minimal = env::join_paths([PathBuf::from("/usr/bin"), PathBuf::from("/bin")])
+        .expect("minimal GUI PATH");
+    let output = git_command_for(&repo, Some(minimal.as_os_str()), Some(&home))
+        .args(["add", "-A", "--", "."])
+        .output()
+        .expect("run checkpoint Git command");
+
+    assert!(
+        output.status.success(),
+        "required Git filter was not resolved: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        test_git(&repo, &["show", ":asset.filtered"]),
+        "checkpoint content"
+    );
+    fs::remove_dir_all(&root).expect("remove checkpoint filter fixture");
+}
+
+#[test]
 fn github_remote_attachment_validates_and_refuses_to_replace_origin() {
     let project = env::temp_dir().join(format!(
         "openkiwi-github-attach-test-{}",

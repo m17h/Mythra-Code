@@ -55,6 +55,69 @@ describe("ChatTimeline", () => {
     expect(screen.queryByText(/&amp;/)).not.toBeInTheDocument();
   });
 
+  it("renders a structured spawn as a live provider dispatch instead of a raw activity", () => {
+    render(<ActivityRow activity={{
+      id: "child-agent-2",
+      kind: "agent",
+      title: "Spawned Claude sub-agent",
+      detail: "claude · claude-opus-5\nRust critical bug fixes",
+      status: "inProgress",
+      agent: {
+        action: "spawn",
+        provider: "claude",
+        model: "claude-opus-5",
+        task: "Rust critical bug fixes",
+        count: 1,
+      },
+    }} />);
+
+    expect(screen.getByRole("article", { name: /Claude sub-agent working: Rust critical bug fixes/i })).toBeInTheDocument();
+    expect(screen.getByText("Claude sub-agent")).toBeInTheDocument();
+    expect(screen.getByText("claude-opus-5")).toBeInTheDocument();
+    expect(screen.getByText("Rust critical bug fixes")).toBeInTheDocument();
+    expect(screen.getByText("Working")).toBeInTheDocument();
+    expect(screen.queryByText("inProgress")).not.toBeInTheDocument();
+  });
+
+  it("groups consecutive same-turn spawns into one coordinated wave", () => {
+    const spawn = (id: string, order: number, turnId: string) => ({
+      id,
+      kind: "agent" as const,
+      title: `Spawned ${id}`,
+      timelineOrder: order,
+      turnId,
+      agent: { action: "spawn" as const, provider: "openai" as const, task: id },
+    });
+    const entries = orderedTimelineEntries([], [
+      spawn("one", 1, "turn-a"),
+      spawn("two", 2, "turn-a"),
+      spawn("three", 3, "turn-b"),
+    ]);
+
+    expect(entries).toHaveLength(2);
+    expect(entries[0]).toMatchObject({ kind: "spawns", value: [{ id: "one" }, { id: "two" }] });
+    expect(entries[1]).toMatchObject({ kind: "activity", value: { id: "three" } });
+  });
+
+  it("announces a parallel wave once while keeping each relay navigable", () => {
+    const activities = ["Parser audit", "UI audit"].map((task, index) => ({
+      id: `spawn-${index}`,
+      kind: "agent" as const,
+      title: `Spawned worker ${index}`,
+      status: index ? "completed" : "inProgress",
+      timelineOrder: index + 1,
+      turnId: "turn-a",
+      agent: { action: "spawn" as const, provider: "openai" as const, task },
+    }));
+    render(<ChatTimeline messages={[]} activities={activities} running thinkingLabel="Working" />);
+
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+    expect(screen.getByRole("status")).toHaveTextContent("Sub-agents: 1 working · 1 done");
+    expect(screen.getByLabelText("Sub-agent wave: 1 working · 1 done")).toBeInTheDocument();
+    expect(screen.getByRole("article", { name: /Parser audit/ })).toBeInTheDocument();
+    expect(screen.getByRole("article", { name: /UI audit/ })).toBeInTheDocument();
+  });
+
   it("places command activity between the messages that surround it", () => {
     const entries = orderedTimelineEntries(
       [
@@ -64,7 +127,7 @@ describe("ChatTimeline", () => {
       [{ id: "command", kind: "command", title: "git status", detail: "clean", timelineOrder: 2 }],
     );
 
-    expect(entries.map((entry) => entry.kind === "commands" || entry.kind === "files"
+    expect(entries.map((entry) => entry.kind === "commands" || entry.kind === "files" || entry.kind === "spawns"
         ? entry.value.map((activity) => activity.id).join(",")
         : entry.value.id))
       .toEqual(["user", "command", "assistant"]);
@@ -82,7 +145,7 @@ describe("ChatTimeline", () => {
       ],
     );
 
-    expect(entries.map((entry) => entry.kind === "commands" || entry.kind === "files" ? entry.value.map((activity) => activity.id).join(",") : entry.kind))
+    expect(entries.map((entry) => entry.kind === "commands" || entry.kind === "files" || entry.kind === "spawns" ? entry.value.map((activity) => activity.id).join(",") : entry.kind))
       .toEqual(["message", "one,two", "file,file-two", "three"]);
   });
 
