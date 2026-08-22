@@ -146,6 +146,7 @@ const EMPTY_ACTIVITIES: Activity[] = [];
 const EMPTY_AGENTS: AgentRecord[] = [];
 const EMPTY_QUEUED_TURNS: QueuedTurn[] = [];
 const LOCAL_TRANSCRIPT_SAVE_DEBOUNCE_MS = 900;
+const DEFAULT_GIT_COMMIT_MESSAGE = "Update project files";
 
 const initialProjects = sanitizeProjectSubagentOverrides(loadStored<Project[]>("kiwi.projects", []));
 const initialWorkspaceMode: WorkspaceMode = loadStored<WorkspaceMode>("kiwi.workspaceMode", initialProjects.length ? "project" : "chat");
@@ -310,6 +311,8 @@ export default function App() {
   const [mcpServers, setMcpServers] = useState<McpView[]>([]);
   const [gitOutput, setGitOutput] = useState("");
   const [gitCommitMessage, setGitCommitMessage] = useState("");
+  const [gitCommitSuccess, setGitCommitSuccess] = useState("");
+  const [gitCommitBusy, setGitCommitBusy] = useState(false);
   const [githubStatus, setGithubStatus] = useState<GitHubAccountStatus | null>(null);
   const [githubBusy, setGithubBusy] = useState(false);
   const [githubLoginPending, setGithubLoginPending] = useState(false);
@@ -3385,6 +3388,7 @@ export default function App() {
     void refreshGitHubRepo();
     setGithubRemoteInput("");
     setGithubRepoName(activeProject?.name.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") ?? "");
+    setGitCommitSuccess("");
   }, [activeExecutionPath, activeProject?.id, activeProject?.name, refreshGitHubRepo]);
 
   const runGitAction = async (action: GitWorkspaceAction) => {
@@ -3412,26 +3416,49 @@ export default function App() {
         setGitOutput((current) => current === output ? `${output}\n\n${note}` : current);
       });
     };
-    if (action === "commitPush") {
-      if (!pushCommand) {
+    if (action === "commit" || action === "commitPush") {
+      if (action === "commitPush" && !pushCommand) {
         setGitOutput("Check out a named branch before committing and pushing to GitHub.");
         return;
       }
-      const commitCommand = ["git", "commit", "-m", gitCommitMessage.trim()];
+      const commitMessage = gitCommitMessage.trim() || DEFAULT_GIT_COMMIT_MESSAGE;
+      const stageCommand = ["git", "add", "--all"];
+      const commitCommand = ["git", "commit", "-m", commitMessage];
+      setGitCommitBusy(true);
+      setGitCommitSuccess("");
       try {
-        const commit = await executeCommand(commitCommand, commandPath, gitRoots);
-        if (commit.exitCode !== 0) {
-          setGitOutput(`$ ${commitCommand.join(" ")}\n${commit.stdout}${commit.stderr}\n[exit ${commit.exitCode}]`);
+        const stage = await executeCommand(stageCommand, commandPath, gitRoots);
+        if (stage.exitCode !== 0) {
+          setGitOutput(`$ ${stageCommand.join(" ")}\n${stage.stdout}${stage.stderr}\n[exit ${stage.exitCode}]`);
           return;
         }
-        const push = await executeCommand(pushCommand, commandPath, gitRoots);
-        const output = `$ ${commitCommand.join(" ")}\n${commit.stdout}${commit.stderr}\n[exit ${commit.exitCode}]\n\n$ ${pushCommand.join(" ")}\n${push.stdout}${push.stderr}\n[exit ${push.exitCode}]`;
-        if (push.exitCode === 0) showPushOutput(output);
-        else setGitOutput(output);
+        const commit = await executeCommand(commitCommand, commandPath, gitRoots);
+        if (commit.exitCode !== 0) {
+          setGitOutput(`$ ${stageCommand.join(" ")}\n${stage.stdout}${stage.stderr}\n[exit ${stage.exitCode}]\n\n$ ${commitCommand.join(" ")}\n${commit.stdout}${commit.stderr}\n[exit ${commit.exitCode}]`);
+          return;
+        }
         setGitCommitMessage("");
-        if (push.exitCode === 0) void refreshGitHubRepo(commandPath);
+        setGitCommitSuccess(`“${commitMessage}” was saved to this repository.`);
+        if (action === "commit") {
+          setGitOutput(`$ ${stageCommand.join(" ")}\n${stage.stdout}${stage.stderr}\n[exit ${stage.exitCode}]\n\n$ ${commitCommand.join(" ")}\n${commit.stdout}${commit.stderr}\n[exit ${commit.exitCode}]`);
+          showSuccessToast("Changes committed locally");
+          void refreshGitHubRepo(commandPath);
+          return;
+        }
+        const push = await executeCommand(pushCommand!, commandPath, gitRoots);
+        const output = `$ ${stageCommand.join(" ")}\n${stage.stdout}${stage.stderr}\n[exit ${stage.exitCode}]\n\n$ ${commitCommand.join(" ")}\n${commit.stdout}${commit.stderr}\n[exit ${commit.exitCode}]\n\n$ ${pushCommand!.join(" ")}\n${push.stdout}${push.stderr}\n[exit ${push.exitCode}]`;
+        if (push.exitCode === 0) {
+          showPushOutput(output);
+          showSuccessToast("Changes committed locally and pushed to GitHub");
+          void refreshGitHubRepo(commandPath);
+        } else {
+          setGitOutput(output);
+          showSuccessToast("Changes committed locally; GitHub push needs attention");
+        }
       } catch (reason) {
         setGitOutput(friendlyError(reason));
+      } finally {
+        setGitCommitBusy(false);
       }
       return;
     }
@@ -3442,8 +3469,7 @@ export default function App() {
     else if (action === "revert") {
       if (!window.confirm("Revert all tracked staged and working-tree changes? Untracked files will be kept.")) return;
       command = ["git", "restore", "--staged", "--worktree", "."];
-    } else if (action === "commit") command = ["git", "commit", "-m", gitCommitMessage.trim()];
-    else if (action === "fetch") command = ["git", "fetch", "--prune", "origin"];
+    } else if (action === "fetch") command = ["git", "fetch", "--prune", "origin"];
     else if (action === "pull") command = ["git", "pull", "--ff-only"];
     else if (action === "push") {
       if (!pushCommand) {
@@ -3466,7 +3492,6 @@ export default function App() {
       if (action === "push" && result.exitCode === 0) showPushOutput(output);
       else setGitOutput(output);
       if (action === "diff" && activeThreadId) useTaskStore.getState().setDiff(activeThreadId, result.stdout);
-      if (action === "commit" && result.exitCode === 0) setGitCommitMessage("");
       if (result.exitCode === 0) void refreshGitHubRepo(commandPath);
     } catch (reason) {
       setGitOutput(friendlyError(reason));
@@ -4527,6 +4552,8 @@ export default function App() {
             mcpServers={mcpServers}
             gitOutput={gitOutput}
             gitCommitMessage={gitCommitMessage}
+            gitCommitSuccess={gitCommitSuccess}
+            gitCommitBusy={gitCommitBusy}
             githubAuthenticated={Boolean(githubStatus?.authenticated)}
             githubRepoStatus={githubRepoStatus}
             githubRepoError={githubRepoError}
@@ -4597,7 +4624,10 @@ export default function App() {
             onCompact={() => void compactThread()}
             onRefreshTools={() => void refreshTools(activeProject)}
             onGitAction={(action) => void runGitAction(action)}
-            onGitCommitMessage={setGitCommitMessage}
+            onGitCommitMessage={(value) => {
+              setGitCommitMessage(value);
+              setGitCommitSuccess("");
+            }}
             onGitHubRemoteInput={setGithubRemoteInput}
             onGitHubRepoName={setGithubRepoName}
             onGitHubRepoVisibility={setGithubRepoVisibility}

@@ -146,6 +146,8 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .app-shell[data-theme="daylight"] .primary-button:hover { background: #47a02a; }
 .app-shell[data-theme="daylight"] .github-create-button { border-color: #2e6d18; color: #ffffff; background: #35791d; }
 .app-shell[data-theme="daylight"] .github-create-button:hover:not(:disabled) { background: #3a8320; }
+.app-shell[data-theme="daylight"] .git-commit-button { border-color: #2e6d18; color: #ffffff; background: #35791d; }
+.app-shell[data-theme="daylight"] .git-commit-button:hover:not(:disabled) { background: #3a8320; }
 .app-shell[data-theme="daylight"] .send-button { color: #ffffff; }
 .app-shell[data-theme="daylight"] .send-button:disabled { color: #9aa294; background: #e2e5de; }
 .app-shell[data-theme="daylight"] .secondary-button { color: #3c443c; }
@@ -1722,6 +1724,21 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .file-preview pre { flex: 1; overflow: auto; margin: 0; padding: 10px; color: #aeb5b0; font: 10.5px/1.5 ui-monospace, "SFMono-Regular", Menlo, monospace; white-space: pre; }
 .file-preview-empty { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--s-2); padding: var(--s-4); color: var(--muted-2); font-size: var(--fs-meta); text-align: center; }
 .git-screen { min-height: 210px; max-height: 390px; margin-bottom: 12px; }
+.git-commit-card { display: grid; gap: var(--s-3); margin-bottom: var(--s-3); padding: var(--s-3); border: 1px solid var(--green-line); border-radius: var(--r-md); background: color-mix(in srgb, var(--green) 6%, transparent); }
+.git-commit-heading { display: grid; grid-template-columns: 34px minmax(0,1fr); align-items: center; gap: var(--s-2); }
+.git-commit-heading > span { width: 34px; height: 34px; display: grid; place-items: center; border-radius: var(--r-sm); color: var(--green); background: var(--green-soft); }
+.git-commit-heading > div, .git-commit-success > div { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.git-commit-heading strong, .git-commit-success strong { color: var(--text); font-size: var(--fs-ui); font-weight: 650; }
+.git-commit-heading small, .git-commit-success small { color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.45; }
+.git-commit-card .dock-field { margin: 0; }
+.git-commit-card .dock-field > span { display: flex; align-items: center; justify-content: space-between; }
+.git-commit-card .dock-field em { padding: 2px 5px; border-radius: var(--r-xs); color: var(--muted-2); background: rgba(255,255,255,.045); font-size: 9px; font-style: normal; font-weight: 650; text-transform: uppercase; letter-spacing: var(--track-caps); }
+.git-commit-success { display: grid; grid-template-columns: 20px minmax(0,1fr); align-items: start; gap: var(--s-2); padding: 9px 10px; border: 1px solid color-mix(in srgb, var(--green) 36%, var(--line)); border-radius: var(--r-sm); color: var(--green); background: color-mix(in srgb, var(--green) 10%, transparent); }
+.git-commit-success > svg { margin-top: 1px; }
+.git-commit-button { width: 100%; min-height: 40px; display: flex; align-items: center; justify-content: center; gap: 7px; padding: 0 var(--s-3); border: 1px solid color-mix(in srgb, var(--green) 76%, #fff); border-radius: var(--r-sm); color: #10140c; background: var(--green); font-size: var(--fs-ui); font-weight: 700; cursor: pointer; transition: border-color var(--t-fast) ease, background var(--t-fast) ease, transform var(--t-fast) ease; }
+.git-commit-button:hover:not(:disabled) { background: color-mix(in srgb, var(--green) 88%, #fff); transform: translateY(-1px); }
+.git-commit-button:active:not(:disabled) { transform: translateY(0); }
+.git-commit-button:disabled { opacity: .4; cursor: default; }
 .git-file-list { max-height: 150px; overflow: auto; display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
 .git-file-list > div { min-height: 30px; display: grid; grid-template-columns: minmax(0,1fr) auto 25px; align-items: center; gap: 4px; padding: 3px 4px 3px 8px; border: 1px solid var(--line); border-radius: 7px; }
 .git-file-list code { overflow: hidden; color: var(--muted); font-size: var(--fs-meta); white-space: nowrap; text-overflow: ellipsis; }

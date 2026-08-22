@@ -3,6 +3,7 @@ import {
   Bot,
   Boxes,
   Check,
+  CheckCircle2,
   ChevronDown,
   ChevronRight,
   CircleStop,
@@ -16,6 +17,7 @@ import {
   GitFork,
   Gauge,
   History,
+  LoaderCircle,
   Paperclip,
   Play,
   Plus,
@@ -136,6 +138,8 @@ export function StudioDock(props: {
   mcpServers: McpView[];
   gitOutput: string;
   gitCommitMessage: string;
+  gitCommitSuccess: string;
+  gitCommitBusy: boolean;
   githubAuthenticated: boolean;
   githubRepoStatus: GitHubRepoStatus | null;
   githubRepoError?: string;
@@ -536,11 +540,27 @@ export function StudioDock(props: {
               </div>
             </div>
           )}
+          <form className="git-commit-card" onSubmit={(event) => { event.preventDefault(); props.onGitAction("commit"); }}>
+            <div className="git-commit-heading">
+              <span><GitCommitHorizontal size={17} /></span>
+              <div><strong>Commit changes locally</strong><small>Stages all current changes and saves them to this repository. Nothing is pushed.</small></div>
+            </div>
+            {props.gitCommitSuccess && (
+              <div className="git-commit-success" role="status" aria-live="polite">
+                <CheckCircle2 size={18} />
+                <div><strong>Committed successfully</strong><small>{props.gitCommitSuccess}</small></div>
+              </div>
+            )}
+            <label className="dock-field"><span>Commit message <em>Optional</em></span><input value={props.gitCommitMessage} onChange={(event) => props.onGitCommitMessage(event.target.value)} placeholder="Update project files" /></label>
+            <button className="git-commit-button" type="submit" disabled={props.gitActionsReadOnly || props.gitCommitBusy}>
+              {props.gitCommitBusy ? <LoaderCircle className="spin" size={16} /> : <GitCommitHorizontal size={16} />}
+              {props.gitCommitBusy ? "Committing…" : "Commit all changes locally"}
+            </button>
+          </form>
           <div className="studio-actions wrap"><button onClick={() => props.onGitAction("status")}><RefreshCw size={13} /> Status</button><button onClick={() => props.onGitAction("diff")}><CodeXml size={13} /> Diff</button><button onClick={() => props.onGitAction("stage")} disabled={props.gitActionsReadOnly}><Plus size={13} /> Stage all</button><button className="danger-action" onClick={() => props.onGitAction("revert")} aria-label="Revert all Git changes" disabled={props.gitActionsReadOnly}><RotateCcw size={13} /> Revert all</button></div>
           {diffFiles.length > 0 && <><h3 className="panel-label">Changed files</h3><div className="git-file-list">{diffFiles.map((path) => <div key={path}><code>{path}</code><button onClick={() => props.onGitPathAction("stage", path)} disabled={props.gitActionsReadOnly}><Plus size={11} /> Stage</button><button className="danger-action" onClick={() => props.onGitPathAction("revert", path)} disabled={props.gitActionsReadOnly}><RotateCcw size={11} /></button></div>)}</div></>}
           <pre className="git-screen">{props.gitOutput || "Choose an action to inspect the repository."}</pre>
-          <label className="dock-field"><span>Commit message</span><input value={props.gitCommitMessage} onChange={(e) => props.onGitCommitMessage(e.target.value)} placeholder="Describe this change" /></label>
-          <div className="studio-actions wrap"><button onClick={() => props.onGitAction("commit")} disabled={props.gitActionsReadOnly || !props.gitCommitMessage.trim()}><GitCommitHorizontal size={13} /> Commit staged</button><button onClick={() => props.onGitAction("commitPush")} disabled={props.gitActionsReadOnly || !props.gitCommitMessage.trim() || !props.githubRepoStatus?.repository || !props.githubRepoStatus.branch}><Upload size={13} /> Commit & push</button><button onClick={() => props.onGitAction("fetch")} disabled={props.gitActionsReadOnly || !props.githubRepoStatus?.repository}><RefreshCw size={13} /> Fetch</button><button onClick={() => props.onGitAction("pull")} disabled={props.gitActionsReadOnly || !props.githubRepoStatus?.upstream}><RotateCw size={13} /> Pull</button><button onClick={() => props.onGitAction("push")} disabled={props.gitActionsReadOnly || !props.githubRepoStatus?.repository || !props.githubRepoStatus.branch} title={!props.githubRepoStatus?.branch ? "Check out a named branch before pushing" : "Push committed changes to GitHub"}><Upload size={13} /> Push commits</button><button onClick={() => props.onGitAction("comments")} disabled={props.gitActionsReadOnly || !props.githubRepoStatus?.repository}><CodeXml size={13} /> Review comments</button><button onClick={() => props.onGitAction("ci")} disabled={props.gitActionsReadOnly || !props.githubRepoStatus?.repository}><ShieldCheck size={13} /> CI checks</button><button onClick={() => props.onGitAction("pr")} disabled={props.gitActionsReadOnly || !props.githubRepoStatus?.repository}><GitFork size={13} /> Draft PR</button></div>
+          <div className="studio-actions wrap"><button onClick={() => props.onGitAction("commitPush")} disabled={props.gitActionsReadOnly || props.gitCommitBusy || !props.githubRepoStatus?.repository || !props.githubRepoStatus.branch}><Upload size={13} /> Commit & push</button><button onClick={() => props.onGitAction("fetch")} disabled={props.gitActionsReadOnly || !props.githubRepoStatus?.repository}><RefreshCw size={13} /> Fetch</button><button onClick={() => props.onGitAction("pull")} disabled={props.gitActionsReadOnly || !props.githubRepoStatus?.upstream}><RotateCw size={13} /> Pull</button><button onClick={() => props.onGitAction("push")} disabled={props.gitActionsReadOnly || !props.githubRepoStatus?.repository || !props.githubRepoStatus.branch} title={!props.githubRepoStatus?.branch ? "Check out a named branch before pushing" : "Push committed changes to GitHub"}><Upload size={13} /> Push commits</button><button onClick={() => props.onGitAction("comments")} disabled={props.gitActionsReadOnly || !props.githubRepoStatus?.repository}><CodeXml size={13} /> Review comments</button><button onClick={() => props.onGitAction("ci")} disabled={props.gitActionsReadOnly || !props.githubRepoStatus?.repository}><ShieldCheck size={13} /> CI checks</button><button onClick={() => props.onGitAction("pr")} disabled={props.gitActionsReadOnly || !props.githubRepoStatus?.repository}><GitFork size={13} /> Draft PR</button></div>
         </>}
       </div>
     </aside>

@@ -24,6 +24,8 @@ function dockProps(open: boolean): Parameters<typeof StudioDock>[0] {
     mcpServers: [],
     gitOutput: "",
     gitCommitMessage: "",
+    gitCommitSuccess: "",
+    gitCommitBusy: false,
     githubAuthenticated: false,
     githubRepoStatus: null,
     githubRepoError: "",
@@ -353,7 +355,30 @@ describe("StudioDock", () => {
     expect(screen.getByRole("button", { name: "Diff" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Stage all" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Stage" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Commit all changes locally" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Push commits" })).toBeDisabled();
     expect(screen.getByText(/Read only allows Status and Diff/)).toBeInTheDocument();
+  });
+
+  it("makes local commits prominent, keeps the message optional, and confirms success", () => {
+    const onGitAction = vi.fn();
+    render(
+      <StudioDock
+        {...dockProps(true)}
+        tab="git"
+        onGitAction={onGitAction}
+        gitCommitSuccess="“Polish the Git panel” was saved to this repository."
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: "Git workspace" })).toBeInTheDocument();
+    expect(screen.getByText("Commit changes locally")).toBeInTheDocument();
+    expect(screen.getByLabelText(/Commit message/i)).toHaveAttribute("placeholder", "Update project files");
+    const commit = screen.getByRole("button", { name: "Commit all changes locally" });
+    expect(commit).toBeEnabled();
+    fireEvent.click(commit);
+    expect(onGitAction).toHaveBeenCalledWith("commit");
+    expect(screen.getByText("Committed successfully")).toBeInTheDocument();
+    expect(screen.getByText(/Polish the Git panel/)).toBeInTheDocument();
   });
 });

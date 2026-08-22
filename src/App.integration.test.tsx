@@ -582,6 +582,46 @@ describe("workspace switching during thread selection", () => {
     expect(await screen.findByText(/2 uncommitted entries remain local/)).toBeInTheDocument();
   });
 
+  it("stages and commits locally with either the default or an optional custom message", async () => {
+    const user = userEvent.setup();
+    const commands: string[][] = [];
+    commandExecImpl = (params) => {
+      const command = params.command as string[];
+      commands.push(command);
+      if (command[1] === "commit") {
+        return { exitCode: 0, stdout: `[main abc1234] ${command.at(-1)}\n`, stderr: "" };
+      }
+      return { exitCode: 0, stdout: "", stderr: "" };
+    };
+    await renderApp();
+
+    await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
+    await user.click(await screen.findByRole("button", { name: "Git workspace tool" }));
+    const commitButton = await screen.findByRole("button", { name: "Commit all changes locally" });
+    await user.click(commitButton);
+
+    await waitFor(() => {
+      expect(commands.slice(0, 2)).toEqual([
+        ["git", "add", "--all"],
+        ["git", "commit", "-m", "Update project files"],
+      ]);
+    });
+    expect(await screen.findByText("Committed successfully")).toBeInTheDocument();
+    expect(screen.getByText(/“Update project files” was saved/)).toBeInTheDocument();
+    expect(screen.getByText("Changes committed locally")).toBeInTheDocument();
+
+    const message = screen.getByLabelText(/Commit message/i);
+    await user.type(message, "Polish the Git panel");
+    await user.click(commitButton);
+    await waitFor(() => {
+      expect(commands.slice(-2)).toEqual([
+        ["git", "add", "--all"],
+        ["git", "commit", "-m", "Polish the Git panel"],
+      ]);
+    });
+    expect(await screen.findByText(/“Polish the Git panel” was saved/)).toBeInTheDocument();
+  });
+
   it("does not install a thread whose resume settles after switching workspaces", async () => {
     const user = userEvent.setup();
     await renderApp();
