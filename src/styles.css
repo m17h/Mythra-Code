@@ -1588,7 +1588,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .openrouter-empty span { max-width: 320px; font-size: var(--fs-meta); line-height: 1.45; }
 .openrouter-catalog-warning { margin-top: 5px; padding: 6px 7px; border-radius: 6px; color: #c39bff; background: rgba(195,155,255,.055); font-size: var(--fs-micro); }
 .openrouter-reasoning { min-width: 0; padding: 0 3px; }
-.openrouter-reasoning-heading { display: flex; align-items: center; gap: 5px; margin: 0 2px 5px; color: var(--muted); font-size: var(--fs-meta); }
+.openrouter-reasoning-heading { height: 13px; display: flex; align-items: center; gap: 5px; margin: 0 2px 5px; color: var(--muted); font-size: var(--fs-meta); }
 .openrouter-reasoning-heading svg, .openrouter-reasoning-heading strong { color: var(--router-accent); }
 .openrouter-reasoning-heading strong { margin-left: auto; font-size: var(--fs-micro); }
 .openrouter-reasoning-rail { position: relative; height: 14px; display: flex; align-items: center; }
