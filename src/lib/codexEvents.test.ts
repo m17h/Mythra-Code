@@ -231,6 +231,15 @@ describe("routeCodexEvent", () => {
     }, ctx);
 
     expect(useTaskStore.getState().tasks.root.agents.map((agent) => agent.id)).toEqual(["child"]);
+    expect(useTaskStore.getState().tasks.root.activities).toContainEqual(expect.objectContaining({
+      id: "activity-2",
+      agent: {
+        action: "spawn",
+        provider: "openai",
+        task: "Split the work",
+        count: 1,
+      },
+    }));
     expect(ctx.onNativeAgentDiscovered).toHaveBeenCalledTimes(1);
     expect(ctx.onNativeAgentDiscovered).toHaveBeenCalledWith("root", "child", { prompt: "Split the work" });
   });

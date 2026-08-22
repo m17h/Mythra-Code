@@ -153,12 +153,25 @@ export function handleThreadItem(threadId: string, item: ThreadItem, ctx: CodexE
       wait: "Wait for sub-agents",
       closeAgent: "Close sub-agent",
     };
+    const actions = {
+      spawnAgent: "spawn",
+      sendInput: "sendInput",
+      resumeAgent: "resume",
+      wait: "wait",
+      closeAgent: "close",
+    } as const;
     taskStore.upsertActivity(threadId, {
       id,
       kind: "agent",
       title: titles[item.tool ?? ""] ?? "Sub-agent activity",
       detail: item.prompt ?? undefined,
       status: item.status,
+      agent: {
+        action: item.tool ? actions[item.tool] : "status",
+        provider: "openai",
+        task: item.prompt ?? undefined,
+        count: item.receiverThreadIds?.filter((childThreadId) => childThreadId && childThreadId !== threadId).length,
+      },
     });
     if (item.receiverThreadIds?.length) {
       for (const childThreadId of item.receiverThreadIds) {
@@ -181,6 +194,7 @@ export function handleThreadItem(threadId: string, item: ThreadItem, ctx: CodexE
       title: `Sub-agent ${action}`,
       detail: item.agentPath || item.agentThreadId,
       status: item.kind,
+      agent: { action: "status", provider: "openai" },
     });
     if (item.agentThreadId && item.agentThreadId !== threadId) {
       taskStore.upsertAgent(threadId, { id: item.agentThreadId, prompt: "Delegated task", status: item.kind ?? "working", path: item.agentPath });

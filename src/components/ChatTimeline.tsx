@@ -8,12 +8,15 @@ import type { JsonObject } from "../lib/codex";
 import { InlineApprovalCard } from "./ApprovalCenter";
 import { ProviderLogo } from "./BrandLogos";
 import { decodeHtmlEntities } from "../lib/text";
+import { providerDisplayName } from "../lib/childAgents";
+import { describeSubAgentActivity, subAgentStatusLabel, workerStatusFromAgentRecord, type SubAgentCounts } from "../lib/subAgentActivity";
 
 export type WorkItemEntry =
   | { kind: "message"; value: ChatMessage }
   | { kind: "activity"; value: Activity }
   | { kind: "commands"; value: Activity[] }
-  | { kind: "files"; value: Activity[] };
+  | { kind: "files"; value: Activity[] }
+  | { kind: "spawns"; value: Activity[] };
 
 export type TimelineEntry =
   | WorkItemEntry
@@ -23,13 +26,13 @@ export type TimelineEntry =
 
 function entryOrder(entry: TimelineEntry): number {
   if (entry.kind === "thinking" || entry.kind === "approval") return Number.MAX_SAFE_INTEGER;
-  if (entry.kind === "commands" || entry.kind === "files") return entry.value[0]?.timelineOrder ?? Number.MAX_SAFE_INTEGER;
+  if (entry.kind === "commands" || entry.kind === "files" || entry.kind === "spawns") return entry.value[0]?.timelineOrder ?? Number.MAX_SAFE_INTEGER;
   if (entry.kind === "work") return entry.value[0] ? entryOrder(entry.value[0]) : Number.MAX_SAFE_INTEGER;
   return entry.value.timelineOrder ?? Number.MAX_SAFE_INTEGER;
 }
 
 function workItemId(entry: WorkItemEntry): string | undefined {
-  if (entry.kind === "commands" || entry.kind === "files") return entry.value[0]?.id;
+  if (entry.kind === "commands" || entry.kind === "files" || entry.kind === "spawns") return entry.value[0]?.id;
   return entry.value.id;
 }
 
@@ -47,7 +50,7 @@ function sameActivities(left: Activity[], right: Activity[]): boolean {
 function sameWorkItem(left: WorkItemEntry, right: WorkItemEntry): boolean {
   if (left === right) return true;
   if (left.kind !== right.kind) return false;
-  if (left.kind === "commands" || left.kind === "files") {
+  if (left.kind === "commands" || left.kind === "files" || left.kind === "spawns") {
     return sameActivities(left.value, (right as typeof left).value);
   }
   return left.value === (right as typeof left).value;
@@ -58,7 +61,7 @@ function sameWorkItems(left: WorkItemEntry[], right: WorkItemEntry[]): boolean {
 }
 
 function workItemTurnId(entry: WorkItemEntry): string | undefined {
-  if (entry.kind === "commands" || entry.kind === "files") {
+  if (entry.kind === "commands" || entry.kind === "files" || entry.kind === "spawns") {
     const turnId = entry.value[0]?.turnId;
     return turnId && entry.value.every((activity) => activity.turnId === turnId) ? turnId : undefined;
   }
@@ -66,7 +69,7 @@ function workItemTurnId(entry: WorkItemEntry): string | undefined {
 }
 
 function workItemTurnStatus(entry: WorkItemEntry): ChatMessage["turnStatus"] {
-  if (entry.kind === "commands" || entry.kind === "files") {
+  if (entry.kind === "commands" || entry.kind === "files" || entry.kind === "spawns") {
     return entry.value.find((activity) => activity.turnStatus)?.turnStatus;
   }
   return entry.value.turnStatus;
@@ -75,6 +78,19 @@ function workItemTurnStatus(entry: WorkItemEntry): ChatMessage["turnStatus"] {
 function groupToolRuns(entries: WorkItemEntry[]): WorkItemEntry[] {
   const grouped: WorkItemEntry[] = [];
   for (const entry of entries) {
+    const isSpawn = entry.kind === "activity" && entry.value.kind === "agent" && entry.value.agent?.action === "spawn";
+    if (isSpawn) {
+      const previous = grouped.at(-1);
+      const sameTurn = previous && Boolean(entry.value.turnId) && workItemTurnId(previous) === entry.value.turnId;
+      if (sameTurn && previous.kind === "spawns") {
+        previous.value.push(entry.value);
+      } else if (sameTurn && previous.kind === "activity" && previous.value.kind === "agent" && previous.value.agent?.action === "spawn") {
+        grouped[grouped.length - 1] = { kind: "spawns", value: [previous.value, entry.value] };
+      } else {
+        grouped.push(entry);
+      }
+      continue;
+    }
     if (entry.kind !== "activity" || (entry.value.kind !== "command" && entry.value.kind !== "file")) {
       grouped.push(entry);
       continue;
@@ -323,6 +339,9 @@ export const ActivityRow = memo(function ActivityRow({ activity }: { activity: A
   if (activity.kind === "reasoning") {
     return <ReasoningDisclosure detail={activity.detail ?? ""} inProgress={activity.status === "inProgress"} />;
   }
+  if (activity.kind === "agent" && activity.agent?.action === "spawn") {
+    return <SubAgentRelayCard activity={activity} />;
+  }
 
   const expandable = Boolean(activity.detail) && activity.kind === "command";
   const displayTitle = activity.kind === "agent" ? decodeHtmlEntities(activity.title) : activity.title;
@@ -354,6 +373,73 @@ export const ActivityRow = memo(function ActivityRow({ activity }: { activity: A
     </div>
   );
 });
+
+function subAgentCountsFromActivities(activities: Activity[]): SubAgentCounts {
+  const counts: SubAgentCounts = { total: 0, active: 0, starting: 0, working: 0, completed: 0, cancelled: 0, failed: 0 };
+  for (const activity of activities) {
+    const count = Math.max(1, activity.agent?.count ?? 1);
+    const status = workerStatusFromAgentRecord(activity.status ?? "");
+    counts.total += count;
+    if (status === "starting" || status === "working") counts.active += count;
+    if (status !== "idle") counts[status] += count;
+  }
+  return counts;
+}
+
+export const SubAgentRelayCard = memo(function SubAgentRelayCard({ activity }: { activity: Activity }) {
+  const metadata = activity.agent;
+  const provider = metadata?.provider;
+  const status = workerStatusFromAgentRecord(activity.status ?? "");
+  const statusLabel = subAgentStatusLabel(status);
+  const providerLabel = provider ? providerDisplayName(provider) : "OpenKiwi";
+  const task = decodeHtmlEntities(metadata?.task?.trim() || activity.title || "Delegated task");
+  const model = decodeHtmlEntities(metadata?.model?.trim() || "");
+  const count = Math.max(1, metadata?.count ?? 1);
+
+  return (
+    <article
+      className={`subagent-relay-card provider-${provider ?? "unknown"} status-${status}`}
+      aria-label={`${providerLabel} sub-agent ${statusLabel.toLowerCase()}: ${task}`}
+    >
+      <div className="subagent-relay-emblem" aria-hidden="true">
+        <span className="subagent-relay-avatar">
+          {provider ? <ProviderLogo provider={provider} size={15} /> : <UsersRound size={15} />}
+          <svg className="sa-avatar-trace" viewBox="0 0 34 34" focusable="false">
+            <rect className="sa-avatar-trace-rail" x="1.5" y="1.5" width="31" height="31" rx="8" pathLength="100" />
+            <rect className="sa-avatar-trace-runner" x="1.5" y="1.5" width="31" height="31" rx="8" pathLength="100" />
+          </svg>
+        </span>
+      </div>
+      <div className="subagent-relay-copy">
+        <div className="subagent-relay-identity">
+          <span>{providerLabel} sub-agent{count > 1 ? ` wave · ${count}` : ""}</span>
+          {model && <code>{model}</code>}
+        </div>
+        <strong>{task}</strong>
+      </div>
+      <span className="subagent-relay-status">
+        <i aria-hidden="true" />
+        {statusLabel}
+      </span>
+    </article>
+  );
+});
+
+export const SubAgentRelayManifest = memo(function SubAgentRelayManifest({ activities }: { activities: Activity[] }) {
+  const counts = subAgentCountsFromActivities(activities);
+  return (
+    <section className="subagent-relay-manifest" aria-label={`Sub-agent wave: ${describeSubAgentActivity(counts)}`}>
+      <header>
+        <UsersRound size={14} aria-hidden="true" />
+        <strong>Dispatched {counts.total} sub-agents</strong>
+        <small>{describeSubAgentActivity(counts)}</small>
+      </header>
+      <div className="subagent-relay-list">
+        {activities.map((activity) => <SubAgentRelayCard activity={activity} key={activity.id} />)}
+      </div>
+    </section>
+  );
+}, (previous, next) => sameActivities(previous.activities, next.activities));
 
 export const ReasoningDisclosure = memo(function ReasoningDisclosure({
   detail,
@@ -470,6 +556,7 @@ function completedWorkParts(entries: WorkItemEntry[]): string[] {
   for (const entry of entries) {
     if (entry.kind === "commands") commands += entry.value.length;
     else if (entry.kind === "files") files += entry.value.reduce((total, activity) => total + (activity.itemCount ?? 1), 0);
+    else if (entry.kind === "spawns") otherSteps += entry.value.length;
     else if (entry.kind === "activity" && entry.value.kind === "command") commands += 1;
     else if (entry.kind === "activity" && entry.value.kind === "file") files += entry.value.itemCount ?? 1;
     else otherSteps += 1;
@@ -483,7 +570,7 @@ function completedWorkParts(entries: WorkItemEntry[]): string[] {
 
 function completedWorkDuration(entries: WorkItemEntry[]): number | undefined {
   for (const entry of entries) {
-    if (entry.kind === "commands" || entry.kind === "files") {
+    if (entry.kind === "commands" || entry.kind === "files" || entry.kind === "spawns") {
       const duration = entry.value.find((activity) => activity.turnDurationMs !== undefined)?.turnDurationMs;
       if (duration !== undefined) return duration;
       continue;
@@ -609,6 +696,9 @@ function TimelineEntryContent({
   if (entry.kind === "files") {
     return row(`timeline-entry timeline-entry-disclosure${hitClass}`, <FileDisclosure files={entry.value} />);
   }
+  if (entry.kind === "spawns") {
+    return row(`timeline-entry timeline-entry-activity${hitClass}`, <SubAgentRelayManifest activities={entry.value} />);
+  }
   if (entry.kind === "work") {
     return row(`timeline-entry timeline-entry-disclosure${hitClass}`, <CompletedWorkDisclosure entries={entry.value} reveal={index === activeEntryIndex && Boolean(searchQuery?.trim())} />);
   }
@@ -624,7 +714,7 @@ function TimelineEntryContent({
 export function timelineEntryKey(entry: TimelineEntry, index: number): string {
   if (entry.kind === "thinking") return "thinking";
   if (entry.kind === "work") return `work-${(entry.value[0] && workItemId(entry.value[0])) ?? index}`;
-  if (entry.kind === "commands" || entry.kind === "files") return `${entry.kind}-${entry.value[0]?.id ?? index}`;
+  if (entry.kind === "commands" || entry.kind === "files" || entry.kind === "spawns") return `${entry.kind}-${entry.value[0]?.id ?? index}`;
   return `${entry.kind}-${entry.value.id}`;
 }
 
@@ -640,6 +730,7 @@ export function timelineEntryKey(entry: TimelineEntry, index: number): string {
 function FlowTimeline({
   activeEntryIndex,
   entries,
+  liveSubAgentSummary,
   onApprovalRespond,
   onEditMessage,
   provider,
@@ -647,6 +738,7 @@ function FlowTimeline({
 }: {
   activeEntryIndex: number;
   entries: TimelineEntry[];
+  liveSubAgentSummary: string;
   onApprovalRespond?: (approval: PendingApproval, result: JsonObject) => void | Promise<void>;
   onEditMessage?: (text: string) => void;
   provider: Provider;
@@ -718,6 +810,7 @@ function FlowTimeline({
 
   return (
     <div className="timeline-shell" data-scroll-mode={followingEndRef.current ? "following-end" : "free-scrolling"}>
+      <span className="sr-only" role="status">{liveSubAgentSummary}</span>
       <div
         ref={scrollerRef}
         className="timeline flow-timeline"
@@ -834,8 +927,8 @@ export function ChatTimeline({
           ? `${entry.value.title} ${entry.value.detail ?? ""}`
           : entry.kind === "commands"
             ? entry.value.map((command) => `${command.title} ${command.detail ?? ""}`).join(" ")
-            : entry.kind === "files"
-              ? entry.value.map((file) => `${file.title} ${file.detail ?? ""}`).join(" ")
+            : entry.kind === "files" || entry.kind === "spawns"
+              ? entry.value.map((activity) => `${activity.title} ${activity.detail ?? ""}`).join(" ")
               : entry.kind === "work"
                 ? entry.value.map((item) => item.kind === "message"
                   ? item.value.text
@@ -854,10 +947,15 @@ export function ChatTimeline({
   const activeEntryIndex = matchIndices.length
     ? matchIndices[((searchActiveMatch ?? 0) % matchIndices.length + matchIndices.length) % matchIndices.length]
     : -1;
+  const liveSubAgentSummary = useMemo(() => {
+    const spawns = activities.filter((activity) => activity.kind === "agent" && activity.agent?.action === "spawn");
+    return spawns.length ? `Sub-agents: ${describeSubAgentActivity(subAgentCountsFromActivities(spawns))}` : "";
+  }, [activities]);
   return (
     <FlowTimeline
       activeEntryIndex={activeEntryIndex}
       entries={entries}
+      liveSubAgentSummary={liveSubAgentSummary}
       onApprovalRespond={onApprovalRespond}
       onEditMessage={onEditMessage}
       provider={provider}

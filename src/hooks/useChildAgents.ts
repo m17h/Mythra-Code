@@ -338,6 +338,13 @@ export function useChildAgents(context: ChildAgentContext): {
       title: `Spawned ${target.label || target.id} sub-agent`,
       detail: `${target.provider} · ${childAgentModel(target) || "provider default"}\n${title}`,
       status: isChildActive(taskStatusOf(childThreadId)) ? "inProgress" : lifecycle,
+      agent: {
+        action: "spawn",
+        provider: target.provider,
+        model: childAgentModel(target),
+        task: title,
+        count: 1,
+      },
     });
     if (result.provider === "claude") ctx.scheduleClaudeThreadSave(childThreadId);
     if (result.provider === "cursor") ctx.scheduleCursorThreadSave(childThreadId);
@@ -379,6 +386,8 @@ export function useChildAgents(context: ChildAgentContext): {
           taskStore.setActiveTurn(childThreadId, undefined);
           taskStore.setTaskStatus(childThreadId, "interrupted");
           taskStore.upsertAgent(rootThreadId, { id: childThreadId, prompt: title, status: "interrupted" });
+          const spawnActivity = taskStore.tasks[rootThreadId]?.activities.find((activity) => activity.id === `child-agent-${childThreadId}`);
+          if (spawnActivity) taskStore.upsertActivity(rootThreadId, { ...spawnActivity, status: "cancelled" });
           const interrupted = { ...link, terminalStatus: "cancelled" as const };
           pendingLinksRef.current.set(childThreadId, interrupted);
           ctx.persistChildAgentLinks((current) => ({ ...current, [childThreadId]: interrupted }));
@@ -697,11 +706,14 @@ export function useChildAgents(context: ChildAgentContext): {
           if (!latest || latest.terminalStatus === terminalStatus) return current;
           return { ...current, [link.childThreadId]: { ...latest, terminalStatus } };
         });
-        useTaskStore.getState().upsertAgent(link.rootThreadId, {
+        const store = useTaskStore.getState();
+        store.upsertAgent(link.rootThreadId, {
           id: link.childThreadId,
           prompt: link.title,
           status: childLifecycle(status),
         });
+        const spawnActivity = store.tasks[link.rootThreadId]?.activities.find((activity) => activity.id === `child-agent-${link.childThreadId}`);
+        if (spawnActivity) store.upsertActivity(link.rootThreadId, { ...spawnActivity, status: terminalStatus });
       }
     });
     return unsubscribe;
@@ -722,11 +734,14 @@ export function useChildAgents(context: ChildAgentContext): {
         if (!latest || latest.terminalStatus === terminalStatus) return current;
         return { ...current, [link.childThreadId]: { ...latest, terminalStatus } };
       });
-      useTaskStore.getState().upsertAgent(link.rootThreadId, {
+      const store = useTaskStore.getState();
+      store.upsertAgent(link.rootThreadId, {
         id: link.childThreadId,
         prompt: link.title,
         status: terminalStatus,
       });
+      const spawnActivity = store.tasks[link.rootThreadId]?.activities.find((activity) => activity.id === `child-agent-${link.childThreadId}`);
+      if (spawnActivity) store.upsertActivity(link.rootThreadId, { ...spawnActivity, status: terminalStatus });
     }
   }, [context.links]);
 

@@ -84,6 +84,45 @@ describe("Claude event routing", () => {
     expect(context.onApprovalRequested).toHaveBeenCalledWith("thread-1");
   });
 
+  it("keeps Claude spawn identity when its tool result completes", () => {
+    send({
+      type: "assistant",
+      message: {
+        id: "message-1",
+        content: [{
+          type: "tool_use",
+          id: "spawn-1",
+          name: "Task",
+          input: {
+            description: "Audit the Rust bridge",
+            prompt: "Inspect the bridge and report risks.",
+            model: "claude-opus-5",
+          },
+        }],
+      },
+    });
+    send({
+      type: "user",
+      message: {
+        content: [{ type: "tool_result", tool_use_id: "spawn-1", content: "Audit complete" }],
+      },
+    });
+
+    expect(useTaskStore.getState().tasks["thread-1"].activities[0]).toMatchObject({
+      id: "spawn-1",
+      kind: "agent",
+      status: "completed",
+      detail: "Audit complete",
+      agent: {
+        action: "spawn",
+        provider: "claude",
+        model: "claude-opus-5",
+        task: "Audit the Rust bridge",
+        count: 1,
+      },
+    });
+  });
+
   it("completes the turn after final output", () => {
     send({
       type: "assistant",

@@ -374,4 +374,24 @@ describe("task store", () => {
     expect(task.messages[0].timelineOrder).toBeLessThan(task.activities[0].timelineOrder!);
     expect(task.activities[0].timelineOrder).toBeLessThan(task.messages[1].timelineOrder!);
   });
+
+  it("does not mark a still-running child complete when its parent turn ends", () => {
+    const store = useTaskStore.getState();
+    store.setActiveTurn("thread-a", "turn-a");
+    store.upsertActivity("thread-a", {
+      id: "spawn",
+      kind: "agent",
+      title: "Spawned Claude sub-agent",
+      status: "inProgress",
+      agent: { action: "spawn", provider: "claude", task: "Audit the bridge" },
+    });
+
+    store.completeTurn("thread-a", "turn-a", "completed");
+
+    expect(useTaskStore.getState().tasks["thread-a"].activities[0]).toMatchObject({
+      status: "inProgress",
+      turnStatus: "completed",
+      agent: { action: "spawn", task: "Audit the bridge" },
+    });
+  });
 });

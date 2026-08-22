@@ -94,6 +94,15 @@ export interface Activity {
   title: string;
   detail?: string;
   status?: string;
+  /** Structured sub-agent identity for the animated timeline dispatch card.
+   * Generic agent-shaped activities such as plans intentionally omit this. */
+  agent?: {
+    action: "spawn" | "sendInput" | "resume" | "wait" | "close" | "status";
+    provider?: Provider;
+    model?: string;
+    task?: string;
+    count?: number;
+  };
   /** Number of concrete operations represented by a grouped runtime activity. */
   itemCount?: number;
   timelineOrder?: number;

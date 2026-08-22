@@ -221,7 +221,18 @@ describe("useChildAgents", () => {
       });
       const store = useTaskStore.getState();
       expect(store.tasks["root-1"].agents).toEqual([expect.objectContaining({ id: "child-terra", status: "inProgress" })]);
-      expect(store.tasks["root-1"].activities.some((activity) => activity.kind === "agent")).toBe(true);
+      expect(store.tasks["root-1"].activities).toContainEqual(expect.objectContaining({
+        id: "child-agent-child-terra",
+        kind: "agent",
+        status: "inProgress",
+        agent: {
+          action: "spawn",
+          provider: "openai",
+          model: "gpt-5.6-terra",
+          task: "Refactor the parser.",
+          count: 1,
+        },
+      }));
       expect(store.statuses["child-terra"]).toBe("running");
       expect(store.tasks["child-terra"].workspacePath).toBe("/tmp/project/.worktrees/a");
       expect(store.tasks["child-terra"].messages[0]).toMatchObject({ role: "user", text: "Refactor the parser." });
@@ -558,6 +569,8 @@ describe("useChildAgents", () => {
       act(() => { useTaskStore.getState().setTaskStatus("child-terra", "completed"); });
       expect(bridge.reportChildAgentFinished).toHaveBeenCalledExactlyOnceWith("session-1", "child-terra");
       expect(useTaskStore.getState().tasks["root-1"].agents[0].status).toBe("completed");
+      expect(useTaskStore.getState().tasks["root-1"].activities)
+        .toContainEqual(expect.objectContaining({ id: "child-agent-child-terra", status: "completed" }));
     });
 
     it("reports each child's status to the parent", async () => {
