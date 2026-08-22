@@ -49,6 +49,7 @@ import {
 } from "../lib/checkpoints";
 import type { ThreadWorktreeRecord, WorktreeStatus } from "../lib/worktrees";
 import type { GitHubRepoStatus } from "../lib/github";
+import type { AccountUsageView } from "../lib/providerUsage";
 
 export type StudioTab = "files" | "review" | "agents" | "terminal" | "checkpoints" | "worktrees" | "context" | "usage" | "tools" | "git";
 
@@ -130,7 +131,7 @@ export function StudioDock(props: {
   usage: TokenUsageView | null;
   costEstimate?: string;
   costTotals?: string;
-  accountUsage: { label: string; summary: string };
+  accountUsage: AccountUsageView;
   skills: SkillView[];
   mcpServers: McpView[];
   gitOutput: string;
@@ -458,7 +459,37 @@ export function StudioDock(props: {
               Prompt caching: {props.usage.cachedInputTokens.toLocaleString()} read · {(props.usage.cacheWriteInputTokens ?? 0).toLocaleString()} written
             </div>
           ) : null}
-          <div className="rate-card"><span>{props.accountUsage.label}</span><strong>{props.accountUsage.summary}</strong></div>
+          {props.accountUsage.windows?.length ? (
+            <section className="provider-quota-card" aria-label={props.accountUsage.label}>
+              <header className="provider-quota-header">
+                <span>{props.accountUsage.label}</span>
+                {props.accountUsage.planLabel ? <small>{props.accountUsage.planLabel}</small> : null}
+              </header>
+              <div className="provider-quota-windows">
+                {props.accountUsage.windows.map((window, index) => (
+                  <div className="provider-quota-window" key={`${window.label}-${index}`}>
+                    <div className="provider-quota-window-heading">
+                      <strong>{window.label}</strong>
+                      <b>{window.percentLabel}</b>
+                    </div>
+                    <div
+                      className="provider-quota-track"
+                      role="progressbar"
+                      aria-label={`${window.label} ${window.percentLabel}`}
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-valuenow={window.percent}
+                    >
+                      <i style={{ width: `${window.percent}%` }} />
+                    </div>
+                    {window.resetLabel ? <small><Clock3 size={12} /> Resets {window.resetLabel}</small> : null}
+                  </div>
+                ))}
+              </div>
+            </section>
+          ) : (
+            <div className="rate-card"><span>{props.accountUsage.label}</span><strong>{props.accountUsage.summary}</strong></div>
+          )}
           {props.costTotals && <div className="rate-card"><span>OpenRouter history</span><strong>{props.costTotals}</strong></div>}
           <h3 className="panel-label">Request audit</h3><div className="audit-table">{props.promptAudit.map((row) => <div key={row.label}><span>{row.label}</span><code>{row.value}</code></div>)}</div>
         </>}

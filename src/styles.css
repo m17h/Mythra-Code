@@ -1869,6 +1869,20 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .usage-hero i { position: absolute; left: 0; bottom: 0; height: 2px; background: var(--info); box-shadow: none; transition: width var(--t-mid) var(--ease); }
 .usage-cache-note { margin: calc(var(--s-1) * -1) 0 var(--s-3); color: var(--muted-2); font-size: var(--fs-meta); font-variant-numeric: tabular-nums; }
 .rate-card { display: flex; flex-direction: column; gap: var(--s-1); margin: var(--s-2) 0 var(--s-3); padding: var(--s-3); border: 1px solid var(--line); border-radius: var(--r-sm); }
+.provider-quota-card { overflow: hidden; margin: var(--s-2) 0 var(--s-3); border: 1px solid var(--line); border-radius: var(--r-md); background: rgba(255,255,255,.012); }
+.provider-quota-header { min-height: 40px; display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); padding: 9px var(--s-3); border-bottom: 1px solid var(--line); }
+.provider-quota-header > span { color: var(--muted-2); font-size: var(--fs-micro); font-weight: 650; text-transform: uppercase; letter-spacing: var(--track-caps); }
+.provider-quota-header > small { flex: none; padding: 3px 7px; border: 1px solid var(--green-line); border-radius: 99px; color: var(--green); background: var(--green-soft); font-size: var(--fs-micro); font-weight: 600; }
+.provider-quota-windows { display: grid; }
+.provider-quota-window { min-width: 0; display: grid; gap: 8px; padding: 11px var(--s-3) 12px; }
+.provider-quota-window + .provider-quota-window { border-top: 1px solid var(--line-quiet); }
+.provider-quota-window-heading { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s-3); }
+.provider-quota-window-heading > strong { min-width: 0; overflow: hidden; color: var(--ink-2); font-size: var(--fs-meta); font-weight: 600; white-space: nowrap; text-overflow: ellipsis; }
+.provider-quota-window-heading > b { flex: none; color: var(--text); font-size: var(--fs-ui); font-weight: 650; font-variant-numeric: tabular-nums; }
+.provider-quota-track { overflow: hidden; height: 5px; border-radius: 99px; background: color-mix(in srgb, var(--muted-2) 18%, transparent); }
+.provider-quota-track > i { display: block; height: 100%; border-radius: inherit; background: var(--green); transition: width var(--t-mid) var(--ease); }
+.provider-quota-window > small { display: flex; align-items: center; gap: 5px; color: var(--muted-2); font-size: var(--fs-micro); font-variant-numeric: tabular-nums; }
+.provider-quota-window > small svg { flex: none; }
 .tool-policy-card { display: grid; grid-template-columns: 18px minmax(0,1fr); gap: var(--s-2); padding: 10px; border: 1px solid color-mix(in srgb, var(--green) 14%, var(--line)); border-radius: var(--r-sm); color: var(--green); background: var(--green-soft); }
 .tool-policy-card > div { display: flex; flex-direction: column; gap: 3px; }
 .tool-policy-card strong { color: var(--ink-2); font-size: var(--fs-meta); font-weight: 600; }
@@ -2015,7 +2029,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
   .studio-dock, .onboarding-modal, .onboarding-stage, .onboarding-rail-foot i { transition: none; animation: none; }
   .command-palette, .model-menu, .openrouter-menu, .thread-provider-menu, .settings-modal, .runtime-setup-modal,
   .workflow-card, .studio-list-row, .theme-card, .provider-card, .skill-card,
-  .lever-track i, .usage-hero i, .update-progress > span { transition: none; animation: none; }
+  .lever-track i, .usage-hero i, .provider-quota-track > i, .update-progress > span { transition: none; animation: none; }
   .status-orb.inProgress, .status-orb.started { animation: none; }
   .update-progress.indeterminate > span { animation: none; width: 100%; }
 }

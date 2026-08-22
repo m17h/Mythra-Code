@@ -5,6 +5,16 @@ import type { Provider, UsageDisplayMode } from "../types";
 export interface AccountUsageView {
   label: string;
   summary: string;
+  planLabel?: string;
+  windows?: AccountUsageWindowView[];
+}
+
+/** Presentation-ready quota data kept structured for an at-a-glance card. */
+export interface AccountUsageWindowView {
+  label: string;
+  percent: number;
+  percentLabel: string;
+  resetLabel: string;
 }
 
 /**
@@ -97,6 +107,35 @@ export function formatResetTime(resetsAt: number | null | undefined, now = Date.
     : reset.toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" });
 }
 
+/**
+ * Claude's terminal-friendly reset labels include a repeated IANA timezone and
+ * compact lowercase meridiem. The dock already runs in the user's local
+ * context, so keep the full date and time while removing that visual noise.
+ */
+export function compactResetLabel(value: string): string {
+  return value
+    .trim()
+    .replace(/\s+\([A-Za-z_]+\/[A-Za-z_]+\)\s*$/, "")
+    .replace(/\s+at\s+/i, " · ")
+    .replace(/(\d)\s*(am|pm)\b/gi, (_, digit: string, period: string) => `${digit} ${period.toUpperCase()}`);
+}
+
+function accountUsageWindows(
+  limits: ProviderRateLimits,
+  mode: UsageDisplayMode,
+  now: number,
+): AccountUsageWindowView[] {
+  return limits.windows.map((window, index) => {
+    const reset = formatResetTime(window.resetsAt, now) || window.resetLabel || "";
+    return {
+      label: window.label || (limits.windows.length === 1 ? "Current window" : `Window ${index + 1}`),
+      percent: displayedPercent(window.usedPercent, mode),
+      percentLabel: usagePercentLabel(window.usedPercent, mode),
+      resetLabel: compactResetLabel(reset),
+    };
+  });
+}
+
 export function formatRateLimitWindow(
   window: RateLimitWindow,
   mode: UsageDisplayMode,
@@ -179,6 +218,12 @@ export function providerAccountUsage(
       summary: limits
         ? `${planLabel} plan · ${limits}`
         : `${planLabel} plan connected · live limits are managed by Claude Code`,
+      ...(options.claudeRateLimits?.windows.length
+        ? {
+            planLabel: `${planLabel} plan`,
+            windows: accountUsageWindows(options.claudeRateLimits, mode, now),
+          }
+        : {}),
     };
   }
   if (provider === "cursor") {
@@ -201,7 +246,11 @@ export function providerAccountUsage(
     };
   }
   const openAi = formatRateLimits(options.openAiRateLimits, mode, now);
-  if (openAi) return { label: "OpenAI subscription", summary: openAi };
+  if (openAi && options.openAiRateLimits) return {
+    label: "OpenAI subscription",
+    summary: openAi,
+    windows: accountUsageWindows(options.openAiRateLimits, mode, now),
+  };
   return {
     label: "OpenAI subscription",
     summary: options.openAiRateLimitsRead ? "No active limit window" : "Sign in to view live limits",

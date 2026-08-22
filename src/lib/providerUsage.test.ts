@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   clampUsedPercent,
+  compactResetLabel,
   displayedPercent,
   formatRateLimits,
   formatResetTime,
@@ -140,6 +141,11 @@ describe("rate limit window formatting", () => {
     }, "remaining", NOW)).toBe("58% left · resets Aug 21 at 11:29pm (America/New_York)");
   });
 
+  it("compacts a provider-local reset label for the quota card", () => {
+    expect(compactResetLabel("Aug 21 at 11:29pm (America/New_York)"))
+      .toBe("Aug 21 · 11:29 PM");
+  });
+
   it("labels windows only when more than one is reported", () => {
     const single = { windows: [{ label: "5h", usedPercent: 42, resetsAt: null }] };
     expect(formatRateLimits(single, "remaining", NOW)).toBe("58% left");
@@ -204,7 +210,11 @@ describe("provider account usage", () => {
       claudeStatus: connectedClaude,
       openRouterReady: true,
       now: NOW,
-    })).toEqual({ label: "OpenAI subscription", summary: "58% left" });
+    })).toEqual({
+      label: "OpenAI subscription",
+      summary: "58% left",
+      windows: [{ label: "5h", percent: 58, percentLabel: "58% left", resetLabel: "" }],
+    });
   });
 
   it("defaults to remaining when no preference is supplied", () => {
@@ -223,7 +233,11 @@ describe("provider account usage", () => {
       openRouterReady: true,
       usageDisplay: "consumed",
       now: NOW,
-    })).toEqual({ label: "OpenAI subscription", summary: "42% used" });
+    })).toEqual({
+      label: "OpenAI subscription",
+      summary: "42% used",
+      windows: [{ label: "5h", percent: 42, percentLabel: "42% used", resetLabel: "" }],
+    });
   });
 
   it("tells a failed limit read apart from an empty one", () => {

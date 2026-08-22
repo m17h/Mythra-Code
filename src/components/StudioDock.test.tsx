@@ -148,6 +148,39 @@ describe("StudioDock", () => {
     expect(screen.queryByText("58% left")).not.toBeInTheDocument();
   });
 
+  it("renders provider windows as separate scannable rows", () => {
+    const accountUsage = providerAccountUsage("claude", {
+      openAiRateLimits: null,
+      claudeStatus: {
+        available: true,
+        path: "/bin/claude",
+        version: "2.1.238",
+        loggedIn: true,
+        authMethod: "claude.ai",
+        email: null,
+        subscriptionType: "max",
+        warning: null,
+      },
+      claudeRateLimits: {
+        windows: [
+          { label: "5h", usedPercent: 6, resetsAt: null, resetLabel: "Aug 21 at 11:30pm (America/New_York)" },
+          { label: "Weekly", usedPercent: 29, resetsAt: null, resetLabel: "Aug 23 at 6pm (America/New_York)" },
+        ],
+      },
+      openRouterReady: false,
+      usageDisplay: "remaining",
+    });
+
+    render(<StudioDock {...dockProps(true)} tab="usage" accountUsage={accountUsage} />);
+
+    expect(screen.getByText("Max plan")).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "5h 94% left" })).toHaveAttribute("aria-valuenow", "94");
+    expect(screen.getByRole("progressbar", { name: "Weekly 71% left" })).toHaveAttribute("aria-valuenow", "71");
+    expect(screen.getByText("Resets Aug 21 · 11:30 PM")).toBeInTheDocument();
+    expect(screen.getByText("Resets Aug 23 · 6 PM")).toBeInTheDocument();
+    expect(screen.queryByText(accountUsage.summary)).not.toBeInTheDocument();
+  });
+
   it("uses current context pressure instead of cumulative thread history", () => {
     const { container } = render(
       <StudioDock
