@@ -1602,7 +1602,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 /* ---- Model rail ----
    Each model family keeps an accent for identity, but the accent is carried by
    a mark and a border tint — not by glows, breathing orbs, or shimmer. */
-.model-power-control { --model-accent: #e0a066; --reasoning-fill: 0%; position: relative; z-index: 8; display: grid; grid-template-columns: minmax(205px, .78fr) minmax(250px, 1.22fr); gap: var(--s-3); align-items: center; margin: 0 10px var(--s-1); padding: var(--s-2); overflow: visible; border: 1px solid var(--line); border-radius: var(--r-lg); background: rgba(255,255,255,.014); box-shadow: none; transition: border-color 220ms ease, background 220ms ease; }
+.model-power-control { --model-accent: #e0a066; --reasoning-fill: 0%; position: relative; z-index: 8; display: grid; grid-template-columns: minmax(280px, 1.08fr) minmax(245px, .92fr); gap: var(--s-3); align-items: center; margin: 0 10px var(--s-1); padding: var(--s-2); overflow: visible; border: 1px solid var(--line); border-radius: var(--r-lg); background: rgba(255,255,255,.014); box-shadow: none; transition: border-color 220ms ease, background 220ms ease; }
 .model-power-control.terra { --model-accent: #a6df72; }
 .model-power-control.luna { --model-accent: #86cdf7; }
 .model-picker { position: relative; z-index: 4; min-width: 0; }
@@ -2013,7 +2013,6 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
   .studio-dock { position: fixed; z-index: 30; top: 0; right: 0; bottom: 0; width: min(var(--dock-width, 430px), 92vw); grid-template-columns: 70px minmax(0,1fr); box-shadow: -24px 0 70px rgba(0,0,0,.52); transition: opacity 210ms ease, transform 290ms cubic-bezier(.22,.8,.25,1), border-color 180ms ease, box-shadow 180ms ease; }
   .studio-dock.closed { width: min(var(--dock-width, 430px), 92vw); opacity: 0; transform: translateX(104%); }
   .studio-panel { width: auto; min-width: 0; }
-  .model-power-control { grid-template-columns: minmax(210px,.9fr) minmax(190px,1fr); }
 }
 
 @media (prefers-reduced-motion: reduce) {
