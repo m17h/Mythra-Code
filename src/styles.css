@@ -1633,11 +1633,11 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .model-menu-option small { color: var(--muted-2); font-size: var(--fs-micro); line-height: 1.4; }
 .model-menu-option > svg { color: var(--option-accent); }
 .menu-model-orb { width: 22px; height: 22px; display: grid; place-items: center; border-radius: var(--r-xs); color: #101315; background: var(--option-accent); box-shadow: none; }
-.reasoning-control { position: relative; z-index: 1; min-width: 0; }
-.reasoning-heading { display: flex; align-items: center; gap: var(--s-1); margin: 0 2px var(--s-2); color: var(--muted-2); font-size: var(--fs-meta); }
+.reasoning-control { position: relative; z-index: 1; min-width: 0; padding: 0 3px; }
+.reasoning-heading { height: 13px; display: flex; align-items: center; gap: 5px; margin: 0 2px 5px; color: var(--muted-2); font-size: var(--fs-meta); }
 .reasoning-heading svg { color: var(--muted-2); }
 .reasoning-heading strong { margin-left: auto; color: var(--ink-2); font-size: var(--fs-micro); font-weight: 650; text-transform: uppercase; letter-spacing: var(--track-caps); }
-.fast-tier { height: 20px; display: flex; align-items: center; gap: 4px; margin-left: var(--s-1); padding: 0 6px; border: 1px solid var(--line); border-radius: var(--r-xs); color: var(--muted-2); background: transparent; font-size: var(--fs-micro); cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
+.fast-tier { height: 18px; display: flex; align-items: center; gap: 4px; margin-left: var(--s-1); padding: 0 6px; border: 1px solid var(--line); border-radius: var(--r-xs); color: var(--muted-2); background: transparent; font-size: var(--fs-micro); cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
 .fast-tier:hover { color: var(--ink-2); border-color: var(--line-strong); }
 .reasoning-heading .fast-tier svg { color: inherit; }
 .fast-tier.on { color: var(--orange); border-color: color-mix(in srgb, var(--orange) 30%, var(--line)); background: color-mix(in srgb, var(--orange) 11%, transparent); box-shadow: none; }
@@ -1649,7 +1649,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .reasoning-ticks { position: absolute; z-index: 1; inset: 0 2px; display: flex; align-items: center; justify-content: space-between; pointer-events: none; }
 .reasoning-ticks i { width: 6px; height: 6px; border: 1px solid var(--line-strong); border-radius: 50%; background: var(--panel-2); }
 .reasoning-ticks i.reached { border-color: var(--model-accent); background: var(--model-accent); box-shadow: none; }
-.reasoning-labels { display: flex; justify-content: space-between; margin-top: 6px; color: var(--muted-2); font-size: var(--fs-micro); }
+.reasoning-labels { display: flex; justify-content: space-between; margin-top: 5px; color: var(--muted-2); font-size: var(--fs-micro); }
 .reasoning-labels span { transition: color var(--t-fast) ease; }
 .reasoning-labels span.active { color: var(--ink-2); font-weight: 600; text-shadow: none; }
 .has-attachments { color: var(--info); background: color-mix(in srgb, var(--info) 8%, transparent); }
