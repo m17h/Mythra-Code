@@ -127,6 +127,8 @@ pub(super) fn checkpoint_ref(id: &str, phase: &str) -> Result<String, String> {
 /// installed by Homebrew) then disappear. Preserve every inherited entry and
 /// add the native package-manager locations Git filters commonly use.
 pub(super) fn git_runtime_path(current: Option<&OsStr>, home: Option<&Path>) -> Option<OsString> {
+    #[cfg(not(unix))]
+    let _ = home;
     let mut directories: Vec<PathBuf> = Vec::new();
     let mut add = |path: PathBuf| {
         if !directories.contains(&path) {
