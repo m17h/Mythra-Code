@@ -1,3 +1,4 @@
+import { DEFAULT_USAGE_DISPLAY } from "./providerUsage";
 import type { AppSettings, ChildAgentSettings, PromptProfile, ThemeName } from "../types";
 
 /** Cross-provider delegation is off by default; every enabled destination is user-approved. */
@@ -37,6 +38,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   notificationsEnabled: true,
   terminalScrollback: 100_000,
   uiScale: 100,
+  usageDisplay: DEFAULT_USAGE_DISPLAY,
 };
 
 /** OpenKiwi ships no opinions as profiles; every saved profile belongs to the user. */

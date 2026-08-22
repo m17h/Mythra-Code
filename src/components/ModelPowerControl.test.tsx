@@ -3,12 +3,11 @@ import { describe, expect, it, vi } from "vitest";
 import { ModelPowerControl } from "./ModelPowerControl";
 
 describe("ModelPowerControl", () => {
-  it("selects models, reasoning, Fast, and Ultra independently", () => {
+  it("selects models, reasoning, and Fast independently", () => {
     const onModel = vi.fn();
     const onEffort = vi.fn();
     const onFast = vi.fn();
-    const onUltra = vi.fn();
-    render(<ModelPowerControl model="gpt-5.6-sol" effort="medium" ultra={false} fast={false} runtimeModels={[]} onModel={onModel} onEffort={onEffort} onFast={onFast} onUltra={onUltra} />);
+    render(<ModelPowerControl model="gpt-5.6-sol" effort="medium" fast={false} runtimeModels={[]} onModel={onModel} onEffort={onEffort} onFast={onFast} />);
     fireEvent.click(screen.getByRole("button", { name: /OpenAI model: Sol/i }));
     fireEvent.click(screen.getByRole("menuitemradio", { name: /Luna/i }));
     expect(onModel).toHaveBeenCalledWith("gpt-5.6-luna");
@@ -16,8 +15,19 @@ describe("ModelPowerControl", () => {
     expect(onEffort).toHaveBeenCalledWith("xhigh");
     fireEvent.click(screen.getByRole("button", { name: /Fast/i }));
     expect(onFast).toHaveBeenCalledWith(true);
-    fireEvent.click(screen.getByRole("switch", { name: /Ultra/i }));
-    expect(onUltra).toHaveBeenCalledWith(true);
+    expect(screen.queryByRole("switch", { name: /Ultra/i })).not.toBeInTheDocument();
+  });
+
+  it("displays a legacy Ultra effort as editable Maximum reasoning", () => {
+    const onEffort = vi.fn();
+    render(<ModelPowerControl model="gpt-5.6-sol" effort="ultra" fast={false} runtimeModels={[]} onModel={vi.fn()} onEffort={onEffort} onFast={vi.fn()} />);
+
+    const slider = screen.getByRole("slider", { name: "Reasoning effort" });
+    expect(slider).toHaveValue("4");
+    expect(slider).toBeEnabled();
+    expect(screen.getByText("Maximum")).toBeInTheDocument();
+    fireEvent.change(slider, { target: { value: "3" } });
+    expect(onEffort).toHaveBeenCalledWith("xhigh");
   });
 
   it("closes the menu on Escape without letting the key reach app-level handlers", () => {
@@ -28,7 +38,7 @@ describe("ModelPowerControl", () => {
     };
     document.addEventListener("keydown", listener);
     try {
-      render(<ModelPowerControl model="gpt-5.6-sol" effort="medium" ultra={false} fast={false} runtimeModels={[]} onModel={vi.fn()} onEffort={vi.fn()} onFast={vi.fn()} onUltra={vi.fn()} />);
+      render(<ModelPowerControl model="gpt-5.6-sol" effort="medium" fast={false} runtimeModels={[]} onModel={vi.fn()} onEffort={vi.fn()} onFast={vi.fn()} />);
       const trigger = screen.getByRole("button", { name: /OpenAI model: Sol/i });
       fireEvent.click(trigger);
       expect(trigger).toHaveAttribute("aria-expanded", "true");

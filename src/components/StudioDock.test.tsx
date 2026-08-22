@@ -1,6 +1,8 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { STUDIO_DOCK_EXIT_MS, StudioDock } from "./StudioDock";
+import { providerAccountUsage } from "../lib/providerUsage";
+import type { UsageDisplayMode } from "../types";
 
 vi.mock("./XtermPanel", () => ({ XtermPanel: () => null }));
 
@@ -22,6 +24,9 @@ function dockProps(open: boolean): Parameters<typeof StudioDock>[0] {
     mcpServers: [],
     gitOutput: "",
     gitCommitMessage: "",
+    gitCommitSuccess: "",
+    gitCommitBusy: false,
+    gitRepositoryReady: true,
     githubAuthenticated: false,
     githubRepoStatus: null,
     githubRepoError: "",
@@ -125,6 +130,58 @@ describe("StudioDock", () => {
     expect(screen.getByText("Claude subscription")).toBeInTheDocument();
     expect(screen.getByText(/Max plan connected/)).toBeInTheDocument();
     expect(screen.queryByText("25% used")).not.toBeInTheDocument();
+  });
+
+  it("renders the active provider quota in whichever direction the user chose", () => {
+    const limits = { windows: [{ label: "5h", usedPercent: 42, resetsAt: null }] };
+    const view = (usageDisplay: UsageDisplayMode) => providerAccountUsage("openai", {
+      openAiRateLimits: limits,
+      openAiRateLimitsRead: true,
+      claudeStatus: null,
+      openRouterReady: false,
+      usageDisplay,
+    });
+
+    const { rerender } = render(<StudioDock {...dockProps(true)} tab="usage" accountUsage={view("remaining")} />);
+    expect(screen.getByText("58% left")).toBeInTheDocument();
+    expect(screen.queryByText("42% used")).not.toBeInTheDocument();
+
+    rerender(<StudioDock {...dockProps(true)} tab="usage" accountUsage={view("consumed")} />);
+    expect(screen.getByText("42% used")).toBeInTheDocument();
+    expect(screen.queryByText("58% left")).not.toBeInTheDocument();
+  });
+
+  it("renders provider windows as separate scannable rows", () => {
+    const accountUsage = providerAccountUsage("claude", {
+      openAiRateLimits: null,
+      claudeStatus: {
+        available: true,
+        path: "/bin/claude",
+        version: "2.1.238",
+        loggedIn: true,
+        authMethod: "claude.ai",
+        email: null,
+        subscriptionType: "max",
+        warning: null,
+      },
+      claudeRateLimits: {
+        windows: [
+          { label: "5h", usedPercent: 6, resetsAt: null, resetLabel: "Aug 21 at 11:30pm (America/New_York)" },
+          { label: "Weekly", usedPercent: 29, resetsAt: null, resetLabel: "Aug 23 at 6pm (America/New_York)" },
+        ],
+      },
+      openRouterReady: false,
+      usageDisplay: "remaining",
+    });
+
+    render(<StudioDock {...dockProps(true)} tab="usage" accountUsage={accountUsage} />);
+
+    expect(screen.getByText("Max plan")).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "5h 94% left" })).toHaveAttribute("aria-valuenow", "94");
+    expect(screen.getByRole("progressbar", { name: "Weekly 71% left" })).toHaveAttribute("aria-valuenow", "71");
+    expect(screen.getByText("Resets Aug 21 · 11:30 PM")).toBeInTheDocument();
+    expect(screen.getByText("Resets Aug 23 · 6 PM")).toBeInTheDocument();
+    expect(screen.queryByText(accountUsage.summary)).not.toBeInTheDocument();
   });
 
   it("uses current context pressure instead of cumulative thread history", () => {
@@ -299,7 +356,49 @@ describe("StudioDock", () => {
     expect(screen.getByRole("button", { name: "Diff" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Stage all" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Stage" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Commit all changes locally" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Push commits" })).toBeDisabled();
     expect(screen.getByText(/Read only allows Status and Diff/)).toBeInTheDocument();
+  });
+
+  it("makes local commits prominent, keeps the message optional, and confirms success", () => {
+    const onGitAction = vi.fn();
+    render(
+      <StudioDock
+        {...dockProps(true)}
+        tab="git"
+        onGitAction={onGitAction}
+        gitCommitSuccess="“Polish the Git panel” was saved to this repository."
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: "Git workspace" })).toBeInTheDocument();
+    expect(screen.getByText("Commit changes locally")).toBeInTheDocument();
+    expect(screen.getByLabelText(/Commit message/i)).toHaveAttribute("placeholder", "Update project files");
+    const commit = screen.getByRole("button", { name: "Commit all changes locally" });
+    expect(commit).toBeEnabled();
+    fireEvent.click(commit);
+    expect(onGitAction).toHaveBeenCalledWith("commit");
+    expect(screen.getByText("Committed successfully")).toBeInTheDocument();
+    expect(screen.getByText(/Polish the Git panel/)).toBeInTheDocument();
+  });
+
+  it("disables local Git mutations until the project has a repository", () => {
+    render(
+      <StudioDock
+        {...dockProps(true)}
+        tab="git"
+        gitRepositoryReady={false}
+        githubAuthenticated
+        githubRemoteInput="https://github.com/owner/repo.git"
+        githubRepoName="repo"
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Commit all changes locally" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Stage all" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Revert all Git changes" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Attach remote" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
   });
 });

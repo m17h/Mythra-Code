@@ -1,6 +1,7 @@
 import type { CodexEvent, JsonObject } from "./codex";
 import type { ThreadItem, Turn } from "../types";
 import { useTaskStore } from "./taskStore";
+import { parseCodexRateLimits, type ProviderRateLimits } from "./providerUsage";
 import type { TokenUsageView } from "../components/StudioDock";
 
 /**
@@ -98,7 +99,7 @@ export interface CodexEventContext {
   onStatus: (status: string) => void;
   onError: (message: string) => void;
   onAuthRequired: () => void;
-  onRateSummary: (summary: string) => void;
+  onRateLimits: (limits: ProviderRateLimits | null) => void;
   onTerminalOutput: (delta: string) => void;
   onTurnCompleted: (threadId: string, turn: Turn | null) => void;
   onApprovalRequested: (threadId: string) => void;
@@ -276,8 +277,11 @@ export function routeCodexEvent(event: CodexEvent, ctx: CodexEventContext): void
     return;
   }
   if (method === "account/rateLimits/updated") {
-    const limits = params.rateLimits as { primary?: { usedPercent?: number } } | undefined;
-    if (limits?.primary) ctx.onRateSummary(`${Math.round(limits.primary.usedPercent ?? 0)}% used`);
+    // Same payload as `account/rateLimits/read`, so the push path and the poll
+    // path normalize through one parser and render identically. A valid update
+    // with no windows must also clear the previous quota instead of leaving a
+    // stale percentage on screen.
+    ctx.onRateLimits(parseCodexRateLimits(params));
     return;
   }
   if (method === "turn/started") {

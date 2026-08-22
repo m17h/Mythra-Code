@@ -615,7 +615,7 @@ pub(super) async fn local_skills_create(
     .map_err(|error| format!("Skill creation failed: {error}"))?
 }
 
-pub(super) fn delete_local_skill_source(folder: &Path, source: &Path) -> Result<(), String> {
+pub(super) fn detected_local_skill_source(folder: &Path, source: &Path) -> Result<PathBuf, String> {
     let folder = folder
         .canonicalize()
         .map_err(|error| format!("Could not open the skills folder: {error}"))?;
@@ -623,7 +623,9 @@ pub(super) fn delete_local_skill_source(folder: &Path, source: &Path) -> Result<
         .canonicalize()
         .map_err(|error| format!("Could not open the skill source: {error}"))?;
     if !source.starts_with(&folder) || !source.is_file() || !is_markdown(&source) {
-        return Err("The selected skill source is not a Markdown file in the skills folder.".into());
+        return Err(
+            "The selected skill source is not a Markdown file in the skills folder.".into(),
+        );
     }
 
     // Only files the scanner recognizes as actual skills may be deleted. This
@@ -638,8 +640,73 @@ pub(super) fn delete_local_skill_source(folder: &Path, source: &Path) -> Result<
         return Err("The selected file is not a detected OpenKiwi skill.".into());
     }
 
+    Ok(source)
+}
+
+pub(super) fn read_local_skill_source(folder: &Path, source: &Path) -> Result<String, String> {
+    let source = detected_local_skill_source(folder, source)?;
+    let size = fs::metadata(&source)
+        .map_err(|error| format!("Could not inspect {}: {error}", source.display()))?
+        .len();
+    if size > MAX_SKILL_FILE_BYTES {
+        return Err(format!("{} is larger than 1 MB", source.display()));
+    }
+    fs::read_to_string(&source)
+        .map_err(|error| format!("Could not read {}: {error}", source.display()))
+}
+
+pub(super) fn update_local_skill_source(
+    folder: &Path,
+    source: &Path,
+    content: &str,
+    original: &str,
+) -> Result<(), String> {
+    if content.trim().is_empty() {
+        return Err("Skill Markdown cannot be empty.".into());
+    }
+    if content.len() as u64 > MAX_SKILL_FILE_BYTES {
+        return Err("Skill Markdown must be smaller than 1 MB.".into());
+    }
+    let source = detected_local_skill_source(folder, source)?;
+    let current = fs::read_to_string(&source)
+        .map_err(|error| format!("Could not read {} before saving: {error}", source.display()))?;
+    if current != original {
+        return Err("This skill changed on disk after you opened it. Reload it before saving so those changes are not overwritten.".into());
+    }
+    fs::write(&source, content)
+        .map_err(|error| format!("Could not save {}: {error}", source.display()))
+}
+
+pub(super) fn delete_local_skill_source(folder: &Path, source: &Path) -> Result<(), String> {
+    let source = detected_local_skill_source(folder, source)?;
+
     fs::remove_file(&source)
         .map_err(|error| format!("Could not delete {}: {error}", source.display()))
+}
+
+#[tauri::command]
+pub(super) async fn local_skills_read(folder: String, path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let folder = canonical_skill_folder(&folder)?;
+        read_local_skill_source(&folder, Path::new(&path))
+    })
+    .await
+    .map_err(|error| format!("Skill read failed: {error}"))?
+}
+
+#[tauri::command]
+pub(super) async fn local_skills_update(
+    folder: String,
+    path: String,
+    content: String,
+    original: String,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let folder = canonical_skill_folder(&folder)?;
+        update_local_skill_source(&folder, Path::new(&path), &content, &original)
+    })
+    .await
+    .map_err(|error| format!("Skill update failed: {error}"))?
 }
 
 #[tauri::command]

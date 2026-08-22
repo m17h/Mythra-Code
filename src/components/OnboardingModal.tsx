@@ -7,17 +7,17 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
+  Compass,
   ExternalLink,
   FolderOpen,
   KeyRound,
   MessageSquare,
   NotebookPen,
+  Rocket,
   Shield,
   ShieldAlert,
   ShieldCheck,
-  Sparkles,
   TerminalSquare,
-  WandSparkles,
   X,
 } from "lucide-react";
 import type { CodexRuntimeStatus } from "../lib/codex";
@@ -25,7 +25,7 @@ import type { ClaudeRuntimeStatus } from "../lib/claude";
 import type { CursorRuntimeStatus } from "../lib/cursor";
 import type { Account, SettingsSection } from "../types";
 import { useModalFocus } from "../hooks/useModalFocus";
-import { ClaudeLogo, CursorLogo, LmStudioLogo, OpenAILogo } from "./BrandLogos";
+import { ClaudeLogo, CursorLogo, LmStudioLogo, OpenAILogo, OpenRouterLogo } from "./BrandLogos";
 
 const CODEX_INSTALL_URL = "https://learn.chatgpt.com/docs/codex/cli";
 const OPENROUTER_KEYS_URL = "https://openrouter.ai/settings/keys";
@@ -35,12 +35,12 @@ const CURSOR_INSTALL_URL = "https://cursor.com/docs/cli/installation";
 const LM_STUDIO_SERVER_URL = "https://lmstudio.ai/docs/developer/core/server";
 
 const STEPS = [
-  { id: "welcome", label: "Welcome", icon: Sparkles },
+  { id: "welcome", label: "Welcome", icon: Compass },
   { id: "providers", label: "Connect AI", icon: KeyRound },
   { id: "workspaces", label: "Projects & chats", icon: FolderOpen },
   { id: "controls", label: "Your controls", icon: ShieldCheck },
   { id: "skills", label: "Local skills", icon: Boxes },
-  { id: "ready", label: "Ready to build", icon: WandSparkles },
+  { id: "ready", label: "Ready to build", icon: Rocket },
 ] as const;
 
 function StatusPill({ ready, children }: { ready: boolean; children: ReactNode }) {
@@ -107,7 +107,7 @@ function ProviderStep({ runtimeStatus, claudeStatus, cursorStatus, account, open
       </article>
 
       <article className="onboarding-provider-card openrouter">
-        <div className="onboarding-card-title"><span><Bot size={18} /></span><div><strong>OpenRouter</strong><small>One key, broad model catalog</small></div></div>
+        <div className="onboarding-card-title"><span><OpenRouterLogo size={18} /></span><div><strong>OpenRouter</strong><small>One key, broad model catalog</small></div></div>
         <ol>
           <li><b>1</b><span>Create or sign in to OpenRouter, add credits if your chosen model requires them, and create an <strong>API key</strong>.</span></li>
           <li><b>2</b><span>Paste the key in <strong>Settings → Models & accounts</strong>. It is stored in your OS credential store.</span></li>
@@ -202,7 +202,7 @@ function SkillsStep({ skillsFolder, onChooseSkillsFolder }: { skillsFolder: stri
       </div>
       <div className="onboarding-skill-rules">
         <div><b>1</b><span><strong>Import or create Markdown</strong><small>Top-level Markdown files and folders containing SKILL.md become skills.</small></span></div>
-        <div><b>2</b><span><strong>Name them in the app</strong><small>Names start from the file, but you may rename a skill in OpenKiwi without renaming the file.</small></span></div>
+        <div><b>2</b><span><strong>Edit them in the app</strong><small>Update the Markdown or change its OpenKiwi invocation name without leaving settings.</small></span></div>
         <div><b>3</b><span><strong>Reference supporting Markdown</strong><small>A skill can point to other Markdown files when its instructions need more detail.</small></span></div>
         <div><b>4</b><span><strong>The model calls the enabled skill</strong><small>It uses the app-facing name when the workflow matches your request.</small></span></div>
       </div>

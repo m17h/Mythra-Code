@@ -3,6 +3,7 @@ import {
   Bot,
   Boxes,
   Check,
+  CheckCircle2,
   ChevronDown,
   ChevronRight,
   CircleStop,
@@ -16,6 +17,7 @@ import {
   GitFork,
   Gauge,
   History,
+  LoaderCircle,
   Paperclip,
   Play,
   Plus,
@@ -49,6 +51,7 @@ import {
 } from "../lib/checkpoints";
 import type { ThreadWorktreeRecord, WorktreeStatus } from "../lib/worktrees";
 import type { GitHubRepoStatus } from "../lib/github";
+import type { AccountUsageView } from "../lib/providerUsage";
 
 export type StudioTab = "files" | "review" | "agents" | "terminal" | "checkpoints" | "worktrees" | "context" | "usage" | "tools" | "git";
 
@@ -130,11 +133,14 @@ export function StudioDock(props: {
   usage: TokenUsageView | null;
   costEstimate?: string;
   costTotals?: string;
-  accountUsage: { label: string; summary: string };
+  accountUsage: AccountUsageView;
   skills: SkillView[];
   mcpServers: McpView[];
   gitOutput: string;
   gitCommitMessage: string;
+  gitCommitSuccess: string;
+  gitCommitBusy: boolean;
+  gitRepositoryReady: boolean;
   githubAuthenticated: boolean;
   githubRepoStatus: GitHubRepoStatus | null;
   githubRepoError?: string;
@@ -458,7 +464,37 @@ export function StudioDock(props: {
               Prompt caching: {props.usage.cachedInputTokens.toLocaleString()} read · {(props.usage.cacheWriteInputTokens ?? 0).toLocaleString()} written
             </div>
           ) : null}
-          <div className="rate-card"><span>{props.accountUsage.label}</span><strong>{props.accountUsage.summary}</strong></div>
+          {props.accountUsage.windows?.length ? (
+            <section className="provider-quota-card" aria-label={props.accountUsage.label}>
+              <header className="provider-quota-header">
+                <span>{props.accountUsage.label}</span>
+                {props.accountUsage.planLabel ? <small>{props.accountUsage.planLabel}</small> : null}
+              </header>
+              <div className="provider-quota-windows">
+                {props.accountUsage.windows.map((window, index) => (
+                  <div className="provider-quota-window" key={`${window.label}-${index}`}>
+                    <div className="provider-quota-window-heading">
+                      <strong>{window.label}</strong>
+                      <b>{window.percentLabel}</b>
+                    </div>
+                    <div
+                      className="provider-quota-track"
+                      role="progressbar"
+                      aria-label={`${window.label} ${window.percentLabel}`}
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-valuenow={window.percent}
+                    >
+                      <i style={{ width: `${window.percent}%` }} />
+                    </div>
+                    {window.resetLabel ? <small><Clock3 size={12} /> Resets {window.resetLabel}</small> : null}
+                  </div>
+                ))}
+              </div>
+            </section>
+          ) : (
+            <div className="rate-card"><span>{props.accountUsage.label}</span><strong>{props.accountUsage.summary}</strong></div>
+          )}
           {props.costTotals && <div className="rate-card"><span>OpenRouter history</span><strong>{props.costTotals}</strong></div>}
           <h3 className="panel-label">Request audit</h3><div className="audit-table">{props.promptAudit.map((row) => <div key={row.label}><span>{row.label}</span><code>{row.value}</code></div>)}</div>
         </>}
@@ -493,7 +529,7 @@ export function StudioDock(props: {
           {!props.githubRepoStatus?.repository && props.githubAuthenticated && (
             <div className="github-connect-project">
               <label className="dock-field"><span>Existing repository URL</span><input value={props.githubRemoteInput} onChange={(event) => props.onGitHubRemoteInput(event.target.value)} placeholder="https://github.com/owner/repository.git" /></label>
-              <button className="github-secondary-button" onClick={props.onGitHubAttach} disabled={props.gitActionsReadOnly || !props.githubRemoteInput.trim()}><GitFork size={13} /> Attach remote</button>
+              <button className="github-secondary-button" onClick={props.onGitHubAttach} disabled={props.gitActionsReadOnly || !props.gitRepositoryReady || !props.githubRemoteInput.trim()}><GitFork size={13} /> Attach remote</button>
               <div className="github-create-divider"><span>or create one</span></div>
               <div className="github-create-row">
                 <input className="github-repo-name-input" value={props.githubRepoName} onChange={(event) => props.onGitHubRepoName(event.target.value)} placeholder="repository-name" aria-label="New GitHub repository name" />
@@ -501,15 +537,31 @@ export function StudioDock(props: {
                   <select value={props.githubRepoVisibility} onChange={(event) => props.onGitHubRepoVisibility(event.target.value as "private" | "public")} aria-label="Repository visibility"><option value="private">Private</option><option value="public">Public</option></select>
                   <ChevronDown size={13} aria-hidden="true" />
                 </span>
-                <button className="github-create-button" onClick={props.onGitHubCreate} disabled={props.gitActionsReadOnly || !props.githubRepoName.trim()}><Plus size={13} /> Create</button>
+                <button className="github-create-button" onClick={props.onGitHubCreate} disabled={props.gitActionsReadOnly || !props.gitRepositoryReady || !props.githubRepoName.trim()}><Plus size={13} /> Create</button>
               </div>
             </div>
           )}
-          <div className="studio-actions wrap"><button onClick={() => props.onGitAction("status")}><RefreshCw size={13} /> Status</button><button onClick={() => props.onGitAction("diff")}><CodeXml size={13} /> Diff</button><button onClick={() => props.onGitAction("stage")} disabled={props.gitActionsReadOnly}><Plus size={13} /> Stage all</button><button className="danger-action" onClick={() => props.onGitAction("revert")} aria-label="Revert all Git changes" disabled={props.gitActionsReadOnly}><RotateCcw size={13} /> Revert all</button></div>
+          <form className="git-commit-card" onSubmit={(event) => { event.preventDefault(); props.onGitAction("commit"); }}>
+            <div className="git-commit-heading">
+              <span><GitCommitHorizontal size={17} /></span>
+              <div><strong>Commit changes locally</strong><small>Stages all current changes and saves them to this repository. Nothing is pushed.</small></div>
+            </div>
+            {props.gitCommitSuccess && (
+              <div className="git-commit-success" role="status" aria-live="polite">
+                <CheckCircle2 size={18} />
+                <div><strong>Committed successfully</strong><small>{props.gitCommitSuccess}</small></div>
+              </div>
+            )}
+            <label className="dock-field"><span>Commit message <em>Optional</em></span><input value={props.gitCommitMessage} onChange={(event) => props.onGitCommitMessage(event.target.value)} placeholder="Update project files" /></label>
+            <button className="git-commit-button" type="submit" disabled={props.gitActionsReadOnly || props.gitCommitBusy || !props.gitRepositoryReady} title={props.gitRepositoryReady ? "Stage and commit every current change to the local repository" : "Initialize Git for this project before committing"}>
+              {props.gitCommitBusy ? <LoaderCircle className="spin" size={16} /> : <GitCommitHorizontal size={16} />}
+              {props.gitCommitBusy ? "Committing…" : "Commit all changes locally"}
+            </button>
+          </form>
+          <div className="studio-actions wrap"><button onClick={() => props.onGitAction("status")}><RefreshCw size={13} /> Status</button><button onClick={() => props.onGitAction("diff")}><CodeXml size={13} /> Diff</button><button onClick={() => props.onGitAction("stage")} disabled={props.gitActionsReadOnly || !props.gitRepositoryReady}><Plus size={13} /> Stage all</button><button className="danger-action" onClick={() => props.onGitAction("revert")} aria-label="Revert all Git changes" disabled={props.gitActionsReadOnly || !props.gitRepositoryReady}><RotateCcw size={13} /> Revert all</button></div>
           {diffFiles.length > 0 && <><h3 className="panel-label">Changed files</h3><div className="git-file-list">{diffFiles.map((path) => <div key={path}><code>{path}</code><button onClick={() => props.onGitPathAction("stage", path)} disabled={props.gitActionsReadOnly}><Plus size={11} /> Stage</button><button className="danger-action" onClick={() => props.onGitPathAction("revert", path)} disabled={props.gitActionsReadOnly}><RotateCcw size={11} /></button></div>)}</div></>}
           <pre className="git-screen">{props.gitOutput || "Choose an action to inspect the repository."}</pre>
-          <label className="dock-field"><span>Commit message</span><input value={props.gitCommitMessage} onChange={(e) => props.onGitCommitMessage(e.target.value)} placeholder="Describe this change" /></label>
-          <div className="studio-actions wrap"><button onClick={() => props.onGitAction("commit")} disabled={props.gitActionsReadOnly || !props.gitCommitMessage.trim()}><GitCommitHorizontal size={13} /> Commit staged</button><button onClick={() => props.onGitAction("commitPush")} disabled={props.gitActionsReadOnly || !props.gitCommitMessage.trim() || !props.githubRepoStatus?.repository || !props.githubRepoStatus.branch}><Upload size={13} /> Commit & push</button><button onClick={() => props.onGitAction("fetch")} disabled={props.gitActionsReadOnly || !props.githubRepoStatus?.repository}><RefreshCw size={13} /> Fetch</button><button onClick={() => props.onGitAction("pull")} disabled={props.gitActionsReadOnly || !props.githubRepoStatus?.upstream}><RotateCw size={13} /> Pull</button><button onClick={() => props.onGitAction("push")} disabled={props.gitActionsReadOnly || !props.githubRepoStatus?.repository || !props.githubRepoStatus.branch} title={!props.githubRepoStatus?.branch ? "Check out a named branch before pushing" : "Push committed changes to GitHub"}><Upload size={13} /> Push commits</button><button onClick={() => props.onGitAction("comments")} disabled={props.gitActionsReadOnly || !props.githubRepoStatus?.repository}><CodeXml size={13} /> Review comments</button><button onClick={() => props.onGitAction("ci")} disabled={props.gitActionsReadOnly || !props.githubRepoStatus?.repository}><ShieldCheck size={13} /> CI checks</button><button onClick={() => props.onGitAction("pr")} disabled={props.gitActionsReadOnly || !props.githubRepoStatus?.repository}><GitFork size={13} /> Draft PR</button></div>
+          <div className="studio-actions wrap"><button onClick={() => props.onGitAction("commitPush")} disabled={props.gitActionsReadOnly || props.gitCommitBusy || !props.githubRepoStatus?.repository || !props.githubRepoStatus.branch}><Upload size={13} /> Commit & push</button><button onClick={() => props.onGitAction("fetch")} disabled={props.gitActionsReadOnly || !props.githubRepoStatus?.repository}><RefreshCw size={13} /> Fetch</button><button onClick={() => props.onGitAction("pull")} disabled={props.gitActionsReadOnly || !props.githubRepoStatus?.upstream}><RotateCw size={13} /> Pull</button><button onClick={() => props.onGitAction("push")} disabled={props.gitActionsReadOnly || !props.githubRepoStatus?.repository || !props.githubRepoStatus.branch} title={!props.githubRepoStatus?.branch ? "Check out a named branch before pushing" : "Push committed changes to GitHub"}><Upload size={13} /> Push commits</button><button onClick={() => props.onGitAction("comments")} disabled={props.gitActionsReadOnly || !props.githubRepoStatus?.repository}><CodeXml size={13} /> Review comments</button><button onClick={() => props.onGitAction("ci")} disabled={props.gitActionsReadOnly || !props.githubRepoStatus?.repository}><ShieldCheck size={13} /> CI checks</button><button onClick={() => props.onGitAction("pr")} disabled={props.gitActionsReadOnly || !props.githubRepoStatus?.repository}><GitFork size={13} /> Draft PR</button></div>
         </>}
       </div>
     </aside>

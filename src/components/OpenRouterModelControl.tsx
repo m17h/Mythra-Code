@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { Check, ChevronDown, Gauge, LoaderCircle, RefreshCw, Route, Search } from "lucide-react";
+import { Check, ChevronDown, Gauge, LoaderCircle, RefreshCw, Search } from "lucide-react";
 import type { ReasoningEffort } from "./ModelPowerControl";
+import { OpenRouterLogo } from "./BrandLogos";
 
 export interface OpenRouterModel {
   id: string;
@@ -97,7 +98,7 @@ export function OpenRouterModelControl({
     <div className="openrouter-control" ref={rootRef} style={{ "--router-fill": `${fill}%` } as CSSProperties}>
       <div className={`openrouter-picker ${open ? "open" : ""}`}>
         <button type="button" className="openrouter-trigger" aria-haspopup="menu" aria-expanded={open} aria-label={`OpenRouter model: ${selected?.name || model || "not selected"}`} onClick={() => setOpen((value) => !value)} onKeyDown={(event) => { if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); setOpen(true); } }}>
-          <span className="openrouter-logo"><Route size={14} /></span>
+          <span className="openrouter-logo openrouter-brand-logo"><OpenRouterLogo size={16} /></span>
           <span className="openrouter-trigger-copy">
             <small>OpenRouter model</small>
             <strong>{selected?.name || model || "Choose a model"}</strong>

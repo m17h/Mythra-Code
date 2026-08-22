@@ -12,6 +12,48 @@ fn claude_always_uses_openkiwi_as_its_only_subagent_route() {
 }
 
 #[test]
+fn claude_usage_normalizes_subscription_windows_without_credentials() {
+    let usage = parse_claude_usage_result(
+        "You are currently using your subscription to power your Claude Code usage\n\
+         \n\
+         Current session: 5% used · resets Aug 21 at 11:29pm (America/New_York)\n\
+         Current week (all models): 29% used · resets Aug 23 at 5:59pm (America/New_York)\n\
+         Current week (Fable): 120% used",
+    );
+    assert_eq!(
+        usage,
+        ClaudeUsageLimits {
+            windows: vec![
+                ClaudeUsageWindow {
+                    label: "5h".into(),
+                    used_percent: 5.0,
+                    reset_label: Some("Aug 21 at 11:29pm (America/New_York)".into()),
+                },
+                ClaudeUsageWindow {
+                    label: "Weekly".into(),
+                    used_percent: 29.0,
+                    reset_label: Some("Aug 23 at 5:59pm (America/New_York)".into()),
+                },
+                ClaudeUsageWindow {
+                    label: "Weekly Fable".into(),
+                    used_percent: 100.0,
+                    reset_label: None,
+                },
+            ],
+        }
+    );
+}
+
+#[test]
+fn claude_usage_skips_missing_or_malformed_windows() {
+    assert!(parse_claude_usage_result(
+        "Current session: unknown% used\nCurrent month: 20% used\nCurrent week (all models): unavailable"
+    )
+    .windows
+    .is_empty());
+}
+
+#[test]
 fn child_agent_completion_cannot_be_resurrected_by_a_late_spawn_response() {
     let mut runtime = super::agents::SessionRuntime::default();
     super::agents::record_finished_child(&mut runtime, "child-fast");
@@ -1520,6 +1562,70 @@ fn local_skill_scan_fingerprint_changes_when_instructions_change() {
         .content_fingerprint
         .clone();
     assert_ne!(first, second);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn local_skill_editor_reads_and_updates_only_detected_skill_sources() {
+    let root = skill_test_directory("skill-editor");
+    fs::create_dir_all(root.join("references")).unwrap();
+    let source = root.join("review.md");
+    let supporting = root.join("references/details.md");
+    fs::write(&source, "# Review\n\nOriginal instructions.\n").unwrap();
+    fs::write(&supporting, "# Details\n\nSupporting material.\n").unwrap();
+
+    assert_eq!(
+        read_local_skill_source(&root, &source).unwrap(),
+        "# Review\n\nOriginal instructions.\n"
+    );
+    update_local_skill_source(
+        &root,
+        &source,
+        "# Review\n\nUpdated in OpenKiwi.\n",
+        "# Review\n\nOriginal instructions.\n",
+    )
+    .unwrap();
+    assert_eq!(
+        fs::read_to_string(&source).unwrap(),
+        "# Review\n\nUpdated in OpenKiwi.\n"
+    );
+
+    let error = update_local_skill_source(
+        &root,
+        &supporting,
+        "# Rewritten\n",
+        "# Details\n\nSupporting material.\n",
+    )
+    .unwrap_err();
+    assert!(error.contains("not a detected OpenKiwi skill"));
+    assert_eq!(
+        fs::read_to_string(&supporting).unwrap(),
+        "# Details\n\nSupporting material.\n"
+    );
+
+    let error =
+        update_local_skill_source(&root, &source, "   ", "# Review\n\nUpdated in OpenKiwi.\n")
+            .unwrap_err();
+    assert!(error.contains("cannot be empty"));
+    assert_eq!(
+        fs::read_to_string(&source).unwrap(),
+        "# Review\n\nUpdated in OpenKiwi.\n"
+    );
+
+    fs::write(&source, "# Review\n\nChanged outside OpenKiwi.\n").unwrap();
+    let error = update_local_skill_source(
+        &root,
+        &source,
+        "# Review\n\nStale editor draft.\n",
+        "# Review\n\nUpdated in OpenKiwi.\n",
+    )
+    .unwrap_err();
+    assert!(error.contains("changed on disk"));
+    assert_eq!(
+        fs::read_to_string(&source).unwrap(),
+        "# Review\n\nChanged outside OpenKiwi.\n"
+    );
 
     fs::remove_dir_all(root).unwrap();
 }

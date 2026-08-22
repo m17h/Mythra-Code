@@ -3,6 +3,7 @@ import { save } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   Boxes,
+  BookOpenCheck,
   Check,
   ChevronRight,
   Download,
@@ -21,7 +22,6 @@ import {
   Plus,
   RotateCcw,
   ShieldCheck,
-  Sparkles,
   UsersRound,
   Wrench,
   X,
@@ -32,7 +32,7 @@ import type { CursorRuntimeStatus } from "../lib/cursor";
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_SETTINGS, RELEASE_NOTES_URL, THEMES } from "../lib/appConfig";
 import { friendlyError } from "../lib/errors";
 import { useModalFocus } from "../hooks/useModalFocus";
-import { AnthropicLogo, ClaudeLogo, CodexLogo, CursorDarkAppIcon, CursorLogo, LmStudioLogo, OpenAILogo } from "./BrandLogos";
+import { AnthropicLogo, ClaudeLogo, CodexLogo, CursorDarkAppIcon, CursorLogo, LmStudioLogo, OpenAILogo, OpenRouterLogo } from "./BrandLogos";
 import type { LMStudioModel } from "../lib/lmStudio";
 import { updateProgress, type AppUpdater } from "../lib/appUpdater";
 import {
@@ -60,7 +60,9 @@ import type {
   ScheduleRunRecord,
   ThemeName,
   SettingsSection,
+  UsageDisplayMode,
 } from "../types";
+import { usagePercentLabel } from "../lib/providerUsage";
 
 /**
  * Single source of truth for the settings navigation: the rail, the pane
@@ -174,6 +176,8 @@ export function SettingsModal({
   onRefreshSkills,
   onImportSkills,
   onCreateSkill,
+  onReadSkill,
+  onUpdateSkill,
   onRenameSkill,
   onToggleSkill,
   onRemoveSkill,
@@ -248,6 +252,8 @@ export function SettingsModal({
   onRefreshSkills: (silent?: boolean) => Promise<void> | void;
   onImportSkills: () => void;
   onCreateSkill: (name: string, instructions: string) => Promise<boolean>;
+  onReadSkill: (path: string) => Promise<string>;
+  onUpdateSkill: (path: string, content: string, original: string) => Promise<void>;
   onRenameSkill: (path: string, name: string) => boolean;
   onToggleSkill: (path: string) => void;
   onRemoveSkill: (path: string, deleteSource: boolean) => Promise<boolean>;
@@ -544,7 +550,7 @@ export function SettingsModal({
           {settingsSection === "general" &&
           <section className="settings-section getting-started-settings">
             <div className="settings-section-heading settings-heading-with-action">
-              <div className="settings-icon"><Sparkles size={17} /></div>
+              <div className="settings-icon"><BookOpenCheck size={17} /></div>
               <div><h3>Getting started</h3><p>Review model setup, projects and chats, permissions, and local skills.</p></div>
               <button type="button" className="secondary-button" onClick={requestOnboarding}>Run onboarding</button>
             </div>
@@ -679,7 +685,10 @@ export function SettingsModal({
             }}
           />}
 
-          {settingsSection === "usage" && <AllTimeUsageSettings totals={usageTotals} />}
+          {settingsSection === "usage" && <>
+            <UsageDisplaySettings value={local.usageDisplay} onChange={(usageDisplay) => setLocal({ ...local, usageDisplay })} />
+            <AllTimeUsageSettings totals={usageTotals} />
+          </>}
 
           {settingsSection === "skills" && <SkillLibrary
             folder={skillsFolder}
@@ -691,6 +700,8 @@ export function SettingsModal({
             onRefresh={onRefreshSkills}
             onImport={onImportSkills}
             onCreate={onCreateSkill}
+            onRead={onReadSkill}
+            onUpdate={onUpdateSkill}
             onRename={onRenameSkill}
             onToggle={onToggleSkill}
             onRemove={onRemoveSkill}
@@ -750,7 +761,7 @@ export function SettingsModal({
                 {local.provider === "openai" && <Check size={16} />}
               </button>
               <button className={`provider-card ${local.provider === "openrouter" ? "selected" : ""}`} onClick={() => setLocal({ ...local, provider: "openrouter", model: local.provider === "openrouter" ? local.model : "", ultra: false })}>
-                <span className="provider-logo openrouter"><RotateCcw size={17} /></span>
+                <span className="provider-logo openrouter"><OpenRouterLogo size={18} /></span>
                 <span><strong>OpenRouter</strong><small>Responses-compatible model routing</small></span>
                 {local.provider === "openrouter" && <Check size={16} />}
               </button>
@@ -1050,6 +1061,45 @@ function GitHubSettings({
       <button className="primary-button" disabled={!status?.authenticated || busy || !cloneUrl.trim() || !cloneFolder.trim()} onClick={() => void onClone()}>{busy ? <LoaderCircle className="spin" size={13} /> : <Download size={13} />} Choose location and clone</button>
     </section>
   </>;
+}
+
+const USAGE_DISPLAY_OPTIONS: ReadonlyArray<{ id: UsageDisplayMode; label: string }> = [
+  { id: "remaining", label: "Percentage remaining" },
+  { id: "consumed", label: "Percentage consumed" },
+];
+
+function UsageDisplaySettings({ value, onChange }: { value: UsageDisplayMode; onChange: (value: UsageDisplayMode) => void }) {
+  return <section className="settings-section">
+    <div className="usage-display-layout">
+      <div className="settings-section-heading">
+        <div className="settings-icon"><Gauge size={17} /></div>
+        <div>
+          <h3>Provider quota display</h3>
+          <p id="usage-display-help">Choose the direction OpenKiwi reads subscription limits in. The choice applies everywhere a live provider quota appears — the usage card in the studio dock, OpenAI/Codex rate limits, and Claude Code rate limits — including each window&rsquo;s length and reset time.</p>
+        </div>
+      </div>
+      <div className="usage-display-controls">
+        <div className="usage-display-options" role="radiogroup" aria-label="Provider quota display" aria-describedby="usage-display-help">
+          {USAGE_DISPLAY_OPTIONS.map((option) => (
+            <button
+              key={option.id}
+              type="button"
+              role="radio"
+              aria-checked={value === option.id}
+              className={value === option.id ? "selected" : ""}
+              onClick={() => onChange(option.id)}
+            >
+              <strong>{option.label}</strong>
+              {value === option.id && <Check size={14} />}
+            </button>
+          ))}
+        </div>
+        {/* Rendered through the same helper the live cards use, so the example can
+            never describe a format the app does not actually produce. */}
+        <div className="usage-display-preview"><Gauge size={13} /><span>Example · 5h window {usagePercentLabel(42, value)}</span></div>
+      </div>
+    </div>
+  </section>;
 }
 
 function AllTimeUsageSettings({ totals }: { totals: UsageTotals }) {

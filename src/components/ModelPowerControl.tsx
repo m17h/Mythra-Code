@@ -37,24 +37,20 @@ export function modelKind(model: string): ModelKind {
 export function ModelPowerControl({
   model,
   effort,
-  ultra,
   fast,
   runtimeModels,
   disabled,
   onModel,
   onEffort,
-  onUltra,
   onFast,
 }: {
   model: string;
   effort: ReasoningEffort;
-  ultra: boolean;
   fast: boolean;
   runtimeModels: RuntimeModel[];
   disabled?: boolean;
   onModel: (model: string) => void;
   onEffort: (effort: ReasoningEffort) => void;
-  onUltra: (enabled: boolean) => void;
   onFast: (enabled: boolean) => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -62,11 +58,8 @@ export function ModelPowerControl({
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const kind = modelKind(model);
   const selectedModel = MODELS.find((entry) => entry.kind === kind) ?? MODELS[0];
-  const selectedRuntime = runtimeModels.find((entry) => entry.model === model || entry.id === model);
-  const supported = selectedRuntime?.supportedReasoningEfforts.map((entry) => entry.reasoningEffort) ?? [];
-  const ultraAvailable = supported.length === 0 || supported.includes("ultra");
   const effortIndex = Math.max(0, EFFORTS.findIndex((entry) => entry.value === (effort === "ultra" ? "max" : effort)));
-  const reasoningFill = ultra ? 100 : (effortIndex / (EFFORTS.length - 1)) * 100;
+  const reasoningFill = (effortIndex / (EFFORTS.length - 1)) * 100;
   const SelectedModelIcon = selectedModel.icon;
 
   useEffect(() => {
@@ -107,11 +100,9 @@ export function ModelPowerControl({
   return (
     <div
       ref={rootRef}
-      className={`model-power-control ${kind} ${ultra ? "ultra" : ""} ${menuOpen ? "menu-open" : ""} ${disabled ? "disabled" : ""}`}
+      className={`model-power-control ${kind} ${menuOpen ? "menu-open" : ""} ${disabled ? "disabled" : ""}`}
       style={{ "--reasoning-fill": `${reasoningFill}%` } as CSSProperties}
     >
-      {ultra && <div className="electric-field"><i /><i /><i /><i /></div>}
-
       <div className="model-picker">
         <button
           type="button"
@@ -174,7 +165,7 @@ export function ModelPowerControl({
       </div>
 
       <div className="reasoning-control">
-        <div className="reasoning-heading"><Gauge size={13} /><span>Reasoning</span><button type="button" className={`fast-tier ${fast ? "on" : ""}`} aria-pressed={fast} aria-label="Use OpenAI fast priority service tier" onClick={() => onFast(!fast)} title="Use OpenAI priority service tier"><Zap size={9} /> Fast</button><strong>{ultra ? "Ultra" : EFFORTS[effortIndex].label}</strong></div>
+        <div className="reasoning-heading"><Gauge size={13} /><span>Reasoning</span><button type="button" className={`fast-tier ${fast ? "on" : ""}`} aria-pressed={fast} aria-label="Use OpenAI fast priority service tier" onClick={() => onFast(!fast)} title="Use OpenAI priority service tier"><Zap size={9} /> Fast</button><strong>{EFFORTS[effortIndex].label}</strong></div>
         <div className="reasoning-rail">
           <input
             aria-label="Reasoning effort"
@@ -182,32 +173,18 @@ export function ModelPowerControl({
             min={0}
             max={EFFORTS.length - 1}
             step={1}
-            value={ultra ? EFFORTS.length - 1 : effortIndex}
-            disabled={disabled || ultra}
+            value={effortIndex}
+            disabled={disabled}
             onChange={(event) => onEffort(EFFORTS[Number(event.target.value)].value)}
           />
           <div className="reasoning-ticks" aria-hidden="true">
-            {EFFORTS.map((entry, index) => <i key={entry.value} className={index <= effortIndex || ultra ? "reached" : ""} />)}
+            {EFFORTS.map((entry, index) => <i key={entry.value} className={index <= effortIndex ? "reached" : ""} />)}
           </div>
         </div>
         <div className="reasoning-labels">
-          {EFFORTS.map((entry, index) => <span key={entry.value} className={index === effortIndex || (ultra && index === EFFORTS.length - 1) ? "active" : ""}>{entry.shortLabel}</span>)}
+          {EFFORTS.map((entry, index) => <span key={entry.value} className={index === effortIndex ? "active" : ""}>{entry.shortLabel}</span>)}
         </div>
       </div>
-
-      <button
-        type="button"
-        role="switch"
-        aria-checked={ultra}
-        aria-label="Ultra reasoning"
-        className={`ultra-lever ${ultra ? "engaged" : ""}`}
-        disabled={disabled || !ultraAvailable}
-        onClick={() => onUltra(!ultra)}
-        title={ultraAvailable ? "Ultra uses maximum reasoning and proactive sub-agent delegation" : "Ultra is not available for this account/model"}
-      >
-        <span className="lever-label"><Zap size={12} /> Ultra</span>
-        <span className="lever-track"><i /></span>
-      </button>
     </div>
   );
 }

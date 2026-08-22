@@ -23,7 +23,7 @@ function onboardingProps(overrides: Partial<Parameters<typeof OnboardingModal>[0
 
 describe("OnboardingModal", () => {
   it("starts with the product principles and advances through setup", () => {
-    render(<OnboardingModal {...onboardingProps()} />);
+    const { container } = render(<OnboardingModal {...onboardingProps()} />);
     expect(screen.getByRole("heading", { name: /transparent AI coding harness/i })).toBeInTheDocument();
     expect(screen.getByText("The base prompt starts empty")).toBeInTheDocument();
 
@@ -31,6 +31,7 @@ describe("OnboardingModal", () => {
     expect(screen.getByRole("heading", { name: /Connect the models/i })).toBeInTheDocument();
     expect(screen.getAllByText(/Codex CLI/).length).toBeGreaterThan(0);
     expect(screen.getByText(/Create or sign in to OpenRouter/)).toBeInTheDocument();
+    expect(container.querySelector(".onboarding-provider-card.openrouter svg")).toHaveAttribute("viewBox", "0 0 401.4 293.7");
   });
 
   it("explains the difference between project threads and normal chats", () => {
@@ -49,7 +50,7 @@ describe("OnboardingModal", () => {
     fireEvent.click(screen.getByRole("button", { name: /Local skills/ }));
 
     expect(screen.getByRole("heading", { name: /Skills are local Markdown playbooks/ })).toBeInTheDocument();
-    expect(screen.getByText(/rename a skill in OpenKiwi without renaming the file/)).toBeInTheDocument();
+    expect(screen.getByText(/Update the Markdown or change its OpenKiwi invocation name/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Choose folder" }));
     expect(onChooseSkillsFolder).toHaveBeenCalledOnce();
   });

@@ -7,7 +7,7 @@ import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { Archive, ArchiveRestore, Bot, Check, ChevronDown, Circle, Code2, Download, FileCode2, Folder, FolderOpen, GitBranch, GitFork, LoaderCircle, MessageSquare, Paperclip, PanelRight, PanelLeftClose, PanelLeftOpen, Plus, Pin, PinOff, Pencil, Search, Settings, Shield, ShieldAlert, ShieldCheck, TerminalSquare, Trash2, X } from "lucide-react";
 import { getCodexRuntimeStatus, auditEvent, exportTextFile, getNormalChatWorkspace, hasLmStudioKey, hasOpenRouterKey, listOpenRouterModels, respond, restartRuntime, rpc, runtimeInstanceId, type CodexRuntimeStatus, type JsonObject } from "./lib/codex";
-import { deleteClaudeTranscript, getClaudeRuntimeStatus, loadClaudeTranscript, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, type ClaudeRuntimeStatus } from "./lib/claude";
+import { deleteClaudeTranscript, getClaudeRateLimits, getClaudeRuntimeStatus, loadClaudeTranscript, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, type ClaudeRuntimeStatus } from "./lib/claude";
 import { deleteCursorTranscript, getCursorRuntimeStatus, listCursorModels, loadCursorTranscript, respondToCursorPermission, saveCursorTranscript, startCursorLogin, type CursorModel, type CursorRuntimeStatus } from "./lib/cursor";
 import { loadStored, storeValue } from "./lib/storage";
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_PROMPT_PROFILES, DEFAULT_SETTINGS, THEMES } from "./lib/appConfig";
@@ -80,13 +80,13 @@ import { PANE_BOUNDS, usePaneResize } from "./hooks/usePaneResize";
 import { useSidebarSplitResize } from "./hooks/useSidebarSplitResize";
 import { useWorkflowEngine } from "./hooks/useWorkflowEngine";
 import { isEstablishedOpenKiwiInstall, ONBOARDING_EXIT_MS, ONBOARDING_VERSION } from "./lib/onboarding";
-import { createLocalSkill, deleteLocalSkill, importLocalSkills, normalizeSkillName, resolveLocalSkills, scanLocalSkills, syncLocalSkills, type LocalSkill, type LocalSkillFile } from "./lib/skills";
+import { createLocalSkill, deleteLocalSkill, importLocalSkills, normalizeSkillName, readLocalSkill, resolveLocalSkills, scanLocalSkills, syncLocalSkills, updateLocalSkill, type LocalSkill, type LocalSkillFile } from "./lib/skills";
 import { compactWorkflowRun, normalizeWorkflows, recoverWorkflowRuns, type WorkflowDefinition, type WorkflowRunRecord } from "./lib/workflows";
 import { isClaudeThread, isCursorThread, isLocalSubscriptionThread, modelForProvider, providerFromThread } from "./lib/threadProvider";
 import { listLMStudioModels, type LMStudioModel } from "./lib/lmStudio";
 import { basename, normalizedProjectPath } from "./lib/paths";
 import { resolveProviderSystemPrompt, resolveSystemPrompt } from "./lib/systemPrompt";
-import { providerAccountUsage } from "./lib/providerUsage";
+import { parseCodexRateLimits, providerAccountUsage, sanitizeUsageDisplay, type ProviderRateLimits } from "./lib/providerUsage";
 import { contextUsagePercent } from "./lib/contextUsage";
 import { openKiwiDeveloperInstructions } from "./lib/completionPrompt";
 import { runtimeModelProviderId } from "./lib/providerIds";
@@ -146,6 +146,28 @@ const EMPTY_ACTIVITIES: Activity[] = [];
 const EMPTY_AGENTS: AgentRecord[] = [];
 const EMPTY_QUEUED_TURNS: QueuedTurn[] = [];
 const LOCAL_TRANSCRIPT_SAVE_DEBOUNCE_MS = 900;
+const DEFAULT_GIT_COMMIT_MESSAGE = "Update project files";
+const COMPOSER_REASONING_EFFORTS: ThreadReasoning["reasoningEffort"][] = ["low", "medium", "high", "xhigh", "max"];
+
+function sanitizeComposerReasoningEffort(
+  value: unknown,
+  fallback: ThreadReasoning["reasoningEffort"] = DEFAULT_SETTINGS.reasoningEffort,
+): ThreadReasoning["reasoningEffort"] {
+  if (value === "ultra") return "max";
+  return COMPOSER_REASONING_EFFORTS.includes(value as ThreadReasoning["reasoningEffort"])
+    ? value as ThreadReasoning["reasoningEffort"]
+    : fallback;
+}
+
+function sanitizeThreadReasoningRecords(value: unknown): Record<string, ThreadReasoning> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value).flatMap(([threadId, reasoning]) => {
+    if (!reasoning || typeof reasoning !== "object") return [];
+    const rawEffort = (reasoning as Partial<ThreadReasoning>).reasoningEffort;
+    if (typeof rawEffort !== "string" || (rawEffort !== "ultra" && !COMPOSER_REASONING_EFFORTS.includes(rawEffort as ThreadReasoning["reasoningEffort"]))) return [];
+    return [[threadId, { reasoningEffort: sanitizeComposerReasoningEffort(rawEffort), ultra: false }]];
+  }));
+}
 
 const initialProjects = sanitizeProjectSubagentOverrides(loadStored<Project[]>("kiwi.projects", []));
 const initialWorkspaceMode: WorkspaceMode = loadStored<WorkspaceMode>("kiwi.workspaceMode", initialProjects.length ? "project" : "chat");
@@ -155,7 +177,7 @@ const establishedInstall = isEstablishedOpenKiwiInstall({ projects: initialProje
 const initialOnboardingOpen = initialOnboardingVersion < ONBOARDING_VERSION && !establishedInstall;
 const storedSettings = loadStored<Partial<AppSettings>>("kiwi.settings", {});
 const initialChildAgents = sanitizeChildAgentSettings(storedSettings.childAgents);
-const initialSettings: AppSettings = { ...DEFAULT_SETTINGS, ...storedSettings, openAiLogo: storedSettings.openAiLogo === "codex" ? "codex" : "openai", claudeLogo: storedSettings.claudeLogo === "anthropic" ? "anthropic" : "claude", cursorLogo: storedSettings.cursorLogo === "app-dark" ? "app-dark" : "cube", subagentMax: crewSafeConcurrency(Number(storedSettings.subagentMax) || DEFAULT_SETTINGS.subagentMax, initialChildAgents), childAgents: initialChildAgents, model: modelForProvider(storedSettings.provider ?? DEFAULT_SETTINGS.provider, storedSettings.model ?? DEFAULT_SETTINGS.model), lmStudioBaseUrl: storedSettings.lmStudioBaseUrl?.trim() || DEFAULT_LM_STUDIO_BASE_URL, theme: THEMES.some((theme) => theme.id === storedSettings.theme) ? storedSettings.theme! : DEFAULT_SETTINGS.theme, uiScale: Math.min(150, Math.max(80, Number(storedSettings.uiScale) || DEFAULT_SETTINGS.uiScale)) };
+const initialSettings: AppSettings = { ...DEFAULT_SETTINGS, ...storedSettings, openAiLogo: storedSettings.openAiLogo === "codex" ? "codex" : "openai", claudeLogo: storedSettings.claudeLogo === "anthropic" ? "anthropic" : "claude", cursorLogo: storedSettings.cursorLogo === "app-dark" ? "app-dark" : "cube", subagentMax: crewSafeConcurrency(Number(storedSettings.subagentMax) || DEFAULT_SETTINGS.subagentMax, initialChildAgents), childAgents: initialChildAgents, model: modelForProvider(storedSettings.provider ?? DEFAULT_SETTINGS.provider, storedSettings.model ?? DEFAULT_SETTINGS.model), reasoningEffort: sanitizeComposerReasoningEffort(storedSettings.reasoningEffort), ultra: false, lmStudioBaseUrl: storedSettings.lmStudioBaseUrl?.trim() || DEFAULT_LM_STUDIO_BASE_URL, theme: THEMES.some((theme) => theme.id === storedSettings.theme) ? storedSettings.theme! : DEFAULT_SETTINGS.theme, uiScale: Math.min(150, Math.max(80, Number(storedSettings.uiScale) || DEFAULT_SETTINGS.uiScale)), usageDisplay: sanitizeUsageDisplay(storedSettings.usageDisplay) };
 
 function permissionLabel(mode: PermissionMode): string {
   if (mode === "read-only") return "Read only";
@@ -204,7 +226,9 @@ export default function App() {
   const [startingDraftTurn, setStartingDraftTurn] = useState(false);
   const [settings, persistSettings] = usePersistedState<AppSettings>("kiwi.settings", DEFAULT_SETTINGS, { init: () => initialSettings });
   const [threadModels, setThreadModels] = usePersistedState<Record<string, string>>("kiwi.threadModels", {});
-  const [threadReasoning, setThreadReasoning] = usePersistedState<Record<string, ThreadReasoning>>("kiwi.threadReasoning", {});
+  const [threadReasoning, setThreadReasoning] = usePersistedState<Record<string, ThreadReasoning>>("kiwi.threadReasoning", {}, {
+    init: (load) => sanitizeThreadReasoningRecords(load()),
+  });
   const [draftThreadProvider, setDraftThreadProvider] = useState<Provider | null>(null);
   const [draftThreadModel, setDraftThreadModel] = useState<string | null>(null);
   const [draftThreadIsolated, setDraftThreadIsolated] = useState(false);
@@ -283,7 +307,9 @@ export default function App() {
   const [studioOpen, setStudioOpen] = useState(false);
   const [studioTab, setStudioTab] = useState<StudioTab>("review");
   const [attachments, setAttachments] = useState<AttachmentRecord[]>([]);
-  const [rateSummary, setRateSummary] = useState("");
+  const [openAiRateLimits, setOpenAiRateLimits] = useState<ProviderRateLimits | null>(null);
+  const [openAiRateLimitsRead, setOpenAiRateLimitsRead] = useState(false);
+  const [claudeRateLimits, setClaudeRateLimits] = useState<ProviderRateLimits | null>(null);
   const [skillsFolder, setSkillsFolder] = usePersistedState<string>("kiwi.skillsFolder", "");
   const [skillFiles, setSkillFiles] = useState<LocalSkillFile[]>([]);
   const [skillAliases, setSkillAliases] = usePersistedState<Record<string, string>>("kiwi.skillAliases", {});
@@ -303,10 +329,14 @@ export default function App() {
   const [mcpServers, setMcpServers] = useState<McpView[]>([]);
   const [gitOutput, setGitOutput] = useState("");
   const [gitCommitMessage, setGitCommitMessage] = useState("");
+  const [gitCommitSuccess, setGitCommitSuccess] = useState("");
+  const [gitCommitBusy, setGitCommitBusy] = useState(false);
+  const gitProjectSequenceRef = useRef(0);
   const [githubStatus, setGithubStatus] = useState<GitHubAccountStatus | null>(null);
   const [githubBusy, setGithubBusy] = useState(false);
   const [githubLoginPending, setGithubLoginPending] = useState(false);
   const [githubRepoStatus, setGithubRepoStatus] = useState<GitHubRepoStatus | null>(null);
+  const githubRepoRefreshSequenceRef = useRef(0);
   const [githubRepoError, setGithubRepoError] = useState("");
   const [githubRemoteInput, setGithubRemoteInput] = useState("");
   const [githubRepoName, setGithubRepoName] = useState("");
@@ -404,6 +434,8 @@ export default function App() {
       model: modelForProvider(activeProvider, threadModel ?? projectSettings.model),
       systemPrompt: providerPrompt,
       ...(rememberedReasoning ?? {}),
+      reasoningEffort: sanitizeComposerReasoningEffort(rememberedReasoning?.reasoningEffort ?? projectSettings.reasoningEffort),
+      ultra: false,
     };
     return activeThread && isSubAgentThread(activeThread, childThreadLinks)
       ? settingsWithoutChildDelegation(resolved)
@@ -685,13 +717,16 @@ export default function App() {
 
   const accountUsageView = useMemo(() => {
     return providerAccountUsage(effectiveSettings.provider, {
-      openAiRateSummary: rateSummary,
+      openAiRateLimits,
+      openAiRateLimitsRead,
       claudeStatus,
+      claudeRateLimits,
       cursorStatus,
       openRouterReady,
       lmStudioReady,
+      usageDisplay: settings.usageDisplay,
     });
-  }, [claudeStatus, cursorStatus, effectiveSettings.provider, lmStudioReady, openRouterReady, rateSummary]);
+  }, [claudeRateLimits, claudeStatus, cursorStatus, effectiveSettings.provider, lmStudioReady, openAiRateLimits, openAiRateLimitsRead, openRouterReady, settings.usageDisplay]);
 
   // Only offer "Check settings" for failures settings can actually fix.
   const errorSuggestsSettings = useMemo(() => Boolean(error) && /sign in|api key|openrouter|lm studio|claude|model|settings|runtime|codex|account/i.test(error ?? ""), [error]);
@@ -900,15 +935,6 @@ export default function App() {
       persistSettings({ ...settings, reasoningEffort, ultra: false });
     }
   }, [activeThreadId, persistSettings, persistThreadReasoning, settings]);
-
-  const persistComposerUltra = useCallback((ultra: boolean) => {
-    if (activeThreadId) {
-      persistThreadReasoning(activeThreadId, { reasoningEffort: effectiveSettings.reasoningEffort, ultra });
-      if (ultra && !settings.subagentsEnabled) persistSettings({ ...settings, subagentsEnabled: true });
-    } else {
-      persistSettings({ ...settings, ultra, subagentsEnabled: ultra ? true : settings.subagentsEnabled });
-    }
-  }, [activeThreadId, effectiveSettings.reasoningEffort, persistSettings, persistThreadReasoning, settings]);
 
   const persistComposerPermission = useCallback(
     (permission: PermissionMode) => {
@@ -1156,10 +1182,16 @@ export default function App() {
     try {
       const result = await getClaudeRuntimeStatus();
       setClaudeStatus(result);
+      if (result.loggedIn) {
+        setClaudeRateLimits(await getClaudeRateLimits().catch(() => null));
+      } else {
+        setClaudeRateLimits(null);
+      }
       return result;
     } catch (reason) {
       const result: ClaudeRuntimeStatus = { available: false, path: null, version: null, loggedIn: false, authMethod: null, email: null, subscriptionType: null, warning: null };
       setClaudeStatus(result);
+      setClaudeRateLimits(null);
       setError(friendlyError(reason));
       return result;
     }
@@ -1343,11 +1375,12 @@ export default function App() {
 
   const refreshUsage = useCallback(async () => {
     try {
-      const result = await rpc<{ rateLimits?: { primary?: { usedPercent?: number; resetsAt?: number } } }>("account/rateLimits/read");
-      const primary = result.rateLimits?.primary;
-      setRateSummary(primary ? `${Math.round(primary.usedPercent ?? 0)}% used${primary.resetsAt ? ` · resets ${new Date(primary.resetsAt * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : ""}` : "No active limit window");
+      const result = await rpc<unknown>("account/rateLimits/read");
+      setOpenAiRateLimits(parseCodexRateLimits(result));
+      setOpenAiRateLimitsRead(true);
     } catch {
-      setRateSummary("");
+      setOpenAiRateLimits(null);
+      setOpenAiRateLimitsRead(false);
     }
   }, []);
 
@@ -1538,7 +1571,10 @@ export default function App() {
     onStatus: setStatus,
     onError: setError,
     onAuthRequired: () => setAuthRequiredOpen(true),
-    onRateSummary: setRateSummary,
+    onRateLimits: (limits) => {
+      setOpenAiRateLimits(limits);
+      setOpenAiRateLimitsRead(true);
+    },
     onTerminalOutput: terminal.append,
     onAccountUpdated: () => void refreshAccount(),
     onLoginFailed: (message) => {
@@ -3354,24 +3390,33 @@ export default function App() {
   }, []);
 
   const refreshGitHubRepo = useCallback(async (cwd = activeExecutionPath || activeProject?.path || "") => {
+    const refreshSequence = ++githubRepoRefreshSequenceRef.current;
     if (!cwd) {
       setGithubRepoStatus(null);
       setGithubRepoError("");
       return;
     }
     try {
-      setGithubRepoStatus(await getGitHubRepoStatus(cwd));
+      const next = await getGitHubRepoStatus(cwd);
+      if (githubRepoRefreshSequenceRef.current !== refreshSequence) return;
+      setGithubRepoStatus(next);
       setGithubRepoError("");
     } catch (reason) {
+      if (githubRepoRefreshSequenceRef.current !== refreshSequence) return;
       setGithubRepoStatus(null);
       setGithubRepoError(friendlyError(reason));
     }
   }, [activeExecutionPath, activeProject?.path]);
 
   useEffect(() => {
+    gitProjectSequenceRef.current += 1;
     void refreshGitHubRepo();
+    setGitOutput("");
+    setGitCommitMessage("");
+    setGitCommitBusy(false);
     setGithubRemoteInput("");
     setGithubRepoName(activeProject?.name.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") ?? "");
+    setGitCommitSuccess("");
   }, [activeExecutionPath, activeProject?.id, activeProject?.name, refreshGitHubRepo]);
 
   const runGitAction = async (action: GitWorkspaceAction) => {
@@ -3382,6 +3427,8 @@ export default function App() {
       return;
     }
     const commandPath = activeExecutionPath || activeProject.path;
+    const projectSequence = gitProjectSequenceRef.current;
+    const isCurrentProject = () => gitProjectSequenceRef.current === projectSequence;
     const gitRoots = activeThreadWorktree?.gitDir ? [activeThreadWorktree.gitDir] : [];
     const pushCommand = gitPushCommand(githubRepoStatus);
     const pushCompletionNote = async () => {
@@ -3393,32 +3440,61 @@ export default function App() {
       }
     };
     const showPushOutput = (output: string) => {
+      if (!isCurrentProject()) return;
       setGitOutput(output);
       void pushCompletionNote().then((note) => {
-        if (!note) return;
+        if (!note || !isCurrentProject()) return;
         setGitOutput((current) => current === output ? `${output}\n\n${note}` : current);
       });
     };
-    if (action === "commitPush") {
-      if (!pushCommand) {
+    if (action === "commit" || action === "commitPush") {
+      if (action === "commitPush" && !pushCommand) {
         setGitOutput("Check out a named branch before committing and pushing to GitHub.");
         return;
       }
-      const commitCommand = ["git", "commit", "-m", gitCommitMessage.trim()];
+      const commitMessage = gitCommitMessage.trim() || DEFAULT_GIT_COMMIT_MESSAGE;
+      const stageCommand = ["git", "add", "--all"];
+      const commitCommand = ["git", "commit", "-m", commitMessage];
+      setGitCommitBusy(true);
+      setGitCommitSuccess("");
       try {
-        const commit = await executeCommand(commitCommand, commandPath, gitRoots);
-        if (commit.exitCode !== 0) {
-          setGitOutput(`$ ${commitCommand.join(" ")}\n${commit.stdout}${commit.stderr}\n[exit ${commit.exitCode}]`);
+        const stage = await executeCommand(stageCommand, commandPath, gitRoots);
+        if (stage.exitCode !== 0) {
+          if (isCurrentProject()) setGitOutput(`$ ${stageCommand.join(" ")}\n${stage.stdout}${stage.stderr}\n[exit ${stage.exitCode}]`);
           return;
         }
-        const push = await executeCommand(pushCommand, commandPath, gitRoots);
-        const output = `$ ${commitCommand.join(" ")}\n${commit.stdout}${commit.stderr}\n[exit ${commit.exitCode}]\n\n$ ${pushCommand.join(" ")}\n${push.stdout}${push.stderr}\n[exit ${push.exitCode}]`;
-        if (push.exitCode === 0) showPushOutput(output);
-        else setGitOutput(output);
-        setGitCommitMessage("");
-        if (push.exitCode === 0) void refreshGitHubRepo(commandPath);
+        const commit = await executeCommand(commitCommand, commandPath, gitRoots);
+        if (commit.exitCode !== 0) {
+          if (isCurrentProject()) setGitOutput(`$ ${stageCommand.join(" ")}\n${stage.stdout}${stage.stderr}\n[exit ${stage.exitCode}]\n\n$ ${commitCommand.join(" ")}\n${commit.stdout}${commit.stderr}\n[exit ${commit.exitCode}]`);
+          return;
+        }
+        const commitResultIsVisible = isCurrentProject();
+        if (commitResultIsVisible) {
+          setGitCommitMessage("");
+          setGitCommitSuccess(`“${commitMessage}” was saved to this repository.`);
+        }
+        if (action === "commit") {
+          if (!commitResultIsVisible) return;
+          setGitOutput(`$ ${stageCommand.join(" ")}\n${stage.stdout}${stage.stderr}\n[exit ${stage.exitCode}]\n\n$ ${commitCommand.join(" ")}\n${commit.stdout}${commit.stderr}\n[exit ${commit.exitCode}]`);
+          showSuccessToast("Changes committed locally");
+          void refreshGitHubRepo(commandPath);
+          return;
+        }
+        const push = await executeCommand(pushCommand!, commandPath, gitRoots);
+        if (!isCurrentProject()) return;
+        const output = `$ ${stageCommand.join(" ")}\n${stage.stdout}${stage.stderr}\n[exit ${stage.exitCode}]\n\n$ ${commitCommand.join(" ")}\n${commit.stdout}${commit.stderr}\n[exit ${commit.exitCode}]\n\n$ ${pushCommand!.join(" ")}\n${push.stdout}${push.stderr}\n[exit ${push.exitCode}]`;
+        if (push.exitCode === 0) {
+          showPushOutput(output);
+          showSuccessToast("Changes committed locally and pushed to GitHub");
+          void refreshGitHubRepo(commandPath);
+        } else {
+          setGitOutput(output);
+          showSuccessToast("Changes committed locally; GitHub push needs attention");
+        }
       } catch (reason) {
-        setGitOutput(friendlyError(reason));
+        if (isCurrentProject()) setGitOutput(friendlyError(reason));
+      } finally {
+        if (isCurrentProject()) setGitCommitBusy(false);
       }
       return;
     }
@@ -3429,8 +3505,7 @@ export default function App() {
     else if (action === "revert") {
       if (!window.confirm("Revert all tracked staged and working-tree changes? Untracked files will be kept.")) return;
       command = ["git", "restore", "--staged", "--worktree", "."];
-    } else if (action === "commit") command = ["git", "commit", "-m", gitCommitMessage.trim()];
-    else if (action === "fetch") command = ["git", "fetch", "--prune", "origin"];
+    } else if (action === "fetch") command = ["git", "fetch", "--prune", "origin"];
     else if (action === "pull") command = ["git", "pull", "--ff-only"];
     else if (action === "push") {
       if (!pushCommand) {
@@ -3446,6 +3521,7 @@ export default function App() {
     }
     try {
       const result = await executeCommand(command, commandPath, gitRoots);
+      if (!isCurrentProject()) return;
       const combined = `${result.stdout}${result.stderr || ""}`;
       const output = combined.includes("not a git repository")
         ? "This project folder is not a Git repository yet. Initialize Git from the terminal to enable these workflows."
@@ -3453,10 +3529,9 @@ export default function App() {
       if (action === "push" && result.exitCode === 0) showPushOutput(output);
       else setGitOutput(output);
       if (action === "diff" && activeThreadId) useTaskStore.getState().setDiff(activeThreadId, result.stdout);
-      if (action === "commit" && result.exitCode === 0) setGitCommitMessage("");
       if (result.exitCode === 0) void refreshGitHubRepo(commandPath);
     } catch (reason) {
-      setGitOutput(friendlyError(reason));
+      if (isCurrentProject()) setGitOutput(friendlyError(reason));
     }
   };
 
@@ -3620,6 +3695,26 @@ export default function App() {
     } catch (reason) {
       setSkillsError(friendlyError(reason));
       return false;
+    }
+  };
+
+  const readSkill = async (path: string): Promise<string> => {
+    if (!skillsFolder) throw new Error("Choose a skills folder before editing a skill.");
+    return readLocalSkill(skillsFolder, path);
+  };
+
+  const updateSkill = async (path: string, content: string, original: string): Promise<void> => {
+    if (!skillsFolder) throw new Error("Choose a skills folder before editing a skill.");
+    setSkillsBusy(true);
+    setSkillsError("");
+    try {
+      await updateLocalSkill(skillsFolder, path, content, original);
+      await refreshLocalSkills(skillsFolder, skillAliases, disabledSkillPaths, removedSkillPaths);
+    } catch (reason) {
+      setSkillsError(friendlyError(reason));
+      throw reason;
+    } finally {
+      setSkillsBusy(false);
     }
   };
 
@@ -4356,7 +4451,7 @@ export default function App() {
                 onStop={() => void stopTurnAndChildren()}
                 modelControls={
                   <>
-                    {effectiveSettings.provider === "openai" && <ModelPowerControl model={effectiveSettings.model || DEFAULT_OPENAI_MODEL} effort={effectiveSettings.reasoningEffort} ultra={effectiveSettings.ultra} fast={settings.serviceTier === "priority"} runtimeModels={runtimeModels} onModel={persistComposerModel} onEffort={persistComposerReasoning} onUltra={persistComposerUltra} onFast={(fast) => persistSettings({ ...settings, serviceTier: fast ? "priority" : null })} />}
+                    {effectiveSettings.provider === "openai" && <ModelPowerControl model={effectiveSettings.model || DEFAULT_OPENAI_MODEL} effort={effectiveSettings.reasoningEffort} fast={settings.serviceTier === "priority"} runtimeModels={runtimeModels} onModel={persistComposerModel} onEffort={persistComposerReasoning} onFast={(fast) => persistSettings({ ...settings, serviceTier: fast ? "priority" : null })} />}
                     {effectiveSettings.provider === "openrouter" && (
                       <OpenRouterModelControl
                         model={effectiveSettings.model}
@@ -4366,7 +4461,6 @@ export default function App() {
                         error={openRouterModelsError}
                         onModel={(model) => {
                           persistComposerModel(model);
-                          if (effectiveSettings.ultra) persistComposerReasoning(effectiveSettings.reasoningEffort);
                         }}
                         onEffort={persistComposerReasoning}
                         onRefresh={() => void refreshOpenRouterModels()}
@@ -4495,6 +4589,9 @@ export default function App() {
             mcpServers={mcpServers}
             gitOutput={gitOutput}
             gitCommitMessage={gitCommitMessage}
+            gitCommitSuccess={gitCommitSuccess}
+            gitCommitBusy={gitCommitBusy}
+            gitRepositoryReady={Boolean(githubRepoStatus?.isRepo)}
             githubAuthenticated={Boolean(githubStatus?.authenticated)}
             githubRepoStatus={githubRepoStatus}
             githubRepoError={githubRepoError}
@@ -4507,7 +4604,7 @@ export default function App() {
               { label: "Developer instruction", value: "empty" },
               { label: "AGENTS.md discovery", value: settings.projectInstructionsEnabled ? "enabled · up to 32 KB" : "disabled" },
               { label: "Model", value: effectiveSettings.model || "provider default" },
-              { label: "Reasoning", value: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort },
+              { label: "Reasoning", value: effectiveSettings.reasoningEffort },
               { label: "Sub-agents", value: effectiveSettings.subagentsEnabled ? `on · max ${effectiveSettings.subagentMax}` : "off" },
               { label: "Cross-provider", value: effectiveSettings.subagentsEnabled ? childAgentSummary : "off" },
               { label: "Skills", value: skillsFolder ? `${skills.filter((skill) => skill.enabled).length} enabled · local folder` : "no folder selected" },
@@ -4565,7 +4662,10 @@ export default function App() {
             onCompact={() => void compactThread()}
             onRefreshTools={() => void refreshTools(activeProject)}
             onGitAction={(action) => void runGitAction(action)}
-            onGitCommitMessage={setGitCommitMessage}
+            onGitCommitMessage={(value) => {
+              setGitCommitMessage(value);
+              setGitCommitSuccess("");
+            }}
             onGitHubRemoteInput={setGithubRemoteInput}
             onGitHubRepoName={setGithubRepoName}
             onGitHubRepoVisibility={setGithubRepoVisibility}
@@ -4674,6 +4774,8 @@ export default function App() {
         onRefreshSkills={(silent = false) => refreshLocalSkills(skillsFolder, skillAliases, disabledSkillPaths, removedSkillPaths, silent).then(() => undefined)}
         onImportSkills={() => void importSkills()}
         onCreateSkill={createSkill}
+        onReadSkill={readSkill}
+        onUpdateSkill={updateSkill}
         onRenameSkill={renameSkill}
         onToggleSkill={toggleSkill}
         onRemoveSkill={removeSkill}

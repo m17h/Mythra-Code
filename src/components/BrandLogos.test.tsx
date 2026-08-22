@@ -1,6 +1,6 @@
 import { render } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { AnthropicLogo, ClaudeLogo, CodexLogo, OpenAILogo, ProviderLogo } from "./BrandLogos";
+import { AnthropicLogo, ClaudeLogo, CodexLogo, OpenAILogo, OpenRouterLogo, ProviderLogo } from "./BrandLogos";
 
 describe("BrandLogos", () => {
   it("keeps the Claude glyph white regardless of inherited theme color", () => {
@@ -13,10 +13,12 @@ describe("BrandLogos", () => {
     expect(container.querySelector("svg")).toHaveAttribute("fill", "#fff");
   });
 
-  it("uses a routing mark for OpenRouter instead of an unrelated sparkle", () => {
+  it("uses OpenRouter's official v2 brand glyph", () => {
     const { container } = render(<ProviderLogo provider="openrouter" />);
-    expect(container.querySelector(".lucide-route")).toBeInTheDocument();
-    expect(container.querySelector(".lucide-sparkles")).not.toBeInTheDocument();
+    const glyph = container.querySelector("svg");
+    expect(glyph).toHaveAttribute("viewBox", "0 0 401.4 293.7");
+    expect(glyph).toHaveAttribute("fill", "currentColor");
+    expect(container.querySelectorAll("path")).toHaveLength(1);
   });
 
   it("provides both selectable OpenAI and Codex marks for OpenAI providers", () => {
@@ -57,5 +59,11 @@ describe("BrandLogos", () => {
     const { container } = render(<CodexLogo />);
     expect(container.querySelector("linearGradient")).toBeInTheDocument();
     expect(container.querySelectorAll("path")).toHaveLength(2);
+  });
+
+  it("renders the standalone OpenRouter mark as a self-contained vector", () => {
+    const { container } = render(<OpenRouterLogo />);
+    expect(container.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
+    expect(container.querySelectorAll("path")).toHaveLength(1);
   });
 });
