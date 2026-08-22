@@ -1072,25 +1072,27 @@ function UsageDisplaySettings({ value, onChange }: { value: UsageDisplayMode; on
           <p id="usage-display-help">Choose the direction OpenKiwi reads subscription limits in. The choice applies everywhere a live provider quota appears — the usage card in the studio dock, OpenAI/Codex rate limits, and Claude Code rate limits — including each window&rsquo;s length and reset time.</p>
         </div>
       </div>
-      <div className="usage-display-options" role="radiogroup" aria-label="Provider quota display" aria-describedby="usage-display-help">
-        {USAGE_DISPLAY_OPTIONS.map((option) => (
-          <button
-            key={option.id}
-            type="button"
-            role="radio"
-            aria-checked={value === option.id}
-            className={value === option.id ? "selected" : ""}
-            onClick={() => onChange(option.id)}
-          >
-            <strong>{option.label}</strong>
-            {value === option.id && <Check size={14} />}
-          </button>
-        ))}
+      <div className="usage-display-controls">
+        <div className="usage-display-options" role="radiogroup" aria-label="Provider quota display" aria-describedby="usage-display-help">
+          {USAGE_DISPLAY_OPTIONS.map((option) => (
+            <button
+              key={option.id}
+              type="button"
+              role="radio"
+              aria-checked={value === option.id}
+              className={value === option.id ? "selected" : ""}
+              onClick={() => onChange(option.id)}
+            >
+              <strong>{option.label}</strong>
+              {value === option.id && <Check size={14} />}
+            </button>
+          ))}
+        </div>
+        {/* Rendered through the same helper the live cards use, so the example can
+            never describe a format the app does not actually produce. */}
+        <div className="usage-display-preview"><Gauge size={13} /><span>Example · 5h window {usagePercentLabel(42, value)}</span></div>
       </div>
     </div>
-    {/* Rendered through the same helper the live cards use, so the example can
-        never describe a format the app does not actually produce. */}
-    <div className="usage-display-preview"><Gauge size={13} /><span>Example · 5h window {usagePercentLabel(42, value)}</span></div>
   </section>;
 }
 

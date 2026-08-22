@@ -1204,10 +1204,11 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .field-label input:focus, .key-input-row input:focus { border-color: var(--green-line); box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 9%, transparent); }
 /* Fields are focus-ringed by their own border treatment — no doubled outline. */
 .field-label input:focus-visible, .key-input-row input:focus-visible, .prompt-editor:focus-visible, .thread-search input:focus-visible, .palette-search input:focus-visible, .composer textarea:focus-visible { outline: none; }
-.usage-display-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(250px, .72fr); align-items: start; gap: var(--s-5); }
+.usage-display-layout { display: grid; grid-template-columns: minmax(0, 1fr) max-content; align-items: start; gap: var(--s-5); }
 .usage-display-layout .settings-section-heading { margin-bottom: 0; }
+.usage-display-controls { width: max-content; max-width: 100%; display: grid; justify-self: end; }
 .usage-display-options { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s-2); }
-.usage-display-options > button { min-width: 0; min-height: 48px; display: grid; grid-template-columns: minmax(0, 1fr) 16px; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-md); color: var(--muted); background: rgba(255,255,255,.014); text-align: left; cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
+.usage-display-options > button { min-width: 0; min-height: 48px; display: grid; grid-template-columns: max-content 16px; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-md); color: var(--muted); background: rgba(255,255,255,.014); text-align: left; cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
 .usage-display-options > button:hover { color: var(--ink-2); border-color: var(--line-strong); background: rgba(255,255,255,.035); }
 .usage-display-options > button.selected { color: var(--text); border-color: var(--green-line); background: var(--green-soft); }
 .usage-display-options strong { color: inherit; font-size: var(--fs-ui); font-weight: 600; }
@@ -2057,6 +2058,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
   .settings-content { padding: 16px; }
   .usage-display-layout { grid-template-columns: 1fr; gap: var(--s-3); }
   .usage-display-layout .settings-section-heading { margin-bottom: 0; }
+  .usage-display-controls { justify-self: start; }
   .theme-grid, .behavior-grid, .runtime-field-grid, .provider-cards, .provider-prompt-grid { grid-template-columns: 1fr; }
   .profile-grid { grid-template-columns: 1fr 1fr; }
   .inline-create.two, .schedule-create { grid-template-columns: 1fr; }
