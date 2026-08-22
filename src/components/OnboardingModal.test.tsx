@@ -50,7 +50,7 @@ describe("OnboardingModal", () => {
     fireEvent.click(screen.getByRole("button", { name: /Local skills/ }));
 
     expect(screen.getByRole("heading", { name: /Skills are local Markdown playbooks/ })).toBeInTheDocument();
-    expect(screen.getByText(/rename a skill in OpenKiwi without renaming the file/)).toBeInTheDocument();
+    expect(screen.getByText(/Update the Markdown or change its OpenKiwi invocation name/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Choose folder" }));
     expect(onChooseSkillsFolder).toHaveBeenCalledOnce();
   });

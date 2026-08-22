@@ -3,6 +3,7 @@ import { save } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   Boxes,
+  BookOpenCheck,
   Check,
   ChevronRight,
   Download,
@@ -21,7 +22,6 @@ import {
   Plus,
   RotateCcw,
   ShieldCheck,
-  Sparkles,
   UsersRound,
   Wrench,
   X,
@@ -176,6 +176,8 @@ export function SettingsModal({
   onRefreshSkills,
   onImportSkills,
   onCreateSkill,
+  onReadSkill,
+  onUpdateSkill,
   onRenameSkill,
   onToggleSkill,
   onRemoveSkill,
@@ -250,6 +252,8 @@ export function SettingsModal({
   onRefreshSkills: (silent?: boolean) => Promise<void> | void;
   onImportSkills: () => void;
   onCreateSkill: (name: string, instructions: string) => Promise<boolean>;
+  onReadSkill: (path: string) => Promise<string>;
+  onUpdateSkill: (path: string, content: string, original: string) => Promise<void>;
   onRenameSkill: (path: string, name: string) => boolean;
   onToggleSkill: (path: string) => void;
   onRemoveSkill: (path: string, deleteSource: boolean) => Promise<boolean>;
@@ -546,7 +550,7 @@ export function SettingsModal({
           {settingsSection === "general" &&
           <section className="settings-section getting-started-settings">
             <div className="settings-section-heading settings-heading-with-action">
-              <div className="settings-icon"><Sparkles size={17} /></div>
+              <div className="settings-icon"><BookOpenCheck size={17} /></div>
               <div><h3>Getting started</h3><p>Review model setup, projects and chats, permissions, and local skills.</p></div>
               <button type="button" className="secondary-button" onClick={requestOnboarding}>Run onboarding</button>
             </div>
@@ -696,6 +700,8 @@ export function SettingsModal({
             onRefresh={onRefreshSkills}
             onImport={onImportSkills}
             onCreate={onCreateSkill}
+            onRead={onReadSkill}
+            onUpdate={onUpdateSkill}
             onRename={onRenameSkill}
             onToggle={onToggleSkill}
             onRemove={onRemoveSkill}

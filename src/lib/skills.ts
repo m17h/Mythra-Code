@@ -73,6 +73,14 @@ export async function createLocalSkill(folder: string, name: string, instruction
   return invoke<string>("local_skills_create", { folder, name, instructions });
 }
 
+export async function readLocalSkill(folder: string, path: string): Promise<string> {
+  return invoke<string>("local_skills_read", { folder, path });
+}
+
+export async function updateLocalSkill(folder: string, path: string, content: string, original: string): Promise<void> {
+  return invoke<void>("local_skills_update", { folder, path, content, original });
+}
+
 export async function deleteLocalSkill(folder: string, path: string): Promise<void> {
   return invoke<void>("local_skills_delete", { folder, path });
 }

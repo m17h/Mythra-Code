@@ -1,5 +1,5 @@
 import { Children, isValidElement, memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Check, ChevronDown, ChevronRight, Clipboard, FileCode2, ListChecks, Pencil, Sparkles, TerminalSquare, UsersRound } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, CircleDot, Clipboard, FileCode2, ListChecks, MessageSquare, Pencil, TerminalSquare, UsersRound } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -333,7 +333,7 @@ export const ActivityRow = memo(function ActivityRow({ activity }: { activity: A
       ? FileCode2
       : activity.kind === "agent"
         ? UsersRound
-        : Sparkles;
+        : CircleDot;
   return (
     <div className={`activity-row ${activity.kind === "command" ? "command-activity" : ""} ${expanded ? "expanded" : "collapsed"}`}>
       <div className={`activity-icon ${activity.kind}`}><Icon size={14} /></div>
@@ -543,7 +543,7 @@ export const CompletedWorkDisclosure = memo(function CompletedWorkDisclosure({ e
                 if (entry.kind === "message") {
                   return [(
                     <div className="completed-work-update" key={`update-${entry.value.id}`}>
-                      <Sparkles size={13} />
+                      <MessageSquare size={13} />
                       <div className="rich-markdown">
                         <Markdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>{entry.value.text}</Markdown>
                       </div>

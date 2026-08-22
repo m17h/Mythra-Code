@@ -10,7 +10,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { ArrowUp, CircleStop, CornerUpRight, FileCode2, ListPlus, LoaderCircle, Paperclip, RotateCw, Sparkles, Trash2, X } from "lucide-react";
+import { ArrowUp, Boxes, CircleStop, CornerUpRight, FileCode2, ListPlus, LoaderCircle, Paperclip, RotateCw, Trash2, X } from "lucide-react";
 import { loadStored, storeValue } from "../lib/storage";
 import type { QueuedTurn } from "../lib/taskStore";
 import type { AttachmentRecord } from "./StudioDock";
@@ -394,7 +394,7 @@ export const Composer = forwardRef<ComposerHandle, {
                   insertMention(result);
                 }}
               >
-                {result.kind === "skill" ? <Sparkles size={12} /> : <FileCode2 size={12} />}
+                {result.kind === "skill" ? <Boxes size={12} /> : <FileCode2 size={12} />}
                 <span className="mention-result-copy">
                   <strong>{result.label}</strong>
                   {result.detail && <small>{result.detail}</small>}

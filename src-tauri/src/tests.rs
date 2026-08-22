@@ -1567,6 +1567,70 @@ fn local_skill_scan_fingerprint_changes_when_instructions_change() {
 }
 
 #[test]
+fn local_skill_editor_reads_and_updates_only_detected_skill_sources() {
+    let root = skill_test_directory("skill-editor");
+    fs::create_dir_all(root.join("references")).unwrap();
+    let source = root.join("review.md");
+    let supporting = root.join("references/details.md");
+    fs::write(&source, "# Review\n\nOriginal instructions.\n").unwrap();
+    fs::write(&supporting, "# Details\n\nSupporting material.\n").unwrap();
+
+    assert_eq!(
+        read_local_skill_source(&root, &source).unwrap(),
+        "# Review\n\nOriginal instructions.\n"
+    );
+    update_local_skill_source(
+        &root,
+        &source,
+        "# Review\n\nUpdated in OpenKiwi.\n",
+        "# Review\n\nOriginal instructions.\n",
+    )
+    .unwrap();
+    assert_eq!(
+        fs::read_to_string(&source).unwrap(),
+        "# Review\n\nUpdated in OpenKiwi.\n"
+    );
+
+    let error = update_local_skill_source(
+        &root,
+        &supporting,
+        "# Rewritten\n",
+        "# Details\n\nSupporting material.\n",
+    )
+    .unwrap_err();
+    assert!(error.contains("not a detected OpenKiwi skill"));
+    assert_eq!(
+        fs::read_to_string(&supporting).unwrap(),
+        "# Details\n\nSupporting material.\n"
+    );
+
+    let error =
+        update_local_skill_source(&root, &source, "   ", "# Review\n\nUpdated in OpenKiwi.\n")
+            .unwrap_err();
+    assert!(error.contains("cannot be empty"));
+    assert_eq!(
+        fs::read_to_string(&source).unwrap(),
+        "# Review\n\nUpdated in OpenKiwi.\n"
+    );
+
+    fs::write(&source, "# Review\n\nChanged outside OpenKiwi.\n").unwrap();
+    let error = update_local_skill_source(
+        &root,
+        &source,
+        "# Review\n\nStale editor draft.\n",
+        "# Review\n\nUpdated in OpenKiwi.\n",
+    )
+    .unwrap_err();
+    assert!(error.contains("changed on disk"));
+    assert_eq!(
+        fs::read_to_string(&source).unwrap(),
+        "# Review\n\nChanged outside OpenKiwi.\n"
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn skill_runtime_bridge_preserves_app_name_body_and_markdown_references() {
     let root = skill_test_directory("skill-runtime-source");
     let runtime = skill_test_directory("skill-runtime-output");

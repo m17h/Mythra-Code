@@ -80,7 +80,7 @@ import { PANE_BOUNDS, usePaneResize } from "./hooks/usePaneResize";
 import { useSidebarSplitResize } from "./hooks/useSidebarSplitResize";
 import { useWorkflowEngine } from "./hooks/useWorkflowEngine";
 import { isEstablishedOpenKiwiInstall, ONBOARDING_EXIT_MS, ONBOARDING_VERSION } from "./lib/onboarding";
-import { createLocalSkill, deleteLocalSkill, importLocalSkills, normalizeSkillName, resolveLocalSkills, scanLocalSkills, syncLocalSkills, type LocalSkill, type LocalSkillFile } from "./lib/skills";
+import { createLocalSkill, deleteLocalSkill, importLocalSkills, normalizeSkillName, readLocalSkill, resolveLocalSkills, scanLocalSkills, syncLocalSkills, updateLocalSkill, type LocalSkill, type LocalSkillFile } from "./lib/skills";
 import { compactWorkflowRun, normalizeWorkflows, recoverWorkflowRuns, type WorkflowDefinition, type WorkflowRunRecord } from "./lib/workflows";
 import { isClaudeThread, isCursorThread, isLocalSubscriptionThread, modelForProvider, providerFromThread } from "./lib/threadProvider";
 import { listLMStudioModels, type LMStudioModel } from "./lib/lmStudio";
@@ -3638,6 +3638,26 @@ export default function App() {
     }
   };
 
+  const readSkill = async (path: string): Promise<string> => {
+    if (!skillsFolder) throw new Error("Choose a skills folder before editing a skill.");
+    return readLocalSkill(skillsFolder, path);
+  };
+
+  const updateSkill = async (path: string, content: string, original: string): Promise<void> => {
+    if (!skillsFolder) throw new Error("Choose a skills folder before editing a skill.");
+    setSkillsBusy(true);
+    setSkillsError("");
+    try {
+      await updateLocalSkill(skillsFolder, path, content, original);
+      await refreshLocalSkills(skillsFolder, skillAliases, disabledSkillPaths, removedSkillPaths);
+    } catch (reason) {
+      setSkillsError(friendlyError(reason));
+      throw reason;
+    } finally {
+      setSkillsBusy(false);
+    }
+  };
+
   const renameSkill = (path: string, requestedName: string): boolean => {
     const name = normalizeSkillName(requestedName);
     if (!name) {
@@ -4689,6 +4709,8 @@ export default function App() {
         onRefreshSkills={(silent = false) => refreshLocalSkills(skillsFolder, skillAliases, disabledSkillPaths, removedSkillPaths, silent).then(() => undefined)}
         onImportSkills={() => void importSkills()}
         onCreateSkill={createSkill}
+        onReadSkill={readSkill}
+        onUpdateSkill={updateSkill}
         onRenameSkill={renameSkill}
         onToggleSkill={toggleSkill}
         onRemoveSkill={removeSkill}

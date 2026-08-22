@@ -39,6 +39,8 @@ function renderLibrary(overrides: Partial<Parameters<typeof SkillLibrary>[0]> = 
     onRefresh: vi.fn(),
     onImport: vi.fn(),
     onCreate: vi.fn(async () => true),
+    onRead: vi.fn(async () => "# Review\n\nReview code for correctness.\n"),
+    onUpdate: vi.fn(async () => undefined),
     onRename: vi.fn(() => true),
     onToggle: vi.fn(),
     onRemove: vi.fn(async () => true),
@@ -109,6 +111,58 @@ describe("SkillLibrary", () => {
     expect(revealItemInDir).toHaveBeenCalledWith("/skills");
     fireEvent.click(screen.getByRole("button", { name: "Show review in folder" }));
     expect(revealItemInDir).toHaveBeenCalledWith("/skills/review.md");
+  });
+
+  it("loads and saves a skill's Markdown without leaving OpenKiwi", async () => {
+    const onRead = vi.fn(async () => "# Review\n\nReview code for correctness.\n");
+    const onUpdate = vi.fn(async () => undefined);
+    renderLibrary({ onRead, onUpdate });
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit review skill" }));
+    const editor = await screen.findByRole("dialog", { name: "Edit @review" });
+    const markdown = await within(editor).findByRole("textbox", { name: "Markdown for review" });
+    expect(onRead).toHaveBeenCalledWith("/skills/review.md");
+    expect(markdown).toHaveValue("# Review\n\nReview code for correctness.\n");
+    expect(markdown).toHaveFocus();
+
+    fireEvent.change(markdown, { target: { value: "# Review\n\nCheck correctness and tests.\n" } });
+    fireEvent.click(within(editor).getByRole("button", { name: "Save skill" }));
+
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledWith(
+      "/skills/review.md",
+      "# Review\n\nCheck correctness and tests.\n",
+      "# Review\n\nReview code for correctness.\n",
+    ));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Edit @review" })).not.toBeInTheDocument());
+  });
+
+  it("keeps the skill editor and draft open when saving fails", async () => {
+    renderLibrary({ onUpdate: vi.fn(async () => { throw new Error("permission denied"); }) });
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit review skill" }));
+    const markdown = await screen.findByRole("textbox", { name: "Markdown for review" });
+    fireEvent.change(markdown, { target: { value: "# Revised\n" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save skill" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("does not have permission");
+    expect(markdown).toHaveValue("# Revised\n");
+    expect(screen.getByRole("dialog", { name: "Edit @review" })).toBeInTheDocument();
+  });
+
+  it("asks before discarding unsaved skill Markdown", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+    renderLibrary();
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit review skill" }));
+    const markdown = await screen.findByRole("textbox", { name: "Markdown for review" });
+    fireEvent.change(markdown, { target: { value: "# Unsaved\n" } });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("dialog", { name: "Edit @review" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog", { name: "Edit @review" })).not.toBeInTheDocument();
+    expect(confirm).toHaveBeenCalledTimes(2);
+    confirm.mockRestore();
   });
 
   it("asks whether to keep or delete the source when removing a skill", async () => {
@@ -415,7 +469,7 @@ describe("SkillLibrary", () => {
       renderLibrary();
 
       expect(screen.getByText(/Renaming changes only the invocation name inside OpenKiwi/)).toBeInTheDocument();
-      expect(screen.getByText(/Source files are never rewritten/)).toBeInTheDocument();
+      expect(screen.getByText(/source changes only when you explicitly save it in the editor/)).toBeInTheDocument();
     });
   });
 });

@@ -1967,6 +1967,22 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .skill-add-button:hover { color: var(--green); border-color: var(--green-line); background: var(--green-soft); }
 .skill-created-note { display: flex; align-items: center; gap: var(--s-2); margin: 0; color: var(--green); font-size: var(--fs-meta); }
 
+.skill-editor-backdrop { position: absolute; inset: 0; z-index: 5; display: grid; place-items: center; padding: var(--s-5); background: rgba(2,3,4,.72); backdrop-filter: blur(5px); }
+.skill-editor-dialog { width: min(720px, 100%); max-height: min(690px, calc(100vh - 70px)); display: flex; flex-direction: column; gap: var(--s-3); padding: var(--s-4); border: 1px solid var(--green-line); border-radius: var(--r-lg); background: var(--panel); box-shadow: var(--shadow); }
+.skill-editor-head { display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: start; gap: var(--s-3); }
+.skill-editor-head > span:nth-child(2) { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.skill-editor-head strong { color: var(--text); font-size: var(--fs-heading); font-weight: 620; }
+.skill-editor-head small { color: var(--muted); font-size: var(--fs-meta); line-height: 1.5; }
+.skill-editor-head code { color: var(--ink-2); font-family: var(--font-mono); }
+.skill-editor-head > button { width: 28px; height: 28px; display: grid; place-items: center; padding: 0; border: 0; border-radius: var(--r-xs); color: var(--muted-2); background: transparent; cursor: pointer; }
+.skill-editor-head > button:hover:not(:disabled) { color: var(--text); background: var(--line); }
+.skill-editor-loading { min-height: 320px; display: flex; align-items: center; justify-content: center; gap: var(--s-2); border: 1px solid var(--line); border-radius: var(--r-md); color: var(--muted); background: var(--field); font-size: var(--fs-ui); }
+.skill-editor-field { min-height: 0; display: flex; flex: 1; flex-direction: column; gap: var(--s-2); color: var(--ink-2); font-size: var(--fs-meta); font-weight: 600; }
+.skill-editor-field textarea { width: 100%; min-height: 320px; max-height: min(520px, calc(100vh - 260px)); flex: 1; padding: var(--s-3); border: 1px solid var(--line); border-radius: var(--r-md); outline: none; color: var(--text); background: var(--field); font: 12px/1.6 var(--font-mono); resize: vertical; tab-size: 2; }
+.skill-editor-field textarea:focus { border-color: var(--green-line); box-shadow: var(--ring); }
+.skill-editor-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--s-2); }
+.skill-editor-actions > span { min-width: 0; flex: 1; color: var(--muted-2); font-size: var(--fs-micro); }
+
 .skill-create-card { display: flex; flex-direction: column; gap: var(--s-3); padding: var(--s-4); border: 1px solid var(--green-line); border-radius: var(--r-md); background: var(--line-quiet); }
 .skill-create-head { display: flex; align-items: flex-start; gap: var(--s-3); }
 .skill-create-head > span:last-child { min-width: 0; display: flex; flex-direction: column; gap: 2px; }

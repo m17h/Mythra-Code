@@ -7,17 +7,17 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
+  Compass,
   ExternalLink,
   FolderOpen,
   KeyRound,
   MessageSquare,
   NotebookPen,
+  Rocket,
   Shield,
   ShieldAlert,
   ShieldCheck,
-  Sparkles,
   TerminalSquare,
-  WandSparkles,
   X,
 } from "lucide-react";
 import type { CodexRuntimeStatus } from "../lib/codex";
@@ -35,12 +35,12 @@ const CURSOR_INSTALL_URL = "https://cursor.com/docs/cli/installation";
 const LM_STUDIO_SERVER_URL = "https://lmstudio.ai/docs/developer/core/server";
 
 const STEPS = [
-  { id: "welcome", label: "Welcome", icon: Sparkles },
+  { id: "welcome", label: "Welcome", icon: Compass },
   { id: "providers", label: "Connect AI", icon: KeyRound },
   { id: "workspaces", label: "Projects & chats", icon: FolderOpen },
   { id: "controls", label: "Your controls", icon: ShieldCheck },
   { id: "skills", label: "Local skills", icon: Boxes },
-  { id: "ready", label: "Ready to build", icon: WandSparkles },
+  { id: "ready", label: "Ready to build", icon: Rocket },
 ] as const;
 
 function StatusPill({ ready, children }: { ready: boolean; children: ReactNode }) {
@@ -202,7 +202,7 @@ function SkillsStep({ skillsFolder, onChooseSkillsFolder }: { skillsFolder: stri
       </div>
       <div className="onboarding-skill-rules">
         <div><b>1</b><span><strong>Import or create Markdown</strong><small>Top-level Markdown files and folders containing SKILL.md become skills.</small></span></div>
-        <div><b>2</b><span><strong>Name them in the app</strong><small>Names start from the file, but you may rename a skill in OpenKiwi without renaming the file.</small></span></div>
+        <div><b>2</b><span><strong>Edit them in the app</strong><small>Update the Markdown or change its OpenKiwi invocation name without leaving settings.</small></span></div>
         <div><b>3</b><span><strong>Reference supporting Markdown</strong><small>A skill can point to other Markdown files when its instructions need more detail.</small></span></div>
         <div><b>4</b><span><strong>The model calls the enabled skill</strong><small>It uses the app-facing name when the workflow matches your request.</small></span></div>
       </div>

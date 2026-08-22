@@ -76,6 +76,8 @@ function modalProps(overrides: Partial<Parameters<typeof SettingsModal>[0]> = {}
     onRefreshSkills: vi.fn(),
     onImportSkills: vi.fn(),
     onCreateSkill: vi.fn(async () => true),
+    onReadSkill: vi.fn(async () => "# Review\n\nReview carefully.\n"),
+    onUpdateSkill: vi.fn(async () => undefined),
     onRenameSkill: vi.fn(() => true),
     onToggleSkill: vi.fn(),
     onRemoveSkill: vi.fn(async () => true),

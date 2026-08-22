@@ -7,11 +7,11 @@ import {
   CircleStop,
   Clock3,
   Eye,
+  MessageSquare,
   Pencil,
   Play,
   Plus,
   RotateCcw,
-  Sparkles,
   TerminalSquare,
   Trash2,
   Workflow,
@@ -258,7 +258,7 @@ export function WorkflowManager({
                     : <button onClick={() => prepareRun(workflow)} disabled={!project}><Play size={11} /> Run</button>}
                   <button onClick={() => { setDraft(structuredClone(workflow)); setDraftError(""); }} disabled={Boolean(draft)}><Pencil size={11} /> Edit</button>
                   {latest && <button onClick={() => setSelectedRunId(latest.id)}><Eye size={11} /> Details</button>}
-                  {workflow.lastThreadId && onOpenRun && <button onClick={() => onOpenRun(workflow.lastThreadId!)}><Sparkles size={11} /> Last thread</button>}
+                  {workflow.lastThreadId && onOpenRun && <button onClick={() => onOpenRun(workflow.lastThreadId!)}><MessageSquare size={11} /> Last thread</button>}
                   <button
                     className="danger-action"
                     aria-label={`Delete ${workflow.name}`}
@@ -467,7 +467,7 @@ export function WorkflowManager({
             ))}
           </div>
           <div className="workflow-editor-actions">
-            {selectedRun.threadId && onOpenRun && <button className="secondary-button" onClick={() => onOpenRun(selectedRun.threadId!)}><Sparkles size={12} /> Open thread</button>}
+            {selectedRun.threadId && onOpenRun && <button className="secondary-button" onClick={() => onOpenRun(selectedRun.threadId!)}><MessageSquare size={12} /> Open thread</button>}
             {selectedRun.status === "running" && <button className="danger-action" onClick={() => void onStop(selectedRun.workflowId)}><CircleStop size={12} /> Stop workflow</button>}
           </div>
         </div>
