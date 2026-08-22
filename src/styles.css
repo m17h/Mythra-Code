@@ -170,7 +170,6 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .app-shell[data-theme="daylight"] .model-power-control { --model-accent: #b06b1e; }
 .app-shell[data-theme="daylight"] .model-power-control.terra { --model-accent: #3e8e22; }
 .app-shell[data-theme="daylight"] .model-power-control.luna { --model-accent: #1668a8; }
-.app-shell[data-theme="daylight"] .model-power-control.ultra { --model-accent: #7a56be; }
 .app-shell[data-theme="daylight"] .model-menu-option.sol { --option-accent: #b06b1e; }
 .app-shell[data-theme="daylight"] .model-menu-option.terra { --option-accent: #3e8e22; }
 .app-shell[data-theme="daylight"] .model-menu-option.luna { --option-accent: #1668a8; }
@@ -208,7 +207,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .app-shell[data-theme="daylight"] .studio-list-row strong { color: #333b33; }
 .app-shell[data-theme="daylight"] .composer-caption { color: #838b83; }
 .app-shell[data-theme="daylight"] .composer textarea::placeholder, .app-shell[data-theme="daylight"] .prompt-editor::placeholder { color: #99a199; }
-/* Switches, levers, and steppers use hardcoded dark fills in the off state */
+/* Switches and steppers use hardcoded dark fills in the off state */
 .app-shell[data-theme="daylight"] .toggle-switch { background: #cdd2c8; }
 .app-shell[data-theme="daylight"] .toggle-switch span { background: #ffffff; box-shadow: 0 1px 3px rgba(40,50,35,.25); }
 .app-shell[data-theme="daylight"] .toggle-switch.on { background: rgba(62,142,34,.4); }
@@ -217,12 +216,6 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .app-shell[data-theme="daylight"] .mini-toggle span { background: #ffffff; box-shadow: 0 1px 2px rgba(40,50,35,.25); }
 .app-shell[data-theme="daylight"] .mini-toggle.on { background: color-mix(in srgb, var(--green) 45%, #dfe3da); }
 .app-shell[data-theme="daylight"] .mini-toggle.on span { background: var(--green); }
-.app-shell[data-theme="daylight"] .ultra-lever { color: #6b746c; border-color: var(--line); background: #f4f5f1; }
-.app-shell[data-theme="daylight"] .lever-track { background: #d8dcd2; box-shadow: inset 0 1px 3px rgba(40,50,35,.18); }
-.app-shell[data-theme="daylight"] .lever-track i { background: #ffffff; box-shadow: 0 1px 3px rgba(40,50,35,.3); }
-.app-shell[data-theme="daylight"] .ultra-lever.engaged { color: #5c3f8f; border-color: rgba(122,86,190,.35); background: rgba(122,86,190,.08); }
-.app-shell[data-theme="daylight"] .ultra-lever.engaged .lever-track { background: rgba(122,86,190,.3); }
-.app-shell[data-theme="daylight"] .ultra-lever.engaged .lever-track i { background: #7a56be; box-shadow: 0 0 10px rgba(122,86,190,.6); }
 .app-shell[data-theme="daylight"] .number-stepper { background: #ffffff; }
 .app-shell[data-theme="daylight"] .number-stepper button:hover:not(:disabled) { background: rgba(0,0,0,.05); }
 .app-shell[data-theme="daylight"] .fast-tier { background: rgba(0,0,0,.03); }
@@ -1609,10 +1602,9 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 /* ---- Model rail ----
    Each model family keeps an accent for identity, but the accent is carried by
    a mark and a border tint — not by glows, breathing orbs, or shimmer. */
-.model-power-control { --model-accent: #e0a066; --reasoning-fill: 0%; position: relative; z-index: 8; display: grid; grid-template-columns: minmax(205px, .78fr) minmax(250px, 1.22fr) 66px; gap: var(--s-3); align-items: center; margin: 0 10px var(--s-1); padding: var(--s-2); overflow: visible; border: 1px solid var(--line); border-radius: var(--r-lg); background: rgba(255,255,255,.014); box-shadow: none; transition: border-color 220ms ease, background 220ms ease; }
+.model-power-control { --model-accent: #e0a066; --reasoning-fill: 0%; position: relative; z-index: 8; display: grid; grid-template-columns: minmax(205px, .78fr) minmax(250px, 1.22fr); gap: var(--s-3); align-items: center; margin: 0 10px var(--s-1); padding: var(--s-2); overflow: visible; border: 1px solid var(--line); border-radius: var(--r-lg); background: rgba(255,255,255,.014); box-shadow: none; transition: border-color 220ms ease, background 220ms ease; }
 .model-power-control.terra { --model-accent: #a6df72; }
 .model-power-control.luna { --model-accent: #86cdf7; }
-.model-power-control.ultra { --model-accent: #b993f5; border-color: color-mix(in srgb, var(--model-accent) 24%, var(--line)); background: color-mix(in srgb, var(--model-accent) 5%, transparent); }
 .model-picker { position: relative; z-index: 4; min-width: 0; }
 .model-picker-trigger { width: 100%; height: 46px; display: grid; grid-template-columns: 26px minmax(0,1fr) 16px; align-items: center; gap: var(--s-2); padding: 0 10px; border: 1px solid var(--line); border-radius: var(--r-md); color: var(--text); background: var(--field); box-shadow: none; cursor: pointer; text-align: left; transition: border-color var(--t-mid) ease, background var(--t-mid) ease; }
 .model-picker-trigger:hover:not(:disabled), .menu-open .model-picker-trigger { border-color: color-mix(in srgb, var(--model-accent) 34%, var(--line-strong)); background: color-mix(in srgb, var(--model-accent) 5%, var(--field)); }
@@ -1657,26 +1649,9 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .reasoning-ticks { position: absolute; z-index: 1; inset: 0 2px; display: flex; align-items: center; justify-content: space-between; pointer-events: none; }
 .reasoning-ticks i { width: 6px; height: 6px; border: 1px solid var(--line-strong); border-radius: 50%; background: var(--panel-2); }
 .reasoning-ticks i.reached { border-color: var(--model-accent); background: var(--model-accent); box-shadow: none; }
-.model-power-control.ultra .reasoning-control input[type="range"] { animation: none; background: linear-gradient(90deg, var(--model-accent) 0, var(--model-accent) var(--reasoning-fill), var(--panel-3) var(--reasoning-fill), var(--panel-3) 100%); }
 .reasoning-labels { display: flex; justify-content: space-between; margin-top: 6px; color: var(--muted-2); font-size: var(--fs-micro); }
 .reasoning-labels span { transition: color var(--t-fast) ease; }
 .reasoning-labels span.active { color: var(--ink-2); font-weight: 600; text-shadow: none; }
-.ultra-lever { position: relative; z-index: 2; min-width: 0; height: 52px; display: flex; align-items: center; justify-content: space-between; gap: var(--s-1); padding: var(--s-1) 6px; border: 1px solid var(--line); border-radius: var(--r-md); color: var(--muted-2); background: var(--field); cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
-.ultra-lever:hover:not(:disabled) { color: var(--ink-2); border-color: var(--line-strong); }
-.ultra-lever:disabled { opacity: .35; cursor: default; }
-.lever-label { display: flex; flex-direction: column; align-items: center; gap: 2px; font-size: var(--fs-micro); font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
-.lever-track { position: relative; width: 15px; height: 36px; border-radius: var(--r-pill); background: var(--panel-3); box-shadow: inset 0 1px 3px rgba(0,0,0,.45); }
-.lever-track i { position: absolute; left: 3px; top: 3px; width: 9px; height: 14px; border-radius: var(--r-pill); background: var(--muted-2); box-shadow: var(--elev-1); transition: transform 230ms var(--ease), background 230ms ease; }
-.ultra-lever.engaged { color: #ded0f7; border-color: color-mix(in srgb, #b993f5 34%, var(--line)); background: color-mix(in srgb, #b993f5 10%, transparent); }
-.ultra-lever.engaged .lever-track { background: color-mix(in srgb, #b993f5 26%, transparent); }
-.ultra-lever.engaged .lever-track i { transform: translateY(16px); background: #b993f5; box-shadow: var(--elev-1); }
-/* The Ultra spark field was pure decoration — kept in the DOM, rendered inert. */
-.electric-field { display: none; }
-.electric-field i { position: absolute; width: 2px; height: 2px; border-radius: 50%; background: transparent; box-shadow: none; animation: none; }
-.electric-field i:nth-child(1) { left: 36%; top: 22%; animation-delay: -.3s; }
-.electric-field i:nth-child(2) { left: 63%; top: 68%; animation-delay: -.9s; }
-.electric-field i:nth-child(3) { left: 81%; top: 18%; animation-delay: -1.2s; }
-.electric-field i:nth-child(4) { left: 52%; top: 42%; animation-delay: -.6s; }
 .has-attachments { color: var(--info); background: color-mix(in srgb, var(--info) 8%, transparent); }
 
 /* Workspace studio */
@@ -2038,14 +2013,14 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
   .studio-dock { position: fixed; z-index: 30; top: 0; right: 0; bottom: 0; width: min(var(--dock-width, 430px), 92vw); grid-template-columns: 70px minmax(0,1fr); box-shadow: -24px 0 70px rgba(0,0,0,.52); transition: opacity 210ms ease, transform 290ms cubic-bezier(.22,.8,.25,1), border-color 180ms ease, box-shadow 180ms ease; }
   .studio-dock.closed { width: min(var(--dock-width, 430px), 92vw); opacity: 0; transform: translateX(104%); }
   .studio-panel { width: auto; min-width: 0; }
-  .model-power-control { grid-template-columns: minmax(210px,.9fr) minmax(190px,1fr) 62px; }
+  .model-power-control { grid-template-columns: minmax(210px,.9fr) minmax(190px,1fr); }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .studio-dock, .onboarding-modal, .onboarding-stage, .onboarding-rail-foot i { transition: none; animation: none; }
   .command-palette, .model-menu, .openrouter-menu, .thread-provider-menu, .settings-modal, .runtime-setup-modal,
   .workflow-card, .studio-list-row, .theme-card, .provider-card, .skill-card,
-  .lever-track i, .usage-hero i, .provider-quota-track > i, .update-progress > span { transition: none; animation: none; }
+  .usage-hero i, .provider-quota-track > i, .update-progress > span { transition: none; animation: none; }
   .status-orb.inProgress, .status-orb.started { animation: none; }
   .update-progress.indeterminate > span { animation: none; width: 100%; }
 }
@@ -2068,8 +2043,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
   .runtime-setup-actions { flex-wrap: wrap; }
   .openrouter-control { grid-template-columns: 1fr; }
   .openrouter-menu { width: min(570px, calc(100vw - 32px)); }
-  .model-power-control { grid-template-columns: 1fr 56px; }
-  .reasoning-control { grid-column: 1 / -1; }
+  .model-power-control { grid-template-columns: 1fr; }
   .model-picker-copy em { display: none; }
   .settings-modal { height: calc(100vh - 24px); }
   .settings-layout { grid-template-columns: 1fr; grid-template-rows: auto minmax(0,1fr); }
@@ -2400,10 +2374,9 @@ body[data-pane-resizing] .sidebar, body[data-pane-resizing] .studio-dock { trans
 @container chat-main (max-width: 680px) {
   .composer-zone { padding-inline: var(--s-4); }
   .model-power-control, .openrouter-control { gap: var(--s-2); margin-inline: 6px; }
-  .model-power-control { grid-template-columns: minmax(0, 1fr) 58px; }
+  .model-power-control { grid-template-columns: minmax(0, 1fr); }
   .model-picker { grid-column: 1; grid-row: 1; }
-  .ultra-lever { grid-column: 2; grid-row: 1; width: 58px; }
-  .reasoning-control { grid-column: 1 / -1; grid-row: 2; }
+  .reasoning-control { grid-column: 1; grid-row: 2; }
   .openrouter-control { grid-template-columns: minmax(0, 1fr); }
   .openrouter-reasoning { grid-column: 1; }
   .openrouter-menu, .claude-model-menu { width: min(570px, calc(100cqw - 44px)); }
@@ -2412,8 +2385,7 @@ body[data-pane-resizing] .sidebar, body[data-pane-resizing] .studio-dock { trans
 @container chat-main (max-width: 600px) {
   .composer-zone { padding-inline: var(--s-3); }
   .model-power-control, .openrouter-control { margin-inline: var(--s-1); padding: 6px; }
-  .model-power-control { grid-template-columns: minmax(0, 1fr) 54px; }
-  .ultra-lever { width: 54px; padding-inline: var(--s-1); }
+  .model-power-control { grid-template-columns: minmax(0, 1fr); }
   .model-picker-copy em, .openrouter-trigger-copy em { display: none; }
   .composer-toolbar { flex-wrap: wrap; row-gap: var(--s-1); }
   .cursor-model-menu { width: calc(100vw - 28px); }

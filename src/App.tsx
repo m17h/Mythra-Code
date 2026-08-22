@@ -155,7 +155,7 @@ const establishedInstall = isEstablishedOpenKiwiInstall({ projects: initialProje
 const initialOnboardingOpen = initialOnboardingVersion < ONBOARDING_VERSION && !establishedInstall;
 const storedSettings = loadStored<Partial<AppSettings>>("kiwi.settings", {});
 const initialChildAgents = sanitizeChildAgentSettings(storedSettings.childAgents);
-const initialSettings: AppSettings = { ...DEFAULT_SETTINGS, ...storedSettings, openAiLogo: storedSettings.openAiLogo === "codex" ? "codex" : "openai", claudeLogo: storedSettings.claudeLogo === "anthropic" ? "anthropic" : "claude", cursorLogo: storedSettings.cursorLogo === "app-dark" ? "app-dark" : "cube", subagentMax: crewSafeConcurrency(Number(storedSettings.subagentMax) || DEFAULT_SETTINGS.subagentMax, initialChildAgents), childAgents: initialChildAgents, model: modelForProvider(storedSettings.provider ?? DEFAULT_SETTINGS.provider, storedSettings.model ?? DEFAULT_SETTINGS.model), lmStudioBaseUrl: storedSettings.lmStudioBaseUrl?.trim() || DEFAULT_LM_STUDIO_BASE_URL, theme: THEMES.some((theme) => theme.id === storedSettings.theme) ? storedSettings.theme! : DEFAULT_SETTINGS.theme, uiScale: Math.min(150, Math.max(80, Number(storedSettings.uiScale) || DEFAULT_SETTINGS.uiScale)), usageDisplay: sanitizeUsageDisplay(storedSettings.usageDisplay) };
+const initialSettings: AppSettings = { ...DEFAULT_SETTINGS, ...storedSettings, openAiLogo: storedSettings.openAiLogo === "codex" ? "codex" : "openai", claudeLogo: storedSettings.claudeLogo === "anthropic" ? "anthropic" : "claude", cursorLogo: storedSettings.cursorLogo === "app-dark" ? "app-dark" : "cube", subagentMax: crewSafeConcurrency(Number(storedSettings.subagentMax) || DEFAULT_SETTINGS.subagentMax, initialChildAgents), childAgents: initialChildAgents, model: modelForProvider(storedSettings.provider ?? DEFAULT_SETTINGS.provider, storedSettings.model ?? DEFAULT_SETTINGS.model), reasoningEffort: storedSettings.reasoningEffort === "ultra" ? "max" : (storedSettings.reasoningEffort ?? DEFAULT_SETTINGS.reasoningEffort), ultra: false, lmStudioBaseUrl: storedSettings.lmStudioBaseUrl?.trim() || DEFAULT_LM_STUDIO_BASE_URL, theme: THEMES.some((theme) => theme.id === storedSettings.theme) ? storedSettings.theme! : DEFAULT_SETTINGS.theme, uiScale: Math.min(150, Math.max(80, Number(storedSettings.uiScale) || DEFAULT_SETTINGS.uiScale)), usageDisplay: sanitizeUsageDisplay(storedSettings.usageDisplay) };
 
 function permissionLabel(mode: PermissionMode): string {
   if (mode === "read-only") return "Read only";
@@ -204,7 +204,12 @@ export default function App() {
   const [startingDraftTurn, setStartingDraftTurn] = useState(false);
   const [settings, persistSettings] = usePersistedState<AppSettings>("kiwi.settings", DEFAULT_SETTINGS, { init: () => initialSettings });
   const [threadModels, setThreadModels] = usePersistedState<Record<string, string>>("kiwi.threadModels", {});
-  const [threadReasoning, setThreadReasoning] = usePersistedState<Record<string, ThreadReasoning>>("kiwi.threadReasoning", {});
+  const [threadReasoning, setThreadReasoning] = usePersistedState<Record<string, ThreadReasoning>>("kiwi.threadReasoning", {}, {
+    init: (load) => Object.fromEntries(Object.entries(load()).map(([threadId, reasoning]) => [threadId, {
+      reasoningEffort: reasoning.reasoningEffort === "ultra" ? "max" : reasoning.reasoningEffort,
+      ultra: false,
+    }])),
+  });
   const [draftThreadProvider, setDraftThreadProvider] = useState<Provider | null>(null);
   const [draftThreadModel, setDraftThreadModel] = useState<string | null>(null);
   const [draftThreadIsolated, setDraftThreadIsolated] = useState(false);
@@ -406,6 +411,8 @@ export default function App() {
       model: modelForProvider(activeProvider, threadModel ?? projectSettings.model),
       systemPrompt: providerPrompt,
       ...(rememberedReasoning ?? {}),
+      reasoningEffort: rememberedReasoning?.reasoningEffort === "ultra" ? "max" : (rememberedReasoning?.reasoningEffort ?? (projectSettings.reasoningEffort === "ultra" ? "max" : projectSettings.reasoningEffort)),
+      ultra: false,
     };
     return activeThread && isSubAgentThread(activeThread, childThreadLinks)
       ? settingsWithoutChildDelegation(resolved)
@@ -905,15 +912,6 @@ export default function App() {
       persistSettings({ ...settings, reasoningEffort, ultra: false });
     }
   }, [activeThreadId, persistSettings, persistThreadReasoning, settings]);
-
-  const persistComposerUltra = useCallback((ultra: boolean) => {
-    if (activeThreadId) {
-      persistThreadReasoning(activeThreadId, { reasoningEffort: effectiveSettings.reasoningEffort, ultra });
-      if (ultra && !settings.subagentsEnabled) persistSettings({ ...settings, subagentsEnabled: true });
-    } else {
-      persistSettings({ ...settings, ultra, subagentsEnabled: ultra ? true : settings.subagentsEnabled });
-    }
-  }, [activeThreadId, effectiveSettings.reasoningEffort, persistSettings, persistThreadReasoning, settings]);
 
   const persistComposerPermission = useCallback(
     (permission: PermissionMode) => {
@@ -4391,7 +4389,7 @@ export default function App() {
                 onStop={() => void stopTurnAndChildren()}
                 modelControls={
                   <>
-                    {effectiveSettings.provider === "openai" && <ModelPowerControl model={effectiveSettings.model || DEFAULT_OPENAI_MODEL} effort={effectiveSettings.reasoningEffort} ultra={effectiveSettings.ultra} fast={settings.serviceTier === "priority"} runtimeModels={runtimeModels} onModel={persistComposerModel} onEffort={persistComposerReasoning} onUltra={persistComposerUltra} onFast={(fast) => persistSettings({ ...settings, serviceTier: fast ? "priority" : null })} />}
+                    {effectiveSettings.provider === "openai" && <ModelPowerControl model={effectiveSettings.model || DEFAULT_OPENAI_MODEL} effort={effectiveSettings.reasoningEffort} fast={settings.serviceTier === "priority"} runtimeModels={runtimeModels} onModel={persistComposerModel} onEffort={persistComposerReasoning} onFast={(fast) => persistSettings({ ...settings, serviceTier: fast ? "priority" : null })} />}
                     {effectiveSettings.provider === "openrouter" && (
                       <OpenRouterModelControl
                         model={effectiveSettings.model}
@@ -4401,7 +4399,6 @@ export default function App() {
                         error={openRouterModelsError}
                         onModel={(model) => {
                           persistComposerModel(model);
-                          if (effectiveSettings.ultra) persistComposerReasoning(effectiveSettings.reasoningEffort);
                         }}
                         onEffort={persistComposerReasoning}
                         onRefresh={() => void refreshOpenRouterModels()}
@@ -4542,7 +4539,7 @@ export default function App() {
               { label: "Developer instruction", value: "empty" },
               { label: "AGENTS.md discovery", value: settings.projectInstructionsEnabled ? "enabled · up to 32 KB" : "disabled" },
               { label: "Model", value: effectiveSettings.model || "provider default" },
-              { label: "Reasoning", value: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort },
+              { label: "Reasoning", value: effectiveSettings.reasoningEffort },
               { label: "Sub-agents", value: effectiveSettings.subagentsEnabled ? `on · max ${effectiveSettings.subagentMax}` : "off" },
               { label: "Cross-provider", value: effectiveSettings.subagentsEnabled ? childAgentSummary : "off" },
               { label: "Skills", value: skillsFolder ? `${skills.filter((skill) => skill.enabled).length} enabled · local folder` : "no folder selected" },
