@@ -181,6 +181,26 @@ function context(overrides: Partial<TurnRunnerContext> = {}): TurnRunnerContext 
   };
 }
 
+function claudeContext(overrides: Partial<TurnRunnerContext> = {}): TurnRunnerContext {
+  return context({
+    activeThread: CLAUDE_THREAD,
+    running: true,
+    effectiveSettings: { ...DEFAULT_SETTINGS, provider: "claude", model: "claude-opus-5" },
+    claudeStatus: {
+      available: true,
+      loggedIn: true,
+      version: "test",
+      path: "/usr/local/bin/claude",
+      authMethod: "subscription",
+      email: "test@example.com",
+      subscriptionType: "max",
+      warning: null,
+    },
+    threadProjectBindingsRef: { current: { [CLAUDE_THREAD.id]: "/tmp/project" } },
+    ...overrides,
+  });
+}
+
 describe("useTurnRunner", () => {
   it("preserves the draft and opens settings when LM Studio is not ready", async () => {
     const setError = vi.fn();
@@ -535,22 +555,7 @@ describe("useTurnRunner", () => {
     store.ensureTask(CLAUDE_THREAD.id, CLAUDE_THREAD.cwd);
     store.setActiveTurn(CLAUDE_THREAD.id, "turn-live");
     store.setTaskStatus(CLAUDE_THREAD.id, "running");
-    const deps = context({
-      activeThread: CLAUDE_THREAD,
-      running: true,
-      effectiveSettings: { ...DEFAULT_SETTINGS, provider: "claude", model: "claude-opus-5" },
-      claudeStatus: {
-        available: true,
-        loggedIn: true,
-        version: "test",
-        path: "/usr/local/bin/claude",
-        authMethod: "subscription",
-        email: "test@example.com",
-        subscriptionType: "max",
-        warning: null,
-      },
-      threadProjectBindingsRef: { current: { [CLAUDE_THREAD.id]: "/tmp/project" } },
-    });
+    const deps = claudeContext();
     const { result } = renderHook(() => useTurnRunner(deps));
     await act(async () => { await result.current.sendMessage("do this next"); });
     const queuedTurn = useTaskStore.getState().tasks[CLAUDE_THREAD.id]?.queuedTurns[0];
@@ -564,7 +569,7 @@ describe("useTurnRunner", () => {
       error: undefined,
     });
     expect(deps.setError).not.toHaveBeenCalledWith(expect.stringContaining("not currently running"));
-    expect(deps.setTransientStatus).toHaveBeenCalledWith("Turn finished; message queued for the next turn");
+    expect(deps.setTransientStatus).toHaveBeenCalledWith("Steering was unavailable; message kept for the next turn");
 
     await act(async () => {
       useTaskStore.getState().completeTurn(CLAUDE_THREAD.id, "turn-live", "completed");
@@ -573,6 +578,53 @@ describe("useTurnRunner", () => {
 
     expect(claude.startClaudeTurn).toHaveBeenCalledWith(expect.objectContaining({ prompt: "do this next" }));
     expect(useTaskStore.getState().tasks[CLAUDE_THREAD.id]?.queuedTurns).toEqual([]);
+  });
+
+  it("keeps and starts a Claude steer when completion races a closed input pipe", async () => {
+    const store = useTaskStore.getState();
+    store.ensureTask(CLAUDE_THREAD.id, CLAUDE_THREAD.cwd);
+    store.setActiveTurn(CLAUDE_THREAD.id, "turn-live");
+    store.setTaskStatus(CLAUDE_THREAD.id, "running");
+    claude.steerClaudeTurn.mockImplementationOnce(async () => {
+      // The terminal event reaches the renderer while the failed write is
+      // returning across Tauri — the narrowest version of the reported race.
+      useTaskStore.getState().completeTurn(CLAUDE_THREAD.id, "turn-live", "completed");
+      throw new Error("Could not write to Claude Code: Broken pipe");
+    });
+    const deps = claudeContext();
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { await result.current.sendMessage("continue after this"); });
+    const queuedTurn = useTaskStore.getState().tasks[CLAUDE_THREAD.id]?.queuedTurns[0];
+
+    await act(async () => {
+      await result.current.steerQueuedMessage(queuedTurn!.id);
+      await Promise.resolve();
+    });
+
+    expect(deps.setError).not.toHaveBeenCalledWith(expect.stringContaining("connection stopped"));
+    expect(claude.startClaudeTurn).toHaveBeenCalledWith(expect.objectContaining({ prompt: "continue after this" }));
+    expect(useTaskStore.getState().tasks[CLAUDE_THREAD.id]?.queuedTurns).toEqual([]);
+  });
+
+  it("still exposes a genuine queued steering failure for retry", async () => {
+    cursor.steerCursorTurn.mockRejectedValueOnce(new Error("The attached reference could not be read"));
+    const store = useTaskStore.getState();
+    store.ensureTask(CURSOR_THREAD.id, CURSOR_THREAD.cwd);
+    store.setActiveTurn(CURSOR_THREAD.id, "turn-live");
+    store.setTaskStatus(CURSOR_THREAD.id, "running");
+    const deps = context({ running: true });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { await result.current.sendMessage("use this reference"); });
+    const queuedTurn = useTaskStore.getState().tasks[CURSOR_THREAD.id]?.queuedTurns[0];
+
+    await act(async () => { await result.current.steerQueuedMessage(queuedTurn!.id); });
+
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]?.queuedTurns[0]).toMatchObject({
+      id: queuedTurn!.id,
+      status: "failed",
+      error: "The message could not be steered into the active turn.",
+    });
+    expect(deps.setError).toHaveBeenCalledWith("The attached reference could not be read");
   });
 
   it("cleans up a failed local-provider start so the thread can retry", async () => {
