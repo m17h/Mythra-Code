@@ -1057,34 +1057,36 @@ function GitHubSettings({
   </>;
 }
 
-const USAGE_DISPLAY_OPTIONS: ReadonlyArray<{ id: UsageDisplayMode; label: string; detail: string }> = [
-  { id: "remaining", label: "Percentage remaining", detail: "Counts down what is still available in each limit window." },
-  { id: "consumed", label: "Percentage consumed", detail: "Counts up what has already been used in each limit window." },
+const USAGE_DISPLAY_OPTIONS: ReadonlyArray<{ id: UsageDisplayMode; label: string }> = [
+  { id: "remaining", label: "Percentage remaining" },
+  { id: "consumed", label: "Percentage consumed" },
 ];
 
 function UsageDisplaySettings({ value, onChange }: { value: UsageDisplayMode; onChange: (value: UsageDisplayMode) => void }) {
   return <section className="settings-section">
-    <div className="settings-section-heading">
-      <div className="settings-icon"><Gauge size={17} /></div>
-      <div>
-        <h3>Provider quota display</h3>
-        <p id="usage-display-help">Choose the direction OpenKiwi reads subscription limits in. The choice applies everywhere a live provider quota appears — the usage card in the studio dock, OpenAI/Codex rate limits, and Claude Code rate limits — including each window&rsquo;s length and reset time.</p>
+    <div className="usage-display-layout">
+      <div className="settings-section-heading">
+        <div className="settings-icon"><Gauge size={17} /></div>
+        <div>
+          <h3>Provider quota display</h3>
+          <p id="usage-display-help">Choose the direction OpenKiwi reads subscription limits in. The choice applies everywhere a live provider quota appears — the usage card in the studio dock, OpenAI/Codex rate limits, and Claude Code rate limits — including each window&rsquo;s length and reset time.</p>
+        </div>
       </div>
-    </div>
-    <div className="usage-display-options" role="radiogroup" aria-label="Provider quota display" aria-describedby="usage-display-help">
-      {USAGE_DISPLAY_OPTIONS.map((option) => (
-        <button
-          key={option.id}
-          type="button"
-          role="radio"
-          aria-checked={value === option.id}
-          className={value === option.id ? "selected" : ""}
-          onClick={() => onChange(option.id)}
-        >
-          <span><strong>{option.label}</strong><small>{option.detail}</small></span>
-          {value === option.id && <Check size={14} />}
-        </button>
-      ))}
+      <div className="usage-display-options" role="radiogroup" aria-label="Provider quota display" aria-describedby="usage-display-help">
+        {USAGE_DISPLAY_OPTIONS.map((option) => (
+          <button
+            key={option.id}
+            type="button"
+            role="radio"
+            aria-checked={value === option.id}
+            className={value === option.id ? "selected" : ""}
+            onClick={() => onChange(option.id)}
+          >
+            <strong>{option.label}</strong>
+            {value === option.id && <Check size={14} />}
+          </button>
+        ))}
+      </div>
     </div>
     {/* Rendered through the same helper the live cards use, so the example can
         never describe a format the app does not actually produce. */}

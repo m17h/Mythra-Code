@@ -222,6 +222,8 @@ describe("SettingsModal", () => {
     const group = screen.getByRole("radiogroup", { name: "Provider quota display" });
     expect(within(group).getByRole("radio", { name: /Percentage remaining/ })).toHaveAttribute("aria-checked", "true");
     expect(within(group).getByRole("radio", { name: /Percentage consumed/ })).toHaveAttribute("aria-checked", "false");
+    expect(within(group).queryByText(/Counts down what is still available/)).not.toBeInTheDocument();
+    expect(within(group).queryByText(/Counts up what has already been used/)).not.toBeInTheDocument();
     expect(screen.getByText(/OpenAI\/Codex rate limits, and Claude Code rate limits/)).toBeInTheDocument();
     expect(screen.getByText(/reset time/)).toBeInTheDocument();
     expect(screen.getByText("Example · 5h window 58% left")).toBeInTheDocument();
