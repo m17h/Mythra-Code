@@ -49,6 +49,11 @@ import type { Account, AppSettings, CustomAgentProfile, Project, Provider, Setti
 const queuedDeliveries = new Map<string, { threadId: string; context: TurnRunnerContext }>();
 const activeQueuedDeliveries = new Set<string>();
 
+/** The provider can finish between the UI's steering check and the write. */
+function isInactiveSteerError(reason: unknown): boolean {
+  return /(?:Claude|Cursor).*(?:not currently running|no longer running)/i.test(friendlyError(reason));
+}
+
 /**
  * Release the captured delivery contexts for a thread. A context pins the whole
  * App render context, so a deleted conversation must not keep one alive. With
@@ -194,7 +199,12 @@ export function useTurnRunner(context: TurnRunnerContext): {
 
   // Returns true when the message was delivered; the Composer restores its
   // draft when it was not.
-  const deliverMessage = useCallback(async (ctx: TurnRunnerContext, text: string, mode: "turn" | "steer"): Promise<boolean> => {
+  const deliverMessage = useCallback(async (
+    ctx: TurnRunnerContext,
+    text: string,
+    mode: "turn" | "steer",
+    onInactiveSteer?: () => void,
+  ): Promise<boolean> => {
     const {
       activeThread, activeWorkspace, activeProject, running, attachments, deferredDelivery,
       effectiveSettings, subscriptionSystemPrompts, customAgents, openRouterModels, lmStudioModels = [],
@@ -295,7 +305,14 @@ export function useTurnRunner(context: TurnRunnerContext): {
         // The message never reached the runtime — remove the optimistic bubble
         // so a retry does not duplicate it in the timeline.
         useTaskStore.getState().removeMessage(activeThread.id, steerMessageId);
-        setError(friendlyError(reason));
+        if (isInactiveSteerError(reason)) {
+          // A terminal provider event may still be crossing the Tauri bridge.
+          // Let the caller preserve this as a normal queued follow-up instead
+          // of presenting the harmless timing race as a broken provider.
+          onInactiveSteer?.();
+        } else {
+          setError(friendlyError(reason));
+        }
         return false;
       }
     }
@@ -817,9 +834,22 @@ export function useTurnRunner(context: TurnRunnerContext): {
     if (ctx.activeThread && task?.status === "starting") return queueFollowUp(ctx, text);
     if (ctx.activeThread && task?.status === "running") {
       if (isAssistantOutputActive(task)) return queueFollowUp(ctx, text);
-      return deliverMessage({ ...ctx, running: true }, text, "steer");
+      let providerFinished = false;
+      const delivered = await deliverMessage(
+        { ...ctx, running: true },
+        text,
+        "steer",
+        () => { providerFinished = true; },
+      );
+      if (!delivered && providerFinished) return queueFollowUp(ctx, text);
+      return delivered;
     }
-    if (ctx.activeThread && ctx.running && !task) return deliverMessage(ctx, text, "steer");
+    if (ctx.activeThread && ctx.running && !task) {
+      let providerFinished = false;
+      const delivered = await deliverMessage(ctx, text, "steer", () => { providerFinished = true; });
+      if (!delivered && providerFinished) return queueFollowUp(ctx, text);
+      return delivered;
+    }
     return deliverMessage({ ...ctx, running: false }, text, "turn");
   }, [deliverMessage, queueFollowUp]);
 
@@ -832,18 +862,31 @@ export function useTurnRunner(context: TurnRunnerContext): {
     const queuedTurn = task.queuedTurns.find((entry) => entry.id === queuedTurnId);
     if (!queuedTurn || queuedTurn.status === "sending") return;
     useTaskStore.getState().setQueuedTurnStatus(threadId, queuedTurn.id, "sending");
+    let providerFinished = false;
     const delivered = await deliverMessage(
       { ...ctx, running: true, attachments: queuedTurn.attachments, setAttachments: () => undefined },
       queuedTurn.text,
       "steer",
+      () => { providerFinished = true; },
     );
     if (delivered) {
       useTaskStore.getState().removeQueuedTurn(threadId, queuedTurn.id);
       queuedDeliveries.delete(queuedTurn.id);
+    } else if (providerFinished) {
+      // The turn ended just before the provider received the steer. Keep the
+      // user's message in FIFO order; the normal completion path will start it
+      // as the next turn as soon as that terminal event reaches the renderer.
+      useTaskStore.getState().setQueuedTurnStatus(threadId, queuedTurn.id, "queued");
+      ctx.setError(null);
+      ctx.setTransientStatus("Turn finished; message queued for the next turn");
+      const status = useTaskStore.getState().tasks[threadId]?.status;
+      if (status !== "starting" && status !== "running") {
+        queueMicrotask(() => { void pumpQueuedThread(threadId); });
+      }
     } else {
       useTaskStore.getState().setQueuedTurnStatus(threadId, queuedTurn.id, "failed", "The message could not be steered into the active turn.");
     }
-  }, [deliverMessage]);
+  }, [deliverMessage, pumpQueuedThread]);
 
   const retryQueuedMessage = useCallback((queuedTurnId: string) => {
     const threadId = contextRef.current.activeThread?.id;
