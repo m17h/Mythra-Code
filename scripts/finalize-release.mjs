@@ -53,9 +53,20 @@ try {
     "--dir", temporary,
     "--clobber",
   ], "Updater manifest download");
+  checked("gh", [
+    "release", "download", tag,
+    "--repo", REPOSITORY,
+    "--pattern", "release-notes.md",
+    "--dir", temporary,
+    "--clobber",
+  ], "Release notes download");
   const manifest = JSON.parse(readFileSync(resolve(temporary, "latest.json"), "utf8"));
   if (manifest.version !== version) {
     throw new Error(`Draft manifest version ${manifest.version} does not match package version ${version}.`);
+  }
+  const approvedNotes = readFileSync(resolve(temporary, "release-notes.md"), "utf8").trim();
+  if (manifest.notes !== approvedNotes) {
+    throw new Error("The combined updater manifest does not preserve the approved release-notes.md content.");
   }
 
   const assetNames = new Set((release.assets || []).map((asset) => asset.name));
@@ -69,7 +80,11 @@ try {
   }
   for (const required of [
     "latest.json",
+    "release-notes.md",
+    "OpenKiwi-icon.png",
+    `OpenKiwi_${version}_aarch64.app.tar.gz`,
     `OpenKiwi_${version}_aarch64.dmg`,
+    `OpenKiwi_${version}_x64-setup.exe`,
     `OpenKiwi_${version}_x64-setup.exe.sig`,
     "build-info.txt",
     "build-info.json",
