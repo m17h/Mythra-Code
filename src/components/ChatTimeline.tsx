@@ -1,5 +1,6 @@
 import { Children, isValidElement, memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Check, ChevronDown, ChevronRight, CircleDot, Clipboard, FileCode2, ListChecks, MessageSquare, Pencil, TerminalSquare, UsersRound } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, CircleDot, Clipboard, FileCode2, ImageIcon, ListChecks, MessageSquare, Pencil, TerminalSquare, UsersRound } from "lucide-react";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -300,6 +301,40 @@ function StreamingMessageMarkdown({ text }: { text: string }) {
   return <MessageMarkdown text={deferredText} />;
 }
 
+function imagePreviewUrl(path: string): string {
+  if (/^(?:asset:|https?:|data:|blob:)/i.test(path)) return path;
+  try {
+    return convertFileSrc(path);
+  } catch {
+    // Browser previews do not have the Tauri bridge. Keeping the path makes
+    // component tests and browser development degrade without crashing.
+    return path;
+  }
+}
+
+function MessageImagePreview({ path, name }: { path: string; name: string }) {
+  const [failed, setFailed] = useState(false);
+  if (failed) {
+    return (
+      <span className="message-image-preview unavailable" title={name}>
+        <ImageIcon size={16} aria-hidden="true" />
+        <span>{name}</span>
+      </span>
+    );
+  }
+  return (
+    <img
+      className="message-image-preview"
+      src={imagePreviewUrl(path)}
+      alt={`Attached image: ${name}`}
+      title={name}
+      loading="lazy"
+      draggable={false}
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
 const MessageRow = memo(function MessageRow({ message, provider, onEdit }: { message: ChatMessage; provider: Provider; onEdit?: (text: string) => void }) {
   const [copied, copy] = useCopyFeedback();
   return (
@@ -328,6 +363,13 @@ const MessageRow = memo(function MessageRow({ message, provider, onEdit }: { mes
         {message.streaming
           ? <StreamingMessageMarkdown text={message.text} />
           : <MessageMarkdown text={message.text} />}
+        {message.role === "user" && Boolean(message.attachments?.length) && (
+          <div className="message-image-previews" aria-label="Attached images">
+            {message.attachments?.map((attachment) => (
+              <MessageImagePreview key={attachment.path} path={attachment.path} name={attachment.name} />
+            ))}
+          </div>
+        )}
         {message.streaming && <span className="stream-caret" />}
       </div>
     </article>

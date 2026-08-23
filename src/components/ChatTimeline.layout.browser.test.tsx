@@ -100,6 +100,25 @@ function overlaps(rows: PositionedRow[]): string[] {
 const settle = () => new Promise((resolve) => { setTimeout(resolve, 600); });
 
 describe("ChatTimeline browser layout", () => {
+  it("keeps a sent image preview compact inside the user message bubble", async () => {
+    const previewSource = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='640' height='480'%3E%3Crect width='640' height='480' fill='%238fd6ff'/%3E%3C/svg%3E";
+    render(<Shell messages={[{
+      id: "image-prompt",
+      role: "user",
+      text: "Use this screenshot",
+      attachments: [{ path: previewSource, name: "screenshot.png", kind: "image" }],
+    }]} running={false} activities={[]} />);
+    await settle();
+
+    const preview = document.querySelector<HTMLImageElement>(".message-image-preview");
+    const bubble = document.querySelector<HTMLElement>(".message.user .message-body");
+    expect(preview).not.toBeNull();
+    expect(bubble).not.toBeNull();
+    expect(Math.round(preview!.getBoundingClientRect().width)).toBe(112);
+    expect(Math.round(preview!.getBoundingClientRect().height)).toBe(76);
+    expect(preview!.getBoundingClientRect().right).toBeLessThanOrEqual(bubble!.getBoundingClientRect().right + 1);
+  });
+
   it("aligns a Relay card with neighbouring timeline activity and keeps its height stable", async () => {
     const relay: Activity = {
       id: "relay",

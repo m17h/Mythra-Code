@@ -11,6 +11,10 @@ import { playwright } from "@vitest/browser-playwright";
  */
 export default defineConfig({
   plugins: [react()],
+  // ChatTimeline converts local image paths for sent attachment previews.
+  // Pre-bundling the Tauri helper prevents Vite from reloading a live browser
+  // spec the first time that lazy timeline chunk is imported.
+  optimizeDeps: { include: ["@tauri-apps/api/core"] },
   test: {
     include: ["src/**/*.browser.test.{ts,tsx}"],
     setupFiles: ["./src/test/browser-setup.ts"],

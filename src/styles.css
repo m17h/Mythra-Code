@@ -524,6 +524,10 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .app-shell[data-theme="daylight"] .message-avatar.provider-openai { background: #1a1d18; }
 .message-body { min-width: 0; color: var(--ink-2); font-size: var(--fs-body); line-height: 1.68; letter-spacing: -.005em; text-wrap: pretty; }
 .message-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.message-image-previews { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; margin-top: 9px; }
+.message-image-preview { width: 112px; height: 76px; display: block; object-fit: cover; border: 1px solid var(--line-strong); border-radius: var(--r-sm); background: var(--field); box-shadow: 0 2px 8px rgba(0,0,0,.18); }
+.message-image-preview.unavailable { box-sizing: border-box; align-items: center; justify-content: center; gap: 6px; padding: 7px; color: var(--muted); font-size: var(--fs-micro); }
+.message-image-preview.unavailable span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .timeline-shell { position: relative; width: 100%; height: 100%; min-height: 0; }
 .flow-timeline { height: 100%; overflow-x: hidden; overflow-y: auto; overscroll-behavior-y: contain; overflow-anchor: none; }
 .flow-timeline:focus { outline: none; }

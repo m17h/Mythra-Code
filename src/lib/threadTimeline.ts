@@ -13,6 +13,15 @@ function userText(item: ThreadItem): string {
     .join("\n");
 }
 
+function userImageAttachments(item: ThreadItem): ChatMessage["attachments"] {
+  const images = (item.content ?? []).flatMap((content) => {
+    if (typeof content === "string" || content.type !== "localImage" || !content.path) return [];
+    const name = content.name || content.path.replaceAll("\\", "/").split("/").at(-1) || "Attached image";
+    return [{ path: content.path, name, kind: "image" as const }];
+  });
+  return images.length ? images : undefined;
+}
+
 function activityFromItem(item: ThreadItem, id: string, timelineOrder: number, turnId: string, turnStatus: Turn["status"]): Activity | null {
   if (item.type === "commandExecution") {
     return { id, kind: "command", title: item.command ?? "Run command", detail: item.aggregatedOutput ?? item.cwd, status: item.status, timelineOrder, turnId, turnStatus };
@@ -74,7 +83,15 @@ export function timelineFromTurns(turns: Turn[] = []): ThreadTimelineSnapshot {
       const order = ++timelineOrder;
       const id = item.id ?? `${turn.id}-${itemIndex}`;
       if (item.type === "userMessage") {
-        messages.push({ id, role: "user", text: userText(item), timelineOrder: order, turnId: turn.id, turnStatus });
+        messages.push({
+          id,
+          role: "user",
+          text: userText(item),
+          attachments: userImageAttachments(item),
+          timelineOrder: order,
+          turnId: turn.id,
+          turnStatus,
+        });
         return;
       }
       if (item.type === "agentMessage" || item.type === "plan") {
