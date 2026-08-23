@@ -7,6 +7,20 @@ function run(root, command, args, options = {}) {
   return spawnSync(command, args, { cwd: root, encoding: "utf8", ...options });
 }
 
+/** Merge native platform manifests while keeping macOS's approved release copy. */
+export function combinePlatformManifests(previous, incoming) {
+  const previousHasMac = Boolean(previous.platforms?.["darwin-aarch64"] || previous.platforms?.["darwin-x86_64"]);
+  const incomingHasMac = Boolean(incoming.platforms?.["darwin-aarch64"] || incoming.platforms?.["darwin-x86_64"]);
+  const releaseCopy = incomingHasMac ? incoming : previousHasMac ? previous : incoming;
+  return {
+    ...previous,
+    ...incoming,
+    notes: releaseCopy.notes || previous.notes || incoming.notes,
+    pub_date: releaseCopy.pub_date || previous.pub_date || incoming.pub_date,
+    platforms: { ...(previous.platforms || {}), ...(incoming.platforms || {}) },
+  };
+}
+
 export function uploadPlatformDraft({
   root,
   repository,
@@ -48,13 +62,7 @@ export function uploadPlatformDraft({
       if (previous.version !== manifest.version) {
         throw new Error(`Draft manifest version ${previous.version} does not match local version ${manifest.version}.`);
       }
-      combined = {
-        ...previous,
-        ...manifest,
-        notes: manifest.notes || previous.notes,
-        pub_date: manifest.pub_date || previous.pub_date,
-        platforms: { ...(previous.platforms || {}), ...(manifest.platforms || {}) },
-      };
+      combined = combinePlatformManifests(previous, manifest);
     }
 
     const combinedManifest = resolve(temporary, "latest.json");
