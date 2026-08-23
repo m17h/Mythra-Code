@@ -17,12 +17,11 @@ import type { AppSettings, PermissionMode } from "../types";
  *
  * Two rules, and they pull in different directions on purpose:
  *
- * - *Destinations are frozen.* The approved set is decided once — on the first
- *   turn where cross-provider sub-agents are available — and reused verbatim
- *   afterwards, so a settings change mid-conversation can never re-point the
- *   children a running plan depends on. Providers that spawn a fresh process
- *   per turn (Claude, Cursor) therefore get the same launch descriptor every
- *   time.
+ * - *Destinations are turn-boundary atomic.* The approved set is reused while
+ *   work is active. A direct user edit is staged while idle and promoted only
+ *   when the next prompt starts, so no running plan can be re-pointed midway.
+ *   Providers that spawn a fresh process per turn (Claude, Cursor) therefore
+ *   receive one internally consistent launch descriptor for each turn.
  * - *The switch is live.* Whether that frozen roster is reachable at all
  *   follows the current sub-agent settings on every turn. A user who enables
  *   sub-agents several messages into a conversation gets them on the very next
@@ -77,6 +76,8 @@ export interface ChildAgentBridgeInput {
   readiness: ChildAgentReadiness;
   /** Saved projects keep a proposal-only bridge even while delegation is off. */
   settingsProposalsEnabled?: boolean;
+  /** Only an actual prompt may consume a thread-local staged crew edit. */
+  promoteStagedEdits?: boolean;
   newSessionId?: () => string;
 }
 
@@ -99,12 +100,22 @@ export async function ensureChildAgentBridge(
   // is itself a child never receives a bridge.
   if (input.isChildThread || (input.threadId && input.links[input.threadId])) return null;
 
-  const stored = childAgentPolicyForThread(input.policies, input.threadId);
+  const persistedStored = childAgentPolicyForThread(input.policies, input.threadId);
+  // A composer edit can be followed by Send before React persistence renders.
+  // Prefer an immediately staged record once storage identifies the session.
+  // Other cached policies (notably the temporary proposal-only bridge used
+  // while delegation is switched off) must not overwrite the durable roster.
+  const immediateStored = persistedStored
+    ? childAgentPolicyForSession(input.policies, persistedStored.sessionId)
+    : undefined;
+  const stored = immediateStored?.pendingRecapture ? immediateStored : persistedStored;
   // A roster the user explicitly approved replaces the frozen one — but only
   // when it still has somewhere to send work. An empty approved roster would
   // otherwise be promoted into a policy the backend rejects, turning the next
   // prompt into a failed turn instead of a thread without delegation.
-  const recapture = stored?.pendingRecapture?.targets.length ? stored.pendingRecapture : undefined;
+  const recapture = input.promoteStagedEdits && stored?.pendingRecapture?.targets.length
+    ? stored.pendingRecapture
+    : undefined;
   const existing = recapture ? {
     ...stored!,
     maxConcurrent: recapture.maxConcurrent,
@@ -186,6 +197,11 @@ export async function ensureChildAgentBridge(
     : livePolicy;
   if (!policy) return null;
   cacheChildAgentPolicy(policy);
+
+  // A promoted policy must never reuse a bridge registered with the old
+  // roster. Keep this invariant here rather than relying on every writer to
+  // remember to invalidate the launch cache.
+  if (recapture) launches.delete(policy.sessionId);
 
   const cached = launches.get(policy.sessionId);
   if (cached?.toolNames.includes("spawn_agent")) return { policy, launch: cached, captured: false };

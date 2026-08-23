@@ -431,27 +431,45 @@ describe("SubAgentCommandCenter editing a draft policy", () => {
 });
 
 describe("SubAgentCommandCenter on a thread that froze a roster", () => {
-  it("shows the captured destinations read-only and never offers to change them", async () => {
-    await open({ mode: "captured", capturedPolicy: CAPTURED });
-    expect(screen.getByText("Destinations locked for this thread")).toBeInTheDocument();
-    expect(screen.getByText(/froze its destinations on the first run where cross-provider sub-agents were available/)).toBeInTheDocument();
-    expect(screen.getByText("Frozen reviewer")).toBeInTheDocument();
-    expect(screen.getByText("Captured on the first run with cross-provider sub-agents.")).toBeInTheDocument();
+  const capturedDraft: ProjectSubagentSettings = {
+    ...POLICY,
+    maxConcurrent: CAPTURED.maxConcurrent,
+    childAgents: { enabled: true, targets: CAPTURED.targets },
+  };
 
+  it("lets an idle captured thread edit its own crew for the next message", async () => {
+    await open({ mode: "captured", capturedPolicy: CAPTURED, policy: capturedDraft });
+    expect(screen.getByText("Editing this thread")).toBeInTheDocument();
+    expect(screen.getByText(/Destination and limit changes stay in this thread/)).toBeInTheDocument();
+    expect(screen.getByText("Frozen reviewer")).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "Enable Frozen reviewer" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "More concurrent sub-agents" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add OpenAI destination" })).toBeInTheDocument();
+  });
+
+  it("locks every crew control while the parent is active", async () => {
+    await open({ mode: "captured", capturedPolicy: CAPTURED, policy: capturedDraft, parentActive: true });
+    expect(screen.getByText("Crew locked while work is active")).toBeInTheDocument();
+    expect(screen.getByText(/Finish or stop the parent and every sub-agent/)).toBeInTheDocument();
     expect(screen.queryByRole("switch", { name: /^Enable / })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "More concurrent sub-agents" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /^Add / })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /^Remove / })).not.toBeInTheDocument();
-    expect(screen.queryByText("Reviewer")).not.toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "Allow sub-agent spawning" })).toBeDisabled();
+    expect(screen.getByRole("switch", { name: "Allow cross-provider sub-agents" })).toBeDisabled();
+  });
+
+  it("locks every crew control while any child is active", async () => {
+    await open({ mode: "captured", capturedPolicy: CAPTURED, policy: capturedDraft, workers: [worker()] });
+    expect(screen.getByText("Crew locked while work is active")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "More concurrent sub-agents" })).not.toBeInTheDocument();
   });
 
   it("shows the captured limit rather than the limit configured since", async () => {
-    await open({ mode: "captured", capturedPolicy: CAPTURED });
+    await open({ mode: "captured", capturedPolicy: CAPTURED, policy: capturedDraft });
     expect(trigger()).toHaveTextContent("Agents: 2");
   });
 
-  it("keeps the switches live so a frozen thread can always be switched off", async () => {
-    const { onChange } = await open({ mode: "captured", capturedPolicy: CAPTURED });
+  it("keeps the switches editable once the thread is idle", async () => {
+    const { onChange } = await open({ mode: "captured", capturedPolicy: CAPTURED, policy: capturedDraft });
     await userEvent.click(screen.getByRole("switch", { name: "Allow sub-agent spawning" }));
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ enabled: false }));
 
@@ -477,7 +495,7 @@ describe("SubAgentCommandCenter on a thread that froze a roster", () => {
     await open({
       mode: "captured",
       capturedPolicy: CAPTURED,
-      policy: { ...POLICY, enabled: true, childAgents: { enabled: false, targets: [REVIEWER] } },
+      policy: { ...capturedDraft, enabled: true, childAgents: { enabled: false, targets: CAPTURED.targets } },
     });
     expect(trigger()).toHaveTextContent("Agents: 2");
     expect(trigger()).not.toHaveTextContent("↗");

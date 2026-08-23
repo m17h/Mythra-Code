@@ -1176,7 +1176,7 @@ describe("composer sub-agent command center", () => {
     });
   });
 
-  it("locks the destinations of a thread that has already delegated, but not the switch", async () => {
+  it("stages idle captured-crew edits on the thread without rewriting defaults", async () => {
     const user = userEvent.setup();
     localStorage.setItem("kiwi.settings", JSON.stringify({
       subagentsEnabled: true,
@@ -1201,17 +1201,28 @@ describe("composer sub-agent command center", () => {
     await user.click(await screen.findByText("Alpha thread"));
     const crew = await openCrew(user);
 
-    expect(screen.getByText(/froze its destinations on the first run where cross-provider sub-agents were available/)).toBeInTheDocument();
+    expect(screen.getByText("Editing this thread")).toBeInTheDocument();
+    expect(screen.getByText(/Destination and limit changes stay in this thread/)).toBeInTheDocument();
     expect(within(crew).getByText("Frozen reviewer")).toBeInTheDocument();
     // The destination configured since is not one this thread may reach.
     expect(within(crew).queryByText("Cursor")).not.toBeInTheDocument();
-    expect(within(crew).queryByRole("button", { name: "More concurrent sub-agents" })).not.toBeInTheDocument();
-    expect(within(crew).queryByRole("button", { name: /^Add / })).not.toBeInTheDocument();
-    expect(JSON.parse(localStorage.getItem("kiwi.settings") ?? "{}").subagentMax).toBe(5);
+    await user.click(within(crew).getByRole("button", { name: "Add OpenAI destination" }));
 
-    // Revocation always stays reachable, and reaches the runtime on the next turn.
-    await user.click(screen.getByRole("switch", { name: "Allow sub-agent spawning" }));
-    await waitFor(() => expect(projectSubagents(PROJECT_A.id)).toMatchObject({ enabled: false }));
+    await waitFor(() => {
+      const policies = JSON.parse(localStorage.getItem("kiwi.childAgentPolicies") ?? "{}");
+      expect(policies["session-a"].pendingRecapture).toMatchObject({
+        targets: [
+          expect.objectContaining({ id: "frozen", provider: "claude" }),
+          expect.objectContaining({ id: "openai", provider: "openai" }),
+        ],
+      });
+    });
+    // This edit belongs to THREAD_A only. New chats and other project threads
+    // continue to inherit the defaults they had before the click.
+    const storedSettings = JSON.parse(localStorage.getItem("kiwi.settings") ?? "{}");
+    expect(storedSettings.subagentMax).toBe(5);
+    expect(storedSettings.childAgents.targets).toEqual([expect.objectContaining({ id: "cursor" })]);
+    expect(projectSubagents(PROJECT_A.id)).toBeUndefined();
   });
 
   /**

@@ -489,11 +489,8 @@ export default function App() {
     : undefined;
   /** This conversation is itself a sub-agent, so it may never delegate. */
   const activeThreadIsChild = Boolean(activeThread && isSubAgentThread(activeThread, childThreadLinks));
-  /**
-   * A thread is only locked once a run has made its cross-provider roster
-   * available. Until then it stays editable, so sub-agents configured partway
-   * through a conversation are usable on its very next turn.
-   */
+  /** A captured thread keeps its own roster; activity decides whether the
+   * command center may stage a replacement for the next turn. */
   const subagentPolicyMode = useMemo<SubAgentPolicyMode>(() => {
     if (activeThreadIsChild) return "child";
     return activeDelegationPolicy ? "captured" : "open";
@@ -507,12 +504,27 @@ export default function App() {
     if (!effectiveSettings.subagentsEnabled) return "Cross-provider off";
     return describeChildAgentRoster(roster, childAgentReadiness);
   }, [activeDelegationPolicy, childAgentReadiness, effectiveSettings.childAgents, effectiveSettings.subagentsEnabled]);
-  // The composer's command center edits this shape directly; a started thread
-  // renders it read-only beside the policy it froze.
+  // The composer's command center edits this shape directly until a thread has
+  // captured a crew of its own.
   const composerSubagentPolicy = useMemo(
     () => projectSubagentSettingsFromApp(effectiveSettings),
     [effectiveSettings],
   );
+  // Captured conversations edit a thread-local draft. A pending recapture is
+  // shown immediately so the UI never appears to discard an edit while it is
+  // waiting for the next prompt to promote it.
+  const activeThreadSubagentPolicy = useMemo<ProjectSubagentSettings>(() => {
+    if (!activeDelegationPolicy) return composerSubagentPolicy;
+    const pending = activeDelegationPolicy.pendingRecapture;
+    return {
+      enabled: effectiveSettings.subagentsEnabled,
+      maxConcurrent: pending?.maxConcurrent ?? activeDelegationPolicy.maxConcurrent,
+      childAgents: {
+        enabled: effectiveSettings.childAgents.enabled,
+        targets: pending?.targets ?? activeDelegationPolicy.targets,
+      },
+    };
+  }, [activeDelegationPolicy, composerSubagentPolicy, effectiveSettings.childAgents.enabled, effectiveSettings.subagentsEnabled]);
   const subAgentModelCatalogs = useMemo<Partial<Record<Provider, SubAgentModelOption[]>>>(() => ({
     ...(runtimeModels.length ? {
       openai: runtimeModels.map((entry) => ({
@@ -1007,6 +1019,77 @@ export default function App() {
       setStatus((current) => (current === message ? "Ready" : current));
     }, 3000);
   }, []);
+
+  /**
+   * Stage destination/model/reasoning/limit edits for this conversation only.
+   * The global/project switches intentionally remain live defaults, while the
+   * captured roster is promoted atomically by the next prompt.
+   */
+  const persistActiveThreadSubagentPolicy = useCallback((next: ProjectSubagentSettings) => {
+    const existing = activeDelegationPolicy;
+    if (!existing || !activeThreadId) {
+      persistComposerSubagentPolicy(next);
+      return;
+    }
+    // The rendered controls re-lock as soon as work starts, but re-check here
+    // so a click that lands in the same tick as a run cannot mutate its crew.
+    const latestStatus = useTaskStore.getState().statuses[activeThreadId] ?? "idle";
+    const parentActive = latestStatus === "starting" || latestStatus === "running" || queuedTurns.length > 0;
+    if (parentActive || childrenRunning) {
+      setTransientStatus("Finish or stop the parent and every sub-agent before changing this crew");
+      return;
+    }
+
+    // These switches have always been revocation controls read fresh by every
+    // turn. Preserve that contract without copying this thread's roster back
+    // into project/global defaults.
+    if (next.enabled !== composerSubagentPolicy.enabled
+      || next.childAgents.enabled !== composerSubagentPolicy.childAgents.enabled) {
+      persistComposerSubagentPolicy({
+        ...composerSubagentPolicy,
+        enabled: next.enabled,
+        childAgents: { ...composerSubagentPolicy.childAgents, enabled: next.childAgents.enabled },
+      });
+    }
+
+    const crewChanged = next.maxConcurrent !== activeThreadSubagentPolicy.maxConcurrent
+      || JSON.stringify(next.childAgents.targets) !== JSON.stringify(activeThreadSubagentPolicy.childAgents.targets);
+    if (!crewChanged) {
+      setTransientStatus("Sub-agent access updated · applies next message");
+      return;
+    }
+    const targets = next.childAgents.targets;
+    if (!readyChildAgentTargets({ enabled: true, targets }, childAgentReadiness).length) {
+      setTransientStatus("Keep one ready destination, or switch cross-provider sub-agents off");
+      return;
+    }
+    const pendingRecapture = {
+      maxConcurrent: crewSafeConcurrency(next.maxConcurrent, { enabled: true, targets }),
+      targets,
+      approvedAt: Date.now(),
+    };
+    const staged = { ...existing, pendingRecapture };
+    // The immediate cache closes the tiny click-then-send race before React's
+    // persisted state has rendered the staged policy back into this callback.
+    cacheChildAgentPolicy(staged);
+    persistChildAgentPolicies((current) => ({
+      ...current,
+      [existing.sessionId]: { ...(current[existing.sessionId] ?? existing), pendingRecapture },
+    }));
+    invalidateChildAgentLaunch(existing.sessionId);
+    setTransientStatus("Sub-agent crew updated for this thread · applies next message");
+  }, [
+    activeDelegationPolicy,
+    activeThreadSubagentPolicy,
+    activeThreadId,
+    childAgentReadiness,
+    childrenRunning,
+    composerSubagentPolicy,
+    persistChildAgentPolicies,
+    persistComposerSubagentPolicy,
+    queuedTurns.length,
+    setTransientStatus,
+  ]);
 
   const openSettings = useCallback((section: SettingsSection = "general") => {
     setSettingsInitialSection(section);
@@ -4544,15 +4627,16 @@ export default function App() {
                       )}
                     </div>
                     <SubAgentCommandCenter
-                      policy={composerSubagentPolicy}
+                      policy={activeThreadSubagentPolicy}
                       capturedPolicy={activeDelegationPolicy ?? null}
                       mode={subagentPolicyMode}
                       readiness={childAgentReadiness}
                       workers={subAgentWorkers}
+                      parentActive={running || queuedTurns.length > 0}
                       scopeLabel={activeProject ? activeProject.name : "Chats & project defaults"}
-                      projectOverride={Boolean(activeProject?.overrides?.subagents)}
+                      projectOverride={!activeDelegationPolicy && Boolean(activeProject?.overrides?.subagents)}
                       modelCatalogs={subAgentModelCatalogs}
-                      onChange={persistComposerSubagentPolicy}
+                      onChange={activeDelegationPolicy ? persistActiveThreadSubagentPolicy : persistComposerSubagentPolicy}
                       onOpenSettings={() => openSettings("agents")}
                       onOpenWorker={openSubAgentWorker}
                       onStopWorker={stopSubAgentWorker}

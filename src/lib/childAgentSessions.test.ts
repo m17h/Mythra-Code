@@ -6,7 +6,7 @@ const bridge = vi.hoisted(() => ({
 }));
 vi.mock("./agentBridge", () => bridge);
 
-import { ensureChildAgentBridge, releaseChildAgentSessions, resetChildAgentLaunches } from "./childAgentSessions";
+import { cacheChildAgentPolicy, ensureChildAgentBridge, releaseChildAgentSessions, resetChildAgentLaunches } from "./childAgentSessions";
 import type { ChildAgentBridgeLaunch } from "./agentBridge";
 import type { ChildAgentLink, ChildAgentPolicy, ChildAgentReadiness } from "./childAgents";
 import type { ChildAgentSettings, ChildAgentTarget } from "../types";
@@ -216,6 +216,7 @@ describe("ensureChildAgentBridge", () => {
     const result = await ensureChildAgentBridge(input({
       threadId: "thread-1",
       policies: { "session-existing": staged },
+      promoteStagedEdits: true,
     }));
     expect(result?.captured).toBe(true);
     expect(result?.policy.pendingRecapture).toBeUndefined();
@@ -223,6 +224,44 @@ describe("ensureChildAgentBridge", () => {
     expect(result?.policy.targets.map((entry) => entry.id)).toEqual(["approved-reviewer"]);
     expect(bridge.startChildAgentSession).toHaveBeenCalledWith(
       expect.objectContaining({ sessionId: "session-existing", targets: [approved] }),
+      [],
+    );
+  });
+
+  it("leaves a staged roster untouched when a thread is only being selected", async () => {
+    const approved = { ...TARGET, id: "approved-reviewer" };
+    const staged = policy({ pendingRecapture: { maxConcurrent: 1, targets: [approved], approvedAt: 99 } });
+    const result = await ensureChildAgentBridge(input({
+      threadId: "thread-1",
+      policies: { "session-existing": staged },
+    }));
+    expect(result?.captured).toBe(false);
+    expect(result?.policy.pendingRecapture).toEqual(staged.pendingRecapture);
+    expect(result?.policy.targets.map((entry) => entry.id)).toEqual(["frozen"]);
+  });
+
+  it("rebuilds a warm bridge with an immediately staged crew on prompt send", async () => {
+    const frozen = policy();
+    await ensureChildAgentBridge(input({
+      threadId: "thread-1",
+      policies: { "session-existing": frozen },
+    }));
+    const approved = { ...TARGET, id: "approved-reviewer" };
+    cacheChildAgentPolicy(policy({ pendingRecapture: { maxConcurrent: 1, targets: [approved], approvedAt: 99 } }));
+
+    const result = await ensureChildAgentBridge(input({
+      threadId: "thread-1",
+      policies: { "session-existing": frozen },
+      promoteStagedEdits: true,
+    }));
+
+    expect(result?.captured).toBe(true);
+    expect(result?.policy.targets.map((entry) => entry.id)).toEqual(["approved-reviewer"]);
+    // The second registration must carry the new roster; reusing the warm
+    // launch would leave Rust serving the old destination behind the new UI.
+    expect(bridge.startChildAgentSession).toHaveBeenCalledTimes(2);
+    expect(bridge.startChildAgentSession).toHaveBeenLastCalledWith(
+      expect.objectContaining({ targets: [approved] }),
       [],
     );
   });
@@ -379,6 +418,7 @@ describe("ensureChildAgentBridge revoking delegation", () => {
       threadId: "thread-1",
       policies: current,
       settingsProposalsEnabled: true,
+      promoteStagedEdits: true,
     }));
     expect(restored?.captured).toBe(true);
     expect(restored?.policy.pendingRecapture).toBeUndefined();

@@ -528,6 +528,9 @@ export function useTurnRunner(context: TurnRunnerContext): {
         serviceTier: effectiveSettings.serviceTier,
         readiness: childAgentReadiness,
         settingsProposalsEnabled: Boolean(activeProject),
+        // Thread selection may attach a bridge, but only sending a prompt is
+        // allowed to consume a staged thread-local crew edit.
+        promoteStagedEdits: true,
       });
       // A captured cross-provider policy freezes one concurrency budget for
       // the whole conversation. Use that same budget for provider-native
