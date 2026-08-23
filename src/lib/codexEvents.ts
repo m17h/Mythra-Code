@@ -172,6 +172,7 @@ export function handleThreadItem(threadId: string, item: ThreadItem, ctx: CodexE
         provider: "openai",
         task: item.prompt ?? undefined,
         count: item.receiverThreadIds?.filter((childThreadId) => childThreadId && childThreadId !== threadId).length,
+        threadIds: item.receiverThreadIds?.filter((childThreadId) => childThreadId && childThreadId !== threadId),
       },
     });
     if (item.receiverThreadIds?.length) {

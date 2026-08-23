@@ -727,6 +727,22 @@ export function SettingsModal({
               <div className="settings-icon"><UsersRound size={17} /></div>
               <div><h3>Sub-agents</h3><p>Let the model delegate parallel work to direct child agents. Applies when a new thread starts.</p></div>
             </div>
+            <div className={`agent-settings-card ${local.autoArchiveSubagentThreads ? "enabled" : ""}`}>
+              <div className="agent-toggle-copy">
+                <strong>Archive sub-agent threads automatically</strong>
+                <small>After the parent finishes, move each settled child conversation to Archived. Children still working remain visible until they finish.</small>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-label="Archive sub-agent threads automatically"
+                aria-checked={local.autoArchiveSubagentThreads}
+                className={`toggle-switch ${local.autoArchiveSubagentThreads ? "on" : ""}`}
+                onClick={() => setLocal({ ...local, autoArchiveSubagentThreads: !local.autoArchiveSubagentThreads })}
+              >
+                <span />
+              </button>
+            </div>
             <div className="subagent-scope-bar">
               <label htmlFor="subagent-scope">Policy for</label>
               <select id="subagent-scope" value={effectiveAgentScope} onChange={(event) => setAgentScope(event.target.value)}>

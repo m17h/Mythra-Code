@@ -231,6 +231,7 @@ describe("useChildAgents", () => {
           model: "gpt-5.6-terra",
           task: "Refactor the parser.",
           count: 1,
+          threadIds: ["child-terra"],
         },
       }));
       expect(store.statuses["child-terra"]).toBe("running");

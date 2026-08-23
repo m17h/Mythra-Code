@@ -464,21 +464,48 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
         ? { ...message, turnStatus, turnDurationMs: turnDurationMs ?? message.turnDurationMs }
         : message)
       : task.messages;
+    const terminalAgentStatus = status === "completed"
+      ? "completed"
+      : status === "interrupted"
+        ? "interrupted"
+        : "failed";
+    const agents = newerTurnActive
+      ? task.agents
+      : task.agents.map((agent) => {
+          if (!isActiveAgentRecord(agent.status)) return agent;
+          const childStatus = state.statuses[agent.id];
+          // A child is live only when its own task says so. Provider-native
+          // `started` records occasionally arrive without a matching terminal
+          // event; letting the parent record win forever leaves Stop and the
+          // concurrency counter stuck after the parent has visibly finished.
+          if (childStatus === "starting" || childStatus === "running") return agent;
+          return { ...agent, status: terminalAgentStatus };
+        });
+    const activeAgentIds = new Set(agents.filter((agent) => isActiveAgentRecord(agent.status)).map((agent) => agent.id));
     const activities = completedTurnId
       ? task.activities.map((activity) => activity.turnId === completedTurnId
-        ? {
-            ...activity,
-            // A provider can disappear while a tool card is awaiting its
-            // result. The turn is terminal, so that card must not keep
-            // claiming it is live after the composer has returned to idle.
-            // Spawn cards are different: their child thread owns a separate
-            // lifecycle and may legitimately outlive the parent's turn.
-            status: activity.status === "inProgress" && !(activity.kind === "agent" && activity.agent?.action === "spawn")
-              ? (status === "completed" ? "completed" : "failed")
-              : activity.status,
-            turnStatus,
-            turnDurationMs: turnDurationMs ?? activity.turnDurationMs,
-          }
+        ? (() => {
+            const isLiveSpawn = activity.kind === "agent"
+              && activity.agent?.action === "spawn"
+              && isActiveAgentRecord(activity.status ?? "");
+            const representedChildren = activity.agent?.threadIds ?? [];
+            const childStillActive = representedChildren.length
+              ? representedChildren.some((childThreadId) => activeAgentIds.has(childThreadId)
+                || state.statuses[childThreadId] === "starting"
+                || state.statuses[childThreadId] === "running")
+              : activeAgentIds.size > 0;
+            const shouldSettle = activity.status === "inProgress" && !isLiveSpawn
+              || (isLiveSpawn && !childStillActive);
+            return {
+              ...activity,
+              // Spawn cards may outlive their parent only while at least one
+              // represented child task is genuinely active. This keeps the
+              // timeline, composer Stop button, and worker count in agreement.
+              status: shouldSettle ? terminalAgentStatus : activity.status,
+              turnStatus,
+              turnDurationMs: turnDurationMs ?? activity.turnDurationMs,
+            };
+          })()
         : activity)
       : task.activities;
     return {
@@ -488,6 +515,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
           ...task,
           messages,
           activities,
+          agents,
           activeTurnId: task.activeTurnId === turnId || !turnId ? undefined : task.activeTurnId,
           assistantOutputTurnId: completedTurnId === task.assistantOutputTurnId
             ? undefined

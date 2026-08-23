@@ -116,6 +116,7 @@ import {
 import { cacheChildAgentPolicy, ensureChildAgentBridge, invalidateChildAgentLaunch, releaseChildAgentSessions } from "./lib/childAgentSessions";
 import { forgetSubagentCapabilities, planSubagentCapabilities, recordSubagentCapabilities, subagentCapabilitySignature } from "./lib/threadCapabilities";
 import { canOwnThread, nativeAgentLinkFromThread, nativeAgentLinksAfterThreadDeletion, sanitizeNativeAgentLinks, type NativeAgentLink, type OwnershipLinks } from "./lib/nativeAgentLinks";
+import { autoArchiveSubagentCandidates } from "./lib/subAgentArchive";
 import { collectSubAgentWorkers, isSubAgentWorkerActive, type SubAgentWorker } from "./lib/subAgentActivity";
 import { useChildAgents } from "./hooks/useChildAgents";
 import { reorderProjects, type ProjectDropPosition } from "./lib/projectOrdering";
@@ -177,7 +178,7 @@ const establishedInstall = isEstablishedOpenKiwiInstall({ projects: initialProje
 const initialOnboardingOpen = initialOnboardingVersion < ONBOARDING_VERSION && !establishedInstall;
 const storedSettings = loadStored<Partial<AppSettings>>("kiwi.settings", {});
 const initialChildAgents = sanitizeChildAgentSettings(storedSettings.childAgents);
-const initialSettings: AppSettings = { ...DEFAULT_SETTINGS, ...storedSettings, openAiLogo: storedSettings.openAiLogo === "codex" ? "codex" : "openai", claudeLogo: storedSettings.claudeLogo === "anthropic" ? "anthropic" : "claude", cursorLogo: storedSettings.cursorLogo === "app-dark" ? "app-dark" : "cube", subagentMax: crewSafeConcurrency(Number(storedSettings.subagentMax) || DEFAULT_SETTINGS.subagentMax, initialChildAgents), childAgents: initialChildAgents, model: modelForProvider(storedSettings.provider ?? DEFAULT_SETTINGS.provider, storedSettings.model ?? DEFAULT_SETTINGS.model), reasoningEffort: sanitizeComposerReasoningEffort(storedSettings.reasoningEffort), ultra: false, lmStudioBaseUrl: storedSettings.lmStudioBaseUrl?.trim() || DEFAULT_LM_STUDIO_BASE_URL, theme: THEMES.some((theme) => theme.id === storedSettings.theme) ? storedSettings.theme! : DEFAULT_SETTINGS.theme, uiScale: Math.min(150, Math.max(80, Number(storedSettings.uiScale) || DEFAULT_SETTINGS.uiScale)), usageDisplay: sanitizeUsageDisplay(storedSettings.usageDisplay) };
+const initialSettings: AppSettings = { ...DEFAULT_SETTINGS, ...storedSettings, openAiLogo: storedSettings.openAiLogo === "codex" ? "codex" : "openai", claudeLogo: storedSettings.claudeLogo === "anthropic" ? "anthropic" : "claude", cursorLogo: storedSettings.cursorLogo === "app-dark" ? "app-dark" : "cube", subagentMax: crewSafeConcurrency(Number(storedSettings.subagentMax) || DEFAULT_SETTINGS.subagentMax, initialChildAgents), autoArchiveSubagentThreads: storedSettings.autoArchiveSubagentThreads === true, childAgents: initialChildAgents, model: modelForProvider(storedSettings.provider ?? DEFAULT_SETTINGS.provider, storedSettings.model ?? DEFAULT_SETTINGS.model), reasoningEffort: sanitizeComposerReasoningEffort(storedSettings.reasoningEffort), ultra: false, lmStudioBaseUrl: storedSettings.lmStudioBaseUrl?.trim() || DEFAULT_LM_STUDIO_BASE_URL, theme: THEMES.some((theme) => theme.id === storedSettings.theme) ? storedSettings.theme! : DEFAULT_SETTINGS.theme, uiScale: Math.min(150, Math.max(80, Number(storedSettings.uiScale) || DEFAULT_SETTINGS.uiScale)), usageDisplay: sanitizeUsageDisplay(storedSettings.usageDisplay) };
 
 function permissionLabel(mode: PermissionMode): string {
   if (mode === "read-only") return "Read only";
@@ -266,6 +267,8 @@ export default function App() {
   const [searchResults, setSearchResults] = useState<Thread[] | null>(null);
   const [pinnedThreadIds, setPinnedThreadIds] = usePersistedState<string[]>("kiwi.pinnedThreads", []);
   const [archivedThreads, persistArchivedThreads] = usePersistedState<ArchivedThread[]>("kiwi.archivedThreads", []);
+  const archivingThreadIdsRef = useRef(new Set<string>());
+  const autoArchiveCompletionRef = useRef<(completedThreadId: string) => void>(() => undefined);
   const [threadHandoffs, persistThreadHandoffs] = usePersistedState<Record<string, ThreadHandoff>>("kiwi.threadHandoffs", {});
   // Cross-provider delegation: one frozen policy per bridge session, plus the
   // parent/child ownership record that outlives a reload.
@@ -1646,6 +1649,7 @@ export default function App() {
     },
     onTurnCompleted: (threadId, turn) => {
       void finalizeRunCheckpoint(threadId, turn?.id);
+      autoArchiveCompletionRef.current(threadId);
       const needsProviderRepair = providerRepairThreadsRef.current.delete(threadId);
       if (turn) {
         setActiveThread((current) => (current && current.id === threadId ? { ...current, turns: [...(current.turns ?? []).filter((entry) => entry.id !== turn.id), turn] } : current));
@@ -1748,6 +1752,7 @@ export default function App() {
     },
     onTurnCompleted: (threadId) => {
       void finalizeRunCheckpoint(threadId);
+      autoArchiveCompletionRef.current(threadId);
       const task = useTaskStore.getState().tasks[threadId];
       const known = knownThreadsRef.current?.[threadId];
       if (known) {
@@ -1798,6 +1803,7 @@ export default function App() {
     },
     onTurnCompleted: (threadId) => {
       void finalizeRunCheckpoint(threadId);
+      autoArchiveCompletionRef.current(threadId);
       const task = useTaskStore.getState().tasks[threadId];
       const known = knownThreadsRef.current?.[threadId];
       if (known) {
@@ -2847,14 +2853,16 @@ export default function App() {
     persistNativeAgentLinks((current) => nativeAgentLinksAfterThreadDeletion(current, threadId));
   };
 
-  const archiveThread = async (thread: Thread) => {
+  const archiveThreadRecord = async (thread: Thread, confirmArchive: boolean) => {
     const label = thread.name || thread.preview || "Untitled thread";
     const taskStatus = useTaskStore.getState().statuses[thread.id];
     if (taskStatus === "starting" || taskStatus === "running") {
-      setError(`Stop “${label}” before archiving it so its final output and transcript are preserved.`);
+      if (confirmArchive) setError(`Stop “${label}” before archiving it so its final output and transcript are preserved.`);
       return;
     }
-    if (!window.confirm(`Archive “${label}”?\n\nIt moves to the Archived list in the sidebar, where you can restore or permanently delete it.`)) return;
+    if (archivingThreadIdsRef.current.has(thread.id)) return;
+    if (confirmArchive && !window.confirm(`Archive “${label}”?\n\nIt moves to the Archived list in the sidebar, where you can restore or permanently delete it.`)) return;
+    archivingThreadIdsRef.current.add(thread.id);
     try {
       if (!isLocalSubscriptionThread(thread)) await rpc("thread/archive", { threadId: thread.id });
       await cancelChildAgentsFor(thread.id);
@@ -2868,6 +2876,28 @@ export default function App() {
       persistArchivedThreads((current) => [{ id: thread.id, label, path, archivedAt: Date.now(), provider }, ...current.filter((entry) => entry.id !== thread.id)]);
     } catch (reason) {
       setError(friendlyError(reason));
+    } finally {
+      archivingThreadIdsRef.current.delete(thread.id);
+    }
+  };
+
+  const archiveThread = async (thread: Thread) => archiveThreadRecord(thread, true);
+
+  // Completion callbacks run before React has necessarily rendered the latest
+  // task-store snapshot, so they enter through a ref and inspect the store
+  // synchronously. A parent completion sweeps its settled children; a child
+  // that genuinely outlives the parent sweeps itself when its own turn ends.
+  autoArchiveCompletionRef.current = (completedThreadId) => {
+    if (!settings.autoArchiveSubagentThreads) return;
+    const childIds = autoArchiveSubagentCandidates({
+      completedThreadId,
+      links: childThreadLinks,
+      statuses: useTaskStore.getState().statuses,
+      archivedThreadIds: archivedThreads.map((record) => record.id),
+    });
+    for (const childThreadId of childIds) {
+      const child = threads.find((thread) => thread.id === childThreadId) ?? knownThreadsRef.current?.[childThreadId];
+      if (child) void archiveThreadRecord(child, false);
     }
   };
 
