@@ -206,8 +206,50 @@ describe("routeCodexEvent", () => {
     }, ctx);
 
     expect(useTaskStore.getState().tasks.root.agents).toContainEqual(expect.objectContaining({ id: "child", status: "interacted" }));
+    expect(useTaskStore.getState().tasks.root.activities).toContainEqual(expect.objectContaining({
+      id: "activity-1",
+      kind: "agent",
+      detail: "/root/worker",
+      status: "interacted",
+      agent: {
+        action: "spawn",
+        provider: "openai",
+        task: "/root/worker",
+        count: 1,
+      },
+    }));
     expect(useTaskStore.getState().tasks.child.workspacePath).toBe("/workspace");
     expect(ctx.onNativeAgentDiscovered).toHaveBeenCalledWith("root", "child", { path: "/root/worker" });
+  });
+
+  it("renders a native Codex start as a structured Relay spawn", () => {
+    const ctx = makeContext({ bindingFor: () => "/workspace" });
+    routeCodexEvent({
+      method: "item/completed",
+      params: {
+        threadId: "root",
+        item: {
+          id: "activity-1",
+          type: "subAgentActivity",
+          kind: "started",
+          agentThreadId: "child",
+          agentPath: "/root/audio_regression_audit",
+        },
+      },
+    }, ctx);
+
+    expect(useTaskStore.getState().tasks.root.activities).toContainEqual(expect.objectContaining({
+      id: "activity-1",
+      title: "Sub-agent started",
+      detail: "/root/audio_regression_audit",
+      status: "started",
+      agent: {
+        action: "spawn",
+        provider: "openai",
+        task: "/root/audio_regression_audit",
+        count: 1,
+      },
+    }));
   });
 
   it("never records the root thread as one of its own sub-agents", () => {

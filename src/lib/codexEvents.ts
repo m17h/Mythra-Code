@@ -3,6 +3,7 @@ import type { ThreadItem, Turn } from "../types";
 import { useTaskStore } from "./taskStore";
 import { parseCodexRateLimits, type ProviderRateLimits } from "./providerUsage";
 import type { TokenUsageView } from "../components/StudioDock";
+import { nativeSubAgentPresentation } from "./nativeSubAgentActivity";
 
 /**
  * Events that arrive without a threadId are routed to this bucket instead of
@@ -187,14 +188,9 @@ export function handleThreadItem(threadId: string, item: ThreadItem, ctx: CodexE
     return;
   }
   if (item.type === "subAgentActivity") {
-    const action = item.kind === "started" ? "started" : item.kind === "interrupted" ? "interrupted" : "working";
     taskStore.upsertActivity(threadId, {
       id,
-      kind: "agent",
-      title: `Sub-agent ${action}`,
-      detail: item.agentPath || item.agentThreadId,
-      status: item.kind,
-      agent: { action: "status", provider: "openai" },
+      ...nativeSubAgentPresentation(item),
     });
     if (item.agentThreadId && item.agentThreadId !== threadId) {
       taskStore.upsertAgent(threadId, { id: item.agentThreadId, prompt: "Delegated task", status: item.kind ?? "working", path: item.agentPath });

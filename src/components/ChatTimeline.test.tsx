@@ -5,6 +5,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn() }));
 
 import { ActivityRow, ChatTimeline, CommandDisclosure, CompletedWorkDisclosure, FileDisclosure, ReasoningDisclosure, compactCompletedTurns, formatCompletedDuration, orderedTimelineEntries, type WorkItemEntry } from "./ChatTimeline";
+import { timelineFromTurns } from "../lib/threadTimeline";
 
 /** Mirrors the shape of the old thread that exposed the production stall. */
 function oldLongThread(): { messages: Array<{
@@ -77,6 +78,26 @@ describe("ChatTimeline", () => {
     expect(screen.getByText("Rust critical bug fixes")).toBeInTheDocument();
     expect(screen.getByText("Working")).toBeInTheDocument();
     expect(screen.queryByText("inProgress")).not.toBeInTheDocument();
+  });
+
+  it("renders a restored native Codex child through the provider Relay", () => {
+    const snapshot = timelineFromTurns([{ id: "turn-1", items: [{
+      id: "native-spawn",
+      type: "subAgentActivity",
+      kind: "started",
+      agentThreadId: "child",
+      agentPath: "/root/audio_regression_audit",
+    }] }]);
+
+    render(<ActivityRow activity={snapshot.activities[0]} />);
+
+    expect(screen.getByRole("article", {
+      name: /OpenAI sub-agent working: \/root\/audio_regression_audit/i,
+    })).toBeInTheDocument();
+    expect(screen.getByText("OpenAI sub-agent")).toBeInTheDocument();
+    expect(screen.getByText("/root/audio_regression_audit")).toBeInTheDocument();
+    expect(screen.getByText("Working")).toBeInTheDocument();
+    expect(screen.queryByText("Sub-agent started")).not.toBeInTheDocument();
   });
 
   it("groups consecutive same-turn spawns into one coordinated wave", () => {
