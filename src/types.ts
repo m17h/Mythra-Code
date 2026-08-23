@@ -59,7 +59,7 @@ export interface ThreadItem {
   id?: string;
   type: string;
   text?: string;
-  content?: Array<{ type: string; text?: string }> | string[];
+  content?: Array<{ type: string; text?: string; path?: string; name?: string }> | string[];
   command?: string;
   cwd?: string;
   status?: string;
@@ -75,10 +75,18 @@ export interface ThreadItem {
   kind?: string;
 }
 
+export interface MessageAttachment {
+  path: string;
+  name: string;
+  kind: "image";
+}
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
   text: string;
+  /** Images submitted with this user turn, retained for the transcript UI. */
+  attachments?: MessageAttachment[];
   streaming?: boolean;
   timelineOrder?: number;
   /** Runtime turn identity keeps steering inside the turn it belongs to. */

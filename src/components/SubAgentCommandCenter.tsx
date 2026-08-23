@@ -53,12 +53,10 @@ import type { ChildAgentTarget, ProjectSubagentSettings, Provider } from "../typ
  *   has never run with cross-provider sub-agents available, edits the policy
  *   the next turn will capture, writing through to the global defaults or to
  *   the active project override.
- * - `captured` — this thread froze a roster on its first run with
- *   cross-provider sub-agents available. The
- *   destinations and the parallel limit are read-only, because changing them
- *   would hand a running root agent powers it did not start with. The on/off
- *   switches stay live: revoking delegation must always be possible, and it
- *   takes effect on the next turn.
+ * - `captured` — this thread already owns a roster. It may edit that roster
+ *   while the parent and all children are idle; the edit is staged atomically
+ *   for the next message. While any work is active, the roster is read-only so
+ *   a running plan cannot acquire different destinations mid-flight.
  * - `child` — this conversation is itself a sub-agent. It can never delegate,
  *   so nothing here is editable and nothing is offered.
  */
@@ -73,6 +71,8 @@ export interface SubAgentCommandCenterProps {
   mode: SubAgentPolicyMode;
   readiness: ChildAgentReadiness;
   workers: SubAgentWorker[];
+  /** Whether the parent conversation is starting or running. */
+  parentActive?: boolean;
   /** "Chats" or the project name — where an edit would be written. */
   scopeLabel: string;
   /** The active project already carries its own sub-agent override. */
@@ -197,23 +197,26 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
 
   const { policy, capturedPolicy, mode, readiness, workers, onChange } = props;
   const counts = useMemo(() => summarizeSubAgentWorkers(workers), [workers]);
-  /** This thread froze a roster; it is a readout, not a draft. */
-  const frozen = mode === "captured";
+  /** This thread already owns a captured, thread-specific roster. */
+  const captured = mode === "captured";
   /** A sub-agent conversation, which may never delegate again. */
   const isChild = mode === "child";
+  const crewActive = Boolean(props.parentActive) || counts.active > 0;
   /** Whether the destination roster and the parallel limit may be edited. */
-  const editable = mode === "open";
-  // A thread that captured a roster shows exactly that roster, because it is
-  // the one the runtime would use — not whatever the user has configured since.
+  const editable = mode === "open" || (captured && !crewActive);
+  // App resolves a captured thread's policy to its current or staged roster,
+  // so every edit operates on the exact draft the next message will promote.
   const targets = useMemo(() => {
     if (isChild) return NO_TARGETS;
-    return frozen ? (capturedPolicy?.targets ?? NO_TARGETS) : policy.childAgents.targets;
-  }, [capturedPolicy, frozen, isChild, policy.childAgents.targets]);
-  const maxConcurrent = frozen ? (capturedPolicy?.maxConcurrent ?? policy.maxConcurrent) : policy.maxConcurrent;
+    if (captured && crewActive) return capturedPolicy?.targets ?? NO_TARGETS;
+    return policy.childAgents.targets;
+  }, [captured, capturedPolicy?.targets, crewActive, isChild, policy.childAgents.targets]);
+  const maxConcurrent = captured && crewActive
+    ? (capturedPolicy?.maxConcurrent ?? policy.maxConcurrent)
+    : policy.maxConcurrent;
   // The switches are read fresh by every turn, so the panel reports the live
-  // ones even for a thread whose roster is frozen. Claiming a locked thread
-  // still has agent access after the user switched sub-agents off would
-  // promise powers the next turn will not have.
+  // ones even for a thread whose roster is captured. They re-lock with the
+  // rest of the controls while work is active.
   const delegationOn = !isChild && policy.enabled;
   const crossProviderOn = !isChild && policy.childAgents.enabled;
   const readyCount = useMemo(
@@ -258,6 +261,16 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
   }, [clearCloseTimer, finishClose]);
 
   useEffect(() => () => clearCloseTimer(), [clearCloseTimer]);
+
+  // A popover opened for one conversation must not remain open after the user
+  // switches to another and accidentally stage an edit against the new crew.
+  const previousSessionIdRef = useRef(capturedPolicy?.sessionId);
+  useEffect(() => {
+    const nextSessionId = capturedPolicy?.sessionId;
+    if (previousSessionIdRef.current === nextSessionId) return;
+    previousSessionIdRef.current = nextSessionId;
+    if (open) close();
+  }, [capturedPolicy?.sessionId, close, open]);
 
   const openWorker = useCallback(async (worker: SubAgentWorker) => {
     if (!props.onOpenWorker || workerAction) return;
@@ -410,8 +423,10 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
         aria-controls={open ? panelId : undefined}
         title={isChild
           ? "This conversation is a sub-agent, so it cannot start sub-agents of its own."
-          : frozen
-            ? "This thread's destinations are locked. Open the crew to watch its agents or switch them off."
+          : captured && crewActive
+            ? "This thread's crew is locked while its parent or a sub-agent is working."
+            : captured
+              ? "Edit this thread's sub-agent crew for its next message."
             : "Manage the sub-agent crew for this thread"}
         onClick={() => (open ? close() : show())}
       >
@@ -457,8 +472,10 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
               <small>
                 {isChild
                   ? "Sub-agent conversation"
-                  : frozen
-                    ? "Destinations locked for this thread"
+                  : captured && crewActive
+                    ? "Crew locked while work is active"
+                    : captured
+                      ? "Editing this thread"
                     : `Editing ${props.scopeLabel}`}
               </small>
             </span>
@@ -467,13 +484,20 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
             </button>
           </header>
 
-          {frozen && (
+          {captured && crewActive && (
             <p className="sa-locked-note">
               <Lock size={12} aria-hidden="true" />
               <span>
-                This thread froze its destinations on the first run where cross-provider sub-agents were available, so they cannot change mid-flight.
-                Switching sub-agents off still works, and takes effect on the next message.
+                Finish or stop the parent and every sub-agent before changing this crew.
+                The current run keeps the destinations it started with.
               </span>
+            </p>
+          )}
+
+          {captured && !crewActive && (
+            <p className="sa-locked-note">
+              <ArrowRightLeft size={12} aria-hidden="true" />
+              <span>Destination and limit changes stay in this thread and take effect together on its next message.</span>
             </p>
           )}
 
@@ -501,6 +525,7 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
                   role="switch"
                   aria-checked={policy.enabled}
                   aria-label="Allow sub-agent spawning"
+                  disabled={captured && crewActive}
                   className={`toggle-switch ${policy.enabled ? "on" : ""}`}
                   onClick={() => onChange({ ...policy, enabled: !policy.enabled })}
                 >
@@ -517,8 +542,8 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
                     ? crewSize > 0
                       ? `How many children may run at once (1–${MAX_SUBAGENT_CONCURRENCY}), chosen from ${crewSize} destination${crewSize === 1 ? "" : "s"}.`
                       : `How many children may run at once (1–${MAX_SUBAGENT_CONCURRENCY}).`
-                    : frozen
-                      ? "Captured on the first run with cross-provider sub-agents."
+                    : captured
+                      ? "Locked until the parent and every child are idle."
                       : "A sub-agent works alone."}
                 </small>
               </span>
@@ -563,7 +588,7 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
                   role="switch"
                   aria-checked={policy.childAgents.enabled}
                   aria-label="Allow cross-provider sub-agents"
-                  disabled={!policy.enabled}
+                  disabled={!policy.enabled || (captured && crewActive)}
                   className={`toggle-switch ${policy.childAgents.enabled && policy.enabled ? "on" : ""}`}
                   onClick={() => onChange({ ...policy, childAgents: { ...policy.childAgents, enabled: !policy.childAgents.enabled } })}
                 >
@@ -741,7 +766,7 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
                 <p className="sa-empty">
                   {isChild
                     ? "A sub-agent has no destinations of its own."
-                    : frozen
+                    : captured
                       ? "This thread captured no cross-provider destinations."
                       : "No destinations yet. Add a worker to let the root agent delegate across providers."}
                 </p>

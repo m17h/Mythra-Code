@@ -269,6 +269,24 @@ describe("useTurnRunner", () => {
     expect(deps.persistThreadReasoning).toHaveBeenCalledWith(expect.any(String), { reasoningEffort: "high", ultra: false });
   });
 
+  it("keeps sent image metadata on the user message for the timeline preview", async () => {
+    const deps = context({
+      attachments: [
+        { path: "/tmp/pasted-reference.png", name: "pasted-reference.png", kind: "image" },
+        { path: "/tmp/notes.md", name: "notes.md", kind: "file" },
+      ],
+    });
+    const { result } = renderHook(() => useTurnRunner(deps));
+
+    await act(async () => { await result.current.sendMessage("Match this reference"); });
+
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]?.messages[0]).toMatchObject({
+      role: "user",
+      text: "Match this reference",
+      attachments: [{ path: "/tmp/pasted-reference.png", name: "pasted-reference.png", kind: "image" }],
+    });
+  });
+
   it("hard-stops the active provider turn and records the stopped state", async () => {
     useTaskStore.getState().ensureTask(CURSOR_THREAD.id, CURSOR_THREAD.cwd);
     useTaskStore.getState().setActiveTurn(CURSOR_THREAD.id, "turn-live");
@@ -498,6 +516,9 @@ describe("useTurnRunner", () => {
       [{ path: "/tmp/reference.png", kind: "image" }],
     );
     expect(deps.setAttachments).toHaveBeenCalled();
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]?.messages[0]?.attachments).toEqual([
+      { path: "/tmp/reference.png", name: "reference.png", kind: "image" },
+    ]);
   });
 
   it("turns a stale steer into a queued follow-up as soon as assistant output starts", async () => {

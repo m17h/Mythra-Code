@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn() }));
+vi.mock("@tauri-apps/api/core", () => ({ convertFileSrc: (path: string) => `asset://localhost/${encodeURIComponent(path)}` }));
 
 import { ActivityRow, ChatTimeline, CommandDisclosure, CompletedWorkDisclosure, FileDisclosure, ReasoningDisclosure, compactCompletedTurns, formatCompletedDuration, orderedTimelineEntries, type WorkItemEntry } from "./ChatTimeline";
 import { timelineFromTurns } from "../lib/threadTimeline";
@@ -43,6 +44,25 @@ function oldLongThread(): { messages: Array<{
 }
 
 describe("ChatTimeline", () => {
+  it("shows sent image attachments as compact previews in the user message", () => {
+    render(<ChatTimeline
+      messages={[{
+        id: "user-with-image",
+        role: "user",
+        text: "Use this screenshot",
+        attachments: [{ path: "/tmp/pasted image.png", name: "pasted image.png", kind: "image" }],
+      }]}
+      activities={[]}
+      running={false}
+      thinkingLabel="Working"
+    />);
+
+    const preview = screen.getByRole("img", { name: "Attached image: pasted image.png" });
+    expect(preview).toHaveClass("message-image-preview");
+    expect(preview).toHaveAttribute("src", "asset://localhost/%2Ftmp%2Fpasted%20image.png");
+    expect(screen.getByLabelText("Attached images")).toContainElement(preview);
+  });
+
   it("renders entity-escaped sub-agent labels as plain text", () => {
     render(<ActivityRow activity={{
       id: "child-agent-1",

@@ -1639,6 +1639,9 @@ async fn save_pasted_image(
     tokio::fs::write(&file, &bytes)
         .await
         .map_err(|error| format!("Could not save the pasted image: {error}"))?;
+    app.asset_protocol_scope()
+        .allow_file(&file)
+        .map_err(|error| format!("Could not prepare the pasted image preview: {error}"))?;
     let cleanup_directory = dir.clone();
     let preserved_file = file.clone();
     // Cleanup is best effort: a successfully saved paste must remain usable

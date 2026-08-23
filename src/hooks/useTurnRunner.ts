@@ -98,6 +98,14 @@ function queuedDeliveryContext(context: TurnRunnerContext, threadId: string, att
   };
 }
 
+/** Keep only the image metadata the transcript needs, detached from composer state. */
+function messageImageAttachments(attachments: AttachmentRecord[]) {
+  const images = attachments
+    .filter((attachment) => attachment.kind === "image")
+    .map(({ path, name }) => ({ path, name, kind: "image" as const }));
+  return images.length ? images : undefined;
+}
+
 /** The verbatim isolation record persisted for a thread's private worktree. */
 function threadWorktreeRecord(threadId: string, project: Project, worktree: CreatedWorktree): ThreadWorktreeRecord {
   return {
@@ -284,7 +292,12 @@ export function useTurnRunner(context: TurnRunnerContext): {
       const sentAttachments = [...attachments];
       setError(null);
       const steerMessageId = `local-${crypto.randomUUID()}`;
-      useTaskStore.getState().appendUserMessage(activeThread.id, { id: steerMessageId, role: "user", text });
+      useTaskStore.getState().appendUserMessage(activeThread.id, {
+        id: steerMessageId,
+        role: "user",
+        text,
+        attachments: messageImageAttachments(sentAttachments),
+      });
       try {
         if (isClaudeThread(activeThread)) {
           await steerClaudeTurn(
@@ -457,7 +470,12 @@ export function useTurnRunner(context: TurnRunnerContext): {
       if (!pendingStart) pendingStart = pendingTurnStartsRef.current.begin(thread.id);
       await beginRunCheckpoint(thread.id, executionPath, text, effectiveSettings.provider, effectiveSettings.model);
       sentMessageId = `local-${crypto.randomUUID()}`;
-      useTaskStore.getState().appendUserMessage(thread.id, { id: sentMessageId, role: "user", text });
+      useTaskStore.getState().appendUserMessage(thread.id, {
+        id: sentMessageId,
+        role: "user",
+        text,
+        attachments: messageImageAttachments(sentAttachments),
+      });
       const result = await strategy.startTurn(thread, updatedThread);
       // Provider events can race ahead of the start RPC response. If a very
       // short turn already delivered its result, reinstalling it here would
@@ -510,6 +528,9 @@ export function useTurnRunner(context: TurnRunnerContext): {
         serviceTier: effectiveSettings.serviceTier,
         readiness: childAgentReadiness,
         settingsProposalsEnabled: Boolean(activeProject),
+        // Thread selection may attach a bridge, but only sending a prompt is
+        // allowed to consume a staged thread-local crew edit.
+        promoteStagedEdits: true,
       });
       // A captured cross-provider policy freezes one concurrency budget for
       // the whole conversation. Use that same budget for provider-native
@@ -645,7 +666,12 @@ export function useTurnRunner(context: TurnRunnerContext): {
       if (!pendingStart) pendingStart = pendingTurnStartsRef.current.begin(threadId);
       await beginRunCheckpoint(threadId, executionPath, text, effectiveSettings.provider, effectiveSettings.model);
       sentMessageId = `local-${crypto.randomUUID()}`;
-      useTaskStore.getState().appendUserMessage(threadId, { id: sentMessageId, role: "user", text });
+      useTaskStore.getState().appendUserMessage(threadId, {
+        id: sentMessageId,
+        role: "user",
+        text,
+        attachments: messageImageAttachments(sentAttachments),
+      });
 
       const result = await rpc<{ turn: Turn }>("turn/start", turnStartParams(effectiveSettings, threadId, executionPath, input, additionalWorkspaceRoots));
       const resultTurnId = result.turn?.id;

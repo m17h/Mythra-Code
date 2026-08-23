@@ -41,6 +41,26 @@ describe("timelineFromTurns", () => {
     expect(snapshot.messages.map((message) => message.turnStatus)).toEqual(["interrupted", "interrupted"]);
   });
 
+  it("restores local images on user messages for transcript previews", () => {
+    const snapshot = timelineFromTurns([{ id: "turn-image", items: [{
+      id: "user-image",
+      type: "userMessage",
+      content: [
+        { type: "text", text: "Use this screenshot" },
+        { type: "localImage", path: "C:\\Users\\Morgan\\pasted.png" },
+      ],
+    }] }]);
+
+    expect(snapshot.messages[0]).toMatchObject({
+      text: "Use this screenshot",
+      attachments: [{
+        path: "C:\\Users\\Morgan\\pasted.png",
+        name: "pasted.png",
+        kind: "image",
+      }],
+    });
+  });
+
   it("restores structured spawn metadata for the animated dispatch card", () => {
     const snapshot = timelineFromTurns([{ id: "turn-1", items: [{
       id: "spawn",
