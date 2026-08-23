@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve()) }));
 
-import { costTotals, formatCost, recordThreadCost } from "./costLedger";
+import { compactCostEntries, costTotals, formatCost, recordThreadCost, type CostEntry } from "./costLedger";
 
 describe("cost ledger", () => {
   beforeEach(() => localStorage.clear());
@@ -27,6 +27,26 @@ describe("cost ledger", () => {
     for (let index = 0; index < 520; index += 1) recordThreadCost(`t${index}`, "/p", 0.01);
     const stored = JSON.parse(localStorage.getItem("kiwi.costLedger") ?? "[]") as unknown[];
     expect(stored).toHaveLength(520);
+  });
+
+  it("collapses aged entries per thread while preserving every sum", () => {
+    const now = Date.parse("2026-08-23T12:00:00Z");
+    const entries: CostEntry[] = [
+      { threadId: "t1", projectPath: "/p", cost: 0.1, day: "2026-01-01", updatedAt: 1 },
+      { threadId: "t1", projectPath: "/p", cost: 0.2, day: "2026-01-02", updatedAt: 2 },
+      { threadId: "t1", projectPath: "/p", cost: 0.4, day: "2026-08-23", updatedAt: 9 },
+      { threadId: "t2", projectPath: "/p", cost: 0.8, day: "2026-01-03", updatedAt: 3 },
+      // A prior archive row merges with newly aged entries for its thread.
+      { threadId: "t2", projectPath: "/p", cost: 1.6, day: "archive", updatedAt: 4 },
+    ];
+    const compacted = compactCostEntries(entries, now);
+    expect(compacted).toHaveLength(3);
+    const threadTotal = (threadId: string) => compacted.filter((entry) => entry.threadId === threadId).reduce((sum, entry) => sum + entry.cost, 0);
+    expect(threadTotal("t1")).toBeCloseTo(0.7);
+    expect(threadTotal("t2")).toBeCloseTo(2.4);
+    expect(compacted.filter((entry) => entry.day === "archive")).toHaveLength(2);
+    // Recent per-day entries survive untouched.
+    expect(compacted.find((entry) => entry.day === "2026-08-23")?.cost).toBeCloseTo(0.4);
   });
 
   it("parses the stored ledger once across repeated reads", () => {

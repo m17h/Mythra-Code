@@ -86,8 +86,25 @@ export async function respondToCursorPermission(threadId: string, requestId: str
   await invoke("cursor_permission_respond", { threadId, requestId, result });
 }
 
-export function onCursorEvent(handler: (event: CursorEvent) => void): Promise<UnlistenFn> {
-  return listen<CursorEvent>("cursor-event", ({ payload }) => handler(payload));
+export async function onCursorEvent(handler: (event: CursorEvent) => void): Promise<UnlistenFn> {
+  // The backend emits single messages on "cursor-event" and coalesced bursts
+  // of session/update notifications on "cursor-events" as an ordered array.
+  // Keep both subscriptions so either backend version works.
+  const single = await listen<CursorEvent>("cursor-event", ({ payload }) => handler(payload));
+  try {
+    const batched = await listen<CursorEvent[]>("cursor-events", ({ payload }) => {
+      for (const event of payload) handler(event);
+    });
+    return () => {
+      single();
+      batched();
+    };
+  } catch (reason) {
+    // If the second subscription fails, do not leave the first listener
+    // orphaned and delivering every event twice after a retry.
+    single();
+    throw reason;
+  }
 }
 
 function transcriptKey(threadId: string): string {

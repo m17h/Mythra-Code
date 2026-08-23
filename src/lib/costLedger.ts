@@ -10,8 +10,37 @@ export interface CostEntry {
 
 const LEDGER_KEY = "kiwi.costLedger";
 
+/** Per-day granularity is only shown for recent spend; older entries collapse
+ * to one archived row per thread so the ledger stops growing with age. */
+const RETENTION_DAYS = 90;
+const ARCHIVE_DAY = "archive";
+
 function today(): string {
   return new Date().toISOString().slice(0, 10);
+}
+
+/**
+ * Collapse entries older than the retention window into a single `archive`
+ * entry per thread. Every reader keeps working unchanged: per-thread sums
+ * (incremental-cost accounting) and per-project sums are preserved exactly,
+ * and `archive` never matches today's date so daily totals are unaffected.
+ */
+export function compactCostEntries(entries: CostEntry[], now = Date.now()): CostEntry[] {
+  const cutoff = new Date(now - RETENTION_DAYS * 86_400_000).toISOString().slice(0, 10);
+  const recent: CostEntry[] = [];
+  const archived = new Map<string, CostEntry>();
+  for (const entry of entries) {
+    if (entry.day !== ARCHIVE_DAY && entry.day >= cutoff) {
+      recent.push(entry);
+      continue;
+    }
+    const key = `${entry.threadId}\0${entry.projectPath}`;
+    const existing = archived.get(key);
+    archived.set(key, existing
+      ? { ...existing, cost: existing.cost + entry.cost, updatedAt: Math.max(existing.updatedAt, entry.updatedAt) }
+      : { ...entry, day: ARCHIVE_DAY });
+  }
+  return archived.size > 0 ? [...recent, ...archived.values()] : entries;
 }
 
 // `costTotals` runs on every App render, so re-parsing the stored ledger each
@@ -71,7 +100,7 @@ export function recordThreadCost(threadId: string, projectPath: string, cost: nu
     next.push({ threadId, projectPath, cost: incrementalCost, day, updatedAt: Date.now() });
   }
   next.sort((left, right) => right.updatedAt - left.updatedAt);
-  storeValue(LEDGER_KEY, next);
+  storeValue(LEDGER_KEY, compactCostEntries(next));
   // Costs are recorded once per turn, so re-reading the stored string once on
   // the next read is cheaper than serializing it a second time here.
   resetCostLedgerCache();

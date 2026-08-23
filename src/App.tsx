@@ -13,7 +13,7 @@ import { loadStored, storeValue } from "./lib/storage";
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_PROMPT_PROFILES, DEFAULT_SETTINGS, THEMES } from "./lib/appConfig";
 import { commandSandbox, threadResumeParams, threadRuntimeConfig } from "./lib/turnConfig";
 import { threadSearchParams, threadsForWorkspace, type ThreadSearchResponse } from "./lib/threadSearch";
-import { countActiveThreadsByWorkspace, filterThreadsByKind, filterThreadsForWorkspace, forgetSidebarThread, isSubAgentThread, pruneSidebarIndex, reconcileWorkspaceThreads, rememberSidebarThread, repairRootThreadMetadata, sidebarThread, threadBelongsToWorkspace, upsertThread, type ThreadSidebarIndex } from "./lib/threadList";
+import { countActiveThreadsByWorkspace, filterThreadsByKind, filterThreadsForWorkspace, forgetSidebarThread, isSubAgentThread, partitionBulkArchiveThreads, pruneSidebarIndex, reconcileWorkspaceThreads, rememberSidebarThread, repairRootThreadMetadata, sidebarThread, threadBelongsToWorkspace, upsertThread, type ThreadSidebarIndex } from "./lib/threadList";
 import { timelineFromTurns } from "./lib/threadTimeline";
 import { buildTranscriptMarkdown } from "./lib/transcript";
 import { RowMenu } from "./components/RowMenu";
@@ -91,7 +91,7 @@ import { contextUsagePercent } from "./lib/contextUsage";
 import { openKiwiDeveloperInstructions } from "./lib/completionPrompt";
 import { runtimeModelProviderId } from "./lib/providerIds";
 import { primaryModifierLabel } from "./lib/platform";
-import { providerForArchivedThread } from "./lib/threadArchive";
+import { archivedThreadsForInbox, providerForArchivedThread } from "./lib/threadArchive";
 import { buildProviderHandoffPrompt, sanitizePendingHandoff } from "./lib/providerHandoff";
 import { deleteThreadTurnDurations } from "./lib/turnDurations";
 import {
@@ -113,7 +113,7 @@ import {
   type ChildAgentPolicy,
   type ChildAgentReadiness,
 } from "./lib/childAgents";
-import { cacheChildAgentPolicy, ensureChildAgentBridge, invalidateChildAgentLaunch, releaseChildAgentSessions } from "./lib/childAgentSessions";
+import { cacheChildAgentPolicy, ensureChildAgentBridge, invalidateChildAgentLaunch, releaseChildAgentSession, releaseChildAgentSessions } from "./lib/childAgentSessions";
 import { forgetSubagentCapabilities, planSubagentCapabilities, recordSubagentCapabilities, subagentCapabilitySignature } from "./lib/threadCapabilities";
 import { canOwnThread, nativeAgentLinkFromThread, nativeAgentLinksAfterThreadDeletion, sanitizeNativeAgentLinks, type NativeAgentLink, type OwnershipLinks } from "./lib/nativeAgentLinks";
 import { autoArchiveSubagentCandidates } from "./lib/subAgentArchive";
@@ -179,6 +179,27 @@ const initialOnboardingOpen = initialOnboardingVersion < ONBOARDING_VERSION && !
 const storedSettings = loadStored<Partial<AppSettings>>("kiwi.settings", {});
 const initialChildAgents = sanitizeChildAgentSettings(storedSettings.childAgents);
 const initialSettings: AppSettings = { ...DEFAULT_SETTINGS, ...storedSettings, openAiLogo: storedSettings.openAiLogo === "codex" ? "codex" : "openai", claudeLogo: storedSettings.claudeLogo === "anthropic" ? "anthropic" : "claude", cursorLogo: storedSettings.cursorLogo === "app-dark" ? "app-dark" : "cube", subagentMax: crewSafeConcurrency(Number(storedSettings.subagentMax) || DEFAULT_SETTINGS.subagentMax, initialChildAgents), autoArchiveSubagentThreads: storedSettings.autoArchiveSubagentThreads === true, childAgents: initialChildAgents, model: modelForProvider(storedSettings.provider ?? DEFAULT_SETTINGS.provider, storedSettings.model ?? DEFAULT_SETTINGS.model), reasoningEffort: sanitizeComposerReasoningEffort(storedSettings.reasoningEffort), ultra: false, lmStudioBaseUrl: storedSettings.lmStudioBaseUrl?.trim() || DEFAULT_LM_STUDIO_BASE_URL, theme: THEMES.some((theme) => theme.id === storedSettings.theme) ? storedSettings.theme! : DEFAULT_SETTINGS.theme, uiScale: Math.min(150, Math.max(80, Number(storedSettings.uiScale) || DEFAULT_SETTINGS.uiScale)), usageDisplay: sanitizeUsageDisplay(storedSettings.usageDisplay) };
+
+/**
+ * Claude/Cursor transcripts flow memory → disk on a debounced save, so the
+ * in-memory task is always at least as fresh as the file. Replacing a
+ * non-empty task with the disk snapshot would truncate everything persisted
+ * less than a debounce ago — including a turn still streaming — and the next
+ * scheduled save would then write that truncation back to disk.
+ */
+function hydrateLocalProviderTask(
+  threadId: string,
+  transcript: { messages: ChatMessage[]; activities: Activity[] } | null | undefined,
+  executionPath: string | undefined,
+): void {
+  const store = useTaskStore.getState();
+  const existing = store.tasks[threadId];
+  if (existing && (existing.messages.length > 0 || existing.activities.length > 0)) {
+    store.ensureTask(threadId, executionPath);
+    return;
+  }
+  store.hydrateTask(threadId, transcript?.messages ?? [], transcript?.activities ?? [], executionPath);
+}
 
 function permissionLabel(mode: PermissionMode): string {
   if (mode === "read-only") return "Read only";
@@ -628,15 +649,19 @@ export default function App() {
     threadProjectBindingsRef.current ?? {},
     threadTaskStatuses,
   );
+  const workspaceKindThreads = useMemo(() => {
+    if (!activeWorkspace) return [];
+    return filterThreadsByKind(
+      filterThreadsForWorkspace(threads, activeWorkspace.path, threadProjectBindingsRef.current ?? {}),
+      childThreadLinks,
+      threadKindView,
+    );
+  }, [activeWorkspace, childThreadLinks, threadKindView, threads]);
   const displayedThreads = useMemo(() => {
     if (!activeWorkspace) return [];
     const threadProjectBindings = threadProjectBindingsRef.current ?? {};
     const query = threadSearch.trim().toLowerCase();
-    const merged = filterThreadsByKind(
-      filterThreadsForWorkspace(threads, activeWorkspace.path, threadProjectBindings),
-      childThreadLinks,
-      threadKindView,
-    )
+    const merged = workspaceKindThreads
       .filter((thread) => `${thread.name ?? ""} ${thread.preview}`.toLowerCase().includes(query));
     const mergedIds = new Set(merged.map((thread) => thread.id));
     for (const found of filterThreadsForWorkspace(searchResults ?? [], activeWorkspace.path, threadProjectBindings)) {
@@ -648,7 +673,7 @@ export default function App() {
     }
     const pinned = new Set(pinnedThreadIds);
     return merged.sort((a, b) => Number(pinned.has(b.id)) - Number(pinned.has(a.id)) || b.updatedAt - a.updatedAt);
-  }, [activeWorkspace, childThreadLinks, pinnedThreadIds, searchResults, threadKindView, threadSearch, threads]);
+  }, [activeWorkspace, childThreadLinks, pinnedThreadIds, searchResults, threadKindView, threadSearch, workspaceKindThreads]);
 
   // Jump-to surfaces are for the user's own conversations. Delegated children
   // are browsable through the sidebar's Sub-agents view, not mixed into search.
@@ -745,10 +770,9 @@ export default function App() {
 
   // Only offer "Check settings" for failures settings can actually fix.
   const errorSuggestsSettings = useMemo(() => Boolean(error) && /sign in|api key|openrouter|lm studio|claude|model|settings|runtime|codex|account/i.test(error ?? ""), [error]);
-  const workspaceArchived = useMemo(() => (activeWorkspace ? archivedThreads.filter((record) => (
-    record.path === normalizedProjectPath(activeWorkspace.path)
-    && Boolean(childThreadLinks[record.id]) === (threadKindView === "subagents")
-  )) : []), [activeWorkspace, archivedThreads, childThreadLinks, threadKindView]);
+  const workspaceArchived = useMemo(() => (activeWorkspace
+    ? archivedThreadsForInbox(archivedThreads, activeWorkspace.path, childThreadLinks, threadKindView)
+    : []), [activeWorkspace, archivedThreads, childThreadLinks, threadKindView]);
 
   const persistThreadModel = useCallback((threadId: string, model: string) => {
     setThreadModels((current) => (current[threadId] === model ? current : { ...current, [threadId]: model }));
@@ -1180,22 +1204,28 @@ export default function App() {
   }, [childThreadLinks]);
 
   const persistClaudeThread = useCallback(
-    (threadId: string) => {
+    async (threadId: string): Promise<boolean> => {
       const task = useTaskStore.getState().tasks[threadId];
       const thread = activeThread?.id === threadId ? activeThread : (threads.find((entry) => entry.id === threadId) ?? knownThreadsRef.current?.[threadId]);
-      if (!task || !thread || !isClaudeThread(thread)) return Promise.resolve();
-      return saveClaudeTranscript({ thread, messages: task.messages.map((message) => ({ ...message, streaming: false })), activities: task.activities });
+      if (!task || !thread || !isClaudeThread(thread)) return false;
+      await saveClaudeTranscript({ thread, messages: task.messages.map((message) => ({ ...message, streaming: false })), activities: task.activities });
+      return true;
     },
     [activeThread, threads],
   );
 
   const scheduleClaudeThreadSave = useCallback(
     (threadId: string) => {
+      useTaskStore.getState().setTranscriptDirty(threadId, true);
       const existing = claudeSaveTimersRef.current.get(threadId);
       if (existing !== undefined) window.clearTimeout(existing);
       const timer = window.setTimeout(() => {
         claudeSaveTimersRef.current.delete(threadId);
-        void persistClaudeThread(threadId).catch(() => {});
+        void persistClaudeThread(threadId)
+          .then((saved) => {
+            if (saved) useTaskStore.getState().setTranscriptDirty(threadId, false);
+          })
+          .catch((error) => recordError(`Claude transcript save failed: ${error instanceof Error ? error.message : String(error)}`));
       }, LOCAL_TRANSCRIPT_SAVE_DEBOUNCE_MS);
       claudeSaveTimersRef.current.set(threadId, timer);
     },
@@ -1203,27 +1233,33 @@ export default function App() {
   );
 
   const persistCursorThread = useCallback(
-    (threadId: string) => {
+    async (threadId: string): Promise<boolean> => {
       const task = useTaskStore.getState().tasks[threadId];
       const thread = activeThread?.id === threadId ? activeThread : (threads.find((entry) => entry.id === threadId) ?? knownThreadsRef.current?.[threadId]);
-      if (!task || !thread || !isCursorThread(thread)) return Promise.resolve();
-      return saveCursorTranscript({
+      if (!task || !thread || !isCursorThread(thread)) return false;
+      await saveCursorTranscript({
         thread,
         cursorSessionId: cursorSessionIdsRef.current[threadId] ?? "",
         messages: task.messages.map((message) => ({ ...message, streaming: false })),
         activities: task.activities,
       });
+      return true;
     },
     [activeThread, threads],
   );
 
   const scheduleCursorThreadSave = useCallback(
     (threadId: string) => {
+      useTaskStore.getState().setTranscriptDirty(threadId, true);
       const existing = cursorSaveTimersRef.current.get(threadId);
       if (existing !== undefined) window.clearTimeout(existing);
       const timer = window.setTimeout(() => {
         cursorSaveTimersRef.current.delete(threadId);
-        void persistCursorThread(threadId).catch(() => {});
+        void persistCursorThread(threadId)
+          .then((saved) => {
+            if (saved) useTaskStore.getState().setTranscriptDirty(threadId, false);
+          })
+          .catch((error) => recordError(`Cursor transcript save failed: ${error instanceof Error ? error.message : String(error)}`));
       }, LOCAL_TRANSCRIPT_SAVE_DEBOUNCE_MS);
       cursorSaveTimersRef.current.set(threadId, timer);
     },
@@ -1851,7 +1887,10 @@ export default function App() {
         if (activeWorkspace && threadBelongsToWorkspace(updated, activeWorkspace.path, threadProjectBindingsRef.current ?? {})) {
           setThreads((current) => upsertThread(current, updated));
         }
-        void saveClaudeTranscript({ thread: updated, messages: (task?.messages ?? []).map((message) => ({ ...message, streaming: false })), activities: task?.activities ?? [] }).catch(() => {});
+        useTaskStore.getState().setTranscriptDirty(threadId, true);
+        void saveClaudeTranscript({ thread: updated, messages: (task?.messages ?? []).map((message) => ({ ...message, streaming: false })), activities: task?.activities ?? [] })
+          .then(() => useTaskStore.getState().setTranscriptDirty(threadId, false))
+          .catch((error) => recordError(`Claude transcript save failed: ${error instanceof Error ? error.message : String(error)}`));
       }
       if (settings.notificationsEnabled && useTaskStore.getState().activeThreadId !== threadId) {
         void (async () => {
@@ -1902,7 +1941,10 @@ export default function App() {
         if (activeWorkspace && threadBelongsToWorkspace(updated, activeWorkspace.path, threadProjectBindingsRef.current ?? {})) {
           setThreads((current) => upsertThread(current, updated));
         }
-        void saveCursorTranscript({ thread: updated, cursorSessionId: cursorSessionIdsRef.current[threadId] ?? "", messages: (task?.messages ?? []).map((message) => ({ ...message, streaming: false })), activities: task?.activities ?? [] }).catch(() => {});
+        useTaskStore.getState().setTranscriptDirty(threadId, true);
+        void saveCursorTranscript({ thread: updated, cursorSessionId: cursorSessionIdsRef.current[threadId] ?? "", messages: (task?.messages ?? []).map((message) => ({ ...message, streaming: false })), activities: task?.activities ?? [] })
+          .then(() => useTaskStore.getState().setTranscriptDirty(threadId, false))
+          .catch((error) => recordError(`Cursor transcript save failed: ${error instanceof Error ? error.message : String(error)}`));
       }
       if (settings.notificationsEnabled && useTaskStore.getState().activeThreadId !== threadId) {
         void (async () => {
@@ -2339,7 +2381,7 @@ export default function App() {
         bindThreadToProject(resolvedThread.id, activeWorkspace.path);
         rememberThread(resolvedThread);
         setActiveThread(resolvedThread);
-        useTaskStore.getState().hydrateTask(resolvedThread.id, transcript?.messages ?? [], transcript?.activities ?? [], executionPath);
+        hydrateLocalProviderTask(resolvedThread.id, transcript, executionPath);
         useTaskStore.getState().setActiveThread(resolvedThread.id);
         setStatus("Ready");
         return;
@@ -2356,7 +2398,7 @@ export default function App() {
         bindThreadToProject(resolvedThread.id, activeWorkspace.path);
         rememberThread(resolvedThread);
         setActiveThread(resolvedThread);
-        useTaskStore.getState().hydrateTask(resolvedThread.id, transcript?.messages ?? [], transcript?.activities ?? [], executionPath);
+        hydrateLocalProviderTask(resolvedThread.id, transcript, executionPath);
         useTaskStore.getState().setActiveThread(resolvedThread.id);
         setStatus("Ready");
         return;
@@ -2397,7 +2439,13 @@ export default function App() {
         readiness: childAgentReadiness,
         settingsProposalsEnabled: true,
       }) : null;
-      if (selectThreadRequestRef.current !== requestId) return;
+      if (selectThreadRequestRef.current !== requestId) {
+        // A newer selection won while the bridge was starting. A freshly
+        // captured session has no persisted policy pointing at it, so nothing
+        // could ever revoke it — release it before abandoning this select.
+        if (childBridge?.captured) void releaseChildAgentSession(childBridge.policy.sessionId);
+        return;
+      }
       if (childBridge?.captured) {
         const policy = { ...childBridge.policy, rootThreadId: thread.id };
         cacheChildAgentPolicy(policy);
@@ -2692,6 +2740,8 @@ export default function App() {
     scheduleCursorThreadSave,
     projectSubagentSettingsForThread,
     applyProjectSubagentSettings: applyProposedProjectSubagents,
+    beginRunCheckpoint,
+    discardRunCheckpoint,
   });
 
   /**
@@ -2936,15 +2986,15 @@ export default function App() {
     persistNativeAgentLinks((current) => nativeAgentLinksAfterThreadDeletion(current, threadId));
   };
 
-  const archiveThreadRecord = async (thread: Thread, confirmArchive: boolean) => {
+  const archiveThreadRecord = async (thread: Thread, confirmArchive: boolean): Promise<boolean> => {
     const label = thread.name || thread.preview || "Untitled thread";
     const taskStatus = useTaskStore.getState().statuses[thread.id];
     if (taskStatus === "starting" || taskStatus === "running") {
       if (confirmArchive) setError(`Stop “${label}” before archiving it so its final output and transcript are preserved.`);
-      return;
+      return false;
     }
-    if (archivingThreadIdsRef.current.has(thread.id)) return;
-    if (confirmArchive && !window.confirm(`Archive “${label}”?\n\nIt moves to the Archived list in the sidebar, where you can restore or permanently delete it.`)) return;
+    if (archivingThreadIdsRef.current.has(thread.id)) return false;
+    if (confirmArchive && !window.confirm(`Archive “${label}”?\n\nIt moves to the Archived list in the sidebar, where you can restore or permanently delete it.`)) return false;
     archivingThreadIdsRef.current.add(thread.id);
     try {
       if (!isLocalSubscriptionThread(thread)) await rpc("thread/archive", { threadId: thread.id });
@@ -2957,14 +3007,48 @@ export default function App() {
       const path = normalizedProjectPath(threadProjectBindingsRef.current?.[thread.id] || thread.cwd);
       const provider = providerFromThread(thread, "openai");
       persistArchivedThreads((current) => [{ id: thread.id, label, path, archivedAt: Date.now(), provider }, ...current.filter((entry) => entry.id !== thread.id)]);
+      return true;
     } catch (reason) {
       setError(friendlyError(reason));
+      return false;
     } finally {
       archivingThreadIdsRef.current.delete(thread.id);
     }
   };
 
   const archiveThread = async (thread: Thread) => archiveThreadRecord(thread, true);
+
+  const archiveAllThreadsInInbox = async () => {
+    if (!activeWorkspace || workspaceKindThreads.length === 0) return;
+    const kindLabel = threadKindView === "subagents" ? "sub-agent" : "main";
+    const { ready, active } = partitionBulkArchiveThreads(
+      workspaceKindThreads,
+      useTaskStore.getState().statuses,
+    );
+    if (ready.length === 0) {
+      setError(`Stop the active ${kindLabel} ${active.length === 1 ? "thread" : "threads"} before archiving this inbox.`);
+      return;
+    }
+    const activeNote = active.length
+      ? `\n\n${active.length} active ${active.length === 1 ? "thread" : "threads"} will remain in the inbox.`
+      : "";
+    if (!window.confirm(
+      `Archive all ${ready.length} idle ${kindLabel} ${ready.length === 1 ? "thread" : "threads"} in “${activeWorkspace.name}”?`
+      + `\n\nThey move to the Archived list, where they can be restored or permanently deleted.${activeNote}`,
+    )) return;
+
+    setError(null);
+    let archived = 0;
+    for (const thread of ready) {
+      if (await archiveThreadRecord(thread, false)) archived += 1;
+    }
+    const failed = ready.length - archived;
+    setStatus(`Archived ${archived} ${kindLabel} ${archived === 1 ? "thread" : "threads"}${active.length ? ` · ${active.length} active skipped` : ""}`);
+    if (failed > 0) {
+      setError(`${failed} ${kindLabel} ${failed === 1 ? "thread could" : "threads could"} not be archived. Try ${failed === 1 ? "it" : "them"} individually for details.`);
+    }
+    if (archived > 0) setArchivedOpen(true);
+  };
 
   // Completion callbacks run before React has necessarily rendered the latest
   // task-store snapshot, so they enter through a ref and inspect the store
@@ -3003,17 +3087,17 @@ export default function App() {
     }
   };
 
-  const deleteThreadForever = async (threadId: string, label: string) => {
+  const deleteThreadRecord = async (threadId: string, label: string, confirmDelete: boolean): Promise<boolean> => {
     const thread = threads.find((entry) => entry.id === threadId) ?? knownThreadsRef.current?.[threadId];
     const isolation = threadWorktreesRef.current[threadId];
     if (isolation && isolation.status !== "removed") {
       setError(`Remove “${isolation.branch}” from the Worktrees workspace tab before permanently deleting this thread.`);
-      return;
+      return false;
     }
     const taskStatus = useTaskStore.getState().statuses[threadId];
     if (taskStatus === "starting" || taskStatus === "running") {
       setError(`Stop “${label}” before deleting it so no model process continues working after the conversation is removed.`);
-      return;
+      return false;
     }
     const archived = archivedThreads.find((record) => record.id === threadId);
     let legacyClaudeTranscript = false;
@@ -3022,7 +3106,7 @@ export default function App() {
         legacyClaudeTranscript = Boolean(await loadClaudeTranscript(threadId));
       } catch (reason) {
         setError(friendlyError(reason));
-        return;
+        return false;
       }
     }
     const provider = thread
@@ -3031,7 +3115,7 @@ export default function App() {
         ? providerForArchivedThread(archived, legacyClaudeTranscript)
         : "openai";
     const localSubscription = provider === "claude" || provider === "cursor";
-    if (!window.confirm(`Permanently delete “${label}”?\n\nThis removes the conversation from ${localSubscription ? "OpenKiwi" : "the Codex runtime"} and cannot be undone.`)) return;
+    if (confirmDelete && !window.confirm(`Permanently delete “${label}”?\n\nThis removes the conversation from ${localSubscription ? "OpenKiwi" : "the Codex runtime"} and cannot be undone.`)) return false;
     try {
       const saveTimer = claudeSaveTimersRef.current.get(threadId);
       if (saveTimer !== undefined) window.clearTimeout(saveTimer);
@@ -3075,8 +3159,32 @@ export default function App() {
         delete next[threadId];
         return next;
       });
+      return true;
     } catch (reason) {
       setError(friendlyError(reason));
+      return false;
+    }
+  };
+
+  const deleteThreadForever = async (threadId: string, label: string) => deleteThreadRecord(threadId, label, true);
+
+  const deleteAllArchivedThreads = async () => {
+    if (!activeWorkspace || workspaceArchived.length === 0) return;
+    const kindLabel = threadKindView === "subagents" ? "sub-agent" : "main";
+    if (!window.confirm(
+      `Permanently delete all ${workspaceArchived.length} archived ${kindLabel} ${workspaceArchived.length === 1 ? "thread" : "threads"} in “${activeWorkspace.name}”?`
+      + "\n\nEvery conversation in this Archived section will be removed. This cannot be undone.",
+    )) return;
+
+    setError(null);
+    let deleted = 0;
+    for (const record of workspaceArchived) {
+      if (await deleteThreadRecord(record.id, record.label, false)) deleted += 1;
+    }
+    const failed = workspaceArchived.length - deleted;
+    setStatus(`Deleted ${deleted} archived ${kindLabel} ${deleted === 1 ? "thread" : "threads"}`);
+    if (failed > 0) {
+      setError(`${failed} archived ${kindLabel} ${failed === 1 ? "thread could" : "threads could"} not be deleted. Try ${failed === 1 ? "it" : "them"} individually for details.`);
     }
   };
 
@@ -3950,6 +4058,9 @@ export default function App() {
     customAgents,
     ensureSkillRoots,
     bindThreadToProject,
+    beginRunCheckpoint,
+    finalizeRunCheckpoint,
+    discardRunCheckpoint,
     updateWorkflow,
     recordRun: recordWorkflowRun,
     onThreadStarted: (project, threadId, source) => {
@@ -4000,6 +4111,8 @@ export default function App() {
     lmStudioModels,
     ensureSkillRoots,
     bindThreadToProject,
+    beginRunCheckpoint,
+    discardRunCheckpoint,
     onThreadStarted: (project) => {
       if (activeProject?.id === project.id) void loadThreads(project);
     },
@@ -4158,10 +4271,21 @@ export default function App() {
             </div>}
           </div>
           {activeWorkspace && (
-            <label className="thread-search">
-              <Search size={11} />
-              <input value={threadSearch} onChange={(event) => setThreadSearch(event.target.value)} placeholder={`Search ${workspaceMode === "chat" ? "chats" : (activeProject?.name ?? "threads")}…`} />
-            </label>
+            <div className="thread-search-actions">
+              <label className="thread-search">
+                <Search size={11} />
+                <input value={threadSearch} onChange={(event) => setThreadSearch(event.target.value)} placeholder={`Search ${workspaceMode === "chat" ? "chats" : (activeProject?.name ?? "threads")}…`} />
+              </label>
+              <button
+                className="thread-bulk-button"
+                onClick={() => void archiveAllThreadsInInbox()}
+                disabled={workspaceKindThreads.length === 0}
+                title={`Archive all ${threadKindView === "subagents" ? "sub-agent" : "main"} threads in this ${workspaceMode === "chat" ? "workspace" : "project"}`}
+              >
+                <Archive size={12} />
+                <span>Archive all</span>
+              </button>
+            </div>
           )}
           <div className="thread-list">
             {displayedThreads.map((thread) => (
@@ -4214,12 +4338,22 @@ export default function App() {
           </div>
           {workspaceArchived.length > 0 && (
             <div className="archived-threads">
-              <button className="archived-toggle" onClick={() => setArchivedOpen((open) => !open)} aria-expanded={archivedOpen}>
-                <Archive size={12} />
-                <span>Archived</span>
-                <span className="thread-count">{workspaceArchived.length}</span>
-                <ChevronDown className={archivedOpen ? "open" : ""} size={12} />
-              </button>
+              <div className="archived-header">
+                <button className="archived-toggle" onClick={() => setArchivedOpen((open) => !open)} aria-expanded={archivedOpen}>
+                  <Archive size={12} />
+                  <span>Archived</span>
+                  <span className="thread-count">{workspaceArchived.length}</span>
+                  <ChevronDown className={archivedOpen ? "open" : ""} size={12} />
+                </button>
+                <button
+                  className="archived-delete-all"
+                  onClick={() => void deleteAllArchivedThreads()}
+                  title={`Permanently delete all archived ${threadKindView === "subagents" ? "sub-agent" : "main"} threads in this ${workspaceMode === "chat" ? "workspace" : "project"}`}
+                >
+                  <Trash2 size={11} />
+                  <span>Delete all</span>
+                </button>
+              </div>
               {archivedOpen &&
                 workspaceArchived.map((record) => (
                   <div key={record.id} className="thread-row-wrap archived">
@@ -4715,7 +4849,7 @@ export default function App() {
             githubRepoVisibility={githubRepoVisibility}
             promptAudit={[
               { label: "Base instruction", value: effectiveSettings.systemPrompt ? `${activeProject?.overrides?.systemPrompt ? (activeProject.overrides.systemPromptMode === "append" ? "OpenKiwi + project" : "project") : "OpenKiwi"} · ${effectiveSettings.systemPrompt.length} chars` : "empty" },
-              { label: "Developer instruction", value: "empty" },
+              { label: "Developer instruction", value: `OpenKiwi internal · ${openKiwiDeveloperInstructions(effectiveSettings.subagentsEnabled, effectiveSettings.subagentsEnabled).length} chars` },
               { label: "AGENTS.md discovery", value: settings.projectInstructionsEnabled ? "enabled · up to 32 KB" : "disabled" },
               { label: "Model", value: effectiveSettings.model || "provider default" },
               { label: "Reasoning", value: effectiveSettings.reasoningEffort },

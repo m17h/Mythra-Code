@@ -83,6 +83,21 @@ export function filterThreadsByKind(
   return threads.filter((thread) => isSubAgentThread(thread, childLinks) === wantsChild);
 }
 
+/** Bulk archive never stops a live task. Split the selected inbox snapshot so
+ * the UI can archive every idle thread while clearly reporting active skips. */
+export function partitionBulkArchiveThreads(
+  threads: Thread[],
+  statuses: Record<string, TaskStatus | undefined>,
+): { ready: Thread[]; active: Thread[] } {
+  const ready: Thread[] = [];
+  const active: Thread[] = [];
+  for (const thread of threads) {
+    const status = statuses[thread.id];
+    (status === "starting" || status === "running" ? active : ready).push(thread);
+  }
+  return { ready, active };
+}
+
 export function countActiveThreadsByWorkspace(
   index: ThreadSidebarIndex,
   bindings: Record<string, string>,

@@ -79,6 +79,8 @@ function context(overrides: Partial<ChildAgentContext> = {}): ChildAgentContext 
     isolationGitDirFor: () => "/tmp/project/.git",
     serviceNameFor: () => "OpenKiwi",
     bindThreadToProject: vi.fn(),
+    beginRunCheckpoint: vi.fn(async () => undefined),
+    discardRunCheckpoint: vi.fn(),
     rememberThread: vi.fn(),
     persistThreadModel: vi.fn(),
     persistThreadReasoning: vi.fn(),

@@ -1438,10 +1438,14 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .request-fields input:focus, .request-fields select:focus { border-color: var(--green-line); }
 .elicitation-url { min-height: 38px; display: flex; align-items: center; justify-content: center; gap: 6px; margin: 0 0 var(--s-4); padding: 0 var(--s-3); border: 1px solid color-mix(in srgb, var(--info) 24%, transparent); border-radius: var(--r-sm); color: var(--info); background: color-mix(in srgb, var(--info) 8%, transparent); font-size: var(--fs-meta); cursor: pointer; transition: background var(--t-fast) ease; }
 .elicitation-url:hover { background: color-mix(in srgb, var(--info) 14%, transparent); }
-.thread-search { height: 30px; display: grid; grid-template-columns: 17px minmax(0,1fr); align-items: center; gap: var(--s-1); margin: var(--s-1) var(--s-3) var(--s-2); padding: 0 var(--s-2); border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--muted-2); background: rgba(0,0,0,.16); transition: border-color var(--t-fast) ease, background var(--t-fast) ease; }
+.thread-search-actions { display: flex; align-items: center; gap: 5px; margin: var(--s-1) var(--s-3) var(--s-2); }
+.thread-search { min-width: 0; height: 30px; flex: 1 1 auto; display: grid; grid-template-columns: 17px minmax(0,1fr); align-items: center; gap: var(--s-1); padding: 0 var(--s-2); border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--muted-2); background: rgba(0,0,0,.16); transition: border-color var(--t-fast) ease, background var(--t-fast) ease; }
 .thread-search:focus-within { border-color: var(--line-strong); background: rgba(0,0,0,.25); }
 .thread-search input { min-width: 0; border: 0; outline: 0; color: var(--text); background: transparent; font-size: var(--fs-meta); }
 .thread-search input::placeholder { color: var(--muted-2); }
+.thread-bulk-button { height: 30px; flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px; padding: 0 7px; border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--muted-2); background: transparent; font-size: var(--fs-micro); cursor: pointer; white-space: nowrap; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease, opacity var(--t-fast) ease; }
+.thread-bulk-button:hover:not(:disabled) { color: var(--text); border-color: var(--line-strong); background: rgba(255,255,255,.04); }
+.thread-bulk-button:disabled { opacity: .36; cursor: default; }
 .thread-state { color: var(--green); }
 .thread-unread { width: 6px; height: 6px; border-radius: 50%; background: var(--green); box-shadow: 0 0 7px color-mix(in srgb, var(--green) 70%, transparent); }
 .command-palette-trigger { height: var(--ctl-md); display: flex; align-items: center; gap: 6px; padding: 0 var(--s-2); border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--muted); background: transparent; font-size: var(--fs-meta); letter-spacing: var(--track-tight); cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
@@ -2167,11 +2171,14 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 
 /* Archived threads */
 .archived-threads { margin-top: 6px; padding-top: 4px; border-top: 1px solid var(--line); }
-.archived-toggle { width: calc(100% - 24px); display: flex; align-items: center; gap: 5px; margin: 0 12px 3px; padding: 4px 5px; border: 0; border-radius: 6px; color: var(--muted-2); background: transparent; font-size: var(--fs-micro); text-transform: uppercase; letter-spacing: .06em; cursor: pointer; }
+.archived-header { display: flex; align-items: center; gap: 4px; margin: 0 12px 3px; }
+.archived-toggle { min-width: 0; flex: 1 1 auto; display: flex; align-items: center; gap: 5px; padding: 4px 5px; border: 0; border-radius: 6px; color: var(--muted-2); background: transparent; font-size: var(--fs-micro); text-transform: uppercase; letter-spacing: .06em; cursor: pointer; }
 .archived-toggle:hover { color: var(--text); background: rgba(255,255,255,.04); }
 .archived-toggle span:nth-child(2) { flex: 1; text-align: left; }
 .archived-toggle svg:last-child { transition: transform .15s ease; }
 .archived-toggle svg:last-child.open { transform: rotate(180deg); }
+.archived-delete-all { height: 25px; flex: 0 0 auto; display: inline-flex; align-items: center; gap: 3px; padding: 0 5px; border: 0; border-radius: 6px; color: var(--muted-2); background: transparent; font-size: var(--fs-micro); cursor: pointer; white-space: nowrap; transition: color var(--t-fast) ease, background var(--t-fast) ease; }
+.archived-delete-all:hover { color: var(--red); background: color-mix(in srgb, var(--red) 8%, transparent); }
 .thread-row-wrap.archived .thread-row.archived-label { display: flex; align-items: center; gap: 7px; opacity: .62; cursor: default; }
 
 /* Streaming text renders as plain pre-wrap until Markdown parses on completion */

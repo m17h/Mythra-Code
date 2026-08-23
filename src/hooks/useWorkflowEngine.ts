@@ -18,7 +18,7 @@ import {
   type WorkflowRunSource,
   type WorkflowRunStepRecord,
 } from "../lib/workflows";
-import type { CustomAgentProfile, Project, Thread, Turn } from "../types";
+import type { CustomAgentProfile, Project, Provider, Thread, Turn } from "../types";
 
 const TERMINAL_STATUSES = new Set<TaskStatus>(["completed", "interrupted", "error"]);
 
@@ -196,6 +196,10 @@ interface WorkflowEngineDeps {
   customAgents: CustomAgentProfile[];
   ensureSkillRoots: () => Promise<void>;
   bindThreadToProject: (threadId: string, projectPath: string) => void;
+  /** Automatic per-step file snapshots, same lifecycle user turns get. */
+  beginRunCheckpoint: (threadId: string, workspacePath: string, prompt: string, provider: Provider, model: string) => Promise<string | undefined>;
+  finalizeRunCheckpoint: (threadId: string, turnId?: string) => Promise<void>;
+  discardRunCheckpoint: (threadId: string) => void;
   updateWorkflow: (id: string, patch: (current: WorkflowDefinition) => WorkflowDefinition) => void;
   recordRun: (run: WorkflowRunRecord) => void;
   onThreadStarted: (project: Project, threadId: string, source: WorkflowRunSource) => void;
@@ -382,13 +386,23 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
                 detail: attempt > 1 ? `${step.name} · attempt ${attempt}` : step.name,
                 status: "inProgress",
               });
-              const result = await rpc<{ exitCode: number; stdout: string; stderr: string }>("command/exec", {
-                command: ["/bin/zsh", "-lc", command],
-                processId,
-                cwd: project.path,
-                timeoutMs: 30 * 60_000,
-                sandboxPolicy: commandSandbox(workflow.run.permission, project.path),
-              });
+              // Command steps edit the project unattended; snapshot around
+              // them so their changes are restorable like any model turn's.
+              await current.beginRunCheckpoint(threadId, project.path, command, workflow.run.provider, workflow.run.model);
+              let result: { exitCode: number; stdout: string; stderr: string };
+              try {
+                result = await rpc<{ exitCode: number; stdout: string; stderr: string }>("command/exec", {
+                  command: ["/bin/zsh", "-lc", command],
+                  processId,
+                  cwd: project.path,
+                  timeoutMs: 30 * 60_000,
+                  sandboxPolicy: commandSandbox(workflow.run.permission, project.path),
+                });
+              } finally {
+                // Even a failed command may have modified files before it
+                // stopped; finish the snapshot so those edits are captured.
+                void current.finalizeRunCheckpoint(threadId);
+              }
               active.processId = undefined;
               stepOutput = [result.stdout, result.stderr].filter(Boolean).join("\n").trim().slice(-12_000);
               useTaskStore.getState().upsertActivity(threadId, {
@@ -410,14 +424,29 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
                 text: prompt,
               });
               useTaskStore.getState().setTaskStatus(threadId, "starting");
-              const result = await rpc<{ turn: Turn }>("turn/start", turnStartParams(
-                workflow.run,
-                threadId,
-                project.path,
-                [{ type: "text", text: prompt, text_elements: [] }],
-              ));
+              // Snapshot before the model edits anything. The Codex event
+              // router finalizes it when the turn completes, exactly as it
+              // does for user-initiated turns.
+              await current.beginRunCheckpoint(threadId, project.path, prompt, workflow.run.provider, workflow.run.model);
+              let result: { turn: Turn };
+              try {
+                result = await rpc<{ turn: Turn }>("turn/start", turnStartParams(
+                  workflow.run,
+                  threadId,
+                  project.path,
+                  [{ type: "text", text: prompt, text_elements: [] }],
+                ));
+              } catch (reason) {
+                // No turn ever started, so no completion event will finalize
+                // the snapshot; drop it instead of leaving it running forever.
+                current.discardRunCheckpoint(threadId);
+                throw reason;
+              }
               active.turnId = result.turn?.id;
-              if (!active.turnId) throw new Error("The runtime did not return a turn identifier.");
+              if (!active.turnId) {
+                current.discardRunCheckpoint(threadId);
+                throw new Error("The runtime did not return a turn identifier.");
+              }
               if (useTaskStore.getState().tasks[threadId]?.lastCompletedTurnId !== active.turnId) {
                 useTaskStore.getState().setActiveTurn(threadId, active.turnId);
               }

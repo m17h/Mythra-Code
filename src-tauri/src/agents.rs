@@ -81,6 +81,9 @@ pub(super) const AGENT_BRIDGE_TOOLS: [&str; 5] = [
 const RELAY_TIMEOUT: Duration = Duration::from_secs(60);
 const SPAWN_RELAY_TIMEOUT: Duration = Duration::from_secs(300);
 const COLLECT_RELAY_TIMEOUT: Duration = Duration::from_secs(360);
+/// How long a timed-out spawn's reservation survives waiting for the webview's
+/// late answer before the slot is released as abandoned.
+const LATE_SPAWN_GRACE: Duration = Duration::from_secs(600);
 
 const MAX_PROMPT_BYTES: usize = 32_768;
 const MAX_TITLE_BYTES: usize = 200;
@@ -249,7 +252,17 @@ struct BridgeServer {
 }
 
 type SessionMap = Arc<Mutex<HashMap<String, Arc<ChildAgentSession>>>>;
-type PendingRelays = Arc<Mutex<HashMap<String, oneshot::Sender<Result<Value, String>>>>>;
+type RelayPayload = Result<Value, String>;
+
+/// Every relay transition lives under one mutex so a webview response cannot
+/// fall between separate "pending" and "late spawn" registries.
+enum PendingRelay {
+    Waiting(oneshot::Sender<RelayPayload>),
+    TimedOutSpawn(Arc<ChildAgentSession>),
+    AnsweredAfterTimeout(RelayPayload),
+}
+
+type PendingRelays = Arc<Mutex<HashMap<String, PendingRelay>>>;
 
 #[derive(Default)]
 pub(super) struct ChildAgentState {
@@ -568,9 +581,13 @@ pub(super) fn tool_catalog(targets: &[ChildAgentTarget], max_concurrent: usize) 
     ]);
     if targets.is_empty() {
         return Value::Array(
-            catalog.as_array().expect("tool catalog is an array")
+            catalog
+                .as_array()
+                .expect("tool catalog is an array")
                 .iter()
-                .filter(|tool| tool.get("name").and_then(Value::as_str) == Some(TOOL_PROPOSE_SETTINGS))
+                .filter(|tool| {
+                    tool.get("name").and_then(Value::as_str) == Some(TOOL_PROPOSE_SETTINGS)
+                })
                 .cloned()
                 .collect(),
         );
@@ -695,9 +712,13 @@ pub(super) fn validate_tool_call(
                 }
             }
             if let Some(max) = object.get("maxConcurrent") {
-                let max = max.as_u64().ok_or_else(|| "`maxConcurrent` must be an integer.".to_string())?;
+                let max = max
+                    .as_u64()
+                    .ok_or_else(|| "`maxConcurrent` must be an integer.".to_string())?;
                 if !(1..=MAX_CONCURRENT_CEILING as u64).contains(&max) {
-                    return Err(format!("`maxConcurrent` must be between 1 and {MAX_CONCURRENT_CEILING}."));
+                    return Err(format!(
+                        "`maxConcurrent` must be between 1 and {MAX_CONCURRENT_CEILING}."
+                    ));
                 }
             }
             if let Some(targets) = object.get("targets") {
@@ -711,19 +732,29 @@ pub(super) fn validate_tool_call(
     }
 }
 
-async fn relay_to_app(
+enum RelayOutcome {
+    Answered(Result<Value, String>),
+    /// The webview did not answer within the tool's deadline; the request id
+    /// identifies the still-pending relay so a spawn can atomically change its
+    /// registry entry from a waiter into a reserved late spawn.
+    TimedOut {
+        request_id: String,
+    },
+}
+
+async fn relay_to_app_inner(
     state: &BridgeHttpState,
     session: &ChildAgentSession,
     tool: &str,
     arguments: Value,
-) -> Result<Value, String> {
+) -> RelayOutcome {
     let request_id = uuid::Uuid::new_v4().to_string();
     let (sender, receiver) = oneshot::channel();
     state
         .pending
         .lock()
         .await
-        .insert(request_id.clone(), sender);
+        .insert(request_id.clone(), PendingRelay::Waiting(sender));
     let emitted = state.app.emit(
         "child-agent-request",
         json!({
@@ -735,7 +766,9 @@ async fn relay_to_app(
     );
     if let Err(error) = emitted {
         state.pending.lock().await.remove(&request_id);
-        return Err(format!("OpenKiwi could not dispatch the request: {error}"));
+        return RelayOutcome::Answered(Err(format!(
+            "OpenKiwi could not dispatch the request: {error}"
+        )));
     }
     let wait = match tool {
         TOOL_SPAWN => SPAWN_RELAY_TIMEOUT,
@@ -743,15 +776,42 @@ async fn relay_to_app(
         _ => RELAY_TIMEOUT,
     };
     match timeout(wait, receiver).await {
-        Ok(Ok(result)) => result,
+        Ok(Ok(result)) => {
+            // The responder keeps a registry copy until the receiver confirms
+            // it won the deadline race. Remove that backup only now.
+            state.pending.lock().await.remove(&request_id);
+            RelayOutcome::Answered(result)
+        }
         Ok(Err(_)) => {
             state.pending.lock().await.remove(&request_id);
-            Err("OpenKiwi stopped tracking this request before it completed.".into())
+            RelayOutcome::Answered(Err(
+                "OpenKiwi stopped tracking this request before it completed.".into(),
+            ))
         }
-        Err(_) => {
+        Err(_) => RelayOutcome::TimedOut { request_id },
+    }
+}
+
+async fn relay_to_app(
+    state: &BridgeHttpState,
+    session: &ChildAgentSession,
+    tool: &str,
+    arguments: Value,
+) -> Result<Value, String> {
+    match relay_to_app_inner(state, session, tool, arguments).await {
+        RelayOutcome::Answered(result) => result,
+        RelayOutcome::TimedOut { request_id } => {
             state.pending.lock().await.remove(&request_id);
             Err("OpenKiwi did not answer the sub-agent request in time.".into())
         }
+    }
+}
+
+async fn settle_spawn_response(session: Arc<ChildAgentSession>, payload: &RelayPayload) {
+    let mut runtime = session.runtime.lock().await;
+    runtime.reserved = runtime.reserved.saturating_sub(1);
+    if let Ok(value) = payload {
+        record_spawned_child(&mut runtime, value);
     }
 }
 
@@ -799,15 +859,78 @@ async fn dispatch_tool(
         object.insert("label".into(), Value::String(target.label.clone()));
     }
 
-    let result = relay_to_app(state, session, tool, relayed).await;
-    let mut runtime = session.runtime.lock().await;
-    runtime.reserved = runtime.reserved.saturating_sub(1);
-    // A refused or failed spawn leaves no child behind, so only a successful
-    // one takes a lasting slot.
-    if let Ok(value) = &result {
-        record_spawned_child(&mut runtime, value);
+    match relay_to_app_inner(state, session, tool, relayed).await {
+        RelayOutcome::Answered(result) => {
+            let mut runtime = session.runtime.lock().await;
+            runtime.reserved = runtime.reserved.saturating_sub(1);
+            // A refused or failed spawn leaves no child behind, so only a
+            // successful one takes a lasting slot.
+            if let Ok(value) = &result {
+                record_spawned_child(&mut runtime, value);
+            }
+            result
+        }
+        RelayOutcome::TimedOut { request_id } => {
+            // Keep the reservation and the pending relay alive: a cold provider
+            // start can outlast the MCP wait yet still succeed, and dropping it
+            // here would orphan the child and free a slot it occupies. The
+            // webview's late answer settles both through `child_agent_respond`;
+            // a grace timer releases the slot if that answer never comes.
+            let (answer_after_timeout, parked) = {
+                let mut pending = state.pending.lock().await;
+                match pending.remove(&request_id) {
+                    Some(PendingRelay::Waiting(_sender)) => {
+                        pending.insert(
+                            request_id.clone(),
+                            PendingRelay::TimedOutSpawn(session.clone()),
+                        );
+                        (None, true)
+                    }
+                    Some(PendingRelay::AnsweredAfterTimeout(payload)) => (Some(payload), false),
+                    Some(entry @ PendingRelay::TimedOutSpawn(_)) => {
+                        pending.insert(request_id.clone(), entry);
+                        (None, true)
+                    }
+                    None => (None, false),
+                }
+            };
+            if let Some(payload) = answer_after_timeout {
+                settle_spawn_response(session.clone(), &payload).await;
+                return payload;
+            }
+            if !parked {
+                let mut runtime = session.runtime.lock().await;
+                runtime.reserved = runtime.reserved.saturating_sub(1);
+                return Err(
+                    "OpenKiwi lost the spawn acknowledgement at its timeout boundary. Check `agent_status` before retrying so a slow start is not duplicated."
+                        .into(),
+                );
+            }
+
+            let pending = state.pending.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(LATE_SPAWN_GRACE).await;
+                let abandoned = {
+                    let mut pending = pending.lock().await;
+                    match pending.remove(&request_id) {
+                        Some(PendingRelay::TimedOutSpawn(session)) => Some(session),
+                        Some(entry) => {
+                            pending.insert(request_id, entry);
+                            None
+                        }
+                        None => None,
+                    }
+                };
+                if let Some(session) = abandoned {
+                    let mut runtime = session.runtime.lock().await;
+                    runtime.reserved = runtime.reserved.saturating_sub(1);
+                }
+            });
+            Err(
+                "OpenKiwi did not confirm the spawn in time. It may still be starting; check `agent_status` before retrying so a slow start is not duplicated.".into(),
+            )
+        }
     }
-    result
 }
 
 async fn handle_bridge_request(
@@ -941,7 +1064,10 @@ pub(super) async fn child_agent_session_start(
         tool_names: if options.targets.is_empty() {
             vec![TOOL_PROPOSE_SETTINGS.to_string()]
         } else {
-            AGENT_BRIDGE_TOOLS.iter().map(|tool| (*tool).to_string()).collect()
+            AGENT_BRIDGE_TOOLS
+                .iter()
+                .map(|tool| (*tool).to_string())
+                .collect()
         },
     };
     let mcp_config = json!({
@@ -993,6 +1119,34 @@ pub(super) async fn child_agent_session_end(
     Ok(())
 }
 
+async fn route_relay_response(
+    pending: &PendingRelays,
+    request_id: String,
+    payload: RelayPayload,
+) -> Option<(Arc<ChildAgentSession>, RelayPayload)> {
+    let mut pending = pending.lock().await;
+    match pending.remove(&request_id) {
+        Some(PendingRelay::Waiting(sender)) => {
+            // Keep a registry copy even when `send` succeeds: the timeout can
+            // still win at the exact polling boundary after delivery. The
+            // receiver removes this backup only after it observes the answer;
+            // otherwise dispatch consumes it as a late response.
+            let backup = payload.clone();
+            let retained = sender.send(payload).err().unwrap_or(backup);
+            pending.insert(request_id, PendingRelay::AnsweredAfterTimeout(retained));
+            None
+        }
+        Some(PendingRelay::TimedOutSpawn(session)) => Some((session, payload)),
+        Some(entry @ PendingRelay::AnsweredAfterTimeout(_)) => {
+            // Ignore a duplicate response without discarding the first
+            // answer that dispatch still needs to consume.
+            pending.insert(request_id, entry);
+            None
+        }
+        None => None,
+    }
+}
+
 /// The webview's answer to a `child-agent-request` event. Exactly one of
 /// `result`/`error` is used; an unknown request id is ignored, because the
 /// bridge caller has already been told it timed out.
@@ -1003,14 +1157,14 @@ pub(super) async fn child_agent_respond(
     result: Option<Value>,
     error: Option<String>,
 ) -> Result<(), String> {
-    let Some(sender) = state.pending.lock().await.remove(&request_id) else {
-        return Ok(());
-    };
     let payload = match error {
         Some(message) if !message.trim().is_empty() => Err(message),
         _ => Ok(result.unwrap_or_else(|| json!({}))),
     };
-    let _ = sender.send(payload);
+    let late_spawn = route_relay_response(&state.pending, request_id, payload).await;
+    if let Some((session, payload)) = late_spawn {
+        settle_spawn_response(session, &payload).await;
+    }
     Ok(())
 }
 
@@ -1210,4 +1364,54 @@ pub(super) fn run_agent_bridge(session_path: &str) -> i32 {
         }
         0
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn response_after_receiver_timeout_is_preserved_for_dispatch() {
+        let pending: PendingRelays = Arc::new(Mutex::new(HashMap::new()));
+        let (sender, receiver) = oneshot::channel();
+        drop(receiver);
+        pending
+            .lock()
+            .await
+            .insert("request".into(), PendingRelay::Waiting(sender));
+
+        let payload = Ok(json!({ "threadId": "child" }));
+        assert!(route_relay_response(&pending, "request".into(), payload)
+            .await
+            .is_none());
+
+        let registry = pending.lock().await;
+        let Some(PendingRelay::AnsweredAfterTimeout(Ok(answer))) = registry.get("request") else {
+            panic!("late answer was not retained");
+        };
+        assert_eq!(answer.get("threadId"), Some(&json!("child")));
+    }
+
+    #[tokio::test]
+    async fn delivered_response_stays_backed_up_until_receiver_acknowledges_it() {
+        let pending: PendingRelays = Arc::new(Mutex::new(HashMap::new()));
+        let (sender, receiver) = oneshot::channel();
+        pending
+            .lock()
+            .await
+            .insert("request".into(), PendingRelay::Waiting(sender));
+
+        let payload = Ok(json!({ "threadId": "child" }));
+        assert!(route_relay_response(&pending, "request".into(), payload)
+            .await
+            .is_none());
+        assert_eq!(
+            receiver.await.expect("receive response"),
+            Ok(json!({ "threadId": "child" }))
+        );
+        assert!(matches!(
+            pending.lock().await.get("request"),
+            Some(PendingRelay::AnsweredAfterTimeout(Ok(_)))
+        ));
+    }
 }

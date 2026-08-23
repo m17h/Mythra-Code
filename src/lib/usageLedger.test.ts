@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   annotateThreadUsage,
+  compactUsageRecords,
   estimateUsageCost,
   MODEL_PRICING_CATALOG_KEY,
   parseModelPricingCatalog,
@@ -41,10 +42,70 @@ describe("usage ledger", () => {
     localStorage.clear();
   });
 
+  it("folds stale thread records into one archive record with identical totals", () => {
+    const now = Date.parse("2026-08-23T12:00:00Z");
+    const stale = now - 120 * 86_400_000;
+    const records = [
+      { threadId: "fresh", usage: usage(100, 10), estimatedCost: 0.5, pricedTokens: 110, unpricedTokens: 0, updatedAt: now - 86_400_000 },
+      { threadId: "old-a", usage: usage(200, 20), estimatedCost: 1, pricedTokens: 220, unpricedTokens: 0, updatedAt: stale },
+      { threadId: "old-b", usage: usage(50, 5), updatedAt: stale },
+    ];
+    const compacted = compactUsageRecords(records, now);
+    expect(compacted).toHaveLength(2);
+    const archive = compacted.find((record) => record.threadId === "openkiwi:archived-usage");
+    expect(archive?.archivedThreads).toBe(2);
+    expect(archive?.usage).toMatchObject({ inputTokens: 250, outputTokens: 25 });
+    expect(archive?.estimatedCost).toBeCloseTo(1);
+    // old-b had no pricing, so its tokens count as unpriced.
+    expect(archive?.unpricedTokens).toBe(55);
+    localStorage.setItem(USAGE_LEDGER_KEY, JSON.stringify(compacted));
+    const totals = usageTotals();
+    expect(totals.threads).toBe(3);
+    expect(totals.inputTokens).toBe(350);
+    expect(totals.estimatedCost).toBeCloseTo(1.5);
+  });
+
   it("accumulates cumulative Codex snapshots without double counting them", () => {
     recordCumulativeUsage("thread", usage(100, 20));
     recordCumulativeUsage("thread", usage(180, 45));
     expect(usageForThread("thread")?.usage).toMatchObject({ inputTokens: 180, outputTokens: 45 });
+  });
+
+  it("resumes an archived cumulative thread from its retained baseline", () => {
+    const now = Date.parse("2026-08-23T12:00:00Z");
+    const compacted = compactUsageRecords([{
+      threadId: "old-codex",
+      usage: usage(200, 20),
+      cumulativeSnapshot: usage(200, 20),
+      updatedAt: now - 120 * 86_400_000,
+    }], now);
+    localStorage.setItem(USAGE_LEDGER_KEY, JSON.stringify(compacted));
+    resetUsageLedgerCache();
+
+    recordCumulativeUsage("old-codex", usage(250, 25));
+
+    expect(usageForThread("old-codex")).toMatchObject({
+      countedInArchive: true,
+      usage: { inputTokens: 50, outputTokens: 5 },
+    });
+    expect(usageTotals()).toMatchObject({ inputTokens: 250, outputTokens: 25, threads: 1 });
+  });
+
+  it("rebaselines a lower counter after archive without recounting history", () => {
+    const now = Date.parse("2026-08-23T12:00:00Z");
+    const compacted = compactUsageRecords([{
+      threadId: "old-codex",
+      usage: usage(200, 20),
+      cumulativeSnapshot: usage(200, 20),
+      updatedAt: now - 120 * 86_400_000,
+    }], now);
+    localStorage.setItem(USAGE_LEDGER_KEY, JSON.stringify(compacted));
+    resetUsageLedgerCache();
+
+    recordCumulativeUsage("old-codex", usage(10, 5));
+    recordCumulativeUsage("old-codex", usage(30, 12));
+
+    expect(usageTotals()).toMatchObject({ inputTokens: 220, outputTokens: 27, threads: 1 });
   });
 
   it("rebaselines a lower resumed Codex snapshot without shrinking totals", () => {

@@ -31,7 +31,7 @@ import { useTaskStore, type TaskStatus } from "../lib/taskStore";
 import type { OpenRouterModel } from "../components/OpenRouterModelControl";
 import type { LMStudioModel } from "../lib/lmStudio";
 import type { SetPersisted } from "./usePersistedState";
-import type { PendingApproval, ProjectSubagentSettings, Thread, ThreadReasoning } from "../types";
+import type { PendingApproval, ProjectSubagentSettings, Provider, Thread, ThreadReasoning } from "../types";
 
 /**
  * Routes the delegation requests a root agent makes through the OpenKiwi
@@ -76,6 +76,9 @@ export interface ChildAgentContext {
   scheduleCursorThreadSave: (threadId: string) => void;
   projectSubagentSettingsForThread: (rootThreadId: string) => ProjectSubagentSettings;
   applyProjectSubagentSettings: (rootThreadId: string, settings: ProjectSubagentSettings) => void | Promise<void>;
+  /** Automatic pre-turn file snapshots for child turns, same as user turns. */
+  beginRunCheckpoint: (threadId: string, workspacePath: string, prompt: string, provider: Provider, model: string) => Promise<string | undefined>;
+  discardRunCheckpoint: (threadId: string) => void;
 }
 
 function taskStatusOf(threadId: string): TaskStatus {
@@ -298,6 +301,10 @@ export function useChildAgents(context: ChildAgentContext): {
             ? ctx.lmStudioModels?.find((entry) => entry.id === childAgentModel(target))?.maxContextLength
             : undefined,
         lmStudioBaseUrl: ctx.lmStudioBaseUrl,
+        beginCheckpoint: async (childThreadId) => {
+          await ctx.beginRunCheckpoint(childThreadId, executionPath, prompt, target.provider, childAgentModel(target));
+        },
+        discardCheckpoint: ctx.discardRunCheckpoint,
       });
     } finally {
       pending.delete(reservation);
@@ -697,7 +704,31 @@ export function useChildAgents(context: ChildAgentContext): {
       const { links } = contextRef.current;
       for (const link of Object.values(links)) {
         const status = state.statuses[link.childThreadId];
-        if (!status || isChildActive(status)) continue;
+        if (!status) continue;
+        if (isChildActive(status)) {
+          // A renderer reload settles unhydrated links as cancelled, but a
+          // webview reload does not kill backend-held provider processes:
+          // this child's events are streaming again, so it never actually
+          // stopped. Reopen the record so its real outcome can settle.
+          if (releasedRef.current.has(link.childThreadId)) {
+            releasedRef.current.delete(link.childThreadId);
+            contextRef.current.persistChildAgentLinks((current) => {
+              const latest = current[link.childThreadId];
+              if (!latest?.terminalStatus) return current;
+              const { terminalStatus: _settled, ...reopened } = latest;
+              return { ...current, [link.childThreadId]: reopened };
+            });
+            const store = useTaskStore.getState();
+            store.upsertAgent(link.rootThreadId, {
+              id: link.childThreadId,
+              prompt: link.title,
+              status: childLifecycle(status),
+            });
+            const spawnActivity = store.tasks[link.rootThreadId]?.activities.find((activity) => activity.id === `child-agent-${link.childThreadId}`);
+            if (spawnActivity) store.upsertActivity(link.rootThreadId, { ...spawnActivity, status: "running" });
+          }
+          continue;
+        }
         if (releasedRef.current.has(link.childThreadId)) continue;
         releasedRef.current.add(link.childThreadId);
         void reportChildAgentFinished(link.sessionId, link.childThreadId).catch(() => undefined);

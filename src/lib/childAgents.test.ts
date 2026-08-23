@@ -296,6 +296,17 @@ describe("persistence and migration", () => {
     expect(restored["child-1"].terminalStatus).toBe("failed");
   });
 
+  it("keeps old settled links because they are durable ownership records", () => {
+    const now = Date.now();
+    const old = now - 200 * 86_400_000;
+    const restored = sanitizeChildAgentLinks({
+      "child-old-settled": { rootThreadId: "root-1", sessionId: "session-1", targetId: "terra", provider: "openai", model: "m", title: "Old done", createdAt: old, terminalStatus: "completed" },
+      "child-old-open": { rootThreadId: "root-1", sessionId: "session-1", targetId: "terra", provider: "openai", model: "m", title: "Old open", createdAt: old },
+      "child-recent-settled": { rootThreadId: "root-1", sessionId: "session-1", targetId: "terra", provider: "openai", model: "m", title: "Recent done", createdAt: now - 86_400_000, terminalStatus: "completed" },
+    });
+    expect(Object.keys(restored).sort()).toEqual(["child-old-open", "child-old-settled", "child-recent-settled"]);
+  });
+
   it("keeps surviving children classified when their parent is deleted", () => {
     const links = sanitizeChildAgentLinks({
       "child-1": { rootThreadId: "root-1", sessionId: "session-1", targetId: "terra", provider: "openai", model: "gpt-5.6-terra", title: "One", createdAt: 1 },

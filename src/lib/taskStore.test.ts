@@ -19,6 +19,59 @@ describe("task store", () => {
     expect(useTaskStore.getState().tasks.root.agentRunStartedAt).toBe(123);
   });
 
+  it("evicts the coldest idle transcripts beyond the working set on thread switch", () => {
+    const store = useTaskStore.getState();
+    const old = Date.now() - 10 * 60_000;
+    for (let index = 0; index < 14; index += 1) {
+      const threadId = `thread-${index}`;
+      store.hydrateTask(threadId, [{ id: `m-${index}`, role: "user", text: "hi" }], [], "/p");
+    }
+    // Age every hydrated task past the save-debounce safety window, and make
+    // one of the coldest ineligible by marking it running.
+    useTaskStore.setState((state) => ({
+      tasks: Object.fromEntries(Object.entries(state.tasks).map(([threadId, task], index) => [
+        threadId,
+        { ...task, updatedAt: old + index },
+      ])),
+      statuses: { ...state.statuses, "thread-0": "running" },
+    }));
+    useTaskStore.getState().setActiveThread("thread-13");
+    const tasks = useTaskStore.getState().tasks;
+    const hydrated = Object.values(tasks).filter((task) => task.messages.length > 0).map((task) => task.threadId);
+    // 14 hydrated, cap 12 → the two coldest eligible (thread-1, thread-2) are
+    // evicted; running thread-0 keeps its transcript.
+    expect(hydrated).toHaveLength(12);
+    expect(tasks["thread-0"].messages).toHaveLength(1);
+    expect(tasks["thread-1"].messages).toHaveLength(0);
+    expect(tasks["thread-2"].messages).toHaveLength(0);
+    // The shell survives eviction so approvals/queues/agents would too.
+    expect(tasks["thread-1"]).toBeDefined();
+  });
+
+  it("never evicts a local transcript whose durable save is still pending", () => {
+    const store = useTaskStore.getState();
+    const old = Date.now() - 10 * 60_000;
+    for (let index = 0; index < 14; index += 1) {
+      store.hydrateTask(`thread-${index}`, [{ id: `m-${index}`, role: "user", text: "hi" }], [], "/p");
+    }
+    useTaskStore.setState((state) => ({
+      tasks: Object.fromEntries(Object.entries(state.tasks).map(([threadId, task], index) => [
+        threadId,
+        { ...task, updatedAt: old + index },
+      ])),
+      statuses: { ...state.statuses, "thread-0": "running" },
+    }));
+    useTaskStore.getState().setTranscriptDirty("thread-1", true);
+
+    useTaskStore.getState().setActiveThread("thread-13");
+
+    const tasks = useTaskStore.getState().tasks;
+    expect(tasks["thread-1"].messages).toHaveLength(1);
+    expect(tasks["thread-1"].transcriptDirty).toBe(true);
+    expect(tasks["thread-2"].messages).toHaveLength(0);
+    expect(tasks["thread-3"].messages).toHaveLength(0);
+  });
+
   it("routes streamed output to the correct thread", () => {
     const store = useTaskStore.getState();
     store.ensureTask("thread-a", "/a");

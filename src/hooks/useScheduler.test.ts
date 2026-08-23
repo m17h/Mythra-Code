@@ -43,6 +43,8 @@ function testSchedulerDeps(
     openRouterReady: false,
     ensureSkillRoots: vi.fn(async () => undefined),
     bindThreadToProject: vi.fn(),
+    beginRunCheckpoint: vi.fn(async () => undefined),
+    discardRunCheckpoint: vi.fn(),
     onThreadStarted: vi.fn(),
     recordRun: (run) => {
       runs.push(run);

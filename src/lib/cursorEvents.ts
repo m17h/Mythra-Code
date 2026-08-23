@@ -173,7 +173,7 @@ export function routeCursorEvent(event: CursorEvent, ctx: CursorEventContext): v
         question: text(question.prompt),
         options: (Array.isArray(question.options) ? question.options : []).map((option) => {
           const entry = object(option);
-          return { label: text(entry.label), description: text(entry.label) };
+          return { label: text(entry.label), description: text(entry.description) };
         }),
       };
     });

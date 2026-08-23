@@ -527,6 +527,13 @@ export function childAgentPolicyForThread(
   return Object.values(policies).find((policy) => policy.rootThreadId === threadId);
 }
 
+/**
+ * Restore the durable ownership graph for cross-provider children. A settled
+ * child remains a child for the lifetime of its thread: this record is the
+ * only parent marker for providers whose native thread metadata cannot carry
+ * `parentThreadId`, and dropping it would incorrectly turn that child back
+ * into a root that can delegate again.
+ */
 export function sanitizeChildAgentLinks(stored: unknown): Record<string, ChildAgentLink> {
   if (!stored || typeof stored !== "object") return {};
   const result: Record<string, ChildAgentLink> = {};

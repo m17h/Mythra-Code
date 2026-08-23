@@ -56,6 +56,17 @@ export function discardDraft(key: string): void {
   persistDraft(key, "");
 }
 
+// The debounce above loses whatever was typed in the final 400ms if the
+// window closes; flush pending drafts on pagehide like the other stores do.
+if (typeof window !== "undefined") {
+  window.addEventListener("pagehide", () => {
+    if (draftSaveTimer === null) return;
+    window.clearTimeout(draftSaveTimer);
+    draftSaveTimer = null;
+    storeValue(DRAFTS_KEY, drafts());
+  });
+}
+
 export function resetDraftStoreForTests(): void {
   draftsCache = null;
   if (draftSaveTimer !== null) window.clearTimeout(draftSaveTimer);

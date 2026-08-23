@@ -35,6 +35,14 @@ export interface ChildRunContext {
   modelContextWindow?: number;
   /** Current LM Studio Responses endpoint used by local-model destinations. */
   lmStudioBaseUrl?: string;
+  /**
+   * Snapshot the execution folder just before the child's first turn starts,
+   * keyed by the child's thread id so the provider's turn-completion handler
+   * finalizes it like any other automatic run checkpoint.
+   */
+  beginCheckpoint?: (childThreadId: string) => Promise<void>;
+  /** Drop the snapshot when the turn never actually started. */
+  discardCheckpoint?: (childThreadId: string) => void;
 }
 
 export interface ChildRunResult {
@@ -90,19 +98,26 @@ export async function startChildAgentTurn(
     const thread = childThreadRecord(crypto.randomUUID(), target, prompt, context.executionPath);
     const threadId = thread.id;
     await saveClaudeTranscript({ thread, messages: [], activities: [] });
-    const result = await startClaudeTurn({
-      threadId,
-      cwd: context.executionPath,
-      prompt,
-      model: run.model,
-      effort: context.reasoningEffort,
-      permission: run.permission,
-      systemPrompt,
-      resume: false,
-      attachments: [],
-      subagentMax: 1,
-      customAgents: [],
-    });
+    await context.beginCheckpoint?.(threadId);
+    let result;
+    try {
+      result = await startClaudeTurn({
+        threadId,
+        cwd: context.executionPath,
+        prompt,
+        model: run.model,
+        effort: context.reasoningEffort,
+        permission: run.permission,
+        systemPrompt,
+        resume: false,
+        attachments: [],
+        subagentMax: 1,
+        customAgents: [],
+      });
+    } catch (reason) {
+      context.discardCheckpoint?.(threadId);
+      throw reason;
+    }
     return { thread, turnId: result.turnId, provider: "claude", model: run.model };
   }
 
@@ -110,16 +125,23 @@ export async function startChildAgentTurn(
     const thread = childThreadRecord(crypto.randomUUID(), target, prompt, context.executionPath);
     const threadId = thread.id;
     await saveCursorTranscript({ thread, cursorSessionId: "", messages: [], activities: [] });
-    const result = await startCursorTurn({
-      threadId,
-      cwd: context.executionPath,
-      prompt,
-      model: run.model,
-      effort: context.reasoningEffort,
-      permission: run.permission,
-      systemPrompt,
-      attachments: [],
-    });
+    await context.beginCheckpoint?.(threadId);
+    let result;
+    try {
+      result = await startCursorTurn({
+        threadId,
+        cwd: context.executionPath,
+        prompt,
+        model: run.model,
+        effort: context.reasoningEffort,
+        permission: run.permission,
+        systemPrompt,
+        attachments: [],
+      });
+    } catch (reason) {
+      context.discardCheckpoint?.(threadId);
+      throw reason;
+    }
     return {
       thread,
       turnId: result.turnId,
@@ -137,12 +159,19 @@ export async function startChildAgentTurn(
     additionalWorkspaceRoots: context.additionalWorkspaceRoots,
   }));
   const thread = optimisticStartedThread(started.thread, prompt);
-  const turn = await rpc<{ turn: Turn }>("turn/start", turnStartParams(
-    run,
-    thread.id,
-    context.executionPath,
-    buildTurnInput(prompt, []),
-    context.additionalWorkspaceRoots,
-  ));
+  await context.beginCheckpoint?.(thread.id);
+  let turn: { turn: Turn };
+  try {
+    turn = await rpc<{ turn: Turn }>("turn/start", turnStartParams(
+      run,
+      thread.id,
+      context.executionPath,
+      buildTurnInput(prompt, []),
+      context.additionalWorkspaceRoots,
+    ));
+  } catch (reason) {
+    context.discardCheckpoint?.(thread.id);
+    throw reason;
+  }
   return { thread, turnId: turn.turn?.id, provider: target.provider, model: run.model };
 }
