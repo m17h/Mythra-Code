@@ -1,4 +1,5 @@
 import type { Activity, ChatMessage, ThreadItem, Turn } from "../types";
+import { nativeSubAgentPresentation } from "./nativeSubAgentActivity";
 
 export interface ThreadTimelineSnapshot {
   messages: ChatMessage[];
@@ -57,8 +58,7 @@ function activityFromItem(item: ThreadItem, id: string, timelineOrder: number, t
     };
   }
   if (item.type === "subAgentActivity") {
-    const action = item.kind === "started" ? "started" : item.kind === "interrupted" ? "interrupted" : "working";
-    return { id, kind: "agent", title: `Sub-agent ${action}`, detail: item.agentPath || item.agentThreadId, status: item.kind, agent: { action: "status", provider: "openai" }, timelineOrder, turnId, turnStatus };
+    return { id, ...nativeSubAgentPresentation(item), timelineOrder, turnId, turnStatus };
   }
   return null;
 }

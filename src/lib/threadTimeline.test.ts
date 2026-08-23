@@ -62,4 +62,28 @@ describe("timelineFromTurns", () => {
       },
     });
   });
+
+  it("restores native Codex sub-agents through the same animated Relay path", () => {
+    const snapshot = timelineFromTurns([{ id: "turn-1", items: [{
+      id: "native-spawn",
+      type: "subAgentActivity",
+      kind: "started",
+      agentThreadId: "child",
+      agentPath: "/root/audio_regression_audit",
+    }] }]);
+
+    expect(snapshot.activities[0]).toMatchObject({
+      id: "native-spawn",
+      kind: "agent",
+      title: "Sub-agent started",
+      detail: "/root/audio_regression_audit",
+      status: "started",
+      agent: {
+        action: "spawn",
+        provider: "openai",
+        task: "/root/audio_regression_audit",
+        count: 1,
+      },
+    });
+  });
 });
