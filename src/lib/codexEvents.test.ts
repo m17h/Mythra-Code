@@ -216,6 +216,7 @@ describe("routeCodexEvent", () => {
         provider: "openai",
         task: "/root/worker",
         count: 1,
+        threadIds: ["child"],
       },
     }));
     expect(useTaskStore.getState().tasks.child.workspacePath).toBe("/workspace");
@@ -248,6 +249,7 @@ describe("routeCodexEvent", () => {
         provider: "openai",
         task: "/root/audio_regression_audit",
         count: 1,
+        threadIds: ["child"],
       },
     }));
   });
@@ -280,6 +282,7 @@ describe("routeCodexEvent", () => {
         provider: "openai",
         task: "Split the work",
         count: 1,
+        threadIds: ["child"],
       },
     }));
     expect(ctx.onNativeAgentDiscovered).toHaveBeenCalledTimes(1);

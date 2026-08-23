@@ -27,6 +27,7 @@ export function nativeSubAgentPresentation(item: ThreadItem): NativeSubAgentPres
       provider: "openai",
       task,
       count: 1,
+      ...(item.agentThreadId ? { threadIds: [item.agentThreadId] } : {}),
     },
   };
 }

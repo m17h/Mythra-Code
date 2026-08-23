@@ -344,6 +344,7 @@ export function useChildAgents(context: ChildAgentContext): {
         model: childAgentModel(target),
         task: title,
         count: 1,
+        threadIds: [childThreadId],
       },
     });
     if (result.provider === "claude") ctx.scheduleClaudeThreadSave(childThreadId);

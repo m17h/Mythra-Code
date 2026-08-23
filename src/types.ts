@@ -102,6 +102,9 @@ export interface Activity {
     model?: string;
     task?: string;
     count?: number;
+    /** Runtime thread identities represented by this activity. They let the
+     * parent turn settle only children that are no longer genuinely active. */
+    threadIds?: string[];
   };
   /** Number of concrete operations represented by a grouped runtime activity. */
   itemCount?: number;
@@ -271,6 +274,8 @@ export interface AppSettings {
   projectInstructionsEnabled: boolean;
   subagentsEnabled: boolean;
   subagentMax: number;
+  /** Move settled child conversations to Archived after their parent ends. */
+  autoArchiveSubagentThreads: boolean;
   /** Cross-provider delegation. Absent in settings written before 1.5. */
   childAgents: ChildAgentSettings;
   reasoningEffort: ReasoningEffort;

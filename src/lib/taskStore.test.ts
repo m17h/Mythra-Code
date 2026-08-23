@@ -377,13 +377,16 @@ describe("task store", () => {
 
   it("does not mark a still-running child complete when its parent turn ends", () => {
     const store = useTaskStore.getState();
+    store.ensureTask("child-a");
+    store.setTaskStatus("child-a", "running");
     store.setActiveTurn("thread-a", "turn-a");
+    store.upsertAgent("thread-a", { id: "child-a", prompt: "Audit the bridge", status: "inProgress" });
     store.upsertActivity("thread-a", {
       id: "spawn",
       kind: "agent",
       title: "Spawned Claude sub-agent",
       status: "inProgress",
-      agent: { action: "spawn", provider: "claude", task: "Audit the bridge" },
+      agent: { action: "spawn", provider: "claude", task: "Audit the bridge", threadIds: ["child-a"] },
     });
 
     store.completeTurn("thread-a", "turn-a", "completed");
@@ -392,6 +395,30 @@ describe("task store", () => {
       status: "inProgress",
       turnStatus: "completed",
       agent: { action: "spawn", task: "Audit the bridge" },
+    });
+    expect(useTaskStore.getState().tasks["thread-a"].agents[0].status).toBe("inProgress");
+  });
+
+  it("settles a stale native child and Relay card when the parent finishes", () => {
+    const store = useTaskStore.getState();
+    store.ensureTask("native-child");
+    store.setActiveTurn("thread-a", "turn-a");
+    store.upsertAgent("thread-a", { id: "native-child", prompt: "Delegated task", status: "started" });
+    store.upsertActivity("thread-a", {
+      id: "native-spawn",
+      kind: "agent",
+      title: "Sub-agent started",
+      status: "started",
+      agent: { action: "spawn", provider: "openai", task: "Audit audio", threadIds: ["native-child"] },
+    });
+
+    store.completeTurn("thread-a", "turn-a", "completed");
+
+    expect(useTaskStore.getState().tasks["thread-a"].agents[0].status).toBe("completed");
+    expect(useTaskStore.getState().tasks["thread-a"].activities[0]).toMatchObject({
+      status: "completed",
+      turnStatus: "completed",
+      agent: { action: "spawn", threadIds: ["native-child"] },
     });
   });
 });

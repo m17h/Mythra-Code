@@ -30,6 +30,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   projectInstructionsEnabled: false,
   subagentsEnabled: false,
   subagentMax: 3,
+  autoArchiveSubagentThreads: false,
   childAgents: DEFAULT_CHILD_AGENT_SETTINGS,
   reasoningEffort: "medium",
   ultra: false,

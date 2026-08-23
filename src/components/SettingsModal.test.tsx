@@ -499,6 +499,18 @@ describe("SettingsModal", () => {
     }));
   });
 
+  it("saves the automatic sub-agent archive preference", () => {
+    const onSave = vi.fn();
+    render(<SettingsModal {...modalProps({ initialSection: "agents", onSave })} />);
+
+    const toggle = screen.getByRole("switch", { name: "Archive sub-agent threads automatically" });
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ autoArchiveSubagentThreads: true }));
+  });
+
   it("keeps unsaved drafts when the saved settings change externally while open", () => {
     const props = modalProps({ initialSection: "prompts" });
     const { rerender } = render(<SettingsModal {...props} />);
