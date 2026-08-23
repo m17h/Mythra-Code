@@ -62,12 +62,12 @@ use github::{
     validate_github_repository_name,
 };
 use persistence::{
-    lock_state_db, open_state_db, shared_state_db, state_db_path, state_delete, state_read,
-    state_write, StateDb,
+    lock_state_db, open_state_db_or_quarantine, shared_state_db, state_db_path, state_delete,
+    state_read, state_write, StateDb,
 };
-use process_launch::{background_command, background_std_command};
 #[cfg(windows)]
 use process_launch::interactive_command;
+use process_launch::{background_command, background_std_command};
 #[cfg(test)]
 use project_git::*;
 use project_git::{
@@ -482,8 +482,14 @@ fn normalize_lmstudio_base_url(value: &str) -> Result<reqwest::Url, String> {
     if !matches!(url.scheme(), "http" | "https") {
         return Err("The LM Studio server URL must use http or https.".into());
     }
-    if !url.username().is_empty() || url.password().is_some() || url.query().is_some() || url.fragment().is_some() {
-        return Err("The LM Studio server URL cannot contain credentials, a query, or a fragment.".into());
+    if !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(
+            "The LM Studio server URL cannot contain credentials, a query, or a fragment.".into(),
+        );
     }
     if url.host_str().is_none() {
         return Err("The LM Studio server URL must include a host.".into());
@@ -1099,7 +1105,10 @@ async fn resolve_codex_binary(app: &AppHandle) -> Result<PathBuf, String> {
     }
 
     #[cfg(windows)]
-    for candidate in candidates.into_iter().filter(|candidate| candidate.is_file()) {
+    for candidate in candidates
+        .into_iter()
+        .filter(|candidate| candidate.is_file())
+    {
         // `where.exe` can expose protected WindowsApps resource paths that
         // exist but cannot be launched directly. Accept only a runtime that
         // successfully executes, then the later app-server spawn is reliable.
@@ -1228,7 +1237,10 @@ async fn resolve_claude_binary(app: &AppHandle) -> Result<PathBuf, String> {
         }
     }
     #[cfg(windows)]
-    for candidate in candidates.into_iter().filter(|candidate| candidate.is_file()) {
+    for candidate in candidates
+        .into_iter()
+        .filter(|candidate| candidate.is_file())
+    {
         if runtime_version(&candidate).await.is_some() {
             return Ok(candidate);
         }
@@ -3074,14 +3086,23 @@ async fn codex_rpc(
     match server.request(&method, params.clone()).await {
         Ok(result) => Ok(result),
         Err(error) if !server.is_alive() => {
-            let mut guard = state.server.lock().await;
-            if guard
-                .as_ref()
-                .is_some_and(|current| Arc::ptr_eq(current, &server))
-            {
-                guard.take();
+            let dead = {
+                let mut guard = state.server.lock().await;
+                if guard
+                    .as_ref()
+                    .is_some_and(|current| Arc::ptr_eq(current, &server))
+                {
+                    guard.take()
+                } else {
+                    None
+                }
+            };
+            // The process is gone, but shutdown still has to abort the
+            // OpenRouter proxy task or its listener (and key) outlive the
+            // server it belonged to.
+            if let Some(dead) = dead {
+                dead.shutdown().await;
             }
-            drop(guard);
             let recovered = ensure_server(&app, &state).await.map_err(|restart_error| {
                 format!("{error}. OpenKiwi also could not restart the runtime: {restart_error}")
             })?;
@@ -3252,7 +3273,9 @@ async fn list_lmstudio_models(base_url: String) -> Result<Value, String> {
         .bearer_auth(token)
         .send()
         .await
-        .map_err(|error| format!("Could not reach LM Studio. Start its local server and check the URL: {error}"))?
+        .map_err(|error| {
+            format!("Could not reach LM Studio. Start its local server and check the URL: {error}")
+        })?
         .error_for_status()
         .map_err(|error| format!("LM Studio rejected the model request: {error}"))?
         .json::<Value>()
@@ -3373,7 +3396,8 @@ pub fn run() {
             app.handle()
                 .plugin(tauri_plugin_updater::Builder::new().build())?;
             let db_path = state_db_path(app.handle()).map_err(std::io::Error::other)?;
-            let connection = open_state_db(&db_path).map_err(std::io::Error::other)?;
+            let connection =
+                open_state_db_or_quarantine(&db_path).map_err(std::io::Error::other)?;
             app.manage(StateDb {
                 connection: Arc::new(std::sync::Mutex::new(connection)),
             });

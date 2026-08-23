@@ -115,6 +115,9 @@ export interface ThreadTaskState {
   agentRunStartedAt?: number;
   diff: string;
   usage: TokenUsageView | null;
+  /** Local-provider transcript changes not yet acknowledged by durable disk
+   * persistence. Dirty transcripts are never eligible for memory eviction. */
+  transcriptDirty: boolean;
   unread: boolean;
   error?: string;
   updatedAt: number;
@@ -136,6 +139,7 @@ interface TaskStoreState {
   setActiveThread: (threadId: string | null) => void;
   ensureTask: (threadId: string, workspacePath?: string) => void;
   hydrateTask: (threadId: string, messages: ChatMessage[], activities: Activity[], workspacePath?: string) => void;
+  setTranscriptDirty: (threadId: string, dirty: boolean) => void;
   appendUserMessage: (threadId: string, message: ChatMessage) => void;
   removeMessage: (threadId: string, messageId: string) => void;
   queueAssistantDelta: (threadId: string, itemId: string, delta: string) => void;
@@ -187,9 +191,55 @@ function emptyTask(threadId: string, workspacePath?: string): ThreadTaskState {
     agents: [],
     diff: "",
     usage: usageForThread(threadId)?.usage ?? null,
+    transcriptDirty: false,
     unread: false,
     updatedAt: Date.now(),
   };
+}
+
+/** Most hydrated transcripts kept in renderer memory at once. */
+const MAX_HYDRATED_TRANSCRIPTS = 12;
+/** A transcript this recently touched may still have a debounced disk save
+ * pending; never evict it, or the re-hydrate would read a stale file. */
+const EVICT_MIN_IDLE_MS = 5 * 60_000;
+
+/**
+ * Visited threads hydrate their full transcript into memory and, without this,
+ * never release it — a day of touring large threads grows the renderer
+ * monotonically. On every thread switch, drop the messages/activities of the
+ * coldest idle threads beyond a small working set; they rehydrate from disk
+ * (or runtime history) on the next visit. Everything that must survive —
+ * approvals, queued turns, agent rosters, statuses — stays on the task shell.
+ */
+function evictColdTranscripts(
+  state: TaskStoreState,
+  activeThreadId: string | null,
+): Record<string, ThreadTaskState> | null {
+  const hydrated = Object.values(state.tasks).filter(
+    (task) => task.messages.length > 0 || task.activities.length > 0,
+  );
+  const excess = hydrated.length - MAX_HYDRATED_TRANSCRIPTS;
+  if (excess <= 0) return null;
+  const now = Date.now();
+  const victims = hydrated
+    .filter((task) => (
+      task.threadId !== activeThreadId
+      && state.statuses[task.threadId] !== "starting"
+      && state.statuses[task.threadId] !== "running"
+      && task.approvals.length === 0
+      && task.queuedTurns.length === 0
+      && !task.transcriptDirty
+      && !task.unread
+      && now - task.updatedAt > EVICT_MIN_IDLE_MS
+    ))
+    .sort((left, right) => left.updatedAt - right.updatedAt)
+    .slice(0, excess);
+  if (victims.length === 0) return null;
+  const tasks = { ...state.tasks };
+  for (const task of victims) {
+    tasks[task.threadId] = { ...task, messages: [], activities: [] };
+  }
+  return tasks;
 }
 
 function scheduleDeltaFlush(flush: () => void): void {
@@ -219,10 +269,14 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
   tasks: {},
   statuses: {},
   setActiveThread: (threadId) => set((state) => {
-    if (!threadId || !state.tasks[threadId]) return { activeThreadId: threadId };
+    const tasks = evictColdTranscripts(state, threadId);
+    if (!threadId || !state.tasks[threadId]) {
+      return tasks ? { activeThreadId: threadId, tasks } : { activeThreadId: threadId };
+    }
+    const base = tasks ?? state.tasks;
     return {
       activeThreadId: threadId,
-      tasks: { ...state.tasks, [threadId]: { ...state.tasks[threadId], unread: false } },
+      tasks: { ...base, [threadId]: { ...base[threadId], unread: false } },
     };
   }),
   ensureTask: (threadId, workspacePath) => set((state) => {
@@ -258,11 +312,22 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
             ...activity,
             turnDurationMs: activity.turnDurationMs ?? durationForTurn(threadId, activity.turnId),
           })),
+          transcriptDirty: false,
           unread: false,
           updatedAt: Date.now(),
         },
       },
       statuses: { ...state.statuses, [threadId]: state.statuses[threadId] ?? "idle" },
+    };
+  }),
+  setTranscriptDirty: (threadId, dirty) => set((state) => {
+    const task = state.tasks[threadId];
+    if (!task || task.transcriptDirty === dirty) return state;
+    return {
+      tasks: {
+        ...state.tasks,
+        [threadId]: { ...task, transcriptDirty: dirty },
+      },
     };
   }),
   appendUserMessage: (threadId, message) => set((state) => {

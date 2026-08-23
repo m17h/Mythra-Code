@@ -29,3 +29,19 @@ export function recentErrors(): LoggedError[] {
 export function clearErrorLog(): void {
   buffer.length = 0;
 }
+
+/**
+ * Failures that never reach a surfaced banner — uncaught exceptions and
+ * unhandled promise rejections — would otherwise vanish; capture them into
+ * the same diagnostics buffer so "it broke earlier" stays answerable.
+ */
+export function installGlobalErrorCapture(): void {
+  window.addEventListener("error", (event) => {
+    recordError(`Uncaught: ${event.message || String(event.error ?? "unknown error")}`);
+  });
+  window.addEventListener("unhandledrejection", (event) => {
+    const reason = event.reason;
+    const message = reason instanceof Error ? reason.message : String(reason ?? "unknown reason");
+    recordError(`Unhandled rejection: ${message}`);
+  });
+}

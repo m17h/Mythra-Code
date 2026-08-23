@@ -1,15 +1,15 @@
+#[cfg(windows)]
+use std::fs;
 use std::{
     collections::HashMap,
     env,
     path::{Path, PathBuf},
     process::Stdio,
     sync::{
-        atomic::{AtomicBool, AtomicI64, Ordering},
+        atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering},
         Arc,
     },
 };
-#[cfg(windows)]
-use std::fs;
 
 use base64::Engine;
 use serde::{Deserialize, Serialize};
@@ -19,7 +19,7 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::{Child, ChildStdin},
     sync::{oneshot, Mutex},
-    time::{timeout, Duration},
+    time::{timeout, timeout_at, Duration, Instant},
 };
 
 use crate::agents::{child_agent_bridge_launch_registered, ChildAgentState};
@@ -59,6 +59,10 @@ struct CursorProcess {
     pending: PendingMap,
     next_id: AtomicI64,
     alive: Arc<AtomicBool>,
+    /// Outstanding `session/prompt` requests. A steer queues a second prompt
+    /// on the same session; only the last one to settle may take the process
+    /// down, or a completing primary prompt would kill its own steer.
+    active_prompts: AtomicUsize,
     session_id: Mutex<Option<String>>,
     turn_id: Option<String>,
     wsl: bool,
@@ -638,6 +642,7 @@ async fn spawn_cursor_process(
         pending: pending.clone(),
         next_id: AtomicI64::new(1),
         alive: alive.clone(),
+        active_prompts: AtomicUsize::new(0),
         session_id: Mutex::new(None),
         turn_id: event_context
             .as_ref()
@@ -649,11 +654,43 @@ async fn spawn_cursor_process(
     let event_for_reader = event_context.clone();
     let alive_for_reader = alive.clone();
     tauri::async_runtime::spawn(async move {
+        const DELTA_FLUSH_INTERVAL: Duration = Duration::from_millis(25);
         let mut lines = BufReader::new(stdout).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
+        // High-frequency ACP notifications (`session/update` and friends) are
+        // coalesced into a single "cursor-events" array emit, mirroring the
+        // Codex and Claude readers: flushed on a ~25ms tick or before any
+        // other message so ordering is strictly preserved. Each entry is
+        // exactly the payload a per-line "cursor-event" emit would carry.
+        let mut delta_buffer: Vec<Value> = Vec::new();
+        let mut flush_deadline = Instant::now();
+        let flush_deltas = |buffer: &mut Vec<Value>, app: &AppHandle| {
+            if !buffer.is_empty() {
+                let batch = std::mem::take(buffer);
+                let _ = app.emit("cursor-events", Value::Array(batch));
+            }
+        };
+        loop {
+            // `Lines::next_line` is cancellation safe, so racing it against
+            // the flush deadline cannot drop partial lines.
+            let next = if delta_buffer.is_empty() {
+                lines.next_line().await
+            } else {
+                match timeout_at(flush_deadline, lines.next_line()).await {
+                    Ok(next) => next,
+                    Err(_) => {
+                        flush_deltas(&mut delta_buffer, &app_for_reader);
+                        continue;
+                    }
+                }
+            };
+            let line = match next {
+                Ok(Some(line)) => line,
+                _ => break,
+            };
             let Ok(message) = serde_json::from_str::<Value>(&line) else {
                 // Surface unparseable output instead of dropping it, so a
                 // wedged or misbehaving agent is visible in the thread.
+                flush_deltas(&mut delta_buffer, &app_for_reader);
                 if let Some((thread_id, turn_id, _)) = event_for_reader.as_ref() {
                     let _ = app_for_reader.emit(
                         "cursor-event",
@@ -667,6 +704,9 @@ async fn spawn_cursor_process(
             };
             if let Some(id) = message.get("id").and_then(Value::as_i64) {
                 if message.get("result").is_some() || message.get("error").is_some() {
+                    // A settled request can trigger turn completion handling;
+                    // deliver buffered updates first so order is preserved.
+                    flush_deltas(&mut delta_buffer, &app_for_reader);
                     if let Some(sender) = pending.lock().await.remove(&id) {
                         let result = if let Some(error) = message.get("error") {
                             Err(error
@@ -687,6 +727,7 @@ async fn spawn_cursor_process(
                 .and_then(Value::as_str)
                 .unwrap_or_default();
             if method == "session/request_permission" {
+                flush_deltas(&mut delta_buffer, &app_for_reader);
                 let params = message.get("params").cloned().unwrap_or_else(|| json!({}));
                 if let (Some(id), Some((thread_id, turn_id, permission))) =
                     (message.get("id").cloned(), event_for_reader.as_ref())
@@ -708,6 +749,7 @@ async fn spawn_cursor_process(
                 continue;
             }
             if method == "cursor/ask_question" {
+                flush_deltas(&mut delta_buffer, &app_for_reader);
                 if let (Some(id), Some((thread_id, turn_id, _))) =
                     (message.get("id").cloned(), event_for_reader.as_ref())
                 {
@@ -719,6 +761,7 @@ async fn spawn_cursor_process(
                 continue;
             }
             if method == "cursor/create_plan" {
+                flush_deltas(&mut delta_buffer, &app_for_reader);
                 if let Some((thread_id, turn_id, _)) = event_for_reader.as_ref() {
                     let _ = app_for_reader.emit("cursor-event", json!({
                         "threadId": thread_id, "turnId": turn_id,
@@ -735,6 +778,7 @@ async fn spawn_cursor_process(
                 continue;
             }
             if message.get("id").is_some() && message.get("method").is_some() {
+                flush_deltas(&mut delta_buffer, &app_for_reader);
                 if let Some(id) = message.get("id").cloned() {
                     let _ = write_json(&stdin, &json!({
                         "jsonrpc": "2.0", "id": id,
@@ -744,12 +788,16 @@ async fn spawn_cursor_process(
                 continue;
             }
             if let Some((thread_id, turn_id, _)) = event_for_reader.as_ref() {
-                let _ = app_for_reader.emit("cursor-event", json!({
+                if delta_buffer.is_empty() {
+                    flush_deadline = Instant::now() + DELTA_FLUSH_INTERVAL;
+                }
+                delta_buffer.push(json!({
                     "threadId": thread_id, "turnId": turn_id,
                     "message": { "type": "notification", "method": method, "params": message.get("params").cloned().unwrap_or(Value::Null) }
                 }));
             }
         }
+        flush_deltas(&mut delta_buffer, &app_for_reader);
         let was_alive = alive_for_reader.swap(false, Ordering::AcqRel);
         let mut waiting = pending.lock().await;
         for (_, sender) in waiting.drain() {
@@ -1104,6 +1152,7 @@ pub async fn cursor_turn_start(
     let turns = state.turns.clone();
     let process_for_prompt = process.clone();
     let prompt_session_id = session_id.clone();
+    process.active_prompts.fetch_add(1, Ordering::AcqRel);
     tauri::async_runtime::spawn(async move {
         let result = process_for_prompt
             .request(
@@ -1131,14 +1180,22 @@ pub async fn cursor_turn_start(
                 );
             }
         }
-        process_for_prompt.alive.store(false, Ordering::Release);
-        process_for_prompt.shutdown().await;
-        let mut turns = turns.lock().await;
-        if turns
-            .get(&thread_id)
-            .is_some_and(|current| Arc::ptr_eq(current, &process_for_prompt))
+        // A steer queued behind this prompt is still running on the same
+        // session; only the last outstanding prompt tears the process down.
+        if process_for_prompt
+            .active_prompts
+            .fetch_sub(1, Ordering::AcqRel)
+            == 1
         {
-            turns.remove(&thread_id);
+            process_for_prompt.alive.store(false, Ordering::Release);
+            process_for_prompt.shutdown().await;
+            let mut turns = turns.lock().await;
+            if turns
+                .get(&thread_id)
+                .is_some_and(|current| Arc::ptr_eq(current, &process_for_prompt))
+            {
+                turns.remove(&thread_id);
+            }
         }
     });
 
@@ -1170,7 +1227,9 @@ pub async fn cursor_turn_steer(
         .clone()
         .ok_or("Cursor session is still starting")?;
     let turn_for_prompt = turn.clone();
+    let turns_for_prompt = state.turns.clone();
     let blocks = cursor_prompt_blocks_for(&prompt, "", &attachments, turn.wsl).await?;
+    turn.active_prompts.fetch_add(1, Ordering::AcqRel);
     tauri::async_runtime::spawn(async move {
         if let Err(error) = turn_for_prompt
             .request(
@@ -1195,6 +1254,24 @@ pub async fn cursor_turn_steer(
                     }
                 }),
             );
+        }
+        // The primary prompt increments before any steer can exist, so a
+        // count reaching zero here means it already settled and skipped its
+        // teardown; this steer inherits that duty.
+        if turn_for_prompt
+            .active_prompts
+            .fetch_sub(1, Ordering::AcqRel)
+            == 1
+        {
+            turn_for_prompt.alive.store(false, Ordering::Release);
+            turn_for_prompt.shutdown().await;
+            let mut turns = turns_for_prompt.lock().await;
+            if turns
+                .get(&thread_id)
+                .is_some_and(|current| Arc::ptr_eq(current, &turn_for_prompt))
+            {
+                turns.remove(&thread_id);
+            }
         }
     });
     Ok(())

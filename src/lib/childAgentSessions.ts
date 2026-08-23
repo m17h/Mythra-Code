@@ -118,7 +118,10 @@ export async function ensureChildAgentBridge(
     : undefined;
   const existing = recapture ? {
     ...stored!,
-    maxConcurrent: recapture.maxConcurrent,
+    // The staged budget was clamped against every *enabled* destination, but
+    // only the ready subset is promoted; re-clamp so the limit can never
+    // exceed the roster it actually governs.
+    maxConcurrent: Math.max(1, Math.min(recapture.maxConcurrent, recapture.targets.length)),
     targets: recapture.targets,
     capturedAt: recapture.approvedAt,
     pendingRecapture: undefined,

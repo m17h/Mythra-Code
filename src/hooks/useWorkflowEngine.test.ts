@@ -47,6 +47,9 @@ function testEngineDeps(
     customAgents: [],
     ensureSkillRoots: vi.fn(async () => undefined),
     bindThreadToProject: vi.fn(),
+    beginRunCheckpoint: vi.fn(async () => undefined),
+    finalizeRunCheckpoint: vi.fn(async () => undefined),
+    discardRunCheckpoint: vi.fn(),
     updateWorkflow: vi.fn(),
     recordRun: (run) => {
       const index = runs.findIndex((item) => item.id === run.id);
@@ -146,6 +149,9 @@ describe("workflow turn waiting", () => {
       customAgents: [],
       ensureSkillRoots: vi.fn(async () => undefined),
       bindThreadToProject: vi.fn(),
+      beginRunCheckpoint: vi.fn(async () => undefined),
+      finalizeRunCheckpoint: vi.fn(async () => undefined),
+      discardRunCheckpoint: vi.fn(),
       updateWorkflow: vi.fn(),
       recordRun: (run) => {
         const index = runs.findIndex((item) => item.id === run.id);
@@ -218,6 +224,9 @@ describe("workflow turn waiting", () => {
       customAgents: [],
       ensureSkillRoots: vi.fn(async () => undefined),
       bindThreadToProject: vi.fn(),
+      beginRunCheckpoint: vi.fn(async () => undefined),
+      finalizeRunCheckpoint: vi.fn(async () => undefined),
+      discardRunCheckpoint: vi.fn(),
       updateWorkflow: vi.fn(),
       recordRun: (run) => {
         const index = runs.findIndex((item) => item.id === run.id);
@@ -281,6 +290,9 @@ describe("workflow turn waiting", () => {
       customAgents: [],
       ensureSkillRoots: vi.fn(async () => undefined),
       bindThreadToProject: vi.fn(),
+      beginRunCheckpoint: vi.fn(async () => undefined),
+      finalizeRunCheckpoint: vi.fn(async () => undefined),
+      discardRunCheckpoint: vi.fn(),
       updateWorkflow,
       recordRun: (run) => {
         const index = runs.findIndex((item) => item.id === run.id);

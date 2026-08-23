@@ -52,6 +52,18 @@ export interface ThreadUsageRecord {
   pricedTokens?: number;
   unpricedTokens?: number;
   eventIds?: string[];
+  /** This thread's unique count already lives in the archive record. Its
+   * resumed deltas still contribute tokens, but must not add another thread. */
+  countedInArchive?: boolean;
+  /** Set only on the synthetic archive record: how many pruned thread records
+   * it stands for, so all-time totals keep an accurate thread count. */
+  archivedThreads?: number;
+  /** Durable identities let a pruned thread resume without incrementing the
+   * all-time thread count a second time. */
+  archivedThreadIds?: string[];
+  /** Cumulative-provider baselines retained after pruning, so a resumed Codex
+   * counter only contributes usage newer than the archived snapshot. */
+  archivedSnapshots?: Record<string, TokenUsageView>;
   updatedAt: number;
 }
 
@@ -239,13 +251,82 @@ function ledger(): ThreadUsageRecord[] {
   if (cachedLedger && raw === cachedRaw) return cachedLedger;
   cachedRaw = raw;
   const stored = loadStored<ThreadUsageRecord[]>(USAGE_LEDGER_KEY, []);
-  cachedLedger = (Array.isArray(stored) ? stored : []).map((record) => ({
-    ...record,
-    usage: cleanUsage(record.usage),
-    cumulativeSnapshot: record.cumulativeSnapshot ? cleanUsage(record.cumulativeSnapshot) : undefined,
-  }));
+  cachedLedger = (Array.isArray(stored) ? stored : []).map((record) => {
+    const archivedThreadIds = Array.isArray(record.archivedThreadIds)
+      ? [...new Set(record.archivedThreadIds.filter((id): id is string => typeof id === "string" && Boolean(id.trim())))]
+      : undefined;
+    const archivedSnapshots = record.archivedSnapshots && typeof record.archivedSnapshots === "object"
+      ? Object.fromEntries(Object.entries(record.archivedSnapshots)
+          .filter(([threadId, snapshot]) => Boolean(threadId.trim()) && snapshot && typeof snapshot === "object")
+          .map(([threadId, snapshot]) => [threadId, cleanUsage(snapshot)]))
+      : undefined;
+    return {
+      ...record,
+      usage: cleanUsage(record.usage),
+      cumulativeSnapshot: record.cumulativeSnapshot ? cleanUsage(record.cumulativeSnapshot) : undefined,
+      archivedThreadIds,
+      archivedSnapshots,
+    };
+  });
   cachedTotals = null;
   return cachedLedger;
+}
+
+/** Threads quiet this long fold into the archive record on the next flush. */
+const USAGE_RETENTION_MS = 90 * 86_400_000;
+const USAGE_ARCHIVE_THREAD_ID = "openkiwi:archived-usage";
+
+/**
+ * The ledger keeps one record per thread forever so all-time totals survive
+ * thread deletion; without retention it grows without bound. Fold records
+ * whose last usage is older than the retention window into one synthetic
+ * archive record that preserves every number `usageTotals` reports. The
+ * archive also retains compact thread identities and cumulative baselines, so
+ * a folded thread can resume without double-counting either its identity or
+ * the provider's still-cumulative runtime counters.
+ */
+export function compactUsageRecords(records: ThreadUsageRecord[], now = Date.now()): ThreadUsageRecord[] {
+  const cutoff = now - USAGE_RETENTION_MS;
+  const stale = records.filter(
+    (record) => record.threadId !== USAGE_ARCHIVE_THREAD_ID && record.updatedAt < cutoff,
+  );
+  if (stale.length === 0) return records;
+  let archive = records.find((record) => record.threadId === USAGE_ARCHIVE_THREAD_ID) ?? {
+    threadId: USAGE_ARCHIVE_THREAD_ID,
+    usage: emptyUsage(),
+    estimatedCost: 0,
+    pricedTokens: 0,
+    unpricedTokens: 0,
+    archivedThreads: 0,
+    updatedAt: 0,
+  };
+  for (const record of stale) {
+    if (tokensIn(record.usage) === 0) continue;
+    const cost = record.estimatedCost ?? estimateUsageCost(record.usage, record.pricing);
+    const archivedThreadIds = new Set(archive.archivedThreadIds ?? []);
+    const alreadyCounted = record.countedInArchive === true || archivedThreadIds.has(record.threadId);
+    archivedThreadIds.add(record.threadId);
+    const archivedSnapshots = {
+      ...(archive.archivedSnapshots ?? {}),
+      ...(record.cumulativeSnapshot ? { [record.threadId]: record.cumulativeSnapshot } : {}),
+    };
+    archive = {
+      ...archive,
+      usage: addUsage(archive.usage, record.usage),
+      estimatedCost: (archive.estimatedCost ?? 0) + (cost ?? 0),
+      pricedTokens: (archive.pricedTokens ?? 0) + (record.pricedTokens ?? (cost === null ? 0 : tokensIn(record.usage))),
+      unpricedTokens: (archive.unpricedTokens ?? 0) + (record.unpricedTokens ?? (cost === null ? tokensIn(record.usage) : 0)),
+      archivedThreads: (archive.archivedThreads ?? 0) + (alreadyCounted ? 0 : 1),
+      archivedThreadIds: [...archivedThreadIds],
+      archivedSnapshots,
+      updatedAt: Math.max(archive.updatedAt, record.updatedAt),
+    };
+  }
+  const staleIds = new Set(stale.map((record) => record.threadId));
+  return [
+    ...records.filter((record) => !staleIds.has(record.threadId) && record.threadId !== USAGE_ARCHIVE_THREAD_ID),
+    archive,
+  ];
 }
 
 export function flushUsageLedger(): void {
@@ -254,7 +335,7 @@ export function flushUsageLedger(): void {
     clearTimeout(persistTimer);
     persistTimer = null;
   }
-  const records = [...cachedLedger].sort((left, right) => right.updatedAt - left.updatedAt);
+  const records = compactUsageRecords([...cachedLedger]).sort((left, right) => right.updatedAt - left.updatedAt);
   cachedLedger = records;
   cachedRaw = JSON.stringify(records);
   ledgerDirty = false;
@@ -348,9 +429,17 @@ function withCostDelta(record: ThreadUsageRecord, delta: TokenUsageView): Pick<T
 function upsert(threadId: string, update: (record: ThreadUsageRecord) => ThreadUsageRecord): ThreadUsageRecord {
   const records = ledger();
   const index = records.findIndex((record) => record.threadId === threadId);
+  const archive = records.find((record) => record.threadId === USAGE_ARCHIVE_THREAD_ID);
+  const archivedBefore = archive?.archivedThreadIds?.includes(threadId) === true;
   const current = index >= 0
     ? records[index]
-    : { threadId, usage: emptyUsage(), updatedAt: Date.now() };
+    : {
+        threadId,
+        usage: emptyUsage(),
+        cumulativeSnapshot: archive?.archivedSnapshots?.[threadId],
+        countedInArchive: archivedBefore || undefined,
+        updatedAt: Date.now(),
+      };
   const next = update(current);
   if (next === current) return current;
   if (index >= 0) records[index] = next;
@@ -545,7 +634,9 @@ export function usageTotals(): UsageTotals {
     totals.outputTokens += usage.outputTokens;
     totals.reasoningOutputTokens += usage.reasoningOutputTokens;
     totals.totalTokens += usage.totalTokens;
-    totals.threads += 1;
+    totals.threads += record.threadId === USAGE_ARCHIVE_THREAD_ID
+      ? (record.archivedThreads ?? 1)
+      : (record.countedInArchive ? 0 : 1);
     const cost = record.estimatedCost ?? estimateUsageCost(usage, record.pricing);
     totals.estimatedCost += cost ?? 0;
     totals.pricedTokens += record.pricedTokens ?? (cost === null ? 0 : tokensIn(usage));

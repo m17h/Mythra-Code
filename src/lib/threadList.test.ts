@@ -6,6 +6,7 @@ import {
   filterThreadsForWorkspace,
   forgetSidebarThread,
   optimisticStartedThread,
+  partitionBulkArchiveThreads,
   reconcileWorkspaceThreads,
   rememberSidebarThread,
   repairRootThreadMetadata,
@@ -137,6 +138,28 @@ describe("thread sidebar list", () => {
   it("counts a newly starting task before its sidebar metadata arrives", () => {
     expect(countActiveThreadsByWorkspace({}, { draft: "/projects/alpha" }, { draft: "starting" })).toEqual({
       "/projects/alpha": 1,
+    });
+  });
+
+  it("keeps live tasks out of a bulk archive operation", () => {
+    const idle = makeThread("idle");
+    const starting = makeThread("starting");
+    const running = makeThread("running");
+    const completed = makeThread("completed");
+    const failed = makeThread("failed");
+
+    expect(partitionBulkArchiveThreads(
+      [idle, starting, running, completed, failed],
+      {
+        idle: "idle",
+        starting: "starting",
+        running: "running",
+        completed: "completed",
+        failed: "error",
+      },
+    )).toEqual({
+      ready: [idle, completed, failed],
+      active: [starting, running],
     });
   });
 });

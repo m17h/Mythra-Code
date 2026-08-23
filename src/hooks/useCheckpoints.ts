@@ -425,6 +425,14 @@ export function useCheckpoints(context: CheckpointsContext) {
       `Are you sure you want to ${action}?\n\n`
       + "The complete project source state will move to that point. Later work will leave the active folder, but OpenKiwi will save the current state as a new safety checkpoint first. Git commits and ignored files are not changed.",
     )) return;
+    // The confirm dialog blocks for as long as the user leaves it open; a
+    // scheduler tick, workflow step, or queued turn can start editing in the
+    // meantime. Re-check so the restore cannot rewrite the tree under a turn
+    // that began while the dialog was up.
+    if (projectHasActiveTask(checkpoint.workspacePath)) {
+      setError("A task started in this project while the confirmation was open. Stop every active task before restoring a checkpoint.");
+      return;
+    }
 
     setCheckpointBusyId(checkpoint.id);
     let safetyId: string | null = null;

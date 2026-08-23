@@ -3,7 +3,7 @@ import { auditEvent, rpc } from "../lib/codex";
 import { useTaskStore } from "../lib/taskStore";
 import { scheduleRunSnapshot, threadStartParams, turnStartParams } from "../lib/turnConfig";
 import type { LMStudioModel } from "../lib/lmStudio";
-import type { AppSettings, Project, ScheduleRunRecord, ScheduleRunSettings, ScheduledTask, Thread } from "../types";
+import type { AppSettings, Project, Provider, ScheduleRunRecord, ScheduleRunSettings, ScheduledTask, Thread } from "../types";
 
 export interface SchedulerDeps {
   schedules: ScheduledTask[];
@@ -17,6 +17,9 @@ export interface SchedulerDeps {
   lmStudioModels?: LMStudioModel[];
   ensureSkillRoots: () => Promise<void>;
   bindThreadToProject: (threadId: string, projectPath: string) => void;
+  /** Automatic pre-turn file snapshot, same lifecycle user turns get. */
+  beginRunCheckpoint: (threadId: string, workspacePath: string, prompt: string, provider: Provider, model: string) => Promise<string | undefined>;
+  discardRunCheckpoint: (threadId: string) => void;
   onThreadStarted: (project: Project) => void;
   recordRun: (run: ScheduleRunRecord) => void;
 }
@@ -93,9 +96,18 @@ export function useScheduler(deps: SchedulerDeps): void {
       useTaskStore.getState().ensureTask(started.thread.id, project.path);
       useTaskStore.getState().appendUserMessage(started.thread.id, { id: `scheduled-${crypto.randomUUID()}`, role: "user", text: scheduled.prompt });
       useTaskStore.getState().setTaskStatus(started.thread.id, "starting");
-      await rpc("turn/start", turnStartParams(run, started.thread.id, project.path, [
-        { type: "text", text: scheduled.prompt, text_elements: [] },
-      ]));
+      // Snapshot before the unattended turn edits anything; the Codex event
+      // router finalizes it on turn completion like any user turn.
+      await current.beginRunCheckpoint(started.thread.id, project.path, scheduled.prompt, run.provider, run.model);
+      try {
+        await rpc("turn/start", turnStartParams(run, started.thread.id, project.path, [
+          { type: "text", text: scheduled.prompt, text_elements: [] },
+        ]));
+      } catch (reason) {
+        // No turn started, so no completion event will finalize the snapshot.
+        current.discardRunCheckpoint(started.thread.id);
+        throw reason;
+      }
       turnStarted = true;
       current.updateSchedule(scheduled.id, (item) => ({
         ...item,
