@@ -6,7 +6,8 @@ export type OpenAILogoStyle = "openai" | "codex";
 export type ClaudeLogoStyle = "claude" | "anthropic";
 export type CursorLogoStyle = "cube" | "app-dark";
 export type PermissionMode = "read-only" | "ask" | "full";
-export type ThemeName = "kiwi" | "daylight";
+export type ThemeName = "kiwi" | "daylight" | "midnight" | "synthwave" | "ember" | "terminal";
+export type EffortSliderStyle = "spectrum" | "classic" | "neon" | "pixel" | "aurora" | "ink";
 export type WorkspaceMode = "chat" | "project";
 export type SettingsSection = "general" | "models" | "github" | "usage" | "prompts" | "agents" | "workflows" | "projects" | "skills" | "tools" | "updates";
 export type ProjectPromptMode = "replace" | "append";
@@ -290,6 +291,8 @@ export interface AppSettings {
   ultra: boolean;
   serviceTier: string | null;
   theme: ThemeName;
+  /** Visual style of the reasoning-effort sliders. Absent before 1.8.5. */
+  effortSlider: EffortSliderStyle;
   notificationsEnabled: boolean;
   terminalScrollback: number;
   uiScale: number;

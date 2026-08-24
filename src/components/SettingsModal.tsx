@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
+import { confirmDialog } from "../lib/confirmDialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   Boxes,
@@ -29,7 +30,7 @@ import {
 import { exportDiagnostics, recentAuditRows, rpc, saveLmStudioKey, saveOpenRouterKey, type AuditRow, type CodexRuntimeStatus } from "../lib/codex";
 import type { ClaudeRuntimeStatus } from "../lib/claude";
 import type { CursorRuntimeStatus } from "../lib/cursor";
-import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_SETTINGS, RELEASE_NOTES_URL, THEMES } from "../lib/appConfig";
+import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_SETTINGS, EFFORT_SLIDER_STYLES, RELEASE_NOTES_URL, THEMES } from "../lib/appConfig";
 import { friendlyError } from "../lib/errors";
 import { useModalFocus } from "../hooks/useModalFocus";
 import { AnthropicLogo, ClaudeLogo, CodexLogo, CursorDarkAppIcon, CursorLogo, LmStudioLogo, OpenAILogo, OpenRouterLogo } from "./BrandLogos";
@@ -52,6 +53,7 @@ import type {
   Account,
   AppSettings,
   CustomAgentProfile,
+  EffortSliderStyle,
   PermissionMode,
   Project,
   ProjectAction,
@@ -131,6 +133,7 @@ export function SettingsModal({
   onClose,
   onSave,
   onThemePreview,
+  onEffortSliderPreview,
   onAccountChange,
   onSignIn,
   onClaudeSignIn = async () => {},
@@ -207,6 +210,7 @@ export function SettingsModal({
   onClose: () => void;
   onSave: (settings: AppSettings) => void;
   onThemePreview: (theme: ThemeName) => void;
+  onEffortSliderPreview: (style: EffortSliderStyle) => void;
   onAccountChange: () => Promise<void>;
   onSignIn: () => Promise<void>;
   onClaudeSignIn?: () => Promise<void>;
@@ -277,12 +281,12 @@ export function SettingsModal({
   // Buffered edits (theme, prompt, toggles) are discarded on close — warn
   // before silently throwing away work like a hand-written system prompt.
   const dirty = open && (JSON.stringify(local) !== JSON.stringify(settings) || JSON.stringify(localProjects) !== JSON.stringify(projects));
-  const requestClose = () => {
-    if (dirty && !window.confirm("Discard unsaved settings changes?")) return;
+  const requestClose = async () => {
+    if (dirty && !await confirmDialog("Discard unsaved settings changes?")) return;
     onClose();
   };
-  const requestOnboarding = () => {
-    if (dirty && !window.confirm("Discard unsaved settings changes?")) return;
+  const requestOnboarding = async () => {
+    if (dirty && !await confirmDialog("Discard unsaved settings changes?")) return;
     onOpenOnboarding();
   };
 
@@ -306,6 +310,7 @@ export function SettingsModal({
       setLocalProjects(projects);
       setAgentScope(activeProjectId ?? "global");
       onThemePreview(settings.theme);
+      onEffortSliderPreview(settings.effortSlider);
       setSettingsSection(initialSection);
       return;
     }
@@ -330,7 +335,7 @@ export function SettingsModal({
       });
     }
     draftBaselineRef.current = { settings, projects };
-  }, [activeProjectId, initialSection, onThemePreview, open, projects, settings]);
+  }, [activeProjectId, initialSection, onEffortSliderPreview, onThemePreview, open, projects, settings]);
 
   useEffect(() => {
     if (open && initialSection === "general" && appUpdater.phase === "available") {
@@ -476,6 +481,11 @@ export function SettingsModal({
     onThemePreview(theme);
   };
 
+  const previewEffortSlider = (style: EffortSliderStyle) => {
+    setLocal((current) => ({ ...current, effortSlider: style }));
+    onEffortSliderPreview(style);
+  };
+
   const exportDiagnosticBundle = async () => {
     try {
       const path = await save({ title: "Export OpenKiwi diagnostics", defaultPath: `openkiwi-diagnostics-${new Date().toISOString().slice(0, 10)}.json`, filters: [{ name: "JSON", extensions: ["json"] }] });
@@ -580,6 +590,27 @@ export function SettingsModal({
                   </span>
                   <span><strong>{theme.name}</strong><small>{theme.description}</small></span>
                   {local.theme === theme.id && <Check size={14} />}
+                </button>
+              ))}
+            </div>
+            <div className="slider-style-heading">
+              <strong>Effort slider style</strong>
+              <small>How the reasoning-effort slider looks across every provider. Previewed instantly; save to keep.</small>
+            </div>
+            <div className="slider-style-grid">
+              {EFFORT_SLIDER_STYLES.map((style) => (
+                <button
+                  type="button"
+                  key={style.id}
+                  className={`slider-style-card ${local.effortSlider === style.id ? "selected" : ""}`}
+                  aria-pressed={local.effortSlider === style.id}
+                  onClick={() => previewEffortSlider(style.id)}
+                >
+                  <span className={`slider-style-preview ${style.id}`} aria-hidden="true">
+                    <i className="slider-style-rail" /><i className="slider-style-thumb" />
+                  </span>
+                  <span><strong>{style.name}</strong><small>{style.description}</small></span>
+                  {local.effortSlider === style.id && <Check size={14} />}
                 </button>
               ))}
             </div>

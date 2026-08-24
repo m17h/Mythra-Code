@@ -43,6 +43,7 @@ function modalProps(overrides: Partial<Parameters<typeof SettingsModal>[0]> = {}
     onClose: vi.fn(),
     onSave: vi.fn(),
     onThemePreview: vi.fn(),
+    onEffortSliderPreview: vi.fn(),
     onAccountChange: vi.fn(async () => undefined),
     onSignIn: vi.fn(async () => undefined),
     onRuntimeRequired: vi.fn(),
@@ -112,12 +113,29 @@ describe("SettingsModal", () => {
     expect(within(screen.getByRole("group", { name: "System" })).getByRole("button", { name: /Updates/ })).toBeInTheDocument();
   });
 
-  it("offers only the OpenKiwi and Daylight themes", () => {
+  it("offers every registered theme and effort-slider style", () => {
     render(<SettingsModal {...modalProps()} />);
 
     expect(screen.getByRole("button", { name: /OpenKiwi.*Deep graphite/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Daylight.*Paper white/ })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Midnight|Ember|Violet/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Midnight.*ocean blue/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Synthwave.*magenta/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Ember.*amber/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Terminal.*Phosphor/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Spectrum.*Heat colors/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Classic.*original/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Neon.*model's accent/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Pixel.*VU meter/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Aurora.*northern-light/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Ink.*monochrome/ })).toBeInTheDocument();
+  });
+
+  it("previews an effort-slider style immediately", () => {
+    const onEffortSliderPreview = vi.fn();
+    render(<SettingsModal {...modalProps({ onEffortSliderPreview })} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /Classic.*original/ }));
+    expect(onEffortSliderPreview).toHaveBeenLastCalledWith("classic");
   });
 
   it("opens directly to the requested settings section", () => {
@@ -310,7 +328,7 @@ describe("SettingsModal", () => {
     expect(screen.queryByRole("button", { name: "Sign in again" })).not.toBeInTheDocument();
   });
 
-  it("previews a theme immediately but does not save it when cancelled", () => {
+  it("previews a theme immediately but does not save it when cancelled", async () => {
     const onThemePreview = vi.fn();
     const onClose = vi.fn();
     const onSave = vi.fn();
@@ -322,8 +340,9 @@ describe("SettingsModal", () => {
     expect(onThemePreview).toHaveBeenLastCalledWith("daylight");
 
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    // The confirmation now resolves through the async dialog helper.
+    await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
     expect(window.confirm).toHaveBeenCalledOnce();
-    expect(onClose).toHaveBeenCalledOnce();
     expect(onSave).not.toHaveBeenCalled();
     vi.unstubAllGlobals();
   });

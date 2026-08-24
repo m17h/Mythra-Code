@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { Check, ChevronDown, Earth, Gauge, Moon, Sun, Zap, type LucideIcon } from "lucide-react";
+import { EffortSlider, effortFlairStyle } from "./effortFlair";
 
 export type ModelKind = "sol" | "terra" | "luna";
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
@@ -100,8 +101,8 @@ export function ModelPowerControl({
   return (
     <div
       ref={rootRef}
-      className={`model-power-control ${kind} ${menuOpen ? "menu-open" : ""} ${disabled ? "disabled" : ""}`}
-      style={{ "--reasoning-fill": `${reasoningFill}%` } as CSSProperties}
+      className={`model-power-control ${kind} ${menuOpen ? "menu-open" : ""} ${disabled ? "disabled" : ""} ${effortIndex === EFFORTS.length - 1 ? "effort-max" : ""}`}
+      style={{ "--reasoning-fill": `${reasoningFill}%`, ...effortFlairStyle(effortIndex, EFFORTS.length) } as CSSProperties}
     >
       <div className="model-picker">
         <button
@@ -119,7 +120,8 @@ export function ModelPowerControl({
             }
           }}
         >
-          <span className="model-orb"><SelectedModelIcon size={13} strokeWidth={2.2} /></span>
+          {/* Keyed by kind so a model switch replays the arrival burst. */}
+          <span className="model-orb" key={kind}><SelectedModelIcon size={13} strokeWidth={2.2} /></span>
           <span className="model-picker-copy">
             <small>GPT-5.6 model</small>
             <strong>{selectedModel.name}</strong>
@@ -165,22 +167,16 @@ export function ModelPowerControl({
       </div>
 
       <div className="reasoning-control">
-        <div className="reasoning-heading"><Gauge size={13} /><span>Reasoning</span><button type="button" className={`fast-tier ${fast ? "on" : ""}`} aria-pressed={fast} aria-label="Use OpenAI fast priority service tier" onClick={() => onFast(!fast)} title="Use OpenAI priority service tier"><Zap size={9} /> Fast</button><strong>{EFFORTS[effortIndex].label}</strong></div>
-        <div className="reasoning-rail">
-          <input
-            aria-label="Reasoning effort"
-            type="range"
-            min={0}
-            max={EFFORTS.length - 1}
-            step={1}
-            value={effortIndex}
-            disabled={disabled}
-            onChange={(event) => onEffort(EFFORTS[Number(event.target.value)].value)}
-          />
-          <div className="reasoning-ticks" aria-hidden="true">
-            {EFFORTS.map((entry, index) => <i key={entry.value} className={index <= effortIndex ? "reached" : ""} />)}
-          </div>
-        </div>
+        <div className="reasoning-heading"><Gauge size={13} /><span>Reasoning</span><button type="button" className={`fast-tier ${fast ? "on" : ""}`} aria-pressed={fast} aria-label="Use OpenAI fast priority service tier" onClick={() => onFast(!fast)} title="Use OpenAI priority service tier"><Zap size={9} /> Fast</button>{/* Keyed by effort so each change replays the pop-in. */}<strong key={EFFORTS[effortIndex].value}>{EFFORTS[effortIndex].label}</strong></div>
+        <EffortSlider
+          variant="codex"
+          index={effortIndex}
+          count={EFFORTS.length}
+          ariaLabel="Reasoning effort"
+          valueText={EFFORTS[effortIndex].label}
+          disabled={disabled}
+          onIndex={(next) => onEffort(EFFORTS[next].value)}
+        />
         <div className="reasoning-labels">
           {EFFORTS.map((entry, index) => <span key={entry.value} className={index === effortIndex ? "active" : ""}>{entry.shortLabel}</span>)}
         </div>

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { Check, ChevronDown, Gauge } from "lucide-react";
+import { EffortSlider, effortFlairStyle } from "./effortFlair";
 import type { ReasoningEffort } from "./ModelPowerControl";
 import { ClaudeProviderLogo } from "./BrandLogos";
 
@@ -127,34 +128,24 @@ export function ClaudeModelControl({
           </div>
         </div>
       </div>
-      <div className="openrouter-reasoning">
+      <div
+        className={`openrouter-reasoning ${effortIndex === EFFORTS.length - 1 ? "effort-max" : ""}`}
+        style={effortFlairStyle(effortIndex, EFFORTS.length)}
+      >
         <div className="openrouter-reasoning-heading">
           <Gauge size={13} />
           <span>Reasoning</span>
-          <strong>{EFFORTS[effortIndex].label}</strong>
+          {/* Keyed so each effort change replays the readout pop. */}
+          <strong key={EFFORTS[effortIndex].value}>{EFFORTS[effortIndex].label}</strong>
         </div>
-        <div className="openrouter-reasoning-rail">
-          <input
-            aria-label="Claude reasoning effort"
-            type="range"
-            min={0}
-            max={EFFORTS.length - 1}
-            step={1}
-            value={effortIndex}
-            aria-valuetext={EFFORTS[effortIndex].label}
-            onChange={(event) =>
-              onEffort(EFFORTS[Number(event.target.value)].value)
-            }
-          />
-          <div className="openrouter-reasoning-ticks" aria-hidden="true">
-            {EFFORTS.map((entry, index) => (
-              <i
-                key={entry.value}
-                className={index <= effortIndex ? "reached" : ""}
-              />
-            ))}
-          </div>
-        </div>
+        <EffortSlider
+          variant="router"
+          index={effortIndex}
+          count={EFFORTS.length}
+          ariaLabel="Claude reasoning effort"
+          valueText={EFFORTS[effortIndex].label}
+          onIndex={(next) => onEffort(EFFORTS[next].value)}
+        />
         <div className="openrouter-reasoning-labels">
           {EFFORTS.map((entry, index) => (
             <span

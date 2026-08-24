@@ -10,13 +10,16 @@ import { getCodexRuntimeStatus, auditEvent, exportTextFile, getNormalChatWorkspa
 import { deleteClaudeTranscript, getClaudeRateLimits, getClaudeRuntimeStatus, loadClaudeTranscript, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, type ClaudeRuntimeStatus } from "./lib/claude";
 import { deleteCursorTranscript, getCursorRuntimeStatus, listCursorModels, loadCursorTranscript, respondToCursorPermission, saveCursorTranscript, startCursorLogin, type CursorModel, type CursorRuntimeStatus } from "./lib/cursor";
 import { loadStored, storeValue } from "./lib/storage";
-import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_PROMPT_PROFILES, DEFAULT_SETTINGS, THEMES } from "./lib/appConfig";
+import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_PROMPT_PROFILES, DEFAULT_SETTINGS, EFFORT_SLIDER_STYLES, THEMES } from "./lib/appConfig";
 import { commandSandbox, threadResumeParams, threadRuntimeConfig } from "./lib/turnConfig";
 import { threadSearchParams, threadsForWorkspace, type ThreadSearchResponse } from "./lib/threadSearch";
 import { countActiveThreadsByWorkspace, filterThreadsByKind, filterThreadsForWorkspace, forgetSidebarThread, isSubAgentThread, partitionBulkArchiveThreads, pruneSidebarIndex, reconcileWorkspaceThreads, rememberSidebarThread, repairRootThreadMetadata, sidebarThread, threadBelongsToWorkspace, upsertThread, type ThreadSidebarIndex } from "./lib/threadList";
 import { timelineFromTurns } from "./lib/threadTimeline";
 import { buildTranscriptMarkdown } from "./lib/transcript";
 import { RowMenu } from "./components/RowMenu";
+import { Odometer } from "./components/Odometer";
+import { confirmDialog } from "./lib/confirmDialog";
+import { ConfirmDialogModal } from "./components/ConfirmDialogModal";
 import { ModelPowerControl, type RuntimeModel } from "./components/ModelPowerControl";
 import { OpenRouterModelControl, type OpenRouterModel } from "./components/OpenRouterModelControl";
 import { ClaudeModelControl } from "./components/ClaudeModelControl";
@@ -33,7 +36,7 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { SettingsModal } from "./components/SettingsModal";
 import { AuthRequiredModal, RuntimeSetupModal } from "./components/RuntimeModals";
 import type { AgentRecord, AttachmentRecord, McpView, StudioTab } from "./components/StudioDock";
-import type { Account, Activity, AppSettings, ArchivedThread, ChatMessage, CustomAgentProfile, PendingApproval, PermissionMode, Project, ProjectAction, ProjectPromptMode, ProjectSubagentSettings, PromptProfile, Provider, ScheduledTask, ScheduleRunRecord, SettingsSection, Thread, ThreadHandoff, ThreadReasoning, ThemeName, WorkspaceMode } from "./types";
+import type { Account, Activity, AppSettings, ArchivedThread, ChatMessage, CustomAgentProfile, PendingApproval, PermissionMode, Project, ProjectAction, ProjectPromptMode, ProjectSubagentSettings, EffortSliderStyle, PromptProfile, Provider, ScheduledTask, ScheduleRunRecord, SettingsSection, Thread, ThreadHandoff, ThreadReasoning, ThemeName, WorkspaceMode } from "./types";
 import { PendingTurnStarts } from "./lib/pendingTurnStarts";
 import { isAssistantOutputActive, useTaskStore, type QueuedTurn } from "./lib/taskStore";
 import { friendlyError } from "./lib/errors";
@@ -178,7 +181,7 @@ const establishedInstall = isEstablishedOpenKiwiInstall({ projects: initialProje
 const initialOnboardingOpen = initialOnboardingVersion < ONBOARDING_VERSION && !establishedInstall;
 const storedSettings = loadStored<Partial<AppSettings>>("kiwi.settings", {});
 const initialChildAgents = sanitizeChildAgentSettings(storedSettings.childAgents);
-const initialSettings: AppSettings = { ...DEFAULT_SETTINGS, ...storedSettings, openAiLogo: storedSettings.openAiLogo === "codex" ? "codex" : "openai", claudeLogo: storedSettings.claudeLogo === "anthropic" ? "anthropic" : "claude", cursorLogo: storedSettings.cursorLogo === "app-dark" ? "app-dark" : "cube", subagentMax: crewSafeConcurrency(Number(storedSettings.subagentMax) || DEFAULT_SETTINGS.subagentMax, initialChildAgents), autoArchiveSubagentThreads: storedSettings.autoArchiveSubagentThreads === true, childAgents: initialChildAgents, model: modelForProvider(storedSettings.provider ?? DEFAULT_SETTINGS.provider, storedSettings.model ?? DEFAULT_SETTINGS.model), reasoningEffort: sanitizeComposerReasoningEffort(storedSettings.reasoningEffort), ultra: false, lmStudioBaseUrl: storedSettings.lmStudioBaseUrl?.trim() || DEFAULT_LM_STUDIO_BASE_URL, theme: THEMES.some((theme) => theme.id === storedSettings.theme) ? storedSettings.theme! : DEFAULT_SETTINGS.theme, uiScale: Math.min(150, Math.max(80, Number(storedSettings.uiScale) || DEFAULT_SETTINGS.uiScale)), usageDisplay: sanitizeUsageDisplay(storedSettings.usageDisplay) };
+const initialSettings: AppSettings = { ...DEFAULT_SETTINGS, ...storedSettings, openAiLogo: storedSettings.openAiLogo === "codex" ? "codex" : "openai", claudeLogo: storedSettings.claudeLogo === "anthropic" ? "anthropic" : "claude", cursorLogo: storedSettings.cursorLogo === "app-dark" ? "app-dark" : "cube", subagentMax: crewSafeConcurrency(Number(storedSettings.subagentMax) || DEFAULT_SETTINGS.subagentMax, initialChildAgents), autoArchiveSubagentThreads: storedSettings.autoArchiveSubagentThreads === true, childAgents: initialChildAgents, model: modelForProvider(storedSettings.provider ?? DEFAULT_SETTINGS.provider, storedSettings.model ?? DEFAULT_SETTINGS.model), reasoningEffort: sanitizeComposerReasoningEffort(storedSettings.reasoningEffort), ultra: false, lmStudioBaseUrl: storedSettings.lmStudioBaseUrl?.trim() || DEFAULT_LM_STUDIO_BASE_URL, theme: THEMES.some((theme) => theme.id === storedSettings.theme) ? storedSettings.theme! : DEFAULT_SETTINGS.theme, effortSlider: EFFORT_SLIDER_STYLES.some((style) => style.id === storedSettings.effortSlider) ? storedSettings.effortSlider! : DEFAULT_SETTINGS.effortSlider, uiScale: Math.min(150, Math.max(80, Number(storedSettings.uiScale) || DEFAULT_SETTINGS.uiScale)), usageDisplay: sanitizeUsageDisplay(storedSettings.usageDisplay) };
 
 /**
  * Claude/Cursor transcripts flow memory → disk on a debounced save, so the
@@ -262,6 +265,7 @@ export default function App() {
   const [worktreeStatus, setWorktreeStatus] = useState<WorktreeStatus | null>(null);
   const [worktreeBusy, setWorktreeBusy] = useState(false);
   const [previewTheme, setPreviewTheme] = useState<ThemeName | null>(null);
+  const [previewEffortSlider, setPreviewEffortSlider] = useState<EffortSliderStyle | null>(null);
   const [promptProfiles, setPromptProfiles] = usePersistedState<PromptProfile[]>("kiwi.promptProfiles", DEFAULT_PROMPT_PROFILES);
   const [customAgents, setCustomAgents] = usePersistedState<CustomAgentProfile[]>("kiwi.customAgents", []);
   const [projectActions, setProjectActions] = usePersistedState<ProjectAction[]>("kiwi.projectActions", []);
@@ -1362,6 +1366,11 @@ export default function App() {
         setThreads(reconcileWorkspaceThreads([], knownThreadsRef.current ?? {}, project.path, threadProjectBindingsRef.current ?? {}));
         return;
       }
+      // Paint the remembered sidebar snapshot for this workspace immediately.
+      // Without it, the frames between the project click and the first
+      // thread/list page render an empty inbox — a visible flicker of the
+      // rows and of every header control derived from the visible list.
+      setThreads(reconcileWorkspaceThreads([], knownThreadsRef.current ?? {}, project.path, threadProjectBindingsRef.current ?? {}));
       try {
         const allThreads: Thread[] = [];
         let cursor: string | null = null;
@@ -2325,7 +2334,7 @@ export default function App() {
     setProjects(next);
   };
 
-  const removeProject = (project: Project) => {
+  const removeProject = async (project: Project) => {
     const isolatedCount = Object.values(threadWorktreesRef.current).filter(
       (record) => normalizedProjectPath(record.projectPath) === normalizedProjectPath(project.path)
         && record.status !== "removed",
@@ -2334,7 +2343,7 @@ export default function App() {
       setError(`Remove the ${isolatedCount} isolated worktree${isolatedCount === 1 ? "" : "s"} in this project from the Worktrees workspace tab before removing the project from OpenKiwi.`);
       return;
     }
-    const confirmed = window.confirm(`Remove “${project.name}” from OpenKiwi?\n\nIts folder and every file inside it will remain untouched on your computer.`);
+    const confirmed = await confirmDialog(`Remove “${project.name}” from OpenKiwi?\n\nIts folder and every file inside it will remain untouched on your computer.`);
     if (!confirmed) return;
     const next = projects.filter((entry) => entry.id !== project.id);
     setProjects(next);
@@ -2554,7 +2563,7 @@ export default function App() {
     requestAnimationFrame(() => composerRef.current?.focus());
   };
 
-  const startNewThreadWithProvider = (provider: Provider) => {
+  const startNewThreadWithProvider = async (provider: Provider) => {
     if (running) {
       setError("Stop the running task before starting a thread with another provider.");
       return;
@@ -2566,7 +2575,7 @@ export default function App() {
       }
       const sourceProvider = providerFromThread(activeThread, settings.provider);
       const sourceTitle = activeThread.name || activeThread.preview || "Untitled task";
-      if (!window.confirm(`Hand off “${sourceTitle}” from ${providerLabel(sourceProvider)} to ${providerLabel(provider)}?\n\nOpenKiwi will start a separate provider thread in the same workspace with a bounded, visible copy of the conversation. The original thread remains unchanged.`)) return;
+      if (!await confirmDialog(`Hand off “${sourceTitle}” from ${providerLabel(sourceProvider)} to ${providerLabel(provider)}?\n\nOpenKiwi will start a separate provider thread in the same workspace with a bounded, visible copy of the conversation. The original thread remains unchanged.`)) return;
       const task = useTaskStore.getState().tasks[activeThread.id];
       const handoff: ThreadHandoff = {
         sourceThreadId: activeThread.id,
@@ -2994,7 +3003,7 @@ export default function App() {
       return false;
     }
     if (archivingThreadIdsRef.current.has(thread.id)) return false;
-    if (confirmArchive && !window.confirm(`Archive “${label}”?\n\nIt moves to the Archived list in the sidebar, where you can restore or permanently delete it.`)) return false;
+    if (confirmArchive && !await confirmDialog(`Archive “${label}”?\n\nIt moves to the Archived list in the sidebar, where you can restore or permanently delete it.`)) return false;
     archivingThreadIdsRef.current.add(thread.id);
     try {
       if (!isLocalSubscriptionThread(thread)) await rpc("thread/archive", { threadId: thread.id });
@@ -3032,7 +3041,7 @@ export default function App() {
     const activeNote = active.length
       ? `\n\n${active.length} active ${active.length === 1 ? "thread" : "threads"} will remain in the inbox.`
       : "";
-    if (!window.confirm(
+    if (!await confirmDialog(
       `Archive all ${ready.length} idle ${kindLabel} ${ready.length === 1 ? "thread" : "threads"} in “${activeWorkspace.name}”?`
       + `\n\nThey move to the Archived list, where they can be restored or permanently deleted.${activeNote}`,
     )) return;
@@ -3115,7 +3124,7 @@ export default function App() {
         ? providerForArchivedThread(archived, legacyClaudeTranscript)
         : "openai";
     const localSubscription = provider === "claude" || provider === "cursor";
-    if (confirmDelete && !window.confirm(`Permanently delete “${label}”?\n\nThis removes the conversation from ${localSubscription ? "OpenKiwi" : "the Codex runtime"} and cannot be undone.`)) return false;
+    if (confirmDelete && !await confirmDialog(`Permanently delete “${label}”?\n\nThis removes the conversation from ${localSubscription ? "OpenKiwi" : "the Codex runtime"} and cannot be undone.`)) return false;
     try {
       const saveTimer = claudeSaveTimersRef.current.get(threadId);
       if (saveTimer !== undefined) window.clearTimeout(saveTimer);
@@ -3171,7 +3180,7 @@ export default function App() {
   const deleteAllArchivedThreads = async () => {
     if (!activeWorkspace || workspaceArchived.length === 0) return;
     const kindLabel = threadKindView === "subagents" ? "sub-agent" : "main";
-    if (!window.confirm(
+    if (!await confirmDialog(
       `Permanently delete all ${workspaceArchived.length} archived ${kindLabel} ${workspaceArchived.length === 1 ? "thread" : "threads"} in “${activeWorkspace.name}”?`
       + "\n\nEvery conversation in this Archived section will be removed. This cannot be undone.",
     )) return;
@@ -3315,7 +3324,7 @@ export default function App() {
 
   const rollbackTurn = async () => {
     if (!activeThread) return;
-    if (!window.confirm("Undo the last turn?\n\nThis permanently removes the latest exchange from the conversation. Files changed by the turn are not reverted.")) return;
+    if (!await confirmDialog("Undo the last turn?\n\nThis permanently removes the latest exchange from the conversation. Files changed by the turn are not reverted.")) return;
     try {
       const result = await rpc<{ thread: Thread }>("thread/rollback", { threadId: activeThread.id, numTurns: 1 });
       rememberThread(result.thread);
@@ -3362,7 +3371,7 @@ export default function App() {
     const recreationWarning = activeThreadWorktree.recreatedFromMissing
       ? "\n\nThis worktree was recreated from its committed branch after its folder disappeared. Applying can remove earlier uncommitted work that had already been copied to the shared project; the safety checkpoint lets you restore it."
       : "";
-    if (!window.confirm(
+    if (!await confirmDialog(
       `Apply all changes from “${activeThreadWorktree.branch}” to the shared project?\n\n`
       + `OpenKiwi will save the shared project as a safety checkpoint first. The isolated branch and worktree remain unchanged, and Git staging and commits are not modified.${recreationWarning}`,
     )) return;
@@ -3411,7 +3420,7 @@ export default function App() {
       setError("Wait for every active task in the isolated worktree and source project to finish before merging.");
       return;
     }
-    if (!window.confirm(
+    if (!await confirmDialog(
       `Merge “${activeThreadWorktree.branch}” into the source project's current branch?\n\n`
       + "Both working folders must be clean and all isolated changes must be committed. OpenKiwi saves a safety checkpoint first and aborts automatically if Git reports a conflict.",
     )) return;
@@ -3472,7 +3481,7 @@ export default function App() {
         latest.ahead ? `${latest.ahead} unmerged commit${latest.ahead === 1 ? "" : "s"}` : "",
         latest.ignoredFiles.length ? `${latest.ignoredFiles.length} ignored file${latest.ignoredFiles.length === 1 ? "" : "s"}` : "",
       ].filter(Boolean).join(", ");
-      if (!window.confirm(
+      if (!await confirmDialog(
         destructive
           ? `Remove this isolated worktree and delete its branch?\n\nIt contains ${details}. Those worktree-only files and commits will be permanently deleted. The shared project and GitHub are not changed.`
           : `Remove this isolated worktree and delete its branch?\n\nThe shared project, GitHub repository, and conversation remain available. This thread must be explicitly switched to shared mode before it can run again.`,
@@ -3523,13 +3532,13 @@ export default function App() {
     }
   };
 
-  const continueThreadInSharedProject = () => {
+  const continueThreadInSharedProject = async () => {
     if (!activeThread || !activeThreadWorktree) return;
     if (activeThreadWorktree.status === "missing") {
       setError("Recreate the missing worktree from its branch, then remove it before continuing this conversation in the shared project.");
       return;
     }
-    if (!window.confirm(
+    if (!await confirmDialog(
       "Continue this conversation in the shared project folder?\n\nFuture model work will run directly in the project. Existing isolated files are not copied automatically.",
     )) return;
     persistThreadWorktrees((current) => {
@@ -3543,7 +3552,7 @@ export default function App() {
 
   const recreateActiveWorktree = async () => {
     if (!activeThread || !activeThreadWorktree || activeThreadWorktree.status !== "missing") return;
-    if (!window.confirm(
+    if (!await confirmDialog(
       "Recreate this worktree from its committed branch?\n\nUncommitted files from the missing folder cannot be recovered. Changes already applied to the shared project remain there, but a later Apply may reconcile them with the recreated branch and will save a safety checkpoint first.",
     )) return;
     setWorktreeBusy(true);
@@ -3724,7 +3733,7 @@ export default function App() {
     else if (action === "diff") command = ["git", "diff", "--stat", "--patch"];
     else if (action === "stage") command = ["git", "add", "--all"];
     else if (action === "revert") {
-      if (!window.confirm("Revert all tracked staged and working-tree changes? Untracked files will be kept.")) return;
+      if (!await confirmDialog("Revert all tracked staged and working-tree changes? Untracked files will be kept.")) return;
       command = ["git", "restore", "--staged", "--worktree", "."];
     } else if (action === "fetch") command = ["git", "fetch", "--prune", "origin"];
     else if (action === "pull") command = ["git", "pull", "--ff-only"];
@@ -3737,7 +3746,7 @@ export default function App() {
     } else if (action === "comments") command = githubCliCommand(githubStatus?.path || "gh", "comments");
     else if (action === "ci") command = githubCliCommand(githubStatus?.path || "gh", "ci");
     else {
-      if (!window.confirm("Create a draft pull request on the configured GitHub remote?")) return;
+      if (!await confirmDialog("Create a draft pull request on the configured GitHub remote?")) return;
       command = githubCliCommand(githubStatus?.path || "gh", "pr");
     }
     try {
@@ -3867,7 +3876,7 @@ export default function App() {
       return;
     }
     const commandPath = activeExecutionPath || activeProject.path;
-    if (action === "revert" && !window.confirm(`Revert changes to ${path}?`)) return;
+    if (action === "revert" && !await confirmDialog(`Revert changes to ${path}?`)) return;
     const command = action === "stage" ? ["git", "add", "--", path] : ["git", "restore", "--staged", "--worktree", "--", path];
     try {
       const result = await executeCommand(command, commandPath, activeThreadWorktree?.gitDir ? [activeThreadWorktree.gitDir] : []);
@@ -4092,7 +4101,7 @@ export default function App() {
         variables[variable.name] = value;
       }
       const commandCount = workflow.steps.filter((step) => step.type === "command").length;
-      if (commandCount && !window.confirm(`Run “${workflow.name}” now?\n\nIt contains ${commandCount} shell command${commandCount === 1 ? "" : "s"} that will run with the saved ${workflow.run.permission} permission setting.`)) return;
+      if (commandCount && !await confirmDialog(`Run “${workflow.name}” now?\n\nIt contains ${commandCount} shell command${commandCount === 1 ? "" : "s"} that will run with the saved ${workflow.run.permission} permission setting.`)) return;
       await runWorkflow(workflow.id, "manual", variables);
     },
     [runWorkflow, workflowRuns],
@@ -4119,7 +4128,7 @@ export default function App() {
   });
 
   return (
-    <div ref={shellRef} className="app-shell" data-theme={previewTheme ?? settings.theme} data-openai-logo={settings.openAiLogo} data-claude-logo={settings.claudeLogo} data-cursor-logo={settings.cursorLogo} style={{ zoom: (settings.uiScale || 100) / 100 }}>
+    <div ref={shellRef} className="app-shell" data-theme={previewTheme ?? settings.theme} data-effort-slider={previewEffortSlider ?? settings.effortSlider} data-openai-logo={settings.openAiLogo} data-claude-logo={settings.claudeLogo} data-cursor-logo={settings.cursorLogo} style={{ zoom: (settings.uiScale || 100) / 100 }}>
       {successToast && (
         <div className="app-toast success" role="status" aria-live="polite">
           <span className="app-toast-icon"><Check size={14} strokeWidth={2.5} /></span>
@@ -4661,7 +4670,8 @@ export default function App() {
               )}
             </section>
 
-            <section className="composer-zone">
+            {/* Ambient glow tints to the active provider and breathes while a turn runs. */}
+            <section className={`composer-zone ambiance-${effectiveSettings.provider} ${running ? "ambiance-live" : ""}`}>
               {error && (
                 <div className="error-banner" role="alert">
                   <span>{error}</span>
@@ -4788,7 +4798,8 @@ export default function App() {
                 {contextPercent !== null ? (
                   <span className={`context-meter ${contextPercent > 80 ? "warn" : ""}`}>
                     {" "}
-                    · Context {Math.round(contextPercent)}% used{costEstimate ? ` · ${costEstimate}` : ""}
+                    · Context <Odometer value={String(Math.round(contextPercent))} label={`${Math.round(contextPercent)} percent`} />% used
+                    {costEstimate ? <> · <Odometer value={costEstimate} /></> : null}
                   </span>
                 ) : null}
               </div>
@@ -4961,6 +4972,7 @@ export default function App() {
           closeSettings();
         }}
         onThemePreview={setPreviewTheme}
+        onEffortSliderPreview={setPreviewEffortSlider}
         onAccountChange={async () => {
           await refreshAccount();
           await refreshModels();
@@ -5075,6 +5087,7 @@ export default function App() {
         onSettings={() => openSettings()}
         onTool={openStudio}
       />
+      <ConfirmDialogModal />
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { confirmDialog } from "../lib/confirmDialog";
 import { Boxes, Check, FilePenLine, FilePlus2, FolderOpen, LoaderCircle, Pencil, Plus, RefreshCw, RotateCcw, Save, Search, Trash2, X } from "lucide-react";
 import { normalizeSkillName, type LocalSkill } from "../lib/skills";
 import { useModalFocus } from "../hooks/useModalFocus";
@@ -205,13 +206,13 @@ export function SkillLibrary({
     void loadSourceEditor(skill);
   };
 
-  const closeSourceEditor = (confirmDiscard = true, force = false) => {
+  const closeSourceEditor = async (confirmDiscard = true, force = false) => {
     if (sourceSaving && !force) return;
     if (
       confirmDiscard
       && sourceLoaded
       && sourceDraft !== sourceOriginal
-      && !window.confirm("Discard your unsaved skill changes?")
+      && !await confirmDialog("Discard your unsaved skill changes?")
     ) return;
     sourceRequestRef.current += 1;
     setSourceEditorSkill(null);

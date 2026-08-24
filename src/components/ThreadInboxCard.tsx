@@ -74,6 +74,17 @@ interface ThreadInboxCardProps {
   onOpen: () => void;
 }
 
+/** Lifecycle class for the card shell: `live` breathes in the provider's
+ * accent while a task runs, `settled` replays the completion sweep when a
+ * turn finishes with unread output. */
+function threadCardLifecycle(status: string, unread: boolean, approvals: number): string {
+  if (approvals > 0) return "attention";
+  if (status === "starting" || status === "running") return "live";
+  if (status === "error") return "faulted";
+  if (unread) return "settled";
+  return "";
+}
+
 export function ThreadInboxCard({
   threadId,
   title,
@@ -86,8 +97,13 @@ export function ThreadInboxCard({
   branch,
   onOpen,
 }: ThreadInboxCardProps) {
+  const lifecycle = useTaskStore((state) => threadCardLifecycle(
+    state.statuses[threadId] ?? "idle",
+    Boolean(state.tasks[threadId]?.unread),
+    state.tasks[threadId]?.approvals.length ?? 0,
+  ));
   return (
-    <button className="thread-card" onClick={onOpen} aria-label={`Open ${title}`}>
+    <button className={`thread-card ${lifecycle} provider-${provider}`} onClick={onOpen} aria-label={`Open ${title}`}>
       <span className="thread-card-context">
         <span className="thread-card-workspace" title={directory}>
           {isolated ? <GitBranch size={14} /> : <Folder size={14} />}

@@ -1,4 +1,4 @@
-import { Children, isValidElement, memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Children, isValidElement, memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Check, ChevronDown, ChevronRight, CircleDot, Clipboard, FileCode2, ImageIcon, ListChecks, MessageSquare, Pencil, TerminalSquare, UsersRound } from "lucide-react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -428,7 +428,7 @@ function subAgentCountsFromActivities(activities: Activity[]): SubAgentCounts {
   return counts;
 }
 
-export const SubAgentRelayCard = memo(function SubAgentRelayCard({ activity }: { activity: Activity }) {
+export const SubAgentRelayCard = memo(function SubAgentRelayCard({ activity, dealIndex }: { activity: Activity; dealIndex?: number }) {
   const metadata = activity.agent;
   const provider = metadata?.provider;
   const status = workerStatusFromAgentRecord(activity.status ?? "");
@@ -441,6 +441,9 @@ export const SubAgentRelayCard = memo(function SubAgentRelayCard({ activity }: {
   return (
     <article
       className={`subagent-relay-card provider-${provider ?? "unknown"} status-${status}`}
+      // Crew launches deal cards in one-by-one; the delay caps so a large
+      // wave (or reopening an old transcript) never feels sluggish.
+      style={dealIndex !== undefined ? { "--deal-delay": `${Math.min(dealIndex, 8) * 65}ms` } as CSSProperties : undefined}
       aria-label={`${providerLabel} sub-agent ${statusLabel.toLowerCase()}: ${task}`}
     >
       <div className="subagent-relay-emblem" aria-hidden="true">
@@ -470,14 +473,14 @@ export const SubAgentRelayCard = memo(function SubAgentRelayCard({ activity }: {
 export const SubAgentRelayManifest = memo(function SubAgentRelayManifest({ activities }: { activities: Activity[] }) {
   const counts = subAgentCountsFromActivities(activities);
   return (
-    <section className="subagent-relay-manifest" aria-label={`Sub-agent wave: ${describeSubAgentActivity(counts)}`}>
+    <section className={`subagent-relay-manifest ${counts.active > 0 ? "live" : ""}`} aria-label={`Sub-agent wave: ${describeSubAgentActivity(counts)}`}>
       <header>
         <UsersRound size={14} aria-hidden="true" />
         <strong>Dispatched {counts.total} sub-agents</strong>
         <small>{describeSubAgentActivity(counts)}</small>
       </header>
       <div className="subagent-relay-list">
-        {activities.map((activity) => <SubAgentRelayCard activity={activity} key={activity.id} />)}
+        {activities.map((activity, index) => <SubAgentRelayCard activity={activity} dealIndex={index} key={activity.id} />)}
       </div>
     </section>
   );
