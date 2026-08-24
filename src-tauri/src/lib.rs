@@ -159,6 +159,12 @@ struct ClaudeState {
 /// the thread's slot indefinitely.
 const CLAUDE_INTERRUPT_GRACE: Duration = Duration::from_secs(10);
 
+/// A Claude `result` is the terminal protocol event for one OpenKiwi turn.
+/// After signalling its process group, give the direct CLI a brief chance to
+/// reap cleanly so no provider output or foreground tool child can leak into
+/// a later turn in the same thread.
+const CLAUDE_RESULT_EXIT_GRACE: Duration = Duration::from_secs(2);
+
 struct ClaudeTurn {
     stdin: Mutex<ChildStdin>,
     child: Arc<Mutex<Child>>,
@@ -264,9 +270,12 @@ impl ClaudeTurn {
     }
 
     async fn close_input(&self) {
-        self.alive.store(false, Ordering::Release);
         let _ = self.stdin.lock().await.shutdown().await;
     }
+}
+
+fn claude_message_ends_turn(message: &Value) -> bool {
+    message.get("type").and_then(Value::as_str) == Some("result")
 }
 
 /// How much provider stderr is retained per turn. Only the tail is ever
@@ -2126,30 +2135,51 @@ async fn claude_turn_start(
                 continue;
             }
             flush_deltas(&mut delta_buffer, &stdout_app);
-            if message.get("type").and_then(Value::as_str) == Some("result") {
+            if claude_message_ends_turn(&message) {
                 saw_result = true;
                 // Publish the terminal event before making the backend turn
                 // look inactive. Otherwise a foreground health check can race
                 // into this gap and misclassify a normal result as a vanished
                 // provider process.
                 emit_claude_event(&stdout_app, &stdout_thread, &stdout_turn, message).await;
-                // Stream-input mode deliberately waits for another user
-                // message. OpenKiwi uses one process per turn so the next
-                // turn can resume from the persisted Claude session.
-                remove_claude_turn_if_current(&turns, &stdout_thread, &stdout_runtime).await;
+                // Stream-input mode waits indefinitely for another message.
+                // OpenKiwi deliberately uses one process per turn, so stop
+                // accepting provider output at the result boundary and reap
+                // this process before its slot can be reused. Continuing to
+                // read here used to leave completed Claude processes alive for
+                // hours; several could then write interleaved messages into
+                // one conversation and make a finished turn look active.
                 stdout_runtime.close_input().await;
-                continue;
+                // Signal every process owned by this turn before freeing the
+                // slot. The frontend may allow the next prompt immediately
+                // after receiving `result`; by then the old process tree must
+                // already be unable to produce more transcript events.
+                if let Some(pid) = stdout_runtime.pid {
+                    kill_process_tree(pid);
+                }
+                stdout_runtime.alive.store(false, Ordering::Release);
+                remove_claude_turn_if_current(&turns, &stdout_thread, &stdout_runtime).await;
+                break;
             }
             emit_claude_event(&stdout_app, &stdout_thread, &stdout_turn, message).await;
         }
         flush_deltas(&mut delta_buffer, &stdout_app);
+        // Close our read half immediately. A provider that writes after its
+        // terminal result gets a broken pipe instead of another chance to
+        // mutate the transcript.
+        drop(lines);
         // Reap the completed child so repeated Claude turns cannot accumulate
         // zombie processes during a long-running OpenKiwi session. Bounded
         // like the Codex reaper: a child that closed stdout but refuses to
         // exit is force-killed along with its descendants.
         let exit = {
             let mut child = stdout_child.lock().await;
-            match timeout(Duration::from_secs(5), child.wait()).await {
+            let grace = if saw_result {
+                CLAUDE_RESULT_EXIT_GRACE
+            } else {
+                Duration::from_secs(5)
+            };
+            match timeout(grace, child.wait()).await {
                 Ok(exit) => exit.ok(),
                 Err(_) => {
                     if let Some(pid) = stdout_runtime.pid {
@@ -2243,9 +2273,8 @@ async fn claude_turn_interrupt(
         return Err(error);
     }
     // Escalate if the CLI ignores the interrupt. A healthy process emits a
-    // `result` well within the grace period (which sets `alive` to false via
-    // close_input); a wedged one would otherwise hold the per-thread slot
-    // until app restart.
+    // `result` well within the grace period (whose reader reaps the process);
+    // a wedged one would otherwise hold the per-thread slot until app restart.
     let turns = state.turns.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(CLAUDE_INTERRUPT_GRACE).await;

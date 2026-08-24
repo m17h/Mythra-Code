@@ -24,6 +24,26 @@ function text(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
+function terminalTurnStatus(status: string | undefined): boolean {
+  return status === "completed" || status === "failed" || status === "interrupted";
+}
+
+/**
+ * A retired Claude process must never reclaim the thread after a newer turn
+ * starts or append more output after its own result. Native process cleanup is
+ * the primary boundary; this is the transcript-side safety net for delayed OS
+ * events and conversations saved by older OpenKiwi versions.
+ */
+function isRetiredClaudeTurn(threadId: string, turnId: string): boolean {
+  const task = useTaskStore.getState().tasks[threadId];
+  if (!task) return false;
+  if (task.activeTurnId && task.activeTurnId !== turnId) return true;
+  if (task.activeTurnId === turnId) return false;
+  if (task.lastCompletedTurnId === turnId) return true;
+  return task.messages.some((entry) => entry.turnId === turnId && terminalTurnStatus(entry.turnStatus))
+    || task.activities.some((entry) => entry.turnId === turnId && terminalTurnStatus(entry.turnStatus));
+}
+
 function number(value: unknown): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
@@ -204,6 +224,7 @@ export function routeClaudeEvent(
   const type = text(message.type);
   const store = useTaskStore.getState();
   store.ensureTask(threadId, ctx.bindingFor(threadId));
+  if (isRetiredClaudeTurn(threadId, turnId)) return;
 
   if (type === "control_request") {
     const request = object(message.request);

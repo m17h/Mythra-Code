@@ -363,6 +363,24 @@ describe("task store", () => {
     expect(task.activities[0].turnStatus).toBe("interrupted");
   });
 
+  it("seals streaming assistant output when its turn completes", () => {
+    const store = useTaskStore.getState();
+    store.setTaskStatus("thread-a", "starting");
+    store.appendUserMessage("thread-a", { id: "user", role: "user", text: "Fix it" });
+    store.setActiveTurn("thread-a", "turn-a");
+    store.queueAssistantDelta("thread-a", "answer", "Done");
+    store.flushDeltas();
+
+    expect(useTaskStore.getState().tasks["thread-a"].messages[1].streaming).toBe(true);
+
+    store.completeTurn("thread-a", "turn-a", "completed");
+
+    expect(useTaskStore.getState().tasks["thread-a"].messages[1]).toMatchObject({
+      streaming: false,
+      turnStatus: "completed",
+    });
+  });
+
   it("records a completed turn duration and restores it with hydrated history", () => {
     vi.useFakeTimers();
     try {

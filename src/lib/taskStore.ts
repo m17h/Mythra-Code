@@ -526,7 +526,15 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       : undefined;
     const messages = completedTurnId
       ? task.messages.map((message) => message.turnId === completedTurnId
-        ? { ...message, turnStatus, turnDurationMs: turnDurationMs ?? message.turnDurationMs }
+        ? {
+            ...message,
+            // A terminal turn cannot still have a streaming message. Sealing
+            // it here also lets the timeline identify the final response and
+            // collapse the preceding work reliably after crash recovery.
+            streaming: false,
+            turnStatus,
+            turnDurationMs: turnDurationMs ?? message.turnDurationMs,
+          }
         : message)
       : task.messages;
     const terminalAgentStatus = status === "completed"
