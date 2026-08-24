@@ -170,45 +170,59 @@ function compactTurnSegment(segment: WorkItemEntry[], compact: boolean): Timelin
  * fully chronological.
  */
 export function compactCompletedTurns(entries: WorkItemEntry[], running: boolean): TimelineEntry[] {
-  const segments: Array<{ entries: WorkItemEntry[]; turnId?: string }> = [];
+  const segments: WorkItemEntry[][] = [];
   let segment: WorkItemEntry[] = [];
-  let segmentTurnId: string | undefined;
+  let hasUser = false;
+  let primaryTurnId: string | undefined;
   const flushSegment = () => {
-    if (segment.length) segments.push({ entries: segment, turnId: segmentTurnId });
+    if (segment.length) segments.push(segment);
     segment = [];
-    segmentTurnId = undefined;
+    hasUser = false;
+    primaryTurnId = undefined;
   };
   for (const entry of entries) {
     const turnId = workItemTurnId(entry);
-    if (turnId) {
-      // Early/legacy saves can contain the optimistic user prompt just before
-      // the runtime-tagged entries without copying the returned turn id onto
-      // that prompt. Treat a prompt-only prefix as part of the tagged turn so
-      // a successfully completed run can still collapse as one unit.
-      const isOrphanedPromptPrefix = !segmentTurnId
-        && segment.length > 0
-        && segment.every((candidate) => candidate.kind === "message" && candidate.value.role === "user");
-      if (segment.length && segmentTurnId !== turnId && !isOrphanedPromptPrefix) flushSegment();
-      segmentTurnId = turnId;
+    const isUser = entry.kind === "message" && entry.value.role === "user";
+    if (isUser) {
+      // User messages are the durable logical boundary. Provider turn ids are
+      // normally identical within that boundary, but recovered local-provider
+      // processes from older versions can write several ids into one visible
+      // run. Splitting on every id leaves all of that completed work expanded.
+      // A same-id user message is steering and remains inside the current run.
+      const sameRuntimeTurn = hasUser && Boolean(turnId) && turnId === primaryTurnId;
+      if (segment.length && (!hasUser || !sameRuntimeTurn)) flushSegment();
+      hasUser = true;
+      primaryTurnId = turnId;
       segment.push(entry);
       continue;
     }
-    if (segmentTurnId) flushSegment();
-    const startsNextLegacyTurn = entry.kind === "message"
-      && entry.value.role === "user"
-      && segment.some((candidate) => candidate.kind === "message" && candidate.value.role === "user");
-    if (startsNextLegacyTurn) flushSegment();
+    // The optimistic opening prompt can be saved just before the runtime turn
+    // id returns. Adopt the first tagged work item as this logical run's id so
+    // a later steering message still stays in the same segment.
+    if (hasUser && !primaryTurnId && turnId) primaryTurnId = turnId;
     segment.push(entry);
   }
   flushSegment();
 
-  return segments.flatMap(({ entries: turnEntries, turnId }, index) => {
-    const status = turnEntries.map(workItemTurnStatus).find(Boolean);
-    // Runtime-tagged turns compact only after an explicit successful
-    // completion. Legacy transcripts retain the previous last-turn fallback.
-    const compact = turnId
-      ? status === "completed"
-      : index < segments.length - 1 || !running;
+  return segments.flatMap((turnEntries, index) => {
+    let finalAssistant: WorkItemEntry | undefined;
+    for (let entryIndex = turnEntries.length - 1; entryIndex >= 0; entryIndex -= 1) {
+      const entry = turnEntries[entryIndex];
+      if (entry.kind === "message" && entry.value.role === "assistant" && !entry.value.streaming) {
+        finalAssistant = entry;
+        break;
+      }
+    }
+    const finalStatus = finalAssistant ? workItemTurnStatus(finalAssistant) : undefined;
+    const isLastRunningSegment = running && index === segments.length - 1;
+    // Runtime-tagged turns compact only around a successful final assistant
+    // message. Legacy transcripts retain the prior idle/older-turn fallback.
+    // Looking at the final output rather than the first turn id also repairs a
+    // saved transcript whose now-retired provider processes interleaved ids.
+    const compact = !isLastRunningSegment && Boolean(finalAssistant) && (
+      finalStatus === "completed"
+      || (!workItemTurnId(finalAssistant!) && !finalStatus)
+    );
     return compactTurnSegment(turnEntries, compact);
   });
 }

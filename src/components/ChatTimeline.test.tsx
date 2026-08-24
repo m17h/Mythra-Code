@@ -494,6 +494,35 @@ describe("ChatTimeline", () => {
     expect(entries[2]).toMatchObject({ kind: "message", value: { id: "final" } });
   });
 
+  it("compacts a recovered completed run whose provider processes interleaved turn ids", () => {
+    const entries = compactCompletedTurns(orderedTimelineEntries(
+      [
+        { id: "user", role: "user", text: "Finish the audit", timelineOrder: 1, turnId: "turn-current", turnStatus: "completed" },
+        { id: "progress-current", role: "assistant", text: "Running the suite.", timelineOrder: 3, turnId: "turn-current", turnStatus: "completed" },
+        { id: "progress-retired", role: "assistant", text: "A retired process reported late.", timelineOrder: 5, turnId: "turn-retired", turnStatus: "completed" },
+        { id: "progress-untagged", role: "assistant", text: "Checking the last result.", timelineOrder: 6 },
+        { id: "final", role: "assistant", text: "Everything is fixed and verified.", timelineOrder: 8, turnId: "turn-resumed", turnStatus: "completed" },
+      ],
+      [
+        { id: "command-current", kind: "command", title: "npm test", timelineOrder: 2, turnId: "turn-current", turnStatus: "completed", status: "completed" },
+        { id: "command-retired", kind: "command", title: "pytest", timelineOrder: 4, turnId: "turn-retired", turnStatus: "completed", status: "completed" },
+        { id: "command-final", kind: "command", title: "git status", timelineOrder: 7, turnId: "turn-resumed", turnStatus: "completed", status: "completed" },
+      ],
+    ), false);
+
+    expect(entries.map((entry) => entry.kind)).toEqual(["message", "work", "message"]);
+    expect(entries[0]).toMatchObject({ kind: "message", value: { id: "user" } });
+    expect(entries[1]).toMatchObject({
+      kind: "work",
+      value: expect.arrayContaining([
+        { kind: "message", value: expect.objectContaining({ id: "progress-current" }) },
+        { kind: "message", value: expect.objectContaining({ id: "progress-retired" }) },
+        { kind: "message", value: expect.objectContaining({ id: "progress-untagged" }) },
+      ]),
+    });
+    expect(entries[2]).toMatchObject({ kind: "message", value: { id: "final" } });
+  });
+
   it("does not hide an interrupted turn without a final answer", () => {
     const entries = compactCompletedTurns(orderedTimelineEntries(
       [{ id: "user", role: "user", text: "Fix it", timelineOrder: 1 }],

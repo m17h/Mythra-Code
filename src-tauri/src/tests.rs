@@ -1269,6 +1269,22 @@ fn tail_buffer_keeps_only_the_newest_bytes() {
     assert!(unicode.contents().chars().all(|character| character == 'é'));
 }
 
+#[test]
+fn claude_result_is_the_terminal_boundary_for_one_process_per_turn() {
+    assert!(claude_message_ends_turn(&json!({
+        "type": "result",
+        "subtype": "success"
+    })));
+    assert!(!claude_message_ends_turn(&json!({
+        "type": "assistant",
+        "message": { "content": [] }
+    })));
+    assert!(!claude_message_ends_turn(&json!({
+        "type": "stream_event",
+        "event": { "type": "message_stop" }
+    })));
+}
+
 #[tokio::test]
 async fn claiming_an_occupied_turn_slot_fails_instead_of_evicting_the_live_turn() {
     struct FakeTurn {

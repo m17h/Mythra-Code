@@ -153,6 +153,49 @@ describe("Claude event routing", () => {
     expect(context.onTurnCompleted).toHaveBeenCalledWith("thread-1");
   });
 
+  it("ignores late output from a completed Claude process", () => {
+    useTaskStore.getState().setActiveTurn("thread-1", "turn-old");
+    useTaskStore.getState().setTaskStatus("thread-1", "running");
+    send({
+      type: "assistant",
+      message: { id: "old-final", content: [{ type: "text", text: "Finished" }] },
+    }, "turn-old");
+    send({ type: "result", subtype: "success", is_error: false }, "turn-old");
+
+    send({
+      type: "stream_event",
+      event: { type: "message_start", message: { id: "late-message" } },
+    }, "turn-old");
+    send({
+      type: "assistant",
+      message: { id: "late-message", content: [{ type: "text", text: "Late output" }] },
+    }, "turn-old");
+
+    const task = useTaskStore.getState().tasks["thread-1"];
+    expect(task.status).toBe("completed");
+    expect(task.activeTurnId).toBeUndefined();
+    expect(task.messages.map((message) => message.text)).toEqual(["Finished"]);
+    expect(context.onTurnCompleted).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not let an older Claude process replace a newer active turn", () => {
+    useTaskStore.getState().setActiveTurn("thread-1", "turn-new");
+    useTaskStore.getState().setTaskStatus("thread-1", "running");
+
+    send({
+      type: "stream_event",
+      event: { type: "message_start", message: { id: "old-message" } },
+    }, "turn-old");
+    send({ type: "result", subtype: "success", is_error: false }, "turn-old");
+
+    const task = useTaskStore.getState().tasks["thread-1"];
+    expect(task.status).toBe("running");
+    expect(task.activeTurnId).toBe("turn-new");
+    expect(task.messages).toEqual([]);
+    expect(context.onTurnCompleted).not.toHaveBeenCalled();
+    expect(context.onStatus).not.toHaveBeenCalledWith("Ready");
+  });
+
   it("keeps accumulating input and output usage across Claude runs", () => {
     send({
       type: "result",
