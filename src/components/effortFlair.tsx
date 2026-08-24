@@ -74,6 +74,7 @@ export function EffortSlider({
   const frameRef = useRef(0);
   const dragRef = useRef<{ pointerId: number; startX: number; moved: boolean } | null>(null);
   const interactedRef = useRef(false);
+  const pendingInteractionIndexRef = useRef<number | null>(null);
 
   const setVisualNow = (value: number) => {
     visualRef.current = value;
@@ -98,9 +99,19 @@ export function EffortSlider({
     frameRef.current = requestAnimationFrame(step);
   };
 
-  // Committed level changed (click, keyboard, or externally) — glide there.
+  // A local click/keyboard change glides to its committed level. External
+  // changes (for example switching threads) snap immediately so the native
+  // input and its accessible value never expose a stale in-between effort.
   useEffect(() => {
-    if (!dragRef.current) tweenTo(index);
+    if (dragRef.current) return;
+    if (pendingInteractionIndexRef.current === index) {
+      pendingInteractionIndexRef.current = null;
+      tweenTo(index);
+    } else {
+      pendingInteractionIndexRef.current = null;
+      cancelAnimationFrame(frameRef.current);
+      setVisualNow(index);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [index]);
   useEffect(() => () => cancelAnimationFrame(frameRef.current), []);
@@ -115,7 +126,10 @@ export function EffortSlider({
 
   const commit = (target: number) => {
     interactedRef.current = true;
-    if (target !== index) onIndex(target);
+    if (target !== index) {
+      pendingInteractionIndexRef.current = target;
+      onIndex(target);
+    }
     else tweenTo(target);
   };
 
