@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { Check, ChevronDown, Gauge, LoaderCircle, RefreshCw, Search, X } from "lucide-react";
+import { EffortSlider, effortFlairStyle } from "./effortFlair";
 import type { CursorModel } from "../lib/cursor";
 import type { ReasoningEffort } from "./ModelPowerControl";
 import { CursorProviderLogo } from "./BrandLogos";
@@ -153,12 +154,9 @@ export function CursorModelControl({
           </div>
         </div>
       </div>
-      <div className="openrouter-reasoning">
-        <div className="openrouter-reasoning-heading"><Gauge size={13} /><span>Reasoning</span><strong>{EFFORTS[effortIndex].label}</strong></div>
-        <div className="openrouter-reasoning-rail">
-          <input aria-label="Cursor reasoning effort" type="range" min={0} max={EFFORTS.length - 1} step={1} value={effortIndex} onChange={(event) => onEffort(EFFORTS[Number(event.target.value)].value)} />
-          <div className="openrouter-reasoning-ticks" aria-hidden="true">{EFFORTS.map((entry, index) => <i key={entry.value} className={index <= effortIndex ? "reached" : ""} />)}</div>
-        </div>
+      <div className={`openrouter-reasoning ${effortIndex === EFFORTS.length - 1 ? "effort-max" : ""}`} style={effortFlairStyle(effortIndex, EFFORTS.length)}>
+        <div className="openrouter-reasoning-heading"><Gauge size={13} /><span>Reasoning</span><strong key={EFFORTS[effortIndex].value}>{EFFORTS[effortIndex].label}</strong></div>
+        <EffortSlider variant="router" index={effortIndex} count={EFFORTS.length} ariaLabel="Cursor reasoning effort" valueText={EFFORTS[effortIndex].label} onIndex={(next) => onEffort(EFFORTS[next].value)} />
         <div className="openrouter-reasoning-labels">{EFFORTS.map((entry, index) => <span key={entry.value} className={index === effortIndex ? "active" : ""}>{entry.label}</span>)}</div>
       </div>
     </div>

@@ -28,6 +28,7 @@ import { buildTurnInput, withoutSentAttachments } from "../lib/turnInput";
 import { optimisticStartedThread, upsertThread } from "../lib/threadList";
 import { isAssistantOutputActive, useTaskStore } from "../lib/taskStore";
 import { friendlyError } from "../lib/errors";
+import { confirmDialog } from "../lib/confirmDialog";
 import { clearProviderStopIntent, markProviderStopIntent } from "../lib/providerStopIntent";
 import { isClaudeThread, isCursorThread } from "../lib/threadProvider";
 import { withOpenKiwiCompletionInstructions } from "../lib/completionPrompt";
@@ -361,7 +362,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
             detail: overlapMessage,
           });
           throw new Error(overlapMessage);
-        } else if (!window.confirm(
+        } else if (!await confirmDialog(
           "Another thread is already working in this shared project folder.\n\nBoth models can edit the same files at the same time. Continue anyway, or cancel and start this as an isolated worktree instead?",
         )) return false;
       }

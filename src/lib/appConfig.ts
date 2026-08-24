@@ -1,5 +1,5 @@
 import { DEFAULT_USAGE_DISPLAY } from "./providerUsage";
-import type { AppSettings, ChildAgentSettings, PromptProfile, ThemeName } from "../types";
+import type { AppSettings, ChildAgentSettings, EffortSliderStyle, PromptProfile, ThemeName } from "../types";
 
 /** Cross-provider delegation is off by default; every enabled destination is user-approved. */
 export const DEFAULT_CHILD_AGENT_SETTINGS: ChildAgentSettings = { enabled: false, targets: [] };
@@ -13,6 +13,19 @@ export const RELEASE_NOTES_URL = "https://github.com/m17h/OpenKiwi/releases/late
 export const THEMES: Array<{ id: ThemeName; name: string; description: string; swatches: [string, string, string] }> = [
   { id: "kiwi", name: "OpenKiwi", description: "Deep graphite with electric green", swatches: ["#1e2024", "#292d32", "#a7e26f"] },
   { id: "daylight", name: "Daylight", description: "Paper white with a deep leaf green", swatches: ["#f4f5f2", "#ffffff", "#3e8e22"] },
+  { id: "midnight", name: "Midnight", description: "Deep ocean blue with arctic ice", swatches: ["#14181f", "#1d232d", "#7fc4ff"] },
+  { id: "synthwave", name: "Synthwave", description: "Neon violet with hot magenta", swatches: ["#17131f", "#221b2e", "#ff6ac1"] },
+  { id: "ember", name: "Ember", description: "Warm charcoal with molten amber", swatches: ["#1e1a17", "#292420", "#ffb45f"] },
+  { id: "terminal", name: "Terminal", description: "Phosphor green on near-black", swatches: ["#0c0f0c", "#141814", "#4eff8a"] },
+];
+
+export const EFFORT_SLIDER_STYLES: Array<{ id: EffortSliderStyle; name: string; description: string }> = [
+  { id: "spectrum", name: "Spectrum", description: "Heat colors per level, sparks, and a burning Max" },
+  { id: "classic", name: "Classic", description: "The original quiet accent-colored rail" },
+  { id: "neon", name: "Neon", description: "Your model's accent, glowing hotter with effort" },
+  { id: "pixel", name: "Pixel", description: "A chunky retro VU meter with a square thumb" },
+  { id: "aurora", name: "Aurora", description: "A slow drift of northern-light pastels" },
+  { id: "ink", name: "Ink", description: "A bare monochrome line for zero distraction" },
 ];
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -36,6 +49,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   ultra: false,
   serviceTier: null,
   theme: "kiwi",
+  effortSlider: "spectrum",
   notificationsEnabled: true,
   terminalScrollback: 100_000,
   uiScale: 100,

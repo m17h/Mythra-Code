@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Bot, Check, Clock3, NotebookPen, Play, Plus, Save, Trash2, Workflow, Wrench } from "lucide-react";
 import type { AppSettings, CustomAgentProfile, Project, ProjectAction, PromptProfile, ScheduledTask, ScheduleRunRecord } from "../types";
 import { rpc } from "../lib/codex";
+import { confirmDialog } from "../lib/confirmDialog";
 import { friendlyError } from "../lib/errors";
 import { scheduleRunSnapshot } from "../lib/turnConfig";
 import type { LocalSkill } from "../lib/skills";
@@ -76,8 +77,8 @@ export function HarnessSettings({ section, settings, profiles, agents, actions, 
               <span><strong>{profile.name}</strong><small>{characters ? `${characters} characters across all layers` : "Empty prompt set"}</small></span>
               {settings.promptProfileId === profile.id && <Check size={13} />}
             </button>
-            <button className="profile-delete" aria-label={`Delete ${profile.name}`} onClick={() => {
-              if (!window.confirm(`Delete the prompt profile “${profile.name}”?`)) return;
+            <button className="profile-delete" aria-label={`Delete ${profile.name}`} onClick={async () => {
+              if (!await confirmDialog(`Delete the prompt profile “${profile.name}”?`)) return;
               onProfiles(profiles.filter((item) => item.id !== profile.id));
               if (settings.promptProfileId === profile.id) onSettings({ ...settings, promptProfileId: "" });
             }}><Trash2 size={12} /></button>
@@ -90,7 +91,7 @@ export function HarnessSettings({ section, settings, profiles, agents, actions, 
     {section === "agents" &&
     <section className="settings-section">
       <div className="settings-section-heading"><div className="settings-icon"><Bot size={17} /></div><div><h3>Custom agents</h3><p>Expose named specialist configurations when sub-agents are enabled.</p></div></div>
-      <div className="manager-list">{agents.map((agent) => <div key={agent.id}><button className={`mini-toggle ${agent.enabled ? "on" : ""}`} aria-label={`${agent.enabled ? "Disable" : "Enable"} ${agent.name}`} aria-pressed={agent.enabled} onClick={() => onAgents(agents.map((item) => item.id === agent.id ? { ...item, enabled: !item.enabled } : item))}><span /></button><span><strong>{agent.name}</strong><small>{agent.instructions}</small></span><button className="manager-delete" aria-label={`Delete ${agent.name}`} onClick={() => { if (window.confirm(`Delete the custom agent “${agent.name}” and its instructions? This cannot be undone.`)) onAgents(agents.filter((item) => item.id !== agent.id)); }}><Trash2 size={12} /></button></div>)}</div>
+      <div className="manager-list">{agents.map((agent) => <div key={agent.id}><button className={`mini-toggle ${agent.enabled ? "on" : ""}`} aria-label={`${agent.enabled ? "Disable" : "Enable"} ${agent.name}`} aria-pressed={agent.enabled} onClick={() => onAgents(agents.map((item) => item.id === agent.id ? { ...item, enabled: !item.enabled } : item))}><span /></button><span><strong>{agent.name}</strong><small>{agent.instructions}</small></span><button className="manager-delete" aria-label={`Delete ${agent.name}`} onClick={async () => { if (await confirmDialog(`Delete the custom agent “${agent.name}” and its instructions? This cannot be undone.`)) onAgents(agents.filter((item) => item.id !== agent.id)); }}><Trash2 size={12} /></button></div>)}</div>
       <div className="stacked-create"><input value={agentName} onChange={(event) => setAgentName(event.target.value)} placeholder="Agent name (for example: reviewer)" /><textarea value={agentInstructions} onChange={(event) => setAgentInstructions(event.target.value)} placeholder="Specialist instructions" rows={3} /><button onClick={() => { if (!agentName.trim() || !agentInstructions.trim()) return; onAgents([...agents, { id: crypto.randomUUID(), name: agentName.trim(), description: agentInstructions.trim().slice(0, 90), instructions: agentInstructions.trim(), enabled: true }]); setAgentName(""); setAgentInstructions(""); }} disabled={!agentName.trim() || !agentInstructions.trim()}><Plus size={12} /> Add custom agent</button></div>
     </section>}
 
@@ -109,13 +110,13 @@ export function HarnessSettings({ section, settings, profiles, agents, actions, 
 
     <section className="settings-section">
       <div className="settings-section-heading"><div className="settings-icon"><Play size={17} /></div><div><h3>Quick project actions</h3><p>Keep lightweight one-click commands for the Workspace panel. Use an agent workflow when you need multiple ordered steps, triggers, skills, or run history.</p></div></div>
-      <div className="manager-list">{actions.map((action) => <div key={action.id}><Play size={12} /><span><strong>{action.name}</strong><small>{action.command}</small></span><button className="manager-delete" aria-label={`Delete ${action.name}`} onClick={() => { if (window.confirm(`Delete the project action “${action.name}”?`)) onActions(actions.filter((item) => item.id !== action.id)); }}><Trash2 size={12} /></button></div>)}</div>
+      <div className="manager-list">{actions.map((action) => <div key={action.id}><Play size={12} /><span><strong>{action.name}</strong><small>{action.command}</small></span><button className="manager-delete" aria-label={`Delete ${action.name}`} onClick={async () => { if (await confirmDialog(`Delete the project action “${action.name}”?`)) onActions(actions.filter((item) => item.id !== action.id)); }}><Trash2 size={12} /></button></div>)}</div>
       <div className="inline-create two"><input value={actionName} onChange={(event) => setActionName(event.target.value)} placeholder="Action name" /><input value={actionCommand} onChange={(event) => setActionCommand(event.target.value)} placeholder="Command" /><button onClick={() => { if (!actionName.trim() || !actionCommand.trim()) return; onActions([...actions, { id: crypto.randomUUID(), name: actionName.trim(), command: actionCommand.trim() }]); setActionName(""); setActionCommand(""); }}><Plus size={12} /> Add</button></div>
     </section>
 
     <section className="settings-section">
       <div className="settings-section-heading"><div className="settings-icon"><Clock3 size={17} /></div><div><h3>Simple scheduled prompts</h3><p>Existing single-prompt schedules remain fully supported. Converted workflows start disabled, so the original schedule cannot run twice while you review the richer workflow.</p></div></div>
-      <div className="manager-list scheduled-workflow-list">{schedules.map((schedule) => <div key={schedule.id}><button className={`mini-toggle ${schedule.enabled ? "on" : ""}`} aria-label={`${schedule.enabled ? "Disable" : "Enable"} ${schedule.name}`} aria-pressed={schedule.enabled} onClick={() => onSchedules(schedules.map((item) => item.id === schedule.id ? { ...item, enabled: !item.enabled, nextRunAt: Date.now() + item.intervalMinutes * 60_000 } : item))}><span /></button><span><strong>{schedule.name}</strong><small>Every {schedule.intervalMinutes} min · {projects.find((project) => project.id === schedule.projectId)?.name ?? "No project"}</small></span><span className="manager-row-actions"><button title={`Convert ${schedule.name} to an agent workflow`} aria-label={`Convert ${schedule.name} to workflow`} disabled={!schedule.projectId} onClick={() => onWorkflows([workflowFromSchedule(schedule, scheduleRunSnapshot(settings)), ...workflows])}><Workflow size={11} /></button><button className="manager-delete" aria-label={`Delete ${schedule.name}`} onClick={() => { if (window.confirm(`Delete the scheduled task “${schedule.name}”? It will stop running.`)) onSchedules(schedules.filter((item) => item.id !== schedule.id)); }}><Trash2 size={12} /></button></span></div>)}</div>
+      <div className="manager-list scheduled-workflow-list">{schedules.map((schedule) => <div key={schedule.id}><button className={`mini-toggle ${schedule.enabled ? "on" : ""}`} aria-label={`${schedule.enabled ? "Disable" : "Enable"} ${schedule.name}`} aria-pressed={schedule.enabled} onClick={() => onSchedules(schedules.map((item) => item.id === schedule.id ? { ...item, enabled: !item.enabled, nextRunAt: Date.now() + item.intervalMinutes * 60_000 } : item))}><span /></button><span><strong>{schedule.name}</strong><small>Every {schedule.intervalMinutes} min · {projects.find((project) => project.id === schedule.projectId)?.name ?? "No project"}</small></span><span className="manager-row-actions"><button title={`Convert ${schedule.name} to an agent workflow`} aria-label={`Convert ${schedule.name} to workflow`} disabled={!schedule.projectId} onClick={() => onWorkflows([workflowFromSchedule(schedule, scheduleRunSnapshot(settings)), ...workflows])}><Workflow size={11} /></button><button className="manager-delete" aria-label={`Delete ${schedule.name}`} onClick={async () => { if (await confirmDialog(`Delete the scheduled task “${schedule.name}”? It will stop running.`)) onSchedules(schedules.filter((item) => item.id !== schedule.id)); }}><Trash2 size={12} /></button></span></div>)}</div>
       {scheduleRuns.length > 0 && (
         <>
           <h3 className="panel-label">Recent runs</h3>
@@ -151,8 +152,8 @@ export function HarnessSettings({ section, settings, profiles, agents, actions, 
               <button
                 className="manager-delete"
                 aria-label={`Remove MCP server ${server.name}`}
-                onClick={() => {
-                  if (!window.confirm(`Remove the MCP server “${server.name}” from OpenKiwi’s configuration?`)) return;
+                onClick={async () => {
+                  if (!await confirmDialog(`Remove the MCP server “${server.name}” from OpenKiwi’s configuration?`)) return;
                   setMcpStatus("Removing…");
                   void rpc("config/value/write", { keyPath: `mcp_servers.${server.name}`, value: null, mergeStrategy: "replace" })
                     .catch(() => rpc("config/value/delete", { keyPath: `mcp_servers.${server.name}` }))

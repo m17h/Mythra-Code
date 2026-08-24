@@ -1731,6 +1731,20 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .reasoning-labels { display: flex; justify-content: space-between; margin-top: 5px; color: var(--muted-2); font-size: var(--fs-micro); }
 .reasoning-labels span { transition: color var(--t-fast) ease; }
 .reasoning-labels span.active { color: var(--ink-2); font-weight: 600; text-shadow: none; }
+
+/* Power-control flair — the orb bursts on a model switch and the Fast tier
+   crackles. (The effort slider's own treatment lives in the unified
+   "Effort slider" section near the end of this file.) */
+@keyframes effort-pop { 0% { opacity: 0; transform: translateY(3px) scale(.82); } 60% { transform: scale(1.12); } 100% { opacity: 1; transform: none; } }
+.model-orb { animation: orb-arrive 460ms var(--ease); }
+.model-picker-trigger .model-orb { animation: orb-arrive 460ms var(--ease); }
+@keyframes orb-arrive { 0% { transform: scale(.55) rotate(-70deg); box-shadow: 0 0 0 0 color-mix(in srgb, var(--model-accent) 70%, transparent); } 55% { transform: scale(1.14) rotate(6deg); box-shadow: 0 0 0 7px transparent; } 100% { transform: none; box-shadow: 0 0 0 9px transparent; } }
+.menu-open .model-picker-trigger .model-orb { animation: none; }
+.fast-tier.on svg { animation: fast-zap 1.6s ease-in-out infinite; }
+@keyframes fast-zap { 0%, 100% { opacity: 1; filter: none; } 50% { opacity: .55; filter: drop-shadow(0 0 3px currentColor); } }
+@media (prefers-reduced-motion: reduce) {
+  .reasoning-heading strong, .model-orb, .model-picker-trigger .model-orb, .fast-tier.on svg, .model-power-control.max-effort .reasoning-rail::after { animation: none; }
+}
 .has-attachments { color: var(--info); background: color-mix(in srgb, var(--info) 8%, transparent); }
 
 /* Workspace studio */
@@ -2501,3 +2515,438 @@ body[data-pane-resizing] .sidebar, body[data-pane-resizing] .studio-dock { trans
   color: #171714;
   background: #f1f0eb;
 }
+
+/* ===== Flair pass: mission-control beams, living inbox cards, provider
+   ambiance, odometer digits, crew launch stagger. Grouped here so the whole
+   layer can be tuned (or ripped out) as one unit; every animation is
+   disarmed under prefers-reduced-motion at the bottom. ===== */
+
+/* -- Sub-agent mission control (timeline relay manifest) -- */
+/* Crew launch: cards deal in one-by-one (delay set inline, capped). */
+.subagent-relay-card { animation: sa-pop 300ms var(--ease) both; animation-delay: var(--deal-delay, 0ms); }
+/* While a child runs, its provider rail becomes a downward-flowing beam. */
+.subagent-relay-card.status-starting::before, .subagent-relay-card.status-working::before {
+  opacity: 1;
+  background: repeating-linear-gradient(180deg,
+    var(--relay-accent) 0 7px,
+    color-mix(in srgb, var(--relay-accent) 28%, transparent) 7px 16px);
+  animation: relay-flow 800ms linear infinite;
+}
+@keyframes relay-flow { to { background-position-y: 32px; } }
+/* The manifest grows a shared dispatch spine while any child is live: a
+   faint beam behind the cards that reads as one feed powering the crew. */
+.subagent-relay-list { position: relative; }
+.subagent-relay-list .subagent-relay-card { z-index: 1; }
+.subagent-relay-manifest.live .subagent-relay-list::before {
+  content: ""; position: absolute; top: -6px; bottom: 4px; left: 5px; width: 2px; z-index: 0;
+  background: repeating-linear-gradient(180deg, var(--info) 0 7px, color-mix(in srgb, var(--info) 20%, transparent) 7px 16px);
+  opacity: .38; animation: relay-flow 800ms linear infinite; pointer-events: none;
+}
+.subagent-relay-manifest.live > header > svg { animation: reasoning-pulse 1.5s ease-in-out infinite; }
+/* Settle burst: an expanding ring off the avatar when a child completes
+   (replays whenever the status-completed class lands). */
+.subagent-relay-card.status-completed .subagent-relay-avatar::after {
+  content: ""; position: absolute; inset: -2px; border: 2px solid var(--green);
+  border-radius: inherit; opacity: 0; pointer-events: none;
+  animation: relay-settle-ring 640ms var(--ease);
+}
+@keyframes relay-settle-ring { 0% { opacity: .9; transform: scale(.8); } 100% { opacity: 0; transform: scale(1.55); } }
+.subagent-relay-card.status-completed .subagent-relay-status { animation: sa-flash 480ms var(--ease); }
+
+/* -- Living inbox cards -- */
+.thread-card { --card-accent: var(--green); }
+.thread-card.provider-claude { --card-accent: #d97757; }
+.thread-card.provider-cursor { --card-accent: #b9b8b3; }
+.thread-card.provider-openrouter { --card-accent: #c8ff00; }
+.thread-card.provider-lmstudio { --card-accent: #75d5c7; }
+.app-shell[data-theme="daylight"] .thread-card.provider-openrouter { --card-accent: #7624f4; }
+.thread-card.live {
+  border-color: color-mix(in srgb, var(--card-accent) 30%, transparent);
+  background: color-mix(in srgb, var(--card-accent) 3.5%, transparent);
+  animation: card-breathe 2.8s ease-in-out infinite;
+}
+@keyframes card-breathe {
+  0%, 100% { box-shadow: 0 0 7px -3px color-mix(in srgb, var(--card-accent) 26%, transparent); }
+  50% { box-shadow: 0 0 15px -3px color-mix(in srgb, var(--card-accent) 48%, transparent); }
+}
+.thread-card.attention { --card-accent: var(--orange); border-color: color-mix(in srgb, var(--orange) 34%, transparent); background: color-mix(in srgb, var(--orange) 4%, transparent); animation: card-breathe 1.6s ease-in-out infinite; }
+.thread-card.faulted { border-color: color-mix(in srgb, var(--red) 26%, transparent); }
+/* Completion: a one-shot green sheen sweeps the card as "Done" appears. */
+.thread-card.settled { border-color: color-mix(in srgb, var(--green) 20%, transparent); }
+.thread-card.settled::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  transform: translateX(-100%);
+  background: linear-gradient(100deg, transparent 28%, color-mix(in srgb, var(--green) 15%, transparent) 50%, transparent 72%);
+  animation: card-done-sweep 850ms var(--ease) 240ms both;
+}
+@keyframes card-done-sweep { to { transform: translateX(100%); } }
+
+/* -- Provider ambiance behind the composer -- */
+.composer-zone { --ambiance: var(--green); }
+.composer-zone.ambiance-claude { --ambiance: #d97757; }
+.composer-zone.ambiance-cursor { --ambiance: #a8a69e; }
+.composer-zone.ambiance-openrouter { --ambiance: #c8ff00; }
+.composer-zone.ambiance-lmstudio { --ambiance: #75d5c7; }
+.app-shell[data-theme="daylight"] .composer-zone.ambiance-openrouter { --ambiance: #7624f4; }
+.composer-zone::before {
+  content: ""; position: absolute; left: 50%; bottom: -46px; z-index: 0;
+  width: min(760px, 92%); height: 130px; transform: translateX(-50%);
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--ambiance) 16%, transparent), transparent 72%);
+  opacity: .35; pointer-events: none; transition: opacity 600ms ease;
+}
+.composer-zone > * { position: relative; z-index: 1; }
+.composer-zone.ambiance-live::before { opacity: .8; animation: ambiance-breathe 3.4s ease-in-out infinite; }
+@keyframes ambiance-breathe { 0%, 100% { opacity: .55; } 50% { opacity: .95; } }
+.composer-zone.ambiance-live .composer {
+  border-color: color-mix(in srgb, var(--ambiance) 24%, var(--line-strong));
+  box-shadow: var(--elev-2), 0 0 26px -10px color-mix(in srgb, var(--ambiance) 40%, transparent);
+}
+
+/* -- Odometer: rolling digits for live numbers -- */
+.odometer { display: inline-flex; align-items: flex-start; overflow: hidden; height: 1.3em; vertical-align: bottom; font-variant-numeric: tabular-nums; }
+.odometer-static { line-height: 1.3; }
+.odometer-reel { height: 1.3em; overflow: hidden; }
+.odometer-reel > span { display: flex; flex-direction: column; transition: transform 520ms cubic-bezier(.2,.75,.25,1); will-change: transform; }
+.odometer-reel i { height: 1.3em; line-height: 1.3; font-style: normal; }
+
+@media (prefers-reduced-motion: reduce) {
+  .subagent-relay-card,
+  .subagent-relay-card.status-starting::before, .subagent-relay-card.status-working::before,
+  .subagent-relay-manifest.live .subagent-relay-list::before,
+  .subagent-relay-manifest.live > header > svg,
+  .subagent-relay-card.status-completed .subagent-relay-avatar::after,
+  .subagent-relay-card.status-completed .subagent-relay-status,
+  .thread-card.live, .thread-card.attention, .thread-card.settled::after,
+  .composer-zone.ambiance-live::before { animation: none; }
+  .odometer-reel > span { transition: none; }
+}
+
+/* ===== Effort slider, unified across every provider =====
+   Codex uses .reasoning-*; Claude/Cursor/OpenRouter/LM Studio share
+   .openrouter-reasoning-*. Each level owns a color (blue → green → amber →
+   orange → red); the fill paints the spectrum travelled so far, the thumb
+   grows and glows with heat, ticks pop in their own level color, sparks fly
+   on every change, dragging streams energy down the rail, and Max catches
+   fire. --effort-heat (0–1) and --effort-color come inline from
+   effortFlair.tsx; --reasoning-fill / --router-fill are the fill percent. */
+.reasoning-control input[type="range"], .openrouter-reasoning input[type="range"] {
+  height: 6px;
+  background:
+    linear-gradient(var(--panel-3), var(--panel-3)) no-repeat right center / calc(100% - var(--reasoning-fill, var(--router-fill, 0%))) 100%,
+    linear-gradient(90deg, #4db6ff 0%, #43d97c 25%, #ffc531 50%, #ff8a2b 75%, #ff4655 100%);
+  box-shadow: 0 0 calc(var(--effort-heat, 0) * 14px) color-mix(in srgb, var(--effort-color, #4db6ff) 55%, transparent);
+  transition: box-shadow 240ms ease;
+}
+.app-shell[data-theme="daylight"] .reasoning-control input[type="range"], .app-shell[data-theme="daylight"] .openrouter-reasoning input[type="range"] {
+  background:
+    linear-gradient(#d8dcd2, #d8dcd2) no-repeat right center / calc(100% - var(--reasoning-fill, var(--router-fill, 0%))) 100%,
+    linear-gradient(90deg, #1e8fdc 0%, #17a655 25%, #dfa010 50%, #ec7418 75%, #e63946 100%);
+}
+.reasoning-control input[type="range"]::-webkit-slider-thumb, .openrouter-reasoning input[type="range"]::-webkit-slider-thumb {
+  width: 15px; height: 15px; border: 2px solid var(--panel); border-radius: 50%;
+  background: var(--effort-color, #4db6ff);
+  transform: scale(calc(.9 + var(--effort-heat, 0) * .38));
+  box-shadow:
+    0 0 0 calc(var(--effort-heat, 0) * 4px) color-mix(in srgb, var(--effort-color, #4db6ff) 22%, transparent),
+    0 0 calc(5px + var(--effort-heat, 0) * 13px) color-mix(in srgb, var(--effort-color, #4db6ff) 80%, transparent);
+  cursor: grab;
+  transition: transform 220ms var(--ease), box-shadow 220ms ease, background 220ms ease;
+}
+.reasoning-rail, .openrouter-reasoning-rail { cursor: grab; touch-action: none; }
+.reasoning-rail.dragging, .openrouter-reasoning-rail.dragging { cursor: grabbing; }
+.reasoning-rail.disabled, .openrouter-reasoning-rail.disabled { cursor: default; }
+/* Pointer input is handled by the rail so the thumb can track the pointer
+   continuously and glide on click; the input stays for keyboard and AT. */
+.reasoning-rail input[type="range"], .openrouter-reasoning-rail input[type="range"] { pointer-events: none; }
+.dragging input[type="range"]::-webkit-slider-thumb {
+  transform: scale(calc(1.18 + var(--effort-heat, 0) * .4));
+  box-shadow:
+    0 0 0 6px color-mix(in srgb, var(--effort-color, #4db6ff) 22%, transparent),
+    0 0 24px color-mix(in srgb, var(--effort-color, #4db6ff) 90%, transparent);
+}
+/* Ticks each own their level color once reached, and pop as they light. */
+.reasoning-ticks i:nth-child(1), .openrouter-reasoning-ticks i:nth-child(1) { color: #4db6ff; }
+.reasoning-ticks i:nth-child(2), .openrouter-reasoning-ticks i:nth-child(2) { color: #43d97c; }
+.reasoning-ticks i:nth-child(3), .openrouter-reasoning-ticks i:nth-child(3) { color: #ffc531; }
+.reasoning-ticks i:nth-child(4), .openrouter-reasoning-ticks i:nth-child(4) { color: #ff8a2b; }
+.reasoning-ticks i:nth-child(5), .openrouter-reasoning-ticks i:nth-child(5) { color: #ff4655; }
+.reasoning-ticks i.reached, .openrouter-reasoning-ticks i.reached,
+.app-shell[data-theme="daylight"] .reasoning-ticks i.reached, .app-shell[data-theme="daylight"] .openrouter-reasoning-ticks i.reached {
+  border-color: currentColor; background: currentColor;
+  box-shadow: 0 0 8px currentColor;
+  animation: tick-pop 340ms var(--ease);
+}
+@keyframes tick-pop { 0% { transform: scale(2.1); } 100% { transform: scale(1); } }
+/* Readout and active label wear the level color and pop on change. */
+.reasoning-heading strong, .openrouter-reasoning-heading strong {
+  color: var(--effort-color, var(--ink-2));
+  text-shadow: 0 0 10px color-mix(in srgb, var(--effort-color, transparent) 50%, transparent);
+  animation: effort-pop 280ms var(--ease);
+}
+/* The speedometer is a compact mirror of the active effort slider. Target
+   only the leading Gauge so Codex's separate Fast-tier icon keeps its color. */
+.reasoning-heading > svg:first-child, .openrouter-reasoning-heading > svg:first-child {
+  color: var(--effort-color, var(--muted-2));
+  transition: color var(--t-fast) ease;
+}
+.reasoning-labels span.active, .openrouter-reasoning-labels span.active {
+  color: var(--effort-color, var(--ink-2));
+  font-weight: 650;
+  text-shadow: 0 0 8px color-mix(in srgb, var(--effort-color, transparent) 40%, transparent);
+}
+/* Spark burst at the thumb on every change (keyed remount replays it). */
+.effort-sparks { position: absolute; top: 50%; z-index: 4; width: 0; height: 0; pointer-events: none; }
+.effort-sparks i { position: absolute; left: -3px; top: -3px; width: 6px; height: 6px; border-radius: 50%; background: var(--effort-color, #4db6ff); box-shadow: 0 0 10px 2px color-mix(in srgb, var(--effort-color, #4db6ff) 85%, transparent); opacity: 0; animation: spark-fly 750ms var(--ease) both; }
+.effort-sparks i:nth-child(1) { --sx: -22px; --sy: -13px; animation-delay: 0ms; }
+.effort-sparks i:nth-child(2) { --sx: 20px; --sy: -16px; animation-delay: 25ms; }
+.effort-sparks i:nth-child(3) { --sx: -13px; --sy: 15px; animation-delay: 10ms; }
+.effort-sparks i:nth-child(4) { --sx: 17px; --sy: 12px; animation-delay: 35ms; }
+.effort-sparks i:nth-child(5) { --sx: -26px; --sy: 3px; animation-delay: 45ms; }
+.effort-sparks i:nth-child(6) { --sx: 25px; --sy: -4px; animation-delay: 18ms; }
+.effort-sparks i:nth-child(7) { --sx: -7px; --sy: -19px; animation-delay: 30ms; }
+.effort-sparks i:nth-child(8) { --sx: 8px; --sy: 18px; animation-delay: 50ms; }
+@keyframes spark-fly {
+  0% { opacity: 1; transform: translate(0, 0) scale(1); }
+  100% { opacity: 0; transform: translate(var(--sx), var(--sy)) scale(.2); }
+}
+/* Dragging streams energy along the filled rail toward the thumb. */
+.reasoning-rail.dragging::before, .openrouter-reasoning-rail.dragging::before {
+  content: ""; position: absolute; left: 2px; top: 50%; z-index: 2; height: 6px;
+  width: calc(var(--reasoning-fill, var(--router-fill, 0%)) - 4px); transform: translateY(-50%);
+  border-radius: var(--r-pill);
+  background: repeating-linear-gradient(90deg, transparent 0 8px, rgba(255,255,255,.5) 8px 11px);
+  background-size: 19px 100%; pointer-events: none;
+  animation: energy-stream 380ms linear infinite;
+}
+@keyframes energy-stream { to { background-position-x: 19px; } }
+/* Max effort is on fire: shimmer runs the rail, the readout flickers like a
+   flame, and the thumb burns. */
+.effort-max .reasoning-rail::after, .effort-max .openrouter-reasoning-rail::after {
+  content: ""; position: absolute; top: 50%; left: 2px; right: 2px; z-index: 3; height: 6px;
+  transform: translateY(-50%); border-radius: var(--r-pill);
+  background: linear-gradient(100deg, transparent 25%, rgba(255,255,255,.5) 50%, transparent 75%);
+  background-size: 240% 100%; pointer-events: none;
+  animation: rail-blaze 1.7s linear infinite;
+}
+@keyframes rail-blaze { from { background-position: 140% 0; } to { background-position: -100% 0; } }
+.effort-max .reasoning-heading strong, .effort-max .openrouter-reasoning-heading strong {
+  animation: effort-pop 280ms var(--ease), flame-flicker 1.3s ease-in-out 280ms infinite;
+}
+@keyframes flame-flicker {
+  0%, 100% { text-shadow: 0 0 8px rgba(255, 70, 85, .6); }
+  35% { text-shadow: 0 0 18px rgba(255, 138, 43, .95), 0 0 30px rgba(255, 70, 85, .5); }
+  65% { text-shadow: 0 0 12px rgba(255, 70, 85, .75); }
+}
+.effort-max .reasoning-control input[type="range"]::-webkit-slider-thumb, .effort-max.openrouter-reasoning input[type="range"]::-webkit-slider-thumb, .effort-max .openrouter-reasoning-rail input[type="range"]::-webkit-slider-thumb {
+  animation: thumb-burn 1.1s ease-in-out infinite;
+}
+@keyframes thumb-burn { 50% { filter: brightness(1.4) saturate(1.35); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .effort-sparks i, .reasoning-ticks i.reached, .openrouter-reasoning-ticks i.reached,
+  .reasoning-heading strong, .openrouter-reasoning-heading strong,
+  .reasoning-rail.dragging::before, .openrouter-reasoning-rail.dragging::before,
+  .effort-max .reasoning-rail::after, .effort-max .openrouter-reasoning-rail::after,
+  .effort-max .reasoning-control input[type="range"]::-webkit-slider-thumb, .effort-max.openrouter-reasoning input[type="range"]::-webkit-slider-thumb, .effort-max .openrouter-reasoning-rail input[type="range"]::-webkit-slider-thumb { animation: none; }
+  .effort-sparks i { opacity: 0; }
+}
+
+/* -- In-app confirmation dialog (replaces the OS-native confirm window) -- */
+.confirm-backdrop { z-index: 95; }
+.confirm-dialog { width: min(440px, 100%); padding: var(--s-5); border: 1px solid var(--line-strong); border-radius: var(--r-xl); background: var(--panel); box-shadow: var(--shadow); animation: palette-in 170ms var(--ease); }
+.confirm-dialog-icon { width: 32px; height: 32px; display: grid; place-items: center; margin-bottom: var(--s-3); border-radius: var(--r-md); color: var(--orange); background: color-mix(in srgb, var(--orange) 12%, transparent); }
+.confirm-dialog-icon.danger { color: var(--red); background: color-mix(in srgb, var(--red) 11%, transparent); }
+.confirm-dialog h2 { margin: 0 0 var(--s-2); font-size: 15px; font-weight: 650; letter-spacing: var(--track-tight); line-height: 1.4; overflow-wrap: anywhere; }
+.confirm-dialog p { margin: 0; color: var(--muted); font-size: var(--fs-ui); line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.confirm-dialog-actions { display: flex; justify-content: flex-end; gap: var(--s-2); margin-top: var(--s-5); }
+.confirm-dialog-actions .primary-button.confirm-danger { border-color: color-mix(in srgb, var(--red) 75%, #fff); color: #fff; background: var(--red); }
+.confirm-dialog-actions .primary-button.confirm-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--red) 86%, #fff); }
+@media (prefers-reduced-motion: reduce) { .confirm-dialog { animation: none; } }
+
+/* ===== Extended themes =====
+   Dark variants recolor the semantic tokens only; every component rule
+   already reads through them. (Daylight stays the one hand-tuned light set.) */
+.app-shell[data-theme="midnight"] { --bg: #14181f; --sidebar: #171c24; --panel: #1d232d; --panel-2: #232a36; --panel-3: #2b3441; --field: #1a202a; --menu-surface: #232a36; --topbar: rgba(20,24,31,.88); --green: #7fc4ff; --green-soft: rgba(127,196,255,.12); --green-line: rgba(127,196,255,.28); --orange: #e8b46a; --red: #ff8d95; --info: #9bd0ff; }
+.app-shell[data-theme="synthwave"] { --bg: #17131f; --sidebar: #1b1626; --panel: #221b2e; --panel-2: #2a2138; --panel-3: #342a44; --field: #1e1829; --menu-surface: #2a2138; --topbar: rgba(23,19,31,.88); --green: #ff6ac1; --green-soft: rgba(255,106,193,.13); --green-line: rgba(255,106,193,.3); --orange: #ffb45f; --red: #ff7582; --info: #8be1ff; --text: #f0ebf4; --ink-2: #cdc4d6; }
+.app-shell[data-theme="ember"] { --bg: #1e1a17; --sidebar: #221e1a; --panel: #292420; --panel-2: #302a25; --panel-3: #39322c; --field: #262119; --menu-surface: #302a25; --topbar: rgba(30,26,23,.88); --green: #ffb45f; --green-soft: rgba(255,180,95,.12); --green-line: rgba(255,180,95,.3); --orange: #ff9d4d; --red: #f2807b; --info: #9cc8e8; --text: #f0ece6; --ink-2: #cfc7bc; }
+.app-shell[data-theme="terminal"] { --bg: #0c0f0c; --sidebar: #0f130f; --panel: #141814; --panel-2: #191f19; --panel-3: #212821; --field: #101410; --menu-surface: #191f19; --topbar: rgba(12,15,12,.9); --green: #4eff8a; --green-soft: rgba(78,255,138,.11); --green-line: rgba(78,255,138,.3); --orange: #ffc14d; --red: #ff6f68; --info: #5fe0d2; --text: #d8e6d8; --ink-2: #b0c4b0; --muted: #829682; --muted-2: #839783; }
+
+/* ===== Effort slider styles =====
+   data-effort-slider on the app shell picks the look; the drag/glide
+   interaction is shared by all three. Spectrum is the default and needs no
+   overrides. */
+
+/* -- Classic: the original quiet accent rail. -- */
+.app-shell[data-effort-slider="classic"] .reasoning-control input[type="range"] { height: 4px; background: linear-gradient(90deg, var(--model-accent) 0, var(--model-accent) var(--reasoning-fill, 0%), var(--panel-3) var(--reasoning-fill, 0%), var(--panel-3) 100%); box-shadow: none; }
+.app-shell[data-effort-slider="classic"] .openrouter-reasoning input[type="range"] { height: 4px; background: linear-gradient(90deg, var(--router-accent) 0, var(--router-accent) var(--reasoning-fill, 0%), var(--panel-3) var(--reasoning-fill, 0%), var(--panel-3) 100%); box-shadow: inset 0 1px 2px rgba(0,0,0,.55); }
+.app-shell[data-effort-slider="classic"] .reasoning-control input[type="range"]::-webkit-slider-thumb { width: 14px; height: 14px; transform: none; background: var(--model-accent); box-shadow: var(--elev-1); }
+.app-shell[data-effort-slider="classic"] .openrouter-reasoning input[type="range"]::-webkit-slider-thumb { width: 14px; height: 14px; transform: none; background: var(--router-accent); box-shadow: 0 0 0 2px rgba(195,155,255,.12), 0 0 11px rgba(195,155,255,.46); }
+.app-shell[data-effort-slider="classic"] .dragging input[type="range"]::-webkit-slider-thumb { transform: scale(1.12); }
+.app-shell[data-effort-slider="classic"] .reasoning-ticks i, .app-shell[data-effort-slider="classic"] .openrouter-reasoning-ticks i { animation: none; }
+.app-shell[data-effort-slider="classic"] .reasoning-ticks i.reached { border-color: var(--model-accent); background: var(--model-accent); box-shadow: none; }
+.app-shell[data-effort-slider="classic"] .openrouter-reasoning-ticks i.reached { border-color: var(--router-accent); background: var(--router-accent); box-shadow: 0 0 6px rgba(195,155,255,.45); }
+.app-shell[data-effort-slider="classic"] .reasoning-heading strong { color: var(--ink-2); text-shadow: none; animation: none; }
+.app-shell[data-effort-slider="classic"] .openrouter-reasoning-heading strong { color: var(--router-accent); text-shadow: none; animation: none; }
+.app-shell[data-effort-slider="classic"] .reasoning-heading > svg:first-child { color: var(--model-accent); }
+.app-shell[data-effort-slider="classic"] .openrouter-reasoning-heading > svg:first-child { color: var(--router-accent); }
+.app-shell[data-effort-slider="classic"] .reasoning-labels span.active { color: var(--ink-2); text-shadow: none; }
+.app-shell[data-effort-slider="classic"] .openrouter-reasoning-labels span.active { color: var(--router-accent); text-shadow: 0 0 8px rgba(195,155,255,.42); }
+.app-shell[data-effort-slider="classic"] .effort-sparks,
+.app-shell[data-effort-slider="classic"] .reasoning-rail.dragging::before,
+.app-shell[data-effort-slider="classic"] .openrouter-reasoning-rail.dragging::before,
+.app-shell[data-effort-slider="classic"] .effort-max .reasoning-rail::after,
+.app-shell[data-effort-slider="classic"] .effort-max .openrouter-reasoning-rail::after { display: none; }
+
+/* -- Neon: the active model's accent, glowing hotter with effort.
+   Codex reads --model-accent (Sol/Terra/Luna), the other providers read
+   their control's --router-accent — same source Classic uses. -- */
+.app-shell[data-effort-slider="neon"] .reasoning-control input[type="range"] {
+  background:
+    linear-gradient(var(--panel-3), var(--panel-3)) no-repeat right center / calc(100% - var(--reasoning-fill, 0%)) 100%,
+    linear-gradient(90deg, color-mix(in srgb, var(--model-accent) 45%, var(--panel-3)), var(--model-accent));
+  box-shadow: 0 0 calc(4px + var(--effort-heat, 0) * 16px) color-mix(in srgb, var(--model-accent) 70%, transparent);
+}
+.app-shell[data-effort-slider="neon"] .openrouter-reasoning input[type="range"] {
+  background:
+    linear-gradient(var(--panel-3), var(--panel-3)) no-repeat right center / calc(100% - var(--reasoning-fill, 0%)) 100%,
+    linear-gradient(90deg, color-mix(in srgb, var(--router-accent) 45%, var(--panel-3)), var(--router-accent));
+  box-shadow: 0 0 calc(4px + var(--effort-heat, 0) * 16px) color-mix(in srgb, var(--router-accent) 70%, transparent);
+}
+.app-shell[data-effort-slider="neon"] .reasoning-control input[type="range"]::-webkit-slider-thumb {
+  background: color-mix(in srgb, var(--model-accent) 45%, #fff);
+  box-shadow:
+    0 0 0 calc(var(--effort-heat, 0) * 4px) color-mix(in srgb, var(--model-accent) 24%, transparent),
+    0 0 calc(6px + var(--effort-heat, 0) * 14px) color-mix(in srgb, var(--model-accent) 85%, transparent);
+}
+.app-shell[data-effort-slider="neon"] .openrouter-reasoning input[type="range"]::-webkit-slider-thumb {
+  background: color-mix(in srgb, var(--router-accent) 45%, #fff);
+  box-shadow:
+    0 0 0 calc(var(--effort-heat, 0) * 4px) color-mix(in srgb, var(--router-accent) 24%, transparent),
+    0 0 calc(6px + var(--effort-heat, 0) * 14px) color-mix(in srgb, var(--router-accent) 85%, transparent);
+}
+.app-shell[data-effort-slider="neon"] .reasoning-ticks i { color: var(--model-accent); }
+.app-shell[data-effort-slider="neon"] .openrouter-reasoning-ticks i { color: var(--router-accent); }
+.app-shell[data-effort-slider="neon"] .reasoning-heading strong { color: var(--model-accent); text-shadow: 0 0 10px color-mix(in srgb, var(--model-accent) 55%, transparent); }
+.app-shell[data-effort-slider="neon"] .openrouter-reasoning-heading strong { color: var(--router-accent); text-shadow: 0 0 10px color-mix(in srgb, var(--router-accent) 55%, transparent); }
+.app-shell[data-effort-slider="neon"] .reasoning-heading > svg:first-child { color: var(--model-accent); }
+.app-shell[data-effort-slider="neon"] .openrouter-reasoning-heading > svg:first-child { color: var(--router-accent); }
+.app-shell[data-effort-slider="neon"] .reasoning-labels span.active { color: var(--model-accent); text-shadow: 0 0 8px color-mix(in srgb, var(--model-accent) 45%, transparent); }
+.app-shell[data-effort-slider="neon"] .openrouter-reasoning-labels span.active { color: var(--router-accent); text-shadow: 0 0 8px color-mix(in srgb, var(--router-accent) 45%, transparent); }
+.app-shell[data-effort-slider="neon"] .reasoning-rail .effort-sparks i { background: var(--model-accent); box-shadow: 0 0 10px 2px color-mix(in srgb, var(--model-accent) 85%, transparent); }
+.app-shell[data-effort-slider="neon"] .openrouter-reasoning-rail .effort-sparks i { background: var(--router-accent); box-shadow: 0 0 10px 2px color-mix(in srgb, var(--router-accent) 85%, transparent); }
+.app-shell[data-effort-slider="neon"] .effort-max .reasoning-heading strong { animation: effort-pop 280ms var(--ease); text-shadow: 0 0 16px var(--model-accent); }
+.app-shell[data-effort-slider="neon"] .effort-max .openrouter-reasoning-heading strong { animation: effort-pop 280ms var(--ease); text-shadow: 0 0 16px var(--router-accent); }
+
+/* -- Pixel: a chunky retro VU meter. Green through red LED segments, square
+   thumb, monospace readout, square sparks. -- */
+.app-shell[data-effort-slider="pixel"] .reasoning-control input[type="range"], .app-shell[data-effort-slider="pixel"] .openrouter-reasoning input[type="range"] {
+  height: 10px; border-radius: 2px;
+  background:
+    linear-gradient(var(--panel-3), var(--panel-3)) no-repeat right center / calc(100% - var(--reasoning-fill, 0%)) 100%,
+    repeating-linear-gradient(90deg, transparent 0 8px, var(--bg) 8px 11px),
+    linear-gradient(90deg, #33d17a 0 42%, #f6d32d 42% 72%, #f66151 72% 100%);
+  box-shadow: none;
+}
+.app-shell[data-effort-slider="pixel"] .reasoning-control input[type="range"]::-webkit-slider-thumb, .app-shell[data-effort-slider="pixel"] .openrouter-reasoning input[type="range"]::-webkit-slider-thumb {
+  width: 9px; height: 16px; border-radius: 2px; transform: none;
+  background: var(--text); border: 2px solid var(--bg); box-shadow: 0 0 0 1px var(--line-strong);
+}
+.app-shell[data-effort-slider="pixel"] .dragging input[type="range"]::-webkit-slider-thumb { transform: scaleY(1.15); box-shadow: 0 0 0 1px var(--line-strong); }
+.app-shell[data-effort-slider="pixel"] .reasoning-ticks i, .app-shell[data-effort-slider="pixel"] .openrouter-reasoning-ticks i { border-radius: 1px; }
+.app-shell[data-effort-slider="pixel"] .reasoning-ticks i.reached, .app-shell[data-effort-slider="pixel"] .openrouter-reasoning-ticks i.reached { box-shadow: none; }
+.app-shell[data-effort-slider="pixel"] .reasoning-ticks i:nth-child(1), .app-shell[data-effort-slider="pixel"] .openrouter-reasoning-ticks i:nth-child(1),
+.app-shell[data-effort-slider="pixel"] .reasoning-ticks i:nth-child(2), .app-shell[data-effort-slider="pixel"] .openrouter-reasoning-ticks i:nth-child(2) { color: #33d17a; }
+.app-shell[data-effort-slider="pixel"] .reasoning-ticks i:nth-child(3), .app-shell[data-effort-slider="pixel"] .openrouter-reasoning-ticks i:nth-child(3),
+.app-shell[data-effort-slider="pixel"] .reasoning-ticks i:nth-child(4), .app-shell[data-effort-slider="pixel"] .openrouter-reasoning-ticks i:nth-child(4) { color: #f6d32d; }
+.app-shell[data-effort-slider="pixel"] .reasoning-ticks i:nth-child(5), .app-shell[data-effort-slider="pixel"] .openrouter-reasoning-ticks i:nth-child(5) { color: #f66151; }
+.app-shell[data-effort-slider="pixel"] .reasoning-heading strong, .app-shell[data-effort-slider="pixel"] .openrouter-reasoning-heading strong { font-family: var(--font-mono); text-transform: uppercase; text-shadow: none; }
+.app-shell[data-effort-slider="pixel"] .reasoning-heading > svg:first-child, .app-shell[data-effort-slider="pixel"] .openrouter-reasoning-heading > svg:first-child { color: var(--pixel-effort-color, var(--text)); }
+.app-shell[data-effort-slider="pixel"] .reasoning-labels span.active, .app-shell[data-effort-slider="pixel"] .openrouter-reasoning-labels span.active { text-shadow: none; }
+.app-shell[data-effort-slider="pixel"] .effort-sparks i { border-radius: 0; box-shadow: none; }
+.app-shell[data-effort-slider="pixel"] .reasoning-rail.dragging::before, .app-shell[data-effort-slider="pixel"] .openrouter-reasoning-rail.dragging::before,
+.app-shell[data-effort-slider="pixel"] .effort-max .reasoning-rail::after, .app-shell[data-effort-slider="pixel"] .effort-max .openrouter-reasoning-rail::after { display: none; }
+
+/* -- Aurora: northern-light pastels drifting slowly along the fill. -- */
+.app-shell[data-effort-slider="aurora"] .reasoning-control input[type="range"], .app-shell[data-effort-slider="aurora"] .openrouter-reasoning input[type="range"] {
+  background:
+    linear-gradient(var(--panel-3), var(--panel-3)) no-repeat right center,
+    linear-gradient(110deg, #6ee7d8, #7aa5ff 28%, #b98cff 55%, #ff8cd1 82%, #6ee7d8 100%);
+  background-size: calc(100% - var(--reasoning-fill, 0%)) 100%, 320% 100%;
+  box-shadow: 0 0 calc(3px + var(--effort-heat, 0) * 11px) rgba(157, 140, 255, .5);
+  animation: aurora-drift 8s ease-in-out infinite alternate;
+}
+@keyframes aurora-drift { from { background-position: right center, 0% 50%; } to { background-position: right center, 100% 50%; } }
+.app-shell[data-effort-slider="aurora"] .reasoning-control input[type="range"]::-webkit-slider-thumb, .app-shell[data-effort-slider="aurora"] .openrouter-reasoning input[type="range"]::-webkit-slider-thumb {
+  background: #fff;
+  box-shadow:
+    0 0 0 calc(var(--effort-heat, 0) * 4px) rgba(185, 140, 255, .22),
+    0 0 calc(6px + var(--effort-heat, 0) * 12px) rgba(185, 140, 255, .8);
+}
+.app-shell[data-effort-slider="aurora"] .reasoning-ticks i:nth-child(1), .app-shell[data-effort-slider="aurora"] .openrouter-reasoning-ticks i:nth-child(1) { color: #6ee7d8; }
+.app-shell[data-effort-slider="aurora"] .reasoning-ticks i:nth-child(2), .app-shell[data-effort-slider="aurora"] .openrouter-reasoning-ticks i:nth-child(2) { color: #7aa5ff; }
+.app-shell[data-effort-slider="aurora"] .reasoning-ticks i:nth-child(3), .app-shell[data-effort-slider="aurora"] .openrouter-reasoning-ticks i:nth-child(3) { color: #9d8cff; }
+.app-shell[data-effort-slider="aurora"] .reasoning-ticks i:nth-child(4), .app-shell[data-effort-slider="aurora"] .openrouter-reasoning-ticks i:nth-child(4) { color: #b98cff; }
+.app-shell[data-effort-slider="aurora"] .reasoning-ticks i:nth-child(5), .app-shell[data-effort-slider="aurora"] .openrouter-reasoning-ticks i:nth-child(5) { color: #ff8cd1; }
+.app-shell[data-effort-slider="aurora"] .reasoning-heading strong, .app-shell[data-effort-slider="aurora"] .openrouter-reasoning-heading strong { color: #b99cff; text-shadow: 0 0 10px rgba(185, 140, 255, .55); }
+.app-shell[data-effort-slider="aurora"] .reasoning-heading > svg:first-child, .app-shell[data-effort-slider="aurora"] .openrouter-reasoning-heading > svg:first-child { color: var(--aurora-effort-color, #b99cff); }
+.app-shell[data-effort-slider="aurora"] .reasoning-labels span.active, .app-shell[data-effort-slider="aurora"] .openrouter-reasoning-labels span.active { color: #b99cff; text-shadow: 0 0 8px rgba(185, 140, 255, .45); }
+.app-shell[data-effort-slider="aurora"] .effort-sparks i { background: #cdb5ff; box-shadow: 0 0 10px 2px rgba(185, 140, 255, .85); }
+.app-shell[data-effort-slider="aurora"] .effort-max .reasoning-heading strong, .app-shell[data-effort-slider="aurora"] .effort-max .openrouter-reasoning-heading strong { animation: effort-pop 280ms var(--ease); text-shadow: 0 0 16px #ff8cd1; }
+.app-shell[data-theme="daylight"][data-effort-slider="aurora"] .reasoning-heading strong, .app-shell[data-theme="daylight"][data-effort-slider="aurora"] .openrouter-reasoning-heading strong,
+.app-shell[data-theme="daylight"][data-effort-slider="aurora"] .reasoning-labels span.active, .app-shell[data-theme="daylight"][data-effort-slider="aurora"] .openrouter-reasoning-labels span.active { color: #7d5bd6; }
+
+/* -- Ink: a bare monochrome line. No color, no glow, no sparks. -- */
+.app-shell[data-effort-slider="ink"] .reasoning-control input[type="range"], .app-shell[data-effort-slider="ink"] .openrouter-reasoning input[type="range"] {
+  height: 2px; border-radius: 0;
+  background:
+    linear-gradient(var(--panel-3), var(--panel-3)) no-repeat right center / calc(100% - var(--reasoning-fill, 0%)) 100%,
+    linear-gradient(var(--text), var(--text));
+  box-shadow: none;
+}
+.app-shell[data-effort-slider="ink"] .reasoning-control input[type="range"]::-webkit-slider-thumb, .app-shell[data-effort-slider="ink"] .openrouter-reasoning input[type="range"]::-webkit-slider-thumb {
+  width: 13px; height: 13px; transform: none;
+  background: var(--bg); border: 2px solid var(--text); box-shadow: none;
+}
+.app-shell[data-effort-slider="ink"] .dragging input[type="range"]::-webkit-slider-thumb { transform: scale(1.15); box-shadow: none; }
+.app-shell[data-effort-slider="ink"] .reasoning-ticks i, .app-shell[data-effort-slider="ink"] .openrouter-reasoning-ticks i { width: 4px; height: 4px; }
+.app-shell[data-effort-slider="ink"] .reasoning-ticks i.reached, .app-shell[data-effort-slider="ink"] .openrouter-reasoning-ticks i.reached { border-color: var(--text); background: var(--text); box-shadow: none; }
+.app-shell[data-effort-slider="ink"] .reasoning-heading strong, .app-shell[data-effort-slider="ink"] .openrouter-reasoning-heading strong { color: var(--text); text-shadow: none; }
+.app-shell[data-effort-slider="ink"] .reasoning-heading > svg:first-child, .app-shell[data-effort-slider="ink"] .openrouter-reasoning-heading > svg:first-child { color: var(--text); }
+.app-shell[data-effort-slider="ink"] .reasoning-labels span.active, .app-shell[data-effort-slider="ink"] .openrouter-reasoning-labels span.active { color: var(--text); text-shadow: none; }
+.app-shell[data-effort-slider="ink"] .effort-sparks,
+.app-shell[data-effort-slider="ink"] .reasoning-rail.dragging::before, .app-shell[data-effort-slider="ink"] .openrouter-reasoning-rail.dragging::before,
+.app-shell[data-effort-slider="ink"] .effort-max .reasoning-rail::after, .app-shell[data-effort-slider="ink"] .effort-max .openrouter-reasoning-rail::after { display: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .app-shell[data-effort-slider="aurora"] .reasoning-control input[type="range"], .app-shell[data-effort-slider="aurora"] .openrouter-reasoning input[type="range"] { animation: none; }
+}
+
+/* -- Settings: effort-slider style picker -- */
+.slider-style-heading { display: flex; flex-direction: column; gap: 2px; margin: var(--s-4) 2px var(--s-2); }
+.slider-style-heading strong { color: var(--ink-2); font-size: var(--fs-ui); font-weight: 630; }
+.slider-style-heading small { color: var(--muted-2); font-size: var(--fs-meta); }
+.slider-style-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
+.slider-style-card { min-width: 0; min-height: 62px; display: grid; grid-template-columns: 60px minmax(0, 1fr) 16px; align-items: center; gap: var(--s-2); padding: var(--s-2); border: 1px solid var(--line); border-radius: var(--r-md); color: var(--muted); background: rgba(255,255,255,.014); text-align: left; cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
+.slider-style-card:hover { color: var(--ink-2); border-color: var(--line-strong); background: rgba(255,255,255,.035); }
+.slider-style-card.selected { color: var(--text); border-color: color-mix(in srgb, var(--green) 32%, var(--line)); background: var(--green-soft); }
+.slider-style-card > span:nth-child(2) { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.slider-style-card strong { font-size: var(--fs-meta); font-weight: 620; }
+.slider-style-card small { overflow: hidden; display: -webkit-box; color: var(--muted-2); font-size: var(--fs-micro); line-height: 1.35; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.slider-style-card > svg { color: var(--green); }
+.slider-style-preview { position: relative; width: 58px; height: 24px; display: block; border-radius: 6px; background: rgba(0,0,0,.24); }
+.app-shell[data-theme="daylight"] .slider-style-preview { background: rgba(0,0,0,.06); }
+.slider-style-rail { position: absolute; left: 6px; right: 6px; top: 50%; height: 4px; transform: translateY(-50%); border-radius: 99px; }
+.slider-style-thumb { position: absolute; top: 50%; width: 10px; height: 10px; border: 2px solid var(--panel); border-radius: 50%; transform: translate(-50%, -50%); }
+.slider-style-preview.classic .slider-style-rail { background: linear-gradient(90deg, var(--green) 0 62%, var(--panel-3) 62%); }
+.slider-style-preview.classic .slider-style-thumb { left: 62%; background: var(--green); }
+.slider-style-preview.spectrum .slider-style-rail { background: linear-gradient(90deg, #4db6ff, #43d97c, #ffc531, #ff8a2b, #ff4655); }
+.slider-style-preview.spectrum .slider-style-thumb { left: 76%; background: #ff8a2b; box-shadow: 0 0 8px #ff8a2b; }
+.slider-style-preview.neon .slider-style-rail { background: var(--green); box-shadow: 0 0 8px color-mix(in srgb, var(--green) 75%, transparent); }
+.slider-style-preview.neon .slider-style-thumb { left: 68%; background: color-mix(in srgb, var(--green) 45%, #fff); box-shadow: 0 0 10px var(--green); }
+
+.slider-style-preview.pixel .slider-style-rail { height: 8px; border-radius: 2px; background: repeating-linear-gradient(90deg, transparent 0 5px, var(--panel) 5px 7px), linear-gradient(90deg, #33d17a 0 42%, #f6d32d 42% 72%, #f66151 72% 100%); }
+.slider-style-preview.pixel .slider-style-thumb { left: 66%; width: 6px; height: 12px; border-radius: 2px; background: var(--text); border-color: var(--bg); }
+.slider-style-preview.aurora .slider-style-rail { background: linear-gradient(110deg, #6ee7d8, #7aa5ff 30%, #b98cff 60%, #ff8cd1 90%); box-shadow: 0 0 8px rgba(185, 140, 255, .6); }
+.slider-style-preview.aurora .slider-style-thumb { left: 72%; background: #fff; box-shadow: 0 0 9px rgba(185, 140, 255, .9); }
+.slider-style-preview.ink .slider-style-rail { height: 2px; border-radius: 0; background: linear-gradient(90deg, var(--text) 0 64%, var(--panel-3) 64%); }
+.slider-style-preview.ink .slider-style-thumb { left: 64%; background: var(--panel); border-color: var(--text); }

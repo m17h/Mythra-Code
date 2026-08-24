@@ -18,6 +18,7 @@ import {
   X,
 } from "lucide-react";
 import { useModalFocus } from "../hooks/useModalFocus";
+import { confirmDialog } from "../lib/confirmDialog";
 import { scheduleRunSnapshot } from "../lib/turnConfig";
 import {
   nextWorkflowRunAt,
@@ -262,8 +263,8 @@ export function WorkflowManager({
                   <button
                     className="danger-action"
                     aria-label={`Delete ${workflow.name}`}
-                    onClick={() => {
-                      if (window.confirm(`Delete the workflow “${workflow.name}”? Its existing threads will remain available.`)) {
+                    onClick={async () => {
+                      if (await confirmDialog(`Delete the workflow “${workflow.name}”? Its existing threads will remain available.`)) {
                         onWorkflows(workflows.filter((item) => item.id !== workflow.id));
                       }
                     }}

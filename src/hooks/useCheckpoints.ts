@@ -19,6 +19,7 @@ import { providerFromThread } from "../lib/threadProvider";
 import { normalizedProjectPath } from "../lib/paths";
 import type { ThreadSidebarIndex } from "../lib/threadList";
 import { usePersistedStateRef, type SetPersisted } from "./usePersistedState";
+import { confirmDialog } from "../lib/confirmDialog";
 import type { Project, Provider, Thread } from "../types";
 
 export interface CheckpointsContext {
@@ -421,7 +422,7 @@ export function useCheckpoints(context: CheckpointsContext) {
     const action = target === "before"
       ? `restore the project to before “${checkpoint.label}”`
       : `restore the completed state of “${checkpoint.label}”`;
-    if (!window.confirm(
+    if (!await confirmDialog(
       `Are you sure you want to ${action}?\n\n`
       + "The complete project source state will move to that point. Later work will leave the active folder, but OpenKiwi will save the current state as a new safety checkpoint first. Git commits and ignored files are not changed.",
     )) return;
@@ -547,7 +548,7 @@ export function useCheckpoints(context: CheckpointsContext) {
       setError("Wait for this run to finish before deleting its checkpoint.");
       return;
     }
-    if (!window.confirm(`Delete “${checkpoint.label}”?\n\nIts saved file states will no longer be restorable. Your current files and Git history will not change.`)) return;
+    if (!await confirmDialog(`Delete “${checkpoint.label}”?\n\nIts saved file states will no longer be restorable. Your current files and Git history will not change.`)) return;
     setCheckpointBusyId(checkpoint.id);
     try {
       await runCheckpointProjectOperation(

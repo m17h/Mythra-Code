@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { Check, ChevronDown, Gauge, LoaderCircle, RefreshCw, Search } from "lucide-react";
+import { EffortSlider, effortFlairStyle } from "./effortFlair";
 import type { LMStudioModel, LMStudioReasoningEffort } from "../lib/lmStudio";
 import type { ReasoningEffort } from "./ModelPowerControl";
 import { LmStudioLogo } from "./BrandLogos";
@@ -127,12 +128,9 @@ export function LMStudioModelControl({
         </div>
       </div>
 
-      <div className="openrouter-reasoning">
-        <div className="openrouter-reasoning-heading"><Gauge size={13} /><span>Reasoning</span><strong>{availableEfforts[effortIndex].label}</strong></div>
-        <div className="openrouter-reasoning-rail">
-          <input aria-label="LM Studio reasoning effort" type="range" min={0} max={availableEfforts.length - 1} step={1} value={effortIndex} onChange={(event) => onEffort(availableEfforts[Number(event.target.value)].value)} />
-          <div className="openrouter-reasoning-ticks" aria-hidden="true">{availableEfforts.map((entry, index) => <i key={entry.value} className={index <= effortIndex ? "reached" : ""} />)}</div>
-        </div>
+      <div className={`openrouter-reasoning ${availableEfforts.length > 1 && effortIndex === availableEfforts.length - 1 ? "effort-max" : ""}`} style={effortFlairStyle(effortIndex, availableEfforts.length)}>
+        <div className="openrouter-reasoning-heading"><Gauge size={13} /><span>Reasoning</span><strong key={availableEfforts[effortIndex].value}>{availableEfforts[effortIndex].label}</strong></div>
+        <EffortSlider variant="router" index={effortIndex} count={availableEfforts.length} ariaLabel="LM Studio reasoning effort" valueText={availableEfforts[effortIndex].label} onIndex={(next) => onEffort(availableEfforts[next].value)} />
         <div className="openrouter-reasoning-labels">{availableEfforts.map((entry, index) => <span key={entry.value} className={index === effortIndex ? "active" : ""}>{entry.label}</span>)}</div>
       </div>
     </div>

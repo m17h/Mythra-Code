@@ -160,7 +160,8 @@ describe("SkillLibrary", () => {
     expect(screen.getByRole("dialog", { name: "Edit @review" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(screen.queryByRole("dialog", { name: "Edit @review" })).not.toBeInTheDocument();
+    // The confirmation now resolves through the async dialog helper.
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Edit @review" })).not.toBeInTheDocument());
     expect(confirm).toHaveBeenCalledTimes(2);
     confirm.mockRestore();
   });
