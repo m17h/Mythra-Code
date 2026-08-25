@@ -1,9 +1,9 @@
-# OpenKiwi unified repository instructions
+# Mythra Code unified repository instructions
 
 ## Scope
 
-This is the canonical cross-platform OpenKiwi repository:
-`https://github.com/m17h/OpenKiwi`.
+This is the canonical cross-platform Mythra Code repository:
+`https://github.com/m17h/Mythra-Code`.
 
 Application behavior should remain shared across macOS and Windows unless an
 operating-system boundary genuinely requires a platform-specific implementation.
@@ -31,7 +31,7 @@ release URLs at another repository.
 
 ## Releases
 
-One version tag and one GitHub release in `m17h/OpenKiwi` owns the assets for
+One version tag and one GitHub release in `m17h/Mythra-Code` owns the assets for
 both platforms. Build on each native OS, attach both platform artifact sets to
 the same draft release, then run `npm run release:finalize`. Never publish a
 one-platform updater manifest.

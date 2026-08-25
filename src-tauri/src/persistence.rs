@@ -19,9 +19,9 @@ pub(super) fn state_db_path(app: &AppHandle) -> Result<PathBuf, String> {
     let app_data = app
         .path()
         .app_data_dir()
-        .map_err(|error| format!("Could not resolve OpenKiwi app data: {error}"))?;
+        .map_err(|error| format!("Could not resolve Mythra Code app data: {error}"))?;
     std::fs::create_dir_all(&app_data)
-        .map_err(|error| format!("Could not create OpenKiwi app data: {error}"))?;
+        .map_err(|error| format!("Could not create Mythra Code app data: {error}"))?;
     Ok(app_data.join("openkiwi.sqlite3"))
 }
 
@@ -79,15 +79,15 @@ pub(super) fn open_state_db_or_quarantine(path: &Path) -> Result<Connection, Str
         Err(StateDbError::Corrupt(message)) => message,
     };
     let quarantined = quarantine_state_db(path).map_err(|error| {
-        format!("{first_error}. OpenKiwi also could not set the damaged database aside: {error}")
+        format!("{first_error}. Mythra Code also could not set the damaged database aside: {error}")
     })?;
     open_state_db(path).inspect(|_| {
         eprintln!(
-            "OpenKiwi state database was unreadable and has been moved to {}; starting with a fresh database. Original error: {first_error}",
+            "Mythra Code state database was unreadable and has been moved to {}; starting with a fresh database. Original error: {first_error}",
             quarantined.display()
         );
     }).map_err(|error| {
-        format!("{first_error}. OpenKiwi also could not create a replacement database: {error}")
+        format!("{first_error}. Mythra Code also could not create a replacement database: {error}")
     })
 }
 
@@ -146,16 +146,16 @@ fn quarantine_state_db(path: &Path) -> Result<PathBuf, String> {
 
 pub(super) fn open_state_db(path: &Path) -> Result<Connection, StateDbError> {
     let connection = Connection::open(path).map_err(|error| {
-        classify_state_db_error("Could not open OpenKiwi state database", error)
+        classify_state_db_error("Could not open Mythra Code state database", error)
     })?;
     let user_version: i64 = connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .map_err(|error| {
-            classify_state_db_error("Could not read OpenKiwi state database version", error)
+            classify_state_db_error("Could not read Mythra Code state database version", error)
         })?;
     if user_version > STATE_DB_SCHEMA_VERSION {
         return Err(StateDbError::TooNew(format!(
-            "OpenKiwi state database uses schema version {user_version}, which is newer than this build supports ({STATE_DB_SCHEMA_VERSION}). Update OpenKiwi."
+            "Mythra Code state database uses schema version {user_version}, which is newer than this build supports ({STATE_DB_SCHEMA_VERSION}). Update Mythra Code."
         )));
     }
     connection
@@ -178,12 +178,12 @@ pub(super) fn open_state_db(path: &Path) -> Result<Connection, StateDbError> {
              CREATE INDEX IF NOT EXISTS audit_events_created_at ON audit_events(created_at DESC);",
         )
         .map_err(|error| {
-            classify_state_db_error("Could not initialize OpenKiwi state database", error)
+            classify_state_db_error("Could not initialize Mythra Code state database", error)
         })?;
     connection
         .execute_batch(&format!("PRAGMA user_version = {STATE_DB_SCHEMA_VERSION};"))
         .map_err(|error| {
-            classify_state_db_error("Could not stamp OpenKiwi state database version", error)
+            classify_state_db_error("Could not stamp Mythra Code state database version", error)
         })?;
     // Keep the audit log bounded: prune to the newest rows at startup so a
     // long-lived profile cannot grow the database without limit.
@@ -195,7 +195,7 @@ pub(super) fn open_state_db(path: &Path) -> Result<Connection, StateDbError> {
             params![MAX_AUDIT_EVENT_ROWS],
         )
         .map_err(|error| {
-            classify_state_db_error("Could not prune OpenKiwi audit history", error)
+            classify_state_db_error("Could not prune Mythra Code audit history", error)
         })?;
     Ok(connection)
 }
@@ -203,7 +203,7 @@ pub(super) fn open_state_db(path: &Path) -> Result<Connection, StateDbError> {
 pub(super) fn shared_state_db(app: &AppHandle) -> Result<Arc<Mutex<Connection>>, String> {
     app.try_state::<StateDb>()
         .map(|db| db.connection.clone())
-        .ok_or_else(|| "OpenKiwi state database is not initialized".to_string())
+        .ok_or_else(|| "Mythra Code state database is not initialized".to_string())
 }
 
 pub(super) fn lock_state_db(
@@ -229,9 +229,9 @@ pub(super) async fn state_read(app: AppHandle, key: String) -> Result<Option<Val
         ) {
             Ok(json) => serde_json::from_str(&json)
                 .map(Some)
-                .map_err(|error| format!("Stored OpenKiwi state is invalid: {error}")),
+                .map_err(|error| format!("Stored Mythra Code state is invalid: {error}")),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(error) => Err(format!("Could not read OpenKiwi state: {error}")),
+            Err(error) => Err(format!("Could not read Mythra Code state: {error}")),
         }
     })
     .await
@@ -243,14 +243,14 @@ pub(super) async fn state_write(app: AppHandle, key: String, value: Value) -> Re
     let connection = shared_state_db(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
         let connection = lock_state_db(&connection)?;
-        let json = serde_json::to_string(&value).map_err(|error| format!("Could not encode OpenKiwi state: {error}"))?;
+        let json = serde_json::to_string(&value).map_err(|error| format!("Could not encode Mythra Code state: {error}"))?;
         connection
             .execute(
                 "INSERT INTO app_state(key, value, updated_at) VALUES (?1, ?2, ?3)
                  ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
                 params![key, json, unix_timestamp_ms()],
             )
-            .map_err(|error| format!("Could not save OpenKiwi state: {error}"))?;
+            .map_err(|error| format!("Could not save Mythra Code state: {error}"))?;
         Ok(())
     })
     .await
@@ -264,7 +264,7 @@ pub(super) async fn state_delete(app: AppHandle, key: String) -> Result<(), Stri
         let connection = lock_state_db(&connection)?;
         connection
             .execute("DELETE FROM app_state WHERE key = ?1", params![key])
-            .map_err(|error| format!("Could not delete OpenKiwi state: {error}"))?;
+            .map_err(|error| format!("Could not delete Mythra Code state: {error}"))?;
         Ok(())
     })
     .await

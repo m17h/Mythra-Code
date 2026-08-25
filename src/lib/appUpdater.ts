@@ -45,7 +45,7 @@ const INITIAL_STATE: AppUpdateState = {
 
 // Module lifetime matches the current webview/app session. This prevents a
 // remount from creating another automatic check while still allowing a fresh
-// check the next time OpenKiwi is launched.
+// check the next time Mythra Code is launched.
 let automaticCheckStarted = false;
 
 // Long-running sessions should still learn about new releases without a

@@ -58,7 +58,7 @@ export function repairRootThreadMetadata(thread: Thread, childLinks: OwnershipLi
 /**
  * Which inbox a conversation belongs in.
  *
- * OpenKiwi's own durable ownership records outrank whatever a provider reports
+ * Mythra Code's own durable ownership records outrank whatever a provider reports
  * on the thread itself: a conversation that owns children is a root, full stop,
  * and depth is capped at one. Without that precedence a single reversed or
  * self-referential runtime event could move the user's main conversation into
@@ -73,7 +73,7 @@ export function isSubAgentThread(thread: Thread, childLinks: OwnershipLinks): bo
   return thread.threadSource === "subagent";
 }
 
-/** Keep OpenKiwi child work browsable without mixing it into the user's main inbox. */
+/** Keep Mythra Code child work browsable without mixing it into the user's main inbox. */
 export function filterThreadsByKind(
   threads: Thread[],
   childLinks: OwnershipLinks,

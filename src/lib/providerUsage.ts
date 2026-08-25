@@ -20,7 +20,7 @@ export interface AccountUsageWindowView {
 /**
  * People who watch a subscription quota tend to think in one of two ways:
  * "how much is left" or "how much have I burned". Providers only ever report
- * the consumed side, so OpenKiwi normalizes once here and every quota surface
+ * the consumed side, so Mythra Code normalizes once here and every quota surface
  * reads the same direction.
  */
 export const DEFAULT_USAGE_DISPLAY: UsageDisplayMode = "remaining";

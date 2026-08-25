@@ -24,8 +24,8 @@ function recordRecoveredStatus(threadId: string, task: ThreadTaskState, status: 
   store.completeTurn(threadId, task.activeTurnId, status);
   const localExit = status === "error";
   const detail = localExit
-    ? "The local provider process ended without a final response. OpenKiwi closed the unfinished turn so it can be retried instead of leaving a false running state."
-    : "OpenKiwi reconciled this thread after its final provider event was missed.";
+    ? "The local provider process ended without a final response. Mythra Code closed the unfinished turn so it can be retried instead of leaving a false running state."
+    : "Mythra Code reconciled this thread after its final provider event was missed.";
   if (localExit) store.setTaskStatus(threadId, "error", detail);
   store.upsertActivity(threadId, {
     id: `thread-health-${Date.now()}`,

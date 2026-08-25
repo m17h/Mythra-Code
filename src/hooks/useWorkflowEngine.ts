@@ -320,7 +320,7 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
     try {
       await current.ensureSkillRoots();
       const started = await rpc<{ thread: Thread }>("thread/start", threadStartParams(workflow.run, project.path, {
-        serviceName: `OpenKiwi Workflow: ${workflow.name}`,
+        serviceName: `Mythra Code Workflow: ${workflow.name}`,
         customAgents: current.customAgents,
         modelContextWindow: workflow.run.provider === "lmstudio"
           ? current.lmStudioModels?.find((entry) => entry.id === workflow.run.model)?.maxContextLength

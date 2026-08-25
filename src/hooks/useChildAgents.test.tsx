@@ -77,7 +77,7 @@ function context(overrides: Partial<ChildAgentContext> = {}): ChildAgentContext 
     projectPathForThread: () => "/tmp/project",
     executionPathFor: () => "/tmp/project/.worktrees/a",
     isolationGitDirFor: () => "/tmp/project/.git",
-    serviceNameFor: () => "OpenKiwi",
+    serviceNameFor: () => "Mythra Code",
     bindThreadToProject: vi.fn(),
     beginRunCheckpoint: vi.fn(async () => undefined),
     discardRunCheckpoint: vi.fn(),

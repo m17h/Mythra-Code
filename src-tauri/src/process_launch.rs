@@ -8,10 +8,10 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
 
 /// Build an asynchronous child-process command that cannot create a console
-/// window on Windows. OpenKiwi is a GUI application, but most of the tools it
+/// window on Windows. Mythra Code is a GUI application, but most of the tools it
 /// drives (Codex, Claude, Cursor, Git, and GitHub CLI) are console programs.
 /// Without this flag, Windows is allowed to attach a new console to each child
-/// even when OpenKiwi's own executable uses the Windows GUI subsystem.
+/// even when Mythra Code's own executable uses the Windows GUI subsystem.
 pub(crate) fn background_command(program: impl AsRef<OsStr>) -> Command {
     #[cfg(windows)]
     {
@@ -59,11 +59,11 @@ mod windows_tests {
     #[test]
     fn child_process_has_no_console_window() {
         let script = r#"
-Add-Type -Namespace OpenKiwi -Name NativeMethods -MemberDefinition '
+Add-Type -Namespace MythraCode -Name NativeMethods -MemberDefinition '
   [System.Runtime.InteropServices.DllImport("kernel32.dll")]
   public static extern System.IntPtr GetConsoleWindow();
 ';
-if ([OpenKiwi.NativeMethods]::GetConsoleWindow() -ne [System.IntPtr]::Zero) {
+if ([MythraCode.NativeMethods]::GetConsoleWindow() -ne [System.IntPtr]::Zero) {
   exit 37
 }
 "#;

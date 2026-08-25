@@ -1,12 +1,12 @@
 [package]
-name = "openkiwi"
+name = "mythra-code"
 version = "1.9.1"
 description = "A transparent, user-directed AI coding harness"
-authors = ["OpenKiwi contributors"]
+authors = ["Mythra Code contributors"]
 edition = "2021"
 
 [lib]
-name = "kiwi_lib"
+name = "mythra_code_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

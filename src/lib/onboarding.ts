@@ -1,7 +1,7 @@
 export const ONBOARDING_VERSION = 1;
 export const ONBOARDING_EXIT_MS = 330;
 
-export function isEstablishedOpenKiwiInstall(input: {
+export function isEstablishedMythraCodeInstall(input: {
   projects: number;
   knownThreads: number;
   hasStoredSettings: boolean;

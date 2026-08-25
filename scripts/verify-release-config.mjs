@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 const root = resolve(import.meta.dirname, "..");
 const readJson = (path) => JSON.parse(readFileSync(resolve(root, path), "utf8"));
 const readText = (path) => readFileSync(resolve(root, path), "utf8");
-const canonicalRepo = "m17h/OpenKiwi";
+const canonicalRepo = "m17h/Mythra-Code";
 const releaseEndpoint = `https://github.com/${canonicalRepo}/releases/latest/download/latest.json`;
 const pricingUrl = `https://raw.githubusercontent.com/${canonicalRepo}/main/model-pricing.json`;
 
@@ -29,10 +29,19 @@ const windowsPublish = readText("Windows/publish-release.mjs");
 const usageLedger = readText("src/lib/usageLedger.ts");
 const appConfig = readText("src/lib/appConfig.ts");
 const desktopBuild = readText("scripts/desktop-build.mjs");
+const prepareRelease = readText("scripts/prepare-release.mjs");
+const macPublish = readText("scripts/publish-release.mjs");
+const finalizeRelease = readText("scripts/finalize-release.mjs");
 const packageScripts = pkg.scripts || {};
+const retiredProductName = new RegExp(["Open", "Kiwi"].join(""));
 
+assert(pkg.name === "mythra-code", "package.json must use the Mythra Code package identity.");
 assert(pkg.version === base.version, "package.json and the base Tauri config must have the same version.");
+assert(cargo.includes('name = "mythra-code"'), "Cargo.toml must use the Mythra Code executable identity.");
+assert(cargo.includes('name = "mythra_code_lib"'), "Cargo.toml must use the Mythra Code library identity.");
 assert(cargo.includes(`version = "${pkg.version}"`), "Cargo.toml must have the same version as package.json.");
+assert(base.productName === "Mythra Code", "The packaged product name must be Mythra Code.");
+assert(base.identifier === "com.kiwi.harness", "The released bundle identifier is a compatibility boundary and must remain stable.");
 assert(base.plugins?.updater?.endpoints?.includes(releaseEndpoint), "The macOS updater must use the canonical release endpoint.");
 assert(windows.plugins?.updater?.endpoints?.includes(releaseEndpoint), "The Windows updater must use the canonical release endpoint.");
 assert(base.plugins?.updater?.pubkey, "The macOS updater public key is missing.");
@@ -49,12 +58,19 @@ assert(packageScripts["desktop:build"] === "node scripts/desktop-build.mjs", "Th
 assert(desktopBuild.includes('["--bundles", "app"]'), "The local macOS builder must produce an app bundle.");
 assert(desktopBuild.includes('["--no-bundle"]'), "The local Windows builder must produce an unbundled executable.");
 assert(desktopBuild.includes('spawnSync("codesign"'), "The local macOS app bundle must receive a complete code signature.");
+assert(prepareRelease.includes('src-tauri/icons/mythra-code-master.png'), "The macOS release must use the Mythra Code icon master.");
+assert(prepareRelease.includes('`MythraCode_${version}_${tauriArch}.app.tar.gz`'), "The staged macOS updater artifact must use the URL-safe MythraCode name.");
+assert(macPublish.includes('"MythraCode-icon.png"'), "The macOS publisher must require the Mythra Code icon asset.");
+assert(finalizeRelease.includes('`MythraCode_${version}_x64-setup.exe`'), "The release finalizer must require the Mythra Code Windows installer.");
+assert(windowsBuild.includes('$sourceInstallerName = "Mythra Code_${version}_x64-setup.exe"'), "The Windows builder must locate Tauri's space-preserving installer name.");
+assert(windowsBuild.includes('$installerName = "MythraCode_${version}_x64-setup.exe"'), "The staged Windows installer must use the URL-safe MythraCode name.");
 
-const paths = ["src", "scripts", "Windows", "README.md", "SECURITY.md", "AGENTS.md"];
+const paths = ["src", "src-tauri/src", "src-tauri/Cargo.toml", "src-tauri/tauri.conf.json", "src-tauri/tauri.dev.conf.json", "src-tauri/tauri.windows.conf.json", "scripts", "Windows", "README.md", "SECURITY.md", "AGENTS.md"];
 for (const path of paths) {
   for (const file of filesUnder(path)) {
     const text = readFileSync(file, "utf8");
-    assert(!/m17h\/OpenKiwi-Windows/i.test(text), `${file} still references the retired Windows repository.`);
+    assert(!retiredProductName.test(text), `${file} still contains the retired product name.`);
+    assert(!/m17h\/openkiwi-windows/i.test(text), `${file} still references the retired Windows repository.`);
   }
 }
 

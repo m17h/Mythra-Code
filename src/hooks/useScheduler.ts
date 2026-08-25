@@ -43,7 +43,7 @@ export function useScheduler(deps: SchedulerDeps): void {
     if (!project) {
       // A silent return here would retry every 30 seconds forever with no
       // trace. Disable the schedule and record why it can never fire.
-      const error = "This schedule's project was removed from OpenKiwi, so the schedule was disabled.";
+      const error = "This schedule's project was removed from Mythra Code, so the schedule was disabled.";
       current.updateSchedule(scheduled.id, (item) => ({ ...item, enabled: false }));
       current.recordRun({
         id: crypto.randomUUID(),
@@ -85,7 +85,7 @@ export function useScheduler(deps: SchedulerDeps): void {
     try {
       await current.ensureSkillRoots();
       const started = await rpc<{ thread: Thread }>("thread/start", threadStartParams(run, project.path, {
-        serviceName: "OpenKiwi",
+        serviceName: "Mythra Code",
         modelContextWindow: run.provider === "lmstudio"
           ? current.lmStudioModels?.find((entry) => entry.id === run.model)?.maxContextLength
           : undefined,

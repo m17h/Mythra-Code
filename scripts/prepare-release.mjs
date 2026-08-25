@@ -9,17 +9,17 @@ const packageJson = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8
 const tauriConfig = JSON.parse(readFileSync(resolve(root, "src-tauri/tauri.conf.json"), "utf8"));
 const version = packageJson.version;
 if (tauriConfig.version !== version) throw new Error(`Version mismatch: package.json=${version}, tauri.conf.json=${tauriConfig.version}`);
-if (process.platform !== "darwin") throw new Error("The current OpenKiwi release preparation workflow targets macOS.");
+if (process.platform !== "darwin") throw new Error("The current Mythra Code release preparation workflow targets macOS.");
 
 const tauriArch = process.arch === "arm64" ? "aarch64" : "x86_64";
 const platform = `darwin-${tauriArch}`;
 const macosBundle = resolve(root, "src-tauri/target/release/bundle/macos");
-const appSource = resolve(macosBundle, "OpenKiwi.app");
-const updaterSource = resolve(macosBundle, "OpenKiwi.app.tar.gz");
+const appSource = resolve(macosBundle, "Mythra Code.app");
+const updaterSource = resolve(macosBundle, "Mythra Code.app.tar.gz");
 const signatureSource = `${updaterSource}.sig`;
 const dmgCandidates = [
-  resolve(root, `src-tauri/target/release/bundle/dmg/OpenKiwi_${version}_${tauriArch}.dmg`),
-  resolve(root, "src-tauri/target/release/bundle/dmg/OpenKiwi.dmg"),
+  resolve(root, `src-tauri/target/release/bundle/dmg/Mythra Code_${version}_${tauriArch}.dmg`),
+  resolve(root, "src-tauri/target/release/bundle/dmg/Mythra Code.dmg"),
 ];
 const dmgSource = dmgCandidates.find(existsSync);
 
@@ -77,14 +77,14 @@ const output = resolve(root, "release-assets/latest");
 mkdirSync(output, { recursive: true });
 for (const entry of readdirSync(output)) rmSync(resolve(output, entry), { recursive: true, force: true });
 
-const updaterName = `OpenKiwi_${version}_${tauriArch}.app.tar.gz`;
-const dmgName = `OpenKiwi_${version}_${tauriArch}.dmg`;
+const updaterName = `MythraCode_${version}_${tauriArch}.app.tar.gz`;
+const dmgName = `MythraCode_${version}_${tauriArch}.dmg`;
 copyFileSync(updaterSource, resolve(output, updaterName));
 copyFileSync(dmgSource, resolve(output, dmgName));
-copyFileSync(resolve(root, "src-tauri/icons/openkiwi-ok-master.png"), resolve(output, "OpenKiwi-icon.png"));
+copyFileSync(resolve(root, "src-tauri/icons/mythra-code-master.png"), resolve(output, "MythraCode-icon.png"));
 
 const notesPath = resolve(root, "release-assets/release-notes.md");
-let notes = `OpenKiwi ${version}`;
+let notes = `Mythra Code ${version}`;
 if (existsSync(notesPath)) {
   notes = readFileSync(notesPath, "utf8").trim();
   // Guard against silently shipping the previous release's notes.
@@ -93,7 +93,7 @@ if (existsSync(notesPath)) {
   }
 }
 const signature = readFileSync(signatureSource, "utf8").trim();
-const updaterUrl = `https://github.com/m17h/OpenKiwi/releases/download/v${version}/${updaterName}`;
+const updaterUrl = `https://github.com/m17h/Mythra-Code/releases/download/v${version}/${updaterName}`;
 const latest = {
   version,
   notes,
@@ -111,5 +111,5 @@ const digest = (path) => createHash("sha256").update(readFileSync(path)).digest(
 const shaLines = [updaterName, dmgName].map((name) => `${digest(resolve(output, name))}  ${name}`);
 writeFileSync(resolve(root, "release-assets/local-sha256.txt"), `${shaLines.join("\n")}\n`);
 
-console.log(`Prepared OpenKiwi ${version} release assets in ${output}`);
+console.log(`Prepared Mythra Code ${version} release assets in ${output}`);
 for (const entry of readdirSync(output).sort()) console.log(`- ${basename(entry)}`);

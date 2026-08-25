@@ -1,7 +1,7 @@
 # Windows build and release
 
 The Windows application is built from the same source tree as macOS in
-[`m17h/OpenKiwi`](https://github.com/m17h/OpenKiwi). Run these commands on a
+[`m17h/Mythra-Code`](https://github.com/m17h/Mythra-Code). Run these commands on a
 Windows machine after checking out the desired branch or tag.
 
 ## Development
@@ -38,7 +38,7 @@ npm run release:windows:publish
 ```
 
 Publish Windows artifacts to the draft GitHub release for the matching `vX.Y.Z`
-tag in `m17h/OpenKiwi`. The macOS builder attaches its assets to that same
+tag in `m17h/Mythra-Code`. The macOS builder attaches its assets to that same
 release and the publishers merge both entries into one `latest.json`. After both
 platforms upload, run `npm run release:finalize`; do not create or publish a
 platform-specific tag or release.

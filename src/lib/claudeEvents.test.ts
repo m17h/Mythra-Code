@@ -63,7 +63,7 @@ describe("Claude event routing", () => {
     });
   });
 
-  it("turns Claude permission callbacks into normal OpenKiwi approvals", () => {
+  it("turns Claude permission callbacks into normal Mythra Code approvals", () => {
     send({
       type: "control_request",
       request_id: "request-1",

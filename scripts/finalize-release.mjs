@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
-const REPOSITORY = "m17h/OpenKiwi";
+const REPOSITORY = "m17h/Mythra-Code";
 const REQUIRED_PLATFORMS = ["darwin-aarch64", "windows-x86_64"];
 const root = resolve(import.meta.dirname, "..");
 const version = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")).version;
@@ -44,7 +44,7 @@ if (!runs.some((run) => run.headSha === head && run.status === "completed" && ru
   throw new Error(`No successful Verify workflow exists for ${head}.`);
 }
 
-const temporary = mkdtempSync(join(tmpdir(), "openkiwi-finalize-"));
+const temporary = mkdtempSync(join(tmpdir(), "mythra-code-finalize-"));
 try {
   checked("gh", [
     "release", "download", tag,
@@ -81,11 +81,11 @@ try {
   for (const required of [
     "latest.json",
     "release-notes.md",
-    "OpenKiwi-icon.png",
-    `OpenKiwi_${version}_aarch64.app.tar.gz`,
-    `OpenKiwi_${version}_aarch64.dmg`,
-    `OpenKiwi_${version}_x64-setup.exe`,
-    `OpenKiwi_${version}_x64-setup.exe.sig`,
+    "MythraCode-icon.png",
+    `MythraCode_${version}_aarch64.app.tar.gz`,
+    `MythraCode_${version}_aarch64.dmg`,
+    `MythraCode_${version}_x64-setup.exe`,
+    `MythraCode_${version}_x64-setup.exe.sig`,
     "build-info.txt",
     "build-info.json",
   ]) {
@@ -98,7 +98,7 @@ try {
 const publish = spawnSync("gh", [
   "release", "edit", tag,
   "--repo", REPOSITORY,
-  "--title", `OpenKiwi ${version}`,
+  "--title", `Mythra Code ${version}`,
   "--draft=false",
   "--latest",
 ], { cwd: root, stdio: "inherit" });

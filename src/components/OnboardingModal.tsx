@@ -67,7 +67,7 @@ function ProviderStep({ runtimeStatus, claudeStatus, cursorStatus, account, open
       <article className="onboarding-provider-card openai">
         <div className="onboarding-card-title"><span><OpenAILogo size={18} /></span><div><strong>ChatGPT subscription</strong><small>OpenAI authentication</small></div></div>
         <ol>
-          <li><b>1</b><span>Install the official <strong>Codex CLI</strong>. OpenKiwi detects the runtime automatically.</span></li>
+          <li><b>1</b><span>Install the official <strong>Codex CLI</strong>. Mythra Code detects the runtime automatically.</span></li>
           <li><b>2</b><span>Open <strong>Settings → Models & accounts</strong> and choose OpenAI.</span></li>
           <li><b>3</b><span>Select <strong>Sign in</strong>. The official ChatGPT flow opens in your browser.</span></li>
         </ol>
@@ -81,7 +81,7 @@ function ProviderStep({ runtimeStatus, claudeStatus, cursorStatus, account, open
       <article className="onboarding-provider-card claude">
         <div className="onboarding-card-title"><span><ClaudeLogo size={18} /></span><div><strong>Claude subscription</strong><small>Claude Code authentication</small></div></div>
         <ol>
-          <li><b>1</b><span>Install <strong>Claude Code</strong>. OpenKiwi detects the local executable automatically.</span></li>
+          <li><b>1</b><span>Install <strong>Claude Code</strong>. Mythra Code detects the local executable automatically.</span></li>
           <li><b>2</b><span>Run <strong>claude auth login</strong>, or select Sign in from Models & accounts.</span></li>
           <li><b>3</b><span>Choose Claude, then select Fable, Opus, Sonnet, or Haiku beneath the composer.</span></li>
         </ol>
@@ -95,7 +95,7 @@ function ProviderStep({ runtimeStatus, claudeStatus, cursorStatus, account, open
       <article className="onboarding-provider-card cursor">
         <div className="onboarding-card-title"><span><CursorLogo size={18} /></span><div><strong>Cursor subscription</strong><small>Cursor Agent authentication</small></div></div>
         <ol>
-          <li><b>1</b><span>Install <strong>Cursor Agent</strong>. OpenKiwi detects the official local executable automatically.</span></li>
+          <li><b>1</b><span>Install <strong>Cursor Agent</strong>. Mythra Code detects the official local executable automatically.</span></li>
           <li><b>2</b><span>Choose Cursor in <strong>Models & accounts</strong>, then complete its official browser sign-in.</span></li>
           <li><b>3</b><span>Select Grok 4.5 or another model from the live catalog attached to your subscription.</span></li>
         </ol>
@@ -137,7 +137,7 @@ function ProviderStep({ runtimeStatus, claudeStatus, cursorStatus, account, open
         <button className="onboarding-link-button" onClick={() => void openUrl(LM_STUDIO_SERVER_URL)}><ExternalLink size={12} /> LM Studio server guide</button>
       </article>
     </div>
-    <div className="onboarding-note"><ShieldCheck size={14} /><span>OpenKiwi never asks you to paste a subscription password. ChatGPT, Claude, and Cursor use their official local login; OpenRouter uses your API key; LM Studio uses its local server and an optional token.</span></div>
+    <div className="onboarding-note"><ShieldCheck size={14} /><span>Mythra Code never asks you to paste a subscription password. ChatGPT, Claude, and Cursor use their official local login; OpenRouter uses your API key; LM Studio uses its local server and an optional token.</span></div>
   </div>;
 }
 
@@ -177,7 +177,7 @@ function ControlsStep() {
       <article><ShieldAlert size={17} /><strong>Full access</strong><small>Act without approval prompts. Use only for work you trust.</small></article>
     </div>
     <div className="onboarding-control-list">
-      <div><span className="control-icon prompt">Aa</span><span><strong>Your harness prompt</strong><small>OpenKiwi starts with an empty base instruction. Add your own in Settings → Prompts; the app does not add a hidden harness prompt.</small></span></div>
+      <div><span className="control-icon prompt">Aa</span><span><strong>Your harness prompt</strong><small>Mythra Code starts with an empty base instruction. Add your own in Settings → Prompts; the app does not add a hidden harness prompt.</small></span></div>
       <div><span className="control-icon agents"><Bot size={14} /></span><span><strong>Sub-agents are opt-in</strong><small>Enable them per new thread and choose a maximum of 1–24 direct child agents. They inherit the thread’s permissions.</small></span></div>
       <div><span className="control-icon stop"><X size={14} /></span><span><strong>You can stop and inspect</strong><small>Stop an active turn at any time. Thinking and executed commands stay compact and expandable in the conversation.</small></span></div>
     </div>
@@ -189,7 +189,7 @@ function SkillsStep({ skillsFolder, onChooseSkillsFolder }: { skillsFolder: stri
     <div className="onboarding-copy">
       <span className="onboarding-eyebrow">Reusable instructions you own</span>
       <h2>Skills are local Markdown playbooks.</h2>
-      <p>Choose one folder as your skills library. OpenKiwi scans it and exposes enabled skills by their app name to OpenAI, Claude, and OpenRouter models.</p>
+      <p>Choose one folder as your skills library. Mythra Code scans it and exposes enabled skills by their app name to OpenAI, Claude, and OpenRouter models.</p>
     </div>
     <div className="onboarding-skills-layout">
       <div className="onboarding-folder-tree">
@@ -202,7 +202,7 @@ function SkillsStep({ skillsFolder, onChooseSkillsFolder }: { skillsFolder: stri
       </div>
       <div className="onboarding-skill-rules">
         <div><b>1</b><span><strong>Import or create Markdown</strong><small>Top-level Markdown files and folders containing SKILL.md become skills.</small></span></div>
-        <div><b>2</b><span><strong>Edit them in the app</strong><small>Update the Markdown or change its OpenKiwi invocation name without leaving settings.</small></span></div>
+        <div><b>2</b><span><strong>Edit them in the app</strong><small>Update the Markdown or change its Mythra Code invocation name without leaving settings.</small></span></div>
         <div><b>3</b><span><strong>Reference supporting Markdown</strong><small>A skill can point to other Markdown files when its instructions need more detail.</small></span></div>
         <div><b>4</b><span><strong>The model calls the enabled skill</strong><small>It uses the app-facing name when the workflow matches your request.</small></span></div>
       </div>
@@ -230,7 +230,7 @@ function ReadyStep({ runtimeStatus, claudeStatus, cursorStatus, account, openRou
     <div className="onboarding-ready-mark"><Check size={28} /></div>
     <div className="onboarding-copy centered">
       <span className="onboarding-eyebrow">Tour complete</span>
-      <h2>OpenKiwi is yours to direct.</h2>
+      <h2>Mythra Code is yours to direct.</h2>
       <p>Connect a provider, choose where the thread belongs, set its permissions, and start building. You can rerun this guide from General Settings at any time.</p>
     </div>
     <div className="onboarding-checklist">
@@ -305,11 +305,11 @@ export function OnboardingModal({
   };
   let content: ReactNode;
   if (step.id === "welcome") content = <div className="onboarding-page welcome-page">
-    <div className="onboarding-hero-mark"><span>OK</span><i /><i /></div>
+    <div className="onboarding-hero-mark"><img src="/mythra-code-logo.png" alt="" /></div>
     <div className="onboarding-copy centered">
-      <span className="onboarding-eyebrow">Welcome to OpenKiwi</span>
+      <span className="onboarding-eyebrow">Welcome to Mythra Code</span>
       <h2>A transparent AI coding harness, set up your way.</h2>
-      <p>OpenKiwi brings models, local project work, normal chats, approvals, agents, and skills into one desktop app—without adding a hidden harness-level system prompt.</p>
+      <p>Mythra Code brings models, local project work, normal chats, approvals, agents, and skills into one desktop app—without adding a hidden harness-level system prompt.</p>
     </div>
     <div className="onboarding-principles">
       <div><ShieldCheck size={16} /><span><strong>Your permissions</strong><small>Read only, ask first, or full access</small></span></div>
@@ -325,9 +325,9 @@ export function OnboardingModal({
   else content = <ReadyStep runtimeStatus={runtimeStatus} claudeStatus={claudeStatus} cursorStatus={cursorStatus} account={account} openRouterReady={openRouterReady} lmStudioReady={lmStudioReady} skillsFolder={skillsFolder} onDestination={destination} />;
 
   return <div className={`modal-backdrop onboarding-backdrop ${open ? "open" : "closed"}`} aria-hidden={!open} inert={!open ? true : undefined}>
-    <div ref={dialogRef} className="onboarding-modal" role="dialog" aria-modal="true" aria-label="OpenKiwi onboarding">
+    <div ref={dialogRef} className="onboarding-modal" role="dialog" aria-modal="true" aria-label="Mythra Code onboarding">
       <aside className="onboarding-rail">
-        <div className="onboarding-brand"><span>OK</span><div><strong>OpenKiwi</strong><small>Getting started</small></div></div>
+        <div className="onboarding-brand"><span><img src="/mythra-code-logo.png" alt="" /></span><div><strong>Mythra Code</strong><small>Getting started</small></div></div>
         <nav aria-label="Onboarding progress">
           {STEPS.map(({ id, label, icon: Icon }, index) => <button key={id} className={`${index === stepIndex ? "active" : ""} ${index < stepIndex ? "complete" : ""}`} onClick={() => setStepIndex(index)} aria-current={index === stepIndex ? "step" : undefined}>
             <span>{index < stepIndex ? <Check size={12} /> : <Icon size={13} />}</span><em>{label}</em>

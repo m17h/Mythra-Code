@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { ScheduleRunSettings } from "../types";
-import { OPENKIWI_DELEGATION_INSTRUCTIONS, openKiwiDeveloperInstructions } from "./completionPrompt";
+import { MYTHRA_CODE_DELEGATION_INSTRUCTIONS, mythraCodeDeveloperInstructions } from "./completionPrompt";
 
 /** Skill-mention plus completion guidance: what every turn carries. */
-const BASE_INSTRUCTIONS = openKiwiDeveloperInstructions(false);
+const BASE_INSTRUCTIONS = mythraCodeDeveloperInstructions(false);
 import { childAgentMcpConfig, normalizeLmStudioBaseUrl, threadResumeParams, threadRuntimeConfig, threadStartParams } from "./turnConfig";
 import { LM_STUDIO_RUNTIME_PROVIDER_ID } from "./providerIds";
 import { codexModelProviderId, providerFromThread } from "./threadProvider";
@@ -113,7 +113,7 @@ describe("LM Studio provider configuration", () => {
   /**
    * Codex fails the whole config load with "model_providers contains reserved
    * built-in provider IDs" when any generated entry shadows a built-in. Nothing
-   * OpenKiwi writes into `model_providers` or `modelProvider` may use one.
+   * Mythra Code writes into `model_providers` or `modelProvider` may use one.
    */
   it("never names a reserved Codex built-in provider in the generated config", () => {
     const runs: ScheduleRunSettings[] = [
@@ -151,7 +151,7 @@ describe("LM Studio provider configuration", () => {
 describe("cross-provider sub-agent bridge", () => {
   const bridge = {
     name: "openkiwi",
-    command: "/Applications/OpenKiwi.app/Contents/MacOS/openkiwi",
+    command: "/Applications/Mythra Code.app/Contents/MacOS/mythra-code",
     args: ["--openkiwi-agent-bridge", "/data/child-agents/abc/session.json"],
     configPath: "/data/child-agents/abc/mcp.json",
     toolNames: ["spawn_agent", "agent_status", "collect_agent", "cancel_agent"],
@@ -180,9 +180,9 @@ describe("cross-provider sub-agent bridge", () => {
     const withBridge = threadStartParams(baseRun, "/tmp/project", { interactive: true, childAgentBridge: bridge });
     const without = threadStartParams(baseRun, "/tmp/project", { interactive: true });
     expect(withBridge).toMatchObject({
-      developerInstructions: expect.stringContaining(OPENKIWI_DELEGATION_INSTRUCTIONS),
+      developerInstructions: expect.stringContaining(MYTHRA_CODE_DELEGATION_INSTRUCTIONS),
       config: {
-        developer_instructions: expect.stringContaining(OPENKIWI_DELEGATION_INSTRUCTIONS),
+        developer_instructions: expect.stringContaining(MYTHRA_CODE_DELEGATION_INSTRUCTIONS),
         mcp_servers: { openkiwi: { command: bridge.command } },
         features: { multi_agent: false, multi_agent_v2: false },
       },
@@ -203,9 +203,9 @@ describe("cross-provider sub-agent bridge", () => {
   it("re-applies the bridge when an OpenAI thread is resumed after a runtime restart", () => {
     const params = threadResumeParams(baseRun, "thread-1", "/tmp/project", { childAgentBridge: bridge });
     expect(params).toMatchObject({
-      developerInstructions: expect.stringContaining(OPENKIWI_DELEGATION_INSTRUCTIONS),
+      developerInstructions: expect.stringContaining(MYTHRA_CODE_DELEGATION_INSTRUCTIONS),
       config: {
-        developer_instructions: expect.stringContaining(OPENKIWI_DELEGATION_INSTRUCTIONS),
+        developer_instructions: expect.stringContaining(MYTHRA_CODE_DELEGATION_INSTRUCTIONS),
         mcp_servers: { openkiwi: { args: bridge.args } },
         features: { multi_agent: false, multi_agent_v2: false },
       },
@@ -223,7 +223,7 @@ describe("cross-provider sub-agent bridge", () => {
   });
 
   it("never hands the native agent runtime a parallel budget of its own", () => {
-    // `subagentMax` is the OpenKiwi bridge's budget and the bridge enforces it
+    // `subagentMax` is the Mythra Code bridge's budget and the bridge enforces it
     // per spawn. Mirroring it into `agents.max_threads` gave Codex a second,
     // independent budget stacked on top, so a root configured for two children
     // could reach four workers.

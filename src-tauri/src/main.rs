@@ -1,5 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    kiwi_lib::run();
+    mythra_code_lib::run();
 }

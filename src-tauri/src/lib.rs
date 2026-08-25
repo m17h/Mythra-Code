@@ -159,7 +159,7 @@ struct ClaudeState {
 /// the thread's slot indefinitely.
 const CLAUDE_INTERRUPT_GRACE: Duration = Duration::from_secs(10);
 
-/// A Claude `result` is the terminal protocol event for one OpenKiwi turn.
+/// A Claude `result` is the terminal protocol event for one Mythra Code turn.
 /// After signalling its process group, give the direct CLI a brief chance to
 /// reap cleanly so no provider output or foreground tool child can leak into
 /// a later turn in the same thread.
@@ -776,7 +776,7 @@ async fn start_openrouter_proxy(
 
 const OPENROUTER_DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
 
-/// Configuration keys OpenKiwi re-asserts on every startup, as
+/// Configuration keys Mythra Code re-asserts on every startup, as
 /// `(section, key, value)` with TOML-encoded values. Everything else in
 /// config.toml (model selection, MCP servers, …) belongs to the user and the
 /// Codex runtime and is preserved verbatim.
@@ -786,7 +786,7 @@ fn managed_runtime_config(openrouter_base_url: &str) -> Vec<(&'static str, &'sta
     vec![
         ("", "cli_auth_credentials_store", "\"keyring\"".into()),
         ("", "project_doc_max_bytes", "0".into()),
-        // The OpenKiwi bridge is the only spawning authority, so the native
+        // The Mythra Code bridge is the only spawning authority, so the native
         // agent runtime is pinned to a single non-nesting thread. Depth is
         // re-asserted alongside the thread ceiling: a stale or hand-edited
         // `max_depth` would otherwise let native delegation nest below a child.
@@ -887,7 +887,7 @@ async fn write_runtime_config(
 ) -> Result<(), String> {
     tokio::fs::create_dir_all(codex_home)
         .await
-        .map_err(|error| format!("Could not create OpenKiwi runtime directory: {error}"))?;
+        .map_err(|error| format!("Could not create Mythra Code runtime directory: {error}"))?;
 
     let config_path = codex_home.join("config.toml");
     let base_url = openrouter_base_url.unwrap_or(OPENROUTER_DEFAULT_BASE_URL);
@@ -896,7 +896,7 @@ async fn write_runtime_config(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => {
             return Err(format!(
-                "Could not read OpenKiwi runtime configuration: {error}"
+                "Could not read Mythra Code runtime configuration: {error}"
             ))
         }
     };
@@ -927,7 +927,7 @@ multi_agent_v2 = false
 name = "OpenRouter"
 base_url = {base_url_toml}
 env_key = "OPENROUTER_API_KEY"
-env_key_instructions = "Add your OpenRouter API key in OpenKiwi Settings."
+env_key_instructions = "Add your OpenRouter API key in Mythra Code Settings."
 wire_api = "responses"
 "#
             ))
@@ -937,7 +937,7 @@ wire_api = "responses"
     if let Some(config) = updated {
         tokio::fs::write(&config_path, config)
             .await
-            .map_err(|error| format!("Could not write OpenKiwi runtime configuration: {error}"))?;
+            .map_err(|error| format!("Could not write Mythra Code runtime configuration: {error}"))?;
     }
     // The OpenRouter proxy base URL embeds a secret path token; keep the file
     // readable by the current user only.
@@ -999,7 +999,7 @@ fn push_windows_npm_codex_candidates_at(candidates: &mut Vec<PathBuf>, app_data:
             .join(target);
         // Current Codex npm packages place the native executable in `bin`.
         // Keep the older layout as a fallback so existing installations keep
-        // working when OpenKiwi is launched from Explorer with a stale PATH.
+        // working when Mythra Code is launched from Explorer with a stale PATH.
         push_candidate(candidates, vendor.join("bin/codex.exe"));
         push_candidate(candidates, vendor.join("codex/codex.exe"));
         push_candidate(
@@ -1070,10 +1070,11 @@ async fn resolve_codex_binary(app: &AppHandle) -> Result<PathBuf, String> {
     let mut candidates = Vec::new();
     let executable_name = if cfg!(windows) { "codex.exe" } else { "codex" };
 
-    if let Some(override_path) = env::var_os("OPENKIWI_CODEX_PATH") {
+    let legacy_override = concat!("OPEN", "KIWI_CODEX_PATH");
+    if let Some(override_path) = env::var_os("MYTHRA_CODE_CODEX_PATH").or_else(|| env::var_os(legacy_override)) {
         let override_path = PathBuf::from(override_path);
         return override_path.is_file().then_some(override_path).ok_or_else(|| {
-            "OPENKIWI_CODEX_PATH does not point to a Codex executable. Update or remove it, then choose Try again.".into()
+            "MYTHRA_CODE_CODEX_PATH does not point to a Codex executable. Update or remove it, then choose Try again.".into()
         });
     }
 
@@ -1133,7 +1134,7 @@ async fn resolve_codex_binary(app: &AppHandle) -> Result<PathBuf, String> {
         return Ok(candidate);
     }
 
-    Err("OpenKiwi could not find the Codex runtime. Install the Codex CLI or ChatGPT desktop app, then choose Try again. Advanced users can set OPENKIWI_CODEX_PATH to the Codex executable.".into())
+    Err("Mythra Code could not find the Codex runtime. Install the Codex CLI or ChatGPT desktop app, then choose Try again. Advanced users can set MYTHRA_CODE_CODEX_PATH to the Codex executable.".into())
 }
 
 fn runtime_source(path: &Path) -> &'static str {
@@ -1142,7 +1143,8 @@ fn runtime_source(path: &Path) -> &'static str {
         .contains("ChatGPT.app/Contents/Resources/codex")
     {
         "ChatGPT app"
-    } else if env::var_os("OPENKIWI_CODEX_PATH")
+    } else if env::var_os("MYTHRA_CODE_CODEX_PATH")
+        .or_else(|| env::var_os(concat!("OPEN", "KIWI_CODEX_PATH")))
         .is_some_and(|configured| Path::new(&configured) == path)
     {
         "Custom path"
@@ -1194,7 +1196,7 @@ async fn codex_runtime_status(app: AppHandle) -> CodexRuntimeStatus {
                 available: true,
                 source: Some(runtime_source(&path)),
                 path: Some(path.to_string_lossy().into_owned()),
-                warning: (!compatible).then(|| "This Codex runtime predates OpenKiwi's tested App Server contract (0.145+). Update Codex before relying on advanced features.".to_string()),
+                warning: (!compatible).then(|| "This Codex runtime predates Mythra Code's tested App Server contract (0.145+). Update Codex before relying on advanced features.".to_string()),
                 version,
                 compatible,
             }
@@ -1216,10 +1218,11 @@ async fn resolve_claude_binary(app: &AppHandle) -> Result<PathBuf, String> {
     } else {
         "claude"
     };
-    if let Some(override_path) = env::var_os("OPENKIWI_CLAUDE_PATH") {
+    let legacy_override = concat!("OPEN", "KIWI_CLAUDE_PATH");
+    if let Some(override_path) = env::var_os("MYTHRA_CODE_CLAUDE_PATH").or_else(|| env::var_os(legacy_override)) {
         let override_path = PathBuf::from(override_path);
         return override_path.is_file().then_some(override_path).ok_or_else(|| {
-            "OPENKIWI_CLAUDE_PATH does not point to a Claude Code executable. Update or remove it, then try again.".into()
+            "MYTHRA_CODE_CLAUDE_PATH does not point to a Claude Code executable. Update or remove it, then try again.".into()
         });
     }
 
@@ -1262,7 +1265,7 @@ async fn resolve_claude_binary(app: &AppHandle) -> Result<PathBuf, String> {
         return Ok(candidate);
     }
 
-    Err("OpenKiwi could not find Claude Code. Install Claude Code, sign in with `claude auth login`, then try again. Advanced users can set OPENKIWI_CLAUDE_PATH.".into())
+    Err("Mythra Code could not find Claude Code. Install Claude Code, sign in with `claude auth login`, then try again. Advanced users can set MYTHRA_CODE_CLAUDE_PATH.".into())
 }
 
 fn configure_claude_subscription(command: &mut Command) {
@@ -1401,7 +1404,7 @@ async fn claude_usage(app: AppHandle) -> Result<ClaudeUsageLimits, String> {
 
 async fn read_claude_runtime_status(app: &AppHandle) -> ClaudeRuntimeStatus {
     let warning = claude_credential_override_present()
-    .then(|| "OpenKiwi ignores Anthropic credential, proxy, and hosted-provider environment overrides for Claude subscription sessions, so this provider uses only your Claude Code login.".to_string());
+    .then(|| "Mythra Code ignores Anthropic credential, proxy, and hosted-provider environment overrides for Claude subscription sessions, so this provider uses only your Claude Code login.".to_string());
     let path = match resolve_claude_binary(app).await {
         Ok(path) => path,
         Err(error) => {
@@ -1520,7 +1523,7 @@ async fn claude_login(app: AppHandle) -> Result<(), String> {
     #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = path;
-        Err("Run `claude auth login` in a terminal, then refresh Claude status in OpenKiwi.".into())
+        Err("Run `claude auth login` in a terminal, then refresh Claude status in Mythra Code.".into())
     }
 }
 
@@ -1646,7 +1649,7 @@ async fn save_pasted_image(
     let dir = app
         .path()
         .app_data_dir()
-        .map_err(|error| format!("Could not resolve OpenKiwi app data: {error}"))?
+        .map_err(|error| format!("Could not resolve Mythra Code app data: {error}"))?
         .join("pasted-images");
     tokio::fs::create_dir_all(&dir)
         .await
@@ -1689,7 +1692,7 @@ fn claude_image_media_type(path: &Path) -> &'static str {
     }
 }
 
-/// The largest image attachment OpenKiwi will read into memory — the same
+/// The largest image attachment Mythra Code will read into memory — the same
 /// cap `save_pasted_image` enforces.
 const MAX_IMAGE_ATTACHMENT_BYTES: u64 = 50 * 1024 * 1024;
 
@@ -1837,9 +1840,9 @@ fn claude_disallowed_tools(permission: &str) -> Vec<&'static str> {
             "WebSearch",
         ]);
     }
-    // OpenKiwi is the sole delegation authority. Claude's native Task/team
+    // Mythra Code is the sole delegation authority. Claude's native Task/team
     // surface bypasses the approved roster, concurrency budget, ownership
-    // records, and child inbox, so it is never exposed from OpenKiwi.
+    // records, and child inbox, so it is never exposed from Mythra Code.
     disallowed.extend([
         "Task",
         "SendMessage",
@@ -1896,7 +1899,7 @@ async fn claude_turn_start(
             "--verbose",
             "--include-partial-messages",
             "--name",
-            "OpenKiwi",
+            "Mythra Code",
             "--model",
             &options.model,
             "--effort",
@@ -1985,7 +1988,7 @@ async fn claude_turn_start(
     // attachment can fail (file deleted, pasted image evicted from the
     // cache), and past the spawn every error path must also remove the turn
     // from the map and kill the child — otherwise the thread reports
-    // "Claude is already working" until OpenKiwi restarts.
+    // "Claude is already working" until Mythra Code restarts.
     let user_message =
         claude_user_message(&options.thread_id, &options.prompt, &options.attachments).await?;
 
@@ -2117,7 +2120,7 @@ async fn claude_turn_start(
                     &stdout_turn,
                     json!({
                         "type": "openkiwi_diagnostic",
-                        "message": format!("Claude Code sent output OpenKiwi could not parse: {line}"),
+                        "message": format!("Claude Code sent output Mythra Code could not parse: {line}"),
                     }),
                 )
                 .await;
@@ -2143,7 +2146,7 @@ async fn claude_turn_start(
                 // provider process.
                 emit_claude_event(&stdout_app, &stdout_thread, &stdout_turn, message).await;
                 // Stream-input mode waits indefinitely for another message.
-                // OpenKiwi deliberately uses one process per turn, so stop
+                // Mythra Code deliberately uses one process per turn, so stop
                 // accepting provider output at the result boundary and reap
                 // this process before its slot can be reused. Continuing to
                 // read here used to leave completed Claude processes alive for
@@ -2169,7 +2172,7 @@ async fn claude_turn_start(
         // mutate the transcript.
         drop(lines);
         // Reap the completed child so repeated Claude turns cannot accumulate
-        // zombie processes during a long-running OpenKiwi session. Bounded
+        // zombie processes during a long-running Mythra Code session. Bounded
         // like the Codex reaper: a child that closed stdout but refuses to
         // exit is force-killed along with its descendants.
         let exit = {
@@ -2267,7 +2270,7 @@ async fn claude_turn_interrupt(
     if let Err(error) = turn.write(&interrupt).await {
         // The stdin pipe is unusable, so the process is dead or wedged and a
         // cooperative interrupt can never reach it. Free the slot now instead
-        // of leaving the thread stuck until OpenKiwi restarts.
+        // of leaving the thread stuck until Mythra Code restarts.
         remove_claude_turn_if_current(&state.turns, &thread_id, &turn).await;
         turn.shutdown().await;
         return Err(error);
@@ -2335,7 +2338,7 @@ async fn claude_permission_respond(
     .await
 }
 
-/// Answer a Claude control request OpenKiwi does not implement with an error
+/// Answer a Claude control request Mythra Code does not implement with an error
 /// response, so a CLI blocking on the reply cannot stall the turn.
 #[tauri::command]
 async fn claude_control_error(
@@ -2594,7 +2597,7 @@ async fn normal_chat_workspace(app: AppHandle) -> Result<String, String> {
     let app_data = app
         .path()
         .app_data_dir()
-        .map_err(|error| format!("Could not resolve OpenKiwi app data: {error}"))?;
+        .map_err(|error| format!("Could not resolve Mythra Code app data: {error}"))?;
     let workspace = app_data.join("normal-chats");
     tokio::fs::create_dir_all(&workspace)
         .await
@@ -2654,8 +2657,8 @@ fn runtime_path(codex_binary: &Path, home: Option<&Path>) -> Option<OsString> {
 fn initialize_params() -> Value {
     json!({
         "clientInfo": {
-            "name": "openkiwi",
-            "title": "OpenKiwi",
+            "name": "mythra-code",
+            "title": "Mythra Code",
             "version": env!("CARGO_PKG_VERSION")
         },
         "capabilities": {
@@ -2939,7 +2942,7 @@ async fn ensure_server(app: &AppHandle, state: &RuntimeState) -> Result<Arc<AppS
 
 /// Validate the high-impact RPCs that the webview is allowed to forward.
 /// The Codex app-server normally enforces its own approval policy for agent
-/// turns, but OpenKiwi also exposes a user-operated terminal and workflows via
+/// turns, but Mythra Code also exposes a user-operated terminal and workflows via
 /// `command/exec`. Requiring an explicit, bounded sandbox policy here keeps a
 /// malformed renderer request from silently omitting the sandbox or widening
 /// a workspace-write request beyond its workspace (except for the shared Git
@@ -3029,7 +3032,7 @@ fn validate_rpc_params(method: &str, params: &Value) -> Result<(), String> {
             .unwrap_or_default();
         if !key.starts_with("mcp_servers.") || key.len() > 256 {
             return Err(
-                "OpenKiwi only permits MCP server settings through the desktop bridge".into(),
+                "Mythra Code only permits MCP server settings through the desktop bridge".into(),
             );
         }
     }
@@ -3101,7 +3104,7 @@ async fn codex_rpc(
     ];
     if !ALLOWED_METHODS.contains(&method.as_str()) {
         return Err(format!(
-            "OpenKiwi's desktop bridge does not allow the RPC method `{method}`"
+            "Mythra Code's desktop bridge does not allow the RPC method `{method}`"
         ));
     }
     validate_rpc_params(&method, &params)?;
@@ -3133,7 +3136,7 @@ async fn codex_rpc(
                 dead.shutdown().await;
             }
             let recovered = ensure_server(&app, &state).await.map_err(|restart_error| {
-                format!("{error}. OpenKiwi also could not restart the runtime: {restart_error}")
+                format!("{error}. Mythra Code also could not restart the runtime: {restart_error}")
             })?;
             if RETRYABLE_METHODS.contains(&method.as_str()) {
                 recovered.request(&method, params).await
@@ -3255,7 +3258,7 @@ async fn list_openrouter_models() -> Result<Value, String> {
         .map_err(|error| format!("Could not create the OpenRouter catalog client: {error}"))?;
     let mut request = client
         .get("https://openrouter.ai/api/v1/models?supported_parameters=tools&limit=1000")
-        .header("X-Title", "OpenKiwi");
+        .header("X-Title", "Mythra Code");
     if let Some(key) = openrouter_key().await {
         request = request.bearer_auth(key);
     }
@@ -3514,7 +3517,7 @@ pub fn run() {
             restart_runtime
         ])
         .build(tauri::generate_context!())
-        .expect("error while running OpenKiwi")
+        .expect("error while running Mythra Code")
         .run(|app_handle, event| {
             if matches!(
                 event,

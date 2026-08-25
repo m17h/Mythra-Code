@@ -11,7 +11,7 @@ function active(status: TaskStatus | undefined): boolean {
  * A parent completion archives children that have already settled. A child
  * that legitimately outlives its parent is skipped then and becomes eligible
  * when its own completion arrives. This function is deliberately independent
- * of provider: native Codex children and OpenKiwi-managed Claude/Cursor/OpenAI
+ * of provider: native Codex children and Mythra Code-managed Claude/Cursor/OpenAI
  * children share the same durable ownership graph.
  */
 export function autoArchiveSubagentCandidates(input: {

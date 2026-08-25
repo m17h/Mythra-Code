@@ -325,7 +325,7 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
     // reaches the app-level handler that stops the running turn.
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
-      // A nested OpenKiwi select gets the first Escape so it can close without
+      // A nested Mythra Code select gets the first Escape so it can close without
       // dismissing the entire command center around it.
       if (panelRef.current?.querySelector("[data-app-select-open='true']")) return;
       event.stopPropagation();

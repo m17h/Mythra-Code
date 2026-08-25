@@ -9,7 +9,7 @@ const mac = {
 };
 const windows = {
   version: "1.8.1",
-  notes: "OpenKiwi for Windows 1.8.1",
+  notes: "Mythra Code for Windows 1.8.1",
   pub_date: "2026-08-23T00:00:00.000Z",
   platforms: { "windows-x86_64": { signature: "windows-signature", url: "windows-url" } },
 };

@@ -34,7 +34,7 @@ function context(overrides: Partial<ChildRunContext> = {}): ChildRunContext {
     projectInstructionsEnabled: true,
     reasoningEffort: "high",
     serviceTier: "priority",
-    serviceName: "OpenKiwi",
+    serviceName: "Mythra Code",
     ...overrides,
   };
 }

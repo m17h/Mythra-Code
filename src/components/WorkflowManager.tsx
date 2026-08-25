@@ -197,7 +197,7 @@ export function WorkflowManager({
         <div className="settings-icon"><Workflow size={17} /></div>
         <div>
           <h3>Agent workflows</h3>
-          <p>Build ordered recipes from agent prompts and deterministic commands. Run them manually, on an interval, or whenever OpenKiwi starts.</p>
+          <p>Build ordered recipes from agent prompts and deterministic commands. Run them manually, on an interval, or whenever Mythra Code starts.</p>
         </div>
         <button
           className="secondary-button compact"
@@ -293,7 +293,7 @@ export function WorkflowManager({
               const trigger = triggerFor(event.target.value as WorkflowTrigger["type"]);
               setIntervalText(null);
               setDraft({ ...draft, trigger, nextRunAt: nextWorkflowRunAt(trigger) });
-            }}><option value="manual">Manual</option><option value="interval">Interval</option><option value="app-start">When OpenKiwi starts</option></select></label>
+            }}><option value="manual">Manual</option><option value="interval">Interval</option><option value="app-start">When Mythra Code starts</option></select></label>
             {draft.trigger.type === "interval" && <label><span>Every (minutes)</span><input type="number" min={5} value={intervalText ?? String(draft.trigger.intervalMinutes)} onChange={(event) => setIntervalText(event.target.value)} onBlur={(event) => {
               const trigger: WorkflowTrigger = { type: "interval", intervalMinutes: Math.max(5, Number(event.target.value) || 5) };
               setIntervalText(null);

@@ -34,7 +34,7 @@ import type { SetPersisted } from "./usePersistedState";
 import type { PendingApproval, ProjectSubagentSettings, Provider, Thread, ThreadReasoning } from "../types";
 
 /**
- * Routes the delegation requests a root agent makes through the OpenKiwi
+ * Routes the delegation requests a root agent makes through the Mythra Code
  * bridge into real per-provider turns.
  *
  * Every decision that could be abused lives here or in the backend, never in
@@ -277,7 +277,7 @@ export function useChildAgents(context: ChildAgentContext): {
     }
 
     const logicalPath = ctx.projectPathForThread(rootThreadId);
-    if (!logicalPath) throw new Error("OpenKiwi no longer knows which project folder this thread belongs to.");
+    if (!logicalPath) throw new Error("Mythra Code no longer knows which project folder this thread belongs to.");
     const executionPath = ctx.executionPathFor(rootThreadId, logicalPath);
     const gitDir = ctx.isolationGitDirFor(rootThreadId);
 
@@ -401,7 +401,7 @@ export function useChildAgents(context: ChildAgentContext): {
           ctx.persistChildAgentLinks((current) => ({ ...current, [childThreadId]: interrupted }));
         }
       } catch (reason) {
-        throw new Error(`The run was stopped, but OpenKiwi could not confirm the ${target.label || target.id} sub-agent cutoff: ${friendlyError(reason)}. It remains visible in Live agents so you can stop it again.`);
+        throw new Error(`The run was stopped, but Mythra Code could not confirm the ${target.label || target.id} sub-agent cutoff: ${friendlyError(reason)}. It remains visible in Live agents so you can stop it again.`);
       }
       throw new Error("The user stopped this run while the sub-agent was starting.");
     }
@@ -596,7 +596,7 @@ export function useChildAgents(context: ChildAgentContext): {
       params: {
         title: "Update this project's sub-agents?",
         reason: reason || "The agent requested a project sub-agent crew change.",
-        // Everything below the reason is written by OpenKiwi from the
+        // Everything below the reason is written by Mythra Code from the
         // sanitized settings, so the model cannot dress up what it is asking
         // for — including how long the change lasts.
         command: [
@@ -613,7 +613,7 @@ export function useChildAgents(context: ChildAgentContext): {
       approved: false,
       status: "awaiting_user",
       proposalId: approvalId,
-      note: "OpenKiwi is asking the user to approve this project change. Do not claim it was applied; continue only with the destinations already approved for this turn.",
+      note: "Mythra Code is asking the user to approve this project change. Do not claim it was applied; continue only with the destinations already approved for this turn.",
     };
   }, []);
 

@@ -7,7 +7,7 @@ import "../styles.css";
 /**
  * The only regression test in the suite that exercises real browser layout.
  *
- * jsdom has no layout engine, so it cannot observe row positions. OpenKiwi now
+ * jsdom has no layout engine, so it cannot observe row positions. Mythra Code now
  * uses one ordinary-flow transcript for both hydrated history and live output;
  * these tests enforce that structural invariant and exercise real row geometry.
  *

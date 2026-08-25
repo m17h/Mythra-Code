@@ -194,7 +194,7 @@ export function useCheckpoints(context: CheckpointsContext) {
           id: `checkpoint-unavailable-${id}`,
           kind: "warning",
           title: "Automatic checkpoints unavailable",
-          detail: `${message}. The model can still work, but OpenKiwi cannot create restorable file snapshots here.`,
+          detail: `${message}. The model can still work, but Mythra Code cannot create restorable file snapshots here.`,
         });
       } else {
         recordError(`Could not create the automatic checkpoint: ${message}`);
@@ -269,7 +269,7 @@ export function useCheckpoints(context: CheckpointsContext) {
           ...entry,
           status: "failed",
           completedAt: Date.now(),
-          error: "OpenKiwi closed before the initial project snapshot finished.",
+          error: "Mythra Code closed before the initial project snapshot finished.",
         } : entry));
         // checkpoint_create may have written its private Git ref immediately
         // before the renderer closed, before the returned commit could be
@@ -424,7 +424,7 @@ export function useCheckpoints(context: CheckpointsContext) {
       : `restore the completed state of “${checkpoint.label}”`;
     if (!await confirmDialog(
       `Are you sure you want to ${action}?\n\n`
-      + "The complete project source state will move to that point. Later work will leave the active folder, but OpenKiwi will save the current state as a new safety checkpoint first. Git commits and ignored files are not changed.",
+      + "The complete project source state will move to that point. Later work will leave the active folder, but Mythra Code will save the current state as a new safety checkpoint first. Git commits and ignored files are not changed.",
     )) return;
     // The confirm dialog blocks for as long as the user leaves it open; a
     // scheduler tick, workflow step, or queued turn can start editing in the

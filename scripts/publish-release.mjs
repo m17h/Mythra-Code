@@ -15,13 +15,13 @@ const packageVersion = JSON.parse(readFileSync(resolve(root, "package.json"), "u
 const tag = `v${manifest.version}`;
 const platformKeys = Object.keys(manifest.platforms || {});
 if (platformKeys.length !== 1 || !/^darwin-(aarch64|x86_64)$/.test(platformKeys[0])) {
-  throw new Error(`OpenKiwi macOS releases require exactly one darwin platform in latest.json; found: ${platformKeys.join(", ") || "none"}.`);
+  throw new Error(`Mythra Code macOS releases require exactly one darwin platform in latest.json; found: ${platformKeys.join(", ") || "none"}.`);
 }
 const macArch = platformKeys[0].slice("darwin-".length);
 const expectedAssetNames = [
-  "OpenKiwi-icon.png",
-  `OpenKiwi_${manifest.version}_${macArch}.app.tar.gz`,
-  `OpenKiwi_${manifest.version}_${macArch}.dmg`,
+  "MythraCode-icon.png",
+  `MythraCode_${manifest.version}_${macArch}.app.tar.gz`,
+  `MythraCode_${manifest.version}_${macArch}.dmg`,
   "build-info.txt",
   "latest.json",
   "release-notes.md",
@@ -60,7 +60,7 @@ if (builtCommit !== target) {
 if (process.argv.includes("--skip-ci-check")) {
   console.warn(`WARNING: skipping the CI check. Publishing ${tag} without verified CI for ${target}.`);
 } else {
-  const ci = spawnSync("gh", ["run", "list", "--repo", "m17h/OpenKiwi", "--commit", target, "--workflow", "Verify", "--json", "status,conclusion"], { cwd: root, encoding: "utf8" });
+  const ci = spawnSync("gh", ["run", "list", "--repo", "m17h/Mythra-Code", "--commit", target, "--workflow", "Verify", "--json", "status,conclusion"], { cwd: root, encoding: "utf8" });
   if (ci.status !== 0) {
     throw new Error(`Could not query the Verify workflow for ${target}.\n${(ci.stderr || "").trim()}\nFix gh access, or rerun with --skip-ci-check to override.`);
   }
@@ -79,7 +79,7 @@ if (process.argv.includes("--skip-ci-check")) {
 
 uploadPlatformDraft({
   root,
-  repository: "m17h/OpenKiwi",
+  repository: "m17h/Mythra-Code",
   tag,
   target,
   manifest,

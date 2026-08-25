@@ -27,9 +27,9 @@
   --muted-2: #8f959e; /* 5.4:1 on --bg, 4.6:1 on --panel — AA at meta sizes */
 
   /* ---- Accent: one colour, used sparingly ---- */
-  --green: #a6df72;
-  --green-soft: rgba(166, 223, 114, 0.11);
-  --green-line: rgba(166, 223, 114, 0.26);
+  --green: #64ddf2;
+  --green-soft: rgba(100, 221, 242, 0.11);
+  --green-line: rgba(100, 221, 242, 0.28);
   --orange: #e2a869;
   --red: #ef8a87;
   --info: #86cdf7;
@@ -91,8 +91,9 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,.2); background-clip: content-box; }
 
 .app-shell { display: flex; height: 100%; overflow: hidden; color: var(--text); background: var(--bg); font-size: var(--fs-ui); letter-spacing: var(--track-tight); transition: color 260ms ease, background 260ms ease; }
+.app-shell[data-theme="kiwi"] { --green: #a6df72; --green-soft: rgba(166,223,114,.11); --green-line: rgba(166,223,114,.26); }
 .app-shell[data-theme="daylight"] { --bg: #f4f5f2; --sidebar: #ebede8; --panel: #ffffff; --panel-2: #f1f2ee; --panel-3: #e2e5de; --line: rgba(25,35,20,.11); --line-strong: rgba(25,35,20,.19); --muted: #58615a; --muted-2: #61695f; /* 5.2:1 on --bg, 4.8:1 on --sidebar */ --text: #1c211b; --green: #3e8e22; --green-soft: rgba(62,142,34,.11); --orange: #a8621a; --red: #c04742; --shadow: 0 22px 70px rgba(55,65,45,.18); --topbar: rgba(244,245,242,.86); --field: #ffffff; --menu-surface: #ffffff; }
-/* Daylight overrides the semantic tokens inherited from the OpenKiwi palette. */
+/* Light Kiwi overrides the semantic tokens inherited from the dark palettes. */
 .app-shell[data-theme="daylight"] {
   --ink-2: #3c443c; --line-quiet: rgba(25,35,20,.06); --green-line: rgba(62,142,34,.3); --info: #14639f;
   --elev-1: 0 1px 2px rgba(52,62,44,.09);
@@ -818,7 +819,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .sa-tile-remove { grid-column: 1 / -1; justify-self: start; display: flex; align-items: center; gap: 5px; height: 24px; padding: 0 8px; border: 1px solid color-mix(in srgb, var(--red) 22%, transparent); border-radius: var(--r-xs); color: color-mix(in srgb, var(--red) 72%, var(--text)); background: transparent; font-size: var(--fs-micro); cursor: pointer; transition: background var(--t-fast) ease; }
 .sa-tile-remove:hover { background: color-mix(in srgb, var(--red) 10%, transparent); }
 
-/* Compact OpenKiwi select. Unlike a native <select>, the menu stays inside
+/* Compact Mythra Code select. Unlike a native <select>, the menu stays inside
    the app and shares the same colors, focus treatment, and keyboard behavior
    as the main composer model pickers. */
 .app-select { position: relative; min-width: 0; }
@@ -975,7 +976,8 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .onboarding-backdrop.closed .onboarding-modal { transform: translateY(15px) scale(.978); }
 .onboarding-rail { min-width: 0; display: flex; flex-direction: column; padding: var(--s-5) var(--s-3) var(--s-4); border-right: 1px solid var(--line); background: color-mix(in srgb, var(--sidebar) 88%, var(--panel)); }
 .onboarding-brand { display: flex; align-items: center; gap: 10px; padding: 0 7px 22px; }
-.onboarding-brand > span { width: 32px; height: 32px; display: grid; place-items: center; border: 1px solid color-mix(in srgb, var(--green) 26%, var(--line)); border-radius: var(--r-md); color: #11150e; background: var(--green); box-shadow: none; font-size: var(--fs-meta); font-weight: 800; letter-spacing: -.06em; }
+.onboarding-brand > span { width: 32px; height: 32px; display: grid; place-items: center; padding: 4px; border: 1px solid color-mix(in srgb, var(--green) 26%, var(--line)); border-radius: var(--r-md); background: #111318; box-shadow: none; }
+.onboarding-brand > span img { width: 100%; height: 100%; object-fit: contain; }
 .onboarding-brand > div { display: flex; flex-direction: column; gap: 2px; }
 .onboarding-brand strong { font-size: var(--fs-ui); font-weight: 620; }
 .onboarding-brand small { color: var(--muted-2); font-size: var(--fs-micro); text-transform: uppercase; letter-spacing: .09em; }
@@ -1008,11 +1010,8 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .onboarding-skip { padding: 0 var(--s-2); border: 0; color: var(--muted-2); background: transparent; font-size: var(--fs-meta); cursor: pointer; transition: color var(--t-fast) ease; }
 .onboarding-skip:hover { color: var(--text); }
 .welcome-page { align-items: center; justify-content: center; padding: 10px 0 4px; }
-.onboarding-hero-mark { position: relative; width: 64px; height: 64px; display: grid; place-items: center; margin-bottom: var(--s-5); border: 1px solid color-mix(in srgb, var(--green) 27%, var(--line)); border-radius: var(--r-xl); color: #11160e; background: var(--green); box-shadow: var(--elev-2); }
-.onboarding-hero-mark span { font-size: 21px; font-weight: 800; letter-spacing: -.07em; }
-.onboarding-hero-mark i { display: none; }
-.onboarding-hero-mark i:nth-child(2) { top: -7px; left: 24px; transform-origin: 15px 45px; }
-.onboarding-hero-mark i:nth-child(3) { right: -9px; bottom: 20px; width: 3px; height: 3px; animation-delay: -1.4s; }
+.onboarding-hero-mark { position: relative; width: 64px; height: 64px; display: grid; place-items: center; margin-bottom: var(--s-5); padding: 9px; border: 1px solid color-mix(in srgb, var(--green) 27%, var(--line)); border-radius: var(--r-xl); background: #111318; box-shadow: var(--elev-2); }
+.onboarding-hero-mark img { width: 100%; height: 100%; object-fit: contain; }
 .onboarding-principles { width: min(630px,100%); display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 8px; margin-top: 26px; }
 .onboarding-principles > div { min-width: 0; display: grid; grid-template-columns: 28px minmax(0,1fr); gap: 8px; align-items: center; padding: 10px; border: 1px solid var(--line); border-radius: 10px; color: var(--green); background: rgba(255,255,255,.015); }
 .onboarding-principles span { min-width: 0; display: flex; flex-direction: column; gap: 3px; }

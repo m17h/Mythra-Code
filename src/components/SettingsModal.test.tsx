@@ -116,8 +116,9 @@ describe("SettingsModal", () => {
   it("offers every registered theme and effort-slider style", () => {
     render(<SettingsModal {...modalProps()} />);
 
-    expect(screen.getByRole("button", { name: /OpenKiwi.*Deep graphite/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Daylight.*Paper white/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Mythra.*Deep graphite/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Kiwi.*electric green/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Light Kiwi.*Paper white/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Midnight.*ocean blue/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Synthwave.*magenta/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Ember.*amber/ })).toBeInTheDocument();
@@ -298,7 +299,7 @@ describe("SettingsModal", () => {
   it("keeps project prompts out of Settings and points to the chat header", () => {
     render(<SettingsModal {...modalProps({
       initialSection: "projects",
-      projects: [{ id: "kiwi", name: "OpenKiwi", path: "/code/kiwi", overrides: { systemPrompt: "Existing project prompt" } }],
+      projects: [{ id: "kiwi", name: "Mythra Code", path: "/code/kiwi", overrides: { systemPrompt: "Existing project prompt" } }],
     })} />);
 
     expect(screen.getByText(/Project instructions now live beside the project name/)).toBeInTheDocument();
@@ -336,7 +337,7 @@ describe("SettingsModal", () => {
     vi.stubGlobal("confirm", vi.fn(() => true));
     render(<SettingsModal {...modalProps({ onThemePreview, onClose, onSave })} />);
 
-    fireEvent.click(screen.getByRole("button", { name: /Daylight/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Light Kiwi/ }));
     expect(onThemePreview).toHaveBeenLastCalledWith("daylight");
 
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
@@ -352,7 +353,7 @@ describe("SettingsModal", () => {
     vi.stubGlobal("confirm", vi.fn(() => false));
     render(<SettingsModal {...modalProps({ onClose })} />);
 
-    fireEvent.click(screen.getByRole("button", { name: /Daylight/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Light Kiwi/ }));
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(onClose).not.toHaveBeenCalled();
     vi.unstubAllGlobals();
@@ -474,7 +475,7 @@ describe("SettingsModal", () => {
     expect(notice).toHaveTextContent("Global instruction files are not inherited");
     expect(notice).toHaveTextContent("CLAUDE.md");
     expect(notice).toHaveTextContent("AGENTS.md");
-    expect(notice).toHaveTextContent("do not affect OpenKiwi");
+    expect(notice).toHaveTextContent("do not affect Mythra Code");
     expect(notice).toHaveTextContent("Project-level AGENTS.md files can still be discovered");
   });
 

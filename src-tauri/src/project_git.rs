@@ -337,9 +337,9 @@ pub(super) fn capture_checkpoint_snapshot(
         let mut commit = git_command(&repo);
         commit
             .args(["commit-tree", &tree, "-m", label])
-            .env("GIT_AUTHOR_NAME", "OpenKiwi Checkpoints")
+            .env("GIT_AUTHOR_NAME", "Mythra Code Checkpoints")
             .env("GIT_AUTHOR_EMAIL", "checkpoints@openkiwi.local")
-            .env("GIT_COMMITTER_NAME", "OpenKiwi Checkpoints")
+            .env("GIT_COMMITTER_NAME", "Mythra Code Checkpoints")
             .env("GIT_COMMITTER_EMAIL", "checkpoints@openkiwi.local");
         let output = commit
             .output()
@@ -750,9 +750,13 @@ pub(super) fn worktree_label_slug(label: &str) -> String {
     }
 }
 
+pub(super) fn is_managed_worktree_branch(branch: &str) -> bool {
+    branch.starts_with("mythra/") || branch.starts_with("openkiwi/")
+}
+
 pub(super) fn verify_managed_worktree_branch(worktree: &Path, branch: &str) -> Result<(), String> {
-    if !branch.starts_with("openkiwi/") {
-        return Err("That branch is not managed by OpenKiwi".into());
+    if !is_managed_worktree_branch(branch) {
+        return Err("That branch is not managed by Mythra Code".into());
     }
     git_stdout(worktree, &["check-ref-format", "--branch", branch], None)?;
     let actual = git_stdout(worktree, &["symbolic-ref", "--short", "-q", "HEAD"], None)
@@ -995,7 +999,7 @@ pub(super) fn initialize_workspace_git_sync(
         &selected,
         &[
             "-c",
-            "user.name=OpenKiwi",
+            "user.name=Mythra Code",
             "-c",
             "user.email=openkiwi@local",
             "commit",
@@ -1054,7 +1058,7 @@ pub(super) async fn worktree_create(
     let app_data = app
         .path()
         .app_data_dir()
-        .map_err(|error| format!("Could not locate OpenKiwi's application data: {error}"))?;
+        .map_err(|error| format!("Could not locate Mythra Code's application data: {error}"))?;
     tauri::async_runtime::spawn_blocking(move || {
         let source = checkpoint_repo(&project_path)?;
         let base_commit =
@@ -1063,7 +1067,7 @@ pub(super) async fn worktree_create(
             })?;
         let suffix = uuid::Uuid::new_v4().simple().to_string()[..8].to_string();
         let slug = worktree_label_slug(&label);
-        let branch = format!("openkiwi/{slug}-{suffix}");
+        let branch = format!("mythra/{slug}-{suffix}");
         git_stdout(&source, &["check-ref-format", "--branch", &branch], None)?;
         let project_slug = worktree_label_slug(
             source
@@ -1073,7 +1077,7 @@ pub(super) async fn worktree_create(
         );
         let root = app_data.join("worktrees").join(project_slug);
         fs::create_dir_all(&root)
-            .map_err(|error| format!("Could not create the OpenKiwi worktree folder: {error}"))?;
+            .map_err(|error| format!("Could not create the Mythra Code worktree folder: {error}"))?;
         let path = root.join(format!("{slug}-{suffix}"));
         let path_string = path.to_string_lossy().into_owned();
         git_stdout(
@@ -1102,11 +1106,11 @@ pub(super) async fn worktree_recreate(
     let app_data = app
         .path()
         .app_data_dir()
-        .map_err(|error| format!("Could not locate OpenKiwi's application data: {error}"))?;
+        .map_err(|error| format!("Could not locate Mythra Code's application data: {error}"))?;
     tauri::async_runtime::spawn_blocking(move || {
         let source = checkpoint_repo(&project_path)?;
-        if !branch.starts_with("openkiwi/") {
-            return Err("That branch is not managed by OpenKiwi".into());
+        if !is_managed_worktree_branch(&branch) {
+            return Err("That branch is not managed by Mythra Code".into());
         }
         git_stdout(&source, &["check-ref-format", "--branch", &branch], None)?;
         let branch_commit = git_stdout(
@@ -1129,8 +1133,8 @@ pub(super) async fn worktree_recreate(
         );
         let root = app_data.join("worktrees").join(project_slug);
         fs::create_dir_all(&root)
-            .map_err(|error| format!("Could not create the OpenKiwi worktree folder: {error}"))?;
-        // A worktree folder can be deleted outside OpenKiwi while Git still
+            .map_err(|error| format!("Could not create the Mythra Code worktree folder: {error}"))?;
+        // A worktree folder can be deleted outside Mythra Code while Git still
         // has a stale registration for it. Prune that dead administrative
         // entry before attaching the surviving branch to its replacement.
         let _ = git_stdout(&source, &["worktree", "prune"], None);
@@ -1382,19 +1386,19 @@ pub(super) async fn worktree_remove(
     let managed_root = app
         .path()
         .app_data_dir()
-        .map_err(|error| format!("Could not locate OpenKiwi's application data: {error}"))?
+        .map_err(|error| format!("Could not locate Mythra Code's application data: {error}"))?
         .join("worktrees");
     tauri::async_runtime::spawn_blocking(move || {
         let source = checkpoint_repo(&project_path)?;
         let canonical_root = managed_root
             .canonicalize()
-            .map_err(|error| format!("Could not open OpenKiwi's worktree folder: {error}"))?;
+            .map_err(|error| format!("Could not open Mythra Code's worktree folder: {error}"))?;
         let canonical_worktree = PathBuf::from(&worktree_path)
             .canonicalize()
             .map_err(|error| format!("Could not open the isolated worktree: {error}"))?;
         if !canonical_worktree.starts_with(&canonical_root) {
             return Err(
-                "OpenKiwi will only remove worktrees it created in its managed folder".into(),
+                "Mythra Code will only remove worktrees it created in its managed folder".into(),
             );
         }
         let worktree = checkpoint_repo(&worktree_path)?;

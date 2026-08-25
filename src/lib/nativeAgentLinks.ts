@@ -12,7 +12,7 @@ export interface NativeAgentLink {
 /**
  * The durable ownership graph, as any link map keyed by child thread id.
  *
- * Both link generations participate: OpenKiwi's own {@link ChildAgentLink}
+ * Both link generations participate: Mythra Code's own {@link ChildAgentLink}
  * records and the provider-native ones below. Ownership questions have to be
  * asked of the whole graph or a root proved by one generation could be
  * reclassified by the other.
@@ -50,7 +50,7 @@ export function ownsChildren(links: OwnershipLinks, threadId: string): boolean {
  *   root.
  *
  * A thread that already owns children is refused outright: it is a root, and
- * OpenKiwi never nests delegation deeper than one level.
+ * Mythra Code never nests delegation deeper than one level.
  */
 export function canOwnThread(links: OwnershipLinks, rootThreadId: string, childThreadId: string): boolean {
   if (!rootThreadId || !childThreadId || rootThreadId === childThreadId) return false;

@@ -2,7 +2,7 @@ import { rpc } from "./codex";
 import { saveClaudeTranscript, startClaudeTurn } from "./claude";
 import { saveCursorTranscript, startCursorTurn } from "./cursor";
 import { childAgentModel } from "./childAgents";
-import { withOpenKiwiCompletionInstructions } from "./completionPrompt";
+import { withMythraCodeCompletionInstructions } from "./completionPrompt";
 import { threadStartParams, turnStartParams } from "./turnConfig";
 import { optimisticStartedThread } from "./threadList";
 import { buildTurnInput } from "./turnInput";
@@ -13,7 +13,7 @@ import type { ChildAgentTarget, ScheduleRunSettings, Thread, Turn } from "../typ
 /**
  * Starting a cross-provider child.
  *
- * A child is a first-class OpenKiwi thread: it runs through the same
+ * A child is a first-class Mythra Code thread: it runs through the same
  * per-provider start path the composer uses, in the root thread's execution
  * folder (its isolated worktree when it has one), under the root thread's
  * permission policy. What it deliberately does not get is the parent's
@@ -74,7 +74,7 @@ export function childRunSettings(target: ChildAgentTarget, context: ChildRunCont
   };
 }
 
-/** The thread record OpenKiwi owns for a locally-started child. */
+/** The thread record Mythra Code owns for a locally-started child. */
 export function childThreadRecord(threadId: string, target: ChildAgentTarget, prompt: string, cwd: string): Thread {
   return {
     id: threadId,
@@ -92,7 +92,7 @@ export async function startChildAgentTurn(
   context: ChildRunContext,
 ): Promise<ChildRunResult> {
   const run = childRunSettings(target, context);
-  const systemPrompt = withOpenKiwiCompletionInstructions(context.systemPrompt);
+  const systemPrompt = withMythraCodeCompletionInstructions(context.systemPrompt);
 
   if (target.provider === "claude") {
     const thread = childThreadRecord(crypto.randomUUID(), target, prompt, context.executionPath);

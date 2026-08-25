@@ -36,7 +36,7 @@ type PendingMap = Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, String>>>
 /// deadline. The two exceptions are the calls whose duration is the agent's
 /// work rather than ours: `session/prompt` runs the whole turn, and creating or
 /// loading a session also cold-starts every MCP server the session declares —
-/// which, for an OpenKiwi sub-agent crew, means launching the delegation bridge
+/// which, for an Mythra Code sub-agent crew, means launching the delegation bridge
 /// before Cursor answers.
 pub(super) fn cursor_request_timeout(method: &str) -> Option<Duration> {
     match method {
@@ -401,13 +401,14 @@ fn resolve_windows_cursor_install_at(local_app_data: &Path) -> Option<CursorRunt
 }
 
 async fn resolve_cursor_runtime(app: &AppHandle) -> Result<CursorRuntime, String> {
-    if let Some(override_path) = env::var_os("OPENKIWI_CURSOR_PATH") {
+    let legacy_override = concat!("OPEN", "KIWI_CURSOR_PATH");
+    if let Some(override_path) = env::var_os("MYTHRA_CODE_CURSOR_PATH").or_else(|| env::var_os(legacy_override)) {
         let override_path = PathBuf::from(override_path);
         return override_path
             .is_file()
             .then_some(CursorRuntime::Native(override_path))
             .ok_or_else(|| {
-                "OPENKIWI_CURSOR_PATH does not point to a Cursor Agent executable.".into()
+                "MYTHRA_CODE_CURSOR_PATH does not point to a Cursor Agent executable.".into()
             });
     }
     let executable_names: &[&str] = if cfg!(windows) {
@@ -453,9 +454,9 @@ async fn resolve_cursor_runtime(app: &AppHandle) -> Result<CursorRuntime, String
         return Ok(runtime);
     }
     #[cfg(windows)]
-    return Err("OpenKiwi could not find Cursor Agent. The Cursor desktop editor and Cursor Agent CLI are separate installs. Install the official native Windows CLI, then return here to sign in.".into());
+    return Err("Mythra Code could not find Cursor Agent. The Cursor desktop editor and Cursor Agent CLI are separate installs. Install the official native Windows CLI, then return here to sign in.".into());
     #[cfg(not(windows))]
-    Err("OpenKiwi could not find Cursor Agent. Install it from cursor.com/docs/cli, then sign in with `cursor-agent login`.".into())
+    Err("Mythra Code could not find Cursor Agent. Install it from cursor.com/docs/cli, then sign in with `cursor-agent login`.".into())
 }
 
 async fn read_cursor_runtime_status(app: &AppHandle) -> CursorRuntimeStatus {
@@ -782,7 +783,7 @@ async fn spawn_cursor_process(
                 if let Some(id) = message.get("id").cloned() {
                     let _ = write_json(&stdin, &json!({
                         "jsonrpc": "2.0", "id": id,
-                        "error": { "code": -32601, "message": format!("OpenKiwi does not support Cursor request `{method}` yet") }
+                        "error": { "code": -32601, "message": format!("Mythra Code does not support Cursor request `{method}` yet") }
                     })).await;
                 }
                 continue;
@@ -850,7 +851,7 @@ async fn initialize_cursor(process: &CursorProcess) -> Result<Value, String> {
                     "terminal": false,
                     "_meta": { "parameterizedModelPicker": true }
                 },
-                "clientInfo": { "name": "OpenKiwi", "version": env!("CARGO_PKG_VERSION") }
+                "clientInfo": { "name": "Mythra Code", "version": env!("CARGO_PKG_VERSION") }
             }),
         )
         .await?;
@@ -898,14 +899,14 @@ fn model_config_id(setup: &Value) -> Option<String> {
 #[tauri::command]
 pub async fn cursor_models(app: AppHandle) -> Result<Vec<CursorModel>, String> {
     // The model catalog query needs a working directory but no project;
-    // OpenKiwi's own data folder avoids handing the agent a shared /tmp cwd.
+    // Mythra Code's own data folder avoids handing the agent a shared /tmp cwd.
     let workspace = app
         .path()
         .app_data_dir()
-        .map_err(|error| format!("Could not resolve OpenKiwi app data: {error}"))?;
+        .map_err(|error| format!("Could not resolve Mythra Code app data: {error}"))?;
     tokio::fs::create_dir_all(&workspace)
         .await
-        .map_err(|error| format!("Could not create OpenKiwi app data: {error}"))?;
+        .map_err(|error| format!("Could not create Mythra Code app data: {error}"))?;
     let process = spawn_cursor_process(&app, &workspace, None).await?;
     let result = async {
         initialize_cursor(&process).await?;

@@ -206,7 +206,7 @@ function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
     const delegation = Boolean(options.targets?.length);
     return {
       name: "openkiwi",
-      command: "/Applications/OpenKiwi.app/Contents/MacOS/openkiwi",
+      command: "/Applications/Mythra Code.app/Contents/MacOS/mythra-code",
       args: ["--openkiwi-agent-bridge", `/tmp/${options.sessionId ?? "session"}.json`],
       configPath: `/tmp/${options.sessionId ?? "session"}.mcp.json`,
       toolNames: delegation
@@ -707,7 +707,7 @@ describe("workspace switching during thread selection", () => {
 
     // Open thread A and send — its turn/start stays in flight.
     await user.click(await screen.findByText("Alpha thread"));
-    const composer = await screen.findByPlaceholderText(/Ask OpenKiwi to work in/);
+    const composer = await screen.findByPlaceholderText(/Ask Mythra Code to work in/);
     await user.type(composer, "start something in alpha{Enter}");
     await waitFor(() => {
       expect(useTaskStore.getState().statuses[THREAD_A.id]).toBe("starting");
@@ -730,7 +730,7 @@ describe("workspace switching during thread selection", () => {
 
     // B must not present as running or queueing just because A is starting.
     expect(screen.queryByText("Enter queues")).not.toBeInTheDocument();
-    const idleComposer = await screen.findByPlaceholderText(/Ask OpenKiwi to work in/);
+    const idleComposer = await screen.findByPlaceholderText(/Ask Mythra Code to work in/);
     expect(idleComposer).not.toHaveAttribute("placeholder", "Queue a follow-up for after this run…");
 
     // A send from B must start a new turn for B — never steer.
@@ -888,7 +888,7 @@ describe("workspace switching during thread selection", () => {
     await user.click(screen.getByRole("button", { name: "Thread provider: OpenAI" }));
     await user.click(screen.getByRole("menuitemradio", { name: /Hand off to Claude/ }));
 
-    const composer = await screen.findByPlaceholderText(/Ask OpenKiwi to work in Alpha/);
+    const composer = await screen.findByPlaceholderText(/Ask Mythra Code to work in Alpha/);
     await waitFor(() => {
       expect((composer as HTMLTextAreaElement).value).toContain("Continue “Alpha thread”");
     });
@@ -908,7 +908,7 @@ describe("workspace switching during thread selection", () => {
     await user.click(screen.getByText("Alpha thread"));
     await waitFor(() => expect(useTaskStore.getState().activeThreadId).toBe(THREAD_A.id));
     await user.click(screen.getByRole("button", { name: /New thread/ }));
-    expect(await screen.findByPlaceholderText(/Ask OpenKiwi to work in Alpha/)).toHaveValue("");
+    expect(await screen.findByPlaceholderText(/Ask Mythra Code to work in Alpha/)).toHaveValue("");
     expect(JSON.parse(localStorage.getItem("kiwi.pendingHandoff") ?? "null")).toBeNull();
   });
 
@@ -930,7 +930,7 @@ describe("workspace switching during thread selection", () => {
 
     expect(await screen.findByText("Provider handoff ready")).toBeInTheDocument();
     expect(await screen.findByRole("button", { name: "New thread provider: Claude" })).toBeInTheDocument();
-    expect(await screen.findByPlaceholderText(/Ask OpenKiwi to work in Alpha/)).toHaveValue("Continue the restored handoff.");
+    expect(await screen.findByPlaceholderText(/Ask Mythra Code to work in Alpha/)).toHaveValue("Continue the restored handoff.");
   });
 
   it("refuses a provider handoff while the source thread owns an isolated worktree", async () => {
@@ -973,7 +973,7 @@ describe("workspace switching during thread selection", () => {
     await renderApp();
 
     await user.click(await screen.findByRole("button", { name: /Isolated worktree/i }));
-    const composer = await screen.findByPlaceholderText(/Ask OpenKiwi to work in/);
+    const composer = await screen.findByPlaceholderText(/Ask Mythra Code to work in/);
     await user.type(composer, "build this in isolation{Enter}");
 
     await waitFor(() => {
@@ -1066,7 +1066,7 @@ describe("workspace switching during thread selection", () => {
     const turnsBefore = invokeMock.mock.calls.filter(
       ([command, args]) => command === "codex_rpc" && args?.method === "turn/start",
     ).length;
-    const composer = await screen.findByPlaceholderText(/Ask OpenKiwi to work in/);
+    const composer = await screen.findByPlaceholderText(/Ask Mythra Code to work in/);
     await user.type(composer, "do not run this{Enter}");
     expect(
       invokeMock.mock.calls.filter(
@@ -1258,7 +1258,7 @@ describe("composer sub-agent command center", () => {
     await user.keyboard("{Escape}");
     await waitFor(() => expect(projectSubagents(PROJECT_A.id)).toMatchObject({ enabled: true }));
 
-    const composer = await screen.findByPlaceholderText(/Ask OpenKiwi to work in/);
+    const composer = await screen.findByPlaceholderText(/Ask Mythra Code to work in/);
     await user.type(composer, "now split this up{Enter}");
 
     await waitFor(() => {
@@ -1271,7 +1271,7 @@ describe("composer sub-agent command center", () => {
       threadId: THREAD_A.id,
       config: {
         features: { multi_agent: false, multi_agent_v2: false },
-        // The user's limit of five rides on the OpenKiwi bridge below, never on
+        // The user's limit of five rides on the Mythra Code bridge below, never on
         // Codex's own agent runtime, which stays pinned so the bridge remains
         // the only spawning authority.
         agents: { max_threads: 1, max_depth: 1 },
@@ -1289,7 +1289,7 @@ describe("composer sub-agent command center", () => {
     await waitFor(() => expect(codexCalls("thread/resume")).not.toHaveLength(0));
     const restartsAfterOpen = invokeMock.mock.calls.filter(([command]) => command === "restart_runtime").length;
 
-    const composer = await screen.findByPlaceholderText(/Ask OpenKiwi to work in/);
+    const composer = await screen.findByPlaceholderText(/Ask Mythra Code to work in/);
     await user.type(composer, "carry on{Enter}");
 
     await waitFor(() => {

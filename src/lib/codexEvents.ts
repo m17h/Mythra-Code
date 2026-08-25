@@ -365,7 +365,7 @@ export function routeCodexEvent(event: CodexEvent, ctx: CodexEventContext): void
       id: `unhandled-request-${String(event.id)}`,
       kind: "warning",
       title: "Unsupported runtime request",
-      detail: `The Codex runtime sent a \`${method}\` request this version of OpenKiwi does not support. It was answered with an empty response; updating OpenKiwi may be required.`,
+      detail: `The Codex runtime sent a \`${method}\` request this version of Mythra Code does not support. It was answered with an empty response; updating Mythra Code may be required.`,
     });
   }
 }

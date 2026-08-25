@@ -157,7 +157,7 @@ describe("useCheckpoints", () => {
     await waitFor(() => expect(result.current.checkpoints[0]).toMatchObject({
       id: incomplete.id,
       status: "failed",
-      error: "OpenKiwi closed before the initial project snapshot finished.",
+      error: "Mythra Code closed before the initial project snapshot finished.",
     }));
     await waitFor(() => expect(checkpointApi.deleteCheckpointSnapshot).toHaveBeenCalledWith(incomplete.id, "/tmp/project"));
   });

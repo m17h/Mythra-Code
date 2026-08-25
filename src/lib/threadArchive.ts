@@ -5,7 +5,7 @@ import type { ThreadKindView } from "./threadList";
 
 /**
  * Archives created before provider metadata was added can still be identified
- * by the presence of OpenKiwi's locally persisted Claude transcript.
+ * by the presence of Mythra Code's locally persisted Claude transcript.
  */
 export function providerForArchivedThread(
   record: Pick<ArchivedThread, "provider">,

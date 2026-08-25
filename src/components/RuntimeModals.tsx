@@ -20,7 +20,7 @@ export function RuntimeSetupModal({
         <div className="runtime-setup-copy">
           <span className="runtime-eyebrow">One-time setup</span>
           <h2 id="runtime-setup-title">Connect the Codex runtime</h2>
-          <p>OpenKiwi uses Codex App Server locally for ChatGPT subscription sign-in, OpenRouter, tools, approvals, and threads. Install the official Codex CLI to continue.</p>
+          <p>Mythra Code uses Codex App Server locally for ChatGPT subscription sign-in, OpenRouter, tools, approvals, and threads. Install the official Codex CLI to continue.</p>
         </div>
         <div className="runtime-options">
           <div className="runtime-option recommended">
@@ -28,7 +28,7 @@ export function RuntimeSetupModal({
             <div><strong>Codex CLI <em>Recommended</em></strong><small>The dependable cross-platform option and easiest runtime to keep current.</small></div>
           </div>
         </div>
-        <div className="runtime-note"><Check size={13} /> Your ChatGPT login still happens in the official browser flow and remains isolated to OpenKiwi.</div>
+        <div className="runtime-note"><Check size={13} /> Your ChatGPT login still happens in the official browser flow and remains isolated to Mythra Code.</div>
         <div className="runtime-setup-actions">
           <button className="secondary-button" onClick={onClose}>Not now</button>
           <button className="secondary-button" onClick={() => void openUrl("https://learn.chatgpt.com/docs/codex/cli")}><ExternalLink size={13} /> Installation guide</button>
@@ -62,7 +62,7 @@ export function AuthRequiredModal({
         </div>
         <div className="auth-required-detail">
           <ShieldCheck size={17} />
-          <div><strong>Official browser sign-in</strong><small>Codex opens ChatGPT in your default browser and stores the resulting session inside OpenKiwi’s isolated credential store.</small></div>
+          <div><strong>Official browser sign-in</strong><small>Codex opens ChatGPT in your default browser and stores the resulting session inside Mythra Code’s isolated credential store.</small></div>
         </div>
         <div className="runtime-setup-actions">
           <button className="secondary-button" onClick={onClose}>Not now</button>

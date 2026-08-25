@@ -321,7 +321,7 @@ export function StudioDock(props: {
 
         {props.tab === "terminal" && <>
           <PanelHeader icon={TerminalSquare} title="Terminal" subtitle={props.projectName || "Project shell"} onClose={props.onClose} />
-          <XtermPanel outputStore={props.terminalOutput} placeholder={"OPENKIWI terminal ready\n"} running={props.terminalRunning} onInput={props.onTerminalInput} onResize={props.onTerminalResize} />
+          <XtermPanel outputStore={props.terminalOutput} placeholder={"MYTHRA CODE terminal ready\n"} running={props.terminalRunning} onInput={props.onTerminalInput} onResize={props.onTerminalResize} />
           <div className="terminal-input"><span>$</span><input aria-label="Terminal command" value={props.terminalCommand} onChange={(e) => props.onTerminalCommand(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !props.terminalRunning) props.onRunTerminal(); }} placeholder="npm test" /><button aria-label={props.terminalRunning ? "Stop terminal command" : "Run terminal command"} onClick={props.terminalRunning ? props.onStopTerminal : props.onRunTerminal}>{props.terminalRunning ? <CircleStop size={14} /> : <Play size={14} />}</button></div>
         </>}
 
@@ -330,7 +330,7 @@ export function StudioDock(props: {
           <div className="studio-actions wrap">
             <button onClick={props.onCheckpoint} disabled={!props.activeThread || Boolean(props.checkpointBusyId)}><Plus size={13} /> Save current state</button>
           </div>
-          <div className="checkpoint-note"><ShieldCheck size={14} /><div><strong>Every model run is protected automatically.</strong><span>Restore moves the complete source worktree to that point. OpenKiwi saves the current state first, while Git commits and ignored files remain unchanged.</span></div></div>
+          <div className="checkpoint-note"><ShieldCheck size={14} /><div><strong>Every model run is protected automatically.</strong><span>Restore moves the complete source worktree to that point. Mythra Code saves the current state first, while Git commits and ignored files remain unchanged.</span></div></div>
           <div className="checkpoint-list">
             {props.checkpoints.length ? props.checkpoints.map((checkpoint) => {
               const currentPosition = props.checkpointHead?.checkpointId === checkpoint.id
@@ -514,7 +514,7 @@ export function StudioDock(props: {
         </>}
 
         {props.tab === "git" && <>
-          <PanelHeader icon={GitBranch} title="Git workspace" subtitle="Shape changes without leaving OPENKIWI" onClose={props.onClose} />
+          <PanelHeader icon={GitBranch} title="Git workspace" subtitle="Shape changes without leaving MYTHRA CODE" onClose={props.onClose} />
           {props.gitActionsReadOnly && <div className="history-warning"><ShieldCheck size={13} /> Read only allows Status and Diff. Switch thread access to Ask or Full access before changing Git or contacting GitHub.</div>}
           <div className="github-repo-card">
             <span className="github-repo-icon"><GitFork size={16} /></span>

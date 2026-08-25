@@ -25,7 +25,7 @@ export function useCodexEvents(context: CodexEventContext): void {
       })
       .catch((reason) => {
         contextRef.current.onError(
-          `OpenKiwi could not subscribe to runtime events: ${reason instanceof Error ? reason.message : String(reason)}`,
+          `Mythra Code could not subscribe to runtime events: ${reason instanceof Error ? reason.message : String(reason)}`,
         );
       });
     return () => {

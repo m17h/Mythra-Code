@@ -68,7 +68,7 @@ export function HarnessSettings({ section, settings, profiles, agents, actions, 
   return <>
     {section === "prompts" &&
     <section className="settings-section">
-      <div className="settings-section-heading"><div className="settings-icon"><NotebookPen size={17} /></div><div><h3>Prompt profiles</h3><p>Save and switch complete global, Codex, and Claude prompt sets. OpenKiwi includes no built-in profiles.</p></div></div>
+      <div className="settings-section-heading"><div className="settings-icon"><NotebookPen size={17} /></div><div><h3>Prompt profiles</h3><p>Save and switch complete global, Codex, and Claude prompt sets. Mythra Code includes no built-in profiles.</p></div></div>
       {profiles.length ? (
         <div className="profile-grid">{profiles.map((profile) => {
           const characters = profile.prompt.length + (profile.codexPrompt?.length ?? 0) + (profile.claudePrompt?.length ?? 0);
@@ -142,7 +142,7 @@ export function HarnessSettings({ section, settings, profiles, agents, actions, 
 
     {section === "tools" &&
     <section className="settings-section">
-      <div className="settings-section-heading"><div className="settings-icon"><Wrench size={17} /></div><div><h3>MCP servers</h3><p>Add a local stdio MCP server. Its command is written to OpenKiwi’s isolated Codex configuration.</p></div></div>
+      <div className="settings-section-heading"><div className="settings-icon"><Wrench size={17} /></div><div><h3>MCP servers</h3><p>Add a local stdio MCP server. Its command is written to Mythra Code’s isolated Codex configuration.</p></div></div>
       {mcpServers.length > 0 && (
         <div className="manager-list">
           {mcpServers.map((server) => (
@@ -153,7 +153,7 @@ export function HarnessSettings({ section, settings, profiles, agents, actions, 
                 className="manager-delete"
                 aria-label={`Remove MCP server ${server.name}`}
                 onClick={async () => {
-                  if (!await confirmDialog(`Remove the MCP server “${server.name}” from OpenKiwi’s configuration?`)) return;
+                  if (!await confirmDialog(`Remove the MCP server “${server.name}” from Mythra Code’s configuration?`)) return;
                   setMcpStatus("Removing…");
                   void rpc("config/value/write", { keyPath: `mcp_servers.${server.name}`, value: null, mergeStrategy: "replace" })
                     .catch(() => rpc("config/value/delete", { keyPath: `mcp_servers.${server.name}` }))

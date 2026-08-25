@@ -1,6 +1,6 @@
 # Windows release assets
 
-This directory is local staging for the newest OpenKiwi Windows release only.
+This directory is local staging for the newest Mythra Code Windows release only.
 
 `Windows/build.ps1` deletes the previous generated assets before starting a new
 release build, preserves this README, and writes the validated installer,

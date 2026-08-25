@@ -1,6 +1,6 @@
-# OpenKiwi roadmap
+# Mythra Code roadmap
 
-OpenKiwi 1.0 establishes the core product: a fast, local-first macOS workspace for running and reviewing coding agents across providers. Post-1.0 work should deepen safety, recoverability, review quality, and provider interoperability before expanding into unrelated product areas.
+Mythra Code 1.0 establishes the core product: a fast, local-first macOS workspace for running and reviewing coding agents across providers. Post-1.0 work should deepen safety, recoverability, review quality, and provider interoperability before expanding into unrelated product areas.
 
 ## 1.1 — Safer parallel work
 
@@ -12,7 +12,7 @@ OpenKiwi 1.0 establishes the core product: a fast, local-first macOS workspace f
 - [x] Provide clear actions to review, merge or apply changes, open the worktree, recover a missing worktree, and clean it up.
 - [x] Warn before starting concurrent shared-folder runs that could edit the same files.
 - [x] Continue supporting non-Git projects through the existing shared-folder mode.
-- [ ] Consider isolated conversation forks later; OpenKiwi currently blocks them rather than allowing two threads to silently share one worktree.
+- [ ] Consider isolated conversation forks later; Mythra Code currently blocks them rather than allowing two threads to silently share one worktree.
 
 ### Provider and process recovery
 
@@ -55,7 +55,7 @@ OpenKiwi 1.0 establishes the core product: a fast, local-first macOS workspace f
 - Present test results and relevant warnings alongside the diff.
 - [x] Connect a GitHub account, attach/create/clone repositories, and provide guided commit, fetch, pull, push, and draft pull-request actions.
 - Add guided release-note actions with explicit user confirmation.
-- Provide a concise shipping checklist rather than turning OpenKiwi into a full code editor.
+- Provide a concise shipping checklist rather than turning Mythra Code into a full code editor.
 
 ### Reusable project profiles
 
@@ -90,7 +90,7 @@ OpenKiwi 1.0 establishes the core product: a fast, local-first macOS workspace f
 
 ## Product boundaries
 
-Unless the product direction changes, OpenKiwi should not prioritize:
+Unless the product direction changes, Mythra Code should not prioritize:
 
 - Building a complete code editor or replacing the user's IDE.
 - Adding providers solely to increase the provider count.

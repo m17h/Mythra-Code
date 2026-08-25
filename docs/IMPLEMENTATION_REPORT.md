@@ -1,4 +1,4 @@
-# OpenKiwi frontier-workflow implementation report
+# Mythra Code frontier-workflow implementation report
 
 Date: 2026-07-17
 Version: 0.1.0
@@ -35,7 +35,7 @@ Version: 0.1.0
 - Added persistent custom-agent profiles and injects enabled specialists only when a new thread is configured.
 - Preserved the opt-in sub-agent gate, direct-child depth, and 1–24 concurrency selection.
 - Added skill enable/disable, local MCP server registration, MCP reload/status, and MCP OAuth.
-- Added scheduled project prompts that create normal, inspectable threads while OpenKiwi is running.
+- Added scheduled project prompts that create normal, inspectable threads while Mythra Code is running.
 
 ### Models and performance
 
@@ -58,9 +58,9 @@ Version: 0.1.0
 
 ## Artifacts
 
-- `src-tauri/target/release/bundle/macos/OpenKiwi.app` — 17 MB, Apple silicon.
-- `src-tauri/target/release/bundle/dmg/OpenKiwi_0.1.0_aarch64.dmg` — 9.1 MB.
+- `src-tauri/target/release/bundle/macos/Mythra Code.app` — 17 MB, Apple silicon.
+- `src-tauri/target/release/bundle/dmg/Mythra Code_0.1.0_aarch64.dmg` — 9.1 MB.
 
 ## Distribution boundary
 
-The local app is ad-hoc signed and valid for testing. Public macOS distribution still requires the repository owner’s Apple Developer ID certificate and notarization credentials. OpenKiwi intentionally does not bundle Codex; users can install the Codex CLI or ChatGPT for macOS, and the setup UI detects either runtime.
+The local app is ad-hoc signed and valid for testing. Public macOS distribution still requires the repository owner’s Apple Developer ID certificate and notarization credentials. Mythra Code intentionally does not bundle Codex; users can install the Codex CLI or ChatGPT for macOS, and the setup UI detects either runtime.

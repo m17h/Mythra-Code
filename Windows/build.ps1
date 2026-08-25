@@ -14,9 +14,9 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $packagePath = Join-Path $repoRoot "package.json"
 $tauriConfigPath = Join-Path $repoRoot "src-tauri\tauri.conf.json"
 $bundleDirectory = Join-Path $repoRoot "src-tauri\target\release\bundle\nsis"
-$binaryPath = Join-Path $repoRoot "src-tauri\target\release\openkiwi.exe"
+$binaryPath = Join-Path $repoRoot "src-tauri\target\release\mythra-code.exe"
 $outputDirectory = Join-Path $repoRoot "RELEASE ASSETS"
-$releaseRepository = "m17h/OpenKiwi"
+$releaseRepository = "m17h/Mythra-Code"
 $defaultUpdaterKeyPath = Join-Path $env:USERPROFILE ".tauri\openkiwi-windows-updater.key"
 $defaultUpdaterPasswordPath = Join-Path $env:USERPROFILE ".tauri\openkiwi-windows-updater-password.xml"
 Set-Location -LiteralPath $repoRoot
@@ -34,10 +34,10 @@ function Invoke-Checked {
 }
 
 if (-not [Environment]::Is64BitOperatingSystem) {
-  throw "OpenKiwi's Windows release currently requires 64-bit Windows."
+  throw "Mythra Code's Windows release currently requires 64-bit Windows."
 }
 if (-not (Test-Path $packagePath) -or -not (Test-Path $tauriConfigPath)) {
-  throw "Run Windows/build.ps1 from an OpenKiwi checkout."
+  throw "Run Windows/build.ps1 from a Mythra Code checkout."
 }
 
 # Clear the previous release before starting. This prevents a failed build from
@@ -116,15 +116,17 @@ if (Test-Path $bundleDirectory) {
 }
 Invoke-Checked -Command $npx -Arguments $tauriArguments
 
-$installerName = "OpenKiwi_${version}_x64-setup.exe"
-$installerPath = Join-Path $bundleDirectory $installerName
-$signaturePath = "$installerPath.sig"
-foreach ($artifact in @($binaryPath, $installerPath, $signaturePath)) {
+$sourceInstallerName = "Mythra Code_${version}_x64-setup.exe"
+$sourceInstallerPath = Join-Path $bundleDirectory $sourceInstallerName
+$sourceSignaturePath = "$sourceInstallerPath.sig"
+$installerName = "MythraCode_${version}_x64-setup.exe"
+$signatureName = "$installerName.sig"
+foreach ($artifact in @($binaryPath, $sourceInstallerPath, $sourceSignaturePath)) {
   if (-not (Test-Path -LiteralPath $artifact -PathType Leaf)) {
     throw "Missing Windows release artifact: $artifact"
   }
 }
-if ((Get-Item -LiteralPath $signaturePath).Length -le 0) {
+if ((Get-Item -LiteralPath $sourceSignaturePath).Length -le 0) {
   throw "The Windows updater signature is empty."
 }
 
@@ -142,12 +144,12 @@ if ($peSubsystem -ne 2) {
   throw "Native Windows executable uses PE subsystem $peSubsystem instead of Windows GUI (2); it would open a background terminal window."
 }
 
-$versionInfo = (Get-Item -LiteralPath $installerPath).VersionInfo
+$versionInfo = (Get-Item -LiteralPath $sourceInstallerPath).VersionInfo
 if ([string]$versionInfo.ProductVersion -ne $version -or [string]$versionInfo.FileVersion -ne $version) {
   throw "Installer version mismatch: expected $version, product=$($versionInfo.ProductVersion), file=$($versionInfo.FileVersion)."
 }
 
-$installerBytes = [System.IO.File]::ReadAllBytes($installerPath)
+$installerBytes = [System.IO.File]::ReadAllBytes($sourceInstallerPath)
 if ($installerBytes.Length -lt 256) {
   throw "The Windows installer is too small to contain a valid PE header."
 }
@@ -170,7 +172,7 @@ $certificateTableAddress = [BitConverter]::ToUInt32($installerBytes, $certificat
 $certificateTableSize = [BitConverter]::ToUInt32($installerBytes, $certificateDirectoryOffset + 4)
 $authenticodeStatus = if ($certificateTableAddress -eq 0 -and $certificateTableSize -eq 0) { "NotSigned" } else { "Signed" }
 if ($authenticodeStatus -ne "NotSigned") {
-  throw "OpenKiwi Windows installers are intentionally unsigned, but Authenticode reported status: $authenticodeStatus."
+  throw "Mythra Code Windows installers are intentionally unsigned, but Authenticode reported status: $authenticodeStatus."
 }
 
 if (-not $SkipLaunchSmoke) {
@@ -178,7 +180,7 @@ if (-not $SkipLaunchSmoke) {
   try {
     Start-Sleep -Seconds 5
     if ($process.HasExited) {
-      throw "OpenKiwi exited during the Windows launch smoke test with code $($process.ExitCode)."
+      throw "Mythra Code exited during the Windows launch smoke test with code $($process.ExitCode)."
     }
   } finally {
     if (-not $process.HasExited) {
@@ -188,10 +190,10 @@ if (-not $SkipLaunchSmoke) {
   }
 }
 
-Copy-Item -LiteralPath $installerPath -Destination (Join-Path $outputDirectory $installerName)
-Copy-Item -LiteralPath $signaturePath -Destination (Join-Path $outputDirectory "$installerName.sig")
+Copy-Item -LiteralPath $sourceInstallerPath -Destination (Join-Path $outputDirectory $installerName)
+Copy-Item -LiteralPath $sourceSignaturePath -Destination (Join-Path $outputDirectory $signatureName)
 
-$installerStream = [System.IO.File]::OpenRead($installerPath)
+$installerStream = [System.IO.File]::OpenRead($sourceInstallerPath)
 $sha256Algorithm = [System.Security.Cryptography.SHA256]::Create()
 try {
   $sha256 = ([BitConverter]::ToString($sha256Algorithm.ComputeHash($installerStream))).Replace("-", "").ToLowerInvariant()
@@ -205,7 +207,7 @@ $buildInfo = [ordered]@{
   platform = "windows-x86_64"
   architecture = "x64"
   installer = $installerName
-  signature = "$installerName.sig"
+  signature = $signatureName
   sha256 = $sha256
   authenticodeStatus = $authenticodeStatus
   peSubsystem = "WindowsGui"
@@ -215,10 +217,10 @@ $buildInfo = [ordered]@{
 $utf8WithoutBom = [System.Text.UTF8Encoding]::new($false)
 [System.IO.File]::WriteAllText((Join-Path $outputDirectory "build-info.json"), ($buildInfo | ConvertTo-Json), $utf8WithoutBom)
 
-$updaterSignature = (Get-Content -LiteralPath $signaturePath -Raw).Trim()
+$updaterSignature = (Get-Content -LiteralPath $sourceSignaturePath -Raw).Trim()
 $releaseManifest = [ordered]@{
   version = $version
-  notes = "OpenKiwi for Windows $version"
+  notes = "Mythra Code for Windows $version"
   pub_date = [DateTime]::UtcNow.ToString("o")
   platforms = [ordered]@{
     "windows-x86_64" = [ordered]@{
@@ -229,6 +231,6 @@ $releaseManifest = [ordered]@{
 }
 [System.IO.File]::WriteAllText((Join-Path $outputDirectory "latest.json"), ($releaseManifest | ConvertTo-Json -Depth 5), $utf8WithoutBom)
 
-Write-Output "Prepared OpenKiwi $version Windows release assets in $outputDirectory"
+Write-Output "Prepared Mythra Code $version Windows release assets in $outputDirectory"
 Get-ChildItem -LiteralPath $outputDirectory | Sort-Object Name | ForEach-Object { Write-Output "- $($_.Name)" }
 Write-Warning "The installer is updater-signed but intentionally not Authenticode-signed. Windows SmartScreen may show Unknown publisher."

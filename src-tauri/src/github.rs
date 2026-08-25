@@ -35,12 +35,13 @@ pub(super) struct GitHubRepoStatus {
 
 pub(super) async fn resolve_github_binary(app: &AppHandle) -> Result<PathBuf, String> {
     let executable_name = if cfg!(windows) { "gh.exe" } else { "gh" };
-    if let Some(override_path) = env::var_os("OPENKIWI_GH_PATH") {
+    let legacy_override = concat!("OPEN", "KIWI_GH_PATH");
+    if let Some(override_path) = env::var_os("MYTHRA_CODE_GH_PATH").or_else(|| env::var_os(legacy_override)) {
         let override_path = PathBuf::from(override_path);
         return override_path
             .is_file()
             .then_some(override_path)
-            .ok_or_else(|| "OPENKIWI_GH_PATH does not point to a GitHub CLI executable.".into());
+            .ok_or_else(|| "MYTHRA_CODE_GH_PATH does not point to a GitHub CLI executable.".into());
     }
     let mut candidates = Vec::new();
     if let Some(candidate) = find_on_path(executable_name) {

@@ -63,7 +63,7 @@ const OPENAI_THREAD: Thread = {
 
 const BRIDGE_LAUNCH = {
   name: "openkiwi",
-  command: "/Applications/OpenKiwi.app/Contents/MacOS/openkiwi",
+  command: "/Applications/Mythra Code.app/Contents/MacOS/mythra-code",
   args: ["--openkiwi-agent-bridge", "/data/child-agents/abc/session.json"],
   configPath: "/data/child-agents/abc/mcp.json",
   toolNames: ["spawn_agent", "agent_status", "collect_agent", "cancel_agent"],
@@ -774,7 +774,7 @@ describe("useTurnRunner activating sub-agents mid-conversation", () => {
     await act(async () => { await result.current.sendMessage("more of them"); });
 
     expect(restartRuntimeForCapabilities).toHaveBeenCalledExactlyOnceWith(OPENAI_THREAD.id);
-    // The raised limit belongs to the OpenKiwi bridge, which enforces it per
+    // The raised limit belongs to the Mythra Code bridge, which enforces it per
     // spawn. It is deliberately not mirrored into Codex's own agent runtime,
     // which would otherwise get a second budget stacked on the bridge's.
     expect(resumeCall()?.[1]).toMatchObject({ config: { agents: { max_threads: 1, max_depth: 1 } } });
@@ -952,7 +952,7 @@ describe("useTurnRunner activating sub-agents mid-conversation", () => {
 
     expect(claude.startClaudeTurn).toHaveBeenCalledWith(expect.objectContaining({
       childAgentBridgeConfig: BRIDGE_LAUNCH.configPath,
-      systemPrompt: expect.stringContaining("OpenKiwi-managed sub-agent delegation is active"),
+      systemPrompt: expect.stringContaining("Mythra Code-managed sub-agent delegation is active"),
     }));
     expect(claude.startClaudeTurn.mock.calls[0][0]).not.toHaveProperty("subagentsEnabled");
   });
@@ -966,7 +966,7 @@ describe("useTurnRunner activating sub-agents mid-conversation", () => {
 
     expect(cursor.startCursorTurn).toHaveBeenCalledWith(expect.objectContaining({
       childAgentBridge: { name: BRIDGE_LAUNCH.name, command: BRIDGE_LAUNCH.command, args: BRIDGE_LAUNCH.args },
-      systemPrompt: expect.stringContaining("OpenKiwi-managed sub-agent delegation is active"),
+      systemPrompt: expect.stringContaining("Mythra Code-managed sub-agent delegation is active"),
     }));
   });
 

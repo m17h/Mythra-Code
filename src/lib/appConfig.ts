@@ -8,11 +8,12 @@ export const DEFAULT_OPENAI_MODEL = "gpt-5.6-sol";
 export const DEFAULT_CLAUDE_MODEL = "claude-fable-5";
 export const DEFAULT_CURSOR_MODEL = "auto";
 export const DEFAULT_LM_STUDIO_BASE_URL = "http://127.0.0.1:1234/v1";
-export const RELEASE_NOTES_URL = "https://github.com/m17h/OpenKiwi/releases/latest";
+export const RELEASE_NOTES_URL = "https://github.com/m17h/Mythra-Code/releases/latest";
 
 export const THEMES: Array<{ id: ThemeName; name: string; description: string; swatches: [string, string, string] }> = [
-  { id: "kiwi", name: "OpenKiwi", description: "Deep graphite with electric green", swatches: ["#1e2024", "#292d32", "#a7e26f"] },
-  { id: "daylight", name: "Daylight", description: "Paper white with a deep leaf green", swatches: ["#f4f5f2", "#ffffff", "#3e8e22"] },
+  { id: "mythra", name: "Mythra", description: "Deep graphite with luminous cyan", swatches: ["#1e2024", "#292d32", "#64ddf2"] },
+  { id: "kiwi", name: "Kiwi", description: "Deep graphite with electric green", swatches: ["#1e2024", "#292d32", "#a7e26f"] },
+  { id: "daylight", name: "Light Kiwi", description: "Paper white with a deep leaf green", swatches: ["#f4f5f2", "#ffffff", "#3e8e22"] },
   { id: "midnight", name: "Midnight", description: "Deep ocean blue with arctic ice", swatches: ["#14181f", "#1d232d", "#7fc4ff"] },
   { id: "synthwave", name: "Synthwave", description: "Neon violet with hot magenta", swatches: ["#17131f", "#221b2e", "#ff6ac1"] },
   { id: "ember", name: "Ember", description: "Warm charcoal with molten amber", swatches: ["#1e1a17", "#292420", "#ffb45f"] },
@@ -48,7 +49,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   reasoningEffort: "medium",
   ultra: false,
   serviceTier: null,
-  theme: "kiwi",
+  theme: "mythra",
   effortSlider: "spectrum",
   notificationsEnabled: true,
   terminalScrollback: 100_000,
@@ -56,5 +57,5 @@ export const DEFAULT_SETTINGS: AppSettings = {
   usageDisplay: DEFAULT_USAGE_DISPLAY,
 };
 
-/** OpenKiwi ships no opinions as profiles; every saved profile belongs to the user. */
+/** Mythra Code ships no opinions as profiles; every saved profile belongs to the user. */
 export const DEFAULT_PROMPT_PROFILES: PromptProfile[] = [];
