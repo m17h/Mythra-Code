@@ -280,7 +280,7 @@ export function SkillLibrary({
     <section className="settings-section skill-library-section">
       <div className="settings-section-heading settings-heading-with-action">
         <div className="settings-icon"><Boxes size={17} /></div>
-        <div><h3>Local skill library</h3><p>Markdown workflows that OpenKiwi exposes by name to OpenAI, OpenRouter, and LM Studio models.</p></div>
+        <div><h3>Local skill library</h3><p>Markdown workflows that Mythra Code exposes by name to OpenAI, OpenRouter, and LM Studio models.</p></div>
         {folder && <button className="secondary-button" onClick={() => beginLibraryAction(onRefresh)} disabled={busy}>{busy ? <LoaderCircle className="spin" size={12} /> : <RefreshCw size={12} />} Rescan</button>}
       </div>
 
@@ -349,7 +349,7 @@ export function SkillLibrary({
                   <small className="skill-card-path">{skill.relativePath}{skill.supportingMarkdownCount ? ` · ${skill.supportingMarkdownCount} supporting Markdown file${skill.supportingMarkdownCount === 1 ? "" : "s"}` : ""}</small>
                 </div>
                 <div className="skill-card-actions">
-                  <button type="button" onClick={() => openSourceEditor(skill)} aria-label={`Edit ${skill.name} skill`} title="Edit skill Markdown in OpenKiwi"><FilePenLine size={13} /></button>
+                  <button type="button" onClick={() => openSourceEditor(skill)} aria-label={`Edit ${skill.name} skill`} title="Edit skill Markdown in Mythra Code"><FilePenLine size={13} /></button>
                   {editingPath !== skill.path && <button type="button" onClick={() => { setEditingPath(skill.path); setNameDraft(skill.name); }} aria-label={`Rename ${skill.name}`} title="Change the app-only invocation name"><Pencil size={13} /></button>}
                   <button type="button" onClick={() => void revealItemInDir(skill.path)} aria-label={`Show ${skill.name} in folder`} title="Show source file"><FolderOpen size={13} /></button>
                   <button type="button" className="danger-icon-button" onClick={() => setPendingRemoval(skill)} aria-label={`Remove ${skill.name}`} title="Remove skill"><Trash2 size={13} /></button>
@@ -380,7 +380,7 @@ export function SkillLibrary({
 
         {removedSkills.length > 0 && (
           <div className="skill-removed-group">
-            <div className="skill-library-meta"><h4>Removed from OpenKiwi</h4><span>{removedSkills.length} kept on disk</span></div>
+            <div className="skill-library-meta"><h4>Removed from Mythra Code</h4><span>{removedSkills.length} kept on disk</span></div>
             <ul className="skill-removed-list">
               {removedSkills.map((skill) => (
                 <li key={skill.path}>
@@ -399,7 +399,7 @@ export function SkillLibrary({
                 <span className="skill-create-icon"><Plus size={15} aria-hidden="true" /></span>
                 <span>
                   <strong id={`${fieldId}-create`}>New Markdown skill</strong>
-                  <small>OpenKiwi writes the file into your skills folder. You can edit it here or in any Markdown editor afterward.</small>
+                  <small>Mythra Code writes the file into your skills folder. You can edit it here or in any Markdown editor afterward.</small>
                 </span>
               </div>
 
@@ -451,8 +451,8 @@ export function SkillLibrary({
         </div>
 
         <ul className="skill-notes">
-          <li><Check size={13} aria-hidden="true" /><span>Top-level <code>.md</code> files and nested <code>SKILL.md</code> packages are detected. Renaming changes only the invocation name inside OpenKiwi.</span></li>
-          <li><Check size={13} aria-hidden="true" /><span>Relative <code>.md</code> references are mirrored when OpenKiwi prepares a skill. Its source changes only when you explicitly save it in the editor.</span></li>
+          <li><Check size={13} aria-hidden="true" /><span>Top-level <code>.md</code> files and nested <code>SKILL.md</code> packages are detected. Renaming changes only the invocation name inside Mythra Code.</span></li>
+          <li><Check size={13} aria-hidden="true" /><span>Relative <code>.md</code> references are mirrored when Mythra Code prepares a skill. Its source changes only when you explicitly save it in the editor.</span></li>
         </ul>
 
         {sourceEditorSkill && (
@@ -481,7 +481,7 @@ export function SkillLibrary({
                 <span className="skill-create-icon"><FilePenLine size={15} aria-hidden="true" /></span>
                 <span>
                   <strong id={`${fieldId}-editor-title`}>Edit @{sourceEditorSkill.name}</strong>
-                  <small id={`${fieldId}-editor-description`}>Saving updates <code>{sourceEditorSkill.relativePath}</code> and refreshes the skill used by OpenKiwi.</small>
+                  <small id={`${fieldId}-editor-description`}>Saving updates <code>{sourceEditorSkill.relativePath}</code> and refreshes the skill used by Mythra Code.</small>
                 </span>
                 <button type="button" onClick={() => closeSourceEditor()} aria-label="Close skill editor" disabled={sourceSaving}><X size={15} /></button>
               </div>
@@ -541,7 +541,7 @@ export function SkillLibrary({
               </div>
               <div className="skill-remove-actions">
                 <button data-autofocus type="button" className="secondary-button" onClick={() => setPendingRemoval(null)} disabled={removing}>Cancel</button>
-                <button type="button" className="secondary-button" onClick={() => void confirmRemoval(false)} disabled={removing}>Remove from OpenKiwi</button>
+                <button type="button" className="secondary-button" onClick={() => void confirmRemoval(false)} disabled={removing}>Remove from Mythra Code</button>
                 <button type="button" className="danger-button" onClick={() => void confirmRemoval(true)} disabled={removing}>{removing ? <LoaderCircle className="spin" size={13} /> : <Trash2 size={13} />} Delete source file too</button>
               </div>
             </div>

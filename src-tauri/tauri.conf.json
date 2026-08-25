@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "OpenKiwi",
+  "productName": "Mythra Code",
   "version": "1.9.1",
   "identifier": "com.kiwi.harness",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "OpenKiwi",
+        "title": "Mythra Code",
         "width": 1380,
         "height": 900,
         "minWidth": 980,
@@ -23,7 +23,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost https://raw.githubusercontent.com/m17h/OpenKiwi/; img-src 'self' asset: http://asset.localhost data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'",
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost https://raw.githubusercontent.com/m17h/Mythra-Code/; img-src 'self' asset: http://asset.localhost data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'",
       "assetProtocol": {
         "enable": true,
         "scope": [
@@ -46,13 +46,13 @@
       "icons/icon.ico"
     ],
     "category": "DeveloperTool",
-    "shortDescription": "OpenKiwi, a transparent AI coding harness"
+    "shortDescription": "Mythra Code, a transparent AI coding harness"
   },
   "plugins": {
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEREMjg0NDc1QTlCN0Q0OEYKUldTUDFMZXBkVVFvM1NHa21BajdjbXN5ZStISEhIeWlEbW00NDN2VHZCWmZjc3FpTmNwWG81UHQK",
       "endpoints": [
-        "https://github.com/m17h/OpenKiwi/releases/latest/download/latest.json"
+        "https://github.com/m17h/Mythra-Code/releases/latest/download/latest.json"
       ]
     }
   }

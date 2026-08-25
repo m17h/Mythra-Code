@@ -2,13 +2,20 @@ use super::*;
 use std::process::Command as StdCommand;
 
 #[test]
-fn claude_always_uses_openkiwi_as_its_only_subagent_route() {
+fn claude_always_uses_mythra_code_as_its_only_subagent_route() {
     let disallowed = claude_disallowed_tools("ask");
     assert!(disallowed.contains(&"Task"));
     assert!(disallowed.contains(&"SendMessage"));
     assert!(disallowed.contains(&"TaskCreate"));
     assert!(disallowed.contains(&"TaskUpdate"));
     assert!(disallowed.contains(&"TeamCreate"));
+}
+
+#[test]
+fn worktree_branches_use_mythra_and_keep_legacy_branches_manageable() {
+    assert!(is_managed_worktree_branch("mythra/new-thread"));
+    assert!(is_managed_worktree_branch("openkiwi/existing-thread"));
+    assert!(!is_managed_worktree_branch("feature/unmanaged"));
 }
 
 #[test]
@@ -110,9 +117,9 @@ fn test_git(repo: &Path, args: &[&str]) -> String {
     let output = StdCommand::new("git")
         .current_dir(repo)
         .args(args)
-        .env("GIT_AUTHOR_NAME", "OpenKiwi Tests")
+        .env("GIT_AUTHOR_NAME", "Mythra Code Tests")
         .env("GIT_AUTHOR_EMAIL", "tests@openkiwi.local")
-        .env("GIT_COMMITTER_NAME", "OpenKiwi Tests")
+        .env("GIT_COMMITTER_NAME", "Mythra Code Tests")
         .env("GIT_COMMITTER_EMAIL", "tests@openkiwi.local")
         .output()
         .expect("run git");
@@ -259,7 +266,7 @@ fn github_remote_attachment_validates_and_refuses_to_replace_origin() {
     ));
     fs::create_dir_all(&project).expect("create project");
     test_git(&project, &["init", "-b", "main"]);
-    fs::write(project.join("README.md"), "OpenKiwi\n").expect("write source");
+    fs::write(project.join("README.md"), "Mythra Code\n").expect("write source");
     test_git(&project, &["add", "."]);
     test_git(&project, &["commit", "-m", "Initial"]);
 
@@ -1364,7 +1371,7 @@ base_url = \"https://openrouter.ai/api/v1\"
     assert!(updated.contains("project_doc_max_bytes = 0"));
     assert!(updated.contains("cli_auth_credentials_store = \"keyring\""));
     assert!(updated.contains("max_threads = 1"));
-    // The OpenKiwi bridge is the only spawning authority, so a drifted native
+    // The Mythra Code bridge is the only spawning authority, so a drifted native
     // depth is pulled back to one alongside the thread ceiling.
     assert!(updated.contains("max_depth = 1"));
     assert!(!updated.contains("max_depth = 3"));
@@ -1645,7 +1652,7 @@ fn local_skill_deletion_only_removes_a_detected_source_file() {
     assert!(supporting.exists());
 
     let error = delete_local_skill_source(&root, &supporting).unwrap_err();
-    assert!(error.contains("not a detected OpenKiwi skill"));
+    assert!(error.contains("not a detected Mythra Code skill"));
     assert!(supporting.exists());
 
     fs::remove_dir_all(root).unwrap();
@@ -1712,13 +1719,13 @@ fn local_skill_editor_reads_and_updates_only_detected_skill_sources() {
     update_local_skill_source(
         &root,
         &source,
-        "# Review\n\nUpdated in OpenKiwi.\n",
+        "# Review\n\nUpdated in Mythra Code.\n",
         "# Review\n\nOriginal instructions.\n",
     )
     .unwrap();
     assert_eq!(
         fs::read_to_string(&source).unwrap(),
-        "# Review\n\nUpdated in OpenKiwi.\n"
+        "# Review\n\nUpdated in Mythra Code.\n"
     );
 
     let error = update_local_skill_source(
@@ -1728,33 +1735,33 @@ fn local_skill_editor_reads_and_updates_only_detected_skill_sources() {
         "# Details\n\nSupporting material.\n",
     )
     .unwrap_err();
-    assert!(error.contains("not a detected OpenKiwi skill"));
+    assert!(error.contains("not a detected Mythra Code skill"));
     assert_eq!(
         fs::read_to_string(&supporting).unwrap(),
         "# Details\n\nSupporting material.\n"
     );
 
     let error =
-        update_local_skill_source(&root, &source, "   ", "# Review\n\nUpdated in OpenKiwi.\n")
+        update_local_skill_source(&root, &source, "   ", "# Review\n\nUpdated in Mythra Code.\n")
             .unwrap_err();
     assert!(error.contains("cannot be empty"));
     assert_eq!(
         fs::read_to_string(&source).unwrap(),
-        "# Review\n\nUpdated in OpenKiwi.\n"
+        "# Review\n\nUpdated in Mythra Code.\n"
     );
 
-    fs::write(&source, "# Review\n\nChanged outside OpenKiwi.\n").unwrap();
+    fs::write(&source, "# Review\n\nChanged outside Mythra Code.\n").unwrap();
     let error = update_local_skill_source(
         &root,
         &source,
         "# Review\n\nStale editor draft.\n",
-        "# Review\n\nUpdated in OpenKiwi.\n",
+        "# Review\n\nUpdated in Mythra Code.\n",
     )
     .unwrap_err();
     assert!(error.contains("changed on disk"));
     assert_eq!(
         fs::read_to_string(&source).unwrap(),
-        "# Review\n\nChanged outside OpenKiwi.\n"
+        "# Review\n\nChanged outside Mythra Code.\n"
     );
 
     fs::remove_dir_all(root).unwrap();
@@ -1859,7 +1866,7 @@ fn command_exec_bridge_allows_an_isolated_worktrees_shared_git_directory() {
     let worktree = skill_test_directory("rpc-command-worktree");
     fs::create_dir_all(&source).unwrap();
     test_git(&source, &["init", "-b", "main"]);
-    fs::write(source.join("README.md"), "OpenKiwi\n").unwrap();
+    fs::write(source.join("README.md"), "Mythra Code\n").unwrap();
     test_git(&source, &["add", "."]);
     test_git(&source, &["commit", "-m", "Initial"]);
     test_git(
@@ -2274,7 +2281,7 @@ fn lmstudio_urls_are_normalized_without_accepting_embedded_credentials() {
 }
 
 #[test]
-fn lmstudio_is_an_approved_openkiwi_agent_destination() {
+fn lmstudio_is_an_approved_mythra_code_agent_destination() {
     assert!(super::agents::agent_bridge_providers().contains(&"lmstudio"));
 }
 

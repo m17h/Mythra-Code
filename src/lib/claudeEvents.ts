@@ -32,7 +32,7 @@ function terminalTurnStatus(status: string | undefined): boolean {
  * A retired Claude process must never reclaim the thread after a newer turn
  * starts or append more output after its own result. Native process cleanup is
  * the primary boundary; this is the transcript-side safety net for delayed OS
- * events and conversations saved by older OpenKiwi versions.
+ * events and conversations saved by older Mythra Code versions.
  */
 function isRetiredClaudeTurn(threadId: string, turnId: string): boolean {
   const task = useTaskStore.getState().tasks[threadId];
@@ -244,7 +244,7 @@ export function routeClaudeEvent(
       ctx.onApprovalRequested(threadId);
       return;
     }
-    // A blocking control request OpenKiwi does not implement (a newer CLI's
+    // A blocking control request Mythra Code does not implement (a newer CLI's
     // hook callback or permission variant). Never leave it unanswered — a CLI
     // waiting on the reply would stall the turn until the process is killed.
     const requestId = text(message.request_id);
@@ -254,7 +254,7 @@ export function routeClaudeEvent(
       id: `claude-control-${requestId || crypto.randomUUID()}`,
       kind: "warning",
       title: "Unsupported Claude Code request",
-      detail: `Claude Code sent a \`${subtype}\` control request this version of OpenKiwi does not support. It was answered with an error; updating OpenKiwi may be required.`,
+      detail: `Claude Code sent a \`${subtype}\` control request this version of Mythra Code does not support. It was answered with an error; updating Mythra Code may be required.`,
     });
     return;
   }

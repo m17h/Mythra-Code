@@ -83,7 +83,7 @@ describe("thread sidebar list", () => {
   it("keeps a thread that owns children in the main inbox despite reversed thread metadata", () => {
     // The runtime stamped the root's own thread record as a sub-agent of one of
     // its children. That metadata is persisted and would answer yes forever
-    // after, so OpenKiwi's ownership records outrank it: a thread that owns
+    // after, so Mythra Code's ownership records outrank it: a thread that owns
     // children is a root, and the user's main conversation stays put.
     const main = makeThread("main", { parentThreadId: "child", threadSource: "subagent" });
     const child = makeThread("child");

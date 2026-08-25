@@ -9,7 +9,7 @@ import { decodeHtmlEntities } from "./text";
  * The live sub-agent picture the composer's command center renders.
  *
  * Two independent sources describe the same fleet and neither is complete on
- * its own: cross-provider children are owned by OpenKiwi through
+ * its own: cross-provider children are owned by Mythra Code through
  * {@link ChildAgentLink} plus the task store, while a provider that delegates
  * natively only ever surfaces agent records on the root task. Everything here
  * is pure so the merge, the status mapping, and the ordering can be tested
@@ -27,7 +27,7 @@ export interface SubAgentWorker {
   status: SubAgentWorkerStatus;
   /** Short human title, usually the delegated prompt. */
   title: string;
-  /** Approved destination this child was started on, when OpenKiwi owns it. */
+  /** Approved destination this child was started on, when Mythra Code owns it. */
   targetId?: string;
   provider?: Provider;
   model?: string;
@@ -64,7 +64,7 @@ export function isSubAgentWorkerActive(status: SubAgentWorkerStatus): boolean {
 }
 
 /**
- * Map an OpenKiwi child lifecycle word onto a worker status. The lifecycle
+ * Map an Mythra Code child lifecycle word onto a worker status. The lifecycle
  * vocabulary is what models read over the bridge, so it is translated here
  * rather than widened.
  */
@@ -187,7 +187,7 @@ export function collectSubAgentWorkers(input: SubAgentWorkerInput): SubAgentWork
   for (const agent of input.agents) {
     if (owned.has(agent.id) || agent.id === rootThreadId) continue;
     // A bare native record is only an id and a status word. The durable link
-    // OpenKiwi wrote when it discovered this child carries the actual task and
+    // Mythra Code wrote when it discovered this child carries the actual task and
     // when it started, so a native row reads as informatively as an owned one.
     const nativeLink = input.nativeLinks?.[agent.id];
     const model = input.nativeModel?.trim();

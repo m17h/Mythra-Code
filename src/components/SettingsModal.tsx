@@ -103,7 +103,7 @@ const SETTINGS_NAV: ReadonlyArray<{
   {
     group: "System",
     items: [
-      { id: "updates", label: "Updates", icon: Download, detail: "Secure releases delivered directly from the OpenKiwi repository" },
+      { id: "updates", label: "Updates", icon: Download, detail: "Secure releases delivered directly from the Mythra Code repository" },
     ],
   },
 ];
@@ -488,7 +488,7 @@ export function SettingsModal({
 
   const exportDiagnosticBundle = async () => {
     try {
-      const path = await save({ title: "Export OpenKiwi diagnostics", defaultPath: `openkiwi-diagnostics-${new Date().toISOString().slice(0, 10)}.json`, filters: [{ name: "JSON", extensions: ["json"] }] });
+      const path = await save({ title: "Export Mythra Code diagnostics", defaultPath: `mythra-code-diagnostics-${new Date().toISOString().slice(0, 10)}.json`, filters: [{ name: "JSON", extensions: ["json"] }] });
       if (path) await exportDiagnostics(path);
     } catch (reason) { onError(friendlyError(reason)); }
   };
@@ -530,7 +530,7 @@ export function SettingsModal({
     <div className={`modal-backdrop settings-backdrop ${open ? "open" : "closed"}`} onMouseDown={requestClose} aria-hidden={!open} inert={!open ? true : undefined}>
       <div ref={dialogRef} className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" onMouseDown={(event) => event.stopPropagation()}>
         <div className="modal-header">
-          <div><h2 id="settings-title">Settings</h2><p>Customize OpenKiwi without hidden configuration.</p></div>
+          <div><h2 id="settings-title">Settings</h2><p>Customize Mythra Code without hidden configuration.</p></div>
           <button className="icon-button" onClick={requestClose} aria-label="Close settings"><X size={18} /></button>
         </div>
 
@@ -620,18 +620,18 @@ export function SettingsModal({
           <section className="settings-section">
             <div className="settings-section-heading">
               <div className="settings-icon"><NotebookPen size={17} /></div>
-              <div><h3>System prompts</h3><p>OpenKiwi applies the global layer first, followed by the selected subscription’s own layer.</p></div>
+              <div><h3>System prompts</h3><p>Mythra Code applies the global layer first, followed by the selected subscription’s own layer.</p></div>
             </div>
             <div className="prompt-file-notice" role="note">
               <Info size={16} />
-              <p><strong>Global instruction files are not inherited.</strong> Your global <code>CLAUDE.md</code> and <code>AGENTS.md</code> do not affect OpenKiwi. Add those instructions to the prompt fields below instead. Project-level <code>AGENTS.md</code> files can still be discovered when that setting is enabled.</p>
+              <p><strong>Global instruction files are not inherited.</strong> Your global <code>CLAUDE.md</code> and <code>AGENTS.md</code> do not affect Mythra Code. Add those instructions to the prompt fields below instead. Project-level <code>AGENTS.md</code> files can still be discovered when that setting is enabled.</p>
             </div>
             <div className="prompt-guidance-control">
               <span><strong>Project AGENTS.md discovery</strong><small>Allow AGENTS.md guidance from the active project for its threads (up to 32 KB).</small></span>
               <button type="button" role="switch" aria-label="Project AGENTS.md discovery" aria-checked={local.projectInstructionsEnabled} className={`toggle-switch ${local.projectInstructionsEnabled ? "on" : ""}`} onClick={() => setLocal({ ...local, projectInstructionsEnabled: !local.projectInstructionsEnabled })}><span /></button>
             </div>
             <label className="prompt-layer-field">
-              <span><strong>Global OpenKiwi prompt</strong><small>Used by every provider.</small></span>
+              <span><strong>Global Mythra Code prompt</strong><small>Used by every provider.</small></span>
               <textarea
                 className="prompt-editor"
                 value={local.systemPrompt}
@@ -867,7 +867,7 @@ export function SettingsModal({
                 <label className="field-label">
                   <span>Server URL</span>
                   <input value={local.lmStudioBaseUrl} onChange={(event) => setLocal({ ...local, lmStudioBaseUrl: event.target.value })} placeholder={DEFAULT_LM_STUDIO_BASE_URL} spellCheck={false} />
-                  <small>OpenKiwi uses LM Studio’s OpenAI-compatible Responses API. Keep the default for a server on this computer.</small>
+                  <small>Mythra Code uses LM Studio’s OpenAI-compatible Responses API. Keep the default for a server on this computer.</small>
                 </label>
                 <div className="key-input-row">
                   <input type="password" value={lmStudioToken} onChange={(event) => setLmStudioToken(event.target.value)} placeholder={lmStudioTokenStored ? "Token stored in the OS credential store" : "Optional API token"} />
@@ -932,7 +932,7 @@ export function SettingsModal({
             <div className="provider-logo-settings">
               <div>
                 <strong>OpenAI model logo</strong>
-                <small>Choose the mark used for OpenAI threads, responses, and provider controls throughout OpenKiwi.</small>
+                <small>Choose the mark used for OpenAI threads, responses, and provider controls throughout Mythra Code.</small>
               </div>
               <div className="provider-logo-options" role="radiogroup" aria-label="OpenAI model logo">
                 <button type="button" className={local.openAiLogo === "openai" ? "selected" : ""} role="radio" aria-checked={local.openAiLogo === "openai"} onClick={() => setLocal({ ...local, openAiLogo: "openai" })}>
@@ -968,7 +968,7 @@ export function SettingsModal({
             <div className="provider-logo-settings">
               <div>
                 <strong>Claude model logo</strong>
-                <small>Choose the mark used for Claude threads, responses, and provider controls throughout OpenKiwi.</small>
+                <small>Choose the mark used for Claude threads, responses, and provider controls throughout Mythra Code.</small>
               </div>
               <div className="provider-logo-options" role="radiogroup" aria-label="Claude model logo">
                 <button type="button" className={local.claudeLogo === "claude" ? "selected" : ""} role="radio" aria-checked={local.claudeLogo === "claude"} onClick={() => setLocal({ ...local, claudeLogo: "claude" })}>
@@ -1040,7 +1040,7 @@ function SubagentPolicyEditor({ policy, readiness, disabled, onChange }: {
 
       <div className="settings-section-heading child-agent-heading">
         <div className="settings-icon"><Boxes size={17} /></div>
-        <div><h3>Cross-provider destinations</h3><p>Choose the providers, models, and reasoning authority available to the root agent. Children run through OpenKiwi.</p></div>
+        <div><h3>Cross-provider destinations</h3><p>Choose the providers, models, and reasoning authority available to the root agent. Children run through Mythra Code.</p></div>
       </div>
       <ChildAgentRoster
         value={policy.childAgents}
@@ -1077,7 +1077,7 @@ function GitHubSettings({
     <section className="settings-section">
       <div className="settings-section-heading">
         <div className="settings-icon"><GitFork size={17} /></div>
-        <div><h3>GitHub account</h3><p>OpenKiwi uses the official GitHub CLI and never injects its token into prompts or project files. Agents with command access can still run credential-aware CLI tools, so use the same care you would in a terminal.</p></div>
+        <div><h3>GitHub account</h3><p>Mythra Code uses the official GitHub CLI and never injects its token into prompts or project files. Agents with command access can still run credential-aware CLI tools, so use the same care you would in a terminal.</p></div>
       </div>
       <div className="credential-panel github-account-panel">
         <span className="github-avatar-placeholder"><GitFork size={18} /></span>
@@ -1099,7 +1099,7 @@ function GitHubSettings({
     <section className="settings-section">
       <div className="settings-section-heading">
         <div className="settings-icon"><Download size={17} /></div>
-        <div><h3>Clone a repository</h3><p>Download a GitHub repository into a new local folder and add it to OpenKiwi as a project.</p></div>
+        <div><h3>Clone a repository</h3><p>Download a GitHub repository into a new local folder and add it to Mythra Code as a project.</p></div>
       </div>
       <div className="github-clone-grid">
         <label className="field-label"><span>Repository URL</span><input value={cloneUrl} onChange={(event) => onCloneUrl(event.target.value)} placeholder="https://github.com/owner/repository.git" /></label>
@@ -1122,7 +1122,7 @@ function UsageDisplaySettings({ value, onChange }: { value: UsageDisplayMode; on
         <div className="settings-icon"><Gauge size={17} /></div>
         <div>
           <h3>Provider quota display</h3>
-          <p id="usage-display-help">Choose the direction OpenKiwi reads subscription limits in. The choice applies everywhere a live provider quota appears — the usage card in the studio dock, OpenAI/Codex rate limits, and Claude Code rate limits — including each window&rsquo;s length and reset time.</p>
+          <p id="usage-display-help">Choose the direction Mythra Code reads subscription limits in. The choice applies everywhere a live provider quota appears — the usage card in the studio dock, OpenAI/Codex rate limits, and Claude Code rate limits — including each window&rsquo;s length and reset time.</p>
         </div>
       </div>
       <div className="usage-display-controls">
@@ -1175,7 +1175,7 @@ function AllTimeUsageSettings({ totals }: { totals: UsageTotals }) {
         : "All tracked tokens with model metadata have a published price."} Cache-write premiums are included when providers report them; long-context, regional, batch, and priority pricing adjustments are not.</span>
     </div>
     <div className="usage-source-links">
-      <span>Pricing refreshes from OpenKiwi's validated catalog each time the app opens. New rates apply only to future usage.</span>
+      <span>Pricing refreshes from Mythra Code's validated catalog each time the app opens. New rates apply only to future usage.</span>
       <button className="secondary-button" onClick={() => void openUrl("https://developers.openai.com/api/docs/models/compare")}><ExternalLink size={12} /> OpenAI pricing</button>
       <button className="secondary-button" onClick={() => void openUrl("https://www.anthropic.com/pricing")}><ExternalLink size={12} /> Anthropic pricing</button>
     </div>
@@ -1267,18 +1267,18 @@ function UpdateSettings({ appUpdater }: { appUpdater: AppUpdater }) {
       : appUpdater.phase === "available" ? `Version ${appUpdater.availableVersion} is available.`
         : appUpdater.phase === "downloading" ? (progress === null ? "Downloading the signed update…" : `Downloading the signed update… ${progress}%`)
           : appUpdater.phase === "installing" ? "Verifying and installing the update…"
-            : appUpdater.phase === "restarting" ? "Update installed. Restarting OpenKiwi…"
+            : appUpdater.phase === "restarting" ? "Update installed. Restarting Mythra Code…"
               : appUpdater.phase === "error" ? appUpdater.error || "The update could not be completed."
-                : "Check the public OpenKiwi repository for a newer signed release.";
+                : "Check the public Mythra Code repository for a newer signed release.";
 
   return <section className="settings-section update-settings-section">
     <div className="settings-section-heading">
       <div className="settings-icon"><Download size={17} /></div>
-      <div><h3>OpenKiwi updates</h3><p>Updates are cryptographically verified before installation and are applied after OpenKiwi restarts.</p></div>
+      <div><h3>Mythra Code updates</h3><p>Updates are cryptographically verified before installation and are applied after Mythra Code restarts.</p></div>
     </div>
     <div className={`update-card ${appUpdater.phase}`}>
       <div className="update-version-row">
-        <span><small>Installed</small><strong>OpenKiwi {appUpdater.currentVersion}</strong></span>
+        <span><small>Installed</small><strong>Mythra Code {appUpdater.currentVersion}</strong></span>
         {appUpdater.availableVersion && <span className="update-version-available"><small>Available</small><strong>{appUpdater.availableVersion}</strong></span>}
       </div>
       <div className="update-status-row">
@@ -1302,6 +1302,6 @@ function UpdateSettings({ appUpdater }: { appUpdater: AppUpdater }) {
         )}
       </div>
     </div>
-    <div className="update-trust-row"><ShieldCheck size={14} /><span><strong>Verified release channel</strong><small>Manifest and packages come from github.com/m17h/OpenKiwi and must match the updater key for this platform.</small></span></div>
+    <div className="update-trust-row"><ShieldCheck size={14} /><span><strong>Verified release channel</strong><small>Manifest and packages come from github.com/m17h/Mythra-Code and must match the updater key for this platform.</small></span></div>
   </section>;
 }

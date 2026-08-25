@@ -10,7 +10,7 @@ export interface AppSelectOption {
 }
 
 /**
- * OpenKiwi-owned single-choice menu for compact forms.
+ * Mythra Code-owned single-choice menu for compact forms.
  *
  * Native HTML selects hand their popup to macOS, which makes the sub-agent
  * editor look and behave differently from the model menus in the composer.

@@ -25,7 +25,7 @@ export function settleConfirm(id: number, confirmed: boolean): void {
  * with an async function, so a browser-style `if (!window.confirm(...))`
  * guard receives a Promise — always truthy — and the "confirmation"
  * silently auto-accepts while no dialog ever appears. Inside Tauri this
- * shows OpenKiwi's own in-app modal and awaits the real answer; outside
+ * shows Mythra Code's own in-app modal and awaits the real answer; outside
  * Tauri (tests, plain-browser dev) the environment's native synchronous
  * confirm still works and is kept.
  */

@@ -129,7 +129,7 @@ export function isClaudeThreadBusyError(reason: unknown): boolean {
 }
 
 /**
- * Answer a control request OpenKiwi does not implement with an error
+ * Answer a control request Mythra Code does not implement with an error
  * response, so a Claude CLI blocking on the reply cannot stall the turn.
  */
 export async function respondClaudeControlError(

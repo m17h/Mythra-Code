@@ -5,7 +5,7 @@ import { scheduleRunSnapshot } from "../lib/turnConfig";
 import type { WorkflowDefinition, WorkflowRunRecord } from "../lib/workflows";
 import { WorkflowManager } from "./WorkflowManager";
 
-const project = { id: "project-1", name: "OpenKiwi", path: "/tmp/openkiwi" };
+const project = { id: "project-1", name: "Mythra Code", path: "/tmp/openkiwi" };
 
 describe("WorkflowManager", () => {
   it("creates a transparent agent workflow with a runtime snapshot", () => {

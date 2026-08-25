@@ -4,7 +4,7 @@ type NativeSubAgentPresentation = Pick<Activity, "kind" | "title" | "detail" | "
 
 /**
  * Give every concrete Codex child lifecycle item the same structured metadata
- * used by OpenKiwi-owned and Claude-native spawns. Codex can report a native
+ * used by Mythra Code-owned and Claude-native spawns. Codex can report a native
  * child as `subAgentActivity` without also emitting a `spawnAgent` tool call,
  * so treating these as generic status rows makes the Relay UI provider-
  * dependent and causes restored transcripts to disagree with live ones.

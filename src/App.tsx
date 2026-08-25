@@ -82,7 +82,7 @@ import { useTerminal } from "./hooks/useTerminal";
 import { PANE_BOUNDS, usePaneResize } from "./hooks/usePaneResize";
 import { useSidebarSplitResize } from "./hooks/useSidebarSplitResize";
 import { useWorkflowEngine } from "./hooks/useWorkflowEngine";
-import { isEstablishedOpenKiwiInstall, ONBOARDING_EXIT_MS, ONBOARDING_VERSION } from "./lib/onboarding";
+import { isEstablishedMythraCodeInstall, ONBOARDING_EXIT_MS, ONBOARDING_VERSION } from "./lib/onboarding";
 import { createLocalSkill, deleteLocalSkill, importLocalSkills, normalizeSkillName, readLocalSkill, resolveLocalSkills, scanLocalSkills, syncLocalSkills, updateLocalSkill, type LocalSkill, type LocalSkillFile } from "./lib/skills";
 import { compactWorkflowRun, normalizeWorkflows, recoverWorkflowRuns, type WorkflowDefinition, type WorkflowRunRecord } from "./lib/workflows";
 import { isClaudeThread, isCursorThread, isLocalSubscriptionThread, modelForProvider, providerFromThread } from "./lib/threadProvider";
@@ -91,7 +91,7 @@ import { basename, normalizedProjectPath } from "./lib/paths";
 import { resolveProviderSystemPrompt, resolveSystemPrompt } from "./lib/systemPrompt";
 import { parseCodexRateLimits, providerAccountUsage, sanitizeUsageDisplay, type ProviderRateLimits } from "./lib/providerUsage";
 import { contextUsagePercent } from "./lib/contextUsage";
-import { openKiwiDeveloperInstructions } from "./lib/completionPrompt";
+import { mythraCodeDeveloperInstructions } from "./lib/completionPrompt";
 import { runtimeModelProviderId } from "./lib/providerIds";
 import { primaryModifierLabel } from "./lib/platform";
 import { archivedThreadsForInbox, providerForArchivedThread } from "./lib/threadArchive";
@@ -177,7 +177,7 @@ const initialProjects = sanitizeProjectSubagentOverrides(loadStored<Project[]>("
 const initialWorkspaceMode: WorkspaceMode = loadStored<WorkspaceMode>("kiwi.workspaceMode", initialProjects.length ? "project" : "chat");
 const initialKnownThreads = pruneSidebarIndex(loadStored<ThreadSidebarIndex>("kiwi.knownThreads", {}));
 const initialOnboardingVersion = loadStored<number>("kiwi.onboardingVersion", 0);
-const establishedInstall = isEstablishedOpenKiwiInstall({ projects: initialProjects.length, knownThreads: Object.keys(initialKnownThreads).length, hasStoredSettings: localStorage.getItem("kiwi.settings") !== null, hasSkillsFolder: Boolean(loadStored<string>("kiwi.skillsFolder", "")) });
+const establishedInstall = isEstablishedMythraCodeInstall({ projects: initialProjects.length, knownThreads: Object.keys(initialKnownThreads).length, hasStoredSettings: localStorage.getItem("kiwi.settings") !== null, hasSkillsFolder: Boolean(loadStored<string>("kiwi.skillsFolder", "")) });
 const initialOnboardingOpen = initialOnboardingVersion < ONBOARDING_VERSION && !establishedInstall;
 const storedSettings = loadStored<Partial<AppSettings>>("kiwi.settings", {});
 const initialChildAgents = sanitizeChildAgentSettings(storedSettings.childAgents);
@@ -595,7 +595,7 @@ export default function App() {
     activeThreadId ? isAssistantOutputActive(state.tasks[activeThreadId]) : false
   ));
   const threadTaskStatuses = useTaskStore((state) => state.statuses);
-  // Live crew for the composer panel: OpenKiwi-owned cross-provider children
+  // Live crew for the composer panel: Mythra Code-owned cross-provider children
   // merged with whatever native agents the root task reported.
   const subAgentWorkers = useMemo(
     () => collectSubAgentWorkers({
@@ -1386,7 +1386,7 @@ export default function App() {
         // may execute in a managed worktree while belonging to its root's
         // logical project.
         const discoveredNativeLinks: Record<string, NativeAgentLink> = {};
-        // Ownership claims are checked against the graph OpenKiwi already has,
+        // Ownership claims are checked against the graph Mythra Code already has,
         // plus the ones accepted from this same page. A runtime that reports a
         // root's own parent — or a cycle through one — must not be able to move
         // an established root conversation into the Sub-agents inbox.
@@ -1396,7 +1396,7 @@ export default function App() {
           if (nativeAgentLinkFromThread(thread)) continue;
           listedRootIds.add(thread.id);
           // thread/list is authoritative for provider-native ownership. Remove
-          // only a stale native claim; an OpenKiwi bridge link remains proof
+          // only a stale native claim; an Mythra Code bridge link remains proof
           // that a cross-provider child belongs in the child inbox.
           if (!childAgentLinksRef.current[thread.id]) delete ownershipGraph[thread.id];
         }
@@ -1772,7 +1772,7 @@ export default function App() {
       void (async () => {
         let granted = await isPermissionGranted();
         if (!granted) granted = (await requestPermission()) === "granted";
-        if (granted) sendNotification({ title: "OpenKiwi needs your approval", body: `“${label}” is waiting for permission to continue.` });
+        if (granted) sendNotification({ title: "Mythra Code needs your approval", body: `“${label}” is waiting for permission to continue.` });
       })().catch(() => {});
     },
     onTurnCompleted: (threadId, turn) => {
@@ -1804,7 +1804,7 @@ export default function App() {
         void (async () => {
           let granted = await isPermissionGranted();
           if (!granted) granted = (await requestPermission()) === "granted";
-          if (granted) sendNotification({ title: "OpenKiwi task complete", body: projectName ? `“${label}” finished in ${projectName}.` : `“${label}” finished.` });
+          if (granted) sendNotification({ title: "Mythra Code task complete", body: projectName ? `“${label}” finished in ${projectName}.` : `“${label}” finished.` });
         })().catch(() => {});
       }
       const projectPath = threadProjectBindingsRef.current?.[threadId];
@@ -1866,7 +1866,7 @@ export default function App() {
     onError: setError,
     onTranscriptChanged: scheduleClaudeThreadSave,
     onUnsupportedControlRequest: (threadId, requestId, subtype) => {
-      void respondClaudeControlError(threadId, requestId, `OpenKiwi does not support ${subtype} requests yet.`).catch(() => undefined);
+      void respondClaudeControlError(threadId, requestId, `Mythra Code does not support ${subtype} requests yet.`).catch(() => undefined);
       void auditEvent("claude.unsupportedControlRequest", { subtype }, threadId).catch(() => undefined);
     },
     onApprovalRequested: (threadId) => {
@@ -1875,7 +1875,7 @@ export default function App() {
       void (async () => {
         let granted = await isPermissionGranted();
         if (!granted) granted = (await requestPermission()) === "granted";
-        if (granted) sendNotification({ title: "OpenKiwi needs your approval", body: `“${thread?.name || thread?.preview || "A Claude task"}” is waiting for permission to continue.` });
+        if (granted) sendNotification({ title: "Mythra Code needs your approval", body: `“${thread?.name || thread?.preview || "A Claude task"}” is waiting for permission to continue.` });
       })().catch(() => {});
     },
     onTurnCompleted: (threadId) => {
@@ -1905,7 +1905,7 @@ export default function App() {
         void (async () => {
           let granted = await isPermissionGranted();
           if (!granted) granted = (await requestPermission()) === "granted";
-          if (granted) sendNotification({ title: "OpenKiwi task complete", body: `“${known?.name || known?.preview || "Claude task"}” finished.` });
+          if (granted) sendNotification({ title: "Mythra Code task complete", body: `“${known?.name || known?.preview || "Claude task"}” finished.` });
         })().catch(() => {});
       }
       const projectPath = threadProjectBindingsRef.current?.[threadId];
@@ -1929,7 +1929,7 @@ export default function App() {
       void (async () => {
         let granted = await isPermissionGranted();
         if (!granted) granted = (await requestPermission()) === "granted";
-        if (granted) sendNotification({ title: "OpenKiwi needs your approval", body: `“${thread?.name || thread?.preview || "A Cursor task"}” is waiting for permission to continue.` });
+        if (granted) sendNotification({ title: "Mythra Code needs your approval", body: `“${thread?.name || thread?.preview || "A Cursor task"}” is waiting for permission to continue.` });
       })().catch(() => {});
     },
     onTurnCompleted: (threadId) => {
@@ -1959,7 +1959,7 @@ export default function App() {
         void (async () => {
           let granted = await isPermissionGranted();
           if (!granted) granted = (await requestPermission()) === "granted";
-          if (granted) sendNotification({ title: "OpenKiwi task complete", body: `“${known?.name || known?.preview || "Cursor task"}” finished.` });
+          if (granted) sendNotification({ title: "Mythra Code task complete", body: `“${known?.name || known?.preview || "Cursor task"}” finished.` });
         })().catch(() => {});
       }
       const projectPath = threadProjectBindingsRef.current?.[threadId];
@@ -2082,7 +2082,7 @@ export default function App() {
       return !isLocalSubscriptionThread(knownThreadsRef.current?.[candidateId]);
     });
     if (anotherCodexRun) {
-      throw new Error("Sub-agent settings are ready, but another OpenAI, OpenRouter, or LM Studio task is still running. Your message was not sent; try again when that task finishes so OpenKiwi can safely refresh the runtime without interrupting it.");
+      throw new Error("Sub-agent settings are ready, but another OpenAI, OpenRouter, or LM Studio task is still running. Your message was not sent; try again when that task finishes so Mythra Code can safely refresh the runtime without interrupting it.");
     }
     await deliberateRestartRuntime();
     return runtimeInstanceId();
@@ -2340,10 +2340,10 @@ export default function App() {
         && record.status !== "removed",
     ).length;
     if (isolatedCount > 0) {
-      setError(`Remove the ${isolatedCount} isolated worktree${isolatedCount === 1 ? "" : "s"} in this project from the Worktrees workspace tab before removing the project from OpenKiwi.`);
+      setError(`Remove the ${isolatedCount} isolated worktree${isolatedCount === 1 ? "" : "s"} in this project from the Worktrees workspace tab before removing the project from Mythra Code.`);
       return;
     }
-    const confirmed = await confirmDialog(`Remove “${project.name}” from OpenKiwi?\n\nIts folder and every file inside it will remain untouched on your computer.`);
+    const confirmed = await confirmDialog(`Remove “${project.name}” from Mythra Code?\n\nIts folder and every file inside it will remain untouched on your computer.`);
     if (!confirmed) return;
     const next = projects.filter((entry) => entry.id !== project.id);
     setProjects(next);
@@ -2429,7 +2429,7 @@ export default function App() {
         ? settingsWithoutChildDelegation(targetSettings)
         : targetSettings;
       // Codex keeps a resumed thread loaded in its app-server. Attach the
-      // OpenKiwi bridge during that resume—not one message later—so project
+      // Mythra Code bridge during that resume—not one message later—so project
       // settings proposals are available even while delegation is off and an
       // ordinary follow-up does not have to restart the runtime just to add
       // the proposal-only tool.
@@ -2527,7 +2527,7 @@ export default function App() {
     if (!activeThread) return;
     const task = useTaskStore.getState().tasks[activeThread.id];
     if (!task) return;
-    const label = activeThread.name || activeThread.preview || "OpenKiwi thread";
+    const label = activeThread.name || activeThread.preview || "Mythra Code thread";
     try {
       const path = await save({
         title: "Export conversation",
@@ -2575,7 +2575,7 @@ export default function App() {
       }
       const sourceProvider = providerFromThread(activeThread, settings.provider);
       const sourceTitle = activeThread.name || activeThread.preview || "Untitled task";
-      if (!await confirmDialog(`Hand off “${sourceTitle}” from ${providerLabel(sourceProvider)} to ${providerLabel(provider)}?\n\nOpenKiwi will start a separate provider thread in the same workspace with a bounded, visible copy of the conversation. The original thread remains unchanged.`)) return;
+      if (!await confirmDialog(`Hand off “${sourceTitle}” from ${providerLabel(sourceProvider)} to ${providerLabel(provider)}?\n\nMythra Code will start a separate provider thread in the same workspace with a bounded, visible copy of the conversation. The original thread remains unchanged.`)) return;
       const task = useTaskStore.getState().tasks[activeThread.id];
       const handoff: ThreadHandoff = {
         sourceThreadId: activeThread.id,
@@ -2736,8 +2736,8 @@ export default function App() {
     serviceNameFor: (threadId) => {
       const boundPath = threadProjectBindingsRef.current?.[threadId];
       return boundPath && chatWorkspacePath && normalizedProjectPath(boundPath) === normalizedProjectPath(chatWorkspacePath)
-        ? "OpenKiwi Chat"
-        : "OpenKiwi";
+        ? "Mythra Code Chat"
+        : "Mythra Code";
     },
     bindThreadToProject,
     rememberThread,
@@ -2766,7 +2766,7 @@ export default function App() {
     const thread = threads.find((entry) => entry.id === worker.id)
       ?? knownThreadsRef.current?.[worker.id];
     if (!thread) {
-      throw new Error("OpenKiwi does not have this sub-agent's conversation yet. It appears in the Sub-agents inbox once its provider reports the thread.");
+      throw new Error("Mythra Code does not have this sub-agent's conversation yet. It appears in the Sub-agents inbox once its provider reports the thread.");
     }
     await selectThread(thread);
   // selectThread is redeclared every render and is not a dependency-stable
@@ -2791,7 +2791,7 @@ export default function App() {
     // the backend registry, depth limit, and collect/cancel tools authoritative.
     await stopChildAgent(activeThreadId, worker.id);
     const delivered = await steerMessage([
-      "OpenKiwi sub-agent control: replace the sub-agent I just stopped.",
+      "Mythra Code sub-agent control: replace the sub-agent I just stopped.",
       `Use the approved \`${target.id}\` destination (${target.label || providerDisplayName(target.provider)} · ${childAgentModel(target) || "provider default"}).`,
       `Restart the same delegated task: ${worker.title}`,
       "Spawn a fresh child for that task; do not resume or reuse the stopped child id.",
@@ -3124,7 +3124,7 @@ export default function App() {
         ? providerForArchivedThread(archived, legacyClaudeTranscript)
         : "openai";
     const localSubscription = provider === "claude" || provider === "cursor";
-    if (confirmDelete && !await confirmDialog(`Permanently delete “${label}”?\n\nThis removes the conversation from ${localSubscription ? "OpenKiwi" : "the Codex runtime"} and cannot be undone.`)) return false;
+    if (confirmDelete && !await confirmDialog(`Permanently delete “${label}”?\n\nThis removes the conversation from ${localSubscription ? "Mythra Code" : "the Codex runtime"} and cannot be undone.`)) return false;
     try {
       const saveTimer = claudeSaveTimersRef.current.get(threadId);
       if (saveTimer !== undefined) window.clearTimeout(saveTimer);
@@ -3224,7 +3224,7 @@ export default function App() {
   const compactThread = async () => {
     if (!activeThread) return;
     if (isLocalSubscriptionThread(activeThread)) {
-      setError(`${providerLabel(providerFromThread(activeThread, settings.provider))} manages its own context compaction. OpenKiwi’s manual compact action is available for OpenAI, OpenRouter, and LM Studio threads.`);
+      setError(`${providerLabel(providerFromThread(activeThread, settings.provider))} manages its own context compaction. Mythra Code’s manual compact action is available for OpenAI, OpenRouter, and LM Studio threads.`);
       return;
     }
     try {
@@ -3237,7 +3237,7 @@ export default function App() {
 
   const openAgent = async (threadId: string) => {
     try {
-      // A cross-provider child is an OpenKiwi-owned thread, so its timeline
+      // A cross-provider child is an Mythra Code-owned thread, so its timeline
       // lives in a local transcript rather than in the Codex runtime.
       const link = childAgentLinks[threadId];
       if (link?.provider === "claude" || link?.provider === "cursor") {
@@ -3306,7 +3306,7 @@ export default function App() {
     try {
       await ensureSkillRoots();
       const modelProvider = runtimeModelProviderId(effectiveSettings.provider);
-      const result = await rpc<{ thread: Thread }>("thread/fork", { threadId: checkpoint?.threadId ?? activeThread.id, lastTurnId: checkpoint?.turnId, cwd: activeWorkspace?.path, runtimeWorkspaceRoots: activeWorkspace ? [activeWorkspace.path] : undefined, model: effectiveSettings.model, ...(modelProvider ? { modelProvider } : {}), config: threadRuntimeConfig(effectiveSettings, { customAgents, modelContextWindow: effectiveSettings.provider === "openrouter" ? openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.context_length : effectiveSettings.provider === "lmstudio" ? lmStudioModels.find((entry) => entry.id === effectiveSettings.model)?.maxContextLength : undefined }), baseInstructions: effectiveSettings.systemPrompt, developerInstructions: openKiwiDeveloperInstructions(false) });
+      const result = await rpc<{ thread: Thread }>("thread/fork", { threadId: checkpoint?.threadId ?? activeThread.id, lastTurnId: checkpoint?.turnId, cwd: activeWorkspace?.path, runtimeWorkspaceRoots: activeWorkspace ? [activeWorkspace.path] : undefined, model: effectiveSettings.model, ...(modelProvider ? { modelProvider } : {}), config: threadRuntimeConfig(effectiveSettings, { customAgents, modelContextWindow: effectiveSettings.provider === "openrouter" ? openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.context_length : effectiveSettings.provider === "lmstudio" ? lmStudioModels.find((entry) => entry.id === effectiveSettings.model)?.maxContextLength : undefined }), baseInstructions: effectiveSettings.systemPrompt, developerInstructions: mythraCodeDeveloperInstructions(false) });
       if (activeWorkspace) bindThreadToProject(result.thread.id, activeWorkspace.path);
       rememberThread(result.thread);
       persistThreadModel(result.thread.id, effectiveSettings.model);
@@ -3373,7 +3373,7 @@ export default function App() {
       : "";
     if (!await confirmDialog(
       `Apply all changes from “${activeThreadWorktree.branch}” to the shared project?\n\n`
-      + `OpenKiwi will save the shared project as a safety checkpoint first. The isolated branch and worktree remain unchanged, and Git staging and commits are not modified.${recreationWarning}`,
+      + `Mythra Code will save the shared project as a safety checkpoint first. The isolated branch and worktree remain unchanged, and Git staging and commits are not modified.${recreationWarning}`,
     )) return;
     setWorktreeBusy(true);
     try {
@@ -3422,7 +3422,7 @@ export default function App() {
     }
     if (!await confirmDialog(
       `Merge “${activeThreadWorktree.branch}” into the source project's current branch?\n\n`
-      + "Both working folders must be clean and all isolated changes must be committed. OpenKiwi saves a safety checkpoint first and aborts automatically if Git reports a conflict.",
+      + "Both working folders must be clean and all isolated changes must be committed. Mythra Code saves a safety checkpoint first and aborts automatically if Git reports a conflict.",
     )) return;
     setWorktreeBusy(true);
     try {
@@ -3820,7 +3820,7 @@ export default function App() {
     try {
       await startGitHubLogin();
       setGithubLoginPending(true);
-      showSuccessToast("Finish GitHub sign-in in Terminal; OpenKiwi will connect automatically");
+      showSuccessToast("Finish GitHub sign-in in Terminal; Mythra Code will connect automatically");
     } catch (reason) {
       setError(friendlyError(reason));
     } finally {
@@ -3888,7 +3888,7 @@ export default function App() {
   };
 
   const chooseSkillsFolder = async () => {
-    const selected = await open({ directory: true, multiple: false, title: "Choose your OpenKiwi skills folder" });
+    const selected = await open({ directory: true, multiple: false, title: "Choose your Mythra Code skills folder" });
     if (!selected || Array.isArray(selected)) return;
     setSkillsFolder(selected);
     await refreshLocalSkills(selected, skillAliases, disabledSkillPaths, removedSkillPaths);
@@ -4163,9 +4163,9 @@ export default function App() {
         )}
         <div className="sidebar-brand">
           <div className="brand-mark">
-            <img src="/openkiwi-logo.png" alt="" />
+            <img src="/mythra-code-logo.png" alt="" />
           </div>
-          <span>OpenKiwi</span>
+          <span>Mythra Code</span>
           <button className="icon-button subtle collapse-button" onClick={() => setSidebarOpen(false)} title="Hide sidebar" aria-label="Hide sidebar">
             <PanelLeftClose size={17} />
           </button>
@@ -4244,7 +4244,7 @@ export default function App() {
                   items={[
                     { label: project.pinned ? "Unpin project" : "Pin project", icon: project.pinned ? <PinOff size={13} /> : <Pin size={13} />, onSelect: () => toggleProjectPin(project) },
                     { label: "Project settings", icon: <Settings size={13} />, onSelect: () => openSettings("projects") },
-                    { label: "Remove from OpenKiwi", icon: <Trash2 size={13} />, danger: true, onSelect: () => removeProject(project) },
+                    { label: "Remove from Mythra Code", icon: <Trash2 size={13} />, danger: true, onSelect: () => removeProject(project) },
                   ]}
                 />
               </div>;
@@ -4475,7 +4475,7 @@ export default function App() {
               <Download size={15} />
             </span>
             <span>
-              <strong>OpenKiwi {appUpdater.availableVersion} is ready</strong>
+              <strong>Mythra Code {appUpdater.availableVersion} is ready</strong>
               <small>Review the release notes, then update and restart from Settings.</small>
             </span>
             <button className="secondary-button" onClick={() => openSettings("updates")}>
@@ -4693,7 +4693,7 @@ export default function App() {
                 queueing={Boolean(running && activeThread)}
                 canSteer={Boolean(activeThread && taskStatus === "running" && !assistantOutputActive)}
                 dropActive={dropActive}
-                placeholder={running && activeThread ? "Queue a follow-up for after this run…" : activeWorkspace.isChat ? "Ask anything — no project folder attached…" : `Ask OpenKiwi to work in ${activeProject?.name ?? "this project"}…`}
+                placeholder={running && activeThread ? "Queue a follow-up for after this run…" : activeWorkspace.isChat ? "Ask anything — no project folder attached…" : `Ask Mythra Code to work in ${activeProject?.name ?? "this project"}…`}
                 attachments={attachments}
                 queuedTurns={queuedTurns}
                 searchFiles={searchProjectFiles}
@@ -4794,7 +4794,7 @@ export default function App() {
                 }
               />
               <div className="composer-caption">
-                OpenKiwi can make mistakes. Review commands and changes before shipping.
+                Mythra Code can make mistakes. Review commands and changes before shipping.
                 {contextPercent !== null ? (
                   <span className={`context-meter ${contextPercent > 80 ? "warn" : ""}`}>
                     {" "}
@@ -4859,8 +4859,8 @@ export default function App() {
             githubRepoName={githubRepoName}
             githubRepoVisibility={githubRepoVisibility}
             promptAudit={[
-              { label: "Base instruction", value: effectiveSettings.systemPrompt ? `${activeProject?.overrides?.systemPrompt ? (activeProject.overrides.systemPromptMode === "append" ? "OpenKiwi + project" : "project") : "OpenKiwi"} · ${effectiveSettings.systemPrompt.length} chars` : "empty" },
-              { label: "Developer instruction", value: `OpenKiwi internal · ${openKiwiDeveloperInstructions(effectiveSettings.subagentsEnabled, effectiveSettings.subagentsEnabled).length} chars` },
+              { label: "Base instruction", value: effectiveSettings.systemPrompt ? `${activeProject?.overrides?.systemPrompt ? (activeProject.overrides.systemPromptMode === "append" ? "Mythra Code + project" : "project") : "Mythra Code"} · ${effectiveSettings.systemPrompt.length} chars` : "empty" },
+              { label: "Developer instruction", value: `Mythra Code internal · ${mythraCodeDeveloperInstructions(effectiveSettings.subagentsEnabled, effectiveSettings.subagentsEnabled).length} chars` },
               { label: "AGENTS.md discovery", value: settings.projectInstructionsEnabled ? "enabled · up to 32 KB" : "disabled" },
               { label: "Model", value: effectiveSettings.model || "provider default" },
               { label: "Reasoning", value: effectiveSettings.reasoningEffort },

@@ -16,7 +16,7 @@ export function useClaudeEvents(context: ClaudeEventContext): void {
       })
       .catch((reason) => {
         contextRef.current.onError(
-          `OpenKiwi could not subscribe to Claude events: ${reason instanceof Error ? reason.message : String(reason)}`,
+          `Mythra Code could not subscribe to Claude events: ${reason instanceof Error ? reason.message : String(reason)}`,
         );
       });
     return () => {

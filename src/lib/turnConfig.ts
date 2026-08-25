@@ -1,7 +1,7 @@
 import type { AppSettings, CustomAgentProfile, PermissionMode, ScheduleRunSettings } from "../types";
 import type { ChildAgentBridgeLaunch } from "./agentBridge";
 import type { JsonObject } from "./codex";
-import { openKiwiDeveloperInstructions } from "./completionPrompt";
+import { mythraCodeDeveloperInstructions } from "./completionPrompt";
 import { resolveProviderSystemPrompt } from "./systemPrompt";
 import { DEFAULT_LM_STUDIO_BASE_URL } from "./appConfig";
 import { LM_STUDIO_RUNTIME_PROVIDER_ID, runtimeModelProviderId } from "./providerIds";
@@ -20,7 +20,7 @@ function lmStudioProviderConfig(run: ScheduleRunSettings): JsonObject {
         name: "LM Studio",
         base_url: normalizeLmStudioBaseUrl(run.lmStudioBaseUrl),
         env_key: "LMSTUDIO_API_KEY",
-        env_key_instructions: "Configure the optional LM Studio API token in OpenKiwi Settings.",
+        env_key_instructions: "Configure the optional LM Studio API token in Mythra Code Settings.",
         wire_api: "responses",
       },
     },
@@ -67,7 +67,7 @@ export interface ThreadStartOptions {
   childAgentBridge?: ChildAgentBridgeLaunch;
 }
 
-/** Registers the OpenKiwi delegation bridge as a per-thread MCP server. */
+/** Registers the Mythra Code delegation bridge as a per-thread MCP server. */
 export function childAgentMcpConfig(bridge: ChildAgentBridgeLaunch | undefined): JsonObject {
   if (!bridge) return {};
   return {
@@ -100,13 +100,13 @@ export function threadRuntimeConfig(run: ScheduleRunSettings, options: Pick<Thre
     ...lmStudioProviderConfig(run),
     project_doc_max_bytes: run.projectInstructionsEnabled ? 32_768 : 0,
     project_doc_fallback_filenames: [],
-    developer_instructions: openKiwiDeveloperInstructions(openKiwiDelegation, openKiwiSettings),
+    developer_instructions: mythraCodeDeveloperInstructions(openKiwiDelegation, openKiwiSettings),
     model_reasoning_effort: run.ultra ? "ultra" : run.reasoningEffort,
     ...((run.provider === "openrouter" || run.provider === "lmstudio") && Number.isFinite(contextWindow) && contextWindow > 0
       ? { model_context_window: Math.floor(contextWindow) }
       : {}),
     agents: {
-      // Not `run.subagentMax`. That number is the OpenKiwi bridge's budget and
+      // Not `run.subagentMax`. That number is the Mythra Code bridge's budget and
       // the bridge enforces it itself, per spawn, against its own ownership
       // records. Handing the same number to Codex's native agent runtime gave
       // the model a second independent budget stacked on top of the bridge's,
@@ -117,13 +117,13 @@ export function threadRuntimeConfig(run: ScheduleRunSettings, options: Pick<Thre
       ...customAgentConfig(options.customAgents ?? []),
     },
     features: {
-      // OpenKiwi is the only delegation authority. Provider-native spawning
+      // Mythra Code is the only delegation authority. Provider-native spawning
       // bypasses the user's approved destinations, frozen concurrency budget,
       // ownership records, and child inbox. With no managed destination the
       // model receives no spawning route at all.
       multi_agent: false,
       // Codex 0.147 split its native team runtime into a second feature flag.
-      // Keep both generations off so OpenKiwi's approved bridge remains the
+      // Keep both generations off so Mythra Code's approved bridge remains the
       // only delegation authority (and child threads cannot spawn children).
       multi_agent_v2: false,
       ...(run.provider === "openrouter" || run.provider === "lmstudio" ? { apps: false, remote_plugin: false } : {}),
@@ -133,7 +133,7 @@ export function threadRuntimeConfig(run: ScheduleRunSettings, options: Pick<Thre
 }
 
 export function threadStartParams(run: ScheduleRunSettings, cwd: string, options: ThreadStartOptions): JsonObject {
-  const developerInstructions = openKiwiDeveloperInstructions(
+  const developerInstructions = mythraCodeDeveloperInstructions(
     Boolean(options.childAgentBridge?.toolNames.includes("spawn_agent")),
     Boolean(options.childAgentBridge?.toolNames.includes("propose_agent_settings")),
   );
@@ -145,7 +145,7 @@ export function threadStartParams(run: ScheduleRunSettings, cwd: string, options
     baseInstructions: run.systemPrompt,
     developerInstructions,
     config: threadRuntimeConfig(run, options),
-    serviceName: options.serviceName ?? "OpenKiwi",
+    serviceName: options.serviceName ?? "Mythra Code",
     serviceTier: run.serviceTier,
   };
   if (run.model.trim()) params.model = run.model.trim();
@@ -169,7 +169,7 @@ export function threadResumeParams(
     refreshRuntimeConfig?: boolean;
   } = {},
 ): JsonObject {
-  const developerInstructions = openKiwiDeveloperInstructions(
+  const developerInstructions = mythraCodeDeveloperInstructions(
     Boolean(options.childAgentBridge?.toolNames.includes("spawn_agent")),
     Boolean(options.childAgentBridge?.toolNames.includes("propose_agent_settings")),
   );

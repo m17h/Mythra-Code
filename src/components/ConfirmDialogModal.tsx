@@ -4,7 +4,7 @@ import { settleConfirm, useConfirmStore } from "../lib/confirmDialog";
 import { useModalFocus } from "../hooks/useModalFocus";
 
 /**
- * OpenKiwi's own confirmation dialog, replacing the OS-native window that
+ * Mythra Code's own confirmation dialog, replacing the OS-native window that
  * Tauri's confirm() shows. Messages follow the app-wide convention of
  * "Question?\n\nConsequences." — the first paragraph becomes the heading.
  */

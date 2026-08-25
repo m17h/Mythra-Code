@@ -25,7 +25,7 @@ function nextVersion(version, request) {
 }
 
 const version = nextVersion(current, requested);
-if (version === current) throw new Error(`OpenKiwi is already version ${version}`);
+if (version === current) throw new Error(`Mythra Code is already version ${version}`);
 
 packageJson.version = version;
 writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
@@ -51,7 +51,7 @@ function rewriteVersion(path, pattern) {
 }
 
 rewriteVersion(cargoManifestPath, /(^\[package\][\s\S]*?^version\s*=\s*")[^"]+("$)/m);
-rewriteVersion(cargoLockPath, /(\[\[package\]\]\r?\nname = "openkiwi"\r?\nversion = ")[^"]+("\r?\n)/);
+rewriteVersion(cargoLockPath, /(\[\[package\]\]\r?\nname = "mythra-code"\r?\nversion = ")[^"]+("\r?\n)/);
 
-console.log(`OpenKiwi ${current} → ${version}`);
+console.log(`Mythra Code ${current} → ${version}`);
 console.log("Updated package.json, package-lock.json, tauri.conf.json, Cargo.toml, and Cargo.lock.");

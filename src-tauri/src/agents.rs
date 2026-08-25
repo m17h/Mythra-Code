@@ -1,9 +1,9 @@
 //! Cross-provider sub-agents.
 //!
-//! Every provider runtime OpenKiwi drives can only delegate to itself: the
+//! Every provider runtime Mythra Code drives can only delegate to itself: the
 //! Codex app server spawns Codex children, Claude Code spawns Claude
 //! sub-agents, and Cursor has no delegation surface at all. To let a root
-//! agent delegate *across* providers, OpenKiwi exposes its own delegation
+//! agent delegate *across* providers, Mythra Code exposes its own delegation
 //! tools to whichever runtime is driving the root thread, and performs the
 //! spawn itself through the normal per-provider start path.
 //!
@@ -14,7 +14,7 @@
 //! provider CLI ──stdio MCP──▶ `openkiwi --openkiwi-agent-bridge <session>`
 //!                                   │ loopback HTTP + bearer token
 //!                                   ▼
-//!                             OpenKiwi backend ──Tauri event──▶ webview
+//!                             Mythra Code backend ──Tauri event──▶ webview
 //!                                                                  │
 //!                                          real provider turn ◀────┘
 //! ```
@@ -168,7 +168,7 @@ pub(super) fn validate_targets(targets: &[ChildAgentTarget]) -> Result<(), Strin
         }
         if !agent_bridge_providers().contains(&target.provider.as_str()) {
             return Err(format!(
-                "`{}` is not a provider OpenKiwi can start.",
+                "`{}` is not a provider Mythra Code can start.",
                 target.provider
             ));
         }
@@ -378,7 +378,7 @@ fn bridge_root(app: &AppHandle) -> Result<PathBuf, String> {
     let directory = app
         .path()
         .app_data_dir()
-        .map_err(|error| format!("Could not resolve OpenKiwi app data: {error}"))?
+        .map_err(|error| format!("Could not resolve Mythra Code app data: {error}"))?
         .join("child-agents");
     std::fs::create_dir_all(&directory)
         .map_err(|error| format!("Could not create the sub-agent bridge directory: {error}"))?;
@@ -477,8 +477,8 @@ pub(super) fn tool_catalog(targets: &[ChildAgentTarget], max_concurrent: usize) 
             "name": TOOL_SPAWN,
             "title": "Spawn a sub-agent",
             "description": format!(
-                "OpenKiwi is the only permitted sub-agent system for this thread; provider-native task, team, and agent spawning is not allowed. \
-                 Start a child agent on one of the destinations OpenKiwi approved for this thread. \
+                "Mythra Code is the only permitted sub-agent system for this thread; provider-native task, team, and agent spawning is not allowed. \
+                 Start a child agent on one of the destinations Mythra Code approved for this thread. \
                  At most {max_concurrent} child agent{child_plural} may run concurrently. \
                  The child runs in the same workspace with the same permission policy, reports into the \
                  same conversation, and returns immediately with an id — use `{TOOL_COLLECT}` to wait for its result.\n\nDestinations:\n{roster}"
@@ -493,7 +493,7 @@ pub(super) fn tool_catalog(targets: &[ChildAgentTarget], max_concurrent: usize) 
                     },
                     "title": {
                         "type": "string",
-                        "description": "Optional short label shown in the OpenKiwi timeline.",
+                        "description": "Optional short label shown in the Mythra Code timeline.",
                     },
                     "reasoningEffort": {
                         "type": "string",
@@ -534,7 +534,7 @@ pub(super) fn tool_catalog(targets: &[ChildAgentTarget], max_concurrent: usize) 
         {
             "name": TOOL_CANCEL,
             "title": "Cancel a sub-agent",
-            "description": "Interrupt a running child. Its partial work stays visible in the OpenKiwi timeline.",
+            "description": "Interrupt a running child. Its partial work stays visible in the Mythra Code timeline.",
             "inputSchema": {
                 "type": "object",
                 "properties": { "childId": { "type": "string" } },
@@ -545,7 +545,7 @@ pub(super) fn tool_catalog(targets: &[ChildAgentTarget], max_concurrent: usize) 
         {
             "name": TOOL_PROPOSE_SETTINGS,
             "title": "Propose project sub-agent settings",
-            "description": "Queue a user approval prompt for changing this project's OpenKiwi sub-agent crew. This returns as soon as the prompt is queued, not when it is approved: never claim the change was applied. Approved changes update project defaults for subsequent runs; the current turn's security-frozen destination list does not change mid-flight.",
+            "description": "Queue a user approval prompt for changing this project's Mythra Code sub-agent crew. This returns as soon as the prompt is queued, not when it is approved: never claim the change was applied. Approved changes update project defaults for subsequent runs; the current turn's security-frozen destination list does not change mid-flight.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -767,7 +767,7 @@ async fn relay_to_app_inner(
     if let Err(error) = emitted {
         state.pending.lock().await.remove(&request_id);
         return RelayOutcome::Answered(Err(format!(
-            "OpenKiwi could not dispatch the request: {error}"
+            "Mythra Code could not dispatch the request: {error}"
         )));
     }
     let wait = match tool {
@@ -785,7 +785,7 @@ async fn relay_to_app_inner(
         Ok(Err(_)) => {
             state.pending.lock().await.remove(&request_id);
             RelayOutcome::Answered(Err(
-                "OpenKiwi stopped tracking this request before it completed.".into(),
+                "Mythra Code stopped tracking this request before it completed.".into(),
             ))
         }
         Err(_) => RelayOutcome::TimedOut { request_id },
@@ -802,7 +802,7 @@ async fn relay_to_app(
         RelayOutcome::Answered(result) => result,
         RelayOutcome::TimedOut { request_id } => {
             state.pending.lock().await.remove(&request_id);
-            Err("OpenKiwi did not answer the sub-agent request in time.".into())
+            Err("Mythra Code did not answer the sub-agent request in time.".into())
         }
     }
 }
@@ -902,7 +902,7 @@ async fn dispatch_tool(
                 let mut runtime = session.runtime.lock().await;
                 runtime.reserved = runtime.reserved.saturating_sub(1);
                 return Err(
-                    "OpenKiwi lost the spawn acknowledgement at its timeout boundary. Check `agent_status` before retrying so a slow start is not duplicated."
+                    "Mythra Code lost the spawn acknowledgement at its timeout boundary. Check `agent_status` before retrying so a slow start is not duplicated."
                         .into(),
                 );
             }
@@ -927,7 +927,7 @@ async fn dispatch_tool(
                 }
             });
             Err(
-                "OpenKiwi did not confirm the spawn in time. It may still be starting; check `agent_status` before retrying so a slow start is not duplicated.".into(),
+                "Mythra Code did not confirm the spawn in time. It may still be starting; check `agent_status` before retrying so a slow start is not duplicated.".into(),
             )
         }
     }
@@ -1052,7 +1052,7 @@ pub(super) async fn child_agent_session_start(
     write_private_file(&session_path, &session_file)?;
 
     let executable = std::env::current_exe()
-        .map_err(|error| format!("Could not resolve the OpenKiwi executable: {error}"))?
+        .map_err(|error| format!("Could not resolve the Mythra Code executable: {error}"))?
         .to_string_lossy()
         .to_string();
     let session_argument = session_path.to_string_lossy().to_string();
@@ -1220,17 +1220,17 @@ async fn bridge_post(
         .json(&body)
         .send()
         .await
-        .map_err(|error| format!("OpenKiwi is not reachable: {error}"))?;
+        .map_err(|error| format!("Mythra Code is not reachable: {error}"))?;
     let status = response.status();
     let payload: Value = response
         .json()
         .await
-        .map_err(|error| format!("OpenKiwi returned an unreadable response: {error}"))?;
+        .map_err(|error| format!("Mythra Code returned an unreadable response: {error}"))?;
     if !status.is_success() {
         return Err(payload
             .get("error")
             .and_then(Value::as_str)
-            .unwrap_or("OpenKiwi rejected the sub-agent request")
+            .unwrap_or("Mythra Code rejected the sub-agent request")
             .to_string());
     }
     if payload.get("ok").and_then(Value::as_bool) == Some(false) {
@@ -1260,7 +1260,7 @@ pub(super) fn bridge_local_response(method: &str, id: Option<&Value>) -> Option<
                 "protocolVersion": "2025-06-18",
                 "capabilities": { "tools": { "listChanged": false } },
                 "serverInfo": { "name": AGENT_BRIDGE_SERVER, "version": env!("CARGO_PKG_VERSION") },
-                "instructions": "OpenKiwi project sub-agent controls. Use propose_agent_settings when the user asks to change this project's crew, even when delegation is currently off; never claim a proposed change was applied until the user approves it. When spawn_agent is available, it is the authoritative delegation route: collect every child result, recover a failed child at most twice, and do not use provider-native task, team, or agent-spawning tools.",
+                "instructions": "Mythra Code project sub-agent controls. Use propose_agent_settings when the user asks to change this project's crew, even when delegation is currently off; never claim a proposed change was applied until the user approves it. When spawn_agent is available, it is the authoritative delegation route: collect every child result, recover a failed child at most twice, and do not use provider-native task, team, or agent-spawning tools.",
             }
         }))),
         "ping" => Some(Some(json!({ "jsonrpc": "2.0", "id": id, "result": {} }))),
@@ -1268,7 +1268,7 @@ pub(super) fn bridge_local_response(method: &str, id: Option<&Value>) -> Option<
         other => Some(Some(mcp_error(
             id,
             -32601,
-            &format!("`{other}` is not supported by the OpenKiwi bridge"),
+            &format!("`{other}` is not supported by the Mythra Code bridge"),
         ))),
     }
 }
@@ -1316,7 +1316,7 @@ async fn bridge_handle(
 }
 
 /// Entry point for `openkiwi --openkiwi-agent-bridge <session file>`: a stdio
-/// MCP server that forwards to the running OpenKiwi app. Never touches Tauri,
+/// MCP server that forwards to the running Mythra Code app. Never touches Tauri,
 /// so no window, dock icon, or app state is created.
 pub(super) fn run_agent_bridge(session_path: &str) -> i32 {
     let Ok(runtime) = tokio::runtime::Builder::new_current_thread()

@@ -49,7 +49,7 @@ describe("CommandPalette", () => {
       createdAt: 1,
       updatedAt: 1,
     };
-    render(<CommandPalette {...baseProps} projectActive workflows={[workflow]} projects={[{ id: "project-1", name: "OpenKiwi", path: "/tmp/openkiwi" }]} onWorkflow={onWorkflow} />);
+    render(<CommandPalette {...baseProps} projectActive workflows={[workflow]} projects={[{ id: "project-1", name: "Mythra Code", path: "/tmp/openkiwi" }]} onWorkflow={onWorkflow} />);
     fireEvent.click(screen.getByRole("option", { name: /Run workflow: Release checks/i }));
     expect(onWorkflow).toHaveBeenCalledWith(workflow);
   });
@@ -57,7 +57,7 @@ describe("CommandPalette", () => {
   it("groups mixed results while preserving one keyboard navigation order", () => {
     const onProject = vi.fn();
     const onThread = vi.fn();
-    const project = { id: "project-1", name: "OpenKiwi", path: "/tmp/openkiwi" };
+    const project = { id: "project-1", name: "Mythra Code", path: "/tmp/openkiwi" };
     const thread = {
       id: "thread-1",
       name: "Polish UI",
@@ -79,7 +79,7 @@ describe("CommandPalette", () => {
     );
 
     expect(within(screen.getByRole("group", { name: "Commands" })).getByRole("option", { name: /New thread/i })).toBeInTheDocument();
-    expect(within(screen.getByRole("group", { name: "Projects" })).getByRole("option", { name: /OpenKiwi/i })).toBeInTheDocument();
+    expect(within(screen.getByRole("group", { name: "Projects" })).getByRole("option", { name: /Mythra Code/i })).toBeInTheDocument();
     expect(within(screen.getByRole("group", { name: "Threads" })).getByRole("option", { name: /Polish UI/i })).toBeInTheDocument();
 
     const search = screen.getByRole("textbox", { name: /Search commands/i });

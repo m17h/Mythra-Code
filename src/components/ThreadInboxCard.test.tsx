@@ -24,8 +24,8 @@ describe("ThreadInboxCard", () => {
       <ThreadInboxCard
         threadId="thread-1"
         title="Remake the sidebar"
-        workspaceName="OpenKiwi"
-        directory="/Users/morgan/Projects/OpenKiwi"
+        workspaceName="Mythra Code"
+        directory="/Users/morgan/Projects/Mythra Code"
         provider="claude"
         providerName="Claude"
         pinned={false}
@@ -33,8 +33,8 @@ describe("ThreadInboxCard", () => {
       />,
     );
 
-    expect(screen.getByText("OpenKiwi")).toBeInTheDocument();
-    expect(screen.getByText("Projects/OpenKiwi")).toBeInTheDocument();
+    expect(screen.getByText("Mythra Code")).toBeInTheDocument();
+    expect(screen.getByText("Projects/Mythra Code")).toBeInTheDocument();
     expect(screen.getByText("Working")).toBeInTheDocument();
     expect(screen.getByText("1m")).toBeInTheDocument();
     expect(screen.getByLabelText("Claude thread")).toBeInTheDocument();
@@ -54,8 +54,8 @@ describe("ThreadInboxCard", () => {
       <ThreadInboxCard
         threadId="thread-1"
         title="Review a command"
-        workspaceName="OpenKiwi"
-        directory="/Projects/OpenKiwi"
+        workspaceName="Mythra Code"
+        directory="/Projects/Mythra Code"
         provider="openai"
         providerName="OpenAI"
         pinned
@@ -69,8 +69,8 @@ describe("ThreadInboxCard", () => {
   });
 
   it("formats compact paths and elapsed time defensively", () => {
-    expect(compactDirectory("/Users/morgan/Projects/OpenKiwi")).toBe("Projects/OpenKiwi");
-    expect(compactDirectory("C:\\work\\OpenKiwi")).toBe("work/OpenKiwi");
+    expect(compactDirectory("/Users/morgan/Projects/Mythra Code")).toBe("Projects/Mythra Code");
+    expect(compactDirectory("C:\\work\\Mythra Code")).toBe("work/Mythra Code");
     expect(formatWorkingDuration(Number.NaN)).toBe("0s");
     expect(formatWorkingDuration(3_661_000)).toBe("1h 1m");
   });

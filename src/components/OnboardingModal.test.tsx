@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { isEstablishedOpenKiwiInstall } from "../lib/onboarding";
+import { isEstablishedMythraCodeInstall } from "../lib/onboarding";
 import { OnboardingModal } from "./OnboardingModal";
 
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn(async () => undefined) }));
@@ -50,7 +50,7 @@ describe("OnboardingModal", () => {
     fireEvent.click(screen.getByRole("button", { name: /Local skills/ }));
 
     expect(screen.getByRole("heading", { name: /Skills are local Markdown playbooks/ })).toBeInTheDocument();
-    expect(screen.getByText(/Update the Markdown or change its OpenKiwi invocation name/)).toBeInTheDocument();
+    expect(screen.getByText(/Update the Markdown or change its Mythra Code invocation name/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Choose folder" }));
     expect(onChooseSkillsFolder).toHaveBeenCalledOnce();
   });
@@ -67,9 +67,9 @@ describe("OnboardingModal", () => {
   });
 
   it("does not treat a genuinely empty install as established", () => {
-    expect(isEstablishedOpenKiwiInstall({ projects: 0, knownThreads: 0, hasStoredSettings: false, hasSkillsFolder: false })).toBe(false);
-    expect(isEstablishedOpenKiwiInstall({ projects: 1, knownThreads: 0, hasStoredSettings: false, hasSkillsFolder: false })).toBe(true);
-    expect(isEstablishedOpenKiwiInstall({ projects: 0, knownThreads: 2, hasStoredSettings: false, hasSkillsFolder: false })).toBe(true);
-    expect(isEstablishedOpenKiwiInstall({ projects: 0, knownThreads: 0, hasStoredSettings: true, hasSkillsFolder: false })).toBe(true);
+    expect(isEstablishedMythraCodeInstall({ projects: 0, knownThreads: 0, hasStoredSettings: false, hasSkillsFolder: false })).toBe(false);
+    expect(isEstablishedMythraCodeInstall({ projects: 1, knownThreads: 0, hasStoredSettings: false, hasSkillsFolder: false })).toBe(true);
+    expect(isEstablishedMythraCodeInstall({ projects: 0, knownThreads: 2, hasStoredSettings: false, hasSkillsFolder: false })).toBe(true);
+    expect(isEstablishedMythraCodeInstall({ projects: 0, knownThreads: 0, hasStoredSettings: true, hasSkillsFolder: false })).toBe(true);
   });
 });

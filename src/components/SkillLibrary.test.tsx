@@ -113,7 +113,7 @@ describe("SkillLibrary", () => {
     expect(revealItemInDir).toHaveBeenCalledWith("/skills/review.md");
   });
 
-  it("loads and saves a skill's Markdown without leaving OpenKiwi", async () => {
+  it("loads and saves a skill's Markdown without leaving Mythra Code", async () => {
     const onRead = vi.fn(async () => "# Review\n\nReview code for correctness.\n");
     const onUpdate = vi.fn(async () => undefined);
     renderLibrary({ onRead, onUpdate });
@@ -174,7 +174,7 @@ describe("SkillLibrary", () => {
     const dialog = screen.getByRole("alertdialog", { name: "Remove @review?" });
     expect(dialog).toHaveTextContent("Choose whether to leave review.md in your skills folder or permanently delete that source file too. Other package and supporting files are always kept.");
 
-    fireEvent.click(within(dialog).getByRole("button", { name: "Remove from OpenKiwi" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Remove from Mythra Code" }));
     await waitFor(() => expect(onRemove).toHaveBeenCalledWith("/skills/review.md", false));
     await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
   });
@@ -193,7 +193,7 @@ describe("SkillLibrary", () => {
     renderLibrary({ onRemove: vi.fn(async () => false) });
 
     fireEvent.click(screen.getByRole("button", { name: "Remove review" }));
-    fireEvent.click(screen.getByRole("button", { name: "Remove from OpenKiwi" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove from Mythra Code" }));
 
     await waitFor(() => expect(screen.getByRole("alertdialog", { name: "Remove @review?" })).toBeInTheDocument());
     expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
@@ -203,7 +203,7 @@ describe("SkillLibrary", () => {
     const onRestore = vi.fn(async () => true);
     renderLibrary({ skills: [], removedSkills: [skill], onRestore });
 
-    expect(screen.getByText("Removed from OpenKiwi")).toBeInTheDocument();
+    expect(screen.getByText("Removed from Mythra Code")).toBeInTheDocument();
     expect(screen.getByText("1 kept on disk")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Restore" }));
     await waitFor(() => expect(onRestore).toHaveBeenCalledWith("/skills/review.md"));
@@ -469,7 +469,7 @@ describe("SkillLibrary", () => {
     it("keeps the reference and detection guarantees visible", () => {
       renderLibrary();
 
-      expect(screen.getByText(/Renaming changes only the invocation name inside OpenKiwi/)).toBeInTheDocument();
+      expect(screen.getByText(/Renaming changes only the invocation name inside Mythra Code/)).toBeInTheDocument();
       expect(screen.getByText(/source changes only when you explicitly save it in the editor/)).toBeInTheDocument();
     });
   });

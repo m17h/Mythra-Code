@@ -21,7 +21,7 @@ const READY: ChildAgentReadiness = {
 
 const LAUNCH: ChildAgentBridgeLaunch = {
   name: "openkiwi",
-  command: "/Applications/OpenKiwi.app/Contents/MacOS/openkiwi",
+  command: "/Applications/Mythra Code.app/Contents/MacOS/mythra-code",
   args: ["--openkiwi-agent-bridge", "/data/child-agents/abc/session.json"],
   configPath: "/data/child-agents/abc/mcp.json",
   toolNames: ["spawn_agent", "agent_status", "collect_agent", "cancel_agent"],

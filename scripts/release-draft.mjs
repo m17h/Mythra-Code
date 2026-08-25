@@ -30,7 +30,7 @@ export function uploadPlatformDraft({
   assetPaths,
   notesFile,
 }) {
-  const title = `OpenKiwi ${manifest.version}`;
+  const title = `Mythra Code ${manifest.version}`;
   const view = run(root, "gh", ["release", "view", tag, "--repo", repository, "--json", "isDraft,targetCommitish"]);
   let exists = false;
   if (view.status === 0) {
@@ -44,7 +44,7 @@ export function uploadPlatformDraft({
     }
   }
 
-  const temporary = mkdtempSync(join(tmpdir(), "openkiwi-release-"));
+  const temporary = mkdtempSync(join(tmpdir(), "mythra-code-release-"));
   try {
     let combined = manifest;
     if (exists) {

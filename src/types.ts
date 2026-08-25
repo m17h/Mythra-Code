@@ -6,7 +6,7 @@ export type OpenAILogoStyle = "openai" | "codex";
 export type ClaudeLogoStyle = "claude" | "anthropic";
 export type CursorLogoStyle = "cube" | "app-dark";
 export type PermissionMode = "read-only" | "ask" | "full";
-export type ThemeName = "kiwi" | "daylight" | "midnight" | "synthwave" | "ember" | "terminal";
+export type ThemeName = "mythra" | "kiwi" | "daylight" | "midnight" | "synthwave" | "ember" | "terminal";
 export type EffortSliderStyle = "spectrum" | "classic" | "neon" | "pixel" | "aurora" | "ink";
 export type WorkspaceMode = "chat" | "project";
 export type SettingsSection = "general" | "models" | "github" | "usage" | "prompts" | "agents" | "workflows" | "projects" | "skills" | "tools" | "updates";
@@ -273,7 +273,7 @@ export interface AppSettings {
   /** OpenAI-compatible Responses endpoint exposed by LM Studio. */
   lmStudioBaseUrl: string;
   permission: PermissionMode;
-  /** Global OpenKiwi instructions, applied before any subscription-specific layer. */
+  /** Global Mythra Code instructions, applied before any subscription-specific layer. */
   systemPrompt: string;
   /** Additional instructions for ChatGPT/Codex subscription threads. */
   codexSystemPrompt: string;

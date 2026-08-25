@@ -11,7 +11,7 @@ const bundleArgs = process.platform === "darwin"
     : null;
 
 if (!bundleArgs) {
-  throw new Error("OpenKiwi desktop builds are supported only on macOS and Windows.");
+  throw new Error("Mythra Code desktop builds are supported only on macOS and Windows.");
 }
 
 const result = spawnSync(process.execPath, [
@@ -29,7 +29,7 @@ if (result.error) throw result.error;
 if (result.status !== 0) process.exit(result.status ?? 1);
 
 if (process.platform === "darwin") {
-  const appBundle = resolve(root, "src-tauri", "target", "release", "bundle", "macos", "OpenKiwi.app");
+  const appBundle = resolve(root, "src-tauri", "target", "release", "bundle", "macos", "Mythra Code.app");
   const verifyArgs = ["--verify", "--deep", "--strict", appBundle];
   const initialVerification = spawnSync("codesign", verifyArgs, { cwd: root, stdio: "ignore" });
 

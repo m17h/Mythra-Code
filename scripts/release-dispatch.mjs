@@ -11,7 +11,7 @@ const target = process.platform === "darwin"
   : process.platform === "win32"
     ? resolve(root, "Windows", action === "build" ? "build.ps1" : "publish-release.mjs")
     : null;
-if (!target) throw new Error("OpenKiwi releases are supported only on macOS and Windows.");
+if (!target) throw new Error("Mythra Code releases are supported only on macOS and Windows.");
 const command = process.platform === "win32" && action === "build" ? "powershell.exe" : process.execPath;
 const args = process.platform === "win32" && action === "build"
   ? ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", target]

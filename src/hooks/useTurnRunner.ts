@@ -31,7 +31,7 @@ import { friendlyError } from "../lib/errors";
 import { confirmDialog } from "../lib/confirmDialog";
 import { clearProviderStopIntent, markProviderStopIntent } from "../lib/providerStopIntent";
 import { isClaudeThread, isCursorThread } from "../lib/threadProvider";
-import { withOpenKiwiCompletionInstructions } from "../lib/completionPrompt";
+import { withMythraCodeCompletionInstructions } from "../lib/completionPrompt";
 import {
   createThreadWorktree,
   removeThreadWorktree,
@@ -152,7 +152,7 @@ export interface TurnRunnerContext {
   /** Bridge sessions for cross-provider sub-agents, keyed by session id. */
   childAgentPolicies: Record<string, ChildAgentPolicy>;
   childAgentLinks: Record<string, ChildAgentLink>;
-  /** True for both OpenKiwi bridge children and provider-native children. */
+  /** True for both Mythra Code bridge children and provider-native children. */
   activeThreadIsChild?: boolean;
   childAgentReadiness: ChildAgentReadiness;
   persistChildAgentPolicies: SetPersisted<Record<string, ChildAgentPolicy>>;
@@ -553,7 +553,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
             // presence, so resume detection is unaffected by running after it.
             const canResumeClaude = Boolean(activeThread && useTaskStore.getState().tasks[thread.id]?.messages.some((message) => message.role === "assistant"));
             await saveClaudeTranscript({ thread: updatedThread, messages: useTaskStore.getState().tasks[thread.id]?.messages ?? [], activities: useTaskStore.getState().tasks[thread.id]?.activities ?? [] });
-            const result = await startClaudeTurn({ threadId: thread.id, cwd: executionPath, prompt: text, model: effectiveSettings.model || DEFAULT_CLAUDE_MODEL, effort: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort, permission: effectiveSettings.permission, systemPrompt: withOpenKiwiCompletionInstructions(effectiveSettings.systemPrompt, Boolean(childBridge?.launch.toolNames.includes("spawn_agent")), Boolean(childBridge?.launch.toolNames.includes("propose_agent_settings"))), resume: canResumeClaude, attachments: sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })), subagentMax: runtimeSubagentMax, customAgents, skillsPluginPath: skillRuntimeRootRef.current || undefined, childAgentBridgeConfig: childBridge?.launch.configPath });
+            const result = await startClaudeTurn({ threadId: thread.id, cwd: executionPath, prompt: text, model: effectiveSettings.model || DEFAULT_CLAUDE_MODEL, effort: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort, permission: effectiveSettings.permission, systemPrompt: withMythraCodeCompletionInstructions(effectiveSettings.systemPrompt, Boolean(childBridge?.launch.toolNames.includes("spawn_agent")), Boolean(childBridge?.launch.toolNames.includes("propose_agent_settings"))), resume: canResumeClaude, attachments: sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })), subagentMax: runtimeSubagentMax, customAgents, skillsPluginPath: skillRuntimeRootRef.current || undefined, childAgentBridgeConfig: childBridge?.launch.configPath });
             return { turnId: result.turnId };
           },
           hardStop: (threadId) => killClaudeTurn(threadId),
@@ -572,7 +572,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
               model: effectiveSettings.model || DEFAULT_CURSOR_MODEL,
               effort: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort,
               permission: effectiveSettings.permission,
-              systemPrompt: withOpenKiwiCompletionInstructions(effectiveSettings.systemPrompt, Boolean(childBridge?.launch.toolNames.includes("spawn_agent")), Boolean(childBridge?.launch.toolNames.includes("propose_agent_settings"))),
+              systemPrompt: withMythraCodeCompletionInstructions(effectiveSettings.systemPrompt, Boolean(childBridge?.launch.toolNames.includes("spawn_agent")), Boolean(childBridge?.launch.toolNames.includes("propose_agent_settings"))),
               resumeSessionId: priorSessionId || undefined,
               attachments: sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })),
               childAgentBridge: childBridge
@@ -606,7 +606,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       let threadId = activeThread?.id;
       startedThreadId = threadId;
       if (!threadId) {
-        const result = await rpc<{ thread: Thread }>("thread/start", threadStartParams(runtimeSettings, executionPath, { serviceName: activeWorkspace.isChat ? "OpenKiwi Chat" : "OpenKiwi", customAgents, modelContextWindow, interactive: true, additionalWorkspaceRoots, childAgentBridge: childBridge?.launch }));
+        const result = await rpc<{ thread: Thread }>("thread/start", threadStartParams(runtimeSettings, executionPath, { serviceName: activeWorkspace.isChat ? "Mythra Code Chat" : "Mythra Code", customAgents, modelContextWindow, interactive: true, additionalWorkspaceRoots, childAgentBridge: childBridge?.launch }));
         const startedThread = optimisticStartedThread(result.thread, text);
         threadId = startedThread.id;
         startedThreadId = threadId;
@@ -726,7 +726,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         if (isClaudeThreadBusyError(reason)) {
           // The backend slot is held by a Claude process the UI no longer
           // tracks (e.g. after an event loss). Free it so a retry succeeds
-          // instead of failing until OpenKiwi restarts.
+          // instead of failing until Mythra Code restarts.
           void killClaudeTurn(failedThreadId).catch(() => undefined);
         } else if (effectiveSettings.provider === "cursor" && /already working/i.test(friendlyError(reason))) {
           void killCursorTurn(failedThreadId).catch(() => undefined);

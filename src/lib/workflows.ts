@@ -115,7 +115,7 @@ export function nextWorkflowFailureAt(
 
 export function workflowTriggerLabel(trigger: WorkflowTrigger): string {
   if (trigger.type === "interval") return `Every ${Math.max(5, trigger.intervalMinutes)} min`;
-  if (trigger.type === "app-start") return "When OpenKiwi starts";
+  if (trigger.type === "app-start") return "When Mythra Code starts";
   return "Manual";
 }
 
@@ -196,12 +196,12 @@ export function recoverWorkflowRuns(runs: WorkflowRunRecord[], now = Date.now())
     status: "interrupted",
     finishedAt: now,
     recovered: true,
-    error: "OpenKiwi closed before this workflow finished.",
+    error: "Mythra Code closed before this workflow finished.",
     steps: run.steps?.map((step) => step.status !== "running" ? step : {
       ...step,
       status: "interrupted",
       finishedAt: now,
-      error: "Interrupted when OpenKiwi closed.",
+      error: "Interrupted when Mythra Code closed.",
     }),
   });
 }

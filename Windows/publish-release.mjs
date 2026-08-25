@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { uploadPlatformDraft } from "../scripts/release-draft.mjs";
 
-const REPOSITORY = "m17h/OpenKiwi";
+const REPOSITORY = "m17h/Mythra-Code";
 const PLATFORM = "windows-x86_64";
 const root = resolve(import.meta.dirname, "..");
 const output = resolve(root, "RELEASE ASSETS");
@@ -27,7 +27,7 @@ function checked(command, args, label) {
 }
 
 const packageVersion = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")).version;
-const installerName = `OpenKiwi_${packageVersion}_x64-setup.exe`;
+const installerName = `MythraCode_${packageVersion}_x64-setup.exe`;
 const signatureName = `${installerName}.sig`;
 const expectedFiles = [installerName, signatureName, "build-info.json", "latest.json"];
 for (const name of expectedFiles) {
@@ -68,7 +68,7 @@ if (buildInfo.sha256 !== installerDigest) {
   throw new Error(`Installer SHA-256 mismatch: build-info=${buildInfo.sha256}, actual=${installerDigest}`);
 }
 if (buildInfo.authenticodeStatus !== "NotSigned") {
-  throw new Error(`OpenKiwi Windows installers must be intentionally unsigned; found Authenticode status ${buildInfo.authenticodeStatus}.`);
+  throw new Error(`Mythra Code Windows installers must be intentionally unsigned; found Authenticode status ${buildInfo.authenticodeStatus}.`);
 }
 
 checked("gh", ["auth", "status"], "GitHub authentication check");

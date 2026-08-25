@@ -1,12 +1,12 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "OpenKiwi Local Dev",
+  "productName": "Mythra Code Local Dev",
   "identifier": "com.kiwi.harness.localdev",
   "app": {
     "windows": [
       {
         "label": "main",
-        "title": "OpenKiwi Local Dev",
+        "title": "Mythra Code Local Dev",
         "width": 1380,
         "height": 900,
         "minWidth": 980,

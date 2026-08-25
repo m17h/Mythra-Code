@@ -7,7 +7,7 @@ describe("ProjectPromptControl", () => {
     const onSave = vi.fn();
     render(
       <ProjectPromptControl
-        projectName="OpenKiwi"
+        projectName="Mythra Code"
         appPrompt="Keep answers concise."
         promptMode="replace"
         provider="openai"
@@ -20,7 +20,7 @@ describe("ProjectPromptControl", () => {
     fireEvent.click(screen.getByRole("button", { name: "Project instructions: Inherited" }));
     expect(screen.getByText("Uses the 21-character app-wide prompt")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("radio", { name: /Use a project prompt/ }));
-    fireEvent.change(screen.getByRole("textbox", { name: "Prompt for OpenKiwi" }), { target: { value: "Prefer TypeScript." } });
+    fireEvent.change(screen.getByRole("textbox", { name: "Prompt for Mythra Code" }), { target: { value: "Prefer TypeScript." } });
     fireEvent.click(screen.getByRole("button", { name: "Save project prompt" }));
 
     expect(onSave).toHaveBeenCalledWith("Prefer TypeScript.", "replace");
@@ -30,7 +30,7 @@ describe("ProjectPromptControl", () => {
     const onSave = vi.fn();
     render(
       <ProjectPromptControl
-        projectName="OpenKiwi"
+        projectName="Mythra Code"
         projectPrompt="Project-only instructions"
         appPrompt=""
         promptMode="replace"
@@ -52,7 +52,7 @@ describe("ProjectPromptControl", () => {
   it("accurately explains when Claude applies an edited project prompt", () => {
     render(
       <ProjectPromptControl
-        projectName="OpenKiwi"
+        projectName="Mythra Code"
         projectPrompt="Project-only instructions"
         appPrompt=""
         promptMode="replace"
@@ -72,7 +72,7 @@ describe("ProjectPromptControl", () => {
     const onSave = vi.fn();
     render(
       <ProjectPromptControl
-        projectName="OpenKiwi"
+        projectName="Mythra Code"
         projectPrompt="Project-only instructions"
         promptMode="replace"
         appPrompt="App-wide instructions"
@@ -96,7 +96,7 @@ describe("ProjectPromptControl", () => {
   it("does not claim prompts are layered while the app-wide prompt is empty", () => {
     render(
       <ProjectPromptControl
-        projectName="OpenKiwi"
+        projectName="Mythra Code"
         projectPrompt="Project-only instructions"
         promptMode="append"
         appPrompt="  "
