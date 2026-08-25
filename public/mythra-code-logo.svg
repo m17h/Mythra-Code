@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title description">
+  <title id="title">Mythra Code</title>
+  <desc id="description">A segmented cyan and blue code portal surrounding an angular M.</desc>
+
+  <!-- Four deliberate portal segments. -->
+  <path d="M205 290 512 110 819 290 735 375 512 245 289 375Z" fill="#35D6F4" />
+  <path d="M289 375 512 245 735 375 699 411 512 302 325 411Z" fill="#148FE6" />
+
+  <path d="M169 330 289 390 289 630 169 690Z" fill="#35D6F4" />
+  <path d="M169 594 289 534 289 630 169 690Z" fill="#148FE6" />
+
+  <path d="M855 330 735 390 735 630 855 690Z" fill="#148FE6" />
+  <path d="M735 534 855 594 855 690 735 630Z" fill="#35D6F4" />
+
+  <path d="M819 734 512 914 205 734 289 649 512 779 735 649Z" fill="#148FE6" />
+  <path d="M205 734 512 914 819 734 783 770 512 929 241 770Z" fill="#35D6F4" />
+
+  <!-- The central monogram shares the portal's folded-facet language. -->
+  <path d="M350 650V418L512 548 674 418V650" fill="none" stroke="#35D6F4" stroke-width="88" stroke-linecap="square" stroke-linejoin="miter" />
+  <path d="M512 548 674 418V650" fill="none" stroke="#148FE6" stroke-width="30" stroke-linecap="square" stroke-linejoin="miter" />
+</svg>

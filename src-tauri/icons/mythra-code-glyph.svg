@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <path d="M232 304 512 140 792 304 718 378 512 258 306 378Z" fill="#35D6F4" />
+  <path d="M190 354 304 410 304 614 190 670Z" fill="#35D6F4" />
+  <path d="M834 354 720 410 720 614 834 670Z" fill="#148FE6" />
+  <path d="M792 720 512 884 232 720 306 646 512 766 718 646Z" fill="#148FE6" />
+  <path d="M356 646V426L512 552 668 426V646" fill="none" stroke="#35D6F4" stroke-width="92" stroke-linecap="square" stroke-linejoin="miter" />
+</svg>

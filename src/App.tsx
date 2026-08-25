@@ -4163,7 +4163,7 @@ export default function App() {
         )}
         <div className="sidebar-brand">
           <div className="brand-mark">
-            <img src="/mythra-code-logo.png" alt="" />
+            <img src="/mythra-code-glyph.svg" alt="" />
           </div>
           <span>Mythra Code</span>
           <button className="icon-button subtle collapse-button" onClick={() => setSidebarOpen(false)} title="Hide sidebar" aria-label="Hide sidebar">

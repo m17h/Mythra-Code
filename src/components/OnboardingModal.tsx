@@ -305,7 +305,7 @@ export function OnboardingModal({
   };
   let content: ReactNode;
   if (step.id === "welcome") content = <div className="onboarding-page welcome-page">
-    <div className="onboarding-hero-mark"><img src="/mythra-code-logo.png" alt="" /></div>
+    <div className="onboarding-hero-mark"><img src="/mythra-code-logo.svg" alt="" /></div>
     <div className="onboarding-copy centered">
       <span className="onboarding-eyebrow">Welcome to Mythra Code</span>
       <h2>A transparent AI coding harness, set up your way.</h2>
@@ -327,7 +327,7 @@ export function OnboardingModal({
   return <div className={`modal-backdrop onboarding-backdrop ${open ? "open" : "closed"}`} aria-hidden={!open} inert={!open ? true : undefined}>
     <div ref={dialogRef} className="onboarding-modal" role="dialog" aria-modal="true" aria-label="Mythra Code onboarding">
       <aside className="onboarding-rail">
-        <div className="onboarding-brand"><span><img src="/mythra-code-logo.png" alt="" /></span><div><strong>Mythra Code</strong><small>Getting started</small></div></div>
+        <div className="onboarding-brand"><span><img src="/mythra-code-glyph.svg" alt="" /></span><div><strong>Mythra Code</strong><small>Getting started</small></div></div>
         <nav aria-label="Onboarding progress">
           {STEPS.map(({ id, label, icon: Icon }, index) => <button key={id} className={`${index === stepIndex ? "active" : ""} ${index < stepIndex ? "complete" : ""}`} onClick={() => setStepIndex(index)} aria-current={index === stepIndex ? "step" : undefined}>
             <span>{index < stepIndex ? <Check size={12} /> : <Icon size={13} />}</span><em>{label}</em>
