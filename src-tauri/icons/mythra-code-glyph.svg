@@ -1,7 +1,26 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
-  <path d="M232 304 512 140 792 304 718 378 512 258 306 378Z" fill="#35D6F4" />
-  <path d="M190 354 304 410 304 614 190 670Z" fill="#35D6F4" />
-  <path d="M834 354 720 410 720 614 834 670Z" fill="#148FE6" />
-  <path d="M792 720 512 884 232 720 306 646 512 766 718 646Z" fill="#148FE6" />
-  <path d="M356 646V426L512 552 668 426V646" fill="none" stroke="#35D6F4" stroke-width="92" stroke-linecap="square" stroke-linejoin="miter" />
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title description">
+  <title id="title">Mythra Code</title>
+  <desc id="description">A compact folded cyan and blue M with a forward code caret.</desc>
+  <defs>
+    <linearGradient id="cyan" x1="170" y1="180" x2="620" y2="700" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#35E7F2" />
+      <stop offset="1" stop-color="#08AEEA" />
+    </linearGradient>
+    <linearGradient id="blue" x1="430" y1="400" x2="610" y2="840" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#148EFF" />
+      <stop offset="1" stop-color="#1644E8" />
+    </linearGradient>
+    <linearGradient id="fold" x1="500" y1="230" x2="820" y2="430" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#176BFA" />
+      <stop offset="1" stop-color="#1247D9" />
+    </linearGradient>
+    <mask id="caret-cutout">
+      <rect width="1024" height="1024" fill="#fff" />
+      <path d="M463 560 548 638 463 716v-56l24-22-24-22Z" fill="#000" />
+    </mask>
+  </defs>
+  <path d="M495 344 685 229q15-9 30 0l119 71-195 127Z" fill="url(#fold)" />
+  <path d="M704 385 834 300v329q0 17-15 26l-111 67q-20 12-20-12V408Z" fill="url(#cyan)" />
+  <path d="M414 405 610 522v217q0 15-13 23l-149 89q-23 14-23-14V454Z" fill="url(#blue)" mask="url(#caret-cutout)" />
+  <path d="M190 159q15-9 30 0l395 235q23 14 6 34l-68 78q-12 14-28 4L329 393v316q0 20-17 30-12 7-24 0l-107-64q-17-10-17-30V184q0-17 14-25 6-4 12 0Z" fill="url(#cyan)" />
 </svg>

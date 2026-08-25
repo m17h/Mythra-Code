@@ -1,10 +1,49 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
-  <rect x="32" y="32" width="960" height="960" rx="224" fill="#111318" />
-  <g transform="translate(128 128) scale(.75)">
-    <path d="M232 304 512 140 792 304 718 378 512 258 306 378Z" fill="#35D6F4" />
-    <path d="M190 354 304 410 304 614 190 670Z" fill="#35D6F4" />
-    <path d="M834 354 720 410 720 614 834 670Z" fill="#148FE6" />
-    <path d="M792 720 512 884 232 720 306 646 512 766 718 646Z" fill="#148FE6" />
-    <path d="M356 646V426L512 552 668 426V646" fill="none" stroke="#35D6F4" stroke-width="92" stroke-linecap="square" stroke-linejoin="miter" />
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title description">
+  <title id="title">Mythra Code app icon</title>
+  <desc id="description">A folded cyan and blue architectural M with a forward code caret on a charcoal app tile.</desc>
+  <defs>
+    <linearGradient id="tile" x1="120" y1="90" x2="850" y2="930" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#141C29" />
+      <stop offset=".55" stop-color="#0C121D" />
+      <stop offset="1" stop-color="#080D15" />
+    </linearGradient>
+    <linearGradient id="rim" x1="170" y1="80" x2="900" y2="900" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#38E6F4" />
+      <stop offset=".48" stop-color="#147EFF" />
+      <stop offset="1" stop-color="#1742C8" />
+    </linearGradient>
+    <linearGradient id="cyan" x1="170" y1="180" x2="620" y2="700" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#35E7F2" />
+      <stop offset="1" stop-color="#08AEEA" />
+    </linearGradient>
+    <linearGradient id="blue" x1="430" y1="400" x2="610" y2="840" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#148EFF" />
+      <stop offset="1" stop-color="#1644E8" />
+    </linearGradient>
+    <linearGradient id="fold" x1="500" y1="230" x2="820" y2="430" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#176BFA" />
+      <stop offset="1" stop-color="#1247D9" />
+    </linearGradient>
+    <filter id="tile-shadow" x="-15%" y="-15%" width="130%" height="140%">
+      <feDropShadow dx="0" dy="18" stdDeviation="22" flood-color="#000" flood-opacity=".42" />
+    </filter>
+    <filter id="mark-lift" x="-25%" y="-25%" width="150%" height="160%">
+      <feDropShadow dx="0" dy="10" stdDeviation="13" flood-color="#087DFF" flood-opacity=".28" />
+    </filter>
+    <mask id="caret-cutout">
+      <rect width="1024" height="1024" fill="#fff" />
+      <path d="M463 560 548 638 463 716v-56l24-22-24-22Z" fill="#000" />
+    </mask>
+  </defs>
+  <rect x="42" y="42" width="940" height="940" rx="218" fill="url(#tile)" filter="url(#tile-shadow)" />
+  <rect x="46" y="46" width="932" height="932" rx="214" fill="none" stroke="url(#rim)" stroke-width="8" stroke-opacity=".78" />
+  <path d="M168 105c77-38 184-55 344-55 175 0 281 20 350 61" fill="none" stroke="#8FF6FC" stroke-width="7" stroke-linecap="round" stroke-opacity=".12" />
+  <g transform="translate(55 62) scale(.89)" filter="url(#mark-lift)">
+    <path d="M495 344 685 229q15-9 30 0l119 71-195 127Z" fill="url(#fold)" />
+    <path d="M704 385 834 300v329q0 17-15 26l-111 67q-20 12-20-12V408Z" fill="url(#cyan)" />
+    <path d="M414 405 610 522v217q0 15-13 23l-149 89q-23 14-23-14V454Z" fill="url(#blue)" mask="url(#caret-cutout)" />
+    <path d="M190 159q15-9 30 0l395 235q23 14 6 34l-68 78q-12 14-28 4L329 393v316q0 20-17 30-12 7-24 0l-107-64q-17-10-17-30V184q0-17 14-25 6-4 12 0Z" fill="url(#cyan)" />
+    <path d="M190 159q15-9 30 0l395 235" fill="none" stroke="#7BF3FA" stroke-opacity=".62" stroke-width="6" stroke-linecap="round" />
+    <path d="M495 344 685 229q15-9 30 0l119 71" fill="none" stroke="#3A9CFF" stroke-opacity=".68" stroke-width="6" stroke-linecap="round" />
   </g>
 </svg>
