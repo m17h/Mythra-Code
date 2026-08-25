@@ -59,6 +59,11 @@ describe("planSubagentCapabilities", () => {
     expect(planSubagentCapabilities("thread-1", RUNTIME, OFF)).toEqual(REFRESH);
   });
 
+  it("refreshes a thread recorded before the managed routing-policy revision", () => {
+    recordSubagentCapabilities("thread-1", RUNTIME, "on:4:/bridge/one/mcp.json");
+    expect(planSubagentCapabilities("thread-1", RUNTIME, BRIDGED)).toEqual(REFRESH);
+  });
+
   it("only resumes when the app-server that held the thread has since been replaced", () => {
     // A restarted runtime has nothing loaded, so config applies on resume and
     // interrupting it again would cost the user a turn for no reason.
@@ -139,7 +144,7 @@ describe("durable capability records", () => {
 
   it("ignores stored records that are not shaped like one", async () => {
     localStorage.setItem("kiwi.threadSubagentCapabilities", JSON.stringify({
-      "thread-1": "on:4:",
+      "thread-1": "managed-v2:on:4:",
       "thread-2": { instance: RUNTIME },
       "thread-3": { instance: "", signature: ON },
       "thread-4": { instance: RUNTIME, signature: ON },

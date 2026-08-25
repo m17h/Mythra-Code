@@ -492,4 +492,43 @@ describe("task store", () => {
       agent: { action: "spawn", threadIds: ["native-child"] },
     });
   });
+
+  it("does not let a late provider event restart a stopped Relay card", () => {
+    const store = useTaskStore.getState();
+    store.ensureTask("child-a");
+    store.setTaskStatus("child-a", "interrupted");
+    store.upsertAgent("thread-a", { id: "child-a", prompt: "Audit routing", status: "interrupted" });
+    store.upsertActivity("thread-a", {
+      id: "spawn",
+      kind: "agent",
+      title: "Spawned Claude sub-agent",
+      status: "cancelled",
+      agent: { action: "spawn", provider: "claude", threadIds: ["child-a"] },
+    });
+    store.upsertAgent("thread-a", { id: "child-a", prompt: "Audit routing", status: "completed" });
+    store.upsertActivity("thread-a", {
+      id: "spawn",
+      kind: "agent",
+      title: "Spawned Claude sub-agent",
+      detail: "late terminal event",
+      status: "completed",
+      agent: { action: "spawn", provider: "claude", threadIds: ["child-a"] },
+    });
+
+    store.upsertAgent("thread-a", { id: "child-a", prompt: "Audit routing", status: "inProgress" });
+    store.upsertActivity("thread-a", {
+      id: "spawn",
+      kind: "agent",
+      title: "Spawned Claude sub-agent",
+      detail: "late terminal event",
+      status: "inProgress",
+      agent: { action: "spawn", provider: "claude", threadIds: ["child-a"] },
+    });
+
+    expect(useTaskStore.getState().tasks["thread-a"].agents[0].status).toBe("interrupted");
+    expect(useTaskStore.getState().tasks["thread-a"].activities[0]).toMatchObject({
+      status: "cancelled",
+      detail: "late terminal event",
+    });
+  });
 });

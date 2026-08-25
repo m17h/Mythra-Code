@@ -775,6 +775,7 @@ async fn start_openrouter_proxy(
 }
 
 const OPENROUTER_DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
+const MYTHRA_CODE_NATIVE_DELEGATION_POLICY: &str = "Provider-native task, team, and agent spawning is disabled in Mythra Code. Never use collaboration.spawn_agent or another provider-native agent tool. When the Mythra Code MCP agent bridge exposes spawn_agent, use that bridge exclusively and obey its exact approved destination list; when it is absent, do not spawn sub-agents.";
 
 /// Configuration keys Mythra Code re-asserts on every startup, as
 /// `(section, key, value)` with TOML-encoded values. Everything else in
@@ -783,9 +784,19 @@ const OPENROUTER_DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
 fn managed_runtime_config(openrouter_base_url: &str) -> Vec<(&'static str, &'static str, String)> {
     let base_url = serde_json::to_string(openrouter_base_url)
         .unwrap_or_else(|_| format!("\"{OPENROUTER_DEFAULT_BASE_URL}\""));
+    let native_delegation_policy = serde_json::to_string(MYTHRA_CODE_NATIVE_DELEGATION_POLICY)
+        .expect("static native delegation policy must encode as a TOML string");
     vec![
         ("", "cli_auth_credentials_store", "\"keyring\"".into()),
         ("", "project_doc_max_bytes", "0".into()),
+        // Codex also keys native team delegation off a host-level mode. This
+        // prevents that injected team role from competing with the exact,
+        // user-approved Mythra Code MCP destination roster.
+        (
+            "",
+            "multi_agent_mode",
+            format!("{{ custom = {native_delegation_policy} }}"),
+        ),
         // The Mythra Code bridge is the only spawning authority, so the native
         // agent runtime is pinned to a single non-nesting thread. Depth is
         // re-asserted alongside the thread ceiling: a stale or hand-edited
@@ -908,12 +919,17 @@ async fn write_runtime_config(
         None => {
             let base_url_toml = serde_json::to_string(base_url)
                 .map_err(|error| format!("Could not encode the OpenRouter base URL: {error}"))?;
+            let native_delegation_policy =
+                serde_json::to_string(MYTHRA_CODE_NATIVE_DELEGATION_POLICY).map_err(|error| {
+                    format!("Could not encode the native delegation policy: {error}")
+                })?;
             Some(format!(
                 r#"cli_auth_credentials_store = "keyring"
 model_provider = "openai"
 project_doc_max_bytes = 0
 project_doc_fallback_filenames = []
 developer_instructions = ""
+multi_agent_mode = {{ custom = {native_delegation_policy} }}
 
 [agents]
 max_threads = 1

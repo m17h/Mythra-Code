@@ -700,12 +700,20 @@ describe("useChildAgents", () => {
       act(() => {
         useTaskStore.getState().setTaskStatus("child-1", "running");
         useTaskStore.getState().setTaskStatus("child-2", "running");
+        useTaskStore.getState().upsertActivity("root-1", {
+          id: "child-agent-child-1",
+          kind: "agent",
+          title: "Spawned Claude sub-agent",
+          status: "inProgress",
+          agent: { action: "spawn", provider: "claude", threadIds: ["child-1"] },
+        });
       });
       await act(async () => { await view.result.current.stopChildAgent("root-1", "child-1"); });
       expect(claude.killClaudeTurn).toHaveBeenCalledExactlyOnceWith("child-1");
       expect(cursor.killCursorTurn).not.toHaveBeenCalled();
       expect(useTaskStore.getState().statuses["child-1"]).toBe("interrupted");
       expect(useTaskStore.getState().statuses["child-2"]).toBe("running");
+      expect(useTaskStore.getState().tasks["root-1"].activities[0].status).toBe("cancelled");
     });
 
     it("interrupts one Codex-native child when the runtime exposed its turn", async () => {
@@ -715,11 +723,19 @@ describe("useChildAgents", () => {
         useTaskStore.getState().ensureTask("native-1", "/tmp/project");
         useTaskStore.getState().setActiveTurn("native-1", "native-turn");
         useTaskStore.getState().setTaskStatus("native-1", "running");
+        useTaskStore.getState().upsertActivity("root-1", {
+          id: "native-spawn",
+          kind: "agent",
+          title: "Sub-agent started",
+          status: "inProgress",
+          agent: { action: "spawn", provider: "openai", threadIds: ["native-1"] },
+        });
       });
       await act(async () => { await view.result.current.stopChildAgent("root-1", "native-1"); });
       expect(codex.rpc).toHaveBeenCalledWith("turn/interrupt", { threadId: "native-1", turnId: "native-turn" });
       expect(useTaskStore.getState().statuses["native-1"]).toBe("interrupted");
       expect(useTaskStore.getState().tasks["root-1"].agents[0].status).toBe("interrupted");
+      expect(useTaskStore.getState().tasks["root-1"].activities[0].status).toBe("cancelled");
     });
 
     it("fails closed when a native provider did not expose an individual turn", async () => {
@@ -748,11 +764,19 @@ describe("useChildAgents", () => {
         useTaskStore.getState().setTaskStatus("child-1", "running");
         useTaskStore.getState().setTaskStatus("child-2", "running");
         useTaskStore.getState().setTaskStatus("child-3", "completed");
+        useTaskStore.getState().upsertActivity("root-1", {
+          id: "wave",
+          kind: "agent",
+          title: "Dispatched sub-agent wave",
+          status: "inProgress",
+          agent: { action: "spawn", count: 2, threadIds: ["child-1", "child-2"] },
+        });
       });
       await act(async () => { await view.result.current.cancelChildAgentsFor("root-1"); });
       expect(claude.killClaudeTurn).toHaveBeenCalledExactlyOnceWith("child-1");
       expect(cursor.killCursorTurn).toHaveBeenCalledExactlyOnceWith("child-2");
       expect(useTaskStore.getState().statuses["child-3"]).toBe("completed");
+      expect(useTaskStore.getState().tasks["root-1"].activities[0].status).toBe("cancelled");
     });
 
     it("does not claim a child stopped when its provider cutoff fails", async () => {
@@ -762,12 +786,20 @@ describe("useChildAgents", () => {
       act(() => {
         useTaskStore.getState().setTaskStatus("child-1", "running");
         useTaskStore.getState().upsertAgent("root-1", { id: "child-1", prompt: "Review the parser", status: "inProgress" });
+        useTaskStore.getState().upsertActivity("root-1", {
+          id: "child-agent-child-1",
+          kind: "agent",
+          title: "Spawned Cursor sub-agent",
+          status: "inProgress",
+          agent: { action: "spawn", provider: "cursor", threadIds: ["child-1"] },
+        });
       });
 
       await expect(view.result.current.cancelChildAgentsFor("root-1"))
         .rejects.toThrow(/Could not stop .*Cursor process would not exit/);
       expect(useTaskStore.getState().statuses["child-1"]).toBe("running");
       expect(useTaskStore.getState().tasks["root-1"].agents[0].status).toBe("inProgress");
+      expect(useTaskStore.getState().tasks["root-1"].activities[0].status).toBe("inProgress");
     });
 
     it("settles provider-native children whatever word their runtime used", async () => {
