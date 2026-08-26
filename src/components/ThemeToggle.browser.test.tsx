@@ -1,13 +1,14 @@
 import { render } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import type { ThemeName } from "../types";
+import { themeColorScheme } from "../lib/appConfig";
 import "../styles.css";
 
-const THEMES: ThemeName[] = ["mythra", "kiwi", "daylight", "midnight", "synthwave", "ember", "terminal"];
+const THEMES: ThemeName[] = ["mythra", "light-mythra", "kiwi", "daylight", "midnight", "synthwave"];
 
 function ToggleSamples({ theme }: { theme: ThemeName }) {
   return (
-    <div className="app-shell" data-theme={theme} data-testid={theme}>
+    <div className="app-shell" data-theme={theme} data-color-scheme={themeColorScheme(theme)} data-testid={theme}>
       <button className="toggle-switch on"><span /></button>
       <button className="mini-toggle on"><span /></button>
       <button className="sa-tile-switch on"><span /></button>
@@ -49,5 +50,16 @@ describe("theme-aware toggle colors", () => {
     expect(getComputedStyle(thumb!).backgroundColor).toBe("rgb(127, 196, 255)");
     expect(getComputedStyle(track!).backgroundColor).not.toBe("rgba(167, 226, 111, 0.32)");
     expect(getComputedStyle(track!).backgroundColor).not.toBe(getComputedStyle(thumb!).backgroundColor);
+  });
+
+  it("gives Light Mythra its own cyan palette instead of inheriting Light Kiwi green", () => {
+    const view = render(<ToggleSamples theme="light-mythra" />);
+    const shell = view.getByTestId("light-mythra");
+    const track = shell.querySelector<HTMLElement>(".toggle-switch.on");
+    const thumb = shell.querySelector<HTMLElement>(".toggle-switch.on span");
+
+    expect(getComputedStyle(shell).backgroundColor).toBe("rgb(242, 246, 247)");
+    expect(getComputedStyle(thumb!).backgroundColor).toBe("rgb(8, 127, 155)");
+    expect(getComputedStyle(track!).backgroundColor).not.toBe("rgba(62, 142, 34, 0.38)");
   });
 });
