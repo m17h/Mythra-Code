@@ -91,6 +91,59 @@ describe("ModelPowerControl runtime catalog", () => {
     expect(screen.getByText("3 from your OpenAI account")).toBeInTheDocument();
   });
 
+  it("uses the selected OpenAI provider mark for every model without named tier artwork", () => {
+    const { container } = render(
+      <div data-openai-logo="codex">
+        <ModelPowerControl
+          model="gpt-6-research"
+          effort="medium"
+          fast={false}
+          runtimeModels={[
+            runtimeModel("gpt-5.6-sol", "Sol"),
+            runtimeModel("gpt-5.6-terra", "Terra"),
+            runtimeModel("gpt-5.6-luna", "Luna"),
+            runtimeModel("gpt-6-research", "Research preview"),
+          ]}
+          onModel={vi.fn()}
+          onEffort={vi.fn()}
+          onFast={vi.fn()}
+        />
+      </div>,
+    );
+
+    expect(container.querySelector(".model-picker-trigger .openai-logo-choice")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /OpenAI model: Research preview/i }));
+    expect(screen.getByRole("menuitemradio", { name: /Research preview/ }).querySelector(".openai-logo-choice")).toBeInTheDocument();
+    expect(screen.getByRole("menuitemradio", { name: /Sol/ }).querySelector(".openai-logo-choice")).not.toBeInTheDocument();
+    expect(screen.getByRole("menuitemradio", { name: /Terra/ }).querySelector(".openai-logo-choice")).not.toBeInTheDocument();
+    expect(screen.getByRole("menuitemradio", { name: /Luna/ }).querySelector(".openai-logo-choice")).not.toBeInTheDocument();
+  });
+
+  it("uses the generated artwork for Sol, Terra, and Luna only", () => {
+    const { container } = render(
+      <ModelPowerControl
+        model="gpt-5.6-sol"
+        effort="medium"
+        fast={false}
+        runtimeModels={[
+          runtimeModel("gpt-5.6-sol", "Sol"),
+          runtimeModel("gpt-5.6-terra", "Terra"),
+          runtimeModel("gpt-5.6-luna", "Luna"),
+          runtimeModel("gpt-6-research", "Research preview"),
+        ]}
+        onModel={vi.fn()}
+        onEffort={vi.fn()}
+        onFast={vi.fn()}
+      />,
+    );
+
+    expect(container.querySelector<HTMLImageElement>(".model-picker-trigger .named-model-art img")?.src).toContain("/model-icons/sol.png");
+    fireEvent.click(screen.getByRole("button", { name: /OpenAI model: Sol/i }));
+    expect(screen.getByRole("menuitemradio", { name: /Terra/ }).querySelector<HTMLImageElement>("img")?.src).toContain("/model-icons/terra.png");
+    expect(screen.getByRole("menuitemradio", { name: /Luna/ }).querySelector<HTMLImageElement>("img")?.src).toContain("/model-icons/luna.png");
+    expect(screen.getByRole("menuitemradio", { name: /Research preview/ }).querySelector("img")).not.toBeInTheDocument();
+  });
+
   it("selects a runtime model that has no built-in tier", () => {
     const onModel = vi.fn();
     render(
