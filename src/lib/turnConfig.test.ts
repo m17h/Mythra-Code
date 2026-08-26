@@ -4,7 +4,7 @@ import { MYTHRA_CODE_DELEGATION_INSTRUCTIONS, MYTHRA_CODE_NATIVE_DELEGATION_POLI
 
 /** Skill-mention plus completion guidance: what every turn carries. */
 const BASE_INSTRUCTIONS = mythraCodeDeveloperInstructions(false);
-import { childAgentMcpConfig, normalizeLmStudioBaseUrl, threadResumeParams, threadRuntimeConfig, threadStartParams } from "./turnConfig";
+import { childAgentMcpConfig, normalizeLmStudioBaseUrl, threadResumeParams, threadRuntimeConfig, threadStartParams, turnStartParams } from "./turnConfig";
 import { LM_STUDIO_RUNTIME_PROVIDER_ID } from "./providerIds";
 import { codexModelProviderId, providerFromThread } from "./threadProvider";
 
@@ -23,6 +23,32 @@ const baseRun: ScheduleRunSettings = {
   ultra: false,
   serviceTier: null,
 };
+
+describe("permission policy", () => {
+  it.each([
+    ["read-only", "never", "readOnly"],
+    ["ask", "on-request", "workspaceWrite"],
+    ["full", "never", "dangerFullAccess"],
+  ] as const)("keeps %s consistent across start, resume, and every interactive turn", (permission, approvalPolicy, sandboxType) => {
+    const run = { ...baseRun, permission };
+    const start = threadStartParams(run, "/tmp/project", { interactive: true });
+    const resume = threadResumeParams(run, "thread-1", "/tmp/project");
+    const turn = turnStartParams(run, "thread-1", "/tmp/project", []);
+
+    expect(start).toMatchObject({ approvalPolicy, sandbox: permission === "ask" ? "workspace-write" : permission === "full" ? "danger-full-access" : "read-only" });
+    expect(resume).toMatchObject({ approvalPolicy, sandbox: permission === "ask" ? "workspace-write" : permission === "full" ? "danger-full-access" : "read-only" });
+    expect(turn).toMatchObject({ approvalPolicy, sandboxPolicy: { type: sandboxType } });
+  });
+
+  it("never pauses an unattended Ask to act run for approval", () => {
+    const run = { ...baseRun, permission: "ask" as const };
+    expect(threadStartParams(run, "/tmp/project", { interactive: false })).toMatchObject({ approvalPolicy: "never" });
+    expect(turnStartParams(run, "thread-1", "/tmp/project", [], [], false)).toMatchObject({
+      approvalPolicy: "never",
+      sandboxPolicy: { type: "workspaceWrite" },
+    });
+  });
+});
 
 describe("OpenRouter runtime isolation", () => {
   it("disables connected-app tools while preserving local coding features", () => {

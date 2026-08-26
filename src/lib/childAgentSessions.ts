@@ -86,6 +86,8 @@ export interface ChildAgentBridgeResult {
   launch: ChildAgentBridgeLaunch;
   /** True when this call captured the policy, so the caller must persist it. */
   captured: boolean;
+  /** The roster stayed frozen, but a live execution setting changed. */
+  policyUpdated?: boolean;
 }
 
 /**
@@ -116,7 +118,7 @@ export async function ensureChildAgentBridge(
   const recapture = input.promoteStagedEdits && stored?.pendingRecapture?.targets.length
     ? stored.pendingRecapture
     : undefined;
-  const existing = recapture ? {
+  const frozenExisting = recapture ? {
     ...stored!,
     // The staged budget was clamped against every *enabled* destination, but
     // only the ready subset is promoted; re-clamp so the limit can never
@@ -126,6 +128,15 @@ export async function ensureChildAgentBridge(
     capturedAt: recapture.approvedAt,
     pendingRecapture: undefined,
   } : stored;
+  // The destination roster is frozen, not the execution boundary. Permission
+  // mode is a live composer control and every child promises to inherit the
+  // parent turn's current mode. Refresh it in both directions so an old Ask
+  // policy cannot prompt under Full access—and an old Full policy cannot stay
+  // over-privileged after the user tightens it.
+  const existing = frozenExisting && frozenExisting.permission !== input.permission
+    ? { ...frozenExisting, permission: input.permission }
+    : frozenExisting;
+  const policyUpdated = Boolean(stored && existing && stored.permission !== existing.permission);
   // The switch is read fresh every turn, in both directions. Switching
   // sub-agents (or cross-provider delegation) off has to remove the powers a
   // thread already holds, not just decline to hand out new ones.
@@ -162,7 +173,7 @@ export async function ensureChildAgentBridge(
     cacheChildAgentPolicy(policy);
     const cached = launches.get(policy.sessionId);
     if (cached?.toolNames.length === 1 && cached.toolNames[0] === "propose_agent_settings") {
-      return { policy, launch: cached, captured: !stored };
+      return { policy, launch: cached, captured: !stored, ...(policyUpdated ? { policyUpdated: true } : {}) };
     }
     if (cached || existing) await releaseChildAgentSession(policy.sessionId);
     cacheChildAgentPolicy(policy);
@@ -172,7 +183,7 @@ export async function ensureChildAgentBridge(
     // a stored policy would erase the frozen destinations (and any approved
     // recapture) that switching delegation back on is documented to restore,
     // so the policy is captured only when the thread never had one.
-    return { policy, launch, captured: !stored };
+    return { policy, launch, captured: !stored, ...(policyUpdated ? { policyUpdated: true } : {}) };
   }
 
   // An existing thread with no policy has never run with a cross-provider
@@ -207,7 +218,9 @@ export async function ensureChildAgentBridge(
   if (recapture) launches.delete(policy.sessionId);
 
   const cached = launches.get(policy.sessionId);
-  if (cached?.toolNames.includes("spawn_mythra_agent")) return { policy, launch: cached, captured: false };
+  if (cached?.toolNames.includes("spawn_mythra_agent")) {
+    return { policy, launch: cached, captured: false, ...(policyUpdated ? { policyUpdated: true } : {}) };
+  }
   // A launch cached while delegation was off carries only the settings
   // proposal tool. Reusing it would run this turn with a roster visible in the
   // UI but no way to spawn into it, so — mirroring the check the proposal-only
@@ -225,7 +238,12 @@ export async function ensureChildAgentBridge(
     .map((link) => link.childThreadId);
   const launch = await startChildAgentSession(policy, knownChildren);
   launches.set(policy.sessionId, launch);
-  return { policy, launch, captured: !stored || Boolean(recapture) };
+  return {
+    policy,
+    launch,
+    captured: !stored || Boolean(recapture),
+    ...(policyUpdated ? { policyUpdated: true } : {}),
+  };
 }
 
 /** Tear down every bridge session belonging to a thread. */

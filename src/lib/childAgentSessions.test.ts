@@ -194,18 +194,20 @@ describe("ensureChildAgentBridge", () => {
     );
   });
 
-  it("reuses the policy a thread froze instead of the live settings", async () => {
+  it("keeps the frozen roster while refreshing the permission inherited by the next child", async () => {
     const frozen = policy();
     const result = await ensureChildAgentBridge(input({
       threadId: "thread-1",
       policies: { "session-existing": frozen },
       // The user has since replaced the roster and raised the budget.
       settings: { childAgents: { enabled: true, targets: [{ ...TARGET, id: "changed" }] }, subagentsEnabled: true, subagentMax: 9 },
+      permission: "full",
     }));
-    expect(result?.policy).toBe(frozen);
     expect(result?.captured).toBe(false);
+    expect(result?.policyUpdated).toBe(true);
     expect(result?.policy.targets.map((entry) => entry.id)).toEqual(["frozen"]);
     expect(result?.policy.maxConcurrent).toBe(2);
+    expect(result?.policy.permission).toBe("full");
   });
 
   it("promotes an explicitly approved pending roster on the next bridge start", async () => {

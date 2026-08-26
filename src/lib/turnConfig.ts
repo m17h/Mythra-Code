@@ -183,6 +183,11 @@ export function threadResumeParams(
     threadId,
     cwd,
     runtimeWorkspaceRoots: [cwd, ...(options.additionalWorkspaceRoots ?? [])],
+    // A thread may have been created under a different permission mode. Resume
+    // it with the mode currently shown in the composer so a stale `on-request`
+    // policy cannot survive after the user switches to Full access.
+    approvalPolicy: run.permission === "ask" ? "on-request" : "never",
+    sandbox: sandboxMode(run.permission),
     developerInstructions,
     ...(options.excludeTurns ? { excludeTurns: true } : {}),
     ...(modelProvider ? { modelProvider } : {}),
@@ -192,12 +197,23 @@ export function threadResumeParams(
   };
 }
 
-export function turnStartParams(run: ScheduleRunSettings, threadId: string, cwd: string, input: JsonObject[], additionalWritableRoots: string[] = []): JsonObject {
+export function turnStartParams(
+  run: ScheduleRunSettings,
+  threadId: string,
+  cwd: string,
+  input: JsonObject[],
+  additionalWritableRoots: string[] = [],
+  interactive = true,
+): JsonObject {
   return {
     threadId,
     input,
     cwd,
     runtimeWorkspaceRoots: [cwd, ...additionalWritableRoots],
+    // Both values are sticky in Codex app-server. Always override them
+    // together on every turn so the visible permission mode is authoritative,
+    // including for threads that were originally created with Ask to act.
+    approvalPolicy: interactive && run.permission === "ask" ? "on-request" : "never",
     sandboxPolicy: commandSandbox(run.permission, cwd, additionalWritableRoots),
     model: run.model.trim() || undefined,
     effort: run.ultra ? "ultra" : run.reasoningEffort,

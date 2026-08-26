@@ -404,10 +404,10 @@ export function useTurnRunner(context: TurnRunnerContext): {
     // thread id can only happen once the runtime has reported it.
     const rememberChildAgentPolicy = (threadId: string) => {
       if (!childBridge) return;
-      const { policy, captured } = childBridge;
-      if (!captured && policy.rootThreadId === threadId) return;
+      const { policy, captured, policyUpdated } = childBridge;
+      if (!captured && !policyUpdated && policy.rootThreadId === threadId) return;
       const next = { ...policy, rootThreadId: threadId };
-      childBridge = { ...childBridge, policy: next, captured: false };
+      childBridge = { ...childBridge, policy: next, captured: false, policyUpdated: false };
       cacheChildAgentPolicy(next);
       persistChildAgentPolicies((current) => ({ ...current, [next.sessionId]: next }));
     };

@@ -90,6 +90,13 @@ function modalProps(overrides: Partial<Parameters<typeof SettingsModal>[0]> = {}
 }
 
 describe("SettingsModal", () => {
+  it("orders model providers by the primary subscription choices", () => {
+    const { container } = render(<SettingsModal {...modalProps({ initialSection: "models" })} />);
+    const providers = [...container.querySelectorAll(".provider-card strong")].map((node) => node.textContent);
+
+    expect(providers).toEqual(["OpenAI", "Anthropic", "Cursor", "OpenRouter", "LM Studio"]);
+  });
+
   it("uses the official OpenRouter glyph in provider settings", () => {
     const { container } = render(<SettingsModal {...modalProps({ initialSection: "models" })} />);
     expect(container.querySelector(".provider-logo.openrouter svg")).toHaveAttribute("viewBox", "0 0 401.4 293.7");

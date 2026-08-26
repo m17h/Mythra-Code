@@ -2455,7 +2455,7 @@ export default function App() {
         if (childBridge?.captured) void releaseChildAgentSession(childBridge.policy.sessionId);
         return;
       }
-      if (childBridge?.captured) {
+      if (childBridge?.captured || childBridge?.policyUpdated) {
         const policy = { ...childBridge.policy, rootThreadId: thread.id };
         cacheChildAgentPolicy(policy);
         persistChildAgentPolicies((current) => ({ ...current, [policy.sessionId]: policy }));
