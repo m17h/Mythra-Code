@@ -1733,6 +1733,10 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .menu-open .model-picker-chevron { color: var(--model-accent); transform: rotate(180deg); }
 .model-orb { position: relative; flex: 0 0 auto; width: 22px; height: 22px; display: grid; place-items: center; border-radius: var(--r-sm); color: #17120d; background: var(--model-accent); box-shadow: none; }
 .model-picker-trigger .model-orb { width: 24px; height: 24px; animation: none; }
+.model-orb.named-model-art, .menu-model-orb.named-model-art,
+.model-orb.provider-model-art, .menu-model-orb.provider-model-art { background: transparent; }
+.model-orb.named-model-art img, .menu-model-orb.named-model-art img { width: 20px; height: 20px; display: block; object-fit: contain; pointer-events: none; }
+.model-picker-trigger .model-orb.named-model-art img { width: 22px; height: 22px; }
 .model-menu { position: absolute; left: 0; right: 0; bottom: calc(100% + 8px); z-index: 90; display: grid; gap: 2px; padding: var(--s-1); border: 1px solid var(--line-strong); border-radius: var(--r-lg); background: color-mix(in srgb, var(--panel-2) 97%, transparent); box-shadow: var(--shadow); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); opacity: 0; visibility: hidden; transform: translateY(6px) scale(.972); transform-origin: bottom left; pointer-events: none; transition: opacity 180ms var(--ease), visibility 0s linear 180ms, transform 180ms var(--ease); }
 .menu-open .model-menu { opacity: 1; visibility: visible; transform: none; pointer-events: auto; transition: opacity 180ms var(--ease), visibility 0s, transform 180ms var(--ease); }
 .model-menu-heading { display: flex; justify-content: space-between; align-items: center; padding: var(--s-2) var(--s-1) var(--s-2) var(--s-2); color: var(--muted-2); font-size: var(--fs-micro); font-weight: 650; text-transform: uppercase; letter-spacing: var(--track-caps); }
