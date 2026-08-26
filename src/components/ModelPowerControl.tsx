@@ -15,7 +15,7 @@ export interface RuntimeModel {
   isDefault: boolean;
 }
 
-const MODELS: Array<{ kind: ModelKind; name: string; id: string; tagline: string; icon: LucideIcon }> = [
+export const OPENAI_MODELS: Array<{ kind: ModelKind; name: string; id: string; tagline: string; icon: LucideIcon }> = [
   { kind: "sol", name: "Sol", id: "gpt-5.6-sol", tagline: "Detail & polish", icon: Sun },
   { kind: "terra", name: "Terra", id: "gpt-5.6-terra", tagline: "Everyday power", icon: Earth },
   { kind: "luna", name: "Luna", id: "gpt-5.6-luna", tagline: "Fast & focused", icon: Moon },
@@ -58,7 +58,7 @@ export function ModelPowerControl({
   const rootRef = useRef<HTMLDivElement>(null);
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const kind = modelKind(model);
-  const selectedModel = MODELS.find((entry) => entry.kind === kind) ?? MODELS[0];
+  const selectedModel = OPENAI_MODELS.find((entry) => entry.kind === kind) ?? OPENAI_MODELS[0];
   const effortIndex = Math.max(0, EFFORTS.findIndex((entry) => entry.value === (effort === "ultra" ? "max" : effort)));
   const reasoningFill = (effortIndex / (EFFORTS.length - 1)) * 100;
   const SelectedModelIcon = selectedModel.icon;
@@ -87,7 +87,7 @@ export function ModelPowerControl({
 
   useEffect(() => {
     if (!menuOpen) return;
-    const selectedIndex = Math.max(0, MODELS.findIndex((entry) => entry.kind === kind));
+    const selectedIndex = Math.max(0, OPENAI_MODELS.findIndex((entry) => entry.kind === kind));
     requestAnimationFrame(() => optionRefs.current[selectedIndex]?.focus());
   }, [kind, menuOpen]);
 
@@ -137,7 +137,7 @@ export function ModelPowerControl({
           if (event.key === "End") { event.preventDefault(); [...optionRefs.current].reverse().find((entry) => entry && !entry.disabled)?.focus(); }
         }}>
           <div className="model-menu-heading"><span>Choose your model</span><small>OpenAI subscription</small></div>
-          {MODELS.map((entry) => {
+          {OPENAI_MODELS.map((entry) => {
             const available = runtimeModels.length === 0 || runtimeModels.some((candidate) => candidate.model === entry.id || candidate.id === entry.id);
             const selected = kind === entry.kind;
             const ModelIcon = entry.icon;
@@ -148,7 +148,7 @@ export function ModelPowerControl({
                 aria-checked={selected}
                 aria-label={`${entry.name}: ${entry.tagline}${available ? "" : " (unavailable)"}`}
                 key={entry.kind}
-                ref={(node) => { optionRefs.current[MODELS.indexOf(entry)] = node; }}
+                ref={(node) => { optionRefs.current[OPENAI_MODELS.indexOf(entry)] = node; }}
                 className={`model-menu-option ${entry.kind} ${selected ? "selected" : ""}`}
                 disabled={disabled || !available}
                 onClick={() => {

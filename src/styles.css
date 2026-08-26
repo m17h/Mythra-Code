@@ -836,6 +836,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .app-select-value strong { color: var(--ink-2); font-size: var(--fs-micro); font-weight: 560; }
 .app-select-value small { color: var(--muted-2); font-size: 8.5px; }
 .app-select-menu { position: absolute; z-index: 140; top: calc(100% + 4px); left: 0; width: max(100%, 210px); overflow: hidden; padding: 4px; border: 1px solid var(--line-strong); border-radius: var(--r-md); background: var(--menu-surface); box-shadow: var(--shadow); transform-origin: top left; animation: sa-select-pop 130ms var(--ease) both; }
+.app-select.opens-up .app-select-menu { top: auto; bottom: calc(100% + 4px); transform-origin: bottom left; }
 /* Animate geometry only: fading the entire element also fades its supposedly
    opaque surface and exposes controls behind it during the transition. */
 @keyframes sa-select-pop { from { transform: translateY(-3px) scale(.985); } to { transform: none; } }
@@ -1268,6 +1269,10 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .field-label input:focus, .key-input-row input:focus { border-color: var(--green-line); box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 9%, transparent); }
 /* Fields are focus-ringed by their own border treatment — no doubled outline. */
 .field-label input:focus-visible, .key-input-row input:focus-visible, .prompt-editor:focus-visible, .thread-search input:focus-visible, .palette-search input:focus-visible, .composer textarea:focus-visible { outline: none; }
+.default-model-picker .app-select-trigger { min-height: 42px; padding: 7px 10px; border-radius: var(--r-sm); }
+.default-model-picker .app-select-menu { right: 0; width: auto; }
+.default-model-picker .app-select-value strong, .default-model-picker .app-select-option-copy strong { font-size: var(--fs-meta); }
+.default-model-picker .app-select-value small, .default-model-picker .app-select-option-copy small { font-size: var(--fs-micro); }
 .usage-display-layout { display: grid; grid-template-columns: minmax(0, 1fr) max-content; align-items: start; gap: var(--s-5); }
 .usage-display-layout .settings-section-heading { margin-bottom: 0; }
 .usage-display-controls { width: max-content; max-width: 100%; display: grid; justify-self: end; }

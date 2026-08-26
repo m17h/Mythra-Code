@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { confirmDialog } from "../lib/confirmDialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -29,7 +29,7 @@ import {
 } from "lucide-react";
 import { exportDiagnostics, recentAuditRows, rpc, saveLmStudioKey, saveOpenRouterKey, type AuditRow, type CodexRuntimeStatus } from "../lib/codex";
 import type { ClaudeRuntimeStatus } from "../lib/claude";
-import type { CursorRuntimeStatus } from "../lib/cursor";
+import type { CursorModel, CursorRuntimeStatus } from "../lib/cursor";
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_SETTINGS, EFFORT_SLIDER_STYLES, RELEASE_NOTES_URL, THEMES } from "../lib/appConfig";
 import { friendlyError } from "../lib/errors";
 import { useModalFocus } from "../hooks/useModalFocus";
@@ -65,6 +65,10 @@ import type {
   UsageDisplayMode,
 } from "../types";
 import { usagePercentLabel } from "../lib/providerUsage";
+import { AppSelectMenu, type AppSelectOption } from "./AppSelectMenu";
+import { CLAUDE_MODELS } from "./ClaudeModelControl";
+import { OPENAI_MODELS, type RuntimeModel } from "./ModelPowerControl";
+import type { OpenRouterModel } from "./OpenRouterModelControl";
 
 /**
  * Single source of truth for the settings navigation: the rail, the pane
@@ -126,6 +130,9 @@ export function SettingsModal({
   lmStudioTokenStored = false,
   lmStudioModels = [],
   lmStudioModelsError = "",
+  runtimeModels = [],
+  openRouterModels = [],
+  cursorModels = [],
   childAgentReadiness,
   githubStatus,
   githubBusy = false,
@@ -202,6 +209,9 @@ export function SettingsModal({
   lmStudioTokenStored?: boolean;
   lmStudioModels?: LMStudioModel[];
   lmStudioModelsError?: string;
+  runtimeModels?: RuntimeModel[];
+  openRouterModels?: OpenRouterModel[];
+  cursorModels?: CursorModel[];
   /** Which providers a cross-provider child could be started on right now. */
   childAgentReadiness: ChildAgentReadiness;
   githubStatus: GitHubAccountStatus | null;
@@ -277,6 +287,52 @@ export function SettingsModal({
   const githubRefreshRequestedRef = useRef(false);
   const skillsRefreshRef = useRef(onRefreshSkills);
   skillsRefreshRef.current = onRefreshSkills;
+
+  const defaultModelOptions = useMemo<AppSelectOption[]>(() => {
+    let options: AppSelectOption[];
+    if (local.provider === "openai") {
+      const available = runtimeModels.length
+        ? OPENAI_MODELS.filter((entry) => runtimeModels.some((candidate) => candidate.model === entry.id || candidate.id === entry.id))
+        : OPENAI_MODELS;
+      options = available.map((entry) => ({ value: entry.id, label: entry.name, detail: entry.tagline }));
+    } else if (local.provider === "claude") {
+      options = CLAUDE_MODELS.map((entry) => ({ value: entry.id, label: entry.name, detail: entry.tagline }));
+    } else if (local.provider === "cursor") {
+      options = (cursorModels.length ? cursorModels : [{ id: DEFAULT_CURSOR_MODEL, name: "Auto", configOptions: [] }])
+        .map((entry) => ({ value: entry.id, label: entry.name || entry.id, detail: entry.id }));
+    } else if (local.provider === "lmstudio") {
+      options = lmStudioModels.map((entry) => ({
+        value: entry.id,
+        label: entry.displayName || entry.id,
+        detail: `${entry.publisher}${entry.trainedForToolUse ? " · tool use" : ""}`,
+      }));
+    } else {
+      options = openRouterModels.map((entry) => ({
+        value: entry.id,
+        label: entry.name || entry.id,
+        detail: entry.id,
+        keywords: entry.description,
+      }));
+    }
+
+    // Preserve a saved custom or retired model as a visible selection. The
+    // user can move to any currently available catalog entry without the UI
+    // silently rewriting their settings just because a catalog changed.
+    if (local.model && !options.some((entry) => entry.value === local.model)) {
+      options = [{ value: local.model, label: local.model, detail: "Current saved model" }, ...options];
+    }
+    return options;
+  }, [cursorModels, lmStudioModels, local.model, local.provider, openRouterModels, runtimeModels]);
+
+  const defaultModelHelp = local.provider === "openrouter"
+    ? "Search the live OpenRouter catalog. New threads will start with this model."
+    : local.provider === "lmstudio"
+      ? "Choose from the models reported by the configured LM Studio server."
+      : local.provider === "claude"
+        ? "Availability follows your signed-in Claude Code subscription."
+        : local.provider === "cursor"
+          ? "Choose from the live catalog associated with your Cursor subscription."
+          : "Availability follows the signed-in ChatGPT account.";
 
   // Buffered edits (theme, prompt, toggles) are discarded on close — warn
   // before silently throwing away work like a hand-written system prompt.
@@ -918,16 +974,20 @@ export function SettingsModal({
               </div>
             )}
 
-            <label className="field-label">
-              <span>Model</span>
-              <input
+            <div className="field-label default-model-picker">
+              <span>Default model</span>
+              <AppSelectMenu
                 value={local.model}
-                onChange={(event) => setLocal({ ...local, model: event.target.value })}
-                readOnly={local.provider !== "openrouter"}
-                placeholder={local.provider === "openrouter" ? "e.g. anthropic/claude-sonnet-4" : local.provider === "lmstudio" ? "Select a local model below the composer" : local.provider === "claude" ? "Select a Claude model below the composer" : local.provider === "cursor" ? "Select Grok 4.5 or another Cursor model below the composer" : "Select Sol, Terra, or Luna below the composer"}
+                options={defaultModelOptions}
+                ariaLabel={`Default ${local.provider === "openai" ? "OpenAI" : local.provider === "openrouter" ? "OpenRouter" : local.provider === "lmstudio" ? "LM Studio" : local.provider === "claude" ? "Claude" : "Cursor"} model`}
+                placeholder="Choose a default model"
+                searchable={local.provider === "openrouter" || local.provider === "lmstudio" || local.provider === "cursor"}
+                menuPlacement="top"
+                emptyMessage={local.provider === "lmstudio" ? "Connect LM Studio and refresh its catalog first." : "No models are currently available for this provider."}
+                onChange={(model) => setLocal({ ...local, model })}
               />
-              <small>{local.provider === "openrouter" ? "Use the searchable picker beneath the composer, or enter any valid provider/model slug here." : local.provider === "lmstudio" ? "Use the local model selector beneath the composer. Its catalog comes directly from the LM Studio server on this computer." : local.provider === "claude" ? "Use the Claude selector beneath the composer. Availability follows your signed-in Claude Code subscription." : local.provider === "cursor" ? "Use the Cursor selector beneath the composer. Its live catalog comes from your signed-in Cursor subscription." : "Use the animated selector beneath the composer. Availability follows the signed-in ChatGPT account."}</small>
-            </label>
+              <small>{defaultModelHelp}</small>
+            </div>
 
             <div className="provider-logo-settings">
               <div>

@@ -4962,6 +4962,9 @@ export default function App() {
         lmStudioTokenStored={lmStudioTokenStored}
         lmStudioModels={lmStudioModels}
         lmStudioModelsError={lmStudioModelsError}
+        runtimeModels={runtimeModels}
+        openRouterModels={openRouterModels}
+        cursorModels={cursorModels}
         childAgentReadiness={childAgentReadiness}
         githubStatus={githubStatus}
         githubBusy={githubBusy || githubLoginPending}

@@ -147,6 +147,53 @@ describe("SettingsModal", () => {
     expect(screen.getByText(/Each thread keeps its own provider/)).toBeInTheDocument();
   });
 
+  it("chooses and saves a default model from an app-owned provider menu", () => {
+    const onSave = vi.fn();
+    const { container } = render(<SettingsModal {...modalProps({
+      initialSection: "models",
+      settings: { ...DEFAULT_SETTINGS, provider: "claude", model: "claude-opus-5" },
+      onSave,
+    })} />);
+
+    const trigger = screen.getByRole("button", { name: "Default Claude model" });
+    expect(trigger).toHaveAttribute("aria-haspopup", "menu");
+    expect(trigger).toHaveTextContent("Opus 5");
+    expect(container.querySelector(".default-model-picker select")).not.toBeInTheDocument();
+
+    fireEvent.click(trigger);
+    expect(container.querySelector(".default-model-picker .app-select")).toHaveClass("opens-up");
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Sonnet 5/ }));
+    expect(trigger).toHaveTextContent("Sonnet 5");
+
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
+      provider: "claude",
+      model: "claude-sonnet-5",
+    }));
+  });
+
+  it("uses each provider's live model catalog in the default picker", () => {
+    const onSave = vi.fn();
+    render(<SettingsModal {...modalProps({
+      initialSection: "models",
+      settings: { ...DEFAULT_SETTINGS, provider: "cursor", model: "auto" },
+      cursorModels: [
+        { id: "auto", name: "Auto", configOptions: [] },
+        { id: "grok-4.5", name: "Grok 4.5", configOptions: [] },
+      ],
+      onSave,
+    })} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Default Cursor model" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Grok 4.5/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
+      provider: "cursor",
+      model: "grok-4.5",
+    }));
+  });
+
   it("saves the chosen logo for OpenAI models", () => {
     const onSave = vi.fn();
     render(<SettingsModal {...modalProps({ initialSection: "models", onSave })} />);

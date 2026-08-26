@@ -4,7 +4,7 @@ import { EffortSlider, effortFlairStyle } from "./effortFlair";
 import type { ReasoningEffort } from "./ModelPowerControl";
 import { ClaudeProviderLogo } from "./BrandLogos";
 
-const MODELS = [
+export const CLAUDE_MODELS = [
   { id: "claude-fable-5", name: "Fable 5", tagline: "Frontier coding" },
   { id: "claude-opus-5", name: "Opus 5", tagline: "Deepest reasoning" },
   { id: "claude-sonnet-5", name: "Sonnet 5", tagline: "Balanced power" },
@@ -36,7 +36,7 @@ export function ClaudeModelControl({
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
-  const selected = MODELS.find((entry) => entry.id === model) ?? MODELS[0];
+  const selected = CLAUDE_MODELS.find((entry) => entry.id === model) ?? CLAUDE_MODELS[0];
   const normalizedEffort = effort === "ultra" ? "max" : effort;
   const effortIndex = Math.max(
     0,
@@ -102,7 +102,7 @@ export function ClaudeModelControl({
             role="menu"
             aria-label="Claude model selector"
           >
-            {MODELS.map((entry) => (
+            {CLAUDE_MODELS.map((entry) => (
               <button
                 type="button"
                 role="menuitemradio"
