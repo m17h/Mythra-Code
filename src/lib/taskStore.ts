@@ -141,6 +141,7 @@ interface TaskStoreState {
   hydrateTask: (threadId: string, messages: ChatMessage[], activities: Activity[], workspacePath?: string) => void;
   setTranscriptDirty: (threadId: string, dirty: boolean) => void;
   appendUserMessage: (threadId: string, message: ChatMessage) => void;
+  setMessageSteerStatus: (threadId: string, messageId: string, status: ChatMessage["steerStatus"]) => void;
   removeMessage: (threadId: string, messageId: string) => void;
   queueAssistantDelta: (threadId: string, itemId: string, delta: string) => void;
   queueReasoningDelta: (threadId: string, itemId: string, delta: string, source: "summary" | "content") => void;
@@ -336,6 +337,15 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     const pendingTurnStartOrder = task.pendingTurnStartOrder
       ?? (task.status === "starting" && !task.activeTurnId ? nextMessage.timelineOrder : undefined);
     return { tasks: { ...state.tasks, [threadId]: { ...task, pendingTurnStartOrder, messages: [...task.messages, nextMessage], updatedAt: Date.now() } } };
+  }),
+  setMessageSteerStatus: (threadId, messageId, status) => set((state) => {
+    const task = state.tasks[threadId];
+    if (!task) return state;
+    const index = task.messages.findIndex((message) => message.id === messageId);
+    if (index < 0 || task.messages[index].steerStatus === status) return state;
+    const messages = [...task.messages];
+    messages[index] = { ...messages[index], steerStatus: status };
+    return { tasks: { ...state.tasks, [threadId]: { ...task, messages, updatedAt: Date.now() } } };
   }),
   removeMessage: (threadId, messageId) => set((state) => {
     const task = state.tasks[threadId];

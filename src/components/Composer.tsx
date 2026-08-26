@@ -135,8 +135,7 @@ export const Composer = forwardRef<ComposerHandle, {
    * there is no turn to steer and nothing to queue behind yet.
    */
   queueing: boolean;
-  /** Queue remains available while this is false, but no message may be
-   * inserted into the active turn while its user-facing response is active. */
+  /** False while a thread is still starting and has no active turn to steer. */
   canSteer: boolean;
   dropActive: boolean;
   placeholder: string;

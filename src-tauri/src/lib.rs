@@ -1418,6 +1418,104 @@ async fn claude_usage(app: AppHandle) -> Result<ClaudeUsageLimits, String> {
     Ok(usage)
 }
 
+/// Reads the live Claude Code model catalog.
+///
+/// The CLI has no `models` subcommand, but the stream-json control protocol it
+/// already speaks answers a `list_models` request with the same catalog its own
+/// picker shows — resolved against the signed-in subscription, the settings
+/// cascade, and any enforcement policy. A CLI too old to know the subtype
+/// answers with an error, which the frontend turns into a labelled fallback.
+#[tauri::command]
+async fn claude_models(app: AppHandle) -> Result<Value, String> {
+    let binary = resolve_claude_binary(&app).await?;
+    let cwd = app
+        .path()
+        .home_dir()
+        .ok()
+        .filter(|path| path.is_dir())
+        .unwrap_or_else(env::temp_dir);
+    let mut child = subscription_only_command(&binary)
+        .current_dir(cwd)
+        .env("CLAUDE_CODE_ENTRYPOINT", "sdk-ts")
+        .args([
+            "--setting-sources",
+            "",
+            "-p",
+            "--output-format",
+            "stream-json",
+            "--input-format",
+            "stream-json",
+            "--verbose",
+            "--no-session-persistence",
+            "--model",
+            // `default` is the account's recommended model and is the safest
+            // bootstrap choice when an organization has disabled Haiku. The
+            // control request itself does not start a billed model turn.
+            "default",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|error| format!("Could not start Claude Code: {error}"))?;
+
+    // kill_on_drop only fires once the handle is dropped; the reader below owns
+    // stdout, so take both pipes before any early return can leak the process.
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "Claude Code did not accept a model catalog request".to_string())?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Claude Code did not return a model catalog".to_string())?;
+
+    let request = json!({
+        "type": "control_request",
+        "request_id": "mythra-list-models",
+        "request": { "subtype": "list_models" },
+    });
+    let outcome = timeout(Duration::from_secs(20), async {
+        stdin
+            .write_all(format!("{request}\n").as_bytes())
+            .await
+            .map_err(|error| format!("Could not ask Claude Code for its models: {error}"))?;
+        stdin
+            .flush()
+            .await
+            .map_err(|error| format!("Could not ask Claude Code for its models: {error}"))?;
+        let mut lines = BufReader::new(stdout).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            let Ok(message) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            if message.get("type").and_then(Value::as_str) != Some("control_response") {
+                continue;
+            }
+            let response = message.get("response").unwrap_or(&Value::Null);
+            if response.get("request_id").and_then(Value::as_str) != Some("mythra-list-models") {
+                continue;
+            }
+            if response.get("subtype").and_then(Value::as_str) == Some("error") {
+                return Err(response
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Claude Code could not list its models")
+                    .to_string());
+            }
+            return response
+                .get("response")
+                .cloned()
+                .ok_or_else(|| "Claude Code returned an empty model catalog".to_string());
+        }
+        Err("Claude Code closed before returning its models".to_string())
+    })
+    .await;
+    let _ = child.start_kill();
+    outcome.map_err(|_| "Claude Code took too long to list its models".to_string())?
+}
+
 async fn read_claude_runtime_status(app: &AppHandle) -> ClaudeRuntimeStatus {
     let warning = claude_credential_override_present()
     .then(|| "Mythra Code ignores Anthropic credential, proxy, and hosted-provider environment overrides for Claude subscription sessions, so this provider uses only your Claude Code login.".to_string());
@@ -3266,19 +3364,67 @@ async fn has_lmstudio_key() -> bool {
     lmstudio_key().await.is_some()
 }
 
-#[tauri::command]
-async fn list_openrouter_models() -> Result<Value, String> {
-    let client = reqwest::Client::builder()
+const OPENROUTER_MODELS_URL: &str = "https://openrouter.ai/api/v1/models";
+const OPENROUTER_USER_MODELS_URL: &str = "https://openrouter.ai/api/v1/models/user";
+
+fn openrouter_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
         .timeout(Duration::from_secs(20))
         .build()
-        .map_err(|error| format!("Could not create the OpenRouter catalog client: {error}"))?;
-    let mut request = client
-        .get("https://openrouter.ai/api/v1/models?supported_parameters=tools&limit=1000")
-        .header("X-Title", "Mythra Code");
-    if let Some(key) = openrouter_key().await {
-        request = request.bearer_auth(key);
+        .map_err(|error| format!("Could not create the OpenRouter catalog client: {error}"))
+}
+
+async fn openrouter_get(client: &reqwest::Client, url: &str) -> reqwest::RequestBuilder {
+    let request = client.get(url).header("X-Title", "Mythra Code");
+    match openrouter_key().await {
+        Some(key) => request.bearer_auth(key),
+        None => request,
     }
-    request
+}
+
+fn openrouter_tool_models(mut catalog: Value) -> Value {
+    if let Some(models) = catalog.get_mut("data").and_then(Value::as_array_mut) {
+        models.retain(|model| {
+            model
+                .get("supported_parameters")
+                .and_then(Value::as_array)
+                .is_some_and(|parameters| parameters.iter().any(|value| value.as_str() == Some("tools")))
+        });
+    }
+    catalog
+}
+
+/// Reads every model available under the user's OpenRouter preferences,
+/// privacy settings, and guardrails. Omitting both `offset` and `limit` from
+/// `/models/user` explicitly requests the complete list, so local search can
+/// never miss an entry beyond an arbitrary page boundary. Older or restricted
+/// keys fall back to the complete public tool-capable catalog.
+#[tauri::command]
+async fn list_openrouter_models() -> Result<Value, String> {
+    let client = openrouter_client()?;
+    if let Some(key) = openrouter_key().await {
+        let response = client
+            .get(OPENROUTER_USER_MODELS_URL)
+            .header("X-Title", "Mythra Code")
+            .bearer_auth(key)
+            .send()
+            .await
+            .map_err(|error| format!("Could not reach the OpenRouter account model catalog: {error}"))?;
+        if let Ok(response) = response.error_for_status() {
+            let catalog = response
+                .json::<Value>()
+                .await
+                .map_err(|error| format!("Could not read the OpenRouter account model catalog: {error}"))?;
+            return Ok(openrouter_tool_models(catalog));
+        }
+    }
+
+    let mut url = reqwest::Url::parse(OPENROUTER_MODELS_URL)
+        .map_err(|error| format!("Could not build the OpenRouter catalog request: {error}"))?;
+    url.query_pairs_mut()
+        .append_pair("supported_parameters", "tools");
+    openrouter_get(&client, url.as_str())
+        .await
         .send()
         .await
         .map_err(|error| format!("Could not reach the OpenRouter model catalog: {error}"))?
@@ -3287,6 +3433,65 @@ async fn list_openrouter_models() -> Result<Value, String> {
         .json::<Value>()
         .await
         .map_err(|error| format!("Could not read the OpenRouter model catalog: {error}"))
+}
+
+/// Resolves one `author/slug` directly.
+///
+/// The catalog filter and the `q` search can both come up empty for a model the
+/// account can still route to, so a typed slug gets its own lookup rather than
+/// being rejected as unknown.
+/// Catalog path for an `author/slug`, rejecting anything that could climb out
+/// of `/api/v1/models/`. Variant suffixes such as `:free` are routing options
+/// rather than catalog paths, so they are dropped before the lookup.
+fn openrouter_model_path(slug: &str) -> Result<String, String> {
+    let invalid = || "Enter a complete provider/model slug.".to_string();
+    let slug = slug.trim();
+    if slug.is_empty() || slug.starts_with('/') || !slug.contains('/') {
+        return Err(invalid());
+    }
+    let path = slug.split(':').next().unwrap_or(slug);
+    let segments: Vec<&str> = path.split('/').collect();
+    if segments.len() < 2
+        || segments
+            .iter()
+            .any(|segment| segment.is_empty() || *segment == "." || *segment == "..")
+    {
+        return Err(invalid());
+    }
+    Ok(path.to_string())
+}
+
+#[tauri::command]
+async fn openrouter_model(slug: String) -> Result<Value, String> {
+    let path = openrouter_model_path(&slug)?;
+    let path = path.as_str();
+    let slug = slug.trim();
+    let client = openrouter_client()?;
+    let mut url = reqwest::Url::parse(OPENROUTER_MODELS_URL)
+        .map_err(|error| format!("Could not build the OpenRouter model request: {error}"))?;
+    {
+        let mut segments = url
+            .path_segments_mut()
+            .map_err(|_| "Could not build the OpenRouter model request.".to_string())?;
+        for segment in path.split('/') {
+            segments.push(segment);
+        }
+        segments.push("endpoints");
+    }
+    let response = openrouter_get(&client, url.as_str())
+        .await
+        .send()
+        .await
+        .map_err(|error| format!("Could not reach OpenRouter: {error}"))?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Err(format!("OpenRouter does not know the model {slug}."));
+    }
+    response
+        .error_for_status()
+        .map_err(|error| format!("OpenRouter rejected the model lookup: {error}"))?
+        .json::<Value>()
+        .await
+        .map_err(|error| format!("Could not read the OpenRouter model: {error}"))
 }
 
 #[tauri::command]
@@ -3462,6 +3667,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             codex_runtime_status,
             claude_runtime_status,
+            claude_models,
             claude_usage,
             claude_login,
             cursor_runtime_status,
@@ -3524,6 +3730,7 @@ pub fn run() {
             has_openrouter_key,
             has_lmstudio_key,
             list_openrouter_models,
+            openrouter_model,
             list_lmstudio_models,
             child_agent_session_start,
             child_agent_session_end,

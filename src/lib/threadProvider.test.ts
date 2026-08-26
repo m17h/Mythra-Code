@@ -21,6 +21,9 @@ describe("thread provider resolution", () => {
 
   it("normalizes incompatible models when a new thread changes provider", () => {
     expect(modelForProvider("claude", "gpt-5.6-sol")).toBe(DEFAULT_CLAUDE_MODEL);
+    expect(modelForProvider("claude", "default")).toBe("default");
+    expect(modelForProvider("claude", "sonnet")).toBe("sonnet");
+    expect(modelForProvider("claude", "opus[1m]")).toBe("opus[1m]");
     expect(modelForProvider("openai", "anthropic/claude-sonnet")).toBe(DEFAULT_OPENAI_MODEL);
     expect(modelForProvider("openrouter", "gpt-5.6-sol")).toBe("");
     expect(modelForProvider("openrouter", "anthropic/claude-sonnet")).toBe("anthropic/claude-sonnet");

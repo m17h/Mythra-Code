@@ -6,8 +6,8 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { Archive, ArchiveRestore, Bot, Check, ChevronDown, Circle, Code2, Download, FileCode2, Folder, FolderOpen, GitBranch, GitFork, LoaderCircle, MessageSquare, Paperclip, PanelRight, PanelLeftClose, PanelLeftOpen, Plus, Pin, PinOff, Pencil, Search, Settings, Shield, ShieldAlert, ShieldCheck, TerminalSquare, Trash2, X } from "lucide-react";
-import { getCodexRuntimeStatus, auditEvent, exportTextFile, getNormalChatWorkspace, hasLmStudioKey, hasOpenRouterKey, listOpenRouterModels, respond, restartRuntime, rpc, runtimeInstanceId, type CodexRuntimeStatus, type JsonObject } from "./lib/codex";
-import { deleteClaudeTranscript, getClaudeRateLimits, getClaudeRuntimeStatus, loadClaudeTranscript, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, type ClaudeRuntimeStatus } from "./lib/claude";
+import { getCodexRuntimeStatus, auditEvent, exportTextFile, getNormalChatWorkspace, hasLmStudioKey, hasOpenRouterKey, respond, restartRuntime, rpc, runtimeInstanceId, type CodexRuntimeStatus, type JsonObject } from "./lib/codex";
+import { deleteClaudeTranscript, getClaudeRateLimits, getClaudeRuntimeStatus, listClaudeModels, loadClaudeTranscript, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, type ClaudeModel, type ClaudeRuntimeStatus } from "./lib/claude";
 import { deleteCursorTranscript, getCursorRuntimeStatus, listCursorModels, loadCursorTranscript, respondToCursorPermission, saveCursorTranscript, startCursorLogin, type CursorModel, type CursorRuntimeStatus } from "./lib/cursor";
 import { loadStored, storeValue } from "./lib/storage";
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_PROMPT_PROFILES, DEFAULT_SETTINGS, EFFORT_SLIDER_STYLES, sanitizeTheme, themeColorScheme } from "./lib/appConfig";
@@ -38,7 +38,7 @@ import { AuthRequiredModal, RuntimeSetupModal } from "./components/RuntimeModals
 import type { AgentRecord, AttachmentRecord, McpView, StudioTab } from "./components/StudioDock";
 import type { Account, Activity, AppSettings, ArchivedThread, ChatMessage, CustomAgentProfile, PendingApproval, PermissionMode, Project, ProjectAction, ProjectPromptMode, ProjectSubagentSettings, EffortSliderStyle, PromptProfile, Provider, ScheduledTask, ScheduleRunRecord, SettingsSection, Thread, ThreadHandoff, ThreadReasoning, ThemeName, WorkspaceMode } from "./types";
 import { PendingTurnStarts } from "./lib/pendingTurnStarts";
-import { isAssistantOutputActive, useTaskStore, type QueuedTurn } from "./lib/taskStore";
+import { useTaskStore, type QueuedTurn } from "./lib/taskStore";
 import { friendlyError } from "./lib/errors";
 import { recordError } from "./lib/errorLog";
 import {
@@ -87,6 +87,8 @@ import { createLocalSkill, deleteLocalSkill, importLocalSkills, normalizeSkillNa
 import { compactWorkflowRun, normalizeWorkflows, recoverWorkflowRuns, type WorkflowDefinition, type WorkflowRunRecord } from "./lib/workflows";
 import { isClaudeThread, isCursorThread, isLocalSubscriptionThread, modelForProvider, providerFromThread } from "./lib/threadProvider";
 import { listLMStudioModels, type LMStudioModel } from "./lib/lmStudio";
+import { EMPTY_MODEL_FAVORITES, MODEL_FAVORITES_KEY, favoriteModels, sanitizeModelFavorites, toggleFavoriteModel, type ModelFavorites } from "./lib/modelFavorites";
+import { fetchOpenRouterCatalog, mergeOpenRouterModels, resolveOpenRouterSlug } from "./lib/openRouterCatalog";
 import { basename, normalizedProjectPath } from "./lib/paths";
 import { resolveProviderSystemPrompt, resolveSystemPrompt } from "./lib/systemPrompt";
 import { parseCodexRateLimits, providerAccountUsage, sanitizeUsageDisplay, type ProviderRateLimits } from "./lib/providerUsage";
@@ -254,6 +256,7 @@ export default function App() {
   const [threadReasoning, setThreadReasoning] = usePersistedState<Record<string, ThreadReasoning>>("kiwi.threadReasoning", {}, {
     init: (load) => sanitizeThreadReasoningRecords(load()),
   });
+  const [deferredReasoningNoticeThreads, setDeferredReasoningNoticeThreads] = useState<Set<string>>(() => new Set());
   const [draftThreadProvider, setDraftThreadProvider] = useState<Provider | null>(null);
   const [draftThreadModel, setDraftThreadModel] = useState<string | null>(null);
   const [draftThreadIsolated, setDraftThreadIsolated] = useState(false);
@@ -373,6 +376,17 @@ export default function App() {
   const [openRouterModels, setOpenRouterModels] = useState<OpenRouterModel[]>([]);
   const [openRouterModelsLoading, setOpenRouterModelsLoading] = useState(false);
   const [openRouterModelsError, setOpenRouterModelsError] = useState("");
+  const [openRouterSearching, setOpenRouterSearching] = useState(false);
+  const [claudeModels, setClaudeModels] = useState<ClaudeModel[]>([]);
+  const [claudeModelsLoading, setClaudeModelsLoading] = useState(false);
+  const [claudeModelsError, setClaudeModelsError] = useState("");
+  // Starred models per provider. Sanitized on load because the store outlives
+  // any single catalog and can hold ids a provider has since retired.
+  const [modelFavorites, setModelFavorites] = usePersistedState<ModelFavorites>(
+    MODEL_FAVORITES_KEY,
+    EMPTY_MODEL_FAVORITES,
+    { init: (load) => sanitizeModelFavorites(load()) },
+  );
   const [lmStudioModels, setLMStudioModels] = useState<LMStudioModel[]>([]);
   const [lmStudioModelsLoading, setLMStudioModelsLoading] = useState(false);
   const [lmStudioModelsError, setLMStudioModelsError] = useState("");
@@ -565,6 +579,16 @@ export default function App() {
         detail: entry.id,
       })),
     } : {}),
+    // A model the Claude plan cannot run is left out entirely here: a
+    // destination roster is a promise the child turn will actually start.
+    ...(claudeModels.length ? {
+      claude: claudeModels.filter((entry) => !entry.disabled).map((entry) => ({
+        id: entry.id,
+        label: entry.displayName,
+        detail: entry.description || entry.resolvedModel,
+        keywords: entry.resolvedModel,
+      })),
+    } : {}),
     openrouter: openRouterModels.map((entry) => ({
       id: entry.id,
       label: entry.name || entry.id,
@@ -576,7 +600,7 @@ export default function App() {
       label: entry.id,
       detail: `${entry.publisher}${entry.trainedForToolUse ? " · tool use" : ""}`,
     })),
-  }), [cursorModels, lmStudioModels, openRouterModels, runtimeModels]);
+  }), [claudeModels, cursorModels, lmStudioModels, openRouterModels, runtimeModels]);
 
   const terminal = useTerminal({ scrollback: settings.terminalScrollback, permission: effectiveSettings.permission, onError: setError });
   const timelineEmpty = useTaskStore((state) => {
@@ -591,9 +615,6 @@ export default function App() {
   const contextPercent = contextUsagePercent(tokenUsage);
   const queuedTurns = useTaskStore((state) => (activeThreadId ? (state.tasks[activeThreadId]?.queuedTurns ?? EMPTY_QUEUED_TURNS) : EMPTY_QUEUED_TURNS));
   const taskStatus = useTaskStore((state) => (activeThreadId ? (state.statuses[activeThreadId] ?? "idle") : "idle"));
-  const assistantOutputActive = useTaskStore((state) => (
-    activeThreadId ? isAssistantOutputActive(state.tasks[activeThreadId]) : false
-  ));
   const threadTaskStatuses = useTaskStore((state) => state.statuses);
   // Live crew for the composer panel: Mythra Code-owned cross-provider children
   // merged with whatever native agents the root task reported.
@@ -614,6 +635,18 @@ export default function App() {
     [activeProvider, activeThreadId, agentRecords, agentRunStartedAt, childAgentLinks, effectiveSettings.model, nativeAgentLinks, threadTaskStatuses],
   );
   const running = activeThreadId ? taskStatus === "starting" || taskStatus === "running" : startingDraftTurn;
+  useEffect(() => {
+    setDeferredReasoningNoticeThreads((current) => {
+      const next = new Set(
+        [...current].filter((threadId) => {
+          const status = threadTaskStatuses[threadId];
+          return status === "starting" || status === "running";
+        }),
+      );
+      if (next.size === current.size && [...next].every((threadId) => current.has(threadId))) return current;
+      return next;
+    });
+  }, [threadTaskStatuses]);
   // A root turn can end — normally, or by failing — while children it spawned
   // are still editing the folder. Stop has to stay reachable for exactly that
   // window, or the only cutoff left would be one worker at a time inside the
@@ -725,15 +758,25 @@ export default function App() {
     };
   }, [effectiveSettings.model, effectiveSettings.provider, openRouterModels]);
 
+  /**
+   * Claude's live catalog offers aliases (`default`, `opus[1m]`) rather than
+   * the ids pricing is published under. The catalog is the only authority on
+   * what an alias currently resolves to, so cost estimates use it when it is
+   * loaded and fall back to pattern normalization when it is not.
+   */
+  const pricingModel = useCallback((provider: Provider, model: string) => (
+    provider === "claude" ? claudeModels.find((entry) => entry.id === model)?.resolvedModel ?? model : model
+  ), [claudeModels]);
+
   useEffect(() => {
     if (!activeThreadId) return;
     annotateThreadUsage(activeThreadId, {
       provider: effectiveSettings.provider,
       model: effectiveSettings.model,
       projectPath: activeWorkspace ? normalizedProjectPath(activeWorkspace.path) : undefined,
-      pricing: activeOpenRouterPricing ?? pricingForModel(effectiveSettings.provider, effectiveSettings.model),
+      pricing: activeOpenRouterPricing ?? pricingForModel(effectiveSettings.provider, pricingModel(effectiveSettings.provider, effectiveSettings.model)),
     });
-  }, [activeOpenRouterPricing, activeThreadId, activeWorkspace, effectiveSettings.model, effectiveSettings.provider, pricingCatalogRevision, tokenUsage]);
+  }, [activeOpenRouterPricing, activeThreadId, activeWorkspace, effectiveSettings.model, effectiveSettings.provider, pricingCatalogRevision, pricingModel, tokenUsage]);
 
   const activeUsageRecord = activeThreadId ? usageForThread(activeThreadId) : null;
   const activeUsageCost = activeUsageRecord?.estimatedCost
@@ -974,10 +1017,18 @@ export default function App() {
   const persistComposerReasoning = useCallback((reasoningEffort: ThreadReasoning["reasoningEffort"]) => {
     if (activeThreadId) {
       persistThreadReasoning(activeThreadId, { reasoningEffort, ultra: false });
+      if (running) {
+        setDeferredReasoningNoticeThreads((current) => {
+          if (current.has(activeThreadId)) return current;
+          const next = new Set(current);
+          next.add(activeThreadId);
+          return next;
+        });
+      }
     } else {
       persistSettings({ ...settings, reasoningEffort, ultra: false });
     }
-  }, [activeThreadId, persistSettings, persistThreadReasoning, settings]);
+  }, [activeThreadId, persistSettings, persistThreadReasoning, running, settings]);
 
   const persistComposerPermission = useCallback(
     (permission: PermissionMode) => {
@@ -1476,8 +1527,9 @@ export default function App() {
     setOpenRouterModelsLoading(true);
     setOpenRouterModelsError("");
     try {
-      const result = await listOpenRouterModels<{ data?: OpenRouterModel[] }>();
-      const models = (result.data ?? []).filter((entry) => entry.id && entry.name).sort((a, b) => a.name.localeCompare(b.name));
+      const models = await fetchOpenRouterCatalog();
+      // A full refresh is authoritative: retired or newly unavailable models
+      // must leave the catalog instead of surviving through an earlier search.
       setOpenRouterModels(models);
       if (!models.length) setOpenRouterModelsError("OpenRouter returned an empty catalog");
     } catch (reason) {
@@ -1486,6 +1538,51 @@ export default function App() {
       setOpenRouterModelsLoading(false);
     }
   }, []);
+
+  /** Resolve a complete typed slug that is absent from the full account list. */
+  const openRouterDiscoveryRef = useRef(0);
+  const discoverOpenRouterModels = useCallback(async (query: string) => {
+    const search = query.trim();
+    if (!search.includes("/")) return;
+    const request = ++openRouterDiscoveryRef.current;
+    setOpenRouterSearching(true);
+    try {
+      const slug = openRouterModels.some((entry) => entry.id.toLowerCase() === search.toLowerCase())
+        ? null
+        : await resolveOpenRouterSlug(search).catch(() => null);
+      if (openRouterDiscoveryRef.current !== request) return;
+      const additions = slug?.verified ? [slug.model] : [];
+      if (additions.length) setOpenRouterModels((current) => mergeOpenRouterModels(current, additions));
+    } finally {
+      if (openRouterDiscoveryRef.current === request) setOpenRouterSearching(false);
+    }
+  }, [openRouterModels]);
+
+  /**
+   * Reads the Claude Code CLI's own model catalog. The CLI has no `models`
+   * subcommand, so this rides the stream-json control protocol; an older CLI
+   * or a signed-out install leaves the labelled built-in list in place.
+   */
+  const refreshClaudeModels = useCallback(async () => {
+    setClaudeModelsLoading(true);
+    setClaudeModelsError("");
+    try {
+      const models = await listClaudeModels();
+      setClaudeModels(models);
+      if (!models.length) setClaudeModelsError("Claude Code returned no models.");
+      return models;
+    } catch (reason) {
+      setClaudeModels([]);
+      setClaudeModelsError(friendlyError(reason));
+      return [];
+    } finally {
+      setClaudeModelsLoading(false);
+    }
+  }, []);
+
+  const toggleModelFavorite = useCallback((provider: Provider, model: string) => {
+    setModelFavorites((current) => toggleFavoriteModel(current, provider, model));
+  }, [setModelFavorites]);
 
   const refreshLMStudioModels = useCallback(async (baseUrl: string) => {
     setLMStudioModelsLoading(true);
@@ -1823,7 +1920,7 @@ export default function App() {
         projectPath: projectPath ? normalizedProjectPath(projectPath) : undefined,
         pricing: Number.isFinite(promptRate) && Number.isFinite(completionRate)
           ? { inputPerMillion: promptRate * 1_000_000, outputPerMillion: completionRate * 1_000_000, source: "OpenRouter", asOf: new Date().toISOString().slice(0, 10) }
-          : pricingForModel(completedProvider, completedModel),
+          : pricingForModel(completedProvider, pricingModel(completedProvider, completedModel)),
       });
       if (completedProvider === "openrouter") {
         const completedUsage = usageForThread(threadId);
@@ -2015,6 +2112,12 @@ export default function App() {
   useEffect(() => {
     if (cursorStatus?.loggedIn) void refreshCursorModels();
   }, [cursorStatus?.loggedIn, refreshCursorModels]);
+
+  // The Claude catalog needs a signed-in CLI to answer, so it is read after
+  // sign-in rather than as part of the startup sequence.
+  useEffect(() => {
+    if (claudeStatus?.available && claudeStatus.loggedIn) void refreshClaudeModels();
+  }, [claudeStatus?.available, claudeStatus?.loggedIn, refreshClaudeModels]);
 
   // Workspace-change side effects are keyed on the workspace *path* and
   // runtime availability, with refreshTools read through a ref. Depending on
@@ -4691,7 +4794,7 @@ export default function App() {
                 running={running}
                 childrenRunning={childrenRunning}
                 queueing={Boolean(running && activeThread)}
-                canSteer={Boolean(activeThread && taskStatus === "running" && !assistantOutputActive)}
+                canSteer={Boolean(activeThread && taskStatus === "running")}
                 dropActive={dropActive}
                 placeholder={running && activeThread ? "Queue a follow-up for after this run…" : activeWorkspace.isChat ? "Ask anything — no project folder attached…" : `Ask Mythra Code to work in ${activeProject?.name ?? "this project"}…`}
                 attachments={attachments}
@@ -4708,7 +4811,7 @@ export default function App() {
                 onStop={() => void stopTurnAndChildren()}
                 modelControls={
                   <>
-                    {effectiveSettings.provider === "openai" && <ModelPowerControl model={effectiveSettings.model || DEFAULT_OPENAI_MODEL} effort={effectiveSettings.reasoningEffort} fast={settings.serviceTier === "priority"} runtimeModels={runtimeModels} onModel={persistComposerModel} onEffort={persistComposerReasoning} onFast={(fast) => persistSettings({ ...settings, serviceTier: fast ? "priority" : null })} />}
+                    {effectiveSettings.provider === "openai" && <ModelPowerControl model={effectiveSettings.model || DEFAULT_OPENAI_MODEL} effort={effectiveSettings.reasoningEffort} fast={settings.serviceTier === "priority"} runtimeModels={runtimeModels} favorites={favoriteModels(modelFavorites, "openai")} onToggleFavorite={(model) => toggleModelFavorite("openai", model)} onModel={persistComposerModel} onEffort={persistComposerReasoning} onFast={(fast) => persistSettings({ ...settings, serviceTier: fast ? "priority" : null })} />}
                     {effectiveSettings.provider === "openrouter" && (
                       <OpenRouterModelControl
                         model={effectiveSettings.model}
@@ -4716,11 +4819,15 @@ export default function App() {
                         models={openRouterModels}
                         loading={openRouterModelsLoading}
                         error={openRouterModelsError}
+                        searching={openRouterSearching}
+                        favorites={favoriteModels(modelFavorites, "openrouter")}
+                        onToggleFavorite={(model) => toggleModelFavorite("openrouter", model)}
                         onModel={(model) => {
                           persistComposerModel(model);
                         }}
                         onEffort={persistComposerReasoning}
                         onRefresh={() => void refreshOpenRouterModels()}
+                        onDiscover={(query) => void discoverOpenRouterModels(query)}
                       />
                     )}
                     {effectiveSettings.provider === "lmstudio" && (
@@ -4730,13 +4837,20 @@ export default function App() {
                         effort={effectiveSettings.reasoningEffort}
                         loading={lmStudioModelsLoading}
                         error={lmStudioModelsError}
+                        favorites={favoriteModels(modelFavorites, "lmstudio")}
+                        onToggleFavorite={(model) => toggleModelFavorite("lmstudio", model)}
                         onRefresh={() => void refreshLMStudioModels(settings.lmStudioBaseUrl)}
                         onModel={persistComposerModel}
                         onEffort={persistComposerReasoning}
                       />
                     )}
-                    {effectiveSettings.provider === "claude" && <ClaudeModelControl model={effectiveSettings.model || DEFAULT_CLAUDE_MODEL} effort={effectiveSettings.reasoningEffort} onModel={(model) => persistComposerModel(model)} onEffort={persistComposerReasoning} />}
-                    {effectiveSettings.provider === "cursor" && <CursorModelControl model={effectiveSettings.model || DEFAULT_CURSOR_MODEL} models={cursorModels} effort={effectiveSettings.reasoningEffort} loading={cursorModelsLoading} onRefresh={() => void refreshCursorModels()} onModel={(model) => persistComposerModel(model)} onEffort={persistComposerReasoning} />}
+                    {effectiveSettings.provider === "claude" && <ClaudeModelControl model={effectiveSettings.model || DEFAULT_CLAUDE_MODEL} effort={effectiveSettings.reasoningEffort} models={claudeModels} loading={claudeModelsLoading} error={claudeModelsError} favorites={favoriteModels(modelFavorites, "claude")} onToggleFavorite={(model) => toggleModelFavorite("claude", model)} onRefresh={() => void refreshClaudeModels()} onModel={(model) => persistComposerModel(model)} onEffort={persistComposerReasoning} />}
+                    {effectiveSettings.provider === "cursor" && <CursorModelControl model={effectiveSettings.model || DEFAULT_CURSOR_MODEL} models={cursorModels} effort={effectiveSettings.reasoningEffort} loading={cursorModelsLoading} favorites={favoriteModels(modelFavorites, "cursor")} onToggleFavorite={(model) => toggleModelFavorite("cursor", model)} onRefresh={() => void refreshCursorModels()} onModel={(model) => persistComposerModel(model)} onEffort={persistComposerReasoning} />}
+                    {running && activeThreadId && deferredReasoningNoticeThreads.has(activeThreadId) && (
+                      <p className="composer-reasoning-notice" role="status" aria-live="polite">
+                        Reasoning change will apply to the next prompt.
+                      </p>
+                    )}
                   </>
                 }
                 controls={
@@ -4780,6 +4894,8 @@ export default function App() {
                       scopeLabel={activeProject ? activeProject.name : "Chats & project defaults"}
                       projectOverride={!activeDelegationPolicy && Boolean(activeProject?.overrides?.subagents)}
                       modelCatalogs={subAgentModelCatalogs}
+                      modelFavorites={modelFavorites}
+                      onToggleModelFavorite={toggleModelFavorite}
                       onChange={activeDelegationPolicy ? persistActiveThreadSubagentPolicy : persistComposerSubagentPolicy}
                       onOpenSettings={() => openSettings("agents")}
                       onOpenWorker={openSubAgentWorker}
@@ -4912,7 +5028,7 @@ export default function App() {
             onAddAttachment={() => void addAttachment()}
             onRemoveAttachment={(path) => setAttachments((current) => current.filter((item) => item.path !== path))}
             onRefreshUsage={() => {
-              if (effectiveSettings.provider === "claude") void refreshClaudeStatus();
+              if (effectiveSettings.provider === "claude") void Promise.all([refreshClaudeStatus(), refreshClaudeModels()]);
               else if (effectiveSettings.provider === "cursor") void Promise.all([refreshCursorStatus(), refreshCursorModels()]);
               else if (effectiveSettings.provider === "openrouter") void hasOpenRouterKey().then(setOpenRouterReady).catch(() => setOpenRouterReady(false));
               else if (effectiveSettings.provider === "lmstudio") void refreshLMStudioModels(settings.lmStudioBaseUrl);
@@ -4965,6 +5081,10 @@ export default function App() {
         runtimeModels={runtimeModels}
         openRouterModels={openRouterModels}
         cursorModels={cursorModels}
+        claudeModels={claudeModels}
+        modelFavorites={modelFavorites}
+        onToggleModelFavorite={toggleModelFavorite}
+        onDiscoverOpenRouterModels={(query) => void discoverOpenRouterModels(query)}
         childAgentReadiness={childAgentReadiness}
         githubStatus={githubStatus}
         githubBusy={githubBusy || githubLoginPending}

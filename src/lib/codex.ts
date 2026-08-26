@@ -64,8 +64,14 @@ export async function hasOpenRouterKey(): Promise<boolean> {
   return invoke<boolean>("has_openrouter_key");
 }
 
+/** Reads the complete account-filtered OpenRouter tool-capable catalog. */
 export async function listOpenRouterModels<T>(): Promise<T> {
   return invoke<T>("list_openrouter_models");
+}
+
+/** Resolves a single `author/slug` that is absent from the catalog response. */
+export async function fetchOpenRouterModel<T>(slug: string): Promise<T> {
+  return invoke<T>("openrouter_model", { slug });
 }
 
 export async function saveLmStudioKey(apiKey: string): Promise<void> {

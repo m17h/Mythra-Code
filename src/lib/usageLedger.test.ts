@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   annotateThreadUsage,
+  claudeCanonicalModel,
   compactUsageRecords,
   estimateUsageCost,
   MODEL_PRICING_CATALOG_KEY,
@@ -336,5 +337,27 @@ describe("usage ledger", () => {
 
     expect(usageTotals().threads).toBe(1_005);
     expect(JSON.parse(localStorage.getItem("kiwi.usageLedger") ?? "[]")).toHaveLength(1_005);
+  });
+});
+
+describe("Claude model canonicalization", () => {
+  it("prices the live catalog's decorated aliases", () => {
+    expect(claudeCanonicalModel("opus[1m]")).toBe("claude-opus-5");
+    expect(claudeCanonicalModel("claude-fable-5[1m]")).toBe("claude-fable-5");
+    expect(claudeCanonicalModel("haiku")).toBe("claude-haiku-4-5");
+    expect(claudeCanonicalModel("claude-haiku-4-5-20251001")).toBe("claude-haiku-4-5");
+    expect(claudeCanonicalModel("claude-sonnet-5@20260101")).toBe("claude-sonnet-5");
+  });
+
+  it("resolves an alias to a published rate", () => {
+    expect(pricingForModel("claude", "sonnet")?.source).toBe("Anthropic");
+    expect(pricingForModel("claude", "claude-opus-5[1m]")?.outputPerMillion).toBe(25);
+  });
+
+  // `default` is whatever Anthropic currently points it at, so guessing a rate
+  // would be a confidently wrong number rather than a missing one.
+  it("leaves an ambiguous alias unpriced", () => {
+    expect(claudeCanonicalModel("default")).toBe("default");
+    expect(pricingForModel("claude", "default")).toBeUndefined();
   });
 });

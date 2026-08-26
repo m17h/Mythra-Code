@@ -1,5 +1,10 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Check, ChevronDown, Search } from "lucide-react";
+import { ModelFavoriteStar } from "./ModelFavoriteStar";
+import { favoriteCount, sortByFavorites } from "../lib/modelFavorites";
+
+/** Options rendered before the menu offers to reveal the rest of a long list. */
+const BROWSE_LIMIT = 80;
 
 export interface AppSelectOption {
   value: string;
@@ -25,6 +30,9 @@ export function AppSelectMenu({
   searchable = false,
   menuPlacement = "bottom",
   emptyMessage = "No options available",
+  favorites = [],
+  onToggleFavorite,
+  onSearch,
   onChange,
 }: {
   value: string;
@@ -34,30 +42,51 @@ export function AppSelectMenu({
   searchable?: boolean;
   menuPlacement?: "top" | "bottom";
   emptyMessage?: string;
+  /** Starred option values, floated to the top of the list. */
+  favorites?: string[];
+  /** Renders a star beside each option when supplied. */
+  onToggleFavorite?: (value: string) => void;
+  /**
+   * Lets the owner resolve a provider-specific identifier typed into search.
+   * The normal option search remains exhaustive and local.
+   */
+  onSearch?: (query: string) => void;
   onChange: (value: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [showAll, setShowAll] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const selected = options.find((option) => option.value === value);
   const normalizedQuery = query.trim().toLowerCase();
+  const ordered = useMemo(
+    () => sortByFavorites(options, favorites, (option) => option.value),
+    [favorites, options],
+  );
+  // A search is never truncated: a cut-off result list is indistinguishable
+  // from an option the catalog does not have. Token matching lets a query like
+  // "anthropic sonnet" reach `anthropic/claude-sonnet-5`.
   const filtered = useMemo(() => {
-    const matches = !normalizedQuery ? options : options.filter((option) => (
-      `${option.label} ${option.detail ?? ""} ${option.value} ${option.keywords ?? ""}`
-        .toLowerCase()
-        .includes(normalizedQuery)
-    ));
-    // Live routing catalogs can contain hundreds of entries. Search still
-    // covers the entire catalog, while the open menu stays cheap to render.
-    return matches.slice(0, 80);
-  }, [normalizedQuery, options]);
+    if (!normalizedQuery) return ordered;
+    const tokens = normalizedQuery.split(/\s+/).filter(Boolean);
+    return ordered.filter((option) => {
+      const haystack = `${option.label} ${option.detail ?? ""} ${option.value} ${option.keywords ?? ""}`.toLowerCase();
+      return tokens.every((token) => haystack.includes(token));
+    });
+  }, [normalizedQuery, ordered]);
+  // Idle browsing of a several-hundred-entry routing catalog is capped for
+  // render cost only; the row below discloses and reveals the remainder.
+  const visible = normalizedQuery || showAll ? filtered : filtered.slice(0, BROWSE_LIMIT);
+  const hidden = filtered.length - visible.length;
+  const starredVisible = favoriteCount(visible, favorites, (option) => option.value);
 
   const close = () => {
     setOpen(false);
     setQuery("");
+    setShowAll(false);
   };
 
   useEffect(() => {
@@ -87,10 +116,16 @@ export function AppSelectMenu({
         searchRef.current?.focus();
         return;
       }
-      const selectedIndex = Math.max(0, filtered.findIndex((option) => option.value === value));
+      const selectedIndex = Math.max(0, visible.findIndex((option) => option.value === value));
       optionRefs.current[selectedIndex]?.focus();
     });
-  }, [filtered, open, searchable, value]);
+  }, [open, searchable, value, visible]);
+
+  useEffect(() => {
+    if (!open || !onSearch || !normalizedQuery) return;
+    const timer = window.setTimeout(() => onSearch(query.trim()), 320);
+    return () => window.clearTimeout(timer);
+  }, [normalizedQuery, onSearch, open, query]);
 
   const moveFocus = (current: HTMLButtonElement, direction: number) => {
     const connected = optionRefs.current.filter((item): item is HTMLButtonElement => Boolean(item?.isConnected));
@@ -147,32 +182,43 @@ export function AppSelectMenu({
             </label>
           )}
           <div className="app-select-options" role="menu" aria-label={`${ariaLabel} choices`}>
-            {filtered.map((option, index) => (
-              <button
-                ref={(node) => { optionRefs.current[index] = node; }}
-                type="button"
-                role="menuitemradio"
-                aria-checked={option.value === value}
-                className={option.value === value ? "selected" : ""}
-                key={option.value}
-                onKeyDown={(event) => {
-                  if (event.key === "ArrowDown") { event.preventDefault(); moveFocus(event.currentTarget, 1); }
-                  if (event.key === "ArrowUp") { event.preventDefault(); moveFocus(event.currentTarget, -1); }
-                }}
-                onClick={() => {
-                  onChange(option.value);
-                  close();
-                  triggerRef.current?.focus();
-                }}
-              >
-                <span className="app-select-option-copy">
-                  {option.icon}
-                  <span><strong>{option.label}</strong>{option.detail && <small>{option.detail}</small>}</span>
-                </span>
-                {option.value === value && <Check size={12} aria-hidden="true" />}
-              </button>
+            {visible.map((option, index) => (
+              <Fragment key={option.value}>
+                {starredVisible > 0 && index === 0 && <p className="model-group-label">Favorites</p>}
+                {starredVisible > 0 && index === starredVisible && <p className="model-group-label">All models</p>}
+                <div className="model-row" role="none">
+                  <button
+                    ref={(node) => { optionRefs.current[index] = node; }}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={option.value === value}
+                    className={option.value === value ? "selected" : ""}
+                    onKeyDown={(event) => {
+                      if (event.key === "ArrowDown") { event.preventDefault(); moveFocus(event.currentTarget, 1); }
+                      if (event.key === "ArrowUp") { event.preventDefault(); moveFocus(event.currentTarget, -1); }
+                    }}
+                    onClick={() => {
+                      onChange(option.value);
+                      close();
+                      triggerRef.current?.focus();
+                    }}
+                  >
+                    <span className="app-select-option-copy">
+                      {option.icon}
+                      <span><strong>{option.label}</strong>{option.detail && <small>{option.detail}</small>}</span>
+                    </span>
+                    {option.value === value && <Check size={12} aria-hidden="true" />}
+                  </button>
+                  {onToggleFavorite && <ModelFavoriteStar model={option.value} label={option.label} favorite={favorites.includes(option.value)} onToggle={onToggleFavorite} />}
+                </div>
+              </Fragment>
             ))}
-            {filtered.length === 0 && <p className="app-select-empty">{emptyMessage}</p>}
+            {hidden > 0 && (
+              <button type="button" className="model-show-all" onClick={() => setShowAll(true)}>
+                Show all {filtered.length} options ({hidden} more)
+              </button>
+            )}
+            {visible.length === 0 && <p className="app-select-empty">{emptyMessage}</p>}
           </div>
         </div>
       )}

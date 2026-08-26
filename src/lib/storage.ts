@@ -40,6 +40,7 @@ export const DURABLE_STORAGE_KEYS = [
   "kiwi.nativeAgentLinks",
   "kiwi.threadSubagentCapabilities",
   "kiwi.onboardingVersion",
+  "kiwi.modelFavorites",
 ] as const;
 
 /**
@@ -47,7 +48,7 @@ export const DURABLE_STORAGE_KEYS = [
  * migrateStorage. Old installs then upgrade their data instead of loading
  * garbage into the new code.
  */
-export const STORAGE_SCHEMA_VERSION = 18;
+export const STORAGE_SCHEMA_VERSION = 19;
 const nativeWriteQueues = new Map<string, Promise<void>>();
 const NATIVE_PENDING_PREFIX = "kiwi.nativePending.";
 let nativeOperationSequence = 0;
@@ -172,6 +173,8 @@ export function migrateStorage(): void {
   // Version 18 adds LM Studio as a persisted provider value. Existing
   // settings already merge with the current defaults, so no eager rewrite is
   // required.
+  // Version 19 adds per-provider starred models. The store starts empty and
+  // is sanitized on read, so no eager migration is required.
   // All other additions are optional and require no eager rewrite of existing records.
   storeValue("kiwi.schemaVersion", STORAGE_SCHEMA_VERSION);
 }

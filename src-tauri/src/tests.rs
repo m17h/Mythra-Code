@@ -2320,3 +2320,49 @@ fn lmstudio_catalog_exposes_only_language_models_and_coding_capabilities() {
     assert_eq!(catalog["data"][0]["context_length"], 65536);
     assert_eq!(catalog["data"][0]["trained_for_tool_use"], true);
 }
+
+#[test]
+fn openrouter_slug_lookup_accepts_real_slugs_and_variants() {
+    assert_eq!(
+        openrouter_model_path("moonshotai/kimi-k2").unwrap(),
+        "moonshotai/kimi-k2"
+    );
+    // A `:free`/`:batch` suffix selects a routing variant of the same catalog
+    // entry, so the lookup path drops it.
+    assert_eq!(
+        openrouter_model_path("  z-ai/glm-5.2:free  ").unwrap(),
+        "z-ai/glm-5.2"
+    );
+}
+
+#[test]
+fn openrouter_slug_lookup_cannot_climb_out_of_the_models_path() {
+    for slug in [
+        "",
+        "kimi",
+        "moonshotai/",
+        "/moonshotai/kimi-k2",
+        "../../keys",
+        "moonshotai/../../keys",
+        "moonshotai/./kimi",
+        "a//b",
+    ] {
+        assert!(
+            openrouter_model_path(slug).is_err(),
+            "expected {slug:?} to be rejected"
+        );
+    }
+}
+
+#[test]
+fn openrouter_account_catalog_keeps_only_tool_capable_models() {
+    let catalog = openrouter_tool_models(json!({
+        "data": [
+            { "id": "vendor/agent", "supported_parameters": ["tools", "reasoning"] },
+            { "id": "vendor/chat", "supported_parameters": ["temperature"] },
+            { "id": "vendor/unknown" }
+        ]
+    }));
+    assert_eq!(catalog["data"].as_array().map(Vec::len), Some(1));
+    assert_eq!(catalog["data"][0]["id"], "vendor/agent");
+}

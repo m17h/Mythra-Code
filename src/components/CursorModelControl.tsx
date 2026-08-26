@@ -4,6 +4,8 @@ import { EffortSlider, effortFlairStyle } from "./effortFlair";
 import type { CursorModel } from "../lib/cursor";
 import type { ReasoningEffort } from "./ModelPowerControl";
 import { CursorProviderLogo } from "./BrandLogos";
+import { ModelFavoriteStar, type ModelFavoriteProps } from "./ModelFavoriteStar";
+import { favoriteCount, sortByFavorites } from "../lib/modelFavorites";
 
 const EFFORTS: Array<{ value: Exclude<ReasoningEffort, "ultra">; label: string }> = [
   { value: "low", label: "Low" },
@@ -50,10 +52,12 @@ export function CursorModelControl({
   models,
   effort,
   loading,
+  favorites = [],
+  onToggleFavorite,
   onRefresh,
   onModel,
   onEffort,
-}: {
+}: ModelFavoriteProps & {
   model: string;
   models: CursorModel[];
   effort: ReasoningEffort;
@@ -70,11 +74,14 @@ export function CursorModelControl({
   const catalog = useMemo(() => models.length ? models : [{ id: "auto", name: "Auto", configOptions: [] }], [models]);
   const selected = catalog.find((entry) => entry.id === model) ?? { id: model || "auto", name: model || "Auto", configOptions: [] };
   const normalizedQuery = query.trim().toLowerCase();
-  const filtered = useMemo(() => catalog
+  // Favorites are applied after scoring so a starred model leads the list
+  // without disturbing the relative order of everything else.
+  const filtered = useMemo(() => sortByFavorites(catalog
     .map((entry) => ({ entry, score: searchScore(entry, normalizedQuery) }))
     .filter(({ score }) => score >= 0)
     .sort((left, right) => right.score - left.score || left.entry.name.localeCompare(right.entry.name))
-    .map(({ entry }) => entry), [catalog, normalizedQuery]);
+    .map(({ entry }) => entry), favorites, (entry) => entry.id), [catalog, favorites, normalizedQuery]);
+  const starredVisible = favoriteCount(filtered, favorites, (entry) => entry.id);
   const normalizedEffort = effort === "ultra" ? "max" : effort;
   const effortIndex = Math.max(0, EFFORTS.findIndex((entry) => entry.value === normalizedEffort));
   const fill = (effortIndex / (EFFORTS.length - 1)) * 100;
@@ -132,11 +139,12 @@ export function CursorModelControl({
           </div>
           <div className="cursor-model-results-meta">
             <span>{normalizedQuery ? `${filtered.length} match${filtered.length === 1 ? "" : "es"}` : `${catalog.length} models`}</span>
-            <small>{normalizedQuery ? "Best matches first" : "Featured models and Auto appear first"}</small>
+            <small>{favorites.length ? "Favorites first" : normalizedQuery ? "Best matches first" : "Featured models and Auto appear first"}</small>
           </div>
           <div className="openrouter-options cursor-model-options" role="menu" aria-label="Cursor model selector">
-            {filtered.map((entry) => (
-              <button type="button" role="menuitemradio" aria-checked={entry.id === selected.id} aria-label={`${entry.name}, ${modelFamily(entry)}`} className={entry.id === selected.id ? "selected" : ""} key={entry.id} ref={(node) => { optionRefs.current[filtered.indexOf(entry)] = node; }} onKeyDown={(event) => {
+            {filtered.map((entry, entryIndex) => (
+              <div className="model-row" key={entry.id} role="none">
+              <button type="button" role="menuitemradio" aria-checked={entry.id === selected.id} aria-label={`${entry.name}, ${modelFamily(entry)}`} className={`${entry.id === selected.id ? "selected" : ""}${starredVisible > 0 && entryIndex === starredVisible - 1 ? " favorite-group-end" : ""}`} ref={(node) => { optionRefs.current[entryIndex] = node; }} onKeyDown={(event) => {
                 const enabled = optionRefs.current.filter((item): item is HTMLButtonElement => Boolean(item?.isConnected));
                 const index = enabled.indexOf(event.currentTarget);
                 const columns = window.matchMedia("(min-width: 720px)").matches ? 2 : 1;
@@ -149,6 +157,8 @@ export function CursorModelControl({
                 <span><strong>{entry.name}</strong><small><em>{modelFamily(entry)}</em><code>{entry.id}</code></small></span>
                 {entry.id === selected.id && <Check size={13} />}
               </button>
+              {onToggleFavorite && <ModelFavoriteStar model={entry.id} label={entry.name} favorite={favorites.includes(entry.id)} onToggle={onToggleFavorite} />}
+              </div>
             ))}
             {!loading && filtered.length === 0 && <div className="cursor-model-empty"><Search size={20} /><strong>No models match “{query.trim()}”</strong><small>Try a company name like xAI, OpenAI, Anthropic, or Google.</small></div>}
           </div>
