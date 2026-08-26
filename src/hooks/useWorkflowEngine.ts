@@ -435,6 +435,8 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
                   threadId,
                   project.path,
                   [{ type: "text", text: prompt, text_elements: [] }],
+                  [],
+                  source === "manual",
                 ));
               } catch (reason) {
                 // No turn ever started, so no completion event will finalize

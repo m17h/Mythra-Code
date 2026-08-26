@@ -62,11 +62,11 @@ const OPENAI_THREAD: Thread = {
 };
 
 const BRIDGE_LAUNCH = {
-  name: "openkiwi",
+  name: "mythra_agents",
   command: "/Applications/Mythra Code.app/Contents/MacOS/mythra-code",
   args: ["--openkiwi-agent-bridge", "/data/child-agents/abc/session.json"],
   configPath: "/data/child-agents/abc/mcp.json",
-  toolNames: ["spawn_agent", "agent_status", "collect_agent", "cancel_agent"],
+  toolNames: ["spawn_mythra_agent", "agent_status", "collect_agent", "cancel_agent"],
 };
 
 /** What `ensureChildAgentBridge` hands back once a policy is captured. */
@@ -738,7 +738,7 @@ describe("useTurnRunner activating sub-agents mid-conversation", () => {
     expect(params).toMatchObject({
       threadId: OPENAI_THREAD.id,
       config: {
-        mcp_servers: { openkiwi: { command: BRIDGE_LAUNCH.command, args: BRIDGE_LAUNCH.args } },
+        mcp_servers: { mythra_agents: { command: BRIDGE_LAUNCH.command, args: BRIDGE_LAUNCH.args } },
         features: { multi_agent: false },
       },
     });
@@ -822,7 +822,7 @@ describe("useTurnRunner activating sub-agents mid-conversation", () => {
     // The bridge this thread believes it has is not registered anywhere in the
     // new runtime until it is resumed into it.
     expect(resumeCall()?.[1]).toMatchObject({
-      config: { mcp_servers: { openkiwi: { args: BRIDGE_LAUNCH.args } } },
+      config: { mcp_servers: { mythra_agents: { args: BRIDGE_LAUNCH.args } } },
     });
   });
 

@@ -12,13 +12,22 @@ export const RELEASE_NOTES_URL = "https://github.com/m17h/Mythra-Code/releases/l
 
 export const THEMES: Array<{ id: ThemeName; name: string; description: string; swatches: [string, string, string] }> = [
   { id: "mythra", name: "Mythra", description: "Deep graphite with luminous cyan", swatches: ["#1e2024", "#292d32", "#64ddf2"] },
+  { id: "light-mythra", name: "Light Mythra", description: "Paper white with a deep cyan accent", swatches: ["#f3f6f7", "#ffffff", "#087f9b"] },
   { id: "kiwi", name: "Kiwi", description: "Deep graphite with electric green", swatches: ["#1e2024", "#292d32", "#a7e26f"] },
   { id: "daylight", name: "Light Kiwi", description: "Paper white with a deep leaf green", swatches: ["#f4f5f2", "#ffffff", "#3e8e22"] },
   { id: "midnight", name: "Midnight", description: "Deep ocean blue with arctic ice", swatches: ["#14181f", "#1d232d", "#7fc4ff"] },
   { id: "synthwave", name: "Synthwave", description: "Neon violet with hot magenta", swatches: ["#17131f", "#221b2e", "#ff6ac1"] },
-  { id: "ember", name: "Ember", description: "Warm charcoal with molten amber", swatches: ["#1e1a17", "#292420", "#ffb45f"] },
-  { id: "terminal", name: "Terminal", description: "Phosphor green on near-black", swatches: ["#0c0f0c", "#141814", "#4eff8a"] },
 ];
+
+/** Stored theme ids may outlive a palette. Retired and malformed values fall
+ * back to Mythra instead of leaving the shell with an unstyled data attribute. */
+export function sanitizeTheme(value: unknown): ThemeName {
+  return THEMES.some((theme) => theme.id === value) ? value as ThemeName : "mythra";
+}
+
+export function themeColorScheme(theme: ThemeName): "light" | "dark" {
+  return theme === "light-mythra" || theme === "daylight" ? "light" : "dark";
+}
 
 export const EFFORT_SLIDER_STYLES: Array<{ id: EffortSliderStyle; name: string; description: string }> = [
   { id: "aurora", name: "Aurora", description: "A slow drift of northern-light pastels" },

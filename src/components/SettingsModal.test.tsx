@@ -90,6 +90,13 @@ function modalProps(overrides: Partial<Parameters<typeof SettingsModal>[0]> = {}
 }
 
 describe("SettingsModal", () => {
+  it("orders model providers by the primary subscription choices", () => {
+    const { container } = render(<SettingsModal {...modalProps({ initialSection: "models" })} />);
+    const providers = [...container.querySelectorAll(".provider-card strong")].map((node) => node.textContent);
+
+    expect(providers).toEqual(["OpenAI", "Anthropic", "Cursor", "OpenRouter", "LM Studio"]);
+  });
+
   it("uses the official OpenRouter glyph in provider settings", () => {
     const { container } = render(<SettingsModal {...modalProps({ initialSection: "models" })} />);
     expect(container.querySelector(".provider-logo.openrouter svg")).toHaveAttribute("viewBox", "0 0 401.4 293.7");
@@ -117,12 +124,13 @@ describe("SettingsModal", () => {
     const { container } = render(<SettingsModal {...modalProps()} />);
 
     expect(screen.getByRole("button", { name: /Mythra.*Deep graphite/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Light Mythra.*Paper white/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Kiwi.*electric green/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Light Kiwi.*Paper white/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Midnight.*ocean blue/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Synthwave.*magenta/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Ember.*amber/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Terminal.*Phosphor/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Ember.*amber/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Terminal.*Phosphor/ })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Spectrum.*Heat colors/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Classic.*original/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Neon.*model's accent/ })).toBeInTheDocument();
@@ -134,6 +142,9 @@ describe("SettingsModal", () => {
     const sliderCards = container.querySelectorAll<HTMLButtonElement>(".slider-style-card");
     expect(themeCards[0]).toHaveTextContent("Mythra");
     expect(themeCards[0]).toHaveAttribute("aria-pressed", "true");
+    expect(themeCards[1]).toHaveTextContent("Light Mythra");
+    expect(themeCards[2]).toHaveTextContent("Kiwi");
+    expect(themeCards[3]).toHaveTextContent("Light Kiwi");
     expect(sliderCards[0]).toHaveTextContent("Aurora");
     expect(sliderCards[0]).toHaveAttribute("aria-pressed", "true");
     expect(DEFAULT_SETTINGS).toMatchObject({ theme: "mythra", effortSlider: "aurora" });

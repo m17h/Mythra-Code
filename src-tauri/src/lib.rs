@@ -775,7 +775,7 @@ async fn start_openrouter_proxy(
 }
 
 const OPENROUTER_DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
-const MYTHRA_CODE_NATIVE_DELEGATION_POLICY: &str = "Provider-native task, team, and agent spawning is disabled in Mythra Code. Never use collaboration.spawn_agent or another provider-native agent tool. When the Mythra Code MCP agent bridge exposes spawn_agent, use that bridge exclusively and obey its exact approved destination list; when it is absent, do not spawn sub-agents.";
+const MYTHRA_CODE_NATIVE_DELEGATION_POLICY: &str = "Provider-native task, team, and agent spawning is disabled in Mythra Code. Never use collaboration.spawn_agent or another provider-native agent tool. When the mythra_agents MCP bridge exposes spawn_mythra_agent, use that uniquely named tool exclusively and obey its exact approved destination list; when it is absent, do not spawn sub-agents.";
 
 /// Configuration keys Mythra Code re-asserts on every startup, as
 /// `(section, key, value)` with TOML-encoded values. Everything else in

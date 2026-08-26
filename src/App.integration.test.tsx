@@ -205,12 +205,12 @@ function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
     const options = (args?.options ?? {}) as { targets?: unknown[]; sessionId?: string };
     const delegation = Boolean(options.targets?.length);
     return {
-      name: "openkiwi",
+      name: "mythra_agents",
       command: "/Applications/Mythra Code.app/Contents/MacOS/mythra-code",
       args: ["--openkiwi-agent-bridge", `/tmp/${options.sessionId ?? "session"}.json`],
       configPath: `/tmp/${options.sessionId ?? "session"}.mcp.json`,
       toolNames: delegation
-        ? ["spawn_agent", "agent_status", "collect_agent", "cancel_agent", "propose_agent_settings"]
+        ? ["spawn_mythra_agent", "agent_status", "collect_agent", "cancel_agent", "propose_agent_settings"]
         : ["propose_agent_settings"],
     };
   }
@@ -1275,7 +1275,7 @@ describe("composer sub-agent command center", () => {
         // Codex's own agent runtime, which stays pinned so the bridge remains
         // the only spawning authority.
         agents: { max_threads: 1, max_depth: 1 },
-        mcp_servers: { openkiwi: expect.anything() },
+        mcp_servers: { mythra_agents: expect.anything() },
       },
     });
   });

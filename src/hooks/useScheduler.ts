@@ -102,7 +102,7 @@ export function useScheduler(deps: SchedulerDeps): void {
       try {
         await rpc("turn/start", turnStartParams(run, started.thread.id, project.path, [
           { type: "text", text: scheduled.prompt, text_elements: [] },
-        ]));
+        ], [], false));
       } catch (reason) {
         // No turn started, so no completion event will finalize the snapshot.
         current.discardRunCheckpoint(started.thread.id);

@@ -92,140 +92,168 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 
 .app-shell { --toggle-active-track: color-mix(in srgb, var(--green) 38%, var(--panel-3)); display: flex; height: 100%; overflow: hidden; color: var(--text); background: var(--bg); font-size: var(--fs-ui); letter-spacing: var(--track-tight); transition: color 260ms ease, background 260ms ease; }
 .app-shell[data-theme="kiwi"] { --green: #a6df72; --green-soft: rgba(166,223,114,.11); --green-line: rgba(166,223,114,.26); }
-.app-shell[data-theme="daylight"] { --bg: #f4f5f2; --sidebar: #ebede8; --panel: #ffffff; --panel-2: #f1f2ee; --panel-3: #e2e5de; --line: rgba(25,35,20,.11); --line-strong: rgba(25,35,20,.19); --muted: #58615a; --muted-2: #61695f; /* 5.2:1 on --bg, 4.8:1 on --sidebar */ --text: #1c211b; --green: #3e8e22; --green-soft: rgba(62,142,34,.11); --orange: #a8621a; --red: #c04742; --shadow: 0 22px 70px rgba(55,65,45,.18); --topbar: rgba(244,245,242,.86); --field: #ffffff; --menu-surface: #ffffff; }
-/* Light Kiwi overrides the semantic tokens inherited from the dark palettes. */
-.app-shell[data-theme="daylight"] {
+.app-shell[data-color-scheme="light"] { --bg: #f4f5f2; --sidebar: #ebede8; --panel: #ffffff; --panel-2: #f1f2ee; --panel-3: #e2e5de; --line: rgba(25,35,20,.11); --line-strong: rgba(25,35,20,.19); --muted: #58615a; --muted-2: #61695f; /* 5.2:1 on --bg, 4.8:1 on --sidebar */ --text: #1c211b; --green: #3e8e22; --green-soft: rgba(62,142,34,.11); --orange: #a8621a; --red: #c04742; --shadow: 0 22px 70px rgba(55,65,45,.18); --topbar: rgba(244,245,242,.86); --field: #ffffff; --menu-surface: #ffffff; }
+/* The two light palettes share component treatment; their semantic accent
+   blocks below keep Mythra cyan and Kiwi green. */
+.app-shell[data-color-scheme="light"] {
   --ink-2: #3c443c; --line-quiet: rgba(25,35,20,.06); --green-line: rgba(62,142,34,.3); --info: #14639f;
   --elev-1: 0 1px 2px rgba(52,62,44,.09);
   --elev-2: 0 6px 18px rgba(52,62,44,.1);
   --elev-3: 0 16px 40px rgba(52,62,44,.14);
   --topbar: rgba(244,245,242,.82);
 }
-.app-shell[data-theme="daylight"] * { scrollbar-color: rgba(25,35,20,.2) transparent; }
-.app-shell[data-theme="daylight"] ::-webkit-scrollbar-thumb { background: rgba(25,35,20,.18); background-clip: content-box; }
-.app-shell[data-theme="daylight"] ::-webkit-scrollbar-thumb:hover { background: rgba(25,35,20,.3); background-clip: content-box; }
+.app-shell[data-color-scheme="light"] * { scrollbar-color: rgba(25,35,20,.2) transparent; }
+.app-shell[data-color-scheme="light"] ::-webkit-scrollbar-thumb { background: rgba(25,35,20,.18); background-clip: content-box; }
+.app-shell[data-color-scheme="light"] ::-webkit-scrollbar-thumb:hover { background: rgba(25,35,20,.3); background-clip: content-box; }
 
-/* Daylight overrides for surfaces with hardcoded dark colors. The terminal
-   intentionally stays dark. */
-.app-shell[data-theme="daylight"] .message.user .message-body { background: #eceee8; }
-.app-shell[data-theme="daylight"] .message-body { color: #2a3129; }
-.app-shell[data-theme="daylight"] .message-avatar { color: #ffffff; }
-.app-shell[data-theme="daylight"] .message.user .message-avatar { background: #dfe2da; color: var(--muted); }
-.app-shell[data-theme="daylight"] .code-block pre { background: #f6f7f4; color: #38402f; }
-.app-shell[data-theme="daylight"] .code-copy { background: #eceee8; }
-.app-shell[data-theme="daylight"] .rich-markdown code:not(pre code) { color: #2f6d1c; background: rgba(62,142,34,.07); }
-.app-shell[data-theme="daylight"] .rich-markdown a { color: #14639f; }
-.app-shell[data-theme="daylight"] .permission-menu, .app-shell[data-theme="daylight"] .approval-modal, .app-shell[data-theme="daylight"] .model-menu, .app-shell[data-theme="daylight"] .openrouter-menu, .app-shell[data-theme="daylight"] .mention-menu, .app-shell[data-theme="daylight"] .subagent-panel, .app-shell[data-theme="daylight"] .app-select-menu { background: #ffffff; }
-.app-shell[data-theme="daylight"] .sa-tile-switch { background: #cdd2c8; }
-.app-shell[data-theme="daylight"] .sa-tile-switch span { background: #ffffff; box-shadow: 0 1px 3px rgba(40,50,35,.25); }
-.app-shell[data-theme="daylight"] .sa-tile-switch.on { background: var(--toggle-active-track); }
-.app-shell[data-theme="daylight"] .sa-tile-switch.on span { background: var(--green); }
+/* Light-palette overrides for surfaces with hardcoded dark colors. The
+   workspace terminal intentionally stays dark in both. */
+.app-shell[data-color-scheme="light"] .message.user .message-body { background: #eceee8; }
+.app-shell[data-color-scheme="light"] .message-body { color: #2a3129; }
+.app-shell[data-color-scheme="light"] .message-avatar { color: #ffffff; }
+.app-shell[data-color-scheme="light"] .message.user .message-avatar { background: #dfe2da; color: var(--muted); }
+.app-shell[data-color-scheme="light"] .code-block pre { background: #f6f7f4; color: #38402f; }
+.app-shell[data-color-scheme="light"] .code-copy { background: #eceee8; }
+.app-shell[data-color-scheme="light"] .rich-markdown code:not(pre code) { color: #2f6d1c; background: rgba(62,142,34,.07); }
+.app-shell[data-color-scheme="light"] .rich-markdown a { color: #14639f; }
+.app-shell[data-color-scheme="light"] .permission-menu, .app-shell[data-color-scheme="light"] .approval-modal, .app-shell[data-color-scheme="light"] .model-menu, .app-shell[data-color-scheme="light"] .openrouter-menu, .app-shell[data-color-scheme="light"] .mention-menu, .app-shell[data-color-scheme="light"] .subagent-panel, .app-shell[data-color-scheme="light"] .app-select-menu { background: #ffffff; }
+.app-shell[data-color-scheme="light"] .sa-tile-switch { background: #cdd2c8; }
+.app-shell[data-color-scheme="light"] .sa-tile-switch span { background: #ffffff; box-shadow: 0 1px 3px rgba(40,50,35,.25); }
+.app-shell[data-color-scheme="light"] .sa-tile-switch.on { background: var(--toggle-active-track); }
+.app-shell[data-color-scheme="light"] .sa-tile-switch.on span { background: var(--green); }
 /* :where() keeps this at the same specificity as the state classes further
    down, so an enabled row or a failed worker still wins in Daylight. */
-.app-shell[data-theme="daylight"] :where(.sa-tile, .sa-row, .sa-worker) { background: rgba(25,35,20,.02); }
-.app-shell[data-theme="daylight"] .sa-close:hover, .app-shell[data-theme="daylight"] .sa-advanced:hover { background: rgba(0,0,0,.05); }
-.app-shell[data-theme="daylight"] .studio-dock { background: #eff1ec; }
-.app-shell[data-theme="daylight"] .studio-tabs { background: #e7eae2; }
-.app-shell[data-theme="daylight"] .studio-tabs button { color: #6b746c; }
-.app-shell[data-theme="daylight"] .studio-header { background: rgba(239,241,236,.94); }
-.app-shell[data-theme="daylight"] .studio-actions button { color: #4f584f; background: transparent; }
-.app-shell[data-theme="daylight"] .studio-actions button:hover:not(:disabled) { background: rgba(0,0,0,.045); }
-.app-shell[data-theme="daylight"] .studio-list-row:hover, .app-shell[data-theme="daylight"] .workflow-card:hover, .app-shell[data-theme="daylight"] .manager-list > div:hover, .app-shell[data-theme="daylight"] .theme-card:hover, .app-shell[data-theme="daylight"] .provider-card:hover, .app-shell[data-theme="daylight"] .profile-card:hover { background: rgba(0,0,0,.04); }
-.app-shell[data-theme="daylight"] .palette-results > button.active, .app-shell[data-theme="daylight"] .palette-group > button.active, .app-shell[data-theme="daylight"] .mention-menu button.active, .app-shell[data-theme="daylight"] .mention-menu button:hover { background: rgba(0,0,0,.06); }
-.app-shell[data-theme="daylight"] .palette-results > button > span, .app-shell[data-theme="daylight"] .palette-group > button > span { background: rgba(0,0,0,.05); }
-.app-shell[data-theme="daylight"] .settings-nav button.active, .app-shell[data-theme="daylight"] .thread-row-wrap.active, .app-shell[data-theme="daylight"] .studio-tabs button.active { background: rgba(0,0,0,.06); }
-.app-shell[data-theme="daylight"] .studio-tabs button:hover, .app-shell[data-theme="daylight"] .settings-nav button:hover { background: rgba(0,0,0,.04); }
-.app-shell[data-theme="daylight"] .composer-attachments > span:hover, .app-shell[data-theme="daylight"] .toolbar-button:hover:not(:disabled), .app-shell[data-theme="daylight"] .studio-list-row > button:hover, .app-shell[data-theme="daylight"] .openrouter-search-row button:hover:not(:disabled), .app-shell[data-theme="daylight"] .palette-search button:hover { background: rgba(0,0,0,.05); }
-.app-shell[data-theme="daylight"] .secondary-button:hover:not(:disabled), .app-shell[data-theme="daylight"] .empty-state-actions button:hover, .app-shell[data-theme="daylight"] .new-thread-button:hover:not(:disabled), .app-shell[data-theme="daylight"] .provider-pill:hover, .app-shell[data-theme="daylight"] .command-palette-trigger:hover, .app-shell[data-theme="daylight"] .workspace-tools-trigger:hover:not(:disabled) { background: rgba(0,0,0,.05); }
-.app-shell[data-theme="daylight"] .thread-provider-menu > button:hover, .app-shell[data-theme="daylight"] .thread-provider-menu > button.selected { background: rgba(0,0,0,.045); }
-.app-shell[data-theme="daylight"] .project-prompt-trigger:hover, .app-shell[data-theme="daylight"] .project-prompt-modes > button:hover, .app-shell[data-theme="daylight"] .project-prompt-modes > button.selected, .app-shell[data-theme="daylight"] .project-prompt-layer-toggle:hover, .app-shell[data-theme="daylight"] .project-prompt-layer-toggle.enabled { background: rgba(0,0,0,.045); }
-.app-shell[data-theme="daylight"] .diff-view, .app-shell[data-theme="daylight"] .git-screen { background: #f7f8f5; color: #454d43; }
-.app-shell[data-theme="daylight"] .diff-line-add { color: #2f6d1c; background: rgba(62,142,34,.09); }
-.app-shell[data-theme="daylight"] .diff-line-del { color: #a33b36; background: rgba(192,71,66,.08); }
-.app-shell[data-theme="daylight"] .diff-line-hunk { color: #14639f; }
-.app-shell[data-theme="daylight"] .primary-button { border-color: #35791d; color: #ffffff; }
-.app-shell[data-theme="daylight"] .primary-button:hover { background: #47a02a; }
-.app-shell[data-theme="daylight"] .github-create-button { border-color: #2e6d18; color: #ffffff; background: #35791d; }
-.app-shell[data-theme="daylight"] .github-create-button:hover:not(:disabled) { background: #3a8320; }
-.app-shell[data-theme="daylight"] .git-commit-button { border-color: #2e6d18; color: #ffffff; background: #35791d; }
-.app-shell[data-theme="daylight"] .git-commit-button:hover:not(:disabled) { background: #3a8320; }
-.app-shell[data-theme="daylight"] .send-button { color: #ffffff; }
-.app-shell[data-theme="daylight"] .send-button:disabled { color: #9aa294; background: #e2e5de; }
-.app-shell[data-theme="daylight"] .secondary-button { color: #3c443c; }
-.app-shell[data-theme="daylight"] .new-thread-button { color: #333b33; background: rgba(0,0,0,.025); }
-.app-shell[data-theme="daylight"] .workspace-row, .app-shell[data-theme="daylight"] .thread-row { color: #4c544c; }
-.app-shell[data-theme="daylight"] .workspace-row:hover, .app-shell[data-theme="daylight"] .thread-row:hover { background: rgba(0,0,0,.045); }
-.app-shell[data-theme="daylight"] .workspace-row.active, .app-shell[data-theme="daylight"] .workspace-row-wrap.active, .app-shell[data-theme="daylight"] .thread-row-wrap.active { background: rgba(0,0,0,.06); }
-.app-shell[data-theme="daylight"] .workspace-icon { background: rgba(0,0,0,.05); }
-.app-shell[data-theme="daylight"] .row-menu-trigger { background: color-mix(in srgb, var(--sidebar) 82%, transparent); }
-.app-shell[data-theme="daylight"] .row-menu-list { background: #ffffff; }
-.app-shell[data-theme="daylight"] .row-menu-list button:hover { background: rgba(0,0,0,.05); }
-.app-shell[data-theme="daylight"] .new-thread-button kbd { background: rgba(0,0,0,.05); }
-.app-shell[data-theme="daylight"] .toolbar-button { color: #5a635a; }
-.app-shell[data-theme="daylight"] .toolbar-button:hover { color: var(--text); background: rgba(0,0,0,.05); }
-.app-shell[data-theme="daylight"] .icon-button:hover, .app-shell[data-theme="daylight"] .sidebar-settings:hover { background: rgba(0,0,0,.05); }
-.app-shell[data-theme="daylight"] .activity-row { background: rgba(0,0,0,.018); }
-.app-shell[data-theme="daylight"] .activity-icon { color: #5a635a; background: #e6e8e2; }
-.app-shell[data-theme="daylight"] .activity-copy > span, .app-shell[data-theme="daylight"] .activity-toggle span { color: #4c544c; }
-.app-shell[data-theme="daylight"] .activity-copy pre { color: #5a635a; background: rgba(0,0,0,.05); }
-.app-shell[data-theme="daylight"] .reasoning-text { color: #5a635a; }
+.app-shell[data-color-scheme="light"] :where(.sa-tile, .sa-row, .sa-worker) { background: rgba(25,35,20,.02); }
+.app-shell[data-color-scheme="light"] .sa-close:hover, .app-shell[data-color-scheme="light"] .sa-advanced:hover { background: rgba(0,0,0,.05); }
+.app-shell[data-color-scheme="light"] .studio-dock { background: #eff1ec; }
+.app-shell[data-color-scheme="light"] .studio-tabs { background: #e7eae2; }
+.app-shell[data-color-scheme="light"] .studio-tabs button { color: #6b746c; }
+.app-shell[data-color-scheme="light"] .studio-header { background: rgba(239,241,236,.94); }
+.app-shell[data-color-scheme="light"] .studio-actions button { color: #4f584f; background: transparent; }
+.app-shell[data-color-scheme="light"] .studio-actions button:hover:not(:disabled) { background: rgba(0,0,0,.045); }
+.app-shell[data-color-scheme="light"] .studio-list-row:hover, .app-shell[data-color-scheme="light"] .workflow-card:hover, .app-shell[data-color-scheme="light"] .manager-list > div:hover, .app-shell[data-color-scheme="light"] .theme-card:hover, .app-shell[data-color-scheme="light"] .provider-card:hover, .app-shell[data-color-scheme="light"] .profile-card:hover { background: rgba(0,0,0,.04); }
+.app-shell[data-color-scheme="light"] .palette-results > button.active, .app-shell[data-color-scheme="light"] .palette-group > button.active, .app-shell[data-color-scheme="light"] .mention-menu button.active, .app-shell[data-color-scheme="light"] .mention-menu button:hover { background: rgba(0,0,0,.06); }
+.app-shell[data-color-scheme="light"] .palette-results > button > span, .app-shell[data-color-scheme="light"] .palette-group > button > span { background: rgba(0,0,0,.05); }
+.app-shell[data-color-scheme="light"] .settings-nav button.active, .app-shell[data-color-scheme="light"] .thread-row-wrap.active, .app-shell[data-color-scheme="light"] .studio-tabs button.active { background: rgba(0,0,0,.06); }
+.app-shell[data-color-scheme="light"] .studio-tabs button:hover, .app-shell[data-color-scheme="light"] .settings-nav button:hover { background: rgba(0,0,0,.04); }
+.app-shell[data-color-scheme="light"] .composer-attachments > span:hover, .app-shell[data-color-scheme="light"] .toolbar-button:hover:not(:disabled), .app-shell[data-color-scheme="light"] .studio-list-row > button:hover, .app-shell[data-color-scheme="light"] .openrouter-search-row button:hover:not(:disabled), .app-shell[data-color-scheme="light"] .palette-search button:hover { background: rgba(0,0,0,.05); }
+.app-shell[data-color-scheme="light"] .secondary-button:hover:not(:disabled), .app-shell[data-color-scheme="light"] .empty-state-actions button:hover, .app-shell[data-color-scheme="light"] .new-thread-button:hover:not(:disabled), .app-shell[data-color-scheme="light"] .provider-pill:hover, .app-shell[data-color-scheme="light"] .command-palette-trigger:hover, .app-shell[data-color-scheme="light"] .workspace-tools-trigger:hover:not(:disabled) { background: rgba(0,0,0,.05); }
+.app-shell[data-color-scheme="light"] .thread-provider-menu > button:hover, .app-shell[data-color-scheme="light"] .thread-provider-menu > button.selected { background: rgba(0,0,0,.045); }
+.app-shell[data-color-scheme="light"] .project-prompt-trigger:hover, .app-shell[data-color-scheme="light"] .project-prompt-modes > button:hover, .app-shell[data-color-scheme="light"] .project-prompt-modes > button.selected, .app-shell[data-color-scheme="light"] .project-prompt-layer-toggle:hover, .app-shell[data-color-scheme="light"] .project-prompt-layer-toggle.enabled { background: rgba(0,0,0,.045); }
+.app-shell[data-color-scheme="light"] .diff-view, .app-shell[data-color-scheme="light"] .git-screen { background: #f7f8f5; color: #454d43; }
+.app-shell[data-color-scheme="light"] .diff-line-add { color: #2f6d1c; background: rgba(62,142,34,.09); }
+.app-shell[data-color-scheme="light"] .diff-line-del { color: #a33b36; background: rgba(192,71,66,.08); }
+.app-shell[data-color-scheme="light"] .diff-line-hunk { color: #14639f; }
+.app-shell[data-color-scheme="light"] .primary-button { border-color: #35791d; color: #ffffff; }
+.app-shell[data-color-scheme="light"] .primary-button:hover { background: #47a02a; }
+.app-shell[data-color-scheme="light"] .github-create-button { border-color: #2e6d18; color: #ffffff; background: #35791d; }
+.app-shell[data-color-scheme="light"] .github-create-button:hover:not(:disabled) { background: #3a8320; }
+.app-shell[data-color-scheme="light"] .git-commit-button { border-color: #2e6d18; color: #ffffff; background: #35791d; }
+.app-shell[data-color-scheme="light"] .git-commit-button:hover:not(:disabled) { background: #3a8320; }
+.app-shell[data-color-scheme="light"] .send-button { color: #ffffff; }
+.app-shell[data-color-scheme="light"] .send-button:disabled { color: #9aa294; background: #e2e5de; }
+.app-shell[data-color-scheme="light"] .secondary-button { color: #3c443c; }
+.app-shell[data-color-scheme="light"] .new-thread-button { color: #333b33; background: rgba(0,0,0,.025); }
+.app-shell[data-color-scheme="light"] .workspace-row, .app-shell[data-color-scheme="light"] .thread-row { color: #4c544c; }
+.app-shell[data-color-scheme="light"] .workspace-row:hover, .app-shell[data-color-scheme="light"] .thread-row:hover { background: rgba(0,0,0,.045); }
+.app-shell[data-color-scheme="light"] .workspace-row.active, .app-shell[data-color-scheme="light"] .workspace-row-wrap.active, .app-shell[data-color-scheme="light"] .thread-row-wrap.active { background: rgba(0,0,0,.06); }
+.app-shell[data-color-scheme="light"] .workspace-icon { background: rgba(0,0,0,.05); }
+.app-shell[data-color-scheme="light"] .row-menu-trigger { background: color-mix(in srgb, var(--sidebar) 82%, transparent); }
+.app-shell[data-color-scheme="light"] .row-menu-list { background: #ffffff; }
+.app-shell[data-color-scheme="light"] .row-menu-list button:hover { background: rgba(0,0,0,.05); }
+.app-shell[data-color-scheme="light"] .new-thread-button kbd { background: rgba(0,0,0,.05); }
+.app-shell[data-color-scheme="light"] .toolbar-button { color: #5a635a; }
+.app-shell[data-color-scheme="light"] .toolbar-button:hover { color: var(--text); background: rgba(0,0,0,.05); }
+.app-shell[data-color-scheme="light"] .icon-button:hover, .app-shell[data-color-scheme="light"] .sidebar-settings:hover { background: rgba(0,0,0,.05); }
+.app-shell[data-color-scheme="light"] .activity-row { background: rgba(0,0,0,.018); }
+.app-shell[data-color-scheme="light"] .activity-icon { color: #5a635a; background: #e6e8e2; }
+.app-shell[data-color-scheme="light"] .activity-copy > span, .app-shell[data-color-scheme="light"] .activity-toggle span { color: #4c544c; }
+.app-shell[data-color-scheme="light"] .activity-copy pre { color: #5a635a; background: rgba(0,0,0,.05); }
+.app-shell[data-color-scheme="light"] .reasoning-text { color: #5a635a; }
 /* Neon accents vanish on white — swap in darker variants for Daylight */
-.app-shell[data-theme="daylight"] .model-power-control { --model-accent: #b06b1e; }
-.app-shell[data-theme="daylight"] .model-power-control.terra { --model-accent: #3e8e22; }
-.app-shell[data-theme="daylight"] .model-power-control.luna { --model-accent: #1668a8; }
-.app-shell[data-theme="daylight"] .model-menu-option.sol { --option-accent: #b06b1e; }
-.app-shell[data-theme="daylight"] .model-menu-option.terra { --option-accent: #3e8e22; }
-.app-shell[data-theme="daylight"] .model-menu-option.luna { --option-accent: #1668a8; }
-.app-shell[data-theme="daylight"] .openrouter-control { --router-accent: #7624f4; }
-.app-shell[data-theme="daylight"] .openrouter-control.lmstudio-control { --router-accent: #16856c; }
-.app-shell[data-theme="daylight"] .openrouter-control.claude-control { --router-accent: #b75f42; }
-.app-shell[data-theme="daylight"] .model-orb, .app-shell[data-theme="daylight"] .menu-model-orb, .app-shell[data-theme="daylight"] .openrouter-logo { color: #ffffff; }
-.app-shell[data-theme="daylight"] .provider-logo { background: #eceee8; }
-.app-shell[data-theme="daylight"] .provider-logo.openrouter { color: #7624f4; }
-.app-shell[data-theme="daylight"] .provider-logo.lmstudio { color: #16856c; }
-.app-shell[data-theme="daylight"] .provider-logo.claude { color: #fff; background: #d97757; }
-.app-shell[data-theme="daylight"] .provider-logo.cursor { color: #26251e; background: #edecec; }
-.app-shell[data-theme="daylight"] .provider-mark.openrouter { color: #7624f4; background: rgba(118,36,244,.07); }
-.app-shell[data-theme="daylight"] .sa-tile.openrouter { --sa-accent: #7624f4; --sa-avatar-bg: rgba(118,36,244,.07); --sa-avatar-ink: #7624f4; }
-.app-shell[data-theme="daylight"] .onboarding-provider-card.openrouter { border-color: color-mix(in srgb, #7624f4 19%, var(--line)); }
-.app-shell[data-theme="daylight"] .onboarding-provider-card.openrouter .onboarding-card-title > span { color: #7624f4; background: rgba(118,36,244,.07); }
-.app-shell[data-theme="daylight"] .provider-card { color: #4c544c; }
-.app-shell[data-theme="daylight"] .provider-dot.openrouter { background: #7624f4; box-shadow: 0 0 0 3px rgba(118,36,244,.12); }
-.app-shell[data-theme="daylight"] .provider-dot.claude { background: #b75f42; box-shadow: 0 0 0 3px rgba(183,95,66,.12); }
-.app-shell[data-theme="daylight"] .provider-dot.cursor { background: #595954; box-shadow: 0 0 0 3px rgba(89,89,84,.12); }
-.app-shell[data-theme="daylight"] .file-preview { background: #f7f8f5; }
-.app-shell[data-theme="daylight"] .file-preview pre { color: #454d43; }
-.app-shell[data-theme="daylight"] .file-search { background: #ffffff; }
-.app-shell[data-theme="daylight"] .model-menu-option { color: #5a635a; }
-.app-shell[data-theme="daylight"] .model-menu-option:hover:not(:disabled) { color: #2a312a; background: rgba(0,0,0,.04); }
-.app-shell[data-theme="daylight"] .model-menu-option.selected { color: #2a312a; background: rgba(0,0,0,.06); }
-.app-shell[data-theme="daylight"] .model-menu-option small { color: #78817a; }
-.app-shell[data-theme="daylight"] .model-menu-heading { color: #68716a; }
-.app-shell[data-theme="daylight"] .permission-menu button { color: #4c544c; }
-.app-shell[data-theme="daylight"] .permission-menu button:hover, .app-shell[data-theme="daylight"] .permission-menu button.selected { color: var(--text); background: rgba(0,0,0,.05); }
-.app-shell[data-theme="daylight"] .openrouter-options strong { color: #3c443c; }
-.app-shell[data-theme="daylight"] .openrouter-options > button:hover { background: rgba(0,0,0,.04); }
-.app-shell[data-theme="daylight"] .openrouter-options > button.selected { background: rgba(0,0,0,.06); }
-.app-shell[data-theme="daylight"] .approval-command { background: #f6f7f4; color: #38402f; }
-.app-shell[data-theme="daylight"] .studio-list-row strong { color: #333b33; }
-.app-shell[data-theme="daylight"] .composer-caption { color: #838b83; }
-.app-shell[data-theme="daylight"] .composer textarea::placeholder, .app-shell[data-theme="daylight"] .prompt-editor::placeholder { color: #99a199; }
+.app-shell[data-color-scheme="light"] .model-power-control { --model-accent: #b06b1e; }
+.app-shell[data-color-scheme="light"] .model-power-control.terra { --model-accent: #3e8e22; }
+.app-shell[data-color-scheme="light"] .model-power-control.luna { --model-accent: #1668a8; }
+.app-shell[data-color-scheme="light"] .model-menu-option.sol { --option-accent: #b06b1e; }
+.app-shell[data-color-scheme="light"] .model-menu-option.terra { --option-accent: #3e8e22; }
+.app-shell[data-color-scheme="light"] .model-menu-option.luna { --option-accent: #1668a8; }
+.app-shell[data-color-scheme="light"] .openrouter-control { --router-accent: #7624f4; }
+.app-shell[data-color-scheme="light"] .openrouter-control.lmstudio-control { --router-accent: #16856c; }
+.app-shell[data-color-scheme="light"] .openrouter-control.claude-control { --router-accent: #b75f42; }
+.app-shell[data-color-scheme="light"] .model-orb, .app-shell[data-color-scheme="light"] .menu-model-orb, .app-shell[data-color-scheme="light"] .openrouter-logo { color: #ffffff; }
+.app-shell[data-color-scheme="light"] .provider-logo { background: #eceee8; }
+.app-shell[data-color-scheme="light"] .provider-logo.openrouter { color: #7624f4; }
+.app-shell[data-color-scheme="light"] .provider-logo.lmstudio { color: #16856c; }
+.app-shell[data-color-scheme="light"] .provider-logo.claude { color: #fff; background: #d97757; }
+.app-shell[data-color-scheme="light"] .provider-logo.cursor { color: #26251e; background: #edecec; }
+.app-shell[data-color-scheme="light"] .provider-mark.openrouter { color: #7624f4; background: rgba(118,36,244,.07); }
+.app-shell[data-color-scheme="light"] .sa-tile.openrouter { --sa-accent: #7624f4; --sa-avatar-bg: rgba(118,36,244,.07); --sa-avatar-ink: #7624f4; }
+.app-shell[data-color-scheme="light"] .onboarding-provider-card.openrouter { border-color: color-mix(in srgb, #7624f4 19%, var(--line)); }
+.app-shell[data-color-scheme="light"] .onboarding-provider-card.openrouter .onboarding-card-title > span { color: #7624f4; background: rgba(118,36,244,.07); }
+.app-shell[data-color-scheme="light"] .provider-card { color: #4c544c; }
+.app-shell[data-color-scheme="light"] .provider-dot.openrouter { background: #7624f4; box-shadow: 0 0 0 3px rgba(118,36,244,.12); }
+.app-shell[data-color-scheme="light"] .provider-dot.claude { background: #b75f42; box-shadow: 0 0 0 3px rgba(183,95,66,.12); }
+.app-shell[data-color-scheme="light"] .provider-dot.cursor { background: #595954; box-shadow: 0 0 0 3px rgba(89,89,84,.12); }
+.app-shell[data-color-scheme="light"] .file-preview { background: #f7f8f5; }
+.app-shell[data-color-scheme="light"] .file-preview pre { color: #454d43; }
+.app-shell[data-color-scheme="light"] .file-search { background: #ffffff; }
+.app-shell[data-color-scheme="light"] .model-menu-option { color: #5a635a; }
+.app-shell[data-color-scheme="light"] .model-menu-option:hover:not(:disabled) { color: #2a312a; background: rgba(0,0,0,.04); }
+.app-shell[data-color-scheme="light"] .model-menu-option.selected { color: #2a312a; background: rgba(0,0,0,.06); }
+.app-shell[data-color-scheme="light"] .model-menu-option small { color: #78817a; }
+.app-shell[data-color-scheme="light"] .model-menu-heading { color: #68716a; }
+.app-shell[data-color-scheme="light"] .permission-menu button { color: #4c544c; }
+.app-shell[data-color-scheme="light"] .permission-menu button:hover, .app-shell[data-color-scheme="light"] .permission-menu button.selected { color: var(--text); background: rgba(0,0,0,.05); }
+.app-shell[data-color-scheme="light"] .openrouter-options strong { color: #3c443c; }
+.app-shell[data-color-scheme="light"] .openrouter-options > button:hover { background: rgba(0,0,0,.04); }
+.app-shell[data-color-scheme="light"] .openrouter-options > button.selected { background: rgba(0,0,0,.06); }
+.app-shell[data-color-scheme="light"] .approval-command { background: #f6f7f4; color: #38402f; }
+.app-shell[data-color-scheme="light"] .studio-list-row strong { color: #333b33; }
+.app-shell[data-color-scheme="light"] .composer-caption { color: #838b83; }
+.app-shell[data-color-scheme="light"] .composer textarea::placeholder, .app-shell[data-color-scheme="light"] .prompt-editor::placeholder { color: #99a199; }
 /* Switches and steppers use hardcoded dark fills in the off state */
-.app-shell[data-theme="daylight"] .toggle-switch { background: #cdd2c8; }
-.app-shell[data-theme="daylight"] .toggle-switch span { background: #ffffff; box-shadow: 0 1px 3px rgba(40,50,35,.25); }
-.app-shell[data-theme="daylight"] .toggle-switch.on { background: var(--toggle-active-track); }
-.app-shell[data-theme="daylight"] .toggle-switch.on span { background: var(--green); }
-.app-shell[data-theme="daylight"] .mini-toggle { background: #cdd2c8; }
-.app-shell[data-theme="daylight"] .mini-toggle span { background: #ffffff; box-shadow: 0 1px 2px rgba(40,50,35,.25); }
-.app-shell[data-theme="daylight"] .mini-toggle.on { background: var(--toggle-active-track); }
-.app-shell[data-theme="daylight"] .mini-toggle.on span { background: var(--green); }
-.app-shell[data-theme="daylight"] .number-stepper { background: #ffffff; }
-.app-shell[data-theme="daylight"] .number-stepper button:hover:not(:disabled) { background: rgba(0,0,0,.05); }
-.app-shell[data-theme="daylight"] .fast-tier { background: rgba(0,0,0,.03); }
-.app-shell[data-theme="daylight"] .reasoning-ticks i, .app-shell[data-theme="daylight"] .openrouter-reasoning-ticks i { border-color: #c4c9bf; background: #eef0ea; }
-.app-shell[data-theme="daylight"] .reasoning-control input[type="range"] { background: linear-gradient(90deg, var(--model-accent) 0, var(--model-accent) var(--reasoning-fill), #d8dcd2 var(--reasoning-fill), #d8dcd2 100%); box-shadow: inset 0 1px 2px rgba(40,50,35,.18); }
-.app-shell[data-theme="daylight"] .openrouter-reasoning input[type="range"] { background: linear-gradient(90deg, var(--router-accent) 0, var(--router-accent) var(--router-fill), #d8dcd2 var(--router-fill), #d8dcd2 100%); box-shadow: inset 0 1px 2px rgba(40,50,35,.18); }
-.app-shell[data-theme="daylight"] .reasoning-control input[type="range"]::-webkit-slider-thumb { border-color: #ffffff; }
+.app-shell[data-color-scheme="light"] .toggle-switch { background: #cdd2c8; }
+.app-shell[data-color-scheme="light"] .toggle-switch span { background: #ffffff; box-shadow: 0 1px 3px rgba(40,50,35,.25); }
+.app-shell[data-color-scheme="light"] .toggle-switch.on { background: var(--toggle-active-track); }
+.app-shell[data-color-scheme="light"] .toggle-switch.on span { background: var(--green); }
+.app-shell[data-color-scheme="light"] .mini-toggle { background: #cdd2c8; }
+.app-shell[data-color-scheme="light"] .mini-toggle span { background: #ffffff; box-shadow: 0 1px 2px rgba(40,50,35,.25); }
+.app-shell[data-color-scheme="light"] .mini-toggle.on { background: var(--toggle-active-track); }
+.app-shell[data-color-scheme="light"] .mini-toggle.on span { background: var(--green); }
+.app-shell[data-color-scheme="light"] .number-stepper { background: #ffffff; }
+.app-shell[data-color-scheme="light"] .number-stepper button:hover:not(:disabled) { background: rgba(0,0,0,.05); }
+.app-shell[data-color-scheme="light"] .fast-tier { background: rgba(0,0,0,.03); }
+.app-shell[data-color-scheme="light"] .reasoning-ticks i, .app-shell[data-color-scheme="light"] .openrouter-reasoning-ticks i { border-color: #c4c9bf; background: #eef0ea; }
+.app-shell[data-color-scheme="light"] .reasoning-control input[type="range"] { background: linear-gradient(90deg, var(--model-accent) 0, var(--model-accent) var(--reasoning-fill), #d8dcd2 var(--reasoning-fill), #d8dcd2 100%); box-shadow: inset 0 1px 2px rgba(40,50,35,.18); }
+.app-shell[data-color-scheme="light"] .openrouter-reasoning input[type="range"] { background: linear-gradient(90deg, var(--router-accent) 0, var(--router-accent) var(--router-fill), #d8dcd2 var(--router-fill), #d8dcd2 100%); box-shadow: inset 0 1px 2px rgba(40,50,35,.18); }
+.app-shell[data-color-scheme="light"] .reasoning-control input[type="range"]::-webkit-slider-thumb { border-color: #ffffff; }
+
+/* Light Mythra mirrors Light Kiwi's hierarchy with a cool neutral surface
+   family and a deeper cyan that stays legible against white. */
+.app-shell[data-theme="light-mythra"] {
+  --bg: #f2f6f7; --sidebar: #e8eff1; --panel: #ffffff; --panel-2: #edf3f4; --panel-3: #dee8ea;
+  --field: #ffffff; --menu-surface: #ffffff; --line: rgba(15,49,58,.11); --line-strong: rgba(15,49,58,.19); --line-quiet: rgba(15,49,58,.06);
+  --text: #172126; --ink-2: #38484d; --muted: #52666d; --muted-2: #586b71;
+  --green: #087f9b; --green-soft: rgba(8,127,155,.1); --green-line: rgba(8,127,155,.28); --info: #176f9c;
+  --shadow: 0 22px 70px rgba(34,72,82,.16); --elev-1: 0 1px 2px rgba(34,72,82,.09); --elev-2: 0 6px 18px rgba(34,72,82,.1); --elev-3: 0 16px 40px rgba(34,72,82,.14);
+  --topbar: rgba(242,246,247,.84);
+}
+.app-shell[data-theme="light-mythra"] .message.user .message-body, .app-shell[data-theme="light-mythra"] .code-copy { background: #e8eff1; }
+.app-shell[data-theme="light-mythra"] .message-body { color: #26363b; }
+.app-shell[data-theme="light-mythra"] .message.user .message-avatar { background: #dce7e9; }
+.app-shell[data-theme="light-mythra"] .code-block pre, .app-shell[data-theme="light-mythra"] .approval-command { color: #31474d; background: #f5f8f9; }
+.app-shell[data-theme="light-mythra"] .rich-markdown code:not(pre code) { color: #086f87; background: rgba(8,127,155,.07); }
+.app-shell[data-theme="light-mythra"] .studio-dock { background: #ebf1f2; }
+.app-shell[data-theme="light-mythra"] .studio-tabs { background: #e3ebed; }
+.app-shell[data-theme="light-mythra"] .studio-header { background: rgba(235,241,242,.94); }
+.app-shell[data-theme="light-mythra"] .activity-icon { background: #e1eaec; }
+.app-shell[data-theme="light-mythra"] .provider-logo, .app-shell[data-theme="light-mythra"] .code-copy { background: #e8eff1; }
+.app-shell[data-theme="light-mythra"] :where(.toggle-switch, .mini-toggle, .sa-tile-switch) { background: #c7d3d6; }
+.app-shell[data-theme="light-mythra"] .reasoning-ticks i, .app-shell[data-theme="light-mythra"] .openrouter-reasoning-ticks i { border-color: #becacd; background: #ebf1f2; }
+.app-shell[data-theme="light-mythra"] .reasoning-control input[type="range"] { background: linear-gradient(90deg, var(--model-accent) 0, var(--model-accent) var(--reasoning-fill), #d3dddf var(--reasoning-fill), #d3dddf 100%); }
+.app-shell[data-theme="light-mythra"] .openrouter-reasoning input[type="range"] { background: linear-gradient(90deg, var(--router-accent) 0, var(--router-accent) var(--router-fill), #d3dddf var(--router-fill), #d3dddf 100%); }
+.app-shell[data-theme="light-mythra"] :where(.primary-button, .github-create-button, .git-commit-button) { border-color: #076f87; color: #ffffff; background: #087f9b; }
+.app-shell[data-theme="light-mythra"] :where(.primary-button, .github-create-button, .git-commit-button):hover:not(:disabled) { background: #0790af; }
 .sidebar { position: relative; z-index: 2; display: flex; flex-direction: column; flex: 0 0 var(--sidebar-width, var(--sidebar-width-fallback, 264px)); width: var(--sidebar-width, var(--sidebar-width-fallback, 264px)); background: var(--sidebar); border-right: 1px solid var(--line); transition: width var(--t-mid) var(--ease), flex-basis var(--t-mid) var(--ease), opacity var(--t-fast) ease; overflow: hidden; }
 .sidebar.closed { width: 0; flex-basis: 0; opacity: 0; border-right: 0; }
 .sidebar-brand { display: flex; align-items: center; height: var(--topbar-h); padding: 0 var(--s-3) 0 var(--s-4); gap: var(--s-2); font-size: var(--fs-body); font-weight: 650; letter-spacing: var(--track-display); white-space: nowrap; }
@@ -315,7 +343,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .thread-card-provider.openrouter { color: #c8ff00; background: rgba(200,255,0,.08); }
 .thread-card-provider.lmstudio { border-color: transparent; background: transparent; }
 .thread-card-provider.cursor { border-color: rgba(237,236,236,.35); color: #26251e; background: #edecec; }
-.app-shell[data-theme="daylight"] .thread-card-provider.openrouter { color: #7624f4; background: rgba(118,36,244,.07); }
+.app-shell[data-color-scheme="light"] .thread-card-provider.openrouter { color: #7624f4; background: rgba(118,36,244,.07); }
 .thread-card-status { display: inline-flex; align-items: center; gap: 4px; min-width: 0; margin-left: auto; color: var(--muted-2); font-size: var(--fs-meta); font-weight: 610; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .thread-card-status.working { color: var(--info); }
 .thread-card-status.approval { color: var(--orange); }
@@ -522,7 +550,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
   transform: scale(1.35);
   transform-origin: center;
 }
-.app-shell[data-theme="daylight"] .message-avatar.provider-openai { background: #1a1d18; }
+.app-shell[data-color-scheme="light"] .message-avatar.provider-openai { background: #1a1d18; }
 .message-body { min-width: 0; color: var(--ink-2); font-size: var(--fs-body); line-height: 1.68; letter-spacing: -.005em; text-wrap: pretty; }
 .message-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .message-image-previews { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; margin-top: 9px; }
@@ -650,9 +678,9 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .subagent-relay-manifest > header small { color: var(--muted-2); font-size: var(--fs-micro); white-space: nowrap; }
 .subagent-relay-list { display: flex; flex-direction: column; gap: 4px; padding: 5px; }
 .subagent-relay-list .subagent-relay-card { margin: 0; }
-.app-shell[data-theme="daylight"] .subagent-relay-card, .app-shell[data-theme="daylight"] .subagent-relay-manifest { background: rgba(0,0,0,.018); }
-.app-shell[data-theme="daylight"] .subagent-relay-card.provider-openrouter { --relay-accent: #7624f4; --relay-plate: rgba(118,36,244,.07); --relay-ink: #7624f4; }
-.app-shell[data-theme="daylight"] .subagent-relay-copy > strong { color: #333a36; }
+.app-shell[data-color-scheme="light"] .subagent-relay-card, .app-shell[data-color-scheme="light"] .subagent-relay-manifest { background: rgba(0,0,0,.018); }
+.app-shell[data-color-scheme="light"] .subagent-relay-card.provider-openrouter { --relay-accent: #7624f4; --relay-plate: rgba(118,36,244,.07); --relay-ink: #7624f4; }
+.app-shell[data-color-scheme="light"] .subagent-relay-copy > strong { color: #333a36; }
 .reasoning-disclosure { min-width: 0; color: var(--muted); }
 .reasoning-toggle { min-height: 22px; display: inline-flex; align-items: center; gap: 5px; padding: 1px 3px 1px 0; border: 0; color: var(--muted); background: transparent; font: 500 11px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; cursor: pointer; }
 .reasoning-toggle:hover { color: var(--ink-2); }
@@ -687,10 +715,10 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .completed-work-update .rich-markdown { min-width: 0; overflow-wrap: anywhere; }
 .completed-work-update .rich-markdown p { margin: 0 0 6px; }
 .completed-work-update .rich-markdown > :last-child { margin-bottom: 0; }
-.app-shell[data-theme="daylight"] .command-list-item { background: rgba(0,0,0,.018); }
-.app-shell[data-theme="daylight"] .command-list-title code { color: #4c544c; }
-.app-shell[data-theme="daylight"] .command-list-item pre { color: #5a635a; background: rgba(0,0,0,.05); }
-.app-shell[data-theme="daylight"] .completed-work-update { color: #5a635a; background: rgba(0,0,0,.018); }
+.app-shell[data-color-scheme="light"] .command-list-item { background: rgba(0,0,0,.018); }
+.app-shell[data-color-scheme="light"] .command-list-title code { color: #4c544c; }
+.app-shell[data-color-scheme="light"] .command-list-item pre { color: #5a635a; background: rgba(0,0,0,.05); }
+.app-shell[data-color-scheme="light"] .completed-work-update { color: #5a635a; background: rgba(0,0,0,.018); }
 
 @keyframes reasoning-pulse { 0%, 100% { opacity: .35; transform: scale(.8); } 50% { opacity: 1; transform: scale(1); } }
 @media (prefers-reduced-motion: reduce) {
@@ -1607,7 +1635,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .openrouter-trigger:hover, .openrouter-picker.open .openrouter-trigger { border-color: color-mix(in srgb, var(--router-accent) 34%, var(--line-strong)); background: color-mix(in srgb, var(--router-accent) 5%, var(--field)); box-shadow: none; }
 .openrouter-logo { width: 24px; height: 24px; display: grid; place-items: center; border-radius: var(--r-xs); color: #16111d; background: var(--router-accent); box-shadow: none; }
 .openrouter-logo.openrouter-brand-logo { color: #c8ff00; background: rgba(200,255,0,.08); }
-.app-shell[data-theme="daylight"] .openrouter-logo.openrouter-brand-logo { color: #7624f4; background: rgba(118,36,244,.07); }
+.app-shell[data-color-scheme="light"] .openrouter-logo.openrouter-brand-logo { color: #7624f4; background: rgba(118,36,244,.07); }
 .cursor-control { --router-accent: #edecec; --router-accent-2: #b9b8b3; }
 .cursor-logo { color: #26251e !important; background: #edecec !important; }
 .cursor-model-menu { width: min(720px, calc(100vw - 42px)); max-height: min(590px, calc(100vh - 150px)); padding: 8px; }
@@ -2591,7 +2619,7 @@ body[data-pane-resizing] .sidebar, body[data-pane-resizing] .studio-dock { trans
 .thread-card.provider-cursor { --card-accent: #b9b8b3; }
 .thread-card.provider-openrouter { --card-accent: #c8ff00; }
 .thread-card.provider-lmstudio { --card-accent: #75d5c7; }
-.app-shell[data-theme="daylight"] .thread-card.provider-openrouter { --card-accent: #7624f4; }
+.app-shell[data-color-scheme="light"] .thread-card.provider-openrouter { --card-accent: #7624f4; }
 .thread-card.live {
   border-color: color-mix(in srgb, var(--card-accent) 30%, transparent);
   background: color-mix(in srgb, var(--card-accent) 3.5%, transparent);
@@ -2619,7 +2647,7 @@ body[data-pane-resizing] .sidebar, body[data-pane-resizing] .studio-dock { trans
 .composer-zone.ambiance-cursor { --ambiance: #a8a69e; }
 .composer-zone.ambiance-openrouter { --ambiance: #c8ff00; }
 .composer-zone.ambiance-lmstudio { --ambiance: #75d5c7; }
-.app-shell[data-theme="daylight"] .composer-zone.ambiance-openrouter { --ambiance: #7624f4; }
+.app-shell[data-color-scheme="light"] .composer-zone.ambiance-openrouter { --ambiance: #7624f4; }
 .composer-zone::before {
   content: ""; position: absolute; left: 50%; bottom: -46px; z-index: 0;
   width: min(760px, 92%); height: 130px; transform: translateX(-50%);
@@ -2673,7 +2701,7 @@ body[data-pane-resizing] .sidebar, body[data-pane-resizing] .studio-dock { trans
   box-shadow: 0 0 calc(var(--effort-heat, 0) * 14px) color-mix(in srgb, var(--effort-color, #4db6ff) 55%, transparent);
   transition: box-shadow 240ms ease;
 }
-.app-shell[data-theme="daylight"] .reasoning-control input[type="range"], .app-shell[data-theme="daylight"] .openrouter-reasoning input[type="range"] {
+.app-shell[data-color-scheme="light"] .reasoning-control input[type="range"], .app-shell[data-color-scheme="light"] .openrouter-reasoning input[type="range"] {
   background:
     linear-gradient(#d8dcd2, #d8dcd2) no-repeat right center / calc(100% - var(--reasoning-fill, var(--router-fill, 0%))) 100%,
     linear-gradient(90deg, #1e8fdc 0%, #17a655 25%, #dfa010 50%, #ec7418 75%, #e63946 100%);
@@ -2707,7 +2735,7 @@ body[data-pane-resizing] .sidebar, body[data-pane-resizing] .studio-dock { trans
 .reasoning-ticks i:nth-child(4), .openrouter-reasoning-ticks i:nth-child(4) { color: #ff8a2b; }
 .reasoning-ticks i:nth-child(5), .openrouter-reasoning-ticks i:nth-child(5) { color: #ff4655; }
 .reasoning-ticks i.reached, .openrouter-reasoning-ticks i.reached,
-.app-shell[data-theme="daylight"] .reasoning-ticks i.reached, .app-shell[data-theme="daylight"] .openrouter-reasoning-ticks i.reached {
+.app-shell[data-color-scheme="light"] .reasoning-ticks i.reached, .app-shell[data-color-scheme="light"] .openrouter-reasoning-ticks i.reached {
   border-color: currentColor; background: currentColor;
   box-shadow: 0 0 8px currentColor;
   animation: tick-pop 340ms var(--ease);
@@ -2801,11 +2829,9 @@ body[data-pane-resizing] .sidebar, body[data-pane-resizing] .studio-dock { trans
 
 /* ===== Extended themes =====
    Dark variants recolor the semantic tokens only; every component rule
-   already reads through them. (Daylight stays the one hand-tuned light set.) */
+   already reads through them. */
 .app-shell[data-theme="midnight"] { --bg: #14181f; --sidebar: #171c24; --panel: #1d232d; --panel-2: #232a36; --panel-3: #2b3441; --field: #1a202a; --menu-surface: #232a36; --topbar: rgba(20,24,31,.88); --green: #7fc4ff; --green-soft: rgba(127,196,255,.12); --green-line: rgba(127,196,255,.28); --orange: #e8b46a; --red: #ff8d95; --info: #9bd0ff; }
 .app-shell[data-theme="synthwave"] { --bg: #17131f; --sidebar: #1b1626; --panel: #221b2e; --panel-2: #2a2138; --panel-3: #342a44; --field: #1e1829; --menu-surface: #2a2138; --topbar: rgba(23,19,31,.88); --green: #ff6ac1; --green-soft: rgba(255,106,193,.13); --green-line: rgba(255,106,193,.3); --orange: #ffb45f; --red: #ff7582; --info: #8be1ff; --text: #f0ebf4; --ink-2: #cdc4d6; }
-.app-shell[data-theme="ember"] { --bg: #1e1a17; --sidebar: #221e1a; --panel: #292420; --panel-2: #302a25; --panel-3: #39322c; --field: #262119; --menu-surface: #302a25; --topbar: rgba(30,26,23,.88); --green: #ffb45f; --green-soft: rgba(255,180,95,.12); --green-line: rgba(255,180,95,.3); --orange: #ff9d4d; --red: #f2807b; --info: #9cc8e8; --text: #f0ece6; --ink-2: #cfc7bc; }
-.app-shell[data-theme="terminal"] { --bg: #0c0f0c; --sidebar: #0f130f; --panel: #141814; --panel-2: #191f19; --panel-3: #212821; --field: #101410; --menu-surface: #191f19; --topbar: rgba(12,15,12,.9); --green: #4eff8a; --green-soft: rgba(78,255,138,.11); --green-line: rgba(78,255,138,.3); --orange: #ffc14d; --red: #ff6f68; --info: #5fe0d2; --text: #d8e6d8; --ink-2: #b0c4b0; --muted: #829682; --muted-2: #839783; }
 
 /* ===== Effort slider styles =====
    data-effort-slider on the app shell picks the look; the drag/glide
@@ -2928,8 +2954,8 @@ body[data-pane-resizing] .sidebar, body[data-pane-resizing] .studio-dock { trans
 .app-shell[data-effort-slider="aurora"] .reasoning-labels span.active, .app-shell[data-effort-slider="aurora"] .openrouter-reasoning-labels span.active { color: #b99cff; text-shadow: 0 0 8px rgba(185, 140, 255, .45); }
 .app-shell[data-effort-slider="aurora"] .effort-sparks i { background: #cdb5ff; box-shadow: 0 0 10px 2px rgba(185, 140, 255, .85); }
 .app-shell[data-effort-slider="aurora"] .effort-max .reasoning-heading strong, .app-shell[data-effort-slider="aurora"] .effort-max .openrouter-reasoning-heading strong { animation: effort-pop 280ms var(--ease); text-shadow: 0 0 16px #ff8cd1; }
-.app-shell[data-theme="daylight"][data-effort-slider="aurora"] .reasoning-heading strong, .app-shell[data-theme="daylight"][data-effort-slider="aurora"] .openrouter-reasoning-heading strong,
-.app-shell[data-theme="daylight"][data-effort-slider="aurora"] .reasoning-labels span.active, .app-shell[data-theme="daylight"][data-effort-slider="aurora"] .openrouter-reasoning-labels span.active { color: #7d5bd6; }
+.app-shell[data-color-scheme="light"][data-effort-slider="aurora"] .reasoning-heading strong, .app-shell[data-color-scheme="light"][data-effort-slider="aurora"] .openrouter-reasoning-heading strong,
+.app-shell[data-color-scheme="light"][data-effort-slider="aurora"] .reasoning-labels span.active, .app-shell[data-color-scheme="light"][data-effort-slider="aurora"] .openrouter-reasoning-labels span.active { color: #7d5bd6; }
 
 /* -- Ink: a bare monochrome line. No color, no glow, no sparks. -- */
 .app-shell[data-effort-slider="ink"] .reasoning-control input[type="range"], .app-shell[data-effort-slider="ink"] .openrouter-reasoning input[type="range"] {
@@ -2970,7 +2996,7 @@ body[data-pane-resizing] .sidebar, body[data-pane-resizing] .studio-dock { trans
 .slider-style-card small { overflow: hidden; display: -webkit-box; color: var(--muted-2); font-size: var(--fs-micro); line-height: 1.35; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .slider-style-card > svg { color: var(--green); }
 .slider-style-preview { position: relative; width: 58px; height: 24px; display: block; border-radius: 6px; background: rgba(0,0,0,.24); }
-.app-shell[data-theme="daylight"] .slider-style-preview { background: rgba(0,0,0,.06); }
+.app-shell[data-color-scheme="light"] .slider-style-preview { background: rgba(0,0,0,.06); }
 .slider-style-rail { position: absolute; left: 6px; right: 6px; top: 50%; height: 4px; transform: translateY(-50%); border-radius: 99px; }
 .slider-style-thumb { position: absolute; top: 50%; width: 10px; height: 10px; border: 2px solid var(--panel); border-radius: 50%; transform: translate(-50%, -50%); }
 .slider-style-preview.classic .slider-style-rail { background: linear-gradient(90deg, var(--green) 0 62%, var(--panel-3) 62%); }

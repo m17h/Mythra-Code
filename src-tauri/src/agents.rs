@@ -57,11 +57,11 @@ use tokio::{
 pub(super) const AGENT_BRIDGE_ARG: &str = "--openkiwi-agent-bridge";
 
 /// MCP server name the provider runtimes register the bridge under.
-pub(super) const AGENT_BRIDGE_SERVER: &str = "openkiwi";
+pub(super) const AGENT_BRIDGE_SERVER: &str = "mythra_agents";
 
 /// Tools the bridge exposes. Kept small and explicit so a root model chooses a
 /// pre-approved destination rather than writing a free-form model string.
-const TOOL_SPAWN: &str = "spawn_agent";
+const TOOL_SPAWN: &str = "spawn_mythra_agent";
 const TOOL_STATUS: &str = "agent_status";
 const TOOL_COLLECT: &str = "collect_agent";
 const TOOL_CANCEL: &str = "cancel_agent";
@@ -1260,7 +1260,7 @@ pub(super) fn bridge_local_response(method: &str, id: Option<&Value>) -> Option<
                 "protocolVersion": "2025-06-18",
                 "capabilities": { "tools": { "listChanged": false } },
                 "serverInfo": { "name": AGENT_BRIDGE_SERVER, "version": env!("CARGO_PKG_VERSION") },
-                "instructions": "Mythra Code project sub-agent controls. Use propose_agent_settings when the user asks to change this project's crew, even when delegation is currently off; never claim a proposed change was applied until the user approves it. When spawn_agent is available, it is the authoritative delegation route: collect every child result, recover a failed child at most twice, and do not use provider-native task, team, or agent-spawning tools.",
+                "instructions": "Mythra Code project sub-agent controls. Use propose_agent_settings when the user asks to change this project's crew, even when delegation is currently off; never claim a proposed change was applied until the user approves it. When spawn_mythra_agent is available, it is the authoritative delegation route: collect every child result, recover a failed child at most twice, and never use collaboration.spawn_agent or another provider-native task, team, or agent-spawning tool.",
             }
         }))),
         "ping" => Some(Some(json!({ "jsonrpc": "2.0", "id": id, "result": {} }))),

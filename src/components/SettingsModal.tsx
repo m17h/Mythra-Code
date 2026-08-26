@@ -863,6 +863,16 @@ export function SettingsModal({
                 <span><strong>OpenAI</strong><small>Official ChatGPT subscription sign-in</small></span>
                 {local.provider === "openai" && <Check size={16} />}
               </button>
+              <button className={`provider-card ${local.provider === "claude" ? "selected" : ""}`} onClick={() => setLocal({ ...local, provider: "claude", model: local.provider === "claude" ? (local.model || DEFAULT_CLAUDE_MODEL) : DEFAULT_CLAUDE_MODEL, ultra: false })}>
+                <span className={`provider-logo claude${local.claudeLogo === "anthropic" ? " anthropic-mark" : ""}`}>{local.claudeLogo === "anthropic" ? <AnthropicLogo size={17} /> : <ClaudeLogo size={17} />}</span>
+                <span><strong>Anthropic</strong><small>Official Claude Code subscription login</small></span>
+                {local.provider === "claude" && <Check size={16} />}
+              </button>
+              <button className={`provider-card ${local.provider === "cursor" ? "selected" : ""}`} onClick={() => setLocal({ ...local, provider: "cursor", model: local.provider === "cursor" ? local.model : DEFAULT_CURSOR_MODEL, ultra: false })}>
+                <span className={`provider-logo cursor${local.cursorLogo === "app-dark" ? " app-dark" : ""}`}>{local.cursorLogo === "app-dark" ? <CursorDarkAppIcon size={23} /> : <CursorLogo size={17} />}</span>
+                <span><strong>Cursor</strong><small>Official Cursor subscription login</small></span>
+                {local.provider === "cursor" && <Check size={16} />}
+              </button>
               <button className={`provider-card ${local.provider === "openrouter" ? "selected" : ""}`} onClick={() => setLocal({ ...local, provider: "openrouter", model: local.provider === "openrouter" ? local.model : "", ultra: false })}>
                 <span className="provider-logo openrouter"><OpenRouterLogo size={18} /></span>
                 <span><strong>OpenRouter</strong><small>Responses-compatible model routing</small></span>
@@ -872,16 +882,6 @@ export function SettingsModal({
                 <span className="provider-logo lmstudio"><LmStudioLogo size={18} /></span>
                 <span><strong>LM Studio</strong><small>Local models through your LM Studio server</small></span>
                 {local.provider === "lmstudio" && <Check size={16} />}
-              </button>
-              <button className={`provider-card ${local.provider === "claude" ? "selected" : ""}`} onClick={() => setLocal({ ...local, provider: "claude", model: local.provider === "claude" ? (local.model || DEFAULT_CLAUDE_MODEL) : DEFAULT_CLAUDE_MODEL, ultra: false })}>
-                <span className={`provider-logo claude${local.claudeLogo === "anthropic" ? " anthropic-mark" : ""}`}>{local.claudeLogo === "anthropic" ? <AnthropicLogo size={17} /> : <ClaudeLogo size={17} />}</span>
-                <span><strong>Claude</strong><small>Official Claude Code subscription login</small></span>
-                {local.provider === "claude" && <Check size={16} />}
-              </button>
-              <button className={`provider-card ${local.provider === "cursor" ? "selected" : ""}`} onClick={() => setLocal({ ...local, provider: "cursor", model: local.provider === "cursor" ? local.model : DEFAULT_CURSOR_MODEL, ultra: false })}>
-                <span className={`provider-logo cursor${local.cursorLogo === "app-dark" ? " app-dark" : ""}`}>{local.cursorLogo === "app-dark" ? <CursorDarkAppIcon size={23} /> : <CursorLogo size={17} />}</span>
-                <span><strong>Cursor</strong><small>Official Cursor subscription login</small></span>
-                {local.provider === "cursor" && <Check size={16} />}
               </button>
             </div>
             <p className="provider-default-note">Use the provider control above the conversation to choose a different provider for one new thread without changing this default.</p>

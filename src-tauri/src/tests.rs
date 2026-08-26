@@ -1988,6 +1988,8 @@ fn child_agent_tool_catalog_offers_only_approved_destinations() {
         .filter_map(|tool| tool.get("name").and_then(Value::as_str))
         .collect();
     assert_eq!(names, AGENT_BRIDGE_TOOLS.to_vec());
+    assert_eq!(names[0], "spawn_mythra_agent");
+    assert!(!names.contains(&"spawn_agent"));
 
     let spawn = &tools[0];
     let enumeration = spawn["inputSchema"]["properties"]["target"]["enum"]
@@ -2041,7 +2043,7 @@ fn child_agent_spawn_requires_an_approved_destination_and_a_prompt() {
     assert!(validate_tool_call(
         &targets,
         &none,
-        "spawn_agent",
+        "spawn_mythra_agent",
         &json!({ "target": "terra", "prompt": "Refactor the parser." })
     )
     .is_ok());
@@ -2049,7 +2051,7 @@ fn child_agent_spawn_requires_an_approved_destination_and_a_prompt() {
     let rejected = validate_tool_call(
         &targets,
         &none,
-        "spawn_agent",
+        "spawn_mythra_agent",
         &json!({ "target": "gemini-pro", "prompt": "Refactor the parser." }),
     )
     .unwrap_err();
@@ -2064,16 +2066,22 @@ fn child_agent_spawn_requires_an_approved_destination_and_a_prompt() {
         json!({ "target": "terra" }),
         json!({ "target": "terra", "prompt": "   " }),
     ] {
-        assert!(validate_tool_call(&targets, &none, "spawn_agent", &bad).is_err());
+        assert!(validate_tool_call(&targets, &none, "spawn_mythra_agent", &bad).is_err());
     }
     assert!(validate_tool_call(
         &targets,
         &none,
-        "spawn_agent",
+        "spawn_mythra_agent",
         &json!({ "target": "terra", "prompt": "x".repeat(32_769) })
     )
     .is_err());
-    assert!(validate_tool_call(&targets, &none, "spawn_agent", &json!("not an object")).is_err());
+    assert!(validate_tool_call(
+        &targets,
+        &none,
+        "spawn_mythra_agent",
+        &json!("not an object")
+    )
+    .is_err());
 }
 
 #[test]
@@ -2140,7 +2148,7 @@ fn child_agent_spawn_enforces_user_reasoning_authority_and_ceiling() {
     assert!(validate_tool_call(
         &[inherited],
         &none,
-        "spawn_agent",
+        "spawn_mythra_agent",
         &json!({ "target": "terra", "prompt": "Implement it.", "reasoningEffort": "high" })
     )
     .unwrap_err()
@@ -2152,14 +2160,14 @@ fn child_agent_spawn_enforces_user_reasoning_authority_and_ceiling() {
     assert!(validate_tool_call(
         &[agent_controlled.clone()],
         &none,
-        "spawn_agent",
+        "spawn_mythra_agent",
         &json!({ "target": "reviewer", "prompt": "Review it.", "reasoningEffort": "high" })
     )
     .is_ok());
     assert!(validate_tool_call(
         &[agent_controlled],
         &none,
-        "spawn_agent",
+        "spawn_mythra_agent",
         &json!({ "target": "reviewer", "prompt": "Review it.", "reasoningEffort": "ultra" })
     )
     .unwrap_err()
@@ -2237,11 +2245,13 @@ fn bridge_answers_the_mcp_handshake_without_reaching_the_app() {
         initialize["result"]["serverInfo"]["name"],
         AGENT_BRIDGE_SERVER
     );
+    assert_eq!(AGENT_BRIDGE_SERVER, "mythra_agents");
     assert_eq!(initialize["result"]["protocolVersion"], "2025-06-18");
     assert!(initialize["result"]["capabilities"]["tools"].is_object());
     assert!(initialize["result"]["instructions"]
         .as_str()
-        .is_some_and(|instructions| instructions.contains("authoritative delegation route")));
+        .is_some_and(|instructions| instructions.contains("spawn_mythra_agent")
+            && instructions.contains("never use collaboration.spawn_agent")));
 
     assert_eq!(
         bridge_local_response("ping", Some(&json!("a")))

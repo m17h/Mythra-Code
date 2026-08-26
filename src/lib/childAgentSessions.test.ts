@@ -20,11 +20,11 @@ const READY: ChildAgentReadiness = {
 };
 
 const LAUNCH: ChildAgentBridgeLaunch = {
-  name: "openkiwi",
+  name: "mythra_agents",
   command: "/Applications/Mythra Code.app/Contents/MacOS/mythra-code",
   args: ["--openkiwi-agent-bridge", "/data/child-agents/abc/session.json"],
   configPath: "/data/child-agents/abc/mcp.json",
-  toolNames: ["spawn_agent", "agent_status", "collect_agent", "cancel_agent"],
+  toolNames: ["spawn_mythra_agent", "agent_status", "collect_agent", "cancel_agent"],
 };
 
 const PROPOSAL_LAUNCH: ChildAgentBridgeLaunch = {
@@ -194,18 +194,20 @@ describe("ensureChildAgentBridge", () => {
     );
   });
 
-  it("reuses the policy a thread froze instead of the live settings", async () => {
+  it("keeps the frozen roster while refreshing the permission inherited by the next child", async () => {
     const frozen = policy();
     const result = await ensureChildAgentBridge(input({
       threadId: "thread-1",
       policies: { "session-existing": frozen },
       // The user has since replaced the roster and raised the budget.
       settings: { childAgents: { enabled: true, targets: [{ ...TARGET, id: "changed" }] }, subagentsEnabled: true, subagentMax: 9 },
+      permission: "full",
     }));
-    expect(result?.policy).toBe(frozen);
     expect(result?.captured).toBe(false);
+    expect(result?.policyUpdated).toBe(true);
     expect(result?.policy.targets.map((entry) => entry.id)).toEqual(["frozen"]);
     expect(result?.policy.maxConcurrent).toBe(2);
+    expect(result?.policy.permission).toBe("full");
   });
 
   it("promotes an explicitly approved pending roster on the next bridge start", async () => {
@@ -390,7 +392,7 @@ describe("ensureChildAgentBridge revoking delegation", () => {
     // The proposal-only launch cached while delegation was off is not reused:
     // it has no spawn tool, so the thread would show destinations it cannot
     // reach. A fresh spawn-capable session replaces it.
-    expect(restored?.launch.toolNames).toContain("spawn_agent");
+    expect(restored?.launch.toolNames).toContain("spawn_mythra_agent");
     expect(restored?.policy.targets.map((entry) => entry.id)).toEqual(["frozen"]);
     expect(restored?.captured).toBe(false);
     expect(bridge.startChildAgentSession).toHaveBeenCalledTimes(2);
@@ -423,7 +425,7 @@ describe("ensureChildAgentBridge revoking delegation", () => {
     expect(restored?.captured).toBe(true);
     expect(restored?.policy.pendingRecapture).toBeUndefined();
     expect(restored?.policy.targets.map((entry) => entry.id)).toEqual(["approved-reviewer"]);
-    expect(restored?.launch.toolNames).toContain("spawn_agent");
+    expect(restored?.launch.toolNames).toContain("spawn_mythra_agent");
     expect(bridge.startChildAgentSession).toHaveBeenCalledTimes(2);
   });
 

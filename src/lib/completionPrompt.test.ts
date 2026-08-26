@@ -29,7 +29,10 @@ describe("Mythra Code completion instructions", () => {
       `Follow the project style.\n\n${ALWAYS_ON}\n\n${MYTHRA_CODE_DELEGATION_INSTRUCTIONS}`,
     );
     expect(MYTHRA_CODE_DELEGATION_INSTRUCTIONS).toContain("Always interpret a user request");
-    expect(MYTHRA_CODE_DELEGATION_INSTRUCTIONS).toContain("use only the delegation tools provided by the Mythra Code agent bridge");
+    expect(MYTHRA_CODE_DELEGATION_INSTRUCTIONS).toContain("use only the mythra_agents MCP bridge tools");
+    expect(MYTHRA_CODE_DELEGATION_INSTRUCTIONS).toContain("spawn_mythra_agent");
+    expect(MYTHRA_CODE_DELEGATION_INSTRUCTIONS).toContain("mcp__mythra_agents__<tool>");
+    expect(MYTHRA_CODE_DELEGATION_INSTRUCTIONS).toContain("Provider-native task, team, and agent-spawning features are not allowed");
   });
 
   it("treats exact @skill tokens as explicit skill requests, and other @words as text", () => {

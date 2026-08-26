@@ -4,7 +4,7 @@ import { MYTHRA_CODE_DELEGATION_INSTRUCTIONS, MYTHRA_CODE_NATIVE_DELEGATION_POLI
 
 /** Skill-mention plus completion guidance: what every turn carries. */
 const BASE_INSTRUCTIONS = mythraCodeDeveloperInstructions(false);
-import { childAgentMcpConfig, normalizeLmStudioBaseUrl, threadResumeParams, threadRuntimeConfig, threadStartParams } from "./turnConfig";
+import { childAgentMcpConfig, normalizeLmStudioBaseUrl, threadResumeParams, threadRuntimeConfig, threadStartParams, turnStartParams } from "./turnConfig";
 import { LM_STUDIO_RUNTIME_PROVIDER_ID } from "./providerIds";
 import { codexModelProviderId, providerFromThread } from "./threadProvider";
 
@@ -23,6 +23,32 @@ const baseRun: ScheduleRunSettings = {
   ultra: false,
   serviceTier: null,
 };
+
+describe("permission policy", () => {
+  it.each([
+    ["read-only", "never", "readOnly"],
+    ["ask", "on-request", "workspaceWrite"],
+    ["full", "never", "dangerFullAccess"],
+  ] as const)("keeps %s consistent across start, resume, and every interactive turn", (permission, approvalPolicy, sandboxType) => {
+    const run = { ...baseRun, permission };
+    const start = threadStartParams(run, "/tmp/project", { interactive: true });
+    const resume = threadResumeParams(run, "thread-1", "/tmp/project");
+    const turn = turnStartParams(run, "thread-1", "/tmp/project", []);
+
+    expect(start).toMatchObject({ approvalPolicy, sandbox: permission === "ask" ? "workspace-write" : permission === "full" ? "danger-full-access" : "read-only" });
+    expect(resume).toMatchObject({ approvalPolicy, sandbox: permission === "ask" ? "workspace-write" : permission === "full" ? "danger-full-access" : "read-only" });
+    expect(turn).toMatchObject({ approvalPolicy, sandboxPolicy: { type: sandboxType } });
+  });
+
+  it("never pauses an unattended Ask to act run for approval", () => {
+    const run = { ...baseRun, permission: "ask" as const };
+    expect(threadStartParams(run, "/tmp/project", { interactive: false })).toMatchObject({ approvalPolicy: "never" });
+    expect(turnStartParams(run, "thread-1", "/tmp/project", [], [], false)).toMatchObject({
+      approvalPolicy: "never",
+      sandboxPolicy: { type: "workspaceWrite" },
+    });
+  });
+});
 
 describe("OpenRouter runtime isolation", () => {
   it("disables connected-app tools while preserving local coding features", () => {
@@ -150,17 +176,17 @@ describe("LM Studio provider configuration", () => {
 
 describe("cross-provider sub-agent bridge", () => {
   const bridge = {
-    name: "openkiwi",
+    name: "mythra_agents",
     command: "/Applications/Mythra Code.app/Contents/MacOS/mythra-code",
     args: ["--openkiwi-agent-bridge", "/data/child-agents/abc/session.json"],
     configPath: "/data/child-agents/abc/mcp.json",
-    toolNames: ["spawn_agent", "agent_status", "collect_agent", "cancel_agent"],
+    toolNames: ["spawn_mythra_agent", "agent_status", "collect_agent", "cancel_agent"],
   };
 
   it("registers the bridge as a per-thread MCP server", () => {
     expect(childAgentMcpConfig(bridge)).toEqual({
       mcp_servers: {
-        openkiwi: {
+        mythra_agents: {
           command: bridge.command,
           args: bridge.args,
           startup_timeout_sec: 30,
@@ -183,7 +209,7 @@ describe("cross-provider sub-agent bridge", () => {
       developerInstructions: expect.stringContaining(MYTHRA_CODE_DELEGATION_INSTRUCTIONS),
       config: {
         developer_instructions: expect.stringContaining(MYTHRA_CODE_DELEGATION_INSTRUCTIONS),
-        mcp_servers: { openkiwi: { command: bridge.command } },
+        mcp_servers: { mythra_agents: { command: bridge.command } },
         features: { multi_agent: false, multi_agent_v2: false },
       },
     });
@@ -197,7 +223,7 @@ describe("cross-provider sub-agent bridge", () => {
     const params = threadResumeParams({ ...baseRun, provider: "openrouter", model: "x-ai/grok-4.5" }, "thread-1", "/tmp/project", {
       childAgentBridge: bridge,
     });
-    expect(params.config).toMatchObject({ mcp_servers: { openkiwi: { args: bridge.args } } });
+    expect(params.config).toMatchObject({ mcp_servers: { mythra_agents: { args: bridge.args } } });
   });
 
   it("re-applies the bridge when an OpenAI thread is resumed after a runtime restart", () => {
@@ -206,7 +232,7 @@ describe("cross-provider sub-agent bridge", () => {
       developerInstructions: expect.stringContaining(MYTHRA_CODE_DELEGATION_INSTRUCTIONS),
       config: {
         developer_instructions: expect.stringContaining(MYTHRA_CODE_DELEGATION_INSTRUCTIONS),
-        mcp_servers: { openkiwi: { args: bridge.args } },
+        mcp_servers: { mythra_agents: { args: bridge.args } },
         features: { multi_agent: false, multi_agent_v2: false },
       },
     });
@@ -254,7 +280,7 @@ describe("cross-provider sub-agent bridge", () => {
     const params = threadStartParams(baseRun, "/work", { interactive: true, childAgentBridge: bridge });
     expect(params.config).toMatchObject({
       multi_agent_mode: { custom: expect.stringContaining("Never use collaboration.spawn_agent") },
-      mcp_servers: { openkiwi: { command: bridge.command } },
+      mcp_servers: { mythra_agents: { command: bridge.command } },
     });
   });
 });

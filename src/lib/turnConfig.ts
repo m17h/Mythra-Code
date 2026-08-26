@@ -93,8 +93,8 @@ export function childAgentMcpConfig(bridge: ChildAgentBridgeLaunch | undefined):
  */
 export function threadRuntimeConfig(run: ScheduleRunSettings, options: Pick<ThreadStartOptions, "customAgents" | "modelContextWindow" | "childAgentBridge"> = {}): JsonObject {
   const contextWindow = Number(options.modelContextWindow);
-  const openKiwiDelegation = Boolean(options.childAgentBridge?.toolNames.includes("spawn_agent"));
-  const openKiwiSettings = Boolean(options.childAgentBridge?.toolNames.includes("propose_agent_settings"));
+  const mythraDelegation = Boolean(options.childAgentBridge?.toolNames.includes("spawn_mythra_agent"));
+  const mythraSettings = Boolean(options.childAgentBridge?.toolNames.includes("propose_agent_settings"));
   return {
     ...childAgentMcpConfig(options.childAgentBridge),
     ...lmStudioProviderConfig(run),
@@ -105,7 +105,7 @@ export function threadRuntimeConfig(run: ScheduleRunSettings, options: Pick<Thre
     // This suppresses that injected team role and leaves the exact Mythra Code
     // MCP destination enum as the sole provider/model authority.
     multi_agent_mode: { custom: MYTHRA_CODE_NATIVE_DELEGATION_POLICY },
-    developer_instructions: mythraCodeDeveloperInstructions(openKiwiDelegation, openKiwiSettings),
+    developer_instructions: mythraCodeDeveloperInstructions(mythraDelegation, mythraSettings),
     model_reasoning_effort: run.ultra ? "ultra" : run.reasoningEffort,
     ...((run.provider === "openrouter" || run.provider === "lmstudio") && Number.isFinite(contextWindow) && contextWindow > 0
       ? { model_context_window: Math.floor(contextWindow) }
@@ -139,7 +139,7 @@ export function threadRuntimeConfig(run: ScheduleRunSettings, options: Pick<Thre
 
 export function threadStartParams(run: ScheduleRunSettings, cwd: string, options: ThreadStartOptions): JsonObject {
   const developerInstructions = mythraCodeDeveloperInstructions(
-    Boolean(options.childAgentBridge?.toolNames.includes("spawn_agent")),
+    Boolean(options.childAgentBridge?.toolNames.includes("spawn_mythra_agent")),
     Boolean(options.childAgentBridge?.toolNames.includes("propose_agent_settings")),
   );
   const params: JsonObject = {
@@ -175,7 +175,7 @@ export function threadResumeParams(
   } = {},
 ): JsonObject {
   const developerInstructions = mythraCodeDeveloperInstructions(
-    Boolean(options.childAgentBridge?.toolNames.includes("spawn_agent")),
+    Boolean(options.childAgentBridge?.toolNames.includes("spawn_mythra_agent")),
     Boolean(options.childAgentBridge?.toolNames.includes("propose_agent_settings")),
   );
   const modelProvider = runtimeModelProviderId(run.provider);
@@ -183,6 +183,11 @@ export function threadResumeParams(
     threadId,
     cwd,
     runtimeWorkspaceRoots: [cwd, ...(options.additionalWorkspaceRoots ?? [])],
+    // A thread may have been created under a different permission mode. Resume
+    // it with the mode currently shown in the composer so a stale `on-request`
+    // policy cannot survive after the user switches to Full access.
+    approvalPolicy: run.permission === "ask" ? "on-request" : "never",
+    sandbox: sandboxMode(run.permission),
     developerInstructions,
     ...(options.excludeTurns ? { excludeTurns: true } : {}),
     ...(modelProvider ? { modelProvider } : {}),
@@ -192,12 +197,23 @@ export function threadResumeParams(
   };
 }
 
-export function turnStartParams(run: ScheduleRunSettings, threadId: string, cwd: string, input: JsonObject[], additionalWritableRoots: string[] = []): JsonObject {
+export function turnStartParams(
+  run: ScheduleRunSettings,
+  threadId: string,
+  cwd: string,
+  input: JsonObject[],
+  additionalWritableRoots: string[] = [],
+  interactive = true,
+): JsonObject {
   return {
     threadId,
     input,
     cwd,
     runtimeWorkspaceRoots: [cwd, ...additionalWritableRoots],
+    // Both values are sticky in Codex app-server. Always override them
+    // together on every turn so the visible permission mode is authoritative,
+    // including for threads that were originally created with Ask to act.
+    approvalPolicy: interactive && run.permission === "ask" ? "on-request" : "never",
     sandboxPolicy: commandSandbox(run.permission, cwd, additionalWritableRoots),
     model: run.model.trim() || undefined,
     effort: run.ultra ? "ultra" : run.reasoningEffort,
