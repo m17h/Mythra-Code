@@ -29,3 +29,26 @@ describe("CursorModelControl", () => {
     expect(onModel).toHaveBeenCalledWith("cursor-grok-4.5");
   });
 });
+
+describe("CursorModelControl favorites", () => {
+  it("floats starred models above the featured ordering", async () => {
+    const user = userEvent.setup();
+    render(<CursorModelControl model="auto" models={models} effort="medium" favorites={["gemini-3-pro"]} onToggleFavorite={vi.fn()} onModel={vi.fn()} onEffort={vi.fn()} onRefresh={vi.fn()} />);
+
+    await user.click(screen.getByRole("button", { name: "Cursor model: auto" }));
+    expect(screen.getAllByRole("menuitemradio")[0]).toHaveTextContent("Gemini 3 Pro");
+    expect(screen.getByText("Favorites first")).toBeInTheDocument();
+  });
+
+  it("stars a model without selecting it", async () => {
+    const user = userEvent.setup();
+    const onToggleFavorite = vi.fn();
+    const onModel = vi.fn();
+    render(<CursorModelControl model="auto" models={models} effort="medium" favorites={[]} onToggleFavorite={onToggleFavorite} onModel={onModel} onEffort={vi.fn()} onRefresh={vi.fn()} />);
+
+    await user.click(screen.getByRole("button", { name: "Cursor model: auto" }));
+    await user.click(screen.getByRole("button", { name: "Star GPT-5.4" }));
+    expect(onToggleFavorite).toHaveBeenCalledWith("gpt-5.4");
+    expect(onModel).not.toHaveBeenCalled();
+  });
+});

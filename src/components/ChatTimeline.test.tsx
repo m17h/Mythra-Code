@@ -63,6 +63,22 @@ describe("ChatTimeline", () => {
     expect(screen.getByLabelText("Attached images")).toContainElement(preview);
   });
 
+  it("shows when the active turn accepted a steer", () => {
+    render(<ChatTimeline
+      messages={[{
+        id: "steer-message",
+        role: "user",
+        text: "Use the Opus sub-agent now",
+        steerStatus: "accepted",
+      }]}
+      activities={[]}
+      running
+      thinkingLabel="Working"
+    />);
+
+    expect(screen.getByText("Steer accepted by active turn")).toHaveClass("message-steer-status", "accepted");
+  });
+
   it("renders entity-escaped sub-agent labels as plain text", () => {
     render(<ActivityRow activity={{
       id: "child-agent-1",

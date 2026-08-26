@@ -482,7 +482,7 @@ describe("useTurnRunner", () => {
     confirmSpy.mockRestore();
   });
 
-  it("removes an optimistic steering message when explicit Cursor steering fails", async () => {
+  it("keeps an explicitly rejected steer as the next queued turn", async () => {
     cursor.steerCursorTurn.mockRejectedValueOnce(new Error("steer failed"));
     useTaskStore.getState().ensureTask(CURSOR_THREAD.id, CURSOR_THREAD.cwd);
     useTaskStore.getState().setActiveTurn(CURSOR_THREAD.id, "turn-live");
@@ -493,9 +493,12 @@ describe("useTurnRunner", () => {
     let delivered = true;
     await act(async () => { delivered = await result.current.steerMessage("change direction"); });
 
-    expect(delivered).toBe(false);
+    expect(delivered).toBe(true);
     expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]?.messages).toEqual([]);
-    expect(deps.setError).toHaveBeenLastCalledWith("steer failed");
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]?.queuedTurns).toEqual([
+      expect.objectContaining({ text: "change direction", status: "queued" }),
+    ]);
+    expect(deps.setError).toHaveBeenLastCalledWith(null);
   });
 
   it("sends Cursor steering attachments instead of silently discarding them", async () => {
@@ -519,9 +522,37 @@ describe("useTurnRunner", () => {
     expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]?.messages[0]?.attachments).toEqual([
       { path: "/tmp/reference.png", name: "reference.png", kind: "image" },
     ]);
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]?.messages[0]?.steerStatus).toBe("accepted");
   });
 
-  it("turns a stale steer into a queued follow-up as soon as assistant output starts", async () => {
+  it("sends Codex the active turn identity and marks the steer accepted", async () => {
+    const store = useTaskStore.getState();
+    store.ensureTask(OPENAI_THREAD.id, OPENAI_THREAD.cwd);
+    store.setActiveTurn(OPENAI_THREAD.id, "turn-live");
+    store.setTaskStatus(OPENAI_THREAD.id, "running");
+    const deps = context({
+      activeThread: OPENAI_THREAD,
+      running: true,
+      effectiveSettings: { ...DEFAULT_SETTINGS, provider: "openai", model: "gpt-5.6-sol" },
+      runtimeStatus: { available: true, source: "Codex CLI", path: "/usr/local/bin/codex", version: "test", compatible: true, warning: null },
+      account: { type: "chatgpt", email: "test@example.com", planType: "pro" },
+      threadProjectBindingsRef: { current: { [OPENAI_THREAD.id]: "/tmp/project" } },
+    });
+    const { result } = renderHook(() => useTurnRunner(deps));
+
+    await act(async () => { await result.current.steerMessage("spin up Opus now"); });
+
+    expect(codex.rpc).toHaveBeenCalledWith("turn/steer", expect.objectContaining({
+      threadId: OPENAI_THREAD.id,
+      expectedTurnId: "turn-live",
+    }));
+    expect(useTaskStore.getState().tasks[OPENAI_THREAD.id]?.messages).toContainEqual(
+      expect.objectContaining({ text: "spin up Opus now", turnId: "turn-live", steerStatus: "accepted" }),
+    );
+    expect(deps.setTransientStatus).toHaveBeenCalledWith("Steer accepted by the active turn");
+  });
+
+  it("still attempts to steer while assistant output is arriving", async () => {
     const store = useTaskStore.getState();
     store.ensureTask(CURSOR_THREAD.id, CURSOR_THREAD.cwd);
     store.setActiveTurn(CURSOR_THREAD.id, "turn-live");
@@ -537,16 +568,14 @@ describe("useTurnRunner", () => {
     await act(async () => { delivered = await result.current.steerMessage("one more thing"); });
 
     expect(delivered).toBe(true);
-    expect(cursor.steerCursorTurn).not.toHaveBeenCalled();
-    expect(cursor.startCursorTurn).not.toHaveBeenCalled();
-    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]?.queuedTurns).toEqual([
-      expect.objectContaining({
-        text: "one more thing",
-        status: "queued",
-        attachments: [{ path: "/tmp/reference.png", name: "reference.png", kind: "image" }],
-      }),
+    expect(cursor.steerCursorTurn).toHaveBeenCalledWith(CURSOR_THREAD.id, "one more thing", [
+      { path: "/tmp/reference.png", kind: "image" },
     ]);
-    expect(deps.setTransientStatus).toHaveBeenCalledWith("Message queued for the next turn");
+    expect(cursor.startCursorTurn).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]?.queuedTurns).toEqual([]);
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]?.messages).toContainEqual(
+      expect.objectContaining({ text: "one more thing", steerStatus: "accepted" }),
+    );
   });
 
   it("queues a direct steer when the provider finishes before receiving it", async () => {
@@ -627,7 +656,7 @@ describe("useTurnRunner", () => {
     expect(useTaskStore.getState().tasks[CLAUDE_THREAD.id]?.queuedTurns).toEqual([]);
   });
 
-  it("still exposes a genuine queued steering failure for retry", async () => {
+  it("keeps a queued steering failure durable for the next turn", async () => {
     cursor.steerCursorTurn.mockRejectedValueOnce(new Error("The attached reference could not be read"));
     const store = useTaskStore.getState();
     store.ensureTask(CURSOR_THREAD.id, CURSOR_THREAD.cwd);
@@ -642,10 +671,11 @@ describe("useTurnRunner", () => {
 
     expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]?.queuedTurns[0]).toMatchObject({
       id: queuedTurn!.id,
-      status: "failed",
-      error: "The message could not be steered into the active turn.",
+      status: "queued",
+      error: undefined,
     });
-    expect(deps.setError).toHaveBeenCalledWith("The attached reference could not be read");
+    expect(deps.setError).toHaveBeenLastCalledWith(null);
+    expect(deps.setTransientStatus).toHaveBeenCalledWith("Steer could not be inserted; message kept for the next turn");
   });
 
   it("cleans up a failed local-provider start so the thread can retry", async () => {

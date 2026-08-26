@@ -25,6 +25,7 @@ import {
   summarizeSubAgentWorkers,
   type SubAgentWorker,
 } from "../lib/subAgentActivity";
+import { favoriteModels, type ModelFavorites } from "../lib/modelFavorites";
 import type { ChildAgentTarget, ProjectSubagentSettings, Provider } from "../types";
 
 /**
@@ -81,6 +82,9 @@ export interface SubAgentCommandCenterProps {
   onOpenSettings: () => void;
   /** Live provider catalogs used by the app's own model pickers. */
   modelCatalogs?: Partial<Record<Provider, SubAgentModelOption[]>>;
+  /** Starred models, shared with the composer and Settings pickers. */
+  modelFavorites?: ModelFavorites;
+  onToggleModelFavorite?: (provider: Provider, model: string) => void;
   /** Open a child's own conversation, live or finished, in the main view. */
   onOpenWorker?: (worker: SubAgentWorker) => Promise<void>;
   /** Stop one live child without stopping its root conversation. */
@@ -684,6 +688,10 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
                               ariaLabel={`Model for ${target.id}`}
                               value={selectedModel}
                               options={modelOptions}
+                              favorites={favoriteModels(props.modelFavorites ?? {}, target.provider)}
+                              {...(props.onToggleModelFavorite
+                                ? { onToggleFavorite: (model: string) => props.onToggleModelFavorite?.(target.provider, model) }
+                                : {})}
                               placeholder={target.provider === "openrouter" ? "Choose an OpenRouter model" : target.provider === "lmstudio" ? "Choose an LM Studio model" : "Choose a model"}
                               searchable={modelOptions.length > 8}
                               emptyMessage={target.provider === "openrouter"

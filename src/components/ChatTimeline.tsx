@@ -1,5 +1,5 @@
 import { Children, isValidElement, memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { Check, ChevronDown, ChevronRight, CircleDot, Clipboard, FileCode2, ImageIcon, ListChecks, MessageSquare, Pencil, TerminalSquare, UsersRound } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, CircleDot, Clipboard, CornerUpRight, FileCode2, ImageIcon, ListChecks, MessageSquare, Pencil, TerminalSquare, UsersRound } from "lucide-react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import Markdown from "react-markdown";
@@ -382,6 +382,12 @@ const MessageRow = memo(function MessageRow({ message, provider, onEdit }: { mes
             {message.attachments?.map((attachment) => (
               <MessageImagePreview key={attachment.path} path={attachment.path} name={attachment.name} />
             ))}
+          </div>
+        )}
+        {message.role === "user" && message.steerStatus && (
+          <div className={`message-steer-status ${message.steerStatus}`} role="status">
+            {message.steerStatus === "accepted" ? <Check size={11} /> : <CornerUpRight size={11} />}
+            {message.steerStatus === "accepted" ? "Steer accepted by active turn" : "Sending steer…"}
           </div>
         )}
         {message.streaming && <span className="stream-caret" />}

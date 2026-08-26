@@ -95,6 +95,8 @@ export interface ChatMessage {
   turnStatus?: Turn["status"];
   /** Wall-clock duration copied onto completed turn entries for timeline summaries. */
   turnDurationMs?: number;
+  /** Local delivery feedback for guidance inserted into an already-active turn. */
+  steerStatus?: "sending" | "accepted";
 }
 
 export interface Activity {

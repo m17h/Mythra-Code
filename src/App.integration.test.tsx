@@ -752,7 +752,7 @@ describe("workspace switching during thread selection", () => {
     expect(useTaskStore.getState().statuses[THREAD_A.id]).toBe("starting");
   });
 
-  it("keeps follow-ups queueable but disables steering while final output is arriving", async () => {
+  it("keeps steering available while final output is arriving", async () => {
     const user = userEvent.setup();
     resumeImpl = (params) => ({ thread: { ...THREAD_A, id: String(params.threadId), turns: [] } });
     await renderApp();
@@ -770,18 +770,21 @@ describe("workspace switching during thread selection", () => {
     });
 
     expect(await screen.findByText("Enter queues")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Steer" })).toBeDisabled();
 
     const composer = screen.getByPlaceholderText(/Queue a follow-up for after this run/);
-    await user.type(composer, "ask this next{Enter}");
+    await user.type(composer, "change direction now");
+    expect(screen.getByRole("button", { name: "Steer" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Steer" }));
     await waitFor(() => {
-      expect(useTaskStore.getState().tasks[THREAD_A.id]?.queuedTurns).toEqual([
-        expect.objectContaining({ text: "ask this next", status: "queued" }),
-      ]);
+      expect(useTaskStore.getState().tasks[THREAD_A.id]?.messages).toContainEqual(
+        expect.objectContaining({ text: "change direction now", steerStatus: "accepted", turnId: "turn-final" }),
+      );
     });
-    expect(
-      invokeMock.mock.calls.some(([command, args]) => command === "codex_rpc" && args?.method === "turn/steer"),
-    ).toBe(false);
+    expect(invokeMock.mock.calls).toContainEqual(["codex_rpc", expect.objectContaining({
+      method: "turn/steer",
+      params: expect.objectContaining({ threadId: THREAD_A.id, expectedTurnId: "turn-final" }),
+    })]);
+    expect(await screen.findByText("Steer accepted by active turn")).toBeInTheDocument();
   });
 
   it("still opens the selected thread when no workspace switch happens", async () => {
@@ -830,6 +833,29 @@ describe("workspace switching during thread selection", () => {
     await waitFor(() => expect(screen.getByRole("slider", { name: "Reasoning effort" })).toHaveValue("0"));
     await user.click(screen.getByText("Beta thread"));
     await waitFor(() => expect(screen.getByRole("slider", { name: "Reasoning effort" })).toHaveValue("3"));
+  });
+
+  it("explains that a reasoning change during a run applies to the next prompt", async () => {
+    const user = userEvent.setup();
+    resumeImpl = (params) => ({
+      thread: { ...THREAD_A, id: String(params.threadId), turns: [] },
+    });
+    await renderApp();
+    const { useTaskStore } = await import("./lib/taskStore");
+
+    await user.click(await screen.findByText("Alpha thread"));
+    await waitFor(() => expect(useTaskStore.getState().activeThreadId).toBe(THREAD_A.id));
+    expect(screen.queryByText("Reasoning change will apply to the next prompt.")).not.toBeInTheDocument();
+
+    act(() => useTaskStore.getState().setTaskStatus(THREAD_A.id, "running"));
+    fireEvent.change(screen.getByRole("slider", { name: "Reasoning effort" }), { target: { value: "3" } });
+
+    expect(await screen.findByText("Reasoning change will apply to the next prompt.")).toBeInTheDocument();
+
+    act(() => useTaskStore.getState().setTaskStatus(THREAD_A.id, "idle"));
+    await waitFor(() => {
+      expect(screen.queryByText("Reasoning change will apply to the next prompt.")).not.toBeInTheDocument();
+    });
   });
 
   it("recovers safely from malformed and legacy Ultra reasoning storage", async () => {

@@ -4,6 +4,8 @@ import { EffortSlider, effortFlairStyle } from "./effortFlair";
 import type { LMStudioModel, LMStudioReasoningEffort } from "../lib/lmStudio";
 import type { ReasoningEffort } from "./ModelPowerControl";
 import { LmStudioLogo } from "./BrandLogos";
+import { ModelFavoriteStar, type ModelFavoriteProps } from "./ModelFavoriteStar";
+import { favoriteCount, sortByFavorites } from "../lib/modelFavorites";
 
 const EFFORTS: Array<{ value: LMStudioReasoningEffort; label: string }> = [
   { value: "low", label: "Low" },
@@ -19,10 +21,12 @@ export function LMStudioModelControl({
   effort,
   loading,
   error,
+  favorites = [],
+  onToggleFavorite,
   onRefresh,
   onModel,
   onEffort,
-}: {
+}: ModelFavoriteProps & {
   model: string;
   models: LMStudioModel[];
   effort: ReasoningEffort;
@@ -38,9 +42,10 @@ export function LMStudioModelControl({
   const searchRef = useRef<HTMLInputElement>(null);
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const normalizedQuery = query.trim().toLowerCase();
-  const filtered = useMemo(() => models.filter((entry) => (
+  const filtered = useMemo(() => sortByFavorites(models.filter((entry) => (
     `${entry.id} ${entry.displayName} ${entry.publisher}`.toLowerCase().includes(normalizedQuery)
-  )), [models, normalizedQuery]);
+  )), favorites, (entry) => entry.id), [favorites, models, normalizedQuery]);
+  const starredVisible = favoriteCount(filtered, favorites, (entry) => entry.id);
   const selectedModel = models.find((entry) => entry.id === model);
   const customModel = query.trim();
   const canUseCustom = Boolean(customModel) && !models.some((entry) => entry.id.toLowerCase() === normalizedQuery);
@@ -108,10 +113,11 @@ export function LMStudioModelControl({
             }} placeholder="Search or enter a model identifier…" />
             <button type="button" onClick={onRefresh} title="Refresh local models" aria-label="Refresh LM Studio model catalog" disabled={loading}>{loading ? <LoaderCircle className="spin" size={13} /> : <RefreshCw size={13} />}</button>
           </div>
-          <div className="openrouter-menu-meta"><span>{normalizedQuery ? `${filtered.length} matches` : `${models.length} available`}</span><small>Local server catalog</small></div>
+          <div className="openrouter-menu-meta"><span>{normalizedQuery ? `${filtered.length} matches` : `${models.length} available`}</span><small>{favorites.length ? "Favorites first · local server catalog" : "Local server catalog"}</small></div>
           <div className="openrouter-options" role="menu" aria-label="LM Studio model selector">
             {filtered.map((entry, entryIndex) => (
-              <button type="button" role="menuitemradio" aria-checked={entry.id === model} aria-label={entry.id} className={entry.id === model ? "selected" : ""} key={entry.id} ref={(node) => { optionRefs.current[entryIndex] = node; }} onKeyDown={(event) => {
+              <div className="model-row" key={entry.id} role="none">
+              <button type="button" role="menuitemradio" aria-checked={entry.id === model} aria-label={entry.id} className={`${entry.id === model ? "selected" : ""}${starredVisible > 0 && entryIndex === starredVisible - 1 ? " favorite-group-end" : ""}`} ref={(node) => { optionRefs.current[entryIndex] = node; }} onKeyDown={(event) => {
                 const enabled = optionRefs.current.filter((item): item is HTMLButtonElement => Boolean(item?.isConnected));
                 const index = enabled.indexOf(event.currentTarget);
                 if (event.key === "ArrowDown") { event.preventDefault(); enabled[(index + 1) % enabled.length]?.focus(); }
@@ -121,6 +127,8 @@ export function LMStudioModelControl({
                 <span><strong>{entry.displayName}</strong><small>{entry.id} · {entry.trainedForToolUse ? "Tool use" : "No tool-use training"}</small></span>
                 {entry.id === model && <Check size={13} />}
               </button>
+              {onToggleFavorite && <ModelFavoriteStar model={entry.id} label={entry.displayName} favorite={favorites.includes(entry.id)} onToggle={onToggleFavorite} />}
+              </div>
             ))}
             {canUseCustom && <button type="button" role="menuitemradio" aria-checked={false} className="custom-model-option" onClick={() => { onModel(customModel); setQuery(""); setOpen(false); }}><span className="openrouter-provider-mark">+</span><span><strong>Use model identifier</strong><small>{customModel}</small></span></button>}
             {!loading && filtered.length === 0 && !canUseCustom && <div className="openrouter-empty"><strong>{error ? "LM Studio is not connected" : "No matching models"}</strong><span>{error || "Download or load a model in LM Studio, then refresh this list."}</span></div>}

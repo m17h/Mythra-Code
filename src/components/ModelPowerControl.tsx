@@ -1,6 +1,8 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
-import { Check, ChevronDown, Earth, Gauge, Moon, Sun, Zap, type LucideIcon } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { Check, ChevronDown, Cpu, Earth, Gauge, Moon, Sun, Zap, type LucideIcon } from "lucide-react";
 import { EffortSlider, effortFlairStyle } from "./effortFlair";
+import { ModelFavoriteStar, type ModelFavoriteProps } from "./ModelFavoriteStar";
+import { favoriteCount, sortByFavorites } from "../lib/modelFavorites";
 
 export type ModelKind = "sol" | "terra" | "luna";
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
@@ -15,11 +17,26 @@ export interface RuntimeModel {
   isDefault: boolean;
 }
 
+/**
+ * The named GPT-5.6 tiers Mythra Code has artwork and copy for. The menu is
+ * driven by the account's live `model/list` response; this only supplies the
+ * icon, accent, and tagline when a runtime model matches one of them, and
+ * stands in as the whole list when the runtime reports nothing at all.
+ */
 export const OPENAI_MODELS: Array<{ kind: ModelKind; name: string; id: string; tagline: string; icon: LucideIcon }> = [
   { kind: "sol", name: "Sol", id: "gpt-5.6-sol", tagline: "Detail & polish", icon: Sun },
   { kind: "terra", name: "Terra", id: "gpt-5.6-terra", tagline: "Everyday power", icon: Earth },
   { kind: "luna", name: "Luna", id: "gpt-5.6-luna", tagline: "Fast & focused", icon: Moon },
 ];
+
+interface ModelOption {
+  id: string;
+  name: string;
+  tagline: string;
+  kind: ModelKind;
+  icon: LucideIcon;
+  isDefault: boolean;
+}
 
 const EFFORTS: Array<{ value: Exclude<ReasoningEffort, "ultra">; label: string; shortLabel: string }> = [
   { value: "low", label: "Light", shortLabel: "Light" },
@@ -35,16 +52,42 @@ export function modelKind(model: string): ModelKind {
   return "sol";
 }
 
+/** Every model the account can actually run, decorated where Mythra Code knows one. */
+export function openAiModelOptions(runtimeModels: RuntimeModel[]): ModelOption[] {
+  if (!runtimeModels.length) {
+    return OPENAI_MODELS.map((entry) => ({ ...entry, isDefault: entry.kind === "sol" }));
+  }
+  const options: ModelOption[] = [];
+  const seen = new Set<string>();
+  for (const entry of runtimeModels) {
+    const id = (entry.model || entry.id || "").trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    const known = OPENAI_MODELS.find((candidate) => candidate.id === id);
+    options.push({
+      id,
+      name: entry.displayName?.trim() || known?.name || id,
+      tagline: entry.description?.trim() || known?.tagline || id,
+      kind: known?.kind ?? modelKind(id),
+      icon: known?.icon ?? Cpu,
+      isDefault: Boolean(entry.isDefault),
+    });
+  }
+  return options;
+}
+
 export function ModelPowerControl({
   model,
   effort,
   fast,
   runtimeModels,
   disabled,
+  favorites = [],
+  onToggleFavorite,
   onModel,
   onEffort,
   onFast,
-}: {
+}: ModelFavoriteProps & {
   model: string;
   effort: ReasoningEffort;
   fast: boolean;
@@ -57,11 +100,20 @@ export function ModelPowerControl({
   const [menuOpen, setMenuOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
-  const kind = modelKind(model);
-  const selectedModel = OPENAI_MODELS.find((entry) => entry.kind === kind) ?? OPENAI_MODELS[0];
+  const catalog = useMemo(() => openAiModelOptions(runtimeModels), [runtimeModels]);
+  const options = useMemo(
+    () => sortByFavorites(catalog, favorites, (entry) => entry.id),
+    [catalog, favorites],
+  );
+  const starredVisible = favoriteCount(options, favorites, (entry) => entry.id);
+  // A saved model the runtime no longer lists stays selected and visible; the
+  // menu never silently rewrites the user's choice.
+  const selectedModel = options.find((entry) => entry.id === model)
+    ?? (model ? { id: model, name: model, tagline: "Saved model", kind: modelKind(model), icon: Cpu, isDefault: false } : options[0]);
+  const kind = selectedModel?.kind ?? "sol";
   const effortIndex = Math.max(0, EFFORTS.findIndex((entry) => entry.value === (effort === "ultra" ? "max" : effort)));
   const reasoningFill = (effortIndex / (EFFORTS.length - 1)) * 100;
-  const SelectedModelIcon = selectedModel.icon;
+  const SelectedModelIcon = selectedModel?.icon ?? Sun;
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -87,12 +139,12 @@ export function ModelPowerControl({
 
   useEffect(() => {
     if (!menuOpen) return;
-    const selectedIndex = Math.max(0, OPENAI_MODELS.findIndex((entry) => entry.kind === kind));
+    const selectedIndex = Math.max(0, options.findIndex((entry) => entry.id === selectedModel?.id));
     requestAnimationFrame(() => optionRefs.current[selectedIndex]?.focus());
-  }, [kind, menuOpen]);
+  }, [menuOpen, options, selectedModel?.id]);
 
   const moveOptionFocus = (direction: number) => {
-    const enabled = optionRefs.current.filter((entry): entry is HTMLButtonElement => Boolean(entry && !entry.disabled));
+    const enabled = optionRefs.current.filter((entry): entry is HTMLButtonElement => Boolean(entry && entry.isConnected && !entry.disabled));
     if (!enabled.length) return;
     const current = enabled.indexOf(document.activeElement as HTMLButtonElement);
     enabled[(current + direction + enabled.length) % enabled.length]?.focus();
@@ -110,7 +162,7 @@ export function ModelPowerControl({
           className="model-picker-trigger"
           aria-haspopup="menu"
           aria-expanded={menuOpen}
-          aria-label={`OpenAI model: ${selectedModel.name}`}
+          aria-label={`OpenAI model: ${selectedModel?.name ?? "not selected"}`}
           disabled={disabled}
           onClick={() => setMenuOpen((open) => !open)}
           onKeyDown={(event) => {
@@ -120,12 +172,12 @@ export function ModelPowerControl({
             }
           }}
         >
-          {/* Keyed by kind so a model switch replays the arrival burst. */}
-          <span className="model-orb" key={kind}><SelectedModelIcon size={13} strokeWidth={2.2} /></span>
+          {/* Keyed by model so a switch replays the arrival burst. */}
+          <span className="model-orb" key={selectedModel?.id ?? kind}><SelectedModelIcon size={13} strokeWidth={2.2} /></span>
           <span className="model-picker-copy">
-            <small>GPT-5.6 model</small>
-            <strong>{selectedModel.name}</strong>
-            <em>{selectedModel.tagline}</em>
+            <small>OpenAI model</small>
+            <strong>{selectedModel?.name ?? "Choose a model"}</strong>
+            <em>{selectedModel?.tagline ?? ""}</em>
           </span>
           <ChevronDown className="model-picker-chevron" size={15} />
         </button>
@@ -136,31 +188,35 @@ export function ModelPowerControl({
           if (event.key === "Home") { event.preventDefault(); optionRefs.current.find((entry) => entry && !entry.disabled)?.focus(); }
           if (event.key === "End") { event.preventDefault(); [...optionRefs.current].reverse().find((entry) => entry && !entry.disabled)?.focus(); }
         }}>
-          <div className="model-menu-heading"><span>Choose your model</span><small>OpenAI subscription</small></div>
-          {OPENAI_MODELS.map((entry) => {
-            const available = runtimeModels.length === 0 || runtimeModels.some((candidate) => candidate.model === entry.id || candidate.id === entry.id);
-            const selected = kind === entry.kind;
+          <div className="model-menu-heading">
+            <span>Choose your model</span>
+            <small>{runtimeModels.length ? `${options.length} from your OpenAI account` : "OpenAI subscription"}</small>
+          </div>
+          {options.map((entry, index) => {
+            const selected = selectedModel?.id === entry.id;
             const ModelIcon = entry.icon;
             return (
-              <button
-                type="button"
-                role="menuitemradio"
-                aria-checked={selected}
-                aria-label={`${entry.name}: ${entry.tagline}${available ? "" : " (unavailable)"}`}
-                key={entry.kind}
-                ref={(node) => { optionRefs.current[OPENAI_MODELS.indexOf(entry)] = node; }}
-                className={`model-menu-option ${entry.kind} ${selected ? "selected" : ""}`}
-                disabled={disabled || !available}
-                onClick={() => {
-                  onModel(entry.id);
-                  setMenuOpen(false);
-                }}
-                title={available ? `${entry.name}: ${entry.tagline}` : `${entry.name} is not available for this account`}
-              >
-                <span className="menu-model-orb"><ModelIcon size={13} strokeWidth={2.2} /></span>
-                <span><strong>{entry.name}</strong><small>{entry.tagline}</small></span>
-                {selected && <Check size={14} />}
-              </button>
+              <div className="model-row" key={entry.id} role="none">
+                <button
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={selected}
+                  aria-label={`${entry.name}: ${entry.tagline}`}
+                  ref={(node) => { optionRefs.current[index] = node; }}
+                  className={`model-menu-option ${entry.kind} ${selected ? "selected" : ""}${starredVisible > 0 && index === starredVisible - 1 ? " favorite-group-end" : ""}`}
+                  disabled={disabled}
+                  onClick={() => {
+                    onModel(entry.id);
+                    setMenuOpen(false);
+                  }}
+                  title={`${entry.name}: ${entry.tagline}`}
+                >
+                  <span className="menu-model-orb"><ModelIcon size={13} strokeWidth={2.2} /></span>
+                  <span><strong>{entry.name}</strong><small>{entry.tagline}</small></span>
+                  {selected && <Check size={14} />}
+                </button>
+                {onToggleFavorite && <ModelFavoriteStar model={entry.id} label={entry.name} favorite={favorites.includes(entry.id)} onToggle={onToggleFavorite} />}
+              </div>
             );
           })}
         </div>

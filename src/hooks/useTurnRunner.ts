@@ -26,7 +26,7 @@ import {
 import { threadResumeParams, threadStartParams, turnStartParams } from "../lib/turnConfig";
 import { buildTurnInput, withoutSentAttachments } from "../lib/turnInput";
 import { optimisticStartedThread, upsertThread } from "../lib/threadList";
-import { isAssistantOutputActive, useTaskStore } from "../lib/taskStore";
+import { useTaskStore } from "../lib/taskStore";
 import { friendlyError } from "../lib/errors";
 import { confirmDialog } from "../lib/confirmDialog";
 import { clearProviderStopIntent, markProviderStopIntent } from "../lib/providerStopIntent";
@@ -298,6 +298,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         role: "user",
         text,
         attachments: messageImageAttachments(sentAttachments),
+        steerStatus: "sending",
       });
       try {
         if (isClaudeThread(activeThread)) {
@@ -315,10 +316,17 @@ export function useTurnRunner(context: TurnRunnerContext): {
           );
           scheduleCursorThreadSave(activeThread.id);
         } else {
-          await rpc("turn/steer", { threadId: activeThread.id, input: buildTurnInput(text, sentAttachments) });
+          const expectedTurnId = useTaskStore.getState().tasks[activeThread.id]?.activeTurnId;
+          if (!expectedTurnId) throw new Error("The active turn is still starting");
+          await rpc("turn/steer", {
+            threadId: activeThread.id,
+            expectedTurnId,
+            input: buildTurnInput(text, sentAttachments),
+          });
         }
+        useTaskStore.getState().setMessageSteerStatus(activeThread.id, steerMessageId, "accepted");
         setAttachments((current) => withoutSentAttachments(current, sentAttachments));
-        setTransientStatus("Direction added");
+        setTransientStatus("Steer accepted by the active turn");
         return true;
       } catch (reason) {
         // The message never reached the runtime — remove the optimistic bubble
@@ -865,22 +873,21 @@ export function useTurnRunner(context: TurnRunnerContext): {
     const task = ctx.activeThread ? useTaskStore.getState().tasks[ctx.activeThread.id] : undefined;
     if (ctx.activeThread && task?.status === "starting") return queueFollowUp(ctx, text);
     if (ctx.activeThread && task?.status === "running") {
-      if (isAssistantOutputActive(task)) return queueFollowUp(ctx, text);
-      let steerUnavailable = false;
       const delivered = await deliverMessage(
         { ...ctx, running: true },
         text,
         "steer",
-        () => { steerUnavailable = true; },
       );
-      if (!delivered && steerUnavailable) return queueFollowUp(ctx, text);
+      // Steering is an intent, not a lossy transport operation. If the runtime
+      // crosses a lifecycle boundary or rejects the insertion for any reason,
+      // retain the instruction as the next turn instead of handing the user a
+      // rejected prompt.
+      if (!delivered) return queueFollowUp(ctx, text);
       return delivered;
     }
     if (ctx.activeThread && ctx.running && !task) {
-      let steerUnavailable = false;
-      const delivered = await deliverMessage(ctx, text, "steer", () => { steerUnavailable = true; });
-      if (!delivered && steerUnavailable) return queueFollowUp(ctx, text);
-      return delivered;
+      const delivered = await deliverMessage(ctx, text, "steer");
+      return delivered || queueFollowUp(ctx, text);
     }
     return deliverMessage({ ...ctx, running: false }, text, "turn");
   }, [deliverMessage, queueFollowUp]);
@@ -890,7 +897,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
     const threadId = ctx.activeThread?.id;
     if (!threadId) return;
     const task = useTaskStore.getState().tasks[threadId];
-    if (task?.status !== "running" || isAssistantOutputActive(task)) return;
+    if (task?.status !== "running") return;
     const queuedTurn = task.queuedTurns.find((entry) => entry.id === queuedTurnId);
     if (!queuedTurn || queuedTurn.status === "sending") return;
     useTaskStore.getState().setQueuedTurnStatus(threadId, queuedTurn.id, "sending");
@@ -904,19 +911,20 @@ export function useTurnRunner(context: TurnRunnerContext): {
     if (delivered) {
       useTaskStore.getState().removeQueuedTurn(threadId, queuedTurn.id);
       queuedDeliveries.delete(queuedTurn.id);
-    } else if (steerUnavailable) {
-      // The provider crossed a lifecycle boundary before receiving the steer.
-      // Keep the user's message in FIFO order; the normal completion path will
-      // start it as the next turn rather than losing it or requiring a retry.
+    } else {
+      // Whether the provider crossed a lifecycle boundary or rejected the
+      // insertion, the user's queued instruction remains durable and will run
+      // next. A steering attempt must never turn a valid queued message red or
+      // require the user to retype it.
       useTaskStore.getState().setQueuedTurnStatus(threadId, queuedTurn.id, "queued");
       ctx.setError(null);
-      ctx.setTransientStatus("Steering was unavailable; message kept for the next turn");
+      ctx.setTransientStatus(steerUnavailable
+        ? "Steering was unavailable; message kept for the next turn"
+        : "Steer could not be inserted; message kept for the next turn");
       const status = useTaskStore.getState().tasks[threadId]?.status;
       if (status !== "starting" && status !== "running") {
         queueMicrotask(() => { void pumpQueuedThread(threadId); });
       }
-    } else {
-      useTaskStore.getState().setQueuedTurnStatus(threadId, queuedTurn.id, "failed", "The message could not be steered into the active turn.");
     }
   }, [deliverMessage, pumpQueuedThread]);
 

@@ -58,6 +58,7 @@ import type {
   Project,
   ProjectAction,
   PromptProfile,
+  Provider,
   ScheduledTask,
   ScheduleRunRecord,
   ThemeName,
@@ -66,8 +67,10 @@ import type {
 } from "../types";
 import { usagePercentLabel } from "../lib/providerUsage";
 import { AppSelectMenu, type AppSelectOption } from "./AppSelectMenu";
-import { CLAUDE_MODELS } from "./ClaudeModelControl";
-import { OPENAI_MODELS, type RuntimeModel } from "./ModelPowerControl";
+import { CLAUDE_FALLBACK_MODELS } from "./ClaudeModelControl";
+import { openAiModelOptions, type RuntimeModel } from "./ModelPowerControl";
+import { favoriteModels, type ModelFavorites } from "../lib/modelFavorites";
+import type { ClaudeModel } from "../lib/claude";
 import type { OpenRouterModel } from "./OpenRouterModelControl";
 
 /**
@@ -133,6 +136,10 @@ export function SettingsModal({
   runtimeModels = [],
   openRouterModels = [],
   cursorModels = [],
+  claudeModels = [],
+  modelFavorites = {},
+  onToggleModelFavorite,
+  onDiscoverOpenRouterModels,
   childAgentReadiness,
   githubStatus,
   githubBusy = false,
@@ -212,6 +219,13 @@ export function SettingsModal({
   runtimeModels?: RuntimeModel[];
   openRouterModels?: OpenRouterModel[];
   cursorModels?: CursorModel[];
+  /** Live Claude Code catalog; empty falls back to the labelled built-ins. */
+  claudeModels?: ClaudeModel[];
+  /** Starred models, shared with the composer and sub-agent pickers. */
+  modelFavorites?: ModelFavorites;
+  onToggleModelFavorite?: (provider: Provider, model: string) => void;
+  /** Resolves an OpenRouter slug typed into the app-native model search. */
+  onDiscoverOpenRouterModels?: (query: string) => void;
   /** Which providers a cross-provider child could be started on right now. */
   childAgentReadiness: ChildAgentReadiness;
   githubStatus: GitHubAccountStatus | null;
@@ -291,12 +305,16 @@ export function SettingsModal({
   const defaultModelOptions = useMemo<AppSelectOption[]>(() => {
     let options: AppSelectOption[];
     if (local.provider === "openai") {
-      const available = runtimeModels.length
-        ? OPENAI_MODELS.filter((entry) => runtimeModels.some((candidate) => candidate.model === entry.id || candidate.id === entry.id))
-        : OPENAI_MODELS;
-      options = available.map((entry) => ({ value: entry.id, label: entry.name, detail: entry.tagline }));
+      // Every model the account can run, not just the ones Mythra Code has
+      // artwork for; `model/list` is the authority on availability.
+      options = openAiModelOptions(runtimeModels).map((entry) => ({ value: entry.id, label: entry.name, detail: entry.tagline }));
     } else if (local.provider === "claude") {
-      options = CLAUDE_MODELS.map((entry) => ({ value: entry.id, label: entry.name, detail: entry.tagline }));
+      options = (claudeModels.length ? claudeModels.filter((entry) => !entry.disabled) : CLAUDE_FALLBACK_MODELS).map((entry) => ({
+        value: entry.id,
+        label: entry.displayName,
+        detail: entry.description || entry.resolvedModel,
+        keywords: entry.resolvedModel,
+      }));
     } else if (local.provider === "cursor") {
       options = (cursorModels.length ? cursorModels : [{ id: DEFAULT_CURSOR_MODEL, name: "Auto", configOptions: [] }])
         .map((entry) => ({ value: entry.id, label: entry.name || entry.id, detail: entry.id }));
@@ -322,14 +340,16 @@ export function SettingsModal({
       options = [{ value: local.model, label: local.model, detail: "Current saved model" }, ...options];
     }
     return options;
-  }, [cursorModels, lmStudioModels, local.model, local.provider, openRouterModels, runtimeModels]);
+  }, [claudeModels, cursorModels, lmStudioModels, local.model, local.provider, openRouterModels, runtimeModels]);
 
   const defaultModelHelp = local.provider === "openrouter"
     ? "Search the live OpenRouter catalog. New threads will start with this model."
     : local.provider === "lmstudio"
       ? "Choose from the models reported by the configured LM Studio server."
       : local.provider === "claude"
-        ? "Availability follows your signed-in Claude Code subscription."
+        ? (claudeModels.length
+          ? "Live catalog from your Claude Code CLI."
+          : "Mythra Code’s built-in list — the Claude Code CLI catalog could not be read.")
         : local.provider === "cursor"
           ? "Choose from the live catalog associated with your Cursor subscription."
           : "Availability follows the signed-in ChatGPT account.";
@@ -981,8 +1001,11 @@ export function SettingsModal({
                 options={defaultModelOptions}
                 ariaLabel={`Default ${local.provider === "openai" ? "OpenAI" : local.provider === "openrouter" ? "OpenRouter" : local.provider === "lmstudio" ? "LM Studio" : local.provider === "claude" ? "Claude" : "Cursor"} model`}
                 placeholder="Choose a default model"
-                searchable={local.provider === "openrouter" || local.provider === "lmstudio" || local.provider === "cursor"}
+                searchable={defaultModelOptions.length > 8 || local.provider === "openrouter" || local.provider === "lmstudio" || local.provider === "cursor"}
                 menuPlacement="top"
+                favorites={favoriteModels(modelFavorites, local.provider)}
+                {...(onToggleModelFavorite ? { onToggleFavorite: (model: string) => onToggleModelFavorite(local.provider, model) } : {})}
+                {...(local.provider === "openrouter" && onDiscoverOpenRouterModels ? { onSearch: onDiscoverOpenRouterModels } : {})}
                 emptyMessage={local.provider === "lmstudio" ? "Connect LM Studio and refresh its catalog first." : "No models are currently available for this provider."}
                 onChange={(model) => setLocal({ ...local, model })}
               />

@@ -293,6 +293,22 @@ describe("task store", () => {
     expect(task.activities[0].turnId).toBe("turn-a");
   });
 
+  it("updates steering delivery feedback without changing timeline identity", () => {
+    const store = useTaskStore.getState();
+    store.setActiveTurn("thread-a", "turn-a");
+    store.appendUserMessage("thread-a", { id: "steer", role: "user", text: "Change direction", steerStatus: "sending" });
+    const order = useTaskStore.getState().tasks["thread-a"].messages[0].timelineOrder;
+
+    store.setMessageSteerStatus("thread-a", "steer", "accepted");
+
+    expect(useTaskStore.getState().tasks["thread-a"].messages[0]).toMatchObject({
+      id: "steer",
+      turnId: "turn-a",
+      timelineOrder: order,
+      steerStatus: "accepted",
+    });
+  });
+
   it("finds optimistic input when callers mark the turn starting after appending", () => {
     const store = useTaskStore.getState();
     store.appendUserMessage("thread-a", { id: "scheduled", role: "user", text: "Run the schedule" });

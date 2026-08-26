@@ -547,7 +547,31 @@ export function usageForThread(threadId: string): ThreadUsageRecord | null {
   return ledger().find((record) => record.threadId === threadId) ?? null;
 }
 
+/**
+ * Reduces a Claude `--model` value to the model id pricing is published under.
+ *
+ * The CLI's live catalog offers decorated aliases (`opus[1m]`, `sonnet`,
+ * `claude-haiku-4-5-20251001`) rather than bare pricing ids. Anything still
+ * ambiguous after this — `default`, which Anthropic can repoint — is left
+ * alone so it produces no estimate rather than a confidently wrong one.
+ */
+export function claudeCanonicalModel(model: string): string {
+  const value = model.trim().toLowerCase().replace(/\[[^\]]*\]$/, "");
+  const dated = value.replace(/[-@]\d{8}$/, "");
+  const families: Array<[RegExp, string]> = [
+    [/^fable(-\d.*)?$/, "claude-fable-5"],
+    [/^opus(-\d.*)?$/, "claude-opus-5"],
+    [/^sonnet(-\d.*)?$/, "claude-sonnet-5"],
+    [/^haiku(-\d.*)?$/, "claude-haiku-4-5"],
+  ];
+  for (const [pattern, id] of families) {
+    if (pattern.test(dated)) return id;
+  }
+  return dated;
+}
+
 export function pricingForModel(provider: Provider, model: string, at = new Date()): ModelPricing | undefined {
+  if (provider === "claude") model = claudeCanonicalModel(model);
   const refreshed = catalogPricing(provider, model, at);
   if (refreshed) return refreshed;
   if (provider === "openai") {

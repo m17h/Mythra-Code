@@ -43,6 +43,75 @@ export function parseClaudeUsageLimits(payload: ClaudeUsagePayload | null | unde
   return windows.length ? { windows } : null;
 }
 
+/**
+ * One selectable model from the Claude Code CLI's own catalog.
+ *
+ * `id` is the value passed to `--model`; `resolvedModel` is the concrete model
+ * the CLI would route to, which is what the UI shows as the technical detail.
+ */
+export interface ClaudeModel {
+  id: string;
+  displayName: string;
+  description: string;
+  resolvedModel: string;
+  /** Present but not selectable — policy or plan blocks it. */
+  disabled: boolean;
+  supportedEfforts: string[];
+}
+
+interface ClaudeModelPayload {
+  value?: unknown;
+  displayName?: unknown;
+  description?: unknown;
+  resolvedModel?: unknown;
+  isDisabled?: unknown;
+  disabled?: unknown;
+  supportsEffort?: unknown;
+  supportedEffortLevels?: unknown;
+}
+
+function trimmed(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+/**
+ * Normalizes a `list_models` control response. Unknown fields are tolerated so
+ * a newer CLI cannot break the picker, and anything without an id is dropped
+ * rather than rendered as a blank row.
+ */
+export function parseClaudeModelCatalog(payload: unknown): ClaudeModel[] {
+  const models = (payload as { models?: unknown } | null | undefined)?.models;
+  if (!Array.isArray(models)) return [];
+  const seen = new Set<string>();
+  const catalog: ClaudeModel[] = [];
+  for (const entry of models as ClaudeModelPayload[]) {
+    if (!entry || typeof entry !== "object") continue;
+    const id = trimmed(entry.value);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    const resolvedModel = trimmed(entry.resolvedModel) || id;
+    catalog.push({
+      id,
+      displayName: trimmed(entry.displayName) || id,
+      description: trimmed(entry.description),
+      resolvedModel,
+      disabled: entry.isDisabled === true || entry.disabled === true,
+      supportedEfforts: Array.isArray(entry.supportedEffortLevels)
+        ? entry.supportedEffortLevels.filter((effort): effort is string => typeof effort === "string")
+        : [],
+    });
+  }
+  return catalog;
+}
+
+/**
+ * The Claude Code CLI exposes no `models` subcommand, so the catalog comes
+ * from the stream-json control protocol the backend already speaks.
+ */
+export async function listClaudeModels(): Promise<ClaudeModel[]> {
+  return parseClaudeModelCatalog(await invoke<unknown>("claude_models"));
+}
+
 export interface ClaudeEvent {
   threadId: string;
   turnId: string;
