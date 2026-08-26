@@ -93,8 +93,8 @@ export function childAgentMcpConfig(bridge: ChildAgentBridgeLaunch | undefined):
  */
 export function threadRuntimeConfig(run: ScheduleRunSettings, options: Pick<ThreadStartOptions, "customAgents" | "modelContextWindow" | "childAgentBridge"> = {}): JsonObject {
   const contextWindow = Number(options.modelContextWindow);
-  const openKiwiDelegation = Boolean(options.childAgentBridge?.toolNames.includes("spawn_agent"));
-  const openKiwiSettings = Boolean(options.childAgentBridge?.toolNames.includes("propose_agent_settings"));
+  const mythraDelegation = Boolean(options.childAgentBridge?.toolNames.includes("spawn_mythra_agent"));
+  const mythraSettings = Boolean(options.childAgentBridge?.toolNames.includes("propose_agent_settings"));
   return {
     ...childAgentMcpConfig(options.childAgentBridge),
     ...lmStudioProviderConfig(run),
@@ -105,7 +105,7 @@ export function threadRuntimeConfig(run: ScheduleRunSettings, options: Pick<Thre
     // This suppresses that injected team role and leaves the exact Mythra Code
     // MCP destination enum as the sole provider/model authority.
     multi_agent_mode: { custom: MYTHRA_CODE_NATIVE_DELEGATION_POLICY },
-    developer_instructions: mythraCodeDeveloperInstructions(openKiwiDelegation, openKiwiSettings),
+    developer_instructions: mythraCodeDeveloperInstructions(mythraDelegation, mythraSettings),
     model_reasoning_effort: run.ultra ? "ultra" : run.reasoningEffort,
     ...((run.provider === "openrouter" || run.provider === "lmstudio") && Number.isFinite(contextWindow) && contextWindow > 0
       ? { model_context_window: Math.floor(contextWindow) }
@@ -139,7 +139,7 @@ export function threadRuntimeConfig(run: ScheduleRunSettings, options: Pick<Thre
 
 export function threadStartParams(run: ScheduleRunSettings, cwd: string, options: ThreadStartOptions): JsonObject {
   const developerInstructions = mythraCodeDeveloperInstructions(
-    Boolean(options.childAgentBridge?.toolNames.includes("spawn_agent")),
+    Boolean(options.childAgentBridge?.toolNames.includes("spawn_mythra_agent")),
     Boolean(options.childAgentBridge?.toolNames.includes("propose_agent_settings")),
   );
   const params: JsonObject = {
@@ -175,7 +175,7 @@ export function threadResumeParams(
   } = {},
 ): JsonObject {
   const developerInstructions = mythraCodeDeveloperInstructions(
-    Boolean(options.childAgentBridge?.toolNames.includes("spawn_agent")),
+    Boolean(options.childAgentBridge?.toolNames.includes("spawn_mythra_agent")),
     Boolean(options.childAgentBridge?.toolNames.includes("propose_agent_settings")),
   );
   const modelProvider = runtimeModelProviderId(run.provider);

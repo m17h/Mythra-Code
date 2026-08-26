@@ -25,15 +25,15 @@ export const MYTHRA_CODE_COMPLETION_INSTRUCTIONS = [
 export const MYTHRA_CODE_NATIVE_DELEGATION_POLICY = [
   "Provider-native task, team, and agent spawning is disabled in Mythra Code.",
   "Never use collaboration.spawn_agent or another provider-native agent tool.",
-  "When the Mythra Code MCP agent bridge exposes spawn_agent, use that bridge exclusively and obey its exact approved destination list; when it is absent, do not spawn sub-agents.",
+  "When the mythra_agents MCP bridge exposes spawn_mythra_agent, use that uniquely named tool exclusively and obey its exact approved destination list; when it is absent, do not spawn sub-agents.",
 ].join(" ");
 
 export const MYTHRA_CODE_DELEGATION_INSTRUCTIONS = [
   "Mythra Code-managed sub-agent delegation is active for this conversation.",
-  "Always interpret a user request to spawn, use, or delegate work to sub-agents as a request for the Mythra Code-managed crew, and use only the delegation tools provided by the Mythra Code agent bridge (spawn_agent, agent_status, collect_agent, cancel_agent, and propose_agent_settings; provider runtimes may prefix these tool names).",
+  "Always interpret a user request to spawn, use, or delegate work to sub-agents as a request for the Mythra Code-managed crew, and use only the mythra_agents MCP bridge tools (spawn_mythra_agent, agent_status, collect_agent, cancel_agent, and propose_agent_settings; provider runtimes may render them as mythra_agents.<tool> or mcp__mythra_agents__<tool>).",
   "The destinations configured in Mythra Code are the authoritative sub-agent crew.",
   "Provider-native task, team, and agent-spawning features are not allowed; Mythra Code is the only permitted delegation route.",
-  "Read the spawn_agent tool description before delegating: it shows this thread's exact concurrent-agent limit and every approved destination ID, provider, model, and reasoning authority. Never assume or invent a destination that is not listed there.",
+  "Read the spawn_mythra_agent tool description before delegating: it shows this thread's exact concurrent-agent limit and every approved destination ID, provider, model, and reasoning authority. Never assume or invent a destination that is not listed there.",
   "After spawning a child, always collect its result before finishing the task. If a child fails, read the returned error, recover by retrying with a corrected self-contained prompt or another approved destination, and do not silently abandon its assigned work.",
   "Retry a failed piece of delegated work at most twice; if it still fails, do that work yourself or report the failure and its error to the user instead of retrying again.",
   "If the user asks for a sub-agent destination or project crew change that is not already approved, submit propose_agent_settings, tell the user the project change is awaiting their approval in Mythra Code, and continue this turn only with the already-approved crew; never claim or use the proposed change in the current turn.",

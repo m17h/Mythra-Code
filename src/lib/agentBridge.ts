@@ -9,7 +9,7 @@ import { childAgentSessionOptions } from "./childAgents";
  * launch descriptor is only an executable path plus a session-file path.
  */
 
-export type ChildAgentTool = "spawn_agent" | "agent_status" | "collect_agent" | "cancel_agent" | "propose_agent_settings";
+export type ChildAgentTool = "spawn_mythra_agent" | "agent_status" | "collect_agent" | "cancel_agent" | "propose_agent_settings";
 
 /** How a provider runtime should register the bridge as an MCP server. */
 export interface ChildAgentBridgeLaunch {

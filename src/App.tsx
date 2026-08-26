@@ -2474,7 +2474,7 @@ export default function App() {
         ? null
         : await runtimeInstanceId().catch(() => null);
       const capabilitySignature = subagentCapabilitySignature({
-        subagentsEnabled: Boolean(childBridge?.launch.toolNames.includes("spawn_agent")),
+        subagentsEnabled: Boolean(childBridge?.launch.toolNames.includes("spawn_mythra_agent")),
         subagentMax: resumedSubagentMax,
         bridgeInstanceId: childBridge?.launch.configPath,
       });

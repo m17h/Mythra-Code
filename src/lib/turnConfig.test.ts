@@ -150,17 +150,17 @@ describe("LM Studio provider configuration", () => {
 
 describe("cross-provider sub-agent bridge", () => {
   const bridge = {
-    name: "openkiwi",
+    name: "mythra_agents",
     command: "/Applications/Mythra Code.app/Contents/MacOS/mythra-code",
     args: ["--openkiwi-agent-bridge", "/data/child-agents/abc/session.json"],
     configPath: "/data/child-agents/abc/mcp.json",
-    toolNames: ["spawn_agent", "agent_status", "collect_agent", "cancel_agent"],
+    toolNames: ["spawn_mythra_agent", "agent_status", "collect_agent", "cancel_agent"],
   };
 
   it("registers the bridge as a per-thread MCP server", () => {
     expect(childAgentMcpConfig(bridge)).toEqual({
       mcp_servers: {
-        openkiwi: {
+        mythra_agents: {
           command: bridge.command,
           args: bridge.args,
           startup_timeout_sec: 30,
@@ -183,7 +183,7 @@ describe("cross-provider sub-agent bridge", () => {
       developerInstructions: expect.stringContaining(MYTHRA_CODE_DELEGATION_INSTRUCTIONS),
       config: {
         developer_instructions: expect.stringContaining(MYTHRA_CODE_DELEGATION_INSTRUCTIONS),
-        mcp_servers: { openkiwi: { command: bridge.command } },
+        mcp_servers: { mythra_agents: { command: bridge.command } },
         features: { multi_agent: false, multi_agent_v2: false },
       },
     });
@@ -197,7 +197,7 @@ describe("cross-provider sub-agent bridge", () => {
     const params = threadResumeParams({ ...baseRun, provider: "openrouter", model: "x-ai/grok-4.5" }, "thread-1", "/tmp/project", {
       childAgentBridge: bridge,
     });
-    expect(params.config).toMatchObject({ mcp_servers: { openkiwi: { args: bridge.args } } });
+    expect(params.config).toMatchObject({ mcp_servers: { mythra_agents: { args: bridge.args } } });
   });
 
   it("re-applies the bridge when an OpenAI thread is resumed after a runtime restart", () => {
@@ -206,7 +206,7 @@ describe("cross-provider sub-agent bridge", () => {
       developerInstructions: expect.stringContaining(MYTHRA_CODE_DELEGATION_INSTRUCTIONS),
       config: {
         developer_instructions: expect.stringContaining(MYTHRA_CODE_DELEGATION_INSTRUCTIONS),
-        mcp_servers: { openkiwi: { args: bridge.args } },
+        mcp_servers: { mythra_agents: { args: bridge.args } },
         features: { multi_agent: false, multi_agent_v2: false },
       },
     });
@@ -254,7 +254,7 @@ describe("cross-provider sub-agent bridge", () => {
     const params = threadStartParams(baseRun, "/work", { interactive: true, childAgentBridge: bridge });
     expect(params.config).toMatchObject({
       multi_agent_mode: { custom: expect.stringContaining("Never use collaboration.spawn_agent") },
-      mcp_servers: { openkiwi: { command: bridge.command } },
+      mcp_servers: { mythra_agents: { command: bridge.command } },
     });
   });
 });

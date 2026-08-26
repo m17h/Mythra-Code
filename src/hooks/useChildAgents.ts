@@ -474,7 +474,7 @@ export function useChildAgents(context: ChildAgentContext): {
           ...(error ? { error } : {}),
           ...(status === "failed" ? {
             retryable: true,
-            recovery: "Inspect the error, then use spawn_agent with a corrected self-contained prompt or another approved destination. Collect the replacement before finishing.",
+            recovery: "Inspect the error, then use spawn_mythra_agent with a corrected self-contained prompt or another approved destination. Collect the replacement before finishing.",
           } : {}),
         };
       }),
@@ -510,7 +510,7 @@ export function useChildAgents(context: ChildAgentContext): {
       ...(useTaskStore.getState().tasks[childId]?.error ? { error: useTaskStore.getState().tasks[childId]?.error } : {}),
       ...(lifecycle === "failed" ? {
         retryable: true,
-        recovery: "Retry this work with spawn_agent using a corrected self-contained prompt or another approved destination, then collect the replacement before finishing.",
+        recovery: "Retry this work with spawn_mythra_agent using a corrected self-contained prompt or another approved destination, then collect the replacement before finishing.",
       } : {}),
     };
   }, [linksIncludingPending]);
@@ -690,7 +690,7 @@ export function useChildAgents(context: ChildAgentContext): {
   const handleRequest = useCallback(async (request: ChildAgentRequest): Promise<void> => {
     try {
       let result: Record<string, unknown>;
-      if (request.tool === "spawn_agent") result = await spawnChild(request);
+      if (request.tool === "spawn_mythra_agent") result = await spawnChild(request);
       else if (request.tool === "agent_status") result = reportStatus(request);
       else if (request.tool === "collect_agent") result = await collectChild(request);
       else if (request.tool === "cancel_agent") result = await cancelChild(request);

@@ -98,7 +98,7 @@ function request(overrides: Partial<ChildAgentRequest> = {}): ChildAgentRequest 
   return {
     requestId: "request-1",
     sessionId: "session-1",
-    tool: "spawn_agent",
+    tool: "spawn_mythra_agent",
     arguments: { target: "terra", prompt: "Refactor the parser." },
     ...overrides,
   };
@@ -516,7 +516,7 @@ describe("useChildAgents", () => {
           status: "failed",
           error: "Provider connection failed",
           retryable: true,
-          recovery: expect.stringContaining("spawn_agent"),
+          recovery: expect.stringContaining("spawn_mythra_agent"),
         })],
       });
     });

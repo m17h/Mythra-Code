@@ -207,7 +207,7 @@ export async function ensureChildAgentBridge(
   if (recapture) launches.delete(policy.sessionId);
 
   const cached = launches.get(policy.sessionId);
-  if (cached?.toolNames.includes("spawn_agent")) return { policy, launch: cached, captured: false };
+  if (cached?.toolNames.includes("spawn_mythra_agent")) return { policy, launch: cached, captured: false };
   // A launch cached while delegation was off carries only the settings
   // proposal tool. Reusing it would run this turn with a roster visible in the
   // UI but no way to spawn into it, so — mirroring the check the proposal-only
