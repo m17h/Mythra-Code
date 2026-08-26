@@ -114,7 +114,7 @@ describe("SettingsModal", () => {
   });
 
   it("offers every registered theme and effort-slider style", () => {
-    render(<SettingsModal {...modalProps()} />);
+    const { container } = render(<SettingsModal {...modalProps()} />);
 
     expect(screen.getByRole("button", { name: /Mythra.*Deep graphite/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Kiwi.*electric green/ })).toBeInTheDocument();
@@ -129,6 +129,14 @@ describe("SettingsModal", () => {
     expect(screen.getByRole("button", { name: /Pixel.*VU meter/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Aurora.*northern-light/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Ink.*monochrome/ })).toBeInTheDocument();
+
+    const themeCards = container.querySelectorAll<HTMLButtonElement>(".theme-card");
+    const sliderCards = container.querySelectorAll<HTMLButtonElement>(".slider-style-card");
+    expect(themeCards[0]).toHaveTextContent("Mythra");
+    expect(themeCards[0]).toHaveAttribute("aria-pressed", "true");
+    expect(sliderCards[0]).toHaveTextContent("Aurora");
+    expect(sliderCards[0]).toHaveAttribute("aria-pressed", "true");
+    expect(DEFAULT_SETTINGS).toMatchObject({ theme: "mythra", effortSlider: "aurora" });
   });
 
   it("previews an effort-slider style immediately", () => {
