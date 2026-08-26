@@ -16,6 +16,18 @@ export const MYTHRA_CODE_COMPLETION_INSTRUCTIONS = [
   "Do not repeat routine tool-by-tool narration in the final response.",
 ].join(" ");
 
+/**
+ * Codex can inject a native team runtime independently of the older feature
+ * flags. Pinning a custom multi-agent mode keeps that second routing surface
+ * out of Mythra Code threads; the MCP bridge remains the only authority that
+ * can choose a provider/model destination.
+ */
+export const MYTHRA_CODE_NATIVE_DELEGATION_POLICY = [
+  "Provider-native task, team, and agent spawning is disabled in Mythra Code.",
+  "Never use collaboration.spawn_agent or another provider-native agent tool.",
+  "When the Mythra Code MCP agent bridge exposes spawn_agent, use that bridge exclusively and obey its exact approved destination list; when it is absent, do not spawn sub-agents.",
+].join(" ");
+
 export const MYTHRA_CODE_DELEGATION_INSTRUCTIONS = [
   "Mythra Code-managed sub-agent delegation is active for this conversation.",
   "Always interpret a user request to spawn, use, or delegate work to sub-agents as a request for the Mythra Code-managed crew, and use only the delegation tools provided by the Mythra Code agent bridge (spawn_agent, agent_status, collect_agent, cancel_agent, and propose_agent_settings; provider runtimes may prefix these tool names).",

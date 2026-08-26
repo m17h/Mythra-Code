@@ -21,11 +21,11 @@ export const THEMES: Array<{ id: ThemeName; name: string; description: string; s
 ];
 
 export const EFFORT_SLIDER_STYLES: Array<{ id: EffortSliderStyle; name: string; description: string }> = [
+  { id: "aurora", name: "Aurora", description: "A slow drift of northern-light pastels" },
   { id: "spectrum", name: "Spectrum", description: "Heat colors per level, sparks, and a burning Max" },
   { id: "classic", name: "Classic", description: "The original quiet accent-colored rail" },
   { id: "neon", name: "Neon", description: "Your model's accent, glowing hotter with effort" },
   { id: "pixel", name: "Pixel", description: "A chunky retro VU meter with a square thumb" },
-  { id: "aurora", name: "Aurora", description: "A slow drift of northern-light pastels" },
   { id: "ink", name: "Ink", description: "A bare monochrome line for zero distraction" },
 ];
 
@@ -50,7 +50,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   ultra: false,
   serviceTier: null,
   theme: "mythra",
-  effortSlider: "spectrum",
+  effortSlider: "aurora",
   notificationsEnabled: true,
   terminalScrollback: 100_000,
   uiScale: 100,

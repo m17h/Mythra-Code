@@ -29,7 +29,9 @@
 import { loadStored, storeValue } from "./storage";
 
 const STORAGE_KEY = "kiwi.threadSubagentCapabilities";
-const NEUTRAL = "off:1:";
+/** Bump whenever startup-only routing policy changes for loaded threads. */
+const RUNTIME_POLICY_REVISION = "managed-v2";
+const NEUTRAL = `${RUNTIME_POLICY_REVISION}:off:1:`;
 /** Longest signature worth trusting from disk; real ones are far shorter. */
 const MAX_SIGNATURE_LENGTH = 1024;
 
@@ -68,7 +70,7 @@ export function subagentCapabilitySignature(capabilities: SubagentCapabilities):
   // A parallel limit only means something while sub-agents are on, so nudging
   // it with the feature switched off is not a reason to reconfigure anything.
   const max = capabilities.subagentsEnabled ? Math.max(1, Math.floor(capabilities.subagentMax) || 1) : 1;
-  return `${capabilities.subagentsEnabled ? "on" : "off"}:${max}:${capabilities.bridgeInstanceId ?? ""}`;
+  return `${RUNTIME_POLICY_REVISION}:${capabilities.subagentsEnabled ? "on" : "off"}:${max}:${capabilities.bridgeInstanceId ?? ""}`;
 }
 
 export interface SubagentCapabilityPlan {

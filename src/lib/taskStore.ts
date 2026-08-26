@@ -483,7 +483,30 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       const exists = task.activities.some((entry) => entry.id === activity.id);
       const activityTurnId = activity.turnId ?? task.activeTurnId;
       const activities = exists
-        ? task.activities.map((entry) => entry.id === activity.id ? { ...activity, turnId: activity.turnId ?? entry.turnId ?? task.activeTurnId, turnStatus: activity.turnStatus ?? entry.turnStatus, timelineOrder: entry.timelineOrder } : entry)
+        ? task.activities.map((entry) => {
+            if (entry.id !== activity.id) return entry;
+            const representedChildren = activity.agent?.threadIds ?? entry.agent?.threadIds ?? [];
+            const terminalSpawn = entry.kind === "agent"
+              && entry.agent?.action === "spawn"
+              && ["completed", "cancelled", "interrupted", "failed", "error"].includes(entry.status ?? "");
+            const stoppedSpawn = ["cancelled", "interrupted"].includes(entry.status ?? "");
+            const childrenRemainTerminal = representedChildren.length > 0
+              && representedChildren.every((childId) => !["starting", "running"].includes(state.statuses[childId] ?? "idle"));
+            const lateReactivation = terminalSpawn
+              && isActiveAgentRecord(activity.status ?? "")
+              && childrenRemainTerminal;
+            const preserveStopped = stoppedSpawn && childrenRemainTerminal;
+            return {
+              ...activity,
+              // Stop can race final provider events. Once every represented
+              // child task is terminal, a late event may enrich the card but
+              // must never replace its explicit Stopped outcome.
+              status: lateReactivation || preserveStopped ? entry.status : activity.status,
+              turnId: activity.turnId ?? entry.turnId ?? task.activeTurnId,
+              turnStatus: activity.turnStatus ?? entry.turnStatus,
+              timelineOrder: entry.timelineOrder,
+            };
+          })
         : [...task.activities, withTimelineOrder({ ...activity, turnId: activity.turnId ?? task.activeTurnId })];
       const beginsNewWork = !exists
         && activity.kind !== "warning"
@@ -663,7 +686,14 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
   upsertAgent: (threadId, agent) => set((state) => {
     const task = state.tasks[threadId] ?? emptyTask(threadId);
     const exists = task.agents.some((entry) => entry.id === agent.id);
-    const agents = exists ? task.agents.map((entry) => entry.id === agent.id ? { ...entry, ...agent } : entry) : [...task.agents, agent];
+    const agents = exists ? task.agents.map((entry) => {
+      if (entry.id !== agent.id) return entry;
+      const terminal = ["completed", "cancelled", "interrupted", "failed", "error"].includes(entry.status);
+      const childRemainsTerminal = !["starting", "running"].includes(state.statuses[agent.id] ?? "idle");
+      const lateReactivation = terminal && isActiveAgentRecord(agent.status) && childRemainsTerminal;
+      const preserveStopped = ["cancelled", "interrupted"].includes(entry.status) && childRemainsTerminal;
+      return { ...entry, ...agent, status: lateReactivation || preserveStopped ? entry.status : agent.status };
+    }) : [...task.agents, agent];
     return { tasks: { ...state.tasks, [threadId]: { ...task, agents, updatedAt: Date.now() } } };
   }),
   beginAgentRun: (threadId, startedAt = Date.now()) => set((state) => {

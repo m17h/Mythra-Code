@@ -100,6 +100,27 @@ describe("ChatTimeline", () => {
     expect(screen.queryByText("inProgress")).not.toBeInTheDocument();
   });
 
+  it("renders a stopped child as terminal rather than working", () => {
+    render(<ActivityRow activity={{
+      id: "child-agent-stopped",
+      kind: "agent",
+      title: "Spawned Claude sub-agent",
+      status: "cancelled",
+      agent: {
+        action: "spawn",
+        provider: "claude",
+        model: "claude-opus-5",
+        task: "Audit the routing policy",
+        threadIds: ["child-stopped"],
+      },
+    }} />);
+
+    const card = screen.getByRole("article", { name: /Claude sub-agent stopped: Audit the routing policy/i });
+    expect(card).toHaveClass("status-cancelled");
+    expect(screen.getByText("Stopped")).toBeInTheDocument();
+    expect(screen.queryByText("Working")).not.toBeInTheDocument();
+  });
+
   it("renders a restored native Codex child through the provider Relay", () => {
     const snapshot = timelineFromTurns([{ id: "turn-1", items: [{
       id: "native-spawn",

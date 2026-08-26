@@ -1,7 +1,7 @@
 import type { AppSettings, CustomAgentProfile, PermissionMode, ScheduleRunSettings } from "../types";
 import type { ChildAgentBridgeLaunch } from "./agentBridge";
 import type { JsonObject } from "./codex";
-import { mythraCodeDeveloperInstructions } from "./completionPrompt";
+import { MYTHRA_CODE_NATIVE_DELEGATION_POLICY, mythraCodeDeveloperInstructions } from "./completionPrompt";
 import { resolveProviderSystemPrompt } from "./systemPrompt";
 import { DEFAULT_LM_STUDIO_BASE_URL } from "./appConfig";
 import { LM_STUDIO_RUNTIME_PROVIDER_ID, runtimeModelProviderId } from "./providerIds";
@@ -100,6 +100,11 @@ export function threadRuntimeConfig(run: ScheduleRunSettings, options: Pick<Thre
     ...lmStudioProviderConfig(run),
     project_doc_max_bytes: run.projectInstructionsEnabled ? 32_768 : 0,
     project_doc_fallback_filenames: [],
+    // Current Codex releases can enable their native team surface through the
+    // host's multi-agent mode even while both legacy feature flags are false.
+    // This suppresses that injected team role and leaves the exact Mythra Code
+    // MCP destination enum as the sole provider/model authority.
+    multi_agent_mode: { custom: MYTHRA_CODE_NATIVE_DELEGATION_POLICY },
     developer_instructions: mythraCodeDeveloperInstructions(openKiwiDelegation, openKiwiSettings),
     model_reasoning_effort: run.ultra ? "ultra" : run.reasoningEffort,
     ...((run.provider === "openrouter" || run.provider === "lmstudio") && Number.isFinite(contextWindow) && contextWindow > 0

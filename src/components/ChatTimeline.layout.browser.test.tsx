@@ -147,6 +147,11 @@ describe("ChatTimeline browser layout", () => {
     await settle();
     const completed = document.querySelector<HTMLElement>(".subagent-relay-card");
     expect(Math.round(completed!.getBoundingClientRect().height)).toBe(workingHeight);
+
+    view.rerender(<Shell messages={[]} activities={[activities[0], { ...relay, status: "cancelled" }]} running={false} />);
+    await settle();
+    const stopped = document.querySelector<HTMLElement>(".subagent-relay-card");
+    expect(Math.round(stopped!.getBoundingClientRect().height)).toBe(workingHeight);
   });
 
   it("never draws a row on top of the row above it after a prompt is appended", async () => {

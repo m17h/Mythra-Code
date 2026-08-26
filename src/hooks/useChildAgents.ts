@@ -185,6 +185,45 @@ function cutoffAlreadySettled(reason: unknown): boolean {
     .test(friendlyError(reason));
 }
 
+/**
+ * Make the parent roster and every Relay card representing a child agree with
+ * the provider cutoff. Spawn waves remain live while one represented sibling
+ * is genuinely active, then settle when the last worker stops.
+ */
+function settleChildInParent(
+  rootThreadId: string,
+  childThreadId: string,
+  prompt: string,
+  agentStatus: string,
+  activityStatus: "completed" | "cancelled" | "failed",
+): void {
+  const store = useTaskStore.getState();
+  const existing = store.tasks[rootThreadId]?.agents.find((entry) => entry.id === childThreadId);
+  store.upsertAgent(rootThreadId, {
+    id: childThreadId,
+    prompt,
+    status: agentStatus,
+    path: existing?.path,
+  });
+
+  const latest = useTaskStore.getState();
+  const rootTask = latest.tasks[rootThreadId];
+  if (!rootTask) return;
+  const activeAgentIds = new Set(rootTask.agents
+    .filter((agent) => isActiveAgentRecord(agent.status))
+    .map((agent) => agent.id));
+  for (const activity of rootTask.activities) {
+    if (activity.kind !== "agent" || activity.agent?.action !== "spawn") continue;
+    const represented = activity.agent.threadIds ?? [];
+    const representsChild = activity.id === `child-agent-${childThreadId}`
+      || represented.includes(childThreadId);
+    if (!representsChild) continue;
+    const siblingStillActive = represented.some((id) => activeAgentIds.has(id)
+      || isChildActive(latest.statuses[id] ?? "idle"));
+    if (!siblingStillActive) store.upsertActivity(rootThreadId, { ...activity, status: activityStatus });
+  }
+}
+
 export function useChildAgents(context: ChildAgentContext): {
   cancelChildAgentsFor: (rootThreadId: string) => Promise<void>;
   stopChildAgent: (rootThreadId: string, childThreadId: string) => Promise<void>;
@@ -393,9 +432,7 @@ export function useChildAgents(context: ChildAgentContext): {
           await hardStopChild(target.provider, childThreadId, result.turnId);
           taskStore.setActiveTurn(childThreadId, undefined);
           taskStore.setTaskStatus(childThreadId, "interrupted");
-          taskStore.upsertAgent(rootThreadId, { id: childThreadId, prompt: title, status: "interrupted" });
-          const spawnActivity = taskStore.tasks[rootThreadId]?.activities.find((activity) => activity.id === `child-agent-${childThreadId}`);
-          if (spawnActivity) taskStore.upsertActivity(rootThreadId, { ...spawnActivity, status: "cancelled" });
+          settleChildInParent(rootThreadId, childThreadId, title, "interrupted", "cancelled");
           const interrupted = { ...link, terminalStatus: "cancelled" as const };
           pendingLinksRef.current.set(childThreadId, interrupted);
           ctx.persistChildAgentLinks((current) => ({ ...current, [childThreadId]: interrupted }));
@@ -495,7 +532,11 @@ export function useChildAgents(context: ChildAgentContext): {
       if (link.rootThreadId !== rootThreadId) {
         throw new Error(`\`${childThreadId}\` was not started from this thread.`);
       }
-      if (!isChildActive(taskStatusOf(childThreadId))) return;
+      if (!isChildActive(taskStatusOf(childThreadId))) {
+        const terminalStatus = childLifecycleForLink(link, taskStatusOf(childThreadId)) as "completed" | "cancelled" | "failed";
+        settleChildInParent(rootThreadId, childThreadId, link.title, terminalStatus, terminalStatus);
+        return;
+      }
       await hardStopChild(link.provider, childThreadId);
     } else {
       const agent = taskStore.tasks[rootThreadId]?.agents.find((entry) => entry.id === childThreadId);
@@ -510,12 +551,13 @@ export function useChildAgents(context: ChildAgentContext): {
     taskStore.setActiveTurn(childThreadId, undefined);
     taskStore.setTaskStatus(childThreadId, "interrupted");
     const existing = taskStore.tasks[rootThreadId]?.agents.find((entry) => entry.id === childThreadId);
-    taskStore.upsertAgent(rootThreadId, {
-      id: childThreadId,
-      prompt: link?.title ?? existing?.prompt ?? "Delegated task",
-      status: "interrupted",
-      path: existing?.path,
-    });
+    settleChildInParent(
+      rootThreadId,
+      childThreadId,
+      link?.title ?? existing?.prompt ?? "Delegated task",
+      "interrupted",
+      "cancelled",
+    );
     void auditEvent("childAgent.stopped", { rootThreadId, childThreadId, kind: link ? "cross-provider" : "native" });
   }, [linksIncludingPending]);
 
@@ -738,14 +780,13 @@ export function useChildAgents(context: ChildAgentContext): {
           if (!latest || latest.terminalStatus === terminalStatus) return current;
           return { ...current, [link.childThreadId]: { ...latest, terminalStatus } };
         });
-        const store = useTaskStore.getState();
-        store.upsertAgent(link.rootThreadId, {
-          id: link.childThreadId,
-          prompt: link.title,
-          status: childLifecycle(status),
-        });
-        const spawnActivity = store.tasks[link.rootThreadId]?.activities.find((activity) => activity.id === `child-agent-${link.childThreadId}`);
-        if (spawnActivity) store.upsertActivity(link.rootThreadId, { ...spawnActivity, status: terminalStatus });
+        settleChildInParent(
+          link.rootThreadId,
+          link.childThreadId,
+          link.title,
+          childLifecycle(status),
+          terminalStatus,
+        );
       }
     });
     return unsubscribe;
@@ -766,14 +807,13 @@ export function useChildAgents(context: ChildAgentContext): {
         if (!latest || latest.terminalStatus === terminalStatus) return current;
         return { ...current, [link.childThreadId]: { ...latest, terminalStatus } };
       });
-      const store = useTaskStore.getState();
-      store.upsertAgent(link.rootThreadId, {
-        id: link.childThreadId,
-        prompt: link.title,
-        status: terminalStatus,
-      });
-      const spawnActivity = store.tasks[link.rootThreadId]?.activities.find((activity) => activity.id === `child-agent-${link.childThreadId}`);
-      if (spawnActivity) store.upsertActivity(link.rootThreadId, { ...spawnActivity, status: terminalStatus });
+      settleChildInParent(
+        link.rootThreadId,
+        link.childThreadId,
+        link.title,
+        terminalStatus,
+        terminalStatus,
+      );
     }
   }, [context.links]);
 
@@ -802,7 +842,7 @@ export function useChildAgents(context: ChildAgentContext): {
         }
         taskStore.setActiveTurn(link.childThreadId, undefined);
         taskStore.setTaskStatus(link.childThreadId, "interrupted");
-        taskStore.upsertAgent(rootThreadId, { id: link.childThreadId, prompt: link.title, status: "interrupted" });
+        settleChildInParent(rootThreadId, link.childThreadId, link.title, "interrupted", "cancelled");
       }),
       // Provider-native children have no cross-provider ownership link, but if
       // their runtime exposed a turn id we can still cut them off independently.
@@ -818,7 +858,7 @@ export function useChildAgents(context: ChildAgentContext): {
         }
         taskStore.setActiveTurn(agent.id, undefined);
         taskStore.setTaskStatus(agent.id, "interrupted");
-        taskStore.upsertAgent(rootThreadId, { ...agent, status: "interrupted" });
+        settleChildInParent(rootThreadId, agent.id, agent.prompt, "interrupted", "cancelled");
       }),
     ]);
     const failures = results.flatMap((result) => result.status === "rejected" ? [friendlyError(result.reason)] : []);

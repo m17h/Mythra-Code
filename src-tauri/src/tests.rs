@@ -1370,6 +1370,10 @@ base_url = \"https://openrouter.ai/api/v1\"
     // Managed keys are re-asserted…
     assert!(updated.contains("project_doc_max_bytes = 0"));
     assert!(updated.contains("cli_auth_credentials_store = \"keyring\""));
+    assert!(updated.contains(
+        "multi_agent_mode = { custom = \"Provider-native task, team, and agent spawning is disabled in Mythra Code."
+    ));
+    assert!(updated.contains("Never use collaboration.spawn_agent"));
     assert!(updated.contains("max_threads = 1"));
     // The Mythra Code bridge is the only spawning authority, so a drifted native
     // depth is pulled back to one alongside the thread ceiling.

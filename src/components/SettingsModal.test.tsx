@@ -114,7 +114,7 @@ describe("SettingsModal", () => {
   });
 
   it("offers every registered theme and effort-slider style", () => {
-    render(<SettingsModal {...modalProps()} />);
+    const { container } = render(<SettingsModal {...modalProps()} />);
 
     expect(screen.getByRole("button", { name: /Mythra.*Deep graphite/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Kiwi.*electric green/ })).toBeInTheDocument();
@@ -129,6 +129,14 @@ describe("SettingsModal", () => {
     expect(screen.getByRole("button", { name: /Pixel.*VU meter/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Aurora.*northern-light/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Ink.*monochrome/ })).toBeInTheDocument();
+
+    const themeCards = container.querySelectorAll<HTMLButtonElement>(".theme-card");
+    const sliderCards = container.querySelectorAll<HTMLButtonElement>(".slider-style-card");
+    expect(themeCards[0]).toHaveTextContent("Mythra");
+    expect(themeCards[0]).toHaveAttribute("aria-pressed", "true");
+    expect(sliderCards[0]).toHaveTextContent("Aurora");
+    expect(sliderCards[0]).toHaveAttribute("aria-pressed", "true");
+    expect(DEFAULT_SETTINGS).toMatchObject({ theme: "mythra", effortSlider: "aurora" });
   });
 
   it("previews an effort-slider style immediately", () => {
@@ -145,6 +153,53 @@ describe("SettingsModal", () => {
     expect(screen.getByRole("button", { name: /Models & accounts/ })).toHaveAttribute("aria-current", "page");
     expect(screen.getByRole("heading", { name: "Default model provider" })).toBeInTheDocument();
     expect(screen.getByText(/Each thread keeps its own provider/)).toBeInTheDocument();
+  });
+
+  it("chooses and saves a default model from an app-owned provider menu", () => {
+    const onSave = vi.fn();
+    const { container } = render(<SettingsModal {...modalProps({
+      initialSection: "models",
+      settings: { ...DEFAULT_SETTINGS, provider: "claude", model: "claude-opus-5" },
+      onSave,
+    })} />);
+
+    const trigger = screen.getByRole("button", { name: "Default Claude model" });
+    expect(trigger).toHaveAttribute("aria-haspopup", "menu");
+    expect(trigger).toHaveTextContent("Opus 5");
+    expect(container.querySelector(".default-model-picker select")).not.toBeInTheDocument();
+
+    fireEvent.click(trigger);
+    expect(container.querySelector(".default-model-picker .app-select")).toHaveClass("opens-up");
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Sonnet 5/ }));
+    expect(trigger).toHaveTextContent("Sonnet 5");
+
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
+      provider: "claude",
+      model: "claude-sonnet-5",
+    }));
+  });
+
+  it("uses each provider's live model catalog in the default picker", () => {
+    const onSave = vi.fn();
+    render(<SettingsModal {...modalProps({
+      initialSection: "models",
+      settings: { ...DEFAULT_SETTINGS, provider: "cursor", model: "auto" },
+      cursorModels: [
+        { id: "auto", name: "Auto", configOptions: [] },
+        { id: "grok-4.5", name: "Grok 4.5", configOptions: [] },
+      ],
+      onSave,
+    })} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Default Cursor model" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Grok 4.5/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
+      provider: "cursor",
+      model: "grok-4.5",
+    }));
   });
 
   it("saves the chosen logo for OpenAI models", () => {

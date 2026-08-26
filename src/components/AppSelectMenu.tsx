@@ -23,6 +23,7 @@ export function AppSelectMenu({
   ariaLabel,
   placeholder = "Choose an option",
   searchable = false,
+  menuPlacement = "bottom",
   emptyMessage = "No options available",
   onChange,
 }: {
@@ -31,6 +32,7 @@ export function AppSelectMenu({
   ariaLabel: string;
   placeholder?: string;
   searchable?: boolean;
+  menuPlacement?: "top" | "bottom";
   emptyMessage?: string;
   onChange: (value: string) => void;
 }) {
@@ -98,7 +100,7 @@ export function AppSelectMenu({
   };
 
   return (
-    <div className={`app-select ${open ? "open" : ""}`} ref={rootRef} data-app-select-open={open || undefined}>
+    <div className={`app-select ${open ? "open" : ""} ${menuPlacement === "top" ? "opens-up" : ""}`} ref={rootRef} data-app-select-open={open || undefined}>
       <button
         ref={triggerRef}
         type="button"

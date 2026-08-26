@@ -109,7 +109,7 @@ export function subAgentStatusLabel(status: SubAgentWorkerStatus): string {
   if (status === "working") return "Working";
   if (status === "starting") return "Starting";
   if (status === "completed") return "Completed";
-  if (status === "cancelled") return "Cancelled";
+  if (status === "cancelled") return "Stopped";
   if (status === "failed") return "Failed";
   return "Idle";
 }

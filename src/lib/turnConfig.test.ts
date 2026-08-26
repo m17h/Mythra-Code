@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ScheduleRunSettings } from "../types";
-import { MYTHRA_CODE_DELEGATION_INSTRUCTIONS, mythraCodeDeveloperInstructions } from "./completionPrompt";
+import { MYTHRA_CODE_DELEGATION_INSTRUCTIONS, MYTHRA_CODE_NATIVE_DELEGATION_POLICY, mythraCodeDeveloperInstructions } from "./completionPrompt";
 
 /** Skill-mention plus completion guidance: what every turn carries. */
 const BASE_INSTRUCTIONS = mythraCodeDeveloperInstructions(false);
@@ -242,10 +242,19 @@ describe("cross-provider sub-agent bridge", () => {
     for (const params of [start, resume]) {
       expect(params).toMatchObject({
         config: {
+          multi_agent_mode: { custom: MYTHRA_CODE_NATIVE_DELEGATION_POLICY },
           agents: { max_threads: 1, max_depth: 1 },
           features: { multi_agent: false, multi_agent_v2: false },
         },
       });
     }
+  });
+
+  it("suppresses the newer host-injected team role even when the bridge is enabled", () => {
+    const params = threadStartParams(baseRun, "/work", { interactive: true, childAgentBridge: bridge });
+    expect(params.config).toMatchObject({
+      multi_agent_mode: { custom: expect.stringContaining("Never use collaboration.spawn_agent") },
+      mcp_servers: { openkiwi: { command: bridge.command } },
+    });
   });
 });

@@ -302,7 +302,7 @@ describe("subAgentStatusLabel", () => {
     expect(subAgentStatusLabel("working")).toBe("Working");
     expect(subAgentStatusLabel("starting")).toBe("Starting");
     expect(subAgentStatusLabel("completed")).toBe("Completed");
-    expect(subAgentStatusLabel("cancelled")).toBe("Cancelled");
+    expect(subAgentStatusLabel("cancelled")).toBe("Stopped");
     expect(subAgentStatusLabel("failed")).toBe("Failed");
     expect(subAgentStatusLabel("idle")).toBe("Idle");
   });
