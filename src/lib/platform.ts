@@ -12,3 +12,7 @@ export function primaryModifierPressed(
 export function primaryModifierLabel(platform?: string): "⌘" | "Ctrl" {
   return isMacPlatform(platform) ? "⌘" : "Ctrl";
 }
+
+export function isWindowsPlatform(platform = typeof navigator === "undefined" ? "" : navigator.platform): boolean {
+  return /^Win/i.test(platform);
+}

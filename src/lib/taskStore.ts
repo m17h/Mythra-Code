@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type { Activity, ChatMessage, PendingApproval, Turn } from "../types";
 import type { AgentRecord, TokenUsageView } from "../components/StudioDock";
 import type { AttachmentRecord } from "../components/StudioDock";
+import { EMPTY_REVIEW_DIFF, type ReviewDiff } from "./gitDiff";
 import { isActiveAgentRecord } from "./subAgentActivity";
 import { durationForTurn, recordTurnDuration } from "./turnDurations";
 import { recordCumulativeUsage, recordUsageDelta, resetUsageLedgerCache, usageForThread, USAGE_LEDGER_KEY } from "./usageLedger";
@@ -113,7 +114,12 @@ export interface ThreadTaskState {
   /** Only child activity created at or after this root turn belongs in the
    * live crew panel. A new user prompt advances this boundary. */
   agentRunStartedAt?: number;
-  diff: string;
+  /**
+   * What the Review panel shows for this thread, including where it came from
+   * and what it is taken against. Typed so no other surface can drop an
+   * unrelated command's stdout into the review state.
+   */
+  diff: ReviewDiff;
   usage: TokenUsageView | null;
   /** Local-provider transcript changes not yet acknowledged by durable disk
    * persistence. Dirty transcripts are never eligible for memory eviction. */
@@ -151,7 +157,7 @@ interface TaskStoreState {
   setActiveTurn: (threadId: string, turnId?: string) => void;
   completeTurn: (threadId: string, turnId: string | undefined, status: TaskStatus) => void;
   setTaskStatus: (threadId: string, status: TaskStatus, error?: string) => void;
-  setDiff: (threadId: string, diff: string) => void;
+  setDiff: (threadId: string, diff: ReviewDiff) => void;
   setUsage: (threadId: string, usage: TokenUsageView | null) => void;
   addUsage: (threadId: string, usage: TokenUsageView, eventId?: string) => void;
   upsertAgent: (threadId: string, agent: AgentRecord) => void;
@@ -190,7 +196,7 @@ function emptyTask(threadId: string, workspacePath?: string): ThreadTaskState {
     approvals: [],
     queuedTurns: queuedTurnsCache[threadId] ?? [],
     agents: [],
-    diff: "",
+    diff: EMPTY_REVIEW_DIFF,
     usage: usageForThread(threadId)?.usage ?? null,
     transcriptDirty: false,
     unread: false,

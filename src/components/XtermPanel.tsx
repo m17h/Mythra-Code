@@ -20,6 +20,7 @@ export function XtermPanel({
   const hostRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const cursorRef = useRef(0);
+  const generationRef = useRef(0);
 
   useEffect(() => {
     if (!hostRef.current) return;
@@ -71,6 +72,15 @@ export function XtermPanel({
     const sync = () => {
       const terminal = terminalRef.current;
       if (!terminal) return;
+      // Clear discards the buffer the cursor was measured against, so the
+      // screen is repainted from the new empty buffer rather than appended to.
+      const generation = outputStore.generation();
+      if (generation !== generationRef.current) {
+        generationRef.current = generation;
+        cursorRef.current = 0;
+        terminal.reset();
+        placeholderShown = false;
+      }
       const { text, cursor } = outputStore.read(cursorRef.current);
       cursorRef.current = cursor;
       if (!text) return;
@@ -81,6 +91,8 @@ export function XtermPanel({
       terminal.write(text.replace(/\n/g, "\r\n"));
     };
     cursorRef.current = 0;
+    generationRef.current = outputStore.generation();
+    terminalRef.current?.reset();
     if (!outputStore.appendedLength() && placeholder) {
       terminalRef.current?.write(placeholder.replace(/\n/g, "\r\n"));
       placeholderShown = true;

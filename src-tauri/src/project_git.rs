@@ -71,7 +71,10 @@ pub(super) struct WorktreeStatus {
     pub(super) base_commit: Option<String>,
     pub(super) changed_files: usize,
     pub(super) untracked_files: usize,
-    pub(super) ignored_files: Vec<String>,
+    /// Only the count is reported: the UI shows "N ignored", and a large
+    /// build output directory could otherwise serialize tens of thousands of
+    /// pathnames across the bridge for a number.
+    pub(super) ignored_file_count: usize,
     pub(super) ahead: usize,
     pub(super) behind: usize,
     pub(super) clean: bool,
@@ -401,6 +404,35 @@ pub(super) fn nul_paths(bytes: &[u8]) -> Result<Vec<PathBuf>, String> {
             Ok(path)
         })
         .collect()
+}
+
+/// Untracked files the repository's ignore rules exclude, NUL-separated.
+pub(super) const IGNORED_FILES_ARGS: &[&str] = &[
+    "ls-files",
+    "-z",
+    "--others",
+    "--ignored",
+    "--exclude-standard",
+];
+
+/// How many paths `args` reports, without materializing any of them. Used
+/// where only the count is needed; a generated-output directory can hold far
+/// more entries than are worth allocating or sending to the UI.
+pub(super) fn git_nul_path_count(cwd: &Path, args: &[&str]) -> Result<usize, String> {
+    let output = run_git(cwd, args, None)?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if detail.is_empty() {
+            "Could not inspect checkpoint files".into()
+        } else {
+            detail
+        });
+    }
+    Ok(output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|part| !part.is_empty())
+        .count())
 }
 
 pub(super) fn git_nul_paths(cwd: &Path, args: &[&str]) -> Result<Vec<PathBuf>, String> {
@@ -831,7 +863,7 @@ pub(super) fn worktree_status_sync(
             base_commit: None,
             changed_files: 0,
             untracked_files: 0,
-            ignored_files: Vec::new(),
+            ignored_file_count: 0,
             ahead: 0,
             behind: 0,
             clean: false,
@@ -856,19 +888,7 @@ pub(super) fn worktree_status_sync(
     )?;
     let changed_files = status.lines().filter(|line| !line.is_empty()).count();
     let untracked_files = status.lines().filter(|line| line.starts_with("??")).count();
-    let ignored_files = git_nul_paths(
-        &worktree,
-        &[
-            "ls-files",
-            "-z",
-            "--others",
-            "--ignored",
-            "--exclude-standard",
-        ],
-    )?
-    .into_iter()
-    .map(|path| path.to_string_lossy().into_owned())
-    .collect::<Vec<_>>();
+    let ignored_file_count = git_nul_path_count(&worktree, IGNORED_FILES_ARGS)?;
     let counts = git_stdout(
         &source,
         &[
@@ -896,7 +916,7 @@ pub(super) fn worktree_status_sync(
         base_commit: Some(base_commit.into()),
         changed_files,
         untracked_files,
-        ignored_files,
+        ignored_file_count,
         ahead,
         behind,
         clean: changed_files == 0,
@@ -1409,17 +1429,8 @@ pub(super) async fn worktree_remove(
             &["status", "--porcelain=v1", "--untracked-files=all"],
             None,
         )?;
-        let ignored = git_nul_paths(
-            &worktree,
-            &[
-                "ls-files",
-                "-z",
-                "--others",
-                "--ignored",
-                "--exclude-standard",
-            ],
-        )?;
-        if (!status.is_empty() || !ignored.is_empty()) && !force {
+        let ignored_file_count = git_nul_path_count(&worktree, IGNORED_FILES_ARGS)?;
+        if (!status.is_empty() || ignored_file_count > 0) && !force {
             return Err(
                 "The isolated worktree contains uncommitted, untracked, or ignored files".into(),
             );

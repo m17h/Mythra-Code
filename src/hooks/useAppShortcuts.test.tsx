@@ -8,10 +8,14 @@ function context(overrides: Partial<AppShortcutContext> = {}): AppShortcutContex
     commandPaletteOpen: false,
     threadOpen: true,
     running: true,
+    workspaceOpen: false,
+    workspaceAvailable: true,
     toggleCommandPalette: vi.fn(),
     openConversationSearch: vi.fn(),
     newThread: vi.fn(),
     openSettings: vi.fn(),
+    toggleWorkspace: vi.fn(),
+    closeWorkspace: vi.fn(),
     stopTurn: vi.fn(),
     ...overrides,
   };
@@ -78,6 +82,48 @@ describe("useAppShortcuts", () => {
 
     expect(deps.toggleCommandPalette).not.toHaveBeenCalled();
     expect(deps.newThread).not.toHaveBeenCalled();
+  });
+
+  it("toggles the Workspace dock with the primary modifier and B", () => {
+    const deps = context();
+    renderHook(() => useAppShortcuts(deps));
+
+    fireEvent.keyDown(document.body, { key: "b", ctrlKey: true });
+    expect(deps.toggleWorkspace).toHaveBeenCalledOnce();
+  });
+
+  it("leaves the Workspace shortcut alone outside a project", () => {
+    const deps = context({ workspaceAvailable: false });
+    renderHook(() => useAppShortcuts(deps));
+
+    fireEvent.keyDown(document.body, { key: "b", ctrlKey: true });
+    expect(deps.toggleWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("closes the Workspace with Escape only once nothing is running", () => {
+    const running = context({ running: true, workspaceOpen: true });
+    const { unmount } = renderHook(() => useAppShortcuts(running));
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    // Interrupting the turn remains Escape's first meaning.
+    expect(running.stopTurn).toHaveBeenCalledOnce();
+    expect(running.closeWorkspace).not.toHaveBeenCalled();
+    unmount();
+
+    const idle = context({ running: false, workspaceOpen: true });
+    renderHook(() => useAppShortcuts(idle));
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(idle.closeWorkspace).toHaveBeenCalledOnce();
+  });
+
+  it("does not swallow Escape while typing in the composer", () => {
+    const deps = context({ running: false, workspaceOpen: true });
+    renderHook(() => useAppShortcuts(deps));
+    const textarea = document.createElement("textarea");
+    document.body.append(textarea);
+
+    fireEvent.keyDown(textarea, { key: "Escape" });
+    expect(deps.closeWorkspace).not.toHaveBeenCalled();
+    textarea.remove();
   });
 
   it("uses fresh state and yields to a component that already handled the key", () => {

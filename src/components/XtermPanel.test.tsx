@@ -52,6 +52,7 @@ const outputStore = {
   read: () => ({ text: "", cursor: 0 }),
   subscribe: () => () => {},
   appendedLength: () => 0,
+  generation: () => 0,
 } as never;
 
 describe("XtermPanel", () => {

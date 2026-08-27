@@ -101,7 +101,7 @@ export interface CodexEventContext {
   onError: (message: string) => void;
   onAuthRequired: () => void;
   onRateLimits: (limits: ProviderRateLimits | null) => void;
-  onTerminalOutput: (delta: string) => void;
+  onTerminalOutput: (delta: string, processId?: string) => void;
   onTurnCompleted: (threadId: string, turn: Turn | null) => void;
   onApprovalRequested: (threadId: string) => void;
   onAccountUpdated: () => void;
@@ -257,7 +257,13 @@ export function routeCodexEvent(event: CodexEvent, ctx: CodexEventContext): void
     return;
   }
   if (method === "turn/diff/updated") {
-    useTaskStore.getState().setDiff(eventThreadId, String(params.diff ?? ""));
+    // The runtime's live turn diff, against whatever remote the thread tracks.
+    useTaskStore.getState().setDiff(eventThreadId, {
+      text: String(params.diff ?? ""),
+      source: "runtime",
+      baseline: "the tracked remote branch",
+      untrackedPaths: [],
+    });
     return;
   }
   if (method === "thread/tokenUsage/updated") {
@@ -284,7 +290,11 @@ export function routeCodexEvent(event: CodexEvent, ctx: CodexEventContext): void
     return;
   }
   if (method === "command/exec/outputDelta") {
-    ctx.onTerminalOutput(decodeTerminalChunk(params.deltaBase64, String(params.processId ?? eventThreadId)));
+    const processId = typeof params.processId === "string" ? params.processId : undefined;
+    ctx.onTerminalOutput(
+      decodeTerminalChunk(params.deltaBase64, processId ?? eventThreadId),
+      processId,
+    );
     return;
   }
   if (method === "account/rateLimits/updated") {

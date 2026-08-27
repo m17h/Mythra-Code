@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef } from "react";
 import { auditEvent, rpc } from "../lib/codex";
 import { friendlyError } from "../lib/errors";
 import { useTaskStore, type TaskStatus } from "../lib/taskStore";
+import { shellCommand } from "../lib/shellCommand";
 import { commandSandbox, threadStartParams, turnStartParams } from "../lib/turnConfig";
 import type { LMStudioModel } from "../lib/lmStudio";
 import {
@@ -392,7 +393,7 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
               let result: { exitCode: number; stdout: string; stderr: string };
               try {
                 result = await rpc<{ exitCode: number; stdout: string; stderr: string }>("command/exec", {
-                  command: ["/bin/zsh", "-lc", command],
+                  command: shellCommand(command),
                   processId,
                   cwd: project.path,
                   timeoutMs: 30 * 60_000,

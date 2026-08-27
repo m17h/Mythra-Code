@@ -2,20 +2,27 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { STUDIO_DOCK_EXIT_MS, StudioDock } from "./StudioDock";
 import { providerAccountUsage } from "../lib/providerUsage";
+import { EMPTY_REVIEW_DIFF, type ReviewDiff } from "../lib/gitDiff";
 import type { UsageDisplayMode } from "../types";
 
 vi.mock("./XtermPanel", () => ({ XtermPanel: () => null }));
+
+function reviewDiff(text: string, overrides: Partial<ReviewDiff> = {}): ReviewDiff {
+  return { ...EMPTY_REVIEW_DIFF, text, ...overrides };
+}
 
 function dockProps(open: boolean): Parameters<typeof StudioDock>[0] {
   return {
     open,
     tab: "review",
     activeThread: false,
-    diff: "",
+    reviewDiff: EMPTY_REVIEW_DIFF,
     agents: [],
     terminalOutput: {} as never,
-    terminalCommand: "",
     terminalRunning: false,
+    terminalRunningCommand: "",
+    terminalRunningElsewhere: [],
+    commandsReadOnly: false,
     checkpoints: [],
     attachments: [],
     usage: null,
@@ -23,17 +30,15 @@ function dockProps(open: boolean): Parameters<typeof StudioDock>[0] {
     skills: [],
     mcpServers: [],
     gitOutput: "",
-    gitCommitMessage: "",
     gitCommitSuccess: "",
     gitCommitBusy: false,
-    gitRepositoryReady: true,
+    gitRepositoryState: "ready",
+    gitInitializing: false,
     githubAuthenticated: false,
     githubRepoStatus: null,
     githubRepoError: "",
     gitActionsReadOnly: false,
-    githubRemoteInput: "",
-    githubRepoName: "",
-    githubRepoVisibility: "private",
+    defaultRepositoryName: "",
     promptAudit: [],
     projectActions: [],
     workflows: [],
@@ -44,9 +49,9 @@ function dockProps(open: boolean): Parameters<typeof StudioDock>[0] {
     onReview: vi.fn(),
     onOpenAgent: vi.fn(),
     onStopAgent: vi.fn(),
-    onTerminalCommand: vi.fn(),
     onRunTerminal: vi.fn(),
     onStopTerminal: vi.fn(),
+    onClearTerminal: vi.fn(),
     onTerminalInput: vi.fn(),
     onTerminalResize: vi.fn(),
     onCheckpoint: vi.fn(),
@@ -70,10 +75,7 @@ function dockProps(open: boolean): Parameters<typeof StudioDock>[0] {
     onCompact: vi.fn(),
     onRefreshTools: vi.fn(),
     onGitAction: vi.fn(),
-    onGitCommitMessage: vi.fn(),
-    onGitHubRemoteInput: vi.fn(),
-    onGitHubRepoName: vi.fn(),
-    onGitHubRepoVisibility: vi.fn(),
+    onInitializeGit: vi.fn(),
     onGitHubAttach: vi.fn(),
     onGitHubCreate: vi.fn(),
     onOpenGitHubSettings: vi.fn(),
@@ -90,6 +92,194 @@ function dockProps(open: boolean): Parameters<typeof StudioDock>[0] {
 
 describe("StudioDock", () => {
   afterEach(() => vi.useRealTimers());
+
+  it("exposes the surfaces as a keyboard-navigable tablist", () => {
+    const onTab = vi.fn();
+    render(<StudioDock {...dockProps(true)} onTab={onTab} />);
+
+    const tablist = screen.getByRole("tablist", { name: "Workspace tools" });
+    expect(tablist).toHaveAttribute("aria-orientation", "vertical");
+    const review = screen.getByRole("tab", { name: "Review workspace tool" });
+    expect(review).toHaveAttribute("aria-selected", "true");
+    expect(review).toHaveAttribute("tabindex", "0");
+    // Unselected tabs are out of the tab order: one stop for the whole list.
+    expect(screen.getByRole("tab", { name: "Files workspace tool" })).toHaveAttribute("tabindex", "-1");
+
+    const panel = screen.getByRole("tabpanel");
+    expect(panel).toHaveAttribute("aria-labelledby", review.id);
+    expect(review).toHaveAttribute("aria-controls", panel.id);
+
+    fireEvent.keyDown(tablist, { key: "ArrowDown" });
+    expect(onTab).toHaveBeenLastCalledWith("agents");
+    fireEvent.keyDown(tablist, { key: "ArrowUp" });
+    expect(onTab).toHaveBeenLastCalledWith("files");
+    fireEvent.keyDown(tablist, { key: "End" });
+    expect(onTab).toHaveBeenLastCalledWith("git");
+    fireEvent.keyDown(tablist, { key: "Home" });
+    expect(onTab).toHaveBeenLastCalledWith("files");
+  });
+
+  it("says what the Review diff is taken against and names untracked files", () => {
+    render(
+      <StudioDock
+        {...dockProps(true)}
+        tab="review"
+        reviewDiff={reviewDiff(
+          "diff --git a/src/file.ts b/src/file.ts\n--- a/src/file.ts\n+++ b/src/file.ts\n+change",
+          { source: "repository", baseline: "HEAD", untrackedPaths: ["src/new.ts"] },
+        )}
+      />,
+    );
+
+    expect(screen.getByText("Repository changes")).toBeInTheDocument();
+    expect(screen.getByText("1 file changed · against HEAD")).toBeInTheDocument();
+    expect(screen.getByText(/1 untracked file is not part of this diff: src\/new\.ts/)).toBeInTheDocument();
+  });
+
+  it("explains why AI review is unavailable instead of accepting a rejected click", () => {
+    const onReview = vi.fn();
+    render(
+      <StudioDock
+        {...dockProps(true)}
+        tab="review"
+        activeThread
+        reviewDisabledReason="Inline review is available for OpenAI, OpenRouter, and LM Studio threads."
+        onReview={onReview}
+      />,
+    );
+
+    const button = screen.getByRole("button", { name: "AI review" });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("title", "Inline review is available for OpenAI, OpenRouter, and LM Studio threads.");
+    fireEvent.click(button);
+    expect(onReview).not.toHaveBeenCalled();
+  });
+
+  it("withholds per-file Git actions for a path it could not decode", () => {
+    const onGitPathAction = vi.fn();
+    render(
+      <StudioDock
+        {...dockProps(true)}
+        tab="review"
+        reviewDiff={reviewDiff('diff --git "a/broken\\q" "b/broken\\q"\nold mode 100644\nnew mode 100755')}
+        onGitPathAction={onGitPathAction}
+      />,
+    );
+
+    expect(screen.getByText("Name unavailable")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Stage" })).not.toBeInTheDocument();
+    expect(onGitPathAction).not.toHaveBeenCalled();
+  });
+
+  it("does not mount collapsed diff bodies and caps a very large expansion", () => {
+    const hugeFile = (name: string) => [
+      `diff --git a/${name} b/${name}`,
+      `--- a/${name}`,
+      `+++ b/${name}`,
+      "@@ -0,0 +1,900 @@",
+      ...Array.from({ length: 900 }, (_, index) => `+${name} line ${index}`),
+    ].join("\n");
+    const { container } = render(
+      <StudioDock
+        {...dockProps(true)}
+        tab="review"
+        reviewDiff={reviewDiff(`${hugeFile("one.ts")}\n${hugeFile("two.ts")}`)}
+      />,
+    );
+
+    // Two files: both collapsed, so no diff body exists in the document.
+    expect(container.querySelectorAll(".diff-body")).toHaveLength(0);
+    expect(screen.queryByText(/one\.ts line 0/)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("one.ts"));
+    expect(container.querySelectorAll(".diff-body")).toHaveLength(1);
+    // The expansion is capped, and the rest stays reachable.
+    expect(screen.getByText(/one\.ts line 0/)).toBeInTheDocument();
+    expect(screen.queryByText(/one\.ts line 800/)).not.toBeInTheDocument();
+    expect(screen.getByText(/more lines not shown/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Show \d/ }));
+    expect(screen.getByText(/one\.ts line 800/)).toBeInTheDocument();
+    expect(screen.queryByText(/more lines not shown/)).not.toBeInTheDocument();
+  });
+
+  it("offers Clear and names the project a command is running in", () => {
+    const onClearTerminal = vi.fn();
+    render(
+      <StudioDock
+        {...dockProps(true)}
+        tab="terminal"
+        projectName="Alpha"
+        projectPath="/alpha"
+        terminalRunning
+        terminalRunningCommand="npm test"
+        terminalRunningElsewhere={[{ scope: "/beta", command: "npm run build" }]}
+        onClearTerminal={onClearTerminal}
+      />,
+    );
+
+    expect(screen.getByRole("status")).toHaveTextContent("Running in Alpha · npm test");
+    expect(screen.getByText(/Still running in/)).toHaveTextContent("Still running in beta · npm run build");
+    fireEvent.click(screen.getByRole("button", { name: "Clear" }));
+    expect(onClearTerminal).toHaveBeenCalledOnce();
+  });
+
+  it("explains the read-only restriction on commands rather than waiting for a sandbox failure", () => {
+    render(<StudioDock {...dockProps(true)} tab="terminal" projectName="Alpha" projectPath="/alpha" commandsReadOnly />);
+    expect(screen.getByText(/commands run without permission to write inside Alpha/)).toBeInTheDocument();
+  });
+
+  it("shows an empty state on the Context surface", () => {
+    render(<StudioDock {...dockProps(true)} tab="context" />);
+    expect(screen.getByText("Nothing attached yet")).toBeInTheDocument();
+  });
+
+  it("does not make historical checkpoints look busy while a manual save runs", () => {
+    const checkpoint = {
+      id: "checkpoint-1",
+      threadId: "thread-1",
+      workspacePath: "/project",
+      label: "Run: repair the sidebar",
+      createdAt: Date.now(),
+      completedAt: Date.now(),
+      status: "ready" as const,
+      beforeCommit: "before",
+      afterCommit: "after",
+    };
+    const { container } = render(
+      <StudioDock {...dockProps(true)} tab="checkpoints" activeThread checkpoints={[checkpoint]} checkpointBusyId="manual" />,
+    );
+
+    expect(container.querySelector(".checkpoint-state-icon .spin")).toBeNull();
+    expect(screen.getByRole("button", { name: "Saving current state…" })).toBeDisabled();
+  });
+
+  it("names statuses instead of printing runtime enum values", () => {
+    render(
+      <StudioDock
+        {...dockProps(true)}
+        tab="agents"
+        agents={[{ id: "agent-12345678", prompt: "Audit the dock", status: "inProgress" }]}
+      />,
+    );
+    expect(screen.getByText("Working · agent-12")).toBeInTheDocument();
+    expect(screen.queryByText(/inProgress/)).not.toBeInTheDocument();
+  });
+
+  it("names MCP auth states and hides Connect for a server that has one", () => {
+    render(
+      <StudioDock
+        {...dockProps(true)}
+        tab="tools"
+        mcpServers={[
+          { name: "linear", status: "oAuth", tools: 4 },
+          { name: "stalled", status: "needsAuth", tools: 0 },
+        ]}
+      />,
+    );
+    expect(screen.getByText("Connected · OAuth · 4 tools")).toBeInTheDocument();
+    expect(screen.getByText("Sign-in required · 0 tools")).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Connect server" })).toHaveLength(1);
+  });
 
   it("keeps its contents mounted while the close animation runs", () => {
     vi.useFakeTimers();
@@ -299,7 +489,7 @@ describe("StudioDock", () => {
           baseCommit: "base",
           changedFiles: 2,
           untrackedFiles: 1,
-          ignoredFiles: [],
+          ignoredFileCount: 0,
           ahead: 1,
           behind: 0,
           clean: false,
@@ -337,7 +527,7 @@ describe("StudioDock", () => {
 
     expect(screen.getByRole("heading", { name: "Checkpoints" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Apply to project" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Worktrees workspace tool" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Worktrees workspace tool" })).toBeInTheDocument();
   });
 
   it("keeps Git inspection available but gates mutations in read-only mode", () => {
@@ -346,7 +536,6 @@ describe("StudioDock", () => {
         {...dockProps(true)}
         tab="git"
         gitActionsReadOnly
-        diff={"diff --git a/src/file.ts b/src/file.ts\n--- a/src/file.ts\n+++ b/src/file.ts\n+change"}
         githubAuthenticated
         githubRepoStatus={{ isRepo: true, repository: "owner/repo", branch: "main", upstream: "origin/main", ahead: 0, behind: 0 }}
       />,
@@ -355,10 +544,23 @@ describe("StudioDock", () => {
     expect(screen.getByRole("button", { name: "Status" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Diff" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Stage all" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Stage" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Commit all changes locally" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Push commits" })).toBeDisabled();
     expect(screen.getByText(/Read only allows Status and Diff/)).toBeInTheDocument();
+  });
+
+  it("gates per-file Review actions in read-only mode", () => {
+    render(
+      <StudioDock
+        {...dockProps(true)}
+        tab="review"
+        gitActionsReadOnly
+        reviewDiff={reviewDiff("diff --git a/src/file.ts b/src/file.ts\n--- a/src/file.ts\n+++ b/src/file.ts\n+change")}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Stage" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Revert src/file.ts" })).toBeDisabled();
   });
 
   it("makes local commits prominent, keeps the message optional, and confirms success", () => {
@@ -377,28 +579,51 @@ describe("StudioDock", () => {
     expect(screen.getByLabelText(/Commit message/i)).toHaveAttribute("placeholder", "Update project files");
     const commit = screen.getByRole("button", { name: "Commit all changes locally" });
     expect(commit).toBeEnabled();
+    fireEvent.change(screen.getByLabelText(/Commit message/i), { target: { value: "Polish the Git panel" } });
     fireEvent.click(commit);
-    expect(onGitAction).toHaveBeenCalledWith("commit");
+    expect(onGitAction).toHaveBeenCalledWith("commit", "Polish the Git panel");
     expect(screen.getByText("Committed successfully")).toBeInTheDocument();
     expect(screen.getByText(/Polish the Git panel/)).toBeInTheDocument();
   });
 
-  it("disables local Git mutations until the project has a repository", () => {
+  it("offers Git initialization and disables local mutations when the project is not a repository", () => {
+    const onInitializeGit = vi.fn();
     render(
       <StudioDock
         {...dockProps(true)}
         tab="git"
-        gitRepositoryReady={false}
+        gitRepositoryState="absent"
+        onInitializeGit={onInitializeGit}
         githubAuthenticated
-        githubRemoteInput="https://github.com/owner/repo.git"
-        githubRepoName="repo"
+        defaultRepositoryName="repo"
       />,
     );
 
+    expect(screen.getByText("This project is not a Git repository yet")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Initialize Git" }));
+    expect(onInitializeGit).toHaveBeenCalledOnce();
     expect(screen.getByRole("button", { name: "Commit all changes locally" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Stage all" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Revert all Git changes" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Attach remote" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
+  });
+
+  it("keeps local Git actions available when only the repository probe failed", () => {
+    // A failed GitHub/status probe says nothing about whether the folder is a
+    // repository, so it must not disable every local action.
+    render(
+      <StudioDock
+        {...dockProps(true)}
+        tab="git"
+        gitRepositoryState="unknown"
+        gitRepositoryStateDetail="Could not reach GitHub"
+        githubRepoError="Could not reach GitHub"
+      />,
+    );
+
+    expect(screen.queryByText("This project is not a Git repository yet")).not.toBeInTheDocument();
+    expect(screen.getByText(/Local Git actions stay available/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Stage all" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Commit all changes locally" })).toBeEnabled();
   });
 });

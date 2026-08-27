@@ -1,7 +1,16 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, ChevronRight, Eye, EyeOff, File, Folder, Home, LoaderCircle, Paperclip, Search, X } from "lucide-react";
 import { rpc } from "../lib/codex";
 import { friendlyError } from "../lib/errors";
+import {
+  basename,
+  isAbsolutePath,
+  joinPath,
+  parentPath,
+  pathSegments,
+  relativeDisplayPath,
+  stripTrailingSeparator,
+} from "../lib/paths";
 
 interface FileResult { root: string; path: string; file_name: string; score: number }
 interface DirectoryEntry { fileName: string; isDirectory: boolean; isFile: boolean }
@@ -17,16 +26,12 @@ function decode(value: string): string {
   }
 }
 
-function joinPath(parent: string, name: string): string {
-  return `${parent.replace(/\/$/, "")}/${name}`;
-}
-
 function containsIgnoredSegment(relativePath: string): boolean {
-  return relativePath.split("/").some((segment) => IGNORED_NAMES.has(segment));
+  return pathSegments(relativePath).some((segment) => IGNORED_NAMES.has(segment));
 }
 
 export function FileBrowser({ root, onAttach }: { root: string; onAttach: (path: string) => void }) {
-  const normalizedRoot = root.replace(/\/$/, "");
+  const normalizedRoot = stripTrailingSeparator(root);
   const [currentDirectory, setCurrentDirectory] = useState(normalizedRoot);
   const [query, setQuery] = useState("");
   const [directory, setDirectory] = useState<DirectoryEntry[]>([]);
@@ -34,14 +39,21 @@ export function FileBrowser({ root, onAttach }: { root: string; onAttach: (path:
   const [selected, setSelected] = useState<string | null>(null);
   const [preview, setPreview] = useState("");
   const [loading, setLoading] = useState(false);
+  const [previewLoading, setPreviewLoading] = useState(false);
   const [directoryError, setDirectoryError] = useState("");
   const [showIgnored, setShowIgnored] = useState(false);
+  // Only the newest preview request may publish. Selecting a large file and
+  // then a small one used to render the large file's late response under the
+  // small file's name.
+  const previewRequestRef = useRef(0);
 
   useEffect(() => {
     setCurrentDirectory(normalizedRoot);
     setSelected(null);
     setPreview("");
     setQuery("");
+    previewRequestRef.current += 1;
+    setPreviewLoading(false);
   }, [normalizedRoot]);
 
   useEffect(() => {
@@ -90,7 +102,7 @@ export function FileBrowser({ root, onAttach }: { root: string; onAttach: (path:
         .filter((entry) => showIgnored || !containsIgnoredSegment(entry.path))
         .slice(0, 150)
         .map((entry) => ({
-          path: entry.path.startsWith("/") ? entry.path : joinPath(entry.root, entry.path),
+          path: isAbsolutePath(entry.path) ? entry.path : joinPath(entry.root, entry.path),
           name: entry.path || entry.file_name,
           directory: false,
         }));
@@ -101,14 +113,16 @@ export function FileBrowser({ root, onAttach }: { root: string; onAttach: (path:
       .map((entry) => ({ path: joinPath(currentDirectory, entry.fileName), name: entry.fileName, directory: entry.isDirectory }));
   }, [currentDirectory, directory, query, results, showIgnored]);
 
-  const relativeDirectory = currentDirectory === normalizedRoot ? "" : currentDirectory.slice(normalizedRoot.length + 1);
-  const breadcrumbParts = relativeDirectory.split("/").filter(Boolean);
+  const relativeDirectory = relativeDisplayPath(normalizedRoot, currentDirectory);
+  const breadcrumbParts = pathSegments(relativeDirectory);
 
   const navigate = (path: string) => {
     setCurrentDirectory(path);
     setSelected(null);
     setPreview("");
     setQuery("");
+    previewRequestRef.current += 1;
+    setPreviewLoading(false);
   };
 
   const openEntry = async (path: string, directoryEntry: boolean) => {
@@ -116,22 +130,28 @@ export function FileBrowser({ root, onAttach }: { root: string; onAttach: (path:
       navigate(path);
       return;
     }
+    const request = ++previewRequestRef.current;
     setSelected(path);
-    setLoading(true);
+    setPreview("");
+    setPreviewLoading(true);
     try {
       const value = await rpc<{ dataBase64: string }>("fs/readFile", { path });
+      if (previewRequestRef.current !== request) return;
       const decoded = decode(value.dataBase64);
       setPreview(decoded.length > 250_000 ? `${decoded.slice(0, 250_000)}\n\n… Preview truncated at 250,000 characters.` : decoded);
     } catch (reason) {
+      if (previewRequestRef.current !== request) return;
       setPreview(`Couldn’t preview this file. ${friendlyError(reason)}`);
     } finally {
-      setLoading(false);
+      // The loading indicator belongs to the newest selection only; a slow
+      // earlier response must not clear it while the current file is loading.
+      if (previewRequestRef.current === request) setPreviewLoading(false);
     }
   };
 
   const goUp = () => {
     if (currentDirectory === normalizedRoot) return;
-    navigate(currentDirectory.slice(0, currentDirectory.lastIndexOf("/")) || normalizedRoot);
+    navigate(parentPath(currentDirectory) ?? normalizedRoot);
   };
 
   return (
@@ -139,22 +159,22 @@ export function FileBrowser({ root, onAttach }: { root: string; onAttach: (path:
       <div className="file-browser-toolbar">
         <button className="file-nav-button" onClick={goUp} disabled={currentDirectory === normalizedRoot} aria-label="Go to parent folder"><ArrowLeft size={13} /></button>
         <nav className="file-breadcrumbs" aria-label="Current project folder">
-          <button onClick={() => navigate(normalizedRoot)} title={normalizedRoot}><Home size={11} /><span>{normalizedRoot.split("/").pop()}</span></button>
+          <button onClick={() => navigate(normalizedRoot)} title={normalizedRoot}><Home size={11} /><span>{basename(normalizedRoot)}</span></button>
           {breadcrumbParts.map((part, index) => {
-            const path = joinPath(normalizedRoot, breadcrumbParts.slice(0, index + 1).join("/"));
+            const path = breadcrumbParts.slice(0, index + 1).reduce(joinPath, normalizedRoot);
             return <span key={path}><ChevronRight size={10} /><button onClick={() => navigate(path)}>{part}</button></span>;
           })}
         </nav>
         <button className={`file-nav-button ${showIgnored ? "active" : ""}`} onClick={() => setShowIgnored((show) => !show)} aria-pressed={showIgnored} aria-label={showIgnored ? "Hide generated and ignored folders" : "Show generated and ignored folders"} title={showIgnored ? "Hide generated folders" : "Show generated folders"}>{showIgnored ? <EyeOff size={13} /> : <Eye size={13} />}</button>
       </div>
-      <label className="file-search"><Search size={13} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search the whole project…" />{loading ? <LoaderCircle className="spin" size={13} /> : query && <button onClick={() => setQuery("")} aria-label="Clear file search"><X size={12} /></button>}</label>
+      <label className="file-search"><Search size={13} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search the whole project…" />{loading || previewLoading ? <LoaderCircle className="spin" size={13} /> : query && <button onClick={() => setQuery("")} aria-label="Clear file search"><X size={12} /></button>}</label>
       <div className="file-browser-body">
         <div className="file-results" aria-label={query ? "Project search results" : "Folder contents"}>
           {entries.map((entry) => <button key={entry.path} className={selected === entry.path ? "selected" : ""} onClick={() => void openEntry(entry.path, entry.directory)} title={entry.path}>{entry.directory ? <Folder size={13} /> : <File size={13} />}<span>{entry.name}</span>{entry.directory && <ChevronRight size={11} />}</button>)}
           {!entries.length && !loading && <span className="file-empty">{directoryError || (query ? "No matching files" : "This folder is empty")}</span>}
         </div>
         <div className="file-preview">
-          {selected ? <><div className="file-preview-bar"><span>{selected.slice(normalizedRoot.length + 1)}</span><button onClick={() => onAttach(selected)} aria-label={`Attach ${selected.split("/").pop()}`}><Paperclip size={11} /> Attach</button></div><pre>{preview}</pre></> : <div className="file-preview-empty"><File size={22} /><span>{query ? "Select a search result to preview it" : "Select a file to preview it"}</span></div>}
+          {selected ? <><div className="file-preview-bar"><span>{relativeDisplayPath(normalizedRoot, selected)}</span><button onClick={() => onAttach(selected)} aria-label={`Attach ${basename(selected)}`}><Paperclip size={11} /> Attach</button></div><pre>{previewLoading ? "Loading preview…" : preview}</pre></> : <div className="file-preview-empty"><File size={22} /><span>{query ? "Select a search result to preview it" : "Select a file to preview it"}</span></div>}
         </div>
       </div>
     </div>

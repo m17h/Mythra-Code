@@ -76,6 +76,9 @@ let commandExecImpl: (params: Record<string, unknown>) => unknown;
 let runtimeGeneration: number;
 let workspaceGitInfoImpl: () => unknown;
 let workspaceGitInitializeImpl: () => unknown;
+let lmStudioModelsImpl: (baseUrl: string) => unknown;
+/** Throwing here is how a runtime without the review diff behaves. */
+let gitDiffToRemoteImpl: () => unknown;
 
 function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
   if (command === "codex_runtime_status") {
@@ -126,6 +129,7 @@ function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
     };
   }
   if (command === "state_read") return null;
+  if (command === "audit_recent") return [];
   // Every app-server restart hands back a different identity, which is how the
   // app knows the threads that process had loaded are gone with it.
   if (command === "runtime_instance") return `runtime-${runtimeGeneration}`;
@@ -157,7 +161,7 @@ function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
         baseCommit: null,
         changedFiles: 0,
         untrackedFiles: 0,
-        ignoredFiles: [],
+        ignoredFileCount: 0,
         ahead: 0,
         behind: 0,
         clean: false,
@@ -170,7 +174,7 @@ function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
       baseCommit: "head",
       changedFiles: 0,
       untrackedFiles: 0,
-      ignoredFiles: [],
+      ignoredFileCount: 0,
       ahead: 0,
       behind: 0,
       clean: true,
@@ -216,6 +220,7 @@ function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
   }
   if (command === "child_agent_session_end" || command === "child_agent_finished" || command === "child_agent_respond") return null;
   if (command === "has_openrouter_key") return false;
+  if (command === "list_lmstudio_models") return lmStudioModelsImpl(String(args?.baseUrl ?? ""));
   if (command === "codex_rpc") {
     const method = args?.method as string;
     const params = (args?.params ?? {}) as Record<string, unknown>;
@@ -236,6 +241,15 @@ function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
       };
     }
     if (method === "command/exec") return commandExecImpl(params);
+    if (method === "gitDiffToRemote") return gitDiffToRemoteImpl();
+    if (method === "fs/readDirectory") {
+      return { entries: [
+        { fileName: "diagram.PNG", isDirectory: false, isFile: true },
+        { fileName: "notes.md", isDirectory: false, isFile: true },
+      ] };
+    }
+    if (method === "fs/readFile") return { dataBase64: btoa("preview") };
+    if (method === "fuzzyFileSearch") return { files: [] };
     if (method === "thread/read") {
       return { thread: { ...THREAD_A, id: String(params.threadId), turns: [] } };
     }
@@ -275,12 +289,57 @@ beforeEach(() => {
     createdCommit: true,
     trackedFiles: 2,
   });
+  lmStudioModelsImpl = () => ({ models: [] });
+  gitDiffToRemoteImpl = () => ({ diff: "" });
   invokeMock.mockReset();
   invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) =>
     stubInvoke(command, args),
   );
   localStorage.setItem("kiwi.projects", JSON.stringify([PROJECT_A, PROJECT_B]));
   localStorage.setItem("kiwi.workspaceMode", JSON.stringify("project"));
+});
+
+describe("model catalog request ordering", () => {
+  it("does not let a slow LM Studio startup probe overwrite a newer manual refresh", async () => {
+    const startup = deferred<{ models: unknown[] }>();
+    const manual = deferred<{ models: unknown[] }>();
+    let requests = 0;
+    const urls: string[] = [];
+    lmStudioModelsImpl = (baseUrl) => {
+      urls.push(baseUrl);
+      return requests++ === 0 ? startup.promise : manual.promise;
+    };
+
+    const user = userEvent.setup();
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("button", { name: /Models & accounts/ }));
+    await user.click(screen.getByRole("button", { name: /LM Studio.*Local models/ }));
+    fireEvent.change(screen.getByPlaceholderText("http://127.0.0.1:1234/v1"), { target: { value: "http://10.0.0.2:1234/v1" } });
+    await user.click(screen.getByRole("button", { name: "Test connection" }));
+    expect(urls).toEqual(["http://127.0.0.1:1234/v1", "http://10.0.0.2:1234/v1"]);
+
+    await act(async () => {
+      manual.resolve({ models: [{
+        type: "llm",
+        key: "new/model",
+        display_name: "New model",
+        capabilities: { trained_for_tool_use: true },
+      }] });
+      await manual.promise;
+    });
+    expect(await screen.findByText("1 model available")).toBeInTheDocument();
+
+    await act(async () => {
+      startup.resolve({ models: [
+        { type: "llm", key: "old/one", display_name: "Old one" },
+        { type: "llm", key: "old/two", display_name: "Old two" },
+      ] });
+      await startup.promise;
+    });
+    expect(screen.getByText("1 model available")).toBeInTheDocument();
+    expect(screen.queryByText("2 models available")).not.toBeInTheDocument();
+  });
 });
 
 describe("workspace switching during thread selection", () => {
@@ -569,7 +628,7 @@ describe("workspace switching during thread selection", () => {
     await renderApp();
 
     await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
-    await user.click(await screen.findByRole("button", { name: "Git workspace tool" }));
+    await user.click(await screen.findByRole("tab", { name: "Git workspace tool" }));
     await user.click(await screen.findByRole("button", { name: "Push commits" }));
 
     expect(await screen.findByText(/Everything up-to-date/)).toBeInTheDocument();
@@ -596,7 +655,7 @@ describe("workspace switching during thread selection", () => {
     await renderApp();
 
     await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
-    await user.click(await screen.findByRole("button", { name: "Git workspace tool" }));
+    await user.click(await screen.findByRole("tab", { name: "Git workspace tool" }));
     const commitButton = await screen.findByRole("button", { name: "Commit all changes locally" });
     await user.click(commitButton);
 
@@ -633,7 +692,7 @@ describe("workspace switching during thread selection", () => {
     await renderApp();
 
     await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
-    await user.click(await screen.findByRole("button", { name: "Git workspace tool" }));
+    await user.click(await screen.findByRole("tab", { name: "Git workspace tool" }));
     await user.type(screen.getByLabelText(/Commit message/i), "Commit Alpha changes");
     await user.click(screen.getByRole("button", { name: "Commit all changes locally" }));
     await waitFor(() => {
@@ -922,7 +981,9 @@ describe("workspace switching during thread selection", () => {
     expect(screen.getByText(/review the visible context below/)).toBeInTheDocument();
     expect(useTaskStore.getState().activeThreadId).toBeNull();
     expect(screen.getByText("Alpha thread")).toBeInTheDocument();
-    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining("from OpenAI to Claude"));
+    expect(window.confirm).toHaveBeenCalledWith(expect.stringMatching(/^Hand off the current thread to Claude\?/));
+    expect(window.confirm).not.toHaveBeenCalledWith(expect.stringContaining("Alpha thread"));
+    expect(window.confirm).not.toHaveBeenCalledWith(expect.stringContaining("Preserve the current API"));
     expect(JSON.parse(localStorage.getItem("kiwi.pendingHandoff") ?? "null")).toMatchObject({
       sourceThreadId: THREAD_A.id,
       targetProvider: "claude",
@@ -1323,5 +1384,160 @@ describe("composer sub-agent command center", () => {
     });
     expect(invokeMock.mock.calls.filter(([command]) => command === "restart_runtime")).toHaveLength(restartsAfterOpen);
     expect(codexCalls("thread/resume")).toHaveLength(1);
+  });
+});
+
+describe("workspace attachments", () => {
+  function codexCalls(method: string): Record<string, unknown>[] {
+    return invokeMock.mock.calls
+      .filter(([command, args]) => command === "codex_rpc" && args?.method === method)
+      .map(([, args]) => (args?.params ?? {}) as Record<string, unknown>);
+  }
+
+  /** The sidebar row, not the header title that repeats the open thread. */
+  function threadRow(name: string): HTMLElement {
+    const rows = screen.getAllByText(name).filter((node) => node.closest(".thread-row-wrap"));
+    return rows[0] ?? screen.getByText(name);
+  }
+
+  it("keeps attachment selections inside the thread they were made for", async () => {
+    const user = userEvent.setup();
+    resumeImpl = (params) => ({ thread: { ...THREAD_A, id: String(params.threadId), turns: [] } });
+    await renderApp();
+
+    await user.click(await screen.findByText("Alpha thread"));
+    await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
+    await user.click(await screen.findByRole("tab", { name: "Files workspace tool" }));
+    await user.click(await screen.findByRole("button", { name: "notes.md" }));
+    await user.click(await screen.findByRole("button", { name: "Attach notes.md" }));
+    expect(await screen.findByRole("button", { name: "Remove attachment notes.md" })).toBeInTheDocument();
+
+    // Switching conversations must not carry the file into the other thread.
+    await user.click(threadRow("Beta thread"));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Remove attachment notes.md" })).not.toBeInTheDocument());
+
+    // Returning to the original thread finds the file still chosen for it.
+    await user.click(threadRow("Alpha thread"));
+    expect(await screen.findByRole("button", { name: "Remove attachment notes.md" })).toBeInTheDocument();
+  });
+
+  it("sends a Files-tab image as a native image input", async () => {
+    const user = userEvent.setup();
+    resumeImpl = (params) => ({ thread: { ...THREAD_A, id: String(params.threadId), turns: [] } });
+    await renderApp();
+
+    await user.click(await screen.findByText("Alpha thread"));
+    await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
+    await user.click(await screen.findByRole("tab", { name: "Files workspace tool" }));
+    await user.click(await screen.findByRole("button", { name: "diagram.PNG" }));
+    await user.click(await screen.findByRole("button", { name: "Attach diagram.PNG" }));
+
+    const composer = await screen.findByPlaceholderText(/Ask Mythra Code to work in/);
+    await user.type(composer, "look at this{Enter}");
+
+    await waitFor(() => expect(codexCalls("turn/start")).not.toHaveLength(0));
+    const started = codexCalls("turn/start").at(-1) as { input?: Array<Record<string, unknown>> };
+    // The Files surface classifies extensions exactly like the picker, so the
+    // screenshot arrives as an image rather than as a bare path.
+    expect(started.input).toContainEqual(expect.objectContaining({
+      type: "localImage",
+      path: "/projects/alpha/diagram.PNG",
+    }));
+  });
+});
+
+describe("workspace review diff", () => {
+  const STAGED_DIFF = [
+    'diff --git "a/src/caf\\303\\251 note.ts" "b/src/caf\\303\\251 note.ts"',
+    '--- "a/src/caf\\303\\251 note.ts"',
+    '+++ "b/src/caf\\303\\251 note.ts"',
+    "@@ -0,0 +1 @@",
+    "+staged change",
+  ].join("\n");
+
+  it("falls back to staged and unstaged changes and names untracked files", async () => {
+    const user = userEvent.setup();
+    const commands: string[][] = [];
+    resumeImpl = (params) => ({ thread: { ...THREAD_A, id: String(params.threadId), turns: [] } });
+    gitDiffToRemoteImpl = () => { throw new Error("gitDiffToRemote is not available"); };
+    commandExecImpl = (params) => {
+      const command = params.command as string[];
+      commands.push(command);
+      if (command.join(" ") === "git diff --no-ext-diff HEAD --") {
+        return { exitCode: 0, stdout: STAGED_DIFF, stderr: "" };
+      }
+      if (command.join(" ") === "git ls-files --others --exclude-standard") {
+        return { exitCode: 0, stdout: "src/brand new.ts\n", stderr: "" };
+      }
+      return { exitCode: 0, stdout: "", stderr: "" };
+    };
+    await renderApp();
+
+    await user.click(await screen.findByText("Alpha thread"));
+    await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
+    await user.click(await screen.findByRole("tab", { name: "Review workspace tool" }));
+    await user.click(await screen.findByRole("button", { name: "Refresh" }));
+
+    // `git diff` alone would have hidden the staged change entirely.
+    await waitFor(() => expect(commands).toContainEqual(["git", "diff", "--no-ext-diff", "HEAD", "--"]));
+    expect(await screen.findByText("Repository changes")).toBeInTheDocument();
+    expect(screen.getByText("1 file changed · against HEAD")).toBeInTheDocument();
+    // A quoted non-ASCII path is decoded, so its per-file actions are real.
+    expect(screen.getByText("src/café note.ts")).toBeInTheDocument();
+    // Untracked files cannot appear in a diff, so they are named rather than
+    // silently implied not to exist.
+    expect(screen.getByText(/src\/brand new\.ts/)).toBeInTheDocument();
+  });
+
+  it("includes staged files when a repository has no first commit yet", async () => {
+    const user = userEvent.setup();
+    const commands: string[][] = [];
+    resumeImpl = (params) => ({ thread: { ...THREAD_A, id: String(params.threadId), turns: [] } });
+    gitDiffToRemoteImpl = () => { throw new Error("gitDiffToRemote is not available"); };
+    commandExecImpl = (params) => {
+      const command = params.command as string[];
+      commands.push(command);
+      const joined = command.join(" ");
+      if (joined === "git diff --no-ext-diff HEAD --") {
+        return { exitCode: 128, stdout: "", stderr: "fatal: bad revision 'HEAD'" };
+      }
+      if (joined === "git diff --no-ext-diff --cached --") {
+        return { exitCode: 0, stdout: STAGED_DIFF, stderr: "" };
+      }
+      return { exitCode: 0, stdout: "", stderr: "" };
+    };
+    await renderApp();
+
+    await user.click(await screen.findByText("Alpha thread"));
+    await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
+    await user.click(await screen.findByRole("tab", { name: "Review workspace tool" }));
+    await user.click(await screen.findByRole("button", { name: "Refresh" }));
+
+    await waitFor(() => expect(commands).toContainEqual(["git", "diff", "--no-ext-diff", "--cached", "--"]));
+    expect(screen.getByText("1 file changed · against the empty repository")).toBeInTheDocument();
+    expect(screen.getByText("src/café note.ts")).toBeInTheDocument();
+  });
+
+  it("keeps the Git console's own diff out of the Review panel", async () => {
+    const user = userEvent.setup();
+    resumeImpl = (params) => ({ thread: { ...THREAD_A, id: String(params.threadId), turns: [] } });
+    commandExecImpl = (params) => {
+      const command = params.command as string[];
+      if (command.join(" ") === "git diff --stat --patch") {
+        return { exitCode: 0, stdout: "diff --git a/console.ts b/console.ts\n+++ b/console.ts\n+console only", stderr: "" };
+      }
+      return { exitCode: 0, stdout: "", stderr: "" };
+    };
+    await renderApp();
+
+    await user.click(await screen.findByText("Alpha thread"));
+    await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
+    await user.click(await screen.findByRole("tab", { name: "Git workspace tool" }));
+    await user.click(await screen.findByRole("button", { name: "Diff" }));
+    await waitFor(() => expect(screen.getByText(/console only/)).toBeInTheDocument());
+
+    await user.click(screen.getByRole("tab", { name: "Review workspace tool" }));
+    expect(await screen.findByText("No changes loaded · against the tracked remote branch")).toBeInTheDocument();
+    expect(screen.queryByText("console.ts")).not.toBeInTheDocument();
   });
 });
