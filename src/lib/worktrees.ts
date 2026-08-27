@@ -49,7 +49,12 @@ export interface WorktreeStatus {
   baseCommit?: string | null;
   changedFiles: number;
   untrackedFiles: number;
-  ignoredFiles: string[];
+  /**
+   * How many ignored files the worktree holds. The native side deliberately
+   * reports a count rather than the pathnames: only the count is displayed,
+   * and a generated-output directory can contain tens of thousands of entries.
+   */
+  ignoredFileCount: number;
   ahead: number;
   behind: number;
   clean: boolean;

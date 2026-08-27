@@ -1,10 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   Bot,
   Boxes,
   Check,
-  CheckCircle2,
-  ChevronDown,
   ChevronRight,
   CircleStop,
   Clock3,
@@ -17,7 +15,6 @@ import {
   GitFork,
   Gauge,
   History,
-  LoaderCircle,
   Paperclip,
   Play,
   Plus,
@@ -29,19 +26,23 @@ import {
   ShieldCheck,
   TerminalSquare,
   Trash2,
-  Upload,
   UsersRound,
   Workflow as WorkflowIcon,
   Wrench,
   X,
 } from "lucide-react";
 import { FileBrowser } from "./FileBrowser";
-import { XtermPanel } from "./XtermPanel";
+import { DiffFileSections, DiffText } from "./DiffView";
+import { GitPanel, type GitPanelAction, type GitRepositoryState } from "./GitPanel";
+import { TerminalPanel } from "./TerminalPanel";
 import type { ProjectAction } from "../types";
 import { PANE_BOUNDS } from "../hooks/usePaneResize";
-import type { TerminalOutputStore } from "../hooks/useTerminal";
+import type { RunningTerminalCommand, TerminalOutputStore } from "../hooks/useTerminal";
 import type { WorkflowDefinition, WorkflowRunRecord } from "../lib/workflows";
 import { contextUsagePercent } from "../lib/contextUsage";
+import { parseDiffSections, type ReviewDiff } from "../lib/gitDiff";
+import type { StudioTab } from "../lib/studioTabs";
+import { agentStatusLabel, mcpServerConnected, mcpStatusLabel, worktreeStatusLabel } from "../lib/statusLabels";
 import {
   checkpointIsRestorable,
   checkpointStatusLabel,
@@ -53,7 +54,7 @@ import type { ThreadWorktreeRecord, WorktreeStatus } from "../lib/worktrees";
 import type { GitHubRepoStatus } from "../lib/github";
 import type { AccountUsageView } from "../lib/providerUsage";
 
-export type StudioTab = "files" | "review" | "agents" | "terminal" | "checkpoints" | "worktrees" | "context" | "usage" | "tools" | "git";
+export type { StudioTab } from "../lib/studioTabs";
 
 export interface AgentRecord {
   id: string;
@@ -99,8 +100,16 @@ const TABS: Array<{ id: StudioTab; label: string; icon: typeof CodeXml }> = [
   { id: "git", label: "Git", icon: GitBranch },
 ];
 
+const COMMAND_READ_ONLY_REASON = "Read only: commands run without permission to write in this project. Switch the thread to Ask or Full access first.";
+
 function PanelHeader({ icon: Icon, title, subtitle, onClose }: { icon: typeof CodeXml; title: string; subtitle: string; onClose: () => void }) {
   return <div className="studio-header"><span className="studio-header-icon"><Icon size={16} /></span><div><h2>{title}</h2><p>{subtitle}</p></div><button className="icon-button" onClick={onClose} aria-label="Close workspace tools"><X size={16} /></button></div>;
+}
+
+/** What the Review panel is actually showing, stated in the panel itself. */
+function reviewDiffSummary(diff: ReviewDiff, fileCount: number): string {
+  const files = fileCount ? `${fileCount} file${fileCount === 1 ? "" : "s"} changed` : "No changes loaded";
+  return `${files} · against ${diff.baseline}`;
 }
 
 export function StudioDock(props: {
@@ -117,11 +126,15 @@ export function StudioDock(props: {
   projectName?: string;
   projectPath?: string;
   activeThread: boolean;
-  diff: string;
+  reviewDiff: ReviewDiff;
+  /** Set when AI review cannot run for this thread's provider. */
+  reviewDisabledReason?: string;
   agents: AgentRecord[];
   terminalOutput: TerminalOutputStore;
-  terminalCommand: string;
   terminalRunning: boolean;
+  terminalRunningCommand: string;
+  terminalRunningElsewhere: RunningTerminalCommand[];
+  commandsReadOnly: boolean;
   checkpoints: CheckpointRecord[];
   checkpointHead?: CheckpointHead;
   checkpointBusyId?: string | null;
@@ -137,17 +150,16 @@ export function StudioDock(props: {
   skills: SkillView[];
   mcpServers: McpView[];
   gitOutput: string;
-  gitCommitMessage: string;
   gitCommitSuccess: string;
   gitCommitBusy: boolean;
-  gitRepositoryReady: boolean;
+  gitRepositoryState: GitRepositoryState;
+  gitRepositoryStateDetail?: string;
+  gitInitializing: boolean;
   githubAuthenticated: boolean;
   githubRepoStatus: GitHubRepoStatus | null;
   githubRepoError?: string;
   gitActionsReadOnly: boolean;
-  githubRemoteInput: string;
-  githubRepoName: string;
-  githubRepoVisibility: "private" | "public";
+  defaultRepositoryName: string;
   promptAudit: Array<{ label: string; value: string }>;
   projectActions: ProjectAction[];
   workflows: WorkflowDefinition[];
@@ -158,9 +170,9 @@ export function StudioDock(props: {
   onReview: () => void;
   onOpenAgent: (id: string) => void;
   onStopAgent: (id: string) => void;
-  onTerminalCommand: (value: string) => void;
-  onRunTerminal: () => void;
+  onRunTerminal: (command: string) => void;
   onStopTerminal: () => void;
+  onClearTerminal: () => void;
   onTerminalInput: (value: string) => void;
   onTerminalResize: (columns: number, rows: number) => void;
   onCheckpoint: () => void;
@@ -183,13 +195,10 @@ export function StudioDock(props: {
   onRefreshUsage: () => void;
   onCompact: () => void;
   onRefreshTools: () => void;
-  onGitAction: (action: "status" | "diff" | "stage" | "revert" | "commit" | "commitPush" | "fetch" | "pull" | "push" | "comments" | "ci" | "pr") => void;
-  onGitCommitMessage: (value: string) => void;
-  onGitHubRemoteInput: (value: string) => void;
-  onGitHubRepoName: (value: string) => void;
-  onGitHubRepoVisibility: (value: "private" | "public") => void;
-  onGitHubAttach: () => void;
-  onGitHubCreate: () => void;
+  onGitAction: (action: GitPanelAction, commitMessage?: string) => void;
+  onInitializeGit: () => void;
+  onGitHubAttach: (url: string) => void;
+  onGitHubCreate: (name: string, visibility: "private" | "public") => void;
   onOpenGitHubSettings: () => void;
   onGitPathAction: (action: "stage" | "revert", path: string) => void;
   onAttachPath: (path: string) => void;
@@ -214,36 +223,44 @@ export function StudioDock(props: {
   }, [props.open]);
   const renderContent = props.open || contentMounted;
   const contextPercent = contextUsagePercent(props.usage);
-  const diffSections = useMemo(() => {
-    if (!renderContent || !props.diff) return [];
-    const sections: Array<{ path: string; text: string; additions: number; deletions: number }> = [];
-    let current: { path: string; lines: string[]; additions: number; deletions: number } | null = null;
-    const push = () => {
-      if (current) sections.push({ path: current.path, text: current.lines.join("\n"), additions: current.additions, deletions: current.deletions });
-    };
-    for (const line of props.diff.split("\n")) {
-      if (line.startsWith("diff --git ")) {
-        push();
-        current = { path: line.match(/^diff --git a\/(.+?) b\/(.+)$/)?.[2] ?? line, lines: [line], additions: 0, deletions: 0 };
-      } else if (current) {
-        current.lines.push(line);
-        if (line.startsWith("+") && !line.startsWith("+++")) current.additions += 1;
-        else if (line.startsWith("-") && !line.startsWith("---")) current.deletions += 1;
-      }
-    }
-    push();
-    return sections;
-  }, [props.diff, renderContent]);
-  const diffFiles = useMemo(() => diffSections.map((section) => section.path), [diffSections]);
+  const tabsRef = useRef<HTMLDivElement>(null);
+  const idPrefix = useId();
+  const tabId = (tab: StudioTab) => `${idPrefix}-tab-${tab}`;
+  const panelId = `${idPrefix}-panel`;
+  const diffSections = useMemo(
+    () => (renderContent && props.tab === "review" ? parseDiffSections(props.reviewDiff.text) : []),
+    [props.reviewDiff.text, props.tab, renderContent],
+  );
+  const diffFileCount = useMemo(
+    () => new Set(diffSections.map((section) => section.path ?? section.displayPath)).size,
+    [diffSections],
+  );
   const checkpointById = useMemo(
     () => new Map(props.checkpoints.map((checkpoint) => [checkpoint.id, checkpoint])),
     [props.checkpoints],
   );
+
+  // Vertical tablist: arrows move between tabs and select as they go, Home and
+  // End jump to the ends. Focus follows selection so the panel below always
+  // matches what the roving tab stop is on.
+  const moveTab = (offset: number, absolute?: "first" | "last") => {
+    const index = TABS.findIndex((entry) => entry.id === props.tab);
+    const next = absolute === "first"
+      ? 0
+      : absolute === "last"
+        ? TABS.length - 1
+        : (index + offset + TABS.length) % TABS.length;
+    const target = TABS[next];
+    props.onTab(target.id);
+    tabsRef.current?.querySelector<HTMLButtonElement>(`[data-studio-tab="${target.id}"]`)?.focus();
+  };
+
   // When the dock is closed, skip all panel work (diff parsing, xterm,
   // file browser) — it re-rendered fully even while hidden.
   if (!renderContent) {
     return <aside className="studio-dock closed" aria-label="Project workspace tools" aria-hidden inert />;
   }
+  const projectLabel = props.projectName || "this project";
   return (
     <aside className={`studio-dock ${props.open ? "open" : "closed"}`} aria-label="Project workspace tools" aria-hidden={!props.open} inert={!props.open ? true : undefined}>
       {props.onResizeStart && (
@@ -260,10 +277,38 @@ export function StudioDock(props: {
           tabIndex={0}
         />
       )}
-      <nav className="studio-tabs" aria-label="Workspace tools">
-        {TABS.map(({ id, label, icon: Icon }) => <button key={id} className={props.tab === id ? "active" : ""} onClick={() => props.onTab(id)} title={label} aria-label={`${label} workspace tool`} aria-current={props.tab === id ? "page" : undefined}><Icon size={16} /><span>{label}</span></button>)}
-      </nav>
-      <div className="studio-panel">
+      <div
+        className="studio-tabs"
+        role="tablist"
+        aria-orientation="vertical"
+        aria-label="Workspace tools"
+        ref={tabsRef}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowDown" || event.key === "ArrowRight") { event.preventDefault(); moveTab(1); }
+          else if (event.key === "ArrowUp" || event.key === "ArrowLeft") { event.preventDefault(); moveTab(-1); }
+          else if (event.key === "Home") { event.preventDefault(); moveTab(0, "first"); }
+          else if (event.key === "End") { event.preventDefault(); moveTab(0, "last"); }
+        }}
+      >
+        {TABS.map(({ id, label, icon: Icon }) => (
+          <button
+            key={id}
+            id={tabId(id)}
+            data-studio-tab={id}
+            role="tab"
+            className={props.tab === id ? "active" : ""}
+            onClick={() => props.onTab(id)}
+            title={label}
+            aria-label={`${label} workspace tool`}
+            aria-selected={props.tab === id}
+            aria-controls={panelId}
+            tabIndex={props.tab === id ? 0 : -1}
+          >
+            <Icon size={16} /><span>{label}</span>
+          </button>
+        ))}
+      </div>
+      <div className="studio-panel" role="tabpanel" id={panelId} aria-labelledby={tabId(props.tab)} tabIndex={0}>
         {props.tab === "files" && <>
           <PanelHeader icon={FilePlus2} title="Project files" subtitle="Search, preview, and attach local context" onClose={props.onClose} />
           {props.projectPath ? <FileBrowser root={props.projectPath} onAttach={props.onAttachPath} /> : <Empty icon={FilePlus2} title="No project folder" text="Open a project to browse its files." />}
@@ -271,64 +316,66 @@ export function StudioDock(props: {
 
         {props.tab === "review" && <>
           <PanelHeader icon={SearchCode} title="Review center" subtitle="Inspect the live turn diff" onClose={props.onClose} />
-          <div className="studio-actions"><button onClick={props.onRefreshDiff}><RefreshCw size={13} /> Refresh</button><button onClick={props.onReview} disabled={!props.activeThread}><Bot size={13} /> AI review</button></div>
-          <div className="diff-summary"><span><CodeXml size={13} /> Working changes</span><small>{diffSections.length ? `${diffSections.length} file${diffSections.length === 1 ? "" : "s"} changed` : "No changes loaded"}</small></div>
-          {diffSections.length ? (
-            <div className="diff-file-sections">
-              {diffSections.map((section) => (
-                <details className="diff-file" key={section.path} open={diffSections.length === 1}>
-                  <summary>
-                    <code>{section.path}</code>
-                    <span className="diff-file-stats"><em className="added">+{section.additions}</em> <em className="removed">−{section.deletions}</em></span>
-                    <span className="diff-file-actions">
-                      <button
-                        onClick={(event) => {
-                          event.preventDefault();
-                          props.onGitPathAction("stage", section.path);
-                        }}
-                        disabled={props.gitActionsReadOnly}
-                        title={`Stage ${section.path}`}
-                      >
-                        <Plus size={10} /> Stage
-                      </button>
-                      <button
-                        className="danger-action"
-                        onClick={(event) => {
-                          event.preventDefault();
-                          props.onGitPathAction("revert", section.path);
-                        }}
-                        disabled={props.gitActionsReadOnly}
-                        title={`Revert ${section.path}`}
-                      >
-                        <RotateCcw size={10} />
-                      </button>
-                    </span>
-                  </summary>
-                  <DiffText text={section.text} />
-                </details>
-              ))}
+          <div className="studio-actions">
+            <button onClick={props.onRefreshDiff}><RefreshCw size={13} /> Refresh</button>
+            <button
+              onClick={props.onReview}
+              disabled={!props.activeThread || Boolean(props.reviewDisabledReason)}
+              title={props.reviewDisabledReason || (props.activeThread ? "Ask the model to review the working changes" : "Open a thread to request a review")}
+            ><Bot size={13} /> AI review</button>
+          </div>
+          <div className="diff-summary">
+            <span><CodeXml size={13} /> {props.reviewDiff.source === "repository" ? "Repository changes" : "Working changes"}</span>
+            <small>{reviewDiffSummary(props.reviewDiff, diffFileCount)}</small>
+          </div>
+          {props.reviewDiff.untrackedPaths.length > 0 && (
+            <div className="history-warning">
+              <ShieldCheck size={13} /> {props.reviewDiff.untrackedPaths.length}{props.reviewDiff.untrackedTruncated ? "+" : ""} untracked file{props.reviewDiff.untrackedPaths.length === 1 && !props.reviewDiff.untrackedTruncated ? " is" : "s are"} not part of this diff: {props.reviewDiff.untrackedPaths.slice(0, 6).join(", ")}{props.reviewDiff.untrackedPaths.length > 6 || props.reviewDiff.untrackedTruncated ? " …" : ""}
             </div>
+          )}
+          {diffSections.length ? (
+            <DiffFileSections
+              sections={diffSections}
+              readOnly={props.gitActionsReadOnly}
+              readOnlyReason="Switch this thread from Read only to Ask or Full access before staging or reverting files."
+              onPathAction={props.onGitPathAction}
+            />
           ) : (
-            <pre className="diff-view">{props.diff || "Run a task or refresh to inspect the current Git diff."}</pre>
+            <pre className="diff-view">{props.reviewDiff.text || "Run a task or refresh to inspect the current Git diff."}</pre>
           )}
         </>}
 
         {props.tab === "agents" && <>
           <PanelHeader icon={UsersRound} title="Agent control" subtitle="Direct children and delegated work" onClose={props.onClose} />
           <div className="metric-grid"><div><strong>{props.agents.length}</strong><span>Observed</span></div><div><strong>{props.agents.filter((a) => a.status === "inProgress" || a.status === "started").length}</strong><span>Active</span></div></div>
-          <div className="studio-list">{props.agents.length ? props.agents.map((agent) => <div className="studio-list-row" key={agent.id}><span className={`status-orb ${agent.status}`} /><div><strong>{agent.prompt || "Delegated task"}</strong><small>{agent.status} · {agent.id.slice(0, 8)}</small></div><button onClick={() => props.onOpenAgent(agent.id)} title="Open child thread" aria-label={`Open sub-agent ${agent.id.slice(0, 8)}`}><ChevronRight size={14} /></button><button onClick={() => props.onStopAgent(agent.id)} title="Stop child agent" aria-label={`Stop sub-agent ${agent.id.slice(0, 8)}`}><CircleStop size={14} /></button></div>) : <Empty icon={UsersRound} title="No sub-agents yet" text="When the model delegates, each child appears here." />}</div>
+          <div className="studio-list">{props.agents.length ? props.agents.map((agent) => <div className="studio-list-row" key={agent.id}><span className={`status-orb ${agent.status}`} /><div><strong>{agent.prompt || "Delegated task"}</strong><small>{agentStatusLabel(agent.status)} · {agent.id.slice(0, 8)}</small></div><button onClick={() => props.onOpenAgent(agent.id)} title="Open child thread" aria-label={`Open sub-agent ${agent.id.slice(0, 8)}`}><ChevronRight size={14} /></button><button onClick={() => props.onStopAgent(agent.id)} title="Stop child agent" aria-label={`Stop sub-agent ${agent.id.slice(0, 8)}`}><CircleStop size={14} /></button></div>) : <Empty icon={UsersRound} title="No sub-agents yet" text="When the model delegates, each child appears here." />}</div>
         </>}
 
         {props.tab === "terminal" && <>
-          <PanelHeader icon={TerminalSquare} title="Terminal" subtitle={props.projectName || "Project shell"} onClose={props.onClose} />
-          <XtermPanel outputStore={props.terminalOutput} placeholder={"MYTHRA CODE terminal ready\n"} running={props.terminalRunning} onInput={props.onTerminalInput} onResize={props.onTerminalResize} />
-          <div className="terminal-input"><span>$</span><input aria-label="Terminal command" value={props.terminalCommand} onChange={(e) => props.onTerminalCommand(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !props.terminalRunning) props.onRunTerminal(); }} placeholder="npm test" /><button aria-label={props.terminalRunning ? "Stop terminal command" : "Run terminal command"} onClick={props.terminalRunning ? props.onStopTerminal : props.onRunTerminal}>{props.terminalRunning ? <CircleStop size={14} /> : <Play size={14} />}</button></div>
+          <PanelHeader icon={TerminalSquare} title="Terminal" subtitle={projectLabel} onClose={props.onClose} />
+          <TerminalPanel
+            key={props.projectPath ?? ""}
+            outputStore={props.terminalOutput}
+            scope={props.projectPath ?? ""}
+            scopeLabel={projectLabel}
+            running={props.terminalRunning}
+            runningCommand={props.terminalRunningCommand}
+            runningElsewhere={props.terminalRunningElsewhere}
+            readOnly={props.commandsReadOnly}
+            onRun={props.onRunTerminal}
+            onStop={props.onStopTerminal}
+            onClear={props.onClearTerminal}
+            onInput={props.onTerminalInput}
+            onResize={props.onTerminalResize}
+          />
         </>}
 
         {props.tab === "checkpoints" && <>
           <PanelHeader icon={History} title="Checkpoints" subtitle="Automatic, reversible project snapshots" onClose={props.onClose} />
           <div className="studio-actions wrap">
-            <button onClick={props.onCheckpoint} disabled={!props.activeThread || Boolean(props.checkpointBusyId)}><Plus size={13} /> Save current state</button>
+            <button onClick={props.onCheckpoint} disabled={!props.activeThread || Boolean(props.checkpointBusyId)}>
+              <Plus size={13} /> {props.checkpointBusyId === "manual" ? "Saving current state…" : "Save current state"}
+            </button>
           </div>
           <div className="checkpoint-note"><ShieldCheck size={14} /><div><strong>Every model run is protected automatically.</strong><span>Restore moves the complete source worktree to that point. Mythra Code saves the current state first, while Git commits and ignored files remain unchanged.</span></div></div>
           <div className="checkpoint-list">
@@ -336,7 +383,10 @@ export function StudioDock(props: {
               const currentPosition = props.checkpointHead?.checkpointId === checkpoint.id
                 ? props.checkpointHead.position
                 : null;
-              const workingHere = props.checkpointBusyId === checkpoint.id || props.checkpointBusyId === "manual";
+              // Only the card an operation names is working. A manual save is
+              // not tied to any historical card, and treating "manual" as a
+              // match made every card in the list appear to be running.
+              const workingHere = props.checkpointBusyId === checkpoint.id;
               const busy = Boolean(props.checkpointBusyId);
               const legacy = !checkpoint.workspacePath || checkpoint.status === "legacy" || !checkpoint.beforeCommit;
               const canRestoreBefore = checkpointIsRestorable(checkpoint, "before");
@@ -405,13 +455,13 @@ export function StudioDock(props: {
               <div className="worktree-card-head">
                 <span><GitBranch size={14} /></span>
                 <div><strong>{props.worktree.branch}</strong><small>{props.worktree.path}</small></div>
-                <em>{props.worktree.status}</em>
+                <em>{worktreeStatusLabel(props.worktree.status)}</em>
               </div>
               {props.worktreeStatus && (
                 <div className="worktree-metrics">
                   <span><strong>{props.worktreeStatus.changedFiles}</strong> changed</span>
                   <span><strong>{props.worktreeStatus.ahead}</strong> commits ahead</span>
-                  <span><strong>{props.worktreeStatus.ignoredFiles.length}</strong> ignored</span>
+                  <span><strong>{props.worktreeStatus.ignoredFileCount}</strong> ignored</span>
                 </div>
               )}
               {props.worktree.status === "missing" || props.worktree.status === "removed" ? (
@@ -439,7 +489,11 @@ export function StudioDock(props: {
         {props.tab === "context" && <>
           <PanelHeader icon={Paperclip} title="Context" subtitle="Files, images, and task references" onClose={props.onClose} />
           <button className="attachment-drop" onClick={props.onAddAttachment}><FilePlus2 size={21} /><strong>Add files or images</strong><small>Images are sent natively; file paths become explicit task context.</small></button>
-          <div className="studio-list">{props.attachments.map((item) => <div className="studio-list-row" key={item.path}><Paperclip size={14} /><div><strong>{item.name}</strong><small>{item.kind} · {item.path}</small></div><button onClick={() => props.onRemoveAttachment(item.path)} aria-label={`Remove ${item.name}`}><X size={13} /></button></div>)}</div>
+          {props.attachments.length ? (
+            <div className="studio-list">{props.attachments.map((item) => <div className="studio-list-row" key={item.path}><Paperclip size={14} /><div><strong>{item.name}</strong><small>{item.kind === "image" ? "Image" : "File"} · {item.path}</small></div><button onClick={() => props.onRemoveAttachment(item.path)} aria-label={`Remove ${item.name}`}><X size={13} /></button></div>)}</div>
+          ) : (
+            <Empty icon={Paperclip} title="Nothing attached yet" text="Files and images added here are sent with this conversation's next message only." />
+          )}
         </>}
 
         {props.tab === "usage" && <>
@@ -508,60 +562,33 @@ export function StudioDock(props: {
             const running = latest?.status === "running";
             return <div className="studio-list-row" key={workflow.id}><WorkflowIcon size={14} /><div><strong>{workflow.name}</strong><small>{workflow.steps.length} step{workflow.steps.length === 1 ? "" : "s"} · {running ? `step ${latest.currentStep} of ${latest.stepCount}` : latest?.status ?? "ready"}</small></div>{running ? <button className="danger-action" onClick={() => props.onStopWorkflow(workflow.id)} title="Stop workflow"><CircleStop size={13} /></button> : <button onClick={() => props.onRunWorkflow(workflow)} title="Run workflow"><Play size={13} /></button>}{latest?.threadId && <button onClick={() => props.onOpenWorkflowRun(latest.threadId!)} title="Open workflow thread"><ChevronRight size={13} /></button>}</div>;
           }) : <span className="tool-empty-line">Add agent workflows in Settings.</span>}</div>
-          <h3 className="panel-label">Project actions</h3><div className="studio-list compact">{props.projectActions.length ? props.projectActions.map((action) => <div className="studio-list-row" key={action.id}><Play size={14} /><div><strong>{action.name}</strong><small>{action.command}</small></div><button onClick={() => props.onProjectAction(action)} title="Run action"><Play size={13} /></button></div>) : <span className="tool-empty-line">Add reusable actions in Settings.</span>}</div>
+          <h3 className="panel-label">Project actions</h3><div className="studio-list compact">{props.projectActions.length ? props.projectActions.map((action) => <div className="studio-list-row" key={action.id}><Play size={14} /><div><strong>{action.name}</strong><small>{action.command}</small></div><button onClick={() => props.onProjectAction(action)} title={props.commandsReadOnly ? COMMAND_READ_ONLY_REASON : `Run ${action.name} in ${projectLabel}`} aria-label={`Run ${action.name}`}><Play size={13} /></button></div>) : <span className="tool-empty-line">Add reusable actions in Settings.</span>}</div>
+          {props.commandsReadOnly && props.projectActions.length > 0 && <div className="history-warning"><ShieldCheck size={13} /> {COMMAND_READ_ONLY_REASON}</div>}
           <h3 className="panel-label">Skills</h3><div className="studio-list compact">{props.skills.length ? props.skills.map((skill) => <div className={`studio-list-row ${skill.enabled === false ? "disabled-tool" : ""}`} key={`${skill.name}-${skill.path}`}><Boxes size={14} /><div><strong>@{skill.name}</strong><small>{skill.description || skill.path || "Reusable workflow"}</small></div><button onClick={() => props.onToggleSkill(skill.path)} title={skill.enabled === false ? "Enable skill" : "Disable skill"}>{skill.enabled === false ? <Plus size={13} /> : <Check size={13} />}</button></div>) : <Empty icon={Boxes} title="No skills found" text="Choose a local skills folder in Settings → Skills." />}</div>
-          <h3 className="panel-label">MCP servers</h3><div className="studio-list compact">{props.mcpServers.length ? props.mcpServers.map((server) => <div className="studio-list-row" key={server.name}><span className={`status-orb ${server.status}`} /><div><strong>{server.name}</strong><small>{server.status} · {server.tools} tools</small></div>{!['ready','oAuth','bearerToken'].includes(server.status) && <button onClick={() => props.onConnectMcp(server)} title="Connect server"><ChevronRight size={13} /></button>}</div>) : <Empty icon={Wrench} title="No MCP servers" text="Configured servers and their tool counts appear here." />}</div>
+          <h3 className="panel-label">MCP servers</h3><div className="studio-list compact">{props.mcpServers.length ? props.mcpServers.map((server) => <div className="studio-list-row" key={server.name}><span className={`status-orb ${server.status}`} /><div><strong>{server.name}</strong><small>{mcpStatusLabel(server.status)} · {server.tools} tool{server.tools === 1 ? "" : "s"}</small></div>{!mcpServerConnected(server.status) && <button onClick={() => props.onConnectMcp(server)} title="Connect server"><ChevronRight size={13} /></button>}</div>) : <Empty icon={Wrench} title="No MCP servers" text="Configured servers and their tool counts appear here." />}</div>
         </>}
 
         {props.tab === "git" && <>
           <PanelHeader icon={GitBranch} title="Git workspace" subtitle="Shape changes without leaving MYTHRA CODE" onClose={props.onClose} />
-          {props.gitActionsReadOnly && <div className="history-warning"><ShieldCheck size={13} /> Read only allows Status and Diff. Switch thread access to Ask or Full access before changing Git or contacting GitHub.</div>}
-          <div className="github-repo-card">
-            <span className="github-repo-icon"><GitFork size={16} /></span>
-            <div>
-              <strong>{props.githubRepoStatus?.repository || (props.githubRepoError ? "GitHub status unavailable" : "No GitHub repository attached")}</strong>
-              <small>{props.githubRepoError || (props.githubRepoStatus?.repository
-                ? `${props.githubRepoStatus.branch || "detached"}${props.githubRepoStatus.upstream ? ` · ${props.githubRepoStatus.ahead} ahead · ${props.githubRepoStatus.behind} behind` : " · not pushed yet"}`
-                : props.githubAuthenticated ? "Attach an existing repository or create a new one." : "Connect GitHub in Settings to publish this project.")}</small>
-            </div>
-            {!props.githubAuthenticated && <button className="github-secondary-button" onClick={props.onOpenGitHubSettings}>Connect</button>}
-          </div>
-          {!props.githubRepoStatus?.repository && props.githubAuthenticated && (
-            <div className="github-connect-project">
-              <label className="dock-field"><span>Existing repository URL</span><input value={props.githubRemoteInput} onChange={(event) => props.onGitHubRemoteInput(event.target.value)} placeholder="https://github.com/owner/repository.git" /></label>
-              <button className="github-secondary-button" onClick={props.onGitHubAttach} disabled={props.gitActionsReadOnly || !props.gitRepositoryReady || !props.githubRemoteInput.trim()}><GitFork size={13} /> Attach remote</button>
-              <div className="github-create-divider"><span>or create one</span></div>
-              <div className="github-create-row">
-                <input className="github-repo-name-input" value={props.githubRepoName} onChange={(event) => props.onGitHubRepoName(event.target.value)} placeholder="repository-name" aria-label="New GitHub repository name" />
-                <span className="github-visibility-select">
-                  <select value={props.githubRepoVisibility} onChange={(event) => props.onGitHubRepoVisibility(event.target.value as "private" | "public")} aria-label="Repository visibility"><option value="private">Private</option><option value="public">Public</option></select>
-                  <ChevronDown size={13} aria-hidden="true" />
-                </span>
-                <button className="github-create-button" onClick={props.onGitHubCreate} disabled={props.gitActionsReadOnly || !props.gitRepositoryReady || !props.githubRepoName.trim()}><Plus size={13} /> Create</button>
-              </div>
-            </div>
-          )}
-          <form className="git-commit-card" onSubmit={(event) => { event.preventDefault(); props.onGitAction("commit"); }}>
-            <div className="git-commit-heading">
-              <span><GitCommitHorizontal size={17} /></span>
-              <div><strong>Commit changes locally</strong><small>Stages all current changes and saves them to this repository. Nothing is pushed.</small></div>
-            </div>
-            {props.gitCommitSuccess && (
-              <div className="git-commit-success" role="status" aria-live="polite">
-                <CheckCircle2 size={18} />
-                <div><strong>Committed successfully</strong><small>{props.gitCommitSuccess}</small></div>
-              </div>
-            )}
-            <label className="dock-field"><span>Commit message <em>Optional</em></span><input value={props.gitCommitMessage} onChange={(event) => props.onGitCommitMessage(event.target.value)} placeholder="Update project files" /></label>
-            <button className="git-commit-button" type="submit" disabled={props.gitActionsReadOnly || props.gitCommitBusy || !props.gitRepositoryReady} title={props.gitRepositoryReady ? "Stage and commit every current change to the local repository" : "Initialize Git for this project before committing"}>
-              {props.gitCommitBusy ? <LoaderCircle className="spin" size={16} /> : <GitCommitHorizontal size={16} />}
-              {props.gitCommitBusy ? "Committing…" : "Commit all changes locally"}
-            </button>
-          </form>
-          <div className="studio-actions wrap"><button onClick={() => props.onGitAction("status")}><RefreshCw size={13} /> Status</button><button onClick={() => props.onGitAction("diff")}><CodeXml size={13} /> Diff</button><button onClick={() => props.onGitAction("stage")} disabled={props.gitActionsReadOnly || !props.gitRepositoryReady}><Plus size={13} /> Stage all</button><button className="danger-action" onClick={() => props.onGitAction("revert")} aria-label="Revert all Git changes" disabled={props.gitActionsReadOnly || !props.gitRepositoryReady}><RotateCcw size={13} /> Revert all</button></div>
-          {diffFiles.length > 0 && <><h3 className="panel-label">Changed files</h3><div className="git-file-list">{diffFiles.map((path) => <div key={path}><code>{path}</code><button onClick={() => props.onGitPathAction("stage", path)} disabled={props.gitActionsReadOnly}><Plus size={11} /> Stage</button><button className="danger-action" onClick={() => props.onGitPathAction("revert", path)} disabled={props.gitActionsReadOnly}><RotateCcw size={11} /></button></div>)}</div></>}
-          <pre className="git-screen">{props.gitOutput || "Choose an action to inspect the repository."}</pre>
-          <div className="studio-actions wrap"><button onClick={() => props.onGitAction("commitPush")} disabled={props.gitActionsReadOnly || props.gitCommitBusy || !props.githubRepoStatus?.repository || !props.githubRepoStatus.branch}><Upload size={13} /> Commit & push</button><button onClick={() => props.onGitAction("fetch")} disabled={props.gitActionsReadOnly || !props.githubRepoStatus?.repository}><RefreshCw size={13} /> Fetch</button><button onClick={() => props.onGitAction("pull")} disabled={props.gitActionsReadOnly || !props.githubRepoStatus?.upstream}><RotateCw size={13} /> Pull</button><button onClick={() => props.onGitAction("push")} disabled={props.gitActionsReadOnly || !props.githubRepoStatus?.repository || !props.githubRepoStatus.branch} title={!props.githubRepoStatus?.branch ? "Check out a named branch before pushing" : "Push committed changes to GitHub"}><Upload size={13} /> Push commits</button><button onClick={() => props.onGitAction("comments")} disabled={props.gitActionsReadOnly || !props.githubRepoStatus?.repository}><CodeXml size={13} /> Review comments</button><button onClick={() => props.onGitAction("ci")} disabled={props.gitActionsReadOnly || !props.githubRepoStatus?.repository}><ShieldCheck size={13} /> CI checks</button><button onClick={() => props.onGitAction("pr")} disabled={props.gitActionsReadOnly || !props.githubRepoStatus?.repository}><GitFork size={13} /> Draft PR</button></div>
+          <GitPanel
+            key={props.projectPath ?? ""}
+            repositoryState={props.gitRepositoryState}
+            repositoryStateDetail={props.gitRepositoryStateDetail}
+            gitInitializing={props.gitInitializing}
+            gitOutput={props.gitOutput}
+            gitCommitSuccess={props.gitCommitSuccess}
+            gitCommitBusy={props.gitCommitBusy}
+            githubAuthenticated={props.githubAuthenticated}
+            githubRepoStatus={props.githubRepoStatus}
+            githubRepoError={props.githubRepoError}
+            readOnly={props.gitActionsReadOnly}
+            defaultRepositoryName={props.defaultRepositoryName}
+            onAction={props.onGitAction}
+            onInitializeGit={props.onInitializeGit}
+            onGitHubAttach={props.onGitHubAttach}
+            onGitHubCreate={props.onGitHubCreate}
+            onOpenGitHubSettings={props.onOpenGitHubSettings}
+          />
         </>}
       </div>
     </aside>
@@ -570,21 +597,4 @@ export function StudioDock(props: {
 
 function Empty({ icon: Icon, title, text }: { icon: typeof CodeXml; title: string; text: string }) {
   return <div className="studio-empty"><Icon size={21} /><strong>{title}</strong><span>{text}</span></div>;
-}
-
-function DiffText({ text }: { text: string }) {
-  return (
-    <pre className="diff-view">
-      {text.split("\n").map((line, index) => {
-        const kind = line.startsWith("+") && !line.startsWith("+++")
-          ? "diff-line-add"
-          : line.startsWith("-") && !line.startsWith("---")
-            ? "diff-line-del"
-            : line.startsWith("@@")
-              ? "diff-line-hunk"
-              : undefined;
-        return <span key={index} className={kind}>{`${line}\n`}</span>;
-      })}
-    </pre>
-  );
 }

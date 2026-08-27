@@ -151,8 +151,8 @@ describe("routeCodexEvent", () => {
 
   it("decodes terminal output deltas", () => {
     const ctx = makeContext();
-    routeCodexEvent({ method: "command/exec/outputDelta", params: { deltaBase64: btoa("ok\n") } }, ctx);
-    expect(ctx.onTerminalOutput).toHaveBeenCalledWith("ok\n");
+    routeCodexEvent({ method: "command/exec/outputDelta", params: { deltaBase64: btoa("ok\n"), processId: "process-7" } }, ctx);
+    expect(ctx.onTerminalOutput).toHaveBeenCalledWith("ok\n", "process-7");
   });
 
   it("records runtime warnings as activities", () => {

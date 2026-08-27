@@ -1,16 +1,26 @@
 import { useEffect, useRef } from "react";
-import { primaryModifierPressed } from "../lib/platform";
+import { primaryModifierLabel, primaryModifierPressed } from "../lib/platform";
 
 export interface AppShortcutContext {
   modalOpen: boolean;
   commandPaletteOpen: boolean;
   threadOpen: boolean;
   running: boolean;
+  /** Whether the Workspace dock is currently open and can be toggled. */
+  workspaceOpen: boolean;
+  workspaceAvailable: boolean;
   toggleCommandPalette: () => void;
   openConversationSearch: () => void;
   newThread: () => void;
   openSettings: () => void;
+  toggleWorkspace: () => void;
+  closeWorkspace: () => void;
   stopTurn: () => void;
+}
+
+/** Shown next to the Workspace control so the shortcut is discoverable. */
+export function workspaceShortcutLabel(platform?: string): string {
+  return `${primaryModifierLabel(platform)}+B`;
 }
 
 export function isEditableShortcutTarget(target: EventTarget | null): boolean {
@@ -61,13 +71,24 @@ export function useAppShortcuts(context: AppShortcutContext): void {
         current.openSettings();
         return;
       }
-      if (
-        event.key === "Escape"
-        && current.running
-        && !isEditableShortcutTarget(event.target)
-      ) {
+      if (shortcutModifier && key === "b" && current.workspaceAvailable) {
         event.preventDefault();
-        current.stopTurn();
+        current.toggleWorkspace();
+        return;
+      }
+      if (event.key === "Escape" && !isEditableShortcutTarget(event.target)) {
+        // Stopping a run stays the first meaning of Escape — it is the only
+        // way to interrupt from the keyboard. With nothing running, Escape
+        // dismisses the Workspace dock like any other transient surface.
+        if (current.running) {
+          event.preventDefault();
+          current.stopTurn();
+          return;
+        }
+        if (current.workspaceOpen) {
+          event.preventDefault();
+          current.closeWorkspace();
+        }
       }
     };
     document.addEventListener("keydown", onKeyDown);

@@ -9,7 +9,7 @@ React webview
   ├─ virtualized Markdown/event rendering
   ├─ animated model/reasoning power rail
   ├─ signed GitHub release checks + update progress
-  └─ Studio: review, agents, terminal, checkpoints, context, usage, tools, and Git
+  └─ Studio: files, review, agents, terminal, checkpoints, worktrees, context, usage, tools, and Git
           │ Tauri IPC (allowlisted commands)
           ▼
 Rust desktop host
@@ -106,17 +106,18 @@ The webview renders collaboration tool calls and child activity as structured ti
 
 | Surface | App Server/runtime contract |
 | --- | --- |
-| Review | `turn/diff/updated`, `gitDiffToRemote`, `review/start` |
-| Agents | collaboration thread items, `thread/read`, `turn/interrupt` |
 | Files | `fuzzyFileSearch`, `fs/readDirectory`, `fs/readFile` |
-| Terminal | PTY `command/exec`, streamed base64 output, `command/exec/write`, `command/exec/resize`, `command/exec/terminate` |
-| Checkpoints | Native temporary-index snapshots and guarded complete-worktree restore; `thread/fork`, `thread/rollback`; isolated worktree review/apply/merge/recovery/cleanup |
+| Review | `turn/diff/updated`, `gitDiffToRemote`, `review/start`; a repository-owned `git diff HEAD` fallback (staged plus working-tree diffs against the empty repository before its first commit) with a separate untracked-file listing |
+| Agents | collaboration thread items, `thread/read`, `turn/interrupt` |
+| Terminal | PTY `command/exec` per execution path, streamed base64 output, `command/exec/write`, `command/exec/resize`, `command/exec/terminate` |
+| Checkpoints | Native temporary-index snapshots and guarded complete-worktree restore; `thread/fork`, `thread/rollback` |
+| Worktrees | Native `worktree_create`/`worktree_status`/`worktree_apply_to_source`/`worktree_merge_branch`/`worktree_recreate`/`worktree_remove`; status reports changed, untracked, and ignored-file counts |
 | Context | `localImage` and explicit file mention inputs on `turn/start` |
 | Usage | `thread/tokenUsage/updated`, `account/rateLimits/read` |
-| Tools | `skills/list`, `skills/config/write`, MCP status/OAuth/reload, project actions |
-| Git | typed `git`/`gh` argv through `command/exec`; destructive tracked-file restore requires UI confirmation |
+| Tools | `skills/list`, `skills/extraRoots/set`, `mcpServerStatus/list`, project actions |
+| Git | typed `git`/`gh` argv through `command/exec`, plus native `workspace_git_info`/`workspace_git_initialize`; destructive tracked-file restore requires UI confirmation |
 
-Standalone terminal and Git commands receive an explicit sandbox policy derived from the same Read only / Ask to act / Full access setting used by agent threads.
+Standalone terminal, project-action, and Git commands receive an explicit sandbox policy derived from the same Read only / Ask to act / Full access setting used by agent threads. Free-form user commands are handed to the platform shell through one shared abstraction — a `zsh` login shell on macOS, `cmd.exe` on Windows — so no surface hard-codes an interpreter that only exists on one platform.
 
 ## Filesystem checkpoint contract
 

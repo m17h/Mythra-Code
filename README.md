@@ -158,17 +158,18 @@ Model and effort are sent as real thread/turn overrides. They are not presentati
 
 ## Workspace Studio
 
-The right-side Studio contains nine integrated surfaces:
+The right-side Studio contains ten integrated surfaces, reachable from the command palette or with the Workspace shortcut (`⌘+B` on macOS, `Ctrl+B` on Windows). The selected surface is remembered between sessions; the dock itself always starts closed.
 
 1. **Files** — fuzzy project search, text previews, and one-click context attachment.
-2. **Review** — live turn/Git diff, per-hunk review marks, whole-diff approval state, and an App Server review turn.
+2. **Review** — the live turn diff with per-file stage and revert, expanded lazily and revealed progressively for very large files, plus an App Server review turn. The panel states which baseline the diff is taken against and lists untracked files that a diff cannot contain. When the runtime cannot supply a diff, the repository answers with staged and unstaged changes against `HEAD`, or against the empty repository before its first commit.
 3. **Agents** — observed child threads, current status, child-thread inspection, and interruption.
-4. **Terminal** — a PTY-backed xterm surface with streamed bytes, stdin, resize, cancellation, and the selected permission sandbox.
-5. **Checkpoints** — automatic before/after source snapshots for every Git-project run, complete-worktree restore and reapply, reversible acceptance, pre-restore safety copies, run diffs, conversation forks and rollback, plus isolated-thread worktree review, apply, merge, recovery, and cleanup.
-6. **Context** — file mentions and native local-image inputs attached to the next turn.
-7. **Usage** — cumulative per-thread input/output tokens, API-equivalent inference value, account rate limits, and a visible request-field audit.
-8. **Tools** — project actions, skill enable/disable, MCP status/OAuth, and permission-boundary guidance.
-9. **Git** — GitHub repository attachment/creation, branch sync state, status, diff, file-level stage/revert, stage all, tracked-file revert confirmation, commits, fetch/pull/push, PR comments, CI checks, and draft PR creation.
+4. **Terminal** — a PTY-backed xterm surface with streamed bytes, stdin, resize, cancellation, Clear, and the selected permission sandbox. Each project (or isolated worktree) has its own session, so output and running state never appear under another project's header.
+5. **Checkpoints** — automatic before/after source snapshots for every Git-project run, complete-worktree restore and reapply, reversible acceptance, pre-restore safety copies, run diffs, and conversation forks and rollback.
+6. **Worktrees** — isolated-thread worktree review, apply, merge, recovery, and cleanup, with changed, ahead, and ignored-file counts.
+7. **Context** — file mentions and native local-image inputs attached to the next turn. Attachments belong to the conversation they were chosen in, exactly like composer text.
+8. **Usage** — cumulative per-thread input/output tokens, API-equivalent inference value, account rate limits, and a visible request-field audit.
+9. **Tools** — project actions, skill enable/disable, MCP status/OAuth, and permission-boundary guidance.
+10. **Git** — local repository initialization for a project that has none, GitHub repository attachment/creation, branch sync state, status, diff, stage all, tracked-file revert confirmation, commits, fetch/pull/push, PR comments, CI checks, and draft PR creation.
 
 Checkpoint snapshots are stored as hidden local Git refs without moving the project's branch, HEAD, commits, or staging index. They include tracked and untracked non-ignored source files; ignored files and build output are left alone. Restoring always requires a fresh safety snapshot of the current source state, and conversation rollback remains a separate chat-only action.
 

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type PointerEvent as ReactPointerEvent, type SetStateAction } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -35,7 +35,9 @@ import { CommandPalette } from "./components/CommandPalette";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { SettingsModal } from "./components/SettingsModal";
 import { AuthRequiredModal, RuntimeSetupModal } from "./components/RuntimeModals";
-import type { AgentRecord, AttachmentRecord, McpView, StudioTab } from "./components/StudioDock";
+import type { AgentRecord, AttachmentRecord, McpView } from "./components/StudioDock";
+import { isStudioTab, type StudioTab } from "./lib/studioTabs";
+import type { GitPanelAction, GitRepositoryState } from "./components/GitPanel";
 import type { Account, Activity, AppSettings, ArchivedThread, ChatMessage, CustomAgentProfile, PendingApproval, PermissionMode, Project, ProjectAction, ProjectPromptMode, ProjectSubagentSettings, EffortSliderStyle, PromptProfile, Provider, ScheduledTask, ScheduleRunRecord, SettingsSection, Thread, ThreadHandoff, ThreadReasoning, ThemeName, WorkspaceMode } from "./types";
 import { PendingTurnStarts } from "./lib/pendingTurnStarts";
 import { useTaskStore, type QueuedTurn } from "./lib/taskStore";
@@ -64,7 +66,6 @@ import {
   gitPushCompletionNote,
   gitPushCommand,
   startGitHubLogin,
-  type GitWorkspaceAction,
   type GitHubAccountStatus,
   type GitHubRepoStatus,
 } from "./lib/github";
@@ -72,7 +73,7 @@ import { useAppUpdater } from "./lib/appUpdater";
 import { usePersistedState, usePersistedStateRef } from "./hooks/usePersistedState";
 import { forgetQueuedDeliveries, useTurnRunner } from "./hooks/useTurnRunner";
 import { useCheckpoints } from "./hooks/useCheckpoints";
-import { useAppShortcuts } from "./hooks/useAppShortcuts";
+import { useAppShortcuts, workspaceShortcutLabel } from "./hooks/useAppShortcuts";
 import { useThreadHealth } from "./hooks/useThreadHealth";
 import { useCodexEvents } from "./hooks/useCodexEvents";
 import { useClaudeEvents } from "./hooks/useClaudeEvents";
@@ -89,7 +90,11 @@ import { isClaudeThread, isCursorThread, isLocalSubscriptionThread, modelForProv
 import { listLMStudioModels, type LMStudioModel } from "./lib/lmStudio";
 import { EMPTY_MODEL_FAVORITES, MODEL_FAVORITES_KEY, favoriteModels, sanitizeModelFavorites, toggleFavoriteModel, type ModelFavorites } from "./lib/modelFavorites";
 import { fetchOpenRouterCatalog, mergeOpenRouterModels, resolveOpenRouterSlug } from "./lib/openRouterCatalog";
-import { basename, normalizedProjectPath } from "./lib/paths";
+import { basename, joinPath, normalizedProjectPath } from "./lib/paths";
+import { attachmentRecord, withAttachedPaths } from "./lib/attachments";
+import { attachmentsFor, forgetAttachmentDraft, withAttachmentDraft, type AttachmentDrafts } from "./lib/attachmentDrafts";
+import { EMPTY_REVIEW_DIFF } from "./lib/gitDiff";
+import { shellCommand } from "./lib/shellCommand";
 import { resolveProviderSystemPrompt, resolveSystemPrompt } from "./lib/systemPrompt";
 import { parseCodexRateLimits, providerAccountUsage, sanitizeUsageDisplay, type ProviderRateLimits } from "./lib/providerUsage";
 import { contextUsagePercent } from "./lib/contextUsage";
@@ -153,6 +158,8 @@ const EMPTY_AGENTS: AgentRecord[] = [];
 const EMPTY_QUEUED_TURNS: QueuedTurn[] = [];
 const LOCAL_TRANSCRIPT_SAVE_DEBOUNCE_MS = 900;
 const DEFAULT_GIT_COMMIT_MESSAGE = "Update project files";
+/** Enough to name what is missing from a diff without pasting a build tree. */
+const MAX_LISTED_UNTRACKED_PATHS = 50;
 const COMPOSER_REASONING_EFFORTS: ThreadReasoning["reasoningEffort"][] = ["low", "medium", "high", "xhigh", "max"];
 
 function sanitizeComposerReasoningEffort(
@@ -335,9 +342,18 @@ export default function App() {
   const providerRepairThreadsRef = useRef(new Set<string>());
   const [openRouterReady, setOpenRouterReady] = useState(false);
   const [lmStudioTokenStored, setLmStudioTokenStored] = useState(false);
+  // The dock's open state is deliberately not persisted: it covers a third of
+  // the window, and restoring it on launch hides the conversation the user
+  // came back for. The chosen surface is persisted, so reopening lands where
+  // the last session left off.
   const [studioOpen, setStudioOpen] = useState(false);
-  const [studioTab, setStudioTab] = useState<StudioTab>("review");
-  const [attachments, setAttachments] = useState<AttachmentRecord[]>([]);
+  const [studioTab, setStudioTab] = usePersistedState<StudioTab>("kiwi.studioTab", "review", {
+    init: (load) => {
+      const stored = load();
+      return isStudioTab(stored) ? stored : "review";
+    },
+  });
+  const [attachmentDrafts, setAttachmentDrafts] = useState<AttachmentDrafts>({});
   const [openAiRateLimits, setOpenAiRateLimits] = useState<ProviderRateLimits | null>(null);
   const [openAiRateLimitsRead, setOpenAiRateLimitsRead] = useState(false);
   const [claudeRateLimits, setClaudeRateLimits] = useState<ProviderRateLimits | null>(null);
@@ -359,7 +375,6 @@ export default function App() {
   );
   const [mcpServers, setMcpServers] = useState<McpView[]>([]);
   const [gitOutput, setGitOutput] = useState("");
-  const [gitCommitMessage, setGitCommitMessage] = useState("");
   const [gitCommitSuccess, setGitCommitSuccess] = useState("");
   const [gitCommitBusy, setGitCommitBusy] = useState(false);
   const gitProjectSequenceRef = useRef(0);
@@ -369,9 +384,6 @@ export default function App() {
   const [githubRepoStatus, setGithubRepoStatus] = useState<GitHubRepoStatus | null>(null);
   const githubRepoRefreshSequenceRef = useRef(0);
   const [githubRepoError, setGithubRepoError] = useState("");
-  const [githubRemoteInput, setGithubRemoteInput] = useState("");
-  const [githubRepoName, setGithubRepoName] = useState("");
-  const [githubRepoVisibility, setGithubRepoVisibility] = useState<"private" | "public">("private");
   const [runtimeModels, setRuntimeModels] = useState<RuntimeModel[]>([]);
   const [openRouterModels, setOpenRouterModels] = useState<OpenRouterModel[]>([]);
   const [openRouterModelsLoading, setOpenRouterModelsLoading] = useState(false);
@@ -439,6 +451,24 @@ export default function App() {
   const activeExecutionPath = activeWorkspace
     ? executionPathForThread(activeThreadId, activeWorkspace.path, threadWorktrees)
     : "";
+  // Attachments follow the composer's draft identity exactly: a started thread
+  // owns them by id, an unsent one by its workspace. Switching conversations
+  // therefore cannot carry a file into another thread's next turn, and coming
+  // back to a draft still finds the files chosen for it.
+  const attachmentKey = activeThreadId ?? (activeWorkspace ? `new:${activeWorkspace.path}` : "new:");
+  const attachments = attachmentsFor(attachmentDrafts, attachmentKey);
+  const setAttachmentsForKey = useCallback((key: string, update: AttachmentRecord[] | ((current: AttachmentRecord[]) => AttachmentRecord[])) => {
+    setAttachmentDrafts((current) => {
+      const existing = attachmentsFor(current, key);
+      const next = typeof update === "function" ? update(existing) : update;
+      return next === existing ? current : withAttachmentDraft(current, key, next);
+    });
+  }, []);
+  // Bound to the key of the render that created it, so a send that finishes
+  // after a thread switch clears the attachments of the thread it sent from.
+  const setAttachments = useCallback<Dispatch<SetStateAction<AttachmentRecord[]>>>((update) => {
+    setAttachmentsForKey(attachmentKey, update);
+  }, [attachmentKey, setAttachmentsForKey]);
   const activeProvider = activeThread ? providerFromThread(activeThread, settings.provider) : (draftThreadProvider ?? settings.provider);
   // Resolve project policy independently of the open conversation. Thread
   // selection needs this unclamped shape: the previously active thread may be
@@ -487,7 +517,9 @@ export default function App() {
   useEffect(() => {
     if (!pendingHandoff || !activeWorkspace || activeThread) return;
     if (normalizedProjectPath(pendingHandoff.workspacePath) !== normalizedProjectPath(activeWorkspace.path)) {
+      // The abandoned handoff draft loses both halves of its content.
       discardDraft(`new:${pendingHandoff.workspacePath}`);
+      setAttachmentDrafts((current) => forgetAttachmentDraft(current, `new:${pendingHandoff.workspacePath}`));
       setPendingHandoff(null);
       setDraftThreadProvider(null);
       setDraftThreadModel(null);
@@ -602,13 +634,13 @@ export default function App() {
     })),
   }), [claudeModels, cursorModels, lmStudioModels, openRouterModels, runtimeModels]);
 
-  const terminal = useTerminal({ scrollback: settings.terminalScrollback, permission: effectiveSettings.permission, onError: setError });
+  const terminal = useTerminal({ scrollback: settings.terminalScrollback, permission: effectiveSettings.permission, scope: activeExecutionPath, onError: setError });
   const timelineEmpty = useTaskStore((state) => {
     if (!activeThreadId) return true;
     const task = state.tasks[activeThreadId];
     return !task || (task.messages.length === 0 && task.activities.length === 0);
   });
-  const diff = useTaskStore((state) => (activeThreadId ? (state.tasks[activeThreadId]?.diff ?? "") : ""));
+  const reviewDiff = useTaskStore((state) => (activeThreadId ? (state.tasks[activeThreadId]?.diff ?? EMPTY_REVIEW_DIFF) : EMPTY_REVIEW_DIFF));
   const agentRecords = useTaskStore((state) => (activeThreadId ? (state.tasks[activeThreadId]?.agents ?? EMPTY_AGENTS) : EMPTY_AGENTS));
   const agentRunStartedAt = useTaskStore((state) => (activeThreadId ? state.tasks[activeThreadId]?.agentRunStartedAt : undefined));
   const tokenUsage = useTaskStore((state) => (activeThreadId ? (state.tasks[activeThreadId]?.usage ?? null) : null));
@@ -1388,18 +1420,22 @@ export default function App() {
     }
   }, []);
 
+  const cursorModelsRequestRef = useRef(0);
   const refreshCursorModels = useCallback(async () => {
+    const request = ++cursorModelsRequestRef.current;
     setCursorModelsLoading(true);
     try {
       const models = await listCursorModels() ?? [];
-      setCursorModels(models);
+      if (cursorModelsRequestRef.current === request) setCursorModels(models);
       return models;
     } catch (reason) {
-      setCursorModels([]);
-      if (cursorStatus?.loggedIn) setError(friendlyError(reason));
+      if (cursorModelsRequestRef.current === request) {
+        setCursorModels([]);
+        if (cursorStatus?.loggedIn) setError(friendlyError(reason));
+      }
       return [];
     } finally {
-      setCursorModelsLoading(false);
+      if (cursorModelsRequestRef.current === request) setCursorModelsLoading(false);
     }
   }, [cursorStatus?.loggedIn]);
 
@@ -1507,7 +1543,9 @@ export default function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const runtimeModelsRequestRef = useRef(0);
   const refreshModels = useCallback(async () => {
+    const request = ++runtimeModelsRequestRef.current;
     try {
       const allModels: RuntimeModel[] = [];
       let cursor: string | null = null;
@@ -1517,25 +1555,29 @@ export default function App() {
         cursor = result.nextCursor ?? null;
         if (!cursor) break;
       }
-      setRuntimeModels(allModels);
+      if (runtimeModelsRequestRef.current === request) setRuntimeModels(allModels);
     } catch {
-      setRuntimeModels([]);
+      if (runtimeModelsRequestRef.current === request) setRuntimeModels([]);
     }
   }, []);
 
+  const openRouterModelsRequestRef = useRef(0);
   const refreshOpenRouterModels = useCallback(async () => {
+    const request = ++openRouterModelsRequestRef.current;
     setOpenRouterModelsLoading(true);
     setOpenRouterModelsError("");
     try {
       const models = await fetchOpenRouterCatalog();
       // A full refresh is authoritative: retired or newly unavailable models
       // must leave the catalog instead of surviving through an earlier search.
-      setOpenRouterModels(models);
-      if (!models.length) setOpenRouterModelsError("OpenRouter returned an empty catalog");
+      if (openRouterModelsRequestRef.current === request) {
+        setOpenRouterModels(models);
+        if (!models.length) setOpenRouterModelsError("OpenRouter returned an empty catalog");
+      }
     } catch (reason) {
-      setOpenRouterModelsError(friendlyError(reason));
+      if (openRouterModelsRequestRef.current === request) setOpenRouterModelsError(friendlyError(reason));
     } finally {
-      setOpenRouterModelsLoading(false);
+      if (openRouterModelsRequestRef.current === request) setOpenRouterModelsLoading(false);
     }
   }, []);
 
@@ -1563,20 +1605,26 @@ export default function App() {
    * subcommand, so this rides the stream-json control protocol; an older CLI
    * or a signed-out install leaves the labelled built-in list in place.
    */
+  const claudeModelsRequestRef = useRef(0);
   const refreshClaudeModels = useCallback(async () => {
+    const request = ++claudeModelsRequestRef.current;
     setClaudeModelsLoading(true);
     setClaudeModelsError("");
     try {
       const models = await listClaudeModels();
-      setClaudeModels(models);
-      if (!models.length) setClaudeModelsError("Claude Code returned no models.");
+      if (claudeModelsRequestRef.current === request) {
+        setClaudeModels(models);
+        if (!models.length) setClaudeModelsError("Claude Code returned no models.");
+      }
       return models;
     } catch (reason) {
-      setClaudeModels([]);
-      setClaudeModelsError(friendlyError(reason));
+      if (claudeModelsRequestRef.current === request) {
+        setClaudeModels([]);
+        setClaudeModelsError(friendlyError(reason));
+      }
       return [];
     } finally {
-      setClaudeModelsLoading(false);
+      if (claudeModelsRequestRef.current === request) setClaudeModelsLoading(false);
     }
   }, []);
 
@@ -1584,20 +1632,29 @@ export default function App() {
     setModelFavorites((current) => toggleFavoriteModel(current, provider, model));
   }, [setModelFavorites]);
 
+  const lmStudioModelsRequestRef = useRef(0);
   const refreshLMStudioModels = useCallback(async (baseUrl: string) => {
+    const request = ++lmStudioModelsRequestRef.current;
     setLMStudioModelsLoading(true);
     setLMStudioModelsError("");
     try {
       const models = await listLMStudioModels(baseUrl);
-      setLMStudioModels(models);
-      if (!models.length) setLMStudioModelsError("LM Studio is connected, but it did not report any models");
+      // A startup probe can still be in flight when Settings tests a newly
+      // entered server URL. Only the newest request may publish its catalog;
+      // otherwise the slow old server replaces a successful fresh result.
+      if (lmStudioModelsRequestRef.current === request) {
+        setLMStudioModels(models);
+        if (!models.length) setLMStudioModelsError("LM Studio is connected, but it did not report any models");
+      }
       return models;
     } catch (reason) {
-      setLMStudioModels([]);
-      setLMStudioModelsError(friendlyError(reason));
+      if (lmStudioModelsRequestRef.current === request) {
+        setLMStudioModels([]);
+        setLMStudioModelsError(friendlyError(reason));
+      }
       return [];
     } finally {
-      setLMStudioModelsLoading(false);
+      if (lmStudioModelsRequestRef.current === request) setLMStudioModelsLoading(false);
     }
   }, []);
 
@@ -1689,18 +1746,24 @@ export default function App() {
     [disabledSkillPaths, prepareLocalSkills, removedSkillPaths, skillAliases, skillsFolder],
   );
 
+  // Polling the skills folder every five seconds is only worth doing where a
+  // change is visible: the Tools surface or the Settings skills library. Away
+  // from those it ran forever against a folder nobody was looking at. Window
+  // focus still refreshes unconditionally, so returning to the app after an
+  // external edit is up to date wherever the user lands.
+  const skillsSurfaceVisible = settingsOpen || (studioOpen && studioTab === "tools");
   useEffect(() => {
     if (!skillsFolder) return;
     const refresh = () => {
       if (document.visibilityState === "visible") void refreshLocalSkills(skillsFolder, skillAliases, disabledSkillPaths, removedSkillPaths, true);
     };
-    const interval = window.setInterval(refresh, 5_000);
+    const interval = skillsSurfaceVisible ? window.setInterval(refresh, 5_000) : null;
     window.addEventListener("focus", refresh);
     return () => {
-      window.clearInterval(interval);
+      if (interval !== null) window.clearInterval(interval);
       window.removeEventListener("focus", refresh);
     };
-  }, [disabledSkillPaths, refreshLocalSkills, removedSkillPaths, skillAliases, skillsFolder]);
+  }, [disabledSkillPaths, refreshLocalSkills, removedSkillPaths, skillAliases, skillsFolder, skillsSurfaceVisible]);
 
   const refreshTools = useCallback(
     async (workspace: Project | null) => {
@@ -1726,23 +1789,67 @@ export default function App() {
     [effectiveSettings.permission],
   );
 
+  /**
+   * Loads the Review panel's diff. The runtime's `gitDiffToRemote` is
+   * preferred; when it is unavailable the repository answers directly.
+   *
+   * The fallback is taken against `HEAD`, so staged changes are included —
+   * plain `git diff` showed only unstaged work and quietly hid anything the
+   * user or the model had already staged. Untracked files can never appear in
+   * a diff, so they are listed separately instead of being passed off as "no
+   * changes".
+   */
   const refreshDiffFor = useCallback(
     async (threadId: string, projectPath: string) => {
       try {
         const result = await rpc<{ diff: string }>("gitDiffToRemote", { cwd: projectPath });
-        useTaskStore.getState().setDiff(threadId, result.diff ?? "");
+        useTaskStore.getState().setDiff(threadId, {
+          text: result.diff ?? "",
+          source: "runtime",
+          baseline: "the tracked remote branch",
+          untrackedPaths: [],
+        });
+        return;
       } catch {
-        try {
-          const result = await executeCommand(["git", "diff", "--no-ext-diff", "--"], projectPath);
-          useTaskStore.getState().setDiff(threadId, `${result.stdout}${result.stderr}`);
-        } catch (reason) {
-          setError(friendlyError(reason));
+        /* Fall through to the repository-owned diff below. */
+      }
+      try {
+        let baseline = "HEAD";
+        let tracked = await executeCommand(["git", "diff", "--no-ext-diff", "HEAD", "--"], projectPath);
+        if (tracked.exitCode !== 0) {
+          // A repository with no commits has no HEAD. Show both halves of its
+          // state: `--cached` compares staged files with the empty repository,
+          // while the ordinary diff adds edits made after staging. Using only
+          // the latter silently hid every fully staged new file.
+          baseline = "the empty repository";
+          const [staged, working] = await Promise.all([
+            executeCommand(["git", "diff", "--no-ext-diff", "--cached", "--"], projectPath),
+            executeCommand(["git", "diff", "--no-ext-diff", "--"], projectPath),
+          ]);
+          tracked = {
+            exitCode: staged.exitCode || working.exitCode,
+            stdout: [staged.stdout, working.stdout].filter(Boolean).join("\n"),
+            stderr: [staged.stderr, working.stderr].filter(Boolean).join("\n"),
+          };
         }
+        const untracked = await executeCommand(
+          ["git", "ls-files", "--others", "--exclude-standard"],
+          projectPath,
+        ).catch(() => null);
+        const untrackedPaths = untracked && untracked.exitCode === 0
+          ? untracked.stdout.split(/\r?\n/).filter(Boolean)
+          : [];
+        useTaskStore.getState().setDiff(threadId, {
+          text: `${tracked.stdout}${tracked.stderr}`,
+          source: "repository",
+          baseline,
+          untrackedPaths: untrackedPaths.slice(0, MAX_LISTED_UNTRACKED_PATHS),
+          untrackedTruncated: untrackedPaths.length > MAX_LISTED_UNTRACKED_PATHS,
+        });
+      } catch (reason) {
+        setError(friendlyError(reason));
       }
     },
-    // The parser reports the unrelated rendered `diff` value here; refresh
-    // writes through the task store and reads only executeCommand.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [executeCommand],
   );
 
@@ -1803,7 +1910,7 @@ export default function App() {
       setOpenAiRateLimits(limits);
       setOpenAiRateLimitsRead(true);
     },
-    onTerminalOutput: terminal.append,
+    onTerminalOutput: terminal.appendProcess,
     onAccountUpdated: () => void refreshAccount(),
     onLoginFailed: (message) => {
       setError(message);
@@ -1830,7 +1937,7 @@ export default function App() {
       const existingThread = threads.find((entry) => entry.id === childThreadId) ?? knownThreadsRef.current?.[childThreadId];
       const logicalPath = threadProjectBindingsRef.current?.[rootThreadId] ?? rootThread?.cwd;
       const title = details.prompt?.trim()
-        || details.path?.split("/").filter(Boolean).at(-1)?.replaceAll("_", " ")
+        || (details.path ? basename(details.path).replaceAll("_", " ") : undefined)
         || existingThread?.preview
         || "Delegated task";
       persistNativeAgentLinks((current) => {
@@ -2146,7 +2253,9 @@ export default function App() {
     useTaskStore.getState().setActiveThread(null);
     setDraftThreadProvider(pendingHandoffForWorkspace?.targetProvider === settings.provider ? null : pendingHandoffForWorkspace?.targetProvider ?? null);
     setDraftThreadModel(pendingHandoffForWorkspace ? modelForProvider(pendingHandoffForWorkspace.targetProvider, "") : null);
-    setAttachments([]);
+    // Attachments are keyed by draft identity, so a workspace switch simply
+    // selects a different draft. Clearing here would throw away files chosen
+    // for a thread the user is about to come back to.
     setThreadSearch("");
     setSearchResults(null);
     if (!activeProject) setStudioOpen(false);
@@ -2678,7 +2787,7 @@ export default function App() {
       }
       const sourceProvider = providerFromThread(activeThread, settings.provider);
       const sourceTitle = activeThread.name || activeThread.preview || "Untitled task";
-      if (!await confirmDialog(`Hand off “${sourceTitle}” from ${providerLabel(sourceProvider)} to ${providerLabel(provider)}?\n\nMythra Code will start a separate provider thread in the same workspace with a bounded, visible copy of the conversation. The original thread remains unchanged.`)) return;
+      if (!await confirmDialog(`Hand off the current thread to ${providerLabel(provider)}?\n\nMythra Code will start a separate provider thread in the same workspace with a bounded, visible copy of the conversation. The original thread remains unchanged.`)) return;
       const task = useTaskStore.getState().tasks[activeThread.id];
       const handoff: ThreadHandoff = {
         sourceThreadId: activeThread.id,
@@ -3256,6 +3365,8 @@ export default function App() {
       });
       useTaskStore.getState().removeTask(threadId);
       forgetQueuedDeliveries(threadId);
+      // A deleted thread's attachment draft has nowhere to be sent.
+      setAttachmentDrafts((current) => forgetAttachmentDraft(current, threadId));
       setPinnedThreadIds((current) => (current.includes(threadId) ? current.filter((id) => id !== threadId) : current));
       forgetThreadCheckpoints(threadId);
       const bindings = threadProjectBindingsRef.current ?? {};
@@ -3310,10 +3421,65 @@ export default function App() {
     setStudioOpen(true);
   };
 
+  /**
+   * Why the Review panel's AI review is unavailable, if it is. Claude Code and
+   * Cursor Agent own their own review flow, so the control explains that up
+   * front instead of accepting a click and answering with an error.
+   */
+  const reviewDisabledReason = activeThread && isLocalSubscriptionThread(activeThread)
+    ? `Inline review is available for OpenAI, OpenRouter, and LM Studio threads. Ask ${providerLabel(providerFromThread(activeThread, settings.provider))} to review the project in the conversation instead.`
+    : undefined;
+
+  /**
+   * Whether the project folder is a Git repository. `workspaceGitInfo` is the
+   * local truth; the GitHub probe is only consulted as a fallback because it
+   * can fail for reasons that say nothing about the repository (offline, no
+   * `gh`). A failed probe leaves the state `unknown`, which keeps purely local
+   * Git actions available instead of disabling them all.
+   */
+  const gitRepositoryState: GitRepositoryState = workspaceGitInfo && !workspaceGitInfo.error
+    ? (workspaceGitInfo.isRepo ? "ready" : "absent")
+    : githubRepoStatus
+      ? (githubRepoStatus.isRepo ? "ready" : "absent")
+      : "unknown";
+
+  const defaultRepositoryName = activeProject?.name.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") ?? "";
+
+  // Derived dock inputs are memoized so an unrelated app rerender (a keystroke
+  // in the composer, a streamed token) does not rebuild the checkpoint list,
+  // the workflow list, and the audit table on every frame.
+  const workspaceCheckpoints = useMemo(() => checkpoints.filter((item) => {
+    if (!activeProject) return false;
+    if (item.workspacePath) {
+      const path = normalizedProjectPath(item.workspacePath);
+      return path === normalizedProjectPath(activeExecutionPath)
+        || Boolean(activeThread && item.threadId === activeThread.id && path === normalizedProjectPath(activeProject.path));
+    }
+    return Boolean(activeThread && item.threadId === activeThread.id);
+  }), [activeExecutionPath, activeProject, activeThread, checkpoints]);
+
+  const projectWorkflows = useMemo(
+    () => workflows.filter((workflow) => workflow.projectId === activeProject?.id && workflow.enabled),
+    [activeProject?.id, workflows],
+  );
+
+  const promptAudit = useMemo(() => [
+    { label: "Base instruction", value: effectiveSettings.systemPrompt ? `${activeProject?.overrides?.systemPrompt ? (activeProject.overrides.systemPromptMode === "append" ? "Mythra Code + project" : "project") : "Mythra Code"} · ${effectiveSettings.systemPrompt.length} chars` : "empty" },
+    { label: "Developer instruction", value: `Mythra Code internal · ${mythraCodeDeveloperInstructions(effectiveSettings.subagentsEnabled, effectiveSettings.subagentsEnabled).length} chars` },
+    { label: "AGENTS.md discovery", value: settings.projectInstructionsEnabled ? "enabled · up to 32 KB" : "disabled" },
+    { label: "Model", value: effectiveSettings.model || "provider default" },
+    { label: "Reasoning", value: effectiveSettings.reasoningEffort },
+    { label: "Sub-agents", value: effectiveSettings.subagentsEnabled ? `on · max ${effectiveSettings.subagentMax}` : "off" },
+    { label: "Cross-provider", value: effectiveSettings.subagentsEnabled ? childAgentSummary : "off" },
+    { label: "Skills", value: skillsFolder ? `${skills.filter((skill) => skill.enabled).length} enabled · local folder` : "no folder selected" },
+    { label: "Permissions", value: permissionLabel(effectiveSettings.permission) },
+    { label: "Service tier", value: settings.serviceTier || "standard" },
+  ], [activeProject, childAgentSummary, effectiveSettings, settings.projectInstructionsEnabled, settings.serviceTier, skills, skillsFolder]);
+
   const startReview = async () => {
     if (!activeThread) return;
-    if (isLocalSubscriptionThread(activeThread)) {
-      setError(`Inline Studio review is currently available for OpenAI, OpenRouter, and LM Studio threads. Ask ${providerLabel(providerFromThread(activeThread, settings.provider))} to review the project in the conversation instead.`);
+    if (reviewDisabledReason) {
+      setError(reviewDisabledReason);
       return;
     }
     try {
@@ -3578,11 +3744,11 @@ export default function App() {
         activeThreadWorktree.baseCommit,
       );
       setWorktreeStatus(latest);
-      const destructive = !latest.clean || latest.ignoredFiles.length > 0 || latest.ahead > 0;
+      const destructive = !latest.clean || latest.ignoredFileCount > 0 || latest.ahead > 0;
       const details = [
         latest.changedFiles ? `${latest.changedFiles} changed or untracked file${latest.changedFiles === 1 ? "" : "s"}` : "",
         latest.ahead ? `${latest.ahead} unmerged commit${latest.ahead === 1 ? "" : "s"}` : "",
-        latest.ignoredFiles.length ? `${latest.ignoredFiles.length} ignored file${latest.ignoredFiles.length === 1 ? "" : "s"}` : "",
+        latest.ignoredFileCount ? `${latest.ignoredFileCount} ignored file${latest.ignoredFileCount === 1 ? "" : "s"}` : "",
       ].filter(Boolean).join(", ");
       if (!await confirmDialog(
         destructive
@@ -3689,9 +3855,8 @@ export default function App() {
 
   const addAttachmentPaths = useCallback((paths: string[]) => {
     if (!paths.length) return;
-    const imagePattern = /\.(png|jpe?g|gif|webp|heic)$/i;
-    setAttachments((current) => [...current, ...paths.filter((path) => !current.some((item) => item.path === path)).map((path) => ({ path, name: basename(path), kind: imagePattern.test(path) ? ("image" as const) : ("file" as const) }))]);
-  }, []);
+    setAttachments((current) => withAttachedPaths(current, paths));
+  }, [setAttachments]);
 
   addAttachmentPathsRef.current = addAttachmentPaths;
 
@@ -3715,12 +3880,16 @@ export default function App() {
         }
         const extension = (item.type.split("/")[1] ?? "png").toLowerCase();
         const path = await invoke<string>("save_pasted_image", { dataBase64: btoa(binary), extension });
-        setAttachments((current) => (current.some((entry) => entry.path === path) ? current : [...current, { path, name: basename(path), kind: "image" }]));
+        // Pasted bytes are known to be an image regardless of the extension
+        // the native side chose for the temporary file.
+        setAttachments((current) => (current.some((entry) => entry.path === path)
+          ? current
+          : [...current, { ...attachmentRecord(path), kind: "image" as const }]));
       } catch (reason) {
         setError(friendlyError(reason));
       }
     }
-  }, []);
+  }, [setAttachments]);
 
   const refreshGitHubRepo = useCallback(async (cwd = activeExecutionPath || activeProject?.path || "") => {
     const refreshSequence = ++githubRepoRefreshSequenceRef.current;
@@ -3745,14 +3914,11 @@ export default function App() {
     gitProjectSequenceRef.current += 1;
     void refreshGitHubRepo();
     setGitOutput("");
-    setGitCommitMessage("");
     setGitCommitBusy(false);
-    setGithubRemoteInput("");
-    setGithubRepoName(activeProject?.name.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") ?? "");
     setGitCommitSuccess("");
   }, [activeExecutionPath, activeProject?.id, activeProject?.name, refreshGitHubRepo]);
 
-  const runGitAction = async (action: GitWorkspaceAction) => {
+  const runGitAction = async (action: GitPanelAction, commitMessageInput?: string) => {
     if (!activeProject) return;
     const unavailable = gitActionUnavailableReason(action, effectiveSettings.permission);
     if (unavailable) {
@@ -3785,7 +3951,7 @@ export default function App() {
         setGitOutput("Check out a named branch before committing and pushing to GitHub.");
         return;
       }
-      const commitMessage = gitCommitMessage.trim() || DEFAULT_GIT_COMMIT_MESSAGE;
+      const commitMessage = (commitMessageInput ?? "").trim() || DEFAULT_GIT_COMMIT_MESSAGE;
       const stageCommand = ["git", "add", "--all"];
       const commitCommand = ["git", "commit", "-m", commitMessage];
       setGitCommitBusy(true);
@@ -3803,7 +3969,6 @@ export default function App() {
         }
         const commitResultIsVisible = isCurrentProject();
         if (commitResultIsVisible) {
-          setGitCommitMessage("");
           setGitCommitSuccess(`“${commitMessage}” was saved to this repository.`);
         }
         if (action === "commit") {
@@ -3861,15 +4026,18 @@ export default function App() {
         : `$ ${command.join(" ")}\n${combined}\n[exit ${result.exitCode}]`;
       if (action === "push" && result.exitCode === 0) showPushOutput(output);
       else setGitOutput(output);
-      if (action === "diff" && activeThreadId) useTaskStore.getState().setDiff(activeThreadId, result.stdout);
+      // The Git console shows its own command output. It deliberately does not
+      // write the Review panel's diff: `git diff --stat --patch` is a different
+      // baseline than the review diff, and overwriting it made Review claim to
+      // be showing something it was not.
       if (result.exitCode === 0) void refreshGitHubRepo(commandPath);
     } catch (reason) {
       if (isCurrentProject()) setGitOutput(friendlyError(reason));
     }
   };
 
-  const attachActiveGitHubRemote = async () => {
-    if (!activeProject || !githubRemoteInput.trim()) return;
+  const attachActiveGitHubRemote = async (url: string) => {
+    if (!activeProject || !url.trim()) return;
     const unavailable = gitActionUnavailableReason("attach", effectiveSettings.permission);
     if (unavailable) {
       setGitOutput(unavailable);
@@ -3877,9 +4045,8 @@ export default function App() {
     }
     setGithubBusy(true);
     try {
-      const next = await attachGitHubRemote(activeExecutionPath || activeProject.path, githubRemoteInput.trim());
+      const next = await attachGitHubRemote(activeExecutionPath || activeProject.path, url.trim());
       setGithubRepoStatus(next);
-      setGithubRemoteInput("");
       showSuccessToast("GitHub repository attached");
     } catch (reason) {
       setError(friendlyError(reason));
@@ -3888,8 +4055,8 @@ export default function App() {
     }
   };
 
-  const createActiveGitHubRepository = async () => {
-    if (!activeProject || !githubRepoName.trim()) return;
+  const createActiveGitHubRepository = async (name: string, visibility: "private" | "public") => {
+    if (!activeProject || !name.trim()) return;
     const unavailable = gitActionUnavailableReason("create", effectiveSettings.permission);
     if (unavailable) {
       setGitOutput(unavailable);
@@ -3897,9 +4064,9 @@ export default function App() {
     }
     setGithubBusy(true);
     try {
-      const next = await createGitHubRepository(activeExecutionPath || activeProject.path, githubRepoName.trim(), githubRepoVisibility);
+      const next = await createGitHubRepository(activeExecutionPath || activeProject.path, name.trim(), visibility);
       setGithubRepoStatus(next);
-      showSuccessToast(`${githubRepoVisibility === "private" ? "Private" : "Public"} GitHub repository created`);
+      showSuccessToast(`${visibility === "private" ? "Private" : "Public"} GitHub repository created`);
     } catch (reason) {
       setError(friendlyError(reason));
     } finally {
@@ -3939,7 +4106,7 @@ export default function App() {
     }
     const parent = await open({ directory: true, multiple: false, title: "Choose where to clone the project" });
     if (!parent || Array.isArray(parent)) return false;
-    const destination = `${parent.replace(/[\\/]+$/, "")}/${safeName}`;
+    const destination = joinPath(parent, safeName);
     setGithubBusy(true);
     try {
       await cloneGitHubRepository(url.trim(), destination);
@@ -3960,14 +4127,17 @@ export default function App() {
 
   const runProjectAction = async (action: ProjectAction) => {
     if (!activeProject) return;
+    // The action's output belongs to the folder it runs in, not to whichever
+    // project happens to be selected when it finishes.
+    const commandPath = activeExecutionPath || activeProject.path;
     setStudioTab("terminal");
-    terminal.append(`${terminal.outputStore.appendedLength() ? "\n" : ""}$ ${action.command}\n`);
+    terminal.append(`${terminal.appendedLength(commandPath) ? "\n" : ""}$ ${action.command}\n`, commandPath);
     try {
-      const result = await executeCommand(["/bin/zsh", "-lc", action.command], activeExecutionPath || activeProject.path, activeThreadWorktree?.gitDir ? [activeThreadWorktree.gitDir] : []);
-      terminal.append(`${result.stdout}${result.stderr}\n[exit ${result.exitCode}]\n`);
+      const result = await executeCommand(shellCommand(action.command), commandPath, activeThreadWorktree?.gitDir ? [activeThreadWorktree.gitDir] : []);
+      terminal.append(`${result.stdout}${result.stderr}\n[exit ${result.exitCode}]\n`, commandPath);
       void auditEvent("action.completed", { actionId: action.id, command: action.command, exitCode: result.exitCode }, activeThreadId ?? undefined).catch(() => {});
     } catch (reason) {
-      terminal.append(`${friendlyError(reason)}\n`);
+      terminal.append(`${friendlyError(reason)}\n`, commandPath);
     }
   };
 
@@ -4130,6 +4300,10 @@ export default function App() {
     modalOpen: onboardingOpen || settingsOpen || commandPaletteOpen || runtimeSetupOpen || authRequiredOpen || Boolean(pendingApproval) || permissionOpen,
     commandPaletteOpen,
     threadOpen: Boolean(activeThreadId),
+    workspaceOpen: studioOpen && Boolean(activeProject),
+    workspaceAvailable: Boolean(activeProject),
+    toggleWorkspace: () => (studioOpen ? setStudioOpen(false) : openStudio(studioTab)),
+    closeWorkspace: () => setStudioOpen(false),
     toggleCommandPalette: () => setCommandPaletteOpen((open) => !open),
     openConversationSearch: () => {
       setConvSearchOpen(true);
@@ -4565,9 +4739,10 @@ export default function App() {
               onProvider={startNewThreadWithProvider}
               onDefaultSettings={() => openSettings("models")}
             />
-            <button className={`workspace-tools-trigger studio-toggle ${studioOpen ? "active" : ""}`} onClick={() => (studioOpen ? setStudioOpen(false) : openStudio(studioTab))} title={activeProject ? "Open project workspace tools" : "Workspace tools are available inside projects"} aria-label={studioOpen ? "Close workspace tools" : "Open workspace tools"} aria-expanded={studioOpen} disabled={!activeProject}>
+            <button className={`workspace-tools-trigger studio-toggle ${studioOpen ? "active" : ""}`} onClick={() => (studioOpen ? setStudioOpen(false) : openStudio(studioTab))} title={activeProject ? `${studioOpen ? "Close" : "Open"} project workspace tools (${workspaceShortcutLabel()})` : "Workspace tools are available inside projects"} aria-label={studioOpen ? "Close workspace tools" : "Open workspace tools"} aria-expanded={studioOpen} disabled={!activeProject}>
               <PanelRight size={17} />
               <span>Workspace</span>
+              <kbd>{workspaceShortcutLabel()}</kbd>
             </button>
           </div>
         </header>
@@ -4790,7 +4965,7 @@ export default function App() {
               )}
               <Composer
                 ref={composerRef}
-                threadKey={activeThreadId ?? `new:${activeWorkspace.path}`}
+                threadKey={attachmentKey}
                 running={running}
                 childrenRunning={childrenRunning}
                 queueing={Boolean(running && activeThread)}
@@ -4935,20 +5110,15 @@ export default function App() {
             projectName={activeProject?.name}
             projectPath={activeExecutionPath || activeProject?.path}
             activeThread={Boolean(activeThread)}
-            diff={diff}
+            reviewDiff={reviewDiff}
+            reviewDisabledReason={reviewDisabledReason}
             agents={agentRecords}
             terminalOutput={terminal.outputStore}
-            terminalCommand={terminal.command}
             terminalRunning={terminal.running}
-            checkpoints={checkpoints.filter((item) => {
-              if (!activeProject) return false;
-              if (item.workspacePath) {
-                const path = normalizedProjectPath(item.workspacePath);
-                return path === normalizedProjectPath(activeExecutionPath)
-                  || Boolean(activeThread && item.threadId === activeThread.id && path === normalizedProjectPath(activeProject.path));
-              }
-              return Boolean(activeThread && item.threadId === activeThread.id);
-            })}
+            terminalRunningCommand={terminal.runningCommand}
+            terminalRunningElsewhere={terminal.runningElsewhere}
+            commandsReadOnly={effectiveSettings.permission === "read-only"}
+            checkpoints={workspaceCheckpoints}
             checkpointHead={activeProject ? checkpointHeads[normalizedProjectPath(activeExecutionPath)] : undefined}
             checkpointBusyId={checkpointBusyId}
             checkpointPreview={checkpointPreview}
@@ -4963,31 +5133,19 @@ export default function App() {
             skills={skills}
             mcpServers={mcpServers}
             gitOutput={gitOutput}
-            gitCommitMessage={gitCommitMessage}
             gitCommitSuccess={gitCommitSuccess}
             gitCommitBusy={gitCommitBusy}
-            gitRepositoryReady={Boolean(githubRepoStatus?.isRepo)}
+            gitRepositoryState={gitRepositoryState}
+            gitRepositoryStateDetail={githubRepoError || workspaceGitInfo?.error || undefined}
+            gitInitializing={gitInitializing}
             githubAuthenticated={Boolean(githubStatus?.authenticated)}
             githubRepoStatus={githubRepoStatus}
             githubRepoError={githubRepoError}
             gitActionsReadOnly={effectiveSettings.permission === "read-only"}
-            githubRemoteInput={githubRemoteInput}
-            githubRepoName={githubRepoName}
-            githubRepoVisibility={githubRepoVisibility}
-            promptAudit={[
-              { label: "Base instruction", value: effectiveSettings.systemPrompt ? `${activeProject?.overrides?.systemPrompt ? (activeProject.overrides.systemPromptMode === "append" ? "Mythra Code + project" : "project") : "Mythra Code"} · ${effectiveSettings.systemPrompt.length} chars` : "empty" },
-              { label: "Developer instruction", value: `Mythra Code internal · ${mythraCodeDeveloperInstructions(effectiveSettings.subagentsEnabled, effectiveSettings.subagentsEnabled).length} chars` },
-              { label: "AGENTS.md discovery", value: settings.projectInstructionsEnabled ? "enabled · up to 32 KB" : "disabled" },
-              { label: "Model", value: effectiveSettings.model || "provider default" },
-              { label: "Reasoning", value: effectiveSettings.reasoningEffort },
-              { label: "Sub-agents", value: effectiveSettings.subagentsEnabled ? `on · max ${effectiveSettings.subagentMax}` : "off" },
-              { label: "Cross-provider", value: effectiveSettings.subagentsEnabled ? childAgentSummary : "off" },
-              { label: "Skills", value: skillsFolder ? `${skills.filter((skill) => skill.enabled).length} enabled · local folder` : "no folder selected" },
-              { label: "Permissions", value: permissionLabel(effectiveSettings.permission) },
-              { label: "Service tier", value: settings.serviceTier || "standard" },
-            ]}
+            defaultRepositoryName={defaultRepositoryName}
+            promptAudit={promptAudit}
             projectActions={projectActions}
-            workflows={workflows.filter((workflow) => workflow.projectId === activeProject?.id && workflow.enabled)}
+            workflows={projectWorkflows}
             workflowRuns={workflowRuns}
             onTab={(tab) => {
               setStudioTab(tab);
@@ -4998,11 +5156,11 @@ export default function App() {
             onReview={() => void startReview()}
             onOpenAgent={(id) => void openAgent(id)}
             onStopAgent={(id) => void stopAgent(id)}
-            onTerminalCommand={terminal.setCommand}
-            onRunTerminal={() => {
-              if (activeExecutionPath) void terminal.run(activeExecutionPath, activeThreadWorktree?.gitDir ? [activeThreadWorktree.gitDir] : []);
+            onRunTerminal={(command) => {
+              if (activeExecutionPath) void terminal.run(command, activeThreadWorktree?.gitDir ? [activeThreadWorktree.gitDir] : []);
             }}
             onStopTerminal={() => void terminal.stop()}
+            onClearTerminal={terminal.clear}
             onTerminalInput={terminal.write}
             onTerminalResize={terminal.resize}
             onCheckpoint={() => void createCheckpoint()}
@@ -5036,22 +5194,16 @@ export default function App() {
             }}
             onCompact={() => void compactThread()}
             onRefreshTools={() => void refreshTools(activeProject)}
-            onGitAction={(action) => void runGitAction(action)}
-            onGitCommitMessage={(value) => {
-              setGitCommitMessage(value);
-              setGitCommitSuccess("");
-            }}
-            onGitHubRemoteInput={setGithubRemoteInput}
-            onGitHubRepoName={setGithubRepoName}
-            onGitHubRepoVisibility={setGithubRepoVisibility}
-            onGitHubAttach={() => void attachActiveGitHubRemote()}
-            onGitHubCreate={() => void createActiveGitHubRepository()}
+            onGitAction={(action, commitMessage) => void runGitAction(action, commitMessage)}
+            onInitializeGit={() => void initializeActiveProjectGit()}
+            onGitHubAttach={(url) => void attachActiveGitHubRemote(url)}
+            onGitHubCreate={(name, visibility) => void createActiveGitHubRepository(name, visibility)}
             onOpenGitHubSettings={() => {
               setStudioOpen(false);
               openSettings("github");
             }}
             onGitPathAction={(action, path) => void runGitPathAction(action, path)}
-            onAttachPath={(path) => setAttachments((current) => (current.some((item) => item.path === path) ? current : [...current, { path, name: basename(path), kind: "file" }]))}
+            onAttachPath={(path) => addAttachmentPaths([path])}
             onProjectAction={(action) => void runProjectAction(action)}
             onRunWorkflow={(workflow) => void runWorkflowFromShortcut(workflow)}
             onStopWorkflow={(workflowId) => void stopWorkflow(workflowId)}

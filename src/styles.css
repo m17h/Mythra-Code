@@ -475,6 +475,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .workspace-tools-trigger:hover:not(:disabled) { color: var(--text); border-color: var(--line); background: rgba(255,255,255,.045); }
 .workspace-tools-trigger.active { color: var(--text); border-color: var(--line-strong); background: rgba(255,255,255,.06); }
 .workspace-tools-trigger:disabled { opacity: .4; cursor: default; }
+.workspace-tools-trigger kbd { padding: 2px 5px; border: 1px solid var(--line); border-radius: var(--r-xs); color: var(--muted-2); background: rgba(0,0,0,.22); font: 10.5px var(--font-mono); }
 
 /* ---- Empty states: typographic, centred on the reading measure ---- */
 .welcome-screen, .thread-empty-state { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: var(--s-8) var(--s-6); }
@@ -1549,7 +1550,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 @media (max-width: 860px) {
   :root { --topbar-h: 52px; }
   .runtime-status { display: none; }
-  .workspace-tools-trigger span { display: none; }
+  .workspace-tools-trigger span, .workspace-tools-trigger kbd { display: none; }
   .message.user { margin-left: 0; }
   .message.user .message-body { max-width: 92%; }
   .composer-caption { font-size: var(--fs-meta); }
@@ -1597,7 +1598,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
   .provider-pill { padding-inline: 7px; }
   .provider-pill .provider-label { display: none; }
   .workspace-tools-trigger { width: var(--ctl-md); justify-content: center; padding: 0; }
-  .workspace-tools-trigger span { display: none; }
+  .workspace-tools-trigger span, .workspace-tools-trigger kbd { display: none; }
   .isolation-chip span, .handoff-chip span { display: none; }
 }
 
@@ -1876,6 +1877,10 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .git-file-list code { overflow: hidden; color: var(--muted); font-size: var(--fs-meta); white-space: nowrap; text-overflow: ellipsis; }
 .git-file-list button { height: 22px; display: flex; align-items: center; gap: 3px; padding: 0 6px; border: 0; border-radius: 5px; color: var(--green); background: var(--green-soft); font-size: var(--fs-micro); cursor: pointer; }
 .git-file-list button.danger-action { padding: 0; justify-content: center; color: var(--red); background: rgba(239,138,135,.07); }
+.git-initialize-card { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; align-items: center; gap: var(--s-2); margin-bottom: var(--s-3); padding: var(--s-3); border: 1px solid var(--green-line, var(--line-strong)); border-radius: var(--r-sm); background: rgba(255,255,255,.02); }
+.git-initialize-card > div { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.git-initialize-card strong { font-size: var(--fs-ui); }
+.git-initialize-card small { color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.5; }
 .github-repo-card { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; align-items: center; gap: var(--s-2); margin-bottom: var(--s-3); padding: var(--s-3); border: 1px solid var(--line); border-radius: var(--r-sm); }
 .github-repo-card > div { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .github-repo-card strong, .github-repo-card small { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
@@ -1903,6 +1908,9 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .github-create-button:hover:not(:disabled) { background: color-mix(in srgb, var(--green) 88%, #fff); }
 .github-create-button:disabled { opacity: .4; cursor: default; }
 .manager-status { margin-top: 6px; padding: 7px 8px; border-radius: 6px; color: var(--muted); background: rgba(255,255,255,.02); font-size: var(--fs-meta); }
+.terminal-origin { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; margin-bottom: var(--s-2); padding: 5px 9px; border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--muted); background: rgba(255,255,255,.02); font-size: var(--fs-meta); }
+.terminal-origin.other { color: var(--muted-2); border-style: dashed; }
+.terminal-origin code { overflow: hidden; max-width: 34ch; color: var(--ink-2); font: 10.5px var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
 .terminal-input { display: grid; grid-template-columns: 13px minmax(0,1fr) 32px; align-items: center; gap: 6px; margin-top: var(--s-2); color: var(--green); font-family: var(--font-mono); }
 .terminal-input input, .dock-field input { width: 100%; height: 34px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--r-sm); outline: 0; color: var(--text); background: var(--field); font: 11px var(--font-mono); transition: border-color var(--t-fast) ease; }
 .terminal-input input:focus, .dock-field input:focus { border-color: var(--green-line); }
@@ -2254,6 +2262,12 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .diff-line-add { color: #b6e39a; background: rgba(167,226,111,.07); }
 .diff-line-del { color: #eba3a0; background: rgba(239,138,135,.07); }
 .diff-line-hunk { color: #8fd6ff; }
+.diff-body { display: flex; flex-direction: column; }
+.diff-more { display: flex; align-items: center; gap: var(--s-2); padding: 6px 9px; border-top: 1px solid var(--line); color: var(--muted-2); background: rgba(255,255,255,.015); font-size: var(--fs-meta); }
+.diff-more span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.diff-more button { height: 24px; padding: 0 9px; border: 1px solid var(--line); border-radius: var(--r-xs); color: var(--ink-2); background: transparent; font-size: var(--fs-meta); cursor: pointer; }
+.diff-more button:hover { border-color: var(--line-strong); background: rgba(255,255,255,.05); }
+.diff-file-actions em { color: var(--muted-2); font-size: var(--fs-micro); font-style: normal; white-space: nowrap; }
 
 /* Running composer: follow-ups queue by default; steering is explicit. */
 .composer.queueing { border-color: color-mix(in srgb, var(--green) 24%, var(--line-strong)); }

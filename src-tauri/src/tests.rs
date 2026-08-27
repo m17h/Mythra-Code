@@ -785,10 +785,9 @@ fn worktree_apply_transfers_complete_delta_without_touching_source_index_or_igno
     let expected_changed_files = if cfg!(unix) { 5 } else { 4 };
     assert!(status.changed_files >= expected_changed_files);
     assert!(status.untracked_files >= 2);
-    assert!(status
-        .ignored_files
-        .iter()
-        .any(|path| path == "worktree.secret"));
+    // The status contract reports how many ignored files exist, not their
+    // pathnames: the UI only ever displayed the count.
+    assert_eq!(status.ignored_file_count, 1);
 
     capture_checkpoint_snapshot(
         "worktree-apply-safety",
