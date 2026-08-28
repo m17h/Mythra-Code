@@ -185,6 +185,42 @@ describe("SettingsModal", () => {
     expect(screen.getByText(/Each thread keeps its own provider/)).toBeInTheDocument();
   });
 
+  it("creates a simple schedule with explicit units, model, and thread behavior", () => {
+    const onSchedules = vi.fn();
+    render(<SettingsModal {...modalProps({
+      initialSection: "workflows",
+      projects: [{ id: "project-1", name: "My project", path: "/tmp/my-project" }],
+      onSchedules,
+    })} />);
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Schedule name" }), { target: { value: "Review twice daily" } });
+    fireEvent.click(screen.getByRole("button", { name: "Schedule project" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /My project/ }));
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Schedule interval" }), { target: { value: "12" } });
+    fireEvent.click(screen.getByRole("button", { name: "Schedule interval unit" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "Hours" }));
+    fireEvent.click(screen.getByRole("button", { name: "Schedule model" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Terra/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Schedule thread behavior" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Continue the same thread/ }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Schedule prompt" }), { target: { value: "Review the current changes" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add schedule" }));
+
+    const created = onSchedules.mock.calls[0][0][0];
+    expect(created).toMatchObject({
+      name: "Review twice daily",
+      prompt: "Review the current changes",
+      projectId: "project-1",
+      intervalValue: 12,
+      intervalUnit: "hours",
+      intervalMinutes: 720,
+      threadMode: "reuse",
+      enabled: true,
+      run: expect.objectContaining({ provider: "openai", model: "gpt-5.6-terra" }),
+    });
+    expect(created.nextRunAt).toBeGreaterThan(Date.now());
+  });
+
   it("chooses and saves a default model from an app-owned provider menu", () => {
     const onSave = vi.fn();
     const { container } = render(<SettingsModal {...modalProps({

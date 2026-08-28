@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import { auditEvent, rpc } from "../lib/codex";
 import { useTaskStore } from "../lib/taskStore";
-import { scheduleRunSnapshot, threadStartParams, turnStartParams } from "../lib/turnConfig";
+import { scheduleRunSnapshot, threadResumeParams, threadStartParams, turnStartParams } from "../lib/turnConfig";
 import type { LMStudioModel } from "../lib/lmStudio";
 import type { AppSettings, Project, Provider, ScheduleRunRecord, ScheduleRunSettings, ScheduledTask, Thread } from "../types";
 
@@ -79,18 +79,48 @@ export function useScheduler(deps: SchedulerDeps): void {
     if (run.provider === "openai" && !current.chatGptConnected) return;
     if (run.provider === "openrouter" && !current.openRouterReady) return;
     if (run.provider === "lmstudio" && !current.lmStudioReady) return;
+    const reuseThread = scheduled.threadMode === "reuse" && Boolean(scheduled.lastThreadId);
+    const existingStatus = scheduled.lastThreadId
+      ? useTaskStore.getState().statuses[scheduled.lastThreadId]
+      : undefined;
+    if (reuseThread && (existingStatus === "starting" || existingStatus === "running")) {
+      // A recurring prompt must never collide with the previous unattended
+      // turn in the same conversation. Retry soon without creating a second
+      // thread or recording a misleading failed run.
+      current.updateSchedule(scheduled.id, (item) => ({ ...item, nextRunAt: Date.now() + 60_000 }));
+      return;
+    }
     runningRef.current.add(scheduled.id);
     let startedThreadId: string | undefined;
     let turnStarted = false;
     try {
       await current.ensureSkillRoots();
-      const started = await rpc<{ thread: Thread }>("thread/start", threadStartParams(run, project.path, {
+      const modelContextWindow = run.provider === "lmstudio"
+        ? current.lmStudioModels?.find((entry) => entry.id === run.model)?.maxContextLength
+        : undefined;
+      const startFreshThread = () => rpc<{ thread: Thread }>("thread/start", threadStartParams(run, project.path, {
         serviceName: "Mythra Code",
-        modelContextWindow: run.provider === "lmstudio"
-          ? current.lmStudioModels?.find((entry) => entry.id === run.model)?.maxContextLength
-          : undefined,
+        modelContextWindow,
         interactive: false,
       }));
+      let started: { thread: Thread };
+      if (reuseThread && scheduled.lastThreadId) {
+        try {
+          started = await rpc<{ thread: Thread }>("thread/resume", threadResumeParams(
+            run,
+            scheduled.lastThreadId,
+            project.path,
+            { modelContextWindow, refreshRuntimeConfig: true },
+          ));
+        } catch {
+          // The user may have deleted the earlier run's conversation. Keep the
+          // schedule useful by establishing a new thread that later triggers
+          // can reuse, rather than failing forever on a stale id.
+          started = await startFreshThread();
+        }
+      } else {
+        started = await startFreshThread();
+      }
       startedThreadId = started.thread.id;
       current.bindThreadToProject(started.thread.id, project.path);
       useTaskStore.getState().ensureTask(started.thread.id, project.path);

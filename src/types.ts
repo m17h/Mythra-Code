@@ -234,12 +234,20 @@ export interface ScheduleRunRecord {
   error?: string;
 }
 
+export type ScheduleIntervalUnit = "minutes" | "hours" | "days";
+export type ScheduleThreadMode = "new" | "reuse";
+
 export interface ScheduledTask {
   id: string;
   name: string;
   prompt: string;
   projectId: string | null;
+  /** The user-facing cadence. Legacy schedules only have intervalMinutes. */
+  intervalValue?: number;
+  intervalUnit?: ScheduleIntervalUnit;
   intervalMinutes: number;
+  /** Legacy schedules created a fresh thread for every trigger. */
+  threadMode?: ScheduleThreadMode;
   enabled: boolean;
   nextRunAt: number;
   lastRunAt?: number;

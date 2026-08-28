@@ -86,6 +86,69 @@ describe("useScheduler", () => {
     expect(useTaskStore.getState().statuses["thread-1"]).toBe("starting");
   });
 
+  it("continues the previous thread when the schedule requests it", async () => {
+    const runs: ScheduleRunRecord[] = [];
+    codex.rpc.mockImplementation((method: string) => {
+      if (method === "thread/resume") return Promise.resolve({ thread: { id: "thread-existing" } });
+      return Promise.resolve({});
+    });
+    renderHook(() => useScheduler(testSchedulerDeps(testSchedule({
+      threadMode: "reuse",
+      lastThreadId: "thread-existing",
+    }), runs)));
+
+    await act(async () => {
+      await flushMicrotasks();
+    });
+
+    expect(codex.rpc).toHaveBeenCalledWith("thread/resume", expect.objectContaining({
+      threadId: "thread-existing",
+      cwd: "/tmp/project",
+    }));
+    expect(codex.rpc).not.toHaveBeenCalledWith("thread/start", expect.anything());
+    expect(codex.rpc).toHaveBeenCalledWith("turn/start", expect.objectContaining({ threadId: "thread-existing" }));
+    expect(runs.at(-1)).toMatchObject({ status: "started", threadId: "thread-existing" });
+  });
+
+  it("starts a replacement reusable thread when the previous one was deleted", async () => {
+    const runs: ScheduleRunRecord[] = [];
+    codex.rpc.mockImplementation((method: string) => {
+      if (method === "thread/resume") return Promise.reject(new Error("thread not found"));
+      if (method === "thread/start") return Promise.resolve({ thread: { id: "thread-replacement" } });
+      return Promise.resolve({});
+    });
+    renderHook(() => useScheduler(testSchedulerDeps(testSchedule({
+      threadMode: "reuse",
+      lastThreadId: "thread-deleted",
+    }), runs)));
+
+    await act(async () => {
+      await flushMicrotasks();
+    });
+
+    expect(codex.rpc).toHaveBeenCalledWith("thread/resume", expect.anything());
+    expect(codex.rpc).toHaveBeenCalledWith("thread/start", expect.anything());
+    expect(runs.at(-1)).toMatchObject({ status: "started", threadId: "thread-replacement" });
+  });
+
+  it("waits rather than overlapping turns in a reusable thread", async () => {
+    const runs: ScheduleRunRecord[] = [];
+    const schedule = testSchedule({ threadMode: "reuse", lastThreadId: "thread-existing" });
+    const updateSchedule = vi.fn();
+    useTaskStore.getState().ensureTask("thread-existing", "/tmp/project");
+    useTaskStore.getState().setTaskStatus("thread-existing", "running");
+    renderHook(() => useScheduler(testSchedulerDeps(schedule, runs, { updateSchedule })));
+
+    await act(async () => {
+      await flushMicrotasks();
+    });
+
+    expect(codex.rpc).not.toHaveBeenCalled();
+    expect(runs).toHaveLength(0);
+    const patch = updateSchedule.mock.calls[0][1] as (current: ScheduledTask) => ScheduledTask;
+    expect(patch(schedule).nextRunAt).toBeGreaterThan(schedule.nextRunAt);
+  });
+
   it("does not strand the thread in starting when turn/start fails", async () => {
     const runs: ScheduleRunRecord[] = [];
     codex.rpc.mockImplementation((method: string) => {

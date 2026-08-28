@@ -1517,8 +1517,8 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .settings-subgroup { margin-top: var(--s-5); padding-top: var(--s-4); border-top: 1px solid var(--line); }
 .settings-subgroup-label { display: block; margin-bottom: var(--s-2); color: var(--muted-2); font-size: var(--fs-micro); text-transform: uppercase; letter-spacing: var(--track-caps); }
 .inline-create input, .stacked-create input, .stacked-create textarea, .schedule-create input, .schedule-create textarea, .schedule-create select, .runtime-field-grid select { min-width: 0; min-height: 33px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 7px; outline: 0; color: var(--text); background: var(--field); font-size: var(--fs-micro); resize: vertical; }
-.inline-create button, .stacked-create button, .schedule-create button { min-height: 33px; display: flex; align-items: center; justify-content: center; gap: 5px; padding: 0 9px; border: 1px solid var(--line); border-radius: 7px; color: var(--green); background: var(--green-soft); font-size: var(--fs-meta); cursor: pointer; }
-.inline-create button:disabled, .stacked-create button:disabled, .schedule-create button:disabled { opacity: .4; cursor: default; }
+.inline-create button, .stacked-create button, .schedule-create > button { min-height: 33px; display: flex; align-items: center; justify-content: center; gap: 5px; padding: 0 9px; border: 1px solid var(--line); border-radius: 7px; color: var(--green); background: var(--green-soft); font-size: var(--fs-meta); cursor: pointer; }
+.inline-create button:disabled, .stacked-create button:disabled, .schedule-create > button:disabled { opacity: .4; cursor: default; }
 .manager-list { display: flex; flex-direction: column; gap: 5px; }
 .manager-list > div { min-height: 44px; display: grid; grid-template-columns: 25px minmax(0,1fr) 27px; align-items: center; gap: var(--s-2); padding: var(--s-2); border: 1px solid var(--line); border-radius: var(--r-sm); background: rgba(255,255,255,.012); transition: border-color var(--t-fast) ease, background var(--t-fast) ease; }
 .manager-list > div:hover { border-color: var(--line-strong); background: rgba(255,255,255,.026); }
@@ -1534,9 +1534,19 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .manager-delete { width: 25px; height: 25px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 6px; color: var(--muted-2); background: transparent; cursor: pointer; }
 .manager-delete:hover { color: var(--red); background: rgba(239,138,135,.07); }
 .stacked-create { display: grid; gap: 6px; margin-top: 7px; }
-.schedule-create { display: grid; grid-template-columns: 1fr 1fr 75px; gap: 6px; margin-top: 7px; }
-.schedule-create textarea { grid-column: 1 / -1; }
-.schedule-create button { grid-column: 1 / -1; }
+.schedule-create { position: relative; display: flex; flex-direction: column; gap: var(--s-3); margin-top: var(--s-3); padding: var(--s-3); overflow: visible; border: 1px solid var(--line); border-radius: var(--r-md); background: color-mix(in srgb, var(--field) 55%, transparent); }
+.schedule-create:has(.app-select.open) { z-index: 35; }
+.schedule-create-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-3); }
+.schedule-create-grid > label, .schedule-create-grid > .schedule-field, .schedule-prompt-control { min-width: 0; display: flex; flex-direction: column; gap: 5px; color: var(--muted-2); font-size: var(--fs-meta); font-weight: 600; }
+.schedule-create-grid .app-select, .schedule-create-grid .app-select-trigger { width: 100%; }
+.schedule-create-grid .app-select-trigger { min-height: 40px; }
+.schedule-create-grid .app-select-menu { width: max(100%, 250px); }
+.schedule-model-control .app-select-menu { width: max(100%, 360px); }
+.schedule-interval-inputs { display: grid; grid-template-columns: minmax(70px, .55fr) minmax(120px, 1fr); gap: var(--s-2); }
+.schedule-interval-inputs > input { width: 100%; }
+.schedule-prompt-control textarea { width: 100%; }
+.schedule-runtime-note { display: flex; align-items: center; gap: 6px; margin: 0; color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.45; }
+.schedule-runtime-note svg { flex: 0 0 auto; color: var(--green); }
 .compact-note { display: grid; grid-template-columns: 23px minmax(0,1fr); align-items: center; gap: 7px; color: var(--green); }
 .mcp-controls-note { margin-top: var(--s-5); }
 .behavior-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
@@ -2346,8 +2356,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
   .usage-display-controls { justify-self: start; }
   .theme-grid, .behavior-grid, .runtime-field-grid, .provider-cards, .provider-prompt-grid { grid-template-columns: 1fr; }
   .profile-grid { grid-template-columns: 1fr 1fr; }
-  .inline-create.two, .schedule-create { grid-template-columns: 1fr; }
-  .schedule-create textarea, .schedule-create button { grid-column: 1; }
+  .inline-create.two, .schedule-create-grid { grid-template-columns: 1fr; }
   /* Skills: the folder actions and composer buttons stop competing for a
      row of their own and stack full width instead. */
   .skill-folder-actions { width: 100%; margin-left: 0; }

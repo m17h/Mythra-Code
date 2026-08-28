@@ -356,13 +356,11 @@ export function SettingsModal({
   }, [claudeModels, cursorModels, lmStudioModels, local.model, local.provider, openRouterModels, runtimeModels]);
 
   const subAgentModelCatalogs = useMemo<Partial<Record<Provider, ChildAgentModelOption[]>>>(() => ({
-    ...(runtimeModels.length ? {
-      openai: runtimeModels.map((entry) => ({
-        id: entry.model || entry.id,
-        label: entry.displayName || entry.model || entry.id,
-        detail: entry.description || entry.model || entry.id,
-      })),
-    } : {}),
+    openai: openAiModelOptions(runtimeModels).map((entry) => ({
+      id: entry.id,
+      label: entry.name,
+      detail: entry.tagline,
+    })),
     ...(claudeModels.length ? {
       claude: claudeModels.filter((entry) => !entry.disabled).map((entry) => ({
         id: entry.id,
@@ -879,6 +877,8 @@ export function SettingsModal({
             workflowRuns={workflowRuns}
             projects={projects}
             skills={skills}
+            modelCatalogs={subAgentModelCatalogs}
+            onDiscoverOpenRouterModels={onDiscoverOpenRouterModels}
             onSettings={setLocal}
             onProfiles={onProfiles}
             onAgents={onAgents}
