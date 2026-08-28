@@ -53,9 +53,9 @@ describe("model control browser layout", () => {
   // .reasoning-* markup and the .openrouter-* one every other provider shares.
   const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
   const NEW_STYLE_PALETTES = {
-    sonar: ["rgb(61, 111, 232)", "rgb(31, 159, 224)", "rgb(18, 201, 196)", "rgb(23, 221, 134)", "rgb(92, 255, 192)"],
-    vital: ["rgb(255, 194, 206)", "rgb(255, 157, 180)", "rgb(255, 111, 146)", "rgb(255, 71, 112)", "rgb(255, 32, 80)"],
-    dune: ["rgb(240, 220, 174)", "rgb(230, 189, 133)", "rgb(220, 156, 104)", "rgb(207, 122, 92)", "rgb(192, 90, 78)"],
+    plumb: ["rgb(147, 167, 189)", "rgb(176, 174, 165)", "rgb(201, 179, 130)", "rgb(224, 172, 77)", "rgb(247, 189, 46)"],
+    dart: ["rgb(14, 155, 115)", "rgb(28, 180, 107)", "rgb(67, 203, 92)", "rgb(126, 224, 74)", "rgb(194, 242, 60)"],
+    coil: ["rgb(106, 79, 224)", "rgb(138, 76, 230)", "rgb(171, 72, 224)", "rgb(209, 68, 207)", "rgb(244, 63, 174)"],
   } as const;
 
   it.each(Object.entries(NEW_STYLE_PALETTES))("gives the %s slider its own color at every effort level", (sliderStyle, palette) => {
@@ -77,54 +77,86 @@ describe("model control browser layout", () => {
     });
   });
 
-  it.each([
-    ["sonar", "sonar-ping"],
-    ["vital", "vital-trace"],
-  ] as const)("drives the %s rail decoration from its own animation", (sliderStyle, animationName) => {
-    const view = render(
+  const renderStyle = (sliderStyle: string, effort: "low" | "high" | "max") =>
+    render(
       <div className="app-shell" data-theme="kiwi" data-effort-slider={sliderStyle}>
-        <ModelPowerControl model="gpt-5.6-sol" effort="high" fast={false} runtimeModels={[]} onModel={vi.fn()} onEffort={vi.fn()} onFast={vi.fn()} />
+        <ModelPowerControl model="gpt-5.6-sol" effort={effort} fast={false} runtimeModels={[]} onModel={vi.fn()} onEffort={vi.fn()} onFast={vi.fn()} />
       </div>,
     );
+
+  // The wake and the cord are drawn on the rail's own ::before, each cut to a
+  // shape of its own: neither style is a colored bar with a round thumb.
+  it.each([
+    ["dart", "dart-slipstream"],
+    ["coil", "coil-twist"],
+  ] as const)("drives the %s rail decoration from its own animation", (sliderStyle, animationName) => {
+    const view = renderStyle(sliderStyle, "high");
 
     const rail = view.container.querySelector<HTMLElement>(".reasoning-rail");
     expect(getComputedStyle(rail!, "::before").animationName).toBe(animationName);
   });
 
-  it("drifts the dune rail's grain instead of decorating it", () => {
-    const view = render(
-      <div className="app-shell" data-theme="kiwi" data-effort-slider="dune">
-        <ModelPowerControl model="gpt-5.6-sol" effort="high" fast={false} runtimeModels={[]} onModel={vi.fn()} onEffort={vi.fn()} onFast={vi.fn()} />
-      </div>,
-    );
+  it("cuts the dart wake into a wedge that widens toward the arrowhead", () => {
+    const view = renderStyle("dart", "high");
 
+    const rail = view.container.querySelector<HTMLElement>(".reasoning-rail");
     const track = view.container.querySelector<HTMLElement>(".reasoning-control input[type='range']");
-    expect(getComputedStyle(track!).animationName).toBe("dune-drift");
-    // The drifting layer is the 22px grain tile, not the sand ramp itself.
-    expect(getComputedStyle(track!).backgroundSize).toContain("22px");
+    expect(getComputedStyle(rail!, "::before").clipPath).toContain("polygon");
+    // The track keeps nothing but a hairline flight line under the wake.
+    expect(getComputedStyle(track!).backgroundSize).toContain("1px");
   });
 
-  // Sonar pings, Vital beats and Dune drifts faster the harder the model works,
-  // which only holds if --effort-heat resolves on the rail rather than the shell.
-  it.each([
-    ["sonar", ".reasoning-rail", "::before"],
-    ["vital", ".reasoning-rail", "::before"],
-    ["dune", ".reasoning-control input[type='range']", ""],
-  ] as const)("shortens the %s motion as effort rises", (sliderStyle, selector, pseudo) => {
-    const durationAt = (effort: "low" | "max") => {
-      const view = render(
-        <div className="app-shell" data-theme="kiwi" data-effort-slider={sliderStyle}>
-          <ModelPowerControl model="gpt-5.6-sol" effort={effort} fast={false} runtimeModels={[]} onModel={vi.fn()} onEffort={vi.fn()} onFast={vi.fn()} />
-        </div>,
-      );
-      const target = view.container.querySelector<HTMLElement>(selector);
-      const duration = parseFloat(getComputedStyle(target!, pseudo || undefined).animationDuration);
+  it("hangs the plumb wire along the top of the track with notched ticks", () => {
+    const view = renderStyle("plumb", "high");
+
+    const track = view.container.querySelector<HTMLElement>(".reasoning-control input[type='range']");
+    const tick = view.container.querySelector<HTMLElement>(".reasoning-ticks i");
+    expect(getComputedStyle(track!).height).toBe("16px");
+    expect(getComputedStyle(track!).backgroundSize).toContain("2px");
+    expect(getComputedStyle(tick!).width).toBe("1px");
+    expect(getComputedStyle(tick!).borderRadius).toBe("0px");
+  });
+
+  // Coil reads effort as tension: the winding tightens level by level, which
+  // only holds if --effort-heat resolves on the rail rather than the shell.
+  it("winds the coil tighter as effort rises", () => {
+    const gaugeAt = (effort: "low" | "max") => {
+      const view = renderStyle("coil", effort);
+      const rail = view.container.querySelector<HTMLElement>(".reasoning-rail");
+      const gauge = parseFloat(getComputedStyle(rail!, "::before").maskSize);
       view.unmount();
-      return duration;
+      return gauge;
     };
 
-    const calm = durationAt("low");
-    const flatOut = durationAt("max");
+    const slack = gaugeAt("low");
+    const taut = gaugeAt("max");
+    expect(slack).toBeGreaterThan(0);
+    expect(taut).toBeLessThan(slack);
+  });
+
+  // The bob swings, the slipstream runs and the cord turns faster the harder
+  // the model works — again, straight off the rail's live --effort-heat.
+  it.each([
+    ["dart", "--dart-rush"],
+    ["coil", "--coil-spin"],
+    ["plumb", "--plumb-swing"],
+  ] as const)("shortens the %s motion as effort rises", (sliderStyle, timingVariable) => {
+    const secondsAt = (effort: "low" | "max") => {
+      const view = renderStyle(sliderStyle, effort);
+      const rail = view.container.querySelector<HTMLElement>(".reasoning-rail");
+      // Timing lives in a custom property so it can reach the thumb pseudo-
+      // element too; resolve it through an animation on a probe element.
+      const probe = document.createElement("div");
+      probe.style.animationName = "effort-pop";
+      probe.style.animationDuration = getComputedStyle(rail!).getPropertyValue(timingVariable);
+      rail!.appendChild(probe);
+      const seconds = parseFloat(getComputedStyle(probe).animationDuration);
+      view.unmount();
+      return seconds;
+    };
+
+    const calm = secondsAt("low");
+    const flatOut = secondsAt("max");
     expect(calm).toBeGreaterThan(0);
     expect(flatOut).toBeLessThan(calm);
   });

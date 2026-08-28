@@ -3135,243 +3135,250 @@ body[data-pane-resizing] .sidebar, body[data-pane-resizing] .studio-dock { trans
 .app-shell[data-effort-slider="ink"] .reasoning-rail.dragging::before, .app-shell[data-effort-slider="ink"] .openrouter-reasoning-rail.dragging::before,
 .app-shell[data-effort-slider="ink"] .effort-max .reasoning-rail::after, .app-shell[data-effort-slider="ink"] .effort-max .openrouter-reasoning-rail::after { display: none; }
 
-/* -- Sonar: a sounding line over the abyss. A hairline channel, a contact dot
-   for a thumb wrapped in two static rings, and ping rings that expand out of
-   it — faster the harder the model is thinking. -- */
-.app-shell[data-effort-slider="sonar"] {
-  --sonar-1: #3d6fe8; --sonar-2: #1f9fe0; --sonar-3: #12c9c4; --sonar-4: #17dd86; --sonar-5: #5cffc0;
-  --sonar-abyss: rgba(6,17,26,.94);
+/* -- Plumb: a machinist's plumb line. The track is a hairline wire strung
+   along the top of the rail and the thumb is a brass bob hanging off it on a
+   stem, swinging wider and quicker the harder the model is set to think. -- */
+.app-shell[data-effort-slider="plumb"] {
+  --plumb-1: #93a7bd; --plumb-2: #b0aea5; --plumb-3: #c9b382; --plumb-4: #e0ac4d; --plumb-5: #f7bd2e;
+  --plumb-wire: rgba(255,255,255,.2); --plumb-stem: rgba(255,255,255,.52);
 }
 /* Timing vars live on the rail, the closest element that carries the live
-   --effort-heat: a custom property substitutes where it is declared. */
-.app-shell[data-effort-slider="sonar"] .reasoning-rail, .app-shell[data-effort-slider="sonar"] .openrouter-reasoning-rail { --sonar-ping: calc(2.9s - var(--effort-heat, 0) * 1.55s); }
-/* --sonar-live is the active level's color for the current color scheme. It
+   --effort-heat, and inherit down into the thumb pseudo-element. */
+.app-shell[data-effort-slider="plumb"] .reasoning-rail, .app-shell[data-effort-slider="plumb"] .openrouter-reasoning-rail {
+  --plumb-swing: calc(3.7s - var(--effort-heat, 0) * 2.4s);
+  --plumb-arc: calc(2deg + var(--effort-heat, 0) * 6deg);
+}
+/* --plumb-live is the active level's color for the current color scheme. It
    is declared on the control, the element the level color is published on. */
-.app-shell[data-effort-slider="sonar"] .model-power-control, .app-shell[data-effort-slider="sonar"] .openrouter-reasoning { --sonar-live: var(--sonar-effort-color, #12c9c4); }
-.app-shell[data-color-scheme="light"][data-effort-slider="sonar"] {
-  --sonar-1: #2a52c4; --sonar-2: #146d9e; --sonar-3: #0b8a86; --sonar-4: #12915c; --sonar-5: #17a37e;
-  --sonar-abyss: #ccd3cc;
+.app-shell[data-effort-slider="plumb"] .model-power-control, .app-shell[data-effort-slider="plumb"] .openrouter-reasoning { --plumb-live: var(--plumb-effort-color, #c9b382); }
+.app-shell[data-color-scheme="light"][data-effort-slider="plumb"] {
+  --plumb-1: #5a708a; --plumb-2: #6d7061; --plumb-3: #866d2d; --plumb-4: #94651a; --plumb-5: #9a5c07;
+  --plumb-wire: rgba(30,34,28,.26); --plumb-stem: rgba(30,34,28,.6);
 }
-.app-shell[data-color-scheme="light"][data-effort-slider="sonar"] .model-power-control, .app-shell[data-color-scheme="light"][data-effort-slider="sonar"] .openrouter-reasoning { --sonar-live: color-mix(in srgb, var(--sonar-effort-color, #12c9c4) 38%, #06222b); }
-.app-shell[data-effort-slider="sonar"] .reasoning-control input[type="range"], .app-shell[data-effort-slider="sonar"] .openrouter-reasoning input[type="range"] {
-  height: 3px; border-radius: 1px;
+.app-shell[data-color-scheme="light"][data-effort-slider="plumb"] .model-power-control, .app-shell[data-color-scheme="light"][data-effort-slider="plumb"] .openrouter-reasoning { --plumb-live: color-mix(in srgb, var(--plumb-effort-color, #c9b382) 44%, #241a04); }
+/* The wire is pinned to the top of the track box so the bob has room to hang
+   below it; the stretch already travelled is the only lit part of it. */
+.app-shell[data-effort-slider="plumb"] .reasoning-control input[type="range"], .app-shell[data-effort-slider="plumb"] .openrouter-reasoning input[type="range"] {
+  height: 16px; border-radius: 0;
   background:
-    linear-gradient(var(--sonar-abyss), var(--sonar-abyss)) no-repeat right center / calc(100% - var(--reasoning-fill, var(--router-fill, 0%))) 100%,
-    linear-gradient(90deg, var(--sonar-1) 0%, var(--sonar-2) 26%, var(--sonar-3) 52%, var(--sonar-4) 78%, var(--sonar-5) 100%);
+    linear-gradient(var(--plumb-live), var(--plumb-live)) no-repeat left top / var(--reasoning-fill, var(--router-fill, 0%)) 2px,
+    linear-gradient(var(--plumb-wire), var(--plumb-wire)) no-repeat left top / 100% 2px;
   box-shadow: none;
 }
-.app-shell[data-effort-slider="sonar"] .reasoning-control input[type="range"]::-webkit-slider-thumb, .app-shell[data-effort-slider="sonar"] .openrouter-reasoning input[type="range"]::-webkit-slider-thumb {
-  width: 9px; height: 9px; transform: none;
-  background: var(--sonar-live, #12c9c4); border: 1px solid var(--sonar-abyss);
-  box-shadow:
-    0 0 0 3px color-mix(in srgb, var(--sonar-live, #12c9c4) 16%, transparent),
-    0 0 0 4px color-mix(in srgb, var(--sonar-live, #12c9c4) 46%, transparent);
+/* Stem and weight are one polygon cut out of a two-layer fill, hinged at the
+   wire so the whole bob pivots from where it hangs. */
+.app-shell[data-effort-slider="plumb"] .reasoning-control input[type="range"]::-webkit-slider-thumb, .app-shell[data-effort-slider="plumb"] .openrouter-reasoning input[type="range"]::-webkit-slider-thumb {
+  width: 13px; height: 16px; border: 0; border-radius: 0;
+  clip-path: polygon(46% 0, 54% 0, 54% 44%, 96% 60%, 50% 100%, 4% 60%, 46% 44%);
+  background:
+    linear-gradient(var(--plumb-stem), var(--plumb-stem)) no-repeat top center / 100% 44%,
+    linear-gradient(180deg, color-mix(in srgb, var(--plumb-live, #c9b382) 58%, #fff), var(--plumb-live, #c9b382));
+  box-shadow: none; transform: none; transform-origin: 50% 0; transition: none;
+  animation: plumb-sway var(--plumb-swing, 3.7s) ease-in-out infinite;
 }
-.app-shell[data-effort-slider="sonar"] .dragging input[type="range"]::-webkit-slider-thumb {
-  transform: none;
-  box-shadow:
-    0 0 0 4px color-mix(in srgb, var(--sonar-live, #12c9c4) 18%, transparent),
-    0 0 0 6px color-mix(in srgb, var(--sonar-live, #12c9c4) 52%, transparent);
+@keyframes plumb-sway {
+  0%, 100% { transform: rotate(calc(var(--plumb-arc, 3deg) * -1)); }
+  50% { transform: rotate(var(--plumb-arc, 3deg)); }
 }
-.app-shell[data-effort-slider="sonar"] .reasoning-control input[type="range"]:focus-visible::-webkit-slider-thumb, .app-shell[data-effort-slider="sonar"] .openrouter-reasoning input[type="range"]:focus-visible::-webkit-slider-thumb {
-  box-shadow: 0 0 0 3px var(--panel), 0 0 0 5px var(--sonar-live, #12c9c4);
+/* Taking hold of the bob steadies it. */
+.app-shell[data-effort-slider="plumb"] .dragging input[type="range"]::-webkit-slider-thumb { animation: none; transform: rotate(0deg) scale(1.08); box-shadow: none; }
+/* clip-path crops any box-shadow ring away, so focus is drawn on the track
+   box and echoed as a halo that follows the bob's own silhouette. */
+.app-shell[data-effort-slider="plumb"] .reasoning-control input[type="range"]:focus-visible, .app-shell[data-effort-slider="plumb"] .openrouter-reasoning input[type="range"]:focus-visible {
+  outline: 2px solid var(--plumb-live, #c9b382); outline-offset: 3px;
 }
-/* Both pseudo-elements are rings; the second starts half a cycle in so the
-   sounding never stops. They sit under the rail line, like water. */
-.app-shell[data-effort-slider="sonar"] .reasoning-rail::before, .app-shell[data-effort-slider="sonar"] .openrouter-reasoning-rail::before,
-.app-shell[data-effort-slider="sonar"] .reasoning-rail::after, .app-shell[data-effort-slider="sonar"] .openrouter-reasoning-rail::after {
-  content: ""; position: absolute; left: var(--reasoning-fill, var(--router-fill, 0%)); top: 50%; right: auto; z-index: 1;
-  display: block; width: 13px; height: 13px; border-radius: 50%;
-  border: 1px solid var(--sonar-live, #12c9c4); background: none;
-  transform: translate(-50%, -50%) scale(.4); opacity: 0; pointer-events: none;
-  animation: sonar-ping var(--sonar-ping) cubic-bezier(.2,.62,.35,1) infinite;
+.app-shell[data-effort-slider="plumb"] .reasoning-control input[type="range"]:focus-visible::-webkit-slider-thumb, .app-shell[data-effort-slider="plumb"] .openrouter-reasoning input[type="range"]:focus-visible::-webkit-slider-thumb {
+  box-shadow: none; filter: drop-shadow(0 0 2px var(--plumb-live, #c9b382)) drop-shadow(0 0 5px var(--plumb-live, #c9b382));
 }
-.app-shell[data-effort-slider="sonar"] .reasoning-rail::after, .app-shell[data-effort-slider="sonar"] .openrouter-reasoning-rail::after {
-  animation-delay: calc(var(--sonar-ping) / -2);
+/* Ticks are notches nicked into the wire, not beads threaded onto it. */
+.app-shell[data-effort-slider="plumb"] .reasoning-ticks, .app-shell[data-effort-slider="plumb"] .openrouter-reasoning-ticks { align-items: flex-start; }
+.app-shell[data-effort-slider="plumb"] .reasoning-ticks i, .app-shell[data-effort-slider="plumb"] .openrouter-reasoning-ticks i {
+  width: 1px; height: 7px; margin-top: -1px; border: 0; border-radius: 0; background: var(--plumb-wire);
 }
-@keyframes sonar-ping {
-  0% { opacity: .9; transform: translate(-50%, -50%) scale(.4); }
-  72%, 100% { opacity: 0; transform: translate(-50%, -50%) scale(2.2); }
-}
-.app-shell[data-effort-slider="sonar"] .reasoning-ticks i, .app-shell[data-effort-slider="sonar"] .openrouter-reasoning-ticks i { width: 5px; height: 5px; background: transparent; }
-.app-shell[data-effort-slider="sonar"] .reasoning-ticks i.reached, .app-shell[data-effort-slider="sonar"] .openrouter-reasoning-ticks i.reached {
-  border-color: currentColor; background: currentColor;
-  box-shadow: 0 0 0 2px color-mix(in srgb, currentColor 34%, transparent);
-}
-.app-shell[data-effort-slider="sonar"] .reasoning-ticks i:nth-child(1), .app-shell[data-effort-slider="sonar"] .openrouter-reasoning-ticks i:nth-child(1) { color: var(--sonar-1); }
-.app-shell[data-effort-slider="sonar"] .reasoning-ticks i:nth-child(2), .app-shell[data-effort-slider="sonar"] .openrouter-reasoning-ticks i:nth-child(2) { color: var(--sonar-2); }
-.app-shell[data-effort-slider="sonar"] .reasoning-ticks i:nth-child(3), .app-shell[data-effort-slider="sonar"] .openrouter-reasoning-ticks i:nth-child(3) { color: var(--sonar-3); }
-.app-shell[data-effort-slider="sonar"] .reasoning-ticks i:nth-child(4), .app-shell[data-effort-slider="sonar"] .openrouter-reasoning-ticks i:nth-child(4) { color: var(--sonar-4); }
-.app-shell[data-effort-slider="sonar"] .reasoning-ticks i:nth-child(5), .app-shell[data-effort-slider="sonar"] .openrouter-reasoning-ticks i:nth-child(5) { color: var(--sonar-5); }
-.app-shell[data-effort-slider="sonar"] .reasoning-heading strong, .app-shell[data-effort-slider="sonar"] .openrouter-reasoning-heading strong {
-  color: var(--sonar-live, #12c9c4); font-variant-numeric: tabular-nums; letter-spacing: .04em;
-  text-shadow: 0 0 9px color-mix(in srgb, var(--sonar-live, #12c9c4) 40%, transparent);
-}
-.app-shell[data-effort-slider="sonar"] .reasoning-heading > svg:first-child, .app-shell[data-effort-slider="sonar"] .openrouter-reasoning-heading > svg:first-child { color: var(--sonar-live, #12c9c4); }
-.app-shell[data-effort-slider="sonar"] .reasoning-labels span.active, .app-shell[data-effort-slider="sonar"] .openrouter-reasoning-labels span.active { color: var(--sonar-live, #12c9c4); letter-spacing: .04em; text-shadow: none; }
-/* Sparks answer the ping language: a burst of tiny empty rings. */
-.app-shell[data-effort-slider="sonar"] .effort-sparks i { background: none; box-shadow: inset 0 0 0 1px var(--sonar-live, #12c9c4); }
-.app-shell[data-effort-slider="sonar"] .effort-max .reasoning-heading strong, .app-shell[data-effort-slider="sonar"] .effort-max .openrouter-reasoning-heading strong {
-  animation: effort-pop 280ms var(--ease); text-shadow: 0 0 14px var(--sonar-5);
-}
-.app-shell[data-effort-slider="sonar"] .effort-max .reasoning-control input[type="range"]::-webkit-slider-thumb, .app-shell[data-effort-slider="sonar"] .effort-max.openrouter-reasoning input[type="range"]::-webkit-slider-thumb, .app-shell[data-effort-slider="sonar"] .effort-max .openrouter-reasoning-rail input[type="range"]::-webkit-slider-thumb { animation: none; }
-.app-shell[data-color-scheme="light"][data-effort-slider="sonar"] .reasoning-heading strong, .app-shell[data-color-scheme="light"][data-effort-slider="sonar"] .openrouter-reasoning-heading strong { text-shadow: none; }
+.app-shell[data-effort-slider="plumb"] .reasoning-ticks i.reached, .app-shell[data-effort-slider="plumb"] .openrouter-reasoning-ticks i.reached { border-color: currentColor; background: currentColor; box-shadow: none; animation: none; }
+.app-shell[data-effort-slider="plumb"] .reasoning-ticks i:nth-child(1), .app-shell[data-effort-slider="plumb"] .openrouter-reasoning-ticks i:nth-child(1) { color: var(--plumb-1); }
+.app-shell[data-effort-slider="plumb"] .reasoning-ticks i:nth-child(2), .app-shell[data-effort-slider="plumb"] .openrouter-reasoning-ticks i:nth-child(2) { color: var(--plumb-2); }
+.app-shell[data-effort-slider="plumb"] .reasoning-ticks i:nth-child(3), .app-shell[data-effort-slider="plumb"] .openrouter-reasoning-ticks i:nth-child(3) { color: var(--plumb-3); }
+.app-shell[data-effort-slider="plumb"] .reasoning-ticks i:nth-child(4), .app-shell[data-effort-slider="plumb"] .openrouter-reasoning-ticks i:nth-child(4) { color: var(--plumb-4); }
+.app-shell[data-effort-slider="plumb"] .reasoning-ticks i:nth-child(5), .app-shell[data-effort-slider="plumb"] .openrouter-reasoning-ticks i:nth-child(5) { color: var(--plumb-5); }
+.app-shell[data-effort-slider="plumb"] .reasoning-heading strong, .app-shell[data-effort-slider="plumb"] .openrouter-reasoning-heading strong { color: var(--plumb-live, #c9b382); letter-spacing: .05em; text-shadow: none; }
+.app-shell[data-effort-slider="plumb"] .reasoning-heading > svg:first-child, .app-shell[data-effort-slider="plumb"] .openrouter-reasoning-heading > svg:first-child { color: var(--plumb-live, #c9b382); }
+.app-shell[data-effort-slider="plumb"] .reasoning-labels span.active, .app-shell[data-effort-slider="plumb"] .openrouter-reasoning-labels span.active { color: var(--plumb-live, #c9b382); text-shadow: none; }
+/* Filings knocked off the bob: small, matte, no glow. */
+.app-shell[data-effort-slider="plumb"] .effort-sparks i { width: 3px; height: 3px; background: var(--plumb-live, #c9b382); box-shadow: none; }
+.app-shell[data-effort-slider="plumb"] .effort-max .reasoning-heading strong, .app-shell[data-effort-slider="plumb"] .effort-max .openrouter-reasoning-heading strong { animation: effort-pop 280ms var(--ease); text-shadow: none; }
+.app-shell[data-effort-slider="plumb"] .reasoning-rail.dragging::before, .app-shell[data-effort-slider="plumb"] .openrouter-reasoning-rail.dragging::before,
+.app-shell[data-effort-slider="plumb"] .effort-max .reasoning-rail::after, .app-shell[data-effort-slider="plumb"] .effort-max .openrouter-reasoning-rail::after { display: none; }
 
-/* One heartbeat per 44px tile. Kept on :root so the rail and the Settings
-   preview mask the same trace, whichever style is currently active. */
-:root { --vital-trace: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='44' height='14' viewBox='0 0 44 14'%3E%3Cpath d='M0 9h12q2-2 4 0h2l1 2 2-9 2 10 1-3h6q3-4 6 0h8' fill='none' stroke='%23fff' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"); }
-
-/* -- Vital: a clinical monitor. The rail is a flatline; everything reached is
-   a scrolling heartbeat trace whose rate — and the electrode thumb's own
-   systole — climbs with effort. -- */
-.app-shell[data-effort-slider="vital"] {
-  --vital-1: #ffc2ce; --vital-2: #ff9db4; --vital-3: #ff6f92; --vital-4: #ff4770; --vital-5: #ff2050;
-  --vital-flatline: rgba(255,255,255,.16);
+/* -- Dart: no rail at all. A hairline flight line, an arrowhead for a thumb,
+   and behind it a wake that starts at nothing and widens to full height under
+   the head, with slipstream streaks running back through it. -- */
+.app-shell[data-effort-slider="dart"] {
+  --dart-1: #0e9b73; --dart-2: #1cb46b; --dart-3: #43cb5c; --dart-4: #7ee04a; --dart-5: #c2f23c;
+  --dart-path: rgba(255,255,255,.22);
 }
-.app-shell[data-effort-slider="vital"] .reasoning-rail, .app-shell[data-effort-slider="vital"] .openrouter-reasoning-rail,
-.app-shell[data-effort-slider="vital"] .reasoning-heading, .app-shell[data-effort-slider="vital"] .openrouter-reasoning-heading { --vital-beat: calc(1.9s - var(--effort-heat, 0) * 1.25s); }
-.app-shell[data-effort-slider="vital"] .model-power-control, .app-shell[data-effort-slider="vital"] .openrouter-reasoning { --vital-live: var(--vital-effort-color, #ff6f92); }
-.app-shell[data-color-scheme="light"][data-effort-slider="vital"] {
-  --vital-1: #e0748f; --vital-2: #d6486c; --vital-3: #c81f52; --vital-4: #b30d43; --vital-5: #9c0034;
-  --vital-flatline: rgba(24,26,22,.2);
+.app-shell[data-effort-slider="dart"] .reasoning-rail, .app-shell[data-effort-slider="dart"] .openrouter-reasoning-rail { --dart-rush: calc(1.6s - var(--effort-heat, 0) * 1.15s); }
+.app-shell[data-effort-slider="dart"] .model-power-control, .app-shell[data-effort-slider="dart"] .openrouter-reasoning { --dart-live: var(--dart-effort-color, #43cb5c); }
+.app-shell[data-color-scheme="light"][data-effort-slider="dart"] {
+  --dart-1: #0a7355; --dart-2: #12854e; --dart-3: #2b8f3c; --dart-4: #4c9327; --dart-5: #6f9412;
+  --dart-path: rgba(24,30,22,.24);
 }
-.app-shell[data-color-scheme="light"][data-effort-slider="vital"] .model-power-control, .app-shell[data-color-scheme="light"][data-effort-slider="vital"] .openrouter-reasoning { --vital-live: color-mix(in srgb, var(--vital-effort-color, #ff6f92) 46%, #4a0016); }
-.app-shell[data-effort-slider="vital"] .reasoning-control input[type="range"], .app-shell[data-effort-slider="vital"] .openrouter-reasoning input[type="range"] {
-  height: 2px; border-radius: 0;
-  background: linear-gradient(var(--vital-flatline), var(--vital-flatline)) no-repeat right center / calc(100% - var(--reasoning-fill, var(--router-fill, 0%))) 100%;
+.app-shell[data-color-scheme="light"][data-effort-slider="dart"] .model-power-control, .app-shell[data-color-scheme="light"][data-effort-slider="dart"] .openrouter-reasoning { --dart-live: color-mix(in srgb, var(--dart-effort-color, #43cb5c) 42%, #06210f); }
+.app-shell[data-effort-slider="dart"] .reasoning-control input[type="range"], .app-shell[data-effort-slider="dart"] .openrouter-reasoning input[type="range"] {
+  height: 14px; border-radius: 0;
+  background: linear-gradient(var(--dart-path), var(--dart-path)) no-repeat left center / 100% 1px;
   box-shadow: none;
 }
-/* The trace is masked out of a flat color fill so it wears the level color. */
-.app-shell[data-effort-slider="vital"] .reasoning-rail::before, .app-shell[data-effort-slider="vital"] .openrouter-reasoning-rail::before {
-  content: ""; position: absolute; left: 2px; top: 50%; z-index: 1;
-  width: calc(var(--reasoning-fill, var(--router-fill, 0%)) - 3px); height: 14px;
+/* The wake is a wedge clipped out of the level color; it sits below the ticks
+   so the chevron marks stay legible on top of it. */
+.app-shell[data-effort-slider="dart"] .reasoning-rail::before, .app-shell[data-effort-slider="dart"] .openrouter-reasoning-rail::before {
+  content: ""; position: absolute; left: 1px; top: 50%; z-index: 0; height: 14px;
+  width: calc(var(--reasoning-fill, var(--router-fill, 0%)) - 2px);
   transform: translateY(-50%); border-radius: 0;
-  background: var(--vital-live, #ff6f92);
-  -webkit-mask-image: var(--vital-trace); mask-image: var(--vital-trace);
-  -webkit-mask-size: 44px 14px; mask-size: 44px 14px;
+  clip-path: polygon(0 46%, 100% 0, 100% 100%, 0 54%);
+  background:
+    repeating-linear-gradient(90deg, rgba(255,255,255,.32) 0 5px, transparent 5px 18px),
+    linear-gradient(90deg, color-mix(in srgb, var(--dart-live, #43cb5c) 18%, transparent), var(--dart-live, #43cb5c));
+  background-size: 23px 100%, 100% 100%;
+  background-position: 0 center, 0 center;
+  pointer-events: none;
+  animation: dart-slipstream var(--dart-rush, 1.6s) linear infinite;
+}
+/* Streaks travel backwards through the wake, which reads as the head moving
+   forwards. */
+@keyframes dart-slipstream { to { background-position: -23px center, 0 center; } }
+.app-shell[data-effort-slider="dart"] .reasoning-control input[type="range"]::-webkit-slider-thumb, .app-shell[data-effort-slider="dart"] .openrouter-reasoning input[type="range"]::-webkit-slider-thumb {
+  width: 16px; height: 15px; border: 0; border-radius: 0;
+  clip-path: polygon(0 0, 100% 50%, 0 100%, 30% 50%);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--dart-live, #43cb5c) 52%, #fff), var(--dart-live, #43cb5c));
+  box-shadow: none; transform: none;
+  transition: transform 180ms var(--ease), filter 180ms ease;
+}
+.app-shell[data-effort-slider="dart"] .dragging input[type="range"]::-webkit-slider-thumb { transform: scale(1.12); box-shadow: none; filter: brightness(1.12); }
+/* clip-path crops a box-shadow ring away, so focus rings the track box and
+   the head itself picks up a halo shaped like the arrow. */
+.app-shell[data-effort-slider="dart"] .reasoning-control input[type="range"]:focus-visible, .app-shell[data-effort-slider="dart"] .openrouter-reasoning input[type="range"]:focus-visible {
+  outline: 2px solid var(--dart-live, #43cb5c); outline-offset: 3px;
+}
+.app-shell[data-effort-slider="dart"] .reasoning-control input[type="range"]:focus-visible::-webkit-slider-thumb, .app-shell[data-effort-slider="dart"] .openrouter-reasoning input[type="range"]:focus-visible::-webkit-slider-thumb {
+  box-shadow: none; filter: drop-shadow(0 0 2px var(--dart-live, #43cb5c)) drop-shadow(0 0 5px var(--dart-live, #43cb5c));
+}
+/* Ticks are gate chevrons on the flight line, lightened once passed so they
+   still read against the wake behind them. */
+.app-shell[data-effort-slider="dart"] .reasoning-ticks i, .app-shell[data-effort-slider="dart"] .openrouter-reasoning-ticks i {
+  width: 5px; height: 8px; border: 0; border-radius: 0; background: var(--dart-path);
+  clip-path: polygon(0 0, 100% 50%, 0 100%, 55% 50%);
+}
+.app-shell[data-effort-slider="dart"] .reasoning-ticks i.reached, .app-shell[data-effort-slider="dart"] .openrouter-reasoning-ticks i.reached { background: color-mix(in srgb, currentColor 35%, #fff); box-shadow: none; animation: none; }
+.app-shell[data-color-scheme="light"][data-effort-slider="dart"] .reasoning-ticks i.reached, .app-shell[data-color-scheme="light"][data-effort-slider="dart"] .openrouter-reasoning-ticks i.reached { background: color-mix(in srgb, currentColor 45%, #08240f); }
+.app-shell[data-effort-slider="dart"] .reasoning-ticks i:nth-child(1), .app-shell[data-effort-slider="dart"] .openrouter-reasoning-ticks i:nth-child(1) { color: var(--dart-1); }
+.app-shell[data-effort-slider="dart"] .reasoning-ticks i:nth-child(2), .app-shell[data-effort-slider="dart"] .openrouter-reasoning-ticks i:nth-child(2) { color: var(--dart-2); }
+.app-shell[data-effort-slider="dart"] .reasoning-ticks i:nth-child(3), .app-shell[data-effort-slider="dart"] .openrouter-reasoning-ticks i:nth-child(3) { color: var(--dart-3); }
+.app-shell[data-effort-slider="dart"] .reasoning-ticks i:nth-child(4), .app-shell[data-effort-slider="dart"] .openrouter-reasoning-ticks i:nth-child(4) { color: var(--dart-4); }
+.app-shell[data-effort-slider="dart"] .reasoning-ticks i:nth-child(5), .app-shell[data-effort-slider="dart"] .openrouter-reasoning-ticks i:nth-child(5) { color: var(--dart-5); }
+.app-shell[data-effort-slider="dart"] .reasoning-heading strong, .app-shell[data-effort-slider="dart"] .openrouter-reasoning-heading strong { color: var(--dart-live, #43cb5c); font-variant-numeric: tabular-nums; letter-spacing: .06em; text-shadow: none; }
+.app-shell[data-effort-slider="dart"] .reasoning-heading > svg:first-child, .app-shell[data-effort-slider="dart"] .openrouter-reasoning-heading > svg:first-child { color: var(--dart-live, #43cb5c); }
+.app-shell[data-effort-slider="dart"] .reasoning-labels span.active, .app-shell[data-effort-slider="dart"] .openrouter-reasoning-labels span.active { color: var(--dart-live, #43cb5c); text-shadow: none; }
+/* Sparks stay in the wake's language: flat slivers, no glow. */
+.app-shell[data-effort-slider="dart"] .effort-sparks i { width: 5px; height: 2px; border-radius: 0; background: var(--dart-live, #43cb5c); box-shadow: none; }
+.app-shell[data-effort-slider="dart"] .effort-max .reasoning-heading strong, .app-shell[data-effort-slider="dart"] .effort-max .openrouter-reasoning-heading strong { animation: effort-pop 280ms var(--ease); text-shadow: none; }
+.app-shell[data-effort-slider="dart"] .effort-max .reasoning-rail::after, .app-shell[data-effort-slider="dart"] .effort-max .openrouter-reasoning-rail::after { display: none; }
+.app-shell[data-effort-slider="dart"] .effort-max .reasoning-control input[type="range"]::-webkit-slider-thumb, .app-shell[data-effort-slider="dart"] .effort-max.openrouter-reasoning input[type="range"]::-webkit-slider-thumb, .app-shell[data-effort-slider="dart"] .effort-max .openrouter-reasoning-rail input[type="range"]::-webkit-slider-thumb { animation: none; }
+
+/* One turn of a twisted cord — a bold front strand crossing a faint back one.
+   Kept on :root so the rail and the Settings preview mask the same tile. */
+:root { --coil-turn: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Cpath d='M1 15L15 1' stroke='%23fff' stroke-width='2.6' stroke-linecap='round'/%3E%3Cpath d='M1 1L15 15' stroke='%23fff' stroke-width='1' stroke-linecap='round' opacity='.38'/%3E%3C/svg%3E"); }
+
+/* -- Coil: the track is a cord under load. Effort is tension, not length: the
+   winding tightens tile by tile and the twist travels faster, with a hex
+   collar clamped on the cord where the thumb would be. -- */
+.app-shell[data-effort-slider="coil"] {
+  --coil-1: #6a4fe0; --coil-2: #8a4ce6; --coil-3: #ab48e0; --coil-4: #d144cf; --coil-5: #f43fae;
+  --coil-slack: rgba(255,255,255,.17);
+}
+.app-shell[data-effort-slider="coil"] .reasoning-rail, .app-shell[data-effort-slider="coil"] .openrouter-reasoning-rail {
+  --coil-gauge: calc(17px - var(--effort-heat, 0) * 9px);
+  --coil-spin: calc(2.8s - var(--effort-heat, 0) * 2.05s);
+}
+.app-shell[data-effort-slider="coil"] .model-power-control, .app-shell[data-effort-slider="coil"] .openrouter-reasoning { --coil-live: var(--coil-effort-color, #ab48e0); }
+.app-shell[data-color-scheme="light"][data-effort-slider="coil"] {
+  --coil-1: #4c33b8; --coil-2: #6a2fbe; --coil-3: #862bb4; --coil-4: #a52598; --coil-5: #b81f74;
+  --coil-slack: rgba(26,22,34,.22);
+}
+.app-shell[data-color-scheme="light"][data-effort-slider="coil"] .model-power-control, .app-shell[data-color-scheme="light"][data-effort-slider="coil"] .openrouter-reasoning { --coil-live: color-mix(in srgb, var(--coil-effort-color, #ab48e0) 46%, #18042a); }
+/* The input keeps the hit area and the collar; the cord is drawn behind it so
+   the mask can never clip the thumb. */
+.app-shell[data-effort-slider="coil"] .reasoning-control input[type="range"], .app-shell[data-effort-slider="coil"] .openrouter-reasoning input[type="range"] {
+  height: 16px; border-radius: 0; background: none; box-shadow: none;
+}
+.app-shell[data-effort-slider="coil"] .reasoning-rail::before, .app-shell[data-effort-slider="coil"] .openrouter-reasoning-rail::before {
+  content: ""; position: absolute; inset: -1px 1px; left: 1px; top: -1px; z-index: 0;
+  width: auto; height: auto; transform: none; border-radius: 0;
+  background:
+    linear-gradient(90deg, var(--coil-1), var(--coil-3) 55%, var(--coil-live, #ab48e0)) no-repeat left center / var(--reasoning-fill, var(--router-fill, 0%)) 100%,
+    linear-gradient(var(--coil-slack), var(--coil-slack));
+  background-size: var(--reasoning-fill, var(--router-fill, 0%)) 100%, 100% 100%;
+  -webkit-mask-image: var(--coil-turn); mask-image: var(--coil-turn);
+  -webkit-mask-size: var(--coil-gauge, 17px) 100%; mask-size: var(--coil-gauge, 17px) 100%;
   -webkit-mask-repeat: repeat-x; mask-repeat: repeat-x;
   -webkit-mask-position: 0 center; mask-position: 0 center;
   pointer-events: none;
-  animation: vital-trace var(--vital-beat) linear infinite;
+  animation: coil-twist var(--coil-spin, 2.8s) linear infinite;
 }
-@keyframes vital-trace {
-  to { -webkit-mask-position: -44px center; mask-position: -44px center; }
+/* Travelling exactly one turn per cycle keeps the loop seamless at every
+   winding, however tight the gauge has become. */
+@keyframes coil-twist {
+  to { -webkit-mask-position: calc(var(--coil-gauge, 17px) * -1) center; mask-position: calc(var(--coil-gauge, 17px) * -1) center; }
 }
-.app-shell[data-effort-slider="vital"] .reasoning-control input[type="range"]::-webkit-slider-thumb, .app-shell[data-effort-slider="vital"] .openrouter-reasoning input[type="range"]::-webkit-slider-thumb {
-  width: 13px; height: 13px; transform: none;
-  background: var(--field); border: 2px solid var(--vital-live, #ff6f92);
-  box-shadow: 0 0 0 1px rgba(0,0,0,.45);
-  animation: vital-beat var(--vital-beat) ease-out infinite;
+.app-shell[data-effort-slider="coil"] .reasoning-control input[type="range"]::-webkit-slider-thumb, .app-shell[data-effort-slider="coil"] .openrouter-reasoning input[type="range"]::-webkit-slider-thumb {
+  width: 15px; height: 18px; border: 0; border-radius: 0;
+  clip-path: polygon(50% 0, 100% 26%, 100% 74%, 50% 100%, 0 74%, 0 26%);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--coil-live, #ab48e0) 45%, #fff), var(--coil-live, #ab48e0) 58%, color-mix(in srgb, var(--coil-live, #ab48e0) 62%, #000));
+  box-shadow: none; transform: none;
+  transition: transform 180ms var(--ease), filter 180ms ease;
 }
-@keyframes vital-beat {
-  0%, 100% { transform: scale(1); }
-  9% { transform: scale(1.26); }
-  26% { transform: scale(.96); }
-  42% { transform: scale(1); }
+.app-shell[data-effort-slider="coil"] .dragging input[type="range"]::-webkit-slider-thumb { transform: scale(1.1); box-shadow: none; filter: brightness(1.1); }
+/* clip-path crops a box-shadow ring away, so focus rings the track box and
+   the collar picks up a halo cut to its own six sides. */
+.app-shell[data-effort-slider="coil"] .reasoning-control input[type="range"]:focus-visible, .app-shell[data-effort-slider="coil"] .openrouter-reasoning input[type="range"]:focus-visible {
+  outline: 2px solid var(--coil-live, #ab48e0); outline-offset: 3px;
 }
-.app-shell[data-effort-slider="vital"] .dragging input[type="range"]::-webkit-slider-thumb { transform: scale(1.14); box-shadow: 0 0 0 1px rgba(0,0,0,.45); animation: none; }
-.app-shell[data-effort-slider="vital"] .reasoning-control input[type="range"]:focus-visible::-webkit-slider-thumb, .app-shell[data-effort-slider="vital"] .openrouter-reasoning input[type="range"]:focus-visible::-webkit-slider-thumb {
-  box-shadow: 0 0 0 3px var(--panel), 0 0 0 5px var(--vital-live, #ff6f92);
+.app-shell[data-effort-slider="coil"] .reasoning-control input[type="range"]:focus-visible::-webkit-slider-thumb, .app-shell[data-effort-slider="coil"] .openrouter-reasoning input[type="range"]:focus-visible::-webkit-slider-thumb {
+  box-shadow: none; filter: drop-shadow(0 0 2px var(--coil-live, #ab48e0)) drop-shadow(0 0 5px var(--coil-live, #ab48e0));
 }
-/* Chart gridline ticks, not dots. */
-.app-shell[data-effort-slider="vital"] .reasoning-ticks i, .app-shell[data-effort-slider="vital"] .openrouter-reasoning-ticks i { width: 2px; height: 7px; border-radius: 0; background: transparent; }
-.app-shell[data-effort-slider="vital"] .reasoning-ticks i.reached, .app-shell[data-effort-slider="vital"] .openrouter-reasoning-ticks i.reached { border-color: currentColor; background: currentColor; box-shadow: none; animation: none; }
-.app-shell[data-effort-slider="vital"] .reasoning-ticks i:nth-child(1), .app-shell[data-effort-slider="vital"] .openrouter-reasoning-ticks i:nth-child(1) { color: var(--vital-1); }
-.app-shell[data-effort-slider="vital"] .reasoning-ticks i:nth-child(2), .app-shell[data-effort-slider="vital"] .openrouter-reasoning-ticks i:nth-child(2) { color: var(--vital-2); }
-.app-shell[data-effort-slider="vital"] .reasoning-ticks i:nth-child(3), .app-shell[data-effort-slider="vital"] .openrouter-reasoning-ticks i:nth-child(3) { color: var(--vital-3); }
-.app-shell[data-effort-slider="vital"] .reasoning-ticks i:nth-child(4), .app-shell[data-effort-slider="vital"] .openrouter-reasoning-ticks i:nth-child(4) { color: var(--vital-4); }
-.app-shell[data-effort-slider="vital"] .reasoning-ticks i:nth-child(5), .app-shell[data-effort-slider="vital"] .openrouter-reasoning-ticks i:nth-child(5) { color: var(--vital-5); }
-.app-shell[data-effort-slider="vital"] .reasoning-heading strong, .app-shell[data-effort-slider="vital"] .openrouter-reasoning-heading strong {
-  color: var(--vital-live, #ff6f92); font-family: var(--font-mono); letter-spacing: .06em; text-transform: lowercase; text-shadow: none;
+/* Ticks are studs seated under the cord rather than beads lost inside it. */
+.app-shell[data-effort-slider="coil"] .reasoning-ticks, .app-shell[data-effort-slider="coil"] .openrouter-reasoning-ticks { align-items: flex-end; }
+.app-shell[data-effort-slider="coil"] .reasoning-ticks i, .app-shell[data-effort-slider="coil"] .openrouter-reasoning-ticks i {
+  width: 6px; height: 5px; margin-bottom: -5px; border: 0; border-radius: 0; background: var(--coil-slack);
+  clip-path: polygon(26% 0, 74% 0, 100% 50%, 74% 100%, 26% 100%, 0 50%);
 }
-.app-shell[data-effort-slider="vital"] .reasoning-heading > svg:first-child, .app-shell[data-effort-slider="vital"] .openrouter-reasoning-heading > svg:first-child { color: var(--vital-live, #ff6f92); }
-.app-shell[data-effort-slider="vital"] .reasoning-labels span.active, .app-shell[data-effort-slider="vital"] .openrouter-reasoning-labels span.active { color: var(--vital-live, #ff6f92); text-shadow: none; }
-.app-shell[data-effort-slider="vital"] .effort-sparks i { width: 4px; height: 4px; background: var(--vital-live, #ff6f92); box-shadow: none; }
-/* Max is an alarm, not a fire: the readout ticks over with the beat. */
-.app-shell[data-effort-slider="vital"] .effort-max .reasoning-heading strong, .app-shell[data-effort-slider="vital"] .effort-max .openrouter-reasoning-heading strong {
-  animation: vital-alarm var(--vital-beat) ease-in-out infinite;
-}
-@keyframes vital-alarm { 0%, 100% { opacity: 1; } 50% { opacity: .78; } }
-.app-shell[data-effort-slider="vital"] .effort-max .reasoning-rail::after, .app-shell[data-effort-slider="vital"] .effort-max .openrouter-reasoning-rail::after { display: none; }
-.app-shell[data-color-scheme="light"][data-effort-slider="vital"] .reasoning-heading strong, .app-shell[data-color-scheme="light"][data-effort-slider="vital"] .openrouter-reasoning-heading strong,
-.app-shell[data-color-scheme="light"][data-effort-slider="vital"] .reasoning-heading > svg:first-child, .app-shell[data-color-scheme="light"][data-effort-slider="vital"] .openrouter-reasoning-heading > svg:first-child,
-.app-shell[data-color-scheme="light"][data-effort-slider="vital"] .reasoning-labels span.active, .app-shell[data-color-scheme="light"][data-effort-slider="vital"] .openrouter-reasoning-labels span.active {
-  color: color-mix(in srgb, var(--vital-live, #ff6f92) 68%, #4a0016);
-}
-
-/* -- Dune: matte desert sand. No glow anywhere; the only motion is a grain
-   drifting across the ridge, which picks up as the effort rises. -- */
-.app-shell[data-effort-slider="dune"] {
-  --dune-1: #f0dcae; --dune-2: #e6bd85; --dune-3: #dc9c68; --dune-4: #cf7a5c; --dune-5: #c05a4e;
-  --dune-trench: rgba(20,16,12,.86);
-}
-.app-shell[data-effort-slider="dune"] .reasoning-rail, .app-shell[data-effort-slider="dune"] .openrouter-reasoning-rail { --dune-drift: calc(26s - var(--effort-heat, 0) * 15s); }
-.app-shell[data-color-scheme="light"][data-effort-slider="dune"] {
-  --dune-1: #d9b273; --dune-2: #c9924f; --dune-3: #b4733f; --dune-4: #a05539; --dune-5: #8c3f33;
-  --dune-trench: rgba(60,48,38,.2);
-}
-.app-shell[data-effort-slider="dune"] .reasoning-control input[type="range"], .app-shell[data-effort-slider="dune"] .openrouter-reasoning input[type="range"] {
-  height: 9px; border-radius: 5px;
-  background-image:
-    linear-gradient(var(--dune-trench), var(--dune-trench)),
-    repeating-linear-gradient(112deg, rgba(255,255,255,.14) 0 1px, rgba(70,44,24,.14) 1px 3px, transparent 3px 8px),
-    linear-gradient(180deg, rgba(255,255,255,.2), rgba(58,34,18,.22)),
-    linear-gradient(90deg, var(--dune-1) 0%, var(--dune-2) 26%, var(--dune-3) 52%, var(--dune-4) 78%, var(--dune-5) 100%);
-  background-repeat: no-repeat, repeat, no-repeat, no-repeat;
-  background-position: right center, 0 center, 0 center, 0 center;
-  background-size: calc(100% - var(--reasoning-fill, var(--router-fill, 0%))) 100%, 22px 100%, 100% 100%, 100% 100%;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,.16), inset 0 -1px 2px rgba(40,24,12,.3);
-  animation: dune-drift var(--dune-drift) linear infinite;
-}
-@keyframes dune-drift { to { background-position: right center, 22px center, 0 center, 0 center; } }
-/* A flat sand-worn marker, laid on its side. */
-.app-shell[data-effort-slider="dune"] .reasoning-control input[type="range"]::-webkit-slider-thumb, .app-shell[data-effort-slider="dune"] .openrouter-reasoning input[type="range"]::-webkit-slider-thumb {
-  width: 20px; height: 12px; border-radius: 6px; transform: none;
-  background: linear-gradient(180deg, #f7e8c9, #d8b78b); border: 2px solid var(--panel);
-  box-shadow: 0 1px 2px rgba(30,18,8,.4);
-}
-.app-shell[data-effort-slider="dune"] .dragging input[type="range"]::-webkit-slider-thumb { transform: scaleY(1.12); box-shadow: 0 1px 3px rgba(30,18,8,.5); }
-.app-shell[data-effort-slider="dune"] .reasoning-control input[type="range"]:focus-visible::-webkit-slider-thumb, .app-shell[data-effort-slider="dune"] .openrouter-reasoning input[type="range"]:focus-visible::-webkit-slider-thumb {
-  box-shadow: 0 0 0 3px var(--panel), 0 0 0 5px var(--dune-effort-color, #dc9c68);
-}
-/* Flat stones lining the base of the ridge, rather than dots buried under it. */
-.app-shell[data-effort-slider="dune"] .reasoning-ticks, .app-shell[data-effort-slider="dune"] .openrouter-reasoning-ticks { align-items: flex-end; }
-.app-shell[data-effort-slider="dune"] .reasoning-ticks i, .app-shell[data-effort-slider="dune"] .openrouter-reasoning-ticks i { width: 7px; height: 2px; border: 0; border-radius: 1px; background: rgba(120,96,72,.45); }
-.app-shell[data-effort-slider="dune"] .reasoning-ticks i.reached, .app-shell[data-effort-slider="dune"] .openrouter-reasoning-ticks i.reached { border-color: currentColor; background: currentColor; box-shadow: none; animation: none; }
-.app-shell[data-effort-slider="dune"] .reasoning-ticks i:nth-child(1), .app-shell[data-effort-slider="dune"] .openrouter-reasoning-ticks i:nth-child(1) { color: var(--dune-1); }
-.app-shell[data-effort-slider="dune"] .reasoning-ticks i:nth-child(2), .app-shell[data-effort-slider="dune"] .openrouter-reasoning-ticks i:nth-child(2) { color: var(--dune-2); }
-.app-shell[data-effort-slider="dune"] .reasoning-ticks i:nth-child(3), .app-shell[data-effort-slider="dune"] .openrouter-reasoning-ticks i:nth-child(3) { color: var(--dune-3); }
-.app-shell[data-effort-slider="dune"] .reasoning-ticks i:nth-child(4), .app-shell[data-effort-slider="dune"] .openrouter-reasoning-ticks i:nth-child(4) { color: var(--dune-4); }
-.app-shell[data-effort-slider="dune"] .reasoning-ticks i:nth-child(5), .app-shell[data-effort-slider="dune"] .openrouter-reasoning-ticks i:nth-child(5) { color: var(--dune-5); }
-.app-shell[data-effort-slider="dune"] .reasoning-heading strong, .app-shell[data-effort-slider="dune"] .openrouter-reasoning-heading strong { color: var(--dune-effort-color, #dc9c68); letter-spacing: .05em; text-shadow: none; }
-.app-shell[data-effort-slider="dune"] .reasoning-heading > svg:first-child, .app-shell[data-effort-slider="dune"] .openrouter-reasoning-heading > svg:first-child { color: var(--dune-effort-color, #dc9c68); }
-.app-shell[data-effort-slider="dune"] .reasoning-labels span.active, .app-shell[data-effort-slider="dune"] .openrouter-reasoning-labels span.active { color: var(--dune-effort-color, #dc9c68); text-shadow: none; }
-.app-shell[data-effort-slider="dune"] .effort-sparks i { width: 3px; height: 3px; background: var(--dune-effort-color, #dc9c68); box-shadow: none; }
-.app-shell[data-effort-slider="dune"] .effort-max .reasoning-heading strong, .app-shell[data-effort-slider="dune"] .effort-max .openrouter-reasoning-heading strong { animation: effort-pop 280ms var(--ease); text-shadow: none; }
-.app-shell[data-effort-slider="dune"] .reasoning-rail.dragging::before, .app-shell[data-effort-slider="dune"] .openrouter-reasoning-rail.dragging::before,
-.app-shell[data-effort-slider="dune"] .effort-max .reasoning-rail::after, .app-shell[data-effort-slider="dune"] .effort-max .openrouter-reasoning-rail::after { display: none; }
-.app-shell[data-effort-slider="dune"] .effort-max .reasoning-control input[type="range"]::-webkit-slider-thumb, .app-shell[data-effort-slider="dune"] .effort-max.openrouter-reasoning input[type="range"]::-webkit-slider-thumb, .app-shell[data-effort-slider="dune"] .effort-max .openrouter-reasoning-rail input[type="range"]::-webkit-slider-thumb { animation: none; }
-.app-shell[data-color-scheme="light"][data-effort-slider="dune"] .reasoning-heading strong, .app-shell[data-color-scheme="light"][data-effort-slider="dune"] .openrouter-reasoning-heading strong,
-.app-shell[data-color-scheme="light"][data-effort-slider="dune"] .reasoning-heading > svg:first-child, .app-shell[data-color-scheme="light"][data-effort-slider="dune"] .openrouter-reasoning-heading > svg:first-child,
-.app-shell[data-color-scheme="light"][data-effort-slider="dune"] .reasoning-labels span.active, .app-shell[data-color-scheme="light"][data-effort-slider="dune"] .openrouter-reasoning-labels span.active {
-  color: color-mix(in srgb, var(--dune-effort-color, #dc9c68) 55%, #3a1b0e);
-}
+.app-shell[data-effort-slider="coil"] .reasoning-ticks i.reached, .app-shell[data-effort-slider="coil"] .openrouter-reasoning-ticks i.reached { border-color: currentColor; background: currentColor; box-shadow: none; animation: none; }
+.app-shell[data-effort-slider="coil"] .reasoning-ticks i:nth-child(1), .app-shell[data-effort-slider="coil"] .openrouter-reasoning-ticks i:nth-child(1) { color: var(--coil-1); }
+.app-shell[data-effort-slider="coil"] .reasoning-ticks i:nth-child(2), .app-shell[data-effort-slider="coil"] .openrouter-reasoning-ticks i:nth-child(2) { color: var(--coil-2); }
+.app-shell[data-effort-slider="coil"] .reasoning-ticks i:nth-child(3), .app-shell[data-effort-slider="coil"] .openrouter-reasoning-ticks i:nth-child(3) { color: var(--coil-3); }
+.app-shell[data-effort-slider="coil"] .reasoning-ticks i:nth-child(4), .app-shell[data-effort-slider="coil"] .openrouter-reasoning-ticks i:nth-child(4) { color: var(--coil-4); }
+.app-shell[data-effort-slider="coil"] .reasoning-ticks i:nth-child(5), .app-shell[data-effort-slider="coil"] .openrouter-reasoning-ticks i:nth-child(5) { color: var(--coil-5); }
+.app-shell[data-effort-slider="coil"] .reasoning-heading strong, .app-shell[data-effort-slider="coil"] .openrouter-reasoning-heading strong { color: var(--coil-live, #ab48e0); letter-spacing: .04em; text-shadow: none; }
+.app-shell[data-effort-slider="coil"] .reasoning-heading > svg:first-child, .app-shell[data-effort-slider="coil"] .openrouter-reasoning-heading > svg:first-child { color: var(--coil-live, #ab48e0); }
+.app-shell[data-effort-slider="coil"] .reasoning-labels span.active, .app-shell[data-effort-slider="coil"] .openrouter-reasoning-labels span.active { color: var(--coil-live, #ab48e0); text-shadow: none; }
+/* Sparks are hex chips shed by the collar. */
+.app-shell[data-effort-slider="coil"] .effort-sparks i { width: 5px; height: 4px; border-radius: 0; background: var(--coil-live, #ab48e0); box-shadow: none; clip-path: polygon(26% 0, 74% 0, 100% 50%, 74% 100%, 26% 100%, 0 50%); }
+.app-shell[data-effort-slider="coil"] .effort-max .reasoning-heading strong, .app-shell[data-effort-slider="coil"] .effort-max .openrouter-reasoning-heading strong { animation: effort-pop 280ms var(--ease); text-shadow: none; }
+.app-shell[data-effort-slider="coil"] .effort-max .reasoning-rail::after, .app-shell[data-effort-slider="coil"] .effort-max .openrouter-reasoning-rail::after { display: none; }
+.app-shell[data-effort-slider="coil"] .effort-max .reasoning-control input[type="range"]::-webkit-slider-thumb, .app-shell[data-effort-slider="coil"] .effort-max.openrouter-reasoning input[type="range"]::-webkit-slider-thumb, .app-shell[data-effort-slider="coil"] .effort-max .openrouter-reasoning-rail input[type="range"]::-webkit-slider-thumb { animation: none; }
 
 @media (prefers-reduced-motion: reduce) {
   .app-shell[data-effort-slider="aurora"] .reasoning-control input[type="range"], .app-shell[data-effort-slider="aurora"] .openrouter-reasoning input[type="range"] { animation: none; }
-  /* Each new style keeps its shape and color, and simply stops moving: the
-     sonar ping holds one steady ring, the trace and the sand stand still. */
-  .app-shell[data-effort-slider="dune"] .reasoning-control input[type="range"], .app-shell[data-effort-slider="dune"] .openrouter-reasoning input[type="range"],
-  .app-shell[data-effort-slider="vital"] .reasoning-rail::before, .app-shell[data-effort-slider="vital"] .openrouter-reasoning-rail::before,
-  .app-shell[data-effort-slider="vital"] .reasoning-control input[type="range"]::-webkit-slider-thumb, .app-shell[data-effort-slider="vital"] .openrouter-reasoning input[type="range"]::-webkit-slider-thumb,
-  .app-shell[data-effort-slider="vital"] .effort-max .reasoning-heading strong, .app-shell[data-effort-slider="vital"] .effort-max .openrouter-reasoning-heading strong,
-  .app-shell[data-effort-slider="sonar"] .effort-max .reasoning-heading strong, .app-shell[data-effort-slider="sonar"] .effort-max .openrouter-reasoning-heading strong,
-  .app-shell[data-effort-slider="dune"] .effort-max .reasoning-heading strong, .app-shell[data-effort-slider="dune"] .effort-max .openrouter-reasoning-heading strong,
-  .slider-style-preview.sonar .slider-style-thumb::after { animation: none; }
-  .app-shell[data-effort-slider="sonar"] .reasoning-rail::before, .app-shell[data-effort-slider="sonar"] .openrouter-reasoning-rail::before {
-    animation: none; opacity: .5; transform: translate(-50%, -50%) scale(1.5);
-  }
-  .app-shell[data-effort-slider="sonar"] .reasoning-rail::after, .app-shell[data-effort-slider="sonar"] .openrouter-reasoning-rail::after { animation: none; opacity: 0; }
+  /* Each new style keeps its shape, its geometry and its colors and simply
+     holds still: the bob hangs plumb, the slipstream freezes, the cord stops
+     turning — the winding itself still tightens with effort. */
+  .app-shell[data-effort-slider="plumb"] .reasoning-control input[type="range"]::-webkit-slider-thumb, .app-shell[data-effort-slider="plumb"] .openrouter-reasoning input[type="range"]::-webkit-slider-thumb,
+  .app-shell[data-effort-slider="dart"] .reasoning-rail::before, .app-shell[data-effort-slider="dart"] .openrouter-reasoning-rail::before,
+  .app-shell[data-effort-slider="coil"] .reasoning-rail::before, .app-shell[data-effort-slider="coil"] .openrouter-reasoning-rail::before,
+  .app-shell[data-effort-slider="plumb"] .effort-max .reasoning-heading strong, .app-shell[data-effort-slider="plumb"] .effort-max .openrouter-reasoning-heading strong,
+  .app-shell[data-effort-slider="dart"] .effort-max .reasoning-heading strong, .app-shell[data-effort-slider="dart"] .effort-max .openrouter-reasoning-heading strong,
+  .app-shell[data-effort-slider="coil"] .effort-max .reasoning-heading strong, .app-shell[data-effort-slider="coil"] .effort-max .openrouter-reasoning-heading strong { animation: none; }
+  .app-shell[data-effort-slider="plumb"] .reasoning-control input[type="range"]::-webkit-slider-thumb, .app-shell[data-effort-slider="plumb"] .openrouter-reasoning input[type="range"]::-webkit-slider-thumb { transform: rotate(0deg); }
 }
 
 /* -- Settings: effort-slider style picker -- */
@@ -3403,33 +3410,39 @@ body[data-pane-resizing] .sidebar, body[data-pane-resizing] .studio-dock { trans
 .slider-style-preview.aurora .slider-style-thumb { left: 72%; background: #fff; box-shadow: 0 0 9px rgba(185, 140, 255, .9); }
 .slider-style-preview.ink .slider-style-rail { height: 2px; border-radius: 0; background: linear-gradient(90deg, var(--text) 0 64%, var(--panel-3) 64%); }
 .slider-style-preview.ink .slider-style-thumb { left: 64%; background: var(--panel); border-color: var(--text); }
-/* Sonar: hairline sounding, contact dot, and a ring pinging out of it. */
-.slider-style-preview.sonar .slider-style-rail { height: 3px; border-radius: 1px; background: linear-gradient(90deg, #3d6fe8, #1f9fe0 26%, #12c9c4 52%, #17dd86 78%, #5cffc0 100%) no-repeat left center / 66% 100%, rgba(6,17,26,.94); }
-.slider-style-preview.sonar .slider-style-thumb { left: 66%; width: 9px; height: 9px; border-width: 1px; border-color: rgba(6,17,26,.94); background: #17dd86; box-shadow: 0 0 0 3px rgba(23,221,134,.16), 0 0 0 4px rgba(23,221,134,.46); }
-.slider-style-preview.sonar .slider-style-thumb::after {
-  content: ""; position: absolute; left: 50%; top: 50%; width: 13px; height: 13px;
-  border: 1px solid #17dd86; border-radius: 50%; transform: translate(-50%, -50%) scale(.4); opacity: 0;
-  animation: sonar-ping 2.2s cubic-bezier(.2,.62,.35,1) infinite;
+/* Plumb: the wire runs along the top and the brass bob hangs off it. */
+.slider-style-preview.plumb .slider-style-rail { top: 6px; height: 2px; border-radius: 0; background: linear-gradient(90deg, #e0ac4d 0 62%, var(--panel-3) 62%); }
+.slider-style-preview.plumb .slider-style-thumb {
+  left: 62%; top: 6px; width: 11px; height: 15px; border: 0; border-radius: 0; transform: translate(-50%, 0);
+  clip-path: polygon(46% 0, 54% 0, 54% 44%, 96% 60%, 50% 100%, 4% 60%, 46% 44%);
+  background: linear-gradient(180deg, #f6dda6, #e0ac4d);
 }
-/* Vital: the trace itself, masked out of the crimson ramp. */
-.slider-style-preview.vital .slider-style-rail {
-  height: 14px; border-radius: 0;
-  background: linear-gradient(90deg, #ffc2ce, #ff6f92 52%, #ff2050 100%);
-  -webkit-mask-image: var(--vital-trace); mask-image: var(--vital-trace);
-  -webkit-mask-size: 44px 14px; mask-size: 44px 14px;
+/* Dart: a flight line with the wake widening into the arrowhead. */
+.slider-style-preview.dart .slider-style-rail { height: 1px; border-radius: 0; background: var(--panel-3); }
+.slider-style-preview.dart .slider-style-rail::after {
+  content: ""; position: absolute; left: 0; top: 50%; width: 62%; height: 15px; transform: translateY(-50%);
+  clip-path: polygon(0 46%, 100% 0, 100% 100%, 0 54%);
+  background: linear-gradient(90deg, color-mix(in srgb, #43cb5c 18%, transparent), #7ee04a);
+}
+.slider-style-preview.dart .slider-style-thumb {
+  left: 62%; width: 14px; height: 13px; border: 0; border-radius: 0;
+  clip-path: polygon(0 0, 100% 50%, 0 100%, 30% 50%);
+  background: linear-gradient(180deg, #c2f23c, #7ee04a);
+}
+/* Coil: the cord itself, wound tight, with its hex collar. */
+.slider-style-preview.coil .slider-style-rail {
+  height: 16px; border-radius: 0;
+  background: linear-gradient(90deg, #6a4fe0, #ab48e0 60%, #f43fae) no-repeat left center / 64% 100%, var(--panel-3);
+  -webkit-mask-image: var(--coil-turn); mask-image: var(--coil-turn);
+  -webkit-mask-size: 11px 100%; mask-size: 11px 100%;
   -webkit-mask-repeat: repeat-x; mask-repeat: repeat-x;
   -webkit-mask-position: 0 center; mask-position: 0 center;
 }
-.slider-style-preview.vital .slider-style-thumb { left: 66%; width: 12px; height: 12px; border-width: 2px; border-color: #ff4770; background: var(--field); }
-/* Dune: a matte ridge of sand with its grain. */
-.slider-style-preview.dune .slider-style-rail {
-  height: 9px; border-radius: 5px;
-  background:
-    repeating-linear-gradient(112deg, rgba(255,255,255,.14) 0 1px, rgba(70,44,24,.14) 1px 3px, transparent 3px 8px),
-    linear-gradient(180deg, rgba(255,255,255,.2), rgba(58,34,18,.22)),
-    linear-gradient(90deg, #f0dcae, #e6bd85 26%, #dc9c68 52%, #cf7a5c 78%, #c05a4e 100%);
+.slider-style-preview.coil .slider-style-thumb {
+  left: 64%; width: 12px; height: 17px; border: 0; border-radius: 0;
+  clip-path: polygon(50% 0, 100% 26%, 100% 74%, 50% 100%, 0 74%, 0 26%);
+  background: linear-gradient(180deg, #e07ae8, #ab48e0 58%, #7c2f9e);
 }
-.slider-style-preview.dune .slider-style-thumb { left: 66%; width: 16px; height: 10px; border-radius: 5px; border-color: var(--panel); background: linear-gradient(180deg, #f7e8c9, #d8b78b); }
 
 
 /* Model favorites — a star sits beside every option row in every picker. */

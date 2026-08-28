@@ -156,9 +156,9 @@ describe("SettingsModal", () => {
     expect(screen.getByRole("button", { name: /Pixel.*VU meter/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Aurora.*northern-light/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Ink.*monochrome/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Sonar.*pings/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Vital.*heartbeat/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Dune.*desert sand/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Plumb.*bob hanging/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Dart.*arrowhead/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Coil.*twisted cord/ })).toBeInTheDocument();
 
     const themeCards = container.querySelectorAll<HTMLButtonElement>(".theme-card");
     const sliderCards = container.querySelectorAll<HTMLButtonElement>(".slider-style-card");
@@ -181,9 +181,9 @@ describe("SettingsModal", () => {
   });
 
   it.each([
-    [/Sonar.*pings/, "sonar", "slider-style-preview sonar"],
-    [/Vital.*heartbeat/, "vital", "slider-style-preview vital"],
-    [/Dune.*desert sand/, "dune", "slider-style-preview dune"],
+    [/Plumb.*bob hanging/, "plumb", "slider-style-preview plumb"],
+    [/Dart.*arrowhead/, "dart", "slider-style-preview dart"],
+    [/Coil.*twisted cord/, "coil", "slider-style-preview coil"],
   ])("previews and selects the %s effort-slider style", (name, id, previewClass) => {
     const onEffortSliderPreview = vi.fn();
     render(<SettingsModal {...modalProps({ onEffortSliderPreview })} />);
