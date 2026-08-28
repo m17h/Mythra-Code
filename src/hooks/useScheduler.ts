@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import { auditEvent, rpc } from "../lib/codex";
 import { useTaskStore } from "../lib/taskStore";
-import { scheduleRunSnapshot, threadStartParams, turnStartParams } from "../lib/turnConfig";
+import { scheduleRunSnapshot, threadResumeParams, threadStartParams, turnStartParams } from "../lib/turnConfig";
 import type { LMStudioModel } from "../lib/lmStudio";
 import type { AppSettings, Project, Provider, ScheduleRunRecord, ScheduleRunSettings, ScheduledTask, Thread } from "../types";
 
@@ -9,6 +9,7 @@ export interface SchedulerDeps {
   schedules: ScheduledTask[];
   updateSchedule: (id: string, patch: (current: ScheduledTask) => ScheduledTask) => void;
   projects: Project[];
+  chatWorkspace?: Project | null;
   settings: AppSettings;
   runtimeAvailable: boolean;
   chatGptConnected: boolean;
@@ -38,9 +39,15 @@ export function useScheduler(deps: SchedulerDeps): void {
   const runScheduledTask = useCallback(async (scheduled: ScheduledTask) => {
     const current = depsRef.current;
     if (runningRef.current.has(scheduled.id)) return;
-    const project = current.projects.find((item) => item.id === scheduled.projectId);
+    const project = scheduled.projectId === null
+      ? current.chatWorkspace ?? null
+      : current.projects.find((item) => item.id === scheduled.projectId);
     const run: ScheduleRunSettings = scheduled.run ?? scheduleRunSnapshot(current.settings);
     if (!project) {
+      // The normal-chat path is established asynchronously during startup.
+      // A due chat schedule should wait for it, not permanently disable itself
+      // because the renderer checked a few milliseconds too early.
+      if (scheduled.projectId === null) return;
       // A silent return here would retry every 30 seconds forever with no
       // trace. Disable the schedule and record why it can never fire.
       const error = "This schedule's project was removed from Mythra Code, so the schedule was disabled.";
@@ -79,18 +86,48 @@ export function useScheduler(deps: SchedulerDeps): void {
     if (run.provider === "openai" && !current.chatGptConnected) return;
     if (run.provider === "openrouter" && !current.openRouterReady) return;
     if (run.provider === "lmstudio" && !current.lmStudioReady) return;
+    const reuseThread = scheduled.threadMode === "reuse" && Boolean(scheduled.lastThreadId);
+    const existingStatus = scheduled.lastThreadId
+      ? useTaskStore.getState().statuses[scheduled.lastThreadId]
+      : undefined;
+    if (reuseThread && (existingStatus === "starting" || existingStatus === "running")) {
+      // A recurring prompt must never collide with the previous unattended
+      // turn in the same conversation. Retry soon without creating a second
+      // thread or recording a misleading failed run.
+      current.updateSchedule(scheduled.id, (item) => ({ ...item, nextRunAt: Date.now() + 60_000 }));
+      return;
+    }
     runningRef.current.add(scheduled.id);
     let startedThreadId: string | undefined;
     let turnStarted = false;
     try {
       await current.ensureSkillRoots();
-      const started = await rpc<{ thread: Thread }>("thread/start", threadStartParams(run, project.path, {
+      const modelContextWindow = run.provider === "lmstudio"
+        ? current.lmStudioModels?.find((entry) => entry.id === run.model)?.maxContextLength
+        : undefined;
+      const startFreshThread = () => rpc<{ thread: Thread }>("thread/start", threadStartParams(run, project.path, {
         serviceName: "Mythra Code",
-        modelContextWindow: run.provider === "lmstudio"
-          ? current.lmStudioModels?.find((entry) => entry.id === run.model)?.maxContextLength
-          : undefined,
+        modelContextWindow,
         interactive: false,
       }));
+      let started: { thread: Thread };
+      if (reuseThread && scheduled.lastThreadId) {
+        try {
+          started = await rpc<{ thread: Thread }>("thread/resume", threadResumeParams(
+            run,
+            scheduled.lastThreadId,
+            project.path,
+            { modelContextWindow, refreshRuntimeConfig: true },
+          ));
+        } catch {
+          // The user may have deleted the earlier run's conversation. Keep the
+          // schedule useful by establishing a new thread that later triggers
+          // can reuse, rather than failing forever on a stale id.
+          started = await startFreshThread();
+        }
+      } else {
+        started = await startFreshThread();
+      }
       startedThreadId = started.thread.id;
       current.bindThreadToProject(started.thread.id, project.path);
       useTaskStore.getState().ensureTask(started.thread.id, project.path);

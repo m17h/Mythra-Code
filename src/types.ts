@@ -7,7 +7,7 @@ export type ClaudeLogoStyle = "claude" | "anthropic";
 export type CursorLogoStyle = "cube" | "app-dark";
 export type PermissionMode = "read-only" | "ask" | "full";
 export type ThemeName = "mythra" | "light-mythra" | "kiwi" | "daylight" | "midnight" | "synthwave";
-export type EffortSliderStyle = "spectrum" | "classic" | "neon" | "pixel" | "aurora" | "ink";
+export type EffortSliderStyle = "spectrum" | "classic" | "neon" | "pixel" | "aurora" | "ink" | "tide" | "dart" | "coil";
 export type WorkspaceMode = "chat" | "project";
 export type SettingsSection = "general" | "models" | "github" | "usage" | "prompts" | "agents" | "workflows" | "projects" | "skills" | "tools" | "updates";
 export type ProjectPromptMode = "replace" | "append";
@@ -234,12 +234,20 @@ export interface ScheduleRunRecord {
   error?: string;
 }
 
+export type ScheduleIntervalUnit = "minutes" | "hours" | "days";
+export type ScheduleThreadMode = "new" | "reuse";
+
 export interface ScheduledTask {
   id: string;
   name: string;
   prompt: string;
   projectId: string | null;
+  /** The user-facing cadence. Legacy schedules only have intervalMinutes. */
+  intervalValue?: number;
+  intervalUnit?: ScheduleIntervalUnit;
   intervalMinutes: number;
+  /** Legacy schedules created a fresh thread for every trigger. */
+  threadMode?: ScheduleThreadMode;
   enabled: boolean;
   nextRunAt: number;
   lastRunAt?: number;

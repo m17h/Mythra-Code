@@ -1517,8 +1517,8 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .settings-subgroup { margin-top: var(--s-5); padding-top: var(--s-4); border-top: 1px solid var(--line); }
 .settings-subgroup-label { display: block; margin-bottom: var(--s-2); color: var(--muted-2); font-size: var(--fs-micro); text-transform: uppercase; letter-spacing: var(--track-caps); }
 .inline-create input, .stacked-create input, .stacked-create textarea, .schedule-create input, .schedule-create textarea, .schedule-create select, .runtime-field-grid select { min-width: 0; min-height: 33px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 7px; outline: 0; color: var(--text); background: var(--field); font-size: var(--fs-micro); resize: vertical; }
-.inline-create button, .stacked-create button, .schedule-create button { min-height: 33px; display: flex; align-items: center; justify-content: center; gap: 5px; padding: 0 9px; border: 1px solid var(--line); border-radius: 7px; color: var(--green); background: var(--green-soft); font-size: var(--fs-meta); cursor: pointer; }
-.inline-create button:disabled, .stacked-create button:disabled, .schedule-create button:disabled { opacity: .4; cursor: default; }
+.inline-create button, .stacked-create button, .schedule-create > button { min-height: 33px; display: flex; align-items: center; justify-content: center; gap: 5px; padding: 0 9px; border: 1px solid var(--line); border-radius: 7px; color: var(--green); background: var(--green-soft); font-size: var(--fs-meta); cursor: pointer; }
+.inline-create button:disabled, .stacked-create button:disabled, .schedule-create > button:disabled { opacity: .4; cursor: default; }
 .manager-list { display: flex; flex-direction: column; gap: 5px; }
 .manager-list > div { min-height: 44px; display: grid; grid-template-columns: 25px minmax(0,1fr) 27px; align-items: center; gap: var(--s-2); padding: var(--s-2); border: 1px solid var(--line); border-radius: var(--r-sm); background: rgba(255,255,255,.012); transition: border-color var(--t-fast) ease, background var(--t-fast) ease; }
 .manager-list > div:hover { border-color: var(--line-strong); background: rgba(255,255,255,.026); }
@@ -1534,9 +1534,19 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .manager-delete { width: 25px; height: 25px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 6px; color: var(--muted-2); background: transparent; cursor: pointer; }
 .manager-delete:hover { color: var(--red); background: rgba(239,138,135,.07); }
 .stacked-create { display: grid; gap: 6px; margin-top: 7px; }
-.schedule-create { display: grid; grid-template-columns: 1fr 1fr 75px; gap: 6px; margin-top: 7px; }
-.schedule-create textarea { grid-column: 1 / -1; }
-.schedule-create button { grid-column: 1 / -1; }
+.schedule-create { position: relative; display: flex; flex-direction: column; gap: var(--s-3); margin-top: var(--s-3); padding: var(--s-3); overflow: visible; border: 1px solid var(--line); border-radius: var(--r-md); background: color-mix(in srgb, var(--field) 55%, transparent); }
+.schedule-create:has(.app-select.open) { z-index: 35; }
+.schedule-create-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-3); }
+.schedule-create-grid > label, .schedule-create-grid > .schedule-field, .schedule-prompt-control { min-width: 0; display: flex; flex-direction: column; gap: 5px; color: var(--muted-2); font-size: var(--fs-meta); font-weight: 600; }
+.schedule-create-grid .app-select, .schedule-create-grid .app-select-trigger { width: 100%; }
+.schedule-create-grid .app-select-trigger { min-height: 40px; }
+.schedule-create-grid .app-select-menu { width: max(100%, 250px); }
+.schedule-model-control .app-select-menu { width: max(100%, 360px); }
+.schedule-interval-inputs { display: grid; grid-template-columns: minmax(70px, .55fr) minmax(120px, 1fr); gap: var(--s-2); }
+.schedule-interval-inputs > input { width: 100%; }
+.schedule-prompt-control textarea { width: 100%; }
+.schedule-runtime-note { display: flex; align-items: center; gap: 6px; margin: 0; color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.45; }
+.schedule-runtime-note svg { flex: 0 0 auto; color: var(--green); }
 .compact-note { display: grid; grid-template-columns: 23px minmax(0,1fr); align-items: center; gap: 7px; color: var(--green); }
 .mcp-controls-note { margin-top: var(--s-5); }
 .behavior-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
@@ -2346,8 +2356,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
   .usage-display-controls { justify-self: start; }
   .theme-grid, .behavior-grid, .runtime-field-grid, .provider-cards, .provider-prompt-grid { grid-template-columns: 1fr; }
   .profile-grid { grid-template-columns: 1fr 1fr; }
-  .inline-create.two, .schedule-create { grid-template-columns: 1fr; }
-  .schedule-create textarea, .schedule-create button { grid-column: 1; }
+  .inline-create.two, .schedule-create-grid { grid-template-columns: 1fr; }
   /* Skills: the folder actions and composer buttons stop competing for a
      row of their own and stack full width instead. */
   .skill-folder-actions { width: 100%; margin-left: 0; }
@@ -3126,8 +3135,225 @@ body[data-pane-resizing] .sidebar, body[data-pane-resizing] .studio-dock { trans
 .app-shell[data-effort-slider="ink"] .reasoning-rail.dragging::before, .app-shell[data-effort-slider="ink"] .openrouter-reasoning-rail.dragging::before,
 .app-shell[data-effort-slider="ink"] .effort-max .reasoning-rail::after, .app-shell[data-effort-slider="ink"] .effort-max .openrouter-reasoning-rail::after { display: none; }
 
+/* -- Tide: a slim glass channel whose filled section carries a moving water
+   line into a soft droplet selector. Distinctive, fluid and gently rounded. -- */
+.app-shell[data-effort-slider="tide"] {
+  --tide-1: #4f7cff; --tide-2: #3e99f5; --tide-3: #2db6eb; --tide-4: #2ed2dc; --tide-5: #55ead2;
+  --tide-channel: rgba(188, 226, 255, .1); --tide-line: rgba(188, 226, 255, .24);
+}
+.app-shell[data-effort-slider="tide"] .reasoning-rail, .app-shell[data-effort-slider="tide"] .openrouter-reasoning-rail { --tide-flow: calc(4s - var(--effort-heat, 0) * 2.2s); }
+.app-shell[data-effort-slider="tide"] .model-power-control, .app-shell[data-effort-slider="tide"] .openrouter-reasoning { --tide-live: var(--tide-effort-color, #2db6eb); }
+.app-shell[data-color-scheme="light"][data-effort-slider="tide"] {
+  --tide-1: #315fc9; --tide-2: #2679c5; --tide-3: #168fae; --tide-4: #159f9e; --tide-5: #218f78;
+  --tide-channel: rgba(21, 91, 129, .09); --tide-line: rgba(21, 91, 129, .25);
+}
+.app-shell[data-color-scheme="light"][data-effort-slider="tide"] .model-power-control, .app-shell[data-color-scheme="light"][data-effort-slider="tide"] .openrouter-reasoning { --tide-live: color-mix(in srgb, var(--tide-effort-color, #2db6eb) 66%, #075071); }
+.app-shell[data-effort-slider="tide"] .reasoning-control input[type="range"], .app-shell[data-effort-slider="tide"] .openrouter-reasoning input[type="range"] {
+  height: 11px; border-radius: 7px; background: var(--tide-channel);
+  box-shadow: inset 0 0 0 1px var(--tide-line), inset 0 2px 4px rgba(0, 20, 42, .22);
+}
+.app-shell[data-effort-slider="tide"] .reasoning-rail::before, .app-shell[data-effort-slider="tide"] .openrouter-reasoning-rail::before {
+  content: ""; position: absolute; left: 1px; top: 50%; z-index: 0;
+  width: max(0px, calc(var(--reasoning-fill, var(--router-fill, 0%)) - 1px)); height: 9px;
+  transform: translateY(-50%); border-radius: 6px 3px 3px 6px; pointer-events: none;
+  background:
+    radial-gradient(ellipse at 50% 0, rgba(255,255,255,.65) 0 16%, transparent 19%) 0 1px / 22px 7px repeat-x,
+    linear-gradient(180deg, color-mix(in srgb, var(--tide-live, #2db6eb) 54%, #dffcff) 0 28%, var(--tide-live, #2db6eb) 36% 100%);
+  box-shadow: inset 0 1px rgba(255,255,255,.34), 0 0 8px color-mix(in srgb, var(--tide-live, #2db6eb) 28%, transparent);
+  animation: tide-flow var(--tide-flow, 4s) linear infinite;
+}
+@keyframes tide-flow { to { background-position: 22px 1px, 0 0; } }
+.app-shell[data-effort-slider="tide"] .reasoning-control input[type="range"]::-webkit-slider-thumb, .app-shell[data-effort-slider="tide"] .openrouter-reasoning input[type="range"]::-webkit-slider-thumb {
+  width: 14px; height: 16px; border: 1px solid rgba(255,255,255,.52); border-radius: 56% 56% 56% 14%;
+  background: linear-gradient(135deg, #e8ffff 0 13%, color-mix(in srgb, var(--tide-live, #2db6eb) 58%, #bffaff) 30%, var(--tide-live, #2db6eb) 72%);
+  box-shadow: 0 2px 5px rgba(0, 28, 55, .38), inset 1px 1px rgba(255,255,255,.45);
+  transform: rotate(45deg); transition: transform 180ms var(--ease), filter 180ms ease;
+}
+.app-shell[data-effort-slider="tide"] .dragging input[type="range"]::-webkit-slider-thumb { transform: rotate(45deg) scale(1.1); filter: brightness(1.1); }
+.app-shell[data-effort-slider="tide"] .reasoning-control input[type="range"]:focus-visible, .app-shell[data-effort-slider="tide"] .openrouter-reasoning input[type="range"]:focus-visible { outline: 2px solid var(--tide-live, #2db6eb); outline-offset: 3px; }
+.app-shell[data-effort-slider="tide"] .reasoning-control input[type="range"]:focus-visible::-webkit-slider-thumb, .app-shell[data-effort-slider="tide"] .openrouter-reasoning input[type="range"]:focus-visible::-webkit-slider-thumb { filter: drop-shadow(0 0 5px var(--tide-live, #2db6eb)); }
+.app-shell[data-effort-slider="tide"] .reasoning-ticks i, .app-shell[data-effort-slider="tide"] .openrouter-reasoning-ticks i { width: 7px; height: 7px; border: 1px solid currentColor; border-radius: 50%; background: transparent; opacity: .46; }
+.app-shell[data-effort-slider="tide"] .reasoning-ticks i.reached, .app-shell[data-effort-slider="tide"] .openrouter-reasoning-ticks i.reached { background: currentColor; box-shadow: inset 1px 1px rgba(255,255,255,.5); opacity: 1; animation: none; }
+.app-shell[data-effort-slider="tide"] .reasoning-ticks i:nth-child(1), .app-shell[data-effort-slider="tide"] .openrouter-reasoning-ticks i:nth-child(1) { color: var(--tide-1); }
+.app-shell[data-effort-slider="tide"] .reasoning-ticks i:nth-child(2), .app-shell[data-effort-slider="tide"] .openrouter-reasoning-ticks i:nth-child(2) { color: var(--tide-2); }
+.app-shell[data-effort-slider="tide"] .reasoning-ticks i:nth-child(3), .app-shell[data-effort-slider="tide"] .openrouter-reasoning-ticks i:nth-child(3) { color: var(--tide-3); }
+.app-shell[data-effort-slider="tide"] .reasoning-ticks i:nth-child(4), .app-shell[data-effort-slider="tide"] .openrouter-reasoning-ticks i:nth-child(4) { color: var(--tide-4); }
+.app-shell[data-effort-slider="tide"] .reasoning-ticks i:nth-child(5), .app-shell[data-effort-slider="tide"] .openrouter-reasoning-ticks i:nth-child(5) { color: var(--tide-5); }
+.app-shell[data-effort-slider="tide"] .reasoning-heading strong, .app-shell[data-effort-slider="tide"] .openrouter-reasoning-heading strong,
+.app-shell[data-effort-slider="tide"] .reasoning-heading > svg:first-child, .app-shell[data-effort-slider="tide"] .openrouter-reasoning-heading > svg:first-child,
+.app-shell[data-effort-slider="tide"] .reasoning-labels span.active, .app-shell[data-effort-slider="tide"] .openrouter-reasoning-labels span.active { color: var(--tide-live, #2db6eb); text-shadow: none; }
+.app-shell[data-effort-slider="tide"] .effort-sparks i { width: 5px; height: 5px; border-radius: 50%; background: var(--tide-live, #2db6eb); box-shadow: inset 1px 1px rgba(255,255,255,.55); }
+.app-shell[data-effort-slider="tide"] .effort-max .reasoning-heading strong, .app-shell[data-effort-slider="tide"] .effort-max .openrouter-reasoning-heading strong { animation: effort-pop 280ms var(--ease); }
+.app-shell[data-effort-slider="tide"] .effort-max .reasoning-rail::after, .app-shell[data-effort-slider="tide"] .effort-max .openrouter-reasoning-rail::after { display: none; }
+.app-shell[data-effort-slider="tide"] .effort-max .reasoning-control input[type="range"]::-webkit-slider-thumb, .app-shell[data-effort-slider="tide"] .effort-max.openrouter-reasoning input[type="range"]::-webkit-slider-thumb, .app-shell[data-effort-slider="tide"] .effort-max .openrouter-reasoning-rail input[type="range"]::-webkit-slider-thumb { animation: none; }
+
+/* -- Dart: no rail at all. A hairline flight line, an arrowhead for a thumb,
+   and behind it a wake that starts at nothing and widens to full height under
+   the head, with slipstream streaks running back through it. -- */
+.app-shell[data-effort-slider="dart"] {
+  --dart-1: #0e9b73; --dart-2: #1cb46b; --dart-3: #43cb5c; --dart-4: #7ee04a; --dart-5: #c2f23c;
+  --dart-path: rgba(255,255,255,.22);
+}
+.app-shell[data-effort-slider="dart"] .reasoning-rail, .app-shell[data-effort-slider="dart"] .openrouter-reasoning-rail { --dart-rush: calc(1.6s - var(--effort-heat, 0) * 1.15s); }
+.app-shell[data-effort-slider="dart"] .model-power-control, .app-shell[data-effort-slider="dart"] .openrouter-reasoning { --dart-live: var(--dart-effort-color, #43cb5c); }
+.app-shell[data-color-scheme="light"][data-effort-slider="dart"] {
+  --dart-1: #0a7355; --dart-2: #12854e; --dart-3: #2b8f3c; --dart-4: #4c9327; --dart-5: #6f9412;
+  --dart-path: rgba(24,30,22,.24);
+}
+.app-shell[data-color-scheme="light"][data-effort-slider="dart"] .model-power-control, .app-shell[data-color-scheme="light"][data-effort-slider="dart"] .openrouter-reasoning { --dart-live: color-mix(in srgb, var(--dart-effort-color, #43cb5c) 42%, #06210f); }
+.app-shell[data-effort-slider="dart"] .reasoning-control input[type="range"], .app-shell[data-effort-slider="dart"] .openrouter-reasoning input[type="range"] {
+  height: 14px; border-radius: 0;
+  background: linear-gradient(var(--dart-path), var(--dart-path)) no-repeat left center / 100% 1px;
+  box-shadow: none;
+}
+/* The wake is a wedge clipped out of the level color; it sits below the ticks
+   so the chevron marks stay legible on top of it. */
+.app-shell[data-effort-slider="dart"] .reasoning-rail::before, .app-shell[data-effort-slider="dart"] .openrouter-reasoning-rail::before {
+  content: ""; position: absolute; left: 1px; top: 50%; z-index: 0; height: 14px;
+  width: calc(var(--reasoning-fill, var(--router-fill, 0%)) - 2px);
+  transform: translateY(-50%); border-radius: 0;
+  clip-path: polygon(0 46%, 100% 0, 100% 100%, 0 54%);
+  background:
+    repeating-linear-gradient(90deg, rgba(255,255,255,.32) 0 5px, transparent 5px 18px),
+    linear-gradient(90deg, color-mix(in srgb, var(--dart-live, #43cb5c) 18%, transparent), var(--dart-live, #43cb5c));
+  background-size: 23px 100%, 100% 100%;
+  background-position: 0 center, 0 center;
+  pointer-events: none;
+  animation: dart-slipstream var(--dart-rush, 1.6s) linear infinite;
+}
+/* Streaks travel backwards through the wake, which reads as the head moving
+   forwards. */
+@keyframes dart-slipstream { to { background-position: -23px center, 0 center; } }
+.app-shell[data-effort-slider="dart"] .reasoning-control input[type="range"]::-webkit-slider-thumb, .app-shell[data-effort-slider="dart"] .openrouter-reasoning input[type="range"]::-webkit-slider-thumb {
+  width: 16px; height: 15px; border: 0; border-radius: 0;
+  clip-path: polygon(0 0, 100% 50%, 0 100%, 30% 50%);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--dart-live, #43cb5c) 52%, #fff), var(--dart-live, #43cb5c));
+  box-shadow: none; transform: none;
+  transition: transform 180ms var(--ease), filter 180ms ease;
+}
+.app-shell[data-effort-slider="dart"] .dragging input[type="range"]::-webkit-slider-thumb { transform: scale(1.12); box-shadow: none; filter: brightness(1.12); }
+/* clip-path crops a box-shadow ring away, so focus rings the track box and
+   the head itself picks up a halo shaped like the arrow. */
+.app-shell[data-effort-slider="dart"] .reasoning-control input[type="range"]:focus-visible, .app-shell[data-effort-slider="dart"] .openrouter-reasoning input[type="range"]:focus-visible {
+  outline: 2px solid var(--dart-live, #43cb5c); outline-offset: 3px;
+}
+.app-shell[data-effort-slider="dart"] .reasoning-control input[type="range"]:focus-visible::-webkit-slider-thumb, .app-shell[data-effort-slider="dart"] .openrouter-reasoning input[type="range"]:focus-visible::-webkit-slider-thumb {
+  box-shadow: none; filter: drop-shadow(0 0 2px var(--dart-live, #43cb5c)) drop-shadow(0 0 5px var(--dart-live, #43cb5c));
+}
+/* Ticks are gate chevrons on the flight line, lightened once passed so they
+   still read against the wake behind them. */
+.app-shell[data-effort-slider="dart"] .reasoning-ticks i, .app-shell[data-effort-slider="dart"] .openrouter-reasoning-ticks i {
+  width: 5px; height: 8px; border: 0; border-radius: 0; background: var(--dart-path);
+  clip-path: polygon(0 0, 100% 50%, 0 100%, 55% 50%);
+}
+.app-shell[data-effort-slider="dart"] .reasoning-ticks i.reached, .app-shell[data-effort-slider="dart"] .openrouter-reasoning-ticks i.reached { background: color-mix(in srgb, currentColor 35%, #fff); box-shadow: none; animation: none; }
+.app-shell[data-color-scheme="light"][data-effort-slider="dart"] .reasoning-ticks i.reached, .app-shell[data-color-scheme="light"][data-effort-slider="dart"] .openrouter-reasoning-ticks i.reached { background: color-mix(in srgb, currentColor 45%, #08240f); }
+.app-shell[data-effort-slider="dart"] .reasoning-ticks i:nth-child(1), .app-shell[data-effort-slider="dart"] .openrouter-reasoning-ticks i:nth-child(1) { color: var(--dart-1); }
+.app-shell[data-effort-slider="dart"] .reasoning-ticks i:nth-child(2), .app-shell[data-effort-slider="dart"] .openrouter-reasoning-ticks i:nth-child(2) { color: var(--dart-2); }
+.app-shell[data-effort-slider="dart"] .reasoning-ticks i:nth-child(3), .app-shell[data-effort-slider="dart"] .openrouter-reasoning-ticks i:nth-child(3) { color: var(--dart-3); }
+.app-shell[data-effort-slider="dart"] .reasoning-ticks i:nth-child(4), .app-shell[data-effort-slider="dart"] .openrouter-reasoning-ticks i:nth-child(4) { color: var(--dart-4); }
+.app-shell[data-effort-slider="dart"] .reasoning-ticks i:nth-child(5), .app-shell[data-effort-slider="dart"] .openrouter-reasoning-ticks i:nth-child(5) { color: var(--dart-5); }
+.app-shell[data-effort-slider="dart"] .reasoning-heading strong, .app-shell[data-effort-slider="dart"] .openrouter-reasoning-heading strong { color: var(--dart-live, #43cb5c); font-variant-numeric: tabular-nums; letter-spacing: .06em; text-shadow: none; }
+.app-shell[data-effort-slider="dart"] .reasoning-heading > svg:first-child, .app-shell[data-effort-slider="dart"] .openrouter-reasoning-heading > svg:first-child { color: var(--dart-live, #43cb5c); }
+.app-shell[data-effort-slider="dart"] .reasoning-labels span.active, .app-shell[data-effort-slider="dart"] .openrouter-reasoning-labels span.active { color: var(--dart-live, #43cb5c); text-shadow: none; }
+/* Sparks stay in the wake's language: flat slivers, no glow. */
+.app-shell[data-effort-slider="dart"] .effort-sparks i { width: 5px; height: 2px; border-radius: 0; background: var(--dart-live, #43cb5c); box-shadow: none; }
+.app-shell[data-effort-slider="dart"] .effort-max .reasoning-heading strong, .app-shell[data-effort-slider="dart"] .effort-max .openrouter-reasoning-heading strong { animation: effort-pop 280ms var(--ease); text-shadow: none; }
+.app-shell[data-effort-slider="dart"] .effort-max .reasoning-rail::after, .app-shell[data-effort-slider="dart"] .effort-max .openrouter-reasoning-rail::after { display: none; }
+.app-shell[data-effort-slider="dart"] .effort-max .reasoning-control input[type="range"]::-webkit-slider-thumb, .app-shell[data-effort-slider="dart"] .effort-max.openrouter-reasoning input[type="range"]::-webkit-slider-thumb, .app-shell[data-effort-slider="dart"] .effort-max .openrouter-reasoning-rail input[type="range"]::-webkit-slider-thumb { animation: none; }
+
+/* One turn of a twisted cord — a bold front strand crossing a faint back one.
+   Kept on :root so the rail and the Settings preview mask the same tile. */
+:root { --coil-turn: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Cpath d='M1 15L15 1' stroke='%23fff' stroke-width='2.6' stroke-linecap='round'/%3E%3Cpath d='M1 1L15 15' stroke='%23fff' stroke-width='1' stroke-linecap='round' opacity='.38'/%3E%3C/svg%3E"); }
+
+/* -- Coil: the track is a cord under load. Effort is tension, not length: the
+   winding tightens tile by tile and the twist travels faster, with a hex
+   collar clamped on the cord where the thumb would be. -- */
+.app-shell[data-effort-slider="coil"] {
+  --coil-1: #6a4fe0; --coil-2: #8a4ce6; --coil-3: #ab48e0; --coil-4: #d144cf; --coil-5: #f43fae;
+  --coil-slack: rgba(255,255,255,.17);
+}
+.app-shell[data-effort-slider="coil"] .reasoning-rail, .app-shell[data-effort-slider="coil"] .openrouter-reasoning-rail {
+  --coil-gauge: calc(17px - var(--effort-heat, 0) * 9px);
+  --coil-spin: calc(2.8s - var(--effort-heat, 0) * 2.05s);
+}
+.app-shell[data-effort-slider="coil"] .model-power-control, .app-shell[data-effort-slider="coil"] .openrouter-reasoning { --coil-live: var(--coil-effort-color, #ab48e0); }
+.app-shell[data-color-scheme="light"][data-effort-slider="coil"] {
+  --coil-1: #4c33b8; --coil-2: #6a2fbe; --coil-3: #862bb4; --coil-4: #a52598; --coil-5: #b81f74;
+  --coil-slack: rgba(26,22,34,.22);
+}
+.app-shell[data-color-scheme="light"][data-effort-slider="coil"] .model-power-control, .app-shell[data-color-scheme="light"][data-effort-slider="coil"] .openrouter-reasoning { --coil-live: color-mix(in srgb, var(--coil-effort-color, #ab48e0) 46%, #18042a); }
+/* The input keeps the hit area and the collar; the cord is drawn behind it so
+   the mask can never clip the thumb. */
+.app-shell[data-effort-slider="coil"] .reasoning-control input[type="range"], .app-shell[data-effort-slider="coil"] .openrouter-reasoning input[type="range"] {
+  height: 16px; border-radius: 0; background: none; box-shadow: none;
+}
+.app-shell[data-effort-slider="coil"] .reasoning-rail::before, .app-shell[data-effort-slider="coil"] .openrouter-reasoning-rail::before {
+  content: ""; position: absolute; left: 1px; top: -1px; bottom: -1px; right: auto; z-index: 0;
+  width: max(0px, calc(var(--reasoning-fill, var(--router-fill, 0%)) - 1px)); height: auto; transform: none; border-radius: 0;
+  background: linear-gradient(90deg, var(--coil-1), var(--coil-3) 55%, var(--coil-live, #ab48e0));
+  background-repeat: no-repeat;
+  background-size: 100% 100%;
+  -webkit-mask-image: var(--coil-turn); mask-image: var(--coil-turn);
+  -webkit-mask-size: var(--coil-gauge, 17px) 100%; mask-size: var(--coil-gauge, 17px) 100%;
+  -webkit-mask-repeat: repeat-x; mask-repeat: repeat-x;
+  -webkit-mask-position: 0 center; mask-position: 0 center;
+  pointer-events: none;
+  animation: coil-twist var(--coil-spin, 2.8s) linear infinite;
+}
+/* Travelling exactly one turn per cycle keeps the loop seamless at every
+   winding, however tight the gauge has become. */
+@keyframes coil-twist {
+  to { -webkit-mask-position: calc(var(--coil-gauge, 17px) * -1) center; mask-position: calc(var(--coil-gauge, 17px) * -1) center; }
+}
+.app-shell[data-effort-slider="coil"] .reasoning-control input[type="range"]::-webkit-slider-thumb, .app-shell[data-effort-slider="coil"] .openrouter-reasoning input[type="range"]::-webkit-slider-thumb {
+  width: 15px; height: 18px; border: 0; border-radius: 0;
+  clip-path: polygon(50% 0, 100% 26%, 100% 74%, 50% 100%, 0 74%, 0 26%);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--coil-live, #ab48e0) 45%, #fff), var(--coil-live, #ab48e0) 58%, color-mix(in srgb, var(--coil-live, #ab48e0) 62%, #000));
+  box-shadow: none; transform: none;
+  transition: transform 180ms var(--ease), filter 180ms ease;
+}
+.app-shell[data-effort-slider="coil"] .dragging input[type="range"]::-webkit-slider-thumb { transform: scale(1.1); box-shadow: none; filter: brightness(1.1); }
+/* clip-path crops a box-shadow ring away, so focus rings the track box and
+   the collar picks up a halo cut to its own six sides. */
+.app-shell[data-effort-slider="coil"] .reasoning-control input[type="range"]:focus-visible, .app-shell[data-effort-slider="coil"] .openrouter-reasoning input[type="range"]:focus-visible {
+  outline: 2px solid var(--coil-live, #ab48e0); outline-offset: 3px;
+}
+.app-shell[data-effort-slider="coil"] .reasoning-control input[type="range"]:focus-visible::-webkit-slider-thumb, .app-shell[data-effort-slider="coil"] .openrouter-reasoning input[type="range"]:focus-visible::-webkit-slider-thumb {
+  box-shadow: none; filter: drop-shadow(0 0 2px var(--coil-live, #ab48e0)) drop-shadow(0 0 5px var(--coil-live, #ab48e0));
+}
+/* Ticks are studs seated under the cord rather than beads lost inside it. */
+.app-shell[data-effort-slider="coil"] .reasoning-ticks, .app-shell[data-effort-slider="coil"] .openrouter-reasoning-ticks { align-items: flex-end; }
+.app-shell[data-effort-slider="coil"] .reasoning-ticks i, .app-shell[data-effort-slider="coil"] .openrouter-reasoning-ticks i {
+  width: 6px; height: 5px; margin-bottom: -5px; border: 0; border-radius: 0; background: var(--coil-slack);
+  clip-path: polygon(26% 0, 74% 0, 100% 50%, 74% 100%, 26% 100%, 0 50%);
+}
+.app-shell[data-effort-slider="coil"] .reasoning-ticks i.reached, .app-shell[data-effort-slider="coil"] .openrouter-reasoning-ticks i.reached { border-color: currentColor; background: currentColor; box-shadow: none; animation: none; }
+.app-shell[data-effort-slider="coil"] .reasoning-ticks i:nth-child(1), .app-shell[data-effort-slider="coil"] .openrouter-reasoning-ticks i:nth-child(1) { color: var(--coil-1); }
+.app-shell[data-effort-slider="coil"] .reasoning-ticks i:nth-child(2), .app-shell[data-effort-slider="coil"] .openrouter-reasoning-ticks i:nth-child(2) { color: var(--coil-2); }
+.app-shell[data-effort-slider="coil"] .reasoning-ticks i:nth-child(3), .app-shell[data-effort-slider="coil"] .openrouter-reasoning-ticks i:nth-child(3) { color: var(--coil-3); }
+.app-shell[data-effort-slider="coil"] .reasoning-ticks i:nth-child(4), .app-shell[data-effort-slider="coil"] .openrouter-reasoning-ticks i:nth-child(4) { color: var(--coil-4); }
+.app-shell[data-effort-slider="coil"] .reasoning-ticks i:nth-child(5), .app-shell[data-effort-slider="coil"] .openrouter-reasoning-ticks i:nth-child(5) { color: var(--coil-5); }
+.app-shell[data-effort-slider="coil"] .reasoning-heading strong, .app-shell[data-effort-slider="coil"] .openrouter-reasoning-heading strong { color: var(--coil-live, #ab48e0); letter-spacing: .04em; text-shadow: none; }
+.app-shell[data-effort-slider="coil"] .reasoning-heading > svg:first-child, .app-shell[data-effort-slider="coil"] .openrouter-reasoning-heading > svg:first-child { color: var(--coil-live, #ab48e0); }
+.app-shell[data-effort-slider="coil"] .reasoning-labels span.active, .app-shell[data-effort-slider="coil"] .openrouter-reasoning-labels span.active { color: var(--coil-live, #ab48e0); text-shadow: none; }
+/* Sparks are hex chips shed by the collar. */
+.app-shell[data-effort-slider="coil"] .effort-sparks i { width: 5px; height: 4px; border-radius: 0; background: var(--coil-live, #ab48e0); box-shadow: none; clip-path: polygon(26% 0, 74% 0, 100% 50%, 74% 100%, 26% 100%, 0 50%); }
+.app-shell[data-effort-slider="coil"] .effort-max .reasoning-heading strong, .app-shell[data-effort-slider="coil"] .effort-max .openrouter-reasoning-heading strong { animation: effort-pop 280ms var(--ease); text-shadow: none; }
+.app-shell[data-effort-slider="coil"] .effort-max .reasoning-rail::after, .app-shell[data-effort-slider="coil"] .effort-max .openrouter-reasoning-rail::after { display: none; }
+.app-shell[data-effort-slider="coil"] .effort-max .reasoning-control input[type="range"]::-webkit-slider-thumb, .app-shell[data-effort-slider="coil"] .effort-max.openrouter-reasoning input[type="range"]::-webkit-slider-thumb, .app-shell[data-effort-slider="coil"] .effort-max .openrouter-reasoning-rail input[type="range"]::-webkit-slider-thumb { animation: none; }
+
 @media (prefers-reduced-motion: reduce) {
   .app-shell[data-effort-slider="aurora"] .reasoning-control input[type="range"], .app-shell[data-effort-slider="aurora"] .openrouter-reasoning input[type="range"] { animation: none; }
+  /* Each new style keeps its shape, geometry and colors while the water,
+     slipstream and cord stop moving. */
+  .app-shell[data-effort-slider="tide"] .reasoning-rail::before, .app-shell[data-effort-slider="tide"] .openrouter-reasoning-rail::before,
+  .slider-style-preview.tide .slider-style-rail::after,
+  .app-shell[data-effort-slider="dart"] .reasoning-rail::before, .app-shell[data-effort-slider="dart"] .openrouter-reasoning-rail::before,
+  .app-shell[data-effort-slider="coil"] .reasoning-rail::before, .app-shell[data-effort-slider="coil"] .openrouter-reasoning-rail::before,
+  .app-shell[data-effort-slider="tide"] .effort-max .reasoning-heading strong, .app-shell[data-effort-slider="tide"] .effort-max .openrouter-reasoning-heading strong,
+  .app-shell[data-effort-slider="dart"] .effort-max .reasoning-heading strong, .app-shell[data-effort-slider="dart"] .effort-max .openrouter-reasoning-heading strong,
+  .app-shell[data-effort-slider="coil"] .effort-max .reasoning-heading strong, .app-shell[data-effort-slider="coil"] .effort-max .openrouter-reasoning-heading strong { animation: none; }
 }
 
 /* -- Settings: effort-slider style picker -- */
@@ -3159,6 +3385,47 @@ body[data-pane-resizing] .sidebar, body[data-pane-resizing] .studio-dock { trans
 .slider-style-preview.aurora .slider-style-thumb { left: 72%; background: #fff; box-shadow: 0 0 9px rgba(185, 140, 255, .9); }
 .slider-style-preview.ink .slider-style-rail { height: 2px; border-radius: 0; background: linear-gradient(90deg, var(--text) 0 64%, var(--panel-3) 64%); }
 .slider-style-preview.ink .slider-style-thumb { left: 64%; background: var(--panel); border-color: var(--text); }
+/* Tide: a glass channel, flowing water line and soft droplet selector. */
+.slider-style-preview.tide .slider-style-rail {
+  height: 10px; border-radius: 6px; overflow: hidden;
+  background: rgba(98, 174, 224, .12); box-shadow: inset 0 0 0 1px rgba(145, 215, 255, .3);
+}
+.slider-style-preview.tide .slider-style-rail::after {
+  content: ""; position: absolute; inset: 1px 32% 1px 1px; border-radius: 5px 2px 2px 5px;
+  background: radial-gradient(ellipse at 50% 0, rgba(255,255,255,.65) 0 17%, transparent 20%) 0 1px / 16px 6px repeat-x, linear-gradient(180deg, #bdfaff 0 26%, #2db6eb 34%, #2ed2dc);
+  animation: tide-flow 3s linear infinite;
+}
+.slider-style-preview.tide .slider-style-thumb {
+  left: 68%; width: 11px; height: 13px; border: 1px solid rgba(255,255,255,.55); border-radius: 56% 56% 56% 14%;
+  background: linear-gradient(135deg, #e8ffff, #43d5e7 42%, #2db6eb 78%); box-shadow: 0 2px 4px rgba(0,40,72,.38);
+  transform: translate(-50%, -50%) rotate(45deg);
+}
+/* Dart: a flight line with the wake widening into the arrowhead. */
+.slider-style-preview.dart .slider-style-rail { height: 1px; border-radius: 0; background: var(--panel-3); }
+.slider-style-preview.dart .slider-style-rail::after {
+  content: ""; position: absolute; left: 0; top: 50%; width: 62%; height: 15px; transform: translateY(-50%);
+  clip-path: polygon(0 46%, 100% 0, 100% 100%, 0 54%);
+  background: linear-gradient(90deg, color-mix(in srgb, #43cb5c 18%, transparent), #7ee04a);
+}
+.slider-style-preview.dart .slider-style-thumb {
+  left: 62%; width: 14px; height: 13px; border: 0; border-radius: 0;
+  clip-path: polygon(0 0, 100% 50%, 0 100%, 30% 50%);
+  background: linear-gradient(180deg, #c2f23c, #7ee04a);
+}
+/* Coil: the cord itself, wound tight, with its hex collar. */
+.slider-style-preview.coil .slider-style-rail {
+  height: 16px; border-radius: 0;
+  background: linear-gradient(90deg, #6a4fe0, #ab48e0 60%, #f43fae) no-repeat left center / 64% 100%;
+  -webkit-mask-image: var(--coil-turn); mask-image: var(--coil-turn);
+  -webkit-mask-size: 11px 100%; mask-size: 11px 100%;
+  -webkit-mask-repeat: repeat-x; mask-repeat: repeat-x;
+  -webkit-mask-position: 0 center; mask-position: 0 center;
+}
+.slider-style-preview.coil .slider-style-thumb {
+  left: 64%; width: 12px; height: 17px; border: 0; border-radius: 0;
+  clip-path: polygon(50% 0, 100% 26%, 100% 74%, 50% 100%, 0 74%, 0 26%);
+  background: linear-gradient(180deg, #e07ae8, #ab48e0 58%, #7c2f9e);
+}
 
 
 /* Model favorites — a star sits beside every option row in every picker. */

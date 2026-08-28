@@ -156,6 +156,9 @@ describe("SettingsModal", () => {
     expect(screen.getByRole("button", { name: /Pixel.*VU meter/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Aurora.*northern-light/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Ink.*monochrome/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Tide.*glass water channel/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Dart.*arrowhead/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Coil.*twisted cord/ })).toBeInTheDocument();
 
     const themeCards = container.querySelectorAll<HTMLButtonElement>(".theme-card");
     const sliderCards = container.querySelectorAll<HTMLButtonElement>(".slider-style-card");
@@ -177,12 +180,87 @@ describe("SettingsModal", () => {
     expect(onEffortSliderPreview).toHaveBeenLastCalledWith("classic");
   });
 
+  it.each([
+    [/Tide.*glass water channel/, "tide", "slider-style-preview tide"],
+    [/Dart.*arrowhead/, "dart", "slider-style-preview dart"],
+    [/Coil.*twisted cord/, "coil", "slider-style-preview coil"],
+  ])("previews and selects the %s effort-slider style", (name, id, previewClass) => {
+    const onEffortSliderPreview = vi.fn();
+    render(<SettingsModal {...modalProps({ onEffortSliderPreview })} />);
+
+    const card = screen.getByRole("button", { name });
+    // Each card carries its own preview class, so the swatch matches the style.
+    expect(card.querySelector(".slider-style-preview")).toHaveClass(...previewClass.split(" "));
+    fireEvent.click(card);
+    expect(onEffortSliderPreview).toHaveBeenLastCalledWith(id);
+    expect(screen.getByRole("button", { name })).toHaveAttribute("aria-pressed", "true");
+  });
+
   it("opens directly to the requested settings section", () => {
     render(<SettingsModal {...modalProps({ initialSection: "models" })} />);
 
     expect(screen.getByRole("button", { name: /Models & accounts/ })).toHaveAttribute("aria-current", "page");
     expect(screen.getByRole("heading", { name: "Default model provider" })).toBeInTheDocument();
     expect(screen.getByText(/Each thread keeps its own provider/)).toBeInTheDocument();
+  });
+
+  it("creates a simple schedule with explicit units, model, and thread behavior", () => {
+    const onSchedules = vi.fn();
+    render(<SettingsModal {...modalProps({
+      initialSection: "workflows",
+      projects: [{ id: "project-1", name: "My project", path: "/tmp/my-project" }],
+      onSchedules,
+    })} />);
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Schedule name" }), { target: { value: "Review twice daily" } });
+    fireEvent.click(screen.getByRole("button", { name: "Schedule location" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /My project/ }));
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Schedule interval" }), { target: { value: "12" } });
+    fireEvent.click(screen.getByRole("button", { name: "Schedule interval unit" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "Hours" }));
+    fireEvent.click(screen.getByRole("button", { name: "Schedule model" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Terra/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Schedule thread behavior" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Continue the same thread/ }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Schedule prompt" }), { target: { value: "Review the current changes" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add schedule" }));
+
+    const created = onSchedules.mock.calls[0][0][0];
+    expect(created).toMatchObject({
+      name: "Review twice daily",
+      prompt: "Review the current changes",
+      projectId: "project-1",
+      intervalValue: 12,
+      intervalUnit: "hours",
+      intervalMinutes: 720,
+      threadMode: "reuse",
+      enabled: true,
+      run: expect.objectContaining({ provider: "openai", model: "gpt-5.6-terra" }),
+    });
+    expect(created.nextRunAt).toBeGreaterThan(Date.now());
+  });
+
+  it("creates a simple schedule in Chats without requiring a project", () => {
+    const onSchedules = vi.fn();
+    render(<SettingsModal {...modalProps({
+      initialSection: "workflows",
+      projects: [],
+      onSchedules,
+    })} />);
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Schedule name" }), { target: { value: "Morning brief" } });
+    fireEvent.click(screen.getByRole("button", { name: "Schedule location" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Chats/ }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Schedule prompt" }), { target: { value: "Summarize my priorities" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add schedule" }));
+
+    expect(onSchedules.mock.calls[0][0][0]).toMatchObject({
+      name: "Morning brief",
+      projectId: null,
+      intervalValue: 60,
+      intervalUnit: "minutes",
+      threadMode: "new",
+    });
   });
 
   it("chooses and saves a default model from an app-owned provider menu", () => {

@@ -37,6 +37,7 @@ function testSchedulerDeps(
     schedules: [schedule],
     updateSchedule: vi.fn(),
     projects: [{ id: "project-1", name: "Project", path: "/tmp/project" }],
+    chatWorkspace: { id: "openkiwi-normal-chats", name: "Chats", path: "/tmp/chats", isChat: true },
     settings: DEFAULT_SETTINGS,
     runtimeAvailable: true,
     chatGptConnected: true,
@@ -84,6 +85,110 @@ describe("useScheduler", () => {
     expect(codex.rpc).toHaveBeenCalledWith("turn/start", expect.anything());
     expect(runs.at(-1)).toMatchObject({ status: "started", threadId: "thread-1" });
     expect(useTaskStore.getState().statuses["thread-1"]).toBe("starting");
+  });
+
+  it("runs a projectless schedule in the normal Chats workspace", async () => {
+    const runs: ScheduleRunRecord[] = [];
+    const bindThreadToProject = vi.fn();
+    const onThreadStarted = vi.fn();
+    codex.rpc.mockImplementation((method: string) => {
+      if (method === "thread/start") return Promise.resolve({ thread: { id: "chat-thread" } });
+      return Promise.resolve({});
+    });
+    renderHook(() => useScheduler(testSchedulerDeps(testSchedule({ projectId: null }), runs, {
+      bindThreadToProject,
+      onThreadStarted,
+    })));
+
+    await act(async () => {
+      await flushMicrotasks();
+    });
+
+    expect(codex.rpc).toHaveBeenCalledWith("thread/start", expect.objectContaining({ cwd: "/tmp/chats" }));
+    expect(codex.rpc).toHaveBeenCalledWith("turn/start", expect.objectContaining({ cwd: "/tmp/chats", threadId: "chat-thread" }));
+    expect(bindThreadToProject).toHaveBeenCalledWith("chat-thread", "/tmp/chats");
+    expect(onThreadStarted).toHaveBeenCalledWith(expect.objectContaining({ name: "Chats", isChat: true }));
+    expect(runs.at(-1)).toMatchObject({ status: "started", projectId: null, threadId: "chat-thread" });
+  });
+
+  it("waits for the normal Chats workspace to initialize without disabling the schedule", async () => {
+    const runs: ScheduleRunRecord[] = [];
+    const updateSchedule = vi.fn();
+    renderHook(() => useScheduler(testSchedulerDeps(testSchedule({ projectId: null }), runs, {
+      chatWorkspace: null,
+      updateSchedule,
+    })));
+
+    await act(async () => {
+      await flushMicrotasks();
+    });
+
+    expect(codex.rpc).not.toHaveBeenCalled();
+    expect(updateSchedule).not.toHaveBeenCalled();
+    expect(runs).toHaveLength(0);
+  });
+
+  it("continues the previous thread when the schedule requests it", async () => {
+    const runs: ScheduleRunRecord[] = [];
+    codex.rpc.mockImplementation((method: string) => {
+      if (method === "thread/resume") return Promise.resolve({ thread: { id: "thread-existing" } });
+      return Promise.resolve({});
+    });
+    renderHook(() => useScheduler(testSchedulerDeps(testSchedule({
+      threadMode: "reuse",
+      lastThreadId: "thread-existing",
+    }), runs)));
+
+    await act(async () => {
+      await flushMicrotasks();
+    });
+
+    expect(codex.rpc).toHaveBeenCalledWith("thread/resume", expect.objectContaining({
+      threadId: "thread-existing",
+      cwd: "/tmp/project",
+    }));
+    expect(codex.rpc).not.toHaveBeenCalledWith("thread/start", expect.anything());
+    expect(codex.rpc).toHaveBeenCalledWith("turn/start", expect.objectContaining({ threadId: "thread-existing" }));
+    expect(runs.at(-1)).toMatchObject({ status: "started", threadId: "thread-existing" });
+  });
+
+  it("starts a replacement reusable thread when the previous one was deleted", async () => {
+    const runs: ScheduleRunRecord[] = [];
+    codex.rpc.mockImplementation((method: string) => {
+      if (method === "thread/resume") return Promise.reject(new Error("thread not found"));
+      if (method === "thread/start") return Promise.resolve({ thread: { id: "thread-replacement" } });
+      return Promise.resolve({});
+    });
+    renderHook(() => useScheduler(testSchedulerDeps(testSchedule({
+      threadMode: "reuse",
+      lastThreadId: "thread-deleted",
+    }), runs)));
+
+    await act(async () => {
+      await flushMicrotasks();
+    });
+
+    expect(codex.rpc).toHaveBeenCalledWith("thread/resume", expect.anything());
+    expect(codex.rpc).toHaveBeenCalledWith("thread/start", expect.anything());
+    expect(runs.at(-1)).toMatchObject({ status: "started", threadId: "thread-replacement" });
+  });
+
+  it("waits rather than overlapping turns in a reusable thread", async () => {
+    const runs: ScheduleRunRecord[] = [];
+    const schedule = testSchedule({ threadMode: "reuse", lastThreadId: "thread-existing" });
+    const updateSchedule = vi.fn();
+    useTaskStore.getState().ensureTask("thread-existing", "/tmp/project");
+    useTaskStore.getState().setTaskStatus("thread-existing", "running");
+    renderHook(() => useScheduler(testSchedulerDeps(schedule, runs, { updateSchedule })));
+
+    await act(async () => {
+      await flushMicrotasks();
+    });
+
+    expect(codex.rpc).not.toHaveBeenCalled();
+    expect(runs).toHaveLength(0);
+    const patch = updateSchedule.mock.calls[0][1] as (current: ScheduledTask) => ScheduledTask;
+    expect(patch(schedule).nextRunAt).toBeGreaterThan(schedule.nextRunAt);
   });
 
   it("does not strand the thread in starting when turn/start fails", async () => {
