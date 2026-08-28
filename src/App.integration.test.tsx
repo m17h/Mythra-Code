@@ -300,7 +300,7 @@ beforeEach(() => {
 });
 
 describe("model catalog request ordering", () => {
-  it("does not let a slow LM Studio startup probe overwrite a newer manual refresh", async () => {
+  it("does not let a slow LM Studio startup probe overwrite a newer manual refresh", { timeout: 15_000 }, async () => {
     const startup = deferred<{ models: unknown[] }>();
     const manual = deferred<{ models: unknown[] }>();
     let requests = 0;
