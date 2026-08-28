@@ -3135,80 +3135,58 @@ body[data-pane-resizing] .sidebar, body[data-pane-resizing] .studio-dock { trans
 .app-shell[data-effort-slider="ink"] .reasoning-rail.dragging::before, .app-shell[data-effort-slider="ink"] .openrouter-reasoning-rail.dragging::before,
 .app-shell[data-effort-slider="ink"] .effort-max .reasoning-rail::after, .app-shell[data-effort-slider="ink"] .effort-max .openrouter-reasoning-rail::after { display: none; }
 
-/* -- Plumb: a machinist's plumb line. The track is a hairline wire strung
-   along the top of the rail and the thumb is a brass bob hanging off it on a
-   stem, swinging wider and quicker the harder the model is set to think. -- */
-.app-shell[data-effort-slider="plumb"] {
-  --plumb-1: #93a7bd; --plumb-2: #b0aea5; --plumb-3: #c9b382; --plumb-4: #e0ac4d; --plumb-5: #f7bd2e;
-  --plumb-wire: rgba(255,255,255,.2); --plumb-stem: rgba(255,255,255,.52);
+/* -- Shard: an ice ridge assembled from angular facets. There is no dormant
+   rail: the crystal exists only up to the current effort and terminates in a
+   cut-gem selector, while a cold refraction travels through the facets. -- */
+.app-shell[data-effort-slider="shard"] {
+  --shard-1: #a8f3ff; --shard-2: #69ddff; --shard-3: #38bcff; --shard-4: #438cff; --shard-5: #695cff;
 }
-/* Timing vars live on the rail, the closest element that carries the live
-   --effort-heat, and inherit down into the thumb pseudo-element. */
-.app-shell[data-effort-slider="plumb"] .reasoning-rail, .app-shell[data-effort-slider="plumb"] .openrouter-reasoning-rail {
-  --plumb-swing: calc(3.7s - var(--effort-heat, 0) * 2.4s);
-  --plumb-arc: calc(2deg + var(--effort-heat, 0) * 6deg);
+.app-shell[data-effort-slider="shard"] .reasoning-rail, .app-shell[data-effort-slider="shard"] .openrouter-reasoning-rail {
+  --shard-glint: calc(3.1s - var(--effort-heat, 0) * 2.1s);
 }
-/* --plumb-live is the active level's color for the current color scheme. It
-   is declared on the control, the element the level color is published on. */
-.app-shell[data-effort-slider="plumb"] .model-power-control, .app-shell[data-effort-slider="plumb"] .openrouter-reasoning { --plumb-live: var(--plumb-effort-color, #c9b382); }
-.app-shell[data-color-scheme="light"][data-effort-slider="plumb"] {
-  --plumb-1: #5a708a; --plumb-2: #6d7061; --plumb-3: #866d2d; --plumb-4: #94651a; --plumb-5: #9a5c07;
-  --plumb-wire: rgba(30,34,28,.26); --plumb-stem: rgba(30,34,28,.6);
+.app-shell[data-effort-slider="shard"] .model-power-control, .app-shell[data-effort-slider="shard"] .openrouter-reasoning { --shard-live: var(--shard-effort-color, #38bcff); }
+.app-shell[data-color-scheme="light"][data-effort-slider="shard"] {
+  --shard-1: #21889e; --shard-2: #147da4; --shard-3: #096da8; --shard-4: #275aa9; --shard-5: #493fa8;
 }
-.app-shell[data-color-scheme="light"][data-effort-slider="plumb"] .model-power-control, .app-shell[data-color-scheme="light"][data-effort-slider="plumb"] .openrouter-reasoning { --plumb-live: color-mix(in srgb, var(--plumb-effort-color, #c9b382) 44%, #241a04); }
-/* The wire is pinned to the top of the track box so the bob has room to hang
-   below it; the stretch already travelled is the only lit part of it. */
-.app-shell[data-effort-slider="plumb"] .reasoning-control input[type="range"], .app-shell[data-effort-slider="plumb"] .openrouter-reasoning input[type="range"] {
-  height: 16px; border-radius: 0;
+.app-shell[data-color-scheme="light"][data-effort-slider="shard"] .model-power-control, .app-shell[data-color-scheme="light"][data-effort-slider="shard"] .openrouter-reasoning { --shard-live: color-mix(in srgb, var(--shard-effort-color, #38bcff) 46%, #071d45); }
+.app-shell[data-effort-slider="shard"] .reasoning-control input[type="range"], .app-shell[data-effort-slider="shard"] .openrouter-reasoning input[type="range"] {
+  height: 16px; border-radius: 0; background: none; box-shadow: none;
+}
+.app-shell[data-effort-slider="shard"] .reasoning-rail::before, .app-shell[data-effort-slider="shard"] .openrouter-reasoning-rail::before {
+  content: ""; position: absolute; left: 1px; top: 50%; z-index: 0;
+  width: max(0px, calc(var(--reasoning-fill, var(--router-fill, 0%)) - 1px)); height: 16px;
+  transform: translateY(-50%); border-radius: 0;
+  clip-path: polygon(0 52%, 7% 24%, 14% 45%, 23% 5%, 34% 42%, 44% 17%, 56% 49%, 68% 0, 80% 40%, 91% 16%, 100% 50%, 92% 82%, 82% 58%, 70% 100%, 58% 55%, 46% 86%, 35% 60%, 24% 96%, 14% 58%, 6% 78%);
   background:
-    linear-gradient(var(--plumb-live), var(--plumb-live)) no-repeat left top / var(--reasoning-fill, var(--router-fill, 0%)) 2px,
-    linear-gradient(var(--plumb-wire), var(--plumb-wire)) no-repeat left top / 100% 2px;
-  box-shadow: none;
+    repeating-linear-gradient(118deg, transparent 0 7px, rgba(255,255,255,.38) 7px 8px, transparent 8px 15px),
+    linear-gradient(90deg, color-mix(in srgb, var(--shard-live, #38bcff) 38%, transparent), var(--shard-live, #38bcff));
+  background-size: 31px 100%, 100% 100%; pointer-events: none;
+  animation: shard-refraction var(--shard-glint, 3.1s) linear infinite;
 }
-/* Stem and weight are one polygon cut out of a two-layer fill, hinged at the
-   wire so the whole bob pivots from where it hangs. */
-.app-shell[data-effort-slider="plumb"] .reasoning-control input[type="range"]::-webkit-slider-thumb, .app-shell[data-effort-slider="plumb"] .openrouter-reasoning input[type="range"]::-webkit-slider-thumb {
-  width: 13px; height: 16px; border: 0; border-radius: 0;
-  clip-path: polygon(46% 0, 54% 0, 54% 44%, 96% 60%, 50% 100%, 4% 60%, 46% 44%);
-  background:
-    linear-gradient(var(--plumb-stem), var(--plumb-stem)) no-repeat top center / 100% 44%,
-    linear-gradient(180deg, color-mix(in srgb, var(--plumb-live, #c9b382) 58%, #fff), var(--plumb-live, #c9b382));
-  box-shadow: none; transform: none; transform-origin: 50% 0; transition: none;
-  animation: plumb-sway var(--plumb-swing, 3.7s) ease-in-out infinite;
+@keyframes shard-refraction { to { background-position: 31px center, 0 center; } }
+.app-shell[data-effort-slider="shard"] .reasoning-control input[type="range"]::-webkit-slider-thumb, .app-shell[data-effort-slider="shard"] .openrouter-reasoning input[type="range"]::-webkit-slider-thumb {
+  width: 17px; height: 18px; border: 0; border-radius: 0;
+  clip-path: polygon(50% 0, 100% 32%, 82% 100%, 18% 100%, 0 32%);
+  background: linear-gradient(135deg, #e8fdff 0 22%, var(--shard-live, #38bcff) 23% 62%, color-mix(in srgb, var(--shard-live, #38bcff) 62%, #271b7a) 63%);
+  box-shadow: none; transform: none; transition: transform 180ms var(--ease), filter 180ms ease;
 }
-@keyframes plumb-sway {
-  0%, 100% { transform: rotate(calc(var(--plumb-arc, 3deg) * -1)); }
-  50% { transform: rotate(var(--plumb-arc, 3deg)); }
-}
-/* Taking hold of the bob steadies it. */
-.app-shell[data-effort-slider="plumb"] .dragging input[type="range"]::-webkit-slider-thumb { animation: none; transform: rotate(0deg) scale(1.08); box-shadow: none; }
-/* clip-path crops any box-shadow ring away, so focus is drawn on the track
-   box and echoed as a halo that follows the bob's own silhouette. */
-.app-shell[data-effort-slider="plumb"] .reasoning-control input[type="range"]:focus-visible, .app-shell[data-effort-slider="plumb"] .openrouter-reasoning input[type="range"]:focus-visible {
-  outline: 2px solid var(--plumb-live, #c9b382); outline-offset: 3px;
-}
-.app-shell[data-effort-slider="plumb"] .reasoning-control input[type="range"]:focus-visible::-webkit-slider-thumb, .app-shell[data-effort-slider="plumb"] .openrouter-reasoning input[type="range"]:focus-visible::-webkit-slider-thumb {
-  box-shadow: none; filter: drop-shadow(0 0 2px var(--plumb-live, #c9b382)) drop-shadow(0 0 5px var(--plumb-live, #c9b382));
-}
-/* Ticks are notches nicked into the wire, not beads threaded onto it. */
-.app-shell[data-effort-slider="plumb"] .reasoning-ticks, .app-shell[data-effort-slider="plumb"] .openrouter-reasoning-ticks { align-items: flex-start; }
-.app-shell[data-effort-slider="plumb"] .reasoning-ticks i, .app-shell[data-effort-slider="plumb"] .openrouter-reasoning-ticks i {
-  width: 1px; height: 7px; margin-top: -1px; border: 0; border-radius: 0; background: var(--plumb-wire);
-}
-.app-shell[data-effort-slider="plumb"] .reasoning-ticks i.reached, .app-shell[data-effort-slider="plumb"] .openrouter-reasoning-ticks i.reached { border-color: currentColor; background: currentColor; box-shadow: none; animation: none; }
-.app-shell[data-effort-slider="plumb"] .reasoning-ticks i:nth-child(1), .app-shell[data-effort-slider="plumb"] .openrouter-reasoning-ticks i:nth-child(1) { color: var(--plumb-1); }
-.app-shell[data-effort-slider="plumb"] .reasoning-ticks i:nth-child(2), .app-shell[data-effort-slider="plumb"] .openrouter-reasoning-ticks i:nth-child(2) { color: var(--plumb-2); }
-.app-shell[data-effort-slider="plumb"] .reasoning-ticks i:nth-child(3), .app-shell[data-effort-slider="plumb"] .openrouter-reasoning-ticks i:nth-child(3) { color: var(--plumb-3); }
-.app-shell[data-effort-slider="plumb"] .reasoning-ticks i:nth-child(4), .app-shell[data-effort-slider="plumb"] .openrouter-reasoning-ticks i:nth-child(4) { color: var(--plumb-4); }
-.app-shell[data-effort-slider="plumb"] .reasoning-ticks i:nth-child(5), .app-shell[data-effort-slider="plumb"] .openrouter-reasoning-ticks i:nth-child(5) { color: var(--plumb-5); }
-.app-shell[data-effort-slider="plumb"] .reasoning-heading strong, .app-shell[data-effort-slider="plumb"] .openrouter-reasoning-heading strong { color: var(--plumb-live, #c9b382); letter-spacing: .05em; text-shadow: none; }
-.app-shell[data-effort-slider="plumb"] .reasoning-heading > svg:first-child, .app-shell[data-effort-slider="plumb"] .openrouter-reasoning-heading > svg:first-child { color: var(--plumb-live, #c9b382); }
-.app-shell[data-effort-slider="plumb"] .reasoning-labels span.active, .app-shell[data-effort-slider="plumb"] .openrouter-reasoning-labels span.active { color: var(--plumb-live, #c9b382); text-shadow: none; }
-/* Filings knocked off the bob: small, matte, no glow. */
-.app-shell[data-effort-slider="plumb"] .effort-sparks i { width: 3px; height: 3px; background: var(--plumb-live, #c9b382); box-shadow: none; }
-.app-shell[data-effort-slider="plumb"] .effort-max .reasoning-heading strong, .app-shell[data-effort-slider="plumb"] .effort-max .openrouter-reasoning-heading strong { animation: effort-pop 280ms var(--ease); text-shadow: none; }
-.app-shell[data-effort-slider="plumb"] .reasoning-rail.dragging::before, .app-shell[data-effort-slider="plumb"] .openrouter-reasoning-rail.dragging::before,
-.app-shell[data-effort-slider="plumb"] .effort-max .reasoning-rail::after, .app-shell[data-effort-slider="plumb"] .effort-max .openrouter-reasoning-rail::after { display: none; }
+.app-shell[data-effort-slider="shard"] .dragging input[type="range"]::-webkit-slider-thumb { transform: scale(1.1) rotate(3deg); filter: brightness(1.12); box-shadow: none; }
+.app-shell[data-effort-slider="shard"] .reasoning-control input[type="range"]:focus-visible, .app-shell[data-effort-slider="shard"] .openrouter-reasoning input[type="range"]:focus-visible { outline: 2px solid var(--shard-live, #38bcff); outline-offset: 3px; }
+.app-shell[data-effort-slider="shard"] .reasoning-control input[type="range"]:focus-visible::-webkit-slider-thumb, .app-shell[data-effort-slider="shard"] .openrouter-reasoning input[type="range"]:focus-visible::-webkit-slider-thumb { filter: drop-shadow(0 0 2px var(--shard-live, #38bcff)) drop-shadow(0 0 6px var(--shard-live, #38bcff)); }
+.app-shell[data-effort-slider="shard"] .reasoning-ticks i, .app-shell[data-effort-slider="shard"] .openrouter-reasoning-ticks i { width: 7px; height: 7px; border: 0; border-radius: 0; background: transparent; clip-path: polygon(50% 0, 100% 100%, 0 100%); }
+.app-shell[data-effort-slider="shard"] .reasoning-ticks i.reached, .app-shell[data-effort-slider="shard"] .openrouter-reasoning-ticks i.reached { background: currentColor; box-shadow: none; animation: none; }
+.app-shell[data-effort-slider="shard"] .reasoning-ticks i:nth-child(1), .app-shell[data-effort-slider="shard"] .openrouter-reasoning-ticks i:nth-child(1) { color: var(--shard-1); }
+.app-shell[data-effort-slider="shard"] .reasoning-ticks i:nth-child(2), .app-shell[data-effort-slider="shard"] .openrouter-reasoning-ticks i:nth-child(2) { color: var(--shard-2); }
+.app-shell[data-effort-slider="shard"] .reasoning-ticks i:nth-child(3), .app-shell[data-effort-slider="shard"] .openrouter-reasoning-ticks i:nth-child(3) { color: var(--shard-3); }
+.app-shell[data-effort-slider="shard"] .reasoning-ticks i:nth-child(4), .app-shell[data-effort-slider="shard"] .openrouter-reasoning-ticks i:nth-child(4) { color: var(--shard-4); }
+.app-shell[data-effort-slider="shard"] .reasoning-ticks i:nth-child(5), .app-shell[data-effort-slider="shard"] .openrouter-reasoning-ticks i:nth-child(5) { color: var(--shard-5); }
+.app-shell[data-effort-slider="shard"] .reasoning-heading strong, .app-shell[data-effort-slider="shard"] .openrouter-reasoning-heading strong,
+.app-shell[data-effort-slider="shard"] .reasoning-heading > svg:first-child, .app-shell[data-effort-slider="shard"] .openrouter-reasoning-heading > svg:first-child,
+.app-shell[data-effort-slider="shard"] .reasoning-labels span.active, .app-shell[data-effort-slider="shard"] .openrouter-reasoning-labels span.active { color: var(--shard-live, #38bcff); text-shadow: none; }
+.app-shell[data-effort-slider="shard"] .effort-sparks i { width: 5px; height: 5px; border-radius: 0; background: var(--shard-live, #38bcff); box-shadow: none; clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%); }
+.app-shell[data-effort-slider="shard"] .effort-max .reasoning-heading strong, .app-shell[data-effort-slider="shard"] .effort-max .openrouter-reasoning-heading strong { animation: effort-pop 280ms var(--ease); }
+.app-shell[data-effort-slider="shard"] .effort-max .reasoning-rail::after, .app-shell[data-effort-slider="shard"] .effort-max .openrouter-reasoning-rail::after { display: none; }
+.app-shell[data-effort-slider="shard"] .effort-max .reasoning-control input[type="range"]::-webkit-slider-thumb, .app-shell[data-effort-slider="shard"] .effort-max.openrouter-reasoning input[type="range"]::-webkit-slider-thumb, .app-shell[data-effort-slider="shard"] .effort-max .openrouter-reasoning-rail input[type="range"]::-webkit-slider-thumb { animation: none; }
 
 /* -- Dart: no rail at all. A hairline flight line, an arrowhead for a thumb,
    and behind it a wake that starts at nothing and widens to full height under
@@ -3312,12 +3290,11 @@ body[data-pane-resizing] .sidebar, body[data-pane-resizing] .studio-dock { trans
   height: 16px; border-radius: 0; background: none; box-shadow: none;
 }
 .app-shell[data-effort-slider="coil"] .reasoning-rail::before, .app-shell[data-effort-slider="coil"] .openrouter-reasoning-rail::before {
-  content: ""; position: absolute; inset: -1px 1px; left: 1px; top: -1px; z-index: 0;
-  width: auto; height: auto; transform: none; border-radius: 0;
-  background:
-    linear-gradient(90deg, var(--coil-1), var(--coil-3) 55%, var(--coil-live, #ab48e0)) no-repeat left center / var(--reasoning-fill, var(--router-fill, 0%)) 100%,
-    linear-gradient(var(--coil-slack), var(--coil-slack));
-  background-size: var(--reasoning-fill, var(--router-fill, 0%)) 100%, 100% 100%;
+  content: ""; position: absolute; left: 1px; top: -1px; bottom: -1px; right: auto; z-index: 0;
+  width: max(0px, calc(var(--reasoning-fill, var(--router-fill, 0%)) - 1px)); height: auto; transform: none; border-radius: 0;
+  background: linear-gradient(90deg, var(--coil-1), var(--coil-3) 55%, var(--coil-live, #ab48e0));
+  background-repeat: no-repeat;
+  background-size: 100% 100%;
   -webkit-mask-image: var(--coil-turn); mask-image: var(--coil-turn);
   -webkit-mask-size: var(--coil-gauge, 17px) 100%; mask-size: var(--coil-gauge, 17px) 100%;
   -webkit-mask-repeat: repeat-x; mask-repeat: repeat-x;
@@ -3369,16 +3346,14 @@ body[data-pane-resizing] .sidebar, body[data-pane-resizing] .studio-dock { trans
 
 @media (prefers-reduced-motion: reduce) {
   .app-shell[data-effort-slider="aurora"] .reasoning-control input[type="range"], .app-shell[data-effort-slider="aurora"] .openrouter-reasoning input[type="range"] { animation: none; }
-  /* Each new style keeps its shape, its geometry and its colors and simply
-     holds still: the bob hangs plumb, the slipstream freezes, the cord stops
-     turning — the winding itself still tightens with effort. */
-  .app-shell[data-effort-slider="plumb"] .reasoning-control input[type="range"]::-webkit-slider-thumb, .app-shell[data-effort-slider="plumb"] .openrouter-reasoning input[type="range"]::-webkit-slider-thumb,
+  /* Each new style keeps its shape, geometry and colors while the refraction,
+     slipstream and cord stop moving. */
+  .app-shell[data-effort-slider="shard"] .reasoning-rail::before, .app-shell[data-effort-slider="shard"] .openrouter-reasoning-rail::before,
   .app-shell[data-effort-slider="dart"] .reasoning-rail::before, .app-shell[data-effort-slider="dart"] .openrouter-reasoning-rail::before,
   .app-shell[data-effort-slider="coil"] .reasoning-rail::before, .app-shell[data-effort-slider="coil"] .openrouter-reasoning-rail::before,
-  .app-shell[data-effort-slider="plumb"] .effort-max .reasoning-heading strong, .app-shell[data-effort-slider="plumb"] .effort-max .openrouter-reasoning-heading strong,
+  .app-shell[data-effort-slider="shard"] .effort-max .reasoning-heading strong, .app-shell[data-effort-slider="shard"] .effort-max .openrouter-reasoning-heading strong,
   .app-shell[data-effort-slider="dart"] .effort-max .reasoning-heading strong, .app-shell[data-effort-slider="dart"] .effort-max .openrouter-reasoning-heading strong,
   .app-shell[data-effort-slider="coil"] .effort-max .reasoning-heading strong, .app-shell[data-effort-slider="coil"] .effort-max .openrouter-reasoning-heading strong { animation: none; }
-  .app-shell[data-effort-slider="plumb"] .reasoning-control input[type="range"]::-webkit-slider-thumb, .app-shell[data-effort-slider="plumb"] .openrouter-reasoning input[type="range"]::-webkit-slider-thumb { transform: rotate(0deg); }
 }
 
 /* -- Settings: effort-slider style picker -- */
@@ -3410,12 +3385,16 @@ body[data-pane-resizing] .sidebar, body[data-pane-resizing] .studio-dock { trans
 .slider-style-preview.aurora .slider-style-thumb { left: 72%; background: #fff; box-shadow: 0 0 9px rgba(185, 140, 255, .9); }
 .slider-style-preview.ink .slider-style-rail { height: 2px; border-radius: 0; background: linear-gradient(90deg, var(--text) 0 64%, var(--panel-3) 64%); }
 .slider-style-preview.ink .slider-style-thumb { left: 64%; background: var(--panel); border-color: var(--text); }
-/* Plumb: the wire runs along the top and the brass bob hangs off it. */
-.slider-style-preview.plumb .slider-style-rail { top: 6px; height: 2px; border-radius: 0; background: linear-gradient(90deg, #e0ac4d 0 62%, var(--panel-3) 62%); }
-.slider-style-preview.plumb .slider-style-thumb {
-  left: 62%; top: 6px; width: 11px; height: 15px; border: 0; border-radius: 0; transform: translate(-50%, 0);
-  clip-path: polygon(46% 0, 54% 0, 54% 44%, 96% 60%, 50% 100%, 4% 60%, 46% 44%);
-  background: linear-gradient(180deg, #f6dda6, #e0ac4d);
+/* Shard: a jagged ice ridge capped by a cut-glass selector. */
+.slider-style-preview.shard .slider-style-rail {
+  right: auto; width: 32px; height: 15px; border-radius: 0;
+  clip-path: polygon(0 52%, 10% 20%, 20% 48%, 32% 4%, 45% 42%, 58% 12%, 72% 48%, 86% 0, 100% 50%, 88% 85%, 74% 58%, 60% 100%, 46% 56%, 32% 90%, 18% 58%, 7% 82%);
+  background: repeating-linear-gradient(118deg, transparent 0 6px, rgba(255,255,255,.42) 6px 7px, transparent 7px 13px), linear-gradient(90deg, #a8f3ff, #38bcff 58%, #438cff);
+}
+.slider-style-preview.shard .slider-style-thumb {
+  left: 68%; width: 13px; height: 16px; border: 0; border-radius: 0;
+  clip-path: polygon(50% 0, 100% 32%, 82% 100%, 18% 100%, 0 32%);
+  background: linear-gradient(135deg, #e8fdff 0 22%, #38bcff 23% 62%, #3b3ca5 63%);
 }
 /* Dart: a flight line with the wake widening into the arrowhead. */
 .slider-style-preview.dart .slider-style-rail { height: 1px; border-radius: 0; background: var(--panel-3); }
@@ -3432,7 +3411,7 @@ body[data-pane-resizing] .sidebar, body[data-pane-resizing] .studio-dock { trans
 /* Coil: the cord itself, wound tight, with its hex collar. */
 .slider-style-preview.coil .slider-style-rail {
   height: 16px; border-radius: 0;
-  background: linear-gradient(90deg, #6a4fe0, #ab48e0 60%, #f43fae) no-repeat left center / 64% 100%, var(--panel-3);
+  background: linear-gradient(90deg, #6a4fe0, #ab48e0 60%, #f43fae) no-repeat left center / 64% 100%;
   -webkit-mask-image: var(--coil-turn); mask-image: var(--coil-turn);
   -webkit-mask-size: 11px 100%; mask-size: 11px 100%;
   -webkit-mask-repeat: repeat-x; mask-repeat: repeat-x;

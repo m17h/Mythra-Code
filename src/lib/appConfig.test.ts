@@ -34,13 +34,13 @@ describe("effort slider catalog", () => {
 
   it("registers every style exactly once, with a name and a description", () => {
     const ids = EFFORT_SLIDER_STYLES.map((style) => style.id);
-    expect(ids).toEqual(["aurora", "spectrum", "classic", "neon", "pixel", "ink", "plumb", "dart", "coil"]);
+    expect(ids).toEqual(["aurora", "spectrum", "classic", "neon", "pixel", "ink", "shard", "dart", "coil"]);
     expect(new Set(ids).size).toBe(ids.length);
     expect(EFFORT_SLIDER_STYLES.every((style) => style.name.length > 0 && style.description.length > 0)).toBe(true);
   });
 
   it("persists the newest styles and still falls back for unknown ones", () => {
-    expect(survivesSanitizer("plumb")).toBe("plumb");
+    expect(survivesSanitizer("shard")).toBe("shard");
     expect(survivesSanitizer("dart")).toBe("dart");
     expect(survivesSanitizer("coil")).toBe("coil");
     expect(survivesSanitizer("tidal")).toBe(DEFAULT_SETTINGS.effortSlider);

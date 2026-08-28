@@ -53,7 +53,7 @@ describe("model control browser layout", () => {
   // .reasoning-* markup and the .openrouter-* one every other provider shares.
   const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
   const NEW_STYLE_PALETTES = {
-    plumb: ["rgb(147, 167, 189)", "rgb(176, 174, 165)", "rgb(201, 179, 130)", "rgb(224, 172, 77)", "rgb(247, 189, 46)"],
+    shard: ["rgb(168, 243, 255)", "rgb(105, 221, 255)", "rgb(56, 188, 255)", "rgb(67, 140, 255)", "rgb(105, 92, 255)"],
     dart: ["rgb(14, 155, 115)", "rgb(28, 180, 107)", "rgb(67, 203, 92)", "rgb(126, 224, 74)", "rgb(194, 242, 60)"],
     coil: ["rgb(106, 79, 224)", "rgb(138, 76, 230)", "rgb(171, 72, 224)", "rgb(209, 68, 207)", "rgb(244, 63, 174)"],
   } as const;
@@ -106,14 +106,14 @@ describe("model control browser layout", () => {
     expect(getComputedStyle(track!).backgroundSize).toContain("1px");
   });
 
-  it("hangs the plumb wire along the top of the track with notched ticks", () => {
-    const view = renderStyle("plumb", "high");
+  it("cuts the shard fill and selector into crystalline silhouettes", () => {
+    const view = renderStyle("shard", "high");
 
-    const track = view.container.querySelector<HTMLElement>(".reasoning-control input[type='range']");
+    const rail = view.container.querySelector<HTMLElement>(".reasoning-rail");
     const tick = view.container.querySelector<HTMLElement>(".reasoning-ticks i");
-    expect(getComputedStyle(track!).height).toBe("16px");
-    expect(getComputedStyle(track!).backgroundSize).toContain("2px");
-    expect(getComputedStyle(tick!).width).toBe("1px");
+    expect(getComputedStyle(rail!, "::before").clipPath).toContain("polygon");
+    expect(getComputedStyle(rail!, "::before").animationName).toBe("shard-refraction");
+    expect(getComputedStyle(tick!).clipPath).toContain("polygon");
     expect(getComputedStyle(tick!).borderRadius).toBe("0px");
   });
 
@@ -134,12 +134,20 @@ describe("model control browser layout", () => {
     expect(taut).toBeLessThan(slack);
   });
 
-  // The bob swings, the slipstream runs and the cord turns faster the harder
+  it("ends the coil cord at the selected effort instead of drawing a gray remainder", () => {
+    const view = renderStyle("coil", "high");
+    const rail = view.container.querySelector<HTMLElement>(".reasoning-rail");
+    const cord = getComputedStyle(rail!, "::before");
+    expect(parseFloat(cord.width)).toBeLessThan(rail!.getBoundingClientRect().width);
+    expect(cord.backgroundRepeat).toBe("no-repeat");
+  });
+
+  // Refraction travels, the slipstream runs and the cord turns faster the harder
   // the model works — again, straight off the rail's live --effort-heat.
   it.each([
     ["dart", "--dart-rush"],
     ["coil", "--coil-spin"],
-    ["plumb", "--plumb-swing"],
+    ["shard", "--shard-glint"],
   ] as const)("shortens the %s motion as effort rises", (sliderStyle, timingVariable) => {
     const secondsAt = (effort: "low" | "max") => {
       const view = renderStyle(sliderStyle, effort);

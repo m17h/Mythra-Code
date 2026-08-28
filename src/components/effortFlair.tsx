@@ -9,8 +9,8 @@ import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent as 
 export const EFFORT_COLORS = ["#4db6ff", "#43d97c", "#ffc531", "#ff8a2b", "#ff4655"];
 const PIXEL_EFFORT_COLORS = ["#33d17a", "#33d17a", "#f6d32d", "#f6d32d", "#f66151"];
 const AURORA_EFFORT_COLORS = ["#6ee7d8", "#7aa5ff", "#9d8cff", "#b98cff", "#ff8cd1"];
-/** Plumb: cold zinc wire warming into a heavy brass bob. */
-const PLUMB_EFFORT_COLORS = ["#93a7bd", "#b0aea5", "#c9b382", "#e0ac4d", "#f7bd2e"];
+/** Shard: clear glacial cyan compressing into electric indigo. */
+const SHARD_EFFORT_COLORS = ["#a8f3ff", "#69ddff", "#38bcff", "#438cff", "#695cff"];
 /** Dart: deep racing emerald accelerating to acid lime. */
 const DART_EFFORT_COLORS = ["#0e9b73", "#1cb46b", "#43cb5c", "#7ee04a", "#c2f23c"];
 /** Coil: a cord under load, indigo winding up into magenta. */
@@ -32,7 +32,7 @@ export function effortFlairStyle(index: number, count: number): CSSProperties {
     "--effort-color": paletteColorAt(EFFORT_COLORS, heat),
     "--pixel-effort-color": paletteColorAt(PIXEL_EFFORT_COLORS, heat),
     "--aurora-effort-color": paletteColorAt(AURORA_EFFORT_COLORS, heat),
-    "--plumb-effort-color": paletteColorAt(PLUMB_EFFORT_COLORS, heat),
+    "--shard-effort-color": paletteColorAt(SHARD_EFFORT_COLORS, heat),
     "--dart-effort-color": paletteColorAt(DART_EFFORT_COLORS, heat),
     "--coil-effort-color": paletteColorAt(COIL_EFFORT_COLORS, heat),
   } as CSSProperties;
