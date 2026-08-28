@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Bot, Check, Clock3, NotebookPen, Play, Plus, Save, Trash2, Workflow, Wrench } from "lucide-react";
+import { Bot, Check, ChevronDown, Clock3, NotebookPen, Play, Plus, Save, Trash2, Workflow, Wrench } from "lucide-react";
 import type { AppSettings, CustomAgentProfile, Project, ProjectAction, PromptProfile, ScheduledTask, ScheduleRunRecord } from "../types";
 import { rpc } from "../lib/codex";
 import { confirmDialog } from "../lib/confirmDialog";
@@ -89,11 +89,17 @@ export function HarnessSettings({ section, settings, profiles, agents, actions, 
     </section>}
 
     {section === "agents" &&
-    <section className="settings-section">
-      <div className="settings-section-heading"><div className="settings-icon"><Bot size={17} /></div><div><h3>Custom agents</h3><p>Expose named specialist configurations when sub-agents are enabled.</p></div></div>
-      <div className="manager-list">{agents.map((agent) => <div key={agent.id}><button className={`mini-toggle ${agent.enabled ? "on" : ""}`} aria-label={`${agent.enabled ? "Disable" : "Enable"} ${agent.name}`} aria-pressed={agent.enabled} onClick={() => onAgents(agents.map((item) => item.id === agent.id ? { ...item, enabled: !item.enabled } : item))}><span /></button><span><strong>{agent.name}</strong><small>{agent.instructions}</small></span><button className="manager-delete" aria-label={`Delete ${agent.name}`} onClick={async () => { if (await confirmDialog(`Delete the custom agent “${agent.name}” and its instructions? This cannot be undone.`)) onAgents(agents.filter((item) => item.id !== agent.id)); }}><Trash2 size={12} /></button></div>)}</div>
-      <div className="stacked-create"><input value={agentName} onChange={(event) => setAgentName(event.target.value)} placeholder="Agent name (for example: reviewer)" /><textarea value={agentInstructions} onChange={(event) => setAgentInstructions(event.target.value)} placeholder="Specialist instructions" rows={3} /><button onClick={() => { if (!agentName.trim() || !agentInstructions.trim()) return; onAgents([...agents, { id: crypto.randomUUID(), name: agentName.trim(), description: agentInstructions.trim().slice(0, 90), instructions: agentInstructions.trim(), enabled: true }]); setAgentName(""); setAgentInstructions(""); }} disabled={!agentName.trim() || !agentInstructions.trim()}><Plus size={12} /> Add custom agent</button></div>
-    </section>}
+    <details className="settings-section custom-agent-settings">
+      <summary className="custom-agent-summary">
+        <span className="settings-icon"><Bot size={17} /></span>
+        <span><strong>Custom agent profiles</strong><small>Optional specialist instructions that can be exposed alongside your sub-agent presets.</small></span>
+        <ChevronDown size={15} aria-hidden="true" />
+      </summary>
+      <div className="custom-agent-content">
+        <div className="manager-list">{agents.map((agent) => <div key={agent.id}><button className={`mini-toggle ${agent.enabled ? "on" : ""}`} aria-label={`${agent.enabled ? "Disable" : "Enable"} ${agent.name}`} aria-pressed={agent.enabled} onClick={() => onAgents(agents.map((item) => item.id === agent.id ? { ...item, enabled: !item.enabled } : item))}><span /></button><span><strong>{agent.name}</strong><small>{agent.instructions}</small></span><button className="manager-delete" aria-label={`Delete ${agent.name}`} onClick={async () => { if (await confirmDialog(`Delete the custom agent “${agent.name}” and its instructions? This cannot be undone.`)) onAgents(agents.filter((item) => item.id !== agent.id)); }}><Trash2 size={12} /></button></div>)}</div>
+        <div className="stacked-create"><input value={agentName} onChange={(event) => setAgentName(event.target.value)} placeholder="Agent name (for example: reviewer)" /><textarea value={agentInstructions} onChange={(event) => setAgentInstructions(event.target.value)} placeholder="Specialist instructions" rows={3} /><button onClick={() => { if (!agentName.trim() || !agentInstructions.trim()) return; onAgents([...agents, { id: crypto.randomUUID(), name: agentName.trim(), description: agentInstructions.trim().slice(0, 90), instructions: agentInstructions.trim(), enabled: true }]); setAgentName(""); setAgentInstructions(""); }} disabled={!agentName.trim() || !agentInstructions.trim()}><Plus size={12} /> Add custom agent</button></div>
+      </div>
+    </details>}
 
     {section === "workflows" && <>
     <WorkflowManager

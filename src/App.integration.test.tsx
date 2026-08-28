@@ -380,7 +380,7 @@ describe("workspace switching during thread selection", () => {
 
     await renderApp();
     expect(screen.queryByText("Native child")).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: /Sub-agents/ }));
+    await user.click(screen.getByRole("button", { name: /^Sub-agents \d+$/ }));
     await user.click(await screen.findByText("Native child"));
 
     await waitFor(() => {
@@ -443,7 +443,7 @@ describe("workspace switching during thread selection", () => {
     expect(await screen.findByText("Alpha thread")).toBeInTheDocument();
     expect(screen.queryByText("Native child")).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /Sub-agents/ }));
+    await user.click(screen.getByRole("button", { name: /^Sub-agents \d+$/ }));
     expect(await screen.findByText("Native child")).toBeInTheDocument();
     expect(screen.queryByText("Alpha thread")).not.toBeInTheDocument();
 
@@ -1166,7 +1166,7 @@ describe("workspace switching during thread selection", () => {
 
 describe("composer sub-agent command center", () => {
   async function openCrew(user: ReturnType<typeof userEvent.setup>) {
-    await user.click(await screen.findByRole("button", { name: /Agents/ }));
+    await user.click(await screen.findByRole("button", { name: /^Sub-agents(?: off|:| \d+\/)/ }));
     return screen.getByRole("dialog", { name: "Sub-agent command center" });
   }
 
@@ -1218,7 +1218,7 @@ describe("composer sub-agent command center", () => {
     expect(screen.getByText("Editing Chats & project defaults")).toBeInTheDocument();
     await user.click(screen.getByRole("switch", { name: "Allow sub-agent spawning" }));
     await user.click(screen.getByRole("button", { name: "More concurrent sub-agents" }));
-    await user.click(screen.getByRole("button", { name: "Add Claude destination" }));
+    await user.click(screen.getByRole("button", { name: "Add Claude sub-agent" }));
 
     await waitFor(() => {
       const stored = JSON.parse(localStorage.getItem("kiwi.settings") ?? "{}");
@@ -1240,7 +1240,7 @@ describe("composer sub-agent command center", () => {
     pendingResume.resolve({ thread: { ...THREAD_A, turns: [] } });
     await user.click(await screen.findByText("Alpha thread"));
 
-    const control = await screen.findByRole("button", { name: /Agents/ });
+    const control = await screen.findByRole("button", { name: /^Sub-agents(?: off|:| \d+\/)/ });
     expect(control).toBeEnabled();
     await openCrew(user);
 
@@ -1248,7 +1248,7 @@ describe("composer sub-agent command center", () => {
     // cross-provider roster available.
     expect(screen.queryByText(/froze its destinations/)).not.toBeInTheDocument();
     await user.click(screen.getByRole("switch", { name: "Allow sub-agent spawning" }));
-    await user.click(screen.getByRole("button", { name: "Add Claude destination" }));
+    await user.click(screen.getByRole("button", { name: "Add Claude sub-agent" }));
 
     // This thread lives in a project, so the edit lands on that project's own
     // sub-agent policy — the one its next turn will read.
@@ -1289,11 +1289,11 @@ describe("composer sub-agent command center", () => {
     const crew = await openCrew(user);
 
     expect(screen.getByText("Editing this thread")).toBeInTheDocument();
-    expect(screen.getByText(/Destination and limit changes stay in this thread/)).toBeInTheDocument();
+    expect(screen.getByText(/Sub-agent and limit changes stay in this thread/)).toBeInTheDocument();
     expect(within(crew).getByText("Frozen reviewer")).toBeInTheDocument();
     // The destination configured since is not one this thread may reach.
     expect(within(crew).queryByText("Cursor")).not.toBeInTheDocument();
-    await user.click(within(crew).getByRole("button", { name: "Add OpenAI destination" }));
+    await user.click(within(crew).getByRole("button", { name: "Add OpenAI sub-agent" }));
 
     await waitFor(() => {
       const policies = JSON.parse(localStorage.getItem("kiwi.childAgentPolicies") ?? "{}");

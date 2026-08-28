@@ -10,7 +10,7 @@ import { getCodexRuntimeStatus, auditEvent, exportTextFile, getNormalChatWorkspa
 import { deleteClaudeTranscript, getClaudeRateLimits, getClaudeRuntimeStatus, listClaudeModels, loadClaudeTranscript, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, type ClaudeModel, type ClaudeRuntimeStatus } from "./lib/claude";
 import { deleteCursorTranscript, getCursorRuntimeStatus, listCursorModels, loadCursorTranscript, respondToCursorPermission, saveCursorTranscript, startCursorLogin, type CursorModel, type CursorRuntimeStatus } from "./lib/cursor";
 import { loadStored, storeValue } from "./lib/storage";
-import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_PROMPT_PROFILES, DEFAULT_SETTINGS, EFFORT_SLIDER_STYLES, sanitizeTheme, themeColorScheme } from "./lib/appConfig";
+import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_PROMPT_PROFILES, DEFAULT_SETTINGS, EFFORT_SLIDER_STYLES, sanitizeAutoArchiveSubagentThreads, sanitizeTheme, themeColorScheme } from "./lib/appConfig";
 import { commandSandbox, threadResumeParams, threadRuntimeConfig } from "./lib/turnConfig";
 import { threadSearchParams, threadsForWorkspace, type ThreadSearchResponse } from "./lib/threadSearch";
 import { countActiveThreadsByWorkspace, filterThreadsByKind, filterThreadsForWorkspace, forgetSidebarThread, isSubAgentThread, partitionBulkArchiveThreads, pruneSidebarIndex, reconcileWorkspaceThreads, rememberSidebarThread, repairRootThreadMetadata, sidebarThread, threadBelongsToWorkspace, upsertThread, type ThreadSidebarIndex } from "./lib/threadList";
@@ -113,6 +113,7 @@ import {
   providerDisplayName,
   projectSubagentSettingsFromApp,
   readyChildAgentTargets,
+  sanitizeChildAgentPresets,
   sanitizeChildAgentLinks,
   sanitizeChildAgentPolicies,
   sanitizeChildAgentSettings,
@@ -190,7 +191,7 @@ const establishedInstall = isEstablishedMythraCodeInstall({ projects: initialPro
 const initialOnboardingOpen = initialOnboardingVersion < ONBOARDING_VERSION && !establishedInstall;
 const storedSettings = loadStored<Partial<AppSettings>>("kiwi.settings", {});
 const initialChildAgents = sanitizeChildAgentSettings(storedSettings.childAgents);
-const initialSettings: AppSettings = { ...DEFAULT_SETTINGS, ...storedSettings, openAiLogo: storedSettings.openAiLogo === "codex" ? "codex" : "openai", claudeLogo: storedSettings.claudeLogo === "anthropic" ? "anthropic" : "claude", cursorLogo: storedSettings.cursorLogo === "app-dark" ? "app-dark" : "cube", subagentMax: crewSafeConcurrency(Number(storedSettings.subagentMax) || DEFAULT_SETTINGS.subagentMax, initialChildAgents), autoArchiveSubagentThreads: storedSettings.autoArchiveSubagentThreads === true, childAgents: initialChildAgents, model: modelForProvider(storedSettings.provider ?? DEFAULT_SETTINGS.provider, storedSettings.model ?? DEFAULT_SETTINGS.model), reasoningEffort: sanitizeComposerReasoningEffort(storedSettings.reasoningEffort), ultra: false, lmStudioBaseUrl: storedSettings.lmStudioBaseUrl?.trim() || DEFAULT_LM_STUDIO_BASE_URL, theme: sanitizeTheme(storedSettings.theme), effortSlider: EFFORT_SLIDER_STYLES.some((style) => style.id === storedSettings.effortSlider) ? storedSettings.effortSlider! : DEFAULT_SETTINGS.effortSlider, uiScale: Math.min(150, Math.max(80, Number(storedSettings.uiScale) || DEFAULT_SETTINGS.uiScale)), usageDisplay: sanitizeUsageDisplay(storedSettings.usageDisplay) };
+const initialSettings: AppSettings = { ...DEFAULT_SETTINGS, ...storedSettings, openAiLogo: storedSettings.openAiLogo === "codex" ? "codex" : "openai", claudeLogo: storedSettings.claudeLogo === "anthropic" ? "anthropic" : "claude", cursorLogo: storedSettings.cursorLogo === "app-dark" ? "app-dark" : "cube", subagentMax: crewSafeConcurrency(Number(storedSettings.subagentMax) || DEFAULT_SETTINGS.subagentMax, initialChildAgents), autoArchiveSubagentThreads: sanitizeAutoArchiveSubagentThreads(storedSettings.autoArchiveSubagentThreads), childAgents: initialChildAgents, childAgentPresets: sanitizeChildAgentPresets(storedSettings.childAgentPresets), model: modelForProvider(storedSettings.provider ?? DEFAULT_SETTINGS.provider, storedSettings.model ?? DEFAULT_SETTINGS.model), reasoningEffort: sanitizeComposerReasoningEffort(storedSettings.reasoningEffort), ultra: false, lmStudioBaseUrl: storedSettings.lmStudioBaseUrl?.trim() || DEFAULT_LM_STUDIO_BASE_URL, theme: sanitizeTheme(storedSettings.theme), effortSlider: EFFORT_SLIDER_STYLES.some((style) => style.id === storedSettings.effortSlider) ? storedSettings.effortSlider! : DEFAULT_SETTINGS.effortSlider, uiScale: Math.min(150, Math.max(80, Number(storedSettings.uiScale) || DEFAULT_SETTINGS.uiScale)), usageDisplay: sanitizeUsageDisplay(storedSettings.usageDisplay) };
 
 /**
  * Claude/Cursor transcripts flow memory → disk on a debounced save, so the
@@ -1147,7 +1148,7 @@ export default function App() {
     const latestStatus = useTaskStore.getState().statuses[activeThreadId] ?? "idle";
     const parentActive = latestStatus === "starting" || latestStatus === "running" || queuedTurns.length > 0;
     if (parentActive || childrenRunning) {
-      setTransientStatus("Finish or stop the parent and every sub-agent before changing this crew");
+      setTransientStatus("Finish or stop the parent and every sub-agent before changing this setup");
       return;
     }
 
@@ -1188,7 +1189,7 @@ export default function App() {
       [existing.sessionId]: { ...(current[existing.sessionId] ?? existing), pendingRecapture },
     }));
     invalidateChildAgentLaunch(existing.sessionId);
-    setTransientStatus("Sub-agent crew updated for this thread · applies next message");
+    setTransientStatus("Sub-agent setup updated for this thread · applies next message");
   }, [
     activeDelegationPolicy,
     activeThreadSubagentPolicy,
@@ -5068,6 +5069,7 @@ export default function App() {
                       parentActive={running || queuedTurns.length > 0}
                       scopeLabel={activeProject ? activeProject.name : "Chats & project defaults"}
                       projectOverride={!activeDelegationPolicy && Boolean(activeProject?.overrides?.subagents)}
+                      presets={settings.childAgentPresets}
                       modelCatalogs={subAgentModelCatalogs}
                       modelFavorites={modelFavorites}
                       onToggleModelFavorite={toggleModelFavorite}

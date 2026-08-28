@@ -194,6 +194,13 @@ export interface ProjectSubagentSettings {
   childAgents: ChildAgentSettings;
 }
 
+/** A reusable, user-named snapshot of a complete sub-agent crew policy. */
+export interface ChildAgentPreset {
+  id: string;
+  name: string;
+  policy: ProjectSubagentSettings;
+}
+
 export interface ProjectAction {
   id: string;
   name: string;
@@ -289,6 +296,8 @@ export interface AppSettings {
   autoArchiveSubagentThreads: boolean;
   /** Cross-provider delegation. Absent in settings written before 1.5. */
   childAgents: ChildAgentSettings;
+  /** Reusable crew configurations. Absent in settings written before presets existed. */
+  childAgentPresets: ChildAgentPreset[];
   reasoningEffort: ReasoningEffort;
   ultra: boolean;
   serviceTier: string | null;

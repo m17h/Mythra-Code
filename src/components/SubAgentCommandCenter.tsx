@@ -14,6 +14,7 @@ import {
   describeChildAgentReasoning,
   providerDisplayName,
   readyChildAgentTargets,
+  sanitizeProjectSubagentSettings,
   uniqueChildAgentId,
   type ChildAgentPolicy,
   type ChildAgentReadiness,
@@ -26,7 +27,8 @@ import {
   type SubAgentWorker,
 } from "../lib/subAgentActivity";
 import { favoriteModels, type ModelFavorites } from "../lib/modelFavorites";
-import type { ChildAgentTarget, ProjectSubagentSettings, Provider } from "../types";
+import { useRosterFlip } from "../hooks/useRosterFlip";
+import type { ChildAgentPreset, ChildAgentTarget, ProjectSubagentSettings, Provider } from "../types";
 
 /**
  * The composer's sub-agent command center.
@@ -78,6 +80,8 @@ export interface SubAgentCommandCenterProps {
   scopeLabel: string;
   /** The active project already carries its own sub-agent override. */
   projectOverride: boolean;
+  /** User-created complete crew policies, managed in Settings. */
+  presets?: ChildAgentPreset[];
   onChange: (next: ProjectSubagentSettings) => void;
   onOpenSettings: () => void;
   /** Live provider catalogs used by the app's own model pickers. */
@@ -103,6 +107,8 @@ export interface SubAgentModelOption {
 /** Stable identity so a locked thread's empty roster never re-triggers memos. */
 const NO_TARGETS: ChildAgentTarget[] = [];
 const PANEL_EXIT_MS = 180;
+/** The roster grid's own key, so `sa-add` can travel with the tiles. */
+const ADD_TILE_FLIP_KEY = "__add__";
 
 const BUILTIN_MODEL_CATALOGS: Record<Provider, SubAgentModelOption[]> = {
   openai: [
@@ -190,6 +196,7 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
   const [open, setOpen] = useState(false);
   const [panelPresent, setPanelPresent] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [selectedPresetId, setSelectedPresetId] = useState("");
   const [replaceWorkerId, setReplaceWorkerId] = useState<string | null>(null);
   const [workerAction, setWorkerAction] = useState<{ workerId: string; kind: "stop" | "replace" | "open" } | null>(null);
   const [workerActionError, setWorkerActionError] = useState<string | null>(null);
@@ -236,10 +243,32 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
   const dimmed = !delegationOn;
   const crossProviderReady = delegationOn && crossProviderOn && readyCount > 0;
 
+  // Everything that can move a tile: which one is open, who is in the roster,
+  // and the fields a destination's own settings add or remove from its editor.
+  const crewLayoutSignature = useMemo(() => [
+    expandedId ?? "",
+    editable ? "edit" : "read",
+    targets.map((target) => `${target.id}:${target.provider}:${target.reasoningMode}`).join(","),
+  ].join("|"), [editable, expandedId, targets]);
+  const crewFlip = useRosterFlip(crewLayoutSignature);
+  // The panel is bottom-anchored, so the roster growing under it would jerk
+  // its top edge upward; the transition owns that height too.
+  const setPanelNode = useCallback((node: HTMLDivElement | null) => {
+    panelRef.current = node;
+    crewFlip.surfaceRef(node);
+  }, [crewFlip]);
+
   const clearCloseTimer = useCallback(() => {
     if (closeTimerRef.current === null) return;
     window.clearTimeout(closeTimerRef.current);
     closeTimerRef.current = null;
+  }, []);
+
+  // Expansion is pure state with no exit timer: the roster's own FLIP pass
+  // owns the movement, so the DOM is always in its settled layout and a second
+  // click never has to wait for a previous one to "finish".
+  const toggleExpandedTarget = useCallback((targetId: string) => {
+    setExpandedId((current) => (current === targetId ? null : targetId));
   }, []);
 
   const show = useCallback(() => {
@@ -265,6 +294,11 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
   }, [clearCloseTimer, finishClose]);
 
   useEffect(() => () => clearCloseTimer(), [clearCloseTimer]);
+
+  useEffect(() => {
+    if (!selectedPresetId || props.presets?.some((preset) => preset.id === selectedPresetId)) return;
+    setSelectedPresetId("");
+  }, [props.presets, selectedPresetId]);
 
   // A popover opened for one conversation must not remain open after the user
   // switches to another and accidentally stage an edit against the new crew.
@@ -410,11 +444,19 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
     setExpandedId(target.id);
   }, [onChange, policy]);
 
+  const applyPreset = useCallback(() => {
+    const preset = props.presets?.find((entry) => entry.id === selectedPresetId);
+    const next = sanitizeProjectSubagentSettings(preset?.policy);
+    if (!next) return;
+    setExpandedId(null);
+    onChange(next);
+  }, [onChange, props.presets, selectedPresetId]);
+
   const triggerLabel = counts.active > 0
-    ? `Agents ${counts.active}/${maxConcurrent}`
+    ? `Sub-agents ${counts.active}/${maxConcurrent}`
     : delegationOn
-      ? `Agents: ${maxConcurrent}${crossProviderReady ? " ↗" : ""}`
-      : "Agents off";
+      ? `Sub-agents: ${maxConcurrent}${crossProviderReady ? " ↗" : ""}`
+      : "Sub-agents off";
 
   return (
     <div className="subagent-control" ref={rootRef}>
@@ -428,10 +470,10 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
         title={isChild
           ? "This conversation is a sub-agent, so it cannot start sub-agents of its own."
           : captured && crewActive
-            ? "This thread's crew is locked while its parent or a sub-agent is working."
+            ? "This thread's sub-agents are locked while its parent or a sub-agent is working."
             : captured
-              ? "Edit this thread's sub-agent crew for its next message."
-            : "Manage the sub-agent crew for this thread"}
+              ? "Edit this thread's sub-agents for its next message."
+            : "Manage sub-agents for this thread"}
         onClick={() => (open ? close() : show())}
       >
         {/* No viewBox on purpose: the rect is measured in real pixels, so the
@@ -460,7 +502,7 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
       {panelPresent && (
         <div
           id={panelId}
-          ref={panelRef}
+          ref={setPanelNode}
           className={`subagent-panel ${open ? "" : "closing"}`}
           role="dialog"
           aria-hidden={!open || undefined}
@@ -472,12 +514,12 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
           <header className="sa-header">
             <span className="sa-header-mark" aria-hidden="true"><UsersRound size={14} /></span>
             <span className="sa-header-copy">
-              <strong>Sub-agent crew</strong>
+              <strong>Sub-agents</strong>
               <small>
                 {isChild
                   ? "Sub-agent conversation"
                   : captured && crewActive
-                    ? "Crew locked while work is active"
+                    ? "Sub-agents locked while work is active"
                     : captured
                       ? "Editing this thread"
                     : `Editing ${props.scopeLabel}`}
@@ -492,8 +534,8 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
             <p className="sa-locked-note">
               <Lock size={12} aria-hidden="true" />
               <span>
-                Finish or stop the parent and every sub-agent before changing this crew.
-                The current run keeps the destinations it started with.
+                Finish or stop the parent and every sub-agent before changing this setup.
+                The current run keeps the sub-agents it started with.
               </span>
             </p>
           )}
@@ -501,7 +543,7 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
           {captured && !crewActive && (
             <p className="sa-locked-note">
               <ArrowRightLeft size={12} aria-hidden="true" />
-              <span>Destination and limit changes stay in this thread and take effect together on its next message.</span>
+              <span>Sub-agent and limit changes stay in this thread and take effect together on its next message.</span>
             </p>
           )}
 
@@ -519,7 +561,7 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
             <div className={`sa-row ${delegationOn ? "on" : ""}`}>
               <span className="sa-row-copy">
                 <strong>Sub-agents</strong>
-                <small>{delegationOn ? "The model may split work across parallel agents." : "No sub-agent tools are exposed."}</small>
+                <small>{delegationOn ? "The model may split work across parallel sub-agents." : "No sub-agent tools are exposed."}</small>
               </span>
               {isChild ? (
                 <span className="sa-readout">Off</span>
@@ -540,14 +582,14 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
 
             <div className={`sa-row ${dimmed ? "muted" : ""}`}>
               <span className="sa-row-copy">
-                <strong>Parallel limit</strong>
+                <strong>Max running at once</strong>
                 <small>
                   {editable
                     ? crewSize > 0
-                      ? `How many children may run at once (1–${MAX_SUBAGENT_CONCURRENCY}), chosen from ${crewSize} destination${crewSize === 1 ? "" : "s"}.`
-                      : `How many children may run at once (1–${MAX_SUBAGENT_CONCURRENCY}).`
+                      ? `How many sub-agents may run at once (1–${MAX_SUBAGENT_CONCURRENCY}), chosen from ${crewSize} configured sub-agent${crewSize === 1 ? "" : "s"}.`
+                      : `How many sub-agents may run at once (1–${MAX_SUBAGENT_CONCURRENCY}).`
                     : captured
-                      ? "Locked until the parent and every child are idle."
+                      ? "Locked until the parent and every sub-agent are idle."
                       : "A sub-agent works alone."}
                 </small>
               </span>
@@ -578,10 +620,10 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
                 <strong>Cross-provider</strong>
                 <small>
                   {!crossProviderOn
-                    ? "Children stay inside this thread's own provider."
+                    ? "Sub-agents stay inside this thread's own provider."
                     : enabledCount === 0
-                      ? "No destinations switched on."
-                      : `${readyCount} of ${enabledCount} destination${enabledCount === 1 ? "" : "s"} ready`}
+                      ? "No sub-agents switched on."
+                      : `${readyCount} of ${enabledCount} sub-agent${enabledCount === 1 ? "" : "s"} ready`}
                 </small>
               </span>
               {isChild ? (
@@ -601,8 +643,49 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
               )}
             </div>
 
+            {editable && (
+              <div className="sa-preset-row">
+                <span>
+                  <strong>Sub-agent preset</strong>
+                  <small>{props.presets?.length ? "Replace these sub-agents with a saved preset." : "Create reusable presets in Sub-agent settings."}</small>
+                </span>
+                {props.presets?.length ? (
+                  <div className="sa-preset-actions">
+                    <AppSelectMenu
+                      ariaLabel="Sub-agent preset"
+                      value={selectedPresetId}
+                      placeholder="Choose preset"
+                      options={props.presets.map((preset) => ({
+                        value: preset.id,
+                        label: preset.name,
+                        detail: `${preset.policy.childAgents.targets.length} configured · ${preset.policy.maxConcurrent} at a time`,
+                        icon: <UsersRound size={11} />,
+                      }))}
+                      onChange={setSelectedPresetId}
+                    />
+                    <button type="button" className="sa-apply-preset" disabled={!selectedPresetId} onClick={applyPreset}>Apply</button>
+                  </div>
+                ) : (
+                  <button type="button" className="sa-manage-presets" onClick={() => { close(); props.onOpenSettings(); }}>Create preset</button>
+                )}
+              </div>
+            )}
+
             <div className={`sa-crew ${crossProviderOn && !dimmed ? "" : "muted"}`}>
-              <div className="sa-crew-grid" role="list" aria-label="Cross-provider destinations">
+              {editable && targets.length > 0 && (
+                <div className="sa-crew-toolbar">
+                  <span>{targets.length} configured sub-agent{targets.length === 1 ? "" : "s"}</span>
+                  <button
+                    type="button"
+                    className="sa-clear-all"
+                    onClick={() => {
+                      setExpandedId(null);
+                      setTargets([]);
+                    }}
+                  ><Trash2 size={11} /> Clear all</button>
+                </div>
+              )}
+              <div className="sa-crew-grid" ref={crewFlip.gridRef} role="list" aria-label="Configured sub-agents">
                 {targets.map((target) => {
                   const issue = childAgentTargetIssue(target, readiness);
                   const expanded = expandedId === target.id;
@@ -613,6 +696,7 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
                     <div
                       role="listitem"
                       key={targetKey(target)}
+                      data-flip-key={targetKey(target)}
                       className={`sa-tile ${target.provider} ${target.enabled ? "" : "off"} ${issue && target.enabled ? "issue" : ""} ${busy ? "busy" : ""} ${expanded ? "expanded" : ""}`}
                     >
                       <div className="sa-tile-head">
@@ -622,7 +706,7 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
                           aria-expanded={editable ? expanded : undefined}
                           aria-label={editable ? `Configure ${target.label || target.id}` : undefined}
                           disabled={!editable}
-                          onClick={() => setExpandedId(expanded ? null : target.id)}
+                          onClick={() => toggleExpandedTarget(target.id)}
                         >
                           <span className="sa-avatar" aria-hidden="true">
                             <ProviderLogo provider={target.provider} size={15} />
@@ -651,8 +735,9 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
                       {issue && target.enabled && (
                         <p className="sa-tile-issue"><AlertTriangle size={11} aria-hidden="true" /> {issue}</p>
                       )}
-                      {expanded && editable && (
-                        <div className="sa-tile-config">
+                      {editable && (
+                        <div className={`sa-tile-config-shell ${expanded ? "open" : ""}`} aria-hidden={!expanded || undefined} inert={!expanded ? true : undefined}>
+                          <div className="sa-tile-config">
                           <div className="sa-config-field">
                             <span>Provider</span>
                             <AppSelectMenu
@@ -743,6 +828,7 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
                               setTargets(policy.childAgents.targets.filter((entry) => entry.id !== target.id));
                             }}
                           ><Trash2 size={12} /> Remove</button>
+                          </div>
                         </div>
                       )}
                     </div>
@@ -750,14 +836,14 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
                 })}
 
                 {editable && targets.length < MAX_CHILD_AGENT_TARGETS && (
-                  <div role="listitem" className="sa-add">
-                    <span>Add a worker</span>
+                  <div role="listitem" data-flip-key={ADD_TILE_FLIP_KEY} className="sa-add">
+                    <span>Add a sub-agent</span>
                     <div className="sa-add-row">
                       {CHILD_AGENT_PROVIDERS.map((provider) => (
                         <button
                           type="button"
                           key={provider}
-                          aria-label={`Add ${providerDisplayName(provider)} destination`}
+                          aria-label={`Add ${providerDisplayName(provider)} sub-agent`}
                           title={`Add ${providerDisplayName(provider)}`}
                           onClick={() => addTarget(provider)}
                         >
@@ -773,10 +859,10 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
               {targets.length === 0 && (
                 <p className="sa-empty">
                   {isChild
-                    ? "A sub-agent has no destinations of its own."
+                    ? "A sub-agent cannot start sub-agents of its own."
                     : captured
-                      ? "This thread captured no cross-provider destinations."
-                      : "No destinations yet. Add a worker to let the root agent delegate across providers."}
+                      ? "This thread captured no cross-provider sub-agents."
+                      : "No sub-agents yet. Add one to let the model delegate across providers."}
                 </p>
               )}
             </div>
@@ -784,7 +870,7 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
 
           <div className="sa-activity">
             <div className="sa-activity-head">
-              <strong>Live agents</strong>
+              <strong>Live sub-agents</strong>
               <span className="sa-counts" role="status">
                 <span key={describeSubAgentActivity(counts)} className="sa-flash">{describeSubAgentActivity(counts)}</span>
               </span>
@@ -852,7 +938,7 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
                       </span>
 
                       {replacing && (
-                        <div className="sa-replace-picker" role="group" aria-label={`Replacement destination for ${worker.title}`}>
+                        <div className="sa-replace-picker" role="group" aria-label={`Replacement sub-agent for ${worker.title}`}>
                           <span>
                             <strong>Replace with</strong>
                             <small>The root agent will restart the same task.</small>

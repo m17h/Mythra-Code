@@ -17,6 +17,25 @@ const updater: AppUpdater = {
   downloadAndRestart: vi.fn(async () => undefined),
 };
 
+/** A saved crew, as it comes back out of persisted settings. */
+function preset() {
+  return {
+    id: "review-crew",
+    name: "Review sub-agents",
+    policy: {
+      enabled: true,
+      maxConcurrent: 2,
+      childAgents: {
+        enabled: true,
+        targets: [
+          { id: "reviewer", provider: "claude" as const, model: "claude-fable-5", label: "Reviewer", description: "", enabled: true, reasoningMode: "inherit" as const, reasoningEffort: "medium" as const, reasoningMaxEffort: "high" as const },
+          { id: "builder", provider: "openai" as const, model: "gpt-5.6-terra", label: "Builder", description: "", enabled: true, reasoningMode: "inherit" as const, reasoningEffort: "medium" as const, reasoningMaxEffort: "high" as const },
+        ],
+      },
+    },
+  };
+}
+
 function modalProps(overrides: Partial<Parameters<typeof SettingsModal>[0]> = {}): Parameters<typeof SettingsModal>[0] {
   return {
     open: true,
@@ -483,25 +502,25 @@ describe("SettingsModal", () => {
     expect(onClose).toHaveBeenCalledOnce();
   });
 
-  it("creates and saves a project-specific sub-agent policy", () => {
+  it("applies a preset as a project-specific sub-agent setup", () => {
     const onProjects = vi.fn();
     render(<SettingsModal {...modalProps({
       initialSection: "agents",
       activeProjectId: "project-1",
       projects: [{ id: "project-1", name: "Kiwi", path: "/tmp/kiwi" }],
+      settings: { ...DEFAULT_SETTINGS, childAgentPresets: [preset()] },
       onProjects,
     })} />);
 
-    expect(screen.getByLabelText("Policy for")).toHaveValue("project-1");
-    expect(screen.getByText(/currently inherits the Chats & project defaults policy/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /Customize/ }));
-    fireEvent.click(screen.getByRole("switch", { name: "Allow sub-agent spawning" }));
+    expect(screen.queryByLabelText("Apply presets to")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Apply Review sub-agents" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /^Kiwi/ }));
     fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
 
     expect(onProjects).toHaveBeenCalledWith([
       expect.objectContaining({
         id: "project-1",
-        overrides: expect.objectContaining({ subagents: expect.objectContaining({ enabled: true, maxConcurrent: 1 }) }),
+        overrides: expect.objectContaining({ subagents: expect.objectContaining({ enabled: true, maxConcurrent: 2 }) }),
       }),
     ]);
   });
@@ -590,11 +609,194 @@ describe("SettingsModal", () => {
     render(<SettingsModal {...modalProps({ initialSection: "agents", onSave })} />);
 
     const toggle = screen.getByRole("switch", { name: "Archive sub-agent threads automatically" });
-    expect(toggle).toHaveAttribute("aria-checked", "false");
+    expect(toggle).toHaveAttribute("aria-checked", "true");
     fireEvent.click(toggle);
     fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
 
-    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ autoArchiveSubagentThreads: true }));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ autoArchiveSubagentThreads: false }));
+  });
+
+  it("shows one preset workflow without exposing a separate policy editor", () => {
+    render(<SettingsModal {...modalProps({ initialSection: "agents" })} />);
+
+    const archiveToggle = screen.getByRole("switch", { name: "Archive sub-agent threads automatically" });
+    const presetsHeading = screen.getByRole("heading", { name: "Sub-agent presets" });
+    expect(archiveToggle.compareDocumentPosition(presetsHeading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByLabelText("Apply presets to")).not.toBeInTheDocument();
+    expect(screen.queryByText(/inherited defaults/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create preset" })).toBeInTheDocument();
+    expect(screen.queryByRole("tab")).not.toBeInTheDocument();
+    expect(screen.queryByRole("switch", { name: "Allow sub-agent spawning" })).not.toBeInTheDocument();
+  });
+
+  it("keeps optional custom agent profiles out of the primary setup flow", () => {
+    render(<SettingsModal {...modalProps({ initialSection: "agents" })} />);
+
+    const summary = screen.getByText("Custom agent profiles").closest("summary");
+    const details = summary?.closest("details");
+    expect(details).not.toHaveAttribute("open");
+
+    fireEvent.click(summary as HTMLElement);
+    expect(details).toHaveAttribute("open");
+  });
+
+  it("creates a preset with an explicit name and starting point", () => {
+    const onSave = vi.fn();
+    render(<SettingsModal {...modalProps({ initialSection: "agents", onSave })} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Create preset" }));
+
+    const name = screen.getByLabelText("New preset name");
+    expect(name).toHaveFocus();
+    expect(screen.getByText(/Starts as a copy of/)).toHaveTextContent("Chats & project defaults");
+    fireEvent.change(name, { target: { value: "Review sub-agents" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create and configure" }));
+
+    expect(screen.getByRole("button", { name: "Collapse Review sub-agents" })).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(screen.getByRole("switch", { name: "Allow sub-agent spawning" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
+      childAgentPresets: [expect.objectContaining({
+        id: "review-sub-agents",
+        name: "Review sub-agents",
+        policy: expect.objectContaining({ enabled: true }),
+      })],
+    }));
+  });
+
+  it("can return to edit the first preset after creating a second one", () => {
+    render(<SettingsModal {...modalProps({ initialSection: "agents" })} />);
+
+    const create = (name: string) => {
+      fireEvent.click(screen.getByRole("button", { name: "Create preset" }));
+      fireEvent.change(screen.getByLabelText("New preset name"), { target: { value: name } });
+      fireEvent.click(screen.getByRole("button", { name: "Create and configure" }));
+    };
+
+    create("Review sub-agents");
+    create("Build sub-agents");
+
+    expect(screen.getByRole("button", { name: "Collapse Build sub-agents" })).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Expand Review sub-agents" }));
+
+    expect(screen.getByRole("button", { name: "Collapse Review sub-agents" })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: "Expand Build sub-agents" })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByText("Review sub-agents")).toBeInTheDocument();
+  });
+
+  it("edits one preset at a time with every sub-agent control available", () => {
+    const onSave = vi.fn();
+    render(<SettingsModal {...modalProps({ initialSection: "agents", onSave, settings: { ...DEFAULT_SETTINGS, childAgentPresets: [preset()] } })} />);
+
+    const edit = screen.getByRole("button", { name: "Expand Review sub-agents" });
+    const body = document.getElementById(edit.getAttribute("aria-controls") ?? "");
+    expect(body).toHaveAttribute("aria-hidden", "true");
+
+    fireEvent.click(edit);
+    expect(body).not.toHaveAttribute("aria-hidden");
+    fireEvent.click(within(body as HTMLElement).getByRole("switch", { name: "Allow sub-agent spawning" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
+      childAgentPresets: [expect.objectContaining({ id: "review-crew", policy: expect.objectContaining({ enabled: false }) })],
+    }));
+  });
+
+  it("uses the preset roster directly without a separate cross-provider switch", () => {
+    const legacyPreset = preset();
+    legacyPreset.policy.childAgents.enabled = false;
+    render(<SettingsModal {...modalProps({
+      initialSection: "agents",
+      settings: { ...DEFAULT_SETTINGS, childAgentPresets: [legacyPreset] },
+    })} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Expand Review sub-agents" }));
+
+    expect(screen.queryByRole("switch", { name: "Allow cross-provider sub-agents" })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("New destination name")).toBeEnabled();
+  });
+
+  it("distinguishes configured choices from the simultaneous running cap", () => {
+    const limitedPreset = preset();
+    limitedPreset.policy.maxConcurrent = 1;
+    render(<SettingsModal {...modalProps({
+      initialSection: "agents",
+      settings: { ...DEFAULT_SETTINGS, childAgentPresets: [limitedPreset] },
+    })} />);
+
+    expect(screen.getByText(/2 configured · 1 at a time/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Expand Review sub-agents" }));
+    expect(screen.getByText("Max running at once")).toBeInTheDocument();
+
+    const increase = screen.getByRole("button", { name: "More concurrent sub-agents" });
+    fireEvent.click(increase);
+    expect(within(screen.getByLabelText("Maximum concurrent sub-agents")).getByText("2")).toBeInTheDocument();
+    expect(increase).toBeDisabled();
+  });
+
+  it("renames a preset only after the pencil action is used", () => {
+    render(<SettingsModal {...modalProps({ initialSection: "agents", settings: { ...DEFAULT_SETTINGS, childAgentPresets: [preset()] } })} />);
+
+    expect(screen.queryByLabelText("Name for preset 1")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Rename Review sub-agents" }));
+    const name = screen.getByLabelText("Name for preset 1");
+    fireEvent.change(name, { target: { value: "Build sub-agents" } });
+    fireEvent.click(screen.getByRole("button", { name: "Finish renaming Build sub-agents" }));
+
+    expect(screen.queryByLabelText("Name for preset 1")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Expand Build sub-agents" })).toBeInTheDocument();
+  });
+
+  it("applies a preset to a destination chosen from its compact menu", () => {
+    const onSave = vi.fn();
+    render(<SettingsModal {...modalProps({
+      initialSection: "agents",
+      onSave,
+      settings: { ...DEFAULT_SETTINGS, subagentsEnabled: false, childAgentPresets: [preset()] },
+    })} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Apply Review sub-agents" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /^Chats & project defaults/ }));
+
+    expect(screen.getByRole("status")).toHaveTextContent("Review sub-agents is now the sub-agent setup for Chats & project defaults.");
+
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ subagentsEnabled: true, subagentMax: 2 }));
+  });
+
+  it("offers a plainly named action to reset a project's custom setup", () => {
+    const onProjects = vi.fn();
+    render(<SettingsModal {...modalProps({
+      initialSection: "agents",
+      projects: [{
+        id: "project-1",
+        name: "Kiwi",
+        path: "/tmp/kiwi",
+        overrides: { subagents: preset().policy },
+      }],
+      settings: { ...DEFAULT_SETTINGS, childAgentPresets: [preset()] },
+      onProjects,
+    })} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Apply Review sub-agents" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /^Reset Kiwi to chat defaults/ }));
+
+    expect(screen.getByRole("status")).toHaveTextContent("Kiwi now uses Chats & project defaults.");
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    expect(onProjects).toHaveBeenCalledWith([
+      expect.objectContaining({ id: "project-1", overrides: undefined }),
+    ]);
+  });
+
+  it("deletes a saved sub-agent preset", () => {
+    const onSave = vi.fn();
+    render(<SettingsModal {...modalProps({ initialSection: "agents", onSave, settings: { ...DEFAULT_SETTINGS, childAgentPresets: [preset()] } })} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete Review sub-agents" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ childAgentPresets: [] }));
   });
 
   it("keeps unsaved drafts when the saved settings change externally while open", () => {
