@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { ChildAgentRoster } from "./ChildAgentRoster";
@@ -20,21 +20,39 @@ const ROSTER: ChildAgentSettings = {
 
 function view(overrides: Partial<Parameters<typeof ChildAgentRoster>[0]> = {}) {
   const onChange = vi.fn();
-  render(<ChildAgentRoster value={ROSTER} subagentsEnabled readiness={READY} onChange={onChange} {...overrides} />);
+  render(<ChildAgentRoster value={ROSTER} enabled readiness={READY} onChange={onChange} {...overrides} />);
   return onChange;
 }
 
-describe("ChildAgentRoster", () => {
-  it("cannot be enabled until sub-agents themselves are on", () => {
-    view({ subagentsEnabled: false, value: { enabled: false, targets: [] } });
-    expect(screen.getByRole("switch", { name: "Allow cross-provider sub-agents" })).toBeDisabled();
-    expect(screen.getByText(/Turn sub-agent spawning on first/)).toBeInTheDocument();
-  });
+/** Every worker's controls live behind its own disclosure. */
+async function configure(id: string) {
+  await userEvent.click(screen.getByRole("button", { name: `Configure ${id}` }));
+}
 
-  it("shows each destination's provider and resolved model", () => {
+async function choose(menu: string, option: RegExp) {
+  await userEvent.click(screen.getByRole("button", { name: menu }));
+  await userEvent.click(screen.getByRole("menuitemradio", { name: option }));
+}
+
+describe("ChildAgentRoster", () => {
+  it("summarizes a worker without opening any of its controls", () => {
     view();
     expect(screen.getByText("reviewer")).toBeInTheDocument();
-    expect(screen.getByText("Claude · claude-fable-5")).toBeInTheDocument();
+    expect(screen.getByText(/Claude · claude-fable-5 · Inherit parent/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Configure reviewer" })).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("reveals a worker's controls only while it is being configured", async () => {
+    view();
+    const face = screen.getByRole("button", { name: "Configure reviewer" });
+    const panel = document.getElementById(face.getAttribute("aria-controls") ?? "");
+    expect(panel).toHaveAttribute("aria-hidden", "true");
+
+    await configure("reviewer");
+
+    expect(face).toHaveAttribute("aria-expanded", "true");
+    expect(panel).not.toHaveAttribute("aria-hidden");
+    expect(panel).toHaveClass("open");
   });
 
   it("explains why an unusable destination will not be offered to the model", () => {
@@ -50,48 +68,53 @@ describe("ChildAgentRoster", () => {
     expect(screen.queryByText(/Install and sign in to Claude Code first/)).not.toBeInTheDocument();
   });
 
-  it("adds a destination with a slug a model can name", async () => {
+  it("adds a worker with a slug a model can name", async () => {
     const onChange = view();
     await userEvent.type(screen.getByLabelText("New destination name"), "Grok Fast");
-    await userEvent.selectOptions(screen.getByLabelText("New destination provider"), "openrouter");
-    await userEvent.type(screen.getByLabelText("New destination model"), "x-ai/grok-4.5");
-    await userEvent.click(screen.getByRole("button", { name: /Add/ }));
+    await choose("New sub-agent provider", /OpenRouter/);
+    await userEvent.click(screen.getByRole("button", { name: /Add sub-agent/ }));
 
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
       targets: [
         ROSTER.targets[0],
-        expect.objectContaining({ id: "grok-fast", provider: "openrouter", model: "x-ai/grok-4.5", enabled: true }),
+        expect.objectContaining({ id: "grok-fast", provider: "openrouter", enabled: true }),
       ],
     }));
   });
 
-  it("offers a one-click destination for each provider that has none yet", async () => {
+  it("seeds an unnamed worker from the provider's suggested destination", async () => {
     const onChange = view();
-    // Claude is already in the roster, so only the other three are suggested.
-    expect(screen.queryByRole("button", { name: /Claude Code/ })).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: /Cursor/ }));
+    await choose("New sub-agent provider", /Cursor/);
+    await userEvent.click(screen.getByRole("button", { name: /Add sub-agent/ }));
+
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
-      targets: [ROSTER.targets[0], expect.objectContaining({ provider: "cursor", model: "auto", enabled: true })],
+      targets: [
+        ROSTER.targets[0],
+        expect.objectContaining({ id: "cursor", provider: "cursor", model: "auto", description: expect.stringContaining("Cursor") }),
+      ],
     }));
   });
 
-  it("removes a destination", async () => {
+  it("removes a worker", async () => {
     const onChange = view();
+    await configure("reviewer");
     await userEvent.click(screen.getByRole("button", { name: "Remove reviewer" }));
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ targets: [] }));
   });
 
   it("clears the model when the provider changes, so a stale identity cannot survive", async () => {
     const onChange = view();
-    await userEvent.selectOptions(screen.getByLabelText("Provider for reviewer"), "cursor");
+    await configure("reviewer");
+    await choose("Provider for reviewer", /Cursor/);
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
-      targets: [expect.objectContaining({ provider: "cursor", model: "" })],
+      targets: [expect.objectContaining({ provider: "cursor", model: "auto" })],
     }));
   });
 
   it("lets the user choose who controls reasoning", async () => {
     const onChange = view();
-    await userEvent.selectOptions(screen.getByLabelText("Reasoning control for reviewer"), "agent");
+    await configure("reviewer");
+    await choose("Reasoning control for reviewer", /Main agent decides/);
     expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({
       targets: [expect.objectContaining({ reasoningMode: "agent" })],
     }));
@@ -99,9 +122,36 @@ describe("ChildAgentRoster", () => {
 
   it("lets the user cap agent-selected effort", async () => {
     const onChange = view({ value: { enabled: true, targets: [{ ...ROSTER.targets[0], reasoningMode: "agent" }] } });
-    await userEvent.selectOptions(screen.getByLabelText("Maximum reasoning for reviewer"), "xhigh");
+    await configure("reviewer");
+    await choose("Maximum reasoning for reviewer", /Extra high/);
     expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({
       targets: [expect.objectContaining({ reasoningMaxEffort: "xhigh" })],
     }));
+  });
+
+  it("uses branded app menus instead of operating-system selects", async () => {
+    view();
+    await configure("reviewer");
+    const card = screen.getByRole("button", { name: "Configure reviewer" }).closest("li") as HTMLElement;
+    expect(within(card).queryByRole("combobox")).not.toBeInTheDocument();
+    expect(within(card).getByRole("button", { name: "Provider for reviewer" })).toBeInTheDocument();
+    expect(within(card).getByRole("button", { name: "Model for reviewer" })).toHaveTextContent("Fable 5");
+  });
+
+  it("switches one worker off without touching the others", async () => {
+    const onChange = view({
+      value: { enabled: true, targets: [ROSTER.targets[0], { ...ROSTER.targets[0], id: "builder" }] },
+    });
+    const builder = screen.getByRole("button", { name: "Configure builder" }).closest("li") as HTMLElement;
+    await userEvent.click(within(builder).getByRole("switch", { name: "Enable builder" }));
+
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
+      targets: [expect.objectContaining({ id: "reviewer", enabled: true }), expect.objectContaining({ id: "builder", enabled: false })],
+    }));
+  });
+
+  it("dims the roster while cross-provider delegation is off", () => {
+    view({ enabled: false });
+    expect(screen.getByText("Sub-agents").closest(".worker-roster")).toHaveClass("muted");
   });
 });

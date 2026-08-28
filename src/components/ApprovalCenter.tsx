@@ -105,7 +105,7 @@ export function approvalSummary(approval: PendingApproval): { title: string; rea
   if (approval.method === "openkiwi/subagents/change") {
     return {
       title: String(approval.params.title ?? "Update this project's sub-agents?"),
-      reason: String(approval.params.reason ?? "The agent requested a project sub-agent crew change."),
+      reason: String(approval.params.reason ?? "The agent requested a project sub-agent setup change."),
       command: String(approval.params.command ?? ""),
     };
   }

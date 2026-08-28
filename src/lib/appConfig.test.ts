@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_SETTINGS, sanitizeTheme, themeColorScheme, THEMES } from "./appConfig";
+import { DEFAULT_SETTINGS, sanitizeAutoArchiveSubagentThreads, sanitizeTheme, themeColorScheme, THEMES } from "./appConfig";
 
 describe("theme catalog", () => {
   it("places the Mythra pair above the Kiwi pair", () => {
@@ -23,5 +23,15 @@ describe("theme catalog", () => {
     expect(themeColorScheme("daylight")).toBe("light");
     expect(themeColorScheme("mythra")).toBe("dark");
     expect(themeColorScheme("kiwi")).toBe("dark");
+  });
+});
+
+describe("sub-agent cleanup defaults", () => {
+  it("archives automatically unless the user explicitly turned it off", () => {
+    expect(DEFAULT_SETTINGS.autoArchiveSubagentThreads).toBe(true);
+    expect(sanitizeAutoArchiveSubagentThreads(undefined)).toBe(true);
+    expect(sanitizeAutoArchiveSubagentThreads("invalid")).toBe(true);
+    expect(sanitizeAutoArchiveSubagentThreads(true)).toBe(true);
+    expect(sanitizeAutoArchiveSubagentThreads(false)).toBe(false);
   });
 });

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { confirmDialog } from "../lib/confirmDialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -15,14 +15,15 @@ import {
   Info,
   KeyRound,
   LoaderCircle,
-  Minus,
   NotebookPen,
   Palette,
   PanelRight,
+  Pencil,
   Play,
   Plus,
   RotateCcw,
   ShieldCheck,
+  Trash2,
   UsersRound,
   Wrench,
   X,
@@ -38,12 +39,17 @@ import type { LMStudioModel } from "../lib/lmStudio";
 import { updateProgress, type AppUpdater } from "../lib/appUpdater";
 import {
   projectSubagentSettingsFromApp,
+  providerDisplayName,
+  sanitizeChildAgentPresetPolicy,
+  sanitizeChildAgentPresets,
   sanitizeProjectSubagentOverrides,
+  uniqueChildAgentPresetId,
+  MAX_CHILD_AGENT_PRESETS,
   type ChildAgentReadiness,
 } from "../lib/childAgents";
 import type { LocalSkill } from "../lib/skills";
 import type { WorkflowDefinition, WorkflowRunRecord } from "../lib/workflows";
-import { ChildAgentRoster } from "./ChildAgentRoster";
+import { SubagentPolicyEditor } from "./SubagentPolicyEditor";
 import { HarnessSettings } from "./HarnessSettings";
 import { SkillLibrary } from "./SkillLibrary";
 import type { McpView } from "./StudioDock";
@@ -52,6 +58,7 @@ import { formatEstimatedCost, type UsageTotals } from "../lib/usageLedger";
 import type {
   Account,
   AppSettings,
+  ChildAgentPreset,
   CustomAgentProfile,
   EffortSliderStyle,
   PermissionMode,
@@ -70,6 +77,7 @@ import { AppSelectMenu, type AppSelectOption } from "./AppSelectMenu";
 import { CLAUDE_FALLBACK_MODELS } from "./ClaudeModelControl";
 import { openAiModelOptions, type RuntimeModel } from "./ModelPowerControl";
 import { favoriteModels, type ModelFavorites } from "../lib/modelFavorites";
+import type { ChildAgentModelOption } from "./ChildAgentRoster";
 import type { ClaudeModel } from "../lib/claude";
 import type { OpenRouterModel } from "./OpenRouterModelControl";
 
@@ -96,7 +104,7 @@ const SETTINGS_NAV: ReadonlyArray<{
       { id: "github", label: "GitHub", icon: GitFork, detail: "Account connection and repository cloning" },
       { id: "usage", label: "Usage", icon: Gauge, detail: "All-time tokens and API-equivalent inference value" },
       { id: "prompts", label: "Prompts", icon: NotebookPen, detail: "Your complete harness instruction and reusable profiles" },
-      { id: "agents", label: "Sub-agents", icon: UsersRound, detail: "Project policies, destinations, and reasoning control" },
+      { id: "agents", label: "Sub-agents", icon: UsersRound, detail: "Automatic cleanup and reusable sub-agent setups" },
     ],
   },
   {
@@ -290,7 +298,12 @@ export function SettingsModal({
 }) {
   const [local, setLocal] = useState(settings);
   const [localProjects, setLocalProjects] = useState(projects);
-  const [agentScope, setAgentScope] = useState<string>(activeProjectId ?? "global");
+  const [expandedPresetId, setExpandedPresetId] = useState<string | null>(null);
+  const [renamingPresetId, setRenamingPresetId] = useState<string | null>(null);
+  const [creatingPreset, setCreatingPreset] = useState(false);
+  const [presetDraftName, setPresetDraftName] = useState("");
+  const [policyNotice, setPolicyNotice] = useState("");
+  const subagentPanelId = useId();
   const [apiKey, setApiKey] = useState("");
   const [lmStudioToken, setLmStudioToken] = useState("");
   const [lmStudioConnectionMessage, setLmStudioConnectionMessage] = useState("");
@@ -342,6 +355,38 @@ export function SettingsModal({
     return options;
   }, [claudeModels, cursorModels, lmStudioModels, local.model, local.provider, openRouterModels, runtimeModels]);
 
+  const subAgentModelCatalogs = useMemo<Partial<Record<Provider, ChildAgentModelOption[]>>>(() => ({
+    ...(runtimeModels.length ? {
+      openai: runtimeModels.map((entry) => ({
+        id: entry.model || entry.id,
+        label: entry.displayName || entry.model || entry.id,
+        detail: entry.description || entry.model || entry.id,
+      })),
+    } : {}),
+    ...(claudeModels.length ? {
+      claude: claudeModels.filter((entry) => !entry.disabled).map((entry) => ({
+        id: entry.id,
+        label: entry.displayName,
+        detail: entry.description || entry.resolvedModel,
+        keywords: entry.resolvedModel,
+      })),
+    } : {}),
+    ...(cursorModels.length ? {
+      cursor: cursorModels.map((entry) => ({ id: entry.id, label: entry.name || entry.id, detail: entry.id })),
+    } : {}),
+    openrouter: openRouterModels.map((entry) => ({
+      id: entry.id,
+      label: entry.name || entry.id,
+      detail: entry.id,
+      keywords: entry.description,
+    })),
+    lmstudio: lmStudioModels.map((entry) => ({
+      id: entry.id,
+      label: entry.displayName || entry.id,
+      detail: `${entry.publisher}${entry.trainedForToolUse ? " · tool use" : ""}`,
+    })),
+  }), [claudeModels, cursorModels, lmStudioModels, openRouterModels, runtimeModels]);
+
   const defaultModelHelp = local.provider === "openrouter"
     ? "Search the live OpenRouter catalog. New threads will start with this model."
     : local.provider === "lmstudio"
@@ -384,7 +429,11 @@ export function SettingsModal({
       draftBaselineRef.current = { settings, projects };
       setLocal(settings);
       setLocalProjects(projects);
-      setAgentScope(activeProjectId ?? "global");
+      setExpandedPresetId(null);
+      setRenamingPresetId(null);
+      setCreatingPreset(false);
+      setPresetDraftName("");
+      setPolicyNotice("");
       onThemePreview(settings.theme);
       onEffortSliderPreview(settings.effortSlider);
       setSettingsSection(initialSection);
@@ -569,37 +618,111 @@ export function SettingsModal({
     } catch (reason) { onError(friendlyError(reason)); }
   };
 
-  const effectiveAgentScope = agentScope === "global" || localProjects.some((project) => project.id === agentScope)
-    ? agentScope
-    : "global";
-  const selectedAgentProject = effectiveAgentScope === "global"
-    ? null
-    : localProjects.find((project) => project.id === effectiveAgentScope) ?? null;
-  const customProjectPolicy = selectedAgentProject?.overrides?.subagents;
-  const agentPolicy = customProjectPolicy ?? projectSubagentSettingsFromApp(local);
-  const updateAgentPolicy = (next: ReturnType<typeof projectSubagentSettingsFromApp>) => {
-    if (!selectedAgentProject) {
-      setLocal({ ...local, subagentsEnabled: next.enabled, subagentMax: next.maxConcurrent, childAgents: next.childAgents });
+  const activeAgentProject = activeProjectId
+    ? localProjects.find((project) => project.id === activeProjectId) ?? null
+    : null;
+  const agentPolicy = activeAgentProject?.overrides?.subagents ?? projectSubagentSettingsFromApp(local);
+  const presetSourceName = activeAgentProject?.name ?? "Chats & project defaults";
+  const presetDestinationOptions = useMemo<AppSelectOption[]>(() => [
+    {
+      value: "apply:global",
+      label: "Chats & project defaults",
+      detail: "Use this preset for chats and projects without their own setup",
+      icon: <UsersRound size={13} aria-hidden="true" />,
+    },
+    ...localProjects.map((project) => ({
+      value: `apply:${project.id}`,
+      label: project.name,
+      detail: project.overrides?.subagents
+        ? "Replace this project's custom sub-agent setup"
+        : "Give this project its own sub-agent setup",
+      icon: <FolderCog size={13} aria-hidden="true" />,
+    })),
+    ...localProjects
+      .filter((project) => project.overrides?.subagents)
+      .map((project) => ({
+        value: `reset:${project.id}`,
+        label: `Reset ${project.name} to chat defaults`,
+        detail: "Remove its custom sub-agent setup",
+        icon: <RotateCcw size={13} aria-hidden="true" />,
+      })),
+  ], [localProjects]);
+  const updateAgentPolicy = (next: ReturnType<typeof projectSubagentSettingsFromApp>, scopeId: string) => {
+    if (scopeId === "global") {
+      setLocal((current) => ({ ...current, subagentsEnabled: next.enabled, subagentMax: next.maxConcurrent, childAgents: next.childAgents }));
       return;
     }
-    setLocalProjects(localProjects.map((project) => project.id === selectedAgentProject.id
+    setLocalProjects((current) => current.map((project) => project.id === scopeId
       ? { ...project, overrides: { ...(project.overrides ?? {}), subagents: next } }
       : project));
   };
-  const clearProjectAgentPolicy = () => {
-    if (!selectedAgentProject?.overrides?.subagents) return;
-    setLocalProjects(localProjects.map((project) => {
-      if (project.id !== selectedAgentProject.id) return project;
+  const clearProjectAgentPolicy = (projectId: string) => {
+    const projectName = localProjects.find((project) => project.id === projectId)?.name;
+    if (!projectName) return;
+    setLocalProjects((current) => current.map((project) => {
+      if (project.id !== projectId || !project.overrides?.subagents) return project;
       const overrides = { ...(project.overrides ?? {}) };
       delete overrides.subagents;
       return { ...project, overrides: Object.keys(overrides).length ? overrides : undefined };
     }));
+    setCreatingPreset(false);
+    setPolicyNotice(`${projectName} now uses Chats & project defaults.`);
+  };
+  const presetsFull = local.childAgentPresets.length >= MAX_CHILD_AGENT_PRESETS;
+  const updatePreset = (presetId: string, patch: Partial<ChildAgentPreset>) => {
+    setLocal((current) => ({
+      ...current,
+      childAgentPresets: current.childAgentPresets.map((preset) => preset.id === presetId ? { ...preset, ...patch } : preset),
+    }));
+  };
+  const createPreset = () => {
+    const name = presetDraftName.trim();
+    if (presetsFull || !name) return;
+    const id = uniqueChildAgentPresetId(name, local.childAgentPresets);
+    const policy = sanitizeChildAgentPresetPolicy(agentPolicy);
+    if (!policy) return;
+    setLocal((current) => ({
+      ...current,
+      childAgentPresets: [...current.childAgentPresets, { id, name, policy }],
+    }));
+    setExpandedPresetId(id);
+    setCreatingPreset(false);
+    setPresetDraftName("");
+    setPolicyNotice("");
+  };
+  const removePreset = (presetId: string) => {
+    setLocal((current) => ({ ...current, childAgentPresets: current.childAgentPresets.filter((preset) => preset.id !== presetId) }));
+    setExpandedPresetId((current) => current === presetId ? null : current);
+    setRenamingPresetId((current) => current === presetId ? null : current);
+  };
+  const applyPresetToScope = (preset: ChildAgentPreset, scopeId: string) => {
+    const next = sanitizeChildAgentPresetPolicy(preset.policy);
+    if (!next) return;
+    const scopeName = scopeId === "global"
+      ? "Chats & project defaults"
+      : localProjects.find((project) => project.id === scopeId)?.name;
+    if (!scopeName) return;
+    updateAgentPolicy(next, scopeId);
+    setCreatingPreset(false);
+    setPolicyNotice(`${preset.name.trim() || "Preset"} is now the sub-agent setup for ${scopeName}.`);
+  };
+  const runPresetDestinationAction = (preset: ChildAgentPreset, action: string) => {
+    if (action.startsWith("reset:")) {
+      clearProjectAgentPolicy(action.slice("reset:".length));
+      return;
+    }
+    if (action.startsWith("apply:")) applyPresetToScope(preset, action.slice("apply:".length));
   };
   const saveSettings = () => {
     const nextProjects = sanitizeProjectSubagentOverrides(localProjects);
     const normalizedSubagents = projectSubagentSettingsFromApp(local);
     onProjects(nextProjects);
-    onSave({ ...local, childAgents: normalizedSubagents.childAgents, subagentMax: normalizedSubagents.maxConcurrent });
+    onSave({
+      ...local,
+      childAgents: normalizedSubagents.childAgents,
+      childAgentPresets: sanitizeChildAgentPresets(local.childAgentPresets),
+      subagentMax: normalizedSubagents.maxConcurrent,
+    });
   };
 
   return (
@@ -829,46 +952,168 @@ export function SettingsModal({
           </section>}
 
           {settingsSection === "agents" &&
-          <section className="settings-section">
-            <div className="settings-section-heading">
-              <div className="settings-icon"><UsersRound size={17} /></div>
-              <div><h3>Sub-agents</h3><p>Let the model delegate parallel work to direct child agents. Applies when a new thread starts.</p></div>
-            </div>
-            <div className={`agent-settings-card ${local.autoArchiveSubagentThreads ? "enabled" : ""}`}>
-              <div className="agent-toggle-copy">
-                <strong>Archive sub-agent threads automatically</strong>
-                <small>After the parent finishes, move each settled child conversation to Archived. Children still working remain visible until they finish.</small>
+          <section className="settings-section subagent-settings">
+            <div className="subagent-archive-setting">
+              <span className="settings-subgroup-label">Thread cleanup</span>
+              <div className={`agent-settings-card single ${local.autoArchiveSubagentThreads ? "enabled" : ""}`}>
+                <div className="agent-toggle-copy">
+                  <strong>Archive sub-agent threads automatically</strong>
+                  <small>Move each settled sub-agent conversation to Archived once its parent finishes. Sub-agents still working stay visible.</small>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-label="Archive sub-agent threads automatically"
+                  aria-checked={local.autoArchiveSubagentThreads}
+                  className={`toggle-switch ${local.autoArchiveSubagentThreads ? "on" : ""}`}
+                  onClick={() => setLocal({ ...local, autoArchiveSubagentThreads: !local.autoArchiveSubagentThreads })}
+                >
+                  <span />
+                </button>
               </div>
-              <button
-                type="button"
-                role="switch"
-                aria-label="Archive sub-agent threads automatically"
-                aria-checked={local.autoArchiveSubagentThreads}
-                className={`toggle-switch ${local.autoArchiveSubagentThreads ? "on" : ""}`}
-                onClick={() => setLocal({ ...local, autoArchiveSubagentThreads: !local.autoArchiveSubagentThreads })}
-              >
-                <span />
-              </button>
             </div>
-            <div className="subagent-scope-bar">
-              <label htmlFor="subagent-scope">Policy for</label>
-              <select id="subagent-scope" value={effectiveAgentScope} onChange={(event) => setAgentScope(event.target.value)}>
-                <option value="global">Chats &amp; project defaults</option>
-                {localProjects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
-              </select>
-              {selectedAgentProject && (customProjectPolicy
-                ? <button type="button" className="secondary-button" onClick={clearProjectAgentPolicy}><RotateCcw size={12} /> Use defaults</button>
-                : <button type="button" className="secondary-button" onClick={() => updateAgentPolicy(projectSubagentSettingsFromApp(local))}><Plus size={12} /> Customize</button>)}
+
+            {policyNotice && <p className="subagent-applied-note" role="status"><Check size={13} aria-hidden="true" /> {policyNotice}</p>}
+
+            <div className="preset-panel">
+                  <div className="preset-section-heading">
+                    <h4>Sub-agent presets</h4>
+                    <p>Save providers, models, reasoning, and concurrency as one reusable setup.</p>
+                  </div>
+                  <div className="preset-toolbar">
+                    <span>{local.childAgentPresets.length} of {MAX_CHILD_AGENT_PRESETS} sub-agent presets</span>
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={() => setCreatingPreset(true)}
+                      disabled={presetsFull || creatingPreset}
+                    ><Plus size={12} /> Create preset</button>
+                  </div>
+                  {creatingPreset && (
+                    <div className="preset-create-card">
+                      <span className="preset-create-heading"><strong>Create a preset</strong><small>Name the reusable setup before configuring it.</small></span>
+                      <label>
+                        <span>Preset name</span>
+                        <input
+                          autoFocus
+                          aria-label="New preset name"
+                          value={presetDraftName}
+                          maxLength={60}
+                          placeholder="For example, Code review sub-agents"
+                          onChange={(event) => setPresetDraftName(event.target.value)}
+                          onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); createPreset(); } }}
+                        />
+                      </label>
+                      <p><Check size={13} aria-hidden="true" /> Starts as a copy of the setup currently used by <strong>{presetSourceName}</strong>. Editing this preset will not change that setup until you apply it.</p>
+                      <div className="preset-create-actions">
+                        <button type="button" className="secondary-button" onClick={() => { setCreatingPreset(false); setPresetDraftName(""); }}>Cancel</button>
+                        <button type="button" className="primary-button" disabled={!presetDraftName.trim()} onClick={createPreset}>Create and configure</button>
+                      </div>
+                    </div>
+                  )}
+                  {local.childAgentPresets.length ? (
+                    <div className="preset-list">
+                      {local.childAgentPresets.map((preset, index) => {
+                        const expanded = expandedPresetId === preset.id;
+                        const renaming = renamingPresetId === preset.id;
+                        const subAgents = preset.policy.childAgents.targets;
+                        const providers = [...new Set(subAgents.map((target) => providerDisplayName(target.provider)))];
+                        const name = preset.name.trim() || `preset ${index + 1}`;
+                        return (
+                          <article key={preset.id} className={`preset-card ${expanded ? "expanded" : ""}`}>
+                            <div className="preset-card-head">
+                              {renaming ? (
+                                <div className="preset-card-rename">
+                                <input
+                                  autoFocus
+                                  aria-label={`Name for preset ${index + 1}`}
+                                  value={preset.name}
+                                  maxLength={60}
+                                  placeholder="Name this preset"
+                                  onChange={(event) => updatePreset(preset.id, { name: event.target.value })}
+                                  onBlur={() => setRenamingPresetId((current) => current === preset.id ? null : current)}
+                                  onKeyDown={(event) => {
+                                    if (event.key === "Enter") event.currentTarget.blur();
+                                    if (event.key === "Escape") setRenamingPresetId(null);
+                                  }}
+                                />
+                                </div>
+                              ) : (
+                                <button
+                                  type="button"
+                                  className="preset-card-disclosure"
+                                  aria-expanded={expanded}
+                                  aria-controls={`${subagentPanelId}-preset-${preset.id}`}
+                                  aria-label={expanded ? `Collapse ${name}` : `Expand ${name}`}
+                                  onClick={() => setExpandedPresetId(expanded ? null : preset.id)}
+                                >
+                                  <span className="preset-card-copy">
+                                    <strong>{preset.name || "Untitled preset"}</strong>
+                                    <small>
+                                      {subAgents.length} configured · {preset.policy.maxConcurrent} at a time
+                                      {providers.length ? ` · ${providers.join(", ")}` : ""}
+                                      {preset.policy.enabled ? "" : " · delegation off"}
+                                    </small>
+                                  </span>
+                                  <ChevronRight className="preset-card-caret" size={15} aria-hidden="true" />
+                                </button>
+                              )}
+                              <div className="preset-card-actions">
+                                <button
+                                  type="button"
+                                  className="icon-button preset-rename-button"
+                                  aria-label={renaming ? `Finish renaming ${name}` : `Rename ${name}`}
+                                  title={renaming ? "Finish renaming" : "Rename preset"}
+                                  onMouseDown={(event) => event.preventDefault()}
+                                  onClick={() => setRenamingPresetId(renaming ? null : preset.id)}
+                                >{renaming ? <Check size={13} /> : <Pencil size={13} />}</button>
+                                <div className="preset-apply-menu">
+                                  <AppSelectMenu
+                                    value=""
+                                    options={presetDestinationOptions}
+                                    ariaLabel={`Apply ${name}`}
+                                    placeholder="Apply"
+                                    onChange={(action) => runPresetDestinationAction(preset, action)}
+                                  />
+                                </div>
+                                <button
+                                  type="button"
+                                  className="icon-button preset-delete-button"
+                                  aria-label={`Delete ${name}`}
+                                  onClick={() => removePreset(preset.id)}
+                                ><Trash2 size={13} /></button>
+                              </div>
+                            </div>
+                            <div
+                              id={`${subagentPanelId}-preset-${preset.id}`}
+                              className={`preset-card-body ${expanded ? "open" : ""}`}
+                              aria-hidden={!expanded || undefined}
+                              inert={!expanded ? true : undefined}
+                            >
+                              <div className="preset-card-editor">
+                                <SubagentPolicyEditor
+                                  policy={preset.policy}
+                                  readiness={childAgentReadiness}
+                                  disabled={false}
+                                  modelCatalogs={subAgentModelCatalogs}
+                                  modelFavorites={modelFavorites}
+                                  onToggleModelFavorite={onToggleModelFavorite}
+                                  onDiscoverOpenRouterModels={onDiscoverOpenRouterModels}
+                                  onChange={(policy) => updatePreset(preset.id, { policy })}
+                                />
+                              </div>
+                            </div>
+                          </article>
+                        );
+                      })}
+                    </div>
+                  ) : !creatingPreset ? (
+                    <p className="preset-empty">
+                      No presets yet. Create one to configure a reusable group of sub-agents, then apply it wherever you need it.
+                    </p>
+                  ) : null}
             </div>
-            {selectedAgentProject && !customProjectPolicy && (
-              <div className="subagent-inheritance-note"><Check size={13} /> {selectedAgentProject.name} currently inherits the Chats &amp; project defaults policy. Customize it to make project-specific changes.</div>
-            )}
-            <SubagentPolicyEditor
-              policy={agentPolicy}
-              readiness={childAgentReadiness}
-              disabled={Boolean(selectedAgentProject && !customProjectPolicy)}
-              onChange={updateAgentPolicy}
-            />
+
           </section>}
 
           {settingsSection === "models" &&
@@ -1076,61 +1321,6 @@ export function SettingsModal({
           <button className="primary-button" onClick={saveSettings}>Save settings</button>
         </div>
       </div>
-    </div>
-  );
-}
-
-function SubagentPolicyEditor({ policy, readiness, disabled, onChange }: {
-  policy: ReturnType<typeof projectSubagentSettingsFromApp>;
-  readiness: ChildAgentReadiness;
-  disabled: boolean;
-  onChange: (next: ReturnType<typeof projectSubagentSettingsFromApp>) => void;
-}) {
-  return (
-    <div className={`subagent-policy-editor ${disabled ? "disabled" : ""}`} inert={disabled ? true : undefined}>
-      <div className={`agent-settings-card ${policy.enabled ? "enabled" : ""}`}>
-        <div className="agent-toggle-copy">
-          <strong>Allow sub-agent spawning</strong>
-          <small>{policy.enabled ? "The model may delegate when it decides that parallel work helps." : "No sub-agent tools are exposed to the model."}</small>
-        </div>
-        <button
-          type="button"
-          role="switch"
-          aria-label="Allow sub-agent spawning"
-          aria-checked={policy.enabled}
-          className={`toggle-switch ${policy.enabled ? "on" : ""}`}
-          onClick={() => onChange({ ...policy, enabled: !policy.enabled })}
-        >
-          <span />
-        </button>
-      </div>
-      <div className={`agent-limit-row ${policy.enabled ? "" : "disabled"}`}>
-        <div>
-          <strong>Maximum concurrent sub-agents</strong>
-          <small>Choose 1–24 active at once per thread, excluding the root agent. This also limits specialist profiles exposed to Claude.</small>
-        </div>
-        <div className="number-stepper" aria-label="Maximum concurrent sub-agents">
-          <button type="button" onClick={() => onChange({ ...policy, maxConcurrent: Math.max(1, policy.maxConcurrent - 1) })} disabled={!policy.enabled || policy.maxConcurrent <= 1}><Minus size={13} /></button>
-          <strong>{policy.maxConcurrent}</strong>
-          <button type="button" onClick={() => onChange({ ...policy, maxConcurrent: Math.min(24, policy.maxConcurrent + 1) })} disabled={!policy.enabled || policy.maxConcurrent >= 24}><Plus size={13} /></button>
-        </div>
-      </div>
-      <div className="agent-safety-row">
-        <span><ShieldCheck size={13} /> Inherits permissions</span>
-        <span><Check size={13} /> Direct children only</span>
-        <span><Check size={13} /> Frozen per thread</span>
-      </div>
-
-      <div className="settings-section-heading child-agent-heading">
-        <div className="settings-icon"><Boxes size={17} /></div>
-        <div><h3>Cross-provider destinations</h3><p>Choose the providers, models, and reasoning authority available to the root agent. Children run through Mythra Code.</p></div>
-      </div>
-      <ChildAgentRoster
-        value={policy.childAgents}
-        subagentsEnabled={policy.enabled}
-        readiness={readiness}
-        onChange={(childAgents) => onChange({ ...policy, childAgents })}
-      />
     </div>
   );
 }

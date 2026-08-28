@@ -1,5 +1,7 @@
-import { useState } from "react";
-import { AlertTriangle, Check, Plus, Trash2 } from "lucide-react";
+import { useId, useState } from "react";
+import { AlertTriangle, ChevronDown, Plus, Trash2 } from "lucide-react";
+import { ProviderLogo } from "./BrandLogos";
+import { AppSelectMenu, type AppSelectOption } from "./AppSelectMenu";
 import {
   CHILD_AGENT_PROVIDERS,
   CHILD_AGENT_REASONING_EFFORTS,
@@ -14,211 +16,328 @@ import {
   type ChildAgentReadiness,
 } from "../lib/childAgents";
 import type { ChildAgentSettings, ChildAgentTarget, Provider } from "../types";
+import { favoriteModels, type ModelFavorites } from "../lib/modelFavorites";
+
+export interface ChildAgentModelOption {
+  id: string;
+  label: string;
+  detail?: string;
+  keywords?: string;
+}
+
+const BUILTIN_MODEL_CATALOGS: Record<Provider, ChildAgentModelOption[]> = {
+  openai: [
+    { id: "gpt-5.6-sol", label: "Sol", detail: "gpt-5.6-sol · detail & polish" },
+    { id: "gpt-5.6-terra", label: "Terra", detail: "gpt-5.6-terra · everyday power" },
+    { id: "gpt-5.6-luna", label: "Luna", detail: "gpt-5.6-luna · fast & focused" },
+  ],
+  claude: [
+    { id: "claude-fable-5", label: "Fable 5", detail: "Frontier coding" },
+    { id: "claude-opus-5", label: "Opus 5", detail: "Deepest reasoning" },
+    { id: "claude-sonnet-5", label: "Sonnet 5", detail: "Balanced power" },
+    { id: "claude-haiku-4-5", label: "Haiku 4.5", detail: "Fast and efficient" },
+  ],
+  cursor: [{ id: "auto", label: "Auto", detail: "Cursor recommended" }],
+  openrouter: [],
+  lmstudio: [],
+};
+
+const REASONING_MODE_OPTIONS: AppSelectOption[] = [
+  { value: "inherit", label: "Inherit parent", detail: "Use the main agent's level" },
+  { value: "fixed", label: "You set the level", detail: "Always use one chosen level" },
+  { value: "agent", label: "Main agent decides", detail: "Let the main agent choose within a ceiling" },
+];
+
+const REASONING_LABELS: Record<(typeof CHILD_AGENT_REASONING_EFFORTS)[number], string> = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "Extra high",
+  max: "Maximum",
+  ultra: "Ultra",
+};
+
+const REASONING_OPTIONS: AppSelectOption[] = CHILD_AGENT_REASONING_EFFORTS.map((effort) => ({
+  value: effort,
+  label: REASONING_LABELS[effort],
+}));
+
+function modelOptionsFor(
+  provider: Provider,
+  catalogs: Partial<Record<Provider, ChildAgentModelOption[]>> | undefined,
+  selectedModel: string,
+): AppSelectOption[] {
+  const supplied = catalogs?.[provider];
+  const catalog = supplied?.length ? supplied : BUILTIN_MODEL_CATALOGS[provider];
+  const options: AppSelectOption[] = catalog.map((entry) => ({
+    value: entry.id,
+    label: entry.label,
+    detail: entry.detail ?? entry.id,
+    keywords: entry.keywords,
+    icon: <ProviderLogo provider={provider} size={11} />,
+  }));
+  if (selectedModel && !options.some((option) => option.value === selectedModel)) {
+    options.unshift({
+      value: selectedModel,
+      label: selectedModel,
+      detail: "Previously configured model",
+      icon: <ProviderLogo provider={provider} size={11} />,
+    });
+  }
+  return options;
+}
 
 /**
  * The roster of provider/model destinations a root agent may delegate to.
  *
- * Deliberately lives in Settings rather than the composer: choosing which
- * providers a thread can spawn on is a considered decision made once, and a
- * thread freezes the answer when it starts. The composer only ever shows the
- * resulting one-line summary.
+ * Choosing which providers a thread can spawn on is a considered decision made
+ * once, and a thread freezes the answer when it starts — so the durable place
+ * to make it is Settings, and the composer only ever shows the resulting
+ * summary.
+ *
+ * Every worker is one collapsed line by default: who it is, where it runs, and
+ * who controls its reasoning. The eight controls that define a worker only
+ * appear for the one worker being edited, which is what keeps a roster of a
+ * dozen destinations readable.
  */
-export function ChildAgentRoster({ value, subagentsEnabled, readiness, onChange }: {
+export function ChildAgentRoster({ value, enabled, readiness, modelCatalogs, modelFavorites = {}, onToggleModelFavorite, onDiscoverOpenRouterModels, onChange }: {
   value: ChildAgentSettings;
-  subagentsEnabled: boolean;
+  /** Cross-provider delegation is on *and* sub-agents themselves are on. */
+  enabled: boolean;
   readiness: ChildAgentReadiness;
+  modelCatalogs?: Partial<Record<Provider, ChildAgentModelOption[]>>;
+  modelFavorites?: ModelFavorites;
+  onToggleModelFavorite?: (provider: Provider, model: string) => void;
+  onDiscoverOpenRouterModels?: (query: string) => void;
   onChange: (next: ChildAgentSettings) => void;
 }) {
+  const [expandedId, setExpandedId] = useState<string | null>(null);
   const [draftId, setDraftId] = useState("");
   const [draftProvider, setDraftProvider] = useState<Provider>("claude");
-  const [draftModel, setDraftModel] = useState("");
+  const panelPrefix = useId();
 
   const setTargets = (targets: ChildAgentTarget[]) => onChange({ ...value, targets });
   const updateTarget = (id: string, patch: Partial<ChildAgentTarget>) => {
     setTargets(value.targets.map((target) => (target.id === id ? { ...target, ...patch } : target)));
   };
-
-  const addTarget = (candidate: Omit<ChildAgentTarget, "enabled">) => {
-    if (value.targets.length >= MAX_CHILD_AGENT_TARGETS) return;
-    const id = uniqueChildAgentId(candidate.id || candidate.provider, value.targets);
-    setTargets([...value.targets, { ...candidate, id, label: candidate.label || id, enabled: true }]);
-    setDraftId("");
-    setDraftModel("");
+  const removeTarget = (id: string) => {
+    setExpandedId((current) => (current === id ? null : current));
+    setTargets(value.targets.filter((target) => target.id !== id));
   };
 
   const full = value.targets.length >= MAX_CHILD_AGENT_TARGETS;
-  const unusedSuggestions = SUGGESTED_CHILD_AGENT_TARGETS.filter(
-    (suggestion) => !value.targets.some((target) => target.provider === suggestion.provider),
-  );
+  const addTarget = () => {
+    if (full) return;
+    // The per-provider suggestion carries a sensible default model and a
+    // description written for the model that has to choose between workers,
+    // so a blank name still produces a worker worth spawning.
+    const suggestion = SUGGESTED_CHILD_AGENT_TARGETS.find((entry) => entry.provider === draftProvider);
+    const id = uniqueChildAgentId(draftId || suggestion?.id || draftProvider, value.targets);
+    setTargets([...value.targets, {
+      model: draftProvider === "cursor" ? "auto" : "",
+      description: "",
+      reasoningMode: "inherit",
+      reasoningEffort: "medium",
+      reasoningMaxEffort: "high",
+      ...suggestion,
+      id,
+      provider: draftProvider,
+      label: draftId || suggestion?.label || providerDisplayName(draftProvider),
+      enabled: true,
+    }]);
+    setDraftId("");
+    // A new worker still needs a model, so it opens on the fields that matter.
+    setExpandedId(id);
+  };
 
   return (
-    <>
-      <div className={`agent-settings-card ${value.enabled && subagentsEnabled ? "enabled" : ""}`}>
-        <div className="agent-toggle-copy">
-          <strong>Allow cross-provider sub-agents</strong>
-          <small>
-            {!subagentsEnabled
-              ? "Turn sub-agent spawning on first — cross-provider children use the same budget and depth rules."
-              : value.enabled
-                ? "The root agent may delegate to the destinations below. Each child runs in this thread’s folder under the same permission mode."
-                : "The root agent may only delegate inside its own provider."}
-          </small>
-        </div>
-        <button
-          type="button"
-          role="switch"
-          aria-checked={value.enabled}
-          aria-label="Allow cross-provider sub-agents"
-          disabled={!subagentsEnabled}
-          className={`toggle-switch ${value.enabled && subagentsEnabled ? "on" : ""}`}
-          onClick={() => onChange({ ...value, enabled: !value.enabled })}
-        >
-          <span />
-        </button>
+    <div className={`worker-roster ${enabled ? "" : "muted"}`}>
+      <div className="worker-roster-head">
+        <span>
+          <strong>Sub-agents</strong>
+          <small>Each one is a named choice the model can delegate to.</small>
+        </span>
+        <span className="worker-roster-count">{value.targets.length} of {MAX_CHILD_AGENT_TARGETS}</span>
       </div>
 
-      <div className={`agent-limit-row child-agent-roster ${value.enabled && subagentsEnabled ? "" : "disabled"}`}>
-        <div>
-          <strong>Approved destinations</strong>
-          <small>Each destination becomes one named choice in the model’s spawn tool. A thread freezes this list when it starts.</small>
-        </div>
-      </div>
-
-      {value.targets.length > 0 && (
-        <div className="child-agent-list">
+      {value.targets.length > 0 ? (
+        <ul className="worker-list">
           {value.targets.map((target) => {
             const issue = childAgentTargetIssue(target, readiness);
+            const expanded = expandedId === target.id;
+            const panelId = `${panelPrefix}-${target.id}`;
+            const selectedModel = childAgentModel(target);
+            const modelOptions = modelOptionsFor(target.provider, modelCatalogs, selectedModel);
             return (
-              <div className="child-agent-row" key={target.id}>
-                <div className="child-agent-identity">
-                  <code>{target.id}</code>
-                  <small>{providerDisplayName(target.provider)} · {childAgentModel(target) || "choose a model"}</small>
-                </div>
-                <select
-                  aria-label={`Provider for ${target.id}`}
-                  value={target.provider}
-                  onChange={(event) => updateTarget(target.id, { provider: event.target.value as Provider, model: "" })}
-                >
-                  {CHILD_AGENT_PROVIDERS.map((provider) => (
-                    <option key={provider} value={provider}>{providerDisplayName(provider)}</option>
-                  ))}
-                </select>
-                <input
-                  aria-label={`Model for ${target.id}`}
-                  maxLength={128}
-                  value={target.model}
-                  placeholder="Provider default"
-                  onChange={(event) => updateTarget(target.id, { model: event.target.value })}
-                />
-                <input
-                  aria-label={`When to use ${target.id}`}
-                  maxLength={400}
-                  value={target.description}
-                  placeholder="When the root agent should pick this"
-                  onChange={(event) => updateTarget(target.id, { description: event.target.value })}
-                />
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={target.enabled}
-                  aria-label={`Enable ${target.id}`}
-                  className={`toggle-switch ${target.enabled ? "on" : ""}`}
-                  onClick={() => updateTarget(target.id, { enabled: !target.enabled })}
-                >
-                  <span />
-                </button>
-                <button
-                  type="button"
-                  className="child-agent-remove"
-                  aria-label={`Remove ${target.id}`}
-                  onClick={() => setTargets(value.targets.filter((entry) => entry.id !== target.id))}
-                >
-                  <Trash2 size={13} />
-                </button>
-                <div className="child-agent-reasoning">
-                  <span>Reasoning</span>
-                  <select
-                    aria-label={`Reasoning control for ${target.id}`}
-                    value={target.reasoningMode}
-                    onChange={(event) => updateTarget(target.id, { reasoningMode: event.target.value as ChildAgentTarget["reasoningMode"] })}
+              <li className={`worker-card ${expanded ? "expanded" : ""} ${target.enabled ? "" : "off"}`} key={target.id}>
+                <div className="worker-card-head">
+                  <button
+                    type="button"
+                    className="worker-card-face"
+                    aria-expanded={expanded}
+                    aria-controls={panelId}
+                    aria-label={`Configure ${target.id}`}
+                    onClick={() => setExpandedId(expanded ? null : target.id)}
                   >
-                    <option value="inherit">Inherit parent</option>
-                    <option value="fixed">You set the level</option>
-                    <option value="agent">Main agent decides</option>
-                  </select>
-                  {target.reasoningMode === "fixed" && (
-                    <select
-                      aria-label={`Reasoning level for ${target.id}`}
-                      value={target.reasoningEffort}
-                      onChange={(event) => updateTarget(target.id, { reasoningEffort: event.target.value as ChildAgentTarget["reasoningEffort"] })}
-                    >
-                      {CHILD_AGENT_REASONING_EFFORTS.map((effort) => <option key={effort} value={effort}>{effort}</option>)}
-                    </select>
-                  )}
-                  {target.reasoningMode === "agent" && (
-                    <select
-                      aria-label={`Maximum reasoning for ${target.id}`}
-                      value={target.reasoningMaxEffort}
-                      onChange={(event) => updateTarget(target.id, { reasoningMaxEffort: event.target.value as ChildAgentTarget["reasoningMaxEffort"] })}
-                    >
-                      {CHILD_AGENT_REASONING_EFFORTS.map((effort) => <option key={effort} value={effort}>{effort}</option>)}
-                    </select>
-                  )}
-                  <small>{describeChildAgentReasoning(target)}</small>
+                    <span className="worker-mark" aria-hidden="true"><ProviderLogo provider={target.provider} size={14} /></span>
+                    <span className="worker-copy">
+                      <code>{target.id}</code>
+                      <small>{providerDisplayName(target.provider)} · {childAgentModel(target) || "provider default"} · {describeChildAgentReasoning(target)}</small>
+                    </span>
+                    <ChevronDown className="worker-caret" size={14} aria-hidden="true" />
+                  </button>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={target.enabled}
+                    aria-label={`Enable ${target.id}`}
+                    className={`toggle-switch ${target.enabled ? "on" : ""}`}
+                    onClick={() => updateTarget(target.id, { enabled: !target.enabled })}
+                  >
+                    <span />
+                  </button>
                 </div>
+
                 {issue && target.enabled && (
-                  <p className="child-agent-issue" role="status"><AlertTriangle size={12} /> {issue}</p>
+                  <p className="worker-issue" role="status"><AlertTriangle size={12} aria-hidden="true" /> {issue}</p>
                 )}
-              </div>
+
+                <div
+                  id={panelId}
+                  className={`worker-config-shell ${expanded ? "open" : ""}`}
+                  aria-hidden={!expanded || undefined}
+                  inert={!expanded ? true : undefined}
+                >
+                  <div className="worker-config">
+                    <div className="worker-field">
+                      <span>Provider</span>
+                      <AppSelectMenu
+                        ariaLabel={`Provider for ${target.id}`}
+                        value={target.provider}
+                        options={CHILD_AGENT_PROVIDERS.map((provider) => ({
+                          value: provider,
+                          label: providerDisplayName(provider),
+                          detail: provider === "openai"
+                            ? "ChatGPT subscription"
+                            : provider === "claude"
+                              ? "Claude Code subscription"
+                              : provider === "cursor"
+                                ? "Cursor subscription"
+                                : provider === "lmstudio"
+                                  ? "Local LM Studio server"
+                                  : "API model routing",
+                          icon: <ProviderLogo provider={provider} size={11} />,
+                        }))}
+                        onChange={(value) => {
+                          const provider = value as Provider;
+                          updateTarget(target.id, {
+                            provider,
+                            model: childAgentModel({ provider, model: "" }),
+                            label: target.label === providerDisplayName(target.provider) ? providerDisplayName(provider) : target.label,
+                          });
+                        }}
+                      />
+                    </div>
+                    <div className="worker-field">
+                      <span>Model</span>
+                      <AppSelectMenu
+                        ariaLabel={`Model for ${target.id}`}
+                        value={selectedModel}
+                        options={modelOptions}
+                        favorites={favoriteModels(modelFavorites, target.provider)}
+                        {...(onToggleModelFavorite ? { onToggleFavorite: (model: string) => onToggleModelFavorite(target.provider, model) } : {})}
+                        {...(target.provider === "openrouter" && onDiscoverOpenRouterModels ? { onSearch: onDiscoverOpenRouterModels } : {})}
+                        placeholder={target.provider === "openrouter" ? "Choose an OpenRouter model" : target.provider === "lmstudio" ? "Choose an LM Studio model" : "Choose a model"}
+                        searchable={modelOptions.length > 8 || target.provider === "openrouter" || target.provider === "lmstudio"}
+                        emptyMessage={target.provider === "openrouter"
+                          ? "No OpenRouter models are available. Check the API key and refresh in Settings."
+                          : target.provider === "lmstudio"
+                            ? "No LM Studio models are available. Start the server and refresh in Settings."
+                            : "No models are available for this provider."}
+                        onChange={(model) => updateTarget(target.id, { model })}
+                      />
+                    </div>
+                    <div className="worker-field">
+                      <span>Reasoning</span>
+                      <AppSelectMenu
+                        ariaLabel={`Reasoning control for ${target.id}`}
+                        value={target.reasoningMode}
+                        options={REASONING_MODE_OPTIONS}
+                        onChange={(reasoningMode) => updateTarget(target.id, { reasoningMode: reasoningMode as ChildAgentTarget["reasoningMode"] })}
+                      />
+                    </div>
+                    {target.reasoningMode === "fixed" && (
+                      <div className="worker-field">
+                        <span>Level</span>
+                        <AppSelectMenu
+                          ariaLabel={`Reasoning level for ${target.id}`}
+                          value={target.reasoningEffort}
+                          options={REASONING_OPTIONS}
+                          onChange={(reasoningEffort) => updateTarget(target.id, { reasoningEffort: reasoningEffort as ChildAgentTarget["reasoningEffort"] })}
+                        />
+                      </div>
+                    )}
+                    {target.reasoningMode === "agent" && (
+                      <div className="worker-field">
+                        <span>Ceiling</span>
+                        <AppSelectMenu
+                          ariaLabel={`Maximum reasoning for ${target.id}`}
+                          value={target.reasoningMaxEffort}
+                          options={REASONING_OPTIONS}
+                          onChange={(reasoningMaxEffort) => updateTarget(target.id, { reasoningMaxEffort: reasoningMaxEffort as ChildAgentTarget["reasoningMaxEffort"] })}
+                        />
+                      </div>
+                    )}
+                    <label className="worker-field wide">
+                      <span>When to use</span>
+                      <input
+                        aria-label={`When to use ${target.id}`}
+                        maxLength={400}
+                        value={target.description}
+                        placeholder="How the model should decide to use this sub-agent"
+                        onChange={(event) => updateTarget(target.id, { description: event.target.value })}
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      className="worker-remove"
+                      aria-label={`Remove ${target.id}`}
+                      onClick={() => removeTarget(target.id)}
+                    >
+                      <Trash2 size={12} /> Remove sub-agent
+                    </button>
+                  </div>
+                </div>
+              </li>
             );
           })}
-        </div>
+        </ul>
+      ) : (
+        <p className="worker-empty">No sub-agents yet. Add one below to let the model delegate across providers.</p>
       )}
 
-      <div className="inline-create three">
+      <div className="worker-add">
         <input
           aria-label="New destination name"
           maxLength={40}
           value={draftId}
           placeholder="Name, e.g. reviewer"
           onChange={(event) => setDraftId(sanitizeChildAgentIdInput(event.target.value))}
+          onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addTarget(); } }}
         />
-        <select aria-label="New destination provider" value={draftProvider} onChange={(event) => setDraftProvider(event.target.value as Provider)}>
-          {CHILD_AGENT_PROVIDERS.map((provider) => (
-            <option key={provider} value={provider}>{providerDisplayName(provider)}</option>
-          ))}
-        </select>
-        <input
-          aria-label="New destination model"
-          maxLength={128}
-          value={draftModel}
-          placeholder="Model (blank for provider default)"
-          onChange={(event) => setDraftModel(event.target.value)}
+        <AppSelectMenu
+          ariaLabel="New sub-agent provider"
+          value={draftProvider}
+          options={CHILD_AGENT_PROVIDERS.map((provider) => ({
+            value: provider,
+            label: providerDisplayName(provider),
+            icon: <ProviderLogo provider={provider} size={11} />,
+          }))}
+          onChange={(provider) => setDraftProvider(provider as Provider)}
         />
-        <button
-          type="button"
-          disabled={!draftId.trim() || full}
-          onClick={() => addTarget({ id: draftId, provider: draftProvider, model: draftModel.trim(), label: draftId, description: "", reasoningMode: "inherit", reasoningEffort: "medium", reasoningMaxEffort: "high" })}
-        >
-          <Plus size={12} /> Add
-        </button>
+        <button type="button" disabled={full} onClick={addTarget}><Plus size={12} /> Add sub-agent</button>
       </div>
-
-      {unusedSuggestions.length > 0 && !full && (
-        <div className="child-agent-suggestions">
-          {unusedSuggestions.map((suggestion) => (
-            <button type="button" key={suggestion.provider} onClick={() => addTarget(suggestion)}>
-              <Plus size={11} /> {suggestion.label}
-            </button>
-          ))}
-        </div>
-      )}
-
-      <div className="agent-safety-row">
-        <span><Check size={13} /> Children inherit this thread’s folder</span>
-        <span><Check size={13} /> Same permission mode</span>
-        <span><Check size={13} /> Children cannot delegate further</span>
-      </div>
-    </>
+      {full && <p className="worker-empty">This preset has reached its {MAX_CHILD_AGENT_TARGETS}-sub-agent limit.</p>}
+    </div>
   );
 }

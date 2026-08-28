@@ -20,12 +20,14 @@ import {
   safeSubagentConcurrency,
   sanitizeChildAgentIdInput,
   sanitizeChildAgentLinks,
+  sanitizeChildAgentPresets,
   sanitizeChildAgentPolicies,
   sanitizeChildAgentSettings,
   sanitizeProjectSubagentSettings,
   settingsWithoutChildDelegation,
   settingsWithProjectSubagents,
   uniqueChildAgentId,
+  uniqueChildAgentPresetId,
   type ChildAgentReadiness,
 } from "./childAgents";
 import type { ChildAgentTarget } from "../types";
@@ -79,6 +81,46 @@ describe("child agent identities", () => {
     const existing = [target({ id: "claude" })];
     expect(uniqueChildAgentId("claude", existing)).toBe("claude-2");
     expect(uniqueChildAgentId("fresh", existing)).toBe("fresh");
+  });
+
+  it("gives crew presets stable unique ids", () => {
+    const policy = { enabled: true, maxConcurrent: 1, childAgents: { enabled: true, targets: [target()] } };
+    const existing = [{ id: "review-team", name: "Review team", policy }];
+    expect(uniqueChildAgentPresetId("Review team", existing)).toBe("review-team-2");
+  });
+});
+
+describe("crew presets", () => {
+  it("sanitizes complete reusable policies and returns fresh destination objects", () => {
+    const source = [{
+      id: "Review Team!",
+      name: "  Review   team  ",
+      policy: { enabled: true, maxConcurrent: 99, childAgents: { enabled: true, targets: [target()] } },
+    }];
+
+    const presets = sanitizeChildAgentPresets(source);
+
+    expect(presets).toEqual([{
+      id: "review-team",
+      name: "Review team",
+      policy: expect.objectContaining({
+        enabled: true,
+        maxConcurrent: 1,
+        childAgents: expect.objectContaining({ targets: [expect.objectContaining({ id: "terra" })] }),
+      }),
+    }]);
+    expect(presets[0].policy.childAgents.targets[0]).not.toBe(source[0].policy.childAgents.targets[0]);
+  });
+
+  it("drops malformed presets and implicitly enables the roster in older presets", () => {
+    const valid = { id: "crew", name: "Crew", policy: { enabled: false, maxConcurrent: 2, childAgents: { enabled: false, targets: [] } } };
+    expect(sanitizeChildAgentPresets([valid, { ...valid, name: "Duplicate" }, { id: "bad", name: "Bad" }])).toEqual([
+      expect.objectContaining({
+        id: "crew",
+        name: "Crew",
+        policy: expect.objectContaining({ childAgents: expect.objectContaining({ enabled: true }) }),
+      }),
+    ]);
   });
 });
 

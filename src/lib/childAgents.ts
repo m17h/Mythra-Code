@@ -1,7 +1,7 @@
 import { DEFAULT_CHILD_AGENT_SETTINGS, DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_OPENAI_MODEL } from "./appConfig";
 import { canOwnThread } from "./nativeAgentLinks";
 import type { TaskStatus } from "./taskStore";
-import type { AppSettings, ChildAgentSettings, ChildAgentTarget, PermissionMode, Project, ProjectSubagentSettings, Provider } from "../types";
+import type { AppSettings, ChildAgentPreset, ChildAgentSettings, ChildAgentTarget, PermissionMode, Project, ProjectSubagentSettings, Provider } from "../types";
 import type { ReasoningEffort } from "../components/ModelPowerControl";
 
 /**
@@ -17,6 +17,7 @@ export const CHILD_AGENT_PROVIDERS: Provider[] = ["openai", "openrouter", "lmstu
 
 /** Mirrors the backend ceiling in `agents.rs`. */
 export const MAX_CHILD_AGENT_TARGETS = 24;
+export const MAX_CHILD_AGENT_PRESETS = 12;
 /**
  * Most children one thread may run at once. Numerically the same as the
  * destination ceiling today, but a different rule: a roster of destinations is
@@ -197,6 +198,17 @@ export function uniqueChildAgentId(candidate: string, existing: ChildAgentTarget
   return `${base.slice(0, 32)}-${Date.now().toString(36)}`;
 }
 
+/** Give a user-created preset a stable storage id without coupling it to its editable name. */
+export function uniqueChildAgentPresetId(candidate: string, existing: ChildAgentPreset[]): string {
+  const base = normalizeChildAgentId(candidate) || "crew-preset";
+  if (!existing.some((preset) => preset.id === base)) return base;
+  for (let suffix = 2; suffix < 100; suffix += 1) {
+    const next = `${base.slice(0, 36)}-${suffix}`;
+    if (!existing.some((preset) => preset.id === next)) return next;
+  }
+  return `${base.slice(0, 32)}-${Date.now().toString(36)}`;
+}
+
 /**
  * The model identity a destination actually starts with. An empty model means
  * "whatever this provider defaults to", which keeps a destination working when
@@ -334,6 +346,43 @@ export function sanitizeProjectSubagentSettings(stored: unknown): ProjectSubagen
     maxConcurrent: crewSafeConcurrency(value.maxConcurrent, childAgents),
     childAgents,
   };
+}
+
+/**
+ * A preset's roster is an explicit provider allow-list, so it does not need a
+ * second switch deciding whether that same roster may be used. Keep the
+ * internal runtime flag on for every preset, including presets saved before
+ * the redundant control was removed.
+ */
+export function sanitizeChildAgentPresetPolicy(stored: unknown): ProjectSubagentSettings | null {
+  const policy = sanitizeProjectSubagentSettings(stored);
+  if (!policy) return null;
+  return {
+    ...policy,
+    childAgents: { ...policy.childAgents, enabled: true },
+  };
+}
+
+/** Rebuild reusable crews from persisted settings and return fresh policy objects. */
+export function sanitizeChildAgentPresets(stored: unknown): ChildAgentPreset[] {
+  if (!Array.isArray(stored)) return [];
+  const presets: ChildAgentPreset[] = [];
+  const seen = new Set<string>();
+  for (const candidate of stored) {
+    if (presets.length >= MAX_CHILD_AGENT_PRESETS) break;
+    if (!candidate || typeof candidate !== "object") continue;
+    const value = candidate as Record<string, unknown>;
+    const id = normalizeChildAgentId(typeof value.id === "string" ? value.id : "");
+    const policy = sanitizeChildAgentPresetPolicy(value.policy);
+    if (!isValidChildAgentId(id) || seen.has(id) || !policy) continue;
+    seen.add(id);
+    presets.push({
+      id,
+      name: sanitizeText(value.name, 60) || "Crew preset",
+      policy,
+    });
+  }
+  return presets;
 }
 
 export function projectSubagentSettingsFromApp(settings: Pick<

@@ -4,6 +4,11 @@ import type { AppSettings, ChildAgentSettings, EffortSliderStyle, PromptProfile,
 /** Cross-provider delegation is off by default; every enabled destination is user-approved. */
 export const DEFAULT_CHILD_AGENT_SETTINGS: ChildAgentSettings = { enabled: false, targets: [] };
 
+/** Missing or malformed saved values adopt the safer cleanup default. */
+export function sanitizeAutoArchiveSubagentThreads(value: unknown): boolean {
+  return value === false ? false : true;
+}
+
 export const DEFAULT_OPENAI_MODEL = "gpt-5.6-sol";
 export const DEFAULT_CLAUDE_MODEL = "claude-fable-5";
 export const DEFAULT_CURSOR_MODEL = "auto";
@@ -53,8 +58,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   projectInstructionsEnabled: false,
   subagentsEnabled: false,
   subagentMax: 3,
-  autoArchiveSubagentThreads: false,
+  autoArchiveSubagentThreads: true,
   childAgents: DEFAULT_CHILD_AGENT_SETTINGS,
+  childAgentPresets: [],
   reasoningEffort: "medium",
   ultra: false,
   serviceTier: null,
