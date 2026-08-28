@@ -1574,7 +1574,7 @@ function ProjectDefaultsSettings({ projects, activeProjectId, settings, runtimeM
     <section className="settings-section project-defaults-settings">
       <div className="settings-section-heading">
         <div className="settings-icon"><FolderCog size={17} /></div>
-        <div><h3>Project defaults</h3><p>Choose which projects should use their own model and appearance instead of the global defaults.</p></div>
+        <div><h3>Project defaults</h3><p>Add a project when you want it to override the global provider, model, app theme, or effort-slider theme. Its choices apply automatically whenever you enter that project.</p></div>
       </div>
       <div className="project-prompt-location-note" role="note">
         <Info size={16} />
@@ -1604,11 +1604,11 @@ function ProjectDefaultsSettings({ projects, activeProjectId, settings, runtimeM
             {!defaults.model && <p className="project-default-warning">Choose a model before saving these project defaults.</p>}
           </article>
         );
-      })}</div> : <div className="project-default-empty"><FolderCog size={18} /><span><strong>No project-specific defaults</strong><small>Add an existing project only when it should behave or look different from the global settings.</small></span></div>}
+      })}</div> : <div className="project-default-empty"><FolderCog size={18} /><span><strong>No projects override the global defaults yet</strong><small>Add a project below to give it its own provider, model, app theme, or effort-slider theme.</small></span></div>}
 
       <div className="project-default-add">
-        <div className="project-default-field"><span>Add an existing project</span><AppSelectMenu value={projectToAdd} options={projectOptions} ariaLabel="Project to configure" placeholder={projects.length ? "Choose a project…" : "No projects available"} searchable={projectOptions.length > 8} emptyMessage="Every existing project already has project-specific defaults." onChange={setProjectToAdd} /></div>
-        <button type="button" onClick={addProject} disabled={!projectToAdd}><Plus size={12} /> Add project</button>
+        <div className="project-default-field"><span>Choose a project to override global defaults</span><AppSelectMenu value={projectToAdd} options={projectOptions} ariaLabel="Project to configure" placeholder={projects.length ? "Choose a project…" : "No projects available"} searchable={projectOptions.length > 8} emptyMessage="Every existing project already has project-specific defaults." onChange={setProjectToAdd} /></div>
+        <button type="button" onClick={addProject} disabled={!projectToAdd}><Plus size={12} /> Set defaults</button>
       </div>
     </section>
   );

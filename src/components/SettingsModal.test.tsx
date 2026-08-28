@@ -484,7 +484,7 @@ describe("SettingsModal", () => {
     })} />);
 
     expect(screen.getByText(/choose Project instructions beside the project name/)).toBeInTheDocument();
-    expect(screen.getByText("No project-specific defaults")).toBeInTheDocument();
+    expect(screen.getByText("No projects override the global defaults yet")).toBeInTheDocument();
     expect(screen.queryByText("Instruction prompt override")).not.toBeInTheDocument();
     expect(screen.queryByDisplayValue("Existing project prompt")).not.toBeInTheDocument();
   });
@@ -501,12 +501,13 @@ describe("SettingsModal", () => {
       onProjects,
     })} />);
 
-    expect(screen.getByText("No project-specific defaults")).toBeInTheDocument();
+    expect(screen.getByText("No projects override the global defaults yet")).toBeInTheDocument();
+    expect(screen.getByText(/give it its own provider, model, app theme, or effort-slider theme/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Default provider for Alpha" })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Project to configure" }));
     fireEvent.click(screen.getByRole("menuitemradio", { name: /Alpha/ }));
-    fireEvent.click(screen.getByRole("button", { name: "Add project" }));
+    fireEvent.click(screen.getByRole("button", { name: "Set defaults" }));
 
     fireEvent.click(screen.getByRole("button", { name: "Default provider for Alpha" }));
     fireEvent.click(screen.getByRole("menuitemradio", { name: /Claude.*Claude Code subscription/ }));
