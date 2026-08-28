@@ -5,6 +5,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   Boxes,
   BookOpenCheck,
+  CalendarClock,
   Check,
   ChevronRight,
   Download,
@@ -111,6 +112,7 @@ const SETTINGS_NAV: ReadonlyArray<{
     group: "Automation",
     items: [
       { id: "workflows", label: "Workflows", icon: Play, detail: "Multi-step recipes, triggers, commands, skills, and traceable runs" },
+      { id: "scheduled-tasks", label: "Scheduled tasks", icon: CalendarClock, detail: "Recurring unattended prompts in chats or projects" },
       { id: "skills", label: "Skills", icon: Boxes, detail: "Local Markdown workflows with model-facing invocation names" },
       { id: "tools", label: "Tools & MCP", icon: Wrench, detail: "Model Context Protocol servers and live tool controls" },
     ],
@@ -866,8 +868,8 @@ export function SettingsModal({
             </div>
           </section>}
 
-          {(["prompts", "agents", "workflows", "tools"] as const).includes(settingsSection as "prompts" | "agents" | "workflows" | "tools") && <HarnessSettings
-            section={settingsSection as "prompts" | "agents" | "workflows" | "tools"}
+          {(["prompts", "agents", "workflows", "scheduled-tasks", "tools"] as const).includes(settingsSection as "prompts" | "agents" | "workflows" | "scheduled-tasks" | "tools") && <HarnessSettings
+            section={settingsSection as "prompts" | "agents" | "workflows" | "scheduled-tasks" | "tools"}
             settings={local}
             profiles={profiles}
             agents={agents}

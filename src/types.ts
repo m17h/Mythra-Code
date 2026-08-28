@@ -9,7 +9,7 @@ export type PermissionMode = "read-only" | "ask" | "full";
 export type ThemeName = "mythra" | "light-mythra" | "kiwi" | "daylight" | "midnight" | "synthwave";
 export type EffortSliderStyle = "spectrum" | "classic" | "neon" | "pixel" | "aurora" | "ink" | "tide" | "dart" | "coil";
 export type WorkspaceMode = "chat" | "project";
-export type SettingsSection = "general" | "models" | "github" | "usage" | "prompts" | "agents" | "workflows" | "projects" | "skills" | "tools" | "updates";
+export type SettingsSection = "general" | "models" | "github" | "usage" | "prompts" | "agents" | "workflows" | "scheduled-tasks" | "projects" | "skills" | "tools" | "updates";
 export type ProjectPromptMode = "replace" | "append";
 
 export interface ProjectOverrides {

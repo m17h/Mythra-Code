@@ -135,7 +135,12 @@ describe("SettingsModal", () => {
 
     expect(within(screen.getByRole("group", { name: "Workspace" })).getByRole("button", { name: /Projects/ })).toBeInTheDocument();
     expect(within(screen.getByRole("group", { name: "Intelligence" })).getByRole("button", { name: /Models & accounts/ })).toBeInTheDocument();
-    expect(within(screen.getByRole("group", { name: "Automation" })).getByRole("button", { name: /Tools & MCP/ })).toBeInTheDocument();
+    expect(within(screen.getByRole("group", { name: "Automation" })).getAllByRole("button").map((button) => button.textContent)).toEqual([
+      "Workflows",
+      "Scheduled tasks",
+      "Skills",
+      "Tools & MCP",
+    ]);
     expect(within(screen.getByRole("group", { name: "System" })).getByRole("button", { name: /Updates/ })).toBeInTheDocument();
   });
 
@@ -204,10 +209,23 @@ describe("SettingsModal", () => {
     expect(screen.getByText(/Each thread keeps its own provider/)).toBeInTheDocument();
   });
 
+  it("keeps scheduled task controls in their own settings destination", () => {
+    render(<SettingsModal {...modalProps({ initialSection: "workflows" })} />);
+
+    expect(screen.getByRole("heading", { name: "Agent workflows" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Simple scheduled prompts" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Scheduled tasks" }));
+
+    expect(screen.getByRole("button", { name: "Scheduled tasks" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("heading", { name: "Simple scheduled prompts" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Agent workflows" })).not.toBeInTheDocument();
+  });
+
   it("creates a simple schedule with explicit units, model, and thread behavior", () => {
     const onSchedules = vi.fn();
     render(<SettingsModal {...modalProps({
-      initialSection: "workflows",
+      initialSection: "scheduled-tasks",
       projects: [{ id: "project-1", name: "My project", path: "/tmp/my-project" }],
       onSchedules,
     })} />);
@@ -243,7 +261,7 @@ describe("SettingsModal", () => {
   it("creates a simple schedule in Chats without requiring a project", () => {
     const onSchedules = vi.fn();
     render(<SettingsModal {...modalProps({
-      initialSection: "workflows",
+      initialSection: "scheduled-tasks",
       projects: [],
       onSchedules,
     })} />);

@@ -65,7 +65,7 @@ function initialScheduleRun(
 }
 
 export function HarnessSettings({ section, settings, profiles, agents, actions, schedules, workflows, workflowRuns, projects, skills, modelCatalogs, onDiscoverOpenRouterModels, onSettings, onProfiles, onAgents, onActions, onSchedules, onWorkflows, onRunWorkflow, onStopWorkflow, mcpServers = [], onMcpChanged, scheduleRuns = [], onOpenRun }: {
-  section: "prompts" | "agents" | "workflows" | "tools";
+  section: "prompts" | "agents" | "workflows" | "scheduled-tasks" | "tools";
   settings: AppSettings;
   profiles: PromptProfile[];
   agents: CustomAgentProfile[];
@@ -201,7 +201,9 @@ export function HarnessSettings({ section, settings, profiles, agents, actions, 
       <div className="manager-list">{actions.map((action) => <div key={action.id}><Play size={12} /><span><strong>{action.name}</strong><small>{action.command}</small></span><button className="manager-delete" aria-label={`Delete ${action.name}`} onClick={async () => { if (await confirmDialog(`Delete the project action “${action.name}”?`)) onActions(actions.filter((item) => item.id !== action.id)); }}><Trash2 size={12} /></button></div>)}</div>
       <div className="inline-create two"><input value={actionName} onChange={(event) => setActionName(event.target.value)} placeholder="Action name" /><input value={actionCommand} onChange={(event) => setActionCommand(event.target.value)} placeholder="Command" /><button onClick={() => { if (!actionName.trim() || !actionCommand.trim()) return; onActions([...actions, { id: crypto.randomUUID(), name: actionName.trim(), command: actionCommand.trim() }]); setActionName(""); setActionCommand(""); }}><Plus size={12} /> Add</button></div>
     </section>
+    </>}
 
+    {section === "scheduled-tasks" &&
     <section className="settings-section">
       <div className="settings-section-heading"><div className="settings-icon"><Clock3 size={17} /></div><div><h3>Simple scheduled prompts</h3><p>Run one unattended prompt in a project or a normal chat. Converted project schedules start disabled, so the original cannot run twice while you review the richer workflow.</p></div></div>
       <div className="manager-list scheduled-workflow-list">{schedules.map((schedule) => {
@@ -261,7 +263,7 @@ export function HarnessSettings({ section, settings, profiles, agents, actions, 
         }} disabled={!scheduleName.trim() || !schedulePrompt.trim() || !scheduleProject || !scheduleRun.model.trim()}><Plus size={12} /> Add schedule</button>
       </div>
     </section>
-    </>}
+    }
 
     {section === "tools" &&
     <section className="settings-section">
