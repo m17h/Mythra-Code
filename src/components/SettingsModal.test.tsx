@@ -194,7 +194,7 @@ describe("SettingsModal", () => {
     })} />);
 
     fireEvent.change(screen.getByRole("textbox", { name: "Schedule name" }), { target: { value: "Review twice daily" } });
-    fireEvent.click(screen.getByRole("button", { name: "Schedule project" }));
+    fireEvent.click(screen.getByRole("button", { name: "Schedule location" }));
     fireEvent.click(screen.getByRole("menuitemradio", { name: /My project/ }));
     fireEvent.change(screen.getByRole("spinbutton", { name: "Schedule interval" }), { target: { value: "12" } });
     fireEvent.click(screen.getByRole("button", { name: "Schedule interval unit" }));
@@ -219,6 +219,29 @@ describe("SettingsModal", () => {
       run: expect.objectContaining({ provider: "openai", model: "gpt-5.6-terra" }),
     });
     expect(created.nextRunAt).toBeGreaterThan(Date.now());
+  });
+
+  it("creates a simple schedule in Chats without requiring a project", () => {
+    const onSchedules = vi.fn();
+    render(<SettingsModal {...modalProps({
+      initialSection: "workflows",
+      projects: [],
+      onSchedules,
+    })} />);
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Schedule name" }), { target: { value: "Morning brief" } });
+    fireEvent.click(screen.getByRole("button", { name: "Schedule location" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Chats/ }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Schedule prompt" }), { target: { value: "Summarize my priorities" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add schedule" }));
+
+    expect(onSchedules.mock.calls[0][0][0]).toMatchObject({
+      name: "Morning brief",
+      projectId: null,
+      intervalValue: 60,
+      intervalUnit: "minutes",
+      threadMode: "new",
+    });
   });
 
   it("chooses and saves a default model from an app-owned provider menu", () => {

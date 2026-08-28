@@ -19,6 +19,7 @@ import type { ChildAgentModelOption } from "./ChildAgentRoster";
 export interface McpServerView { name: string; status: string; tools: number }
 
 const SCHEDULE_PROVIDERS: Provider[] = ["openai", "openrouter", "lmstudio"];
+const SCHEDULE_CHAT_TARGET = "__mythra_normal_chats__";
 const SCHEDULE_INTERVAL_UNITS: AppSelectOption[] = [
   { value: "minutes", label: "Minutes" },
   { value: "hours", label: "Hours" },
@@ -132,11 +133,19 @@ export function HarnessSettings({ section, settings, profiles, agents, actions, 
     icon: <ProviderLogo provider={provider} size={15} />,
   }));
   const selectedScheduleModels = scheduleModelOptions(scheduleRun.provider, scheduleRun.model, modelCatalogs);
-  const scheduleProjectOptions: AppSelectOption[] = projects.map((project) => ({
-    value: project.id,
-    label: project.name,
-    detail: project.path,
-  }));
+  const scheduleProjectOptions: AppSelectOption[] = [
+    {
+      value: SCHEDULE_CHAT_TARGET,
+      label: "Chats",
+      detail: "Normal chat — no project folder",
+      icon: <MessageSquare size={14} />,
+    },
+    ...projects.map((project) => ({
+      value: project.id,
+      label: project.name,
+      detail: project.path,
+    })),
+  ];
 
   return <>
     {section === "prompts" &&
@@ -194,10 +203,10 @@ export function HarnessSettings({ section, settings, profiles, agents, actions, 
     </section>
 
     <section className="settings-section">
-      <div className="settings-section-heading"><div className="settings-icon"><Clock3 size={17} /></div><div><h3>Simple scheduled prompts</h3><p>Existing single-prompt schedules remain fully supported. Converted workflows start disabled, so the original schedule cannot run twice while you review the richer workflow.</p></div></div>
+      <div className="settings-section-heading"><div className="settings-icon"><Clock3 size={17} /></div><div><h3>Simple scheduled prompts</h3><p>Run one unattended prompt in a project or a normal chat. Converted project schedules start disabled, so the original cannot run twice while you review the richer workflow.</p></div></div>
       <div className="manager-list scheduled-workflow-list">{schedules.map((schedule) => {
         const run = schedule.run ?? scheduleRunSnapshot(settings);
-        return <div key={schedule.id}><button className={`mini-toggle ${schedule.enabled ? "on" : ""}`} aria-label={`${schedule.enabled ? "Disable" : "Enable"} ${schedule.name}`} aria-pressed={schedule.enabled} onClick={() => onSchedules(schedules.map((item) => item.id === schedule.id ? { ...item, enabled: !item.enabled, nextRunAt: Date.now() + item.intervalMinutes * 60_000 } : item))}><span /></button><span><strong>{schedule.name}</strong><small>{scheduleIntervalLabel(schedule)} · {projects.find((project) => project.id === schedule.projectId)?.name ?? "No project"}</small><small>{providerDisplayName(run.provider)} · {run.model || "Default model"} · {schedule.threadMode === "reuse" ? "same thread" : "new thread each run"}</small></span><span className="manager-row-actions"><button title={`Convert ${schedule.name} to an agent workflow`} aria-label={`Convert ${schedule.name} to workflow`} disabled={!schedule.projectId} onClick={() => onWorkflows([workflowFromSchedule(schedule, scheduleRunSnapshot(settings)), ...workflows])}><Workflow size={11} /></button><button className="manager-delete" aria-label={`Delete ${schedule.name}`} onClick={async () => { if (await confirmDialog(`Delete the scheduled task “${schedule.name}”? It will stop running.`)) onSchedules(schedules.filter((item) => item.id !== schedule.id)); }}><Trash2 size={12} /></button></span></div>;
+        return <div key={schedule.id}><button className={`mini-toggle ${schedule.enabled ? "on" : ""}`} aria-label={`${schedule.enabled ? "Disable" : "Enable"} ${schedule.name}`} aria-pressed={schedule.enabled} onClick={() => onSchedules(schedules.map((item) => item.id === schedule.id ? { ...item, enabled: !item.enabled, nextRunAt: Date.now() + item.intervalMinutes * 60_000 } : item))}><span /></button><span><strong>{schedule.name}</strong><small>{scheduleIntervalLabel(schedule)} · {schedule.projectId === null ? "Chats" : projects.find((project) => project.id === schedule.projectId)?.name ?? "Missing project"}</small><small>{providerDisplayName(run.provider)} · {run.model || "Default model"} · {schedule.threadMode === "reuse" ? "same thread" : "new thread each run"}</small></span><span className="manager-row-actions"><button title={schedule.projectId ? `Convert ${schedule.name} to an agent workflow` : "Normal-chat schedules cannot be converted to project workflows"} aria-label={`Convert ${schedule.name} to workflow`} disabled={!schedule.projectId} onClick={() => onWorkflows([workflowFromSchedule(schedule, scheduleRunSnapshot(settings)), ...workflows])}><Workflow size={11} /></button><button className="manager-delete" aria-label={`Delete ${schedule.name}`} onClick={async () => { if (await confirmDialog(`Delete the scheduled task “${schedule.name}”? It will stop running.`)) onSchedules(schedules.filter((item) => item.id !== schedule.id)); }}><Trash2 size={12} /></button></span></div>;
       })}</div>
       {scheduleRuns.length > 0 && (
         <>
@@ -221,7 +230,7 @@ export function HarnessSettings({ section, settings, profiles, agents, actions, 
       <div className="schedule-create">
         <div className="schedule-create-grid">
           <label><span>Task name</span><input aria-label="Schedule name" value={scheduleName} onChange={(event) => setScheduleName(event.target.value)} placeholder="Daily code review" /></label>
-          <div className="schedule-field"><span>Project</span><AppSelectMenu value={scheduleProject} options={scheduleProjectOptions} ariaLabel="Schedule project" placeholder="Choose project…" menuPlacement="top" onChange={setScheduleProject} /></div>
+          <div className="schedule-field"><span>Run in</span><AppSelectMenu value={scheduleProject} options={scheduleProjectOptions} ariaLabel="Schedule location" placeholder="Choose Chats or a project…" menuPlacement="top" onChange={setScheduleProject} /></div>
           <div className="schedule-field schedule-interval-control"><span>Run every</span><div className="schedule-interval-inputs"><input type="number" min={scheduleIntervalUnit === "minutes" ? 5 : 1} aria-label="Schedule interval" value={scheduleInterval} onChange={(event) => setScheduleInterval(event.target.value)} onBlur={(event) => { const minimum = scheduleIntervalUnit === "minutes" ? 5 : 1; setScheduleInterval(String(Math.max(minimum, Math.floor(Number(event.target.value)) || minimum))); }} /><AppSelectMenu value={scheduleIntervalUnit} options={SCHEDULE_INTERVAL_UNITS} ariaLabel="Schedule interval unit" menuPlacement="top" onChange={(value) => { const unit = value as ScheduleIntervalUnit; setScheduleIntervalUnit(unit); const minimum = unit === "minutes" ? 5 : 1; setScheduleInterval((current) => String(Math.max(minimum, Math.floor(Number(current)) || minimum))); }} /></div></div>
           <div className="schedule-field"><span>Provider</span><AppSelectMenu value={scheduleRun.provider} options={scheduleProviderOptions} ariaLabel="Schedule provider" menuPlacement="top" onChange={(value) => { const provider = value as Provider; const model = modelCatalogs?.[provider]?.[0]?.id ?? (provider === "openai" ? DEFAULT_OPENAI_MODEL : ""); setScheduleRun(scheduleRunSnapshot({ ...settings, provider, model })); }} /></div>
           <div className="schedule-field schedule-model-control"><span>Model</span><AppSelectMenu value={scheduleRun.model} options={selectedScheduleModels} ariaLabel="Schedule model" placeholder="Choose model…" searchable={scheduleRun.provider === "openrouter" || selectedScheduleModels.length > 8} menuPlacement="top" emptyMessage={scheduleRun.provider === "lmstudio" ? "No LM Studio models available" : "No models available"} onSearch={scheduleRun.provider === "openrouter" ? onDiscoverOpenRouterModels : undefined} onChange={(model) => setScheduleRun({ ...scheduleRun, model })} /></div>
@@ -238,7 +247,7 @@ export function HarnessSettings({ section, settings, profiles, agents, actions, 
             id: crypto.randomUUID(),
             name: scheduleName.trim(),
             prompt: schedulePrompt.trim(),
-            projectId: scheduleProject,
+            projectId: scheduleProject === SCHEDULE_CHAT_TARGET ? null : scheduleProject,
             intervalValue,
             intervalUnit: scheduleIntervalUnit,
             intervalMinutes,

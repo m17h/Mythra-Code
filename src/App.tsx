@@ -4390,6 +4390,7 @@ export default function App() {
     updateSchedule,
     recordRun: recordScheduleRun,
     projects,
+    chatWorkspace,
     settings,
     runtimeAvailable: Boolean(runtimeStatus?.available),
     chatGptConnected: account?.type === "chatgpt",
@@ -4400,8 +4401,10 @@ export default function App() {
     bindThreadToProject,
     beginRunCheckpoint,
     discardRunCheckpoint,
-    onThreadStarted: (project) => {
-      if (activeProject?.id === project.id) void loadThreads(project);
+    onThreadStarted: (workspace) => {
+      if (workspace.isChat ? workspaceMode === "chat" : activeProject?.id === workspace.id) {
+        void loadThreads(workspace);
+      }
     },
   });
 

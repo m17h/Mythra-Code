@@ -9,6 +9,7 @@ export interface SchedulerDeps {
   schedules: ScheduledTask[];
   updateSchedule: (id: string, patch: (current: ScheduledTask) => ScheduledTask) => void;
   projects: Project[];
+  chatWorkspace?: Project | null;
   settings: AppSettings;
   runtimeAvailable: boolean;
   chatGptConnected: boolean;
@@ -38,9 +39,15 @@ export function useScheduler(deps: SchedulerDeps): void {
   const runScheduledTask = useCallback(async (scheduled: ScheduledTask) => {
     const current = depsRef.current;
     if (runningRef.current.has(scheduled.id)) return;
-    const project = current.projects.find((item) => item.id === scheduled.projectId);
+    const project = scheduled.projectId === null
+      ? current.chatWorkspace ?? null
+      : current.projects.find((item) => item.id === scheduled.projectId);
     const run: ScheduleRunSettings = scheduled.run ?? scheduleRunSnapshot(current.settings);
     if (!project) {
+      // The normal-chat path is established asynchronously during startup.
+      // A due chat schedule should wait for it, not permanently disable itself
+      // because the renderer checked a few milliseconds too early.
+      if (scheduled.projectId === null) return;
       // A silent return here would retry every 30 seconds forever with no
       // trace. Disable the schedule and record why it can never fire.
       const error = "This schedule's project was removed from Mythra Code, so the schedule was disabled.";

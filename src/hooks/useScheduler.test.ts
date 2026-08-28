@@ -37,6 +37,7 @@ function testSchedulerDeps(
     schedules: [schedule],
     updateSchedule: vi.fn(),
     projects: [{ id: "project-1", name: "Project", path: "/tmp/project" }],
+    chatWorkspace: { id: "openkiwi-normal-chats", name: "Chats", path: "/tmp/chats", isChat: true },
     settings: DEFAULT_SETTINGS,
     runtimeAvailable: true,
     chatGptConnected: true,
@@ -84,6 +85,47 @@ describe("useScheduler", () => {
     expect(codex.rpc).toHaveBeenCalledWith("turn/start", expect.anything());
     expect(runs.at(-1)).toMatchObject({ status: "started", threadId: "thread-1" });
     expect(useTaskStore.getState().statuses["thread-1"]).toBe("starting");
+  });
+
+  it("runs a projectless schedule in the normal Chats workspace", async () => {
+    const runs: ScheduleRunRecord[] = [];
+    const bindThreadToProject = vi.fn();
+    const onThreadStarted = vi.fn();
+    codex.rpc.mockImplementation((method: string) => {
+      if (method === "thread/start") return Promise.resolve({ thread: { id: "chat-thread" } });
+      return Promise.resolve({});
+    });
+    renderHook(() => useScheduler(testSchedulerDeps(testSchedule({ projectId: null }), runs, {
+      bindThreadToProject,
+      onThreadStarted,
+    })));
+
+    await act(async () => {
+      await flushMicrotasks();
+    });
+
+    expect(codex.rpc).toHaveBeenCalledWith("thread/start", expect.objectContaining({ cwd: "/tmp/chats" }));
+    expect(codex.rpc).toHaveBeenCalledWith("turn/start", expect.objectContaining({ cwd: "/tmp/chats", threadId: "chat-thread" }));
+    expect(bindThreadToProject).toHaveBeenCalledWith("chat-thread", "/tmp/chats");
+    expect(onThreadStarted).toHaveBeenCalledWith(expect.objectContaining({ name: "Chats", isChat: true }));
+    expect(runs.at(-1)).toMatchObject({ status: "started", projectId: null, threadId: "chat-thread" });
+  });
+
+  it("waits for the normal Chats workspace to initialize without disabling the schedule", async () => {
+    const runs: ScheduleRunRecord[] = [];
+    const updateSchedule = vi.fn();
+    renderHook(() => useScheduler(testSchedulerDeps(testSchedule({ projectId: null }), runs, {
+      chatWorkspace: null,
+      updateSchedule,
+    })));
+
+    await act(async () => {
+      await flushMicrotasks();
+    });
+
+    expect(codex.rpc).not.toHaveBeenCalled();
+    expect(updateSchedule).not.toHaveBeenCalled();
+    expect(runs).toHaveLength(0);
   });
 
   it("continues the previous thread when the schedule requests it", async () => {
