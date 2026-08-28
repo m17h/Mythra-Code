@@ -9,6 +9,12 @@ import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent as 
 export const EFFORT_COLORS = ["#4db6ff", "#43d97c", "#ffc531", "#ff8a2b", "#ff4655"];
 const PIXEL_EFFORT_COLORS = ["#33d17a", "#33d17a", "#f6d32d", "#f6d32d", "#f66151"];
 const AURORA_EFFORT_COLORS = ["#6ee7d8", "#7aa5ff", "#9d8cff", "#b98cff", "#ff8cd1"];
+/** Sonar: a sounding return getting stronger, deep blue → bright mint. */
+const SONAR_EFFORT_COLORS = ["#3d6fe8", "#1f9fe0", "#12c9c4", "#17dd86", "#5cffc0"];
+/** Vital: one crimson deepening from a resting rose to a racing pulse. */
+const VITAL_EFFORT_COLORS = ["#ffc2ce", "#ff9db4", "#ff6f92", "#ff4770", "#ff2050"];
+/** Dune: pale sand baking down to fired clay. */
+const DUNE_EFFORT_COLORS = ["#f0dcae", "#e6bd85", "#dc9c68", "#cf7a5c", "#c05a4e"];
 
 export function effortHeat(index: number, count: number): number {
   return count > 1 ? index / (count - 1) : 1;
@@ -26,6 +32,9 @@ export function effortFlairStyle(index: number, count: number): CSSProperties {
     "--effort-color": paletteColorAt(EFFORT_COLORS, heat),
     "--pixel-effort-color": paletteColorAt(PIXEL_EFFORT_COLORS, heat),
     "--aurora-effort-color": paletteColorAt(AURORA_EFFORT_COLORS, heat),
+    "--sonar-effort-color": paletteColorAt(SONAR_EFFORT_COLORS, heat),
+    "--vital-effort-color": paletteColorAt(VITAL_EFFORT_COLORS, heat),
+    "--dune-effort-color": paletteColorAt(DUNE_EFFORT_COLORS, heat),
   } as CSSProperties;
 }
 

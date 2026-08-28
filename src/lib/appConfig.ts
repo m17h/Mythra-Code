@@ -41,6 +41,9 @@ export const EFFORT_SLIDER_STYLES: Array<{ id: EffortSliderStyle; name: string; 
   { id: "neon", name: "Neon", description: "Your model's accent, glowing hotter with effort" },
   { id: "pixel", name: "Pixel", description: "A chunky retro VU meter with a square thumb" },
   { id: "ink", name: "Ink", description: "A bare monochrome line for zero distraction" },
+  { id: "sonar", name: "Sonar", description: "An abyss sounding line that pings from the thumb" },
+  { id: "vital", name: "Vital", description: "A clinical heartbeat trace that beats faster with effort" },
+  { id: "dune", name: "Dune", description: "Matte desert sand with a slow drifting grain" },
 ];
 
 export const DEFAULT_SETTINGS: AppSettings = {

@@ -156,6 +156,9 @@ describe("SettingsModal", () => {
     expect(screen.getByRole("button", { name: /Pixel.*VU meter/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Aurora.*northern-light/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Ink.*monochrome/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Sonar.*pings/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Vital.*heartbeat/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Dune.*desert sand/ })).toBeInTheDocument();
 
     const themeCards = container.querySelectorAll<HTMLButtonElement>(".theme-card");
     const sliderCards = container.querySelectorAll<HTMLButtonElement>(".slider-style-card");
@@ -175,6 +178,22 @@ describe("SettingsModal", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /Classic.*original/ }));
     expect(onEffortSliderPreview).toHaveBeenLastCalledWith("classic");
+  });
+
+  it.each([
+    [/Sonar.*pings/, "sonar", "slider-style-preview sonar"],
+    [/Vital.*heartbeat/, "vital", "slider-style-preview vital"],
+    [/Dune.*desert sand/, "dune", "slider-style-preview dune"],
+  ])("previews and selects the %s effort-slider style", (name, id, previewClass) => {
+    const onEffortSliderPreview = vi.fn();
+    render(<SettingsModal {...modalProps({ onEffortSliderPreview })} />);
+
+    const card = screen.getByRole("button", { name });
+    // Each card carries its own preview class, so the swatch matches the style.
+    expect(card.querySelector(".slider-style-preview")).toHaveClass(...previewClass.split(" "));
+    fireEvent.click(card);
+    expect(onEffortSliderPreview).toHaveBeenLastCalledWith(id);
+    expect(screen.getByRole("button", { name })).toHaveAttribute("aria-pressed", "true");
   });
 
   it("opens directly to the requested settings section", () => {
