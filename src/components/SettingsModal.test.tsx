@@ -156,7 +156,7 @@ describe("SettingsModal", () => {
     expect(screen.getByRole("button", { name: /Pixel.*VU meter/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Aurora.*northern-light/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Ink.*monochrome/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Shard.*crystalline ice/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Tide.*glass water channel/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Dart.*arrowhead/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Coil.*twisted cord/ })).toBeInTheDocument();
 
@@ -181,7 +181,7 @@ describe("SettingsModal", () => {
   });
 
   it.each([
-    [/Shard.*crystalline ice/, "shard", "slider-style-preview shard"],
+    [/Tide.*glass water channel/, "tide", "slider-style-preview tide"],
     [/Dart.*arrowhead/, "dart", "slider-style-preview dart"],
     [/Coil.*twisted cord/, "coil", "slider-style-preview coil"],
   ])("previews and selects the %s effort-slider style", (name, id, previewClass) => {

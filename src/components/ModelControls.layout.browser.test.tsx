@@ -53,7 +53,7 @@ describe("model control browser layout", () => {
   // .reasoning-* markup and the .openrouter-* one every other provider shares.
   const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
   const NEW_STYLE_PALETTES = {
-    shard: ["rgb(168, 243, 255)", "rgb(105, 221, 255)", "rgb(56, 188, 255)", "rgb(67, 140, 255)", "rgb(105, 92, 255)"],
+    tide: ["rgb(79, 124, 255)", "rgb(62, 153, 245)", "rgb(45, 182, 235)", "rgb(46, 210, 220)", "rgb(85, 234, 210)"],
     dart: ["rgb(14, 155, 115)", "rgb(28, 180, 107)", "rgb(67, 203, 92)", "rgb(126, 224, 74)", "rgb(194, 242, 60)"],
     coil: ["rgb(106, 79, 224)", "rgb(138, 76, 230)", "rgb(171, 72, 224)", "rgb(209, 68, 207)", "rgb(244, 63, 174)"],
   } as const;
@@ -106,15 +106,15 @@ describe("model control browser layout", () => {
     expect(getComputedStyle(track!).backgroundSize).toContain("1px");
   });
 
-  it("cuts the shard fill and selector into crystalline silhouettes", () => {
-    const view = renderStyle("shard", "high");
+  it("renders tide as a smooth animated water channel with bubble markers", () => {
+    const view = renderStyle("tide", "high");
 
     const rail = view.container.querySelector<HTMLElement>(".reasoning-rail");
+    const track = view.container.querySelector<HTMLElement>(".reasoning-control input[type='range']");
     const tick = view.container.querySelector<HTMLElement>(".reasoning-ticks i");
-    expect(getComputedStyle(rail!, "::before").clipPath).toContain("polygon");
-    expect(getComputedStyle(rail!, "::before").animationName).toBe("shard-refraction");
-    expect(getComputedStyle(tick!).clipPath).toContain("polygon");
-    expect(getComputedStyle(tick!).borderRadius).toBe("0px");
+    expect(getComputedStyle(rail!, "::before").animationName).toBe("tide-flow");
+    expect(getComputedStyle(track!).borderRadius).not.toBe("0px");
+    expect(getComputedStyle(tick!).borderRadius).toBe("50%");
   });
 
   // Coil reads effort as tension: the winding tightens level by level, which
@@ -142,12 +142,12 @@ describe("model control browser layout", () => {
     expect(cord.backgroundRepeat).toBe("no-repeat");
   });
 
-  // Refraction travels, the slipstream runs and the cord turns faster the harder
+  // Water flows, the slipstream runs and the cord turns faster the harder
   // the model works — again, straight off the rail's live --effort-heat.
   it.each([
     ["dart", "--dart-rush"],
     ["coil", "--coil-spin"],
-    ["shard", "--shard-glint"],
+    ["tide", "--tide-flow"],
   ] as const)("shortens the %s motion as effort rises", (sliderStyle, timingVariable) => {
     const secondsAt = (effort: "low" | "max") => {
       const view = renderStyle(sliderStyle, effort);
