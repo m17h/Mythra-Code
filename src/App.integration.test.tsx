@@ -299,6 +299,39 @@ beforeEach(() => {
   localStorage.setItem("kiwi.workspaceMode", JSON.stringify("project"));
 });
 
+describe("project defaults", () => {
+  it("automatically applies project provider, model, theme, and effort-slider defaults", async () => {
+    localStorage.setItem("kiwi.projects", JSON.stringify([
+      {
+        ...PROJECT_A,
+        overrides: {
+          defaults: {
+            provider: "claude",
+            model: "claude-opus-5",
+            theme: "synthwave",
+            effortSlider: "coil",
+          },
+        },
+      },
+      PROJECT_B,
+    ]));
+
+    const user = userEvent.setup();
+    await renderApp();
+    const shell = document.querySelector(".app-shell");
+
+    expect(shell).toHaveAttribute("data-theme", "synthwave");
+    expect(shell).toHaveAttribute("data-effort-slider", "coil");
+    expect(screen.getByRole("button", { name: "New thread provider: Claude" })).toHaveTextContent("claude-opus-5");
+
+    await user.click(screen.getByRole("button", { name: PROJECT_B.name }));
+
+    expect(shell).toHaveAttribute("data-theme", "mythra");
+    expect(shell).toHaveAttribute("data-effort-slider", "aurora");
+    expect(screen.getByRole("button", { name: "New thread provider: OpenAI" })).toBeInTheDocument();
+  });
+});
+
 describe("model catalog request ordering", () => {
   it("does not let a slow LM Studio startup probe overwrite a newer manual refresh", { timeout: 15_000 }, async () => {
     const startup = deferred<{ models: unknown[] }>();

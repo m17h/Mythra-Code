@@ -12,9 +12,17 @@ export type WorkspaceMode = "chat" | "project";
 export type SettingsSection = "general" | "models" | "github" | "usage" | "prompts" | "agents" | "workflows" | "scheduled-tasks" | "projects" | "skills" | "tools" | "updates";
 export type ProjectPromptMode = "replace" | "append";
 
+export interface ProjectDefaults {
+  provider: Provider;
+  model: string;
+  /** Omitted appearance values continue to follow the global setting. */
+  theme?: ThemeName;
+  effortSlider?: EffortSliderStyle;
+}
+
 export interface ProjectOverrides {
-  model?: string;
-  permission?: PermissionMode;
+  /** Opt-in defaults configured from Settings → Projects. */
+  defaults?: ProjectDefaults;
   systemPrompt?: string;
   /** Existing projects default to replace; append layers app instructions first. */
   systemPromptMode?: ProjectPromptMode;

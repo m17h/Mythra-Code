@@ -483,9 +483,55 @@ describe("SettingsModal", () => {
       projects: [{ id: "kiwi", name: "Mythra Code", path: "/code/kiwi", overrides: { systemPrompt: "Existing project prompt" } }],
     })} />);
 
-    expect(screen.getByText(/Project instructions now live beside the project name/)).toBeInTheDocument();
+    expect(screen.getByText(/choose Project instructions beside the project name/)).toBeInTheDocument();
+    expect(screen.getByText("No project-specific defaults")).toBeInTheDocument();
     expect(screen.queryByText("Instruction prompt override")).not.toBeInTheDocument();
     expect(screen.queryByDisplayValue("Existing project prompt")).not.toBeInTheDocument();
+  });
+
+  it("adds an existing project with app-owned model and appearance pickers", () => {
+    const onProjects = vi.fn();
+    render(<SettingsModal {...modalProps({
+      initialSection: "projects",
+      activeProjectId: "alpha",
+      projects: [
+        { id: "alpha", name: "Alpha", path: "/projects/alpha" },
+        { id: "beta", name: "Beta", path: "/projects/beta" },
+      ],
+      onProjects,
+    })} />);
+
+    expect(screen.getByText("No project-specific defaults")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Default provider for Alpha" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Project to configure" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Alpha/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Add project" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Default provider for Alpha" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Claude.*Claude Code subscription/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Default model for Alpha" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Opus 5/ }));
+    fireEvent.click(screen.getByRole("button", { name: "App theme for Alpha" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Midnight/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Effort slider for Alpha" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Coil/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+
+    expect(onProjects).toHaveBeenCalledWith([
+      expect.objectContaining({
+        id: "alpha",
+        overrides: expect.objectContaining({
+          defaults: {
+            provider: "claude",
+            model: "claude-opus-5",
+            theme: "midnight",
+            effortSlider: "coil",
+          },
+        }),
+      }),
+      expect.objectContaining({ id: "beta" }),
+    ]);
   });
 
   it("shows a connected state instead of prompting an authenticated Claude user to sign in again", () => {
@@ -630,7 +676,8 @@ describe("SettingsModal", () => {
 
     expect(screen.getByDisplayValue("Always ship with release notes.")).toBeInTheDocument();
     fireEvent.click(within(screen.getByRole("group", { name: "Workspace" })).getByRole("button", { name: /Projects/ }));
-    expect(screen.getByText("Cloned repo")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Project to configure" }));
+    expect(screen.getByRole("menuitemradio", { name: /Cloned repo/ })).toBeInTheDocument();
   });
 
   it("saves separate global, Codex subscription, and Claude subscription prompts", () => {
