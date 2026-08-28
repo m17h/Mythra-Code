@@ -2457,13 +2457,40 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .approval-thread-line strong { color: var(--muted); font-weight: 600; }
 .approval-queue-note { margin-top: var(--s-3); padding-top: var(--s-3); border-top: 1px solid var(--line); color: var(--muted-2); font-size: var(--fs-meta); }
 
-/* Per-project overrides + schedule run history */
-.project-override-card { display: flex; flex-direction: column; gap: 8px; margin-bottom: 9px; padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.012); }
-.project-override-title { display: flex; flex-direction: column; gap: 2px; }
-.project-override-title strong { font-size: var(--fs-meta); }
-.project-override-title small { overflow: hidden; color: var(--muted-2); font-size: var(--fs-meta); white-space: nowrap; text-overflow: ellipsis; }
-.project-override-card .field-label { margin-top: 3px; }
-.project-override-card input { height: 33px; padding: 0 9px; border: 1px solid var(--line); border-radius: 7px; outline: 0; color: var(--text); background: var(--field); font-size: var(--fs-meta); }
+/* Project defaults + schedule run history */
+.project-defaults-settings { gap: 14px; }
+.project-prompt-location-note { display: grid; grid-template-columns: 28px minmax(0,1fr); align-items: center; gap: 10px; padding: 11px 12px; border: 1px solid color-mix(in srgb, var(--green) 18%, var(--line)); border-radius: var(--r-md); background: color-mix(in srgb, var(--green) 4%, transparent); }
+.project-prompt-location-note > svg { width: 28px; height: 28px; padding: 6px; border-radius: var(--r-sm); color: var(--green); background: var(--green-soft); }
+.project-prompt-location-note > span, .project-default-empty > span, .project-default-card-head > span { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.project-prompt-location-note strong, .project-default-empty strong { color: var(--ink-2); font-size: var(--fs-meta); }
+.project-prompt-location-note small, .project-default-empty small { color: var(--muted); font-size: var(--fs-meta); line-height: 1.45; }
+.project-default-list { display: flex; flex-direction: column; gap: 9px; }
+.project-default-card { position: relative; display: flex; flex-direction: column; gap: 11px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r-md); background: rgba(255,255,255,.016); }
+.project-default-card:has(.app-select.open) { z-index: 30; }
+.project-default-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.project-default-card-head strong { color: var(--ink-2); font-size: var(--fs-ui); font-weight: 620; }
+.project-default-card-head small { overflow: hidden; color: var(--muted-2); font-size: var(--fs-micro); white-space: nowrap; text-overflow: ellipsis; }
+.project-default-remove { flex: 0 0 auto; width: 27px; height: 27px; color: var(--muted-2); }
+.project-default-remove:hover { color: var(--red); border-color: color-mix(in srgb, var(--red) 25%, var(--line)); background: color-mix(in srgb, var(--red) 7%, transparent); }
+.project-default-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 9px; }
+.project-default-field { min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.project-default-field > span { color: var(--muted); font-size: var(--fs-micro); font-weight: 650; text-transform: uppercase; letter-spacing: var(--track-caps); }
+.project-default-field .app-select-trigger { min-height: 40px; padding: 6px 8px; border-radius: var(--r-sm); }
+.project-default-field .app-select-menu { width: max(100%, 260px); }
+.project-default-model .app-select-menu { width: max(100%, 350px); }
+.project-default-warning { margin: -2px 0 0; color: var(--amber); font-size: var(--fs-micro); }
+.project-default-empty { display: grid; grid-template-columns: 28px minmax(0,1fr); align-items: center; gap: 10px; padding: 14px; border: 1px dashed var(--line-strong); border-radius: var(--r-md); color: var(--muted-2); background: rgba(255,255,255,.01); }
+.project-default-empty > svg { margin: auto; }
+.project-default-add { position: relative; display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: end; gap: 9px; padding-top: 12px; border-top: 1px solid var(--line); }
+.project-default-add:has(.app-select.open) { z-index: 31; }
+.project-default-add > button { min-height: 40px; display: inline-flex; align-items: center; gap: 5px; padding: 0 12px; border: 1px solid var(--green-line); border-radius: var(--r-sm); color: var(--green); background: var(--green-soft); font-size: var(--fs-meta); font-weight: 650; cursor: pointer; }
+.project-default-add > button:disabled { opacity: .45; cursor: default; }
+.project-theme-swatch { flex: 0 0 auto; position: relative; width: 17px; height: 17px; overflow: hidden; border: 1px solid rgba(255,255,255,.14); border-radius: 5px; }
+.project-theme-swatch i { position: absolute; right: 2px; bottom: 2px; width: 6px; height: 6px; border-radius: 50%; box-shadow: 0 0 5px currentColor; }
+.project-effort-swatch { flex: 0 0 auto; position: relative; width: 22px; height: 12px; }
+.project-effort-swatch i { position: absolute; top: 5px; left: 0; width: 100%; height: 2px; border-radius: 2px; background: linear-gradient(90deg, var(--green), var(--purple)); }
+.project-effort-swatch b { position: absolute; top: 3px; left: 12px; width: 6px; height: 6px; border: 1px solid var(--panel); border-radius: 50%; background: var(--green); box-shadow: 0 0 5px var(--green); }
+@media (max-width: 760px) { .project-default-grid { grid-template-columns: 1fr; } }
 .schedule-run-list { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
 .schedule-run-list > div { display: grid; grid-template-columns: 14px minmax(0,1fr) auto; align-items: center; gap: 8px; min-height: 34px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 7px; }
 .schedule-run-copy { min-width: 0; display: flex; flex-direction: column; gap: 1px; }

@@ -5,6 +5,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   Boxes,
   BookOpenCheck,
+  CalendarClock,
   Check,
   ChevronRight,
   Download,
@@ -34,7 +35,7 @@ import type { CursorModel, CursorRuntimeStatus } from "../lib/cursor";
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_SETTINGS, EFFORT_SLIDER_STYLES, RELEASE_NOTES_URL, THEMES } from "../lib/appConfig";
 import { friendlyError } from "../lib/errors";
 import { useModalFocus } from "../hooks/useModalFocus";
-import { AnthropicLogo, ClaudeLogo, CodexLogo, CursorDarkAppIcon, CursorLogo, LmStudioLogo, OpenAILogo, OpenRouterLogo } from "./BrandLogos";
+import { AnthropicLogo, ClaudeLogo, CodexLogo, CursorDarkAppIcon, CursorLogo, LmStudioLogo, OpenAILogo, OpenRouterLogo, ProviderLogo } from "./BrandLogos";
 import type { LMStudioModel } from "../lib/lmStudio";
 import { updateProgress, type AppUpdater } from "../lib/appUpdater";
 import {
@@ -61,9 +62,9 @@ import type {
   ChildAgentPreset,
   CustomAgentProfile,
   EffortSliderStyle,
-  PermissionMode,
   Project,
   ProjectAction,
+  ProjectDefaults,
   PromptProfile,
   Provider,
   ScheduledTask,
@@ -80,6 +81,8 @@ import { favoriteModels, type ModelFavorites } from "../lib/modelFavorites";
 import type { ChildAgentModelOption } from "./ChildAgentRoster";
 import type { ClaudeModel } from "../lib/claude";
 import type { OpenRouterModel } from "./OpenRouterModelControl";
+import { sanitizeProjectDefaultOverrides } from "../lib/projectDefaults";
+import { modelForProvider } from "../lib/threadProvider";
 
 /**
  * Single source of truth for the settings navigation: the rail, the pane
@@ -94,7 +97,7 @@ const SETTINGS_NAV: ReadonlyArray<{
     group: "Workspace",
     items: [
       { id: "general", label: "General", icon: Palette, detail: "Appearance, runtime behavior, and diagnostics" },
-      { id: "projects", label: "Projects", icon: FolderCog, detail: "Per-project model and permission overrides" },
+      { id: "projects", label: "Projects", icon: FolderCog, detail: "Project-specific model and appearance defaults" },
     ],
   },
   {
@@ -111,6 +114,7 @@ const SETTINGS_NAV: ReadonlyArray<{
     group: "Automation",
     items: [
       { id: "workflows", label: "Workflows", icon: Play, detail: "Multi-step recipes, triggers, commands, skills, and traceable runs" },
+      { id: "scheduled-tasks", label: "Scheduled tasks", icon: CalendarClock, detail: "Recurring unattended prompts in chats or projects" },
       { id: "skills", label: "Skills", icon: Boxes, detail: "Local Markdown workflows with model-facing invocation names" },
       { id: "tools", label: "Tools & MCP", icon: Wrench, detail: "Model Context Protocol servers and live tool controls" },
     ],
@@ -124,6 +128,54 @@ const SETTINGS_NAV: ReadonlyArray<{
 ];
 
 const SETTINGS_PANES = new Map(SETTINGS_NAV.flatMap((section) => section.items.map((item) => [item.id, item] as const)));
+
+const PROJECT_PROVIDER_OPTIONS: AppSelectOption[] = [
+  { value: "openai", label: "OpenAI", detail: "ChatGPT subscription", icon: <ProviderLogo provider="openai" size={15} /> },
+  { value: "claude", label: "Claude", detail: "Claude Code subscription", icon: <ProviderLogo provider="claude" size={15} /> },
+  { value: "cursor", label: "Cursor", detail: "Cursor subscription", icon: <ProviderLogo provider="cursor" size={15} /> },
+  { value: "openrouter", label: "OpenRouter", detail: "API model routing", icon: <ProviderLogo provider="openrouter" size={15} /> },
+  { value: "lmstudio", label: "LM Studio", detail: "Local models", icon: <ProviderLogo provider="lmstudio" size={15} /> },
+];
+
+function modelOptionsForProvider(provider: Provider, selectedModel: string, catalogs: {
+  runtimeModels: RuntimeModel[];
+  claudeModels: ClaudeModel[];
+  cursorModels: CursorModel[];
+  openRouterModels: OpenRouterModel[];
+  lmStudioModels: LMStudioModel[];
+}): AppSelectOption[] {
+  let options: AppSelectOption[];
+  if (provider === "openai") {
+    options = openAiModelOptions(catalogs.runtimeModels).map((entry) => ({ value: entry.id, label: entry.name, detail: entry.tagline }));
+  } else if (provider === "claude") {
+    options = (catalogs.claudeModels.length ? catalogs.claudeModels.filter((entry) => !entry.disabled) : CLAUDE_FALLBACK_MODELS).map((entry) => ({
+      value: entry.id,
+      label: entry.displayName,
+      detail: entry.description || entry.resolvedModel,
+      keywords: entry.resolvedModel,
+    }));
+  } else if (provider === "cursor") {
+    options = (catalogs.cursorModels.length ? catalogs.cursorModels : [{ id: DEFAULT_CURSOR_MODEL, name: "Auto", configOptions: [] }])
+      .map((entry) => ({ value: entry.id, label: entry.name || entry.id, detail: entry.id }));
+  } else if (provider === "lmstudio") {
+    options = catalogs.lmStudioModels.map((entry) => ({
+      value: entry.id,
+      label: entry.displayName || entry.id,
+      detail: `${entry.publisher}${entry.trainedForToolUse ? " · tool use" : ""}`,
+    }));
+  } else {
+    options = catalogs.openRouterModels.map((entry) => ({
+      value: entry.id,
+      label: entry.name || entry.id,
+      detail: entry.id,
+      keywords: entry.description,
+    }));
+  }
+  if (selectedModel && !options.some((entry) => entry.value === selectedModel)) {
+    options = [{ value: selectedModel, label: selectedModel, detail: "Current saved model" }, ...options];
+  }
+  return options.map((option) => ({ ...option, icon: <ProviderLogo provider={provider} size={15} /> }));
+}
 
 export function SettingsModal({
   open,
@@ -316,43 +368,13 @@ export function SettingsModal({
   skillsRefreshRef.current = onRefreshSkills;
 
   const defaultModelOptions = useMemo<AppSelectOption[]>(() => {
-    let options: AppSelectOption[];
-    if (local.provider === "openai") {
-      // Every model the account can run, not just the ones Mythra Code has
-      // artwork for; `model/list` is the authority on availability.
-      options = openAiModelOptions(runtimeModels).map((entry) => ({ value: entry.id, label: entry.name, detail: entry.tagline }));
-    } else if (local.provider === "claude") {
-      options = (claudeModels.length ? claudeModels.filter((entry) => !entry.disabled) : CLAUDE_FALLBACK_MODELS).map((entry) => ({
-        value: entry.id,
-        label: entry.displayName,
-        detail: entry.description || entry.resolvedModel,
-        keywords: entry.resolvedModel,
-      }));
-    } else if (local.provider === "cursor") {
-      options = (cursorModels.length ? cursorModels : [{ id: DEFAULT_CURSOR_MODEL, name: "Auto", configOptions: [] }])
-        .map((entry) => ({ value: entry.id, label: entry.name || entry.id, detail: entry.id }));
-    } else if (local.provider === "lmstudio") {
-      options = lmStudioModels.map((entry) => ({
-        value: entry.id,
-        label: entry.displayName || entry.id,
-        detail: `${entry.publisher}${entry.trainedForToolUse ? " · tool use" : ""}`,
-      }));
-    } else {
-      options = openRouterModels.map((entry) => ({
-        value: entry.id,
-        label: entry.name || entry.id,
-        detail: entry.id,
-        keywords: entry.description,
-      }));
-    }
-
-    // Preserve a saved custom or retired model as a visible selection. The
-    // user can move to any currently available catalog entry without the UI
-    // silently rewriting their settings just because a catalog changed.
-    if (local.model && !options.some((entry) => entry.value === local.model)) {
-      options = [{ value: local.model, label: local.model, detail: "Current saved model" }, ...options];
-    }
-    return options;
+    return modelOptionsForProvider(local.provider, local.model, {
+      runtimeModels,
+      claudeModels,
+      cursorModels,
+      openRouterModels,
+      lmStudioModels,
+    });
   }, [claudeModels, cursorModels, lmStudioModels, local.model, local.provider, openRouterModels, runtimeModels]);
 
   const subAgentModelCatalogs = useMemo<Partial<Record<Provider, ChildAgentModelOption[]>>>(() => ({
@@ -400,6 +422,7 @@ export function SettingsModal({
   // Buffered edits (theme, prompt, toggles) are discarded on close — warn
   // before silently throwing away work like a hand-written system prompt.
   const dirty = open && (JSON.stringify(local) !== JSON.stringify(settings) || JSON.stringify(localProjects) !== JSON.stringify(projects));
+  const projectDefaultsComplete = localProjects.every((project) => !project.overrides?.defaults || Boolean(project.overrides.defaults.model.trim()));
   const requestClose = async () => {
     if (dirty && !await confirmDialog("Discard unsaved settings changes?")) return;
     onClose();
@@ -432,8 +455,9 @@ export function SettingsModal({
       setCreatingPreset(false);
       setPresetDraftName("");
       setPolicyNotice("");
-      onThemePreview(settings.theme);
-      onEffortSliderPreview(settings.effortSlider);
+      const activeDefaults = projects.find((project) => project.id === activeProjectId)?.overrides?.defaults;
+      onThemePreview(activeDefaults?.theme ?? settings.theme);
+      onEffortSliderPreview(activeDefaults?.effortSlider ?? settings.effortSlider);
       setSettingsSection(initialSection);
       return;
     }
@@ -712,7 +736,7 @@ export function SettingsModal({
     if (action.startsWith("apply:")) applyPresetToScope(preset, action.slice("apply:".length));
   };
   const saveSettings = () => {
-    const nextProjects = sanitizeProjectSubagentOverrides(localProjects);
+    const nextProjects = sanitizeProjectDefaultOverrides(sanitizeProjectSubagentOverrides(localProjects));
     const normalizedSubagents = projectSubagentSettingsFromApp(local);
     onProjects(nextProjects);
     onSave({
@@ -866,8 +890,8 @@ export function SettingsModal({
             </div>
           </section>}
 
-          {(["prompts", "agents", "workflows", "tools"] as const).includes(settingsSection as "prompts" | "agents" | "workflows" | "tools") && <HarnessSettings
-            section={settingsSection as "prompts" | "agents" | "workflows" | "tools"}
+          {(["prompts", "agents", "workflows", "scheduled-tasks", "tools"] as const).includes(settingsSection as "prompts" | "agents" | "workflows" | "scheduled-tasks" | "tools") && <HarnessSettings
+            section={settingsSection as "prompts" | "agents" | "workflows" | "scheduled-tasks" | "tools"}
             settings={local}
             profiles={profiles}
             agents={agents}
@@ -895,7 +919,22 @@ export function SettingsModal({
 
           {settingsSection === "tools" && <div className="settings-workspace-link"><div><strong>Live tool controls</strong><small>{workspaceToolsAvailable ? "Inspect skills, connect configured MCP servers, and run project actions in the active workspace." : "Select a project to inspect live skills, MCP servers, and project actions."}</small></div><button className="secondary-button" onClick={onWorkspaceTools} disabled={!workspaceToolsAvailable}><PanelRight size={13} /> Open workspace tools</button></div>}
 
-          {settingsSection === "projects" && <ProjectOverridesSettings projects={localProjects} onProjects={setLocalProjects} />}
+          {settingsSection === "projects" && <ProjectDefaultsSettings
+            projects={localProjects}
+            activeProjectId={activeProjectId}
+            settings={local}
+            runtimeModels={runtimeModels}
+            claudeModels={claudeModels}
+            cursorModels={cursorModels}
+            openRouterModels={openRouterModels}
+            lmStudioModels={lmStudioModels}
+            modelFavorites={modelFavorites}
+            onToggleModelFavorite={onToggleModelFavorite}
+            onDiscoverOpenRouterModels={onDiscoverOpenRouterModels}
+            onProjects={setLocalProjects}
+            onThemePreview={onThemePreview}
+            onEffortSliderPreview={onEffortSliderPreview}
+          />}
 
           {settingsSection === "github" &&
           <GitHubSettings
@@ -1318,7 +1357,7 @@ export function SettingsModal({
         <div className="modal-footer">
           {dirty && <span className="unsaved-hint">Unsaved changes</span>}
           <button className="secondary-button" onClick={requestClose}>Cancel</button>
-          <button className="primary-button" onClick={saveSettings}>Save settings</button>
+          <button className="primary-button" onClick={saveSettings} disabled={!projectDefaultsComplete}>Save settings</button>
         </div>
       </div>
     </div>
@@ -1455,46 +1494,122 @@ function AllTimeUsageSettings({ totals }: { totals: UsageTotals }) {
   </section>;
 }
 
-function ProjectOverridesSettings({ projects, onProjects }: { projects: Project[]; onProjects: (value: Project[]) => void }) {
-  const updateOverrides = (id: string, patch: Partial<NonNullable<Project["overrides"]>>) => {
+function ProjectDefaultsSettings({ projects, activeProjectId, settings, runtimeModels, claudeModels, cursorModels, openRouterModels, lmStudioModels, modelFavorites, onToggleModelFavorite, onDiscoverOpenRouterModels, onProjects, onThemePreview, onEffortSliderPreview }: {
+  projects: Project[];
+  activeProjectId: string | null;
+  settings: AppSettings;
+  runtimeModels: RuntimeModel[];
+  claudeModels: ClaudeModel[];
+  cursorModels: CursorModel[];
+  openRouterModels: OpenRouterModel[];
+  lmStudioModels: LMStudioModel[];
+  modelFavorites: ModelFavorites;
+  onToggleModelFavorite?: (provider: Provider, model: string) => void;
+  onDiscoverOpenRouterModels?: (query: string) => void;
+  onProjects: (value: Project[]) => void;
+  onThemePreview: (theme: ThemeName) => void;
+  onEffortSliderPreview: (style: EffortSliderStyle) => void;
+}) {
+  const [projectToAdd, setProjectToAdd] = useState("");
+  const configured = projects.filter((project) => project.overrides?.defaults);
+  const available = projects.filter((project) => !project.overrides?.defaults);
+  const catalogs = { runtimeModels, claudeModels, cursorModels, openRouterModels, lmStudioModels };
+  const projectOptions = available.map((project) => ({
+    value: project.id,
+    label: project.name,
+    detail: project.path,
+    icon: <FolderCog size={14} />,
+  }));
+  const themeOptions: AppSelectOption[] = [
+    { value: "", label: "Use global theme", detail: THEMES.find((theme) => theme.id === settings.theme)?.name ?? settings.theme, icon: <Palette size={14} /> },
+    ...THEMES.map((theme) => ({
+      value: theme.id,
+      label: theme.name,
+      detail: theme.description,
+      icon: <span className="project-theme-swatch" style={{ background: theme.swatches[0] }}><i style={{ background: theme.swatches[2] }} /></span>,
+    })),
+  ];
+  const effortOptions: AppSelectOption[] = [
+    { value: "", label: "Use global slider", detail: EFFORT_SLIDER_STYLES.find((style) => style.id === settings.effortSlider)?.name ?? settings.effortSlider, icon: <RotateCcw size={14} /> },
+    ...EFFORT_SLIDER_STYLES.map((style) => ({
+      value: style.id,
+      label: style.name,
+      detail: style.description,
+      icon: <span className={`project-effort-swatch ${style.id}`}><i /><b /></span>,
+    })),
+  ];
+
+  const updateDefaults = (id: string, update: (defaults: ProjectDefaults) => ProjectDefaults) => {
     onProjects(projects.map((project) => {
-      if (project.id !== id) return project;
-      const overrides = { ...(project.overrides ?? {}), ...patch };
-      for (const key of Object.keys(overrides) as Array<keyof typeof overrides>) {
-        if (!overrides[key]) delete overrides[key];
-      }
-      return { ...project, overrides: Object.keys(overrides).length ? overrides : undefined };
+      const defaults = project.overrides?.defaults;
+      if (project.id !== id || !defaults) return project;
+      return { ...project, overrides: { ...(project.overrides ?? {}), defaults: update(defaults) } };
     }));
   };
+  const addProject = () => {
+    const project = projects.find((entry) => entry.id === projectToAdd && !entry.overrides?.defaults);
+    if (!project) return;
+    const modelOptions = modelOptionsForProvider(settings.provider, settings.model, catalogs);
+    const model = modelForProvider(settings.provider, settings.model) || modelOptions[0]?.value || "";
+    onProjects(projects.map((entry) => entry.id === project.id
+      ? { ...entry, overrides: { ...(entry.overrides ?? {}), defaults: { provider: settings.provider, model } } }
+      : entry));
+    setProjectToAdd("");
+  };
+  const removeProject = async (project: Project) => {
+    if (!await confirmDialog(`Remove the project-specific defaults for “${project.name}”? The project itself will stay in Mythra Code.`)) return;
+    onProjects(projects.map((entry) => {
+      if (entry.id !== project.id || !entry.overrides?.defaults) return entry;
+      const overrides = { ...(entry.overrides ?? {}) };
+      delete overrides.defaults;
+      return { ...entry, overrides: Object.keys(overrides).length ? overrides : undefined };
+    }));
+    if (project.id === activeProjectId) {
+      onThemePreview(settings.theme);
+      onEffortSliderPreview(settings.effortSlider);
+    }
+  };
+
   return (
-    <section className="settings-section">
+    <section className="settings-section project-defaults-settings">
       <div className="settings-section-heading">
         <div className="settings-icon"><FolderCog size={17} /></div>
-        <div><h3>Per-project overrides</h3><p>Give a project its own model or permission mode. Project instructions now live beside the project name at the top of its chat window.</p></div>
+        <div><h3>Project defaults</h3><p>Add a project when you want it to override the global provider, model, app theme, or effort-slider theme. Its choices apply automatically whenever you enter that project.</p></div>
       </div>
-      {projects.length ? projects.map((project) => (
-        <div className="project-override-card" key={project.id}>
-          <div className="project-override-title"><strong>{project.name}</strong><small>{project.path}</small></div>
-          <div className="runtime-field-grid">
-            <label>
-              <span>Permission mode</span>
-              <select
-                value={project.overrides?.permission ?? ""}
-                onChange={(event) => updateOverrides(project.id, { permission: (event.target.value || undefined) as PermissionMode | undefined })}
-              >
-                <option value="">Inherit global</option>
-                <option value="read-only">Read only</option>
-                <option value="ask">Ask to act</option>
-                <option value="full">Full access</option>
-              </select>
-            </label>
-            <label>
-              <span>Model</span>
-              <input value={project.overrides?.model ?? ""} placeholder="Inherit global" onChange={(event) => updateOverrides(project.id, { model: event.target.value || undefined })} />
-            </label>
-          </div>
-        </div>
-      )) : <div className="tool-empty-line">Open a project first — each project you add appears here with its own overrides.</div>}
+      <div className="project-prompt-location-note" role="note">
+        <Info size={16} />
+        <span><strong>Looking for project instructions?</strong><small>Open that project’s chat, then choose Project instructions beside the project name at the top of the window.</small></span>
+      </div>
+
+      {configured.length ? <div className="project-default-list">{configured.map((project) => {
+        const defaults = project.overrides!.defaults!;
+        const modelOptions = modelOptionsForProvider(defaults.provider, defaults.model, catalogs);
+        const setProvider = (provider: Provider) => {
+          const options = modelOptionsForProvider(provider, "", catalogs);
+          const model = provider === defaults.provider ? defaults.model : (options[0]?.value ?? modelForProvider(provider, ""));
+          updateDefaults(project.id, (current) => ({ ...current, provider, model }));
+        };
+        return (
+          <article className="project-default-card" key={project.id}>
+            <div className="project-default-card-head">
+              <span><strong>{project.name}</strong><small>{project.path}</small></span>
+              <button type="button" className="icon-button project-default-remove" aria-label={`Remove defaults for ${project.name}`} title="Remove project defaults" onClick={() => void removeProject(project)}><Trash2 size={13} /></button>
+            </div>
+            <div className="project-default-grid">
+              <div className="project-default-field"><span>Provider</span><AppSelectMenu value={defaults.provider} options={PROJECT_PROVIDER_OPTIONS} ariaLabel={`Default provider for ${project.name}`} onChange={(value) => setProvider(value as Provider)} /></div>
+              <div className="project-default-field project-default-model"><span>Model</span><AppSelectMenu value={defaults.model} options={modelOptions} ariaLabel={`Default model for ${project.name}`} placeholder="Choose a model…" searchable={modelOptions.length > 8 || defaults.provider === "openrouter" || defaults.provider === "lmstudio" || defaults.provider === "cursor"} favorites={favoriteModels(modelFavorites, defaults.provider)} {...(onToggleModelFavorite ? { onToggleFavorite: (model: string) => onToggleModelFavorite(defaults.provider, model) } : {})} {...(defaults.provider === "openrouter" && onDiscoverOpenRouterModels ? { onSearch: onDiscoverOpenRouterModels } : {})} emptyMessage={defaults.provider === "lmstudio" ? "Connect LM Studio and refresh its catalog first." : "No models are currently available for this provider."} onChange={(model) => updateDefaults(project.id, (current) => ({ ...current, model }))} /></div>
+              <div className="project-default-field"><span>App theme</span><AppSelectMenu value={defaults.theme ?? ""} options={themeOptions} ariaLabel={`App theme for ${project.name}`} onChange={(value) => { updateDefaults(project.id, (current) => { const next = { ...current }; if (value) next.theme = value as ThemeName; else delete next.theme; return next; }); if (project.id === activeProjectId) onThemePreview((value || settings.theme) as ThemeName); }} /></div>
+              <div className="project-default-field"><span>Effort slider</span><AppSelectMenu value={defaults.effortSlider ?? ""} options={effortOptions} ariaLabel={`Effort slider for ${project.name}`} onChange={(value) => { updateDefaults(project.id, (current) => { const next = { ...current }; if (value) next.effortSlider = value as EffortSliderStyle; else delete next.effortSlider; return next; }); if (project.id === activeProjectId) onEffortSliderPreview((value || settings.effortSlider) as EffortSliderStyle); }} /></div>
+            </div>
+            {!defaults.model && <p className="project-default-warning">Choose a model before saving these project defaults.</p>}
+          </article>
+        );
+      })}</div> : <div className="project-default-empty"><FolderCog size={18} /><span><strong>No projects override the global defaults yet</strong><small>Add a project below to give it its own provider, model, app theme, or effort-slider theme.</small></span></div>}
+
+      <div className="project-default-add">
+        <div className="project-default-field"><span>Choose a project to override global defaults</span><AppSelectMenu value={projectToAdd} options={projectOptions} ariaLabel="Project to configure" placeholder={projects.length ? "Choose a project…" : "No projects available"} searchable={projectOptions.length > 8} emptyMessage="Every existing project already has project-specific defaults." onChange={setProjectToAdd} /></div>
+        <button type="button" onClick={addProject} disabled={!projectToAdd}><Plus size={12} /> Set defaults</button>
+      </div>
     </section>
   );
 }

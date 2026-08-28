@@ -102,6 +102,7 @@ import { mythraCodeDeveloperInstructions } from "./lib/completionPrompt";
 import { runtimeModelProviderId } from "./lib/providerIds";
 import { primaryModifierLabel } from "./lib/platform";
 import { archivedThreadsForInbox, providerForArchivedThread } from "./lib/threadArchive";
+import { sanitizeProjectDefaultOverrides } from "./lib/projectDefaults";
 import { buildProviderHandoffPrompt, sanitizePendingHandoff } from "./lib/providerHandoff";
 import { deleteThreadTurnDurations } from "./lib/turnDurations";
 import {
@@ -183,7 +184,7 @@ function sanitizeThreadReasoningRecords(value: unknown): Record<string, ThreadRe
   }));
 }
 
-const initialProjects = sanitizeProjectSubagentOverrides(loadStored<Project[]>("kiwi.projects", []));
+const initialProjects = sanitizeProjectDefaultOverrides(sanitizeProjectSubagentOverrides(loadStored<Project[]>("kiwi.projects", [])));
 const initialWorkspaceMode: WorkspaceMode = loadStored<WorkspaceMode>("kiwi.workspaceMode", initialProjects.length ? "project" : "chat");
 const initialKnownThreads = pruneSidebarIndex(loadStored<ThreadSidebarIndex>("kiwi.knownThreads", {}));
 const initialOnboardingVersion = loadStored<number>("kiwi.onboardingVersion", 0);
@@ -470,18 +471,21 @@ export default function App() {
   const setAttachments = useCallback<Dispatch<SetStateAction<AttachmentRecord[]>>>((update) => {
     setAttachmentsForKey(attachmentKey, update);
   }, [attachmentKey, setAttachmentsForKey]);
-  const activeProvider = activeThread ? providerFromThread(activeThread, settings.provider) : (draftThreadProvider ?? settings.provider);
+  const projectDefaults = activeProject?.overrides?.defaults;
+  const projectDefaultProvider = projectDefaults?.provider ?? settings.provider;
+  const activeProvider = activeThread ? providerFromThread(activeThread, projectDefaultProvider) : (draftThreadProvider ?? projectDefaultProvider);
   // Resolve project policy independently of the open conversation. Thread
   // selection needs this unclamped shape: the previously active thread may be
   // a depth-one child while the thread being opened is a root (or vice versa).
   const projectSettings = useMemo<AppSettings>(() => {
     const overrides = activeProject?.overrides;
-    const projectResolved = !overrides
+    const defaults = overrides?.defaults;
+    const projectResolved = !defaults
       ? settings
       : {
           ...settings,
-          ...(overrides.model ? { model: overrides.model } : {}),
-          ...(overrides.permission ? { permission: overrides.permission } : {}),
+          provider: defaults.provider,
+          model: defaults.model,
         };
     return settingsWithProjectSubagents(projectResolved, overrides?.subagents);
   }, [activeProject, settings]);
@@ -493,7 +497,7 @@ export default function App() {
     );
     return { openai: resolveFor("openai"), claude: resolveFor("claude") };
   }, [activeProject, projectSettings]);
-  // Per-project overrides win over global defaults, while provider and model
+  // Opt-in project defaults win over global defaults, while provider and model
   // are resolved for the active thread (or the unsent new-thread draft).
   const effectiveSettings = useMemo<AppSettings>(() => {
     const threadModel = activeThreadId ? threadModels[activeThreadId] : draftThreadModel;
@@ -530,10 +534,10 @@ export default function App() {
     // Restore the destination choice beside the durable composer draft after
     // an app restart. Keeping only the text could otherwise send a handoff
     // through the default provider and lose its provenance.
-    setDraftThreadProvider(pendingHandoff.targetProvider === settings.provider ? null : pendingHandoff.targetProvider);
-    setDraftThreadModel(pendingHandoff.targetProvider === settings.provider ? null : modelForProvider(pendingHandoff.targetProvider, ""));
+    setDraftThreadProvider(pendingHandoff.targetProvider === projectDefaultProvider ? null : pendingHandoff.targetProvider);
+    setDraftThreadModel(pendingHandoff.targetProvider === projectDefaultProvider ? null : modelForProvider(pendingHandoff.targetProvider, ""));
     setDraftThreadIsolated(false);
-  }, [activeThread, activeWorkspace, pendingHandoff, setPendingHandoff, settings.provider]);
+  }, [activeThread, activeWorkspace, pendingHandoff, projectDefaultProvider, setPendingHandoff]);
 
   // Which providers a cross-provider child could actually be started on right
   // now. Unusable destinations are filtered out of a thread's policy instead
@@ -1025,26 +1029,17 @@ export default function App() {
     });
   }, [setThreadReasoning]);
 
-  const persistActiveProjectOverride = useCallback(
-    <K extends keyof NonNullable<Project["overrides"]>>(key: K, value: NonNullable<Project["overrides"]>[K]) => {
-      if (!activeProject?.overrides?.[key]) return false;
-      setProjects((current) => current.map((project) => (project.id === activeProject.id ? { ...project, overrides: { ...project.overrides, [key]: value } } : project)));
-      return true;
-    },
-    [activeProject, setProjects],
-  );
-
   const persistComposerModel = useCallback(
     (model: string) => {
       if (activeThreadId) {
         persistThreadModel(activeThreadId, model);
-      } else if (draftThreadProvider !== null) {
+      } else if (draftThreadProvider !== null || activeProject?.overrides?.defaults) {
         setDraftThreadModel(model);
-      } else if (!persistActiveProjectOverride("model", model)) {
+      } else {
         persistSettings({ ...settings, model });
       }
     },
-    [activeThreadId, draftThreadProvider, persistActiveProjectOverride, persistSettings, persistThreadModel, settings],
+    [activeProject, activeThreadId, draftThreadProvider, persistSettings, persistThreadModel, settings],
   );
 
   const persistComposerReasoning = useCallback((reasoningEffort: ThreadReasoning["reasoningEffort"]) => {
@@ -1065,9 +1060,9 @@ export default function App() {
 
   const persistComposerPermission = useCallback(
     (permission: PermissionMode) => {
-      if (!persistActiveProjectOverride("permission", permission)) persistSettings({ ...settings, permission });
+      persistSettings({ ...settings, permission });
     },
-    [persistActiveProjectOverride, persistSettings, settings],
+    [persistSettings, settings],
   );
 
   /**
@@ -1210,6 +1205,7 @@ export default function App() {
 
   const closeSettings = useCallback(() => {
     setPreviewTheme(null);
+    setPreviewEffortSlider(null);
     setSettingsOpen(false);
   }, []);
 
@@ -2252,7 +2248,7 @@ export default function App() {
     selectThreadRequestRef.current += 1;
     setActiveThread(null);
     useTaskStore.getState().setActiveThread(null);
-    setDraftThreadProvider(pendingHandoffForWorkspace?.targetProvider === settings.provider ? null : pendingHandoffForWorkspace?.targetProvider ?? null);
+    setDraftThreadProvider(pendingHandoffForWorkspace?.targetProvider === projectDefaultProvider ? null : pendingHandoffForWorkspace?.targetProvider ?? null);
     setDraftThreadModel(pendingHandoffForWorkspace ? modelForProvider(pendingHandoffForWorkspace.targetProvider, "") : null);
     // Attachments are keyed by draft identity, so a workspace switch simply
     // selects a different draft. Clearing here would throw away files chosen
@@ -2260,7 +2256,7 @@ export default function App() {
     setThreadSearch("");
     setSearchResults(null);
     if (!activeProject) setStudioOpen(false);
-  }, [activeProject, activeWorkspace, claudeStatus?.available, cursorStatus?.available, loadThreads, pendingHandoffForWorkspace, runtimeStatus?.available, settings.provider]);
+  }, [activeProject, activeWorkspace, claudeStatus?.available, cursorStatus?.available, loadThreads, pendingHandoffForWorkspace, projectDefaultProvider, runtimeStatus?.available]);
 
   // Every surfaced error also lands in the diagnostics ring buffer/audit log.
   useEffect(() => {
@@ -2597,7 +2593,7 @@ export default function App() {
         if (selectThreadRequestRef.current !== requestId) return;
         const resolvedThread = transcript?.thread ?? thread;
         if (!threadModels[resolvedThread.id]) {
-          const projectModel = activeProject?.overrides?.model ?? settings.model;
+          const projectModel = activeProject?.overrides?.defaults?.model ?? settings.model;
           persistThreadModel(resolvedThread.id, modelForProvider("claude", projectModel));
         }
         bindThreadToProject(resolvedThread.id, activeWorkspace.path);
@@ -2614,7 +2610,7 @@ export default function App() {
         const resolvedThread = transcript?.thread ?? thread;
         if (transcript?.cursorSessionId) cursorSessionIdsRef.current[resolvedThread.id] = transcript.cursorSessionId;
         if (!threadModels[resolvedThread.id]) {
-          const projectModel = activeProject?.overrides?.model ?? settings.model;
+          const projectModel = activeProject?.overrides?.defaults?.model ?? settings.model;
           persistThreadModel(resolvedThread.id, modelForProvider("cursor", projectModel));
         }
         bindThreadToProject(resolvedThread.id, activeWorkspace.path);
@@ -2625,8 +2621,8 @@ export default function App() {
         setStatus("Ready");
         return;
       }
-      const provider = providerFromThread(thread, settings.provider);
-      const projectModel = activeProject?.overrides?.model ?? settings.model;
+      const provider = providerFromThread(thread, projectDefaultProvider);
+      const projectModel = activeProject?.overrides?.defaults?.model ?? settings.model;
       const providerPrompt = provider === "openai" || provider === "claude"
         ? subscriptionSystemPrompts[provider]
         : resolveSystemPrompt(projectSettings.systemPrompt, activeProject?.overrides?.systemPrompt, activeProject?.overrides?.systemPromptMode);
@@ -2786,7 +2782,7 @@ export default function App() {
         setError("Provider handoff is unavailable while this conversation owns an isolated worktree. Apply or merge its changes, remove the worktree, and choose Continue shared before handing it off.");
         return;
       }
-      const sourceProvider = providerFromThread(activeThread, settings.provider);
+      const sourceProvider = providerFromThread(activeThread, projectDefaultProvider);
       const sourceTitle = activeThread.name || activeThread.preview || "Untitled task";
       if (!await confirmDialog(`Hand off the current thread to ${providerLabel(provider)}?\n\nMythra Code will start a separate provider thread in the same workspace with a bounded, visible copy of the conversation. The original thread remains unchanged.`)) return;
       const task = useTaskStore.getState().tasks[activeThread.id];
@@ -2810,8 +2806,8 @@ export default function App() {
       setPendingHandoff(handoff);
       setActiveThread(null);
       useTaskStore.getState().setActiveThread(null);
-      setDraftThreadProvider(provider === settings.provider ? null : provider);
-      setDraftThreadModel(provider === settings.provider ? null : modelForProvider(provider, ""));
+      setDraftThreadProvider(provider === projectDefaultProvider ? null : provider);
+      setDraftThreadModel(provider === projectDefaultProvider ? null : modelForProvider(provider, ""));
       setDraftThreadIsolated(false);
       setError(null);
       requestAnimationFrame(() => composerRef.current?.setDraft(prompt));
@@ -2820,8 +2816,8 @@ export default function App() {
     if (pendingHandoffForWorkspace) setPendingHandoff({ ...pendingHandoffForWorkspace, targetProvider: provider });
     setActiveThread(null);
     useTaskStore.getState().setActiveThread(null);
-    setDraftThreadProvider(provider === settings.provider ? null : provider);
-    setDraftThreadModel(provider === settings.provider ? null : modelForProvider(provider, ""));
+    setDraftThreadProvider(provider === projectDefaultProvider ? null : provider);
+    setDraftThreadModel(provider === projectDefaultProvider ? null : modelForProvider(provider, ""));
     setDraftThreadIsolated(false);
     setError(null);
     requestAnimationFrame(() => composerRef.current?.focus());
@@ -3428,7 +3424,7 @@ export default function App() {
    * front instead of accepting a click and answering with an error.
    */
   const reviewDisabledReason = activeThread && isLocalSubscriptionThread(activeThread)
-    ? `Inline review is available for OpenAI, OpenRouter, and LM Studio threads. Ask ${providerLabel(providerFromThread(activeThread, settings.provider))} to review the project in the conversation instead.`
+    ? `Inline review is available for OpenAI, OpenRouter, and LM Studio threads. Ask ${providerLabel(providerFromThread(activeThread, projectDefaultProvider))} to review the project in the conversation instead.`
     : undefined;
 
   /**
@@ -3494,7 +3490,7 @@ export default function App() {
   const compactThread = async () => {
     if (!activeThread) return;
     if (isLocalSubscriptionThread(activeThread)) {
-      setError(`${providerLabel(providerFromThread(activeThread, settings.provider))} manages its own context compaction. Mythra Code’s manual compact action is available for OpenAI, OpenRouter, and LM Studio threads.`);
+      setError(`${providerLabel(providerFromThread(activeThread, projectDefaultProvider))} manages its own context compaction. Mythra Code’s manual compact action is available for OpenAI, OpenRouter, and LM Studio threads.`);
       return;
     }
     try {
@@ -4409,7 +4405,7 @@ export default function App() {
   });
 
   return (
-    <div ref={shellRef} className="app-shell" data-theme={previewTheme ?? settings.theme} data-color-scheme={themeColorScheme(previewTheme ?? settings.theme)} data-effort-slider={previewEffortSlider ?? settings.effortSlider} data-openai-logo={settings.openAiLogo} data-claude-logo={settings.claudeLogo} data-cursor-logo={settings.cursorLogo} style={{ zoom: (settings.uiScale || 100) / 100 }}>
+    <div ref={shellRef} className="app-shell" data-theme={previewTheme ?? projectDefaults?.theme ?? settings.theme} data-color-scheme={themeColorScheme(previewTheme ?? projectDefaults?.theme ?? settings.theme)} data-effort-slider={previewEffortSlider ?? projectDefaults?.effortSlider ?? settings.effortSlider} data-openai-logo={settings.openAiLogo} data-claude-logo={settings.claudeLogo} data-cursor-logo={settings.cursorLogo} style={{ zoom: (settings.uiScale || 100) / 100 }}>
       {successToast && (
         <div className="app-toast success" role="status" aria-live="polite">
           <span className="app-toast-icon"><Check size={14} strokeWidth={2.5} /></span>
@@ -4604,8 +4600,8 @@ export default function App() {
                     title={thread.name || thread.preview || "Untitled thread"}
                     workspaceName={activeWorkspace?.name ?? basename(thread.cwd)}
                     directory={threadWorktrees[thread.id]?.path || thread.cwd || activeWorkspace?.path || ""}
-                    provider={providerFromThread(thread, settings.provider)}
-                    providerName={providerLabel(providerFromThread(thread, settings.provider))}
+                    provider={providerFromThread(thread, projectDefaultProvider)}
+                    providerName={providerLabel(providerFromThread(thread, projectDefaultProvider))}
                     pinned={pinnedThreadIds.includes(thread.id)}
                     isolated={Boolean(threadWorktrees[thread.id] && threadWorktrees[thread.id].status !== "removed")}
                     branch={threadWorktrees[thread.id]?.branch}
@@ -4737,11 +4733,11 @@ export default function App() {
             <ThreadProviderControl
               provider={effectiveSettings.provider}
               model={effectiveSettings.model}
-              defaultProvider={settings.provider}
+              defaultProvider={projectDefaultProvider}
               threadStarted={Boolean(activeThread)}
               disabled={!activeWorkspace || running}
               onProvider={startNewThreadWithProvider}
-              onDefaultSettings={() => openSettings("models")}
+              onDefaultSettings={() => openSettings(activeProject ? "projects" : "models")}
             />
             <button className={`workspace-tools-trigger studio-toggle ${studioOpen ? "active" : ""}`} onClick={() => (studioOpen ? setStudioOpen(false) : openStudio(studioTab))} title={activeProject ? `${studioOpen ? "Close" : "Open"} project workspace tools (${workspaceShortcutLabel()})` : "Workspace tools are available inside projects"} aria-label={studioOpen ? "Close workspace tools" : "Open workspace tools"} aria-expanded={studioOpen} disabled={!activeProject}>
               <PanelRight size={17} />
@@ -5038,7 +5034,6 @@ export default function App() {
                       <button className="toolbar-button" onClick={() => setPermissionOpen((open) => !open)} aria-haspopup="menu" aria-expanded={permissionOpen}>
                         <PermissionIcon mode={effectiveSettings.permission} />
                         {permissionLabel(effectiveSettings.permission)}
-                        {activeProject?.overrides?.permission && <em className="project-override-mark">project</em>}
                         <ChevronDown size={13} />
                       </button>
                       {permissionOpen && (
