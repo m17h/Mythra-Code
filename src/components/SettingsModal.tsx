@@ -208,7 +208,6 @@ export function SettingsModal({
   onSave,
   onThemePreview,
   onEffortSliderPreview,
-  onAccountChange,
   onSignIn,
   onClaudeSignIn = async () => {},
   onClaudeRefresh = async () => ({ available: false, path: null, version: null, loggedIn: false, authMethod: null, email: null, subscriptionType: null, warning: null }),
@@ -295,7 +294,6 @@ export function SettingsModal({
   onSave: (settings: AppSettings) => void;
   onThemePreview: (theme: ThemeName) => void;
   onEffortSliderPreview: (style: EffortSliderStyle) => void;
-  onAccountChange: () => Promise<void>;
   onSignIn: () => Promise<void>;
   onClaudeSignIn?: () => Promise<void>;
   onClaudeRefresh?: () => Promise<ClaudeRuntimeStatus>;
@@ -569,7 +567,6 @@ export function SettingsModal({
     setBusy(true);
     try {
       await rpc("account/logout");
-      await onAccountChange();
     } catch (reason) {
       onError(friendlyError(reason));
     } finally {
@@ -1197,7 +1194,10 @@ export function SettingsModal({
                   <small>{account?.type === "chatgpt" ? `${account.planType ?? "ChatGPT"} plan connected` : runtimeStatus?.available ? `Official browser sign-in · ${runtimeStatus.source} detected` : "Codex CLI required"}</small>
                 </div>
                 {account?.type === "chatgpt" ? (
-                  <button className="secondary-button" onClick={() => void signOut()} disabled={busy}>Sign out</button>
+                  <div className="credential-actions">
+                    <span className="connected-badge"><Check size={12} /> Connected</span>
+                    <button className="secondary-button" onClick={() => void signOut()} disabled={busy}>Sign out</button>
+                  </div>
                 ) : (
                   <button className="secondary-button" onClick={() => void signIn()} disabled={busy}>
                     {busy ? <LoaderCircle className="spin" size={14} /> : !runtimeStatus?.available ? <Download size={14} /> : null} {runtimeStatus?.available ? "Sign in" : "Set up Codex"}

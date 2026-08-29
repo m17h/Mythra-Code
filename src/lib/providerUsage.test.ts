@@ -4,10 +4,12 @@ import {
   compactResetLabel,
   displayedPercent,
   formatRateLimits,
+  formatCreditAmount,
   formatResetTime,
   formatWindowLabel,
   parseCodexRateLimits,
   providerAccountUsage,
+  providerHeaderUsage,
   sanitizeUsageDisplay,
   usagePercentLabel,
 } from "./providerUsage";
@@ -255,6 +257,13 @@ describe("provider account usage", () => {
       claudeStatus: connectedClaude,
       openRouterReady: true,
     }).summary).toBe("Sign in to view live limits");
+    expect(providerAccountUsage("openai", {
+      openAiRateLimits: null,
+      openAiRateLimitsRead: false,
+      openAiConnected: true,
+      claudeStatus: connectedClaude,
+      openRouterReady: true,
+    }).summary).toBe("Live usage is temporarily unavailable");
   });
 
   it("applies the same preference to Claude limits", () => {
@@ -331,5 +340,90 @@ describe("provider account usage", () => {
       summary: "Pro connected · live usage and limits are managed by Cursor",
     });
     expect(view.summary).not.toContain("42%");
+  });
+});
+
+describe("chat header provider usage", () => {
+  it("stays visible and points unauthenticated providers toward connection settings", () => {
+    expect(providerHeaderUsage("openai", {
+      label: "OpenAI subscription",
+      summary: "Sign in to view live limits",
+    })).toEqual({
+      text: "Sign in for usage",
+      title: "OpenAI subscription · Sign in to view live limits",
+      needsConnection: true,
+    });
+    expect(providerHeaderUsage("claude", {
+      label: "Claude subscription",
+      summary: "Install Claude Code to view this account",
+    })).toEqual({
+      text: "Connect Claude",
+      title: "Claude subscription · Install Claude Code to view this account",
+      needsConnection: true,
+    });
+  });
+
+  it("uses the already-normalized Codex and Claude quota direction", () => {
+    const view = providerAccountUsage("openai", {
+      openAiRateLimits: { windows: [
+        { label: "5h", usedPercent: 42, resetsAt: null },
+        { label: "Weekly", usedPercent: 10, resetsAt: null },
+      ] },
+      claudeStatus: connectedClaude,
+      openRouterReady: true,
+      usageDisplay: "consumed",
+      now: NOW,
+    });
+    expect(providerHeaderUsage("openai", view)?.text).toBe("5h 42% used · Weekly 10% used");
+  });
+
+  it("shows authoritative OpenRouter account credits without calling estimates credits", () => {
+    const balance = { remaining: 74.75, used: 25.75, source: "account" as const };
+    const account = providerAccountUsage("openrouter", {
+      openAiRateLimits: null,
+      claudeStatus: connectedClaude,
+      openRouterReady: true,
+      openRouterCredits: balance,
+      openRouterCreditsRead: true,
+    });
+    expect(account).toEqual({ label: "OpenRouter credits", summary: "$74.75 credits left" });
+    expect(providerHeaderUsage("openrouter", account, {
+      openRouterReady: true,
+      openRouterCredits: balance,
+      openRouterCreditsRead: true,
+    })).toEqual({
+      text: "$74.75 credits left",
+      title: "OpenRouter account · $74.75 credits left",
+    });
+  });
+
+  it("labels a regular API key's cap as a key limit", () => {
+    const account = { label: "OpenRouter usage", summary: "Pay as you go" };
+    expect(providerHeaderUsage("openrouter", account, {
+      openRouterReady: true,
+      openRouterCredits: { remaining: 3.5, used: 1.5, source: "keyLimit" },
+      openRouterCreditsRead: true,
+    })?.text).toBe("$3.50 key limit left");
+  });
+
+  it("does not mistake an OpenRouter network failure for an unsupported key", () => {
+    const account = providerAccountUsage("openrouter", {
+      openAiRateLimits: null,
+      claudeStatus: connectedClaude,
+      openRouterReady: true,
+      openRouterCreditsRead: true,
+      openRouterCreditsError: "Could not reach OpenRouter usage: connection timed out",
+    });
+    expect(account.summary).toBe("Credits are temporarily unavailable · try refreshing usage");
+    expect(providerHeaderUsage("openrouter", account, {
+      openRouterReady: true,
+      openRouterCreditsRead: true,
+      openRouterCreditsError: "Could not reach OpenRouter usage: connection timed out",
+    })?.title).toBe("OpenRouter credits are temporarily unavailable. Try refreshing usage.");
+  });
+
+  it("formats tiny balances without rounding them away", () => {
+    expect(formatCreditAmount(0)).toBe("$0");
+    expect(formatCreditAmount(0.0049)).toBe("$0.0049");
   });
 });

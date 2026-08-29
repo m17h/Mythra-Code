@@ -130,8 +130,6 @@ pub(super) fn checkpoint_ref(id: &str, phase: &str) -> Result<String, String> {
 /// installed by Homebrew) then disappear. Preserve every inherited entry and
 /// add the native package-manager locations Git filters commonly use.
 pub(super) fn git_runtime_path(current: Option<&OsStr>, home: Option<&Path>) -> Option<OsString> {
-    #[cfg(not(unix))]
-    let _ = home;
     let mut directories: Vec<PathBuf> = Vec::new();
     let mut add = |path: PathBuf| {
         if !directories.contains(&path) {
@@ -164,11 +162,69 @@ pub(super) fn git_runtime_path(current: Option<&OsStr>, home: Option<&Path>) -> 
             add(PathBuf::from(directory));
         }
     }
+    #[cfg(windows)]
+    for directory in windows_git_runtime_directories(
+        env::var_os("ProgramFiles").as_deref().map(Path::new),
+        env::var_os("ProgramFiles(x86)").as_deref().map(Path::new),
+        env::var_os("LOCALAPPDATA").as_deref().map(Path::new),
+        env::var_os("APPDATA").as_deref().map(Path::new),
+        home,
+    ) {
+        add(directory);
+    }
     if directories.is_empty() {
         None
     } else {
         env::join_paths(directories).ok()
     }
+}
+
+/// Explorer-launched Windows applications can receive a PATH that omits Git
+/// even when Git for Windows is installed normally. These are Git's standard
+/// per-machine and per-user locations; adding the folders is harmless when a
+/// candidate does not exist and lets both native Git features and app-server
+/// command execution resolve the same installation.
+#[cfg(any(windows, test))]
+pub(super) fn windows_git_runtime_directories(
+    program_files: Option<&Path>,
+    program_files_x86: Option<&Path>,
+    local_app_data: Option<&Path>,
+    roaming_app_data: Option<&Path>,
+    home: Option<&Path>,
+) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(path) = program_files {
+        roots.push(path.join("Git"));
+    }
+    if let Some(path) = program_files_x86 {
+        roots.push(path.join("Git"));
+    }
+    if let Some(path) = local_app_data {
+        roots.push(path.join("Programs").join("Git"));
+    } else if let Some(path) = home {
+        roots.push(
+            path.join("AppData")
+                .join("Local")
+                .join("Programs")
+                .join("Git"),
+        );
+    }
+    if let Some(path) = roaming_app_data {
+        // npm installs executable shims here by default. Claude tools often
+        // invoke npm/npx or other globally installed CLIs by name.
+        roots.push(path.join("npm"));
+    }
+
+    roots
+        .into_iter()
+        .flat_map(|root| {
+            if root.file_name().is_some_and(|name| name == "npm") {
+                vec![root]
+            } else {
+                vec![root.join("cmd"), root.join("bin")]
+            }
+        })
+        .collect()
 }
 
 pub(super) fn git_command_for(

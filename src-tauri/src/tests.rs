@@ -169,6 +169,25 @@ fn git_runtime_path_preserves_inherited_entries_and_adds_filter_locations() {
     }
 }
 
+#[test]
+fn windows_git_runtime_path_covers_machine_and_per_user_installs() {
+    let machine = Path::new(r"C:\Program Files");
+    let local = Path::new(r"C:\Users\Person\AppData\Local");
+    let roaming = Path::new(r"C:\Users\Person\AppData\Roaming");
+    let directories = windows_git_runtime_directories(
+        Some(machine),
+        None,
+        Some(local),
+        Some(roaming),
+        None,
+    );
+
+    assert!(directories.contains(&machine.join("Git").join("cmd")));
+    assert!(directories.contains(&machine.join("Git").join("bin")));
+    assert!(directories.contains(&local.join("Programs").join("Git").join("cmd")));
+    assert!(directories.contains(&roaming.join("npm")));
+}
+
 #[cfg(unix)]
 #[test]
 fn git_runtime_path_finds_a_filter_outside_a_gui_style_minimal_path() {
@@ -2364,4 +2383,27 @@ fn openrouter_account_catalog_keeps_only_tool_capable_models() {
     }));
     assert_eq!(catalog["data"].as_array().map(Vec::len), Some(1));
     assert_eq!(catalog["data"][0]["id"], "vendor/agent");
+}
+
+#[test]
+fn openrouter_credit_balance_prefers_real_account_credits() {
+    let balance = parse_openrouter_account_credits(&json!({
+        "data": { "total_credits": 100.5, "total_usage": 25.75 }
+    }))
+    .expect("account balance");
+    assert_eq!(balance.remaining, 74.75);
+    assert_eq!(balance.used, Some(25.75));
+    assert_eq!(balance.source, "account");
+}
+
+#[test]
+fn openrouter_credit_balance_falls_back_to_the_key_limit_without_guessing() {
+    let balance = parse_openrouter_key_limit(&json!({
+        "data": { "limit_remaining": 12.25, "usage": 7.75 }
+    }))
+    .expect("key limit");
+    assert_eq!(balance.remaining, 12.25);
+    assert_eq!(balance.used, Some(7.75));
+    assert_eq!(balance.source, "keyLimit");
+    assert!(parse_openrouter_key_limit(&json!({ "data": { "usage": 7.75 } })).is_none());
 }

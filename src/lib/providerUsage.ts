@@ -1,4 +1,5 @@
 import type { ClaudeRuntimeStatus } from "./claude";
+import type { OpenRouterCreditBalance } from "./codex";
 import type { CursorRuntimeStatus } from "./cursor";
 import type { Provider, UsageDisplayMode } from "../types";
 
@@ -15,6 +16,81 @@ export interface AccountUsageWindowView {
   percent: number;
   percentLabel: string;
   resetLabel: string;
+}
+
+export interface ProviderHeaderUsageView {
+  text: string;
+  title: string;
+  needsConnection?: boolean;
+}
+
+export function formatCreditAmount(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return "$0";
+  return value >= 0.01 ? `$${value.toFixed(2)}` : `$${value.toFixed(4)}`;
+}
+
+/** Compact quota copy for the persistent chat header. Detailed reset times
+ * remain in the Usage panel and in this chip's tooltip. */
+export function providerHeaderUsage(
+  provider: Provider,
+  accountUsage: AccountUsageView,
+  options: {
+    openRouterReady?: boolean;
+    openRouterCredits?: OpenRouterCreditBalance | null;
+    openRouterCreditsRead?: boolean;
+    openRouterCreditsError?: string;
+  } = {},
+): ProviderHeaderUsageView | null {
+  if (provider === "openrouter") {
+    const balance = options.openRouterCredits;
+    if (balance) {
+      const amount = formatCreditAmount(balance.remaining);
+      return balance.source === "account"
+        ? { text: `${amount} credits left`, title: `OpenRouter account · ${amount} credits left` }
+        : { text: `${amount} key limit left`, title: `OpenRouter API key · ${amount} spending limit left` };
+    }
+    if (!options.openRouterReady) {
+      return { text: "Add API key", title: "Add an OpenRouter API key to view credits", needsConnection: true };
+    }
+    return options.openRouterCreditsRead
+      ? {
+          text: "Credits unavailable",
+          title: options.openRouterCreditsError?.toLowerCase().includes("does not expose")
+            ? "This OpenRouter key does not expose an account balance or spending limit"
+            : "OpenRouter credits are temporarily unavailable. Try refreshing usage.",
+        }
+      : { text: "Checking credits…", title: "Checking OpenRouter credits" };
+  }
+  if (provider !== "openai" && provider !== "claude") return null;
+  const windows = accountUsage.windows ?? [];
+  if (!windows.length) {
+    const summary = accountUsage.summary.toLowerCase();
+    if (summary.includes("checking")) {
+      return { text: "Checking usage…", title: `${accountUsage.label} · ${accountUsage.summary}` };
+    }
+    if (summary.includes("sign in")) {
+      return {
+        text: "Sign in for usage",
+        title: `${accountUsage.label} · ${accountUsage.summary}`,
+        needsConnection: true,
+      };
+    }
+    if (summary.includes("install")) {
+      return {
+        text: provider === "claude" ? "Connect Claude" : "Connect provider",
+        title: `${accountUsage.label} · ${accountUsage.summary}`,
+        needsConnection: true,
+      };
+    }
+    if (summary.includes("no active limit")) {
+      return { text: "No active limit", title: `${accountUsage.label} · ${accountUsage.summary}` };
+    }
+    return { text: "Usage unavailable", title: `${accountUsage.label} · ${accountUsage.summary}` };
+  }
+  return {
+    text: windows.map((window) => `${window.label} ${window.percentLabel}`).join(" · "),
+    title: `${accountUsage.label} · ${accountUsage.summary}`,
+  };
 }
 
 /**
@@ -195,10 +271,15 @@ export function providerAccountUsage(
     openAiRateLimits: ProviderRateLimits | null;
     /** True once a rate-limit read succeeded, even if it reported no window. */
     openAiRateLimitsRead?: boolean;
+    /** Distinguishes a connected account with a transient read failure from no account. */
+    openAiConnected?: boolean;
     claudeStatus: ClaudeRuntimeStatus | null;
     claudeRateLimits?: ProviderRateLimits | null;
     cursorStatus?: CursorRuntimeStatus | null;
     openRouterReady: boolean;
+    openRouterCredits?: OpenRouterCreditBalance | null;
+    openRouterCreditsRead?: boolean;
+    openRouterCreditsError?: string;
     lmStudioReady?: boolean;
     usageDisplay?: UsageDisplayMode;
     now?: number;
@@ -234,6 +315,26 @@ export function providerAccountUsage(
     return { label: "Cursor subscription", summary: `${plan} connected · live usage and limits are managed by Cursor` };
   }
   if (provider === "openrouter") {
+    const balance = options.openRouterCredits;
+    if (balance) {
+      const amount = formatCreditAmount(balance.remaining);
+      return {
+        label: balance.source === "account" ? "OpenRouter credits" : "OpenRouter API key",
+        summary: balance.source === "account"
+          ? `${amount} credits left`
+          : `${amount} spending limit left on this key`,
+      };
+    }
+    if (options.openRouterCreditsRead) {
+      return {
+        label: "OpenRouter credits",
+        summary: options.openRouterReady
+          ? options.openRouterCreditsError?.toLowerCase().includes("does not expose")
+            ? "This API key does not expose an account balance or spending limit"
+            : "Credits are temporarily unavailable · try refreshing usage"
+          : "Add an OpenRouter API key to track credits",
+      };
+    }
     return {
       label: "OpenRouter usage",
       summary: options.openRouterReady ? "Pay as you go · tracked spend appears below" : "Add an OpenRouter API key to track spend",
@@ -253,6 +354,10 @@ export function providerAccountUsage(
   };
   return {
     label: "OpenAI subscription",
-    summary: options.openAiRateLimitsRead ? "No active limit window" : "Sign in to view live limits",
+    summary: options.openAiRateLimitsRead
+      ? "No active limit window"
+      : options.openAiConnected
+        ? "Live usage is temporarily unavailable"
+        : "Sign in to view live limits",
   };
 }

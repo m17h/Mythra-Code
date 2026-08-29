@@ -1,10 +1,10 @@
 use std::{env, path::PathBuf, process::Stdio};
 
+use super::{find_on_path, find_with_login_shell, git_stdout, optional_git_stdout, push_candidate};
+use crate::process_launch::background_command;
 use serde::Serialize;
 use serde_json::Value;
 use tauri::{AppHandle, Manager};
-use super::{find_on_path, find_with_login_shell, git_stdout, optional_git_stdout, push_candidate};
-use crate::process_launch::background_command;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -36,15 +36,19 @@ pub(super) struct GitHubRepoStatus {
 pub(super) async fn resolve_github_binary(app: &AppHandle) -> Result<PathBuf, String> {
     let executable_name = if cfg!(windows) { "gh.exe" } else { "gh" };
     let legacy_override = concat!("OPEN", "KIWI_GH_PATH");
-    if let Some(override_path) = env::var_os("MYTHRA_CODE_GH_PATH").or_else(|| env::var_os(legacy_override)) {
+    if let Some(override_path) =
+        env::var_os("MYTHRA_CODE_GH_PATH").or_else(|| env::var_os(legacy_override))
+    {
         let override_path = PathBuf::from(override_path);
         return override_path
             .is_file()
             .then_some(override_path)
-            .ok_or_else(|| "MYTHRA_CODE_GH_PATH does not point to a GitHub CLI executable.".into());
+            .ok_or_else(|| {
+                "MYTHRA_CODE_GH_PATH does not point to a GitHub CLI executable.".into()
+            });
     }
     let mut candidates = Vec::new();
-    if let Some(candidate) = find_on_path(executable_name) {
+    if let Some(candidate) = find_on_path(executable_name).await {
         push_candidate(&mut candidates, candidate);
     }
     #[cfg(target_os = "macos")]

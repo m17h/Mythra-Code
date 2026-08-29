@@ -5,8 +5,8 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
-import { Archive, ArchiveRestore, Bot, Check, ChevronDown, Circle, Code2, Download, FileCode2, Folder, FolderOpen, GitBranch, GitFork, LoaderCircle, MessageSquare, Paperclip, PanelRight, PanelLeftClose, PanelLeftOpen, Plus, Pin, PinOff, Pencil, Search, Settings, Shield, ShieldAlert, ShieldCheck, TerminalSquare, Trash2, X } from "lucide-react";
-import { getCodexRuntimeStatus, auditEvent, exportTextFile, getNormalChatWorkspace, hasLmStudioKey, hasOpenRouterKey, respond, restartRuntime, rpc, runtimeInstanceId, type CodexRuntimeStatus, type JsonObject } from "./lib/codex";
+import { Archive, ArchiveRestore, Bot, Check, ChevronDown, Circle, Code2, Download, FileCode2, Folder, FolderOpen, Gauge, GitBranch, GitFork, LoaderCircle, MessageSquare, Paperclip, PanelRight, PanelLeftClose, PanelLeftOpen, Plus, Pin, PinOff, Pencil, Search, Settings, Shield, ShieldAlert, ShieldCheck, TerminalSquare, Trash2, X } from "lucide-react";
+import { getCodexRuntimeStatus, auditEvent, exportTextFile, getNormalChatWorkspace, getOpenRouterCredits, hasLmStudioKey, hasOpenRouterKey, respond, restartRuntime, rpc, runtimeInstanceId, type CodexRuntimeStatus, type JsonObject, type OpenRouterCreditBalance } from "./lib/codex";
 import { deleteClaudeTranscript, getClaudeRateLimits, getClaudeRuntimeStatus, listClaudeModels, loadClaudeTranscript, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, type ClaudeModel, type ClaudeRuntimeStatus } from "./lib/claude";
 import { deleteCursorTranscript, getCursorRuntimeStatus, listCursorModels, loadCursorTranscript, respondToCursorPermission, saveCursorTranscript, startCursorLogin, type CursorModel, type CursorRuntimeStatus } from "./lib/cursor";
 import { loadStored, storeValue } from "./lib/storage";
@@ -96,7 +96,7 @@ import { attachmentsFor, forgetAttachmentDraft, withAttachmentDraft, type Attach
 import { EMPTY_REVIEW_DIFF } from "./lib/gitDiff";
 import { shellCommand } from "./lib/shellCommand";
 import { resolveProviderSystemPrompt, resolveSystemPrompt } from "./lib/systemPrompt";
-import { parseCodexRateLimits, providerAccountUsage, sanitizeUsageDisplay, type ProviderRateLimits } from "./lib/providerUsage";
+import { parseCodexRateLimits, providerAccountUsage, providerHeaderUsage, sanitizeUsageDisplay, type ProviderRateLimits } from "./lib/providerUsage";
 import { contextUsagePercent } from "./lib/contextUsage";
 import { mythraCodeDeveloperInstructions } from "./lib/completionPrompt";
 import { runtimeModelProviderId } from "./lib/providerIds";
@@ -343,6 +343,9 @@ export default function App() {
   const knownThreadsRef = useRef<ThreadSidebarIndex | null>(null);
   const providerRepairThreadsRef = useRef(new Set<string>());
   const [openRouterReady, setOpenRouterReady] = useState(false);
+  const [openRouterCredits, setOpenRouterCredits] = useState<OpenRouterCreditBalance | null>(null);
+  const [openRouterCreditsRead, setOpenRouterCreditsRead] = useState(false);
+  const [openRouterCreditsError, setOpenRouterCreditsError] = useState("");
   const [lmStudioTokenStored, setLmStudioTokenStored] = useState(false);
   // The dock's open state is deliberately not persisted: it covers a third of
   // the window, and restoring it on launch hides the conversation the user
@@ -358,6 +361,8 @@ export default function App() {
   const [attachmentDrafts, setAttachmentDrafts] = useState<AttachmentDrafts>({});
   const [openAiRateLimits, setOpenAiRateLimits] = useState<ProviderRateLimits | null>(null);
   const [openAiRateLimitsRead, setOpenAiRateLimitsRead] = useState(false);
+  const openAiAccountRequestRef = useRef(0);
+  const openAiUsageRequestRef = useRef(0);
   const [claudeRateLimits, setClaudeRateLimits] = useState<ProviderRateLimits | null>(null);
   const [skillsFolder, setSkillsFolder] = usePersistedState<string>("kiwi.skillsFolder", "");
   const [skillFiles, setSkillFiles] = useState<LocalSkillFile[]>([]);
@@ -843,14 +848,24 @@ export default function App() {
     return providerAccountUsage(effectiveSettings.provider, {
       openAiRateLimits,
       openAiRateLimitsRead,
+      openAiConnected: account?.type === "chatgpt",
       claudeStatus,
       claudeRateLimits,
       cursorStatus,
       openRouterReady,
+      openRouterCredits,
+      openRouterCreditsRead,
+      openRouterCreditsError,
       lmStudioReady,
       usageDisplay: settings.usageDisplay,
     });
-  }, [claudeRateLimits, claudeStatus, cursorStatus, effectiveSettings.provider, lmStudioReady, openAiRateLimits, openAiRateLimitsRead, openRouterReady, settings.usageDisplay]);
+  }, [account?.type, claudeRateLimits, claudeStatus, cursorStatus, effectiveSettings.provider, lmStudioReady, openAiRateLimits, openAiRateLimitsRead, openRouterCredits, openRouterCreditsError, openRouterCreditsRead, openRouterReady, settings.usageDisplay]);
+  const headerUsageView = useMemo(() => providerHeaderUsage(effectiveSettings.provider, accountUsageView, {
+    openRouterReady,
+    openRouterCredits,
+    openRouterCreditsRead,
+    openRouterCreditsError,
+  }), [accountUsageView, effectiveSettings.provider, openRouterCredits, openRouterCreditsError, openRouterCreditsRead, openRouterReady]);
 
   // Only offer "Check settings" for failures settings can actually fix.
   const errorSuggestsSettings = useMemo(() => Boolean(error) && /sign in|api key|openrouter|lm studio|claude|model|settings|runtime|codex|account/i.test(error ?? ""), [error]);
@@ -1523,17 +1538,35 @@ export default function App() {
     [bindThreadToProject, persistNativeAgentLinks, runtimeStatus?.available],
   );
 
-  const refreshAccount = useCallback(async () => {
+  const refreshAccount = useCallback(async (refreshToken = false): Promise<{ account: Account | null; requiresOpenaiAuth?: boolean } | null> => {
+    const request = ++openAiAccountRequestRef.current;
     try {
-      const result = await rpc<{ account: Account | null }>("account/read", { refreshToken: false });
+      const result = await rpc<{ account: Account | null; requiresOpenaiAuth?: boolean }>("account/read", { refreshToken });
+      if (openAiAccountRequestRef.current !== request) return null;
       setAccount(result.account);
       if (result.account?.type === "chatgpt") {
         setAuthRequiredOpen(false);
         setError(null);
         setStatus("Ready");
+      } else {
+        openAiUsageRequestRef.current += 1;
+        setOpenAiRateLimits(null);
+        setOpenAiRateLimitsRead(false);
       }
+      return result;
     } catch (reason) {
-      setError(friendlyError(reason));
+      if (openAiAccountRequestRef.current !== request) return null;
+      const message = friendlyError(reason);
+      setError(message);
+      if (/\b401\b|oauth|access token|authenticate|authentication|sign in/i.test(message)) {
+        setAccount(null);
+        openAiUsageRequestRef.current += 1;
+        setOpenAiRateLimits(null);
+        setOpenAiRateLimitsRead(false);
+        setAuthRequiredOpen(true);
+        setStatus("Sign-in required");
+      }
+      return null;
     }
   // Babel's TS-7-compatible parser treats the `result.account` property as
   // the unrelated component state named `account`.
@@ -1656,15 +1689,59 @@ export default function App() {
   }, []);
 
   const refreshUsage = useCallback(async () => {
+    const request = ++openAiUsageRequestRef.current;
     try {
       const result = await rpc<unknown>("account/rateLimits/read");
-      setOpenAiRateLimits(parseCodexRateLimits(result));
-      setOpenAiRateLimitsRead(true);
+      if (openAiUsageRequestRef.current === request) {
+        setOpenAiRateLimits(parseCodexRateLimits(result));
+        setOpenAiRateLimitsRead(true);
+      }
     } catch {
-      setOpenAiRateLimits(null);
-      setOpenAiRateLimitsRead(false);
+      if (openAiUsageRequestRef.current === request) {
+        setOpenAiRateLimits(null);
+        setOpenAiRateLimitsRead(false);
+      }
     }
   }, []);
+
+  const openRouterCreditsRequestRef = useRef(0);
+  const refreshOpenRouterCredits = useCallback(async () => {
+    const request = ++openRouterCreditsRequestRef.current;
+    setOpenRouterCreditsRead(false);
+    setOpenRouterCreditsError("");
+    try {
+      const balance = await getOpenRouterCredits();
+      if (openRouterCreditsRequestRef.current === request) {
+        setOpenRouterCredits(balance);
+        setOpenRouterCreditsRead(true);
+      }
+    } catch (reason) {
+      if (openRouterCreditsRequestRef.current === request) {
+        setOpenRouterCredits(null);
+        setOpenRouterCreditsError(friendlyError(reason));
+        setOpenRouterCreditsRead(true);
+      }
+    }
+  }, []);
+
+  const refreshAccountData = useCallback(async (refreshToken = false) => {
+    const result = await refreshAccount(refreshToken);
+    if (result?.account?.type === "chatgpt") {
+      await Promise.all([refreshModels(), refreshUsage()]);
+    }
+    return result;
+  }, [refreshAccount, refreshModels, refreshUsage]);
+
+  useEffect(() => {
+    if (openRouterReady) {
+      void refreshOpenRouterCredits();
+    } else {
+      openRouterCreditsRequestRef.current += 1;
+      setOpenRouterCredits(null);
+      setOpenRouterCreditsRead(false);
+      setOpenRouterCreditsError("");
+    }
+  }, [openRouterReady, refreshOpenRouterCredits]);
 
   const prepareLocalSkills = useCallback(
     async (folder: string, files: LocalSkillFile[], aliases: Record<string, string>, disabled: string[], removed: string[]) => {
@@ -1798,6 +1875,15 @@ export default function App() {
    */
   const refreshDiffFor = useCallback(
     async (threadId: string, projectPath: string) => {
+      // Review refresh is optional post-turn work. Check repository
+      // availability through the native helper first: on Windows without Git,
+      // asking app-server to run `git` produces the alarming but unrelated
+      // "failed to spawn command: program not found" after Claude completes.
+      const gitInfo = await readWorkspaceGitInfo(projectPath).catch(() => null);
+      if (gitInfo && !gitInfo.isRepo) {
+        useTaskStore.getState().setDiff(threadId, EMPTY_REVIEW_DIFF);
+        return;
+      }
       try {
         const result = await rpc<{ diff: string }>("gitDiffToRemote", { cwd: projectPath });
         useTaskStore.getState().setDiff(threadId, {
@@ -1844,7 +1930,10 @@ export default function App() {
           untrackedTruncated: untrackedPaths.length > MAX_LISTED_UNTRACKED_PATHS,
         });
       } catch (reason) {
-        setError(friendlyError(reason));
+        // A missing Git installation or optional diff capability must not turn
+        // a successfully completed model run into an app-level failure.
+        recordError(`Review diff refresh skipped: ${friendlyError(reason)}`);
+        useTaskStore.getState().setDiff(threadId, EMPTY_REVIEW_DIFF);
       }
     },
     [executeCommand],
@@ -1908,7 +1997,7 @@ export default function App() {
       setOpenAiRateLimitsRead(true);
     },
     onTerminalOutput: terminal.appendProcess,
-    onAccountUpdated: () => void refreshAccount(),
+    onAccountUpdated: () => void refreshAccountData(),
     onLoginFailed: (message) => {
       setError(message);
       setAuthRequiredOpen(true);
@@ -2035,6 +2124,9 @@ export default function App() {
             completedUsage.estimatedCost,
           );
         }
+        void refreshOpenRouterCredits();
+      } else if (completedProvider === "openai") {
+        void refreshUsage();
       }
       if (projectPath && activeWorkspace && normalizedProjectPath(projectPath) === normalizedProjectPath(activeWorkspace.path)) {
         // Bump just the finished thread instead of re-paging the entire
@@ -2113,6 +2205,9 @@ export default function App() {
       if (runtimeStatus?.available && projectPath && !projectPath.includes("normal-chats")) {
         void refreshDiffFor(threadId, executionPathFor(threadId, projectPath));
       }
+      void getClaudeRateLimits()
+        .then(setClaudeRateLimits)
+        .catch(() => setClaudeRateLimits(null));
     },
   });
 
@@ -2184,9 +2279,10 @@ export default function App() {
     }
     void checkRuntime(!initialOnboardingOpen && initialSettings.provider !== "claude" && initialSettings.provider !== "cursor").then((runtime) => {
       if (!runtime.available) return;
-      void refreshAccount();
-      void refreshModels();
-      void refreshUsage();
+      // Reading account state is deliberately non-forcing: Codex manages its
+      // own token refresh, and local thread hydration must not wait on an
+      // avoidable network refresh before showing the user's history.
+      void refreshAccountData(false);
     });
     void refreshClaudeStatus();
     void refreshCursorStatus();
@@ -2205,7 +2301,7 @@ export default function App() {
     void hasLmStudioKey()
       .then(setLmStudioTokenStored)
       .catch(() => setLmStudioTokenStored(false));
-  }, [checkRuntime, refreshAccount, refreshClaudeStatus, refreshCursorStatus, refreshLMStudioModels, refreshModels, refreshOpenRouterModels, refreshUsage]);
+  }, [checkRuntime, refreshAccountData, refreshClaudeStatus, refreshCursorStatus, refreshLMStudioModels, refreshOpenRouterModels]);
 
   useEffect(() => {
     void refreshLMStudioModels(settings.lmStudioBaseUrl);
@@ -3036,7 +3132,7 @@ export default function App() {
       await deliberateRestartRuntime();
       setRuntimeSetupOpen(false);
       setError(null);
-      await Promise.all([refreshAccount(), refreshModels(), refreshUsage()]);
+      await refreshAccountData(false);
       if (activeWorkspace) await loadThreads(activeWorkspace);
       if (activeProject) await refreshTools(activeProject);
     } catch (reason) {
@@ -3058,7 +3154,6 @@ export default function App() {
       setAuthRequiredOpen(false);
       setStatus("Waiting for sign-in");
       await openUrl(result.authUrl);
-      window.setTimeout(() => void refreshAccount(), 1800);
     } catch (reason) {
       setError(friendlyError(reason));
       setAuthRequiredOpen(true);
@@ -4730,6 +4825,26 @@ export default function App() {
               {running ? <LoaderCircle className="spin" size={13} /> : <Circle size={8} fill="currentColor" />}
               <span>{status}</span>
             </div>
+            {headerUsageView && (
+              <button
+                className={`topbar-usage-chip ${effectiveSettings.provider}`}
+                type="button"
+                title={headerUsageView.title}
+                aria-label={`${headerUsageView.title}. ${headerUsageView.needsConnection ? "Open Models & accounts" : "Open usage details"}`}
+                onClick={() => {
+                  if (headerUsageView.needsConnection) {
+                    openSettings("models");
+                  } else if (activeProject) {
+                    openStudio("usage");
+                  } else {
+                    openSettings("usage");
+                  }
+                }}
+              >
+                <Gauge size={13} aria-hidden="true" />
+                <span>{headerUsageView.text}</span>
+              </button>
+            )}
             <ThreadProviderControl
               provider={effectiveSettings.provider}
               model={effectiveSettings.model}
@@ -5188,7 +5303,10 @@ export default function App() {
             onRefreshUsage={() => {
               if (effectiveSettings.provider === "claude") void Promise.all([refreshClaudeStatus(), refreshClaudeModels()]);
               else if (effectiveSettings.provider === "cursor") void Promise.all([refreshCursorStatus(), refreshCursorModels()]);
-              else if (effectiveSettings.provider === "openrouter") void hasOpenRouterKey().then(setOpenRouterReady).catch(() => setOpenRouterReady(false));
+              else if (effectiveSettings.provider === "openrouter") void Promise.all([
+                hasOpenRouterKey().then(setOpenRouterReady).catch(() => setOpenRouterReady(false)),
+                refreshOpenRouterCredits(),
+              ]);
               else if (effectiveSettings.provider === "lmstudio") void refreshLMStudioModels(settings.lmStudioBaseUrl);
               else void refreshUsage();
             }}
@@ -5248,10 +5366,6 @@ export default function App() {
         }}
         onThemePreview={setPreviewTheme}
         onEffortSliderPreview={setPreviewEffortSlider}
-        onAccountChange={async () => {
-          await refreshAccount();
-          await refreshModels();
-        }}
         onSignIn={beginChatGptLogin}
         onClaudeSignIn={beginClaudeLogin}
         onClaudeRefresh={refreshClaudeStatus}
@@ -5266,7 +5380,10 @@ export default function App() {
           closeSettings();
           openStudio("tools");
         }}
-        onOpenRouterChange={setOpenRouterReady}
+        onOpenRouterChange={(ready) => {
+          if (ready && openRouterReady) void refreshOpenRouterCredits();
+          setOpenRouterReady(ready);
+        }}
         onLMStudioRefresh={refreshLMStudioModels}
         onLMStudioTokenChange={setLmStudioTokenStored}
         onGitHubSignIn={beginGitHubLogin}

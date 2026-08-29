@@ -13,7 +13,7 @@ const codex = vi.hoisted(() => ({
 }));
 const claude = vi.hoisted(() => ({
   interruptClaudeTurn: vi.fn(),
-  isClaudeThreadBusyError: vi.fn(() => false),
+  isClaudeThreadBusyError: vi.fn((_reason?: unknown) => false),
   killClaudeTurn: vi.fn(),
   saveClaudeTranscript: vi.fn(),
   startClaudeTurn: vi.fn(),
@@ -237,6 +237,7 @@ describe("useTurnRunner", () => {
     claude.saveClaudeTranscript.mockResolvedValue(undefined);
     claude.startClaudeTurn.mockResolvedValue({ turnId: "turn-new" });
     claude.steerClaudeTurn.mockResolvedValue(undefined);
+    claude.isClaudeThreadBusyError.mockImplementation(() => false);
     childSessions.ensureChildAgentBridge.mockResolvedValue(null);
   });
 
@@ -399,6 +400,34 @@ describe("useTurnRunner", () => {
 
     expect(cursor.startCursorTurn).toHaveBeenCalledWith(expect.objectContaining({ prompt: "do this next" }));
     expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]?.queuedTurns).toEqual([]);
+  });
+
+  it("releases and retries a queued Claude turn when Windows cleanup briefly holds the old slot", async () => {
+    claude.isClaudeThreadBusyError.mockImplementation((reason?: unknown) =>
+      String(reason).includes("Claude is already working in this thread"),
+    );
+    claude.startClaudeTurn
+      .mockRejectedValueOnce(new Error("Claude is already working in this thread"))
+      .mockResolvedValueOnce({ turnId: "turn-retried" });
+    const store = useTaskStore.getState();
+    store.ensureTask(CLAUDE_THREAD.id, CLAUDE_THREAD.cwd);
+    store.setActiveTurn(CLAUDE_THREAD.id, "turn-live");
+    store.setTaskStatus(CLAUDE_THREAD.id, "running");
+    const deps = claudeContext();
+    const { result } = renderHook(() => useTurnRunner(deps));
+
+    await act(async () => { await result.current.sendMessage("continue next"); });
+    await act(async () => {
+      store.completeTurn(CLAUDE_THREAD.id, "turn-live", "completed");
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(claude.killClaudeTurn).toHaveBeenCalledWith(CLAUDE_THREAD.id);
+    expect(claude.startClaudeTurn).toHaveBeenCalledTimes(2);
+    expect(claude.startClaudeTurn).toHaveBeenLastCalledWith(expect.objectContaining({ prompt: "continue next" }));
+    expect(useTaskStore.getState().tasks[CLAUDE_THREAD.id]?.queuedTurns).toEqual([]);
   });
 
   it("starts a queue restored from an earlier app session when the task is opened", async () => {

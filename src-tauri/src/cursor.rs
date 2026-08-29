@@ -402,7 +402,9 @@ fn resolve_windows_cursor_install_at(local_app_data: &Path) -> Option<CursorRunt
 
 async fn resolve_cursor_runtime(app: &AppHandle) -> Result<CursorRuntime, String> {
     let legacy_override = concat!("OPEN", "KIWI_CURSOR_PATH");
-    if let Some(override_path) = env::var_os("MYTHRA_CODE_CURSOR_PATH").or_else(|| env::var_os(legacy_override)) {
+    if let Some(override_path) =
+        env::var_os("MYTHRA_CODE_CURSOR_PATH").or_else(|| env::var_os(legacy_override))
+    {
         let override_path = PathBuf::from(override_path);
         return override_path
             .is_file()
@@ -425,7 +427,7 @@ async fn resolve_cursor_runtime(app: &AppHandle) -> Result<CursorRuntime, String
         }
     }
     for name in executable_names {
-        if let Some(candidate) = super::find_on_path(name) {
+        if let Some(candidate) = super::find_on_path(name).await {
             super::push_candidate(&mut candidates, candidate);
         }
     }
