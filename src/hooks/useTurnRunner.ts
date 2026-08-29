@@ -49,6 +49,8 @@ import type { Account, AppSettings, CustomAgentProfile, Project, Provider, Setti
 
 const queuedDeliveries = new Map<string, { threadId: string; context: TurnRunnerContext }>();
 const activeQueuedDeliveries = new Set<string>();
+/** One bounded recovery attempt for a local-provider slot still unwinding. */
+const queuedBusyRetries = new Set<string>();
 
 /** The local provider can cross a lifecycle boundary after the UI enables Steer. */
 function isUnavailableSteerError(reason: unknown): boolean {
@@ -69,10 +71,14 @@ export function forgetQueuedDeliveries(threadId?: string): void {
   if (threadId === undefined) {
     queuedDeliveries.clear();
     activeQueuedDeliveries.clear();
+    queuedBusyRetries.clear();
     return;
   }
   for (const [queuedTurnId, delivery] of queuedDeliveries) {
-    if (delivery.threadId === threadId) queuedDeliveries.delete(queuedTurnId);
+    if (delivery.threadId === threadId) {
+      queuedDeliveries.delete(queuedTurnId);
+      queuedBusyRetries.delete(queuedTurnId);
+    }
   }
   activeQueuedDeliveries.delete(threadId);
 }
@@ -735,7 +741,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
           // The backend slot is held by a Claude process the UI no longer
           // tracks (e.g. after an event loss). Free it so a retry succeeds
           // instead of failing until Mythra Code restarts.
-          void killClaudeTurn(failedThreadId).catch(() => undefined);
+          await killClaudeTurn(failedThreadId).catch(() => undefined);
         } else if (effectiveSettings.provider === "cursor" && /already working/i.test(friendlyError(reason))) {
           void killCursorTurn(failedThreadId).catch(() => undefined);
         }
@@ -768,14 +774,27 @@ export function useTurnRunner(context: TurnRunnerContext): {
     activeQueuedDeliveries.add(threadId);
     useTaskStore.getState().setQueuedTurnStatus(threadId, queuedTurn.id, "sending");
     let delivered = false;
+    let retryBusySlot = false;
     try {
       delivered = await deliverMessage(queuedContext, queuedTurn.text, "turn");
       if (delivered) {
         useTaskStore.getState().removeQueuedTurn(threadId, queuedTurn.id);
         queuedDeliveries.delete(queuedTurn.id);
+        queuedBusyRetries.delete(queuedTurn.id);
       } else {
         const error = useTaskStore.getState().tasks[threadId]?.error ?? "The queued turn could not be started.";
-        useTaskStore.getState().setQueuedTurnStatus(threadId, queuedTurn.id, "failed", error);
+        // The Claude result event and Windows process-tree teardown used to
+        // cross in flight. Even with the backend ordering fixed, retain one
+        // bounded recovery for older runtimes or an unusually slow cleanup:
+        // the user's message stays queued and is retried after the stale slot
+        // has been force-released instead of being painted as a failed turn.
+        if (isClaudeThreadBusyError(error) && !queuedBusyRetries.has(queuedTurn.id)) {
+          queuedBusyRetries.add(queuedTurn.id);
+          retryBusySlot = true;
+          useTaskStore.getState().setQueuedTurnStatus(threadId, queuedTurn.id, "queued");
+        } else {
+          useTaskStore.getState().setQueuedTurnStatus(threadId, queuedTurn.id, "failed", error);
+        }
       }
     } catch (reason) {
       // Delivery reports failure by returning false; an actual throw would
@@ -783,6 +802,11 @@ export function useTurnRunner(context: TurnRunnerContext): {
       useTaskStore.getState().setQueuedTurnStatus(threadId, queuedTurn.id, "failed", friendlyError(reason));
     } finally {
       activeQueuedDeliveries.delete(threadId);
+    }
+
+    if (retryBusySlot) {
+      queueMicrotask(() => { void pumpQueuedThread(threadId, true); });
+      return;
     }
 
     // A very fast provider can finish before its start call resolves. If that
@@ -911,6 +935,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
     if (delivered) {
       useTaskStore.getState().removeQueuedTurn(threadId, queuedTurn.id);
       queuedDeliveries.delete(queuedTurn.id);
+      queuedBusyRetries.delete(queuedTurn.id);
     } else {
       // Whether the provider crossed a lifecycle boundary or rejected the
       // insertion, the user's queued instruction remains durable and will run
@@ -933,6 +958,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
     if (!threadId) return;
     const head = useTaskStore.getState().tasks[threadId]?.queuedTurns[0];
     if (head?.id !== queuedTurnId) return;
+    queuedBusyRetries.delete(queuedTurnId);
     useTaskStore.getState().setQueuedTurnStatus(threadId, queuedTurnId, "queued");
     void pumpQueuedThread(threadId, true);
   }, [pumpQueuedThread]);
@@ -943,6 +969,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
     const wasHead = useTaskStore.getState().tasks[threadId]?.queuedTurns[0]?.id === queuedTurnId;
     useTaskStore.getState().removeQueuedTurn(threadId, queuedTurnId);
     queuedDeliveries.delete(queuedTurnId);
+    queuedBusyRetries.delete(queuedTurnId);
     if (wasHead) void pumpQueuedThread(threadId);
   }, [pumpQueuedThread]);
 

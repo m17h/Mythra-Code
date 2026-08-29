@@ -9,6 +9,9 @@ import type { Thread } from "./types";
  */
 
 const invokeMock = vi.fn();
+const tauriEvents = vi.hoisted(() => ({
+  handlers: new Map<string, (event: { payload: unknown }) => void>(),
+}));
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: (command: string, args?: Record<string, unknown>) => invokeMock(command, args),
@@ -16,7 +19,10 @@ vi.mock("@tauri-apps/api/core", () => ({
   convertFileSrc: (path: string) => path,
 }));
 vi.mock("@tauri-apps/api/event", () => ({
-  listen: vi.fn(async () => () => {}),
+  listen: vi.fn(async (name: string, handler: (event: { payload: unknown }) => void) => {
+    tauriEvents.handlers.set(name, handler);
+    return () => tauriEvents.handlers.delete(name);
+  }),
 }));
 vi.mock("@tauri-apps/api/webview", () => ({
   getCurrentWebview: () => ({ onDragDropEvent: vi.fn(async () => () => {}) }),
@@ -71,6 +77,11 @@ function deferred<T>(): Deferred<T> {
 let pendingResume: Deferred<{ thread: Thread }>;
 let resumeImpl: (params: Record<string, unknown>) => unknown;
 let turnStartImpl: (params: Record<string, unknown>) => unknown;
+let accountReadImpl: (params: Record<string, unknown>) => unknown;
+let accountLogoutImpl: () => unknown;
+let rateLimitsImpl: () => unknown;
+let openRouterReadyImpl: () => boolean;
+let openRouterCreditsImpl: () => unknown;
 let commandExecImpl: (params: Record<string, unknown>) => unknown;
 /** Bumped by every managed app-server restart, real or simulated. */
 let runtimeGeneration: number;
@@ -219,7 +230,8 @@ function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
     };
   }
   if (command === "child_agent_session_end" || command === "child_agent_finished" || command === "child_agent_respond") return null;
-  if (command === "has_openrouter_key") return false;
+  if (command === "has_openrouter_key") return openRouterReadyImpl();
+  if (command === "openrouter_credits") return openRouterCreditsImpl();
   if (command === "list_lmstudio_models") return lmStudioModelsImpl(String(args?.baseUrl ?? ""));
   if (command === "codex_rpc") {
     const method = args?.method as string;
@@ -256,8 +268,14 @@ function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
     if (method === "thread/resume") return resumeImpl(params);
     if (method === "turn/start") return turnStartImpl(params);
     if (method === "account/read") {
-      return { account: { type: "chatgpt", email: "test@example.com", planType: "pro" } };
+      return accountReadImpl(params);
     }
+    if (method === "account/logout") {
+      const result = accountLogoutImpl();
+      queueMicrotask(() => tauriEvents.handlers.get("codex-event")?.({ payload: { method: "account/updated", params: {} } }));
+      return result;
+    }
+    if (method === "account/rateLimits/read") return rateLimitsImpl();
     if (method === "model/list") return { data: [] };
     return {};
   }
@@ -276,10 +294,16 @@ async function renderApp() {
 
 beforeEach(() => {
   localStorage.clear();
+  tauriEvents.handlers.clear();
   vi.spyOn(window, "confirm").mockReturnValue(true);
   pendingResume = deferred<{ thread: Thread }>();
   resumeImpl = () => pendingResume.promise;
   turnStartImpl = (params) => ({ turn: { id: `turn-${String(params.threadId)}` } });
+  accountReadImpl = () => ({ account: { type: "chatgpt", email: "test@example.com", planType: "pro" }, requiresOpenaiAuth: true });
+  accountLogoutImpl = () => ({});
+  rateLimitsImpl = () => ({ rateLimits: {} });
+  openRouterReadyImpl = () => false;
+  openRouterCreditsImpl = () => ({ remaining: 0, used: null, source: "account" });
   commandExecImpl = () => ({ exitCode: 0, stdout: "", stderr: "" });
   runtimeGeneration = 1;
   workspaceGitInfoImpl = () => ({ isRepo: true, isRoot: true, hasCommit: true, branch: "main", head: "head" });
@@ -297,6 +321,163 @@ beforeEach(() => {
   );
   localStorage.setItem("kiwi.projects", JSON.stringify([PROJECT_A, PROJECT_B]));
   localStorage.setItem("kiwi.workspaceMode", JSON.stringify("project"));
+});
+
+describe("Codex cold startup", () => {
+  it("loads local threads without waiting for a forced token refresh", async () => {
+    const auth = deferred<{ account: { type: "chatgpt"; email: string; planType: string }; requiresOpenaiAuth: boolean }>();
+    accountReadImpl = () => auth.promise;
+    await renderApp();
+
+    await waitFor(() => {
+      const call = invokeMock.mock.calls.find(([, args]) => args?.method === "account/read");
+      expect(call?.[1]?.params).toEqual({ refreshToken: false });
+    });
+    const methodsBeforeAuth = invokeMock.mock.calls
+      .filter(([command]) => command === "codex_rpc")
+      .map(([, args]) => args?.method);
+    expect(methodsBeforeAuth).toContain("thread/list");
+    expect(methodsBeforeAuth).not.toContain("model/list");
+    expect(methodsBeforeAuth).toContain("skills/list");
+
+    await act(async () => {
+      auth.resolve({
+        account: { type: "chatgpt", email: "test@example.com", planType: "pro" },
+        requiresOpenaiAuth: true,
+      });
+      await auth.promise;
+    });
+
+    await waitFor(() => {
+      const methods = invokeMock.mock.calls
+        .filter(([command]) => command === "codex_rpc")
+        .map(([, args]) => args?.method);
+      expect(methods).toContain("thread/list");
+      expect(methods).toContain("model/list");
+      expect(methods).toContain("skills/list");
+    });
+  });
+
+  it("refreshes models and usage when a signed-in account update arrives", async () => {
+    let loggedIn = false;
+    accountReadImpl = () => ({
+      account: loggedIn ? { type: "chatgpt", email: "test@example.com", planType: "pro" } : null,
+      requiresOpenaiAuth: true,
+    });
+    await renderApp();
+    await waitFor(() => expect(tauriEvents.handlers.has("codex-event")).toBe(true));
+    expect(invokeMock.mock.calls.filter(([, args]) => args?.method === "model/list")).toHaveLength(0);
+
+    loggedIn = true;
+    await act(async () => {
+      tauriEvents.handlers.get("codex-event")?.({ payload: { method: "account/updated", params: {} } });
+    });
+
+    await waitFor(() => {
+      expect(invokeMock.mock.calls.some(([, args]) => args?.method === "model/list")).toBe(true);
+      expect(invokeMock.mock.calls.some(([, args]) => args?.method === "account/rateLimits/read")).toBe(true);
+    });
+  });
+});
+
+describe("chat header provider usage", () => {
+  it("keeps the control visible when Local Dev is signed out and opens account settings", async () => {
+    const user = userEvent.setup();
+    accountReadImpl = () => ({ account: null, requiresOpenaiAuth: true });
+    await renderApp();
+
+    const signInUsage = await screen.findByRole("button", {
+      name: /OpenAI subscription.*Sign in to view live limits.*Open Models & accounts/i,
+    });
+    expect(signInUsage).toHaveTextContent("Sign in for usage");
+    await user.click(signInUsage);
+    expect(await screen.findByText("Official ChatGPT subscription sign-in")).toBeInTheDocument();
+  });
+
+  it("shows live OpenRouter credits and opens the detailed usage surface", async () => {
+    const user = userEvent.setup();
+    openRouterReadyImpl = () => true;
+    openRouterCreditsImpl = () => ({ remaining: 74.75, used: 25.75, source: "account" });
+    localStorage.setItem("kiwi.settings", JSON.stringify({ provider: "openrouter", model: "x-ai/grok-4.5" }));
+    await renderApp();
+
+    const credits = await screen.findByRole("button", { name: /OpenRouter account.*74\.75 credits left.*Open usage details/i });
+    expect(credits).toHaveTextContent("$74.75 credits left");
+    await user.click(credits);
+    expect(await screen.findByText(/Usage & audit|Provider quota display/)).toBeInTheDocument();
+  });
+
+  it("refreshes OpenRouter credits when an existing API key is replaced", async () => {
+    const user = userEvent.setup();
+    let requests = 0;
+    openRouterReadyImpl = () => true;
+    openRouterCreditsImpl = () => ({ remaining: requests++ === 0 ? 10 : 20, used: 1, source: "account" });
+    localStorage.setItem("kiwi.settings", JSON.stringify({ provider: "openrouter", model: "x-ai/grok-4.5" }));
+    await renderApp();
+
+    expect(await screen.findByRole("button", { name: /\$10\.00 credits left/i })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("button", { name: /Models & accounts/ }));
+    await user.click(screen.getByRole("button", { name: /OpenRouter.*Responses-compatible model routing/ }));
+    await user.type(screen.getByPlaceholderText("sk-or-v1-…"), "sk-or-v1-new");
+    await user.click(screen.getByRole("button", { name: "Save key" }));
+
+    expect(await screen.findByRole("button", { name: /\$20\.00 credits left/i })).toBeInTheDocument();
+    expect(requests).toBeGreaterThanOrEqual(2);
+  });
+
+  it("clears the previous OpenAI quota immediately after sign-out", async () => {
+    const user = userEvent.setup();
+    let loggedIn = true;
+    accountReadImpl = () => ({
+      account: loggedIn ? { type: "chatgpt", email: "test@example.com", planType: "pro" } : null,
+      requiresOpenaiAuth: true,
+    });
+    accountLogoutImpl = () => {
+      loggedIn = false;
+      return {};
+    };
+    rateLimitsImpl = () => ({
+      rateLimits: { primary: { usedPercent: 42, windowMinutes: 300, resetsAt: null } },
+    });
+    await renderApp();
+
+    expect(await screen.findByRole("button", { name: /OpenAI subscription.*58% left/i })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("button", { name: /Models & accounts/ }));
+    await user.click(await screen.findByRole("button", { name: "Sign out" }));
+
+    expect(await screen.findByRole("button", { name: /OpenAI subscription.*Sign in to view live limits/i })).toHaveTextContent("Sign in for usage");
+    expect(screen.queryByRole("button", { name: /OpenAI subscription.*58% left/i })).not.toBeInTheDocument();
+  });
+
+  it("ignores an old quota request that completes after sign-out", async () => {
+    const user = userEvent.setup();
+    const pendingUsage = deferred<{ rateLimits: { primary: { usedPercent: number; windowMinutes: number } } }>();
+    let loggedIn = true;
+    accountReadImpl = () => ({
+      account: loggedIn ? { type: "chatgpt", email: "test@example.com", planType: "pro" } : null,
+      requiresOpenaiAuth: true,
+    });
+    accountLogoutImpl = () => {
+      loggedIn = false;
+      return {};
+    };
+    rateLimitsImpl = () => pendingUsage.promise;
+    await renderApp();
+    await waitFor(() => expect(invokeMock.mock.calls.some(([, args]) => args?.method === "account/rateLimits/read")).toBe(true));
+
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("button", { name: /Models & accounts/ }));
+    await user.click(await screen.findByRole("button", { name: "Sign out" }));
+    await act(async () => {
+      pendingUsage.resolve({ rateLimits: { primary: { usedPercent: 42, windowMinutes: 300 } } });
+      await pendingUsage.promise;
+    });
+
+    expect(await screen.findByRole("button", { name: /OpenAI subscription.*Sign in to view live limits/i })).toHaveTextContent("Sign in for usage");
+    expect(screen.queryByRole("button", { name: /OpenAI subscription.*58% left/i })).not.toBeInTheDocument();
+  });
 });
 
 describe("project defaults", () => {
@@ -1487,6 +1668,34 @@ describe("workspace review diff", () => {
     "@@ -0,0 +1 @@",
     "+staged change",
   ].join("\n");
+
+  it("does not surface a post-run spawn error when Git is unavailable on Windows", async () => {
+    const user = userEvent.setup();
+    workspaceGitInfoImpl = () => ({
+      isRepo: false,
+      isRoot: false,
+      hasCommit: false,
+      branch: null,
+      head: null,
+      error: null,
+    });
+    gitDiffToRemoteImpl = () => { throw new Error("failed to spawn command: program not found"); };
+    commandExecImpl = () => { throw new Error("failed to spawn command: program not found"); };
+    resumeImpl = (params) => ({ thread: { ...THREAD_A, id: String(params.threadId), turns: [] } });
+    await renderApp();
+
+    await user.click(await screen.findByText("Alpha thread"));
+    await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
+    await user.click(await screen.findByRole("tab", { name: "Review workspace tool" }));
+    await user.click(await screen.findByRole("button", { name: "Refresh" }));
+
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("workspace_git_info", { cwd: PROJECT_A.path }));
+    const attemptedDiffCommands = invokeMock.mock.calls
+      .filter(([command, args]) => command === "codex_rpc" && ["gitDiffToRemote", "command/exec"].includes(String(args?.method)))
+      .map(([, args]) => args?.method);
+    expect(attemptedDiffCommands).toEqual([]);
+    expect(screen.queryByText(/failed to spawn command|program not found/i)).not.toBeInTheDocument();
+  });
 
   it("falls back to staged and unstaged changes and names untracked files", async () => {
     const user = userEvent.setup();

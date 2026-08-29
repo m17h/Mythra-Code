@@ -64,6 +64,17 @@ export async function hasOpenRouterKey(): Promise<boolean> {
   return invoke<boolean>("has_openrouter_key");
 }
 
+export interface OpenRouterCreditBalance {
+  remaining: number;
+  used: number | null;
+  /** Account credits are authoritative; keyLimit is a regular key's cap. */
+  source: "account" | "keyLimit";
+}
+
+export async function getOpenRouterCredits(): Promise<OpenRouterCreditBalance> {
+  return invoke<OpenRouterCreditBalance>("openrouter_credits");
+}
+
 /** Reads the complete account-filtered OpenRouter tool-capable catalog. */
 export async function listOpenRouterModels<T>(): Promise<T> {
   return invoke<T>("list_openrouter_models");

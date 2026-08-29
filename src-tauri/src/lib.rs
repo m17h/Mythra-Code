@@ -72,9 +72,10 @@ use process_launch::{background_command, background_std_command};
 use project_git::*;
 use project_git::{
     checkpoint_complete, checkpoint_create, checkpoint_delete, checkpoint_diff, checkpoint_restore,
-    git_common_dir, git_stdout, optional_git_stdout, unix_timestamp_ms, workspace_git_info,
-    workspace_git_initialize, worktree_apply_to_source, worktree_create, worktree_merge_branch,
-    worktree_recreate, worktree_remove, worktree_set_applied_baseline, worktree_status,
+    git_common_dir, git_runtime_path, git_stdout, optional_git_stdout, unix_timestamp_ms,
+    workspace_git_info, workspace_git_initialize, worktree_apply_to_source, worktree_create,
+    worktree_merge_branch, worktree_recreate, worktree_remove, worktree_set_applied_baseline,
+    worktree_status,
 };
 #[cfg(test)]
 use skills::*;
@@ -113,11 +114,22 @@ struct AppServer {
 #[derive(Default)]
 struct RuntimeState {
     server: Mutex<Option<Arc<AppServer>>>,
+    /// Runtime discovery launches external processes on Windows. Cache the
+    /// first verified executable/version pair for this Mythra Code process so
+    /// status checks and app-server startup cannot repeat `where.exe` and
+    /// `codex --version` during one cold launch.
+    codex_runtime: Mutex<Option<ResolvedCodexRuntime>>,
     /// Pid of the most recently spawned app-server child. Unlike `server`,
     /// this is always accessible without awaiting the async mutex, so the
     /// exit handler can still tear the process tree down while `ensure_server`
     /// holds the lock during a slow spawn/initialize.
     server_pid: std::sync::Mutex<Option<u32>>,
+}
+
+#[derive(Clone)]
+struct ResolvedCodexRuntime {
+    path: PathBuf,
+    version: String,
 }
 
 /// Kill a provider child and all of its descendants. Provider children are
@@ -953,7 +965,9 @@ wire_api = "responses"
     if let Some(config) = updated {
         tokio::fs::write(&config_path, config)
             .await
-            .map_err(|error| format!("Could not write Mythra Code runtime configuration: {error}"))?;
+            .map_err(|error| {
+                format!("Could not write Mythra Code runtime configuration: {error}")
+            })?;
     }
     // The OpenRouter proxy base URL embeds a secret path token; keep the file
     // readable by the current user only.
@@ -966,8 +980,10 @@ wire_api = "responses"
     Ok(())
 }
 
+const RUNTIME_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+
 #[cfg(not(windows))]
-fn find_on_path(program: &str) -> Option<PathBuf> {
+async fn find_on_path(program: &str) -> Option<PathBuf> {
     env::var_os("PATH").and_then(|path| {
         env::split_paths(&path)
             .map(|directory| directory.join(program))
@@ -981,10 +997,12 @@ fn find_on_path(program: &str) -> Option<PathBuf> {
 /// shims are resolved to their native binaries separately so user prompt text
 /// never has to pass through `cmd.exe` parsing.
 #[cfg(windows)]
-fn find_on_path(program: &str) -> Option<PathBuf> {
-    let output = background_std_command("where.exe")
-        .arg(program)
-        .output()
+async fn find_on_path(program: &str) -> Option<PathBuf> {
+    let mut command = background_command("where.exe");
+    command.arg(program).kill_on_drop(true);
+    let output = timeout(RUNTIME_PROBE_TIMEOUT, command.output())
+        .await
+        .ok()?
         .ok()?;
     output.status.success().then_some(())?;
     String::from_utf8_lossy(&output.stdout)
@@ -1082,22 +1100,66 @@ async fn find_with_login_shell(_program: &str) -> Option<PathBuf> {
     None
 }
 
-async fn resolve_codex_binary(app: &AppHandle) -> Result<PathBuf, String> {
+async fn resolve_codex_runtime(
+    app: &AppHandle,
+    state: &RuntimeState,
+) -> Result<ResolvedCodexRuntime, String> {
+    // Runtime discovery is single-flight. Several startup consumers may ask
+    // for status at once; keeping this guard across the bounded probes makes
+    // every follower reuse the first verified path instead of launching its
+    // own where.exe / codex --version process tree.
+    let mut cached = state.codex_runtime.lock().await;
+    if cached
+        .as_ref()
+        .is_some_and(|runtime| runtime.path.is_file())
+    {
+        return Ok(cached.as_ref().expect("checked above").clone());
+    }
+    *cached = None;
+
     let mut candidates = Vec::new();
     let executable_name = if cfg!(windows) { "codex.exe" } else { "codex" };
 
     let legacy_override = concat!("OPEN", "KIWI_CODEX_PATH");
-    if let Some(override_path) = env::var_os("MYTHRA_CODE_CODEX_PATH").or_else(|| env::var_os(legacy_override)) {
+    if let Some(override_path) =
+        env::var_os("MYTHRA_CODE_CODEX_PATH").or_else(|| env::var_os(legacy_override))
+    {
         let override_path = PathBuf::from(override_path);
-        return override_path.is_file().then_some(override_path).ok_or_else(|| {
+        if !override_path.is_file() {
+            return Err(
             "MYTHRA_CODE_CODEX_PATH does not point to a Codex executable. Update or remove it, then choose Try again.".into()
-        });
+            );
+        }
+        let version = runtime_version(&override_path).await.ok_or_else(|| {
+            "MYTHRA_CODE_CODEX_PATH could not be started. Update or remove it, then choose Try again.".to_string()
+        })?;
+        let resolved = ResolvedCodexRuntime {
+            path: override_path,
+            version,
+        };
+        *cached = Some(resolved.clone());
+        return Ok(resolved);
     }
 
     #[cfg(windows)]
     push_windows_npm_codex_candidates(&mut candidates);
 
-    if let Some(candidate) = find_on_path(executable_name) {
+    // Explorer-launched Windows apps commonly have a sparse PATH. Probe the
+    // deterministic npm installation first so an unrelated or stalled app
+    // execution alias cannot delay every startup.
+    #[cfg(windows)]
+    for candidate in candidates.iter().filter(|candidate| candidate.is_file()) {
+        if let Some(version) = runtime_version(candidate).await {
+            let resolved = ResolvedCodexRuntime {
+                path: candidate.clone(),
+                version,
+            };
+            *cached = Some(resolved.clone());
+            return Ok(resolved);
+        }
+    }
+
+    if let Some(candidate) = find_on_path(executable_name).await {
         push_candidate(&mut candidates, candidate);
     }
 
@@ -1138,16 +1200,35 @@ async fn resolve_codex_binary(app: &AppHandle) -> Result<PathBuf, String> {
         // `where.exe` can expose protected WindowsApps resource paths that
         // exist but cannot be launched directly. Accept only a runtime that
         // successfully executes, then the later app-server spawn is reliable.
-        if runtime_version(&candidate).await.is_some() {
-            return Ok(candidate);
+        if let Some(version) = runtime_version(&candidate).await {
+            let resolved = ResolvedCodexRuntime {
+                path: candidate,
+                version,
+            };
+            *cached = Some(resolved.clone());
+            return Ok(resolved);
         }
     }
     #[cfg(not(windows))]
     if let Some(candidate) = candidates.into_iter().find(|candidate| candidate.is_file()) {
-        return Ok(candidate);
+        if let Some(version) = runtime_version(&candidate).await {
+            let resolved = ResolvedCodexRuntime {
+                path: candidate,
+                version,
+            };
+            *cached = Some(resolved.clone());
+            return Ok(resolved);
+        }
     }
     if let Some(candidate) = find_with_login_shell(executable_name).await {
-        return Ok(candidate);
+        if let Some(version) = runtime_version(&candidate).await {
+            let resolved = ResolvedCodexRuntime {
+                path: candidate,
+                version,
+            };
+            *cached = Some(resolved.clone());
+            return Ok(resolved);
+        }
     }
 
     Err("Mythra Code could not find the Codex runtime. Install the Codex CLI or ChatGPT desktop app, then choose Try again. Advanced users can set MYTHRA_CODE_CODEX_PATH to the Codex executable.".into())
@@ -1170,12 +1251,15 @@ fn runtime_source(path: &Path) -> &'static str {
 }
 
 async fn runtime_version(path: &Path) -> Option<String> {
-    let output = background_command(path)
+    let mut command = background_command(path);
+    command
         .arg("--version")
         .stdin(Stdio::null())
         .stderr(Stdio::null())
-        .output()
+        .kill_on_drop(true);
+    let output = timeout(RUNTIME_PROBE_TIMEOUT, command.output())
         .await
+        .ok()?
         .ok()?;
     output
         .status
@@ -1202,18 +1286,16 @@ fn runtime_is_compatible(version: &str) -> bool {
     major > 0 || minor >= 145
 }
 
-#[tauri::command]
-async fn codex_runtime_status(app: AppHandle) -> CodexRuntimeStatus {
-    match resolve_codex_binary(&app).await {
-        Ok(path) => {
-            let version = runtime_version(&path).await;
-            let compatible = version.as_deref().is_some_and(runtime_is_compatible);
+async fn read_codex_runtime_status(app: &AppHandle, state: &RuntimeState) -> CodexRuntimeStatus {
+    match resolve_codex_runtime(app, state).await {
+        Ok(runtime) => {
+            let compatible = runtime_is_compatible(&runtime.version);
             CodexRuntimeStatus {
                 available: true,
-                source: Some(runtime_source(&path)),
-                path: Some(path.to_string_lossy().into_owned()),
+                source: Some(runtime_source(&runtime.path)),
+                path: Some(runtime.path.to_string_lossy().into_owned()),
                 warning: (!compatible).then(|| "This Codex runtime predates Mythra Code's tested App Server contract (0.145+). Update Codex before relying on advanced features.".to_string()),
-                version,
+                version: Some(runtime.version),
                 compatible,
             }
         }
@@ -1228,6 +1310,14 @@ async fn codex_runtime_status(app: AppHandle) -> CodexRuntimeStatus {
     }
 }
 
+#[tauri::command]
+async fn codex_runtime_status(
+    app: AppHandle,
+    state: State<'_, RuntimeState>,
+) -> Result<CodexRuntimeStatus, String> {
+    Ok(read_codex_runtime_status(&app, &state).await)
+}
+
 async fn resolve_claude_binary(app: &AppHandle) -> Result<PathBuf, String> {
     let executable_name = if cfg!(windows) {
         "claude.exe"
@@ -1235,7 +1325,9 @@ async fn resolve_claude_binary(app: &AppHandle) -> Result<PathBuf, String> {
         "claude"
     };
     let legacy_override = concat!("OPEN", "KIWI_CLAUDE_PATH");
-    if let Some(override_path) = env::var_os("MYTHRA_CODE_CLAUDE_PATH").or_else(|| env::var_os(legacy_override)) {
+    if let Some(override_path) =
+        env::var_os("MYTHRA_CODE_CLAUDE_PATH").or_else(|| env::var_os(legacy_override))
+    {
         let override_path = PathBuf::from(override_path);
         return override_path.is_file().then_some(override_path).ok_or_else(|| {
             "MYTHRA_CODE_CLAUDE_PATH does not point to a Claude Code executable. Update or remove it, then try again.".into()
@@ -1245,7 +1337,7 @@ async fn resolve_claude_binary(app: &AppHandle) -> Result<PathBuf, String> {
     let mut candidates = Vec::new();
     #[cfg(windows)]
     push_windows_npm_claude_candidates(&mut candidates);
-    if let Some(candidate) = find_on_path(executable_name) {
+    if let Some(candidate) = find_on_path(executable_name).await {
         push_candidate(&mut candidates, candidate);
     }
     #[cfg(target_os = "macos")]
@@ -1284,7 +1376,7 @@ async fn resolve_claude_binary(app: &AppHandle) -> Result<PathBuf, String> {
     Err("Mythra Code could not find Claude Code. Install Claude Code, sign in with `claude auth login`, then try again. Advanced users can set MYTHRA_CODE_CLAUDE_PATH.".into())
 }
 
-fn configure_claude_subscription(command: &mut Command) {
+fn configure_claude_subscription(command: &mut Command, home: Option<&Path>) {
     command
         .env_remove("ANTHROPIC_API_KEY")
         .env_remove("ANTHROPIC_AUTH_TOKEN")
@@ -1309,11 +1401,18 @@ fn configure_claude_subscription(command: &mut Command) {
         .env_remove("VERTEX_REGION_CLAUDE_3_5_SONNET")
         .env("COLUMNS", "1000")
         .env("NO_COLOR", "1");
+    // GUI-launched Windows apps frequently lack Git and npm in PATH. Claude
+    // itself is started by absolute path, but its Bash/tool subprocesses are
+    // not, so give the whole turn the same augmented environment as Codex and
+    // Mythra Code's native Git helpers.
+    if let Some(path) = git_runtime_path(env::var_os("PATH").as_deref(), home) {
+        command.env("PATH", path);
+    }
 }
 
-fn subscription_only_command(path: &Path) -> Command {
+fn subscription_only_command(path: &Path, home: Option<&Path>) -> Command {
     let mut command = background_command(path);
-    configure_claude_subscription(&mut command);
+    configure_claude_subscription(&mut command, home);
     command
 }
 
@@ -1378,9 +1477,10 @@ fn parse_claude_usage_result(result: &str) -> ClaudeUsageLimits {
 #[tauri::command]
 async fn claude_usage(app: AppHandle) -> Result<ClaudeUsageLimits, String> {
     let path = resolve_claude_binary(&app).await?;
+    let home = app.path().home_dir().ok();
     let output = timeout(
         Duration::from_secs(10),
-        subscription_only_command(&path)
+        subscription_only_command(&path, home.as_deref())
             .args([
                 "--setting-sources",
                 "",
@@ -1434,7 +1534,7 @@ async fn claude_models(app: AppHandle) -> Result<Value, String> {
         .ok()
         .filter(|path| path.is_dir())
         .unwrap_or_else(env::temp_dir);
-    let mut child = subscription_only_command(&binary)
+    let mut child = subscription_only_command(&binary, Some(&cwd))
         .current_dir(cwd)
         .env("CLAUDE_CODE_ENTRYPOINT", "sdk-ts")
         .args([
@@ -1536,7 +1636,8 @@ async fn read_claude_runtime_status(app: &AppHandle) -> ClaudeRuntimeStatus {
     };
 
     let version = runtime_version(&path).await;
-    let auth = subscription_only_command(&path)
+    let home = app.path().home_dir().ok();
+    let auth = subscription_only_command(&path, home.as_deref())
         .args(["--setting-sources", "", "auth", "status"])
         .stdin(Stdio::null())
         .stderr(Stdio::null())
@@ -1620,7 +1721,8 @@ async fn claude_login(app: AppHandle) -> Result<(), String> {
     #[cfg(windows)]
     {
         let mut command = interactive_command(&path);
-        configure_claude_subscription(&mut command);
+        let home = app.path().home_dir().ok();
+        configure_claude_subscription(&mut command, home.as_deref());
         command
             .args(["auth", "login"])
             .stdin(Stdio::inherit())
@@ -1637,7 +1739,10 @@ async fn claude_login(app: AppHandle) -> Result<(), String> {
     #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = path;
-        Err("Run `claude auth login` in a terminal, then refresh Claude status in Mythra Code.".into())
+        Err(
+            "Run `claude auth login` in a terminal, then refresh Claude status in Mythra Code."
+                .into(),
+        )
     }
 }
 
@@ -1998,7 +2103,8 @@ async fn claude_turn_start(
     }
 
     let turn_id = uuid::Uuid::new_v4().to_string();
-    let mut command = subscription_only_command(&binary);
+    let home = app.path().home_dir().ok();
+    let mut command = subscription_only_command(&binary, home.as_deref());
     command
         .current_dir(&options.cwd)
         .env("CLAUDE_CODE_ENTRYPOINT", "sdk-ts")
@@ -2156,7 +2262,7 @@ async fn claude_turn_start(
 
     let stderr_lines = Arc::new(Mutex::new(TailBuffer::new(CLAUDE_STDERR_TAIL_BYTES)));
     let stderr_output = stderr_lines.clone();
-    let stderr_task = tauri::async_runtime::spawn(async move {
+    let mut stderr_task = tauri::async_runtime::spawn(async move {
         let mut lines = BufReader::new(stderr).lines();
         while let Ok(Some(line)) = lines.next_line().await {
             let line = line.trim();
@@ -2183,6 +2289,7 @@ async fn claude_turn_start(
         // per-line "claude-event" emit would have carried.
         let mut delta_buffer: Vec<Value> = Vec::new();
         let mut flush_deadline = Instant::now();
+        let mut observed_exit = None;
         let flush_deltas = |buffer: &mut Vec<Value>, app: &AppHandle| {
             if !buffer.is_empty() {
                 let batch = std::mem::take(buffer);
@@ -2190,11 +2297,33 @@ async fn claude_turn_start(
             }
         };
 
-        loop {
+        'reader: loop {
             // `Lines::next_line` is cancellation safe, so racing it against
             // the flush deadline cannot drop partial lines.
             let next = if delta_buffer.is_empty() {
-                lines.next_line().await
+                match timeout(Duration::from_secs(1), lines.next_line()).await {
+                    Ok(next) => next,
+                    Err(_) => {
+                        // A grandchild can inherit stdout and keep the pipe
+                        // open after the direct Claude process has exited.
+                        // Poll the direct child while output is idle so that
+                        // orphaned pipe handles cannot retain this turn slot
+                        // forever and block every queued follow-up.
+                        match stdout_child.lock().await.try_wait() {
+                            Ok(Some(exit)) => {
+                                observed_exit = Some(exit);
+                                break 'reader;
+                            }
+                            Ok(None) => continue,
+                            Err(error) => {
+                                stderr_lines.lock().await.push_line(&format!(
+                                    "Could not inspect Claude Code after output stopped: {error}"
+                                ));
+                                break 'reader;
+                            }
+                        }
+                    }
+                }
             } else {
                 match timeout_at(flush_deadline, lines.next_line()).await {
                     Ok(next) => next,
@@ -2254,11 +2383,6 @@ async fn claude_turn_start(
             flush_deltas(&mut delta_buffer, &stdout_app);
             if claude_message_ends_turn(&message) {
                 saw_result = true;
-                // Publish the terminal event before making the backend turn
-                // look inactive. Otherwise a foreground health check can race
-                // into this gap and misclassify a normal result as a vanished
-                // provider process.
-                emit_claude_event(&stdout_app, &stdout_thread, &stdout_turn, message).await;
                 // Stream-input mode waits indefinitely for another message.
                 // Mythra Code deliberately uses one process per turn, so stop
                 // accepting provider output at the result boundary and reap
@@ -2276,6 +2400,12 @@ async fn claude_turn_start(
                 }
                 stdout_runtime.alive.store(false, Ordering::Release);
                 remove_claude_turn_if_current(&turns, &stdout_thread, &stdout_runtime).await;
+                // A terminal event makes the renderer pump the next queued
+                // prompt immediately. Publish it only after the old process is
+                // unable to emit and its per-thread slot has been released.
+                // This ordering matters on Windows, where `taskkill /T` can
+                // otherwise leave the next Claude start racing a live slot.
+                emit_claude_event(&stdout_app, &stdout_thread, &stdout_turn, message).await;
                 break;
             }
             emit_claude_event(&stdout_app, &stdout_thread, &stdout_turn, message).await;
@@ -2289,7 +2419,9 @@ async fn claude_turn_start(
         // zombie processes during a long-running Mythra Code session. Bounded
         // like the Codex reaper: a child that closed stdout but refuses to
         // exit is force-killed along with its descendants.
-        let exit = {
+        let exit = if observed_exit.is_some() {
+            observed_exit
+        } else {
             let mut child = stdout_child.lock().await;
             let grace = if saw_result {
                 CLAUDE_RESULT_EXIT_GRACE
@@ -2308,7 +2440,16 @@ async fn claude_turn_start(
                 }
             }
         };
-        let _ = stderr_task.await;
+        // A descendant can inherit stderr just as it can stdout. Never let an
+        // orphaned pipe retain the turn slot after the direct Claude process
+        // has been reaped; the captured tail is diagnostic, not a lifecycle
+        // boundary.
+        if timeout(Duration::from_secs(1), &mut stderr_task)
+            .await
+            .is_err()
+        {
+            stderr_task.abort();
+        }
         if !saw_result {
             let stderr = stderr_lines.lock().await.contents().to_string();
             let detail = if stderr.trim().is_empty() {
@@ -2590,11 +2731,10 @@ async fn audit_recent(
     .map_err(|error| format!("Audit read task failed: {error}"))?
 }
 
-#[tauri::command]
-async fn diagnostics_read(app: AppHandle) -> Result<Value, String> {
-    let runtime = codex_runtime_status(app.clone()).await;
-    let database = state_db_path(&app)?;
-    let shared_connection = shared_state_db(&app)?;
+async fn read_diagnostics(app: &AppHandle, state: &RuntimeState) -> Result<Value, String> {
+    let runtime = read_codex_runtime_status(app, state).await;
+    let database = state_db_path(app)?;
+    let shared_connection = shared_state_db(app)?;
     let audit = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<Value>, String> {
         let connection = lock_state_db(&shared_connection)?;
         let mut statement = connection
@@ -2625,6 +2765,11 @@ async fn diagnostics_read(app: AppHandle) -> Result<Value, String> {
         "generatedAt": unix_timestamp_ms(),
         "auditEvents": audit,
     }))
+}
+
+#[tauri::command]
+async fn diagnostics_read(app: AppHandle, state: State<'_, RuntimeState>) -> Result<Value, String> {
+    read_diagnostics(&app, &state).await
 }
 
 /// Restrict diagnostics exports to visible files inside the user's home
@@ -2680,9 +2825,13 @@ fn validated_export_path(app: &AppHandle, path: &str) -> Result<PathBuf, String>
 }
 
 #[tauri::command]
-async fn diagnostics_export(app: AppHandle, path: String) -> Result<(), String> {
+async fn diagnostics_export(
+    app: AppHandle,
+    state: State<'_, RuntimeState>,
+    path: String,
+) -> Result<(), String> {
     let destination = validated_export_path(&app, &path)?;
-    let diagnostics = diagnostics_read(app).await?;
+    let diagnostics = read_diagnostics(&app, &state).await?;
     let text = serde_json::to_string_pretty(&diagnostics)
         .map_err(|error| format!("Could not encode diagnostics: {error}"))?;
     tokio::fs::write(destination, text)
@@ -2736,22 +2885,10 @@ fn runtime_path(codex_binary: &Path, home: Option<&Path>) -> Option<OsString> {
             }
         }
     }
-    if let Some(current) = env::var_os("PATH") {
-        for directory in env::split_paths(&current) {
+    if let Some(runtime) = git_runtime_path(env::var_os("PATH").as_deref(), home) {
+        for directory in env::split_paths(&runtime) {
             add(directory);
         }
-    }
-    for directory in [
-        "/opt/homebrew/bin",
-        "/opt/homebrew/sbin",
-        "/usr/local/bin",
-        "/usr/local/sbin",
-        "/usr/bin",
-        "/bin",
-        "/usr/sbin",
-        "/sbin",
-    ] {
-        add(PathBuf::from(directory));
     }
     if let Some(home) = home {
         for relative in [
@@ -2783,14 +2920,14 @@ fn initialize_params() -> Value {
     })
 }
 
-async fn spawn_server(app: &AppHandle) -> Result<Arc<AppServer>, String> {
+async fn spawn_server(app: &AppHandle, state: &RuntimeState) -> Result<Arc<AppServer>, String> {
     let app_data = app
         .path()
         .app_data_dir()
         .map_err(|error| format!("Could not resolve app data directory: {error}"))?;
     let codex_home = app_data.join("codex-home");
 
-    let codex_binary = resolve_codex_binary(app).await?;
+    let codex_binary = resolve_codex_runtime(app, state).await?.path;
     let home = app.path().home_dir().ok();
 
     let mut command = background_command(&codex_binary);
@@ -3043,7 +3180,7 @@ async fn ensure_server(app: &AppHandle, state: &RuntimeState) -> Result<Arc<AppS
         guard = state.server.lock().await;
     }
 
-    let server = spawn_server(app).await?;
+    let server = spawn_server(app, state).await?;
     *guard = Some(server.clone());
     // Record the pid where the exit handler can reach it without the async
     // server lock (which this function holds during spawn/initialize).
@@ -3366,6 +3503,40 @@ async fn has_lmstudio_key() -> bool {
 
 const OPENROUTER_MODELS_URL: &str = "https://openrouter.ai/api/v1/models";
 const OPENROUTER_USER_MODELS_URL: &str = "https://openrouter.ai/api/v1/models/user";
+const OPENROUTER_CREDITS_URL: &str = "https://openrouter.ai/api/v1/credits";
+const OPENROUTER_KEY_URL: &str = "https://openrouter.ai/api/v1/key";
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenRouterCreditBalance {
+    remaining: f64,
+    used: Option<f64>,
+    source: &'static str,
+}
+
+fn finite_json_number(value: Option<&Value>) -> Option<f64> {
+    value
+        .and_then(Value::as_f64)
+        .filter(|number| number.is_finite())
+}
+
+fn parse_openrouter_account_credits(value: &Value) -> Option<OpenRouterCreditBalance> {
+    let total = finite_json_number(value.pointer("/data/total_credits"))?;
+    let used = finite_json_number(value.pointer("/data/total_usage"))?;
+    Some(OpenRouterCreditBalance {
+        remaining: (total - used).max(0.0),
+        used: Some(used.max(0.0)),
+        source: "account",
+    })
+}
+
+fn parse_openrouter_key_limit(value: &Value) -> Option<OpenRouterCreditBalance> {
+    Some(OpenRouterCreditBalance {
+        remaining: finite_json_number(value.pointer("/data/limit_remaining"))?.max(0.0),
+        used: finite_json_number(value.pointer("/data/usage")).map(|used| used.max(0.0)),
+        source: "keyLimit",
+    })
+}
 
 fn openrouter_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
@@ -3382,13 +3553,62 @@ async fn openrouter_get(client: &reqwest::Client, url: &str) -> reqwest::Request
     }
 }
 
+/// OpenRouter's account-credit endpoint requires a management-capable key.
+/// Ordinary inference keys can still expose their own remaining spend limit,
+/// so use that as an explicitly identified fallback instead of inventing an
+/// account balance from Mythra Code's local cost estimates.
+#[tauri::command]
+async fn openrouter_credits() -> Result<OpenRouterCreditBalance, String> {
+    let key = openrouter_key()
+        .await
+        .ok_or_else(|| "Add an OpenRouter API key to view credits.".to_string())?;
+    let client = openrouter_client()?;
+
+    if let Ok(response) = client
+        .get(OPENROUTER_CREDITS_URL)
+        .header("X-Title", "Mythra Code")
+        .bearer_auth(&key)
+        .send()
+        .await
+    {
+        if response.status().is_success() {
+            if let Ok(value) = response.json::<Value>().await {
+                if let Some(balance) = parse_openrouter_account_credits(&value) {
+                    return Ok(balance);
+                }
+            }
+        }
+    }
+
+    let response = client
+        .get(OPENROUTER_KEY_URL)
+        .header("X-Title", "Mythra Code")
+        .bearer_auth(key)
+        .send()
+        .await
+        .map_err(|error| format!("Could not reach OpenRouter usage: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("OpenRouter rejected the usage request: {error}"))?;
+    let value = response
+        .json::<Value>()
+        .await
+        .map_err(|error| format!("Could not read OpenRouter usage: {error}"))?;
+    parse_openrouter_key_limit(&value).ok_or_else(|| {
+        "This OpenRouter API key does not expose an account balance or spending limit.".into()
+    })
+}
+
 fn openrouter_tool_models(mut catalog: Value) -> Value {
     if let Some(models) = catalog.get_mut("data").and_then(Value::as_array_mut) {
         models.retain(|model| {
             model
                 .get("supported_parameters")
                 .and_then(Value::as_array)
-                .is_some_and(|parameters| parameters.iter().any(|value| value.as_str() == Some("tools")))
+                .is_some_and(|parameters| {
+                    parameters
+                        .iter()
+                        .any(|value| value.as_str() == Some("tools"))
+                })
         });
     }
     catalog
@@ -3409,12 +3629,13 @@ async fn list_openrouter_models() -> Result<Value, String> {
             .bearer_auth(key)
             .send()
             .await
-            .map_err(|error| format!("Could not reach the OpenRouter account model catalog: {error}"))?;
+            .map_err(|error| {
+                format!("Could not reach the OpenRouter account model catalog: {error}")
+            })?;
         if let Ok(response) = response.error_for_status() {
-            let catalog = response
-                .json::<Value>()
-                .await
-                .map_err(|error| format!("Could not read the OpenRouter account model catalog: {error}"))?;
+            let catalog = response.json::<Value>().await.map_err(|error| {
+                format!("Could not read the OpenRouter account model catalog: {error}")
+            })?;
             return Ok(openrouter_tool_models(catalog));
         }
     }
@@ -3728,6 +3949,7 @@ pub fn run() {
             save_lmstudio_key,
             save_pasted_image,
             has_openrouter_key,
+            openrouter_credits,
             has_lmstudio_key,
             list_openrouter_models,
             openrouter_model,

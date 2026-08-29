@@ -63,7 +63,6 @@ function modalProps(overrides: Partial<Parameters<typeof SettingsModal>[0]> = {}
     onSave: vi.fn(),
     onThemePreview: vi.fn(),
     onEffortSliderPreview: vi.fn(),
-    onAccountChange: vi.fn(async () => undefined),
     onSignIn: vi.fn(async () => undefined),
     onRuntimeRequired: vi.fn(),
     onWorkspaceTools: vi.fn(),
@@ -119,6 +118,16 @@ describe("SettingsModal", () => {
   it("uses the official OpenRouter glyph in provider settings", () => {
     const { container } = render(<SettingsModal {...modalProps({ initialSection: "models" })} />);
     expect(container.querySelector(".provider-logo.openrouter svg")).toHaveAttribute("viewBox", "0 0 401.4 293.7");
+  });
+
+  it("shows the shared connected badge for an authenticated Codex account", () => {
+    render(<SettingsModal {...modalProps({
+      initialSection: "models",
+      account: { type: "chatgpt", email: "morgan@example.com", planType: "pro" },
+    })} />);
+
+    expect(screen.getByText("Connected", { selector: ".connected-badge" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sign out" })).toBeInTheDocument();
   });
 
   it("offers LM Studio as a local model provider", () => {
