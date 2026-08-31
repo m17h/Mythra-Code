@@ -99,6 +99,7 @@ function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
       available: true,
       source: "Codex CLI",
       path: "/usr/local/bin/codex",
+      dataHome: "/profiles/localdev/codex-home",
       version: "99.0.0",
       compatible: true,
       warning: null,
@@ -583,6 +584,23 @@ describe("model catalog request ordering", () => {
 });
 
 describe("workspace switching during thread selection", () => {
+  it("does not offer a runtime thread remembered from another isolated Codex home", async () => {
+    const foreign: Thread = {
+      ...THREAD_A,
+      id: "foreign-thread",
+      name: "Foreign runtime thread",
+      path: "/profiles/production/codex-home/sessions/foreign-thread.jsonl",
+    };
+    localStorage.setItem("kiwi.knownThreads", JSON.stringify({ [foreign.id]: foreign }));
+    localStorage.setItem("kiwi.threadProjects", JSON.stringify({ [foreign.id]: PROJECT_A.path }));
+
+    await renderApp();
+
+    expect(await screen.findByText("Alpha thread")).toBeInTheDocument();
+    expect(screen.queryByText("Foreign runtime thread")).not.toBeInTheDocument();
+    expect(JSON.parse(localStorage.getItem("kiwi.knownThreads") ?? "{}")).toHaveProperty(foreign.id);
+  });
+
   it("shows Windows shortcut labels for new threads and search", async () => {
     await renderApp();
 

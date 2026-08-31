@@ -46,6 +46,8 @@ export interface Thread {
   name: string | null;
   preview: string;
   cwd: string;
+  /** Durable Codex rollout path when this thread is app-server backed. */
+  path?: string | null;
   updatedAt: number;
   modelProvider: string;
   turns?: Turn[];
