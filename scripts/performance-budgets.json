@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "policy": "Limits may stay fixed or decrease. Raising one requires an explicit performance-regression review in the pull request.",
+  "reference": {
+    "release": {
+      "ref": "v1.12.0",
+      "appEntryRawBytes": 519540,
+      "totalJsRawBytes": 1375096
+    },
+    "mainBeforeScorecard": {
+      "commit": "f050ca44c3b126fad408e1310658346a1750d31f",
+      "appEntryRawBytes": 543660,
+      "startupJsRawBytes": 808958,
+      "startupCssRawBytes": 336184,
+      "totalJsRawBytes": 1403070
+    }
+  },
+  "profiles": {
+    "safari13-minified": {
+      "appEntryRawBytes": 543660,
+      "startupJsRawBytes": 808958,
+      "startupCssRawBytes": 336184,
+      "totalJsRawBytes": 1403070
+    },
+    "chrome105-minified": {
+      "appEntryRawBytes": 519855,
+      "startupJsRawBytes": 782798,
+      "startupCssRawBytes": 334097,
+      "totalJsRawBytes": 1370331
+    }
+  }
+}
