@@ -43,6 +43,17 @@ export default defineConfig({
     target: buildTarget,
     manifest: true,
     minify: !debugBuild,
+    rolldownOptions: {
+      output: {
+        codeSplitting: {
+          groups: [{
+            name: "shared",
+            minShareCount: 2,
+            includeDependenciesRecursively: false,
+          }],
+        },
+      },
+    },
     sourcemap: debugBuild,
   },
 });

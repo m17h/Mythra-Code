@@ -37,4 +37,14 @@ describe("ErrorBoundary", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(screen.getByText("workspace restored")).toBeInTheDocument();
   });
+
+  it("delegates retry when the parent must replace a failed lazy view", () => {
+    const onRetry = vi.fn();
+    render(<ErrorBoundary label="settings" onRetry={onRetry}><Bomb defused={false} /></ErrorBoundary>);
+
+    fireEvent.click(screen.getByRole("button", { name: /Reload view/ }));
+
+    expect(onRetry).toHaveBeenCalledOnce();
+    expect(screen.getByRole("alert")).toBeInTheDocument();
+  });
 });

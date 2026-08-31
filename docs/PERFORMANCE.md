@@ -17,6 +17,10 @@ The checked-in limits are target-specific ratchets for minified Safari 13 and
 Chrome 105 renderer builds. They may remain fixed or decrease. Raising
 one requires an explicit performance-regression explanation in the pull
 request; changing a fixture or toolchain must not silently redefine success.
+When a deliberate lazy boundary adds a small amount of total import/runtime
+bookkeeping while materially shrinking the startup closure, record the exact
+cross-target deltas under `reviewedExceptions` rather than silently adding
+headroom.
 
 The scorecard also reports, but does not yet hard-gate, metrics whose wall-clock
 variance is too high for shared CI. A metric should become a gate only after

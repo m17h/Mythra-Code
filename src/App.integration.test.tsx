@@ -430,8 +430,13 @@ describe("chat header provider usage", () => {
       name: /OpenAI subscription.*Sign in to view live limits.*Open Models & accounts/i,
     });
     expect(signInUsage).toHaveTextContent("Sign in for usage");
+    expect(screen.queryByRole("button", { name: /^Models & accounts/ })).not.toBeInTheDocument();
     await user.click(signInUsage);
     expect(await screen.findByText("Official ChatGPT subscription sign-in")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Close settings" }));
+    expect(screen.getByText("Official ChatGPT subscription sign-in")).toBeInTheDocument();
+    await user.click(signInUsage);
+    expect(screen.getByText("Official ChatGPT subscription sign-in")).toBeInTheDocument();
   });
 
   it("shows live OpenRouter credits and opens the detailed usage surface", async () => {
@@ -457,7 +462,7 @@ describe("chat header provider usage", () => {
 
     expect(await screen.findByRole("button", { name: /\$10\.00 credits left/i })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Settings" }));
-    await user.click(screen.getByRole("button", { name: /Models & accounts/ }));
+    await user.click(await screen.findByRole("button", { name: /Models & accounts/ }));
     await user.click(screen.getByRole("button", { name: /OpenRouter.*Responses-compatible model routing/ }));
     await user.type(screen.getByPlaceholderText("sk-or-v1-…"), "sk-or-v1-new");
     await user.click(screen.getByRole("button", { name: "Save key" }));
@@ -484,7 +489,7 @@ describe("chat header provider usage", () => {
 
     expect(await screen.findByRole("button", { name: /OpenAI subscription.*58% left/i })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Settings" }));
-    await user.click(screen.getByRole("button", { name: /Models & accounts/ }));
+    await user.click(await screen.findByRole("button", { name: /Models & accounts/ }));
     await user.click(await screen.findByRole("button", { name: "Sign out" }));
 
     expect(await screen.findByRole("button", { name: /OpenAI subscription.*Sign in to view live limits/i })).toHaveTextContent("Sign in for usage");
@@ -508,7 +513,7 @@ describe("chat header provider usage", () => {
     await waitFor(() => expect(invokeMock.mock.calls.some(([, args]) => args?.method === "account/rateLimits/read")).toBe(true));
 
     await user.click(screen.getByRole("button", { name: "Settings" }));
-    await user.click(screen.getByRole("button", { name: /Models & accounts/ }));
+    await user.click(await screen.findByRole("button", { name: /Models & accounts/ }));
     await user.click(await screen.findByRole("button", { name: "Sign out" }));
     await act(async () => {
       pendingUsage.resolve({ rateLimits: { primary: { usedPercent: 42, windowMinutes: 300 } } });
@@ -567,7 +572,7 @@ describe("model catalog request ordering", () => {
     const user = userEvent.setup();
     await renderApp();
     await user.click(screen.getByRole("button", { name: "Settings" }));
-    await user.click(screen.getByRole("button", { name: /Models & accounts/ }));
+    await user.click(await screen.findByRole("button", { name: /Models & accounts/ }));
     await user.click(screen.getByRole("button", { name: /LM Studio.*Local models/ }));
     fireEvent.change(screen.getByPlaceholderText("http://127.0.0.1:1234/v1"), { target: { value: "http://10.0.0.2:1234/v1" } });
     await user.click(screen.getByRole("button", { name: "Test connection" }));
@@ -615,6 +620,7 @@ describe("workspace switching during thread selection", () => {
   });
 
   it("shows Windows shortcut labels for new threads and search", async () => {
+    const user = userEvent.setup();
     await renderApp();
 
     expect(screen.getByText("Ctrl+N").closest("button")).toHaveClass("new-thread-button");
@@ -623,6 +629,8 @@ describe("workspace switching during thread selection", () => {
     expect(searchButton.querySelector(".lucide-command")).toBeNull();
     expect(searchButton.querySelector(".lucide-search")).not.toBeNull();
     expect(screen.queryByText(/⌘/)).not.toBeInTheDocument();
+    await user.click(searchButton);
+    expect(await screen.findByRole("dialog", { name: "Command palette" })).toBeInTheDocument();
   });
 
   it("keeps a persisted native Codex child in the Sub-agents inbox and depth-limits it", async () => {
