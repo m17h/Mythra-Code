@@ -3,7 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { Activity, ChatMessage, PermissionMode, Thread } from "../types";
 import type { ReasoningEffort } from "../components/ModelPowerControl";
 import type { JsonObject } from "./codex";
-import { forgetLocalTranscriptPersistence, loadLocalTranscript, saveLocalTranscript } from "./localTranscriptPersistence";
+import { forgetLocalTranscriptPersistence, loadLocalTranscript, loadLocalTranscriptPage, saveLocalTranscript, type LocalTranscriptPage } from "./localTranscriptPersistence";
 
 export interface CursorRuntimeStatus {
   available: boolean;
@@ -50,6 +50,8 @@ export interface CursorTranscript {
   messages: ChatMessage[];
   activities: Activity[];
 }
+
+export type CursorTranscriptPage = CursorTranscript & LocalTranscriptPage;
 
 export function getCursorRuntimeStatus(): Promise<CursorRuntimeStatus> {
   return invoke<CursorRuntimeStatus>("cursor_runtime_status");
@@ -118,6 +120,10 @@ export function saveCursorTranscript(transcript: CursorTranscript): Promise<void
 
 export function loadCursorTranscript(threadId: string): Promise<CursorTranscript | null> {
   return loadLocalTranscript<CursorTranscript>("cursor", threadId);
+}
+
+export function loadCursorTranscriptPage(threadId: string, cursor?: string): Promise<CursorTranscriptPage | null> {
+  return loadLocalTranscriptPage<CursorTranscriptPage>("cursor", threadId, cursor);
 }
 
 export async function deleteCursorTranscript(threadId: string): Promise<void> {

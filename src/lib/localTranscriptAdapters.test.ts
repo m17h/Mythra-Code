@@ -6,7 +6,7 @@ const tauri = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: tauri.invoke }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: tauri.listen }));
 
-import { deleteClaudeTranscript, loadClaudeTranscript, saveClaudeTranscript } from "./claude";
+import { deleteClaudeTranscript, loadClaudeTranscript, loadClaudeTranscriptPage, saveClaudeTranscript } from "./claude";
 import { loadCursorTranscript, saveCursorTranscript } from "./cursor";
 import { resetLocalTranscriptPersistenceForTests } from "./localTranscriptPersistence";
 
@@ -32,6 +32,199 @@ describe("local transcript persistence adapters", () => {
     const transcript: ClaudeTranscript = { thread, messages: [completed], activities: [] };
     tauri.invoke.mockResolvedValueOnce(transcript).mockRejectedValueOnce("temporary token failure");
     await expect(loadClaudeTranscript("thread-a")).resolves.toBe(transcript);
+  });
+
+  it("loads only a bounded newest page and acquires its write token", async () => {
+    const page = {
+      thread,
+      messages: [completed],
+      activities: [],
+      nextCursor: "4:2",
+      headSeq: 3,
+      tailSeq: 4,
+      generation: 4,
+      byteLen: 12_345,
+    };
+    tauri.invoke.mockResolvedValueOnce(page);
+
+    await expect(loadClaudeTranscriptPage("thread-a")).resolves.toBe(page);
+
+    expect(tauri.invoke).toHaveBeenNthCalledWith(1, "local_transcript_page_read", {
+      provider: "claude",
+      threadId: "thread-a",
+      cursor: null,
+      byteBudget: 40 * 1024,
+    });
+    expect(tauri.invoke).toHaveBeenCalledTimes(1);
+  });
+
+  it("loads an older page without replacing the newest-page write state", async () => {
+    const page = {
+      thread,
+      messages: [completed],
+      activities: [],
+      nextCursor: null,
+      headSeq: 3,
+      tailSeq: 4,
+      generation: 4,
+      byteLen: 12_345,
+    };
+    tauri.invoke.mockResolvedValueOnce(page);
+
+    await expect(loadClaudeTranscriptPage("thread-a", "4:2")).resolves.toBe(page);
+
+    expect(tauri.invoke).toHaveBeenCalledTimes(1);
+    expect(tauri.invoke).toHaveBeenCalledWith("local_transcript_page_read", {
+      provider: "claude",
+      threadId: "thread-a",
+      cursor: "4:2",
+      byteBudget: 40 * 1024,
+    });
+  });
+
+  it("updates metadata from a partial page without replacing unseen history", async () => {
+    const page = {
+      thread,
+      messages: [completed],
+      activities: [],
+      nextCursor: "4:2",
+      headSeq: 3,
+      tailSeq: 4,
+      generation: 4,
+      byteLen: 12_345,
+    };
+    tauri.invoke.mockResolvedValueOnce(page).mockResolvedValueOnce(writeState(4));
+    await loadClaudeTranscriptPage("thread-a");
+    const renamed = { ...page, thread: { ...thread, name: "Renamed" } };
+
+    await saveClaudeTranscript(renamed);
+
+    expect(tauri.invoke).toHaveBeenLastCalledWith("local_transcript_metadata_write", {
+      provider: "claude",
+      threadId: "thread-a",
+      thread: renamed.thread,
+      cursorSessionId: null,
+      expectedGeneration: 4,
+    });
+    expect(tauri.invoke.mock.calls.some(([command]) => command === "local_transcript_snapshot_write")).toBe(false);
+  });
+
+  it("saves an active partial-page turn through the generation-safe tail", async () => {
+    const page = {
+      thread,
+      messages: [completed],
+      activities: [],
+      nextCursor: "4:2",
+      headSeq: 3,
+      tailSeq: 4,
+      generation: 4,
+      byteLen: 12_345,
+    };
+    tauri.invoke.mockResolvedValueOnce(page).mockResolvedValueOnce(writeState(5));
+    await loadClaudeTranscriptPage("thread-a");
+    const running = {
+      ...page,
+      messages: [...page.messages, { id: "live", role: "assistant" as const, text: "Part", turnId: "turn-new", timelineOrder: 2 }],
+    };
+
+    await saveClaudeTranscript(running);
+
+    expect(tauri.invoke).toHaveBeenLastCalledWith("local_transcript_tail_write", {
+      provider: "claude",
+      expectedGeneration: 4,
+      seal: false,
+      value: { thread, messages: running.messages.slice(1), activities: [] },
+    });
+    expect(tauri.invoke.mock.calls.some(([command]) => command === "local_transcript_snapshot_write")).toBe(false);
+  });
+
+  it("refuses to recover a stale partial-page tail with a destructive snapshot", async () => {
+    const page = {
+      thread,
+      messages: [completed],
+      activities: [],
+      nextCursor: "4:2",
+      headSeq: 3,
+      tailSeq: 4,
+      generation: 4,
+      byteLen: 12_345,
+    };
+    tauri.invoke.mockResolvedValueOnce(page).mockRejectedValueOnce("Local transcript generation is stale");
+    await loadClaudeTranscriptPage("thread-a");
+
+    await expect(saveClaudeTranscript({
+      ...page,
+      messages: [...page.messages, { id: "live", role: "assistant", text: "Part", turnId: "turn-new", timelineOrder: 2 }],
+    })).rejects.toThrow("reload it before saving");
+
+    expect(tauri.invoke.mock.calls.some(([command]) => command === "local_transcript_snapshot_write")).toBe(false);
+  });
+
+  it("retains the partial-write guard across a full read and token failure", async () => {
+    const page = {
+      thread,
+      messages: [completed],
+      activities: [],
+      nextCursor: "4:2",
+      headSeq: 3,
+      tailSeq: 4,
+      generation: 4,
+      byteLen: 12_345,
+    };
+    const full: ClaudeTranscript = {
+      thread,
+      messages: [{ ...completed, id: "older" }, completed],
+      activities: [],
+    };
+    tauri.invoke
+      .mockResolvedValueOnce(page)
+      .mockResolvedValueOnce(full)
+      .mockRejectedValueOnce("temporary token failure")
+      .mockResolvedValueOnce(writeState(4));
+    await loadClaudeTranscriptPage("thread-a");
+    await loadClaudeTranscript("thread-a");
+
+    await saveClaudeTranscript({ ...page, thread: { ...thread, name: "Renamed" } });
+
+    expect(tauri.invoke).toHaveBeenLastCalledWith("local_transcript_metadata_write", expect.objectContaining({
+      expectedGeneration: 4,
+    }));
+    expect(tauri.invoke.mock.calls.some(([command]) => command === "local_transcript_snapshot_write")).toBe(false);
+  });
+
+  it("never evicts a partial-write guard when many local tasks are opened", async () => {
+    tauri.invoke.mockImplementation((command: string, args?: { threadId?: string }) => {
+      if (command === "local_transcript_page_read") {
+        const threadId = String(args?.threadId);
+        return Promise.resolve({
+          thread: { ...thread, id: threadId },
+          messages: [{ ...completed, id: `answer-${threadId}` }],
+          activities: [],
+          nextCursor: "1:0",
+          headSeq: 1,
+          tailSeq: 2,
+          generation: 1,
+          byteLen: 1_024,
+        });
+      }
+      if (command === "local_transcript_metadata_write") return Promise.resolve(writeState(1));
+      throw new Error(`Unexpected command: ${command}`);
+    });
+    for (let index = 0; index < 129; index += 1) {
+      await loadClaudeTranscriptPage(`thread-${index}`);
+    }
+
+    await saveClaudeTranscript({
+      thread: { ...thread, id: "thread-0", name: "Oldest renamed" },
+      messages: [{ ...completed, id: "answer-thread-0" }],
+      activities: [],
+    });
+
+    expect(tauri.invoke).toHaveBeenLastCalledWith("local_transcript_metadata_write", expect.objectContaining({
+      threadId: "thread-0",
+      expectedGeneration: 1,
+    }));
+    expect(tauri.invoke.mock.calls.some(([command]) => command === "local_transcript_snapshot_write")).toBe(false);
   });
 
   it("sends only the active turn and seals it on completion", async () => {

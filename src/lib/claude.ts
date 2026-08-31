@@ -10,7 +10,7 @@ import type {
 import type { ReasoningEffort } from "../components/ModelPowerControl";
 import type { JsonObject } from "./codex";
 import { clampUsedPercent, type ProviderRateLimits } from "./providerUsage";
-import { forgetLocalTranscriptPersistence, loadLocalTranscript, saveLocalTranscript } from "./localTranscriptPersistence";
+import { forgetLocalTranscriptPersistence, loadLocalTranscript, loadLocalTranscriptPage, saveLocalTranscript, type LocalTranscriptPage } from "./localTranscriptPersistence";
 
 export interface ClaudeRuntimeStatus {
   available: boolean;
@@ -150,6 +150,8 @@ export interface ClaudeTranscript {
   activities: Activity[];
 }
 
+export type ClaudeTranscriptPage = ClaudeTranscript & LocalTranscriptPage;
+
 export async function getClaudeRuntimeStatus(): Promise<ClaudeRuntimeStatus> {
   return invoke<ClaudeRuntimeStatus>("claude_runtime_status");
 }
@@ -255,6 +257,10 @@ export async function loadClaudeTranscript(
   threadId: string,
 ): Promise<ClaudeTranscript | null> {
   return loadLocalTranscript<ClaudeTranscript>("claude", threadId);
+}
+
+export function loadClaudeTranscriptPage(threadId: string, cursor?: string): Promise<ClaudeTranscriptPage | null> {
+  return loadLocalTranscriptPage<ClaudeTranscriptPage>("claude", threadId, cursor);
 }
 
 export async function deleteClaudeTranscript(threadId: string): Promise<void> {

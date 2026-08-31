@@ -266,6 +266,7 @@ pub(super) struct LocalTranscriptPage {
     activities: Vec<Value>,
     next_cursor: Option<String>,
     head_seq: i64,
+    tail_seq: i64,
     generation: i64,
     byte_len: usize,
     migrated_legacy: bool,
@@ -598,10 +599,25 @@ fn read_local_transcript_page(
         }
         (None, None) => return Ok(None),
     };
-    let (thread_json, cursor_session_id, head_seq, generation) = connection
+    // Builds predating mutable-tail persistence can have chunk metadata but no
+    // tail boundary. Initialize it before returning the page and write token
+    // together; the shared connection lock keeps this read atomic to callers.
+    connection
+        .execute(
+            "INSERT OR IGNORE INTO local_transcript_tail_state(provider, thread_id, tail_seq)
+             SELECT provider, thread_id, head_seq + 1 FROM local_transcript_meta
+             WHERE provider = ?1 AND thread_id = ?2",
+            params![provider, thread_id],
+        )
+        .map_err(|error| format!("Could not initialize local transcript tail state: {error}"))?;
+    let (thread_json, cursor_session_id, head_seq, tail_seq, generation) = connection
         .query_row(
-            "SELECT thread_json, cursor_session_id, head_seq, generation
-             FROM local_transcript_meta WHERE provider = ?1 AND thread_id = ?2",
+            "SELECT meta.thread_json, meta.cursor_session_id, meta.head_seq,
+                    tail.tail_seq, meta.generation
+             FROM local_transcript_meta meta
+             JOIN local_transcript_tail_state tail
+               ON tail.provider = meta.provider AND tail.thread_id = meta.thread_id
+             WHERE meta.provider = ?1 AND meta.thread_id = ?2",
             params![provider, thread_id],
             |row| {
                 Ok((
@@ -609,6 +625,7 @@ fn read_local_transcript_page(
                     row.get::<_, Option<String>>(1)?,
                     row.get::<_, i64>(2)?,
                     row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
                 ))
             },
         )
@@ -683,6 +700,7 @@ fn read_local_transcript_page(
         activities,
         next_cursor: (oldest_seq > 0).then(|| format!("{generation}:{}", oldest_seq - 1)),
         head_seq,
+        tail_seq,
         generation,
         byte_len,
         migrated_legacy,
@@ -958,14 +976,6 @@ fn read_local_transcript_write_state(
         return Ok(None);
     }
     connection
-        .execute(
-            "INSERT OR IGNORE INTO local_transcript_tail_state(provider, thread_id, tail_seq)
-             SELECT provider, thread_id, head_seq + 1 FROM local_transcript_meta
-             WHERE provider = ?1 AND thread_id = ?2",
-            params![provider, thread_id],
-        )
-        .map_err(|error| format!("Could not initialize local transcript write state: {error}"))?;
-    connection
         .query_row(
             "SELECT meta.generation, meta.head_seq, tail.tail_seq
              FROM local_transcript_meta meta
@@ -998,6 +1008,89 @@ pub(super) async fn local_transcript_write_state_read(
     })
     .await
     .map_err(|error| format!("Local transcript write state task failed: {error}"))?
+}
+
+fn write_local_transcript_metadata(
+    connection: &mut Connection,
+    provider: &str,
+    thread_id: &str,
+    thread: &Value,
+    cursor_session_id: Option<&str>,
+    expected_generation: i64,
+    now: i64,
+) -> Result<LocalTranscriptWriteState, String> {
+    local_transcript_key(provider, thread_id)?;
+    if thread.get("id").and_then(Value::as_str) != Some(thread_id) {
+        return Err("Local transcript metadata belongs to a different thread".to_string());
+    }
+    if read_local_transcript_page(connection, provider, thread_id, None, Some(1))?.is_none() {
+        return Err("Local transcript no longer exists".to_string());
+    }
+    let thread_json = serde_json::to_string(thread)
+        .map_err(|error| format!("Could not encode local thread metadata: {error}"))?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("Could not begin local transcript metadata write: {error}"))?;
+    let (generation, head_seq, tail_seq): (i64, i64, i64) = transaction
+        .query_row(
+            "SELECT meta.generation, meta.head_seq, tail.tail_seq
+             FROM local_transcript_meta meta
+             JOIN local_transcript_tail_state tail
+               ON tail.provider = meta.provider AND tail.thread_id = meta.thread_id
+             WHERE meta.provider = ?1 AND meta.thread_id = ?2",
+            params![provider, thread_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .map_err(|error| format!("Could not inspect local transcript metadata: {error}"))?;
+    if generation != expected_generation {
+        return Err(format!(
+            "Local transcript generation is stale (expected {expected_generation}, current {generation})"
+        ));
+    }
+    transaction
+        .execute(
+            "UPDATE local_transcript_meta SET
+               thread_json = ?3,
+               cursor_session_id = ?4,
+               updated_at = MAX(?5, updated_at + 1)
+             WHERE provider = ?1 AND thread_id = ?2",
+            params![provider, thread_id, thread_json, cursor_session_id, now],
+        )
+        .map_err(|error| format!("Could not update local transcript metadata: {error}"))?;
+    transaction
+        .commit()
+        .map_err(|error| format!("Could not commit local transcript metadata: {error}"))?;
+    Ok(LocalTranscriptWriteState {
+        generation,
+        head_seq,
+        tail_seq,
+    })
+}
+
+#[tauri::command]
+pub(super) async fn local_transcript_metadata_write(
+    app: AppHandle,
+    provider: String,
+    thread_id: String,
+    thread: Value,
+    cursor_session_id: Option<String>,
+    expected_generation: i64,
+) -> Result<LocalTranscriptWriteState, String> {
+    let connection = shared_state_db(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut connection = lock_state_db(&connection)?;
+        write_local_transcript_metadata(
+            &mut connection,
+            &provider,
+            &thread_id,
+            &thread,
+            cursor_session_id.as_deref(),
+            expected_generation,
+            unix_timestamp_ms(),
+        )
+    })
+    .await
+    .map_err(|error| format!("Local transcript metadata task failed: {error}"))?
 }
 
 fn write_local_transcript_tail(
@@ -1392,6 +1485,7 @@ mod tests {
         assert!(first.migrated_legacy);
         assert_eq!(first.cursor_session_id.as_deref(), Some("cursor-session"));
         assert_eq!(first.thread["id"], "thread-a");
+        assert_eq!(first.tail_seq, first.head_seq + 1);
         assert!(first.next_cursor.is_some());
         assert!(
             first.byte_len > 20_000,
@@ -1574,6 +1668,128 @@ mod tests {
             read_local_transcript_full(&mut connection, "cursor", "thread-a").unwrap(),
             Some(renamed)
         );
+        drop(connection);
+        std::fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn metadata_write_preserves_chunks_generation_and_page_cursors() {
+        let (directory, mut connection) = temporary_state_db("metadata-write");
+        let original = transcript_fixture(8, 4_000);
+        let initial =
+            write_local_transcript_snapshot(&mut connection, "cursor", &original, 100).unwrap();
+        let newest =
+            read_local_transcript_page(&mut connection, "cursor", "thread-a", None, Some(20_000))
+                .unwrap()
+                .unwrap();
+        let cursor = newest.next_cursor.expect("older page cursor");
+        let chunks_before: Vec<(i64, String)> = connection
+            .prepare(
+                "SELECT seq, entries_json FROM local_transcript_chunks
+                 WHERE provider = 'cursor' AND thread_id = 'thread-a' ORDER BY seq",
+            )
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        let mut renamed_thread = original["thread"].clone();
+        renamed_thread["name"] = Value::String("Renamed without hydration".to_string());
+
+        let written = write_local_transcript_metadata(
+            &mut connection,
+            "cursor",
+            "thread-a",
+            &renamed_thread,
+            Some("new-session"),
+            initial.generation,
+            101,
+        )
+        .unwrap();
+
+        assert_eq!(written.generation, initial.generation);
+        assert_eq!(
+            connection
+                .prepare(
+                    "SELECT seq, entries_json FROM local_transcript_chunks
+                     WHERE provider = 'cursor' AND thread_id = 'thread-a' ORDER BY seq",
+                )
+                .unwrap()
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap()
+                .collect::<Result<Vec<(i64, String)>, _>>()
+                .unwrap(),
+            chunks_before
+        );
+        assert!(read_local_transcript_page(
+            &mut connection,
+            "cursor",
+            "thread-a",
+            Some(&cursor),
+            Some(20_000),
+        )
+        .is_ok());
+        let restored = read_local_transcript_full(&mut connection, "cursor", "thread-a")
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored["thread"], renamed_thread);
+        assert_eq!(restored["cursorSessionId"], "new-session");
+        assert_eq!(restored["messages"], original["messages"]);
+        assert_eq!(restored["activities"], original["activities"]);
+        drop(connection);
+        std::fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn stale_metadata_write_leaves_existing_metadata_untouched() {
+        let (directory, mut connection) = temporary_state_db("stale-metadata-write");
+        let original = transcript_fixture(3, 1_000);
+        let initial =
+            write_local_transcript_snapshot(&mut connection, "claude", &original, 100).unwrap();
+        let mut renamed_thread = original["thread"].clone();
+        renamed_thread["name"] = Value::String("Must not persist".to_string());
+
+        let error = write_local_transcript_metadata(
+            &mut connection,
+            "claude",
+            "thread-a",
+            &renamed_thread,
+            None,
+            initial.generation + 1,
+            101,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("generation is stale"));
+        let restored = read_local_transcript_full(&mut connection, "claude", "thread-a")
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored["thread"], original["thread"]);
+        assert_eq!(restored["cursorSessionId"], "cursor-session");
+        drop(connection);
+        std::fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn metadata_write_rejects_a_different_thread_identity() {
+        let (directory, mut connection) = temporary_state_db("metadata-thread-identity");
+        let original = transcript_fixture(1, 100);
+        let initial =
+            write_local_transcript_snapshot(&mut connection, "claude", &original, 100).unwrap();
+        let different = json!({ "id": "thread-b", "name": "Wrong thread" });
+
+        let error = write_local_transcript_metadata(
+            &mut connection,
+            "claude",
+            "thread-a",
+            &different,
+            None,
+            initial.generation,
+            101,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("different thread"));
         drop(connection);
         std::fs::remove_dir_all(directory).expect("remove test directory");
     }
