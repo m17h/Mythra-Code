@@ -49,15 +49,29 @@ Do not compare pooled percentiles from unlike device or provider mixes. Keep
 platform and architecture fixed, report the sample count for every group, and
 define “warm” consistently when comparing runs.
 
+The same export also contains aggregate runtime-turn and composer samples:
+
+- streaming delta volume, animation-frame queue delay, and synchronous flush
+  work, emitted once after a turn and its debounced persistence have settled;
+- local Claude/Cursor transcript write count, failures, estimated retained-data
+  bytes, duration, and write strategy (`snapshot`, `tail`, or `metadata`);
+- one composer input-to-frame sample per 16 changes, flushed only in batches of
+  32 so diagnostics never writes on every keystroke;
+- first/last/delta/per-sample memory growth across completed thread-open
+  samples, reusing existing heap/cache/process snapshots without another
+  runtime memory call.
+
+These records contain provider and numeric aggregates only. Thread ids remain
+in renderer memory solely to join lifecycle events and are never passed to the
+audit log; prompts, response text, paths, model names, and free-form errors are
+not recorded. Input-to-frame is a rendering-opportunity proxy, not a literal
+pixel-presentation timestamp.
+
 ## Current scope and next measurements
 
-The first scorecard covers bundle size and existing privacy-safe thread-open
-samples. Planned additions are report-only until their variance is understood:
+These measurements remain report-only until their variance is understood:
 
 - cold process start → window → first paint → interactive;
-- composer input-to-paint and timeline frame pacing during streaming;
-- active-turn persistence duration and writes per turn;
-- memory-growth slope through a repeated open/stream/evict soak;
 - large-transcript rehydration on native macOS and Windows.
 
 Mounted-row counts and payload bytes are implementation signals, not user

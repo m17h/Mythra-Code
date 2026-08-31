@@ -76,8 +76,10 @@ describe("performance scorecard", () => {
       architecture: "aarch64",
       generatedAt: 123,
       stateDatabase: "/secret/database",
-      auditEvents: [10, 20].map((timelineCommit, index) => ({
+      auditEvents: [
+        ...[10, 20].map((timelineCommit, index) => ({
         kind: "performance.threadOpen",
+        createdAt: 200 - index * 100,
         threadId: `secret-thread-${index}`,
         payload: {
           provider: "openai",
@@ -90,9 +92,22 @@ describe("performance scorecard", () => {
           longTasks: { count: 0, maximumDurationMs: 0 },
           javascriptHeap: { usedBytes: 2_000 },
           transcriptCache: { estimatedBytes: 3_000, hydratedThreads: 1, selectedEstimatedBytes: 3_000 },
-          processMemory: { managedProcessTreeResidentBytes: 4_000, managedProcessCount: 2 },
+          processMemory: { managedProcessTreeResidentBytes: 4_000 + index * 100, managedProcessCount: 2, cached: false },
         },
-      })),
+        })),
+        {
+          kind: "performance.runtimeTurn",
+          threadId: "secret-runtime-thread",
+          payload: {
+            provider: "openai",
+            outcome: "completed",
+            observedDurationMs: 200,
+            streaming: { deltaCalls: 20, deltaCharacters: 500, flushes: 4, queueToFrameMaximumMs: 12, flushWorkMaximumMs: 3 },
+            persistence: { writes: 0, failures: 0, estimatedBytes: 0, durationTotalMs: 0, durationMaximumMs: 0 },
+          },
+        },
+        { kind: "performance.composer", payload: { provider: "openai", samples: 3, inputToFrameMs: [4, 8, 12], ignored: "private" } },
+      ],
     };
 
     const summary = summarizeDiagnostics(diagnostics);
@@ -109,6 +124,23 @@ describe("performance scorecard", () => {
         runtimeAfterVisibleMs: { n: 2, p50: 5, p95: 5, maximum: 5 },
         visibleHistoryEntries: { n: 2, p50: 5, p95: 5, maximum: 5 },
       },
+    });
+    expect(summary.runtimeGroups[0]).toMatchObject({
+      provider: "openai",
+      n: 1,
+      completedN: 1,
+      metrics: {
+        deltaCharacters: { n: 1, p50: 500, p95: 500, maximum: 500 },
+        flushWorkMaximumMs: { n: 1, p50: 3, p95: 3, maximum: 3 },
+      },
+    });
+    expect(summary.composerGroups).toEqual([{
+      provider: "openai",
+      metrics: { inputToFrameMs: { n: 3, p50: 8, p95: 12, maximum: 12 } },
+    }]);
+    expect(summary.memoryGrowth).toMatchObject({
+      javascriptHeapUsedBytes: { n: 2, delta: 0, perSample: 0 },
+      managedResidentBytes: { n: 2, delta: -100, perSample: -100 },
     });
     const serialized = JSON.stringify(summary);
     expect(serialized).not.toContain("secret-thread");

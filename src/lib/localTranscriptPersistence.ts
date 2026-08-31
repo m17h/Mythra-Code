@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { Activity, ChatMessage, Thread } from "../types";
+import { estimateTranscriptBytes } from "./taskStore";
+import { beginPersistencePerformanceWrite, type PersistenceWriteKind } from "./runtimePerformanceBridge";
 
 export type LocalTranscriptProvider = "claude" | "cursor";
 
@@ -121,10 +123,12 @@ async function saveSnapshot(
   provider: LocalTranscriptProvider,
   transcript: LocalTranscriptValue,
 ): Promise<PersistenceState> {
-  await invoke("local_transcript_snapshot_write", { provider, value: transcript });
-  const state = await readWriteState(provider, transcript.thread.id);
-  if (!state) throw new Error("Local transcript snapshot was saved without write state");
-  return { ...state, partial: false, mutableTurnId: null, snapshotOnlyTurnId: null };
+  return measuredPersistenceWrite(provider, transcript, "snapshot", transcript, selectMutableTail(transcript)?.turnId, async () => {
+    await invoke("local_transcript_snapshot_write", { provider, value: transcript });
+    const state = await readWriteState(provider, transcript.thread.id);
+    if (!state) throw new Error("Local transcript snapshot was saved without write state");
+    return { ...state, partial: false, mutableTurnId: null, snapshotOnlyTurnId: null };
+  });
 }
 
 async function saveMetadata(
@@ -132,14 +136,60 @@ async function saveMetadata(
   transcript: LocalTranscriptValue,
   state: PersistenceState,
 ): Promise<PersistenceState> {
-  const next = await invoke<LocalTranscriptWriteState>("local_transcript_metadata_write", {
-    provider,
-    threadId: transcript.thread.id,
-    thread: transcript.thread,
-    cursorSessionId: transcript.cursorSessionId ?? null,
-    expectedGeneration: state.generation,
+  return measuredPersistenceWrite(provider, transcript, "metadata", null, undefined, async () => {
+    const next = await invoke<LocalTranscriptWriteState>("local_transcript_metadata_write", {
+      provider,
+      threadId: transcript.thread.id,
+      thread: transcript.thread,
+      cursorSessionId: transcript.cursorSessionId ?? null,
+      expectedGeneration: state.generation,
+    });
+    return { ...state, ...next };
   });
-  return { ...state, ...next };
+}
+
+async function measuredPersistenceWrite<T>(
+  provider: LocalTranscriptProvider,
+  transcript: LocalTranscriptValue,
+  kind: PersistenceWriteKind,
+  payload: LocalTranscriptValue | null,
+  performanceTurnId: string | undefined,
+  write: () => Promise<T>,
+): Promise<T> {
+  // This uses the store's constant-time string-length estimator rather than
+  // serializing a second copy of the payload on the renderer hot path.
+  const estimatedBytes = payload ? estimateTranscriptBytes(payload.messages, payload.activities) : 0;
+  const finish = beginPersistencePerformanceWrite(transcript.thread.id, provider, kind, estimatedBytes, performance.now(), performanceTurnId);
+  try {
+    const result = await write();
+    finish(true);
+    return result;
+  } catch (error) {
+    finish(false);
+    throw error;
+  }
+}
+
+async function saveTail(
+  provider: LocalTranscriptProvider,
+  transcript: LocalTranscriptValue,
+  state: PersistenceState,
+  tail: TailSelection,
+): Promise<PersistenceState> {
+  return measuredPersistenceWrite(provider, transcript, "tail", tail.value, tail.turnId, async () => {
+    const next = await invoke<LocalTranscriptWriteState>("local_transcript_tail_write", {
+      provider,
+      value: tail.value,
+      expectedGeneration: state.generation,
+      seal: tail.seal,
+    });
+    return {
+      ...next,
+      partial: state.partial,
+      mutableTurnId: tail.seal ? null : tail.turnId,
+      snapshotOnlyTurnId: null,
+    };
+  });
 }
 
 async function persistTranscript(
@@ -196,18 +246,8 @@ async function persistTranscript(
   }
 
   try {
-    const next = await invoke<LocalTranscriptWriteState>("local_transcript_tail_write", {
-      provider,
-      value: tail.value,
-      expectedGeneration: state.generation,
-      seal: tail.seal,
-    });
-    rememberPersistenceState(key, {
-      ...next,
-      partial: state.partial,
-      mutableTurnId: tail.seal ? null : tail.turnId,
-      snapshotOnlyTurnId: null,
-    });
+    const next = await saveTail(provider, transcript, state, tail);
+    rememberPersistenceState(key, next);
   } catch (reason) {
     if (!/generation is stale/i.test(String(reason))) throw reason;
     if (state.partial) throw new Error("Paged local transcript changed outside this window; reload it before saving");

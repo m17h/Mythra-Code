@@ -8,6 +8,7 @@ import { durationForTurn, recordTurnDuration } from "./turnDurations";
 import { recordCumulativeUsage, recordUsageDelta, resetUsageLedgerCache, usageForThread, USAGE_LEDGER_KEY } from "./usageLedger";
 import { loadStored, removeStoredValue, storeValue } from "./storage";
 import { EMPTY_THREAD_HISTORY, type ThreadHistoryState } from "./threadHistory";
+import { beginRuntimePerformanceTurn, bindRuntimePerformanceTurn, completeRuntimePerformanceTurn, recordStreamingDelta, recordStreamingFlush, resetRuntimePerformanceDiagnostics } from "./runtimePerformanceBridge";
 
 export type TaskStatus = "idle" | "starting" | "running" | "completed" | "interrupted" | "error";
 
@@ -582,9 +583,9 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     // Delta text is frame-batched below, but the steering lock must become
     // authoritative synchronously. Otherwise a click in that frame can still
     // reach turn/steer even though final output has already started arriving.
+    const currentTask = delta ? get().tasks[threadId] : undefined;
     if (delta) {
-      const task = get().tasks[threadId];
-      if (task?.activeTurnId && task.assistantOutputTurnId !== task.activeTurnId) {
+      if (currentTask?.activeTurnId && currentTask.assistantOutputTurnId !== currentTask.activeTurnId) {
         set((state) => {
           const current = state.tasks[threadId];
           if (!current?.activeTurnId || current.assistantOutputTurnId === current.activeTurnId) return state;
@@ -600,6 +601,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     const byItem = pendingDeltas.get(threadId) ?? new Map<string, string>();
     byItem.set(itemId, `${byItem.get(itemId) ?? ""}${delta}`);
     pendingDeltas.set(threadId, byItem);
+    recordStreamingDelta(threadId, delta.length, performance.now(), currentTask?.activeTurnId);
     scheduleDeltaFlush(get().flushDeltas);
   },
   queueReasoningDelta: (threadId, itemId, delta, source) => {
@@ -628,10 +630,12 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     const items = pendingReasoningItems.get(threadId) ?? new Set<string>();
     items.add(itemId);
     pendingReasoningItems.set(threadId, items);
+    recordStreamingDelta(threadId, delta.length, performance.now(), current?.activeTurnId);
     scheduleDeltaFlush(get().flushDeltas);
   },
   flushDeltas: () => {
     if (!pendingDeltas.size && !pendingReasoningItems.size) return;
+    const flushStartedAt = performance.now();
     const batch = new Map(pendingDeltas);
     const reasoningBatch = new Map(pendingReasoningItems);
     pendingDeltas.clear();
@@ -696,6 +700,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       }
       return { tasks };
     });
+    recordStreamingFlush(new Set([...batch.keys(), ...reasoningBatch.keys()]), flushStartedAt, performance.now());
   },
   completeMessage: (threadId, message) => {
     // Drop any queued deltas for this item so a flush scheduled before the
@@ -780,32 +785,38 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       } } };
     });
   },
-  setActiveTurn: (threadId, turnId) => set((state) => {
-    const task = state.tasks[threadId] ?? emptyTask(threadId);
-    const threshold = turnId ? task.pendingTurnStartOrder : undefined;
-    const messages = threshold === undefined
-      ? task.messages
-      : task.messages.map((message) => !message.turnId && (message.timelineOrder ?? -1) >= threshold ? { ...message, turnId } : message);
-    const activities = threshold === undefined
-      ? task.activities
-      : task.activities.map((activity) => !activity.turnId && (activity.timelineOrder ?? -1) >= threshold ? { ...activity, turnId } : activity);
-    const assistantOutputTurnId = turnId && task.assistantOutputTurnId === turnId
-      ? task.assistantOutputTurnId
-      : undefined;
-    return { tasks: { ...state.tasks, [threadId]: {
-      ...task,
-      activeTurnId: turnId,
-      assistantOutputTurnId,
-      pendingTurnStartOrder: turnId ? undefined : task.pendingTurnStartOrder,
-      messages,
-      activities,
-      estimatedTranscriptBytes: threshold === undefined
-        ? task.estimatedTranscriptBytes
-        : estimateTranscriptBytes(messages, activities),
-      updatedAt: Date.now(),
-    } } };
-  }),
-  completeTurn: (threadId, turnId, status) => set((state) => {
+  setActiveTurn: (threadId, turnId) => {
+    bindRuntimePerformanceTurn(threadId, turnId);
+    set((state) => {
+      const task = state.tasks[threadId] ?? emptyTask(threadId);
+      const threshold = turnId ? task.pendingTurnStartOrder : undefined;
+      const messages = threshold === undefined
+        ? task.messages
+        : task.messages.map((message) => !message.turnId && (message.timelineOrder ?? -1) >= threshold ? { ...message, turnId } : message);
+      const activities = threshold === undefined
+        ? task.activities
+        : task.activities.map((activity) => !activity.turnId && (activity.timelineOrder ?? -1) >= threshold ? { ...activity, turnId } : activity);
+      const assistantOutputTurnId = turnId && task.assistantOutputTurnId === turnId
+        ? task.assistantOutputTurnId
+        : undefined;
+      return { tasks: { ...state.tasks, [threadId]: {
+        ...task,
+        activeTurnId: turnId,
+        assistantOutputTurnId,
+        pendingTurnStartOrder: turnId ? undefined : task.pendingTurnStartOrder,
+        messages,
+        activities,
+        estimatedTranscriptBytes: threshold === undefined
+          ? task.estimatedTranscriptBytes
+          : estimateTranscriptBytes(messages, activities),
+        updatedAt: Date.now(),
+      } } };
+    });
+  },
+  completeTurn: (threadId, turnId, status) => {
+    const previousTask = get().tasks[threadId];
+    const newerTurnActive = Boolean(previousTask?.activeTurnId && turnId && previousTask.activeTurnId !== turnId);
+    set((state) => {
     const task = state.tasks[threadId] ?? emptyTask(threadId);
     const completedTurnId = turnId ?? task.activeTurnId;
     const newerTurnActive = Boolean(task.activeTurnId && turnId && task.activeTurnId !== turnId);
@@ -907,8 +918,21 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       },
       statuses: { ...state.statuses, [threadId]: threadStatus },
     };
-  }),
-  setTaskStatus: (threadId, status, error) => set((state) => {
+    });
+    if (!newerTurnActive) {
+      completeRuntimePerformanceTurn(
+        threadId,
+        status === "completed" ? "completed" : status === "interrupted" ? "interrupted" : "error",
+        turnId,
+      );
+    }
+  },
+  setTaskStatus: (threadId, status, error) => {
+    const previousTask = get().tasks[threadId];
+    const wasWorking = previousTask?.status === "starting" || previousTask?.status === "running";
+    const isWorking = status === "starting" || status === "running";
+    if (isWorking && !wasWorking) beginRuntimePerformanceTurn(threadId);
+    set((state) => {
     const task = state.tasks[threadId] ?? emptyTask(threadId);
     const isWorking = status === "starting" || status === "running";
     const wasWorking = task.status === "starting" || task.status === "running";
@@ -944,7 +968,14 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       },
       statuses: { ...state.statuses, [threadId]: status },
     };
-  }),
+    });
+    if (wasWorking && !isWorking) {
+      completeRuntimePerformanceTurn(
+        threadId,
+        status === "completed" ? "completed" : status === "interrupted" ? "interrupted" : status === "error" ? "error" : "abandoned",
+      );
+    }
+  },
   setDiff: (threadId, diff) => set((state) => {
     const task = state.tasks[threadId] ?? emptyTask(threadId);
     return { tasks: { ...state.tasks, [threadId]: { ...task, diff, updatedAt: Date.now() } } };
@@ -1051,6 +1082,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
 }));
 
 export function resetTaskStore(): void {
+  resetRuntimePerformanceDiagnostics();
   pendingDeltas.clear();
   pendingReasoningItems.clear();
   reasoningStreams.clear();
