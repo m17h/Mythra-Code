@@ -6,6 +6,7 @@ import { recordError } from "../lib/errorLog";
 interface ErrorBoundaryProps {
   label: string;
   children: ReactNode;
+  onRetry?: () => void;
 }
 
 interface ErrorBoundaryState {
@@ -34,7 +35,10 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
           <strong>The {this.props.label} view hit a problem</strong>
           <small>{friendlyError(this.state.error)}</small>
         </div>
-        <button className="secondary-button" onClick={() => this.setState({ error: null })}>
+        <button className="secondary-button" onClick={() => {
+          if (this.props.onRetry) this.props.onRetry();
+          else this.setState({ error: null });
+        }}>
           <RotateCcw size={13} /> Reload view
         </button>
       </div>

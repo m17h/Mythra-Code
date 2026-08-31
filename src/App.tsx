@@ -34,7 +34,6 @@ import { Composer, discardDraft, type ComposerHandle } from "./components/Compos
 import { SubAgentCommandCenter, type SubAgentModelOption, type SubAgentPolicyMode } from "./components/SubAgentCommandCenter";
 import { CommandPalette } from "./components/CommandPalette";
 import { ErrorBoundary } from "./components/ErrorBoundary";
-import { SettingsModal } from "./components/SettingsModal";
 import { AuthRequiredModal, RuntimeSetupModal } from "./components/RuntimeModals";
 import type { AgentRecord, AttachmentRecord, McpView } from "./components/StudioDock";
 import { isStudioTab, type StudioTab } from "./lib/studioTabs";
@@ -155,6 +154,38 @@ import {
 const ChatTimeline = lazy(() => import("./components/ChatTimeline").then((module) => ({ default: module.ChatTimeline })));
 const StudioDock = lazy(() => import("./components/StudioDock").then((module) => ({ default: module.StudioDock })));
 const OnboardingModal = lazy(() => import("./components/OnboardingModal").then((module) => ({ default: module.OnboardingModal })));
+let settingsModalPromise: ReturnType<typeof importSettingsModal> | null = null;
+function importSettingsModal() {
+  return import("./components/SettingsModal").then((module) => ({ default: module.SettingsModal }));
+}
+function loadSettingsModal() {
+  settingsModalPromise ??= importSettingsModal().catch((error) => {
+    settingsModalPromise = null;
+    throw error;
+  });
+  return settingsModalPromise;
+}
+function preloadSettingsModal() {
+  void loadSettingsModal().catch(() => undefined);
+}
+
+function ModalLoadingFallback({ label, onClose }: { label: string; onClose: () => void }) {
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", closeOnEscape);
+    return () => document.removeEventListener("keydown", closeOnEscape);
+  }, [onClose]);
+  return (
+    <div className="modal-backdrop settings-backdrop open" onMouseDown={onClose}>
+      <div className="runtime-setup-modal" role="dialog" aria-modal="true" aria-label={label} onMouseDown={(event) => event.stopPropagation()}>
+        <span role="status" aria-live="polite"><LoaderCircle className="spin" size={18} /> {label}</span>
+        <button className="secondary-button" autoFocus onClick={onClose}>Cancel</button>
+      </div>
+    </div>
+  );
+}
 
 const EMPTY_MESSAGES: ChatMessage[] = [];
 const EMPTY_ACTIVITIES: Activity[] = [];
@@ -394,6 +425,9 @@ export default function App() {
     serialize: (runs) => runs.map((run) => compactWorkflowRun(run)),
   });
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsMounted, setSettingsMounted] = useState(false);
+  const [settingsLoadAttempt, setSettingsLoadAttempt] = useState(0);
+  const [LazySettingsModal, setLazySettingsModal] = useState(() => lazy(loadSettingsModal));
   const [settingsInitialSection, setSettingsInitialSection] = useState<SettingsSection>("general");
   const [onboardingOpen, setOnboardingOpen] = useState(initialOnboardingOpen);
   const [onboardingMounted, setOnboardingMounted] = useState(initialOnboardingOpen);
@@ -1325,6 +1359,8 @@ export default function App() {
   ]);
 
   const openSettings = useCallback((section: SettingsSection = "general") => {
+    preloadSettingsModal();
+    setSettingsMounted(true);
     setSettingsInitialSection(section);
     setSettingsOpen(true);
   }, []);
@@ -5142,7 +5178,7 @@ export default function App() {
         </div>
 
         <div className="sidebar-footer">
-          <button className="sidebar-settings" onClick={() => openSettings()}>
+          <button className="sidebar-settings" onClick={() => openSettings()} onMouseEnter={preloadSettingsModal} onFocus={preloadSettingsModal}>
             <Settings size={16} />
             <span>Settings</span>
             <span className={`provider-dot ${settings.provider}`} title={`Default provider: ${providerLabel(settings.provider)}`} />
@@ -5717,7 +5753,18 @@ export default function App() {
         </Suspense>
       </ErrorBoundary>
 
-      <SettingsModal
+      {settingsMounted && (
+        <ErrorBoundary
+          key={settingsLoadAttempt}
+          label="settings"
+          onRetry={() => {
+            settingsModalPromise = null;
+            setLazySettingsModal(() => lazy(loadSettingsModal));
+            setSettingsLoadAttempt((attempt) => attempt + 1);
+          }}
+        >
+        <Suspense fallback={settingsOpen ? <ModalLoadingFallback label="Loading settings…" onClose={closeSettings} /> : null}>
+          <LazySettingsModal
         open={settingsOpen}
         initialSection={settingsInitialSection}
         appUpdater={appUpdater}
@@ -5821,7 +5868,10 @@ export default function App() {
           closeSettings();
           openOnboarding();
         }}
-      />
+          />
+        </Suspense>
+        </ErrorBoundary>
+      )}
 
       {onboardingMounted && (
         <Suspense fallback={null}>
