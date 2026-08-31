@@ -72,6 +72,34 @@ describe("task store", () => {
     expect(tasks["thread-3"].messages).toHaveLength(0);
   });
 
+  it("prepends an older page without disturbing live order or duplicate items", () => {
+    const store = useTaskStore.getState();
+    store.hydrateTask("thread-a", [{ id: "current", role: "assistant", text: "current" }], [], "/p", {
+      nextCursor: "older",
+      hasMore: true,
+      loading: false,
+      paginated: true,
+    });
+    store.prependHistory("thread-a", [
+      { id: "old", role: "user", text: "old", timelineOrder: 1 },
+      { id: "current", role: "assistant", text: "duplicate", timelineOrder: 2 },
+    ], [], { nextCursor: null, hasMore: false, loading: false });
+
+    const task = useTaskStore.getState().tasks["thread-a"];
+    expect(task.messages.map((message) => message.id)).toEqual(["old", "current"]);
+    expect(task.messages[0].timelineOrder).toBeLessThan(task.messages[1].timelineOrder!);
+    expect(task.history).toMatchObject({ nextCursor: null, hasMore: false, paginated: true });
+  });
+
+  it("keeps an optimistic user message appended while paged hydration is in flight", () => {
+    const store = useTaskStore.getState();
+    store.ensureTask("thread-a", "/p");
+    store.appendUserMessage("thread-a", { id: "optimistic", role: "user", text: "send this now" });
+    store.hydrateTask("thread-a", [{ id: "loaded", role: "assistant", text: "recent answer" }], [], "/p");
+
+    expect(useTaskStore.getState().tasks["thread-a"].messages.map((message) => message.id)).toEqual(["loaded", "optimistic"]);
+  });
+
   it("routes streamed output to the correct thread", () => {
     const store = useTaskStore.getState();
     store.ensureTask("thread-a", "/a");

@@ -58,6 +58,23 @@ The control plane and execution plane remain separate. The React view never laun
 
 Mythra Code's private Codex home is under the platform Tauri app-data directory. The native host creates a controlled `config.toml` on first startup and preserves subsequent user-managed skills/MCP configuration. Provider and thread overrides remain explicit.
 
+## Thread history loading
+
+Codex thread history is loaded as a bounded recent window. The app-server is
+resumed or read with turns excluded, then `thread/turns/list` returns the
+newest page with full item detail. Older pages are requested explicitly from
+the timeline and prepended with scroll-height anchoring. The task store keeps
+the cursor alongside the transcript so a page cannot be mistaken for a
+complete history.
+
+If the installed app-server does not support paginated history, Mythra Code
+falls back to the existing full `thread/read` or `thread/resume` request for
+that runtime. A deliberate runtime restart clears the compatibility decision
+so an updated server is probed again. Claude and Cursor transcripts remain
+whole-file reads because their local persistence format has no safe server-side
+cursor; partially hydrating those files could race the debounced transcript
+writer and truncate durable history.
+
 ## Thread creation contract
 
 A new thread is created with:

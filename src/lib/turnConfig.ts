@@ -165,6 +165,11 @@ export function threadResumeParams(
   cwd: string,
   options: Pick<ThreadStartOptions, "customAgents" | "modelContextWindow" | "additionalWorkspaceRoots" | "childAgentBridge"> & {
     excludeTurns?: boolean;
+    initialTurnsPage?: {
+      limit: number;
+      sortDirection: "desc";
+      itemsView: "full";
+    };
     /**
      * Re-send the whole runtime config even with no bridge attached. This is
      * how a freshly loaded Codex thread learns that sub-agents were switched
@@ -190,6 +195,7 @@ export function threadResumeParams(
     sandbox: sandboxMode(run.permission),
     developerInstructions,
     ...(options.excludeTurns ? { excludeTurns: true } : {}),
+    ...(options.initialTurnsPage ? { initialTurnsPage: options.initialTurnsPage } : {}),
     ...(modelProvider ? { modelProvider } : {}),
     ...(run.provider === "openrouter" || run.provider === "lmstudio" || options.childAgentBridge || options.refreshRuntimeConfig
       ? { config: threadRuntimeConfig(run, options) }

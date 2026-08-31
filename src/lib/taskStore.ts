@@ -7,6 +7,7 @@ import { isActiveAgentRecord } from "./subAgentActivity";
 import { durationForTurn, recordTurnDuration } from "./turnDurations";
 import { recordCumulativeUsage, recordUsageDelta, resetUsageLedgerCache, usageForThread, USAGE_LEDGER_KEY } from "./usageLedger";
 import { loadStored, removeStoredValue, storeValue } from "./storage";
+import { EMPTY_THREAD_HISTORY, type ThreadHistoryState } from "./threadHistory";
 
 export type TaskStatus = "idle" | "starting" | "running" | "completed" | "interrupted" | "error";
 
@@ -124,6 +125,8 @@ export interface ThreadTaskState {
   /** Local-provider transcript changes not yet acknowledged by durable disk
    * persistence. Dirty transcripts are never eligible for memory eviction. */
   transcriptDirty: boolean;
+  /** Window/cursor metadata for Codex history loaded into this task. */
+  history: ThreadHistoryState;
   unread: boolean;
   error?: string;
   updatedAt: number;
@@ -144,7 +147,9 @@ interface TaskStoreState {
   statuses: Record<string, TaskStatus>;
   setActiveThread: (threadId: string | null) => void;
   ensureTask: (threadId: string, workspacePath?: string) => void;
-  hydrateTask: (threadId: string, messages: ChatMessage[], activities: Activity[], workspacePath?: string) => void;
+  hydrateTask: (threadId: string, messages: ChatMessage[], activities: Activity[], workspacePath?: string, history?: ThreadHistoryState) => void;
+  setHistory: (threadId: string, patch: Partial<ThreadHistoryState>) => void;
+  prependHistory: (threadId: string, messages: ChatMessage[], activities: Activity[], patch: Partial<ThreadHistoryState>) => void;
   setTranscriptDirty: (threadId: string, dirty: boolean) => void;
   appendUserMessage: (threadId: string, message: ChatMessage) => void;
   setMessageSteerStatus: (threadId: string, messageId: string, status: ChatMessage["steerStatus"]) => void;
@@ -199,6 +204,7 @@ function emptyTask(threadId: string, workspacePath?: string): ThreadTaskState {
     diff: EMPTY_REVIEW_DIFF,
     usage: usageForThread(threadId)?.usage ?? null,
     transcriptDirty: false,
+    history: EMPTY_THREAD_HISTORY,
     unread: false,
     updatedAt: Date.now(),
   };
@@ -296,17 +302,18 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       statuses: { ...state.statuses, [threadId]: "idle" },
     };
   }),
-  hydrateTask: (threadId, messages, activities, workspacePath) => set((state) => {
+  hydrateTask: (threadId, messages, activities, workspacePath, history) => set((state) => {
     const existing = state.tasks[threadId];
     const hydratedMessages = messages.map((message) => withTimelineOrder({
       ...message,
       turnDurationMs: message.turnDurationMs ?? durationForTurn(threadId, message.turnId),
     }));
     // The turns-derived history excludes the incomplete turn's partially
-    // streamed assistant message. Keep it, so re-opening a running thread does
-    // not truncate the stream to whatever deltas arrive after the hydrate.
+    // streamed assistant message. Keep it, along with an optimistic user
+    // message that may have been appended while the paged read was in flight,
+    // so hydration cannot erase a send that is already on screen.
     const inFlight = (existing?.messages ?? [])
-      .filter((message) => message.streaming && !hydratedMessages.some((entry) => entry.id === message.id))
+      .filter((message) => (message.streaming || (message.role === "user" && !message.turnId)) && !hydratedMessages.some((entry) => entry.id === message.id))
       .map(({ timelineOrder: _order, ...message }) => withTimelineOrder(message as ChatMessage));
     return {
       tasks: {
@@ -320,11 +327,48 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
             turnDurationMs: activity.turnDurationMs ?? durationForTurn(threadId, activity.turnId),
           })),
           transcriptDirty: false,
+          history: history ?? existing?.history ?? EMPTY_THREAD_HISTORY,
           unread: false,
           updatedAt: Date.now(),
         },
       },
       statuses: { ...state.statuses, [threadId]: state.statuses[threadId] ?? "idle" },
+    };
+  }),
+  setHistory: (threadId, patch) => set((state) => {
+    const task = state.tasks[threadId];
+    if (!task) return state;
+    return { tasks: { ...state.tasks, [threadId]: { ...task, history: { ...task.history, ...patch }, updatedAt: Date.now() } } };
+  }),
+  prependHistory: (threadId, messages, activities, patch) => set((state) => {
+    const task = state.tasks[threadId];
+    if (!task) return state;
+    const existingOrders = [...task.messages, ...task.activities]
+      .map((entry) => entry.timelineOrder)
+      .filter((order): order is number => typeof order === "number");
+    const oldestOrder = existingOrders.length ? Math.min(...existingOrders) : 0;
+    const incoming = [...messages.map((entry) => ({ kind: "message" as const, entry })), ...activities.map((entry) => ({ kind: "activity" as const, entry }))]
+      .filter(({ entry }) => !task.messages.some((current) => current.id === entry.id) && !task.activities.some((current) => current.id === entry.id))
+      .sort((left, right) => (left.entry.timelineOrder ?? 0) - (right.entry.timelineOrder ?? 0));
+    const assignedOrders = new Map(incoming.map(({ entry }, index) => [entry.id, oldestOrder - incoming.length + index]));
+    const nextMessages = messages
+      .filter((entry) => !task.messages.some((current) => current.id === entry.id) && !task.activities.some((current) => current.id === entry.id))
+      .map((entry) => ({ ...entry, timelineOrder: assignedOrders.get(entry.id) }));
+    const nextActivities = activities
+      .filter((entry) => !task.messages.some((current) => current.id === entry.id) && !task.activities.some((current) => current.id === entry.id))
+      .map((entry) => ({ ...entry, timelineOrder: assignedOrders.get(entry.id) }));
+    if (!nextMessages.length && !nextActivities.length && Object.keys(patch).length === 0) return state;
+    return {
+      tasks: {
+        ...state.tasks,
+        [threadId]: {
+          ...task,
+          messages: [...nextMessages, ...task.messages],
+          activities: [...nextActivities, ...task.activities],
+          history: { ...task.history, ...patch },
+          updatedAt: Date.now(),
+        },
+      },
     };
   }),
   setTranscriptDirty: (threadId, dirty) => set((state) => {
