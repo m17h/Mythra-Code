@@ -65,8 +65,9 @@ use github::{
 };
 use persistence::{
     local_transcript_full_read, local_transcript_page_read, local_transcript_snapshot_write,
-    lock_state_db, open_state_db_or_quarantine, shared_state_db, state_db_path, state_delete,
-    state_read, state_write, StateDb,
+    local_transcript_tail_write, local_transcript_write_state_read, lock_state_db,
+    open_state_db_or_quarantine, shared_state_db, state_db_path, state_delete, state_read,
+    state_write, StateDb,
 };
 #[cfg(windows)]
 use process_launch::interactive_command;
@@ -4249,6 +4250,8 @@ pub fn run() {
             local_transcript_page_read,
             local_transcript_full_read,
             local_transcript_snapshot_write,
+            local_transcript_write_state_read,
+            local_transcript_tail_write,
             checkpoint_create,
             checkpoint_complete,
             checkpoint_diff,
