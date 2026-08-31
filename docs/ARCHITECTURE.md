@@ -60,20 +60,19 @@ Mythra Code's private Codex home is under the platform Tauri app-data directory.
 
 ## Thread history loading
 
-Codex thread history is loaded as a bounded recent window. The app-server is
-resumed or read with turns excluded, then `thread/turns/list` returns the
-newest page with full item detail. Older pages are requested explicitly from
-the timeline and prepended with scroll-height anchoring. The task store keeps
-the cursor alongside the transcript so a page cannot be mistaken for a
-complete history.
+Codex thread history is loaded as a bounded recent window. A metadata-only
+`thread/read` and the newest `thread/turns/list` page are requested
+concurrently, so a cold open pays the slower latency instead of their sum.
+Older pages are requested explicitly from the timeline and prepended with
+scroll-height anchoring. The task store keeps the cursor alongside the
+transcript so a page cannot be mistaken for a complete history.
 
 If the installed app-server does not support paginated history, Mythra Code
-falls back to the existing full `thread/read` or `thread/resume` request for
-that runtime. A deliberate runtime restart clears the compatibility decision
-so an updated server is probed again. Claude and Cursor transcripts remain
-whole-file reads because their local persistence format has no safe server-side
-cursor; partially hydrating those files could race the debounced transcript
-writer and truncate durable history.
+falls back to the existing full `thread/read` request for that runtime. A
+deliberate runtime restart clears the compatibility decision so an updated
+server is probed again. Claude and Cursor transcripts use SQLite-backed bounded
+pages with generation-safe cursors, so incremental writes cannot replace
+history that is not currently hydrated in the renderer.
 
 ## Thread creation contract
 

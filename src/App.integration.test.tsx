@@ -76,6 +76,7 @@ function deferred<T>(): Deferred<T> {
 
 let pendingResume: Deferred<{ thread: Thread }>;
 let resumeImpl: (params: Record<string, unknown>) => unknown;
+let threadReadImpl: (params: Record<string, unknown>) => unknown;
 let threadListImpl: (params: Record<string, unknown>) => unknown;
 let threadTurnsListImpl: (params: Record<string, unknown>) => unknown;
 let turnStartImpl: (params: Record<string, unknown>) => unknown;
@@ -268,7 +269,7 @@ function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
     if (method === "fs/readFile") return { dataBase64: btoa("preview") };
     if (method === "fuzzyFileSearch") return { files: [] };
     if (method === "thread/read") {
-      return { thread: { ...THREAD_A, id: String(params.threadId), turns: [] } };
+      return threadReadImpl(params);
     }
     if (method === "thread/turns/list") return threadTurnsListImpl(params);
     if (method === "thread/resume") {
@@ -309,6 +310,7 @@ beforeEach(() => {
   vi.spyOn(window, "confirm").mockReturnValue(true);
   pendingResume = deferred<{ thread: Thread }>();
   resumeImpl = () => pendingResume.promise;
+  threadReadImpl = (params) => ({ thread: { ...THREAD_A, id: String(params.threadId), turns: [] } });
   threadListImpl = (params) => ({
     data: params.cwd === PROJECT_A.path ? [THREAD_A, THREAD_B] : [],
     nextCursor: null,
@@ -1078,6 +1080,101 @@ describe("workspace switching during thread selection", () => {
       pendingResume.resolve({ thread: { ...THREAD_A, turns: [] } });
       await pendingResume.promise;
     });
+  });
+
+  it("requests OpenAI metadata and recent history concurrently", async () => {
+    const user = userEvent.setup();
+    const metadata = deferred<{ thread: Thread }>();
+    threadReadImpl = (params) => params.includeTurns
+      ? { thread: { ...THREAD_A, id: String(params.threadId), turns: [] } }
+      : metadata.promise;
+    threadTurnsListImpl = () => ({
+      data: [{
+        id: "recent-turn",
+        status: "completed",
+        items: [{
+          id: "recent-message",
+          type: "userMessage",
+          content: [{ type: "text", text: "parallel history" }],
+        }],
+      }],
+      nextCursor: null,
+      backwardsCursor: null,
+    });
+    await renderApp();
+
+    await user.click(await screen.findByText("Alpha thread"));
+
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("codex_rpc", expect.objectContaining({
+      method: "thread/turns/list",
+      params: expect.objectContaining({ threadId: THREAD_A.id }),
+    })));
+    expect(screen.queryByText("parallel history")).not.toBeInTheDocument();
+
+    await act(async () => {
+      metadata.resolve({ thread: { ...THREAD_A, turns: [] } });
+      await metadata.promise;
+    });
+    expect(await screen.findByText("parallel history")).toBeInTheDocument();
+    // Settle the independent runtime-preparation work before test cleanup.
+    await act(async () => {
+      pendingResume.resolve({ thread: { ...THREAD_A, turns: [] } });
+      await pendingResume.promise;
+    });
+  });
+
+  it("falls back safely when paging is rejected before metadata resolves", async () => {
+    const user = userEvent.setup();
+    const metadata = deferred<{ thread: Thread }>();
+    let metadataReadPending = true;
+    threadReadImpl = (params) => {
+      const thread = String(params.threadId) === THREAD_B.id ? THREAD_B : THREAD_A;
+      if (!params.includeTurns && metadataReadPending && thread.id === THREAD_A.id) {
+        metadataReadPending = false;
+        return metadata.promise;
+      }
+      return {
+        thread: {
+          ...thread,
+          turns: params.includeTurns && thread.id === THREAD_A.id
+            ? [{
+                id: "fallback-turn",
+                status: "completed",
+                items: [{
+                  id: "fallback-message",
+                  type: "userMessage",
+                  content: [{ type: "text", text: "history from compatibility fallback" }],
+                }],
+              }]
+            : [],
+        },
+      };
+    };
+    threadTurnsListImpl = () => {
+      throw new Error("unknown field `itemsView`");
+    };
+    resumeImpl = (params) => ({
+      thread: { ...(String(params.threadId) === THREAD_B.id ? THREAD_B : THREAD_A), turns: [] },
+    });
+    await renderApp();
+    const { useTaskStore } = await import("./lib/taskStore");
+    const turnsListCalls = () => invokeMock.mock.calls.filter(([command, args]) => (
+      command === "codex_rpc" && args?.method === "thread/turns/list"
+    ));
+
+    await user.click(await screen.findByText("Alpha thread"));
+    await waitFor(() => expect(turnsListCalls()).toHaveLength(1));
+    expect(screen.queryByText("history from compatibility fallback")).not.toBeInTheDocument();
+
+    await act(async () => {
+      metadata.resolve({ thread: { ...THREAD_A, turns: [] } });
+      await metadata.promise;
+    });
+    expect(await screen.findByText("history from compatibility fallback")).toBeInTheDocument();
+
+    await user.click(await screen.findByText("Beta thread"));
+    await waitFor(() => expect(useTaskStore.getState().activeThreadId).toBe(THREAD_B.id));
+    expect(turnsListCalls()).toHaveLength(1);
   });
 
   it("opens a local-provider thread from a bounded page and recovers stale backward paging", async () => {

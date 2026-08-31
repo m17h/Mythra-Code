@@ -214,9 +214,8 @@ class MalformedThreadHistoryPageError extends Error {}
  * retained as a compatibility fallback instead of making history fragile.
  */
 async function loadThreadHistory(
-  method: "thread/read" | "thread/resume",
-  params: JsonObject,
-  fallbackParams: JsonObject,
+  params: JsonObject & { threadId: string },
+  fallbackParams: JsonObject & { threadId: string },
 ): Promise<LoadedThreadHistory> {
   const loaded = (thread: Thread, history: ThreadHistoryState): LoadedThreadHistory => ({
     thread: sidebarThread(thread),
@@ -224,38 +223,35 @@ async function loadThreadHistory(
     history,
   });
   const fallback = async (): Promise<LoadedThreadHistory> => {
-    const result = await rpc<{ thread: Thread }>(method, fallbackParams);
+    const result = await rpc<{ thread: Thread }>("thread/read", fallbackParams);
     return loaded(result.thread, { nextCursor: null, hasMore: false, loading: false, paginated: false });
   };
   if (paginatedHistoryUnavailable) return fallback();
-  let result: { thread: Thread };
-  try {
-    result = await rpc<{ thread: Thread }>(method, {
-      ...params,
-      ...(method === "thread/resume" ? { excludeTurns: true } : {}),
-    });
-  } catch (reason) {
-    if (method !== "thread/resume" || !isExcludeTurnsUnsupported(reason)) throw reason;
-    paginatedHistoryUnavailable = true;
-    return fallback();
-  }
+  // Metadata and the bounded recent-turn page are independent app-server
+  // reads. Start both now so a cold open pays the slower latency, not their
+  // sum. Capture page rejection immediately to avoid an unhandled promise if
+  // the metadata request takes the compatibility fallback first.
+  const pageResultPromise = rpc<unknown>("thread/turns/list", {
+    threadId: params.threadId,
+    limit: INITIAL_THREAD_TURN_LIMIT,
+    sortDirection: "desc",
+    // Keep the user prompt and final answer without pulling potentially
+    // enormous historical tool output. Paginated Codex stores intentionally
+    // reject `full`; complete items are served by a separate API.
+    itemsView: "summary",
+  }).then(
+    (value) => ({ ok: true as const, value }),
+    (reason: unknown) => ({ ok: false as const, reason }),
+  );
+  const result = await rpc<{ thread: Thread }>("thread/read", params);
   const fallbackAfterMetadata = async (): Promise<LoadedThreadHistory> => {
-    // A successful resume has already installed runtime configuration. Do not
-    // resume it a second time merely to recover history; read the stored
-    // transcript without mutating the loaded thread.
     const full = await rpc<{ thread: Thread }>("thread/read", { threadId: result.thread.id, includeTurns: true });
     return loaded(full.thread, { nextCursor: null, hasMore: false, loading: false, paginated: false });
   };
   try {
-    const page = normalizeThreadTurnsPage(await rpc<unknown>("thread/turns/list", {
-      threadId: result.thread.id,
-      limit: INITIAL_THREAD_TURN_LIMIT,
-      sortDirection: "desc",
-      // Keep the user prompt and final answer without pulling potentially
-      // enormous historical tool output. Paginated Codex stores intentionally
-      // reject `full`; complete items are served by a separate API.
-      itemsView: "summary",
-    }));
+    const pageResult = await pageResultPromise;
+    if (!pageResult.ok) throw pageResult.reason;
+    const page = normalizeThreadTurnsPage(pageResult.value);
     if (!page) throw new MalformedThreadHistoryPageError("Paginated thread history returned a malformed page");
     return {
       thread: sidebarThread(result.thread),
@@ -3113,7 +3109,6 @@ export default function App() {
       let loaded: LoadedThreadHistory;
       try {
         loaded = await loadThreadHistory(
-          "thread/read",
           { threadId: thread.id, includeTurns: false },
           { threadId: thread.id, includeTurns: true },
         );
@@ -4026,7 +4021,7 @@ export default function App() {
         setStudioOpen(false);
         return;
       }
-      const loaded = await loadThreadHistory("thread/read", { threadId, includeTurns: false }, { threadId, includeTurns: true });
+      const loaded = await loadThreadHistory({ threadId, includeTurns: false }, { threadId, includeTurns: true });
       const nativeLink = nativeAgentLinks[threadId];
       const logicalPath = threadProjectBindingsRef.current?.[threadId]
         ?? (nativeLink ? threadProjectBindingsRef.current?.[nativeLink.rootThreadId] : undefined)
@@ -4087,7 +4082,7 @@ export default function App() {
       }
       if (activeWorkspace) bindThreadToProject(result.thread.id, activeWorkspace.path);
       const loaded = forkedWithoutTurns
-        ? await loadThreadHistory("thread/read", { threadId: result.thread.id, includeTurns: false }, { threadId: result.thread.id, includeTurns: true })
+        ? await loadThreadHistory({ threadId: result.thread.id, includeTurns: false }, { threadId: result.thread.id, includeTurns: true })
         : { thread: sidebarThread(result.thread), turns: result.thread.turns ?? [], history: { nextCursor: null, hasMore: false, loading: false, paginated: false } };
       rememberThread(loaded.thread);
       persistThreadModel(result.thread.id, effectiveSettings.model);
