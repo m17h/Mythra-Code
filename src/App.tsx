@@ -15,7 +15,7 @@ import { commandSandbox, threadResumeParams, threadRuntimeConfig } from "./lib/t
 import { threadSearchParams, threadsForWorkspace, type ThreadSearchResponse } from "./lib/threadSearch";
 import { countActiveThreadsByWorkspace, filterThreadsByKind, filterThreadsForWorkspace, forgetSidebarThread, isSubAgentThread, partitionBulkArchiveThreads, pruneSidebarIndex, reconcileWorkspaceThreads, rememberSidebarThread, repairRootThreadMetadata, sidebarThread, threadBelongsToWorkspace, upsertThread, type ThreadSidebarIndex } from "./lib/threadList";
 import { timelineFromTurns } from "./lib/threadTimeline";
-import { INITIAL_THREAD_TURN_LIMIT, OLDER_THREAD_TURN_LIMIT, isPaginatedHistoryUnsupported, normalizeThreadTurnsPage, turnsFromDescendingPage, type ThreadHistoryState } from "./lib/threadHistory";
+import { INITIAL_THREAD_TURN_LIMIT, OLDER_THREAD_TURN_LIMIT, isExcludeTurnsUnsupported, isPaginatedHistoryUnsupported, normalizeThreadTurnsPage, turnsFromDescendingPage, type ThreadHistoryState } from "./lib/threadHistory";
 import { buildTranscriptMarkdown } from "./lib/transcript";
 import { RowMenu } from "./components/RowMenu";
 import { Odometer } from "./components/Odometer";
@@ -185,32 +185,44 @@ async function loadThreadHistory(
   params: JsonObject,
   fallbackParams: JsonObject,
 ): Promise<LoadedThreadHistory> {
+  const loaded = (thread: Thread, history: ThreadHistoryState): LoadedThreadHistory => ({
+    thread: sidebarThread(thread),
+    turns: thread.turns ?? [],
+    history,
+  });
   const fallback = async (): Promise<LoadedThreadHistory> => {
     const result = await rpc<{ thread: Thread }>(method, fallbackParams);
-    return {
-      thread: sidebarThread(result.thread),
-      turns: result.thread.turns ?? [],
-      history: { nextCursor: null, hasMore: false, loading: false, paginated: false },
-    };
+    return loaded(result.thread, { nextCursor: null, hasMore: false, loading: false, paginated: false });
   };
   if (paginatedHistoryUnavailable) return fallback();
+  let result: { thread: Thread };
   try {
-    const result = await rpc<{ thread: Thread; initialTurnsPage?: unknown }>(method, {
+    result = await rpc<{ thread: Thread }>(method, {
       ...params,
-      ...(method === "thread/resume" ? {
-        excludeTurns: true,
-        initialTurnsPage: { limit: INITIAL_THREAD_TURN_LIMIT, sortDirection: "desc", itemsView: "full" },
-      } : {}),
+      ...(method === "thread/resume" ? { excludeTurns: true } : {}),
     });
-    let page = normalizeThreadTurnsPage(result.initialTurnsPage);
-    if (!page) {
-      page = normalizeThreadTurnsPage(await rpc<unknown>("thread/turns/list", {
-        threadId: result.thread.id,
-        limit: INITIAL_THREAD_TURN_LIMIT,
-        sortDirection: "desc",
-        itemsView: "full",
-      }));
-    }
+  } catch (reason) {
+    if (method !== "thread/resume" || !isExcludeTurnsUnsupported(reason)) throw reason;
+    paginatedHistoryUnavailable = true;
+    return fallback();
+  }
+  const fallbackAfterMetadata = async (): Promise<LoadedThreadHistory> => {
+    // A successful resume has already installed runtime configuration. Do not
+    // resume it a second time merely to recover history; read the stored
+    // transcript without mutating the loaded thread.
+    const full = await rpc<{ thread: Thread }>("thread/read", { threadId: result.thread.id, includeTurns: true });
+    return loaded(full.thread, { nextCursor: null, hasMore: false, loading: false, paginated: false });
+  };
+  try {
+    const page = normalizeThreadTurnsPage(await rpc<unknown>("thread/turns/list", {
+      threadId: result.thread.id,
+      limit: INITIAL_THREAD_TURN_LIMIT,
+      sortDirection: "desc",
+      // Keep the user prompt and final answer without pulling potentially
+      // enormous historical tool output. Paginated Codex stores intentionally
+      // reject `full`; complete items are served by a separate API.
+      itemsView: "summary",
+    }));
     if (!page) throw new MalformedThreadHistoryPageError("Paginated thread history returned a malformed page");
     return {
       thread: sidebarThread(result.thread),
@@ -218,10 +230,10 @@ async function loadThreadHistory(
       history: { nextCursor: page.nextCursor, hasMore: Boolean(page.nextCursor), loading: false, paginated: true },
     };
   } catch (reason) {
-    if (reason instanceof MalformedThreadHistoryPageError) return fallback();
+    if (reason instanceof MalformedThreadHistoryPageError) return fallbackAfterMetadata();
     if (!isPaginatedHistoryUnsupported(reason)) throw reason;
     paginatedHistoryUnavailable = true;
-    return fallback();
+    return fallbackAfterMetadata();
   }
 }
 
@@ -2740,7 +2752,7 @@ export default function App() {
         cursor: task.history.nextCursor,
         limit: OLDER_THREAD_TURN_LIMIT,
         sortDirection: "desc",
-        itemsView: "full",
+        itemsView: "summary",
       }));
       if (!page) throw new MalformedThreadHistoryPageError("Paginated thread history returned a malformed page");
       const currentState = useTaskStore.getState();
@@ -3814,7 +3826,7 @@ export default function App() {
         result = await rpc<{ thread: Thread }>("thread/fork", { ...forkParams, excludeTurns: true });
         forkedWithoutTurns = true;
       } catch (reason) {
-        if (!isPaginatedHistoryUnsupported(reason)) throw reason;
+        if (!isExcludeTurnsUnsupported(reason)) throw reason;
         paginatedHistoryUnavailable = true;
         result = await rpc<{ thread: Thread }>("thread/fork", forkParams);
       }

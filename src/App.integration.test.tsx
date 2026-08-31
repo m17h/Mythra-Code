@@ -965,11 +965,10 @@ describe("workspace switching during thread selection", () => {
   it("clears an older-page loading latch when the user leaves the thread", async () => {
     const user = userEvent.setup();
     const olderPage = deferred<unknown>();
-    resumeImpl = () => ({
-      thread: { ...THREAD_A, turns: [] },
-      initialTurnsPage: { data: [], nextCursor: "older-a", backwardsCursor: null },
-    });
-    threadTurnsListImpl = () => olderPage.promise;
+    resumeImpl = () => ({ thread: { ...THREAD_A, turns: [] } });
+    threadTurnsListImpl = (params) => params.cursor
+      ? olderPage.promise
+      : { data: [], nextCursor: "older-a", backwardsCursor: null };
     await renderApp();
     const { useTaskStore } = await import("./lib/taskStore");
 
@@ -989,16 +988,15 @@ describe("workspace switching during thread selection", () => {
   it("rejects an older page whose cursor was replaced by a same-thread rehydrate", async () => {
     const user = userEvent.setup();
     const stalePage = deferred<unknown>();
-    let resumeCount = 0;
-    resumeImpl = () => ({
-      thread: { ...THREAD_A, turns: [] },
-      initialTurnsPage: {
-        data: [],
-        nextCursor: resumeCount++ === 0 ? "cursor-before-refresh" : "cursor-after-refresh",
-        backwardsCursor: null,
-      },
-    });
-    threadTurnsListImpl = () => stalePage.promise;
+    let initialPageCount = 0;
+    resumeImpl = () => ({ thread: { ...THREAD_A, turns: [] } });
+    threadTurnsListImpl = (params) => params.cursor
+      ? stalePage.promise
+      : {
+          data: [],
+          nextCursor: initialPageCount++ === 0 ? "cursor-before-refresh" : "cursor-after-refresh",
+          backwardsCursor: null,
+        };
     await renderApp();
     const { useTaskStore } = await import("./lib/taskStore");
 
@@ -1032,13 +1030,14 @@ describe("workspace switching during thread selection", () => {
     const user = userEvent.setup();
     resumeImpl = (params) => ({
       thread: { ...(params.threadId === THREAD_B.id ? THREAD_B : THREAD_A), turns: [] },
-      initialTurnsPage: { data: [], nextCursor: `older-${String(params.threadId)}`, backwardsCursor: null },
     });
-    threadTurnsListImpl = () => ({
-      data: [{ id: "malformed-turn", status: "completed", items: null }],
-      nextCursor: null,
-      backwardsCursor: null,
-    });
+    threadTurnsListImpl = (params) => params.cursor
+      ? {
+          data: [{ id: "malformed-turn", status: "completed", items: null }],
+          nextCursor: null,
+          backwardsCursor: null,
+        }
+      : { data: [], nextCursor: `older-${String(params.threadId)}`, backwardsCursor: null };
     await renderApp();
     const { useTaskStore } = await import("./lib/taskStore");
 
@@ -1055,6 +1054,51 @@ describe("workspace switching during thread selection", () => {
       paginated: true,
       nextCursor: `older-${THREAD_B.id}`,
     }));
+  });
+
+  it("falls back with a read instead of resuming twice when turn summaries are unsupported", async () => {
+    const user = userEvent.setup();
+    let resumeCalls = 0;
+    resumeImpl = () => {
+      resumeCalls += 1;
+      return { thread: { ...THREAD_A, turns: [] } };
+    };
+    threadTurnsListImpl = () => {
+      throw new Error("unknown field `itemsView`");
+    };
+    await renderApp();
+    const { useTaskStore } = await import("./lib/taskStore");
+
+    await user.click(await screen.findByText("Alpha thread"));
+    await waitFor(() => expect(useTaskStore.getState().tasks[THREAD_A.id]?.history.paginated).toBe(false));
+    expect(resumeCalls).toBe(1);
+    expect(invokeMock).toHaveBeenCalledWith("codex_rpc", expect.objectContaining({
+      method: "thread/read",
+      params: { threadId: THREAD_A.id, includeTurns: true },
+    }));
+  });
+
+  it("does not disable pagination after an unrelated unsupported resume error", async () => {
+    const user = userEvent.setup();
+    let resumeCalls = 0;
+    resumeImpl = () => {
+      resumeCalls += 1;
+      if (resumeCalls === 1) throw new Error("unsupported model selection");
+      return { thread: { ...THREAD_A, turns: [] } };
+    };
+    threadTurnsListImpl = () => ({ data: [], nextCursor: "older-after-retry", backwardsCursor: null });
+    await renderApp();
+    const { useTaskStore } = await import("./lib/taskStore");
+
+    const threadRow = await screen.findByText("Alpha thread");
+    await user.click(threadRow);
+    await screen.findByText("unsupported model selection");
+    await user.click(threadRow);
+    await waitFor(() => expect(useTaskStore.getState().tasks[THREAD_A.id]?.history).toMatchObject({
+      paginated: true,
+      nextCursor: "older-after-retry",
+    }));
+    expect(resumeCalls).toBe(2);
   });
 
   it("does not mark an idle thread as running/steering while another thread's start is in flight", async () => {
@@ -1686,9 +1730,13 @@ describe("composer sub-agent command center", () => {
     pendingResume.resolve({ thread: { ...THREAD_A, turns: [] } });
     await user.click(await screen.findByText("Alpha thread"));
     await waitFor(() => expect(codexCalls("thread/resume")).not.toHaveLength(0));
-    expect(codexCalls("thread/resume")[0]).toMatchObject({
-      excludeTurns: true,
-      initialTurnsPage: { limit: 12, sortDirection: "desc", itemsView: "full" },
+    expect(codexCalls("thread/resume")[0]).toMatchObject({ excludeTurns: true });
+    expect(codexCalls("thread/resume")[0]).not.toHaveProperty("initialTurnsPage");
+    expect(codexCalls("thread/turns/list")[0]).toMatchObject({
+      threadId: THREAD_A.id,
+      limit: 12,
+      sortDirection: "desc",
+      itemsView: "summary",
     });
     const restartsAfterOpen = invokeMock.mock.calls.filter(([command]) => command === "restart_runtime").length;
 

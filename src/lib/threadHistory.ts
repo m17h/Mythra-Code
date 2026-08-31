@@ -62,5 +62,16 @@ export function normalizeThreadTurnsPage(value: unknown): ThreadTurnsPage | null
 
 export function isPaginatedHistoryUnsupported(reason: unknown): boolean {
   const text = reason instanceof Error ? reason.message : String(reason);
-  return /thread\/(?:turns\/list|items\/list)|initialTurnsPage|excludeTurns|unknown method|method not found|unsupported|unrecognized|invalid (?:field|parameter)|additional propert/i.test(text);
+  // RPC wrappers commonly prefix every failure with the method name. The
+  // name alone is not evidence of an old runtime: latching on a transient
+  // connection error would force a full-history fallback that true paginated
+  // stores intentionally reject.
+  return /initialTurnsPage|exclude[_ ]?turns|itemsView|sortDirection|unknown method|method not found|unknown field|unknown variant|not supported|unsupported|unrecognized|invalid (?:field|parameter|params)|additional propert/i.test(text);
+}
+
+/** Only this field proves a metadata-only resume/fork itself is too new. */
+export function isExcludeTurnsUnsupported(reason: unknown): boolean {
+  const text = reason instanceof Error ? reason.message : String(reason);
+  return /exclude[_ ]?turns/i.test(text)
+    && /unknown|not supported|unsupported|unrecognized|invalid|additional propert/i.test(text);
 }
