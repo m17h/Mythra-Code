@@ -250,7 +250,10 @@ function evictColdTranscripts(
   if (victims.length === 0) return null;
   const tasks = { ...state.tasks };
   for (const task of victims) {
-    tasks[task.threadId] = { ...task, messages: [], activities: [] };
+    // A cursor describes the window that was just discarded. Keeping it on
+    // the shell would let an empty transcript request page two and silently
+    // skip the recent page when the thread is revisited.
+    tasks[task.threadId] = { ...task, messages: [], activities: [], history: EMPTY_THREAD_HISTORY };
   }
   return tasks;
 }
@@ -312,20 +315,44 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     // streamed assistant message. Keep it, along with an optimistic user
     // message that may have been appended while the paged read was in flight,
     // so hydration cannot erase a send that is already on screen.
-    const inFlight = (existing?.messages ?? [])
-      .filter((message) => (message.streaming || (message.role === "user" && !message.turnId)) && !hydratedMessages.some((entry) => entry.id === message.id))
-      .map(({ timelineOrder: _order, ...message }) => withTimelineOrder(message as ChatMessage));
+    const hydratedMessageIds = new Set(hydratedMessages.map((message) => message.id));
+    const preservedEntries: Array<
+      { kind: "message"; entry: ChatMessage }
+      | { kind: "activity"; entry: Activity }
+    > = (existing?.messages ?? [])
+      .filter((message) => (
+        message.streaming
+        || (message.role === "user" && !message.turnId)
+        || Boolean(existing?.activeTurnId && message.turnId === existing.activeTurnId)
+      ) && !hydratedMessageIds.has(message.id))
+      .map((entry) => ({ kind: "message" as const, entry }));
+    const hydratedActivities = activities.map((activity) => withTimelineOrder({
+      ...activity,
+      turnDurationMs: activity.turnDurationMs ?? durationForTurn(threadId, activity.turnId),
+    }));
+    const hydratedActivityIds = new Set(hydratedActivities.map((activity) => activity.id));
+    preservedEntries.push(...(existing?.activities ?? [])
+      .filter((activity) => (
+        activity.status === "inProgress"
+        || Boolean(existing?.activeTurnId && activity.turnId === existing.activeTurnId)
+      ) && !hydratedActivityIds.has(activity.id))
+      .map((entry) => ({ kind: "activity" as const, entry })));
+    preservedEntries.sort((left, right) => (left.entry.timelineOrder ?? Number.MAX_SAFE_INTEGER) - (right.entry.timelineOrder ?? Number.MAX_SAFE_INTEGER));
+    const inFlight: ChatMessage[] = [];
+    const inFlightActivities: Activity[] = [];
+    for (const preserved of preservedEntries) {
+      const { timelineOrder: _order, ...entry } = preserved.entry;
+      if (preserved.kind === "message") inFlight.push(withTimelineOrder(entry as ChatMessage));
+      else inFlightActivities.push(withTimelineOrder(entry as Activity));
+    }
     return {
       tasks: {
         ...state.tasks,
         [threadId]: {
           ...(existing ?? emptyTask(threadId, workspacePath)),
-          workspacePath,
+          workspacePath: workspacePath ?? existing?.workspacePath,
           messages: [...hydratedMessages, ...inFlight],
-          activities: activities.map((activity) => withTimelineOrder({
-            ...activity,
-            turnDurationMs: activity.turnDurationMs ?? durationForTurn(threadId, activity.turnId),
-          })),
+          activities: [...hydratedActivities, ...inFlightActivities],
           transcriptDirty: false,
           history: history ?? existing?.history ?? EMPTY_THREAD_HISTORY,
           unread: false,
@@ -343,20 +370,36 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
   prependHistory: (threadId, messages, activities, patch) => set((state) => {
     const task = state.tasks[threadId];
     if (!task) return state;
-    const existingOrders = [...task.messages, ...task.activities]
-      .map((entry) => entry.timelineOrder)
-      .filter((order): order is number => typeof order === "number");
-    const oldestOrder = existingOrders.length ? Math.min(...existingOrders) : 0;
+    const existingIds = new Set<string>();
+    let oldestOrder = 0;
+    let hasOrder = false;
+    for (const entry of task.messages) {
+      existingIds.add(entry.id);
+      if (entry.timelineOrder === undefined) continue;
+      oldestOrder = hasOrder ? Math.min(oldestOrder, entry.timelineOrder) : entry.timelineOrder;
+      hasOrder = true;
+    }
+    for (const entry of task.activities) {
+      existingIds.add(entry.id);
+      if (entry.timelineOrder === undefined) continue;
+      oldestOrder = hasOrder ? Math.min(oldestOrder, entry.timelineOrder) : entry.timelineOrder;
+      hasOrder = true;
+    }
+    const seenIds = new Set(existingIds);
     const incoming = [...messages.map((entry) => ({ kind: "message" as const, entry })), ...activities.map((entry) => ({ kind: "activity" as const, entry }))]
-      .filter(({ entry }) => !task.messages.some((current) => current.id === entry.id) && !task.activities.some((current) => current.id === entry.id))
       .sort((left, right) => (left.entry.timelineOrder ?? 0) - (right.entry.timelineOrder ?? 0));
-    const assignedOrders = new Map(incoming.map(({ entry }, index) => [entry.id, oldestOrder - incoming.length + index]));
-    const nextMessages = messages
-      .filter((entry) => !task.messages.some((current) => current.id === entry.id) && !task.activities.some((current) => current.id === entry.id))
-      .map((entry) => ({ ...entry, timelineOrder: assignedOrders.get(entry.id) }));
-    const nextActivities = activities
-      .filter((entry) => !task.messages.some((current) => current.id === entry.id) && !task.activities.some((current) => current.id === entry.id))
-      .map((entry) => ({ ...entry, timelineOrder: assignedOrders.get(entry.id) }));
+    const uniqueIncoming = incoming.filter(({ entry }) => {
+      if (seenIds.has(entry.id)) return false;
+      seenIds.add(entry.id);
+      return true;
+    });
+    const nextMessages: ChatMessage[] = [];
+    const nextActivities: Activity[] = [];
+    uniqueIncoming.forEach(({ kind, entry }, index) => {
+      const timelineOrder = oldestOrder - uniqueIncoming.length + index;
+      if (kind === "message") nextMessages.push({ ...entry, timelineOrder });
+      else nextActivities.push({ ...entry, timelineOrder });
+    });
     if (!nextMessages.length && !nextActivities.length && Object.keys(patch).length === 0) return state;
     return {
       tasks: {
