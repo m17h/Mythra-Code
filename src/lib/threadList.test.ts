@@ -1,16 +1,19 @@
 import { describe, expect, it } from "vitest";
 import type { Thread } from "../types";
 import {
+  compactSidebarIndex,
   countActiveThreadsByWorkspace,
   filterThreadsByKind,
   filterThreadsForWorkspace,
   forgetSidebarThread,
+  MAX_THREAD_PREVIEW_CHARACTERS,
   optimisticStartedThread,
   partitionBulkArchiveThreads,
   reconcileSidebarIndex,
   reconcileWorkspaceThreads,
   rememberSidebarThread,
   repairRootThreadMetadata,
+  sidebarThread,
   upsertThread,
 } from "./threadList";
 
@@ -40,6 +43,47 @@ describe("thread sidebar list", () => {
     const indexed = makeThread("normal-chat", { name: "Saved chat", preview: "A normal chat", updatedAt: 25 });
 
     expect(upsertThread([optimistic], indexed)).toEqual([indexed]);
+  });
+
+  it("bounds sidebar previews without retaining turns or splitting Unicode graphemes", () => {
+    const emoji = "👨‍👩‍👧";
+    const thread = makeThread("large-preview", {
+      preview: emoji.repeat(MAX_THREAD_PREVIEW_CHARACTERS + 20),
+      turns: [{ id: "turn", items: [] }],
+    });
+
+    const summary = sidebarThread(thread);
+
+    expect(summary).not.toHaveProperty("turns");
+    expect(Array.from(new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(summary.preview)))
+      .toHaveLength(MAX_THREAD_PREVIEW_CHARACTERS);
+    expect(summary.preview.endsWith(emoji)).toBe(true);
+  });
+
+  it("survives malformed legacy sidebar rows during startup compaction", () => {
+    const malformed = {
+      missingPreview: { id: "missing-preview", name: null, cwd: "/workspace", updatedAt: 1, modelProvider: "openai" },
+      missingWorkspace: { id: "missing-workspace", name: null, preview: "unsafe", updatedAt: 1, modelProvider: "openai" },
+      nullRow: null,
+    } as unknown as Record<string, Thread>;
+
+    expect(compactSidebarIndex(malformed)).toEqual({
+      "missing-preview": expect.objectContaining({ preview: "" }),
+    });
+  });
+
+  it("compacts legacy sidebar rows on startup", () => {
+    const legacy = makeThread("legacy", {
+      preview: "x".repeat(MAX_THREAD_PREVIEW_CHARACTERS * 4),
+      turns: [{ id: "turn", items: [] }],
+    });
+
+    expect(compactSidebarIndex({ legacy })).toEqual({
+      legacy: expect.objectContaining({
+        preview: "x".repeat(MAX_THREAD_PREVIEW_CHARACTERS),
+      }),
+    });
+    expect(compactSidebarIndex({ legacy }).legacy).not.toHaveProperty("turns");
   });
 
   it("keeps a newly started OpenRouter chat while the runtime index catches up", () => {

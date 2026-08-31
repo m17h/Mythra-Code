@@ -29,6 +29,7 @@ use tokio::{
     sync::{oneshot, Mutex},
     time::{timeout, timeout_at, Duration, Instant},
 };
+use unicode_segmentation::UnicodeSegmentation;
 
 mod agents;
 mod cursor;
@@ -3298,6 +3299,61 @@ fn validate_rpc_params(method: &str, params: &Value) -> Result<(), String> {
     Ok(())
 }
 
+const MAX_THREAD_PREVIEW_CHARACTERS: usize = 320;
+
+fn bound_thread_preview(thread: &mut Value) {
+    let Some(preview) = thread.get("preview").and_then(Value::as_str) else {
+        return;
+    };
+    let mut graphemes = UnicodeSegmentation::graphemes(preview, true);
+    let bounded: String = graphemes
+        .by_ref()
+        .take(MAX_THREAD_PREVIEW_CHARACTERS)
+        .collect();
+    if graphemes.next().is_none() {
+        return;
+    }
+    if let Some(value) = thread.get_mut("preview") {
+        *value = Value::String(bounded);
+    }
+}
+
+/// App-server previews repeat the first user prompt. They are useful for one
+/// sidebar line but can otherwise duplicate many kilobytes across IPC before
+/// paginated history delivers the canonical message.
+fn bound_thread_previews(method: &str, result: &mut Value) {
+    match method {
+        "thread/list" => {
+            if let Some(threads) = result.get_mut("data").and_then(Value::as_array_mut) {
+                for thread in threads {
+                    bound_thread_preview(thread);
+                }
+            }
+        }
+        "thread/search" => {
+            if let Some(matches) = result.get_mut("data").and_then(Value::as_array_mut) {
+                for matched in matches {
+                    if let Some(thread) = matched.get_mut("thread") {
+                        bound_thread_preview(thread);
+                    }
+                    // Mythra Code uses search only to discover matching thread
+                    // IDs; the potentially large full-text excerpt is not
+                    // rendered or retained by the client.
+                    if let Some(object) = matched.as_object_mut() {
+                        object.remove("snippet");
+                    }
+                }
+            }
+        }
+        "thread/start" | "thread/resume" | "thread/read" | "thread/fork" => {
+            if let Some(thread) = result.get_mut("thread") {
+                bound_thread_preview(thread);
+            }
+        }
+        _ => {}
+    }
+}
+
 #[tauri::command]
 async fn codex_rpc(
     app: AppHandle,
@@ -3376,7 +3432,7 @@ async fn codex_rpc(
     ) {
         inject_openrouter_proxy_config(&mut params, server.openrouter_proxy_url.as_deref());
     }
-    match server.request(&method, params.clone()).await {
+    let result = match server.request(&method, params.clone()).await {
         Ok(result) => Ok(result),
         Err(error) if !server.is_alive() => {
             let dead = {
@@ -3408,7 +3464,11 @@ async fn codex_rpc(
             }
         }
         Err(error) => Err(error),
-    }
+    };
+    result.map(|mut value| {
+        bound_thread_previews(&method, &mut value);
+        value
+    })
 }
 
 #[tauri::command]

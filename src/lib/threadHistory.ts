@@ -1,7 +1,7 @@
 import type { Turn } from "../types";
 
 /** Recent turns are enough to make a reopened thread useful immediately. */
-export const INITIAL_THREAD_TURN_LIMIT = 12;
+export const INITIAL_THREAD_TURN_LIMIT = 10;
 /** Older pages are larger because they are requested deliberately by the user. */
 export const OLDER_THREAD_TURN_LIMIT = 24;
 

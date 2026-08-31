@@ -1500,6 +1500,56 @@ fn runtime_compatibility_accepts_tested_contract() {
     assert!(!runtime_is_compatible("codex-cli 0.144.9"));
 }
 
+#[test]
+fn codex_bridge_bounds_repeated_thread_previews_without_touching_messages() {
+    let preview = "👨‍👩‍👧".repeat(MAX_THREAD_PREVIEW_CHARACTERS + 10);
+    let message = "complete canonical user message";
+    let mut listed = json!({
+        "data": [{ "id": "thread-a", "preview": preview }],
+        "nextCursor": null
+    });
+    let mut page = json!({
+        "data": [{
+            "id": "turn-a",
+            "items": [{ "type": "userMessage", "text": message }]
+        }]
+    });
+
+    bound_thread_previews("thread/list", &mut listed);
+    bound_thread_previews("thread/turns/list", &mut page);
+
+    let bounded = listed["data"][0]["preview"].as_str().unwrap();
+    assert_eq!(
+        bounded.graphemes(true).count(),
+        MAX_THREAD_PREVIEW_CHARACTERS
+    );
+    assert!(bounded.ends_with("👨‍👩‍👧"));
+    assert_eq!(page["data"][0]["items"][0]["text"], message);
+}
+
+#[test]
+fn codex_bridge_compacts_nested_search_results_and_unused_snippets() {
+    let preview = "p".repeat(MAX_THREAD_PREVIEW_CHARACTERS + 10);
+    let mut result = json!({
+        "data": [{
+            "thread": { "id": "thread-a", "preview": preview },
+            "snippet": "large canonical search excerpt"
+        }]
+    });
+
+    bound_thread_previews("thread/search", &mut result);
+
+    assert_eq!(
+        result["data"][0]["thread"]["preview"]
+            .as_str()
+            .unwrap()
+            .graphemes(true)
+            .count(),
+        MAX_THREAD_PREVIEW_CHARACTERS
+    );
+    assert!(result["data"][0].get("snippet").is_none());
+}
+
 #[cfg(windows)]
 #[test]
 fn codex_candidates_include_current_and_legacy_npm_layouts() {
