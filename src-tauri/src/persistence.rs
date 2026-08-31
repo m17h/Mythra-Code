@@ -202,6 +202,12 @@ pub(super) fn open_state_db(path: &Path) -> Result<Connection, StateDbError> {
                byte_len INTEGER NOT NULL,
                PRIMARY KEY(provider, thread_id, seq)
              );
+             CREATE TABLE IF NOT EXISTS local_transcript_tail_state (
+               provider TEXT NOT NULL,
+               thread_id TEXT NOT NULL,
+               tail_seq INTEGER NOT NULL,
+               PRIMARY KEY(provider, thread_id)
+             );
              CREATE INDEX IF NOT EXISTS audit_events_created_at ON audit_events(created_at DESC);",
         )
         .map_err(|error| {
@@ -273,6 +279,14 @@ pub(super) struct LocalTranscriptSnapshotWrite {
     rewritten_chunks: usize,
     total_chunks: usize,
     compatibility_snapshot_created: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct LocalTranscriptWriteState {
+    generation: i64,
+    head_seq: i64,
+    tail_seq: i64,
 }
 
 fn local_transcript_key(provider: &str, thread_id: &str) -> Result<String, String> {
@@ -502,6 +516,14 @@ fn migrate_legacy_local_transcript(
             ],
         )
         .map_err(|error| format!("Could not save local transcript metadata: {error}"))?;
+    transaction
+        .execute(
+            "INSERT INTO local_transcript_tail_state(provider, thread_id, tail_seq)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(provider, thread_id) DO UPDATE SET tail_seq = excluded.tail_seq",
+            params![provider, thread_id, chunks.len() as i64],
+        )
+        .map_err(|error| format!("Could not seal migrated local transcript: {error}"))?;
     transaction
         .commit()
         .map_err(|error| format!("Could not commit local transcript migration: {error}"))?;
@@ -894,6 +916,14 @@ fn write_local_transcript_snapshot(
         )
         .map_err(|error| format!("Could not save local transcript metadata: {error}"))?;
     transaction
+        .execute(
+            "INSERT INTO local_transcript_tail_state(provider, thread_id, tail_seq)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(provider, thread_id) DO UPDATE SET tail_seq = excluded.tail_seq",
+            params![provider, thread_id, chunks.len() as i64],
+        )
+        .map_err(|error| format!("Could not seal local transcript snapshot: {error}"))?;
+    transaction
         .commit()
         .map_err(|error| format!("Could not commit local transcript snapshot: {error}"))?;
     Ok(LocalTranscriptSnapshotWrite {
@@ -917,6 +947,231 @@ pub(super) async fn local_transcript_snapshot_write(
     })
     .await
     .map_err(|error| format!("Local transcript snapshot task failed: {error}"))?
+}
+
+fn read_local_transcript_write_state(
+    connection: &mut Connection,
+    provider: &str,
+    thread_id: &str,
+) -> Result<Option<LocalTranscriptWriteState>, String> {
+    if read_local_transcript_page(connection, provider, thread_id, None, Some(1))?.is_none() {
+        return Ok(None);
+    }
+    connection
+        .execute(
+            "INSERT OR IGNORE INTO local_transcript_tail_state(provider, thread_id, tail_seq)
+             SELECT provider, thread_id, head_seq + 1 FROM local_transcript_meta
+             WHERE provider = ?1 AND thread_id = ?2",
+            params![provider, thread_id],
+        )
+        .map_err(|error| format!("Could not initialize local transcript write state: {error}"))?;
+    connection
+        .query_row(
+            "SELECT meta.generation, meta.head_seq, tail.tail_seq
+             FROM local_transcript_meta meta
+             JOIN local_transcript_tail_state tail
+               ON tail.provider = meta.provider AND tail.thread_id = meta.thread_id
+             WHERE meta.provider = ?1 AND meta.thread_id = ?2",
+            params![provider, thread_id],
+            |row| {
+                Ok(LocalTranscriptWriteState {
+                    generation: row.get(0)?,
+                    head_seq: row.get(1)?,
+                    tail_seq: row.get(2)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|error| format!("Could not read local transcript write state: {error}"))
+}
+
+#[tauri::command]
+pub(super) async fn local_transcript_write_state_read(
+    app: AppHandle,
+    provider: String,
+    thread_id: String,
+) -> Result<Option<LocalTranscriptWriteState>, String> {
+    let connection = shared_state_db(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut connection = lock_state_db(&connection)?;
+        read_local_transcript_write_state(&mut connection, &provider, &thread_id)
+    })
+    .await
+    .map_err(|error| format!("Local transcript write state task failed: {error}"))?
+}
+
+fn write_local_transcript_tail(
+    connection: &mut Connection,
+    provider: &str,
+    value: &Value,
+    expected_generation: i64,
+    seal: bool,
+    now: i64,
+) -> Result<LocalTranscriptWriteState, String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "Local transcript tail is not an object".to_string())?;
+    let thread = object
+        .get("thread")
+        .cloned()
+        .ok_or_else(|| "Local transcript tail has no thread metadata".to_string())?;
+    let thread_id = thread
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|thread_id| !thread_id.trim().is_empty())
+        .ok_or_else(|| "Local transcript tail has no thread id".to_string())?;
+    local_transcript_key(provider, thread_id)?;
+    let messages = object
+        .get("messages")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "Local transcript tail has no messages array".to_string())?;
+    let activities = object
+        .get("activities")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "Local transcript tail has no activities array".to_string())?;
+    let mut turn_ids = messages
+        .iter()
+        .chain(activities.iter())
+        .filter_map(|entry| entry.get("turnId").and_then(Value::as_str))
+        .filter(|turn_id| !turn_id.is_empty())
+        .collect::<Vec<_>>();
+    turn_ids.sort_unstable();
+    turn_ids.dedup();
+    if turn_ids.len() > 1 {
+        return Err("Local transcript tail spans more than one turn".to_string());
+    }
+    let tail_chunks = if messages.is_empty() && activities.is_empty() {
+        Vec::new()
+    } else {
+        local_transcript_chunks(value)?
+    };
+    let thread_json = serde_json::to_string(&thread)
+        .map_err(|error| format!("Could not encode local thread metadata: {error}"))?;
+    let cursor_session_id = object
+        .get("cursorSessionId")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
+    // Reconcile a newer compatibility row (or an old-build deletion) before
+    // entering the CAS transaction. A remigration advances generation, so the
+    // caller must retry from fresh state instead of overwriting it.
+    if read_local_transcript_page(connection, provider, thread_id, None, Some(1))?.is_none() {
+        return Err("Local transcript no longer exists".to_string());
+    }
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("Could not begin local transcript tail write: {error}"))?;
+    transaction
+        .execute(
+            "INSERT OR IGNORE INTO local_transcript_tail_state(provider, thread_id, tail_seq)
+             SELECT provider, thread_id, head_seq + 1 FROM local_transcript_meta
+             WHERE provider = ?1 AND thread_id = ?2",
+            params![provider, thread_id],
+        )
+        .map_err(|error| format!("Could not initialize local transcript tail: {error}"))?;
+    let (generation, head_seq, tail_seq): (i64, i64, i64) = transaction
+        .query_row(
+            "SELECT meta.generation, meta.head_seq, tail.tail_seq
+             FROM local_transcript_meta meta
+             JOIN local_transcript_tail_state tail
+               ON tail.provider = meta.provider AND tail.thread_id = meta.thread_id
+             WHERE meta.provider = ?1 AND meta.thread_id = ?2",
+            params![provider, thread_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .map_err(|error| format!("Could not inspect local transcript tail: {error}"))?;
+    if generation != expected_generation {
+        return Err(format!(
+            "Local transcript generation is stale (expected {expected_generation}, current {generation})"
+        ));
+    }
+    if tail_seq < 0 || tail_seq > head_seq + 1 {
+        return Err("Stored local transcript tail boundary is invalid".to_string());
+    }
+    transaction
+        .execute(
+            "DELETE FROM local_transcript_chunks
+             WHERE provider = ?1 AND thread_id = ?2 AND seq >= ?3",
+            params![provider, thread_id, tail_seq],
+        )
+        .map_err(|error| format!("Could not replace local transcript tail: {error}"))?;
+    for (offset, chunk) in tail_chunks.iter().enumerate() {
+        transaction
+            .execute(
+                "INSERT INTO local_transcript_chunks(provider, thread_id, seq, entries_json, byte_len)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    provider,
+                    thread_id,
+                    tail_seq + offset as i64,
+                    chunk,
+                    chunk.len() as i64
+                ],
+            )
+            .map_err(|error| format!("Could not save local transcript tail: {error}"))?;
+    }
+    let next_head_seq = tail_seq + tail_chunks.len() as i64 - 1;
+    let next_generation = generation + 1;
+    let next_tail_seq = if seal { next_head_seq + 1 } else { tail_seq };
+    transaction
+        .execute(
+            "UPDATE local_transcript_meta SET
+               thread_json = ?3,
+               cursor_session_id = ?4,
+               head_seq = ?5,
+               generation = ?6,
+               updated_at = MAX(?7, updated_at + 1)
+             WHERE provider = ?1 AND thread_id = ?2",
+            params![
+                provider,
+                thread_id,
+                thread_json,
+                cursor_session_id,
+                next_head_seq,
+                next_generation,
+                now,
+            ],
+        )
+        .map_err(|error| format!("Could not update local transcript tail metadata: {error}"))?;
+    transaction
+        .execute(
+            "UPDATE local_transcript_tail_state SET tail_seq = ?3
+             WHERE provider = ?1 AND thread_id = ?2",
+            params![provider, thread_id, next_tail_seq],
+        )
+        .map_err(|error| format!("Could not update local transcript tail boundary: {error}"))?;
+    transaction
+        .commit()
+        .map_err(|error| format!("Could not commit local transcript tail: {error}"))?;
+    Ok(LocalTranscriptWriteState {
+        generation: next_generation,
+        head_seq: next_head_seq,
+        tail_seq: next_tail_seq,
+    })
+}
+
+#[tauri::command]
+pub(super) async fn local_transcript_tail_write(
+    app: AppHandle,
+    provider: String,
+    value: Value,
+    expected_generation: i64,
+    seal: bool,
+) -> Result<LocalTranscriptWriteState, String> {
+    let connection = shared_state_db(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut connection = lock_state_db(&connection)?;
+        write_local_transcript_tail(
+            &mut connection,
+            &provider,
+            &value,
+            expected_generation,
+            seal,
+            unix_timestamp_ms(),
+        )
+    })
+    .await
+    .map_err(|error| format!("Local transcript tail task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -979,6 +1234,12 @@ fn delete_state_value(connection: &mut Connection, key: &str) -> Result<(), Stri
         .execute("DELETE FROM app_state WHERE key = ?1", params![key])
         .map_err(|error| format!("Could not delete Mythra Code state: {error}"))?;
     if let Some((provider, thread_id)) = local_transcript_identity_from_key(key) {
+        transaction
+            .execute(
+                "DELETE FROM local_transcript_tail_state WHERE provider = ?1 AND thread_id = ?2",
+                params![provider, thread_id],
+            )
+            .map_err(|error| format!("Could not delete local transcript tail state: {error}"))?;
         transaction
             .execute(
                 "DELETE FROM local_transcript_chunks WHERE provider = ?1 AND thread_id = ?2",
@@ -1345,6 +1606,291 @@ mod tests {
     }
 
     #[test]
+    fn mutable_tail_replaces_pending_entries_then_seals_without_touching_history() {
+        let (directory, mut connection) = temporary_state_db("mutable-tail-lifecycle");
+        let original = transcript_fixture(4, 1_000);
+        let snapshot =
+            write_local_transcript_snapshot(&mut connection, "claude", &original, 100).unwrap();
+        connection
+            .execute(
+                "DELETE FROM local_transcript_tail_state
+                 WHERE provider = 'claude' AND thread_id = 'thread-a'",
+                [],
+            )
+            .unwrap();
+        let initial_state =
+            read_local_transcript_write_state(&mut connection, "claude", "thread-a")
+                .unwrap()
+                .unwrap();
+        assert_eq!(initial_state.generation, snapshot.generation);
+        assert_eq!(initial_state.tail_seq, initial_state.head_seq + 1);
+
+        let pending = json!({
+            "thread": original["thread"].clone(),
+            "messages": [{
+                "id": "pending-user",
+                "role": "user",
+                "text": "new prompt",
+                "timelineOrder": 13,
+            }],
+            "activities": [],
+        });
+        let pending_state = write_local_transcript_tail(
+            &mut connection,
+            "claude",
+            &pending,
+            initial_state.generation,
+            false,
+            101,
+        )
+        .unwrap();
+        assert_eq!(pending_state.tail_seq, initial_state.tail_seq);
+
+        let running = json!({
+            "thread": original["thread"].clone(),
+            "messages": [
+                {
+                    "id": "pending-user",
+                    "role": "user",
+                    "text": "new prompt",
+                    "turnId": "turn-new",
+                    "timelineOrder": 13,
+                },
+                {
+                    "id": "answer",
+                    "role": "assistant",
+                    "text": "partial",
+                    "streaming": true,
+                    "turnId": "turn-new",
+                    "timelineOrder": 15,
+                }
+            ],
+            "activities": [{
+                "id": "tool-new",
+                "kind": "command",
+                "title": "npm test",
+                "status": "inProgress",
+                "turnId": "turn-new",
+                "timelineOrder": 14,
+            }],
+        });
+        let running_state = write_local_transcript_tail(
+            &mut connection,
+            "claude",
+            &running,
+            pending_state.generation,
+            false,
+            102,
+        )
+        .unwrap();
+        assert_eq!(running_state.tail_seq, initial_state.tail_seq);
+        let during = read_local_transcript_full(&mut connection, "claude", "thread-a")
+            .unwrap()
+            .unwrap();
+        assert_eq!(during["messages"].as_array().unwrap().len(), 10);
+        assert_eq!(
+            during["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|message| message["id"] == "pending-user")
+                .count(),
+            1,
+            "assigning a turn id replaces rather than duplicates the optimistic entry"
+        );
+
+        let mut completed = running.clone();
+        completed["messages"][1]["streaming"] = Value::Bool(false);
+        completed["messages"][0]["turnStatus"] = Value::String("completed".to_string());
+        completed["messages"][1]["turnStatus"] = Value::String("completed".to_string());
+        completed["activities"][0]["status"] = Value::String("completed".to_string());
+        completed["activities"][0]["turnStatus"] = Value::String("completed".to_string());
+        let sealed_state = write_local_transcript_tail(
+            &mut connection,
+            "claude",
+            &completed,
+            running_state.generation,
+            true,
+            103,
+        )
+        .unwrap();
+        assert_eq!(sealed_state.tail_seq, sealed_state.head_seq + 1);
+
+        let next = json!({
+            "thread": original["thread"].clone(),
+            "messages": [{
+                "id": "next-user",
+                "role": "user",
+                "text": "one more",
+                "turnId": "turn-next",
+                "timelineOrder": 16,
+            }],
+            "activities": [],
+        });
+        write_local_transcript_tail(
+            &mut connection,
+            "claude",
+            &next,
+            sealed_state.generation,
+            false,
+            104,
+        )
+        .unwrap();
+        let final_value = read_local_transcript_full(&mut connection, "claude", "thread-a")
+            .unwrap()
+            .unwrap();
+        assert_eq!(final_value["messages"].as_array().unwrap().len(), 11);
+        assert_eq!(final_value["activities"].as_array().unwrap().len(), 5);
+        drop(connection);
+        std::fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn stale_tail_write_cannot_overwrite_a_newer_mutable_generation() {
+        let (directory, mut connection) = temporary_state_db("stale-tail-cas");
+        let original = transcript_fixture(3, 1_000);
+        let snapshot =
+            write_local_transcript_snapshot(&mut connection, "cursor", &original, 100).unwrap();
+        let newer = json!({
+            "thread": original["thread"].clone(),
+            "cursorSessionId": "new-session",
+            "messages": [{
+                "id": "newer",
+                "role": "assistant",
+                "text": "newer value",
+                "turnId": "turn-new",
+                "timelineOrder": 10,
+            }],
+            "activities": [],
+        });
+        let stale = json!({
+            "thread": original["thread"].clone(),
+            "cursorSessionId": "old-session",
+            "messages": [{
+                "id": "stale",
+                "role": "assistant",
+                "text": "stale value",
+                "turnId": "turn-new",
+                "timelineOrder": 10,
+            }],
+            "activities": [],
+        });
+        write_local_transcript_tail(
+            &mut connection,
+            "cursor",
+            &newer,
+            snapshot.generation,
+            false,
+            101,
+        )
+        .unwrap();
+
+        let error = write_local_transcript_tail(
+            &mut connection,
+            "cursor",
+            &stale,
+            snapshot.generation,
+            false,
+            102,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("stale"));
+        let restored = read_local_transcript_full(&mut connection, "cursor", "thread-a")
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored["cursorSessionId"], "new-session");
+        assert!(restored["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|message| message["id"] == "newer"));
+        assert!(!restored["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|message| message["id"] == "stale"));
+        drop(connection);
+        std::fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn tail_write_rejects_payloads_that_span_multiple_turns() {
+        let (directory, mut connection) = temporary_state_db("multi-turn-tail");
+        let original = transcript_fixture(2, 1_000);
+        let snapshot =
+            write_local_transcript_snapshot(&mut connection, "claude", &original, 100).unwrap();
+        let invalid = json!({
+            "thread": original["thread"].clone(),
+            "messages": [
+                { "id": "one", "role": "user", "text": "one", "turnId": "turn-one" },
+                { "id": "two", "role": "assistant", "text": "two", "turnId": "turn-two" }
+            ],
+            "activities": [],
+        });
+
+        let error = write_local_transcript_tail(
+            &mut connection,
+            "claude",
+            &invalid,
+            snapshot.generation,
+            false,
+            101,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("more than one turn"));
+        assert_eq!(
+            read_local_transcript_full(&mut connection, "claude", "thread-a").unwrap(),
+            Some(original)
+        );
+        drop(connection);
+        std::fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn full_snapshot_fallback_seals_an_existing_mutable_tail() {
+        let (directory, mut connection) = temporary_state_db("tail-snapshot-fallback");
+        let original = transcript_fixture(3, 1_000);
+        let snapshot =
+            write_local_transcript_snapshot(&mut connection, "claude", &original, 100).unwrap();
+        let tail = json!({
+            "thread": original["thread"].clone(),
+            "messages": [{
+                "id": "tail",
+                "role": "assistant",
+                "text": "tail",
+                "turnId": "turn-tail",
+                "timelineOrder": 10,
+            }],
+            "activities": [],
+        });
+        write_local_transcript_tail(
+            &mut connection,
+            "claude",
+            &tail,
+            snapshot.generation,
+            false,
+            101,
+        )
+        .unwrap();
+        let complete = read_local_transcript_full(&mut connection, "claude", "thread-a")
+            .unwrap()
+            .unwrap();
+
+        let fallback =
+            write_local_transcript_snapshot(&mut connection, "claude", &complete, 102).unwrap();
+        let state = read_local_transcript_write_state(&mut connection, "claude", "thread-a")
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(state.generation, fallback.generation);
+        assert_eq!(state.tail_seq, state.head_seq + 1);
+        drop(connection);
+        std::fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[test]
     fn newer_legacy_transcript_invalidates_old_page_cursors() {
         let (directory, mut connection) = temporary_state_db("stale-transcript-cursor");
         insert_legacy_transcript(
@@ -1458,6 +2004,9 @@ mod tests {
                  ) + (
                    SELECT COUNT(*) FROM local_transcript_chunks
                    WHERE provider = 'claude' AND thread_id = 'thread-a'
+                 ) + (
+                   SELECT COUNT(*) FROM local_transcript_tail_state
+                   WHERE provider = 'claude' AND thread_id = 'thread-a'
                  )",
                 [],
                 |row| row.get(0),
@@ -1495,8 +2044,13 @@ mod tests {
         );
         let retained: i64 = connection
             .query_row(
-                "SELECT COUNT(*) FROM local_transcript_meta
-                 WHERE provider = 'cursor' AND thread_id = 'thread-a'",
+                "SELECT (
+                   SELECT COUNT(*) FROM local_transcript_meta
+                   WHERE provider = 'cursor' AND thread_id = 'thread-a'
+                 ) + (
+                   SELECT COUNT(*) FROM local_transcript_tail_state
+                   WHERE provider = 'cursor' AND thread_id = 'thread-a'
+                 )",
                 [],
                 |row| row.get(0),
             )
