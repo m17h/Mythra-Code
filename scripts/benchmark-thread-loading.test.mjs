@@ -48,9 +48,9 @@ describe("thread loading benchmark", () => {
 
   it("reports percentile and 40 KiB regressions from projected initial bytes", () => {
     const summary = summarizeMeasurements([
-      { threadId: "small", initialProjectedBytes: 1_000, initialRawResultBytes: 2_000, rolloutBytes: 100_000 },
-      { threadId: "middle", initialProjectedBytes: 10_000, initialRawResultBytes: 12_000, rolloutBytes: 200_000 },
-      { threadId: "large", initialProjectedBytes: 50_000, initialRawResultBytes: 60_000, rolloutBytes: 300_000 },
+      { threadId: "small", initialProjectedBytes: 1_000, initialRawResultBytes: 2_000, rolloutBytes: 100_000, initialLoadMs: 10, warmLoadMs: 4 },
+      { threadId: "middle", initialProjectedBytes: 10_000, initialRawResultBytes: 12_000, rolloutBytes: 200_000, initialLoadMs: 20, warmLoadMs: 5 },
+      { threadId: "large", initialProjectedBytes: 50_000, initialRawResultBytes: 60_000, rolloutBytes: 300_000, initialLoadMs: 30, warmLoadMs: 6 },
     ]);
 
     expect(summary).toMatchObject({
@@ -61,6 +61,12 @@ describe("thread loading benchmark", () => {
       maximumProjected: { threadId: "large", initialProjectedBytes: 50_000 },
       maximumRawResult: { threadId: "large", initialRawResultBytes: 60_000 },
       largestRollout: { threadId: "large", rolloutBytes: 300_000 },
+      p50InitialLoadMs: 20,
+      p95InitialLoadMs: 20,
+      maximumInitialLoad: { threadId: "large", initialLoadMs: 30 },
+      p50WarmLoadMs: 5,
+      p95WarmLoadMs: 5,
+      maximumWarmLoad: { threadId: "large", warmLoadMs: 6 },
       threadsOver40KiB: 1,
     });
   });

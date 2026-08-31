@@ -7,7 +7,7 @@ use std::{
     process::Stdio,
     sync::{
         atomic::{AtomicBool, AtomicI64, Ordering},
-        Arc,
+        Arc, RwLock,
     },
     time::UNIX_EPOCH,
 };
@@ -108,8 +108,47 @@ struct AppServer {
     /// `codex_respond` consults it so a response can never be sent to a
     /// different (respawned) server than the one that asked.
     server_requests: Arc<Mutex<HashSet<String>>>,
+    /// Threads successfully loaded into this exact app-server process. This
+    /// avoids pessimistically restarting a fresh runtime merely because the
+    /// renderer has no durable capability record for an older thread.
+    loaded_threads: RwLock<HashSet<String>>,
     openrouter_proxy_url: Option<String>,
     openrouter_proxy_task: Option<tokio::task::JoinHandle<()>>,
+}
+
+fn successfully_loaded_thread_ids(
+    method: &str,
+    source_thread_id: Option<&str>,
+    result: &Value,
+) -> HashSet<String> {
+    let mut loaded = HashSet::new();
+    if matches!(
+        method,
+        "thread/start" | "thread/resume" | "thread/fork" | "thread/rollback"
+    ) {
+        if let Some(thread_id) = result
+            .get("thread")
+            .and_then(|thread| thread.get("id"))
+            .and_then(Value::as_str)
+        {
+            loaded.insert(thread_id.to_string());
+        }
+    }
+    if matches!(
+        method,
+        "thread/fork"
+            | "thread/rollback"
+            | "thread/compact/start"
+            | "review/start"
+            | "turn/start"
+            | "turn/steer"
+            | "turn/interrupt"
+    ) {
+        if let Some(thread_id) = source_thread_id {
+            loaded.insert(thread_id.to_string());
+        }
+    }
+    loaded
 }
 
 #[derive(Default)]
@@ -378,6 +417,39 @@ struct CodexRuntimeStatus {
 }
 
 impl AppServer {
+    fn track_successful_request(
+        &self,
+        method: &str,
+        source_thread_id: Option<&str>,
+        result: &Value,
+    ) {
+        {
+            let mut loaded = self
+                .loaded_threads
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // Fork returns the new thread, but successfully forking also proves
+            // the source is resident. Over-reporting costs a guarded restart;
+            // under-reporting can silently ignore startup-only configuration.
+            loaded.extend(successfully_loaded_thread_ids(method, source_thread_id, result));
+        }
+        if method == "thread/delete" {
+            if let Some(thread_id) = source_thread_id {
+                self.loaded_threads
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(thread_id);
+            }
+        }
+    }
+
+    fn has_loaded_thread(&self, thread_id: &str) -> bool {
+        self.loaded_threads
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(thread_id)
+    }
+
     async fn request(&self, method: &str, params: Value) -> Result<Value, String> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (sender, receiver) = oneshot::channel();
@@ -393,6 +465,10 @@ impl AppServer {
             Duration::from_secs(120)
         };
 
+        let tracking_thread_id = params
+            .get("threadId")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
         let message = json!({ "method": method, "id": id, "params": params });
         let mut stdin = self.stdin.lock().await;
         if let Err(error) = stdin.write_all(format!("{}\n", message).as_bytes()).await {
@@ -409,7 +485,12 @@ impl AppServer {
         drop(stdin);
 
         match timeout(request_timeout, receiver).await {
-            Ok(Ok(result)) => result,
+            Ok(Ok(result)) => {
+                if let Ok(value) = &result {
+                    self.track_successful_request(method, tracking_thread_id.as_deref(), value);
+                }
+                result
+            }
             Ok(Err(_)) => Err("Codex App Server stopped before replying".into()),
             Err(_) => {
                 self.pending.lock().await.remove(&id);
@@ -3157,6 +3238,7 @@ async fn spawn_server(app: &AppHandle, state: &RuntimeState) -> Result<Arc<AppSe
         next_id: AtomicI64::new(1),
         alive,
         server_requests,
+        loaded_threads: RwLock::new(HashSet::new()),
         openrouter_proxy_url,
         openrouter_proxy_task,
     });
@@ -3839,6 +3921,32 @@ async fn runtime_instance(
     Ok(ensure_server(&app, &state).await?.instance.clone())
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeThreadState {
+    instance: String,
+    loaded: bool,
+}
+
+/// Whether this exact managed app-server process is already holding a thread.
+/// `thread/read` deliberately does not count: it reads durable history without
+/// installing startup-only configuration into the live runtime.
+#[tauri::command]
+async fn runtime_thread_state(
+    app: AppHandle,
+    state: State<'_, RuntimeState>,
+    thread_id: String,
+) -> Result<RuntimeThreadState, String> {
+    if thread_id.trim().is_empty() || thread_id.len() > 256 {
+        return Err("A runtime thread identity is required.".into());
+    }
+    let server = ensure_server(&app, &state).await?;
+    Ok(RuntimeThreadState {
+        instance: server.instance.clone(),
+        loaded: server.has_loaded_thread(&thread_id),
+    })
+}
+
 #[tauri::command]
 async fn restart_runtime(app: AppHandle, state: State<'_, RuntimeState>) -> Result<(), String> {
     if let Some(server) = state.server.lock().await.take() {
@@ -4029,6 +4137,7 @@ pub fn run() {
             child_agent_respond,
             child_agent_finished,
             runtime_instance,
+            runtime_thread_state,
             restart_runtime
         ])
         .build(tauri::generate_context!())

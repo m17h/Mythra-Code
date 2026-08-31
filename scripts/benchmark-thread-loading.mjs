@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { cp, mkdtemp, readdir, rm, stat } from "node:fs/promises";
+import { access, cp, mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -10,17 +10,21 @@ export const MAX_THREAD_PREVIEW_CHARACTERS = 320;
 const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
 function parseArguments(argv) {
-  const options = { codexHome: null, codexBin: process.env.MYTHRA_CODEX_BIN || "codex", turnLimit: DEFAULT_INITIAL_TURN_LIMIT };
+  const options = { codexHome: null, codexBin: process.env.MYTHRA_CODEX_BIN || "codex", metadataMethod: "thread/read", turnLimit: DEFAULT_INITIAL_TURN_LIMIT };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === "--codex-home") options.codexHome = argv[index += 1] ?? null;
     else if (argument === "--codex-bin") options.codexBin = argv[index += 1] ?? options.codexBin;
+    else if (argument === "--metadata-method") options.metadataMethod = argv[index += 1] ?? options.metadataMethod;
     else if (argument === "--turn-limit") options.turnLimit = Number(argv[index += 1]);
     else if (argument === "--help") options.help = true;
     else throw new Error(`Unknown argument: ${argument}`);
   }
   if (!Number.isInteger(options.turnLimit) || options.turnLimit < 1 || options.turnLimit > 100) {
     throw new Error("--turn-limit must be an integer from 1 to 100");
+  }
+  if (options.metadataMethod !== "thread/resume" && options.metadataMethod !== "thread/read") {
+    throw new Error("--metadata-method must be thread/resume or thread/read");
   }
   return options;
 }
@@ -29,6 +33,25 @@ function defaultCodexHome() {
   if (process.platform === "darwin") return join(homedir(), "Library", "Application Support", "com.kiwi.harness", "codex-home");
   if (process.platform === "win32" && process.env.APPDATA) return join(process.env.APPDATA, "com.kiwi.harness", "codex-home");
   return null;
+}
+
+async function resolvedCodexBinary(configured) {
+  if (process.platform !== "win32" || configured !== "codex") return configured;
+  const architecture = process.arch === "arm64" ? "arm64" : "x64";
+  const target = architecture === "arm64" ? "aarch64-pc-windows-msvc" : "x86_64-pc-windows-msvc";
+  const candidates = [
+    process.env.APPDATA && join(
+      process.env.APPDATA,
+      "npm", "node_modules", "@openai", "codex", "node_modules",
+      `@openai/codex-win32-${architecture}`,
+      "vendor", target, "bin", "codex.exe",
+    ),
+    process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA, "OpenAI", "Codex", "bin", "codex.exe"),
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    if (await access(candidate).then(() => true).catch(() => false)) return candidate;
+  }
+  return configured;
 }
 
 async function rolloutFiles(directory) {
@@ -77,11 +100,17 @@ function percentile(sorted, fraction) {
   return sorted[Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * fraction))];
 }
 
+function elapsedMilliseconds(startedAt) {
+  return Math.round((performance.now() - startedAt) * 100) / 100;
+}
+
 export function summarizeMeasurements(measurements) {
   const sorted = [...measurements].sort((left, right) => left.initialProjectedBytes - right.initialProjectedBytes);
   const maximum = sorted.at(-1) ?? null;
   const byRawResultBytes = [...measurements].sort((left, right) => left.initialRawResultBytes - right.initialRawResultBytes);
   const byRolloutBytes = [...measurements].sort((left, right) => left.rolloutBytes - right.rolloutBytes);
+  const byInitialLoad = [...measurements].sort((left, right) => left.initialLoadMs - right.initialLoadMs);
+  const byWarmLoad = [...measurements].sort((left, right) => left.warmLoadMs - right.warmLoadMs);
   return {
     measuredThreads: sorted.length,
     p50InitialProjectedBytes: percentile(sorted, 0.5)?.initialProjectedBytes ?? null,
@@ -90,6 +119,12 @@ export function summarizeMeasurements(measurements) {
     p95InitialRawResultBytes: percentile(byRawResultBytes, 0.95)?.initialRawResultBytes ?? null,
     maximumRawResult: byRawResultBytes.at(-1) ?? null,
     largestRollout: byRolloutBytes.at(-1) ?? null,
+    p50InitialLoadMs: percentile(byInitialLoad, 0.5)?.initialLoadMs ?? null,
+    p95InitialLoadMs: percentile(byInitialLoad, 0.95)?.initialLoadMs ?? null,
+    maximumInitialLoad: byInitialLoad.at(-1) ?? null,
+    p50WarmLoadMs: percentile(byWarmLoad, 0.5)?.warmLoadMs ?? null,
+    p95WarmLoadMs: percentile(byWarmLoad, 0.95)?.warmLoadMs ?? null,
+    maximumWarmLoad: byWarmLoad.at(-1) ?? null,
     threadsOver40KiB: sorted.filter((row) => row.initialProjectedBytes > 40 * 1024).length,
   };
 }
@@ -194,20 +229,30 @@ async function benchmark(options) {
   try {
     scratchHome = await mkdtemp(join(tmpdir(), "mythra-thread-benchmark-"));
     await cp(sourceSessions, join(scratchHome, "sessions"), { recursive: true });
-    appServer = startAppServer(options.codexBin, scratchHome);
+    const codexBinary = await resolvedCodexBinary(options.codexBin);
+    const startupStartedAt = performance.now();
+    appServer = startAppServer(codexBinary, scratchHome);
     throwRpcError(await appServer.request("initialize", {
       clientInfo: { name: "mythra-thread-benchmark", title: "Mythra Thread Benchmark", version: "1" },
       capabilities: { experimentalApi: true },
     }));
     appServer.child.stdin.write(`${JSON.stringify({ method: "initialized", params: {} })}\n`);
+    const startupMs = elapsedMilliseconds(startupStartedAt);
 
     const files = await rolloutFiles(join(scratchHome, "sessions"));
     for (const rolloutPath of files) {
       const threadId = threadIdFromRollout(rolloutPath);
       if (!threadId) continue;
       try {
-        const resumeResponse = await appServer.request("thread/resume", { threadId, path: rolloutPath, excludeTurns: true });
+        const metadataParams = options.metadataMethod === "thread/read"
+          ? { threadId, includeTurns: false }
+          : { threadId, path: rolloutPath, excludeTurns: true };
+        const initialStartedAt = performance.now();
+        const metadataStartedAt = performance.now();
+        const resumeResponse = await appServer.request(options.metadataMethod, metadataParams);
         const resume = throwRpcError(resumeResponse);
+        const metadataMs = elapsedMilliseconds(metadataStartedAt);
+        const historyStartedAt = performance.now();
         const pageResponse = await appServer.request("thread/turns/list", {
           threadId,
           limit: options.turnLimit,
@@ -215,7 +260,22 @@ async function benchmark(options) {
           itemsView: "summary",
         });
         const page = throwRpcError(pageResponse);
-        const projectedResume = projectThreadPreviews("thread/resume", resume);
+        const historyMs = elapsedMilliseconds(historyStartedAt);
+        const initialLoadMs = elapsedMilliseconds(initialStartedAt);
+        const warmStartedAt = performance.now();
+        const warmMetadataStartedAt = performance.now();
+        throwRpcError(await appServer.request(options.metadataMethod, metadataParams));
+        const warmMetadataMs = elapsedMilliseconds(warmMetadataStartedAt);
+        const warmHistoryStartedAt = performance.now();
+        throwRpcError(await appServer.request("thread/turns/list", {
+          threadId,
+          limit: options.turnLimit,
+          sortDirection: "desc",
+          itemsView: "summary",
+        }));
+        const warmHistoryMs = elapsedMilliseconds(warmHistoryStartedAt);
+        const warmLoadMs = elapsedMilliseconds(warmStartedAt);
+        const projectedResume = projectThreadPreviews(options.metadataMethod, resume);
         measurements.push({
           threadId,
           rolloutBytes: (await stat(rolloutPath)).size,
@@ -226,6 +286,12 @@ async function benchmark(options) {
           initialProjectedBytes: jsonBytes(projectedResume) + jsonBytes(page),
           metadataProjectedBytes: jsonBytes(projectedResume),
           firstPageBytes: jsonBytes(page),
+          metadataMs,
+          historyMs,
+          initialLoadMs,
+          warmMetadataMs,
+          warmHistoryMs,
+          warmLoadMs,
         });
       } catch (error) {
         const message = String(error?.message || error);
@@ -250,8 +316,10 @@ async function benchmark(options) {
     const projectedList = projectThreadPreviews("thread/list", list);
     return {
       schemaVersion: 1,
+      metadataMethod: options.metadataMethod,
       turnLimit: options.turnLimit,
       previewCharacterLimit: MAX_THREAD_PREVIEW_CHARACTERS,
+      startupMs,
       ...summarizeMeasurements(measurements),
       skipped,
       threadList: {
@@ -280,7 +348,7 @@ async function benchmark(options) {
 async function main() {
   const options = parseArguments(process.argv.slice(2));
   if (options.help) {
-    console.log("Usage: npm run benchmark:threads -- [--codex-home PATH] [--codex-bin PATH] [--turn-limit N]");
+    console.log("Usage: npm run benchmark:threads -- [--codex-home PATH] [--codex-bin PATH] [--metadata-method thread/resume|thread/read] [--turn-limit N]");
     return;
   }
   console.log(JSON.stringify(await benchmark(options), null, 2));

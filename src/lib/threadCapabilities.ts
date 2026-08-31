@@ -98,14 +98,19 @@ export function planSubagentCapabilities(
   threadId: string,
   runtimeInstance: string,
   signature: string,
+  runtimeLoaded = true,
 ): SubagentCapabilityPlan {
   const record = applied.get(threadId);
+  // A durable transcript can be displayed without loading it into app-server.
+  // A fresh runtime therefore needs one resume, never a restart, regardless of
+  // what an older process was configured with.
+  if (!runtimeLoaded) return { restartRuntime: false, resume: true };
   // A record from an earlier app-server describes a process that no longer
-  // exists. Nothing is loaded in the replacement process, so this durable
-  // thread must be resumed there before turn/start — even when it wants the
-  // neutral config. Resuming applies the requested config outright.
+  // exists. If this replacement nevertheless loaded the thread through a
+  // different renderer path, its startup config is unknown and must be
+  // replaced rather than silently ignored by another resume.
   if (record && record.instance !== runtimeInstance) {
-    return { restartRuntime: false, resume: true };
+    return { restartRuntime: true, resume: true };
   }
   // An unknown pre-feature thread may already be loaded in this long-lived
   // process. A resume alone can silently ignore non-neutral startup config,

@@ -113,6 +113,16 @@ export async function runtimeInstanceId(): Promise<string> {
   return invoke<string>("runtime_instance");
 }
 
+export interface RuntimeThreadState {
+  instance: string;
+  /** True only when the current app-server process has loaded this thread. */
+  loaded: boolean;
+}
+
+export async function runtimeThreadState(threadId: string): Promise<RuntimeThreadState> {
+  return invoke<RuntimeThreadState>("runtime_thread_state", { threadId });
+}
+
 export async function auditEvent(
   kind: string,
   payload: JsonObject = {},

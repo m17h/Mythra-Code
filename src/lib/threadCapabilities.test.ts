@@ -68,12 +68,21 @@ describe("planSubagentCapabilities", () => {
     // A restarted runtime has nothing loaded, so config applies on resume and
     // interrupting it again would cost the user a turn for no reason.
     recordSubagentCapabilities("thread-1", RUNTIME, ON);
-    expect(planSubagentCapabilities("thread-1", RESTARTED, BRIDGED)).toEqual(RESUME_ONLY);
+    expect(planSubagentCapabilities("thread-1", RESTARTED, BRIDGED, false)).toEqual(RESUME_ONLY);
   });
 
   it("resumes a neutral thread after a restart so the replacement runtime loads it", () => {
     recordSubagentCapabilities("thread-1", RUNTIME, BRIDGED);
-    expect(planSubagentCapabilities("thread-1", RESTARTED, OFF)).toEqual(RESUME_ONLY);
+    expect(planSubagentCapabilities("thread-1", RESTARTED, OFF, false)).toEqual(RESUME_ONLY);
+  });
+
+  it("resumes an unknown thread without restarting a runtime that has not loaded it", () => {
+    expect(planSubagentCapabilities("thread-1", RUNTIME, BRIDGED, false)).toEqual(RESUME_ONLY);
+  });
+
+  it("refreshes a replacement runtime that already loaded the thread through another path", () => {
+    recordSubagentCapabilities("thread-1", RUNTIME, ON);
+    expect(planSubagentCapabilities("thread-1", RESTARTED, BRIDGED, true)).toEqual(REFRESH);
   });
 
   it("distinguishes a newly registered token file for the same policy", () => {
