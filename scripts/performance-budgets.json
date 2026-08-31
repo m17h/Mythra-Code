@@ -31,16 +31,16 @@
   ],
   "profiles": {
     "safari13-minified": {
-      "appEntryRawBytes": 369718,
-      "startupJsRawBytes": 687361,
+      "appEntryRawBytes": 369664,
+      "startupJsRawBytes": 687307,
       "startupCssRawBytes": 336184,
-      "totalJsRawBytes": 1412702
+      "totalJsRawBytes": 1412648
     },
     "chrome105-minified": {
-      "appEntryRawBytes": 350457,
-      "startupJsRawBytes": 663376,
+      "appEntryRawBytes": 350403,
+      "startupJsRawBytes": 663322,
       "startupCssRawBytes": 334097,
-      "totalJsRawBytes": 1379684
+      "totalJsRawBytes": 1379630
     }
   }
 }
