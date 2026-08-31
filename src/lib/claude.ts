@@ -247,8 +247,8 @@ function transcriptKey(threadId: string): string {
 export async function saveClaudeTranscript(
   transcript: ClaudeTranscript,
 ): Promise<void> {
-  await invoke("state_write", {
-    key: transcriptKey(transcript.thread.id),
+  await invoke("local_transcript_snapshot_write", {
+    provider: "claude",
     value: transcript,
   });
 }
@@ -256,8 +256,9 @@ export async function saveClaudeTranscript(
 export async function loadClaudeTranscript(
   threadId: string,
 ): Promise<ClaudeTranscript | null> {
-  return invoke<ClaudeTranscript | null>("state_read", {
-    key: transcriptKey(threadId),
+  return invoke<ClaudeTranscript | null>("local_transcript_full_read", {
+    provider: "claude",
+    threadId,
   });
 }
 
