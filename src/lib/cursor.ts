@@ -112,11 +112,11 @@ function transcriptKey(threadId: string): string {
 }
 
 export function saveCursorTranscript(transcript: CursorTranscript): Promise<void> {
-  return invoke("state_write", { key: transcriptKey(transcript.thread.id), value: transcript });
+  return invoke("local_transcript_snapshot_write", { provider: "cursor", value: transcript });
 }
 
 export function loadCursorTranscript(threadId: string): Promise<CursorTranscript | null> {
-  return invoke("state_read", { key: transcriptKey(threadId) });
+  return invoke("local_transcript_full_read", { provider: "cursor", threadId });
 }
 
 export async function deleteCursorTranscript(threadId: string): Promise<void> {

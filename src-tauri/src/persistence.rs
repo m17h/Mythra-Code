@@ -266,6 +266,15 @@ pub(super) struct LocalTranscriptPage {
     legacy_migration_failed: bool,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct LocalTranscriptSnapshotWrite {
+    generation: i64,
+    rewritten_chunks: usize,
+    total_chunks: usize,
+    compatibility_snapshot_created: bool,
+}
+
 fn local_transcript_key(provider: &str, thread_id: &str) -> Result<String, String> {
     if thread_id.trim().is_empty() {
         return Err("A local transcript requires a thread id".to_string());
@@ -682,6 +691,234 @@ pub(super) async fn local_transcript_page_read(
     .map_err(|error| format!("Local transcript page task failed: {error}"))?
 }
 
+fn read_local_transcript_full(
+    connection: &mut Connection,
+    provider: &str,
+    thread_id: &str,
+) -> Result<Option<Value>, String> {
+    let mut cursor = None;
+    let mut pages = Vec::new();
+    loop {
+        let Some(page) = read_local_transcript_page(
+            connection,
+            provider,
+            thread_id,
+            cursor.as_deref(),
+            Some(LOCAL_TRANSCRIPT_PAGE_MAX_BYTES),
+        )?
+        else {
+            return Ok(None);
+        };
+        cursor = page.next_cursor.clone();
+        pages.push(page);
+        if cursor.is_none() {
+            break;
+        }
+    }
+    pages.reverse();
+    let newest = pages
+        .last()
+        .ok_or_else(|| "Local transcript has no readable pages".to_string())?;
+    let thread = newest.thread.clone();
+    let cursor_session_id = newest.cursor_session_id.clone();
+    let mut messages = Vec::new();
+    let mut activities = Vec::new();
+    for page in pages {
+        messages.extend(page.messages);
+        activities.extend(page.activities);
+    }
+    let mut transcript = serde_json::Map::new();
+    transcript.insert("thread".to_string(), thread);
+    if let Some(cursor_session_id) = cursor_session_id {
+        transcript.insert(
+            "cursorSessionId".to_string(),
+            Value::String(cursor_session_id),
+        );
+    }
+    transcript.insert("messages".to_string(), Value::Array(messages));
+    transcript.insert("activities".to_string(), Value::Array(activities));
+    Ok(Some(Value::Object(transcript)))
+}
+
+#[tauri::command]
+pub(super) async fn local_transcript_full_read(
+    app: AppHandle,
+    provider: String,
+    thread_id: String,
+) -> Result<Option<Value>, String> {
+    let connection = shared_state_db(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut connection = lock_state_db(&connection)?;
+        read_local_transcript_full(&mut connection, &provider, &thread_id)
+    })
+    .await
+    .map_err(|error| format!("Local transcript full read task failed: {error}"))?
+}
+
+fn write_local_transcript_snapshot(
+    connection: &mut Connection,
+    provider: &str,
+    value: &Value,
+    now: i64,
+) -> Result<LocalTranscriptSnapshotWrite, String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "Local transcript snapshot is not an object".to_string())?;
+    let thread = object
+        .get("thread")
+        .cloned()
+        .ok_or_else(|| "Local transcript snapshot has no thread metadata".to_string())?;
+    let thread_id = thread
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|thread_id| !thread_id.trim().is_empty())
+        .ok_or_else(|| "Local transcript snapshot has no thread id".to_string())?;
+    let legacy_key = local_transcript_key(provider, thread_id)?;
+    let cursor_session_id = object
+        .get("cursorSessionId")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let chunks = local_transcript_chunks(value)?;
+    let thread_json = serde_json::to_string(&thread)
+        .map_err(|error| format!("Could not encode local thread metadata: {error}"))?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("Could not begin local transcript snapshot: {error}"))?;
+
+    // Keep exactly one whole-value compatibility snapshot. Older builds can
+    // still open a thread after downgrade, but routine saves in this build no
+    // longer rewrite the multi-megabyte app_state row.
+    let existing_legacy_updated_at = transaction
+        .query_row(
+            "SELECT updated_at FROM app_state WHERE key = ?1",
+            params![legacy_key],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(|error| format!("Could not inspect compatibility transcript: {error}"))?;
+    let compatibility_snapshot_created = existing_legacy_updated_at.is_none();
+    let legacy_updated_at = if let Some(updated_at) = existing_legacy_updated_at {
+        updated_at
+    } else {
+        let snapshot_json = serde_json::to_string(value)
+            .map_err(|error| format!("Could not encode compatibility transcript: {error}"))?;
+        transaction
+            .execute(
+                "INSERT INTO app_state(key, value, updated_at) VALUES (?1, ?2, ?3)",
+                params![legacy_key, snapshot_json, now],
+            )
+            .map_err(|error| format!("Could not create compatibility transcript: {error}"))?;
+        now
+    };
+
+    let prior_meta = transaction
+        .query_row(
+            "SELECT generation FROM local_transcript_meta
+             WHERE provider = ?1 AND thread_id = ?2",
+            params![provider, thread_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(|error| format!("Could not inspect local transcript generation: {error}"))?;
+    let mut statement = transaction
+        .prepare(
+            "SELECT entries_json FROM local_transcript_chunks
+             WHERE provider = ?1 AND thread_id = ?2 ORDER BY seq ASC",
+        )
+        .map_err(|error| format!("Could not prepare local transcript comparison: {error}"))?;
+    let existing_chunks = statement
+        .query_map(params![provider, thread_id], |row| row.get::<_, String>(0))
+        .map_err(|error| format!("Could not compare local transcript chunks: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Could not read local transcript chunk: {error}"))?;
+    drop(statement);
+    let common_prefix = existing_chunks
+        .iter()
+        .zip(chunks.iter())
+        .take_while(|(existing, replacement)| existing == replacement)
+        .count();
+    let chunks_changed = existing_chunks != chunks;
+    let rewritten_chunks = if chunks_changed {
+        let affected_chunks = existing_chunks
+            .len()
+            .max(chunks.len())
+            .saturating_sub(common_prefix);
+        transaction
+            .execute(
+                "DELETE FROM local_transcript_chunks
+                 WHERE provider = ?1 AND thread_id = ?2 AND seq >= ?3",
+                params![provider, thread_id, common_prefix as i64],
+            )
+            .map_err(|error| format!("Could not replace local transcript suffix: {error}"))?;
+        for (seq, chunk) in chunks.iter().enumerate().skip(common_prefix) {
+            transaction
+                .execute(
+                    "INSERT INTO local_transcript_chunks(provider, thread_id, seq, entries_json, byte_len)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![provider, thread_id, seq as i64, chunk, chunk.len() as i64],
+                )
+                .map_err(|error| format!("Could not save local transcript suffix: {error}"))?;
+        }
+        affected_chunks
+    } else {
+        0
+    };
+    let generation = match prior_meta {
+        Some(generation) if !chunks_changed => generation,
+        Some(generation) => generation + 1,
+        None => 1,
+    };
+    transaction
+        .execute(
+            "INSERT INTO local_transcript_meta(
+               provider, thread_id, thread_json, cursor_session_id, head_seq,
+               generation, legacy_updated_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(provider, thread_id) DO UPDATE SET
+               thread_json = excluded.thread_json,
+               cursor_session_id = excluded.cursor_session_id,
+               head_seq = excluded.head_seq,
+               generation = excluded.generation,
+               legacy_updated_at = excluded.legacy_updated_at,
+               updated_at = MAX(excluded.updated_at, local_transcript_meta.updated_at + 1)",
+            params![
+                provider,
+                thread_id,
+                thread_json,
+                cursor_session_id,
+                chunks.len() as i64 - 1,
+                generation,
+                legacy_updated_at,
+                now,
+            ],
+        )
+        .map_err(|error| format!("Could not save local transcript metadata: {error}"))?;
+    transaction
+        .commit()
+        .map_err(|error| format!("Could not commit local transcript snapshot: {error}"))?;
+    Ok(LocalTranscriptSnapshotWrite {
+        generation,
+        rewritten_chunks,
+        total_chunks: chunks.len(),
+        compatibility_snapshot_created,
+    })
+}
+
+#[tauri::command]
+pub(super) async fn local_transcript_snapshot_write(
+    app: AppHandle,
+    provider: String,
+    value: Value,
+) -> Result<LocalTranscriptSnapshotWrite, String> {
+    let connection = shared_state_db(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut connection = lock_state_db(&connection)?;
+        write_local_transcript_snapshot(&mut connection, &provider, &value, unix_timestamp_ms())
+    })
+    .await
+    .map_err(|error| format!("Local transcript snapshot task failed: {error}"))?
+}
+
 #[tauri::command]
 pub(super) async fn state_read(app: AppHandle, key: String) -> Result<Option<Value>, String> {
     let connection = shared_state_db(&app)?;
@@ -950,6 +1187,159 @@ mod tests {
             legacy_count, 1,
             "downgrade-compatible legacy row remains intact"
         );
+        drop(connection);
+        std::fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn local_transcript_full_read_reassembles_every_page_losslessly() {
+        let (directory, mut connection) = temporary_state_db("full-transcript-read");
+        let fixture = transcript_fixture(80, 20_000);
+        insert_legacy_transcript(&connection, "cursor", "thread-a", &fixture, 100);
+
+        let restored = read_local_transcript_full(&mut connection, "cursor", "thread-a")
+            .expect("read full transcript")
+            .expect("transcript exists");
+
+        assert_eq!(restored, fixture);
+        let chunk_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM local_transcript_chunks
+                 WHERE provider = 'cursor' AND thread_id = 'thread-a'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            chunk_count > 1,
+            "fixture must exercise multiple backend pages"
+        );
+        drop(connection);
+        std::fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn snapshot_writes_only_changed_chunk_suffix_and_leaves_legacy_value_stale() {
+        let (directory, mut connection) = temporary_state_db("chunk-suffix-write");
+        let original = transcript_fixture(20, 4_000);
+        insert_legacy_transcript(&connection, "claude", "thread-a", &original, 100);
+        read_local_transcript_full(&mut connection, "claude", "thread-a")
+            .unwrap()
+            .unwrap();
+        let legacy_before: (String, i64) = connection
+            .query_row(
+                "SELECT value, updated_at FROM app_state
+                 WHERE key = 'kiwi.claudeThread.thread-a'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+
+        let unchanged =
+            write_local_transcript_snapshot(&mut connection, "claude", &original, 200).unwrap();
+        assert_eq!(unchanged.rewritten_chunks, 0);
+        let original_generation = unchanged.generation;
+
+        let mut extended = original.clone();
+        let messages = extended["messages"].as_array_mut().unwrap();
+        messages.push(json!({
+            "id": "user-new",
+            "role": "user",
+            "text": "new question",
+            "turnId": "turn-new",
+            "timelineOrder": 61,
+        }));
+        messages.push(json!({
+            "id": "assistant-new",
+            "role": "assistant",
+            "text": "new answer",
+            "turnId": "turn-new",
+            "timelineOrder": 62,
+        }));
+        let changed =
+            write_local_transcript_snapshot(&mut connection, "claude", &extended, 201).unwrap();
+
+        assert!(changed.rewritten_chunks > 0);
+        assert!(changed.rewritten_chunks < changed.total_chunks);
+        assert!(changed.generation > original_generation);
+        assert_eq!(
+            read_local_transcript_full(&mut connection, "claude", "thread-a")
+                .unwrap()
+                .unwrap(),
+            extended
+        );
+        let legacy_after: (String, i64) = connection
+            .query_row(
+                "SELECT value, updated_at FROM app_state
+                 WHERE key = 'kiwi.claudeThread.thread-a'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(legacy_after, legacy_before);
+        drop(connection);
+        std::fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn metadata_only_snapshot_updates_do_not_invalidate_page_cursors() {
+        let (directory, mut connection) = temporary_state_db("metadata-only-snapshot");
+        let original = transcript_fixture(8, 4_000);
+        let initial =
+            write_local_transcript_snapshot(&mut connection, "cursor", &original, 100).unwrap();
+        assert!(initial.compatibility_snapshot_created);
+        let page =
+            read_local_transcript_page(&mut connection, "cursor", "thread-a", None, Some(20_000))
+                .unwrap()
+                .unwrap();
+        let cursor = page.next_cursor.expect("older page cursor");
+        let mut renamed = original.clone();
+        renamed["thread"]["name"] = Value::String("Renamed".to_string());
+
+        let write =
+            write_local_transcript_snapshot(&mut connection, "cursor", &renamed, 101).unwrap();
+
+        assert_eq!(write.rewritten_chunks, 0);
+        assert_eq!(write.generation, initial.generation);
+        assert!(read_local_transcript_page(
+            &mut connection,
+            "cursor",
+            "thread-a",
+            Some(&cursor),
+            Some(20_000),
+        )
+        .is_ok());
+        assert_eq!(
+            read_local_transcript_full(&mut connection, "cursor", "thread-a").unwrap(),
+            Some(renamed)
+        );
+        drop(connection);
+        std::fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn old_build_write_after_chunk_snapshot_is_remigrated() {
+        let (directory, mut connection) = temporary_state_db("downgrade-round-trip");
+        let original = transcript_fixture(4, 1_000);
+        let first =
+            write_local_transcript_snapshot(&mut connection, "claude", &original, 100).unwrap();
+        let downgraded = transcript_fixture(6, 1_000);
+        insert_legacy_transcript(&connection, "claude", "thread-a", &downgraded, 101);
+
+        let restored = read_local_transcript_full(&mut connection, "claude", "thread-a")
+            .unwrap()
+            .unwrap();
+        let generation: i64 = connection
+            .query_row(
+                "SELECT generation FROM local_transcript_meta
+                 WHERE provider = 'claude' AND thread_id = 'thread-a'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(restored, downgraded);
+        assert!(generation > first.generation);
         drop(connection);
         std::fs::remove_dir_all(directory).expect("remove test directory");
     }
