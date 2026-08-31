@@ -8,6 +8,7 @@ import {
   beginThreadOpen,
   failThreadOpen,
   markThreadHistoryHydrated,
+  markThreadRenderMetrics,
   markThreadRuntimeReady,
   markThreadShellCommitted,
   markThreadTimelineCommitted,
@@ -20,6 +21,8 @@ const PROCESS_MEMORY = {
   managedProcessTreeResidentBytes: 30,
   managedProcessCount: 2,
   appServerResidentBytes: 20,
+  sampledAgeMs: 0,
+  cached: false,
 };
 
 function mockTimes(...values: number[]): void {
@@ -49,12 +52,13 @@ describe("performance diagnostics", () => {
       paginated: true,
       hasMore: true,
     });
-    markThreadTimelineCommitted("secret-thread-id", {
+    markThreadTimelineCommitted("secret-thread-id");
+    markThreadRuntimeReady("secret-thread-id");
+    markThreadRenderMetrics("secret-thread-id", {
       renderedRowCount: 6,
       timelineDomNodeCount: 80,
       totalDomNodeCount: 300,
     });
-    markThreadRuntimeReady("secret-thread-id");
 
     await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("audit_append", expect.anything()));
     const auditCall = invoke.mock.calls.find(([command]) => command === "audit_append");
@@ -71,7 +75,7 @@ describe("performance diagnostics", () => {
           historyHydrated: 10,
           timelineCommit: 15,
           runtimeReady: 20,
-          total: 25,
+          total: 20,
         },
         history: { projectedBytes: 12_345, messages: 4, activities: 3, paginated: true, hasMore: true },
         render: { rows: 6, timelineDomNodes: 80, totalDomNodes: 300 },
@@ -81,19 +85,21 @@ describe("performance diagnostics", () => {
     expect(JSON.stringify(auditCall?.[1])).not.toContain("secret-thread-id");
   });
 
-  it("ignores stale commits after a newer selection supersedes a sample", async () => {
+  it("records superseded opens without letting stale commits mutate the new sample", async () => {
     mockTimes(0, 10, 20, 30, 40, 50, 60);
     beginThreadOpen("old", "openai", false);
     beginThreadOpen("new", "claude", true);
     markThreadHistoryHydrated("old", { projectedBytes: 1, messageCount: 1, activityCount: 0, paginated: false, hasMore: false });
     markThreadRuntimeReady("old");
     markThreadHistoryHydrated("new", { projectedBytes: null, messageCount: 2, activityCount: 1, paginated: false, hasMore: false });
-    markThreadTimelineCommitted("new", { renderedRowCount: 2, timelineDomNodeCount: 10, totalDomNodeCount: 40 });
+    markThreadTimelineCommitted("new");
+    markThreadRenderMetrics("new", { renderedRowCount: 2, timelineDomNodeCount: 10, totalDomNodeCount: 40 });
     markThreadRuntimeReady("new");
 
-    await vi.waitFor(() => expect(invoke.mock.calls.filter(([command]) => command === "audit_append")).toHaveLength(1));
-    const payload = invoke.mock.calls.find(([command]) => command === "audit_append")?.[1]?.payload;
-    expect(payload).toMatchObject({ provider: "claude", warm: true, history: { projectedBytes: null } });
+    await vi.waitFor(() => expect(invoke.mock.calls.filter(([command]) => command === "audit_append")).toHaveLength(2));
+    const payloads = invoke.mock.calls.filter(([command]) => command === "audit_append").map((call) => call[1]?.payload);
+    expect(payloads).toContainEqual(expect.objectContaining({ provider: "openai", outcome: "superseded", phase: "newSelection" }));
+    expect(payloads).toContainEqual(expect.objectContaining({ provider: "claude", warm: true, outcome: "completed", history: { projectedBytes: null, messages: 2, activities: 1, paginated: false, hasMore: false } }));
   });
 
   it("records failures without waiting for timeline or runtime readiness", async () => {
@@ -112,5 +118,28 @@ describe("performance diagnostics", () => {
     const cyclic: { self?: unknown } = {};
     cyclic.self = cyclic;
     expect(projectedJsonBytes(cyclic)).toBeNull();
+  });
+
+  it("defers projected payload sizing until after critical timing is captured", async () => {
+    mockTimes(0, 5, 10, 15, 20, 25);
+    const measureProjectedBytes = vi.fn(() => 456);
+    beginThreadOpen("deferred", "openai", false);
+    markThreadHistoryHydrated("deferred", {
+      projectedBytes: null,
+      messageCount: 1,
+      activityCount: 0,
+      paginated: true,
+      hasMore: false,
+      measureProjectedBytes,
+    });
+    markThreadTimelineCommitted("deferred");
+    markThreadRenderMetrics("deferred", { renderedRowCount: 1, timelineDomNodeCount: 5, totalDomNodeCount: 20 });
+    markThreadRuntimeReady("deferred");
+    expect(measureProjectedBytes).not.toHaveBeenCalled();
+
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("audit_append", expect.anything()));
+    expect(measureProjectedBytes).toHaveBeenCalledOnce();
+    const payload = invoke.mock.calls.find(([command]) => command === "audit_append")?.[1]?.payload;
+    expect(payload.history.projectedBytes).toBe(456);
   });
 });

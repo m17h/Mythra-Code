@@ -5,6 +5,7 @@ import type { Provider } from "../types";
 const THREAD_OPEN_AUDIT_KIND = "performance.threadOpen";
 const MAX_LONG_TASKS = 200;
 const MAX_SAMPLE_AGE_MS = 60_000;
+const THREAD_OPEN_TIMEOUT_MS = 30_000;
 
 interface LongTaskSample {
   startTime: number;
@@ -16,6 +17,8 @@ export interface ProcessMemorySnapshot {
   managedProcessTreeResidentBytes: number | null;
   managedProcessCount: number;
   appServerResidentBytes: number | null;
+  sampledAgeMs: number;
+  cached: boolean;
 }
 
 interface ActiveThreadOpen {
@@ -33,8 +36,11 @@ interface ActiveThreadOpen {
   renderedRowCount?: number;
   timelineDomNodeCount?: number;
   totalDomNodeCount?: number;
+  renderMetricsCaptured: boolean;
   paginated?: boolean;
   hasMore?: boolean;
+  measureProjectedHistoryBytes?: () => number | null;
+  timeout?: ReturnType<typeof setTimeout>;
   finished: boolean;
 }
 
@@ -83,7 +89,13 @@ function javascriptHeapSnapshot(): Record<string, number | null> {
 }
 
 function longTaskSummary(startedAt: number, endedAt: number): Record<string, number | boolean> {
-  const matching = longTasks.filter((entry) => entry.startTime >= startedAt && entry.startTime <= endedAt);
+  if (longTaskObserver) {
+    for (const entry of longTaskObserver.takeRecords()) {
+      longTasks.push({ startTime: entry.startTime, duration: entry.duration });
+    }
+    if (longTasks.length > MAX_LONG_TASKS) longTasks.splice(0, longTasks.length - MAX_LONG_TASKS);
+  }
+  const matching = longTasks.filter((entry) => entry.startTime <= endedAt && entry.startTime + entry.duration >= startedAt);
   return {
     supported: Boolean(longTaskObserver),
     count: matching.length,
@@ -104,18 +116,30 @@ export function projectedJsonBytes(value: unknown): number | null {
 /**
  * Starts one privacy-safe navigation sample. Thread ids are used only to
  * reject stale commits in renderer memory and are never written to the audit
- * event. A newer selection supersedes the old sample without generating
- * diagnostic noise.
+ * event. A newer selection closes the old sample as superseded so slow or
+ * incomplete opens do not disappear from the dataset.
  */
 export function beginThreadOpen(threadId: string, provider: Provider, warm: boolean): void {
   startLongTaskObserver();
-  active = {
+  if (active && !active.finished) void finishThreadOpen(active, "superseded", "newSelection", false);
+  const sample: ActiveThreadOpen = {
     threadId,
     provider,
     warm,
     startedAt: performance.now(),
+    renderMetricsCaptured: false,
     finished: false,
   };
+  sample.timeout = setTimeout(() => {
+    if (active !== sample || sample.finished) return;
+    const phase = sample.timelineCommittedAt === undefined
+      ? "timelineCommitTimeout"
+      : sample.renderMetricsCaptured
+        ? "runtimeReadyTimeout"
+        : "renderMetricsTimeout";
+    void finishThreadOpen(sample, "abandoned", phase);
+  }, THREAD_OPEN_TIMEOUT_MS);
+  active = sample;
 }
 
 /** Called from a layout effect after the selected thread shell commits. */
@@ -131,6 +155,7 @@ export function markThreadHistoryHydrated(threadId: string, input: {
   activityCount: number;
   paginated: boolean;
   hasMore: boolean;
+  measureProjectedBytes?: () => number | null;
 }): void {
   if (!active || active.finished || active.threadId !== threadId) return;
   active.historyHydratedAt = performance.now();
@@ -139,6 +164,7 @@ export function markThreadHistoryHydrated(threadId: string, input: {
   active.activityCount = Math.max(0, Math.round(input.activityCount));
   active.paginated = input.paginated;
   active.hasMore = input.hasMore;
+  active.measureProjectedHistoryBytes = input.measureProjectedBytes;
 }
 
 /** Lets the React boundary avoid DOM queries after the one useful commit. */
@@ -152,14 +178,31 @@ export function threadOpenAwaitingTimeline(threadId: string): boolean {
   );
 }
 
-/** Called from the timeline layout effect after hydrated rows reach the DOM. */
-export function markThreadTimelineCommitted(threadId: string, input: {
+/** Stamps the hydrated commit before any diagnostic DOM traversal occurs. */
+export function markThreadTimelineCommitted(threadId: string): void {
+  if (!active || active.finished || active.threadId !== threadId || active.historyHydratedAt === undefined || active.timelineCommittedAt !== undefined) return;
+  active.timelineCommittedAt = performance.now();
+}
+
+/** Lets the React boundary collect render metrics after the measured commit. */
+export function threadOpenAwaitingRenderMetrics(threadId: string): boolean {
+  return Boolean(
+    active
+    && !active.finished
+    && active.threadId === threadId
+    && active.timelineCommittedAt !== undefined
+    && !active.renderMetricsCaptured,
+  );
+}
+
+/** Records DOM metrics in a later frame so counting cannot inflate commit time. */
+export function markThreadRenderMetrics(threadId: string, input: {
   renderedRowCount: number;
   timelineDomNodeCount: number;
   totalDomNodeCount: number;
 }): void {
-  if (!active || active.finished || active.threadId !== threadId || active.historyHydratedAt === undefined || active.timelineCommittedAt !== undefined) return;
-  active.timelineCommittedAt = performance.now();
+  if (!active || active.finished || active.threadId !== threadId || active.timelineCommittedAt === undefined || active.renderMetricsCaptured) return;
+  active.renderMetricsCaptured = true;
   active.renderedRowCount = Math.max(0, Math.round(input.renderedRowCount));
   active.timelineDomNodeCount = Math.max(0, Math.round(input.timelineDomNodeCount));
   active.totalDomNodeCount = Math.max(0, Math.round(input.totalDomNodeCount));
@@ -181,7 +224,7 @@ export function failThreadOpen(threadId: string, phase: string): void {
 
 async function finishIfComplete(): Promise<void> {
   const sample = active;
-  if (!sample || sample.finished || sample.timelineCommittedAt === undefined || sample.runtimeReadyAt === undefined) return;
+  if (!sample || sample.finished || sample.timelineCommittedAt === undefined || !sample.renderMetricsCaptured || sample.runtimeReadyAt === undefined) return;
   await finishThreadOpen(sample, "completed");
 }
 
@@ -193,14 +236,30 @@ async function processMemorySnapshot(): Promise<ProcessMemorySnapshot | null> {
   }
 }
 
-async function finishThreadOpen(sample: ActiveThreadOpen, outcome: "completed" | "error", phase?: string): Promise<void> {
+async function finishThreadOpen(
+  sample: ActiveThreadOpen,
+  outcome: "completed" | "error" | "abandoned" | "superseded",
+  phase?: string,
+  includeProcessMemory = true,
+): Promise<void> {
   if (sample.finished) return;
   sample.finished = true;
-  const endedAt = performance.now();
+  if (sample.timeout) clearTimeout(sample.timeout);
+  const finishedAt = performance.now();
+  const endedAt = outcome === "completed" && sample.timelineCommittedAt !== undefined && sample.runtimeReadyAt !== undefined
+    ? Math.max(sample.timelineCommittedAt, sample.runtimeReadyAt)
+    : finishedAt;
   if (active === sample) active = null;
-  // Native process enumeration is intentionally after every critical timing
-  // has been captured, and is never awaited by thread navigation.
-  const processMemory = await processMemorySnapshot();
+  // Yield until the measured browser task has ended. This lets long-task
+  // entries become observable and keeps all remaining diagnostics work out of
+  // the navigation task whose duration was just captured.
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  const processMemory = includeProcessMemory ? await processMemorySnapshot() : null;
+  if (outcome !== "superseded" && sample.projectedHistoryBytes === undefined && sample.measureProjectedHistoryBytes) {
+    const measured = sample.measureProjectedHistoryBytes();
+    if (measured !== null) sample.projectedHistoryBytes = Math.max(0, Math.round(measured));
+  }
+  sample.measureProjectedHistoryBytes = undefined;
   const payload = {
     schemaVersion: 1,
     provider: sample.provider,
@@ -237,6 +296,7 @@ async function finishThreadOpen(sample: ActiveThreadOpen, outcome: "completed" |
 
 /** Test-only reset; exported to keep observer/sample state deterministic. */
 export function resetPerformanceDiagnostics(): void {
+  if (active?.timeout) clearTimeout(active.timeout);
   active = null;
   longTasks.length = 0;
   longTaskObserver?.disconnect();

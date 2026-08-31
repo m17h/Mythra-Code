@@ -1687,7 +1687,7 @@ function RecentPerformancePanel({ active }: { active: boolean }) {
             ready === null ? null : `ready ${Math.round(ready)} ms`,
             bytes,
             resident ? `${resident} managed RSS` : null,
-            payload.outcome === "error" ? "failed" : null,
+            payload.outcome && payload.outcome !== "completed" ? String(payload.outcome) : null,
           ].filter(Boolean).join(" · ");
           return <div key={row.id}><small>{new Date(row.createdAt).toLocaleString()}</small><span>{summary}</span></div>;
         })}

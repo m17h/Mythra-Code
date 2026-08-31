@@ -44,7 +44,7 @@ import { PendingTurnStarts } from "./lib/pendingTurnStarts";
 import { useTaskStore, type QueuedTurn } from "./lib/taskStore";
 import { friendlyError } from "./lib/errors";
 import { recordError } from "./lib/errorLog";
-import { beginThreadOpen, failThreadOpen, markThreadHistoryHydrated, markThreadRuntimeReady, markThreadShellCommitted, markThreadTimelineCommitted, projectedJsonBytes, threadOpenAwaitingTimeline } from "./lib/performanceDiagnostics";
+import { beginThreadOpen, failThreadOpen, markThreadHistoryHydrated, markThreadRenderMetrics, markThreadRuntimeReady, markThreadShellCommitted, markThreadTimelineCommitted, projectedJsonBytes, threadOpenAwaitingRenderMetrics, threadOpenAwaitingTimeline } from "./lib/performanceDiagnostics";
 import {
   annotateThreadUsage,
   estimateUsageCost,
@@ -313,20 +313,37 @@ function PermissionIcon({ mode, size = 15 }: { mode: PermissionMode; size?: numb
  * Subscribes to the streaming timeline itself so per-frame delta flushes stop
  * at this component boundary instead of re-rendering the entire App.
  */
+function ThreadOpenCommitMarker({ threadId, commitToken }: { threadId: string; commitToken: number }) {
+  useLayoutEffect(() => {
+    markThreadShellCommitted(threadId);
+    if (threadOpenAwaitingTimeline(threadId)) markThreadTimelineCommitted(threadId);
+    if (!threadOpenAwaitingRenderMetrics(threadId)) return;
+    let metricsFrame: number | null = null;
+    const paintFrame = requestAnimationFrame(() => {
+      // A second animation frame guarantees the hydrated commit had an
+      // opportunity to paint before synchronous DOM counting begins.
+      metricsFrame = requestAnimationFrame(() => {
+        if (!threadOpenAwaitingRenderMetrics(threadId)) return;
+        const scroller = document.querySelector<HTMLElement>('[data-testid="timeline-scroller"]');
+        markThreadRenderMetrics(threadId, {
+          renderedRowCount: scroller?.querySelectorAll("[data-entry-index]").length ?? 0,
+          timelineDomNodeCount: scroller?.querySelectorAll("*").length ?? 0,
+          totalDomNodeCount: document.getElementsByTagName("*").length,
+        });
+      });
+    });
+    return () => {
+      cancelAnimationFrame(paintFrame);
+      if (metricsFrame !== null) cancelAnimationFrame(metricsFrame);
+    };
+  }, [commitToken, threadId]);
+  return null;
+}
+
 function ConversationTimeline({ threadId, running, thinkingLabel, approval, provider, searchQuery, searchActiveMatch, onSearchMatches, onEditMessage, onApprovalRespond, onLoadEarlier }: { threadId: string; running: boolean; thinkingLabel: string; approval: PendingApproval | null; provider: AppSettings["provider"]; searchQuery?: string; searchActiveMatch?: number; onSearchMatches?: (count: number) => void; onEditMessage: (text: string) => void; onApprovalRespond: (approval: PendingApproval, result: JsonObject) => void | Promise<void>; onLoadEarlier: () => void }) {
   const messages = useTaskStore((state) => state.tasks[threadId]?.messages ?? EMPTY_MESSAGES);
   const activities = useTaskStore((state) => state.tasks[threadId]?.activities ?? EMPTY_ACTIVITIES);
   const history = useTaskStore((state) => state.tasks[threadId]?.history);
-  useLayoutEffect(() => {
-    markThreadShellCommitted(threadId);
-    if (!threadOpenAwaitingTimeline(threadId)) return;
-    const scroller = document.querySelector<HTMLElement>('[data-testid="timeline-scroller"]');
-    markThreadTimelineCommitted(threadId, {
-      renderedRowCount: scroller?.querySelectorAll("[data-entry-index]").length ?? 0,
-      timelineDomNodeCount: scroller?.querySelectorAll("*").length ?? 0,
-      totalDomNodeCount: document.getElementsByTagName("*").length,
-    });
-  }, [activities, history, messages, threadId]);
   // A thread change must create a fresh virtual scroller so its initial
   // position is applied to the newly selected conversation.
   return <ChatTimeline key={threadId} messages={messages} activities={activities} running={running} thinkingLabel={thinkingLabel} approval={approval} provider={provider} history={history} onLoadEarlier={onLoadEarlier} searchQuery={searchQuery} searchActiveMatch={searchActiveMatch} onSearchMatches={onSearchMatches} onEditMessage={onEditMessage} onApprovalRespond={onApprovalRespond} />;
@@ -340,6 +357,7 @@ export default function App() {
   const [chatWorkspacePath, setChatWorkspacePath] = useState("");
   const [threads, setThreads] = useState<Thread[]>([]);
   const [activeThread, setActiveThread] = useState<Thread | null>(null);
+  const [threadOpenCommitToken, setThreadOpenCommitToken] = useState(0);
   // True only while a send with no active thread yet (a brand-new draft) is
   // creating its thread. Once a thread exists, its own task status carries
   // the starting/running state — never a global flag, so a start in one
@@ -2913,6 +2931,7 @@ export default function App() {
           paginated: false,
           hasMore: false,
         });
+        setThreadOpenCommitToken(requestId);
         markThreadRuntimeReady(resolvedThread.id);
         setStatus("Ready");
         return;
@@ -2939,6 +2958,7 @@ export default function App() {
           paginated: false,
           hasMore: false,
         });
+        setThreadOpenCommitToken(requestId);
         markThreadRuntimeReady(resolvedThread.id);
         setStatus("Ready");
         return;
@@ -3014,12 +3034,14 @@ export default function App() {
       useTaskStore.getState().hydrateTask(loaded.thread.id, history.messages, history.activities, executionPath, loaded.history);
       useTaskStore.getState().setActiveThread(loaded.thread.id);
       markThreadHistoryHydrated(loaded.thread.id, {
-        projectedBytes: projectedJsonBytes({ thread: loaded.thread, turns: loaded.turns }),
+        projectedBytes: null,
         messageCount: history.messages.length,
         activityCount: history.activities.length,
         paginated: loaded.history.paginated,
         hasMore: loaded.history.hasMore,
+        measureProjectedBytes: () => projectedJsonBytes({ thread: loaded.thread, turns: loaded.turns }),
       });
+      setThreadOpenCommitToken(requestId);
       setStatus("Preparing thread");
 
       // Viewing is complete. Now make the live runtime ready for the next
@@ -5213,6 +5235,7 @@ export default function App() {
         ) : (
           <>
             <section className="conversation">
+              {activeThreadId && <ThreadOpenCommitMarker threadId={activeThreadId} commitToken={threadOpenCommitToken} />}
               {convSearchOpen && activeThreadId && (
                 <div className="conv-search-bar" role="search">
                   <Search size={12} />

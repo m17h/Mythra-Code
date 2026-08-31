@@ -1328,6 +1328,30 @@ describe("workspace switching during thread selection", () => {
     });
   });
 
+  it("completes performance diagnostics for an empty thread", async () => {
+    const user = userEvent.setup();
+    await renderApp();
+
+    await user.click(await screen.findByText("Alpha thread"));
+    await act(async () => {
+      pendingResume.resolve({ thread: { ...THREAD_A, turns: [] } as Thread });
+      await pendingResume.promise;
+    });
+
+    await waitFor(() => {
+      expect(invokeMock.mock.calls).toContainEqual([
+        "audit_append",
+        expect.objectContaining({
+          kind: "performance.threadOpen",
+          payload: expect.objectContaining({
+            outcome: "completed",
+            render: expect.objectContaining({ rows: 0 }),
+          }),
+        }),
+      ]);
+    });
+  });
+
   it("restores each thread's remembered reasoning level when switching conversations", async () => {
     const user = userEvent.setup();
     localStorage.setItem("kiwi.threadReasoning", JSON.stringify({
