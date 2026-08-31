@@ -67,6 +67,22 @@ describe("durable storage", () => {
     await flushPendingStateWrites();
   });
 
+  it("compacts legacy sidebar metadata without touching canonical transcripts", async () => {
+    const preview = "🧠".repeat(400);
+    localStorage.setItem("kiwi.schemaVersion", "19");
+    localStorage.setItem("kiwi.knownThreads", JSON.stringify({
+      thread: { id: "thread", preview, turns: [{ id: "turn", items: [{ text: "canonical" }] }] },
+    }));
+    invoke.mockResolvedValue(undefined);
+
+    migrateStorage();
+
+    const stored = loadStored<Record<string, Record<string, unknown>>>("kiwi.knownThreads", {});
+    expect(Array.from(String(stored.thread.preview))).toHaveLength(320);
+    expect(stored.thread).not.toHaveProperty("turns");
+    await flushPendingStateWrites();
+  });
+
   it("migrates legacy localStorage when SQLite is empty", async () => {
     localStorage.setItem("kiwi.projects", JSON.stringify([{ id: "one" }]));
     invoke.mockResolvedValueOnce(null).mockResolvedValueOnce(undefined);

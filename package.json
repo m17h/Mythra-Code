@@ -13,6 +13,7 @@
     "tauri": "tauri",
     "desktop": "tauri dev --config src-tauri/tauri.dev.conf.json",
     "desktop:build": "node scripts/desktop-build.mjs",
+    "benchmark:threads": "node scripts/benchmark-thread-loading.mjs",
     "version:bump": "node scripts/bump-version.mjs",
     "release:build": "node scripts/release-dispatch.mjs build",
     "release:publish": "node scripts/release-dispatch.mjs publish",

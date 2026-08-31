@@ -2,6 +2,9 @@ import type { Thread } from "../types";
 import type { TaskStatus } from "./taskStore";
 import { ownsChildren, type OwnershipLinks } from "./nativeAgentLinks";
 import { isLocalSubscriptionThread } from "./threadProvider";
+import { boundThreadPreview } from "./threadPreview";
+
+export { MAX_THREAD_PREVIEW_CHARACTERS } from "./threadPreview";
 
 export type ThreadSidebarIndex = Record<string, Thread>;
 
@@ -117,7 +120,13 @@ export function countActiveThreadsByWorkspace(
 
 export function sidebarThread(thread: Thread): Thread {
   const { turns: _turns, ...summary } = thread;
-  return summary;
+  if (typeof summary.preview !== "string") return { ...summary, preview: "" };
+  const preview = boundThreadPreview(summary.preview);
+  if (preview === summary.preview) return summary;
+  return {
+    ...summary,
+    preview,
+  };
 }
 
 /** The remembered index is rewritten on every turn — keep it bounded. */
@@ -130,6 +139,29 @@ export function pruneSidebarIndex(index: ThreadSidebarIndex, max = MAX_REMEMBERE
   const next: ThreadSidebarIndex = {};
   for (const thread of kept) next[thread.id] = thread;
   return next;
+}
+
+/** One-time/startup compaction also upgrades legacy rows written before
+ * previews and turns were bounded. */
+export function compactSidebarIndex(index: ThreadSidebarIndex, max = MAX_REMEMBERED_THREADS): ThreadSidebarIndex {
+  const compacted: ThreadSidebarIndex = {};
+  for (const [storedId, value] of Object.entries(index) as Array<[string, unknown]>) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    const candidate = value as Partial<Thread>;
+    if (
+      typeof candidate.cwd !== "string"
+      || typeof candidate.updatedAt !== "number"
+      || typeof candidate.modelProvider !== "string"
+    ) continue;
+    const thread = {
+      ...candidate,
+      id: typeof candidate.id === "string" ? candidate.id : storedId,
+      name: typeof candidate.name === "string" ? candidate.name : null,
+      preview: typeof candidate.preview === "string" ? candidate.preview : "",
+    } as Thread;
+    compacted[thread.id] = sidebarThread(thread);
+  }
+  return pruneSidebarIndex(compacted, max);
 }
 
 export function rememberSidebarThread(index: ThreadSidebarIndex, thread: Thread): ThreadSidebarIndex {

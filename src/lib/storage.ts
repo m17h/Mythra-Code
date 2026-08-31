@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { boundThreadPreview } from "./threadPreview";
 
 export const DURABLE_STORAGE_KEYS = [
   "kiwi.schemaVersion",
@@ -48,7 +49,7 @@ export const DURABLE_STORAGE_KEYS = [
  * migrateStorage. Old installs then upgrade their data instead of loading
  * garbage into the new code.
  */
-export const STORAGE_SCHEMA_VERSION = 19;
+export const STORAGE_SCHEMA_VERSION = 20;
 const nativeWriteQueues = new Map<string, Promise<void>>();
 const NATIVE_PENDING_PREFIX = "kiwi.nativePending.";
 let nativeOperationSequence = 0;
@@ -175,6 +176,30 @@ export function migrateStorage(): void {
   // required.
   // Version 19 adds per-provider starred models. The store starts empty and
   // is sanitized on read, so no eager migration is required.
+  // Version 20 removes accidentally retained turns from sidebar metadata and
+  // bounds legacy previews. Canonical transcript messages live in provider
+  // history and are not changed.
+  if (stored < 20) {
+    const index = loadStored<Record<string, unknown>>("kiwi.knownThreads", {});
+    let changed = false;
+    const compacted = Object.fromEntries(Object.entries(index).map(([threadId, value]) => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return [threadId, value];
+      const next = { ...(value as Record<string, unknown>) };
+      if ("turns" in next) {
+        delete next.turns;
+        changed = true;
+      }
+      if (typeof next.preview === "string") {
+        const preview = boundThreadPreview(next.preview);
+        if (preview !== next.preview) {
+          next.preview = preview;
+          changed = true;
+        }
+      }
+      return [threadId, next];
+    }));
+    if (changed) storeValue("kiwi.knownThreads", compacted);
+  }
   // All other additions are optional and require no eager rewrite of existing records.
   storeValue("kiwi.schemaVersion", STORAGE_SCHEMA_VERSION);
 }

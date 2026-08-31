@@ -1775,7 +1775,7 @@ describe("composer sub-agent command center", () => {
     expect(codexCalls("thread/resume")[0]).not.toHaveProperty("initialTurnsPage");
     expect(codexCalls("thread/turns/list")[0]).toMatchObject({
       threadId: THREAD_A.id,
-      limit: 12,
+      limit: 10,
       sortDirection: "desc",
       itemsView: "summary",
     });
