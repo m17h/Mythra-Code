@@ -7,6 +7,7 @@ import {
   forgetSidebarThread,
   optimisticStartedThread,
   partitionBulkArchiveThreads,
+  reconcileSidebarIndex,
   reconcileWorkspaceThreads,
   rememberSidebarThread,
   repairRootThreadMetadata,
@@ -47,6 +48,70 @@ describe("thread sidebar list", () => {
 
     expect(reconcileWorkspaceThreads([], remembered, "/normal-chats", { "router-chat": "/normal-chats" }))
       .toEqual([expect.objectContaining({ id: "router-chat", preview: "Hello OpenRouter", modelProvider: "openrouter" })]);
+  });
+
+  it("hides runtime threads remembered from another isolated Codex home", () => {
+    const foreign = makeThread("foreign", {
+      path: "/profiles/production/codex-home/sessions/foreign.jsonl",
+      updatedAt: 10,
+    });
+
+    expect(reconcileWorkspaceThreads([], { foreign }, "/workspace", {}, {
+      runtimeHome: "/profiles/localdev/codex-home",
+      runtimeIndexComplete: false,
+      nowSeconds: 1_000,
+    })).toEqual([]);
+  });
+
+  it("keeps same-profile rows during loading but removes absent stale rows after an exhaustive index", () => {
+    const indexed = makeThread("indexed", {
+      path: "/profiles/localdev/codex-home/sessions/indexed.jsonl",
+      updatedAt: 10,
+    });
+    const optimistic = makeThread("optimistic", {
+      path: null,
+      updatedAt: 950,
+    });
+    const remembered = { indexed, optimistic };
+
+    expect(reconcileWorkspaceThreads([], remembered, "/workspace", {}, {
+      runtimeHome: "/profiles/localdev/codex-home",
+      runtimeIndexComplete: false,
+      nowSeconds: 1_000,
+    })).toHaveLength(2);
+    expect(reconcileWorkspaceThreads([], remembered, "/workspace", {}, {
+      runtimeHome: "/profiles/localdev/codex-home",
+      runtimeIndexComplete: true,
+      nowSeconds: 1_000,
+    })).toEqual([optimistic]);
+  });
+
+  it("keeps recoverable metadata while refreshing runtime-owned rows", () => {
+    const foreign = makeThread("foreign", {
+      path: "C:\\Users\\Morgan\\AppData\\Roaming\\production\\codex-home\\sessions\\foreign.jsonl",
+    });
+    const claude = makeThread("claude", { modelProvider: "claude" });
+    const otherWorkspace = makeThread("other", {
+      cwd: "/other",
+      path: "C:\\Users\\Morgan\\AppData\\Roaming\\localdev\\codex-home\\sessions\\other.jsonl",
+    });
+
+    expect(reconcileSidebarIndex({ foreign, claude, other: otherWorkspace }, []))
+      .toEqual({ foreign, claude, other: otherWorkspace });
+  });
+
+  it("preserves a managed-worktree row outside a cwd-scoped runtime listing", () => {
+    const managed = makeThread("managed", {
+      cwd: "/managed/worktrees/thread",
+      path: "/profiles/localdev/codex-home/sessions/managed.jsonl",
+      updatedAt: 10,
+    });
+
+    expect(reconcileWorkspaceThreads([], { managed }, "/workspace", { managed: "/workspace" }, {
+      runtimeHome: "/profiles/localdev/codex-home",
+      runtimeIndexComplete: true,
+      nowSeconds: 1_000,
+    })).toEqual([managed]);
   });
 
   it("merges runtime metadata into remembered chats and removes forgotten chats", () => {

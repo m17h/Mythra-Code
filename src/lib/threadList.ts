@@ -1,6 +1,7 @@
 import type { Thread } from "../types";
 import type { TaskStatus } from "./taskStore";
 import { ownsChildren, type OwnershipLinks } from "./nativeAgentLinks";
+import { isLocalSubscriptionThread } from "./threadProvider";
 
 export type ThreadSidebarIndex = Record<string, Thread>;
 
@@ -142,15 +143,83 @@ export function forgetSidebarThread(index: ThreadSidebarIndex, threadId: string)
   return next;
 }
 
+/** App-server can take a moment to index a thread it just returned from
+ * thread/start. Keep that optimistic row briefly without allowing a stale
+ * profile snapshot to live forever. */
+export const RUNTIME_THREAD_CREATION_GRACE_SECONDS = 120;
+
+export interface RuntimeThreadReconciliation {
+  runtimeHome?: string | null;
+  runtimeIndexComplete?: boolean;
+  nowSeconds?: number;
+}
+
+function comparablePath(path: string): string {
+  const normalized = normalizedPath(path);
+  // Drive-letter paths are case-insensitive on supported Windows systems.
+  return /^[a-z]:\//i.test(normalized) ? normalized.toLowerCase() : normalized;
+}
+
+/** Returns null when old/pathless metadata cannot prove which runtime owns it. */
+export function threadBelongsToRuntimeHome(thread: Thread, runtimeHome: string | null | undefined): boolean | null {
+  const rolloutPath = thread.path?.trim();
+  const home = runtimeHome?.trim();
+  if (!rolloutPath || !home) return null;
+  const candidate = comparablePath(rolloutPath);
+  const root = comparablePath(home);
+  return candidate === root || candidate.startsWith(`${root}/`);
+}
+
+function recentlyCreatedRuntimeThread(thread: Thread, nowSeconds: number): boolean {
+  return thread.updatedAt >= nowSeconds - RUNTIME_THREAD_CREATION_GRACE_SECONDS;
+}
+
+function shouldRetainRememberedThread(
+  thread: Thread,
+  runtimeIds: ReadonlySet<string>,
+  options: RuntimeThreadReconciliation,
+  preserveScopedAbsence = false,
+): boolean {
+  if (isLocalSubscriptionThread(thread) || runtimeIds.has(thread.id)) return true;
+  const homeMembership = threadBelongsToRuntimeHome(thread, options.runtimeHome);
+  if (homeMembership === false) return false;
+  // Old app-server versions and optimistic/native child records can be
+  // pathless. Absence from a cwd-scoped list cannot prove that such a record
+  // belongs to another profile, so keep it recoverable and visible.
+  if (homeMembership === null) return true;
+  if (!options.runtimeIndexComplete || preserveScopedAbsence) return true;
+  return recentlyCreatedRuntimeThread(thread, options.nowSeconds ?? Math.floor(Date.now() / 1000));
+}
+
+/** Merge authoritative runtime metadata without deleting recoverable sidebar
+ * metadata. Visibility is reconciled separately: an archived thread, a
+ * temporarily unavailable volume, or an interrupted page sweep must never turn
+ * a cache cleanup into transcript-adjacent data loss. */
+export function reconcileSidebarIndex(
+  rememberedThreads: ThreadSidebarIndex,
+  runtimeThreads: Thread[],
+): ThreadSidebarIndex {
+  const next: ThreadSidebarIndex = { ...rememberedThreads };
+  for (const thread of runtimeThreads) next[thread.id] = sidebarThread(thread);
+  return pruneSidebarIndex(next);
+}
+
 export function reconcileWorkspaceThreads(
   runtimeThreads: Thread[],
   rememberedThreads: ThreadSidebarIndex,
   workspacePath: string,
   bindings: Record<string, string>,
+  options: RuntimeThreadReconciliation = {},
 ): Thread[] {
+  const runtimeIds = new Set(runtimeThreads.map((thread) => thread.id));
   const merged = new Map<string, Thread>();
   for (const thread of Object.values(rememberedThreads)) {
-    if (threadBelongsToWorkspace(thread, workspacePath, bindings)) merged.set(thread.id, thread);
+    const explicitlyBoundFromAnotherCwd = Boolean(bindings[thread.id])
+      && normalizedPath(thread.cwd) !== normalizedPath(workspacePath);
+    if (
+      threadBelongsToWorkspace(thread, workspacePath, bindings)
+      && shouldRetainRememberedThread(thread, runtimeIds, options, explicitlyBoundFromAnotherCwd)
+    ) merged.set(thread.id, thread);
   }
   for (const thread of runtimeThreads) {
     if (threadBelongsToWorkspace(thread, workspacePath, bindings)) merged.set(thread.id, sidebarThread(thread));

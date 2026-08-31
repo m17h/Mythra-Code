@@ -13,7 +13,7 @@ import { loadStored, storeValue } from "./lib/storage";
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_PROMPT_PROFILES, DEFAULT_SETTINGS, sanitizeAutoArchiveSubagentThreads, sanitizeEffortSlider, sanitizeTheme, themeColorScheme } from "./lib/appConfig";
 import { commandSandbox, threadResumeParams, threadRuntimeConfig } from "./lib/turnConfig";
 import { threadSearchParams, threadsForWorkspace, type ThreadSearchResponse } from "./lib/threadSearch";
-import { countActiveThreadsByWorkspace, filterThreadsByKind, filterThreadsForWorkspace, forgetSidebarThread, isSubAgentThread, partitionBulkArchiveThreads, pruneSidebarIndex, reconcileWorkspaceThreads, rememberSidebarThread, repairRootThreadMetadata, sidebarThread, threadBelongsToWorkspace, upsertThread, type ThreadSidebarIndex } from "./lib/threadList";
+import { countActiveThreadsByWorkspace, filterThreadsByKind, filterThreadsForWorkspace, forgetSidebarThread, isSubAgentThread, partitionBulkArchiveThreads, pruneSidebarIndex, reconcileSidebarIndex, reconcileWorkspaceThreads, rememberSidebarThread, repairRootThreadMetadata, sidebarThread, threadBelongsToWorkspace, upsertThread, type ThreadSidebarIndex } from "./lib/threadList";
 import { timelineFromTurns } from "./lib/threadTimeline";
 import { INITIAL_THREAD_TURN_LIMIT, OLDER_THREAD_TURN_LIMIT, isExcludeTurnsUnsupported, isPaginatedHistoryUnsupported, normalizeThreadTurnsPage, turnsFromDescendingPage, type ThreadHistoryState } from "./lib/threadHistory";
 import { buildTranscriptMarkdown } from "./lib/transcript";
@@ -1542,14 +1542,20 @@ export default function App() {
         return;
       }
       if (!runtimeStatus?.available) {
-        setThreads(reconcileWorkspaceThreads([], knownThreadsRef.current ?? {}, project.path, threadProjectBindingsRef.current ?? {}));
+        setThreads(reconcileWorkspaceThreads([], knownThreadsRef.current ?? {}, project.path, threadProjectBindingsRef.current ?? {}, {
+          runtimeHome: runtimeStatus?.dataHome,
+          runtimeIndexComplete: false,
+        }));
         return;
       }
       // Paint the remembered sidebar snapshot for this workspace immediately.
       // Without it, the frames between the project click and the first
       // thread/list page render an empty inbox — a visible flicker of the
       // rows and of every header control derived from the visible list.
-      setThreads(reconcileWorkspaceThreads([], knownThreadsRef.current ?? {}, project.path, threadProjectBindingsRef.current ?? {}));
+      setThreads(reconcileWorkspaceThreads([], knownThreadsRef.current ?? {}, project.path, threadProjectBindingsRef.current ?? {}, {
+        runtimeHome: runtimeStatus.dataHome,
+        runtimeIndexComplete: false,
+      }));
       try {
         const allThreads: Thread[] = [];
         let cursor: string | null = null;
@@ -1567,6 +1573,7 @@ export default function App() {
               knownThreadsRef.current ?? {},
               project.path,
               threadProjectBindingsRef.current ?? {},
+              { runtimeHome: runtimeStatus.dataHome, runtimeIndexComplete: false },
             ));
           }
           cursor = result.nextCursor ?? null;
@@ -1614,20 +1621,27 @@ export default function App() {
           const boundPath = threadProjectBindingsRef.current?.[thread.id];
           return normalizedProjectPath(boundPath || thread.cwd) === projectPath;
         });
-        const merged = { ...(knownThreadsRef.current ?? {}) };
-        for (const thread of runtimeThreads) merged[thread.id] = sidebarThread(thread);
-        const remembered = pruneSidebarIndex(merged);
+        const remembered = reconcileSidebarIndex(
+          knownThreadsRef.current ?? {},
+          runtimeThreads,
+        );
         knownThreadsRef.current = remembered;
         storeValue("kiwi.knownThreads", remembered);
         if (loadThreadsRequestRef.current !== requestId) return;
-        setThreads(reconcileWorkspaceThreads(runtimeThreads, remembered, project.path, threadProjectBindingsRef.current ?? {}));
+        setThreads(reconcileWorkspaceThreads(runtimeThreads, remembered, project.path, threadProjectBindingsRef.current ?? {}, {
+          runtimeHome: runtimeStatus.dataHome,
+          runtimeIndexComplete: cursor === null,
+        }));
       } catch (reason) {
         if (loadThreadsRequestRef.current !== requestId) return;
-        setThreads(reconcileWorkspaceThreads([], knownThreadsRef.current ?? {}, project.path, threadProjectBindingsRef.current ?? {}));
+        setThreads(reconcileWorkspaceThreads([], knownThreadsRef.current ?? {}, project.path, threadProjectBindingsRef.current ?? {}, {
+          runtimeHome: runtimeStatus.dataHome,
+          runtimeIndexComplete: false,
+        }));
         setError(friendlyError(reason));
       }
     },
-    [bindThreadToProject, persistNativeAgentLinks, runtimeStatus?.available],
+    [bindThreadToProject, persistNativeAgentLinks, runtimeStatus?.available, runtimeStatus?.dataHome],
   );
 
   const refreshAccount = useCallback(async (refreshToken = false): Promise<{ account: Account | null; requiresOpenaiAuth?: boolean } | null> => {

@@ -15,6 +15,8 @@ export interface CodexRuntimeStatus {
   available: boolean;
   source: "Codex CLI" | "ChatGPT app" | "Custom path" | null;
   path: string | null;
+  /** Isolated rollout/config store used by the active app-server process. */
+  dataHome?: string | null;
   version: string | null;
   compatible: boolean;
   warning: string | null;

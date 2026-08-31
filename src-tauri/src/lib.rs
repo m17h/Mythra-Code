@@ -370,6 +370,7 @@ struct CodexRuntimeStatus {
     available: bool,
     source: Option<&'static str>,
     path: Option<String>,
+    data_home: Option<String>,
     version: Option<String>,
     compatible: bool,
     warning: Option<String>,
@@ -1287,6 +1288,11 @@ fn runtime_is_compatible(version: &str) -> bool {
 }
 
 async fn read_codex_runtime_status(app: &AppHandle, state: &RuntimeState) -> CodexRuntimeStatus {
+    let data_home = app
+        .path()
+        .app_data_dir()
+        .ok()
+        .map(|path| path.join("codex-home").to_string_lossy().into_owned());
     match resolve_codex_runtime(app, state).await {
         Ok(runtime) => {
             let compatible = runtime_is_compatible(&runtime.version);
@@ -1294,6 +1300,7 @@ async fn read_codex_runtime_status(app: &AppHandle, state: &RuntimeState) -> Cod
                 available: true,
                 source: Some(runtime_source(&runtime.path)),
                 path: Some(runtime.path.to_string_lossy().into_owned()),
+                data_home,
                 warning: (!compatible).then(|| "This Codex runtime predates Mythra Code's tested App Server contract (0.145+). Update Codex before relying on advanced features.".to_string()),
                 version: Some(runtime.version),
                 compatible,
@@ -1303,6 +1310,7 @@ async fn read_codex_runtime_status(app: &AppHandle, state: &RuntimeState) -> Cod
             available: false,
             source: None,
             path: None,
+            data_home,
             version: None,
             compatible: false,
             warning: Some(error),
