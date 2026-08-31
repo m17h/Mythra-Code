@@ -1557,6 +1557,18 @@ export default function App() {
           const result: { data: Thread[]; nextCursor?: string | null } = await rpc("thread/list", { cwd: project.path, limit: 100, cursor });
           if (loadThreadsRequestRef.current !== requestId) return;
           allThreads.push(...(result.data ?? []));
+          if (page === 0) {
+            // Do not hold the first useful sidebar paint behind every older
+            // page. Ownership reconciliation and durable indexing still run
+            // once over the complete result below, but the newest 100 threads
+            // become interactive after a single round trip.
+            setThreads(reconcileWorkspaceThreads(
+              allThreads,
+              knownThreadsRef.current ?? {},
+              project.path,
+              threadProjectBindingsRef.current ?? {},
+            ));
+          }
           cursor = result.nextCursor ?? null;
           if (!cursor) break;
         }

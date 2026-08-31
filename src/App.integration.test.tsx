@@ -76,6 +76,7 @@ function deferred<T>(): Deferred<T> {
 
 let pendingResume: Deferred<{ thread: Thread }>;
 let resumeImpl: (params: Record<string, unknown>) => unknown;
+let threadListImpl: (params: Record<string, unknown>) => unknown;
 let threadTurnsListImpl: (params: Record<string, unknown>) => unknown;
 let turnStartImpl: (params: Record<string, unknown>) => unknown;
 let accountReadImpl: (params: Record<string, unknown>) => unknown;
@@ -237,12 +238,7 @@ function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
   if (command === "codex_rpc") {
     const method = args?.method as string;
     const params = (args?.params ?? {}) as Record<string, unknown>;
-    if (method === "thread/list") {
-      return {
-        data: params.cwd === PROJECT_A.path ? [THREAD_A, THREAD_B] : [],
-        nextCursor: null,
-      };
-    }
+    if (method === "thread/list") return threadListImpl(params);
     if (method === "thread/start") {
       return {
         thread: {
@@ -300,6 +296,10 @@ beforeEach(() => {
   vi.spyOn(window, "confirm").mockReturnValue(true);
   pendingResume = deferred<{ thread: Thread }>();
   resumeImpl = () => pendingResume.promise;
+  threadListImpl = (params) => ({
+    data: params.cwd === PROJECT_A.path ? [THREAD_A, THREAD_B] : [],
+    nextCursor: null,
+  });
   threadTurnsListImpl = () => ({ data: [], nextCursor: null, backwardsCursor: null });
   turnStartImpl = (params) => ({ turn: { id: `turn-${String(params.threadId)}` } });
   accountReadImpl = () => ({ account: { type: "chatgpt", email: "test@example.com", planType: "pro" }, requiresOpenaiAuth: true });
@@ -359,6 +359,29 @@ describe("Codex cold startup", () => {
       expect(methods).toContain("model/list");
       expect(methods).toContain("skills/list");
     });
+  });
+
+  it("renders the newest thread page while older sidebar pages are still loading", async () => {
+    const olderPage = deferred<{ data: Thread[]; nextCursor: null }>();
+    threadListImpl = (params) => {
+      if (params.cwd !== PROJECT_A.path) return { data: [], nextCursor: null };
+      if (params.cursor === "older-threads") return olderPage.promise;
+      return { data: [THREAD_A], nextCursor: "older-threads" };
+    };
+    await renderApp();
+
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("codex_rpc", expect.objectContaining({
+      method: "thread/list",
+      params: { cwd: PROJECT_A.path, limit: 100, cursor: "older-threads" },
+    })));
+    expect(await screen.findByText("Alpha thread", {}, { timeout: 500 })).toBeInTheDocument();
+    expect(screen.queryByText("Beta thread")).not.toBeInTheDocument();
+
+    await act(async () => {
+      olderPage.resolve({ data: [THREAD_B], nextCursor: null });
+      await olderPage.promise;
+    });
+    expect(await screen.findByText("Beta thread")).toBeInTheDocument();
   });
 
   it("refreshes models and usage when a signed-in account update arrives", async () => {
