@@ -21,6 +21,12 @@ export interface ProcessMemorySnapshot {
   cached: boolean;
 }
 
+export interface TranscriptCacheSnapshot {
+  estimatedBytes: number;
+  hydratedThreads: number;
+  selectedEstimatedBytes: number;
+}
+
 interface ActiveThreadOpen {
   threadId: string;
   provider: Provider;
@@ -40,6 +46,7 @@ interface ActiveThreadOpen {
   paginated?: boolean;
   hasMore?: boolean;
   measureProjectedHistoryBytes?: () => number | null;
+  measureTranscriptCache?: () => TranscriptCacheSnapshot;
   timeout?: ReturnType<typeof setTimeout>;
   finished: boolean;
 }
@@ -119,7 +126,12 @@ export function projectedJsonBytes(value: unknown): number | null {
  * event. A newer selection closes the old sample as superseded so slow or
  * incomplete opens do not disappear from the dataset.
  */
-export function beginThreadOpen(threadId: string, provider: Provider, warm: boolean): void {
+export function beginThreadOpen(
+  threadId: string,
+  provider: Provider,
+  warm: boolean,
+  measureTranscriptCache?: () => TranscriptCacheSnapshot,
+): void {
   startLongTaskObserver();
   if (active && !active.finished) void finishThreadOpen(active, "superseded", "newSelection", false);
   const sample: ActiveThreadOpen = {
@@ -127,6 +139,7 @@ export function beginThreadOpen(threadId: string, provider: Provider, warm: bool
     provider,
     warm,
     startedAt: performance.now(),
+    measureTranscriptCache,
     renderMetricsCaptured: false,
     finished: false,
   };
@@ -260,8 +273,15 @@ async function finishThreadOpen(
     if (measured !== null) sample.projectedHistoryBytes = Math.max(0, Math.round(measured));
   }
   sample.measureProjectedHistoryBytes = undefined;
+  let transcriptCache: TranscriptCacheSnapshot | null = null;
+  try {
+    transcriptCache = sample.measureTranscriptCache?.() ?? null;
+  } catch {
+    transcriptCache = null;
+  }
+  sample.measureTranscriptCache = undefined;
   const payload = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     provider: sample.provider,
     warm: sample.warm,
     outcome,
@@ -287,6 +307,7 @@ async function finishThreadOpen(
     },
     longTasks: longTaskSummary(sample.startedAt, endedAt),
     javascriptHeap: javascriptHeapSnapshot(),
+    transcriptCache,
     processMemory,
   };
   await auditEvent(THREAD_OPEN_AUDIT_KIND, payload).catch(() => undefined);

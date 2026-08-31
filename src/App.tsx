@@ -2891,6 +2891,16 @@ export default function App() {
       thread.id,
       selectedProvider,
       Boolean(existingTask && (existingTask.messages.length > 0 || existingTask.activities.length > 0)),
+      () => {
+        const taskStore = useTaskStore.getState();
+        const tasks = Object.values(taskStore.tasks);
+        const hydrated = tasks.filter((task) => task.messages.length > 0 || task.activities.length > 0);
+        return {
+          estimatedBytes: hydrated.reduce((total, task) => total + task.estimatedTranscriptBytes, 0),
+          hydratedThreads: hydrated.length,
+          selectedEstimatedBytes: taskStore.tasks[thread.id]?.estimatedTranscriptBytes ?? 0,
+        };
+      },
     );
     setError(null);
     setStatus("Loading thread");
