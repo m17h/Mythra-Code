@@ -10,6 +10,7 @@ import type {
 import type { ReasoningEffort } from "../components/ModelPowerControl";
 import type { JsonObject } from "./codex";
 import { clampUsedPercent, type ProviderRateLimits } from "./providerUsage";
+import { forgetLocalTranscriptPersistence, loadLocalTranscript, saveLocalTranscript } from "./localTranscriptPersistence";
 
 export interface ClaudeRuntimeStatus {
   available: boolean;
@@ -247,21 +248,17 @@ function transcriptKey(threadId: string): string {
 export async function saveClaudeTranscript(
   transcript: ClaudeTranscript,
 ): Promise<void> {
-  await invoke("local_transcript_snapshot_write", {
-    provider: "claude",
-    value: transcript,
-  });
+  await saveLocalTranscript("claude", transcript);
 }
 
 export async function loadClaudeTranscript(
   threadId: string,
 ): Promise<ClaudeTranscript | null> {
-  return invoke<ClaudeTranscript | null>("local_transcript_full_read", {
-    provider: "claude",
-    threadId,
-  });
+  return loadLocalTranscript<ClaudeTranscript>("claude", threadId);
 }
 
 export async function deleteClaudeTranscript(threadId: string): Promise<void> {
-  await invoke("state_delete", { key: transcriptKey(threadId) });
+  await forgetLocalTranscriptPersistence("claude", threadId, () => (
+    invoke("state_delete", { key: transcriptKey(threadId) })
+  ));
 }
