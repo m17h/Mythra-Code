@@ -288,12 +288,12 @@ describe("local transcript persistence adapters", () => {
 
   it("uses a snapshot for a completed-turn metadata edit", async () => {
     const baseline: ClaudeTranscript = { thread, messages: [completed], activities: [] };
-    tauri.invoke.mockResolvedValueOnce(baseline).mockResolvedValueOnce(writeState(1)).mockResolvedValueOnce({ generation: 1 }).mockResolvedValueOnce(writeState(1));
+    tauri.invoke.mockResolvedValueOnce(baseline).mockResolvedValueOnce(writeState(1)).mockResolvedValueOnce(writeState(1));
     await loadClaudeTranscript("thread-a");
     const renamed = { ...baseline, thread: { ...thread, name: "Renamed" } };
     await saveClaudeTranscript(renamed);
     expect(tauri.invoke).toHaveBeenNthCalledWith(3, "local_transcript_snapshot_write", { provider: "claude", value: renamed });
-    expect(tauri.invoke).toHaveBeenNthCalledWith(4, "local_transcript_write_state_read", { provider: "claude", threadId: "thread-a" });
+    expect(tauri.invoke).toHaveBeenCalledTimes(3);
   });
 
   it("recovers a stale generation and stays snapshot-only until that turn seals", async () => {
@@ -303,7 +303,7 @@ describe("local transcript persistence adapters", () => {
       if (command === "local_transcript_full_read") return Promise.resolve(baseline);
       if (command === "local_transcript_tail_write") return Promise.reject("Local transcript generation is stale");
       if (command === "local_transcript_write_state_read") return Promise.resolve(writeState(9));
-      return Promise.resolve({ generation: 9 });
+      return Promise.resolve(writeState(9));
     });
     await loadClaudeTranscript("thread-a");
     await saveClaudeTranscript(running);
@@ -315,9 +315,7 @@ describe("local transcript persistence adapters", () => {
   it("keeps an active first save snapshot-only when no load established a tail", async () => {
     const running: ClaudeTranscript = { thread, messages: [{ id: "live", role: "assistant", text: "A", turnId: "turn-live", timelineOrder: 1 }], activities: [] };
     tauri.invoke
-      .mockResolvedValueOnce({ generation: 1 })
       .mockResolvedValueOnce(writeState(1))
-      .mockResolvedValueOnce({ generation: 2 })
       .mockResolvedValueOnce(writeState(2));
 
     await saveClaudeTranscript(running);

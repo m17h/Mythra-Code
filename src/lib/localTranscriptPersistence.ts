@@ -14,8 +14,12 @@ export interface LocalTranscriptValue {
 
 interface LocalTranscriptWriteState {
   generation: number;
-  headSeq: number;
-  tailSeq: number;
+}
+
+interface LocalTranscriptSnapshotWrite extends LocalTranscriptWriteState {
+  rewrittenChunks: number;
+  totalChunks: number;
+  compatibilitySnapshotCreated: boolean;
 }
 
 interface PersistenceState extends LocalTranscriptWriteState {
@@ -124,10 +128,10 @@ async function saveSnapshot(
   transcript: LocalTranscriptValue,
 ): Promise<PersistenceState> {
   return measuredPersistenceWrite(provider, transcript, "snapshot", transcript, selectMutableTail(transcript)?.turnId, async () => {
-    await invoke("local_transcript_snapshot_write", { provider, value: transcript });
-    const state = await readWriteState(provider, transcript.thread.id);
-    if (!state) throw new Error("Local transcript snapshot was saved without write state");
-    return { ...state, partial: false, mutableTurnId: null, snapshotOnlyTurnId: null };
+    // The native snapshot response already contains the committed generation.
+    // Reusing it avoids a second bridge hop and database read.
+    const { generation } = await invoke<LocalTranscriptSnapshotWrite>("local_transcript_snapshot_write", { provider, value: transcript });
+    return { generation, partial: false, mutableTurnId: null, snapshotOnlyTurnId: null };
   });
 }
 
@@ -311,8 +315,6 @@ export async function loadLocalTranscriptPage<T extends LocalTranscriptPage>(
   // lock, avoiding both a second native round trip and a page/token race.
   rememberPersistenceState(key, {
     generation: page.generation,
-    headSeq: page.headSeq,
-    tailSeq: page.tailSeq,
     partial: Boolean(page.nextCursor),
     mutableTurnId: null,
     snapshotOnlyTurnId: null,
