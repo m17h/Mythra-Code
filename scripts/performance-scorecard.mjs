@@ -59,9 +59,11 @@ function sanitizedThreadOpenSample(event) {
   const timelineCommitMs = finite(duration.timelineCommit);
   const runtimeReadyMs = finite(duration.runtimeReady);
   return {
+    createdAt: finite(event.createdAt),
     provider: enumValue(payload.provider, ["openai", "openrouter", "lmstudio", "claude", "cursor"], "unknown"),
     warm: boolean(payload.warm),
     outcome: enumValue(payload.outcome, ["completed", "error", "abandoned", "superseded"], "unknown"),
+    processMemoryCached: boolean(processMemory.cached),
     metrics: {
       shellCommitMs: finite(duration.shellCommit),
       historyHydratedMs: finite(duration.historyHydrated),
@@ -90,11 +92,101 @@ function sanitizedThreadOpenSample(event) {
   };
 }
 
+function sanitizedRuntimeTurnSample(event) {
+  if (event?.kind !== "performance.runtimeTurn") return null;
+  const payload = object(event.payload);
+  const streaming = object(payload.streaming);
+  const persistence = object(payload.persistence);
+  return {
+    provider: enumValue(payload.provider, ["openai", "openrouter", "lmstudio", "claude", "cursor"], "unknown"),
+    outcome: enumValue(payload.outcome, ["completed", "interrupted", "error", "abandoned"], "unknown"),
+    metrics: {
+      observedDurationMs: finite(payload.observedDurationMs),
+      deltaCalls: finite(streaming.deltaCalls),
+      deltaCharacters: finite(streaming.deltaCharacters),
+      flushes: finite(streaming.flushes),
+      queueToFrameAverageMs: finite(streaming.queueToFrameAverageMs),
+      queueToFrameMaximumMs: finite(streaming.queueToFrameMaximumMs),
+      queueToFrameOverBudget: finite(streaming.queueToFrameOverBudget),
+      flushWorkAverageMs: finite(streaming.flushWorkAverageMs),
+      flushWorkMaximumMs: finite(streaming.flushWorkMaximumMs),
+      flushWorkOverBudget: finite(streaming.flushWorkOverBudget),
+      persistenceWrites: finite(persistence.writes),
+      persistenceFailures: finite(persistence.failures),
+      persistenceEstimatedBytes: finite(persistence.estimatedBytes),
+      persistenceDurationTotalMs: finite(persistence.durationTotalMs),
+      persistenceDurationMaximumMs: finite(persistence.durationMaximumMs),
+    },
+  };
+}
+
+function sanitizedComposerSample(event) {
+  if (event?.kind !== "performance.composer") return null;
+  const payload = object(event.payload);
+  const values = Array.isArray(payload.inputToFrameMs)
+    ? payload.inputToFrameMs.map(finite).filter((value) => value !== null).slice(0, 64)
+    : [];
+  if (!values.length) return null;
+  return {
+    provider: enumValue(payload.provider, ["openai", "openrouter", "lmstudio", "claude", "cursor"], "unknown"),
+    values,
+  };
+}
+
+function summarizeGrowth(values) {
+  const samples = values.map(finite).filter((value) => value !== null);
+  if (!samples.length) return { n: 0, first: null, last: null, delta: null, perSample: null, maximum: null };
+  const first = samples[0];
+  const last = samples.at(-1);
+  return {
+    n: samples.length,
+    first,
+    last,
+    delta: last - first,
+    perSample: samples.length > 1 ? Math.round(((last - first) / (samples.length - 1)) * 100) / 100 : null,
+    maximum: Math.max(...samples),
+  };
+}
+
+function summarizeRuntimeGroups(samples) {
+  const groups = new Map();
+  for (const sample of samples) {
+    const group = groups.get(sample.provider) ?? { provider: sample.provider, samples: [] };
+    group.samples.push(sample);
+    groups.set(sample.provider, group);
+  }
+  return [...groups.values()]
+    .sort((left, right) => left.provider.localeCompare(right.provider))
+    .map((group) => {
+      const completedSamples = group.samples.filter((sample) => sample.outcome === "completed");
+      const metricNames = Object.keys(group.samples[0]?.metrics ?? {});
+      return {
+        provider: group.provider,
+        n: group.samples.length,
+        completedN: completedSamples.length,
+        outcomes: Object.fromEntries(["completed", "interrupted", "error", "abandoned", "unknown"].map((outcome) => [
+          outcome,
+          group.samples.filter((sample) => sample.outcome === outcome).length,
+        ])),
+        metrics: Object.fromEntries(metricNames.map((name) => [
+          name,
+          summarizeMetric(completedSamples.map((sample) => sample.metrics[name])),
+        ])),
+      };
+    });
+}
+
 export function summarizeDiagnostics(input) {
   const diagnostics = object(input);
-  const samples = Array.isArray(diagnostics.auditEvents)
-    ? diagnostics.auditEvents.map(sanitizedThreadOpenSample).filter(Boolean)
-    : [];
+  const auditEvents = Array.isArray(diagnostics.auditEvents) ? diagnostics.auditEvents : [];
+  const samples = auditEvents.map(sanitizedThreadOpenSample).filter(Boolean);
+  const runtimeSamples = auditEvents.map(sanitizedRuntimeTurnSample).filter(Boolean);
+  const composerSamples = auditEvents.map(sanitizedComposerSample).filter(Boolean);
+  const chronologicalCompletedSamples = samples
+    .filter((sample) => sample.outcome === "completed")
+    .map((sample, index) => ({ sample, order: sample.createdAt ?? index }))
+    .sort((left, right) => left.order - right.order)
+    .map(({ sample }) => sample);
   const groups = new Map();
   for (const sample of samples) {
     const key = `${sample.provider}\0${String(sample.warm)}`;
@@ -110,6 +202,22 @@ export function summarizeDiagnostics(input) {
       generatedAt: finite(diagnostics.generatedAt),
     },
     sampleCount: samples.length,
+    runtimeSampleCount: runtimeSamples.length,
+    composerSampleCount: composerSamples.reduce((total, sample) => total + sample.values.length, 0),
+    memoryGrowth: {
+      javascriptHeapUsedBytes: summarizeGrowth(chronologicalCompletedSamples.map((sample) => sample.metrics.javascriptHeapUsedBytes)),
+      transcriptCacheBytes: summarizeGrowth(chronologicalCompletedSamples.map((sample) => sample.metrics.transcriptCacheBytes)),
+      managedResidentBytes: summarizeGrowth(chronologicalCompletedSamples.filter((sample) => sample.processMemoryCached === false).map((sample) => sample.metrics.managedResidentBytes)),
+    },
+    runtimeGroups: summarizeRuntimeGroups(runtimeSamples),
+    composerGroups: [...new Set(composerSamples.map((sample) => sample.provider))]
+      .sort()
+      .map((provider) => ({
+        provider,
+        metrics: {
+          inputToFrameMs: summarizeMetric(composerSamples.filter((sample) => sample.provider === provider).flatMap((sample) => sample.values)),
+        },
+      })),
     groups: [...groups.values()]
       .sort((left, right) => left.provider.localeCompare(right.provider) || String(left.warm).localeCompare(String(right.warm)))
       .map((group) => {

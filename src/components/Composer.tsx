@@ -12,6 +12,8 @@ import {
 } from "react";
 import { ArrowUp, Boxes, CircleStop, CornerUpRight, FileCode2, ListPlus, LoaderCircle, Paperclip, RotateCw, Trash2, X } from "lucide-react";
 import { loadStored, storeValue } from "../lib/storage";
+import { recordComposerInputToFrame } from "../lib/runtimePerformanceBridge";
+import type { Provider } from "../types";
 import type { QueuedTurn } from "../lib/taskStore";
 import type { AttachmentRecord } from "./StudioDock";
 
@@ -122,6 +124,7 @@ export function resizeComposerTextarea(
 
 export const Composer = forwardRef<ComposerHandle, {
   threadKey: string;
+  performanceProvider?: Provider;
   running: boolean;
   /**
    * Children spawned by this thread are still live even though its own turn is
@@ -428,6 +431,7 @@ export const Composer = forwardRef<ComposerHandle, {
           aria-activedescendant={mentions.open ? `${mentionMenuId}-${mentions.index}` : undefined}
           value={draft}
           onChange={(event) => {
+            if (props.performanceProvider) recordComposerInputToFrame(props.performanceProvider);
             setDraft(event.target.value);
             updateMentions(event.target.value, event.target.selectionStart ?? event.target.value.length);
           }}

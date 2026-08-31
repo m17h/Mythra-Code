@@ -44,6 +44,7 @@ import { useTaskStore, type QueuedTurn } from "./lib/taskStore";
 import { friendlyError } from "./lib/errors";
 import { recordError } from "./lib/errorLog";
 import { beginThreadOpen, failThreadOpen, markThreadHistoryHydrated, markThreadRenderMetrics, markThreadRuntimeReady, markThreadShellCommitted, markThreadTimelineCommitted, projectedJsonBytes, threadOpenAwaitingRenderMetrics, threadOpenAwaitingTimeline } from "./lib/performanceDiagnostics";
+import { forgetRuntimePerformanceProvider, registerRuntimePerformanceProvider } from "./lib/runtimePerformanceBridge";
 import {
   annotateThreadUsage,
   estimateUsageCost,
@@ -1410,12 +1411,18 @@ export default function App() {
   }, []);
 
   const rememberThread = useCallback((thread: Thread) => {
+    registerRuntimePerformanceProvider(thread.id, providerFromThread(thread, projectDefaultProvider));
     const next = rememberSidebarThread(knownThreadsRef.current ?? {}, thread);
     knownThreadsRef.current = next;
     storeValue("kiwi.knownThreads", next);
-  }, []);
+  }, [projectDefaultProvider]);
+
+  useEffect(() => {
+    if (activeThread) registerRuntimePerformanceProvider(activeThread.id, providerFromThread(activeThread, projectDefaultProvider));
+  }, [activeThread, projectDefaultProvider]);
 
   const forgetThread = useCallback((threadId: string) => {
+    forgetRuntimePerformanceProvider(threadId);
     const next = forgetSidebarThread(knownThreadsRef.current ?? {}, threadId);
     knownThreadsRef.current = next;
     storeValue("kiwi.knownThreads", next);
@@ -5502,6 +5509,7 @@ export default function App() {
               <Composer
                 ref={composerRef}
                 threadKey={attachmentKey}
+                performanceProvider={effectiveSettings.provider}
                 running={running}
                 childrenRunning={childrenRunning}
                 queueing={Boolean(running && activeThread)}

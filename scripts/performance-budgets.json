@@ -21,20 +21,26 @@
       "decision": "Accept about 0.14% more total JavaScript bookkeeping in exchange for over 15% less startup JavaScript on both targets; the added bytes are not in the startup closure.",
       "safari13": { "startupJsFromBytes": 808958, "startupJsToBytes": 684708, "startupJsDeltaBytes": -124250, "totalJsFromBytes": 1403070, "totalJsToBytes": 1405102, "totalJsDeltaBytes": 2032 },
       "chrome105": { "startupJsFromBytes": 782798, "startupJsToBytes": 660768, "startupJsDeltaBytes": -122030, "totalJsFromBytes": 1370331, "totalJsToBytes": 1372285, "totalJsDeltaBytes": 1954 }
+    },
+    {
+      "change": "Add lazy runtime performance instrumentation",
+      "decision": "Accept about 0.41% more startup JavaScript and 0.55% more total JavaScript to collect privacy-safe streaming, composer, persistence, and memory-growth evidence. The 4.8–5.0 KB collector is lazy; startup carries only the ordering/provider bridge, whose direct loaded-path calls avoid per-delta closure and collection allocation.",
+      "safari13": { "appEntryFromBytes": 367075, "appEntryToBytes": 369835, "appEntryDeltaBytes": 2760, "startupJsFromBytes": 684708, "startupJsToBytes": 687478, "startupJsDeltaBytes": 2770, "totalJsFromBytes": 1405102, "totalJsToBytes": 1412819, "totalJsDeltaBytes": 7717 },
+      "chrome105": { "appEntryFromBytes": 347856, "appEntryToBytes": 350574, "appEntryDeltaBytes": 2718, "startupJsFromBytes": 660768, "startupJsToBytes": 663493, "startupJsDeltaBytes": 2725, "totalJsFromBytes": 1372285, "totalJsToBytes": 1379801, "totalJsDeltaBytes": 7516 }
     }
   ],
   "profiles": {
     "safari13-minified": {
-      "appEntryRawBytes": 367075,
-      "startupJsRawBytes": 684708,
+      "appEntryRawBytes": 369835,
+      "startupJsRawBytes": 687478,
       "startupCssRawBytes": 336184,
-      "totalJsRawBytes": 1405102
+      "totalJsRawBytes": 1412819
     },
     "chrome105-minified": {
-      "appEntryRawBytes": 347856,
-      "startupJsRawBytes": 660768,
+      "appEntryRawBytes": 350574,
+      "startupJsRawBytes": 663493,
       "startupCssRawBytes": 334097,
-      "totalJsRawBytes": 1372285
+      "totalJsRawBytes": 1379801
     }
   }
 }
