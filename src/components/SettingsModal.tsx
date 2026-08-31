@@ -983,7 +983,8 @@ export function SettingsModal({
               <div><span><strong>Desktop notifications</strong><small>Notify when a background task finishes.</small></span><button type="button" role="switch" aria-checked={local.notificationsEnabled} className={`toggle-switch ${local.notificationsEnabled ? "on" : ""}`} onClick={() => setLocal({ ...local, notificationsEnabled: !local.notificationsEnabled })}><span /></button></div>
             </div>
             <div className="runtime-field-grid"><label><span>OpenAI service tier</span><select value={local.serviceTier ?? ""} onChange={(event) => setLocal({ ...local, serviceTier: event.target.value || null })}><option value="">Standard</option><option value="priority">Fast / priority</option></select></label><label><span>Terminal scrollback</span><select value={local.terminalScrollback} onChange={(event) => setLocal({ ...local, terminalScrollback: Number(event.target.value) })}><option value={25000}>25k characters</option><option value={100000}>100k characters</option><option value={500000}>500k characters</option></select></label><label><span>UI size</span><select value={local.uiScale ?? 100} onChange={(event) => setLocal({ ...local, uiScale: Number(event.target.value) })}><option value={90}>Compact (90%)</option><option value={100}>Default (100%)</option><option value={110}>Comfortable (110%)</option><option value={125}>Large (125%)</option></select></label></div>
-            <div className="diagnostic-card"><span><strong>Diagnostics</strong><small>{runtimeStatus?.version ?? "Runtime version unavailable"}{runtimeStatus?.warning ? ` · ${runtimeStatus.warning}` : runtimeStatus?.compatible ? " · compatible" : ""}</small></span><button className="secondary-button" onClick={() => void exportDiagnosticBundle()}>Export JSON</button></div>
+            <div className="diagnostic-card"><span><strong>Diagnostics</strong><small>{runtimeStatus?.version ?? "Runtime version unavailable"}{runtimeStatus?.warning ? ` · ${runtimeStatus.warning}` : runtimeStatus?.compatible ? " · compatible" : ""} · includes local performance samples</small></span><button className="secondary-button" onClick={() => void exportDiagnosticBundle()}>Export JSON</button></div>
+            <RecentPerformancePanel active={open && settingsSection === "general"} />
             <RecentErrorsPanel active={open && settingsSection === "general"} />
           </section>}
 
@@ -1641,6 +1642,54 @@ function RecentErrorsPanel({ active }: { active: boolean }) {
               <span>{message || row.kind}</span>
             </div>
           );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function finiteMetric(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function formatDiagnosticBytes(value: number | null): string | null {
+  if (value === null) return null;
+  if (value < 1024) return `${Math.round(value)} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function RecentPerformancePanel({ active }: { active: boolean }) {
+  const [rows, setRows] = useState<AuditRow[]>([]);
+  useEffect(() => {
+    if (!active) return;
+    recentAuditRows(10, "performance.threadOpen")
+      .then(setRows)
+      .catch(() => setRows([]));
+  }, [active]);
+  if (!rows.length) return null;
+  return (
+    <div className="recent-errors recent-performance">
+      <h3 className="panel-label">Recent thread opens</h3>
+      <div className="recent-errors-list">
+        {rows.map((row) => {
+          const payload = row.payload && typeof row.payload === "object" ? row.payload as Record<string, unknown> : {};
+          const durations = payload.durationMs && typeof payload.durationMs === "object" ? payload.durationMs as Record<string, unknown> : {};
+          const history = payload.history && typeof payload.history === "object" ? payload.history as Record<string, unknown> : {};
+          const processMemory = payload.processMemory && typeof payload.processMemory === "object" ? payload.processMemory as Record<string, unknown> : {};
+          const timeline = finiteMetric(durations.timelineCommit);
+          const ready = finiteMetric(durations.runtimeReady) ?? finiteMetric(durations.total);
+          const bytes = formatDiagnosticBytes(finiteMetric(history.projectedBytes));
+          const resident = formatDiagnosticBytes(finiteMetric(processMemory.managedProcessTreeResidentBytes));
+          const summary = [
+            String(payload.provider ?? "provider"),
+            timeline === null ? null : `timeline ${Math.round(timeline)} ms`,
+            ready === null ? null : `ready ${Math.round(ready)} ms`,
+            bytes,
+            resident ? `${resident} managed RSS` : null,
+            payload.outcome === "error" ? "failed" : null,
+          ].filter(Boolean).join(" · ");
+          return <div key={row.id}><small>{new Date(row.createdAt).toLocaleString()}</small><span>{summary}</span></div>;
         })}
       </div>
     </div>

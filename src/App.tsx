@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type PointerEvent as ReactPointerEvent, type SetStateAction } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type PointerEvent as ReactPointerEvent, type SetStateAction } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -44,6 +44,7 @@ import { PendingTurnStarts } from "./lib/pendingTurnStarts";
 import { useTaskStore, type QueuedTurn } from "./lib/taskStore";
 import { friendlyError } from "./lib/errors";
 import { recordError } from "./lib/errorLog";
+import { beginThreadOpen, failThreadOpen, markThreadHistoryHydrated, markThreadRuntimeReady, markThreadShellCommitted, markThreadTimelineCommitted, projectedJsonBytes, threadOpenAwaitingTimeline } from "./lib/performanceDiagnostics";
 import {
   annotateThreadUsage,
   estimateUsageCost,
@@ -316,6 +317,16 @@ function ConversationTimeline({ threadId, running, thinkingLabel, approval, prov
   const messages = useTaskStore((state) => state.tasks[threadId]?.messages ?? EMPTY_MESSAGES);
   const activities = useTaskStore((state) => state.tasks[threadId]?.activities ?? EMPTY_ACTIVITIES);
   const history = useTaskStore((state) => state.tasks[threadId]?.history);
+  useLayoutEffect(() => {
+    markThreadShellCommitted(threadId);
+    if (!threadOpenAwaitingTimeline(threadId)) return;
+    const scroller = document.querySelector<HTMLElement>('[data-testid="timeline-scroller"]');
+    markThreadTimelineCommitted(threadId, {
+      renderedRowCount: scroller?.querySelectorAll("[data-entry-index]").length ?? 0,
+      timelineDomNodeCount: scroller?.querySelectorAll("*").length ?? 0,
+      totalDomNodeCount: document.getElementsByTagName("*").length,
+    });
+  }, [activities, history, messages, threadId]);
   // A thread change must create a fresh virtual scroller so its initial
   // position is applied to the newly selected conversation.
   return <ChatTimeline key={threadId} messages={messages} activities={activities} running={running} thinkingLabel={thinkingLabel} approval={approval} provider={provider} history={history} onLoadEarlier={onLoadEarlier} searchQuery={searchQuery} searchActiveMatch={searchActiveMatch} onSearchMatches={onSearchMatches} onEditMessage={onEditMessage} onApprovalRespond={onApprovalRespond} />;
@@ -2856,6 +2867,13 @@ export default function App() {
     // Clicking two threads quickly must open the one clicked last, not the
     // one whose resume RPC happened to finish last.
     const requestId = ++selectThreadRequestRef.current;
+    const selectedProvider = providerFromThread(thread, projectDefaultProvider);
+    const existingTask = useTaskStore.getState().tasks[thread.id];
+    beginThreadOpen(
+      thread.id,
+      selectedProvider,
+      Boolean(existingTask && (existingTask.messages.length > 0 || existingTask.activities.length > 0)),
+    );
     setError(null);
     setStatus("Loading thread");
     setDraftThreadProvider(null);
@@ -2883,6 +2901,19 @@ export default function App() {
         setActiveThread(resolvedThread);
         hydrateLocalProviderTask(resolvedThread.id, transcript, executionPath);
         useTaskStore.getState().setActiveThread(resolvedThread.id);
+        const hydrated = useTaskStore.getState().tasks[resolvedThread.id];
+        markThreadHistoryHydrated(resolvedThread.id, {
+          // Local-provider transcripts currently arrive as one native value.
+          // Do not stringify a potentially multi-megabyte transcript on the
+          // navigation path merely to measure it; the storage redesign will
+          // expose transport bytes without adding this work to first paint.
+          projectedBytes: null,
+          messageCount: hydrated?.messages.length ?? 0,
+          activityCount: hydrated?.activities.length ?? 0,
+          paginated: false,
+          hasMore: false,
+        });
+        markThreadRuntimeReady(resolvedThread.id);
         setStatus("Ready");
         return;
       }
@@ -2900,10 +2931,19 @@ export default function App() {
         setActiveThread(resolvedThread);
         hydrateLocalProviderTask(resolvedThread.id, transcript, executionPath);
         useTaskStore.getState().setActiveThread(resolvedThread.id);
+        const hydrated = useTaskStore.getState().tasks[resolvedThread.id];
+        markThreadHistoryHydrated(resolvedThread.id, {
+          projectedBytes: null,
+          messageCount: hydrated?.messages.length ?? 0,
+          activityCount: hydrated?.activities.length ?? 0,
+          paginated: false,
+          hasMore: false,
+        });
+        markThreadRuntimeReady(resolvedThread.id);
         setStatus("Ready");
         return;
       }
-      const provider = providerFromThread(thread, projectDefaultProvider);
+      const provider = selectedProvider;
       const projectModel = activeProject?.overrides?.defaults?.model ?? settings.model;
       const providerPrompt = provider === "openai" || provider === "claude"
         ? subscriptionSystemPrompts[provider]
@@ -2973,6 +3013,13 @@ export default function App() {
       const history = timelineFromTurns(loaded.turns);
       useTaskStore.getState().hydrateTask(loaded.thread.id, history.messages, history.activities, executionPath, loaded.history);
       useTaskStore.getState().setActiveThread(loaded.thread.id);
+      markThreadHistoryHydrated(loaded.thread.id, {
+        projectedBytes: projectedJsonBytes({ thread: loaded.thread, turns: loaded.turns }),
+        messageCount: history.messages.length,
+        activityCount: history.activities.length,
+        paginated: loaded.history.paginated,
+        hasMore: loaded.history.hasMore,
+      });
       setStatus("Preparing thread");
 
       // Viewing is complete. Now make the live runtime ready for the next
@@ -3041,6 +3088,7 @@ export default function App() {
           recordSubagentCapabilities(resumed.thread.id, resumedRuntimeInstance, capabilitySignature);
         }
       }
+      markThreadRuntimeReady(thread.id);
       setStatus("Ready");
     })();
     threadPreparationRef.current.set(thread.id, selectionWork);
@@ -3048,6 +3096,7 @@ export default function App() {
       await selectionWork;
     } catch (reason) {
       if (selectThreadRequestRef.current !== requestId) return;
+      failThreadOpen(thread.id, "selection");
       setError(friendlyError(reason));
       setStatus("Ready");
     } finally {

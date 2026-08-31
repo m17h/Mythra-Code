@@ -2,6 +2,39 @@ use super::*;
 use std::process::Command as StdCommand;
 
 #[test]
+fn process_memory_snapshot_counts_only_the_managed_descendant_tree() {
+    let snapshot = summarize_process_memory(
+        &[
+            (100, None, 10),
+            (101, Some(100), 20),
+            (102, Some(101), 30),
+            (200, None, 1_000),
+            (201, Some(200), 2_000),
+        ],
+        100,
+        Some(102),
+    );
+    assert_eq!(
+        snapshot,
+        ProcessMemorySnapshot {
+            host_resident_bytes: Some(10),
+            managed_process_tree_resident_bytes: Some(60),
+            managed_process_count: 3,
+            app_server_resident_bytes: Some(30),
+        }
+    );
+}
+
+#[test]
+fn process_memory_snapshot_reports_missing_processes_without_fake_zeroes() {
+    let snapshot = summarize_process_memory(&[(200, None, 1_000)], 100, Some(999));
+    assert_eq!(snapshot.host_resident_bytes, None);
+    assert_eq!(snapshot.managed_process_tree_resident_bytes, None);
+    assert_eq!(snapshot.managed_process_count, 0);
+    assert_eq!(snapshot.app_server_resident_bytes, None);
+}
+
+#[test]
 fn claude_always_uses_mythra_code_as_its_only_subagent_route() {
     let disallowed = claude_disallowed_tools("ask");
     assert!(disallowed.contains(&"Task"));

@@ -22,6 +22,7 @@ use axum::{
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
@@ -2821,8 +2822,103 @@ async fn audit_recent(
     .map_err(|error| format!("Audit read task failed: {error}"))?
 }
 
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct ProcessMemorySnapshot {
+    host_resident_bytes: Option<u64>,
+    managed_process_tree_resident_bytes: Option<u64>,
+    managed_process_count: usize,
+    app_server_resident_bytes: Option<u64>,
+}
+
+/// Summarize only processes Mythra Code can attribute by parentage. WebView
+/// helpers re-parented by the OS are intentionally excluded rather than
+/// presenting an unreliable machine-wide total as application memory.
+fn summarize_process_memory(
+    processes: &[(u32, Option<u32>, u64)],
+    host_pid: u32,
+    app_server_pid: Option<u32>,
+) -> ProcessMemorySnapshot {
+    let mut managed = HashSet::from([host_pid]);
+    loop {
+        let before = managed.len();
+        for (pid, parent, _) in processes {
+            if parent.is_some_and(|parent| managed.contains(&parent)) {
+                managed.insert(*pid);
+            }
+        }
+        if managed.len() == before {
+            break;
+        }
+    }
+    let managed_rows = processes
+        .iter()
+        .filter(|(pid, _, _)| managed.contains(pid))
+        .collect::<Vec<_>>();
+    ProcessMemorySnapshot {
+        host_resident_bytes: processes
+            .iter()
+            .find_map(|(pid, _, memory)| (*pid == host_pid).then_some(*memory)),
+        managed_process_tree_resident_bytes: (!managed_rows.is_empty())
+            .then(|| managed_rows.iter().map(|(_, _, memory)| *memory).sum()),
+        managed_process_count: managed_rows.len(),
+        app_server_resident_bytes: app_server_pid.and_then(|target| {
+            processes
+                .iter()
+                .find_map(|(pid, _, memory)| (*pid == target).then_some(*memory))
+        }),
+    }
+}
+
+async fn collect_process_memory_snapshot(
+    app_server_pid: Option<u32>,
+) -> Result<ProcessMemorySnapshot, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut system = System::new();
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::All,
+            true,
+            ProcessRefreshKind::nothing().with_memory(),
+        );
+        let processes = system
+            .processes()
+            .iter()
+            .map(|(pid, process)| {
+                (
+                    pid.as_u32(),
+                    process.parent().map(|parent| parent.as_u32()),
+                    process.memory(),
+                )
+            })
+            .collect::<Vec<_>>();
+        Ok(summarize_process_memory(
+            &processes,
+            std::process::id(),
+            app_server_pid,
+        ))
+    })
+    .await
+    .map_err(|error| format!("Process memory snapshot task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn performance_snapshot(
+    state: State<'_, RuntimeState>,
+) -> Result<ProcessMemorySnapshot, String> {
+    let app_server_pid = *state
+        .server_pid
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    collect_process_memory_snapshot(app_server_pid).await
+}
+
 async fn read_diagnostics(app: &AppHandle, state: &RuntimeState) -> Result<Value, String> {
     let runtime = read_codex_runtime_status(app, state).await;
+    let app_server_pid = *state
+        .server_pid
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let process_memory = collect_process_memory_snapshot(app_server_pid).await.ok();
     let database = state_db_path(app)?;
     let shared_connection = shared_state_db(app)?;
     let audit = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<Value>, String> {
@@ -2853,6 +2949,7 @@ async fn read_diagnostics(app: &AppHandle, state: &RuntimeState) -> Result<Value
         "platform": env::consts::OS,
         "architecture": env::consts::ARCH,
         "generatedAt": unix_timestamp_ms(),
+        "processMemory": process_memory,
         "auditEvents": audit,
     }))
 }
@@ -4110,6 +4207,7 @@ pub fn run() {
             worktree_remove,
             audit_append,
             audit_recent,
+            performance_snapshot,
             diagnostics_read,
             diagnostics_export,
             export_text_file,
