@@ -5,7 +5,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ convertFileSrc: (path: string) => `asset://localhost/${encodeURIComponent(path)}` }));
 
-import { ActivityRow, ChatTimeline, CommandDisclosure, CompletedWorkDisclosure, FileDisclosure, ReasoningDisclosure, compactCompletedTurns, formatCompletedDuration, orderedTimelineEntries, type WorkItemEntry } from "./ChatTimeline";
+import { ActivityRow, ChatTimeline, CommandDisclosure, CompletedWorkDisclosure, FileDisclosure, ReasoningDisclosure, TIMELINE_MOUNT_ROWS, compactCompletedTurns, formatCompletedDuration, orderedTimelineEntries, type WorkItemEntry } from "./ChatTimeline";
 import { timelineFromTurns } from "../lib/threadTimeline";
 
 /** Mirrors the shape of the old thread that exposed the production stall. */
@@ -307,7 +307,7 @@ describe("ChatTimeline", () => {
     expect(container.querySelector("[style*='position: absolute']")).toBeNull();
   });
 
-  it("compacts the old 2,089-record thread shape to a manageable flow transcript", () => {
+  it("compacts and initially windows the old 2,089-record thread shape", () => {
     const { activities, messages } = oldLongThread();
 
     expect(messages).toHaveLength(300);
@@ -316,6 +316,9 @@ describe("ChatTimeline", () => {
       <ChatTimeline messages={messages} activities={activities} running={false} thinkingLabel="Thinking" />,
     );
 
+    expect(document.querySelectorAll(".timeline-entry")).toHaveLength(TIMELINE_MOUNT_ROWS);
+    expect(screen.getByTestId("reveal-earlier")).toHaveTextContent("Show 29 earlier messages");
+    fireEvent.click(screen.getByTestId("reveal-earlier"));
     expect(document.querySelectorAll(".timeline-entry")).toHaveLength(69);
     expect(screen.getByTestId("timeline-scroller")).toHaveAttribute("data-flow-timeline", "true");
   });

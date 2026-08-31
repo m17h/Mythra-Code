@@ -715,6 +715,7 @@ export const CompletedWorkDisclosure = memo(function CompletedWorkDisclosure({ e
 }, (previous, next) => (previous.reveal ?? false) === (next.reveal ?? false) && sameWorkItems(previous.entries, next.entries));
 
 export const TIMELINE_FOLLOW_REARM_THRESHOLD_PX = 40;
+export const TIMELINE_MOUNT_ROWS = 40;
 
 export function shouldCancelTimelineFollowForWheel(deltaY: number, contentOverflows: boolean): boolean {
   return deltaY < 0 && contentOverflows;
@@ -784,14 +785,15 @@ export function timelineEntryKey(entry: TimelineEntry, index: number): string {
   return `${entry.kind}-${entry.value.id}`;
 }
 
+type PrependAnchor =
+  | { kind: "local"; scrollHeight: number; scrollTop: number; element: HTMLElement | null; elementTop: number | null; expectHiddenPrefix: number }
+  | { kind: "server"; scrollHeight: number; scrollTop: number; element: HTMLElement | null; elementTop: number | null; previousFirstKey: string | null; sawLoading: boolean };
+
 /**
- * The complete transcript is deliberately rendered in ordinary document flow.
- *
- * Absolute virtualized rows can retain a stale height in WKWebView both while
- * streaming and while hydrating an existing thread. A following prompt then
- * paints through the previous answer. Compaction reduces even the historical
- * 2,089-record fixture to 69 rows, so normal flow is fast enough and removes
- * the stale-coordinate failure mode instead of trying to time measurements.
+ * Rows stay in ordinary document flow because absolute virtualization can
+ * retain stale heights in WKWebView while streaming. Only a bounded suffix is
+ * mounted initially; readers can reveal older in-memory rows in anchored
+ * chunks, preserving normal layout without paying to parse the whole DOM.
  */
 function FlowTimeline({
   activeEntryIndex,
@@ -817,9 +819,28 @@ function FlowTimeline({
   const scrollerRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const followingEndRef = useRef(true);
+  const searchWasActiveRef = useRef(false);
+  const smoothScrollPendingRef = useRef(false);
   const pointerNavigationPendingRef = useRef(false);
-  const prependAnchorRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null);
+  const prependAnchorRef = useRef<PrependAnchor | null>(null);
   const [showScrollToLatest, setShowScrollToLatest] = useState(false);
+  const [hiddenPrefixOverride, setHiddenPrefixOverride] = useState<number | null>(null);
+  const [anchoring, setAnchoring] = useState(false);
+  const [windowAnnouncement, setWindowAnnouncement] = useState("");
+  const automaticHiddenPrefix = Math.max(0, entries.length - TIMELINE_MOUNT_ROWS);
+  const hiddenPrefixCount = hiddenPrefixOverride === null
+    ? automaticHiddenPrefix
+    : Math.min(Math.max(0, hiddenPrefixOverride), automaticHiddenPrefix);
+  const suffixEntries = entries.slice(hiddenPrefixCount);
+  const searching = Boolean(searchQuery?.trim()) && activeEntryIndex >= 0;
+  const searchWindowStart = searching && activeEntryIndex < hiddenPrefixCount
+    ? Math.max(0, activeEntryIndex - Math.floor(TIMELINE_MOUNT_ROWS / 2))
+    : null;
+  const searchWindowEnd = searchWindowStart === null
+    ? null
+    : Math.min(hiddenPrefixCount, searchWindowStart + TIMELINE_MOUNT_ROWS);
+  const hiddenSearchGap = searchWindowEnd === null ? 0 : hiddenPrefixCount - searchWindowEnd;
+  const firstEntryKey = entries[0] ? timelineEntryKey(entries[0], 0) : null;
 
   const scrollToLatest = useCallback((behavior: ScrollBehavior = "auto") => {
     const scroller = scrollerRef.current;
@@ -837,25 +858,97 @@ function FlowTimeline({
     const scroller = scrollerRef.current;
     if (!scroller || scroller.scrollHeight <= scroller.clientHeight + 1) return;
     followingEndRef.current = false;
+    setHiddenPrefixOverride((current) => current ?? hiddenPrefixCount);
     setShowScrollToLatest(true);
-  }, []);
+  }, [hiddenPrefixCount]);
 
   useLayoutEffect(() => {
     const scroller = scrollerRef.current;
-    if (prependAnchorRef.current && scroller && !history?.loading) {
-      const anchor = prependAnchorRef.current;
-      scroller.scrollTop = anchor.scrollTop + (scroller.scrollHeight - anchor.scrollHeight);
+    const anchor = prependAnchorRef.current;
+    if (anchor?.kind === "server" && history?.loading) anchor.sawLoading = true;
+    const localReady = anchor?.kind === "local" && hiddenPrefixCount <= anchor.expectHiddenPrefix;
+    const serverReady = anchor?.kind === "server"
+      && !history?.loading
+      && (anchor.sawLoading || anchor.previousFirstKey !== firstEntryKey);
+    if (anchor && scroller && (localReady || serverReady)) {
+      const serverPrepended = anchor.kind !== "server" || anchor.previousFirstKey !== firstEntryKey;
+      if (serverPrepended) {
+        const nextTop = anchor.element?.isConnected ? anchor.element.getBoundingClientRect().top : null;
+        const visualDelta = nextTop !== null && anchor.elementTop !== null ? nextTop - anchor.elementTop : null;
+        scroller.scrollTop = anchor.scrollTop + (visualDelta ?? (scroller.scrollHeight - anchor.scrollHeight));
+      }
+      if (scroller.scrollHeight <= scroller.clientHeight + 1) {
+        followingEndRef.current = true;
+        setShowScrollToLatest(false);
+      }
       prependAnchorRef.current = null;
+      setAnchoring(false);
       return;
     }
-    if (followingEndRef.current) scrollToLatest();
-  }, [entries, history?.loading, scrollToLatest]);
+    if (anchor) return;
+    if (followingEndRef.current && !smoothScrollPendingRef.current) scrollToLatest();
+  }, [entries, firstEntryKey, hiddenPrefixCount, history?.loading, scrollToLatest]);
+
+  const revealEarlier = useCallback(() => {
+    const scroller = scrollerRef.current;
+    const nextHiddenPrefix = Math.max(0, hiddenPrefixCount - TIMELINE_MOUNT_ROWS);
+    if (scroller) {
+      const element = contentRef.current?.querySelector<HTMLElement>(`[data-entry-index="${hiddenPrefixCount}"]`) ?? null;
+      prependAnchorRef.current = {
+        kind: "local",
+        scrollHeight: scroller.scrollHeight,
+        scrollTop: scroller.scrollTop,
+        element,
+        elementTop: element?.getBoundingClientRect().top ?? null,
+        expectHiddenPrefix: nextHiddenPrefix,
+      };
+    }
+    followingEndRef.current = false;
+    setShowScrollToLatest(true);
+    setAnchoring(true);
+    setHiddenPrefixOverride(nextHiddenPrefix);
+    setWindowAnnouncement(`Showing ${entries.length - nextHiddenPrefix} of ${entries.length} loaded timeline entries.`);
+  }, [entries.length, hiddenPrefixCount]);
+
+  const loadEarlierFromServer = useCallback(() => {
+    const scroller = scrollerRef.current;
+    if (scroller) {
+      const anchor = prependAnchorRef.current;
+      if (!anchor) {
+        const element = contentRef.current?.querySelector<HTMLElement>('[data-entry-index="0"]') ?? null;
+        prependAnchorRef.current = {
+          kind: "server",
+          scrollHeight: scroller.scrollHeight,
+          scrollTop: scroller.scrollTop,
+          element,
+          elementTop: element?.getBoundingClientRect().top ?? null,
+          previousFirstKey: firstEntryKey,
+          sawLoading: Boolean(history?.loading),
+        };
+      }
+    }
+    followingEndRef.current = false;
+    setHiddenPrefixOverride(0);
+    setShowScrollToLatest(true);
+    onLoadEarlier?.();
+  }, [firstEntryKey, history?.loading, onLoadEarlier]);
+
+  const jumpToLatest = useCallback(() => {
+    followingEndRef.current = true;
+    smoothScrollPendingRef.current = true;
+    setHiddenPrefixOverride(null);
+    setShowScrollToLatest(false);
+    requestAnimationFrame(() => {
+      scrollToLatest("smooth");
+      smoothScrollPendingRef.current = false;
+    });
+  }, [scrollToLatest]);
 
   useEffect(() => {
     const content = contentRef.current;
     if (!content || typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(() => {
-      if (followingEndRef.current) scrollToLatest();
+      if (followingEndRef.current && !smoothScrollPendingRef.current) scrollToLatest();
     });
     observer.observe(content);
     return () => observer.disconnect();
@@ -878,17 +971,28 @@ function FlowTimeline({
   }, []);
 
   useEffect(() => {
-    if (activeEntryIndex < 0) return;
-    followingEndRef.current = false;
-    setShowScrollToLatest(true);
-    contentRef.current
-      ?.querySelector<HTMLElement>(`[data-entry-index="${activeEntryIndex}"]`)
-      ?.scrollIntoView?.({ block: "center" });
+    if (activeEntryIndex >= 0) {
+      searchWasActiveRef.current = true;
+      followingEndRef.current = false;
+      setShowScrollToLatest(true);
+      contentRef.current
+        ?.querySelector<HTMLElement>(`[data-entry-index="${activeEntryIndex}"]`)
+        ?.scrollIntoView?.({ block: "center" });
+      return;
+    }
+    if (!searchWasActiveRef.current) return;
+    searchWasActiveRef.current = false;
+    const scroller = scrollerRef.current;
+    if (scroller && scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= TIMELINE_FOLLOW_REARM_THRESHOLD_PX) {
+      followingEndRef.current = true;
+      setHiddenPrefixOverride(null);
+      setShowScrollToLatest(false);
+    }
   }, [activeEntryIndex]);
 
   return (
     <div className="timeline-shell" data-scroll-mode={followingEndRef.current ? "following-end" : "free-scrolling"}>
-      <span className="sr-only" role="status">{liveSubAgentSummary}</span>
+      <span className="sr-only" role="status">{[liveSubAgentSummary, windowAnnouncement].filter(Boolean).join(" ")}</span>
       <div
         ref={scrollerRef}
         className="timeline flow-timeline"
@@ -900,6 +1004,7 @@ function FlowTimeline({
           const atEnd = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= TIMELINE_FOLLOW_REARM_THRESHOLD_PX;
           if (atEnd) {
             followingEndRef.current = true;
+            setHiddenPrefixOverride(null);
             setShowScrollToLatest(false);
           } else if (pointerNavigationPendingRef.current) {
             stopFollowing();
@@ -927,27 +1032,28 @@ function FlowTimeline({
           }
         }}
       >
-        {history?.paginated && history.hasMore && (
+        {(hiddenPrefixCount > 0 || (history?.paginated && history.hasMore)) && !searching && (
           <div className="timeline-history-control">
             <button
               type="button"
-              data-testid="load-earlier"
-              disabled={history.loading}
-              aria-busy={history.loading}
-              onClick={() => {
-                const current = scrollerRef.current;
-                if (current) prependAnchorRef.current = { scrollHeight: current.scrollHeight, scrollTop: current.scrollTop };
-                onLoadEarlier?.();
-              }}
+              data-testid={hiddenPrefixCount > 0 ? "reveal-earlier" : "load-earlier"}
+              disabled={anchoring || (hiddenPrefixCount === 0 && (history?.loading || !onLoadEarlier))}
+              aria-busy={anchoring || (hiddenPrefixCount === 0 && history?.loading)}
+              onClick={hiddenPrefixCount > 0 ? revealEarlier : loadEarlierFromServer}
             >
-              {history.loading ? "Loading earlier messages…" : "Load earlier messages"}
+              {hiddenPrefixCount > 0
+                ? `Show ${Math.min(TIMELINE_MOUNT_ROWS, hiddenPrefixCount)} earlier messages`
+                : history?.loading
+                  ? "Loading earlier messages…"
+                  : "Load earlier messages"}
             </button>
           </div>
         )}
         <TimelineHeader />
         <div ref={contentRef} className="flow-timeline-list">
-          {entries.map((entry, index) => (
-            <div data-entry-index={index} key={timelineEntryKey(entry, index)}>
+          {searchWindowStart !== null && searchWindowEnd !== null && entries.slice(searchWindowStart, searchWindowEnd).map((entry, offset) => {
+            const index = searchWindowStart + offset;
+            return <div data-entry-index={index} key={timelineEntryKey(entry, index)}>
               <TimelineEntryContent
                 activeEntryIndex={activeEntryIndex}
                 entry={entry}
@@ -957,8 +1063,25 @@ function FlowTimeline({
                 provider={provider}
                 searchQuery={searchQuery}
               />
-            </div>
-          ))}
+            </div>;
+          })}
+          {searchWindowEnd !== null && hiddenSearchGap > 0 && (
+            <div className="timeline-window-gap" role="note">{hiddenSearchGap} entries between this result and the latest conversation</div>
+          )}
+          {suffixEntries.map((entry, offset) => {
+            const index = hiddenPrefixCount + offset;
+            return <div data-entry-index={index} key={timelineEntryKey(entry, index)}>
+              <TimelineEntryContent
+                activeEntryIndex={activeEntryIndex}
+                entry={entry}
+                index={index}
+                onApprovalRespond={onApprovalRespond}
+                onEditMessage={onEditMessage}
+                provider={provider}
+                searchQuery={searchQuery}
+              />
+            </div>;
+          })}
         </div>
         <TimelineFooter />
       </div>
@@ -966,7 +1089,7 @@ function FlowTimeline({
         <button
           type="button"
           className="timeline-scroll-latest"
-          onClick={() => scrollToLatest("smooth")}
+          onClick={jumpToLatest}
           aria-label="Scroll to latest message"
         >
           <ChevronDown size={14} />

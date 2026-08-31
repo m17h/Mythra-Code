@@ -575,6 +575,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .timeline-history-control button:hover:not(:disabled) { border-color: color-mix(in srgb, var(--green) 48%, var(--line-strong)); color: var(--text); background: color-mix(in srgb, var(--panel) 88%, var(--green) 12%); }
 .timeline-history-control button:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
 .timeline-history-control button:disabled { cursor: wait; opacity: .7; }
+.timeline-window-gap { width: min(var(--measure), calc(100% - 64px)); margin: 2px auto var(--s-5); padding: 8px 12px; border-block: 1px solid var(--line); color: var(--muted-2); font-size: var(--fs-meta); text-align: center; }
 .timeline-scroll-latest { position: absolute; right: 50%; bottom: 82px; z-index: 12; display: flex; align-items: center; gap: 5px; min-height: 30px; padding: 0 11px; transform: translateX(50%); border: 1px solid var(--line-strong); border-radius: 999px; color: var(--text); background: color-mix(in srgb, var(--panel) 94%, transparent); box-shadow: var(--elev-2); font: inherit; font-size: var(--fs-meta); font-weight: 650; cursor: pointer; backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
 .timeline-scroll-latest:hover { border-color: color-mix(in srgb, var(--green) 48%, var(--line-strong)); background: color-mix(in srgb, var(--panel) 88%, var(--green) 12%); }
 .timeline-scroll-latest:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
