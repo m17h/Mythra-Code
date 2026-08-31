@@ -76,6 +76,7 @@ function deferred<T>(): Deferred<T> {
 
 let pendingResume: Deferred<{ thread: Thread }>;
 let resumeImpl: (params: Record<string, unknown>) => unknown;
+let threadTurnsListImpl: (params: Record<string, unknown>) => unknown;
 let turnStartImpl: (params: Record<string, unknown>) => unknown;
 let accountReadImpl: (params: Record<string, unknown>) => unknown;
 let accountLogoutImpl: () => unknown;
@@ -265,7 +266,7 @@ function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
     if (method === "thread/read") {
       return { thread: { ...THREAD_A, id: String(params.threadId), turns: [] } };
     }
-    if (method === "thread/turns/list") return { data: [], nextCursor: null, backwardsCursor: null };
+    if (method === "thread/turns/list") return threadTurnsListImpl(params);
     if (method === "thread/resume") return resumeImpl(params);
     if (method === "turn/start") return turnStartImpl(params);
     if (method === "account/read") {
@@ -299,6 +300,7 @@ beforeEach(() => {
   vi.spyOn(window, "confirm").mockReturnValue(true);
   pendingResume = deferred<{ thread: Thread }>();
   resumeImpl = () => pendingResume.promise;
+  threadTurnsListImpl = () => ({ data: [], nextCursor: null, backwardsCursor: null });
   turnStartImpl = (params) => ({ turn: { id: `turn-${String(params.threadId)}` } });
   accountReadImpl = () => ({ account: { type: "chatgpt", email: "test@example.com", planType: "pro" }, requiresOpenaiAuth: true });
   accountLogoutImpl = () => ({});
@@ -958,6 +960,101 @@ describe("workspace switching during thread selection", () => {
 
     expect(useTaskStore.getState().activeThreadId).toBeNull();
     expect(screen.queryByText("work in alpha")).not.toBeInTheDocument();
+  });
+
+  it("clears an older-page loading latch when the user leaves the thread", async () => {
+    const user = userEvent.setup();
+    const olderPage = deferred<unknown>();
+    resumeImpl = () => ({
+      thread: { ...THREAD_A, turns: [] },
+      initialTurnsPage: { data: [], nextCursor: "older-a", backwardsCursor: null },
+    });
+    threadTurnsListImpl = () => olderPage.promise;
+    await renderApp();
+    const { useTaskStore } = await import("./lib/taskStore");
+
+    await user.click(await screen.findByText("Alpha thread"));
+    await waitFor(() => expect(useTaskStore.getState().tasks[THREAD_A.id]?.history.nextCursor).toBe("older-a"));
+    await user.click(await screen.findByRole("button", { name: "Load earlier messages" }));
+    await waitFor(() => expect(useTaskStore.getState().tasks[THREAD_A.id]?.history.loading).toBe(true));
+    await user.click(screen.getByRole("button", { name: PROJECT_B.name }));
+
+    await act(async () => {
+      olderPage.resolve({ data: [], nextCursor: null, backwardsCursor: null });
+      await olderPage.promise;
+    });
+    await waitFor(() => expect(useTaskStore.getState().tasks[THREAD_A.id]?.history.loading).toBe(false));
+  });
+
+  it("rejects an older page whose cursor was replaced by a same-thread rehydrate", async () => {
+    const user = userEvent.setup();
+    const stalePage = deferred<unknown>();
+    let resumeCount = 0;
+    resumeImpl = () => ({
+      thread: { ...THREAD_A, turns: [] },
+      initialTurnsPage: {
+        data: [],
+        nextCursor: resumeCount++ === 0 ? "cursor-before-refresh" : "cursor-after-refresh",
+        backwardsCursor: null,
+      },
+    });
+    threadTurnsListImpl = () => stalePage.promise;
+    await renderApp();
+    const { useTaskStore } = await import("./lib/taskStore");
+
+    const threadRow = await screen.findByText("Alpha thread");
+    await user.click(threadRow);
+    await waitFor(() => expect(useTaskStore.getState().tasks[THREAD_A.id]?.history.nextCursor).toBe("cursor-before-refresh"));
+    await user.click(await screen.findByRole("button", { name: "Load earlier messages" }));
+    await waitFor(() => expect(useTaskStore.getState().tasks[THREAD_A.id]?.history.loading).toBe(true));
+    await user.click(threadRow);
+    await waitFor(() => expect(useTaskStore.getState().tasks[THREAD_A.id]?.history.nextCursor).toBe("cursor-after-refresh"));
+
+    await act(async () => {
+      stalePage.resolve({
+        data: [{
+          id: "stale-old-turn",
+          status: "completed",
+          items: [{ id: "stale-old-message", type: "userMessage", content: [{ type: "text", text: "must not appear" }] }],
+        }],
+        nextCursor: "stale-next",
+        backwardsCursor: null,
+      });
+      await stalePage.promise;
+    });
+
+    const task = useTaskStore.getState().tasks[THREAD_A.id];
+    expect(task.history.nextCursor).toBe("cursor-after-refresh");
+    expect(task.messages.some((message) => message.id === "stale-old-message")).toBe(false);
+  });
+
+  it("falls back for a malformed older page without disabling pagination globally", async () => {
+    const user = userEvent.setup();
+    resumeImpl = (params) => ({
+      thread: { ...(params.threadId === THREAD_B.id ? THREAD_B : THREAD_A), turns: [] },
+      initialTurnsPage: { data: [], nextCursor: `older-${String(params.threadId)}`, backwardsCursor: null },
+    });
+    threadTurnsListImpl = () => ({
+      data: [{ id: "malformed-turn", status: "completed", items: null }],
+      nextCursor: null,
+      backwardsCursor: null,
+    });
+    await renderApp();
+    const { useTaskStore } = await import("./lib/taskStore");
+
+    await user.click(await screen.findByText("Alpha thread"));
+    await user.click(await screen.findByRole("button", { name: "Load earlier messages" }));
+    await waitFor(() => expect(useTaskStore.getState().tasks[THREAD_A.id]?.history.paginated).toBe(false));
+    expect(invokeMock).toHaveBeenCalledWith("codex_rpc", expect.objectContaining({
+      method: "thread/read",
+      params: { threadId: THREAD_A.id, includeTurns: true },
+    }));
+
+    await user.click(await screen.findByText("Beta thread"));
+    await waitFor(() => expect(useTaskStore.getState().tasks[THREAD_B.id]?.history).toMatchObject({
+      paginated: true,
+      nextCursor: `older-${THREAD_B.id}`,
+    }));
   });
 
   it("does not mark an idle thread as running/steering while another thread's start is in flight", async () => {

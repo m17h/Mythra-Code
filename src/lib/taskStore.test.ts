@@ -26,6 +26,7 @@ describe("task store", () => {
       const threadId = `thread-${index}`;
       store.hydrateTask(threadId, [{ id: `m-${index}`, role: "user", text: "hi" }], [], "/p");
     }
+    store.setHistory("thread-1", { paginated: true, hasMore: true, nextCursor: "older" });
     // Age every hydrated task past the save-debounce safety window, and make
     // one of the coldest ineligible by marking it running.
     useTaskStore.setState((state) => ({
@@ -44,6 +45,7 @@ describe("task store", () => {
     expect(tasks["thread-0"].messages).toHaveLength(1);
     expect(tasks["thread-1"].messages).toHaveLength(0);
     expect(tasks["thread-2"].messages).toHaveLength(0);
+    expect(tasks["thread-1"].history).toMatchObject({ paginated: false, hasMore: false, nextCursor: null });
     // The shell survives eviction so approvals/queues/agents would too.
     expect(tasks["thread-1"]).toBeDefined();
   });
@@ -98,6 +100,31 @@ describe("task store", () => {
     store.hydrateTask("thread-a", [{ id: "loaded", role: "assistant", text: "recent answer" }], [], "/p");
 
     expect(useTaskStore.getState().tasks["thread-a"].messages.map((message) => message.id)).toEqual(["loaded", "optimistic"]);
+  });
+
+  it("keeps assigned active-turn messages and tools while paged hydration is in flight", () => {
+    const store = useTaskStore.getState();
+    store.ensureTask("thread-a", "/p");
+    store.setActiveTurn("thread-a", "live-turn");
+    store.appendUserMessage("thread-a", { id: "live-user", role: "user", text: "do this", turnId: "live-turn" });
+    store.upsertActivity("thread-a", { id: "live-tool", kind: "command", title: "npm test", status: "inProgress", turnId: "live-turn" });
+    store.completeMessage("thread-a", { id: "live-answer", role: "assistant", text: "partial", turnId: "live-turn" });
+
+    store.hydrateTask("thread-a", [{ id: "loaded", role: "assistant", text: "recent answer", turnId: "older-turn" }], [], "/p");
+
+    const task = useTaskStore.getState().tasks["thread-a"];
+    expect(task.messages.map((message) => message.id)).toEqual(["loaded", "live-user", "live-answer"]);
+    expect(task.activities.map((activity) => activity.id)).toEqual(["live-tool"]);
+    expect(task.messages[1].timelineOrder).toBeLessThan(task.activities[0].timelineOrder!);
+    expect(task.activities[0].timelineOrder).toBeLessThan(task.messages[2].timelineOrder!);
+  });
+
+  it("does not erase a known workspace path when a history refresh omits it", () => {
+    const store = useTaskStore.getState();
+    store.ensureTask("thread-a", "/known/project");
+    store.hydrateTask("thread-a", [{ id: "loaded", role: "assistant", text: "answer" }], [], undefined);
+
+    expect(useTaskStore.getState().tasks["thread-a"].workspacePath).toBe("/known/project");
   });
 
   it("routes streamed output to the correct thread", () => {

@@ -15,7 +15,7 @@ import { commandSandbox, threadResumeParams, threadRuntimeConfig } from "./lib/t
 import { threadSearchParams, threadsForWorkspace, type ThreadSearchResponse } from "./lib/threadSearch";
 import { countActiveThreadsByWorkspace, filterThreadsByKind, filterThreadsForWorkspace, forgetSidebarThread, isSubAgentThread, partitionBulkArchiveThreads, pruneSidebarIndex, reconcileWorkspaceThreads, rememberSidebarThread, repairRootThreadMetadata, sidebarThread, threadBelongsToWorkspace, upsertThread, type ThreadSidebarIndex } from "./lib/threadList";
 import { timelineFromTurns } from "./lib/threadTimeline";
-import { INITIAL_THREAD_TURN_LIMIT, OLDER_THREAD_TURN_LIMIT, isPaginatedHistoryUnsupported, mergeOlderTurns, normalizeThreadTurnsPage, turnsFromDescendingPage, type ThreadHistoryState } from "./lib/threadHistory";
+import { INITIAL_THREAD_TURN_LIMIT, OLDER_THREAD_TURN_LIMIT, isPaginatedHistoryUnsupported, normalizeThreadTurnsPage, turnsFromDescendingPage, type ThreadHistoryState } from "./lib/threadHistory";
 import { buildTranscriptMarkdown } from "./lib/transcript";
 import { RowMenu } from "./components/RowMenu";
 import { Odometer } from "./components/Odometer";
@@ -167,11 +167,13 @@ const COMPOSER_REASONING_EFFORTS: ThreadReasoning["reasoningEffort"][] = ["low",
 
 interface LoadedThreadHistory {
   thread: Thread;
-  turns: Thread["turns"];
+  turns: NonNullable<Thread["turns"]>;
   history: ThreadHistoryState;
 }
 
 let paginatedHistoryUnavailable = false;
+
+class MalformedThreadHistoryPageError extends Error {}
 
 /**
  * Load only a recent Codex window. Installed app-server versions are not
@@ -186,7 +188,7 @@ async function loadThreadHistory(
   const fallback = async (): Promise<LoadedThreadHistory> => {
     const result = await rpc<{ thread: Thread }>(method, fallbackParams);
     return {
-      thread: result.thread,
+      thread: sidebarThread(result.thread),
       turns: result.thread.turns ?? [],
       history: { nextCursor: null, hasMore: false, loading: false, paginated: false },
     };
@@ -209,13 +211,14 @@ async function loadThreadHistory(
         itemsView: "full",
       }));
     }
-    if (!page) throw new Error("thread/turns/list returned an invalid page");
+    if (!page) throw new MalformedThreadHistoryPageError("Paginated thread history returned a malformed page");
     return {
-      thread: result.thread,
+      thread: sidebarThread(result.thread),
       turns: turnsFromDescendingPage(page),
       history: { nextCursor: page.nextCursor, hasMore: Boolean(page.nextCursor), loading: false, paginated: true },
     };
   } catch (reason) {
+    if (reason instanceof MalformedThreadHistoryPageError) return fallback();
     if (!isPaginatedHistoryUnsupported(reason)) throw reason;
     paginatedHistoryUnavailable = true;
     return fallback();
@@ -400,8 +403,8 @@ export default function App() {
   const [account, setAccount] = useState<Account | null>(null);
   const threadProjectBindingsRef = useRef<Record<string, string> | null>(null);
   const knownThreadsRef = useRef<ThreadSidebarIndex | null>(null);
-  const loadedThreadTurnsRef = useRef<Record<string, NonNullable<Thread["turns"]>>>({});
   const historyRequestRef = useRef(new Map<string, number>());
+  const historyRequestSequenceRef = useRef(0);
   const providerRepairThreadsRef = useRef(new Set<string>());
   const [openRouterReady, setOpenRouterReady] = useState(false);
   const [openRouterCredits, setOpenRouterCredits] = useState<OpenRouterCreditBalance | null>(null);
@@ -709,7 +712,11 @@ export default function App() {
   const timelineEmpty = useTaskStore((state) => {
     if (!activeThreadId) return true;
     const task = state.tasks[activeThreadId];
-    return !task || (task.messages.length === 0 && task.activities.length === 0);
+    // A recent page can contain only non-rendered protocol items while older
+    // pages still hold visible conversation. Keep the timeline mounted so the
+    // user can reach its history control instead of being trapped in the
+    // generic empty state.
+    return !task || (task.messages.length === 0 && task.activities.length === 0 && !task.history.hasMore);
   });
   const reviewDiff = useTaskStore((state) => (activeThreadId ? (state.tasks[activeThreadId]?.diff ?? EMPTY_REVIEW_DIFF) : EMPTY_REVIEW_DIFF));
   const agentRecords = useTaskStore((state) => (activeThreadId ? (state.tasks[activeThreadId]?.agents ?? EMPTY_AGENTS) : EMPTY_AGENTS));
@@ -2130,11 +2137,6 @@ export default function App() {
       void finalizeRunCheckpoint(threadId, turn?.id);
       autoArchiveCompletionRef.current(threadId);
       const needsProviderRepair = providerRepairThreadsRef.current.delete(threadId);
-      if (turn) {
-        const loadedTurns = loadedThreadTurnsRef.current[threadId] ?? [];
-        loadedThreadTurnsRef.current[threadId] = [...loadedTurns.filter((entry) => entry.id !== turn.id), turn];
-        setActiveThread((current) => (current && current.id === threadId ? { ...current, turns: [...(current.turns ?? []).filter((entry) => entry.id !== turn.id), turn] } : current));
-      }
       if (needsProviderRepair) {
         setStatus("Refreshing OpenRouter");
         void deliberateRestartRuntime()
@@ -2729,7 +2731,7 @@ export default function App() {
     const store = useTaskStore.getState();
     const task = store.tasks[threadId];
     if (!task?.history.paginated || !task.history.hasMore || task.history.loading || !task.history.nextCursor) return;
-    const requestId = (historyRequestRef.current.get(threadId) ?? 0) + 1;
+    const requestId = ++historyRequestSequenceRef.current;
     historyRequestRef.current.set(threadId, requestId);
     store.setHistory(threadId, { loading: true });
     try {
@@ -2740,11 +2742,14 @@ export default function App() {
         sortDirection: "desc",
         itemsView: "full",
       }));
-      if (!page) throw new Error("thread/turns/list returned an invalid page");
-      if (historyRequestRef.current.get(threadId) !== requestId || useTaskStore.getState().activeThreadId !== threadId) return;
+      if (!page) throw new MalformedThreadHistoryPageError("Paginated thread history returned a malformed page");
+      const currentState = useTaskStore.getState();
+      if (
+        historyRequestRef.current.get(threadId) !== requestId
+        || currentState.activeThreadId !== threadId
+        || currentState.tasks[threadId]?.history.nextCursor !== task.history.nextCursor
+      ) return;
       const olderTurns = turnsFromDescendingPage(page);
-      const currentTurns = loadedThreadTurnsRef.current[threadId] ?? [];
-      loadedThreadTurnsRef.current[threadId] = mergeOlderTurns(olderTurns, currentTurns);
       const history = timelineFromTurns(olderTurns);
       store.prependHistory(threadId, history.messages, history.activities, {
         nextCursor: page.nextCursor,
@@ -2755,15 +2760,22 @@ export default function App() {
     } catch (reason) {
       if (historyRequestRef.current.get(threadId) !== requestId) return;
       store.setHistory(threadId, { loading: false });
-      if (isPaginatedHistoryUnsupported(reason)) {
+      const unsupportedPagination = isPaginatedHistoryUnsupported(reason);
+      if (unsupportedPagination || reason instanceof MalformedThreadHistoryPageError) {
         // A runtime can change underneath the app (for example after an
         // update). Recover with the known-safe full read and stop offering a
-        // cursor that this runtime cannot serve.
-        paginatedHistoryUnavailable = true;
+        // cursor that this runtime cannot serve. A malformed response also
+        // falls back for this request, but must not globally disable a valid
+        // pagination API for the rest of the session.
+        if (unsupportedPagination) paginatedHistoryUnavailable = true;
         try {
           const fallback = await rpc<{ thread: Thread }>("thread/read", { threadId, includeTurns: true });
-          if (historyRequestRef.current.get(threadId) !== requestId || useTaskStore.getState().activeThreadId !== threadId) return;
-          loadedThreadTurnsRef.current[threadId] = fallback.thread.turns ?? [];
+          const currentState = useTaskStore.getState();
+          if (
+            historyRequestRef.current.get(threadId) !== requestId
+            || currentState.activeThreadId !== threadId
+            || currentState.tasks[threadId]?.history.nextCursor !== task.history.nextCursor
+          ) return;
           const fullHistory = timelineFromTurns(fallback.thread.turns);
           store.hydrateTask(threadId, fullHistory.messages, fullHistory.activities, task.workspacePath, {
             nextCursor: null,
@@ -2771,7 +2783,7 @@ export default function App() {
             loading: false,
             paginated: false,
           });
-          if (activeThread?.id === threadId) setActiveThread(fallback.thread);
+          if (activeThread?.id === threadId) setActiveThread(sidebarThread(fallback.thread));
           return;
         } catch (fallbackReason) {
           setError(friendlyError(fallbackReason));
@@ -2779,6 +2791,12 @@ export default function App() {
         }
       }
       if (activeThread?.id === threadId) setError(friendlyError(reason));
+    } finally {
+      if (historyRequestRef.current.get(threadId) === requestId) {
+        historyRequestRef.current.delete(threadId);
+        const currentStore = useTaskStore.getState();
+        if (currentStore.tasks[threadId]?.history.loading) currentStore.setHistory(threadId, { loading: false });
+      }
     }
   }, [activeThread?.id]);
 
@@ -2940,10 +2958,8 @@ export default function App() {
       }
       if (!threadModels[result.thread.id]) persistThreadModel(result.thread.id, threadProviderSettings.model);
       bindThreadToProject(result.thread.id, activeWorkspace.path);
-      const activeResultThread = { ...result.thread, turns: loaded.turns };
-      loadedThreadTurnsRef.current[result.thread.id] = loaded.turns ?? [];
-      rememberThread(activeResultThread);
-      setActiveThread(activeResultThread);
+      rememberThread(result.thread);
+      setActiveThread(result.thread);
       const history = timelineFromTurns(loaded.turns);
       useTaskStore.getState().hydrateTask(result.thread.id, history.messages, history.activities, executionPath, loaded.history);
       useTaskStore.getState().setActiveThread(result.thread.id);
@@ -3738,11 +3754,7 @@ export default function App() {
           ?? knownThreadsRef.current?.[threadId]
           ?? { id: threadId, name: null, preview: link.title, cwd: fallbackCwd, updatedAt: Math.floor(Date.now() / 1000), modelProvider: link.provider };
         setActiveThread(childThread);
-        if (transcript) {
-          useTaskStore.getState().hydrateTask(threadId, transcript.messages, transcript.activities, childThread.cwd);
-        } else {
-          useTaskStore.getState().ensureTask(threadId, childThread.cwd);
-        }
+        hydrateLocalProviderTask(threadId, transcript, childThread.cwd);
         useTaskStore.getState().setActiveThread(threadId);
         setStudioOpen(false);
         return;
@@ -3754,11 +3766,9 @@ export default function App() {
         ?? (nativeLink ? threadProjectBindingsRef.current?.[nativeLink.rootThreadId] : undefined)
         ?? activeWorkspace?.path;
       if (logicalPath) bindThreadToProject(result.thread.id, logicalPath);
-      const activeResultThread = { ...result.thread, turns: loaded.turns };
-      loadedThreadTurnsRef.current[result.thread.id] = loaded.turns ?? [];
-      rememberThread(activeResultThread);
-      setThreads((current) => upsertThread(current, activeResultThread));
-      setActiveThread(activeResultThread);
+      rememberThread(result.thread);
+      setThreads((current) => upsertThread(current, result.thread));
+      setActiveThread(result.thread);
       const history = timelineFromTurns(loaded.turns);
       useTaskStore.getState().hydrateTask(result.thread.id, history.messages, history.activities, result.thread.cwd, loaded.history);
       useTaskStore.getState().setActiveThread(result.thread.id);
@@ -3811,14 +3821,12 @@ export default function App() {
       if (activeWorkspace) bindThreadToProject(result.thread.id, activeWorkspace.path);
       const loaded = forkedWithoutTurns
         ? await loadThreadHistory("thread/read", { threadId: result.thread.id, includeTurns: false }, { threadId: result.thread.id, includeTurns: true })
-        : { thread: result.thread, turns: result.thread.turns ?? [], history: { nextCursor: null, hasMore: false, loading: false, paginated: false } };
-      const activeResultThread = { ...loaded.thread, turns: loaded.turns };
-      rememberThread(activeResultThread);
+        : { thread: sidebarThread(result.thread), turns: result.thread.turns ?? [], history: { nextCursor: null, hasMore: false, loading: false, paginated: false } };
+      rememberThread(loaded.thread);
       persistThreadModel(result.thread.id, effectiveSettings.model);
       persistThreadReasoning(result.thread.id, { reasoningEffort: effectiveSettings.reasoningEffort, ultra: effectiveSettings.ultra });
-      setActiveThread(activeResultThread);
+      setActiveThread(loaded.thread);
       const history = timelineFromTurns(loaded.turns);
-      loadedThreadTurnsRef.current[result.thread.id] = loaded.turns ?? [];
       useTaskStore.getState().hydrateTask(result.thread.id, history.messages, history.activities, activeWorkspace?.path, loaded.history);
       useTaskStore.getState().setActiveThread(result.thread.id);
       setStudioOpen(false);
@@ -3834,9 +3842,8 @@ export default function App() {
     try {
       const result = await rpc<{ thread: Thread }>("thread/rollback", { threadId: activeThread.id, numTurns: 1 });
       rememberThread(result.thread);
-      setActiveThread(result.thread);
+      setActiveThread(sidebarThread(result.thread));
       const history = timelineFromTurns(result.thread.turns);
-      loadedThreadTurnsRef.current[result.thread.id] = result.thread.turns ?? [];
       useTaskStore.getState().hydrateTask(result.thread.id, history.messages, history.activities, activeExecutionPath, {
         nextCursor: null,
         hasMore: false,

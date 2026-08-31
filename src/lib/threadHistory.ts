@@ -36,16 +36,6 @@ export function turnsFromDescendingPage(page: ThreadTurnsPage): Turn[] {
 }
 
 /**
- * Older pages are inserted before the already loaded window. A cursor should
- * make overlap impossible, but deduplication also protects us from an anchor
- * turn being returned again after a reconnect or server retry.
- */
-export function mergeOlderTurns(olderTurns: Turn[], currentTurns: Turn[]): Turn[] {
-  const currentIds = new Set(currentTurns.map((turn) => turn.id));
-  return [...olderTurns.filter((turn) => !currentIds.has(turn.id)), ...currentTurns];
-}
-
-/**
  * Keep the bridge tolerant of an older app-server that returns a partial error
  * or a shape from an early pagination build. Invalid pages fail closed so the
  * caller can use the established full-history fallback.
@@ -54,14 +44,17 @@ export function normalizeThreadTurnsPage(value: unknown): ThreadTurnsPage | null
   if (!value || typeof value !== "object") return null;
   const candidate = value as { data?: unknown; nextCursor?: unknown; backwardsCursor?: unknown };
   if (!Array.isArray(candidate.data)) return null;
-  const data = candidate.data.filter((turn): turn is Turn => (
+  const validTurn = (turn: unknown): turn is Turn => (
     Boolean(turn)
     && typeof turn === "object"
     && typeof (turn as { id?: unknown }).id === "string"
     && Array.isArray((turn as { items?: unknown }).items)
-  ));
+  );
+  // Dropping one malformed turn would advance the opaque cursor past data the
+  // UI never received, creating a permanent hole in the transcript.
+  if (!candidate.data.every(validTurn)) return null;
   return {
-    data,
+    data: candidate.data,
     nextCursor: typeof candidate.nextCursor === "string" ? candidate.nextCursor : null,
     backwardsCursor: typeof candidate.backwardsCursor === "string" ? candidate.backwardsCursor : null,
   };
