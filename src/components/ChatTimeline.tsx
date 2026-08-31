@@ -11,6 +11,7 @@ import { ProviderLogo } from "./BrandLogos";
 import { decodeHtmlEntities } from "../lib/text";
 import { providerDisplayName } from "../lib/childAgents";
 import { describeSubAgentActivity, subAgentStatusLabel, workerStatusFromAgentRecord, type SubAgentCounts } from "../lib/subAgentActivity";
+import type { ThreadHistoryState } from "../lib/threadHistory";
 
 export type WorkItemEntry =
   | { kind: "message"; value: ChatMessage }
@@ -796,6 +797,8 @@ function FlowTimeline({
   activeEntryIndex,
   entries,
   liveSubAgentSummary,
+  history,
+  onLoadEarlier,
   onApprovalRespond,
   onEditMessage,
   provider,
@@ -804,6 +807,8 @@ function FlowTimeline({
   activeEntryIndex: number;
   entries: TimelineEntry[];
   liveSubAgentSummary: string;
+  history?: ThreadHistoryState;
+  onLoadEarlier?: () => void;
   onApprovalRespond?: (approval: PendingApproval, result: JsonObject) => void | Promise<void>;
   onEditMessage?: (text: string) => void;
   provider: Provider;
@@ -813,6 +818,7 @@ function FlowTimeline({
   const contentRef = useRef<HTMLDivElement>(null);
   const followingEndRef = useRef(true);
   const pointerNavigationPendingRef = useRef(false);
+  const prependAnchorRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null);
   const [showScrollToLatest, setShowScrollToLatest] = useState(false);
 
   const scrollToLatest = useCallback((behavior: ScrollBehavior = "auto") => {
@@ -835,8 +841,15 @@ function FlowTimeline({
   }, []);
 
   useLayoutEffect(() => {
+    const scroller = scrollerRef.current;
+    if (prependAnchorRef.current && scroller && !history?.loading) {
+      const anchor = prependAnchorRef.current;
+      scroller.scrollTop = anchor.scrollTop + (scroller.scrollHeight - anchor.scrollHeight);
+      prependAnchorRef.current = null;
+      return;
+    }
     if (followingEndRef.current) scrollToLatest();
-  }, [entries, scrollToLatest]);
+  }, [entries, history?.loading, scrollToLatest]);
 
   useEffect(() => {
     const content = contentRef.current;
@@ -914,6 +927,23 @@ function FlowTimeline({
           }
         }}
       >
+        {history?.paginated && history.hasMore && (
+          <div className="timeline-history-control">
+            <button
+              type="button"
+              data-testid="load-earlier"
+              disabled={history.loading}
+              aria-busy={history.loading}
+              onClick={() => {
+                const current = scrollerRef.current;
+                if (current) prependAnchorRef.current = { scrollHeight: current.scrollHeight, scrollTop: current.scrollTop };
+                onLoadEarlier?.();
+              }}
+            >
+              {history.loading ? "Loading earlier messages…" : "Load earlier messages"}
+            </button>
+          </div>
+        )}
         <TimelineHeader />
         <div ref={contentRef} className="flow-timeline-list">
           {entries.map((entry, index) => (
@@ -957,6 +987,8 @@ export function ChatTimeline({
   searchQuery,
   searchActiveMatch,
   onSearchMatches,
+  history,
+  onLoadEarlier,
   onEditMessage,
   onApprovalRespond,
 }: {
@@ -969,6 +1001,8 @@ export function ChatTimeline({
   searchQuery?: string;
   searchActiveMatch?: number;
   onSearchMatches?: (count: number) => void;
+  history?: ThreadHistoryState;
+  onLoadEarlier?: () => void;
   onEditMessage?: (text: string) => void;
   onApprovalRespond?: (approval: PendingApproval, result: JsonObject) => void | Promise<void>;
 }) {
@@ -1021,6 +1055,8 @@ export function ChatTimeline({
       activeEntryIndex={activeEntryIndex}
       entries={entries}
       liveSubAgentSummary={liveSubAgentSummary}
+      history={history}
+      onLoadEarlier={onLoadEarlier}
       onApprovalRespond={onApprovalRespond}
       onEditMessage={onEditMessage}
       provider={provider}

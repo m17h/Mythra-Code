@@ -65,6 +65,22 @@ describe("ChatTimeline flow scroll state", () => {
     expect(shouldCancelTimelineFollowForWheel(-1, false)).toBe(false);
   });
 
+  it("offers older history only when the active page has more turns", () => {
+    const onLoadEarlier = vi.fn();
+    render(
+      <ChatTimeline
+        messages={transcript(2)}
+        activities={[]}
+        running={false}
+        thinkingLabel="Thinking"
+        history={{ nextCursor: "older", hasMore: true, loading: false, paginated: true }}
+        onLoadEarlier={onLoadEarlier}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("load-earlier"));
+    expect(onLoadEarlier).toHaveBeenCalledTimes(1);
+  });
+
   it("gives an upward wheel gesture authority over streaming follow", () => {
     renderTimeline();
     const { scroller } = configureScroller();

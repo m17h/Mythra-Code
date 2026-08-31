@@ -90,6 +90,17 @@ describe("OpenRouter runtime isolation", () => {
     });
   });
 
+  it("can bootstrap a bounded recent history page while resuming", () => {
+    const params = threadResumeParams(baseRun, "thread-1", "/tmp/project", {
+      excludeTurns: true,
+      initialTurnsPage: { limit: 12, sortDirection: "desc", itemsView: "full" },
+    });
+    expect(params).toMatchObject({
+      excludeTurns: true,
+      initialTurnsPage: { limit: 12, sortDirection: "desc", itemsView: "full" },
+    });
+  });
+
   it("asks every new and resumed thread for a concise final summary", () => {
     const start = threadStartParams(baseRun, "/tmp/project", { interactive: true });
     const resume = threadResumeParams(baseRun, "thread-1", "/tmp/project");

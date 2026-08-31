@@ -265,6 +265,7 @@ function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
     if (method === "thread/read") {
       return { thread: { ...THREAD_A, id: String(params.threadId), turns: [] } };
     }
+    if (method === "thread/turns/list") return { data: [], nextCursor: null, backwardsCursor: null };
     if (method === "thread/resume") return resumeImpl(params);
     if (method === "turn/start") return turnStartImpl(params);
     if (method === "account/read") {
@@ -1588,6 +1589,10 @@ describe("composer sub-agent command center", () => {
     pendingResume.resolve({ thread: { ...THREAD_A, turns: [] } });
     await user.click(await screen.findByText("Alpha thread"));
     await waitFor(() => expect(codexCalls("thread/resume")).not.toHaveLength(0));
+    expect(codexCalls("thread/resume")[0]).toMatchObject({
+      excludeTurns: true,
+      initialTurnsPage: { limit: 12, sortDirection: "desc", itemsView: "full" },
+    });
     const restartsAfterOpen = invokeMock.mock.calls.filter(([command]) => command === "restart_runtime").length;
 
     const composer = await screen.findByPlaceholderText(/Ask Mythra Code to work in/);

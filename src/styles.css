@@ -570,6 +570,11 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .timeline-shell { position: relative; width: 100%; height: 100%; min-height: 0; }
 .flow-timeline { height: 100%; overflow-x: hidden; overflow-y: auto; overscroll-behavior-y: contain; overflow-anchor: none; }
 .flow-timeline:focus { outline: none; }
+.timeline-history-control { display: flex; justify-content: center; padding: var(--s-3) var(--s-4) 0; direction: ltr; }
+.timeline-history-control button { min-height: 29px; padding: 0 11px; border: 1px solid var(--line-strong); border-radius: 999px; color: var(--muted); background: color-mix(in srgb, var(--panel) 94%, transparent); font: inherit; font-size: var(--fs-meta); font-weight: 650; cursor: pointer; }
+.timeline-history-control button:hover:not(:disabled) { border-color: color-mix(in srgb, var(--green) 48%, var(--line-strong)); color: var(--text); background: color-mix(in srgb, var(--panel) 88%, var(--green) 12%); }
+.timeline-history-control button:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
+.timeline-history-control button:disabled { cursor: wait; opacity: .7; }
 .timeline-scroll-latest { position: absolute; right: 50%; bottom: 82px; z-index: 12; display: flex; align-items: center; gap: 5px; min-height: 30px; padding: 0 11px; transform: translateX(50%); border: 1px solid var(--line-strong); border-radius: 999px; color: var(--text); background: color-mix(in srgb, var(--panel) 94%, transparent); box-shadow: var(--elev-2); font: inherit; font-size: var(--fs-meta); font-weight: 650; cursor: pointer; backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
 .timeline-scroll-latest:hover { border-color: color-mix(in srgb, var(--green) 48%, var(--line-strong)); background: color-mix(in srgb, var(--panel) 88%, var(--green) 12%); }
 .timeline-scroll-latest:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }

@@ -15,6 +15,7 @@ import { commandSandbox, threadResumeParams, threadRuntimeConfig } from "./lib/t
 import { threadSearchParams, threadsForWorkspace, type ThreadSearchResponse } from "./lib/threadSearch";
 import { countActiveThreadsByWorkspace, filterThreadsByKind, filterThreadsForWorkspace, forgetSidebarThread, isSubAgentThread, partitionBulkArchiveThreads, pruneSidebarIndex, reconcileWorkspaceThreads, rememberSidebarThread, repairRootThreadMetadata, sidebarThread, threadBelongsToWorkspace, upsertThread, type ThreadSidebarIndex } from "./lib/threadList";
 import { timelineFromTurns } from "./lib/threadTimeline";
+import { INITIAL_THREAD_TURN_LIMIT, OLDER_THREAD_TURN_LIMIT, isPaginatedHistoryUnsupported, mergeOlderTurns, normalizeThreadTurnsPage, turnsFromDescendingPage, type ThreadHistoryState } from "./lib/threadHistory";
 import { buildTranscriptMarkdown } from "./lib/transcript";
 import { RowMenu } from "./components/RowMenu";
 import { Odometer } from "./components/Odometer";
@@ -164,6 +165,63 @@ const DEFAULT_GIT_COMMIT_MESSAGE = "Update project files";
 const MAX_LISTED_UNTRACKED_PATHS = 50;
 const COMPOSER_REASONING_EFFORTS: ThreadReasoning["reasoningEffort"][] = ["low", "medium", "high", "xhigh", "max"];
 
+interface LoadedThreadHistory {
+  thread: Thread;
+  turns: Thread["turns"];
+  history: ThreadHistoryState;
+}
+
+let paginatedHistoryUnavailable = false;
+
+/**
+ * Load only a recent Codex window. Installed app-server versions are not
+ * upgraded in lockstep with Mythra Code, so the established full-read path is
+ * retained as a compatibility fallback instead of making history fragile.
+ */
+async function loadThreadHistory(
+  method: "thread/read" | "thread/resume",
+  params: JsonObject,
+  fallbackParams: JsonObject,
+): Promise<LoadedThreadHistory> {
+  const fallback = async (): Promise<LoadedThreadHistory> => {
+    const result = await rpc<{ thread: Thread }>(method, fallbackParams);
+    return {
+      thread: result.thread,
+      turns: result.thread.turns ?? [],
+      history: { nextCursor: null, hasMore: false, loading: false, paginated: false },
+    };
+  };
+  if (paginatedHistoryUnavailable) return fallback();
+  try {
+    const result = await rpc<{ thread: Thread; initialTurnsPage?: unknown }>(method, {
+      ...params,
+      ...(method === "thread/resume" ? {
+        excludeTurns: true,
+        initialTurnsPage: { limit: INITIAL_THREAD_TURN_LIMIT, sortDirection: "desc", itemsView: "full" },
+      } : {}),
+    });
+    let page = normalizeThreadTurnsPage(result.initialTurnsPage);
+    if (!page) {
+      page = normalizeThreadTurnsPage(await rpc<unknown>("thread/turns/list", {
+        threadId: result.thread.id,
+        limit: INITIAL_THREAD_TURN_LIMIT,
+        sortDirection: "desc",
+        itemsView: "full",
+      }));
+    }
+    if (!page) throw new Error("thread/turns/list returned an invalid page");
+    return {
+      thread: result.thread,
+      turns: turnsFromDescendingPage(page),
+      history: { nextCursor: page.nextCursor, hasMore: Boolean(page.nextCursor), loading: false, paginated: true },
+    };
+  } catch (reason) {
+    if (!isPaginatedHistoryUnsupported(reason)) throw reason;
+    paginatedHistoryUnavailable = true;
+    return fallback();
+  }
+}
+
 function sanitizeComposerReasoningEffort(
   value: unknown,
   fallback: ThreadReasoning["reasoningEffort"] = DEFAULT_SETTINGS.reasoningEffort,
@@ -239,12 +297,13 @@ function PermissionIcon({ mode, size = 15 }: { mode: PermissionMode; size?: numb
  * Subscribes to the streaming timeline itself so per-frame delta flushes stop
  * at this component boundary instead of re-rendering the entire App.
  */
-function ConversationTimeline({ threadId, running, thinkingLabel, approval, provider, searchQuery, searchActiveMatch, onSearchMatches, onEditMessage, onApprovalRespond }: { threadId: string; running: boolean; thinkingLabel: string; approval: PendingApproval | null; provider: AppSettings["provider"]; searchQuery?: string; searchActiveMatch?: number; onSearchMatches?: (count: number) => void; onEditMessage: (text: string) => void; onApprovalRespond: (approval: PendingApproval, result: JsonObject) => void | Promise<void> }) {
+function ConversationTimeline({ threadId, running, thinkingLabel, approval, provider, searchQuery, searchActiveMatch, onSearchMatches, onEditMessage, onApprovalRespond, onLoadEarlier }: { threadId: string; running: boolean; thinkingLabel: string; approval: PendingApproval | null; provider: AppSettings["provider"]; searchQuery?: string; searchActiveMatch?: number; onSearchMatches?: (count: number) => void; onEditMessage: (text: string) => void; onApprovalRespond: (approval: PendingApproval, result: JsonObject) => void | Promise<void>; onLoadEarlier: () => void }) {
   const messages = useTaskStore((state) => state.tasks[threadId]?.messages ?? EMPTY_MESSAGES);
   const activities = useTaskStore((state) => state.tasks[threadId]?.activities ?? EMPTY_ACTIVITIES);
+  const history = useTaskStore((state) => state.tasks[threadId]?.history);
   // A thread change must create a fresh virtual scroller so its initial
   // position is applied to the newly selected conversation.
-  return <ChatTimeline key={threadId} messages={messages} activities={activities} running={running} thinkingLabel={thinkingLabel} approval={approval} provider={provider} searchQuery={searchQuery} searchActiveMatch={searchActiveMatch} onSearchMatches={onSearchMatches} onEditMessage={onEditMessage} onApprovalRespond={onApprovalRespond} />;
+  return <ChatTimeline key={threadId} messages={messages} activities={activities} running={running} thinkingLabel={thinkingLabel} approval={approval} provider={provider} history={history} onLoadEarlier={onLoadEarlier} searchQuery={searchQuery} searchActiveMatch={searchActiveMatch} onSearchMatches={onSearchMatches} onEditMessage={onEditMessage} onApprovalRespond={onApprovalRespond} />;
 }
 
 export default function App() {
@@ -341,6 +400,8 @@ export default function App() {
   const [account, setAccount] = useState<Account | null>(null);
   const threadProjectBindingsRef = useRef<Record<string, string> | null>(null);
   const knownThreadsRef = useRef<ThreadSidebarIndex | null>(null);
+  const loadedThreadTurnsRef = useRef<Record<string, NonNullable<Thread["turns"]>>>({});
+  const historyRequestRef = useRef(new Map<string, number>());
   const providerRepairThreadsRef = useRef(new Set<string>());
   const [openRouterReady, setOpenRouterReady] = useState(false);
   const [openRouterCredits, setOpenRouterCredits] = useState<OpenRouterCreditBalance | null>(null);
@@ -2070,6 +2131,8 @@ export default function App() {
       autoArchiveCompletionRef.current(threadId);
       const needsProviderRepair = providerRepairThreadsRef.current.delete(threadId);
       if (turn) {
+        const loadedTurns = loadedThreadTurnsRef.current[threadId] ?? [];
+        loadedThreadTurnsRef.current[threadId] = [...loadedTurns.filter((entry) => entry.id !== turn.id), turn];
         setActiveThread((current) => (current && current.id === threadId ? { ...current, turns: [...(current.turns ?? []).filter((entry) => entry.id !== turn.id), turn] } : current));
       }
       if (needsProviderRepair) {
@@ -2371,6 +2434,9 @@ export default function App() {
     try {
       await restartRuntime();
     } finally {
+      // A restart may replace the app-server with a newer protocol version.
+      // Let the next thread open probe pagination again.
+      paginatedHistoryUnavailable = false;
       suppressRuntimeRecoveryUntilRef.current = Date.now() + 3_000;
     }
   }, []);
@@ -2659,6 +2725,63 @@ export default function App() {
   };
 
   const selectThreadRequestRef = useRef(0);
+  const loadEarlier = useCallback(async (threadId: string) => {
+    const store = useTaskStore.getState();
+    const task = store.tasks[threadId];
+    if (!task?.history.paginated || !task.history.hasMore || task.history.loading || !task.history.nextCursor) return;
+    const requestId = (historyRequestRef.current.get(threadId) ?? 0) + 1;
+    historyRequestRef.current.set(threadId, requestId);
+    store.setHistory(threadId, { loading: true });
+    try {
+      let page = normalizeThreadTurnsPage(await rpc<unknown>("thread/turns/list", {
+        threadId,
+        cursor: task.history.nextCursor,
+        limit: OLDER_THREAD_TURN_LIMIT,
+        sortDirection: "desc",
+        itemsView: "full",
+      }));
+      if (!page) throw new Error("thread/turns/list returned an invalid page");
+      if (historyRequestRef.current.get(threadId) !== requestId || useTaskStore.getState().activeThreadId !== threadId) return;
+      const olderTurns = turnsFromDescendingPage(page);
+      const currentTurns = loadedThreadTurnsRef.current[threadId] ?? [];
+      loadedThreadTurnsRef.current[threadId] = mergeOlderTurns(olderTurns, currentTurns);
+      const history = timelineFromTurns(olderTurns);
+      store.prependHistory(threadId, history.messages, history.activities, {
+        nextCursor: page.nextCursor,
+        hasMore: Boolean(page.nextCursor),
+        loading: false,
+        paginated: true,
+      });
+    } catch (reason) {
+      if (historyRequestRef.current.get(threadId) !== requestId) return;
+      store.setHistory(threadId, { loading: false });
+      if (isPaginatedHistoryUnsupported(reason)) {
+        // A runtime can change underneath the app (for example after an
+        // update). Recover with the known-safe full read and stop offering a
+        // cursor that this runtime cannot serve.
+        paginatedHistoryUnavailable = true;
+        try {
+          const fallback = await rpc<{ thread: Thread }>("thread/read", { threadId, includeTurns: true });
+          if (historyRequestRef.current.get(threadId) !== requestId || useTaskStore.getState().activeThreadId !== threadId) return;
+          loadedThreadTurnsRef.current[threadId] = fallback.thread.turns ?? [];
+          const fullHistory = timelineFromTurns(fallback.thread.turns);
+          store.hydrateTask(threadId, fullHistory.messages, fullHistory.activities, task.workspacePath, {
+            nextCursor: null,
+            hasMore: false,
+            loading: false,
+            paginated: false,
+          });
+          if (activeThread?.id === threadId) setActiveThread(fallback.thread);
+          return;
+        } catch (fallbackReason) {
+          setError(friendlyError(fallbackReason));
+          return;
+        }
+      }
+      if (activeThread?.id === threadId) setError(friendlyError(reason));
+    }
+  }, [activeThread?.id]);
+
   const selectThread = async (thread: Thread) => {
     if (!activeWorkspace) return;
     const projectPath = normalizedProjectPath(activeWorkspace.path);
@@ -2801,9 +2924,11 @@ export default function App() {
           }
         }
       }
-      const result = isolation?.status === "missing" || isolation?.status === "removed" || capabilityRefreshDeferred
-        ? await rpc<{ thread: Thread }>("thread/read", { threadId: thread.id, includeTurns: true })
-        : await rpc<{ thread: Thread }>("thread/resume", threadResumeParams(resumedSettings, thread.id, executionPath, { customAgents, modelContextWindow: provider === "openrouter" ? openRouterModels.find((entry) => entry.id === resumedSettings.model)?.context_length : provider === "lmstudio" ? lmStudioModels.find((entry) => entry.id === resumedSettings.model)?.maxContextLength : undefined, additionalWorkspaceRoots: isolation?.gitDir ? [isolation.gitDir] : [], childAgentBridge: childBridge?.launch, refreshRuntimeConfig: true }));
+      const resumeParams = threadResumeParams(resumedSettings, thread.id, executionPath, { customAgents, modelContextWindow: provider === "openrouter" ? openRouterModels.find((entry) => entry.id === resumedSettings.model)?.context_length : provider === "lmstudio" ? lmStudioModels.find((entry) => entry.id === resumedSettings.model)?.maxContextLength : undefined, additionalWorkspaceRoots: isolation?.gitDir ? [isolation.gitDir] : [], childAgentBridge: childBridge?.launch, refreshRuntimeConfig: true });
+      const loaded = isolation?.status === "missing" || isolation?.status === "removed" || capabilityRefreshDeferred
+        ? await loadThreadHistory("thread/read", { threadId: thread.id, includeTurns: false }, { threadId: thread.id, includeTurns: true })
+        : await loadThreadHistory("thread/resume", resumeParams, threadResumeParams(resumedSettings, thread.id, executionPath, { customAgents, modelContextWindow: provider === "openrouter" ? openRouterModels.find((entry) => entry.id === resumedSettings.model)?.context_length : provider === "lmstudio" ? lmStudioModels.find((entry) => entry.id === resumedSettings.model)?.maxContextLength : undefined, additionalWorkspaceRoots: isolation?.gitDir ? [isolation.gitDir] : [], childAgentBridge: childBridge?.launch, refreshRuntimeConfig: true }));
+      const result = { thread: loaded.thread };
       if (selectThreadRequestRef.current !== requestId) return;
       if (isolation?.status !== "missing" && isolation?.status !== "removed" && !capabilityRefreshDeferred) {
         // Opening a thread resumes it with the complete capability config,
@@ -2815,10 +2940,12 @@ export default function App() {
       }
       if (!threadModels[result.thread.id]) persistThreadModel(result.thread.id, threadProviderSettings.model);
       bindThreadToProject(result.thread.id, activeWorkspace.path);
-      rememberThread(result.thread);
-      setActiveThread(result.thread);
-      const history = timelineFromTurns(result.thread.turns);
-      useTaskStore.getState().hydrateTask(result.thread.id, history.messages, history.activities, executionPath);
+      const activeResultThread = { ...result.thread, turns: loaded.turns };
+      loadedThreadTurnsRef.current[result.thread.id] = loaded.turns ?? [];
+      rememberThread(activeResultThread);
+      setActiveThread(activeResultThread);
+      const history = timelineFromTurns(loaded.turns);
+      useTaskStore.getState().hydrateTask(result.thread.id, history.messages, history.activities, executionPath, loaded.history);
       useTaskStore.getState().setActiveThread(result.thread.id);
       setStatus("Ready");
     } catch (reason) {
@@ -3620,17 +3747,20 @@ export default function App() {
         setStudioOpen(false);
         return;
       }
-      const result = await rpc<{ thread: Thread }>("thread/read", { threadId, includeTurns: true });
+      const loaded = await loadThreadHistory("thread/read", { threadId, includeTurns: false }, { threadId, includeTurns: true });
+      const result = { thread: loaded.thread };
       const nativeLink = nativeAgentLinks[threadId];
       const logicalPath = threadProjectBindingsRef.current?.[threadId]
         ?? (nativeLink ? threadProjectBindingsRef.current?.[nativeLink.rootThreadId] : undefined)
         ?? activeWorkspace?.path;
       if (logicalPath) bindThreadToProject(result.thread.id, logicalPath);
-      rememberThread(result.thread);
-      setThreads((current) => upsertThread(current, result.thread));
-      setActiveThread(result.thread);
-      const history = timelineFromTurns(result.thread.turns);
-      useTaskStore.getState().hydrateTask(result.thread.id, history.messages, history.activities, result.thread.cwd);
+      const activeResultThread = { ...result.thread, turns: loaded.turns };
+      loadedThreadTurnsRef.current[result.thread.id] = loaded.turns ?? [];
+      rememberThread(activeResultThread);
+      setThreads((current) => upsertThread(current, activeResultThread));
+      setActiveThread(activeResultThread);
+      const history = timelineFromTurns(loaded.turns);
+      useTaskStore.getState().hydrateTask(result.thread.id, history.messages, history.activities, result.thread.cwd, loaded.history);
       useTaskStore.getState().setActiveThread(result.thread.id);
       setStudioOpen(false);
     } catch (reason) {
@@ -3667,14 +3797,29 @@ export default function App() {
     try {
       await ensureSkillRoots();
       const modelProvider = runtimeModelProviderId(effectiveSettings.provider);
-      const result = await rpc<{ thread: Thread }>("thread/fork", { threadId: checkpoint?.threadId ?? activeThread.id, lastTurnId: checkpoint?.turnId, cwd: activeWorkspace?.path, runtimeWorkspaceRoots: activeWorkspace ? [activeWorkspace.path] : undefined, model: effectiveSettings.model, ...(modelProvider ? { modelProvider } : {}), config: threadRuntimeConfig(effectiveSettings, { customAgents, modelContextWindow: effectiveSettings.provider === "openrouter" ? openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.context_length : effectiveSettings.provider === "lmstudio" ? lmStudioModels.find((entry) => entry.id === effectiveSettings.model)?.maxContextLength : undefined }), baseInstructions: effectiveSettings.systemPrompt, developerInstructions: mythraCodeDeveloperInstructions(false) });
+      const forkParams = { threadId: checkpoint?.threadId ?? activeThread.id, lastTurnId: checkpoint?.turnId, cwd: activeWorkspace?.path, runtimeWorkspaceRoots: activeWorkspace ? [activeWorkspace.path] : undefined, model: effectiveSettings.model, ...(modelProvider ? { modelProvider } : {}), config: threadRuntimeConfig(effectiveSettings, { customAgents, modelContextWindow: effectiveSettings.provider === "openrouter" ? openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.context_length : effectiveSettings.provider === "lmstudio" ? lmStudioModels.find((entry) => entry.id === effectiveSettings.model)?.maxContextLength : undefined }), baseInstructions: effectiveSettings.systemPrompt, developerInstructions: mythraCodeDeveloperInstructions(false) };
+      let result: { thread: Thread };
+      let forkedWithoutTurns = false;
+      try {
+        result = await rpc<{ thread: Thread }>("thread/fork", { ...forkParams, excludeTurns: true });
+        forkedWithoutTurns = true;
+      } catch (reason) {
+        if (!isPaginatedHistoryUnsupported(reason)) throw reason;
+        paginatedHistoryUnavailable = true;
+        result = await rpc<{ thread: Thread }>("thread/fork", forkParams);
+      }
       if (activeWorkspace) bindThreadToProject(result.thread.id, activeWorkspace.path);
-      rememberThread(result.thread);
+      const loaded = forkedWithoutTurns
+        ? await loadThreadHistory("thread/read", { threadId: result.thread.id, includeTurns: false }, { threadId: result.thread.id, includeTurns: true })
+        : { thread: result.thread, turns: result.thread.turns ?? [], history: { nextCursor: null, hasMore: false, loading: false, paginated: false } };
+      const activeResultThread = { ...loaded.thread, turns: loaded.turns };
+      rememberThread(activeResultThread);
       persistThreadModel(result.thread.id, effectiveSettings.model);
       persistThreadReasoning(result.thread.id, { reasoningEffort: effectiveSettings.reasoningEffort, ultra: effectiveSettings.ultra });
-      setActiveThread(result.thread);
-      const history = timelineFromTurns(result.thread.turns);
-      useTaskStore.getState().hydrateTask(result.thread.id, history.messages, history.activities, activeWorkspace?.path);
+      setActiveThread(activeResultThread);
+      const history = timelineFromTurns(loaded.turns);
+      loadedThreadTurnsRef.current[result.thread.id] = loaded.turns ?? [];
+      useTaskStore.getState().hydrateTask(result.thread.id, history.messages, history.activities, activeWorkspace?.path, loaded.history);
       useTaskStore.getState().setActiveThread(result.thread.id);
       setStudioOpen(false);
       void loadThreads(activeWorkspace);
@@ -3691,7 +3836,13 @@ export default function App() {
       rememberThread(result.thread);
       setActiveThread(result.thread);
       const history = timelineFromTurns(result.thread.turns);
-      useTaskStore.getState().hydrateTask(result.thread.id, history.messages, history.activities, activeExecutionPath);
+      loadedThreadTurnsRef.current[result.thread.id] = result.thread.turns ?? [];
+      useTaskStore.getState().hydrateTask(result.thread.id, history.messages, history.activities, activeExecutionPath, {
+        nextCursor: null,
+        hasMore: false,
+        loading: false,
+        paginated: false,
+      });
     } catch (reason) {
       setError(friendlyError(reason));
     }
@@ -5057,7 +5208,7 @@ export default function App() {
                       </div>
                     }
                   >
-                    <ConversationTimeline threadId={activeThreadId} running={running} thinkingLabel={activeWorkspace.isChat ? "Thinking in normal chat" : `Working in ${activeProject?.name}`} approval={inlineApproval} provider={effectiveSettings.provider} searchQuery={convSearchOpen ? convSearchQuery : ""} searchActiveMatch={convSearchIndex} onSearchMatches={setConvSearchCount} onEditMessage={editMessageIntoComposer} onApprovalRespond={respondToApproval} />
+                    <ConversationTimeline threadId={activeThreadId} running={running} thinkingLabel={activeWorkspace.isChat ? "Thinking in normal chat" : `Working in ${activeProject?.name}`} approval={inlineApproval} provider={effectiveSettings.provider} onLoadEarlier={() => void loadEarlier(activeThreadId)} searchQuery={convSearchOpen ? convSearchQuery : ""} searchActiveMatch={convSearchIndex} onSearchMatches={setConvSearchCount} onEditMessage={editMessageIntoComposer} onApprovalRespond={respondToApproval} />
                   </Suspense>
                 </ErrorBoundary>
               )}
