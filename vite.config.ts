@@ -5,8 +5,23 @@ import react from "@vitejs/plugin-react";
 // @types/node; declare the one Node global the config reads.
 declare const process: { env: Record<string, string | undefined> };
 
+const buildTarget = process.env.TAURI_ENV_PLATFORM === "windows" ? "chrome105" : "safari13";
+const debugBuild = process.env.TAURI_ENV_DEBUG === "true" || process.env.TAURI_ENV_DEBUG === "1";
+
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+    react(),
+    {
+      name: "mythra-performance-build-metadata",
+      generateBundle() {
+        this.emitFile({
+          type: "asset",
+          fileName: ".vite/performance-build.json",
+          source: JSON.stringify({ schemaVersion: 1, target: buildTarget, minified: !debugBuild }),
+        });
+      },
+    },
+  ],
   test: {
     environment: "jsdom",
     setupFiles: ["./src/test/setup.ts"],
@@ -25,8 +40,9 @@ export default defineConfig({
   },
   envPrefix: ["VITE_", "TAURI_ENV_"],
   build: {
-    target: process.env.TAURI_ENV_PLATFORM === "windows" ? "chrome105" : "safari13",
-    minify: !process.env.TAURI_ENV_DEBUG,
-    sourcemap: !!process.env.TAURI_ENV_DEBUG,
+    target: buildTarget,
+    manifest: true,
+    minify: !debugBuild,
+    sourcemap: debugBuild,
   },
 });
