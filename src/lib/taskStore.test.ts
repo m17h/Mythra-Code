@@ -1,5 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { isAssistantOutputActive, resetTaskStore, sanitizeStoredQueuedTurns, useTaskStore } from "./taskStore";
+import {
+  estimateTranscriptBytes,
+  isAssistantOutputActive,
+  resetTaskStore,
+  sanitizeStoredQueuedTurns,
+  setTranscriptCacheByteBudgetForTests,
+  useTaskStore,
+} from "./taskStore";
 import { durationForTurn, resetTurnDurationsForTests } from "./turnDurations";
 
 describe("task store", () => {
@@ -72,6 +79,157 @@ describe("task store", () => {
     expect(tasks["thread-1"].transcriptDirty).toBe(true);
     expect(tasks["thread-2"].messages).toHaveLength(0);
     expect(tasks["thread-3"].messages).toHaveLength(0);
+  });
+
+  it("evicts cold transcripts by estimated bytes even below the count cap", () => {
+    const store = useTaskStore.getState();
+    const old = Date.now() - 10 * 60_000;
+    for (let index = 0; index < 3; index += 1) {
+      store.hydrateTask(`thread-${index}`, [{
+        id: `message-${index}`,
+        role: "assistant",
+        text: `${index}`.repeat(1_000),
+      }], [], "/p");
+    }
+    useTaskStore.setState((state) => ({
+      tasks: Object.fromEntries(Object.entries(state.tasks).map(([threadId, task], index) => [
+        threadId,
+        { ...task, updatedAt: old + index },
+      ])),
+    }));
+    const before = useTaskStore.getState().tasks;
+    const totalBytes = Object.values(before).reduce((total, task) => total + task.estimatedTranscriptBytes, 0);
+    const firstBytes = before["thread-0"].estimatedTranscriptBytes;
+    setTranscriptCacheByteBudgetForTests(totalBytes - 1, totalBytes - firstBytes);
+
+    useTaskStore.getState().setActiveThread("thread-2");
+
+    const tasks = useTaskStore.getState().tasks;
+    expect(tasks["thread-0"].messages).toHaveLength(0);
+    expect(tasks["thread-0"].estimatedTranscriptBytes).toBe(0);
+    expect(tasks["thread-1"].messages).toHaveLength(1);
+    expect(tasks["thread-2"].messages).toHaveLength(1);
+
+    useTaskStore.getState().hydrateTask("thread-0", [{ id: "again", role: "assistant", text: "rehydrated" }], [], "/p");
+    const rehydrated = useTaskStore.getState().tasks["thread-0"];
+    expect(rehydrated.estimatedTranscriptBytes).toBe(estimateTranscriptBytes(rehydrated.messages, rehydrated.activities));
+  });
+
+  it("can evict an unread transcript while preserving its shell flag", () => {
+    const store = useTaskStore.getState();
+    const old = Date.now() - 10 * 60_000;
+    store.hydrateTask("unread", [{ id: "background", role: "assistant", text: "finished in the background" }], [], "/p");
+    store.hydrateTask("active", [{ id: "foreground", role: "assistant", text: "visible" }], [], "/p");
+    useTaskStore.setState((state) => ({
+      tasks: {
+        ...state.tasks,
+        unread: { ...state.tasks.unread, unread: true, updatedAt: old },
+        active: { ...state.tasks.active, updatedAt: old + 1 },
+      },
+    }));
+    const total = Object.values(useTaskStore.getState().tasks).reduce((sum, task) => sum + task.estimatedTranscriptBytes, 0);
+    setTranscriptCacheByteBudgetForTests(total - 1, useTaskStore.getState().tasks.active.estimatedTranscriptBytes);
+
+    useTaskStore.getState().setActiveThread("active");
+
+    expect(useTaskStore.getState().tasks.unread.messages).toHaveLength(0);
+    expect(useTaskStore.getState().tasks.unread.unread).toBe(true);
+  });
+
+  it("allows protected transcripts to exceed the byte budget", () => {
+    const store = useTaskStore.getState();
+    const old = Date.now() - 10 * 60_000;
+    store.hydrateTask("dirty", [{ id: "dirty-message", role: "user", text: "unsaved" }], [], "/p");
+    store.hydrateTask("running", [{ id: "running-message", role: "assistant", text: "working" }], [], "/p");
+    useTaskStore.setState((state) => ({
+      tasks: Object.fromEntries(Object.entries(state.tasks).map(([threadId, task]) => [
+        threadId,
+        { ...task, updatedAt: old },
+      ])),
+      statuses: { ...state.statuses, running: "running" },
+    }));
+    useTaskStore.getState().setTranscriptDirty("dirty", true);
+    setTranscriptCacheByteBudgetForTests(1);
+
+    useTaskStore.getState().setActiveThread(null);
+
+    expect(useTaskStore.getState().tasks.dirty.messages).toHaveLength(1);
+    expect(useTaskStore.getState().tasks.running.messages).toHaveLength(1);
+  });
+
+  it("does not drain cold transcripts when protected bytes already exceed high water", () => {
+    const store = useTaskStore.getState();
+    const old = Date.now() - 10 * 60_000;
+    store.hydrateTask("protected", [{ id: "large", role: "assistant", text: "x".repeat(2_000) }], [], "/p");
+    store.hydrateTask("cold", [{ id: "small", role: "assistant", text: "keep warm" }], [], "/p");
+    useTaskStore.setState((state) => ({
+      tasks: {
+        ...state.tasks,
+        protected: { ...state.tasks.protected, updatedAt: old },
+        cold: { ...state.tasks.cold, updatedAt: old + 1 },
+      },
+    }));
+    store.setTranscriptDirty("protected", true);
+    setTranscriptCacheByteBudgetForTests(
+      useTaskStore.getState().tasks.protected.estimatedTranscriptBytes - 1,
+      1,
+    );
+
+    useTaskStore.getState().setActiveThread(null);
+
+    expect(useTaskStore.getState().tasks.cold.messages).toHaveLength(1);
+  });
+
+  it("does not evict while estimated bytes remain in the hysteresis band", () => {
+    const store = useTaskStore.getState();
+    const old = Date.now() - 10 * 60_000;
+    store.hydrateTask("cold", [{ id: "message", role: "assistant", text: "cached" }], [], "/p");
+    useTaskStore.setState((state) => ({
+      tasks: { ...state.tasks, cold: { ...state.tasks.cold, updatedAt: old } },
+    }));
+    const bytes = useTaskStore.getState().tasks.cold.estimatedTranscriptBytes;
+    setTranscriptCacheByteBudgetForTests(bytes + 1, 1);
+
+    useTaskStore.getState().setActiveThread(null);
+
+    expect(useTaskStore.getState().tasks.cold.messages).toHaveLength(1);
+  });
+
+  it("keeps incremental transcript byte accounting reconciled", () => {
+    const store = useTaskStore.getState();
+    const expectReconciled = () => {
+      const task = useTaskStore.getState().tasks["thread-a"];
+      expect(task.estimatedTranscriptBytes).toBe(estimateTranscriptBytes(task.messages, task.activities));
+    };
+
+    store.hydrateTask(
+      "thread-a",
+      [{ id: "recent", role: "assistant", text: "recent answer" }],
+      [{ id: "tool", kind: "command", title: "npm test", detail: "running", status: "inProgress" }],
+      "/p",
+    );
+    expectReconciled();
+    store.prependHistory("thread-a", [{ id: "old", role: "user", text: "older prompt" }], [], {});
+    expectReconciled();
+    store.appendUserMessage("thread-a", { id: "optimistic", role: "user", text: "new prompt" });
+    store.setMessageSteerStatus("thread-a", "optimistic", "sending");
+    expectReconciled();
+    store.removeMessage("thread-a", "old");
+    expectReconciled();
+    store.setTaskStatus("thread-a", "starting");
+    store.setActiveTurn("thread-a", "turn-a");
+    store.queueAssistantDelta("thread-a", "answer", "draft that will be shortened");
+    store.queueReasoningDelta("thread-a", "reasoning", "summary", "summary");
+    store.flushDeltas();
+    expectReconciled();
+    store.queueReasoningDelta("thread-a", "reasoning", "private detail", "content");
+    store.flushDeltas();
+    expectReconciled();
+    store.completeMessage("thread-a", { id: "answer", role: "assistant", text: "Done" });
+    store.upsertActivity("thread-a", { id: "tool", kind: "command", title: "npm test", detail: "passed", status: "completed" });
+    expectReconciled();
+    store.completeTurn("thread-a", "turn-a", "completed");
+    expectReconciled();
   });
 
   it("prepends an older page without disturbing live order or duplicate items", () => {

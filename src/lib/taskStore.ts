@@ -109,6 +109,9 @@ export interface ThreadTaskState {
   status: TaskStatus;
   messages: ChatMessage[];
   activities: Activity[];
+  /** Conservative estimate of the retained transcript heap. This is used to
+   * bound the renderer cache; it is not a measurement of process RSS. */
+  estimatedTranscriptBytes: number;
   approvals: PendingApproval[];
   queuedTurns: QueuedTurn[];
   agents: AgentRecord[];
@@ -198,6 +201,7 @@ function emptyTask(threadId: string, workspacePath?: string): ThreadTaskState {
     status: "idle",
     messages: [],
     activities: [],
+    estimatedTranscriptBytes: 0,
     approvals: [],
     queuedTurns: queuedTurnsCache[threadId] ?? [],
     agents: [],
@@ -212,9 +216,77 @@ function emptyTask(threadId: string, workspacePath?: string): ThreadTaskState {
 
 /** Most hydrated transcripts kept in renderer memory at once. */
 const MAX_HYDRATED_TRANSCRIPTS = 12;
+const DEFAULT_TRANSCRIPT_CACHE_HIGH_WATER_BYTES = 64 * 1024 * 1024;
+const DEFAULT_TRANSCRIPT_CACHE_LOW_WATER_BYTES = 48 * 1024 * 1024;
+let transcriptCacheHighWaterBytes = DEFAULT_TRANSCRIPT_CACHE_HIGH_WATER_BYTES;
+let transcriptCacheLowWaterBytes = DEFAULT_TRANSCRIPT_CACHE_LOW_WATER_BYTES;
 /** A transcript this recently touched may still have a debounced disk save
  * pending; never evict it, or the re-hydrate would read a stale file. */
 const EVICT_MIN_IDLE_MS = 5 * 60_000;
+
+const UTF16_BYTES_PER_CODE_UNIT = 2;
+const MESSAGE_BASE_BYTES = 160;
+const ACTIVITY_BASE_BYTES = 192;
+const ATTACHMENT_BASE_BYTES = 96;
+const AGENT_ACTIVITY_BASE_BYTES = 128;
+const ARRAY_SLOT_BYTES = 8;
+
+function stringBytes(value: string | undefined): number {
+  return (value?.length ?? 0) * UTF16_BYTES_PER_CODE_UNIT;
+}
+
+function estimateMessageBytes(message: ChatMessage): number {
+  const attachments = message.attachments ?? [];
+  return MESSAGE_BASE_BYTES
+    + stringBytes(message.id)
+    + stringBytes(message.role)
+    + stringBytes(message.text)
+    + stringBytes(message.turnId)
+    + stringBytes(message.turnStatus)
+    + stringBytes(message.steerStatus)
+    + attachments.reduce((total, attachment) => total
+      + ATTACHMENT_BASE_BYTES
+      + stringBytes(attachment.path)
+      + stringBytes(attachment.name)
+      + stringBytes(attachment.kind), attachments.length * ARRAY_SLOT_BYTES);
+}
+
+function estimateActivityBytes(activity: Activity): number {
+  const agent = activity.agent;
+  const threadIds = agent?.threadIds ?? [];
+  return ACTIVITY_BASE_BYTES
+    + stringBytes(activity.id)
+    + stringBytes(activity.kind)
+    + stringBytes(activity.title)
+    + stringBytes(activity.detail)
+    + stringBytes(activity.status)
+    + stringBytes(activity.turnId)
+    + stringBytes(activity.turnStatus)
+    + (agent ? AGENT_ACTIVITY_BASE_BYTES
+      + stringBytes(agent.action)
+      + stringBytes(agent.provider)
+      + stringBytes(agent.model)
+      + stringBytes(agent.task)
+      + threadIds.reduce((total, threadId) => total + ARRAY_SLOT_BYTES + stringBytes(threadId), 0)
+      : 0);
+}
+
+/** Estimate retained transcript data without serializing or reading string
+ * contents. JavaScript strings expose their length in constant time. */
+export function estimateTranscriptBytes(messages: ChatMessage[], activities: Activity[]): number {
+  return messages.reduce((total, message) => total + ARRAY_SLOT_BYTES + estimateMessageBytes(message), 0)
+    + activities.reduce((total, activity) => total + ARRAY_SLOT_BYTES + estimateActivityBytes(activity), 0);
+}
+
+function adjustedBytes(current: number, previous: number, next: number): number {
+  return Math.max(0, current - previous + next);
+}
+
+/** Keeps byte-budget tests small instead of allocating tens of megabytes. */
+export function setTranscriptCacheByteBudgetForTests(highWaterBytes: number, lowWaterBytes = highWaterBytes): void {
+  transcriptCacheHighWaterBytes = highWaterBytes;
+  transcriptCacheLowWaterBytes = Math.min(lowWaterBytes, highWaterBytes);
+}
 
 /**
  * Visited threads hydrate their full transcript into memory and, without this,
@@ -231,8 +303,10 @@ function evictColdTranscripts(
   const hydrated = Object.values(state.tasks).filter(
     (task) => task.messages.length > 0 || task.activities.length > 0,
   );
-  const excess = hydrated.length - MAX_HYDRATED_TRANSCRIPTS;
-  if (excess <= 0) return null;
+  let hydratedCount = hydrated.length;
+  let hydratedBytes = hydrated.reduce((total, task) => total + task.estimatedTranscriptBytes, 0);
+  const bytesOverHighWater = hydratedBytes > transcriptCacheHighWaterBytes;
+  if (hydratedCount <= MAX_HYDRATED_TRANSCRIPTS && !bytesOverHighWater) return null;
   const now = Date.now();
   const victims = hydrated
     .filter((task) => (
@@ -242,20 +316,47 @@ function evictColdTranscripts(
       && task.approvals.length === 0
       && task.queuedTurns.length === 0
       && !task.transcriptDirty
-      && !task.unread
       && now - task.updatedAt > EVICT_MIN_IDLE_MS
     ))
-    .sort((left, right) => left.updatedAt - right.updatedAt)
-    .slice(0, excess);
+    .sort((left, right) => left.updatedAt - right.updatedAt);
   if (victims.length === 0) return null;
+  const evictableBytes = victims.reduce((total, task) => total + task.estimatedTranscriptBytes, 0);
+  const protectedCount = hydratedCount - victims.length;
+  const protectedBytes = Math.max(0, hydratedBytes - evictableBytes);
+  // Hysteresis is useful only when its target is reachable. If protected work
+  // already exceeds the high-water mark, byte eviction cannot fix the breach
+  // and must not punish every otherwise useful cold transcript. If only the
+  // low-water target is unreachable, release enough to return below high.
+  const byteTarget = !bytesOverHighWater || protectedBytes >= transcriptCacheHighWaterBytes
+    ? null
+    : protectedBytes <= transcriptCacheLowWaterBytes
+      ? transcriptCacheLowWaterBytes
+      : transcriptCacheHighWaterBytes;
+  const canSatisfyCountCap = protectedCount < MAX_HYDRATED_TRANSCRIPTS;
   const tasks = { ...state.tasks };
   for (const task of victims) {
+    const mustReduceCount = canSatisfyCountCap && hydratedCount > MAX_HYDRATED_TRANSCRIPTS;
+    const mustReduceBytes = byteTarget !== null && hydratedBytes > byteTarget;
+    if (!mustReduceCount && !mustReduceBytes) break;
     // A cursor describes the window that was just discarded. Keeping it on
     // the shell would let an empty transcript request page two and silently
     // skip the recent page when the thread is revisited.
-    tasks[task.threadId] = { ...task, messages: [], activities: [], history: EMPTY_THREAD_HISTORY };
+    tasks[task.threadId] = {
+      ...task,
+      messages: [],
+      activities: [],
+      estimatedTranscriptBytes: 0,
+      history: EMPTY_THREAD_HISTORY,
+    };
+    hydratedCount -= 1;
+    hydratedBytes = Math.max(0, hydratedBytes - task.estimatedTranscriptBytes);
+    pendingDeltas.delete(task.threadId);
+    pendingReasoningItems.delete(task.threadId);
+    for (const key of reasoningStreams.keys()) {
+      if (key.startsWith(`${task.threadId}\0`)) reasoningStreams.delete(key);
+    }
   }
-  return tasks;
+  return hydratedCount === hydrated.length ? null : tasks;
 }
 
 function scheduleDeltaFlush(flush: () => void): void {
@@ -345,22 +446,25 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       if (preserved.kind === "message") inFlight.push(withTimelineOrder(entry as ChatMessage));
       else inFlightActivities.push(withTimelineOrder(entry as Activity));
     }
-    return {
-      tasks: {
-        ...state.tasks,
-        [threadId]: {
-          ...(existing ?? emptyTask(threadId, workspacePath)),
-          workspacePath: workspacePath ?? existing?.workspacePath,
-          messages: [...hydratedMessages, ...inFlight],
-          activities: [...hydratedActivities, ...inFlightActivities],
-          transcriptDirty: false,
-          history: history ?? existing?.history ?? EMPTY_THREAD_HISTORY,
-          unread: false,
-          updatedAt: Date.now(),
-        },
+    const nextMessages = [...hydratedMessages, ...inFlight];
+    const nextActivities = [...hydratedActivities, ...inFlightActivities];
+    const nextTasks = {
+      ...state.tasks,
+      [threadId]: {
+        ...(existing ?? emptyTask(threadId, workspacePath)),
+        workspacePath: workspacePath ?? existing?.workspacePath,
+        messages: nextMessages,
+        activities: nextActivities,
+        estimatedTranscriptBytes: estimateTranscriptBytes(nextMessages, nextActivities),
+        transcriptDirty: false,
+        history: history ?? existing?.history ?? EMPTY_THREAD_HISTORY,
+        unread: false,
+        updatedAt: Date.now(),
       },
-      statuses: { ...state.statuses, [threadId]: state.statuses[threadId] ?? "idle" },
     };
+    const statuses = { ...state.statuses, [threadId]: state.statuses[threadId] ?? "idle" };
+    const evictedTasks = evictColdTranscripts({ ...state, tasks: nextTasks, statuses }, state.activeThreadId);
+    return { tasks: evictedTasks ?? nextTasks, statuses };
   }),
   setHistory: (threadId, patch) => set((state) => {
     const task = state.tasks[threadId];
@@ -408,6 +512,8 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
           ...task,
           messages: [...nextMessages, ...task.messages],
           activities: [...nextActivities, ...task.activities],
+          estimatedTranscriptBytes: task.estimatedTranscriptBytes
+            + estimateTranscriptBytes(nextMessages, nextActivities),
           history: { ...task.history, ...patch },
           updatedAt: Date.now(),
         },
@@ -429,7 +535,13 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     const nextMessage = withTimelineOrder({ ...message, turnId: message.turnId ?? task.activeTurnId });
     const pendingTurnStartOrder = task.pendingTurnStartOrder
       ?? (task.status === "starting" && !task.activeTurnId ? nextMessage.timelineOrder : undefined);
-    return { tasks: { ...state.tasks, [threadId]: { ...task, pendingTurnStartOrder, messages: [...task.messages, nextMessage], updatedAt: Date.now() } } };
+    return { tasks: { ...state.tasks, [threadId]: {
+      ...task,
+      pendingTurnStartOrder,
+      messages: [...task.messages, nextMessage],
+      estimatedTranscriptBytes: task.estimatedTranscriptBytes + ARRAY_SLOT_BYTES + estimateMessageBytes(nextMessage),
+      updatedAt: Date.now(),
+    } } };
   }),
   setMessageSteerStatus: (threadId, messageId, status) => set((state) => {
     const task = state.tasks[threadId];
@@ -437,20 +549,30 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     const index = task.messages.findIndex((message) => message.id === messageId);
     if (index < 0 || task.messages[index].steerStatus === status) return state;
     const messages = [...task.messages];
-    messages[index] = { ...messages[index], steerStatus: status };
-    return { tasks: { ...state.tasks, [threadId]: { ...task, messages, updatedAt: Date.now() } } };
+    const previous = messages[index];
+    messages[index] = { ...previous, steerStatus: status };
+    return { tasks: { ...state.tasks, [threadId]: {
+      ...task,
+      messages,
+      estimatedTranscriptBytes: adjustedBytes(task.estimatedTranscriptBytes, estimateMessageBytes(previous), estimateMessageBytes(messages[index])),
+      updatedAt: Date.now(),
+    } } };
   }),
   removeMessage: (threadId, messageId) => set((state) => {
     const task = state.tasks[threadId];
-    const removed = task?.messages.find((message) => message.id === messageId);
-    if (!task || !removed) return state;
+    const removed = task?.messages.filter((message) => message.id === messageId) ?? [];
+    if (!task || removed.length === 0) return state;
+    const removedBytes = estimateTranscriptBytes(removed, []);
     return {
       tasks: {
         ...state.tasks,
         [threadId]: {
           ...task,
-          pendingTurnStartOrder: task.pendingTurnStartOrder === removed.timelineOrder ? undefined : task.pendingTurnStartOrder,
+          pendingTurnStartOrder: removed.some((message) => task.pendingTurnStartOrder === message.timelineOrder)
+            ? undefined
+            : task.pendingTurnStartOrder,
           messages: task.messages.filter((message) => message.id !== messageId),
+          estimatedTranscriptBytes: Math.max(0, task.estimatedTranscriptBytes - removedBytes),
           updatedAt: Date.now(),
         },
       },
@@ -519,12 +641,15 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       const threadIds = new Set([...batch.keys(), ...reasoningBatch.keys()]);
       for (const threadId of threadIds) {
         const task = tasks[threadId] ?? emptyTask(threadId);
+        let estimatedTranscriptBytes = task.estimatedTranscriptBytes;
         let messages = task.messages;
         let messagesCopied = false;
         for (const [itemId, delta] of batch.get(threadId) ?? []) {
           const index = messages.findIndex((message) => message.id === itemId);
           if (index < 0) {
-            messages = [...messages, withTimelineOrder<ChatMessage>({ id: itemId, role: "assistant", text: delta, streaming: true, turnId: task.activeTurnId })];
+            const nextMessage = withTimelineOrder<ChatMessage>({ id: itemId, role: "assistant", text: delta, streaming: true, turnId: task.activeTurnId });
+            messages = [...messages, nextMessage];
+            estimatedTranscriptBytes += ARRAY_SLOT_BYTES + estimateMessageBytes(nextMessage);
             messagesCopied = true;
           } else {
             if (!messagesCopied) {
@@ -533,6 +658,11 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
             }
             const message = messages[index];
             messages[index] = { ...message, text: `${message.text}${delta}`, streaming: true };
+            estimatedTranscriptBytes = adjustedBytes(
+              estimatedTranscriptBytes,
+              estimateMessageBytes(message),
+              estimateMessageBytes(messages[index]),
+            );
           }
         }
         let activities = task.activities;
@@ -544,17 +674,25 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
           const index = activities.findIndex((activity) => activity.id === itemId);
           const activity: Activity = { id: itemId, kind: "reasoning", title: "Model thinking", detail, status: "inProgress", turnId: task.activeTurnId };
           if (index < 0) {
-            activities = [...activities, withTimelineOrder(activity)];
+            const nextActivity = withTimelineOrder(activity);
+            activities = [...activities, nextActivity];
+            estimatedTranscriptBytes += ARRAY_SLOT_BYTES + estimateActivityBytes(nextActivity);
             activitiesCopied = true;
           } else {
             if (!activitiesCopied) {
               activities = [...activities];
               activitiesCopied = true;
             }
-            activities[index] = { ...activities[index], ...activity, turnId: activity.turnId ?? activities[index].turnId, turnStatus: activity.turnStatus ?? activities[index].turnStatus, timelineOrder: activities[index].timelineOrder };
+            const previous = activities[index];
+            activities[index] = { ...previous, ...activity, turnId: activity.turnId ?? previous.turnId, turnStatus: activity.turnStatus ?? previous.turnStatus, timelineOrder: previous.timelineOrder };
+            estimatedTranscriptBytes = adjustedBytes(
+              estimatedTranscriptBytes,
+              estimateActivityBytes(previous),
+              estimateActivityBytes(activities[index]),
+            );
           }
         }
-        tasks[threadId] = { ...task, messages, activities, unread: state.activeThreadId !== threadId, updatedAt: Date.now() };
+        tasks[threadId] = { ...task, messages, activities, estimatedTranscriptBytes, unread: state.activeThreadId !== threadId, updatedAt: Date.now() };
       }
       return { tasks };
     });
@@ -565,10 +703,16 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     pendingDeltas.get(threadId)?.delete(message.id);
     return set((state) => {
     const task = state.tasks[threadId] ?? emptyTask(threadId);
-    const exists = task.messages.some((entry) => entry.id === message.id);
-    const messages = exists
-      ? task.messages.map((entry) => entry.id === message.id ? { ...message, streaming: false, turnId: message.turnId ?? entry.turnId ?? task.activeTurnId, turnStatus: message.turnStatus ?? entry.turnStatus, timelineOrder: entry.timelineOrder } : entry)
-      : [...task.messages, withTimelineOrder({ ...message, streaming: false, turnId: message.turnId ?? task.activeTurnId })];
+    const existingIndex = task.messages.findIndex((entry) => entry.id === message.id);
+    const nextMessage = existingIndex >= 0
+      ? { ...message, streaming: false, turnId: message.turnId ?? task.messages[existingIndex].turnId ?? task.activeTurnId, turnStatus: message.turnStatus ?? task.messages[existingIndex].turnStatus, timelineOrder: task.messages[existingIndex].timelineOrder }
+      : withTimelineOrder({ ...message, streaming: false, turnId: message.turnId ?? task.activeTurnId });
+    const messages = existingIndex >= 0
+      ? task.messages.map((entry, index) => index === existingIndex ? nextMessage : entry)
+      : [...task.messages, nextMessage];
+    const estimatedTranscriptBytes = existingIndex >= 0
+      ? adjustedBytes(task.estimatedTranscriptBytes, estimateMessageBytes(task.messages[existingIndex]), estimateMessageBytes(nextMessage))
+      : task.estimatedTranscriptBytes + ARRAY_SLOT_BYTES + estimateMessageBytes(nextMessage);
     const messageTurnId = message.turnId ?? task.activeTurnId;
     const assistantOutputTurnId = task.status === "running"
       && message.role === "assistant"
@@ -576,18 +720,19 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       && messageTurnId === task.activeTurnId
       ? task.activeTurnId
       : task.assistantOutputTurnId;
-    return { tasks: { ...state.tasks, [threadId]: { ...task, messages, assistantOutputTurnId, unread: state.activeThreadId !== threadId, updatedAt: Date.now() } } };
+    return { tasks: { ...state.tasks, [threadId]: { ...task, messages, estimatedTranscriptBytes, assistantOutputTurnId, unread: state.activeThreadId !== threadId, updatedAt: Date.now() } } };
     });
   },
   upsertActivity: (threadId, activity) => {
     if (activity.kind === "reasoning" && activity.status === "completed") reasoningStreams.delete(`${threadId}\0${activity.id}`);
     set((state) => {
       const task = state.tasks[threadId] ?? emptyTask(threadId);
-      const exists = task.activities.some((entry) => entry.id === activity.id);
+      const existingIndex = task.activities.findIndex((entry) => entry.id === activity.id);
+      const exists = existingIndex >= 0;
       const activityTurnId = activity.turnId ?? task.activeTurnId;
       const activities = exists
-        ? task.activities.map((entry) => {
-            if (entry.id !== activity.id) return entry;
+        ? task.activities.map((entry, index) => {
+            if (index !== existingIndex) return entry;
             const representedChildren = activity.agent?.threadIds ?? entry.agent?.threadIds ?? [];
             const terminalSpawn = entry.kind === "agent"
               && entry.agent?.action === "spawn"
@@ -618,7 +763,21 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       const assistantOutputTurnId = beginsNewWork && activityTurnId === task.assistantOutputTurnId
         ? undefined
         : task.assistantOutputTurnId;
-      return { tasks: { ...state.tasks, [threadId]: { ...task, activities, assistantOutputTurnId, unread: state.activeThreadId !== threadId, updatedAt: Date.now() } } };
+      const estimatedTranscriptBytes = exists
+        ? adjustedBytes(
+            task.estimatedTranscriptBytes,
+            estimateActivityBytes(task.activities[existingIndex]),
+            estimateActivityBytes(activities[existingIndex]),
+          )
+        : task.estimatedTranscriptBytes + ARRAY_SLOT_BYTES + estimateActivityBytes(activities[activities.length - 1]);
+      return { tasks: { ...state.tasks, [threadId]: {
+        ...task,
+        activities,
+        estimatedTranscriptBytes,
+        assistantOutputTurnId,
+        unread: state.activeThreadId !== threadId,
+        updatedAt: Date.now(),
+      } } };
     });
   },
   setActiveTurn: (threadId, turnId) => set((state) => {
@@ -633,7 +792,18 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     const assistantOutputTurnId = turnId && task.assistantOutputTurnId === turnId
       ? task.assistantOutputTurnId
       : undefined;
-    return { tasks: { ...state.tasks, [threadId]: { ...task, activeTurnId: turnId, assistantOutputTurnId, pendingTurnStartOrder: turnId ? undefined : task.pendingTurnStartOrder, messages, activities, updatedAt: Date.now() } } };
+    return { tasks: { ...state.tasks, [threadId]: {
+      ...task,
+      activeTurnId: turnId,
+      assistantOutputTurnId,
+      pendingTurnStartOrder: turnId ? undefined : task.pendingTurnStartOrder,
+      messages,
+      activities,
+      estimatedTranscriptBytes: threshold === undefined
+        ? task.estimatedTranscriptBytes
+        : estimateTranscriptBytes(messages, activities),
+      updatedAt: Date.now(),
+    } } };
   }),
   completeTurn: (threadId, turnId, status) => set((state) => {
     const task = state.tasks[threadId] ?? emptyTask(threadId);
@@ -714,6 +884,9 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
           ...task,
           messages,
           activities,
+          estimatedTranscriptBytes: completedTurnId
+            ? estimateTranscriptBytes(messages, activities)
+            : task.estimatedTranscriptBytes,
           agents,
           activeTurnId: task.activeTurnId === turnId || !turnId ? undefined : task.activeTurnId,
           assistantOutputTurnId: completedTurnId === task.assistantOutputTurnId
@@ -885,6 +1058,8 @@ export function resetTaskStore(): void {
   removeStoredValue(USAGE_LEDGER_KEY);
   resetUsageLedgerCache();
   queuedTurnsCache = {};
+  transcriptCacheHighWaterBytes = DEFAULT_TRANSCRIPT_CACHE_HIGH_WATER_BYTES;
+  transcriptCacheLowWaterBytes = DEFAULT_TRANSCRIPT_CACHE_LOW_WATER_BYTES;
   removeStoredValue(QUEUED_TURNS_KEY);
   useTaskStore.setState({ activeThreadId: null, tasks: {}, statuses: {} });
 }
