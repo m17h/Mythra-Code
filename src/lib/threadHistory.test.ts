@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isPaginatedHistoryUnsupported, normalizeThreadTurnsPage, turnsFromDescendingPage } from "./threadHistory";
+import { isExcludeTurnsUnsupported, isPaginatedHistoryUnsupported, normalizeThreadTurnsPage, turnsFromDescendingPage } from "./threadHistory";
 
 function turn(id: string) {
   return { id, items: [{ id: `${id}-user`, type: "userMessage" as const, content: [{ type: "text", text: id }] }] };
@@ -18,6 +18,13 @@ describe("thread history pagination", () => {
     expect(normalizeThreadTurnsPage({ data: [turn("ok"), { id: "missing-items" }], nextCursor: "cursor" })).toBeNull();
     expect(normalizeThreadTurnsPage({ data: "not-a-page" })).toBeNull();
     expect(isPaginatedHistoryUnsupported("unknown method: thread/turns/list")).toBe(true);
+    expect(isPaginatedHistoryUnsupported("thread/turns/list is not supported yet")).toBe(true);
+    expect(isPaginatedHistoryUnsupported("unknown field `itemsView`")).toBe(true);
+    expect(isPaginatedHistoryUnsupported("unknown variant `summary`")).toBe(true);
+    expect(isPaginatedHistoryUnsupported("Invalid params")).toBe(true);
+    expect(isPaginatedHistoryUnsupported("RPC thread/turns/list: connection closed")).toBe(false);
     expect(isPaginatedHistoryUnsupported("network disconnected")).toBe(false);
+    expect(isExcludeTurnsUnsupported("unknown field `excludeTurns`")).toBe(true);
+    expect(isExcludeTurnsUnsupported("unsupported model selection")).toBe(false);
   });
 });
