@@ -1677,15 +1677,19 @@ function RecentPerformancePanel({ active }: { active: boolean }) {
           const durations = payload.durationMs && typeof payload.durationMs === "object" ? payload.durationMs as Record<string, unknown> : {};
           const history = payload.history && typeof payload.history === "object" ? payload.history as Record<string, unknown> : {};
           const processMemory = payload.processMemory && typeof payload.processMemory === "object" ? payload.processMemory as Record<string, unknown> : {};
+          const transcriptCache = payload.transcriptCache && typeof payload.transcriptCache === "object" ? payload.transcriptCache as Record<string, unknown> : {};
           const timeline = finiteMetric(durations.timelineCommit);
           const ready = finiteMetric(durations.runtimeReady) ?? finiteMetric(durations.total);
           const bytes = formatDiagnosticBytes(finiteMetric(history.projectedBytes));
           const resident = formatDiagnosticBytes(finiteMetric(processMemory.managedProcessTreeResidentBytes));
+          const cachedTranscriptBytes = formatDiagnosticBytes(finiteMetric(transcriptCache.estimatedBytes));
+          const hydratedThreads = finiteMetric(transcriptCache.hydratedThreads);
           const summary = [
             String(payload.provider ?? "provider"),
             timeline === null ? null : `timeline ${Math.round(timeline)} ms`,
             ready === null ? null : `ready ${Math.round(ready)} ms`,
             bytes,
+            cachedTranscriptBytes ? `${cachedTranscriptBytes} transcript cache${hydratedThreads === null ? "" : ` / ${Math.round(hydratedThreads)} threads`}` : null,
             resident ? `${resident} managed RSS` : null,
             payload.outcome && payload.outcome !== "completed" ? String(payload.outcome) : null,
           ].filter(Boolean).join(" · ");

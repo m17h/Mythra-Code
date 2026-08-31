@@ -43,7 +43,11 @@ describe("performance diagnostics", () => {
   it("records one privacy-safe completed thread-open sample", async () => {
     mockTimes(100, 105, 110, 115, 120, 125);
 
-    beginThreadOpen("secret-thread-id", "openai", false);
+    beginThreadOpen("secret-thread-id", "openai", false, () => ({
+      estimatedBytes: 65_536,
+      hydratedThreads: 3,
+      selectedEstimatedBytes: 12_345,
+    }));
     markThreadShellCommitted("secret-thread-id");
     markThreadHistoryHydrated("secret-thread-id", {
       projectedBytes: 12_345,
@@ -66,7 +70,7 @@ describe("performance diagnostics", () => {
       kind: "performance.threadOpen",
       threadId: null,
       payload: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         provider: "openai",
         warm: false,
         outcome: "completed",
@@ -79,6 +83,7 @@ describe("performance diagnostics", () => {
         },
         history: { projectedBytes: 12_345, messages: 4, activities: 3, paginated: true, hasMore: true },
         render: { rows: 6, timelineDomNodes: 80, totalDomNodes: 300 },
+        transcriptCache: { estimatedBytes: 65_536, hydratedThreads: 3, selectedEstimatedBytes: 12_345 },
         processMemory: PROCESS_MEMORY,
       },
     });
