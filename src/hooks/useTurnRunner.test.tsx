@@ -10,6 +10,7 @@ const codex = vi.hoisted(() => ({
   // Identity of the app-server that will serve the next RPC; a restart makes
   // this change, which is how a turn knows nothing is loaded any more.
   runtimeInstanceId: vi.fn(async () => "runtime-1"),
+  runtimeThreadState: vi.fn(async () => ({ instance: "runtime-1", loaded: true })),
 }));
 const claude = vi.hoisted(() => ({
   interruptClaudeTurn: vi.fn(),
@@ -160,6 +161,7 @@ function context(overrides: Partial<TurnRunnerContext> = {}): TurnRunnerContext 
     persistThreadReasoning: vi.fn(),
     persistThreadWorktrees: vi.fn(),
     restartRuntimeForCapabilities: vi.fn(async () => "runtime-2"),
+    waitForThreadPreparation: vi.fn(async () => undefined),
     beginRunCheckpoint: vi.fn(async () => "checkpoint-1"),
     discardRunCheckpoint: vi.fn(),
     refreshLocalSkills: vi.fn(async () => undefined),
@@ -779,6 +781,7 @@ describe("useTurnRunner activating sub-agents mid-conversation", () => {
     vi.clearAllMocks();
     codex.rpc.mockResolvedValue({ turn: { id: "turn-1" } });
     codex.runtimeInstanceId.mockResolvedValue("runtime-1");
+    codex.runtimeThreadState.mockResolvedValue({ instance: "runtime-1", loaded: true });
     claude.saveClaudeTranscript.mockResolvedValue(undefined);
     claude.startClaudeTurn.mockResolvedValue({ turnId: "turn-claude" });
     cursor.saveCursorTranscript.mockResolvedValue(undefined);
@@ -813,6 +816,28 @@ describe("useTurnRunner activating sub-agents mid-conversation", () => {
     expect(codex.rpc).toHaveBeenCalledWith("turn/start", expect.objectContaining({ threadId: OPENAI_THREAD.id }));
   });
 
+  it("waits for view-first runtime preparation before sending", async () => {
+    let releasePreparation!: () => void;
+    const preparation = new Promise<void>((resolve) => { releasePreparation = resolve; });
+    const waitForThreadPreparation = vi.fn(() => preparation);
+    const deps = openAiContext({ waitForThreadPreparation });
+    const { result } = renderHook(() => useTurnRunner(deps));
+
+    let delivery!: Promise<boolean>;
+    await act(async () => {
+      delivery = result.current.sendMessage("wait for preparation");
+      await Promise.resolve();
+    });
+
+    expect(waitForThreadPreparation).toHaveBeenCalledExactlyOnceWith(OPENAI_THREAD.id);
+    expect(childSessions.ensureChildAgentBridge).not.toHaveBeenCalled();
+    expect(codex.rpc).not.toHaveBeenCalledWith("turn/start", expect.anything());
+
+    releasePreparation();
+    await act(async () => { await delivery; });
+    expect(codex.rpc).toHaveBeenCalledWith("turn/start", expect.objectContaining({ threadId: OPENAI_THREAD.id }));
+  });
+
   it("refreshes the runtime that is already holding this thread with other capabilities", async () => {
     childSessions.ensureChildAgentBridge.mockResolvedValue(bridgeResult());
     // First turn teaches this app-server what the thread is configured with.
@@ -827,7 +852,7 @@ describe("useTurnRunner activating sub-agents mid-conversation", () => {
     // has already loaded, so raising the limit has to go through one.
     codex.rpc.mockClear();
     restartRuntimeForCapabilities.mockClear();
-    codex.runtimeInstanceId.mockResolvedValue("runtime-2");
+    codex.runtimeThreadState.mockResolvedValue({ instance: "runtime-2", loaded: true });
     childSessions.ensureChildAgentBridge.mockResolvedValue(bridgeResult({ maxConcurrent: 6 }));
     rerender({ deps: openAiContext({ restartRuntimeForCapabilities, effectiveSettings: { ...ENABLED, subagentMax: 6 } }) });
     await act(async () => { await result.current.sendMessage("more of them"); });
@@ -854,7 +879,7 @@ describe("useTurnRunner activating sub-agents mid-conversation", () => {
     // below applies the new config on its own.
     codex.rpc.mockClear();
     restartRuntimeForCapabilities.mockClear();
-    codex.runtimeInstanceId.mockResolvedValue("runtime-4");
+    codex.runtimeThreadState.mockResolvedValue({ instance: "runtime-4", loaded: false });
     childSessions.ensureChildAgentBridge.mockResolvedValue(bridgeResult({ maxConcurrent: 6 }));
     rerender({ deps: openAiContext({ restartRuntimeForCapabilities, effectiveSettings: { ...ENABLED, subagentMax: 6 } }) });
     await act(async () => { await result.current.sendMessage("more of them"); });
@@ -874,7 +899,7 @@ describe("useTurnRunner activating sub-agents mid-conversation", () => {
     await act(async () => { await result.current.sendMessage("split this up"); });
 
     codex.rpc.mockClear();
-    codex.runtimeInstanceId.mockResolvedValue("runtime-3");
+    codex.runtimeThreadState.mockResolvedValue({ instance: "runtime-3", loaded: false });
     rerender({ deps: openAiContext({ effectiveSettings: ENABLED }) });
     await act(async () => { await result.current.sendMessage("keep going"); });
 
@@ -896,7 +921,7 @@ describe("useTurnRunner activating sub-agents mid-conversation", () => {
     // still needs a resume even though its next run wants the neutral config;
     // otherwise turn/start targets a thread the replacement process has not loaded.
     codex.rpc.mockClear();
-    codex.runtimeInstanceId.mockResolvedValue("runtime-2");
+    codex.runtimeThreadState.mockResolvedValue({ instance: "runtime-2", loaded: false });
     rerender({ deps: openAiContext() });
     await act(async () => { await result.current.sendMessage("continue without agents"); });
 

@@ -1550,6 +1550,49 @@ fn codex_bridge_compacts_nested_search_results_and_unused_snippets() {
     assert!(result["data"][0].get("snippet").is_none());
 }
 
+#[test]
+fn runtime_loaded_thread_tracking_distinguishes_reads_from_live_operations() {
+    let read = successfully_loaded_thread_ids(
+        "thread/read",
+        Some("source"),
+        &json!({ "thread": { "id": "source" } }),
+    );
+    assert!(read.is_empty());
+
+    let resumed = successfully_loaded_thread_ids(
+        "thread/resume",
+        Some("source"),
+        &json!({ "thread": { "id": "source" } }),
+    );
+    assert_eq!(resumed, HashSet::from(["source".to_string()]));
+
+    let forked = successfully_loaded_thread_ids(
+        "thread/fork",
+        Some("source"),
+        &json!({ "thread": { "id": "fork" } }),
+    );
+    assert_eq!(
+        forked,
+        HashSet::from(["source".to_string(), "fork".to_string()])
+    );
+
+    for method in [
+        "thread/rollback",
+        "thread/compact/start",
+        "review/start",
+        "turn/start",
+        "turn/steer",
+        "turn/interrupt",
+    ] {
+        assert!(successfully_loaded_thread_ids(
+            method,
+            Some("source"),
+            &json!({})
+        )
+        .contains("source"));
+    }
+}
+
 #[cfg(windows)]
 #[test]
 fn codex_candidates_include_current_and_legacy_npm_layouts() {

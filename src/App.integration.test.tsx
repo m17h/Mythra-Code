@@ -87,6 +87,7 @@ let openRouterCreditsImpl: () => unknown;
 let commandExecImpl: (params: Record<string, unknown>) => unknown;
 /** Bumped by every managed app-server restart, real or simulated. */
 let runtimeGeneration: number;
+let runtimeLoadedThreads: Set<string>;
 let workspaceGitInfoImpl: () => unknown;
 let workspaceGitInitializeImpl: () => unknown;
 let lmStudioModelsImpl: (baseUrl: string) => unknown;
@@ -147,8 +148,13 @@ function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
   // Every app-server restart hands back a different identity, which is how the
   // app knows the threads that process had loaded are gone with it.
   if (command === "runtime_instance") return `runtime-${runtimeGeneration}`;
+  if (command === "runtime_thread_state") {
+    const threadId = String(args?.threadId ?? "");
+    return { instance: `runtime-${runtimeGeneration}`, loaded: runtimeLoadedThreads.has(threadId) };
+  }
   if (command === "restart_runtime") {
     runtimeGeneration += 1;
+    runtimeLoadedThreads.clear();
     return null;
   }
   if (command === "normal_chat_workspace") return "/chats";
@@ -241,6 +247,7 @@ function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
     const params = (args?.params ?? {}) as Record<string, unknown>;
     if (method === "thread/list") return threadListImpl(params);
     if (method === "thread/start") {
+      runtimeLoadedThreads.add("isolated-thread");
       return {
         thread: {
           ...THREAD_A,
@@ -264,7 +271,12 @@ function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
       return { thread: { ...THREAD_A, id: String(params.threadId), turns: [] } };
     }
     if (method === "thread/turns/list") return threadTurnsListImpl(params);
-    if (method === "thread/resume") return resumeImpl(params);
+    if (method === "thread/resume") {
+      return Promise.resolve(resumeImpl(params)).then((result) => {
+        runtimeLoadedThreads.add(String(params.threadId));
+        return result;
+      });
+    }
     if (method === "turn/start") return turnStartImpl(params);
     if (method === "account/read") {
       return accountReadImpl(params);
@@ -310,6 +322,7 @@ beforeEach(() => {
   openRouterCreditsImpl = () => ({ remaining: 0, used: null, source: "account" });
   commandExecImpl = () => ({ exitCode: 0, stdout: "", stderr: "" });
   runtimeGeneration = 1;
+  runtimeLoadedThreads = new Set();
   workspaceGitInfoImpl = () => ({ isRepo: true, isRoot: true, hasCommit: true, branch: "main", head: "head" });
   workspaceGitInitializeImpl = () => ({
     info: { isRepo: true, isRoot: true, hasCommit: true, branch: "main", head: "new-head" },
@@ -1001,6 +1014,62 @@ describe("workspace switching during thread selection", () => {
 
     expect(useTaskStore.getState().activeThreadId).toBeNull();
     expect(screen.queryByText("work in alpha")).not.toBeInTheDocument();
+  });
+
+  it("does not reopen a preparing thread after the user starts a new one", async () => {
+    const user = userEvent.setup();
+    await renderApp();
+    const { useTaskStore } = await import("./lib/taskStore");
+
+    await user.click(await screen.findByText("Alpha thread"));
+    await waitFor(() => {
+      expect(
+        invokeMock.mock.calls.some(
+          ([command, args]) => command === "codex_rpc" && args?.method === "thread/resume",
+        ),
+      ).toBe(true);
+    });
+
+    await user.click(screen.getByRole("button", { name: /^New thread/ }));
+    await act(async () => {
+      pendingResume.resolve({ thread: { ...THREAD_A, turns: [] } as Thread });
+      await pendingResume.promise;
+    });
+
+    expect(useTaskStore.getState().activeThreadId).toBeNull();
+    expect(screen.queryByText("work in alpha")).not.toBeInTheDocument();
+  });
+
+  it("paints OpenAI history before live-runtime preparation finishes", async () => {
+    const user = userEvent.setup();
+    threadTurnsListImpl = () => ({
+      data: [{
+        id: "recent-turn",
+        status: "completed",
+        items: [{
+          id: "recent-message",
+          type: "userMessage",
+          content: [{ type: "text", text: "visible before Windows runtime preparation" }],
+        }],
+      }],
+      nextCursor: null,
+      backwardsCursor: null,
+    });
+    await renderApp();
+
+    await user.click(await screen.findByText("Alpha thread"));
+
+    expect(await screen.findByText("visible before Windows runtime preparation")).toBeInTheDocument();
+    const methods = invokeMock.mock.calls
+      .filter(([command]) => command === "codex_rpc")
+      .map(([, args]) => args?.method);
+    expect(methods.indexOf("thread/read")).toBeGreaterThanOrEqual(0);
+    expect(methods.indexOf("thread/read")).toBeLessThan(methods.indexOf("thread/resume"));
+
+    await act(async () => {
+      pendingResume.resolve({ thread: { ...THREAD_A, turns: [] } });
+      await pendingResume.promise;
+    });
   });
 
   it("clears an older-page loading latch when the user leaves the thread", async () => {

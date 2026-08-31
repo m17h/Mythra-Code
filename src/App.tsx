@@ -6,7 +6,7 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { Archive, ArchiveRestore, Bot, Check, ChevronDown, Circle, Code2, Download, FileCode2, Folder, FolderOpen, Gauge, GitBranch, GitFork, LoaderCircle, MessageSquare, Paperclip, PanelRight, PanelLeftClose, PanelLeftOpen, Plus, Pin, PinOff, Pencil, Search, Settings, Shield, ShieldAlert, ShieldCheck, TerminalSquare, Trash2, X } from "lucide-react";
-import { getCodexRuntimeStatus, auditEvent, exportTextFile, getNormalChatWorkspace, getOpenRouterCredits, hasLmStudioKey, hasOpenRouterKey, respond, restartRuntime, rpc, runtimeInstanceId, type CodexRuntimeStatus, type JsonObject, type OpenRouterCreditBalance } from "./lib/codex";
+import { getCodexRuntimeStatus, auditEvent, exportTextFile, getNormalChatWorkspace, getOpenRouterCredits, hasLmStudioKey, hasOpenRouterKey, respond, restartRuntime, rpc, runtimeInstanceId, runtimeThreadState, type CodexRuntimeStatus, type JsonObject, type OpenRouterCreditBalance } from "./lib/codex";
 import { deleteClaudeTranscript, getClaudeRateLimits, getClaudeRuntimeStatus, listClaudeModels, loadClaudeTranscript, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, type ClaudeModel, type ClaudeRuntimeStatus } from "./lib/claude";
 import { deleteCursorTranscript, getCursorRuntimeStatus, listCursorModels, loadCursorTranscript, respondToCursorPermission, saveCursorTranscript, startCursorLogin, type CursorModel, type CursorRuntimeStatus } from "./lib/cursor";
 import { loadStored, storeValue } from "./lib/storage";
@@ -2765,6 +2765,13 @@ export default function App() {
   };
 
   const selectThreadRequestRef = useRef(0);
+  const threadPreparationRef = useRef(new Map<string, Promise<void>>());
+  const waitForThreadPreparation = useCallback(async (threadId: string) => {
+    // Preparation errors are already surfaced by selectThread. A turn should
+    // still continue into its own runtime-state/resume recovery path rather
+    // than inheriting a stale navigation failure.
+    await threadPreparationRef.current.get(threadId)?.catch(() => undefined);
+  }, []);
   const loadEarlier = useCallback(async (threadId: string) => {
     const store = useTaskStore.getState();
     const task = store.tasks[threadId];
@@ -2856,7 +2863,7 @@ export default function App() {
     setDraftThreadIsolated(false);
     if (pendingHandoff) composerRef.current?.setDraft("");
     setPendingHandoff(null);
-    try {
+    const selectionWork = (async () => {
       const isolation = threadWorktreesRef.current[thread.id];
       // Keep the unavailable execution path attached to the task while the
       // transcript is read-only. Falling back to the source folder here would
@@ -2912,12 +2919,18 @@ export default function App() {
       const threadProviderSettings = threadIsChild
         ? settingsWithoutChildDelegation(targetSettings)
         : targetSettings;
-      // Codex keeps a resumed thread loaded in its app-server. Attach the
-      // Mythra Code bridge during that resume—not one message later—so project
-      // settings proposals are available even while delegation is off and an
-      // ordinary follow-up does not have to restart the runtime just to add
-      // the proposal-only tool.
-      const childBridge = activeProject ? await ensureChildAgentBridge({
+      // Make repeat navigation paint from the in-memory task immediately. A
+      // cold task follows with a metadata-only read, which is deliberately
+      // independent of slower live-runtime configuration.
+      const initialThread = sidebarThread(thread);
+      useTaskStore.getState().ensureTask(thread.id, executionPath);
+      setActiveThread(initialThread);
+      useTaskStore.getState().setActiveThread(thread.id);
+
+      // Bridge preparation is independent of durable history, so overlap it
+      // with the fast view-only read. The promise is handled immediately to
+      // avoid a transient unhandled rejection while history wins the race.
+      const childBridgePromise = activeProject ? ensureChildAgentBridge({
         threadId: thread.id,
         policies: childAgentPolicies,
         links: childAgentLinks,
@@ -2931,11 +2944,41 @@ export default function App() {
         serviceTier: threadProviderSettings.serviceTier,
         readiness: childAgentReadiness,
         settingsProposalsEnabled: true,
-      }) : null;
+      }) : Promise.resolve(null);
+      void childBridgePromise.catch(() => undefined);
+      let loaded: LoadedThreadHistory;
+      try {
+        loaded = await loadThreadHistory(
+          "thread/read",
+          { threadId: thread.id, includeTurns: false },
+          { threadId: thread.id, includeTurns: true },
+        );
+      } catch (reason) {
+        const abandonedBridge = await childBridgePromise.catch(() => null);
+        if (abandonedBridge?.captured) void releaseChildAgentSession(abandonedBridge.policy.sessionId);
+        throw reason;
+      }
       if (selectThreadRequestRef.current !== requestId) {
+        const abandonedBridge = await childBridgePromise.catch(() => null);
         // A newer selection won while the bridge was starting. A freshly
         // captured session has no persisted policy pointing at it, so nothing
         // could ever revoke it — release it before abandoning this select.
+        if (abandonedBridge?.captured) void releaseChildAgentSession(abandonedBridge.policy.sessionId);
+        return;
+      }
+      if (!threadModels[loaded.thread.id]) persistThreadModel(loaded.thread.id, threadProviderSettings.model);
+      bindThreadToProject(loaded.thread.id, activeWorkspace.path);
+      rememberThread(loaded.thread);
+      setActiveThread(loaded.thread);
+      const history = timelineFromTurns(loaded.turns);
+      useTaskStore.getState().hydrateTask(loaded.thread.id, history.messages, history.activities, executionPath, loaded.history);
+      useTaskStore.getState().setActiveThread(loaded.thread.id);
+      setStatus("Preparing thread");
+
+      // Viewing is complete. Now make the live runtime ready for the next
+      // prompt without holding the transcript behind MCP/process startup.
+      const childBridge = await childBridgePromise;
+      if (selectThreadRequestRef.current !== requestId) {
         if (childBridge?.captured) void releaseChildAgentSession(childBridge.policy.sessionId);
         return;
       }
@@ -2954,9 +2997,11 @@ export default function App() {
       // immediately afterwards, preserving its old identity makes the next
       // turn detect the replacement and resume this thread again. Capturing it
       // after resume could incorrectly claim the replacement already loaded it.
-      let resumedRuntimeInstance = isolation?.status === "missing" || isolation?.status === "removed"
+      const resumedRuntimeState = isolation?.status === "missing" || isolation?.status === "removed"
         ? null
-        : await runtimeInstanceId().catch(() => null);
+        : await runtimeThreadState(thread.id).catch(() => null);
+      let resumedRuntimeInstance = resumedRuntimeState?.instance ?? null;
+      const resumedRuntimeLoaded = resumedRuntimeState?.loaded ?? false;
       const capabilitySignature = subagentCapabilitySignature({
         subagentsEnabled: Boolean(childBridge?.launch.toolNames.includes("spawn_mythra_agent")),
         subagentMax: resumedSubagentMax,
@@ -2964,7 +3009,12 @@ export default function App() {
       });
       let capabilityRefreshDeferred = false;
       if (resumedRuntimeInstance) {
-        const capabilityPlan = planSubagentCapabilities(thread.id, resumedRuntimeInstance, capabilitySignature);
+        const capabilityPlan = planSubagentCapabilities(
+          thread.id,
+          resumedRuntimeInstance,
+          capabilitySignature,
+          resumedRuntimeLoaded,
+        );
         if (capabilityPlan.restartRuntime) {
           try {
             resumedRuntimeInstance = await restartRuntimeForCapabilities(thread.id);
@@ -2980,32 +3030,30 @@ export default function App() {
           }
         }
       }
-      const resumeParams = threadResumeParams(resumedSettings, thread.id, executionPath, { customAgents, modelContextWindow: provider === "openrouter" ? openRouterModels.find((entry) => entry.id === resumedSettings.model)?.context_length : provider === "lmstudio" ? lmStudioModels.find((entry) => entry.id === resumedSettings.model)?.maxContextLength : undefined, additionalWorkspaceRoots: isolation?.gitDir ? [isolation.gitDir] : [], childAgentBridge: childBridge?.launch, refreshRuntimeConfig: true });
-      const loaded = isolation?.status === "missing" || isolation?.status === "removed" || capabilityRefreshDeferred
-        ? await loadThreadHistory("thread/read", { threadId: thread.id, includeTurns: false }, { threadId: thread.id, includeTurns: true })
-        : await loadThreadHistory("thread/resume", resumeParams, threadResumeParams(resumedSettings, thread.id, executionPath, { customAgents, modelContextWindow: provider === "openrouter" ? openRouterModels.find((entry) => entry.id === resumedSettings.model)?.context_length : provider === "lmstudio" ? lmStudioModels.find((entry) => entry.id === resumedSettings.model)?.maxContextLength : undefined, additionalWorkspaceRoots: isolation?.gitDir ? [isolation.gitDir] : [], childAgentBridge: childBridge?.launch, refreshRuntimeConfig: true }));
-      const result = { thread: loaded.thread };
       if (selectThreadRequestRef.current !== requestId) return;
+      const resumeParams = threadResumeParams(resumedSettings, thread.id, executionPath, { customAgents, modelContextWindow: provider === "openrouter" ? openRouterModels.find((entry) => entry.id === resumedSettings.model)?.context_length : provider === "lmstudio" ? lmStudioModels.find((entry) => entry.id === resumedSettings.model)?.maxContextLength : undefined, additionalWorkspaceRoots: isolation?.gitDir ? [isolation.gitDir] : [], childAgentBridge: childBridge?.launch, refreshRuntimeConfig: true });
       if (isolation?.status !== "missing" && isolation?.status !== "removed" && !capabilityRefreshDeferred) {
-        // Opening a thread resumes it with the complete capability config,
-        // including the project-control/delegation bridge when applicable.
-        if (resumedRuntimeInstance) {
-          recordSubagentCapabilities(result.thread.id, resumedRuntimeInstance, capabilitySignature);
-        }
+        const resumed = await rpc<{ thread: Thread }>("thread/resume", { ...resumeParams, excludeTurns: true });
         if (selectThreadRequestRef.current !== requestId) return;
+        rememberThread(resumed.thread);
+        setActiveThread(sidebarThread(resumed.thread));
+        if (resumedRuntimeInstance) {
+          recordSubagentCapabilities(resumed.thread.id, resumedRuntimeInstance, capabilitySignature);
+        }
       }
-      if (!threadModels[result.thread.id]) persistThreadModel(result.thread.id, threadProviderSettings.model);
-      bindThreadToProject(result.thread.id, activeWorkspace.path);
-      rememberThread(result.thread);
-      setActiveThread(result.thread);
-      const history = timelineFromTurns(loaded.turns);
-      useTaskStore.getState().hydrateTask(result.thread.id, history.messages, history.activities, executionPath, loaded.history);
-      useTaskStore.getState().setActiveThread(result.thread.id);
       setStatus("Ready");
+    })();
+    threadPreparationRef.current.set(thread.id, selectionWork);
+    try {
+      await selectionWork;
     } catch (reason) {
       if (selectThreadRequestRef.current !== requestId) return;
       setError(friendlyError(reason));
       setStatus("Ready");
+    } finally {
+      if (threadPreparationRef.current.get(thread.id) === selectionWork) {
+        threadPreparationRef.current.delete(thread.id);
+      }
     }
   };
 
@@ -3038,6 +3086,7 @@ export default function App() {
   }, []);
 
   const newThread = () => {
+    selectThreadRequestRef.current += 1;
     setActiveThread(null);
     useTaskStore.getState().setActiveThread(null);
     setDraftThreadProvider(null);
@@ -3081,6 +3130,7 @@ export default function App() {
         messages: task?.messages ?? [],
       });
       setPendingHandoff(handoff);
+      selectThreadRequestRef.current += 1;
       setActiveThread(null);
       useTaskStore.getState().setActiveThread(null);
       setDraftThreadProvider(provider === projectDefaultProvider ? null : provider);
@@ -3091,6 +3141,7 @@ export default function App() {
       return;
     }
     if (pendingHandoffForWorkspace) setPendingHandoff({ ...pendingHandoffForWorkspace, targetProvider: provider });
+    selectThreadRequestRef.current += 1;
     setActiveThread(null);
     useTaskStore.getState().setActiveThread(null);
     setDraftThreadProvider(provider === projectDefaultProvider ? null : provider);
@@ -3146,6 +3197,7 @@ export default function App() {
     persistThreadReasoning,
     persistThreadWorktrees,
     restartRuntimeForCapabilities,
+    waitForThreadPreparation,
     beginRunCheckpoint,
     discardRunCheckpoint,
     refreshLocalSkills,
@@ -3756,6 +3808,7 @@ export default function App() {
       return;
     }
     try {
+      await waitForThreadPreparation(activeThread.id);
       await rpc("review/start", { threadId: activeThread.id, target: { type: "uncommittedChanges" }, delivery: "inline" });
       setStatus("Reviewing");
     } catch (reason) {
@@ -3770,6 +3823,7 @@ export default function App() {
       return;
     }
     try {
+      await waitForThreadPreparation(activeThread.id);
       await rpc("thread/compact/start", { threadId: activeThread.id });
       setStatus("Compacting context");
     } catch (reason) {
@@ -3798,18 +3852,17 @@ export default function App() {
         return;
       }
       const loaded = await loadThreadHistory("thread/read", { threadId, includeTurns: false }, { threadId, includeTurns: true });
-      const result = { thread: loaded.thread };
       const nativeLink = nativeAgentLinks[threadId];
       const logicalPath = threadProjectBindingsRef.current?.[threadId]
         ?? (nativeLink ? threadProjectBindingsRef.current?.[nativeLink.rootThreadId] : undefined)
         ?? activeWorkspace?.path;
-      if (logicalPath) bindThreadToProject(result.thread.id, logicalPath);
-      rememberThread(result.thread);
-      setThreads((current) => upsertThread(current, result.thread));
-      setActiveThread(result.thread);
+      if (logicalPath) bindThreadToProject(loaded.thread.id, logicalPath);
+      rememberThread(loaded.thread);
+      setThreads((current) => upsertThread(current, loaded.thread));
+      setActiveThread(loaded.thread);
       const history = timelineFromTurns(loaded.turns);
-      useTaskStore.getState().hydrateTask(result.thread.id, history.messages, history.activities, result.thread.cwd, loaded.history);
-      useTaskStore.getState().setActiveThread(result.thread.id);
+      useTaskStore.getState().hydrateTask(loaded.thread.id, history.messages, history.activities, loaded.thread.cwd, loaded.history);
+      useTaskStore.getState().setActiveThread(loaded.thread.id);
       setStudioOpen(false);
     } catch (reason) {
       setError(friendlyError(reason));
@@ -3843,6 +3896,7 @@ export default function App() {
       return;
     }
     try {
+      await waitForThreadPreparation(checkpoint?.threadId ?? activeThread.id);
       await ensureSkillRoots();
       const modelProvider = runtimeModelProviderId(effectiveSettings.provider);
       const forkParams = { threadId: checkpoint?.threadId ?? activeThread.id, lastTurnId: checkpoint?.turnId, cwd: activeWorkspace?.path, runtimeWorkspaceRoots: activeWorkspace ? [activeWorkspace.path] : undefined, model: effectiveSettings.model, ...(modelProvider ? { modelProvider } : {}), config: threadRuntimeConfig(effectiveSettings, { customAgents, modelContextWindow: effectiveSettings.provider === "openrouter" ? openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.context_length : effectiveSettings.provider === "lmstudio" ? lmStudioModels.find((entry) => entry.id === effectiveSettings.model)?.maxContextLength : undefined }), baseInstructions: effectiveSettings.systemPrompt, developerInstructions: mythraCodeDeveloperInstructions(false) };
@@ -3878,6 +3932,7 @@ export default function App() {
     if (!activeThread) return;
     if (!await confirmDialog("Undo the last turn?\n\nThis permanently removes the latest exchange from the conversation. Files changed by the turn are not reverted.")) return;
     try {
+      await waitForThreadPreparation(activeThread.id);
       const result = await rpc<{ thread: Thread }>("thread/rollback", { threadId: activeThread.id, numTurns: 1 });
       rememberThread(result.thread);
       setActiveThread(sidebarThread(result.thread));
@@ -4572,6 +4627,7 @@ export default function App() {
 
   const connectMcp = async (server: McpView) => {
     try {
+      if (activeThreadId) await waitForThreadPreparation(activeThreadId);
       const result = await rpc<{ authorizationUrl: string }>("mcpServer/oauth/login", { name: server.name, threadId: activeThreadId });
       if (result.authorizationUrl) await openUrl(result.authorizationUrl);
     } catch (reason) {

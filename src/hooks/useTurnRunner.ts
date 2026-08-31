@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
-import { rpc, runtimeInstanceId, type CodexRuntimeStatus } from "../lib/codex";
+import { rpc, runtimeInstanceId, runtimeThreadState, type CodexRuntimeStatus } from "../lib/codex";
 import {
   isClaudeThreadBusyError,
   killClaudeTurn,
@@ -179,6 +179,8 @@ export interface TurnRunnerContext {
    * capability config can be reapplied to an already loaded thread. Resolves
    * with the identity of the app-server that replaced it. */
   restartRuntimeForCapabilities: (threadId: string) => Promise<string>;
+  /** Wait for view-first OpenAI navigation to finish preparing its runtime. */
+  waitForThreadPreparation: (threadId: string) => Promise<void>;
   beginRunCheckpoint: (threadId: string, workspacePath: string, prompt: string, provider: Provider, model: string) => Promise<string | undefined>;
   discardRunCheckpoint: (threadId: string) => void;
   refreshLocalSkills: () => Promise<unknown>;
@@ -234,7 +236,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       threadWorktreesRef, threadProjectBindingsRef, activeWorkspacePathRef,
       pendingTurnStartsRef, skillRuntimeRootRef, cursorSessionIdsRef,
       executionPathFor, bindThreadToProject, rememberThread, onThreadCreated, persistThreadModel, persistThreadReasoning,
-      persistThreadWorktrees, restartRuntimeForCapabilities, beginRunCheckpoint, discardRunCheckpoint,
+      persistThreadWorktrees, restartRuntimeForCapabilities, waitForThreadPreparation, beginRunCheckpoint, discardRunCheckpoint,
       refreshLocalSkills, ensureSkillRoots, scheduleClaudeThreadSave, scheduleCursorThreadSave,
       setThreads, setActiveThread, setAttachments, setDraftThreadIsolated,
       setStartingDraftTurn, setError, setStatus, setTransientStatus,
@@ -529,6 +531,9 @@ export function useTurnRunner(context: TurnRunnerContext): {
       }
       const isolationGitDir = provisionalWorktree?.gitDir ?? currentIsolation?.gitDir;
       const additionalWorkspaceRoots = isolationGitDir ? [isolationGitDir] : [];
+      if (activeThread && effectiveSettings.provider !== "claude" && effectiveSettings.provider !== "cursor") {
+        await waitForThreadPreparation(activeThread.id);
+      }
       childBridge = await ensureChildAgentBridge({
         threadId: activeThread?.id,
         policies: childAgentPolicies,
@@ -608,7 +613,10 @@ export function useTurnRunner(context: TurnRunnerContext): {
       // is holding have to be compared against the ones this turn wants — and
       // against the app-server identity that was told about them, because a
       // runtime that has since restarted holds nothing at all.
-      let runtimeInstance = await runtimeInstanceId();
+      const currentRuntime = activeThread
+        ? await runtimeThreadState(activeThread.id)
+        : { instance: await runtimeInstanceId(), loaded: false };
+      let runtimeInstance = currentRuntime.instance;
       const capabilities = subagentCapabilitySignature({
         subagentsEnabled: Boolean(childBridge?.launch.toolNames.includes("spawn_mythra_agent")),
         subagentMax: runtimeSubagentMax,
@@ -650,7 +658,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         // This keeps the same durable thread/history while making the visible
         // switch real; a runtime that restarted since then has nothing loaded
         // and takes the new config from the resume alone.
-        const plan = planSubagentCapabilities(threadId, runtimeInstance, capabilities);
+        const plan = planSubagentCapabilities(threadId, runtimeInstance, capabilities, currentRuntime.loaded);
         if (plan.restartRuntime) runtimeInstance = await restartRuntimeForCapabilities(threadId);
         if (effectiveSettings.provider === "openrouter" || effectiveSettings.provider === "lmstudio" || plan.resume) {
           const resume = threadResumeParams(runtimeSettings, threadId, executionPath, { customAgents, modelContextWindow, excludeTurns: true, additionalWorkspaceRoots, childAgentBridge: childBridge?.launch, refreshRuntimeConfig: true });
