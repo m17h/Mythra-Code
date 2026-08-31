@@ -1,10 +1,12 @@
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
 };
 
-use rusqlite::{params, Connection};
-use serde_json::Value;
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+use serde::Serialize;
+use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 
 use super::unix_timestamp_ms;
@@ -32,11 +34,15 @@ const STATE_DB_SCHEMA_VERSION: i64 = 1;
 
 /// Startup cap for the audit log; the newest rows win.
 const MAX_AUDIT_EVENT_ROWS: i64 = 20_000;
+const LOCAL_TRANSCRIPT_CHUNK_TARGET_BYTES: usize = 32 * 1024;
+const LOCAL_TRANSCRIPT_PAGE_DEFAULT_BYTES: usize = 40 * 1024;
+const LOCAL_TRANSCRIPT_PAGE_MAX_BYTES: usize = 1024 * 1024;
 
 /// A too-new schema is a deliberate refusal (downgraded install; the data is
 /// intact and a newer build reads it). Only SQLite's explicit corruption
 /// codes permit quarantine; transient locks, permissions, disk-full, and I/O
 /// errors must leave the user's database exactly where it is.
+#[derive(Debug)]
 pub(super) enum StateDbError {
     TooNew(String),
     Corrupt(String),
@@ -175,6 +181,27 @@ pub(super) fn open_state_db(path: &Path) -> Result<Connection, StateDbError> {
                thread_id TEXT,
                payload TEXT NOT NULL
              );
+             -- Additive tables intentionally remain compatible with schema-1
+             -- builds: older apps ignore them and continue using app_state.
+             CREATE TABLE IF NOT EXISTS local_transcript_meta (
+               provider TEXT NOT NULL,
+               thread_id TEXT NOT NULL,
+               thread_json TEXT NOT NULL,
+               cursor_session_id TEXT,
+               head_seq INTEGER NOT NULL,
+               generation INTEGER NOT NULL,
+               legacy_updated_at INTEGER NOT NULL,
+               updated_at INTEGER NOT NULL,
+               PRIMARY KEY(provider, thread_id)
+             );
+             CREATE TABLE IF NOT EXISTS local_transcript_chunks (
+               provider TEXT NOT NULL,
+               thread_id TEXT NOT NULL,
+               seq INTEGER NOT NULL,
+               entries_json TEXT NOT NULL,
+               byte_len INTEGER NOT NULL,
+               PRIMARY KEY(provider, thread_id, seq)
+             );
              CREATE INDEX IF NOT EXISTS audit_events_created_at ON audit_events(created_at DESC);",
         )
         .map_err(|error| {
@@ -217,6 +244,444 @@ pub(super) fn lock_state_db(
         .unwrap_or_else(std::sync::PoisonError::into_inner))
 }
 
+struct LocalTranscriptEntry {
+    value: Value,
+    wrapped_json: String,
+    timeline_order: Option<f64>,
+    source_order: usize,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct LocalTranscriptPage {
+    thread: Value,
+    cursor_session_id: Option<String>,
+    messages: Vec<Value>,
+    activities: Vec<Value>,
+    next_cursor: Option<String>,
+    head_seq: i64,
+    generation: i64,
+    byte_len: usize,
+    migrated_legacy: bool,
+    legacy_migration_failed: bool,
+}
+
+fn local_transcript_key(provider: &str, thread_id: &str) -> Result<String, String> {
+    if thread_id.trim().is_empty() {
+        return Err("A local transcript requires a thread id".to_string());
+    }
+    match provider {
+        "claude" => Ok(format!("kiwi.claudeThread.{thread_id}")),
+        "cursor" => Ok(format!("kiwi.cursorThread.{thread_id}")),
+        _ => Err("Local transcript provider must be claude or cursor".to_string()),
+    }
+}
+
+fn local_transcript_identity_from_key(key: &str) -> Option<(&'static str, &str)> {
+    if let Some(thread_id) = key.strip_prefix("kiwi.claudeThread.") {
+        return (!thread_id.is_empty()).then_some(("claude", thread_id));
+    }
+    if let Some(thread_id) = key.strip_prefix("kiwi.cursorThread.") {
+        return (!thread_id.is_empty()).then_some(("cursor", thread_id));
+    }
+    None
+}
+
+fn ordered_local_transcript_entries(value: &Value) -> Result<Vec<LocalTranscriptEntry>, String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "Stored local transcript is not an object".to_string())?;
+    let messages = object
+        .get("messages")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "Stored local transcript has no messages array".to_string())?;
+    let activities = object
+        .get("activities")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "Stored local transcript has no activities array".to_string())?;
+    let mut entries = Vec::with_capacity(messages.len() + activities.len());
+    for (source_order, message) in messages.iter().chain(activities.iter()).enumerate() {
+        let kind = if source_order < messages.len() {
+            "message"
+        } else {
+            "activity"
+        };
+        let value = message.clone();
+        let wrapped_json = serde_json::to_string(&json!({ "kind": kind, "entry": value }))
+            .map_err(|error| format!("Could not encode local transcript entry: {error}"))?;
+        entries.push(LocalTranscriptEntry {
+            timeline_order: message.get("timelineOrder").and_then(Value::as_f64),
+            value,
+            wrapped_json,
+            source_order,
+        });
+    }
+    entries.sort_by(
+        |left, right| match (left.timeline_order, right.timeline_order) {
+            (Some(left_order), Some(right_order)) => left_order
+                .partial_cmp(&right_order)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(left.source_order.cmp(&right.source_order)),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => left.source_order.cmp(&right.source_order),
+        },
+    );
+    Ok(entries)
+}
+
+fn local_transcript_chunks(value: &Value) -> Result<Vec<String>, String> {
+    let entries = ordered_local_transcript_entries(value)?;
+    let mut groups: Vec<Vec<LocalTranscriptEntry>> = Vec::new();
+    let mut turn_groups = HashMap::<String, usize>::new();
+    for entry in entries {
+        let turn_id = entry
+            .value
+            .get("turnId")
+            .and_then(Value::as_str)
+            .filter(|turn_id| !turn_id.is_empty())
+            .map(str::to_string);
+        if let Some(group_index) = turn_id
+            .as_ref()
+            .and_then(|turn_id| turn_groups.get(turn_id))
+            .copied()
+        {
+            groups[group_index].push(entry);
+        } else {
+            if let Some(turn_id) = turn_id {
+                turn_groups.insert(turn_id, groups.len());
+            }
+            groups.push(vec![entry]);
+        }
+    }
+
+    let encode = |entries: &[LocalTranscriptEntry]| -> String {
+        format!(
+            "[{}]",
+            entries
+                .iter()
+                .map(|entry| entry.wrapped_json.as_str())
+                .collect::<Vec<_>>()
+                .join(",")
+        )
+    };
+    let mut chunks = Vec::new();
+    let mut current: Vec<LocalTranscriptEntry> = Vec::new();
+    let mut current_bytes = 2usize;
+    for group in groups {
+        let group_bytes = group
+            .iter()
+            .map(|entry| entry.wrapped_json.len())
+            .sum::<usize>()
+            + group.len().saturating_sub(1);
+        let separator_bytes = usize::from(!current.is_empty());
+        if !current.is_empty()
+            && current_bytes
+                .saturating_add(separator_bytes)
+                .saturating_add(group_bytes)
+                > LOCAL_TRANSCRIPT_CHUNK_TARGET_BYTES
+        {
+            chunks.push(encode(&current));
+            current = group;
+            current_bytes = 2usize.saturating_add(group_bytes);
+        } else {
+            current_bytes = current_bytes
+                .saturating_add(separator_bytes)
+                .saturating_add(group_bytes);
+            current.extend(group);
+        }
+    }
+    if !current.is_empty() {
+        chunks.push(encode(&current));
+    }
+    if chunks.is_empty() {
+        chunks.push("[]".to_string());
+    }
+    Ok(chunks)
+}
+
+enum LegacyMigrationOutcome {
+    Migrated,
+    Missing,
+}
+
+fn migrate_legacy_local_transcript(
+    connection: &mut Connection,
+    provider: &str,
+    thread_id: &str,
+) -> Result<LegacyMigrationOutcome, String> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("Could not begin local transcript migration: {error}"))?;
+    let legacy_key = local_transcript_key(provider, thread_id)?;
+    let Some((legacy_json, legacy_updated_at)) = transaction
+        .query_row(
+            "SELECT value, updated_at FROM app_state WHERE key = ?1",
+            params![legacy_key],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .optional()
+        .map_err(|error| format!("Could not read legacy local transcript: {error}"))?
+    else {
+        return Ok(LegacyMigrationOutcome::Missing);
+    };
+    let value: Value = serde_json::from_str(&legacy_json)
+        .map_err(|error| format!("Stored local transcript is invalid: {error}"))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| "Stored local transcript is not an object".to_string())?;
+    let thread = object
+        .get("thread")
+        .cloned()
+        .ok_or_else(|| "Stored local transcript has no thread metadata".to_string())?;
+    if thread.get("id").and_then(Value::as_str) != Some(thread_id) {
+        return Err("Stored local transcript belongs to a different thread".to_string());
+    }
+    let cursor_session_id = object
+        .get("cursorSessionId")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let chunks = local_transcript_chunks(&value)?;
+    let prior_generation: i64 = transaction
+        .query_row(
+            "SELECT generation FROM local_transcript_meta WHERE provider = ?1 AND thread_id = ?2",
+            params![provider, thread_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| format!("Could not inspect local transcript generation: {error}"))?
+        .unwrap_or(0);
+    transaction
+        .execute(
+            "DELETE FROM local_transcript_chunks WHERE provider = ?1 AND thread_id = ?2",
+            params![provider, thread_id],
+        )
+        .map_err(|error| format!("Could not replace local transcript chunks: {error}"))?;
+    for (seq, chunk) in chunks.iter().enumerate() {
+        transaction
+            .execute(
+                "INSERT INTO local_transcript_chunks(provider, thread_id, seq, entries_json, byte_len)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![provider, thread_id, seq as i64, chunk, chunk.len() as i64],
+            )
+            .map_err(|error| format!("Could not save local transcript chunk: {error}"))?;
+    }
+    let now = unix_timestamp_ms();
+    transaction
+        .execute(
+            "INSERT INTO local_transcript_meta(
+               provider, thread_id, thread_json, cursor_session_id, head_seq,
+               generation, legacy_updated_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(provider, thread_id) DO UPDATE SET
+               thread_json = excluded.thread_json,
+               cursor_session_id = excluded.cursor_session_id,
+               head_seq = excluded.head_seq,
+               generation = excluded.generation,
+               legacy_updated_at = excluded.legacy_updated_at,
+               updated_at = excluded.updated_at",
+            params![
+                provider,
+                thread_id,
+                serde_json::to_string(&thread)
+                    .map_err(|error| format!("Could not encode local thread metadata: {error}"))?,
+                cursor_session_id,
+                chunks.len() as i64 - 1,
+                prior_generation + 1,
+                legacy_updated_at,
+                now,
+            ],
+        )
+        .map_err(|error| format!("Could not save local transcript metadata: {error}"))?;
+    transaction
+        .commit()
+        .map_err(|error| format!("Could not commit local transcript migration: {error}"))?;
+    Ok(LegacyMigrationOutcome::Migrated)
+}
+
+fn parse_local_transcript_cursor(cursor: &str, generation: i64) -> Result<i64, String> {
+    let (cursor_generation, seq) = cursor
+        .split_once(':')
+        .ok_or_else(|| "Local transcript cursor is malformed".to_string())?;
+    let cursor_generation = cursor_generation
+        .parse::<i64>()
+        .map_err(|_| "Local transcript cursor generation is malformed".to_string())?;
+    let seq = seq
+        .parse::<i64>()
+        .map_err(|_| "Local transcript cursor sequence is malformed".to_string())?;
+    if cursor_generation != generation || seq < 0 {
+        return Err("Local transcript cursor is stale".to_string());
+    }
+    Ok(seq)
+}
+
+fn read_local_transcript_page(
+    connection: &mut Connection,
+    provider: &str,
+    thread_id: &str,
+    cursor: Option<&str>,
+    byte_budget: Option<usize>,
+) -> Result<Option<LocalTranscriptPage>, String> {
+    let legacy_key = local_transcript_key(provider, thread_id)?;
+    let legacy = connection
+        .query_row(
+            "SELECT value, updated_at FROM app_state WHERE key = ?1",
+            params![legacy_key],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .optional()
+        .map_err(|error| format!("Could not inspect legacy local transcript: {error}"))?;
+    let meta_legacy_updated_at = connection
+        .query_row(
+            "SELECT legacy_updated_at FROM local_transcript_meta WHERE provider = ?1 AND thread_id = ?2",
+            params![provider, thread_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(|error| format!("Could not inspect local transcript metadata: {error}"))?;
+    let had_migrated_generation = meta_legacy_updated_at.is_some();
+    let mut legacy_migration_failed = false;
+    let migrated_legacy = match (&legacy, meta_legacy_updated_at) {
+        (Some((_, legacy_updated_at)), Some(migrated_at)) if *legacy_updated_at <= migrated_at => {
+            false
+        }
+        (Some(_), _) => match migrate_legacy_local_transcript(connection, provider, thread_id) {
+            Ok(LegacyMigrationOutcome::Migrated) => true,
+            Ok(LegacyMigrationOutcome::Missing) => {
+                delete_state_value(connection, &legacy_key)?;
+                return Ok(None);
+            }
+            // A malformed newer compatibility row must not make the last
+            // complete migrated generation unreachable.
+            Err(_) if had_migrated_generation => {
+                legacy_migration_failed = true;
+                false
+            }
+            Err(error) => return Err(error),
+        },
+        // While legacy rows are the write-side source of truth, their absence
+        // means the user deleted the transcript. Never resurrect old chunks.
+        (None, Some(_)) => {
+            delete_state_value(connection, &legacy_key)?;
+            return Ok(None);
+        }
+        (None, None) => return Ok(None),
+    };
+    let (thread_json, cursor_session_id, head_seq, generation) = connection
+        .query_row(
+            "SELECT thread_json, cursor_session_id, head_seq, generation
+             FROM local_transcript_meta WHERE provider = ?1 AND thread_id = ?2",
+            params![provider, thread_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            },
+        )
+        .map_err(|error| format!("Could not read local transcript metadata: {error}"))?;
+    let start_seq = cursor
+        .map(|cursor| parse_local_transcript_cursor(cursor, generation))
+        .transpose()?
+        .unwrap_or(head_seq);
+    if start_seq > head_seq {
+        return Err("Local transcript cursor is stale".to_string());
+    }
+    let budget = byte_budget
+        .unwrap_or(LOCAL_TRANSCRIPT_PAGE_DEFAULT_BYTES)
+        .clamp(1, LOCAL_TRANSCRIPT_PAGE_MAX_BYTES);
+    let mut statement = connection
+        .prepare(
+            "SELECT seq, entries_json, byte_len FROM local_transcript_chunks
+             WHERE provider = ?1 AND thread_id = ?2 AND seq <= ?3
+             ORDER BY seq DESC",
+        )
+        .map_err(|error| format!("Could not prepare local transcript page: {error}"))?;
+    let mut rows = statement
+        .query(params![provider, thread_id, start_seq])
+        .map_err(|error| format!("Could not read local transcript page: {error}"))?;
+    let mut selected: Vec<(i64, String)> = Vec::new();
+    let mut byte_len = 0usize;
+    while let Some(row) = rows
+        .next()
+        .map_err(|error| format!("Could not advance local transcript page: {error}"))?
+    {
+        let seq = row
+            .get::<_, i64>(0)
+            .map_err(|error| format!("Could not read local transcript sequence: {error}"))?;
+        let entries_json = row
+            .get::<_, String>(1)
+            .map_err(|error| format!("Could not read local transcript entries: {error}"))?;
+        let chunk_bytes = row
+            .get::<_, i64>(2)
+            .map_err(|error| format!("Could not read local transcript size: {error}"))?
+            .max(0) as usize;
+        if !selected.is_empty() && byte_len.saturating_add(chunk_bytes) > budget {
+            break;
+        }
+        byte_len = byte_len.saturating_add(chunk_bytes);
+        selected.push((seq, entries_json));
+    }
+    drop(rows);
+    drop(statement);
+    selected.reverse();
+    let oldest_seq = selected.first().map(|(seq, _)| *seq).unwrap_or(start_seq);
+    let mut messages = Vec::new();
+    let mut activities = Vec::new();
+    for (_, entries_json) in selected {
+        let entries: Vec<Value> = serde_json::from_str(&entries_json)
+            .map_err(|error| format!("Stored local transcript chunk is invalid: {error}"))?;
+        for wrapped in entries {
+            let kind = wrapped.get("kind").and_then(Value::as_str);
+            let entry = wrapped.get("entry").cloned();
+            match (kind, entry) {
+                (Some("message"), Some(entry)) => messages.push(entry),
+                (Some("activity"), Some(entry)) => activities.push(entry),
+                _ => return Err("Stored local transcript chunk has an invalid entry".to_string()),
+            }
+        }
+    }
+    let thread = serde_json::from_str(&thread_json)
+        .map_err(|error| format!("Stored local thread metadata is invalid: {error}"))?;
+    Ok(Some(LocalTranscriptPage {
+        thread,
+        cursor_session_id,
+        messages,
+        activities,
+        next_cursor: (oldest_seq > 0).then(|| format!("{generation}:{}", oldest_seq - 1)),
+        head_seq,
+        generation,
+        byte_len,
+        migrated_legacy,
+        legacy_migration_failed,
+    }))
+}
+
+#[tauri::command]
+pub(super) async fn local_transcript_page_read(
+    app: AppHandle,
+    provider: String,
+    thread_id: String,
+    cursor: Option<String>,
+    byte_budget: Option<usize>,
+) -> Result<Option<LocalTranscriptPage>, String> {
+    let connection = shared_state_db(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut connection = lock_state_db(&connection)?;
+        read_local_transcript_page(
+            &mut connection,
+            &provider,
+            &thread_id,
+            cursor.as_deref(),
+            byte_budget,
+        )
+    })
+    .await
+    .map_err(|error| format!("Local transcript page task failed: {error}"))?
+}
+
 #[tauri::command]
 pub(super) async fn state_read(app: AppHandle, key: String) -> Result<Option<Value>, String> {
     let connection = shared_state_db(&app)?;
@@ -238,34 +703,69 @@ pub(super) async fn state_read(app: AppHandle, key: String) -> Result<Option<Val
     .map_err(|error| format!("State read task failed: {error}"))?
 }
 
+fn write_state_value(
+    connection: &Connection,
+    key: &str,
+    value: &Value,
+    now: i64,
+) -> Result<(), String> {
+    let json = serde_json::to_string(value)
+        .map_err(|error| format!("Could not encode Mythra Code state: {error}"))?;
+    connection
+        .execute(
+            "INSERT INTO app_state(key, value, updated_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(key) DO UPDATE SET
+               value = excluded.value,
+               updated_at = MAX(excluded.updated_at, app_state.updated_at + 1)",
+            params![key, json, now],
+        )
+        .map_err(|error| format!("Could not save Mythra Code state: {error}"))?;
+    Ok(())
+}
+
 #[tauri::command]
 pub(super) async fn state_write(app: AppHandle, key: String, value: Value) -> Result<(), String> {
     let connection = shared_state_db(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
         let connection = lock_state_db(&connection)?;
-        let json = serde_json::to_string(&value).map_err(|error| format!("Could not encode Mythra Code state: {error}"))?;
-        connection
-            .execute(
-                "INSERT INTO app_state(key, value, updated_at) VALUES (?1, ?2, ?3)
-                 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
-                params![key, json, unix_timestamp_ms()],
-            )
-            .map_err(|error| format!("Could not save Mythra Code state: {error}"))?;
-        Ok(())
+        write_state_value(&connection, &key, &value, unix_timestamp_ms())
     })
     .await
     .map_err(|error| format!("State write task failed: {error}"))?
+}
+
+fn delete_state_value(connection: &mut Connection, key: &str) -> Result<(), String> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("Could not begin Mythra Code state deletion: {error}"))?;
+    transaction
+        .execute("DELETE FROM app_state WHERE key = ?1", params![key])
+        .map_err(|error| format!("Could not delete Mythra Code state: {error}"))?;
+    if let Some((provider, thread_id)) = local_transcript_identity_from_key(key) {
+        transaction
+            .execute(
+                "DELETE FROM local_transcript_chunks WHERE provider = ?1 AND thread_id = ?2",
+                params![provider, thread_id],
+            )
+            .map_err(|error| format!("Could not delete local transcript chunks: {error}"))?;
+        transaction
+            .execute(
+                "DELETE FROM local_transcript_meta WHERE provider = ?1 AND thread_id = ?2",
+                params![provider, thread_id],
+            )
+            .map_err(|error| format!("Could not delete local transcript metadata: {error}"))?;
+    }
+    transaction
+        .commit()
+        .map_err(|error| format!("Could not commit Mythra Code state deletion: {error}"))
 }
 
 #[tauri::command]
 pub(super) async fn state_delete(app: AppHandle, key: String) -> Result<(), String> {
     let connection = shared_state_db(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
-        let connection = lock_state_db(&connection)?;
-        connection
-            .execute("DELETE FROM app_state WHERE key = ?1", params![key])
-            .map_err(|error| format!("Could not delete Mythra Code state: {error}"))?;
-        Ok(())
+        let mut connection = lock_state_db(&connection)?;
+        delete_state_value(&mut connection, &key)
     })
     .await
     .map_err(|error| format!("State delete task failed: {error}"))?
@@ -274,6 +774,71 @@ pub(super) async fn state_delete(app: AppHandle, key: String) -> Result<(), Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn transcript_fixture(turns: usize, text_bytes: usize) -> Value {
+        let mut messages = Vec::new();
+        let mut activities = Vec::new();
+        let mut timeline_order = 0;
+        for index in 0..turns {
+            timeline_order += 1;
+            messages.push(json!({
+                "id": format!("user-{index}"),
+                "role": "user",
+                "text": "u".repeat(text_bytes),
+                "turnId": format!("turn-{index}"),
+                "timelineOrder": timeline_order,
+            }));
+            timeline_order += 1;
+            activities.push(json!({
+                "id": format!("tool-{index}"),
+                "kind": "command",
+                "title": "npm test",
+                "detail": "passed",
+                "turnId": format!("turn-{index}"),
+                "timelineOrder": timeline_order,
+            }));
+            timeline_order += 1;
+            messages.push(json!({
+                "id": format!("assistant-{index}"),
+                "role": "assistant",
+                "text": "a".repeat(text_bytes),
+                "turnId": format!("turn-{index}"),
+                "timelineOrder": timeline_order,
+            }));
+        }
+        json!({
+            "thread": { "id": "thread-a", "name": "Paged transcript", "cwd": "/project" },
+            "cursorSessionId": "cursor-session",
+            "messages": messages,
+            "activities": activities,
+        })
+    }
+
+    fn insert_legacy_transcript(
+        connection: &Connection,
+        provider: &str,
+        thread_id: &str,
+        value: &Value,
+        updated_at: i64,
+    ) {
+        let key = local_transcript_key(provider, thread_id).expect("legacy key");
+        connection
+            .execute(
+                "INSERT INTO app_state(key, value, updated_at) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                params![key, serde_json::to_string(value).unwrap(), updated_at],
+            )
+            .expect("insert legacy transcript");
+    }
+
+    fn temporary_state_db(label: &str) -> (PathBuf, Connection) {
+        let directory =
+            std::env::temp_dir().join(format!("openkiwi-{label}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).expect("create test directory");
+        let path = directory.join("openkiwi.sqlite3");
+        let connection = open_state_db(&path).expect("open test state database");
+        (directory, connection)
+    }
 
     #[test]
     fn ordinary_open_failures_are_not_classified_as_corruption() {
@@ -313,6 +878,336 @@ mod tests {
                     .starts_with("openkiwi.sqlite3.quarantined-")
             });
         assert!(quarantined, "original database was not quarantined");
+        std::fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn local_transcript_migrates_losslessly_and_pages_oldest_to_newest() {
+        let (directory, mut connection) = temporary_state_db("paged-transcript");
+        let fixture = transcript_fixture(8, 6_000);
+        insert_legacy_transcript(&connection, "cursor", "thread-a", &fixture, 100);
+
+        let first =
+            read_local_transcript_page(&mut connection, "cursor", "thread-a", None, Some(20_000))
+                .expect("read newest page")
+                .expect("transcript exists");
+        assert!(first.migrated_legacy);
+        assert_eq!(first.cursor_session_id.as_deref(), Some("cursor-session"));
+        assert_eq!(first.thread["id"], "thread-a");
+        assert!(first.next_cursor.is_some());
+        assert!(
+            first.byte_len > 20_000,
+            "one whole turn may exceed the page target"
+        );
+
+        let mut pages = vec![first];
+        while let Some(cursor) = pages.last().and_then(|page| page.next_cursor.clone()) {
+            pages.push(
+                read_local_transcript_page(
+                    &mut connection,
+                    "cursor",
+                    "thread-a",
+                    Some(&cursor),
+                    Some(20_000),
+                )
+                .expect("read older page")
+                .expect("transcript exists"),
+            );
+        }
+        pages.reverse();
+        let message_ids = pages
+            .iter()
+            .flat_map(|page| page.messages.iter())
+            .map(|message| message["id"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+        let activity_ids = pages
+            .iter()
+            .flat_map(|page| page.activities.iter())
+            .map(|activity| activity["id"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+        let expected_message_ids = fixture["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|message| message["id"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+        let expected_activity_ids = fixture["activities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|activity| activity["id"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(message_ids, expected_message_ids);
+        assert_eq!(activity_ids, expected_activity_ids);
+        let legacy_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM app_state WHERE key = 'kiwi.cursorThread.thread-a'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            legacy_count, 1,
+            "downgrade-compatible legacy row remains intact"
+        );
+        drop(connection);
+        std::fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn newer_legacy_transcript_invalidates_old_page_cursors() {
+        let (directory, mut connection) = temporary_state_db("stale-transcript-cursor");
+        insert_legacy_transcript(
+            &connection,
+            "claude",
+            "thread-a",
+            &transcript_fixture(5, 5_000),
+            100,
+        );
+        let first =
+            read_local_transcript_page(&mut connection, "claude", "thread-a", None, Some(20_000))
+                .unwrap()
+                .unwrap();
+        let stale_cursor = first.next_cursor.expect("older page cursor");
+        insert_legacy_transcript(
+            &connection,
+            "claude",
+            "thread-a",
+            &transcript_fixture(6, 5_000),
+            101,
+        );
+        let newest =
+            read_local_transcript_page(&mut connection, "claude", "thread-a", None, Some(20_000))
+                .unwrap()
+                .unwrap();
+        assert!(newest.generation > first.generation);
+        let error = read_local_transcript_page(
+            &mut connection,
+            "claude",
+            "thread-a",
+            Some(&stale_cursor),
+            Some(20_000),
+        )
+        .unwrap_err();
+        assert!(error.contains("stale"));
+        drop(connection);
+        std::fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn malformed_newer_legacy_value_cannot_destroy_migrated_chunks() {
+        let (directory, mut connection) = temporary_state_db("atomic-transcript-migration");
+        insert_legacy_transcript(
+            &connection,
+            "claude",
+            "thread-a",
+            &transcript_fixture(4, 1_000),
+            100,
+        );
+        let original =
+            read_local_transcript_page(&mut connection, "claude", "thread-a", None, None)
+                .unwrap()
+                .unwrap();
+        connection
+            .execute(
+                "UPDATE app_state SET value = '{broken', updated_at = 101
+                 WHERE key = 'kiwi.claudeThread.thread-a'",
+                [],
+            )
+            .unwrap();
+        let fallback =
+            read_local_transcript_page(&mut connection, "claude", "thread-a", None, None)
+                .unwrap()
+                .unwrap();
+        assert_eq!(fallback.generation, original.generation);
+        assert_eq!(fallback.messages, original.messages);
+        assert!(fallback.legacy_migration_failed);
+        let (generation, chunk_count): (i64, i64) = connection
+            .query_row(
+                "SELECT generation, (
+                   SELECT COUNT(*) FROM local_transcript_chunks
+                   WHERE provider = 'claude' AND thread_id = 'thread-a'
+                 ) FROM local_transcript_meta
+                 WHERE provider = 'claude' AND thread_id = 'thread-a'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(generation, original.generation);
+        assert!(chunk_count > 0);
+        drop(connection);
+        std::fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn deleting_legacy_transcript_also_removes_migrated_pages() {
+        let (directory, mut connection) = temporary_state_db("delete-paged-transcript");
+        insert_legacy_transcript(
+            &connection,
+            "claude",
+            "thread-a",
+            &transcript_fixture(4, 1_000),
+            100,
+        );
+        read_local_transcript_page(&mut connection, "claude", "thread-a", None, None)
+            .unwrap()
+            .unwrap();
+
+        delete_state_value(&mut connection, "kiwi.claudeThread.thread-a").unwrap();
+
+        assert!(
+            read_local_transcript_page(&mut connection, "claude", "thread-a", None, None)
+                .unwrap()
+                .is_none()
+        );
+        let retained: i64 = connection
+            .query_row(
+                "SELECT (
+                   SELECT COUNT(*) FROM local_transcript_meta
+                   WHERE provider = 'claude' AND thread_id = 'thread-a'
+                 ) + (
+                   SELECT COUNT(*) FROM local_transcript_chunks
+                   WHERE provider = 'claude' AND thread_id = 'thread-a'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(retained, 0);
+        drop(connection);
+        std::fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn legacy_only_deletion_cleans_compatibility_chunks_without_resurrection() {
+        let (directory, mut connection) = temporary_state_db("legacy-delete-paged-transcript");
+        insert_legacy_transcript(
+            &connection,
+            "cursor",
+            "thread-a",
+            &transcript_fixture(4, 1_000),
+            100,
+        );
+        read_local_transcript_page(&mut connection, "cursor", "thread-a", None, None)
+            .unwrap()
+            .unwrap();
+        connection
+            .execute(
+                "DELETE FROM app_state WHERE key = 'kiwi.cursorThread.thread-a'",
+                [],
+            )
+            .unwrap();
+
+        assert!(
+            read_local_transcript_page(&mut connection, "cursor", "thread-a", None, None)
+                .unwrap()
+                .is_none()
+        );
+        let retained: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM local_transcript_meta
+                 WHERE provider = 'cursor' AND thread_id = 'thread-a'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(retained, 0);
+        drop(connection);
+        std::fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn state_write_timestamps_advance_monotonically_per_key() {
+        let (directory, connection) = temporary_state_db("monotonic-state-write");
+        write_state_value(&connection, "same-key", &json!({ "version": 1 }), 100).unwrap();
+        write_state_value(&connection, "same-key", &json!({ "version": 2 }), 100).unwrap();
+        write_state_value(&connection, "same-key", &json!({ "version": 3 }), 90).unwrap();
+        let (value, updated_at): (String, i64) = connection
+            .query_row(
+                "SELECT value, updated_at FROM app_state WHERE key = 'same-key'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(updated_at, 102);
+        assert!(value.contains("\"version\":3"));
+        drop(connection);
+        std::fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn entries_without_turn_ids_chunk_in_linear_sized_windows() {
+        let messages = (0..4_000)
+            .map(|index| json!({ "id": format!("message-{index}"), "role": "assistant", "text": "small" }))
+            .collect::<Vec<_>>();
+        let transcript = json!({
+            "thread": { "id": "thread-a" },
+            "messages": messages,
+            "activities": [],
+        });
+
+        let chunks = local_transcript_chunks(&transcript).unwrap();
+
+        assert!(chunks.len() > 1);
+        let entry_count = chunks
+            .iter()
+            .map(|chunk| serde_json::from_str::<Vec<Value>>(chunk).unwrap().len())
+            .sum::<usize>();
+        assert_eq!(entry_count, 4_000);
+        assert!(chunks
+            .iter()
+            .all(|chunk| chunk.len() <= LOCAL_TRANSCRIPT_CHUNK_TARGET_BYTES));
+    }
+
+    #[test]
+    fn local_transcript_read_rejects_unknown_providers_and_missing_rows() {
+        let (directory, mut connection) = temporary_state_db("transcript-validation");
+        assert!(
+            read_local_transcript_page(&mut connection, "openai", "thread-a", None, None).is_err()
+        );
+        assert!(
+            read_local_transcript_page(&mut connection, "claude", "missing", None, None)
+                .unwrap()
+                .is_none()
+        );
+        drop(connection);
+        std::fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn local_transcript_pages_keep_turns_atomic_and_bound_feasible_payloads() {
+        let (directory, mut connection) = temporary_state_db("transcript-page-budget");
+        let fixture = transcript_fixture(12, 3_000);
+        insert_legacy_transcript(&connection, "claude", "thread-a", &fixture, 100);
+
+        let mut cursor = None;
+        loop {
+            let page = read_local_transcript_page(
+                &mut connection,
+                "claude",
+                "thread-a",
+                cursor.as_deref(),
+                Some(40 * 1024),
+            )
+            .unwrap()
+            .unwrap();
+            assert!(page.byte_len <= 40 * 1024);
+            let mut turn_counts = std::collections::HashMap::<String, (usize, usize)>::new();
+            for message in &page.messages {
+                let turn_id = message["turnId"].as_str().unwrap().to_string();
+                turn_counts.entry(turn_id).or_default().0 += 1;
+            }
+            for activity in &page.activities {
+                let turn_id = activity["turnId"].as_str().unwrap().to_string();
+                turn_counts.entry(turn_id).or_default().1 += 1;
+            }
+            assert!(turn_counts.values().all(|counts| *counts == (2, 1)));
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        drop(connection);
         std::fs::remove_dir_all(directory).expect("remove test directory");
     }
 }
