@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type PointerEvent as ReactPointerEvent, type SetStateAction } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type PointerEvent as ReactPointerEvent, type SetStateAction } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -44,6 +44,7 @@ import { PendingTurnStarts } from "./lib/pendingTurnStarts";
 import { useTaskStore, type QueuedTurn } from "./lib/taskStore";
 import { friendlyError } from "./lib/errors";
 import { recordError } from "./lib/errorLog";
+import { beginThreadOpen, failThreadOpen, markThreadHistoryHydrated, markThreadRenderMetrics, markThreadRuntimeReady, markThreadShellCommitted, markThreadTimelineCommitted, projectedJsonBytes, threadOpenAwaitingRenderMetrics, threadOpenAwaitingTimeline } from "./lib/performanceDiagnostics";
 import {
   annotateThreadUsage,
   estimateUsageCost,
@@ -312,6 +313,33 @@ function PermissionIcon({ mode, size = 15 }: { mode: PermissionMode; size?: numb
  * Subscribes to the streaming timeline itself so per-frame delta flushes stop
  * at this component boundary instead of re-rendering the entire App.
  */
+function ThreadOpenCommitMarker({ threadId, commitToken }: { threadId: string; commitToken: number }) {
+  useLayoutEffect(() => {
+    markThreadShellCommitted(threadId);
+    if (threadOpenAwaitingTimeline(threadId)) markThreadTimelineCommitted(threadId);
+    if (!threadOpenAwaitingRenderMetrics(threadId)) return;
+    let metricsFrame: number | null = null;
+    const paintFrame = requestAnimationFrame(() => {
+      // A second animation frame guarantees the hydrated commit had an
+      // opportunity to paint before synchronous DOM counting begins.
+      metricsFrame = requestAnimationFrame(() => {
+        if (!threadOpenAwaitingRenderMetrics(threadId)) return;
+        const scroller = document.querySelector<HTMLElement>('[data-testid="timeline-scroller"]');
+        markThreadRenderMetrics(threadId, {
+          renderedRowCount: scroller?.querySelectorAll("[data-entry-index]").length ?? 0,
+          timelineDomNodeCount: scroller?.querySelectorAll("*").length ?? 0,
+          totalDomNodeCount: document.getElementsByTagName("*").length,
+        });
+      });
+    });
+    return () => {
+      cancelAnimationFrame(paintFrame);
+      if (metricsFrame !== null) cancelAnimationFrame(metricsFrame);
+    };
+  }, [commitToken, threadId]);
+  return null;
+}
+
 function ConversationTimeline({ threadId, running, thinkingLabel, approval, provider, searchQuery, searchActiveMatch, onSearchMatches, onEditMessage, onApprovalRespond, onLoadEarlier }: { threadId: string; running: boolean; thinkingLabel: string; approval: PendingApproval | null; provider: AppSettings["provider"]; searchQuery?: string; searchActiveMatch?: number; onSearchMatches?: (count: number) => void; onEditMessage: (text: string) => void; onApprovalRespond: (approval: PendingApproval, result: JsonObject) => void | Promise<void>; onLoadEarlier: () => void }) {
   const messages = useTaskStore((state) => state.tasks[threadId]?.messages ?? EMPTY_MESSAGES);
   const activities = useTaskStore((state) => state.tasks[threadId]?.activities ?? EMPTY_ACTIVITIES);
@@ -329,6 +357,7 @@ export default function App() {
   const [chatWorkspacePath, setChatWorkspacePath] = useState("");
   const [threads, setThreads] = useState<Thread[]>([]);
   const [activeThread, setActiveThread] = useState<Thread | null>(null);
+  const [threadOpenCommitToken, setThreadOpenCommitToken] = useState(0);
   // True only while a send with no active thread yet (a brand-new draft) is
   // creating its thread. Once a thread exists, its own task status carries
   // the starting/running state — never a global flag, so a start in one
@@ -2856,6 +2885,13 @@ export default function App() {
     // Clicking two threads quickly must open the one clicked last, not the
     // one whose resume RPC happened to finish last.
     const requestId = ++selectThreadRequestRef.current;
+    const selectedProvider = providerFromThread(thread, projectDefaultProvider);
+    const existingTask = useTaskStore.getState().tasks[thread.id];
+    beginThreadOpen(
+      thread.id,
+      selectedProvider,
+      Boolean(existingTask && (existingTask.messages.length > 0 || existingTask.activities.length > 0)),
+    );
     setError(null);
     setStatus("Loading thread");
     setDraftThreadProvider(null);
@@ -2883,6 +2919,20 @@ export default function App() {
         setActiveThread(resolvedThread);
         hydrateLocalProviderTask(resolvedThread.id, transcript, executionPath);
         useTaskStore.getState().setActiveThread(resolvedThread.id);
+        const hydrated = useTaskStore.getState().tasks[resolvedThread.id];
+        markThreadHistoryHydrated(resolvedThread.id, {
+          // Local-provider transcripts currently arrive as one native value.
+          // Do not stringify a potentially multi-megabyte transcript on the
+          // navigation path merely to measure it; the storage redesign will
+          // expose transport bytes without adding this work to first paint.
+          projectedBytes: null,
+          messageCount: hydrated?.messages.length ?? 0,
+          activityCount: hydrated?.activities.length ?? 0,
+          paginated: false,
+          hasMore: false,
+        });
+        setThreadOpenCommitToken(requestId);
+        markThreadRuntimeReady(resolvedThread.id);
         setStatus("Ready");
         return;
       }
@@ -2900,10 +2950,20 @@ export default function App() {
         setActiveThread(resolvedThread);
         hydrateLocalProviderTask(resolvedThread.id, transcript, executionPath);
         useTaskStore.getState().setActiveThread(resolvedThread.id);
+        const hydrated = useTaskStore.getState().tasks[resolvedThread.id];
+        markThreadHistoryHydrated(resolvedThread.id, {
+          projectedBytes: null,
+          messageCount: hydrated?.messages.length ?? 0,
+          activityCount: hydrated?.activities.length ?? 0,
+          paginated: false,
+          hasMore: false,
+        });
+        setThreadOpenCommitToken(requestId);
+        markThreadRuntimeReady(resolvedThread.id);
         setStatus("Ready");
         return;
       }
-      const provider = providerFromThread(thread, projectDefaultProvider);
+      const provider = selectedProvider;
       const projectModel = activeProject?.overrides?.defaults?.model ?? settings.model;
       const providerPrompt = provider === "openai" || provider === "claude"
         ? subscriptionSystemPrompts[provider]
@@ -2973,6 +3033,15 @@ export default function App() {
       const history = timelineFromTurns(loaded.turns);
       useTaskStore.getState().hydrateTask(loaded.thread.id, history.messages, history.activities, executionPath, loaded.history);
       useTaskStore.getState().setActiveThread(loaded.thread.id);
+      markThreadHistoryHydrated(loaded.thread.id, {
+        projectedBytes: null,
+        messageCount: history.messages.length,
+        activityCount: history.activities.length,
+        paginated: loaded.history.paginated,
+        hasMore: loaded.history.hasMore,
+        measureProjectedBytes: () => projectedJsonBytes({ thread: loaded.thread, turns: loaded.turns }),
+      });
+      setThreadOpenCommitToken(requestId);
       setStatus("Preparing thread");
 
       // Viewing is complete. Now make the live runtime ready for the next
@@ -3041,6 +3110,7 @@ export default function App() {
           recordSubagentCapabilities(resumed.thread.id, resumedRuntimeInstance, capabilitySignature);
         }
       }
+      markThreadRuntimeReady(thread.id);
       setStatus("Ready");
     })();
     threadPreparationRef.current.set(thread.id, selectionWork);
@@ -3048,6 +3118,7 @@ export default function App() {
       await selectionWork;
     } catch (reason) {
       if (selectThreadRequestRef.current !== requestId) return;
+      failThreadOpen(thread.id, "selection");
       setError(friendlyError(reason));
       setStatus("Ready");
     } finally {
@@ -5164,6 +5235,7 @@ export default function App() {
         ) : (
           <>
             <section className="conversation">
+              {activeThreadId && <ThreadOpenCommitMarker threadId={activeThreadId} commitToken={threadOpenCommitToken} />}
               {convSearchOpen && activeThreadId && (
                 <div className="conv-search-bar" role="search">
                   <Search size={12} />

@@ -22,6 +22,7 @@ use axum::{
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
@@ -164,6 +165,7 @@ struct RuntimeState {
     /// exit handler can still tear the process tree down while `ensure_server`
     /// holds the lock during a slow spawn/initialize.
     server_pid: std::sync::Mutex<Option<u32>>,
+    process_memory: Mutex<ProcessMemoryCache>,
 }
 
 #[derive(Clone)]
@@ -2821,8 +2823,156 @@ async fn audit_recent(
     .map_err(|error| format!("Audit read task failed: {error}"))?
 }
 
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct ProcessMemorySnapshot {
+    host_resident_bytes: Option<u64>,
+    managed_process_tree_resident_bytes: Option<u64>,
+    managed_process_count: usize,
+    app_server_resident_bytes: Option<u64>,
+    sampled_age_ms: u64,
+    cached: bool,
+}
+
+#[derive(Clone, Copy)]
+struct ProcessMemoryRow {
+    pid: u32,
+    parent: Option<u32>,
+    resident_bytes: u64,
+    start_time: u64,
+}
+
+#[derive(Default)]
+struct ProcessMemoryCache {
+    app_server_pid: Option<u32>,
+    sampled_at: Option<Instant>,
+    snapshot: Option<ProcessMemorySnapshot>,
+}
+
+const PROCESS_MEMORY_CACHE_TTL: Duration = Duration::from_secs(5);
+
+/// Summarize only processes Mythra Code can attribute by parentage. WebView
+/// helpers re-parented by the OS are intentionally excluded rather than
+/// presenting an unreliable machine-wide total as application memory.
+fn summarize_process_memory(
+    processes: &[ProcessMemoryRow],
+    host_pid: u32,
+    app_server_pid: Option<u32>,
+) -> ProcessMemorySnapshot {
+    let start_times = processes
+        .iter()
+        .map(|process| (process.pid, process.start_time))
+        .collect::<HashMap<_, _>>();
+    let mut managed = HashSet::from([host_pid]);
+    loop {
+        let before = managed.len();
+        for process in processes {
+            if process.parent.is_some_and(|parent| {
+                if !managed.contains(&parent) {
+                    return false;
+                }
+                let parent_start = start_times.get(&parent).copied().unwrap_or(0);
+                parent_start == 0 || process.start_time == 0 || parent_start <= process.start_time
+            }) {
+                managed.insert(process.pid);
+            }
+        }
+        if managed.len() == before {
+            break;
+        }
+    }
+    let managed_rows = processes
+        .iter()
+        .filter(|process| managed.contains(&process.pid))
+        .collect::<Vec<_>>();
+    ProcessMemorySnapshot {
+        host_resident_bytes: processes
+            .iter()
+            .find_map(|process| (process.pid == host_pid).then_some(process.resident_bytes)),
+        managed_process_tree_resident_bytes: (!managed_rows.is_empty()).then(|| {
+            managed_rows
+                .iter()
+                .map(|process| process.resident_bytes)
+                .sum()
+        }),
+        managed_process_count: managed_rows.len(),
+        app_server_resident_bytes: app_server_pid.and_then(|target| {
+            processes
+                .iter()
+                .filter(|process| managed.contains(&process.pid))
+                .find_map(|process| (process.pid == target).then_some(process.resident_bytes))
+        }),
+        sampled_age_ms: 0,
+        cached: false,
+    }
+}
+
+async fn collect_process_memory_snapshot(
+    app_server_pid: Option<u32>,
+) -> Result<ProcessMemorySnapshot, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut system = System::new();
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::All,
+            true,
+            ProcessRefreshKind::nothing().with_memory(),
+        );
+        let processes = system
+            .processes()
+            .iter()
+            .map(|(pid, process)| ProcessMemoryRow {
+                pid: pid.as_u32(),
+                parent: process.parent().map(|parent| parent.as_u32()),
+                resident_bytes: process.memory(),
+                start_time: process.start_time(),
+            })
+            .collect::<Vec<_>>();
+        Ok(summarize_process_memory(
+            &processes,
+            std::process::id(),
+            app_server_pid,
+        ))
+    })
+    .await
+    .map_err(|error| format!("Process memory snapshot task failed: {error}"))?
+}
+
+async fn cached_process_memory_snapshot(
+    state: &RuntimeState,
+) -> Result<ProcessMemorySnapshot, String> {
+    let app_server_pid = *state
+        .server_pid
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut cache = state.process_memory.lock().await;
+    if cache.app_server_pid == app_server_pid {
+        if let (Some(sampled_at), Some(snapshot)) = (cache.sampled_at, &cache.snapshot) {
+            let age = sampled_at.elapsed();
+            if age <= PROCESS_MEMORY_CACHE_TTL {
+                let mut snapshot = snapshot.clone();
+                snapshot.sampled_age_ms = age.as_millis().min(u128::from(u64::MAX)) as u64;
+                snapshot.cached = true;
+                return Ok(snapshot);
+            }
+        }
+    }
+    let snapshot = collect_process_memory_snapshot(app_server_pid).await?;
+    cache.app_server_pid = app_server_pid;
+    cache.sampled_at = Some(Instant::now());
+    cache.snapshot = Some(snapshot.clone());
+    Ok(snapshot)
+}
+
+#[tauri::command]
+async fn performance_snapshot(
+    state: State<'_, RuntimeState>,
+) -> Result<ProcessMemorySnapshot, String> {
+    cached_process_memory_snapshot(&state).await
+}
+
 async fn read_diagnostics(app: &AppHandle, state: &RuntimeState) -> Result<Value, String> {
     let runtime = read_codex_runtime_status(app, state).await;
+    let process_memory = cached_process_memory_snapshot(state).await.ok();
     let database = state_db_path(app)?;
     let shared_connection = shared_state_db(app)?;
     let audit = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<Value>, String> {
@@ -2853,6 +3003,7 @@ async fn read_diagnostics(app: &AppHandle, state: &RuntimeState) -> Result<Value
         "platform": env::consts::OS,
         "architecture": env::consts::ARCH,
         "generatedAt": unix_timestamp_ms(),
+        "processMemory": process_memory,
         "auditEvents": audit,
     }))
 }
@@ -4110,6 +4261,7 @@ pub fn run() {
             worktree_remove,
             audit_append,
             audit_recent,
+            performance_snapshot,
             diagnostics_read,
             diagnostics_export,
             export_text_file,

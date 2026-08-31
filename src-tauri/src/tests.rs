@@ -2,6 +2,102 @@ use super::*;
 use std::process::Command as StdCommand;
 
 #[test]
+fn process_memory_snapshot_counts_only_the_managed_descendant_tree() {
+    let snapshot = summarize_process_memory(
+        &[
+            ProcessMemoryRow {
+                pid: 100,
+                parent: None,
+                resident_bytes: 10,
+                start_time: 10,
+            },
+            ProcessMemoryRow {
+                pid: 101,
+                parent: Some(100),
+                resident_bytes: 20,
+                start_time: 11,
+            },
+            ProcessMemoryRow {
+                pid: 102,
+                parent: Some(101),
+                resident_bytes: 30,
+                start_time: 12,
+            },
+            ProcessMemoryRow {
+                pid: 200,
+                parent: None,
+                resident_bytes: 1_000,
+                start_time: 1,
+            },
+            ProcessMemoryRow {
+                pid: 201,
+                parent: Some(200),
+                resident_bytes: 2_000,
+                start_time: 2,
+            },
+        ],
+        100,
+        Some(102),
+    );
+    assert_eq!(
+        snapshot,
+        ProcessMemorySnapshot {
+            host_resident_bytes: Some(10),
+            managed_process_tree_resident_bytes: Some(60),
+            managed_process_count: 3,
+            app_server_resident_bytes: Some(30),
+            sampled_age_ms: 0,
+            cached: false,
+        }
+    );
+}
+
+#[test]
+fn process_memory_snapshot_reports_missing_processes_without_fake_zeroes() {
+    let snapshot = summarize_process_memory(
+        &[ProcessMemoryRow {
+            pid: 200,
+            parent: None,
+            resident_bytes: 1_000,
+            start_time: 1,
+        }],
+        100,
+        Some(999),
+    );
+    assert_eq!(snapshot.host_resident_bytes, None);
+    assert_eq!(snapshot.managed_process_tree_resident_bytes, None);
+    assert_eq!(snapshot.managed_process_count, 0);
+    assert_eq!(snapshot.app_server_resident_bytes, None);
+}
+
+#[test]
+fn process_memory_snapshot_rejects_reused_parent_pids() {
+    let snapshot = summarize_process_memory(
+        &[
+            ProcessMemoryRow {
+                pid: 100,
+                parent: None,
+                resident_bytes: 10,
+                start_time: 50,
+            },
+            // This older process cannot be a child of the newer host even if
+            // Windows still reports a stale matching parent PID.
+            ProcessMemoryRow {
+                pid: 101,
+                parent: Some(100),
+                resident_bytes: 900,
+                start_time: 20,
+            },
+        ],
+        100,
+        Some(101),
+    );
+    assert_eq!(snapshot.managed_process_tree_resident_bytes, Some(10));
+    assert_eq!(snapshot.managed_process_count, 1);
+    assert_eq!(snapshot.app_server_resident_bytes, None);
+}
+
+#[test]
 fn claude_always_uses_mythra_code_as_its_only_subagent_route() {
     let disallowed = claude_disallowed_tools("ask");
     assert!(disallowed.contains(&"Task"));
