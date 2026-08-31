@@ -1072,6 +1072,90 @@ describe("workspace switching during thread selection", () => {
     });
   });
 
+  it("opens a local-provider thread from a bounded page and recovers stale backward paging", async () => {
+    const user = userEvent.setup();
+    const claudeThread: Thread = {
+      ...THREAD_A,
+      id: "claude-thread",
+      name: "Paged Claude thread",
+      preview: "newest local message",
+      modelProvider: "claude",
+    };
+    let staleCursorOnce = true;
+    localStorage.setItem("kiwi.knownThreads", JSON.stringify({ [claudeThread.id]: claudeThread }));
+    localStorage.setItem("kiwi.threadProjects", JSON.stringify({ [claudeThread.id]: PROJECT_A.path }));
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "local_transcript_page_read") {
+        if (args?.cursor) {
+          if (staleCursorOnce) {
+            staleCursorOnce = false;
+            throw new Error("Local transcript cursor is stale");
+          }
+          return {
+            thread: claudeThread,
+            messages: [{ id: "older-local", role: "user", text: "older local message", turnId: "older-turn", turnStatus: "completed", timelineOrder: 1 }],
+            activities: [],
+            nextCursor: null,
+            headSeq: 2,
+            tailSeq: 3,
+            generation: 7,
+            byteLen: 1_024,
+          };
+        }
+        return {
+          thread: claudeThread,
+          messages: [{ id: "newest-local", role: "assistant", text: "newest local message", turnId: "newest-turn", turnStatus: "completed", timelineOrder: 2 }],
+          activities: [],
+          nextCursor: "7:1",
+          headSeq: 2,
+          tailSeq: 3,
+          generation: 7,
+          byteLen: 8_192,
+        };
+      }
+      if (command === "local_transcript_write_state_read") {
+        return { generation: 7, headSeq: 2, tailSeq: 3 };
+      }
+      return stubInvoke(command, args);
+    });
+    await renderApp();
+    const { useTaskStore } = await import("./lib/taskStore");
+
+    await user.click(await screen.findByText("Paged Claude thread"));
+
+    expect(await screen.findByText("newest local message")).toBeInTheDocument();
+    expect(screen.queryByText("older local message")).not.toBeInTheDocument();
+    expect(invokeMock).toHaveBeenCalledWith("local_transcript_page_read", {
+      provider: "claude",
+      threadId: claudeThread.id,
+      cursor: null,
+      byteBudget: 40 * 1024,
+    });
+    expect(useTaskStore.getState().tasks[claudeThread.id]?.history).toMatchObject({
+      paginated: true,
+      hasMore: true,
+      nextCursor: "7:1",
+    });
+
+    await user.click(await screen.findByRole("button", { name: "Load earlier messages" }));
+
+    expect(await screen.findByText("older local message")).toBeInTheDocument();
+    expect(useTaskStore.getState().tasks[claudeThread.id]?.history).toMatchObject({
+      paginated: true,
+      hasMore: false,
+      nextCursor: null,
+    });
+    expect(invokeMock).toHaveBeenCalledWith("local_transcript_page_read", {
+      provider: "claude",
+      threadId: claudeThread.id,
+      cursor: "7:1",
+      byteBudget: 40 * 1024,
+    });
+    expect(invokeMock.mock.calls.filter(([command, args]) => (
+      command === "local_transcript_page_read" && args?.threadId === claudeThread.id
+    ))).toHaveLength(4);
+  });
+
   it("clears an older-page loading latch when the user leaves the thread", async () => {
     const user = userEvent.setup();
     const olderPage = deferred<unknown>();

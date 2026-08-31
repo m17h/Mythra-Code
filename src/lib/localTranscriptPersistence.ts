@@ -17,9 +17,11 @@ interface LocalTranscriptWriteState {
 }
 
 interface PersistenceState extends LocalTranscriptWriteState {
+  partial: boolean;
   mutableTurnId: string | null;
   /** A generation conflict makes incremental replacement ambiguous for the
-   * rest of this turn. Full snapshots remain safe and are still uncommon. */
+   * rest of this turn. Full snapshots remain safe only when the complete
+   * transcript is resident and are still uncommon. */
   snapshotOnlyTurnId: string | null;
 }
 
@@ -28,6 +30,16 @@ interface TailSelection {
   turnId: string;
   seal: boolean;
 }
+
+export interface LocalTranscriptPage extends LocalTranscriptValue {
+  nextCursor: string | null;
+  headSeq: number;
+  tailSeq: number;
+  generation: number;
+  byteLen: number;
+}
+
+const LOCAL_TRANSCRIPT_INITIAL_BYTES = 40 * 1024;
 
 const persistenceStates = new Map<string, PersistenceState>();
 const saveQueues = new Map<string, Promise<void>>();
@@ -48,6 +60,10 @@ function rememberPersistenceState(key: string, state: PersistenceState): void {
   if (persistenceStates.size <= MAX_PERSISTENCE_STATES) return;
   for (const candidate of persistenceStates.keys()) {
     if (candidate === key || saveQueues.has(candidate) || deletingTranscripts.has(candidate)) continue;
+    // Losing this marker could turn the next save of a bounded renderer
+    // window into a destructive first-save snapshot. Partial records are only
+    // a few numbers and must live until deletion or a proven full hydration.
+    if (persistenceStates.get(candidate)?.partial) continue;
     persistenceStates.delete(candidate);
     break;
   }
@@ -108,7 +124,22 @@ async function saveSnapshot(
   await invoke("local_transcript_snapshot_write", { provider, value: transcript });
   const state = await readWriteState(provider, transcript.thread.id);
   if (!state) throw new Error("Local transcript snapshot was saved without write state");
-  return { ...state, mutableTurnId: null, snapshotOnlyTurnId: null };
+  return { ...state, partial: false, mutableTurnId: null, snapshotOnlyTurnId: null };
+}
+
+async function saveMetadata(
+  provider: LocalTranscriptProvider,
+  transcript: LocalTranscriptValue,
+  state: PersistenceState,
+): Promise<PersistenceState> {
+  const next = await invoke<LocalTranscriptWriteState>("local_transcript_metadata_write", {
+    provider,
+    threadId: transcript.thread.id,
+    thread: transcript.thread,
+    cursorSessionId: transcript.cursorSessionId ?? null,
+    expectedGeneration: state.generation,
+  });
+  return { ...state, ...next };
 }
 
 async function persistTranscript(
@@ -126,18 +157,29 @@ async function persistTranscript(
   }
   const tail = selectMutableTail(transcript);
   if (!tail) {
+    if (state.partial) {
+      state = await saveMetadata(provider, transcript, state);
+      rememberPersistenceState(key, state);
+      return;
+    }
     state = await saveSnapshot(provider, transcript);
     rememberPersistenceState(key, state);
     return;
   }
 
   if (state.snapshotOnlyTurnId === tail.turnId) {
+    if (state.partial) throw new Error("Paged local transcript requires a full reload before snapshot recovery");
     state = await saveSnapshot(provider, transcript);
     if (!tail.seal) state.snapshotOnlyTurnId = tail.turnId;
     rememberPersistenceState(key, state);
     return;
   }
   if (state.mutableTurnId === null && tail.seal) {
+    if (state.partial) {
+      state = await saveMetadata(provider, transcript, state);
+      rememberPersistenceState(key, state);
+      return;
+    }
     state = await saveSnapshot(provider, transcript);
     rememberPersistenceState(key, state);
     return;
@@ -146,6 +188,7 @@ async function persistTranscript(
     || state.mutableTurnId === tail.turnId
     || state.mutableTurnId === "__pending__";
   if (!compatibleMutableTurn) {
+    if (state.partial) throw new Error("Paged local transcript tail changed before its prior turn was sealed");
     state = await saveSnapshot(provider, transcript);
     if (!tail.seal) state.snapshotOnlyTurnId = tail.turnId;
     rememberPersistenceState(key, state);
@@ -161,11 +204,13 @@ async function persistTranscript(
     });
     rememberPersistenceState(key, {
       ...next,
+      partial: state.partial,
       mutableTurnId: tail.seal ? null : tail.turnId,
       snapshotOnlyTurnId: null,
     });
   } catch (reason) {
     if (!/generation is stale/i.test(String(reason))) throw reason;
+    if (state.partial) throw new Error("Paged local transcript changed outside this window; reload it before saving");
     const recovered = await saveSnapshot(provider, transcript);
     if (!tail.seal) recovered.snapshotOnlyTurnId = tail.turnId;
     rememberPersistenceState(key, recovered);
@@ -182,16 +227,57 @@ export async function loadLocalTranscript<T extends LocalTranscriptValue>(
     persistenceStates.delete(key);
     return null;
   }
+  const existing = persistenceStates.get(key);
   try {
     const state = await readWriteState(provider, threadId);
-    if (state) rememberPersistenceState(key, { ...state, mutableTurnId: null, snapshotOnlyTurnId: null });
+    if (existing?.partial) return transcript;
+    if (state) rememberPersistenceState(key, { ...state, partial: false, mutableTurnId: null, snapshotOnlyTurnId: null });
     else persistenceStates.delete(key);
   } catch {
     // The transcript is already readable. A transient token failure should
-    // only disable incremental writes; the next save safely snapshots it.
-    persistenceStates.delete(key);
+    // only disable incremental writes for a complete in-memory transcript.
+    // Never discard a partial marker: doing so could let a later save replace
+    // unseen history with the bounded renderer window.
+    if (!existing?.partial) persistenceStates.delete(key);
   }
   return transcript;
+}
+
+export async function loadLocalTranscriptPage<T extends LocalTranscriptPage>(
+  provider: LocalTranscriptProvider,
+  threadId: string,
+  cursor?: string,
+): Promise<T | null> {
+  const key = persistenceKey(provider, threadId);
+  if (cursor) {
+    return invoke<T | null>("local_transcript_page_read", {
+      provider,
+      threadId,
+      cursor,
+      byteBudget: LOCAL_TRANSCRIPT_INITIAL_BYTES,
+    });
+  }
+  const page = await invoke<T | null>("local_transcript_page_read", {
+    provider,
+    threadId,
+    cursor: null,
+    byteBudget: LOCAL_TRANSCRIPT_INITIAL_BYTES,
+  });
+  if (!page) {
+    persistenceStates.delete(key);
+    return null;
+  }
+  // The backend returns the page and mutable-tail boundary under one database
+  // lock, avoiding both a second native round trip and a page/token race.
+  rememberPersistenceState(key, {
+    generation: page.generation,
+    headSeq: page.headSeq,
+    tailSeq: page.tailSeq,
+    partial: Boolean(page.nextCursor),
+    mutableTurnId: null,
+    snapshotOnlyTurnId: null,
+  });
+  return page;
 }
 
 export function saveLocalTranscript(

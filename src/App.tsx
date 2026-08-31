@@ -7,8 +7,8 @@ import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { Archive, ArchiveRestore, Bot, Check, ChevronDown, Circle, Code2, Download, FileCode2, Folder, FolderOpen, Gauge, GitBranch, GitFork, LoaderCircle, MessageSquare, Paperclip, PanelRight, PanelLeftClose, PanelLeftOpen, Plus, Pin, PinOff, Pencil, Search, Settings, Shield, ShieldAlert, ShieldCheck, TerminalSquare, Trash2, X } from "lucide-react";
 import { getCodexRuntimeStatus, auditEvent, exportTextFile, getNormalChatWorkspace, getOpenRouterCredits, hasLmStudioKey, hasOpenRouterKey, respond, restartRuntime, rpc, runtimeInstanceId, runtimeThreadState, type CodexRuntimeStatus, type JsonObject, type OpenRouterCreditBalance } from "./lib/codex";
-import { deleteClaudeTranscript, getClaudeRateLimits, getClaudeRuntimeStatus, listClaudeModels, loadClaudeTranscript, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, type ClaudeModel, type ClaudeRuntimeStatus } from "./lib/claude";
-import { deleteCursorTranscript, getCursorRuntimeStatus, listCursorModels, loadCursorTranscript, respondToCursorPermission, saveCursorTranscript, startCursorLogin, type CursorModel, type CursorRuntimeStatus } from "./lib/cursor";
+import { deleteClaudeTranscript, getClaudeRateLimits, getClaudeRuntimeStatus, listClaudeModels, loadClaudeTranscript, loadClaudeTranscriptPage, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, type ClaudeModel, type ClaudeRuntimeStatus } from "./lib/claude";
+import { deleteCursorTranscript, getCursorRuntimeStatus, listCursorModels, loadCursorTranscript, loadCursorTranscriptPage, respondToCursorPermission, saveCursorTranscript, startCursorLogin, type CursorModel, type CursorRuntimeStatus } from "./lib/cursor";
 import { loadStored, storeValue } from "./lib/storage";
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_PROMPT_PROFILES, DEFAULT_SETTINGS, sanitizeAutoArchiveSubagentThreads, sanitizeEffortSlider, sanitizeTheme, themeColorScheme } from "./lib/appConfig";
 import { commandSandbox, threadResumeParams, threadRuntimeConfig } from "./lib/turnConfig";
@@ -279,14 +279,16 @@ function hydrateLocalProviderTask(
   threadId: string,
   transcript: { messages: ChatMessage[]; activities: Activity[] } | null | undefined,
   executionPath: string | undefined,
+  history?: ThreadHistoryState,
 ): void {
   const store = useTaskStore.getState();
   const existing = store.tasks[threadId];
   if (existing && (existing.messages.length > 0 || existing.activities.length > 0)) {
     store.ensureTask(threadId, executionPath);
+    if (history) store.setHistory(threadId, history);
     return;
   }
-  store.hydrateTask(threadId, transcript?.messages ?? [], transcript?.activities ?? [], executionPath);
+  store.hydrateTask(threadId, transcript?.messages ?? [], transcript?.activities ?? [], executionPath, history);
 }
 
 function permissionLabel(mode: PermissionMode): string {
@@ -2809,6 +2811,47 @@ export default function App() {
     historyRequestRef.current.set(threadId, requestId);
     store.setHistory(threadId, { loading: true });
     try {
+      const localProvider = activeThread?.id === threadId
+        ? isClaudeThread(activeThread) ? "claude" : isCursorThread(activeThread) ? "cursor" : null
+        : null;
+      if (localProvider) {
+        const readPage = (cursor?: string) => localProvider === "claude"
+          ? loadClaudeTranscriptPage(threadId, cursor)
+          : loadCursorTranscriptPage(threadId, cursor);
+        let page;
+        try {
+          page = await readPage(task.history.nextCursor);
+        } catch (reason) {
+          if (!/local transcript cursor is stale/i.test(String(reason))) throw reason;
+          // A live tail save advances the write generation. Refresh the tiny
+          // newest window to acquire its new cursor, then fetch the page just
+          // behind it. Prepending both is safe because the store deduplicates
+          // IDs already present in the live renderer task.
+          const newest = await readPage();
+          if (!newest) throw new Error("Local transcript page is missing");
+          const older = newest.nextCursor ? await readPage(newest.nextCursor) : null;
+          page = {
+            ...newest,
+            messages: [...(older?.messages ?? []), ...newest.messages],
+            activities: [...(older?.activities ?? []), ...newest.activities],
+            nextCursor: older?.nextCursor ?? null,
+          };
+        }
+        if (!page) throw new Error("Local transcript page is missing");
+        const currentState = useTaskStore.getState();
+        if (
+          historyRequestRef.current.get(threadId) !== requestId
+          || currentState.activeThreadId !== threadId
+          || currentState.tasks[threadId]?.history.nextCursor !== task.history.nextCursor
+        ) return;
+        store.prependHistory(threadId, page.messages, page.activities, {
+          nextCursor: page.nextCursor,
+          hasMore: Boolean(page.nextCursor),
+          loading: false,
+          paginated: true,
+        });
+        return;
+      }
       let page = normalizeThreadTurnsPage(await rpc<unknown>("thread/turns/list", {
         threadId,
         cursor: task.history.nextCursor,
@@ -2872,7 +2915,7 @@ export default function App() {
         if (currentStore.tasks[threadId]?.history.loading) currentStore.setHistory(threadId, { loading: false });
       }
     }
-  }, [activeThread?.id]);
+  }, [activeThread]);
 
   const selectThread = async (thread: Thread) => {
     if (!activeWorkspace) return;
@@ -2917,7 +2960,7 @@ export default function App() {
       // chooses "Continue shared".
       const executionPath = isolation?.path ?? activeWorkspace.path;
       if (isClaudeThread(thread)) {
-        const transcript = await loadClaudeTranscript(thread.id);
+        const transcript = await loadClaudeTranscriptPage(thread.id);
         if (selectThreadRequestRef.current !== requestId) return;
         const resolvedThread = transcript?.thread ?? thread;
         if (!threadModels[resolvedThread.id]) {
@@ -2927,19 +2970,21 @@ export default function App() {
         bindThreadToProject(resolvedThread.id, activeWorkspace.path);
         rememberThread(resolvedThread);
         setActiveThread(resolvedThread);
-        hydrateLocalProviderTask(resolvedThread.id, transcript, executionPath);
+        const history = {
+          nextCursor: transcript?.nextCursor ?? null,
+          hasMore: Boolean(transcript?.nextCursor),
+          loading: false,
+          paginated: true,
+        };
+        hydrateLocalProviderTask(resolvedThread.id, transcript, executionPath, history);
         useTaskStore.getState().setActiveThread(resolvedThread.id);
         const hydrated = useTaskStore.getState().tasks[resolvedThread.id];
         markThreadHistoryHydrated(resolvedThread.id, {
-          // Local-provider transcripts currently arrive as one native value.
-          // Do not stringify a potentially multi-megabyte transcript on the
-          // navigation path merely to measure it; the storage redesign will
-          // expose transport bytes without adding this work to first paint.
-          projectedBytes: null,
+          projectedBytes: transcript?.byteLen ?? 0,
           messageCount: hydrated?.messages.length ?? 0,
           activityCount: hydrated?.activities.length ?? 0,
-          paginated: false,
-          hasMore: false,
+          paginated: true,
+          hasMore: history.hasMore,
         });
         setThreadOpenCommitToken(requestId);
         markThreadRuntimeReady(resolvedThread.id);
@@ -2947,7 +2992,7 @@ export default function App() {
         return;
       }
       if (isCursorThread(thread)) {
-        const transcript = await loadCursorTranscript(thread.id);
+        const transcript = await loadCursorTranscriptPage(thread.id);
         if (selectThreadRequestRef.current !== requestId) return;
         const resolvedThread = transcript?.thread ?? thread;
         if (transcript?.cursorSessionId) cursorSessionIdsRef.current[resolvedThread.id] = transcript.cursorSessionId;
@@ -2958,15 +3003,21 @@ export default function App() {
         bindThreadToProject(resolvedThread.id, activeWorkspace.path);
         rememberThread(resolvedThread);
         setActiveThread(resolvedThread);
-        hydrateLocalProviderTask(resolvedThread.id, transcript, executionPath);
+        const history = {
+          nextCursor: transcript?.nextCursor ?? null,
+          hasMore: Boolean(transcript?.nextCursor),
+          loading: false,
+          paginated: true,
+        };
+        hydrateLocalProviderTask(resolvedThread.id, transcript, executionPath, history);
         useTaskStore.getState().setActiveThread(resolvedThread.id);
         const hydrated = useTaskStore.getState().tasks[resolvedThread.id];
         markThreadHistoryHydrated(resolvedThread.id, {
-          projectedBytes: null,
+          projectedBytes: transcript?.byteLen ?? 0,
           messageCount: hydrated?.messages.length ?? 0,
           activityCount: hydrated?.activities.length ?? 0,
-          paginated: false,
-          hasMore: false,
+          paginated: true,
+          hasMore: history.hasMore,
         });
         setThreadOpenCommitToken(requestId);
         markThreadRuntimeReady(resolvedThread.id);
