@@ -57,6 +57,10 @@ export interface ClaudeModel {
   resolvedModel: string;
   /** Present but not selectable — policy or plan blocks it. */
   disabled: boolean;
+  /** Why a disabled catalog row cannot start a turn. */
+  unavailableReason?: "update-required" | "unavailable" | null;
+  /** Minimum Claude Code version named by an update-required sentinel. */
+  requiredVersion?: string | null;
   supportedEfforts: string[];
 }
 
@@ -75,6 +79,50 @@ function trimmed(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+const UPDATE_REQUIRED_PATTERN = /\bupdate\s+to\s+v?(\d+\.\d+\.\d+)\+?/i;
+
+function numericVersion(value: string): number[] | null {
+  const match = value.match(/\b(\d+(?:\.\d+)*)\b/);
+  return match ? match[1].split(".").map(Number) : null;
+}
+
+function compareNumericVersions(left: number[], right: number[]): number {
+  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+    const difference = (left[index] ?? 0) - (right[index] ?? 0);
+    if (difference) return difference;
+  }
+  return 0;
+}
+
+function modelFamilyVersion(model: ClaudeModel): { family: string; version: number[] } | null {
+  if (model.id === "default" || /^default\b/i.test(model.displayName)) return null;
+  const text = `${model.displayName} ${model.description}`;
+  const match = text.match(/\b([a-z][a-z0-9-]*)\s+(\d+(?:\.\d+)*)\b/i);
+  const version = match ? numericVersion(match[2]) : null;
+  return match && version ? { family: match[1].toLowerCase(), version } : null;
+}
+
+/**
+ * Removes a model only when the CLI explicitly advertises a newer disabled
+ * successor in the same named family. This keeps update guidance visible
+ * without presenting an already-superseded Claude model as a current choice.
+ */
+export function visibleClaudeModels(catalog: ClaudeModel[]): ClaudeModel[] {
+  const successors = catalog
+    .filter((model) => model.unavailableReason === "update-required")
+    .map(modelFamilyVersion)
+    .filter((entry): entry is { family: string; version: number[] } => Boolean(entry));
+  if (!successors.length) return catalog;
+  return catalog.filter((model) => {
+    if (model.disabled) return true;
+    const current = modelFamilyVersion(model);
+    return !current || !successors.some((successor) => (
+      successor.family === current.family
+      && compareNumericVersions(successor.version, current.version) > 0
+    ));
+  });
+}
+
 /**
  * Normalizes a `list_models` control response. Unknown fields are tolerated so
  * a newer CLI cannot break the picker, and anything without an id is dropped
@@ -91,12 +139,17 @@ export function parseClaudeModelCatalog(payload: unknown): ClaudeModel[] {
     if (!id || seen.has(id)) continue;
     seen.add(id);
     const resolvedModel = trimmed(entry.resolvedModel) || id;
+    const description = trimmed(entry.description);
+    const disabled = entry.isDisabled === true || entry.disabled === true;
+    const requiredVersion = disabled ? description.match(UPDATE_REQUIRED_PATTERN)?.[1] ?? null : null;
     catalog.push({
       id,
-      displayName: trimmed(entry.displayName) || id,
-      description: trimmed(entry.description),
+      displayName: (trimmed(entry.displayName) || id).replace(/\s*\(disabled\)\s*$/i, ""),
+      description,
       resolvedModel,
-      disabled: entry.isDisabled === true || entry.disabled === true,
+      disabled,
+      unavailableReason: disabled ? (requiredVersion ? "update-required" : "unavailable") : null,
+      requiredVersion,
       supportedEfforts: Array.isArray(entry.supportedEffortLevels)
         ? entry.supportedEffortLevels.filter((effort): effort is string => typeof effort === "string")
         : [],

@@ -83,6 +83,42 @@ describe("ClaudeModelControl", () => {
     expect(screen.getByRole("menuitemradio", { name: /Opus \(unavailable on your plan\)/ })).toBeDisabled();
   });
 
+  it("replaces a superseded Fable row with clickable update guidance without selecting the sentinel", () => {
+    const onModel = vi.fn();
+    const onUnavailableModel = vi.fn();
+    const catalog = [
+      ...LIVE,
+      model("claude-fable-5[1m]", "Fable", { description: "Fable 5 · Most capable" }),
+      model("cc-update-required-1", "Fable 5.1", {
+        description: "Update to 2.1.255+ to use Fable 5.1",
+        resolvedModel: "cc-update-required-1",
+        disabled: true,
+        unavailableReason: "update-required",
+        requiredVersion: "2.1.255",
+      }),
+    ];
+    render(<ClaudeModelControl model="sonnet" effort="medium" models={catalog} onUnavailableModel={onUnavailableModel} onModel={onModel} onEffort={vi.fn()} />);
+    open();
+
+    expect(screen.queryByRole("menuitemradio", { name: /^Fable$/ })).not.toBeInTheDocument();
+    const successor = screen.getByRole("menuitemradio", { name: /Fable 5\.1 \(Claude Code update required\)/ });
+    expect(successor).toHaveAttribute("aria-disabled", "true");
+    expect(successor).not.toBeDisabled();
+    fireEvent.click(successor);
+    expect(onUnavailableModel).toHaveBeenCalledWith(expect.objectContaining({ id: "cc-update-required-1" }));
+    expect(onModel).not.toHaveBeenCalled();
+  });
+
+  it("explains that a signed-out catalog is generic", () => {
+    const onSignInRequired = vi.fn();
+    render(<ClaudeModelControl model="sonnet" effort="medium" models={LIVE} signedIn={false} onSignInRequired={onSignInRequired} onModel={vi.fn()} onEffort={vi.fn()} />);
+    open();
+    expect(screen.getByText("Generic CLI catalog — sign in for account models")).toBeInTheDocument();
+    expect(screen.getByText(/Sign in to Claude Code on this computer/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open account settings" }));
+    expect(onSignInRequired).toHaveBeenCalledOnce();
+  });
+
   it("refreshes the catalog on request", () => {
     const onRefresh = vi.fn();
     render(<ClaudeModelControl model="sonnet" effort="medium" models={LIVE} onRefresh={onRefresh} onModel={vi.fn()} onEffort={vi.fn()} />);

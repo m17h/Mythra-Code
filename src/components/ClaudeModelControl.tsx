@@ -4,7 +4,7 @@ import { EffortSlider, effortFlairStyle } from "./effortFlair";
 import { ModelFavoriteStar, type ModelFavoriteProps } from "./ModelFavoriteStar";
 import type { ReasoningEffort } from "./ModelPowerControl";
 import { ClaudeProviderLogo } from "./BrandLogos";
-import type { ClaudeModel } from "../lib/claude";
+import { visibleClaudeModels, type ClaudeModel } from "../lib/claude";
 import { favoriteCount, sortByFavorites } from "../lib/modelFavorites";
 
 /**
@@ -50,11 +50,14 @@ export function ClaudeModelControl({
   models = [],
   loading = false,
   error = "",
+  signedIn,
   favorites = [],
   onToggleFavorite,
   onModel,
   onEffort,
   onRefresh,
+  onUnavailableModel,
+  onSignInRequired,
 }: ModelFavoriteProps & {
   model: string;
   effort: ReasoningEffort;
@@ -62,14 +65,17 @@ export function ClaudeModelControl({
   models?: ClaudeModel[];
   loading?: boolean;
   error?: string;
+  signedIn?: boolean;
   onModel: (model: string) => void;
   onEffort: (effort: ReasoningEffort) => void;
   onRefresh?: () => void;
+  onUnavailableModel?: (model: ClaudeModel) => void;
+  onSignInRequired?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const live = models.length > 0;
-  const catalog = live ? models : CLAUDE_FALLBACK_MODELS;
+  const catalog = visibleClaudeModels(live ? models : CLAUDE_FALLBACK_MODELS);
   const ordered = useMemo(
     () => sortByFavorites(catalog, favorites, (entry) => entry.id),
     [catalog, favorites],
@@ -137,7 +143,9 @@ export function ClaudeModelControl({
         <div className="openrouter-menu claude-model-menu">
           <div className="openrouter-menu-meta">
             <span>{catalog.length} Claude model{catalog.length === 1 ? "" : "s"}</span>
-            <small>{live ? "Live catalog from your Claude Code CLI" : "Built-in list — CLI catalog unavailable"}</small>
+            <small>{live
+              ? signedIn === false ? "Generic CLI catalog — sign in for account models" : "Live catalog from your Claude Code CLI"
+              : "Built-in list — CLI catalog unavailable"}</small>
             {onRefresh && (
               <button type="button" className="model-meta-refresh" onClick={onRefresh} title="Refresh Claude models" aria-label="Refresh Claude model catalog" disabled={loading}>
                 {loading ? <LoaderCircle className="spin" size={13} /> : <RefreshCw size={13} />}
@@ -149,17 +157,25 @@ export function ClaudeModelControl({
             role="menu"
             aria-label="Claude model selector"
           >
-            {ordered.map((entry, index) => (
+            {ordered.map((entry, index) => {
+              const updateRequired = entry.unavailableReason === "update-required";
+              return (
               <div className="model-row" key={entry.id} role="none">
                 <button
                   type="button"
                   role="menuitemradio"
                   aria-checked={entry.id === selected?.id}
-                  aria-label={`${entry.displayName}${entry.disabled ? " (unavailable on your plan)" : ""}`}
-                  className={`${entry.id === selected?.id ? "selected" : ""}${starredVisible > 0 && index === starredVisible - 1 ? " favorite-group-end" : ""}`}
-                  disabled={entry.disabled}
-                  title={entry.disabled ? "Your Claude plan cannot run this model" : entry.resolvedModel}
+                  aria-label={`${entry.displayName}${updateRequired ? " (Claude Code update required)" : entry.disabled ? " (unavailable on your plan)" : ""}`}
+                  aria-disabled={entry.disabled || undefined}
+                  className={`${entry.id === selected?.id ? "selected " : ""}${updateRequired ? "update-required " : ""}${starredVisible > 0 && index === starredVisible - 1 ? "favorite-group-end" : ""}`.trim()}
+                  disabled={entry.disabled && !updateRequired}
+                  title={updateRequired ? `Update Claude Code${entry.requiredVersion ? ` to ${entry.requiredVersion} or newer` : ""}` : entry.disabled ? "Your Claude plan cannot run this model" : entry.resolvedModel}
                   onClick={() => {
+                    if (entry.disabled) {
+                      onUnavailableModel?.(entry);
+                      setOpen(false);
+                      return;
+                    }
                     onModel(entry.id);
                     setOpen(false);
                   }}
@@ -171,13 +187,20 @@ export function ClaudeModelControl({
                     <strong>{entry.displayName}</strong>
                     <small>{entry.description || entry.resolvedModel}</small>
                   </span>
-                  <span className="openrouter-model-meta">{entry.resolvedModel}</span>
+                  <span className="openrouter-model-meta">{updateRequired ? "Update required" : entry.resolvedModel}</span>
                   {entry.id === selected?.id && <Check size={13} />}
                 </button>
-                {onToggleFavorite && <ModelFavoriteStar model={entry.id} label={entry.displayName} favorite={favorites.includes(entry.id)} onToggle={onToggleFavorite} />}
+                {!entry.disabled && onToggleFavorite && <ModelFavoriteStar model={entry.id} label={entry.displayName} favorite={favorites.includes(entry.id)} onToggle={onToggleFavorite} />}
               </div>
-            ))}
+              );
+            })}
           </div>
+          {live && signedIn === false && (
+            <div className="openrouter-catalog-warning">
+              <span>Sign in to Claude Code on this computer, then refresh to load account-specific models such as Fable 5.1.</span>
+              {onSignInRequired && <button type="button" className="secondary-button" onClick={() => { setOpen(false); onSignInRequired(); }}>Open account settings</button>}
+            </div>
+          )}
           {!live && (
             <div className="openrouter-catalog-warning">
               {error || "Could not read the Claude Code model catalog."} Showing Mythra Code’s built-in list, which may not match your plan.

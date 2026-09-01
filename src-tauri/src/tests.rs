@@ -1597,6 +1597,32 @@ fn runtime_compatibility_accepts_tested_contract() {
 }
 
 #[test]
+fn runtime_update_comparison_handles_labels_and_prereleases() {
+    assert_eq!(
+        normalized_runtime_version("codex-cli 0.151.0-alpha.7.2"),
+        Some("0.151.0-alpha.7.2".into())
+    );
+    assert_eq!(
+        normalized_runtime_version("2.1.250 (Claude Code)"),
+        Some("2.1.250".into())
+    );
+    assert_eq!(
+        normalized_runtime_version("rust-v0.152.0"),
+        Some("0.152.0".into())
+    );
+    assert!(runtime_update_available(
+        Some("codex-cli 0.151.0-alpha.7.2"),
+        Some("0.152.0")
+    ));
+    assert!(runtime_update_available(Some("2.1.250"), Some("2.1.257")));
+    assert!(!runtime_update_available(Some("2.1.257"), Some("2.1.257")));
+    assert!(!runtime_update_available(
+        Some("development"),
+        Some("2.1.257")
+    ));
+}
+
+#[test]
 fn codex_bridge_bounds_repeated_thread_previews_without_touching_messages() {
     let preview = "👨‍👩‍👧".repeat(MAX_THREAD_PREVIEW_CHARACTERS + 10);
     let message = "complete canonical user message";

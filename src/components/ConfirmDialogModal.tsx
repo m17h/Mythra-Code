@@ -43,13 +43,13 @@ export function ConfirmDialogModal() {
         {body.length > 0 && <p>{body.join("\n\n")}</p>}
         <div className="confirm-dialog-actions">
           <button className="secondary-button" data-autofocus onClick={() => settleConfirm(request.id, false)}>
-            Cancel
+            {request.cancelLabel}
           </button>
           <button
             className={`primary-button ${destructive ? "confirm-danger" : ""}`}
             onClick={() => settleConfirm(request.id, true)}
           >
-            Confirm
+            {request.confirmLabel}
           </button>
         </div>
       </div>

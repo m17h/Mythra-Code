@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseClaudeModelCatalog, parseClaudeUsageLimits } from "./claude";
+import { parseClaudeModelCatalog, parseClaudeUsageLimits, visibleClaudeModels } from "./claude";
 
 describe("Claude subscription usage", () => {
   it("normalizes Claude's structured usage windows", () => {
@@ -55,6 +55,8 @@ describe("Claude model catalog", () => {
         description: "Opus 5 with 1M context",
         resolvedModel: "claude-opus-5[1m]",
         disabled: false,
+        unavailableReason: null,
+        requiredVersion: null,
         supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
       },
       {
@@ -63,6 +65,8 @@ describe("Claude model catalog", () => {
         description: "Efficient for routine tasks",
         resolvedModel: "claude-sonnet-5",
         disabled: false,
+        unavailableReason: null,
+        requiredVersion: null,
         supportedEfforts: [],
       },
       {
@@ -71,6 +75,8 @@ describe("Claude model catalog", () => {
         description: "",
         resolvedModel: "claude-haiku-4-5-20251001",
         disabled: false,
+        unavailableReason: null,
+        requiredVersion: null,
         supportedEfforts: [],
       },
     ]);
@@ -80,7 +86,41 @@ describe("Claude model catalog", () => {
     expect(parseClaudeModelCatalog({
       models: [{ value: "opus", displayName: "Opus", isDisabled: true }],
     })).toEqual([
-      { id: "opus", displayName: "Opus", description: "", resolvedModel: "opus", disabled: true, supportedEfforts: [] },
+      { id: "opus", displayName: "Opus", description: "", resolvedModel: "opus", disabled: true, unavailableReason: "unavailable", requiredVersion: null, supportedEfforts: [] },
+    ]);
+  });
+
+  it("recognizes an update-required sentinel and removes its disabled suffix", () => {
+    expect(parseClaudeModelCatalog({
+      models: [{
+        value: "cc-update-required-1",
+        displayName: "Fable 5.1 (disabled)",
+        description: "Update to 2.1.255+ to use Fable 5.1",
+        disabled: true,
+      }],
+    })).toEqual([expect.objectContaining({
+      id: "cc-update-required-1",
+      displayName: "Fable 5.1",
+      disabled: true,
+      unavailableReason: "update-required",
+      requiredVersion: "2.1.255",
+    })]);
+  });
+
+  it("keeps an update-required successor while hiding only older models in its family", () => {
+    const catalog = parseClaudeModelCatalog({
+      models: [
+        { value: "default", displayName: "Default (recommended)", description: "Opus 5" },
+        { value: "claude-fable-5[1m]", displayName: "Fable", description: "Fable 5 · Most capable" },
+        { value: "sonnet", displayName: "Sonnet", description: "Sonnet 5 · Efficient" },
+        { value: "cc-update-required-1", displayName: "Fable 5.1 (disabled)", description: "Update to 2.1.255+ to use Fable 5.1", disabled: true },
+      ],
+    });
+
+    expect(visibleClaudeModels(catalog).map((entry) => entry.id)).toEqual([
+      "default",
+      "sonnet",
+      "cc-update-required-1",
     ]);
   });
 
