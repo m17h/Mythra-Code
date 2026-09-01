@@ -1006,10 +1006,12 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 
 .modal-backdrop { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 30px; background: rgba(2,3,4,.68); backdrop-filter: blur(7px); }
 .settings-backdrop { opacity: 0; visibility: hidden; pointer-events: none; transition: opacity 210ms ease, visibility 0s linear 300ms, backdrop-filter 260ms ease; }
-.settings-backdrop.open { opacity: 1; visibility: visible; pointer-events: auto; transition-delay: 0s; }
+.settings-backdrop.open { opacity: 1; visibility: visible; pointer-events: auto; animation: settings-backdrop-enter 210ms ease both; transition-delay: 0s; }
 .settings-modal { position: relative; width: min(920px, 100%); height: min(720px, calc(100vh - 60px)); max-height: calc(100vh - 40px); display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--line-strong); border-radius: var(--r-xl); background: var(--panel); box-shadow: var(--shadow); opacity: 0; transform: translateY(22px) scale(.965); filter: saturate(.72); transition: opacity 190ms ease, transform 300ms cubic-bezier(.2,.86,.24,1), filter 260ms ease, background 260ms ease; }
-.settings-backdrop.open .settings-modal { opacity: 1; transform: translateY(0) scale(1); filter: saturate(1); }
+.settings-backdrop.open .settings-modal { opacity: 1; transform: translateY(0) scale(1); filter: saturate(1); animation: settings-modal-enter 300ms cubic-bezier(.2,.86,.24,1) both; }
 .settings-backdrop.closed .settings-modal { transform: translateY(14px) scale(.975); }
+@keyframes settings-backdrop-enter { from { opacity: 0; backdrop-filter: blur(0); } to { opacity: 1; backdrop-filter: blur(7px); } }
+@keyframes settings-modal-enter { from { opacity: 0; transform: translateY(22px) scale(.965); filter: saturate(.72); } to { opacity: 1; transform: translateY(0) scale(1); filter: saturate(1); } }
 .runtime-setup-backdrop { z-index: 70; opacity: 0; visibility: hidden; pointer-events: none; transition: opacity 210ms ease, visibility 0s linear 280ms; }
 .runtime-setup-backdrop.open { opacity: 1; visibility: visible; pointer-events: auto; transition-delay: 0s; }
 .runtime-setup-modal { position: relative; width: min(570px, 100%); padding: 27px; overflow: hidden; border: 1px solid var(--line-strong); border-radius: 18px; background: radial-gradient(circle at 50% -18%, color-mix(in srgb, var(--green) 14%, transparent), transparent 43%), var(--panel); box-shadow: 0 30px 90px rgba(0,0,0,.58); opacity: 0; transform: translateY(20px) scale(.965); transition: opacity 190ms ease, transform 300ms cubic-bezier(.2,.86,.24,1), background 260ms ease; }
@@ -2326,7 +2328,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 
 @media (prefers-reduced-motion: reduce) {
   .studio-dock, .onboarding-modal, .onboarding-stage, .onboarding-rail-foot i { transition: none; animation: none; }
-  .command-palette, .model-menu, .openrouter-menu, .thread-provider-menu, .settings-modal, .runtime-setup-modal,
+  .command-palette, .model-menu, .openrouter-menu, .thread-provider-menu, .settings-backdrop, .settings-modal, .runtime-setup-modal,
   .workflow-card, .studio-list-row, .theme-card, .provider-card, .skill-card,
   .usage-hero i, .provider-quota-track > i, .update-progress > span { transition: none; animation: none; }
   .status-orb.inProgress, .status-orb.started { animation: none; }

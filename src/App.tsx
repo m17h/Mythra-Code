@@ -170,24 +170,6 @@ function preloadSettingsModal() {
   void loadSettingsModal().catch(() => undefined);
 }
 
-function ModalLoadingFallback({ label, onClose }: { label: string; onClose: () => void }) {
-  useEffect(() => {
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", closeOnEscape);
-    return () => document.removeEventListener("keydown", closeOnEscape);
-  }, [onClose]);
-  return (
-    <div className="modal-backdrop settings-backdrop open" onMouseDown={onClose}>
-      <div className="runtime-setup-modal" role="dialog" aria-modal="true" aria-label={label} onMouseDown={(event) => event.stopPropagation()}>
-        <span role="status" aria-live="polite"><LoaderCircle className="spin" size={18} /> {label}</span>
-        <button className="secondary-button" autoFocus onClick={onClose}>Cancel</button>
-      </div>
-    </div>
-  );
-}
-
 const EMPTY_MESSAGES: ChatMessage[] = [];
 const EMPTY_ACTIVITIES: Activity[] = [];
 const EMPTY_AGENTS: AgentRecord[] = [];
@@ -5766,7 +5748,7 @@ export default function App() {
             setSettingsLoadAttempt((attempt) => attempt + 1);
           }}
         >
-        <Suspense fallback={settingsOpen ? <ModalLoadingFallback label="Loading settings…" onClose={closeSettings} /> : null}>
+        <Suspense fallback={null}>
           <LazySettingsModal
         open={settingsOpen}
         initialSection={settingsInitialSection}
