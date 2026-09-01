@@ -8,18 +8,20 @@ describe("project defaults", () => {
       model: "claude-opus-5",
       theme: "midnight",
       effortSlider: "coil",
+      chatFont: "serif",
     })).toEqual({
       provider: "claude",
       model: "claude-opus-5",
       theme: "midnight",
       effortSlider: "coil",
+      chatFont: "serif",
     });
   });
 
   it("rejects unusable routing and drops malformed appearance values", () => {
     expect(sanitizeProjectDefaults({ provider: "unknown", model: "anything" })).toBeNull();
     expect(sanitizeProjectDefaults({ provider: "openrouter", model: "not-a-provider-slug" })).toBeNull();
-    expect(sanitizeProjectDefaults({ provider: "openai", model: "gpt-5.6-sol", theme: "broken", effortSlider: "broken" }))
+    expect(sanitizeProjectDefaults({ provider: "openai", model: "gpt-5.6-sol", theme: "broken", effortSlider: "broken", chatFont: "Papyrus" }))
       .toEqual({ provider: "openai", model: "gpt-5.6-sol" });
   });
 

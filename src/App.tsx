@@ -5009,7 +5009,7 @@ export default function App() {
     },
   });
 
-  const activeChatFont = previewChatFont ?? settings.chatFont;
+  const activeChatFont = previewChatFont ?? projectDefaults?.chatFont ?? settings.chatFont;
 
   return (
     <div ref={shellRef} className="app-shell" data-theme={previewTheme ?? projectDefaults?.theme ?? settings.theme} data-color-scheme={themeColorScheme(previewTheme ?? projectDefaults?.theme ?? settings.theme)} data-effort-slider={previewEffortSlider ?? projectDefaults?.effortSlider ?? settings.effortSlider} data-chat-font={activeChatFont} data-openai-logo={settings.openAiLogo} data-claude-logo={settings.claudeLogo} data-cursor-logo={settings.cursorLogo} style={{ zoom: (settings.uiScale || 100) / 100 }}>

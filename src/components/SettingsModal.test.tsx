@@ -573,6 +573,7 @@ describe("SettingsModal", () => {
 
   it("adds an existing project with app-owned model and appearance pickers", () => {
     const onProjects = vi.fn();
+    const onChatFontPreview = vi.fn();
     render(<SettingsModal {...modalProps({
       initialSection: "projects",
       activeProjectId: "alpha",
@@ -581,10 +582,11 @@ describe("SettingsModal", () => {
         { id: "beta", name: "Beta", path: "/projects/beta" },
       ],
       onProjects,
+      onChatFontPreview,
     })} />);
 
     expect(screen.getByText("No projects override the global defaults yet")).toBeInTheDocument();
-    expect(screen.getByText(/give it its own provider, model, app theme, or effort-slider theme/)).toBeInTheDocument();
+    expect(screen.getByText(/give it its own provider, model, app theme, effort-slider theme, or chat font/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Default provider for Alpha" })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Project to configure" }));
@@ -599,6 +601,8 @@ describe("SettingsModal", () => {
     fireEvent.click(screen.getByRole("menuitemradio", { name: /Midnight/ }));
     fireEvent.click(screen.getByRole("button", { name: "Effort slider for Alpha" }));
     fireEvent.click(screen.getByRole("menuitemradio", { name: /Coil/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Chat font for Alpha" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Reading serif/ }));
     fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
 
     expect(onProjects).toHaveBeenCalledWith([
@@ -610,11 +614,13 @@ describe("SettingsModal", () => {
             model: "claude-opus-5",
             theme: "midnight",
             effortSlider: "coil",
+            chatFont: "serif",
           },
         }),
       }),
       expect.objectContaining({ id: "beta" }),
     ]);
+    expect(onChatFontPreview).toHaveBeenLastCalledWith("serif");
   });
 
   it("shows a connected state instead of prompting an authenticated Claude user to sign in again", () => {

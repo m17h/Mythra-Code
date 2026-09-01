@@ -628,7 +628,7 @@ describe("chat header provider usage", () => {
 });
 
 describe("project defaults", () => {
-  it("automatically applies project provider, model, theme, and effort-slider defaults", async () => {
+  it("automatically applies project provider, model, theme, effort-slider, and chat-font defaults", async () => {
     localStorage.setItem("kiwi.projects", JSON.stringify([
       {
         ...PROJECT_A,
@@ -638,6 +638,7 @@ describe("project defaults", () => {
             model: "claude-opus-5",
             theme: "synthwave",
             effortSlider: "coil",
+            chatFont: "humanist",
           },
         },
       },
@@ -650,12 +651,14 @@ describe("project defaults", () => {
 
     expect(shell).toHaveAttribute("data-theme", "synthwave");
     expect(shell).toHaveAttribute("data-effort-slider", "coil");
+    expect(shell).toHaveAttribute("data-chat-font", "humanist");
     expect(screen.getByRole("button", { name: "New thread provider: Claude" })).toHaveTextContent("claude-opus-5");
 
     await user.click(screen.getByRole("button", { name: PROJECT_B.name }));
 
     expect(shell).toHaveAttribute("data-theme", "mythra");
     expect(shell).toHaveAttribute("data-effort-slider", "aurora");
+    expect(shell).toHaveAttribute("data-chat-font", "system");
     expect(screen.getByRole("button", { name: "New thread provider: OpenAI" })).toBeInTheDocument();
   });
 });
