@@ -343,7 +343,7 @@ beforeEach(() => {
 });
 
 describe("Codex cold startup", () => {
-  it("keeps the app visible while the Settings chunk loads for the first time", async () => {
+  it("keeps the app visible while the Settings chunk loads for the first time", { timeout: 15_000 }, async () => {
     await renderApp();
 
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
@@ -351,7 +351,12 @@ describe("Codex cold startup", () => {
     expect(screen.queryByRole("dialog", { name: "Loading settings…" })).not.toBeInTheDocument();
     expect(document.querySelector(".settings-backdrop.open .runtime-setup-modal")).not.toBeInTheDocument();
     expect(document.querySelector(".app-shell")).toBeInTheDocument();
-    expect(await screen.findByRole("dialog", { name: "Settings" })).toBeInTheDocument();
+    // A cold Windows CI runner can take more than Testing Library's one-second
+    // default to transform the lazy Settings chunk while the full suite runs.
+    // The immediate assertions above are the regression guard; this longer
+    // wait only proves the chunk eventually resolves instead of hiding an
+    // actual import failure.
+    expect(await screen.findByRole("dialog", { name: "Settings" }, { timeout: 10_000 })).toBeInTheDocument();
   });
 
   it("loads local threads without waiting for a forced token refresh", async () => {
