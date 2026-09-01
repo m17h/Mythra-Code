@@ -14,6 +14,8 @@ export interface LocalTranscriptValue {
 
 interface LocalTranscriptWriteState {
   generation: number;
+  headSeq: number;
+  tailSeq: number;
 }
 
 interface LocalTranscriptSnapshotWrite extends LocalTranscriptWriteState {
@@ -43,6 +45,21 @@ export interface LocalTranscriptPage extends LocalTranscriptValue {
   tailSeq: number;
   generation: number;
   byteLen: number;
+}
+
+/** Discover durable local-provider conversations without reading messages. */
+export async function listLocalTranscriptThreads(knownThreadIds: string[] = []): Promise<Thread[]> {
+  const value = await invoke<unknown>("local_transcript_list", { knownThreadIds });
+  if (!Array.isArray(value)) return [];
+  return value.filter((candidate): candidate is Thread => {
+    if (!candidate || typeof candidate !== "object") return false;
+    const thread = candidate as Partial<Thread>;
+    return typeof thread.id === "string"
+      && Boolean(thread.id.trim())
+      && typeof thread.cwd === "string"
+      && typeof thread.updatedAt === "number"
+      && (thread.modelProvider === "claude" || thread.modelProvider === "cursor");
+  });
 }
 
 const LOCAL_TRANSCRIPT_INITIAL_BYTES = 40 * 1024;
@@ -113,6 +130,14 @@ function selectMutableTail(transcript: LocalTranscriptValue): TailSelection | nu
   };
 }
 
+function storedMutableTurnId(
+  transcript: LocalTranscriptValue,
+  state: LocalTranscriptWriteState,
+): string | null {
+  if (state.tailSeq > state.headSeq) return null;
+  return selectMutableTail(transcript)?.turnId ?? "__pending__";
+}
+
 async function readWriteState(
   provider: LocalTranscriptProvider,
   threadId: string,
@@ -130,8 +155,8 @@ async function saveSnapshot(
   return measuredPersistenceWrite(provider, transcript, "snapshot", transcript, selectMutableTail(transcript)?.turnId, async () => {
     // The native snapshot response already contains the committed generation.
     // Reusing it avoids a second bridge hop and database read.
-    const { generation } = await invoke<LocalTranscriptSnapshotWrite>("local_transcript_snapshot_write", { provider, value: transcript });
-    return { generation, partial: false, mutableTurnId: null, snapshotOnlyTurnId: null };
+    const { generation, headSeq, tailSeq } = await invoke<LocalTranscriptSnapshotWrite>("local_transcript_snapshot_write", { provider, value: transcript });
+    return { generation, headSeq, tailSeq, partial: false, mutableTurnId: null, snapshotOnlyTurnId: null };
   });
 }
 
@@ -275,7 +300,12 @@ export async function loadLocalTranscript<T extends LocalTranscriptValue>(
   try {
     const state = await readWriteState(provider, threadId);
     if (existing?.partial) return transcript;
-    if (state) rememberPersistenceState(key, { ...state, partial: false, mutableTurnId: null, snapshotOnlyTurnId: null });
+    if (state) rememberPersistenceState(key, {
+      ...state,
+      partial: false,
+      mutableTurnId: storedMutableTurnId(transcript, state),
+      snapshotOnlyTurnId: null,
+    });
     else persistenceStates.delete(key);
   } catch {
     // The transcript is already readable. A transient token failure should
@@ -301,7 +331,7 @@ export async function loadLocalTranscriptPage<T extends LocalTranscriptPage>(
       byteBudget: LOCAL_TRANSCRIPT_INITIAL_BYTES,
     });
   }
-  const page = await invoke<T | null>("local_transcript_page_read", {
+  let page = await invoke<T | null>("local_transcript_page_read", {
     provider,
     threadId,
     cursor: null,
@@ -311,12 +341,31 @@ export async function loadLocalTranscriptPage<T extends LocalTranscriptPage>(
     persistenceStates.delete(key);
     return null;
   }
+  // An interrupted process can leave its newest durable turn mutable. A
+  // bounded renderer window cannot safely snapshot around unseen history when
+  // the next turn begins, so recover the complete transcript once on this
+  // exceptional restart path. Ordinary sealed transcripts stay paged.
+  if (page.tailSeq <= page.headSeq && page.nextCursor) {
+    const transcript = await invoke<LocalTranscriptValue | null>("local_transcript_full_read", { provider, threadId });
+    if (!transcript) {
+      persistenceStates.delete(key);
+      return null;
+    }
+    page = {
+      ...page,
+      ...transcript,
+      nextCursor: null,
+      byteLen: estimateTranscriptBytes(transcript.messages, transcript.activities),
+    } as T;
+  }
   // The backend returns the page and mutable-tail boundary under one database
   // lock, avoiding both a second native round trip and a page/token race.
   rememberPersistenceState(key, {
     generation: page.generation,
+    headSeq: page.headSeq,
+    tailSeq: page.tailSeq,
     partial: Boolean(page.nextCursor),
-    mutableTurnId: null,
+    mutableTurnId: storedMutableTurnId(page, page),
     snapshotOnlyTurnId: null,
   });
   return page;

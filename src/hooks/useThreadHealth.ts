@@ -3,6 +3,7 @@ import { rpc } from "../lib/codex";
 import { isClaudeTurnActive } from "../lib/claude";
 import { isCursorTurnActive } from "../lib/cursor";
 import { isClaudeThread, isCursorThread } from "../lib/threadProvider";
+import { isPaginatedHistoryUnsupported, normalizeThreadTurnsPage } from "../lib/threadHistory";
 import { useTaskStore, type TaskStatus, type ThreadTaskState } from "../lib/taskStore";
 import type { Thread, Turn } from "../types";
 
@@ -34,6 +35,24 @@ function recordRecoveredStatus(threadId: string, task: ThreadTaskState, status: 
     detail,
     ...(localExit ? { status: "failed" } : {}),
   });
+}
+
+/** A health probe needs one status record, not a potentially multi-megabyte
+ * transcript. Retain the full read only for app-server compatibility. */
+async function latestCodexTurn(threadId: string): Promise<Turn | undefined> {
+  try {
+    const page = normalizeThreadTurnsPage(await rpc<unknown>("thread/turns/list", {
+      threadId,
+      limit: 1,
+      sortDirection: "desc",
+      itemsView: "summary",
+    }));
+    if (page) return page.data[0];
+  } catch (reason) {
+    if (!isPaginatedHistoryUnsupported(reason)) throw reason;
+  }
+  const result = await rpc<{ thread: Thread }>("thread/read", { threadId, includeTurns: true });
+  return result.thread.turns?.at(-1);
 }
 
 export interface ThreadHealthContext {
@@ -72,8 +91,7 @@ export function useThreadHealth(context: ThreadHealthContext): void {
               continue;
             }
             if (!contextRef.current.runtimeAvailable) continue;
-            const result = await rpc<{ thread: Thread }>("thread/read", { threadId: task.threadId, includeTurns: true });
-            const latest = result.thread.turns?.at(-1);
+            const latest = await latestCodexTurn(task.threadId);
             if (task.activeTurnId && latest?.id !== task.activeTurnId) continue;
             const status = terminalTurnStatus(latest);
             if (status) recordRecoveredStatus(task.threadId, task, status);

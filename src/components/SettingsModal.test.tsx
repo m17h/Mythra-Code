@@ -157,10 +157,11 @@ describe("SettingsModal", () => {
     ]);
   });
 
-  it("keeps General about the interface and moves system controls to their own pane", () => {
+  it("keeps Interface focused on appearance and moves system controls to their own pane", () => {
     render(<SettingsModal {...modalProps()} />);
 
-    // General is interface-only: themes, effort-slider styles, chat typeface.
+    expect(within(screen.getByRole("group", { name: "Workspace" })).getByRole("button", { name: /Interface/ })).toBeInTheDocument();
+    // Interface is appearance-only: themes, effort-slider styles, chat typeface.
     expect(screen.getByText("Appearance")).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Interface size" })).toBeInTheDocument();
     expect(screen.getByText("Chat typeface")).toBeInTheDocument();

@@ -9,6 +9,7 @@ import { Archive, ArchiveRestore, Bot, Check, ChevronDown, Circle, Code2, Downlo
 import { getCodexRuntimeStatus, auditEvent, exportTextFile, getNormalChatWorkspace, getOpenRouterCredits, hasLmStudioKey, hasOpenRouterKey, respond, restartRuntime, rpc, runtimeInstanceId, runtimeThreadState, type CodexRuntimeStatus, type JsonObject, type OpenRouterCreditBalance } from "./lib/codex";
 import { deleteClaudeTranscript, getClaudeRateLimits, getClaudeRuntimeStatus, listClaudeModels, loadClaudeTranscript, loadClaudeTranscriptPage, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, type ClaudeModel, type ClaudeRuntimeStatus } from "./lib/claude";
 import { deleteCursorTranscript, getCursorRuntimeStatus, listCursorModels, loadCursorTranscript, loadCursorTranscriptPage, respondToCursorPermission, saveCursorTranscript, startCursorLogin, type CursorModel, type CursorRuntimeStatus } from "./lib/cursor";
+import { listLocalTranscriptThreads } from "./lib/localTranscriptPersistence";
 import { loadStored, storeValue } from "./lib/storage";
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_PROMPT_PROFILES, DEFAULT_SETTINGS, sanitizeAutoArchiveSubagentThreads, sanitizeChatFont, sanitizeEffortSlider, sanitizeTheme, themeColorScheme } from "./lib/appConfig";
 import { commandSandbox, threadResumeParams, threadRuntimeConfig } from "./lib/turnConfig";
@@ -16,7 +17,6 @@ import { threadSearchParams, threadsForWorkspace, type ThreadSearchResponse } fr
 import { compactSidebarIndex, countActiveThreadsByWorkspace, filterThreadsByKind, filterThreadsForWorkspace, forgetSidebarThread, isSubAgentThread, partitionBulkArchiveThreads, reconcileSidebarIndex, reconcileWorkspaceThreads, rememberSidebarThread, repairRootThreadMetadata, sidebarThread, threadBelongsToWorkspace, upsertThread, type ThreadSidebarIndex } from "./lib/threadList";
 import { timelineFromTurns } from "./lib/threadTimeline";
 import { INITIAL_THREAD_TURN_LIMIT, OLDER_THREAD_TURN_LIMIT, isExcludeTurnsUnsupported, isPaginatedHistoryUnsupported, normalizeThreadTurnsPage, turnsFromDescendingPage, type ThreadHistoryState } from "./lib/threadHistory";
-import { buildTranscriptMarkdown } from "./lib/transcript";
 import { RowMenu } from "./components/RowMenu";
 import { Odometer } from "./components/Odometer";
 import { confirmDialog } from "./lib/confirmDialog";
@@ -190,6 +190,11 @@ let paginatedHistoryUnavailable = false;
 
 class MalformedThreadHistoryPageError extends Error {}
 
+function isMissingRuntimeThread(reason: unknown): boolean {
+  const message = reason instanceof Error ? reason.message : String(reason);
+  return /no rollout found for thread id/i.test(message);
+}
+
 /**
  * Load only a recent Codex window. Installed app-server versions are not
  * upgraded in lockstep with Mythra Code, so the established full-read path is
@@ -295,7 +300,10 @@ function hydrateLocalProviderTask(
   const existing = store.tasks[threadId];
   if (existing && (existing.messages.length > 0 || existing.activities.length > 0)) {
     store.ensureTask(threadId, executionPath);
-    if (history) store.setHistory(threadId, history);
+    // Warm reopens bypass disk above. Reaching this branch means live events
+    // populated an initially empty task while the first page was in flight;
+    // install its cursor once, but never rewind an already-paged transcript.
+    if (history && !existing.history.paginated) store.setHistory(threadId, history);
     return;
   }
   store.hydrateTask(threadId, transcript?.messages ?? [], transcript?.activities ?? [], executionPath, history);
@@ -423,6 +431,8 @@ export default function App() {
   const [searchResults, setSearchResults] = useState<Thread[] | null>(null);
   const [pinnedThreadIds, setPinnedThreadIds] = usePersistedState<string[]>("kiwi.pinnedThreads", []);
   const [archivedThreads, persistArchivedThreads] = usePersistedState<ArchivedThread[]>("kiwi.archivedThreads", []);
+  const archivedThreadIdsRef = useRef(new Set(archivedThreads.map((record) => record.id)));
+  archivedThreadIdsRef.current = new Set(archivedThreads.map((record) => record.id));
   const archivingThreadIdsRef = useRef(new Set<string>());
   const autoArchiveCompletionRef = useRef<(completedThreadId: string) => void>(() => undefined);
   const [threadHandoffs, persistThreadHandoffs] = usePersistedState<Record<string, ThreadHandoff>>("kiwi.threadHandoffs", {});
@@ -993,7 +1003,7 @@ export default function App() {
   }), [accountUsageView, effectiveSettings.provider, openRouterCredits, openRouterCreditsError, openRouterCreditsRead, openRouterReady]);
 
   // Only offer "Check settings" for failures settings can actually fix, and
-  // land on the pane that contains the relevant controls after General became
+  // land on the pane that contains the relevant controls after Interface became
   // interface-only.
   const errorSettingsSection = useMemo<SettingsSection | null>(() => {
     if (!error) return null;
@@ -1603,8 +1613,28 @@ export default function App() {
         setThreads([]);
         return;
       }
+      // SQLite is authoritative for Claude/Cursor transcript existence. Start
+      // its metadata-only discovery beside app-server paging so clearing or
+      // pruning the webview sidebar cache cannot orphan a durable transcript.
+      // Known sidebar/archive identities let the native compatibility scan
+      // avoid parsing old whole-transcript JSON merely to recover metadata we
+      // already have. Chunked transcripts are always returned from metadata.
+      const knownLocalThreadIds = [
+        ...Object.values(knownThreadsRef.current ?? {})
+          .filter(isLocalSubscriptionThread)
+          .map((thread) => thread.id),
+        ...archivedThreadIdsRef.current,
+      ];
+      const localThreadsPromise = listLocalTranscriptThreads([...new Set(knownLocalThreadIds)])
+        .then((localThreads) => localThreads.filter((thread) => !archivedThreadIdsRef.current.has(thread.id)))
+        .catch(() => []);
       if (!runtimeStatus?.available) {
-        setThreads(reconcileWorkspaceThreads([], knownThreadsRef.current ?? {}, project.path, threadProjectBindingsRef.current ?? {}, {
+        const localThreads = await localThreadsPromise;
+        if (loadThreadsRequestRef.current !== requestId) return;
+        const remembered = reconcileSidebarIndex(knownThreadsRef.current ?? {}, localThreads);
+        knownThreadsRef.current = remembered;
+        storeValue("kiwi.knownThreads", remembered);
+        setThreads(reconcileWorkspaceThreads(localThreads, remembered, project.path, threadProjectBindingsRef.current ?? {}, {
           runtimeHome: runtimeStatus?.dataHome,
           runtimeIndexComplete: false,
         }));
@@ -1678,8 +1708,10 @@ export default function App() {
             return sanitizeNativeAgentLinks({ ...next, ...discoveredNativeLinks });
           });
         }
+        const localThreads = await localThreadsPromise;
+        if (loadThreadsRequestRef.current !== requestId) return;
         const projectPath = normalizedProjectPath(project.path);
-        const runtimeThreads = allThreads.filter((thread) => {
+        const runtimeThreads = [...allThreads, ...localThreads].filter((thread) => {
           const boundPath = threadProjectBindingsRef.current?.[thread.id];
           return normalizedProjectPath(boundPath || thread.cwd) === projectPath;
         });
@@ -1696,7 +1728,12 @@ export default function App() {
         }));
       } catch (reason) {
         if (loadThreadsRequestRef.current !== requestId) return;
-        setThreads(reconcileWorkspaceThreads([], knownThreadsRef.current ?? {}, project.path, threadProjectBindingsRef.current ?? {}, {
+        const localThreads = await localThreadsPromise;
+        if (loadThreadsRequestRef.current !== requestId) return;
+        const remembered = reconcileSidebarIndex(knownThreadsRef.current ?? {}, localThreads);
+        knownThreadsRef.current = remembered;
+        storeValue("kiwi.knownThreads", remembered);
+        setThreads(reconcileWorkspaceThreads(localThreads, remembered, project.path, threadProjectBindingsRef.current ?? {}, {
           runtimeHome: runtimeStatus.dataHome,
           runtimeIndexComplete: false,
         }));
@@ -2854,19 +2891,27 @@ export default function App() {
           page = await readPage(task.history.nextCursor);
         } catch (reason) {
           if (!/local transcript cursor is stale/i.test(String(reason))) throw reason;
-          // A live tail save advances the write generation. Refresh the tiny
-          // newest window to acquire its new cursor, then fetch the page just
-          // behind it. Prepending both is safe because the store deduplicates
-          // IDs already present in the live renderer task.
-          const newest = await readPage();
-          if (!newest) throw new Error("Local transcript page is missing");
-          const older = newest.nextCursor ? await readPage(newest.nextCursor) : null;
-          page = {
-            ...newest,
-            messages: [...(older?.messages ?? []), ...newest.messages],
-            activities: [...(older?.activities ?? []), ...newest.activities],
-            nextCursor: older?.nextCursor ?? null,
-          };
+          // A live tail save advances the cursor generation without changing
+          // sealed older pages. Walk forward from the fresh newest cursor
+          // until the first genuinely unseen page instead of rewinding a user
+          // who has already loaded several pages into memory.
+          const existingIds = new Set([
+            ...task.messages.map((message) => message.id),
+            ...task.activities.map((activity) => activity.id),
+          ]);
+          let recoveryCursor: string | undefined;
+          for (let recoveryPage = 0; recoveryPage < 100; recoveryPage += 1) {
+            const candidate = await readPage(recoveryCursor);
+            if (!candidate) throw new Error("Local transcript page is missing");
+            const hasUnseenEntry = candidate.messages.some((message) => !existingIds.has(message.id))
+              || candidate.activities.some((activity) => !existingIds.has(activity.id));
+            if (hasUnseenEntry || !candidate.nextCursor) {
+              page = candidate;
+              break;
+            }
+            recoveryCursor = candidate.nextCursor;
+          }
+          if (!page) throw new Error("Could not recover the local transcript cursor after 100 pages");
         }
         if (!page) throw new Error("Local transcript page is missing");
         const currentState = useTaskStore.getState();
@@ -2983,6 +3028,7 @@ export default function App() {
     setDraftThreadIsolated(false);
     if (pendingHandoff) composerRef.current?.setDraft("");
     setPendingHandoff(null);
+    let durableHistoryLoaded = false;
     const selectionWork = (async () => {
       const isolation = threadWorktreesRef.current[thread.id];
       // Keep the unavailable execution path attached to the task while the
@@ -2990,6 +3036,29 @@ export default function App() {
       // make later file/tool state look shared before the user explicitly
       // chooses "Continue shared".
       const executionPath = isolation?.path ?? activeWorkspace.path;
+      const localProvider = isClaudeThread(thread) ? "claude" : isCursorThread(thread) ? "cursor" : null;
+      if (localProvider && existingTask && (existingTask.messages.length > 0 || existingTask.activities.length > 0)) {
+        useTaskStore.getState().ensureTask(thread.id, executionPath);
+        if (!threadModels[thread.id]) {
+          const projectModel = activeProject?.overrides?.defaults?.model ?? settings.model;
+          persistThreadModel(thread.id, modelForProvider(localProvider, projectModel));
+        }
+        bindThreadToProject(thread.id, activeWorkspace.path);
+        rememberThread(thread);
+        setActiveThread(thread);
+        useTaskStore.getState().setActiveThread(thread.id);
+        markThreadHistoryHydrated(thread.id, {
+          projectedBytes: existingTask.estimatedTranscriptBytes,
+          messageCount: existingTask.messages.length,
+          activityCount: existingTask.activities.length,
+          paginated: existingTask.history.paginated,
+          hasMore: existingTask.history.hasMore,
+        });
+        setThreadOpenCommitToken(requestId);
+        markThreadRuntimeReady(thread.id);
+        setStatus("Ready");
+        return;
+      }
       if (isClaudeThread(thread)) {
         const transcript = await loadClaudeTranscriptPage(thread.id);
         if (selectThreadRequestRef.current !== requestId) return;
@@ -3124,6 +3193,7 @@ export default function App() {
       const history = timelineFromTurns(loaded.turns);
       useTaskStore.getState().hydrateTask(loaded.thread.id, history.messages, history.activities, executionPath, loaded.history);
       useTaskStore.getState().setActiveThread(loaded.thread.id);
+      durableHistoryLoaded = true;
       markThreadHistoryHydrated(loaded.thread.id, {
         projectedBytes: null,
         messageCount: history.messages.length,
@@ -3210,7 +3280,18 @@ export default function App() {
     } catch (reason) {
       if (selectThreadRequestRef.current !== requestId) return;
       failThreadOpen(thread.id, "selection");
-      setError(friendlyError(reason));
+      if (!durableHistoryLoaded && isMissingRuntimeThread(reason)) {
+        // A remembered row can outlive its rollout after the active Codex
+        // profile changes or its files are removed externally. Drop only the
+        // rebuildable sidebar cache entry; never issue thread/delete here.
+        forgetThread(thread.id);
+        setThreads((current) => current.filter((entry) => entry.id !== thread.id));
+        setActiveThread(null);
+        useTaskStore.getState().setActiveThread(null);
+        setError("That thread is no longer available in the active provider profile. Mythra Code removed its stale sidebar entry; no transcript data was deleted.");
+      } else {
+        setError(friendlyError(reason));
+      }
       setStatus("Ready");
     } finally {
       if (threadPreparationRef.current.get(thread.id) === selectionWork) {
@@ -3236,7 +3317,33 @@ export default function App() {
         filters: [{ name: "Markdown", extensions: ["md"] }],
       });
       if (!path) return;
-      await exportTextFile(path, buildTranscriptMarkdown(label, task.messages, task.activities));
+      const { buildTranscriptMarkdown, mergeTranscriptHistory } = await import("./lib/transcript");
+      let messages = task.messages;
+      let activities = task.activities;
+      if (task.history.hasMore) {
+        if (isClaudeThread(activeThread) || isCursorThread(activeThread)) {
+          const complete = isClaudeThread(activeThread)
+            ? await loadClaudeTranscript(activeThread.id)
+            : await loadCursorTranscript(activeThread.id);
+          if (!complete) throw new Error("The complete local transcript is no longer available");
+          ({ messages, activities } = mergeTranscriptHistory(
+            complete.messages,
+            complete.activities,
+            task.messages,
+            task.activities,
+          ));
+        } else {
+          const complete = await rpc<{ thread: Thread }>("thread/read", { threadId: activeThread.id, includeTurns: true });
+          const durable = timelineFromTurns(complete.thread.turns);
+          ({ messages, activities } = mergeTranscriptHistory(
+            durable.messages,
+            durable.activities,
+            task.messages,
+            task.activities,
+          ));
+        }
+      }
+      await exportTextFile(path, buildTranscriptMarkdown(label, messages, activities));
       setTransientStatus("Transcript exported");
     } catch (reason) {
       setError(friendlyError(reason));
@@ -3468,6 +3575,7 @@ export default function App() {
     if (!thread) {
       throw new Error("Mythra Code does not have this sub-agent's conversation yet. It appears in the Sub-agents inbox once its provider reports the thread.");
     }
+    setStudioOpen(false);
     await selectThread(thread);
   // selectThread is redeclared every render and is not a dependency-stable
   // callback; the thread list is what this actually reads.
@@ -3994,41 +4102,30 @@ export default function App() {
   };
 
   const openAgent = async (threadId: string) => {
-    try {
-      // A cross-provider child is an Mythra Code-owned thread, so its timeline
-      // lives in a local transcript rather than in the Codex runtime.
-      const link = childAgentLinks[threadId];
-      if (link?.provider === "claude" || link?.provider === "cursor") {
-        const transcript = link.provider === "claude"
-          ? await loadClaudeTranscript(threadId)
-          : await loadCursorTranscript(threadId);
-        const logicalPath = threadProjectBindingsRef.current?.[threadId];
-        const fallbackCwd = logicalPath ? executionPathFor(threadId, logicalPath) : activeExecutionPath;
-        const childThread = transcript?.thread
-          ?? knownThreadsRef.current?.[threadId]
-          ?? { id: threadId, name: null, preview: link.title, cwd: fallbackCwd, updatedAt: Math.floor(Date.now() / 1000), modelProvider: link.provider };
-        setActiveThread(childThread);
-        hydrateLocalProviderTask(threadId, transcript, childThread.cwd);
-        useTaskStore.getState().setActiveThread(threadId);
-        setStudioOpen(false);
-        return;
-      }
-      const loaded = await loadThreadHistory({ threadId, includeTurns: false }, { threadId, includeTurns: true });
-      const nativeLink = nativeAgentLinks[threadId];
-      const logicalPath = threadProjectBindingsRef.current?.[threadId]
-        ?? (nativeLink ? threadProjectBindingsRef.current?.[nativeLink.rootThreadId] : undefined)
-        ?? activeWorkspace?.path;
-      if (logicalPath) bindThreadToProject(loaded.thread.id, logicalPath);
-      rememberThread(loaded.thread);
-      setThreads((current) => upsertThread(current, loaded.thread));
-      setActiveThread(loaded.thread);
-      const history = timelineFromTurns(loaded.turns);
-      useTaskStore.getState().hydrateTask(loaded.thread.id, history.messages, history.activities, loaded.thread.cwd, loaded.history);
-      useTaskStore.getState().setActiveThread(loaded.thread.id);
-      setStudioOpen(false);
-    } catch (reason) {
-      setError(friendlyError(reason));
+    const localLink = childAgentLinks[threadId];
+    const nativeLink = nativeAgentLinks[threadId];
+    const logicalPath = threadProjectBindingsRef.current?.[threadId]
+      ?? (nativeLink ? threadProjectBindingsRef.current?.[nativeLink.rootThreadId] : undefined)
+      ?? activeWorkspace?.path;
+    const thread = knownThreadsRef.current?.[threadId]
+      ?? threads.find((entry) => entry.id === threadId)
+      ?? (logicalPath ? {
+        id: threadId,
+        name: null,
+        preview: localLink?.title ?? nativeLink?.title ?? "Sub-agent thread",
+        cwd: logicalPath,
+        updatedAt: Math.floor(Date.now() / 1000),
+        modelProvider: localLink?.provider ?? "openai",
+      } : null);
+    if (!thread) {
+      setError("That sub-agent is no longer attached to an available workspace.");
+      return;
     }
+    // Use the same bounded, race-guarded selection path as a sidebar click.
+    // A late selection cannot jump back over this agent, and a large local
+    // child no longer takes the old full-transcript shortcut.
+    await selectThread(thread);
+    if (useTaskStore.getState().activeThreadId === thread.id) setStudioOpen(false);
   };
 
   /**
@@ -4069,7 +4166,6 @@ export default function App() {
         forkedWithoutTurns = true;
       } catch (reason) {
         if (!isExcludeTurnsUnsupported(reason)) throw reason;
-        paginatedHistoryUnavailable = true;
         result = await rpc<{ thread: Thread }>("thread/fork", forkParams);
       }
       if (activeWorkspace) bindThreadToProject(result.thread.id, activeWorkspace.path);

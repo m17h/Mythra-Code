@@ -8,7 +8,7 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: tauri.listen }));
 
 import { deleteClaudeTranscript, loadClaudeTranscript, loadClaudeTranscriptPage, saveClaudeTranscript } from "./claude";
 import { loadCursorTranscript, saveCursorTranscript } from "./cursor";
-import { resetLocalTranscriptPersistenceForTests } from "./localTranscriptPersistence";
+import { listLocalTranscriptThreads, resetLocalTranscriptPersistenceForTests } from "./localTranscriptPersistence";
 
 const thread = { id: "thread-a", name: "Local task", preview: "Hello", cwd: "/project", updatedAt: 1, modelProvider: "claude" };
 const completed = { id: "old-answer", role: "assistant" as const, text: "Done", turnId: "turn-old", turnStatus: "completed" as const, timelineOrder: 1 };
@@ -18,6 +18,28 @@ describe("local transcript persistence adapters", () => {
   beforeEach(() => {
     tauri.invoke.mockReset();
     resetLocalTranscriptPersistenceForTests();
+  });
+
+  it("discovers durable local threads without loading their transcripts", async () => {
+    const cursorThread = { ...thread, id: "thread-b", modelProvider: "cursor" };
+    tauri.invoke.mockResolvedValueOnce([
+      thread,
+      cursorThread,
+      { id: "broken", cwd: "/project", updatedAt: 2, modelProvider: "openai" },
+      null,
+    ]);
+
+    await expect(listLocalTranscriptThreads()).resolves.toEqual([thread, cursorThread]);
+    expect(tauri.invoke).toHaveBeenCalledWith("local_transcript_list", { knownThreadIds: [] });
+  });
+
+  it("passes the compact sidebar identities to native discovery", async () => {
+    tauri.invoke.mockResolvedValueOnce([]);
+
+    await expect(listLocalTranscriptThreads(["thread-a", "thread-b"])).resolves.toEqual([]);
+    expect(tauri.invoke).toHaveBeenCalledWith("local_transcript_list", {
+      knownThreadIds: ["thread-a", "thread-b"],
+    });
   });
 
   it("loads a transcript and its small write token", async () => {
@@ -56,6 +78,50 @@ describe("local transcript persistence adapters", () => {
       byteBudget: 40 * 1024,
     });
     expect(tauri.invoke).toHaveBeenCalledTimes(1);
+  });
+
+  it("fully recovers an interrupted paged tail before a new turn can replace it", async () => {
+    const interrupted = { ...completed, id: "interrupted", turnId: "turn-interrupted", turnStatus: undefined };
+    const page = {
+      thread,
+      messages: [interrupted],
+      activities: [],
+      nextCursor: "9:2",
+      headSeq: 3,
+      tailSeq: 3,
+      generation: 9,
+      byteLen: 8_000,
+    };
+    const full: ClaudeTranscript = {
+      thread,
+      messages: [{ ...completed, id: "older" }, interrupted],
+      activities: [],
+    };
+    tauri.invoke
+      .mockResolvedValueOnce(page)
+      .mockResolvedValueOnce(full)
+      .mockResolvedValueOnce({ ...writeState(10), rewrittenChunks: 2, totalChunks: 2, compatibilitySnapshotCreated: true });
+
+    const recovered = await loadClaudeTranscriptPage("thread-a");
+    expect(recovered).toMatchObject({
+      messages: full.messages,
+      nextCursor: null,
+      headSeq: 3,
+      tailSeq: 3,
+      generation: 9,
+    });
+    expect(tauri.invoke).toHaveBeenNthCalledWith(2, "local_transcript_full_read", { provider: "claude", threadId: "thread-a" });
+
+    await saveClaudeTranscript({
+      thread,
+      messages: [...full.messages, { id: "new-turn", role: "user", text: "continue", turnId: "turn-new", timelineOrder: 3 }],
+      activities: [],
+    });
+
+    expect(tauri.invoke).toHaveBeenNthCalledWith(3, "local_transcript_snapshot_write", expect.objectContaining({
+      provider: "claude",
+    }));
+    expect(tauri.invoke.mock.calls.some(([command]) => command === "local_transcript_tail_write")).toBe(false);
   });
 
   it("loads an older page without replacing the newest-page write state", async () => {

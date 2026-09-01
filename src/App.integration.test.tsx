@@ -145,6 +145,7 @@ function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
     };
   }
   if (command === "state_read") return null;
+  if (command === "local_transcript_list") return [];
   if (command === "audit_recent") return [];
   // Every app-server restart hands back a different identity, which is how the
   // app knows the threads that process had loaded are gone with it.
@@ -391,6 +392,89 @@ describe("Codex cold startup", () => {
       expect(methods).toContain("model/list");
       expect(methods).toContain("skills/list");
     });
+  });
+
+  it("recovers a durable local thread when the browser sidebar index is missing", async () => {
+    const user = userEvent.setup();
+    const claudeThread: Thread = {
+      ...THREAD_A,
+      id: "durable-claude",
+      name: "Recovered Claude thread",
+      preview: "recover me from SQLite",
+      modelProvider: "claude",
+    };
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "local_transcript_list") return [claudeThread];
+      if (command === "local_transcript_page_read" && args?.threadId === claudeThread.id) {
+        return {
+          thread: claudeThread,
+          messages: [{ id: "recovered-message", role: "assistant", text: "durable history is visible", timelineOrder: 1 }],
+          activities: [],
+          nextCursor: null,
+          headSeq: 0,
+          tailSeq: 1,
+          generation: 3,
+          byteLen: 512,
+        };
+      }
+      return stubInvoke(command, args);
+    });
+
+    await renderApp();
+    await user.click(await screen.findByText("Recovered Claude thread"));
+
+    expect(await screen.findByText("durable history is visible")).toBeInTheDocument();
+    const remembered = JSON.parse(localStorage.getItem("kiwi.knownThreads") ?? "{}") as Record<string, Thread>;
+    expect(remembered[claudeThread.id]).toMatchObject({ id: claudeThread.id, modelProvider: "claude" });
+  });
+
+  it("keeps durable local threads available when OpenAI listing fails", async () => {
+    const claudeThread: Thread = {
+      ...THREAD_A,
+      id: "offline-claude",
+      name: "Offline Claude thread",
+      modelProvider: "claude",
+    };
+    threadListImpl = () => {
+      throw new Error("OpenAI runtime is temporarily unavailable");
+    };
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "local_transcript_list") return [claudeThread];
+      return stubInvoke(command, args);
+    });
+
+    await renderApp();
+
+    expect(await screen.findByText("Offline Claude thread")).toBeInTheDocument();
+    expect(screen.getByText("OpenAI runtime is temporarily unavailable")).toBeInTheDocument();
+  });
+
+  it("does not resurrect an archived local transcript during durable discovery", async () => {
+    const archivedClaude: Thread = {
+      ...THREAD_A,
+      id: "archived-claude",
+      name: "Archived Claude thread",
+      modelProvider: "claude",
+    };
+    localStorage.setItem("kiwi.archivedThreads", JSON.stringify([{
+      id: archivedClaude.id,
+      label: archivedClaude.name,
+      path: PROJECT_A.path,
+      archivedAt: Date.now(),
+      provider: "claude",
+    }]));
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "local_transcript_list") return [archivedClaude];
+      return stubInvoke(command, args);
+    });
+
+    await renderApp();
+
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("local_transcript_list", {
+      knownThreadIds: [archivedClaude.id],
+    }));
+    expect(screen.queryByText("Archived Claude thread")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Archived\s*1/i })).toBeInTheDocument();
   });
 
   it("renders the newest thread page while older sidebar pages are still loading", async () => {
@@ -1115,6 +1199,27 @@ describe("workspace switching during thread selection", () => {
     expect(screen.queryByText("work in alpha")).not.toBeInTheDocument();
   });
 
+  it("removes a stale sidebar row when its OpenAI rollout is definitively missing", async () => {
+    const user = userEvent.setup();
+    localStorage.setItem("kiwi.knownThreads", JSON.stringify({ [THREAD_A.id]: THREAD_A }));
+    threadReadImpl = (params) => {
+      if (String(params.threadId) === THREAD_A.id) {
+        throw new Error(`no rollout found for thread id ${THREAD_A.id}`);
+      }
+      return { thread: { ...THREAD_B, id: String(params.threadId), turns: [] } };
+    };
+    await renderApp();
+
+    await user.click(await screen.findByText("Alpha thread"));
+
+    expect(await screen.findByText(/removed its stale sidebar entry/i)).toBeInTheDocument();
+    expect(screen.queryByText("Alpha thread")).not.toBeInTheDocument();
+    const remembered = JSON.parse(localStorage.getItem("kiwi.knownThreads") ?? "{}") as Record<string, Thread>;
+    expect(remembered).not.toHaveProperty(THREAD_A.id);
+    const { useTaskStore } = await import("./lib/taskStore");
+    expect(useTaskStore.getState().activeThreadId).toBeNull();
+  });
+
   it("paints OpenAI history before live-runtime preparation finishes", async () => {
     const user = userEvent.setup();
     threadTurnsListImpl = () => ({
@@ -1324,6 +1429,17 @@ describe("workspace switching during thread selection", () => {
     expect(invokeMock.mock.calls.filter(([command, args]) => (
       command === "local_transcript_page_read" && args?.threadId === claudeThread.id
     ))).toHaveLength(4);
+
+    const readsAfterPaging = invokeMock.mock.calls.filter(([command, args]) => (
+      command === "local_transcript_page_read" && args?.threadId === claudeThread.id
+    )).length;
+    await user.click(await screen.findByText("Beta thread"));
+    await waitFor(() => expect(useTaskStore.getState().activeThreadId).toBe(THREAD_B.id));
+    await user.click(await screen.findByText("Paged Claude thread"));
+    await waitFor(() => expect(useTaskStore.getState().activeThreadId).toBe(claudeThread.id));
+    expect(invokeMock.mock.calls.filter(([command, args]) => (
+      command === "local_transcript_page_read" && args?.threadId === claudeThread.id
+    ))).toHaveLength(readsAfterPaging);
   });
 
   it("clears an older-page loading latch when the user leaves the thread", async () => {
@@ -1347,6 +1463,106 @@ describe("workspace switching during thread selection", () => {
       await olderPage.promise;
     });
     await waitFor(() => expect(useTaskStore.getState().tasks[THREAD_A.id]?.history.loading).toBe(false));
+  });
+
+  it("recovers a stale local cursor at the first page not already in memory", async () => {
+    const user = userEvent.setup();
+    const claudeThread: Thread = {
+      ...THREAD_A,
+      id: "deep-claude-thread",
+      name: "Deep Claude thread",
+      modelProvider: "claude",
+    };
+    localStorage.setItem("kiwi.knownThreads", JSON.stringify({ [claudeThread.id]: claudeThread }));
+    localStorage.setItem("kiwi.threadProjects", JSON.stringify({ [claudeThread.id]: PROJECT_A.path }));
+    const localPage = (id: string, text: string, nextCursor: string | null, generation: number) => ({
+      thread: claudeThread,
+      messages: [{ id, role: "assistant", text, turnId: id, turnStatus: "completed", timelineOrder: generation }],
+      activities: [],
+      nextCursor,
+      headSeq: 3,
+      tailSeq: 4,
+      generation,
+      byteLen: 1_024,
+    });
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "local_transcript_page_read" && args?.threadId === claudeThread.id) {
+        if (args.cursor === null) {
+          const recovering = invokeMock.mock.calls.some(([calledCommand, calledArgs]) => (
+            calledCommand === "local_transcript_page_read" && calledArgs?.cursor === "7:1"
+          ));
+          return localPage("newest", "newest page", recovering ? "8:2" : "7:2", recovering ? 8 : 7);
+        }
+        if (args.cursor === "7:2") return localPage("middle", "middle page", "7:1", 7);
+        if (args.cursor === "7:1") throw new Error("Local transcript cursor is stale");
+        if (args.cursor === "8:2") return localPage("middle", "middle page", "8:1", 8);
+        if (args.cursor === "8:1") return localPage("oldest", "genuinely older page", null, 8);
+      }
+      return stubInvoke(command, args);
+    });
+    await renderApp();
+    const { useTaskStore } = await import("./lib/taskStore");
+
+    await user.click(await screen.findByText("Deep Claude thread"));
+    await user.click(await screen.findByRole("button", { name: "Load earlier messages" }));
+    expect(await screen.findByText("middle page")).toBeInTheDocument();
+
+    await user.click(await screen.findByRole("button", { name: "Load earlier messages" }));
+
+    expect(await screen.findByText("genuinely older page")).toBeInTheDocument();
+    expect(useTaskStore.getState().tasks[claudeThread.id]?.history).toMatchObject({
+      hasMore: false,
+      nextCursor: null,
+    });
+    expect(invokeMock.mock.calls.filter(([command, args]) => (
+      command === "local_transcript_page_read" && args?.threadId === claudeThread.id
+    )).map(([, args]) => args?.cursor)).toEqual([null, "7:2", "7:1", null, "8:2", "8:1"]);
+  });
+
+  it("keeps a local history cursor when live events arrive during first hydration", async () => {
+    const user = userEvent.setup();
+    const claudeThread: Thread = {
+      ...THREAD_A,
+      id: "hydration-race-claude",
+      name: "Hydration race Claude thread",
+      modelProvider: "claude",
+    };
+    const pendingPage = deferred<unknown>();
+    localStorage.setItem("kiwi.knownThreads", JSON.stringify({ [claudeThread.id]: claudeThread }));
+    localStorage.setItem("kiwi.threadProjects", JSON.stringify({ [claudeThread.id]: PROJECT_A.path }));
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "local_transcript_page_read" && args?.threadId === claudeThread.id) return pendingPage.promise;
+      return stubInvoke(command, args);
+    });
+    await renderApp();
+    const { useTaskStore } = await import("./lib/taskStore");
+
+    await user.click(await screen.findByText("Hydration race Claude thread"));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("local_transcript_page_read", expect.objectContaining({
+      threadId: claudeThread.id,
+    })));
+    act(() => {
+      useTaskStore.getState().appendUserMessage(claudeThread.id, { id: "live", role: "user", text: "arrived while loading" });
+    });
+    await act(async () => {
+      pendingPage.resolve({
+        thread: claudeThread,
+        messages: [{ id: "disk", role: "assistant", text: "durable page", timelineOrder: 1 }],
+        activities: [],
+        nextCursor: "5:1",
+        headSeq: 2,
+        tailSeq: 3,
+        generation: 5,
+        byteLen: 1_024,
+      });
+      await pendingPage.promise;
+    });
+
+    expect(useTaskStore.getState().tasks[claudeThread.id]).toMatchObject({
+      history: { paginated: true, hasMore: true, nextCursor: "5:1" },
+      messages: [expect.objectContaining({ id: "live" })],
+    });
+    expect(await screen.findByRole("button", { name: "Load earlier messages" })).toBeInTheDocument();
   });
 
   it("rejects an older page whose cursor was replaced by a same-thread rehydrate", async () => {

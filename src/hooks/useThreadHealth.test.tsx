@@ -82,13 +82,19 @@ describe("useThreadHealth", () => {
   it("leaves a live Codex turn alone and applies its eventual terminal state", async () => {
     const thread: Thread = { ...CURSOR_THREAD, id: "thread-codex", modelProvider: "openai" };
     codex.rpc
-      .mockResolvedValueOnce({ thread: { ...thread, turns: [{ id: "turn-1", items: [], status: "inProgress" }] } })
-      .mockResolvedValueOnce({ thread: { ...thread, turns: [{ id: "turn-1", items: [], status: "failed" }] } });
+      .mockResolvedValueOnce({ data: [{ id: "turn-1", items: [], status: "inProgress" }], nextCursor: null, backwardsCursor: null })
+      .mockResolvedValueOnce({ data: [{ id: "turn-1", items: [], status: "failed" }], nextCursor: null, backwardsCursor: null });
     makeStaleWorkingTask(thread.id, "turn-1");
     renderHook(() => useThreadHealth({ runtimeAvailable: true, threadFor: () => thread }));
 
     act(() => fireEvent.focus(window));
     await waitFor(() => expect(codex.rpc).toHaveBeenCalledTimes(1));
+    expect(codex.rpc).toHaveBeenLastCalledWith("thread/turns/list", {
+      threadId: thread.id,
+      limit: 1,
+      sortDirection: "desc",
+      itemsView: "summary",
+    });
     expect(useTaskStore.getState().statuses[thread.id]).toBe("running");
 
     act(() => fireEvent.focus(window));
@@ -98,7 +104,7 @@ describe("useThreadHealth", () => {
   it("does not apply a terminal status from a different Codex turn", async () => {
     const thread: Thread = { ...CURSOR_THREAD, id: "thread-codex-newer", modelProvider: "openai" };
     codex.rpc.mockResolvedValue({
-      thread: { ...thread, turns: [{ id: "turn-old", items: [], status: "completed" }] },
+      data: [{ id: "turn-old", items: [], status: "completed" }], nextCursor: null, backwardsCursor: null,
     });
     makeStaleWorkingTask(thread.id, "turn-new");
     renderHook(() => useThreadHealth({ runtimeAvailable: true, threadFor: () => thread }));
@@ -106,5 +112,21 @@ describe("useThreadHealth", () => {
     await waitFor(() => expect(codex.rpc).toHaveBeenCalled());
     expect(useTaskStore.getState().statuses[thread.id]).toBe("running");
     expect(useTaskStore.getState().tasks[thread.id]?.activeTurnId).toBe("turn-new");
+  });
+
+  it("falls back to a full read only for an older app-server", async () => {
+    const thread: Thread = { ...CURSOR_THREAD, id: "thread-codex-legacy", modelProvider: "openai" };
+    codex.rpc
+      .mockRejectedValueOnce(new Error("unknown method: thread/turns/list"))
+      .mockResolvedValueOnce({ thread: { ...thread, turns: [{ id: "turn-legacy", items: [], status: "completed" }] } });
+    makeStaleWorkingTask(thread.id, "turn-legacy");
+
+    renderHook(() => useThreadHealth({ runtimeAvailable: true, threadFor: () => thread }));
+
+    await waitFor(() => expect(useTaskStore.getState().statuses[thread.id]).toBe("completed"));
+    expect(codex.rpc.mock.calls).toEqual([
+      ["thread/turns/list", { threadId: thread.id, limit: 1, sortDirection: "desc", itemsView: "summary" }],
+      ["thread/read", { threadId: thread.id, includeTurns: true }],
+    ]);
   });
 });
