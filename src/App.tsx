@@ -10,7 +10,7 @@ import { getCodexRuntimeStatus, auditEvent, exportTextFile, getNormalChatWorkspa
 import { deleteClaudeTranscript, getClaudeRateLimits, getClaudeRuntimeStatus, listClaudeModels, loadClaudeTranscript, loadClaudeTranscriptPage, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, type ClaudeModel, type ClaudeRuntimeStatus } from "./lib/claude";
 import { deleteCursorTranscript, getCursorRuntimeStatus, listCursorModels, loadCursorTranscript, loadCursorTranscriptPage, respondToCursorPermission, saveCursorTranscript, startCursorLogin, type CursorModel, type CursorRuntimeStatus } from "./lib/cursor";
 import { loadStored, storeValue } from "./lib/storage";
-import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_PROMPT_PROFILES, DEFAULT_SETTINGS, sanitizeAutoArchiveSubagentThreads, sanitizeEffortSlider, sanitizeTheme, themeColorScheme } from "./lib/appConfig";
+import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_PROMPT_PROFILES, DEFAULT_SETTINGS, sanitizeAutoArchiveSubagentThreads, sanitizeChatFont, sanitizeEffortSlider, sanitizeTheme, themeColorScheme } from "./lib/appConfig";
 import { commandSandbox, threadResumeParams, threadRuntimeConfig } from "./lib/turnConfig";
 import { threadSearchParams, threadsForWorkspace, type ThreadSearchResponse } from "./lib/threadSearch";
 import { compactSidebarIndex, countActiveThreadsByWorkspace, filterThreadsByKind, filterThreadsForWorkspace, forgetSidebarThread, isSubAgentThread, partitionBulkArchiveThreads, reconcileSidebarIndex, reconcileWorkspaceThreads, rememberSidebarThread, repairRootThreadMetadata, sidebarThread, threadBelongsToWorkspace, upsertThread, type ThreadSidebarIndex } from "./lib/threadList";
@@ -38,7 +38,7 @@ import { AuthRequiredModal, RuntimeSetupModal } from "./components/RuntimeModals
 import type { AgentRecord, AttachmentRecord, McpView } from "./components/StudioDock";
 import { isStudioTab, type StudioTab } from "./lib/studioTabs";
 import type { GitPanelAction, GitRepositoryState } from "./components/GitPanel";
-import type { Account, Activity, AppSettings, ArchivedThread, ChatMessage, CustomAgentProfile, PendingApproval, PermissionMode, Project, ProjectAction, ProjectPromptMode, ProjectSubagentSettings, EffortSliderStyle, PromptProfile, Provider, ScheduledTask, ScheduleRunRecord, SettingsSection, Thread, ThreadHandoff, ThreadReasoning, ThemeName, WorkspaceMode } from "./types";
+import type { Account, Activity, AppSettings, ArchivedThread, ChatFont, ChatMessage, CustomAgentProfile, PendingApproval, PermissionMode, Project, ProjectAction, ProjectPromptMode, ProjectSubagentSettings, EffortSliderStyle, PromptProfile, Provider, ScheduledTask, ScheduleRunRecord, SettingsSection, Thread, ThreadHandoff, ThreadReasoning, ThemeName, WorkspaceMode } from "./types";
 import { PendingTurnStarts } from "./lib/pendingTurnStarts";
 import { useTaskStore, type QueuedTurn } from "./lib/taskStore";
 import { friendlyError } from "./lib/errors";
@@ -276,7 +276,7 @@ const establishedInstall = isEstablishedMythraCodeInstall({ projects: initialPro
 const initialOnboardingOpen = initialOnboardingVersion < ONBOARDING_VERSION && !establishedInstall;
 const storedSettings = loadStored<Partial<AppSettings>>("kiwi.settings", {});
 const initialChildAgents = sanitizeChildAgentSettings(storedSettings.childAgents);
-const initialSettings: AppSettings = { ...DEFAULT_SETTINGS, ...storedSettings, openAiLogo: storedSettings.openAiLogo === "codex" ? "codex" : "openai", claudeLogo: storedSettings.claudeLogo === "anthropic" ? "anthropic" : "claude", cursorLogo: storedSettings.cursorLogo === "app-dark" ? "app-dark" : "cube", subagentMax: crewSafeConcurrency(Number(storedSettings.subagentMax) || DEFAULT_SETTINGS.subagentMax, initialChildAgents), autoArchiveSubagentThreads: sanitizeAutoArchiveSubagentThreads(storedSettings.autoArchiveSubagentThreads), childAgents: initialChildAgents, childAgentPresets: sanitizeChildAgentPresets(storedSettings.childAgentPresets), model: modelForProvider(storedSettings.provider ?? DEFAULT_SETTINGS.provider, storedSettings.model ?? DEFAULT_SETTINGS.model), reasoningEffort: sanitizeComposerReasoningEffort(storedSettings.reasoningEffort), ultra: false, lmStudioBaseUrl: storedSettings.lmStudioBaseUrl?.trim() || DEFAULT_LM_STUDIO_BASE_URL, theme: sanitizeTheme(storedSettings.theme), effortSlider: sanitizeEffortSlider(storedSettings.effortSlider), uiScale: Math.min(150, Math.max(80, Number(storedSettings.uiScale) || DEFAULT_SETTINGS.uiScale)), usageDisplay: sanitizeUsageDisplay(storedSettings.usageDisplay) };
+const initialSettings: AppSettings = { ...DEFAULT_SETTINGS, ...storedSettings, openAiLogo: storedSettings.openAiLogo === "codex" ? "codex" : "openai", claudeLogo: storedSettings.claudeLogo === "anthropic" ? "anthropic" : "claude", cursorLogo: storedSettings.cursorLogo === "app-dark" ? "app-dark" : "cube", subagentMax: crewSafeConcurrency(Number(storedSettings.subagentMax) || DEFAULT_SETTINGS.subagentMax, initialChildAgents), autoArchiveSubagentThreads: sanitizeAutoArchiveSubagentThreads(storedSettings.autoArchiveSubagentThreads), childAgents: initialChildAgents, childAgentPresets: sanitizeChildAgentPresets(storedSettings.childAgentPresets), model: modelForProvider(storedSettings.provider ?? DEFAULT_SETTINGS.provider, storedSettings.model ?? DEFAULT_SETTINGS.model), reasoningEffort: sanitizeComposerReasoningEffort(storedSettings.reasoningEffort), ultra: false, lmStudioBaseUrl: storedSettings.lmStudioBaseUrl?.trim() || DEFAULT_LM_STUDIO_BASE_URL, theme: sanitizeTheme(storedSettings.theme), effortSlider: sanitizeEffortSlider(storedSettings.effortSlider), chatFont: sanitizeChatFont(storedSettings.chatFont), uiScale: Math.min(150, Math.max(80, Number(storedSettings.uiScale) || DEFAULT_SETTINGS.uiScale)), usageDisplay: sanitizeUsageDisplay(storedSettings.usageDisplay) };
 
 /**
  * Claude/Cursor transcripts flow memory → disk on a debounced save, so the
@@ -393,6 +393,7 @@ export default function App() {
   const [worktreeBusy, setWorktreeBusy] = useState(false);
   const [previewTheme, setPreviewTheme] = useState<ThemeName | null>(null);
   const [previewEffortSlider, setPreviewEffortSlider] = useState<EffortSliderStyle | null>(null);
+  const [previewChatFont, setPreviewChatFont] = useState<ChatFont | null>(null);
   const [promptProfiles, setPromptProfiles] = usePersistedState<PromptProfile[]>("kiwi.promptProfiles", DEFAULT_PROMPT_PROFILES);
   const [customAgents, setCustomAgents] = usePersistedState<CustomAgentProfile[]>("kiwi.customAgents", []);
   const [projectActions, setProjectActions] = usePersistedState<ProjectAction[]>("kiwi.projectActions", []);
@@ -991,8 +992,16 @@ export default function App() {
     openRouterCreditsError,
   }), [accountUsageView, effectiveSettings.provider, openRouterCredits, openRouterCreditsError, openRouterCreditsRead, openRouterReady]);
 
-  // Only offer "Check settings" for failures settings can actually fix.
-  const errorSuggestsSettings = useMemo(() => Boolean(error) && /sign in|api key|openrouter|lm studio|claude|model|settings|runtime|codex|account/i.test(error ?? ""), [error]);
+  // Only offer "Check settings" for failures settings can actually fix, and
+  // land on the pane that contains the relevant controls after General became
+  // interface-only.
+  const errorSettingsSection = useMemo<SettingsSection | null>(() => {
+    if (!error) return null;
+    if (/sign in|api key|openrouter|lm studio|claude|model|account/i.test(error)) return "models";
+    if (/runtime|codex|settings/i.test(error)) return "system";
+    return null;
+  }, [error]);
+  const errorSuggestsSettings = errorSettingsSection !== null;
   const workspaceArchived = useMemo(() => (activeWorkspace
     ? archivedThreadsForInbox(archivedThreads, activeWorkspace.path, childThreadLinks, threadKindView)
     : []), [activeWorkspace, archivedThreads, childThreadLinks, threadKindView]);
@@ -1347,6 +1356,7 @@ export default function App() {
   const closeSettings = useCallback(() => {
     setPreviewTheme(null);
     setPreviewEffortSlider(null);
+    setPreviewChatFont(null);
     setSettingsOpen(false);
   }, []);
 
@@ -4903,8 +4913,10 @@ export default function App() {
     },
   });
 
+  const activeChatFont = previewChatFont ?? settings.chatFont;
+
   return (
-    <div ref={shellRef} className="app-shell" data-theme={previewTheme ?? projectDefaults?.theme ?? settings.theme} data-color-scheme={themeColorScheme(previewTheme ?? projectDefaults?.theme ?? settings.theme)} data-effort-slider={previewEffortSlider ?? projectDefaults?.effortSlider ?? settings.effortSlider} data-openai-logo={settings.openAiLogo} data-claude-logo={settings.claudeLogo} data-cursor-logo={settings.cursorLogo} style={{ zoom: (settings.uiScale || 100) / 100 }}>
+    <div ref={shellRef} className="app-shell" data-theme={previewTheme ?? projectDefaults?.theme ?? settings.theme} data-color-scheme={themeColorScheme(previewTheme ?? projectDefaults?.theme ?? settings.theme)} data-effort-slider={previewEffortSlider ?? projectDefaults?.effortSlider ?? settings.effortSlider} data-chat-font={activeChatFont} data-openai-logo={settings.openAiLogo} data-claude-logo={settings.claudeLogo} data-cursor-logo={settings.cursorLogo} style={{ zoom: (settings.uiScale || 100) / 100 }}>
       {successToast && (
         <div className="app-toast success" role="status" aria-live="polite">
           <span className="app-toast-icon"><Check size={14} strokeWidth={2.5} /></span>
@@ -5287,7 +5299,7 @@ export default function App() {
               <div className="error-banner" role="alert">
                 <span>{error}</span>
                 {errorSuggestsSettings && (
-                  <button className="error-settings" onClick={() => openSettings()}>
+                  <button className="error-settings" onClick={() => openSettings(errorSettingsSection ?? "system")}>
                     Check settings
                   </button>
                 )}
@@ -5474,7 +5486,7 @@ export default function App() {
                 <div className="error-banner" role="alert">
                   <span>{error}</span>
                   {errorSuggestsSettings && (
-                    <button className="error-settings" onClick={() => openSettings()}>
+                    <button className="error-settings" onClick={() => openSettings(errorSettingsSection ?? "system")}>
                       Check settings
                     </button>
                   )}
@@ -5486,6 +5498,7 @@ export default function App() {
               <Composer
                 ref={composerRef}
                 threadKey={attachmentKey}
+                chatFont={activeChatFont}
                 performanceProvider={effectiveSettings.provider}
                 running={running}
                 childrenRunning={childrenRunning}
@@ -5783,6 +5796,7 @@ export default function App() {
         }}
         onThemePreview={setPreviewTheme}
         onEffortSliderPreview={setPreviewEffortSlider}
+        onChatFontPreview={setPreviewChatFont}
         onSignIn={beginChatGptLogin}
         onClaudeSignIn={beginClaudeLogin}
         onClaudeRefresh={refreshClaudeStatus}

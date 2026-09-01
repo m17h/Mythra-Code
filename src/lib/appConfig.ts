@@ -1,5 +1,5 @@
 import { DEFAULT_USAGE_DISPLAY } from "./providerUsage";
-import type { AppSettings, ChildAgentSettings, EffortSliderStyle, PromptProfile, ThemeName } from "../types";
+import type { AppSettings, ChatFont, ChildAgentSettings, EffortSliderStyle, PromptProfile, ThemeName } from "../types";
 
 /** Cross-provider delegation is off by default; every enabled destination is user-approved. */
 export const DEFAULT_CHILD_AGENT_SETTINGS: ChildAgentSettings = { enabled: false, targets: [] };
@@ -46,6 +46,13 @@ export const EFFORT_SLIDER_STYLES: Array<{ id: EffortSliderStyle; name: string; 
   { id: "coil", name: "Coil", description: "A twisted cord that winds tighter the harder it works" },
 ];
 
+/** Settings written before the font selector have no value at all; anything
+ * unrecognised falls back to the interface default rather than an unstyled
+ * shell attribute. */
+export function sanitizeChatFont(value: unknown): ChatFont {
+  return value === "humanist" || value === "serif" || value === "mono" ? value : "system";
+}
+
 export const DEFAULT_SETTINGS: AppSettings = {
   provider: "openai",
   openAiLogo: "openai",
@@ -69,6 +76,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   serviceTier: null,
   theme: "mythra",
   effortSlider: "aurora",
+  chatFont: "system",
   notificationsEnabled: true,
   terminalScrollback: 100_000,
   uiScale: 100,

@@ -59,6 +59,7 @@ import { formatEstimatedCost, type UsageTotals } from "../lib/usageLedger";
 import type {
   Account,
   AppSettings,
+  ChatFont,
   ChildAgentPreset,
   CustomAgentProfile,
   EffortSliderStyle,
@@ -96,7 +97,7 @@ const SETTINGS_NAV: ReadonlyArray<{
   {
     group: "Workspace",
     items: [
-      { id: "general", label: "General", icon: Palette, detail: "Appearance, runtime behavior, and diagnostics" },
+      { id: "general", label: "General", icon: Palette, detail: "How Mythra Code looks: theme, effort slider, and chat typography" },
       { id: "projects", label: "Projects", icon: FolderCog, detail: "Project-specific model and appearance defaults" },
     ],
   },
@@ -122,12 +123,23 @@ const SETTINGS_NAV: ReadonlyArray<{
   {
     group: "System",
     items: [
+      { id: "system", label: "Runtime & diagnostics", icon: Wrench, detail: "Getting started, background behavior, and local diagnostics" },
       { id: "updates", label: "Updates", icon: Download, detail: "Secure releases delivered directly from the Mythra Code repository" },
     ],
   },
 ];
 
 const SETTINGS_PANES = new Map(SETTINGS_NAV.flatMap((section) => section.items.map((item) => [item.id, item] as const)));
+
+// Picker-only metadata stays in the lazy Settings chunk. The actual stacks
+// live in CSS, while startup only needs the compact persisted id sanitizer.
+// Keep these ids synchronized with sanitizeChatFont and --chat-font-*.
+const CHAT_FONTS: ReadonlyArray<{ id: ChatFont; name: string; description: string }> = [
+  { id: "system", name: "Interface default", description: "The same typeface as the rest of Mythra Code" },
+  { id: "humanist", name: "Humanist sans", description: "Open, warm letterforms with a little more air" },
+  { id: "serif", name: "Reading serif", description: "Book-like text for long answers" },
+  { id: "mono", name: "Monospace", description: "Fixed-width throughout, like a terminal" },
+];
 
 const PROJECT_PROVIDER_OPTIONS: AppSelectOption[] = [
   { value: "openai", label: "OpenAI", detail: "ChatGPT subscription", icon: <ProviderLogo provider="openai" size={15} /> },
@@ -208,6 +220,7 @@ export function SettingsModal({
   onSave,
   onThemePreview,
   onEffortSliderPreview,
+  onChatFontPreview,
   onSignIn,
   onClaudeSignIn = async () => {},
   onClaudeRefresh = async () => ({ available: false, path: null, version: null, loggedIn: false, authMethod: null, email: null, subscriptionType: null, warning: null }),
@@ -294,6 +307,7 @@ export function SettingsModal({
   onSave: (settings: AppSettings) => void;
   onThemePreview: (theme: ThemeName) => void;
   onEffortSliderPreview: (style: EffortSliderStyle) => void;
+  onChatFontPreview: (font: ChatFont) => void;
   onSignIn: () => Promise<void>;
   onClaudeSignIn?: () => Promise<void>;
   onClaudeRefresh?: () => Promise<ClaudeRuntimeStatus>;
@@ -456,6 +470,8 @@ export function SettingsModal({
       const activeDefaults = projects.find((project) => project.id === activeProjectId)?.overrides?.defaults;
       onThemePreview(activeDefaults?.theme ?? settings.theme);
       onEffortSliderPreview(activeDefaults?.effortSlider ?? settings.effortSlider);
+      // Chat typography is global — projects do not override it.
+      onChatFontPreview(settings.chatFont);
       setSettingsSection(initialSection);
       return;
     }
@@ -480,7 +496,7 @@ export function SettingsModal({
       });
     }
     draftBaselineRef.current = { settings, projects };
-  }, [activeProjectId, initialSection, onEffortSliderPreview, onThemePreview, open, projects, settings]);
+  }, [activeProjectId, initialSection, onChatFontPreview, onEffortSliderPreview, onThemePreview, open, projects, settings]);
 
   useEffect(() => {
     if (open && initialSection === "general" && appUpdater.phase === "available") {
@@ -630,6 +646,11 @@ export function SettingsModal({
     onEffortSliderPreview(style);
   };
 
+  const previewChatFont = (chatFont: ChatFont) => {
+    setLocal((current) => ({ ...current, chatFont }));
+    onChatFontPreview(chatFont);
+  };
+
   const exportDiagnosticBundle = async () => {
     try {
       const path = await save({ title: "Export Mythra Code diagnostics", defaultPath: `mythra-code-diagnostics-${new Date().toISOString().slice(0, 10)}.json`, filters: [{ name: "JSON", extensions: ["json"] }] });
@@ -775,7 +796,7 @@ export function SettingsModal({
             <span>{SETTINGS_PANES.get(settingsSection)?.label}</span>
             <small>{SETTINGS_PANES.get(settingsSection)?.detail}</small>
           </div>
-          {settingsSection === "general" &&
+          {settingsSection === "system" &&
           <section className="settings-section getting-started-settings">
             <div className="settings-section-heading settings-heading-with-action">
               <div className="settings-icon"><BookOpenCheck size={17} /></div>
@@ -788,9 +809,9 @@ export function SettingsModal({
           <section className="settings-section theme-settings-section">
             <div className="settings-section-heading settings-heading-with-action">
               <div className="settings-icon"><Palette size={17} /></div>
-              <div><h3>Appearance</h3><p>Preview a color atmosphere instantly. Save settings to keep it.</p></div>
+              <div><h3>Appearance</h3><p>Theme, slider, and typeface preview instantly. Interface size applies when you save.</p></div>
               <button type="button" className="default-theme-button" onClick={() => previewTheme(DEFAULT_SETTINGS.theme)} disabled={local.theme === DEFAULT_SETTINGS.theme}>
-                <RotateCcw size={12} /> App default
+                <RotateCcw size={12} /> Default theme
               </button>
             </div>
             <div className="theme-grid">
@@ -812,6 +833,13 @@ export function SettingsModal({
               ))}
             </div>
             <div className="slider-style-heading">
+              <strong>Interface size</strong>
+              <small>Scale the complete app, including chat text, without changing the selected typeface.</small>
+            </div>
+            <div className="runtime-field-grid interface-size-grid">
+              <label><span>Interface size</span><select value={local.uiScale ?? 100} onChange={(event) => setLocal({ ...local, uiScale: Number(event.target.value) })}><option value={90}>Compact (90%)</option><option value={100}>Default (100%)</option><option value={110}>Comfortable (110%)</option><option value={125}>Large (125%)</option></select></label>
+            </div>
+            <div className="slider-style-heading">
               <strong>Effort slider style</strong>
               <small>How the reasoning-effort slider looks across every provider. Previewed instantly; save to keep.</small>
             </div>
@@ -829,6 +857,26 @@ export function SettingsModal({
                   </span>
                   <span><strong>{style.name}</strong><small>{style.description}</small></span>
                   {local.effortSlider === style.id && <Check size={14} />}
+                </button>
+              ))}
+            </div>
+            <div className="slider-style-heading">
+              <strong>Chat typeface</strong>
+              <small>Applies to conversation text and the message composer only — the rest of the interface keeps its own type. Code stays monospaced.</small>
+            </div>
+            <div className="chat-font-grid">
+              {CHAT_FONTS.map((font) => (
+                <button
+                  type="button"
+                  key={font.id}
+                  className={`chat-font-card ${local.chatFont === font.id ? "selected" : ""}`}
+                  data-chat-font-option={font.id}
+                  aria-pressed={local.chatFont === font.id}
+                  onClick={() => previewChatFont(font.id)}
+                >
+                  <span className="chat-font-preview" style={{ fontFamily: `var(--chat-font-${font.id})` }} aria-hidden="true">Ag</span>
+                  <span><strong>{font.name}</strong><small>{font.description}</small></span>
+                  {local.chatFont === font.id && <Check size={14} />}
                 </button>
               ))}
             </div>
@@ -976,16 +1024,16 @@ export function SettingsModal({
 
           {settingsSection === "updates" && <UpdateSettings appUpdater={appUpdater} />}
 
-          {settingsSection === "general" &&
+          {settingsSection === "system" &&
           <section className="settings-section">
             <div className="settings-section-heading"><div className="settings-icon"><Wrench size={17} /></div><div><h3>Runtime behavior</h3><p>Control background alerts, service tier, and terminal memory.</p></div></div>
             <div className="behavior-grid behavior-grid-single">
               <div><span><strong>Desktop notifications</strong><small>Notify when a background task finishes.</small></span><button type="button" role="switch" aria-checked={local.notificationsEnabled} className={`toggle-switch ${local.notificationsEnabled ? "on" : ""}`} onClick={() => setLocal({ ...local, notificationsEnabled: !local.notificationsEnabled })}><span /></button></div>
             </div>
-            <div className="runtime-field-grid"><label><span>OpenAI service tier</span><select value={local.serviceTier ?? ""} onChange={(event) => setLocal({ ...local, serviceTier: event.target.value || null })}><option value="">Standard</option><option value="priority">Fast / priority</option></select></label><label><span>Terminal scrollback</span><select value={local.terminalScrollback} onChange={(event) => setLocal({ ...local, terminalScrollback: Number(event.target.value) })}><option value={25000}>25k characters</option><option value={100000}>100k characters</option><option value={500000}>500k characters</option></select></label><label><span>UI size</span><select value={local.uiScale ?? 100} onChange={(event) => setLocal({ ...local, uiScale: Number(event.target.value) })}><option value={90}>Compact (90%)</option><option value={100}>Default (100%)</option><option value={110}>Comfortable (110%)</option><option value={125}>Large (125%)</option></select></label></div>
+            <div className="runtime-field-grid"><label><span>OpenAI service tier</span><select value={local.serviceTier ?? ""} onChange={(event) => setLocal({ ...local, serviceTier: event.target.value || null })}><option value="">Standard</option><option value="priority">Fast / priority</option></select></label><label><span>Terminal scrollback</span><select value={local.terminalScrollback} onChange={(event) => setLocal({ ...local, terminalScrollback: Number(event.target.value) })}><option value={25000}>25k characters</option><option value={100000}>100k characters</option><option value={500000}>500k characters</option></select></label></div>
             <div className="diagnostic-card"><span><strong>Diagnostics</strong><small>{runtimeStatus?.version ?? "Runtime version unavailable"}{runtimeStatus?.warning ? ` · ${runtimeStatus.warning}` : runtimeStatus?.compatible ? " · compatible" : ""} · includes local performance samples</small></span><button className="secondary-button" onClick={() => void exportDiagnosticBundle()}>Export JSON</button></div>
-            <RecentPerformancePanel active={open && settingsSection === "general"} />
-            <RecentErrorsPanel active={open && settingsSection === "general"} />
+            <RecentPerformancePanel active={open && settingsSection === "system"} />
+            <RecentErrorsPanel active={open && settingsSection === "system"} />
           </section>}
 
           {settingsSection === "agents" &&

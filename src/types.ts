@@ -8,8 +8,10 @@ export type CursorLogoStyle = "cube" | "app-dark";
 export type PermissionMode = "read-only" | "ask" | "full";
 export type ThemeName = "mythra" | "light-mythra" | "kiwi" | "daylight" | "midnight" | "synthwave";
 export type EffortSliderStyle = "spectrum" | "classic" | "neon" | "pixel" | "aurora" | "ink" | "tide" | "dart" | "coil";
+/** Typeface family used for chat prose and the composer. Built-in stacks only. */
+export type ChatFont = "system" | "humanist" | "serif" | "mono";
 export type WorkspaceMode = "chat" | "project";
-export type SettingsSection = "general" | "models" | "github" | "usage" | "prompts" | "agents" | "workflows" | "scheduled-tasks" | "projects" | "skills" | "tools" | "updates";
+export type SettingsSection = "general" | "models" | "github" | "usage" | "prompts" | "agents" | "workflows" | "scheduled-tasks" | "projects" | "skills" | "tools" | "system" | "updates";
 export type ProjectPromptMode = "replace" | "append";
 
 export interface ProjectDefaults {
@@ -322,6 +324,8 @@ export interface AppSettings {
   theme: ThemeName;
   /** Visual style of the reasoning-effort sliders. Absent before 1.8.5. */
   effortSlider: EffortSliderStyle;
+  /** Typeface for chat prose and the composer. Absent before the font selector shipped. */
+  chatFont: ChatFont;
   notificationsEnabled: boolean;
   terminalScrollback: number;
   uiScale: number;

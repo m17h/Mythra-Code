@@ -33,20 +33,26 @@
       "decision": "Accept 474 Safari / 409 Chrome startup CSS bytes for first-mount entry keyframes while removing the JavaScript loading dialog. Combined startup JS plus CSS decreases by 220 bytes on Safari and 299 bytes on Chrome, and the full-screen first-open blackout is eliminated.",
       "safari13": { "startupJsFromBytes": 687307, "startupJsToBytes": 686613, "startupJsDeltaBytes": -694, "startupCssFromBytes": 336184, "startupCssToBytes": 336658, "startupCssDeltaBytes": 474, "combinedStartupDeltaBytes": -220 },
       "chrome105": { "startupJsFromBytes": 663322, "startupJsToBytes": 662614, "startupJsDeltaBytes": -708, "startupCssFromBytes": 334097, "startupCssToBytes": 334506, "startupCssDeltaBytes": 409, "combinedStartupDeltaBytes": -299 }
+    },
+    {
+      "change": "Add the chat typeface selector and split Settings into interface vs system panes",
+      "decision": "Accept about 0.45% more startup CSS and 0.05% more startup JavaScript for a typography choice that ships zero font files and makes no network calls. The startup stylesheet carries the family stacks, scoped chat declarations, and picker presentation; picker labels and descriptions stay in the lazy Settings JavaScript chunk, while the cards reuse existing effort-slider styles. All four stacks are system fonts, so there is no download, no FOUT and no layout-shifting swap at runtime.",
+      "safari13": { "appEntryFromBytes": 368970, "appEntryToBytes": 369193, "appEntryDeltaBytes": 223, "startupJsFromBytes": 686613, "startupJsToBytes": 686940, "startupJsDeltaBytes": 327, "startupCssFromBytes": 336658, "startupCssToBytes": 338150, "startupCssDeltaBytes": 1492, "totalJsFromBytes": 1411954, "totalJsToBytes": 1414022, "totalJsDeltaBytes": 2068 },
+      "chrome105": { "appEntryFromBytes": 349695, "appEntryToBytes": 349891, "appEntryDeltaBytes": 196, "startupJsFromBytes": 662614, "startupJsToBytes": 662911, "startupJsDeltaBytes": 297, "startupCssFromBytes": 334506, "startupCssToBytes": 335998, "startupCssDeltaBytes": 1492, "totalJsFromBytes": 1378922, "totalJsToBytes": 1380960, "totalJsDeltaBytes": 2038 }
     }
   ],
   "profiles": {
     "safari13-minified": {
-      "appEntryRawBytes": 368970,
-      "startupJsRawBytes": 686613,
-      "startupCssRawBytes": 336658,
-      "totalJsRawBytes": 1411954
+      "appEntryRawBytes": 369193,
+      "startupJsRawBytes": 686940,
+      "startupCssRawBytes": 338150,
+      "totalJsRawBytes": 1414022
     },
     "chrome105-minified": {
-      "appEntryRawBytes": 349695,
-      "startupJsRawBytes": 662614,
-      "startupCssRawBytes": 334506,
-      "totalJsRawBytes": 1378922
+      "appEntryRawBytes": 349891,
+      "startupJsRawBytes": 662911,
+      "startupCssRawBytes": 335998,
+      "totalJsRawBytes": 1380960
     }
   }
 }
