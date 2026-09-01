@@ -63,6 +63,7 @@ function modalProps(overrides: Partial<Parameters<typeof SettingsModal>[0]> = {}
     onSave: vi.fn(),
     onThemePreview: vi.fn(),
     onEffortSliderPreview: vi.fn(),
+    onChatFontPreview: vi.fn(),
     onSignIn: vi.fn(async () => undefined),
     onRuntimeRequired: vi.fn(),
     onWorkspaceTools: vi.fn(),
@@ -150,7 +151,78 @@ describe("SettingsModal", () => {
       "Skills",
       "Tools & MCP",
     ]);
-    expect(within(screen.getByRole("group", { name: "System" })).getByRole("button", { name: /Updates/ })).toBeInTheDocument();
+    expect(within(screen.getByRole("group", { name: "System" })).getAllByRole("button").map((button) => button.textContent)).toEqual([
+      "Runtime & diagnostics",
+      "Updates",
+    ]);
+  });
+
+  it("keeps General about the interface and moves system controls to their own pane", () => {
+    render(<SettingsModal {...modalProps()} />);
+
+    // General is interface-only: themes, effort-slider styles, chat typeface.
+    expect(screen.getByText("Appearance")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Interface size" })).toBeInTheDocument();
+    expect(screen.getByText("Chat typeface")).toBeInTheDocument();
+    expect(screen.queryByText("Getting started")).not.toBeInTheDocument();
+    expect(screen.queryByText("Runtime behavior")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Run onboarding" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Runtime & diagnostics/ }));
+
+    expect(screen.getByText("Getting started")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Run onboarding" })).toBeInTheDocument();
+    expect(screen.getByText("Runtime behavior")).toBeInTheDocument();
+    expect(screen.getByText("Desktop notifications")).toBeInTheDocument();
+    expect(screen.getByText("Diagnostics")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Export JSON" })).toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "Interface size" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Appearance")).not.toBeInTheDocument();
+  });
+
+  it("offers the curated chat typefaces and previews one without saving it", () => {
+    const onChatFontPreview = vi.fn();
+    const onSave = vi.fn();
+    const { container } = render(<SettingsModal {...modalProps({ onChatFontPreview, onSave })} />);
+
+    const cards = container.querySelectorAll<HTMLButtonElement>(".chat-font-card");
+    expect([...cards].map((card) => card.dataset.chatFontOption)).toEqual(["system", "humanist", "serif", "mono"]);
+    expect(cards[0]).toHaveTextContent("Interface default");
+    expect(cards[0]).toHaveAttribute("aria-pressed", "true");
+    // Each specimen renders in the family the card selects.
+    expect(cards[2].querySelector<HTMLElement>(".chat-font-preview")?.style.fontFamily).toBe("var(--chat-font-serif)");
+
+    fireEvent.click(screen.getByRole("button", { name: /Reading serif/ }));
+    expect(onChatFontPreview).toHaveBeenLastCalledWith("serif");
+    expect(onSave).not.toHaveBeenCalled();
+    expect(container.querySelector(".chat-font-card.selected")).toHaveTextContent("Reading serif");
+  });
+
+  it("saves a previewed chat typeface with the rest of the settings", () => {
+    const onSave = vi.fn();
+    render(<SettingsModal {...modalProps({ onSave })} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /Monospace/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+
+    expect(onSave).toHaveBeenCalledOnce();
+    expect(onSave.mock.calls[0][0]).toMatchObject({ chatFont: "mono" });
+  });
+
+  it("restores the saved chat typeface when the modal is reopened after discarding its draft", () => {
+    const onChatFontPreview = vi.fn();
+    const props = modalProps({ onChatFontPreview });
+    const { rerender } = render(<SettingsModal {...props} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /Humanist sans/ }));
+    expect(onChatFontPreview).toHaveBeenLastCalledWith("humanist");
+
+    rerender(<SettingsModal {...props} open={false} />);
+    rerender(<SettingsModal {...props} open />);
+
+    // Reopening reseeds from the saved settings, so the discarded preview is gone.
+    expect(onChatFontPreview).toHaveBeenLastCalledWith("system");
+    expect(screen.getByRole("button", { name: /Interface default/ })).toHaveAttribute("aria-pressed", "true");
   });
 
   it("offers every registered theme and effort-slider style", () => {
@@ -611,9 +683,9 @@ describe("SettingsModal", () => {
     expect(document.activeElement).toBe(focusable[0]);
   });
 
-  it("offers the onboarding guide again from General settings", () => {
+  it("offers the onboarding guide again from Runtime & diagnostics", () => {
     const onOpenOnboarding = vi.fn();
-    render(<SettingsModal {...modalProps({ onOpenOnboarding })} />);
+    render(<SettingsModal {...modalProps({ initialSection: "system", onOpenOnboarding })} />);
 
     fireEvent.click(screen.getByRole("button", { name: "Run onboarding" }));
     expect(onOpenOnboarding).toHaveBeenCalledOnce();

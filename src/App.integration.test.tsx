@@ -576,6 +576,55 @@ describe("project defaults", () => {
   });
 });
 
+describe("chat typeface", () => {
+  it("publishes a saved chat font on the shell for the scoped chat styles to read", async () => {
+    localStorage.setItem("kiwi.settings", JSON.stringify({ chatFont: "serif" }));
+
+    await renderApp();
+
+    expect(document.querySelector(".app-shell")).toHaveAttribute("data-chat-font", "serif");
+  });
+
+  it("falls back to the interface default for settings saved before the selector", async () => {
+    // A settings blob from an older build has no chatFont at all, and a
+    // hand-edited one can hold anything; both must render as the default.
+    localStorage.setItem("kiwi.settings", JSON.stringify({ theme: "midnight", chatFont: "Papyrus" }));
+
+    await renderApp();
+
+    const shell = document.querySelector(".app-shell");
+    expect(shell).toHaveAttribute("data-chat-font", "system");
+    expect(shell).toHaveAttribute("data-theme", "midnight");
+  });
+
+  it("previews live and restores the saved typeface when Settings is cancelled", async () => {
+    const user = userEvent.setup();
+    await renderApp();
+    const shell = document.querySelector(".app-shell");
+
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(await screen.findByRole("button", { name: /Reading serif/ }));
+    expect(shell).toHaveAttribute("data-chat-font", "serif");
+
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Settings" })).not.toBeInTheDocument());
+    expect(shell).toHaveAttribute("data-chat-font", "system");
+    expect(JSON.parse(localStorage.getItem("kiwi.settings") ?? "{}").chatFont).toBeUndefined();
+  });
+
+  it("persists a saved typeface through the real app settings store", async () => {
+    const user = userEvent.setup();
+    await renderApp();
+
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(await screen.findByRole("button", { name: /Monospace/ }));
+    await user.click(screen.getByRole("button", { name: "Save settings" }));
+
+    await waitFor(() => expect(JSON.parse(localStorage.getItem("kiwi.settings") ?? "{}").chatFont).toBe("mono"));
+    expect(document.querySelector(".app-shell")).toHaveAttribute("data-chat-font", "mono");
+  });
+});
+
 describe("model catalog request ordering", () => {
   it("does not let a slow LM Studio startup probe overwrite a newer manual refresh", { timeout: 15_000 }, async () => {
     const startup = deferred<{ models: unknown[] }>();

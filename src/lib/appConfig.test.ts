@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_SETTINGS, EFFORT_SLIDER_STYLES, sanitizeAutoArchiveSubagentThreads, sanitizeEffortSlider, sanitizeTheme, themeColorScheme, THEMES } from "./appConfig";
+import { DEFAULT_SETTINGS, EFFORT_SLIDER_STYLES, sanitizeAutoArchiveSubagentThreads, sanitizeChatFont, sanitizeEffortSlider, sanitizeTheme, themeColorScheme, THEMES } from "./appConfig";
 
 describe("theme catalog", () => {
   it("places the Mythra pair above the Kiwi pair", () => {
@@ -44,6 +44,22 @@ describe("effort slider catalog", () => {
 
   it("migrates a saved Shard selection directly to Tide", () => {
     expect(sanitizeEffortSlider("shard")).toBe("tide");
+  });
+});
+
+describe("chat typeface catalog", () => {
+  it("defaults to the existing interface typeface", () => {
+    expect(DEFAULT_SETTINGS.chatFont).toBe("system");
+  });
+
+  it("leaves settings saved before the selector on the interface default", () => {
+    expect(sanitizeChatFont(undefined)).toBe("system");
+    expect(sanitizeChatFont(null)).toBe("system");
+    expect(sanitizeChatFont("Comic Sans MS")).toBe("system");
+    expect(sanitizeChatFont({ id: "serif" })).toBe("system");
+    expect(sanitizeChatFont("humanist")).toBe("humanist");
+    expect(sanitizeChatFont("serif")).toBe("serif");
+    expect(sanitizeChatFont("mono")).toBe("mono");
   });
 });
 

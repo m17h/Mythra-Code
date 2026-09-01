@@ -13,7 +13,7 @@ import {
 import { ArrowUp, Boxes, CircleStop, CornerUpRight, FileCode2, ListPlus, LoaderCircle, Paperclip, RotateCw, Trash2, X } from "lucide-react";
 import { loadStored, storeValue } from "../lib/storage";
 import { recordComposerInputToFrame } from "../lib/runtimePerformanceBridge";
-import type { Provider } from "../types";
+import type { ChatFont, Provider } from "../types";
 import type { QueuedTurn } from "../lib/taskStore";
 import type { AttachmentRecord } from "./StudioDock";
 
@@ -124,6 +124,8 @@ export function resizeComposerTextarea(
 
 export const Composer = forwardRef<ComposerHandle, {
   threadKey: string;
+  /** Effective live-previewed font; changes must remeasure wrapped drafts. */
+  chatFont: ChatFont;
   performanceProvider?: Provider;
   running: boolean;
   /**
@@ -295,7 +297,7 @@ export const Composer = forwardRef<ComposerHandle, {
   useLayoutEffect(() => {
     const textarea = textareaRef.current;
     if (textarea) resizeComposerTextarea(textarea, highlightRef.current);
-  }, [draft, hasSkillMentions, props.threadKey]);
+  }, [draft, hasSkillMentions, props.chatFont, props.threadKey]);
 
   const send = useCallback(async (mode: "default" | "steer" = "default") => {
     const text = draft.trim();

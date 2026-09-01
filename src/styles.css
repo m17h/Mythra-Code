@@ -42,7 +42,21 @@
   --fs-lede: 15px;
   --fs-title: 20px;
   --fs-display: 27px;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
   --font-mono: ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, monospace;
+
+  /* ---- Chat typefaces -------------------------------------------------
+     Built-in stacks only: every family here already ships with macOS,
+     Windows or a mainstream Linux desktop, so choosing one costs no
+     download, no network call and no layout-shifting font swap. The
+     selection lands on the shell as data-chat-font and is read back out
+     through --chat-font, which is applied to chat prose and the composer
+     only — never to navigation, settings or controls. */
+  --chat-font-system: var(--font-sans);
+  --chat-font-humanist: Seravek, "Gill Sans Nova", Ubuntu, Calibri, "DejaVu Sans", "Segoe UI", sans-serif;
+  --chat-font-serif: Charter, "Bitstream Charter", "Sitka Text", Cambria, "Iowan Old Style", Georgia, serif;
+  --chat-font-mono: var(--font-mono);
+  --chat-font: var(--chat-font-system);
   --track-tight: -.014em;
   --track-display: -.03em;
   --track-caps: .085em;
@@ -92,6 +106,9 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 
 .app-shell { --toggle-active-track: color-mix(in srgb, var(--green) 38%, var(--panel-3)); display: flex; height: 100%; overflow: hidden; color: var(--text); background: var(--bg); font-size: var(--fs-ui); letter-spacing: var(--track-tight); transition: color 260ms ease, background 260ms ease; }
 .app-shell[data-theme="kiwi"] { --green: #a6df72; --green-soft: rgba(166,223,114,.11); --green-line: rgba(166,223,114,.26); }
+.app-shell[data-chat-font="humanist"] { --chat-font: var(--chat-font-humanist); }
+.app-shell[data-chat-font="serif"] { --chat-font: var(--chat-font-serif); }
+.app-shell[data-chat-font="mono"] { --chat-font: var(--chat-font-mono); }
 .app-shell[data-color-scheme="light"] { --bg: #f4f5f2; --sidebar: #ebede8; --panel: #ffffff; --panel-2: #f1f2ee; --panel-3: #e2e5de; --line: rgba(25,35,20,.11); --line-strong: rgba(25,35,20,.19); --muted: #58615a; --muted-2: #61695f; /* 5.2:1 on --bg, 4.8:1 on --sidebar */ --text: #1c211b; --green: #3e8e22; --green-soft: rgba(62,142,34,.11); --orange: #a8621a; --red: #c04742; --shadow: 0 22px 70px rgba(55,65,45,.18); --topbar: rgba(244,245,242,.86); --field: #ffffff; --menu-surface: #ffffff; }
 /* The two light palettes share component treatment; their semantic accent
    blocks below keep Mythra cyan and Kiwi green. */
@@ -558,7 +575,11 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
   transform-origin: center;
 }
 .app-shell[data-color-scheme="light"] .message-avatar.provider-openai { background: #1a1d18; }
-.message-body { min-width: 0; color: var(--ink-2); font-size: var(--fs-body); line-height: 1.68; letter-spacing: -.005em; text-wrap: pretty; }
+.message-body { min-width: 0; color: var(--ink-2); font-family: var(--chat-font); font-size: var(--fs-body); line-height: 1.68; letter-spacing: -.005em; text-wrap: pretty; }
+/* Code stays code. A prose typeface never reaches anything the author marked
+   up as code, so alignment and glyph disambiguation survive every choice. */
+.message-body code, .message-body pre, .message-body kbd, .message-body samp { font-family: var(--font-mono); }
+.message-body button { font-family: var(--font-sans); }
 .message-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .message-image-previews { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; margin-top: 9px; }
 .message-image-preview { width: 112px; height: 76px; display: block; object-fit: cover; border: 1px solid var(--line-strong); border-radius: var(--r-sm); background: var(--field); box-shadow: 0 2px 8px rgba(0,0,0,.18); }
@@ -748,7 +769,9 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .composer { border: 1px solid var(--line-strong); border-radius: var(--r-xl); background: var(--panel); box-shadow: var(--elev-2); transition: border-color var(--t-fast) ease, box-shadow var(--t-fast) ease, background 260ms ease; }
 .composer:focus-within { border-color: color-mix(in srgb, var(--green) 30%, var(--line-strong)); box-shadow: var(--elev-3), 0 0 0 1px color-mix(in srgb, var(--green) 12%, transparent); }
 .composer-input-wrap { --composer-input-padding-block-start: var(--s-4); --composer-input-padding-inline: var(--s-4); --composer-input-padding-block-end: var(--s-2); }
-.composer textarea, .composer-input-highlight { box-sizing: border-box; width: 100%; padding: var(--composer-input-padding-block-start) var(--composer-input-padding-inline) var(--composer-input-padding-block-end); font-family: inherit; font-size: var(--fs-body); font-style: inherit; font-weight: inherit; line-height: 1.55; letter-spacing: -.005em; white-space: pre-wrap; overflow-wrap: break-word; tab-size: 8; }
+/* The highlight overlay must stay glyph-for-glyph aligned with the textarea,
+   so both read the chat typeface from the same declaration. */
+.composer textarea, .composer-input-highlight { box-sizing: border-box; width: 100%; padding: var(--composer-input-padding-block-start) var(--composer-input-padding-inline) var(--composer-input-padding-block-end); font-family: var(--chat-font, inherit); font-size: var(--fs-body); font-style: inherit; font-weight: inherit; line-height: 1.55; letter-spacing: -.005em; white-space: pre-wrap; overflow-wrap: break-word; tab-size: 8; }
 .composer textarea { display: block; height: 68px; min-height: 68px; max-height: 136px; overflow-y: hidden; resize: none; border: 0; outline: 0; color: var(--text); background: transparent; }
 .composer textarea::placeholder { color: var(--muted-2); }
 .composer-reasoning-notice { margin: 1px var(--s-4) var(--s-2); color: var(--red); font-size: var(--fs-micro); line-height: 1.4; text-align: right; }
@@ -1568,6 +1591,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .behavior-grid-single { grid-template-columns: 1fr; }
 .behavior-grid > div, .diagnostic-card { min-height: 55px; display: flex; align-items: center; justify-content: space-between; gap: 9px; padding: 9px; border: 1px solid var(--line); border-radius: 8px; background: rgba(255,255,255,.012); }
 .runtime-field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 7px; }
+.interface-size-grid { grid-template-columns: minmax(180px, 1fr); margin-top: 0; }
 .runtime-field-grid label { display: flex; flex-direction: column; gap: 5px; color: var(--muted); font-size: var(--fs-meta); }
 .diagnostic-card { margin-top: 7px; }
 .diagnostic-card .secondary-button { min-height: 29px; font-size: var(--fs-meta); }
@@ -2371,7 +2395,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
   .usage-display-layout { grid-template-columns: 1fr; gap: var(--s-3); }
   .usage-display-layout .settings-section-heading { margin-bottom: 0; }
   .usage-display-controls { justify-self: start; }
-  .theme-grid, .behavior-grid, .runtime-field-grid, .provider-cards, .provider-prompt-grid { grid-template-columns: 1fr; }
+  .theme-grid, .chat-font-grid, .behavior-grid, .runtime-field-grid, .provider-cards, .provider-prompt-grid { grid-template-columns: 1fr; }
   .profile-grid { grid-template-columns: 1fr 1fr; }
   .inline-create.two, .schedule-create-grid { grid-template-columns: 1fr; }
   /* Skills: the folder actions and composer buttons stop competing for a
@@ -3405,15 +3429,23 @@ body[data-pane-resizing] .sidebar, body[data-pane-resizing] .studio-dock { trans
 .slider-style-heading strong { color: var(--ink-2); font-size: var(--fs-ui); font-weight: 630; }
 .slider-style-heading small { color: var(--muted-2); font-size: var(--fs-meta); }
 .slider-style-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
-.slider-style-card { min-width: 0; min-height: 62px; display: grid; grid-template-columns: 60px minmax(0, 1fr) 16px; align-items: center; gap: var(--s-2); padding: var(--s-2); border: 1px solid var(--line); border-radius: var(--r-md); color: var(--muted); background: rgba(255,255,255,.014); text-align: left; cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
-.slider-style-card:hover { color: var(--ink-2); border-color: var(--line-strong); background: rgba(255,255,255,.035); }
-.slider-style-card.selected { color: var(--text); border-color: color-mix(in srgb, var(--green) 32%, var(--line)); background: var(--green-soft); }
-.slider-style-card > span:nth-child(2) { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.slider-style-card strong { font-size: var(--fs-meta); font-weight: 620; }
-.slider-style-card small { overflow: hidden; display: -webkit-box; color: var(--muted-2); font-size: var(--fs-micro); line-height: 1.35; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
-.slider-style-card > svg { color: var(--green); }
+
+/* Chat typeface cards reuse the slider-style card shape; only the specimen
+   well and the two-up grid differ. Each specimen renders in the family it
+   selects, so the card is its own preview — no sample image, nothing to load. */
+.chat-font-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+.slider-style-card, .chat-font-card { min-width: 0; min-height: 62px; display: grid; grid-template-columns: 60px minmax(0, 1fr) 16px; align-items: center; gap: var(--s-2); padding: var(--s-2); border: 1px solid var(--line); border-radius: var(--r-md); color: var(--muted); background: rgba(255,255,255,.014); text-align: left; cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
+.chat-font-card { grid-template-columns: 44px minmax(0, 1fr) 16px; }
+.slider-style-card:hover, .chat-font-card:hover { color: var(--ink-2); border-color: var(--line-strong); background: rgba(255,255,255,.035); }
+.slider-style-card.selected, .chat-font-card.selected { color: var(--text); border-color: color-mix(in srgb, var(--green) 32%, var(--line)); background: var(--green-soft); }
+.slider-style-card > span:nth-child(2), .chat-font-card > span:nth-child(2) { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.slider-style-card strong, .chat-font-card strong { font-size: var(--fs-meta); font-weight: 620; }
+.slider-style-card small, .chat-font-card small { overflow: hidden; display: -webkit-box; color: var(--muted-2); font-size: var(--fs-micro); line-height: 1.35; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.slider-style-card > svg, .chat-font-card > svg { color: var(--green); }
 .slider-style-preview { position: relative; width: 58px; height: 24px; display: block; border-radius: 6px; background: rgba(0,0,0,.24); }
-.app-shell[data-color-scheme="light"] .slider-style-preview { background: rgba(0,0,0,.06); }
+.chat-font-preview { width: 42px; height: 34px; display: grid; place-items: center; border-radius: 6px; color: var(--ink-2); background: rgba(0,0,0,.24); font-size: 17px; line-height: 1; letter-spacing: 0; }
+.chat-font-card.selected .chat-font-preview { color: var(--text); }
+.app-shell[data-color-scheme="light"] .slider-style-preview, .app-shell[data-color-scheme="light"] .chat-font-preview { background: rgba(0,0,0,.06); }
 .slider-style-rail { position: absolute; left: 6px; right: 6px; top: 50%; height: 4px; transform: translateY(-50%); border-radius: 99px; }
 .slider-style-thumb { position: absolute; top: 50%; width: 10px; height: 10px; border: 2px solid var(--panel); border-radius: 50%; transform: translate(-50%, -50%); }
 .slider-style-preview.classic .slider-style-rail { background: linear-gradient(90deg, var(--green) 0 62%, var(--panel-3) 62%); }

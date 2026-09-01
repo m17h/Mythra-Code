@@ -8,6 +8,7 @@ import { COMPOSER_INPUT_MAX_HEIGHT, Composer, draftFor, resetDraftStoreForTests 
 function composerProps(overrides: Partial<Parameters<typeof Composer>[0]> = {}): Parameters<typeof Composer>[0] {
   return {
     threadKey: "thread-a",
+    chatFont: "system",
     running: false,
     queueing: false,
     canSteer: true,
@@ -182,6 +183,17 @@ describe("Composer", () => {
     Object.defineProperty(textarea, "scrollHeight", { configurable: true, value: 260 });
     fireEvent.change(textarea, { target: { value: "An even longer prompt that needs more room than the expanded composer allows." } });
     expect(textarea).toHaveStyle({ height: `${COMPOSER_INPUT_MAX_HEIGHT}px`, overflowY: "auto" });
+  });
+
+  it("remeasures a wrapped draft when the live chat typeface changes", () => {
+    const props = composerProps();
+    const { rerender } = render(<Composer {...props} />);
+    const textarea = screen.getByPlaceholderText("Ask anything");
+    Object.defineProperty(textarea, "scrollHeight", { configurable: true, value: 118 });
+
+    rerender(<Composer {...props} chatFont="serif" />);
+
+    expect(textarea).toHaveStyle({ height: "118px", overflowY: "hidden" });
   });
 
   it("mounts a long prompt's mention overlay at the textarea's current scroll position and width", () => {
