@@ -75,7 +75,8 @@ export function ClaudeModelControl({
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const live = models.length > 0;
-  const catalog = visibleClaudeModels(live ? models : CLAUDE_FALLBACK_MODELS);
+  const sourceModels = live ? models : CLAUDE_FALLBACK_MODELS;
+  const catalog = visibleClaudeModels(sourceModels);
   const ordered = useMemo(
     () => sortByFavorites(catalog, favorites, (entry) => entry.id),
     [catalog, favorites],
@@ -84,6 +85,10 @@ export function ClaudeModelControl({
   // A saved model that the live catalog no longer offers stays visible and
   // selected instead of the menu silently pointing somewhere else.
   const selected = ordered.find((entry) => entry.id === model)
+    // Supersession can intentionally hide the old row while it remains the
+    // saved selection. Preserve the live catalog's friendly name in the
+    // closed trigger instead of exposing its raw CLI id.
+    ?? sourceModels.find((entry) => entry.id === model)
     ?? (model ? { id: model, displayName: model, description: "Saved model", resolvedModel: model, disabled: false, supportedEfforts: [] } : ordered[0]);
   const normalizedEffort = effort === "ultra" ? "max" : effort;
   const effortIndex = Math.max(
@@ -163,10 +168,11 @@ export function ClaudeModelControl({
               <div className="model-row" key={entry.id} role="none">
                 <button
                   type="button"
-                  role="menuitemradio"
-                  aria-checked={entry.id === selected?.id}
+                  role={updateRequired ? "menuitem" : "menuitemradio"}
+                  aria-checked={updateRequired ? undefined : entry.id === selected?.id}
+                  aria-current={updateRequired && entry.id === selected?.id ? "true" : undefined}
                   aria-label={`${entry.displayName}${updateRequired ? " (Claude Code update required)" : entry.disabled ? " (unavailable on your plan)" : ""}`}
-                  aria-disabled={entry.disabled || undefined}
+                  aria-disabled={(entry.disabled && !updateRequired) || undefined}
                   className={`${entry.id === selected?.id ? "selected " : ""}${updateRequired ? "update-required " : ""}${starredVisible > 0 && index === starredVisible - 1 ? "favorite-group-end" : ""}`.trim()}
                   disabled={entry.disabled && !updateRequired}
                   title={updateRequired ? `Update Claude Code${entry.requiredVersion ? ` to ${entry.requiredVersion} or newer` : ""}` : entry.disabled ? "Your Claude plan cannot run this model" : entry.resolvedModel}

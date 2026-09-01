@@ -25,7 +25,7 @@ use serde_json::{json, Value};
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::{
-    io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader},
     process::{Child, ChildStdin, Command},
     sync::{oneshot, Mutex},
     time::{timeout, timeout_at, Duration, Instant},
@@ -157,6 +157,9 @@ fn successfully_loaded_thread_ids(
 #[derive(Default)]
 struct RuntimeState {
     server: Mutex<Option<Arc<AppServer>>>,
+    /// Only one package installer may mutate the shared runtime locations at
+    /// a time, even if multiple windows or IPC callers bypass the disabled UI.
+    runtime_update: Mutex<()>,
     /// Runtime discovery launches external processes on Windows. Cache the
     /// first verified executable/version pair for this Mythra Code process so
     /// status checks and app-server startup cannot repeat `where.exe` and
@@ -356,7 +359,11 @@ impl TailBuffer {
         if !self.text.is_empty() {
             self.text.push('\n');
         }
-        self.text.push_str(line);
+        self.push_text(line);
+    }
+
+    fn push_text(&mut self, text: &str) {
+        self.text.push_str(text);
         if self.text.len() > self.limit {
             let excess = self.text.len() - self.limit;
             let cut = (excess..self.text.len())
@@ -427,7 +434,45 @@ const CLAUDE_INSTALLER_WINDOWS_URL: &str = "https://claude.ai/install.ps1";
 const CODEX_INSTALLER_URL: &str = "https://chatgpt.com/codex/install.sh";
 const CODEX_INSTALLER_WINDOWS_URL: &str = "https://chatgpt.com/codex/install.ps1";
 const RUNTIME_UPDATE_OUTPUT_BYTES: usize = 32 * 1024;
+// Codex's channel metadata includes the complete asset manifest and is about
+// 47 KiB today; leave bounded growth room without accepting an arbitrary body.
+const RUNTIME_VERSION_RESPONSE_BYTES: usize = 128 * 1024;
+const RUNTIME_INSTALLER_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const RUNTIME_UPDATE_TIMEOUT: Duration = Duration::from_secs(8 * 60);
+const RUNTIME_UPDATE_OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
+
+#[cfg(windows)]
+struct TemporaryInstallerScript {
+    path: PathBuf,
+}
+
+#[cfg(windows)]
+impl TemporaryInstallerScript {
+    fn create(contents: &str) -> Result<Self, String> {
+        let path = env::temp_dir().join(format!(
+            "mythra-runtime-installer-{}.ps1",
+            uuid::Uuid::new_v4()
+        ));
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(|error| format!("Could not prepare the runtime installer: {error}"))?;
+        if let Err(error) = std::io::Write::write_all(&mut file, contents.as_bytes()) {
+            drop(file);
+            let _ = fs::remove_file(&path);
+            return Err(format!("Could not prepare the runtime installer: {error}"));
+        }
+        Ok(Self { path })
+    }
+}
+
+#[cfg(windows)]
+impl Drop for TemporaryInstallerScript {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1228,6 +1273,16 @@ async fn find_with_login_shell(_program: &str) -> Option<PathBuf> {
     None
 }
 
+fn codex_runtime_override() -> Option<OsString> {
+    env::var_os("MYTHRA_CODE_CODEX_PATH")
+        .or_else(|| env::var_os(concat!("OPEN", "KIWI_CODEX_PATH")))
+}
+
+fn claude_runtime_override() -> Option<OsString> {
+    env::var_os("MYTHRA_CODE_CLAUDE_PATH")
+        .or_else(|| env::var_os(concat!("OPEN", "KIWI_CLAUDE_PATH")))
+}
+
 async fn resolve_codex_runtime(
     app: &AppHandle,
     state: &RuntimeState,
@@ -1248,10 +1303,7 @@ async fn resolve_codex_runtime(
     let mut candidates = Vec::new();
     let executable_name = if cfg!(windows) { "codex.exe" } else { "codex" };
 
-    let legacy_override = concat!("OPEN", "KIWI_CODEX_PATH");
-    if let Some(override_path) =
-        env::var_os("MYTHRA_CODE_CODEX_PATH").or_else(|| env::var_os(legacy_override))
-    {
+    if let Some(override_path) = codex_runtime_override() {
         let override_path = PathBuf::from(override_path);
         if !override_path.is_file() {
             return Err(
@@ -1382,10 +1434,7 @@ fn runtime_source(path: &Path) -> &'static str {
         .contains("ChatGPT.app/Contents/Resources/codex")
     {
         "ChatGPT app"
-    } else if env::var_os("MYTHRA_CODE_CODEX_PATH")
-        .or_else(|| env::var_os(concat!("OPEN", "KIWI_CODEX_PATH")))
-        .is_some_and(|configured| Path::new(&configured) == path)
-    {
+    } else if codex_runtime_override().is_some_and(|configured| Path::new(&configured) == path) {
         "Custom path"
     } else {
         "Codex CLI"
@@ -1497,29 +1546,75 @@ fn runtime_update_available(current: Option<&str>, latest: Option<&str>) -> bool
     current < latest
 }
 
+fn developer_runtime_target_status(
+    installed: bool,
+    current_version: Option<String>,
+    latest: Result<String, String>,
+    source: Option<String>,
+    custom_path: bool,
+    resolution_error: Option<String>,
+) -> DeveloperRuntimeTargetStatus {
+    let latest_version = latest.as_ref().ok().cloned();
+    let update_available =
+        runtime_update_available(current_version.as_deref(), latest_version.as_deref());
+    DeveloperRuntimeTargetStatus {
+        installed,
+        current_version,
+        latest_version,
+        update_available,
+        can_update: !custom_path,
+        source: if custom_path {
+            Some("Custom path".to_string())
+        } else {
+            source
+        },
+        error: resolution_error.or_else(|| latest.err()),
+    }
+}
+
 fn claude_runtime_source(path: &Path) -> String {
-    if env::var_os("MYTHRA_CODE_CLAUDE_PATH")
-        .or_else(|| env::var_os(concat!("OPEN", "KIWI_CLAUDE_PATH")))
-        .is_some_and(|configured| Path::new(&configured) == path)
-    {
+    claude_runtime_source_for_path(
+        path,
+        fs::canonicalize(path).ok().as_deref(),
+        claude_runtime_override().is_some_and(|configured| Path::new(&configured) == path),
+    )
+}
+
+fn claude_runtime_source_for_path(
+    path: &Path,
+    resolved_path: Option<&Path>,
+    custom_path: bool,
+) -> String {
+    if custom_path {
         return "Custom path".into();
     }
-    let display = path.to_string_lossy().to_lowercase();
-    if display.contains(".local/share/claude") || display.contains(".local/bin/claude") {
+    let display = path.to_string_lossy().replace('\\', "/").to_lowercase();
+    let resolved = resolved_path
+        .map(|path| path.to_string_lossy().replace('\\', "/").to_lowercase())
+        .unwrap_or_default();
+    let locations = format!("{display}\n{resolved}");
+    if locations.contains("/.local/share/claude") || locations.contains("/.local/bin/claude") {
         "Native installer".into()
-    } else if display.contains("homebrew") || display.starts_with("/opt/homebrew/") {
+    } else if locations.contains("/cellar/")
+        || display.starts_with("/opt/homebrew/")
+        || resolved.starts_with("/opt/homebrew/")
+    {
         "Homebrew".into()
-    } else if display.contains("node_modules") || display.contains("\\npm\\") {
+    } else if locations.contains("/node_modules/")
+        || locations.contains("/.npm/")
+        || locations.contains("/npm-global/")
+        || locations.contains("/appdata/roaming/npm/")
+    {
         "npm".into()
-    } else if display.contains("windowsapps") {
+    } else if locations.contains("/windowsapps/") {
         "WinGet".into()
     } else {
         "Claude Code".into()
     }
 }
 
-async fn fetch_runtime_text(url: &'static str) -> Result<String, String> {
-    reqwest::Client::builder()
+async fn fetch_runtime_text(url: &'static str, maximum_bytes: usize) -> Result<String, String> {
+    let mut response = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(20))
         .build()
@@ -1529,22 +1624,53 @@ async fn fetch_runtime_text(url: &'static str) -> Result<String, String> {
         .await
         .map_err(|error| format!("Could not reach the runtime release service: {error}"))?
         .error_for_status()
-        .map_err(|error| format!("The runtime release service returned an error: {error}"))?
-        .text()
+        .map_err(|error| format!("The runtime release service returned an error: {error}"))?;
+    if response
+        .content_length()
+        .is_some_and(|length| length > maximum_bytes as u64)
+    {
+        return Err("The runtime release response was unexpectedly large".into());
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
         .await
+        .map_err(|error| format!("Could not read the runtime release response: {error}"))?
+    {
+        if body.len().saturating_add(chunk.len()) > maximum_bytes {
+            return Err("The runtime release response was unexpectedly large".into());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    String::from_utf8(body)
         .map(|text| text.trim().to_string())
-        .map_err(|error| format!("Could not read the runtime release response: {error}"))
+        .map_err(|_| "The runtime release service returned non-UTF-8 text".to_string())
 }
 
 async fn latest_claude_version() -> Result<String, String> {
-    let response = fetch_runtime_text(CLAUDE_LATEST_VERSION_URL).await?;
-    normalized_runtime_version(&response)
-        .ok_or_else(|| "Claude's release service returned an invalid version".to_string())
+    let response =
+        fetch_runtime_text(CLAUDE_LATEST_VERSION_URL, RUNTIME_VERSION_RESPONSE_BYTES).await?;
+    parse_latest_claude_version(&response)
+}
+
+fn parse_latest_claude_version(response: &str) -> Result<String, String> {
+    let response = response
+        .strip_prefix('v')
+        .or_else(|| response.strip_prefix('V'))
+        .unwrap_or(response);
+    semver::Version::parse(response)
+        .map(|version| version.to_string())
+        .map_err(|_| "Claude's release service returned an invalid version".to_string())
 }
 
 async fn latest_codex_version() -> Result<String, String> {
-    let response = fetch_runtime_text(CODEX_LATEST_RELEASE_URL).await?;
-    let payload: Value = serde_json::from_str(&response)
+    let response =
+        fetch_runtime_text(CODEX_LATEST_RELEASE_URL, RUNTIME_VERSION_RESPONSE_BYTES).await?;
+    parse_latest_codex_version(&response)
+}
+
+fn parse_latest_codex_version(response: &str) -> Result<String, String> {
+    let payload: Value = serde_json::from_str(response)
         .map_err(|error| format!("Could not parse the Codex release response: {error}"))?;
     payload
         .get("tag_name")
@@ -1553,21 +1679,99 @@ async fn latest_codex_version() -> Result<String, String> {
         .ok_or_else(|| "Codex's release service returned an invalid version".to_string())
 }
 
-async fn collect_bounded_output<R: AsyncRead + Unpin>(reader: R) -> String {
-    let mut lines = BufReader::new(reader).lines();
-    let mut output = TailBuffer::new(RUNTIME_UPDATE_OUTPUT_BYTES);
-    while let Ok(Some(line)) = lines.next_line().await {
-        let line = line.trim();
-        if !line.is_empty() {
-            output.push_line(line);
+fn push_runtime_output_bytes(
+    output: &mut TailBuffer,
+    pending: &mut Vec<u8>,
+    bytes: &[u8],
+    end_of_input: bool,
+) {
+    pending.extend_from_slice(bytes);
+    loop {
+        match std::str::from_utf8(pending) {
+            Ok(text) => {
+                if text.contains('\r') {
+                    output.push_text(&text.replace('\r', "\n"));
+                } else {
+                    output.push_text(text);
+                }
+                pending.clear();
+                break;
+            }
+            Err(error) => {
+                let valid_up_to = error.valid_up_to();
+                if valid_up_to > 0 {
+                    let text = String::from_utf8(pending[..valid_up_to].to_vec())
+                        .expect("UTF-8 validator marked this prefix valid");
+                    if text.contains('\r') {
+                        output.push_text(&text.replace('\r', "\n"));
+                    } else {
+                        output.push_text(&text);
+                    }
+                    pending.drain(..valid_up_to);
+                }
+                if let Some(error_length) = error.error_len() {
+                    output.push_text("\u{fffd}");
+                    pending.drain(..error_length);
+                } else {
+                    if end_of_input {
+                        output.push_text("\u{fffd}");
+                        pending.clear();
+                    }
+                    break;
+                }
+            }
         }
     }
-    output.contents().to_string()
+}
+
+async fn collect_bounded_output<R: AsyncRead + Unpin>(mut reader: R) -> String {
+    let mut output = TailBuffer::new(RUNTIME_UPDATE_OUTPUT_BYTES);
+    let mut pending = Vec::with_capacity(4);
+    let mut chunk = [0_u8; 8 * 1024];
+    loop {
+        match reader.read(&mut chunk).await {
+            Ok(0) | Err(_) => break,
+            Ok(read) => push_runtime_output_bytes(&mut output, &mut pending, &chunk[..read], false),
+        }
+    }
+    push_runtime_output_bytes(&mut output, &mut pending, &[], true);
+    output.contents().trim().to_string()
+}
+
+async fn finish_bounded_output(
+    mut task: tokio::task::JoinHandle<String>,
+    drain_timeout: Duration,
+) -> String {
+    match timeout(drain_timeout, &mut task).await {
+        Ok(Ok(output)) => output,
+        Ok(Err(_)) => String::new(),
+        Err(_) => {
+            // A detached grandchild can inherit the installer's pipe after the
+            // installer exits. Do not let that keep Mythra's update UI pending.
+            task.abort();
+            String::new()
+        }
+    }
 }
 
 async fn run_runtime_update_command(
+    command: Command,
+    stdin_payload: Option<&[u8]>,
+) -> Result<String, String> {
+    run_runtime_update_command_with_timeouts(
+        command,
+        stdin_payload,
+        RUNTIME_UPDATE_TIMEOUT,
+        RUNTIME_UPDATE_OUTPUT_DRAIN_TIMEOUT,
+    )
+    .await
+}
+
+async fn run_runtime_update_command_with_timeouts(
     mut command: Command,
     stdin_payload: Option<&[u8]>,
+    update_timeout: Duration,
+    drain_timeout: Duration,
 ) -> Result<String, String> {
     command
         .stdin(if stdin_payload.is_some() {
@@ -1578,9 +1782,15 @@ async fn run_runtime_update_command(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    // The timeout must stop installer descendants as well as the shell that
+    // launched them. A dedicated Unix process group gives kill_process_tree a
+    // stable target; Windows taskkill /T walks the child tree by pid.
+    #[cfg(unix)]
+    command.process_group(0);
     let mut child = command
         .spawn()
         .map_err(|error| format!("Could not start the runtime updater: {error}"))?;
+    let child_pid = child.id();
     let stdout = child
         .stdout
         .take()
@@ -1589,30 +1799,54 @@ async fn run_runtime_update_command(
         .stderr
         .take()
         .ok_or_else(|| "The runtime updater did not provide stderr".to_string())?;
-    let stdout_task = tauri::async_runtime::spawn(collect_bounded_output(stdout));
-    let stderr_task = tauri::async_runtime::spawn(collect_bounded_output(stderr));
-    if let Some(payload) = stdin_payload {
-        let mut stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| "The runtime updater did not accept its installer".to_string())?;
-        stdin.write_all(payload).await.map_err(|error| {
-            format!("Could not send the verified installer to the updater: {error}")
-        })?;
-        let _ = stdin.shutdown().await;
+    let stdout_task = tokio::spawn(collect_bounded_output(stdout));
+    let stderr_task = tokio::spawn(collect_bounded_output(stderr));
+    let deadline = Instant::now() + update_timeout;
+    let outcome = async {
+        if let Some(payload) = stdin_payload {
+            let mut stdin = child
+                .stdin
+                .take()
+                .ok_or_else(|| "The runtime updater did not accept its installer".to_string())?;
+            timeout_at(deadline, async {
+                stdin.write_all(payload).await.map_err(|error| {
+                    format!("Could not send the verified installer to the updater: {error}")
+                })?;
+                stdin.shutdown().await.map_err(|error| {
+                    format!("Could not finish sending the installer to the updater: {error}")
+                })
+            })
+            .await
+            .map_err(|_| {
+                "The runtime update timed out while starting the installer".to_string()
+            })??;
+        }
+        timeout_at(deadline, child.wait())
+            .await
+            .map_err(|_| "The runtime update timed out".to_string())?
+            .map_err(|error| format!("Could not wait for the runtime updater: {error}"))
     }
-    let status = match timeout(RUNTIME_UPDATE_TIMEOUT, child.wait()).await {
-        Ok(result) => {
-            result.map_err(|error| format!("Could not wait for the runtime updater: {error}"))?
+    .await;
+    if outcome.is_err() {
+        let timed_out = outcome
+            .as_ref()
+            .err()
+            .is_some_and(|error| error.starts_with("The runtime update timed out"));
+        // Non-timeout failures are local pipe/wait errors. Avoid signalling a
+        // pid that could already have exited and been reused in that case.
+        if timed_out {
+            if let Some(pid) = child_pid {
+                kill_process_tree(pid);
+            }
         }
-        Err(_) => {
-            let _ = child.start_kill();
-            let _ = child.wait().await;
-            return Err("The runtime update timed out".into());
-        }
-    };
-    let stdout = stdout_task.await.unwrap_or_default();
-    let stderr = stderr_task.await.unwrap_or_default();
+        let _ = child.start_kill();
+        let _ = child.wait().await;
+    }
+    let (stdout, stderr) = tokio::join!(
+        finish_bounded_output(stdout_task, drain_timeout),
+        finish_bounded_output(stderr_task, drain_timeout),
+    );
+    let status = outcome?;
     let detail = [stdout.trim(), stderr.trim()]
         .into_iter()
         .filter(|part| !part.is_empty())
@@ -1639,93 +1873,119 @@ async fn run_official_installer(
     codex: bool,
 ) -> Result<String, String> {
     #[cfg(windows)]
-    let (script, mut command) = {
+    let (script, mut command, script_path) = {
         let _ = unix_url;
-        let script = fetch_runtime_text(windows_url).await?;
+        let script = fetch_runtime_text(windows_url, RUNTIME_INSTALLER_RESPONSE_BYTES).await?;
+        let script_path = TemporaryInstallerScript::create(&script)?;
         let mut command = background_command("powershell.exe");
         command.args([
             "-NoProfile",
             "-NonInteractive",
             "-ExecutionPolicy",
             "Bypass",
-            "-Command",
-            "-",
+            "-File",
         ]);
-        (script, command)
+        command.arg(&script_path.path);
+        (script, command, Some(script_path))
     };
     #[cfg(not(windows))]
-    let (script, mut command) = {
+    let (script, mut command, script_path) = {
         let _ = windows_url;
-        let script = fetch_runtime_text(unix_url).await?;
+        let script = fetch_runtime_text(unix_url, RUNTIME_INSTALLER_RESPONSE_BYTES).await?;
         let mut command = background_command("/bin/sh");
         command.args(["-s", "--"]);
-        (script, command)
+        (script, command, None::<PathBuf>)
     };
     if codex {
         command.env("CODEX_NON_INTERACTIVE", "true");
     }
-    run_runtime_update_command(command, Some(script.as_bytes())).await
+    let result =
+        run_runtime_update_command(command, script_path.is_none().then_some(script.as_bytes()))
+            .await;
+    drop(script_path);
+    result
 }
 
 async fn read_developer_runtime_updates(
     app: &AppHandle,
     state: &RuntimeState,
 ) -> DeveloperRuntimeUpdateStatus {
+    // A manual package-manager update can replace the executable while Mythra
+    // remains open. The Updates pane must report the file on disk now, not the
+    // version cached when the app server first started.
+    *state.codex_runtime.lock().await = None;
+    let codex_custom = codex_runtime_override().is_some();
+    let claude_custom = claude_runtime_override().is_some();
     let (codex_runtime, claude_path, codex_latest, claude_latest) = tokio::join!(
         resolve_codex_runtime(app, state),
         resolve_claude_binary(app),
         latest_codex_version(),
         latest_claude_version(),
     );
-    let (codex_installed, codex_current, codex_source) = match codex_runtime {
+    let (codex_installed, codex_current, codex_source, codex_resolution_error) = match codex_runtime
+    {
         Ok(runtime) => (
             true,
             normalized_runtime_version(&runtime.version),
             Some(runtime_source(&runtime.path).to_string()),
+            None,
         ),
-        Err(_) => (false, None, None),
-    };
-    let (claude_installed, claude_current, claude_source) = match claude_path {
-        Ok(path) => (
-            true,
-            runtime_version(&path)
-                .await
-                .and_then(|version| normalized_runtime_version(&version)),
-            Some(claude_runtime_source(&path)),
+        Err(error) => (
+            false,
+            None,
+            codex_custom.then(|| "Custom path".to_string()),
+            codex_custom.then_some(error),
         ),
-        Err(_) => (false, None, None),
     };
-    let codex_latest_version = codex_latest.as_ref().ok().cloned();
-    let claude_latest_version = claude_latest.as_ref().ok().cloned();
+    let (claude_installed, claude_current, claude_source, claude_resolution_error) =
+        match claude_path {
+            Ok(path) => {
+                let source = claude_runtime_source(&path);
+                match runtime_version(&path)
+                    .await
+                    .and_then(|version| normalized_runtime_version(&version))
+                {
+                    Some(version) => (true, Some(version), Some(source), None),
+                    None => (
+                        true,
+                        None,
+                        Some(source),
+                        Some(if claude_custom {
+                            "MYTHRA_CODE_CLAUDE_PATH did not report a valid version. Update or remove it, then check again.".to_string()
+                        } else {
+                            "Claude Code is installed but did not report a valid version. You can check again or update it here.".to_string()
+                        }),
+                    ),
+                }
+            }
+            Err(error) => (
+                false,
+                None,
+                claude_custom.then(|| "Custom path".to_string()),
+                claude_custom.then_some(error),
+            ),
+        };
     DeveloperRuntimeUpdateStatus {
         checked_at: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as i64,
-        codex: DeveloperRuntimeTargetStatus {
-            installed: codex_installed,
-            update_available: runtime_update_available(
-                codex_current.as_deref(),
-                codex_latest_version.as_deref(),
-            ),
-            can_update: codex_source.as_deref() != Some("Custom path"),
-            current_version: codex_current,
-            latest_version: codex_latest_version,
-            source: codex_source,
-            error: codex_latest.err(),
-        },
-        claude: DeveloperRuntimeTargetStatus {
-            installed: claude_installed,
-            update_available: runtime_update_available(
-                claude_current.as_deref(),
-                claude_latest_version.as_deref(),
-            ),
-            can_update: claude_source.as_deref() != Some("Custom path"),
-            current_version: claude_current,
-            latest_version: claude_latest_version,
-            source: claude_source,
-            error: claude_latest.err(),
-        },
+        codex: developer_runtime_target_status(
+            codex_installed,
+            codex_current,
+            codex_latest,
+            codex_source,
+            codex_custom,
+            codex_resolution_error,
+        ),
+        claude: developer_runtime_target_status(
+            claude_installed,
+            claude_current,
+            claude_latest,
+            claude_source,
+            claude_custom,
+            claude_resolution_error,
+        ),
     }
 }
 
@@ -1744,15 +2004,16 @@ async fn developer_runtime_update(
     runtime_state: State<'_, RuntimeState>,
     claude_state: State<'_, ClaudeState>,
 ) -> Result<DeveloperRuntimeUpdateResult, String> {
+    let _update_guard = runtime_state
+        .runtime_update
+        .try_lock()
+        .map_err(|_| "A developer runtime update is already running.".to_string())?;
     let (message, restart_required) = match target.as_str() {
         "claude" => {
             if !claude_state.turns.lock().await.is_empty() {
                 return Err("Stop active Claude tasks before updating Claude Code.".into());
             }
-            if env::var_os("MYTHRA_CODE_CLAUDE_PATH")
-                .or_else(|| env::var_os(concat!("OPEN", "KIWI_CLAUDE_PATH")))
-                .is_some()
-            {
+            if claude_runtime_override().is_some() {
                 return Err("Mythra Code will not overwrite a custom Claude Code path. Update that executable yourself or remove MYTHRA_CODE_CLAUDE_PATH.".into());
             }
             let message = match resolve_claude_binary(&app).await {
@@ -1788,10 +2049,7 @@ async fn developer_runtime_update(
             (message, false)
         }
         "codex" => {
-            if env::var_os("MYTHRA_CODE_CODEX_PATH")
-                .or_else(|| env::var_os(concat!("OPEN", "KIWI_CODEX_PATH")))
-                .is_some()
-            {
+            if codex_runtime_override().is_some() {
                 return Err("Mythra Code will not overwrite a custom Codex path. Update that executable yourself or remove MYTHRA_CODE_CODEX_PATH.".into());
             }
             let message =
@@ -1816,10 +2074,7 @@ async fn resolve_claude_binary(app: &AppHandle) -> Result<PathBuf, String> {
     } else {
         "claude"
     };
-    let legacy_override = concat!("OPEN", "KIWI_CLAUDE_PATH");
-    if let Some(override_path) =
-        env::var_os("MYTHRA_CODE_CLAUDE_PATH").or_else(|| env::var_os(legacy_override))
-    {
+    if let Some(override_path) = claude_runtime_override() {
         let override_path = PathBuf::from(override_path);
         return override_path.is_file().then_some(override_path).ok_or_else(|| {
             "MYTHRA_CODE_CLAUDE_PATH does not point to a Claude Code executable. Update or remove it, then try again.".into()

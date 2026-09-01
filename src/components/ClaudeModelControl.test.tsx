@@ -77,6 +77,23 @@ describe("ClaudeModelControl", () => {
     expect(screen.getByRole("button", { name: /Claude model: claude-retired-9/ })).toBeInTheDocument();
   });
 
+  it("keeps friendly live metadata when supersession hides the saved model row", () => {
+    const catalog = [
+      ...LIVE,
+      model("claude-fable-5[1m]", "Fable", { description: "Fable 5 · Most capable" }),
+      model("cc-update-required-1", "Fable 5.1", {
+        description: "Update to 2.1.255+ to use Fable 5.1",
+        disabled: true,
+        unavailableReason: "update-required",
+        requiredVersion: "2.1.255",
+      }),
+    ];
+    render(<ClaudeModelControl model="claude-fable-5[1m]" effort="medium" models={catalog} onModel={vi.fn()} onEffort={vi.fn()} />);
+
+    expect(screen.getByRole("button", { name: "Claude model: Fable" })).toBeInTheDocument();
+    expect(screen.queryByText("Saved model")).not.toBeInTheDocument();
+  });
+
   it("disables a model the plan cannot run", () => {
     render(<ClaudeModelControl model="sonnet" effort="medium" models={[...LIVE, model("opus", "Opus", { disabled: true })]} onModel={vi.fn()} onEffort={vi.fn()} />);
     open();
@@ -101,12 +118,26 @@ describe("ClaudeModelControl", () => {
     open();
 
     expect(screen.queryByRole("menuitemradio", { name: /^Fable$/ })).not.toBeInTheDocument();
-    const successor = screen.getByRole("menuitemradio", { name: /Fable 5\.1 \(Claude Code update required\)/ });
-    expect(successor).toHaveAttribute("aria-disabled", "true");
+    const successor = screen.getByRole("menuitem", { name: /Fable 5\.1 \(Claude Code update required\)/ });
+    expect(successor).not.toHaveAttribute("aria-disabled");
+    expect(successor).not.toHaveAttribute("aria-checked");
     expect(successor).not.toBeDisabled();
     fireEvent.click(successor);
     expect(onUnavailableModel).toHaveBeenCalledWith(expect.objectContaining({ id: "cc-update-required-1" }));
     expect(onModel).not.toHaveBeenCalled();
+  });
+
+  it("announces a persisted update-required sentinel as the current item", () => {
+    const sentinel = model("cc-update-required-1", "Fable 5.1", {
+      description: "Update Claude Code to use Fable 5.1",
+      disabled: true,
+      unavailableReason: "update-required",
+    });
+    render(<ClaudeModelControl model={sentinel.id} effort="medium" models={[...LIVE, sentinel]} onModel={vi.fn()} onEffort={vi.fn()} />);
+    open();
+
+    expect(screen.getByRole("menuitem", { name: /Fable 5\.1 \(Claude Code update required\)/ }))
+      .toHaveAttribute("aria-current", "true");
   });
 
   it("explains that a signed-out catalog is generic", () => {

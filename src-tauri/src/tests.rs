@@ -1388,6 +1388,98 @@ fn tail_buffer_keeps_only_the_newest_bytes() {
     unicode.push_line("aééé");
     assert!(unicode.contents().len() <= 4);
     assert!(unicode.contents().chars().all(|character| character == 'é'));
+
+    let mut newline_free = TailBuffer::new(32);
+    newline_free.push_text(&"a".repeat(1_000_000));
+    assert_eq!(newline_free.contents().len(), 32);
+    assert_eq!(newline_free.contents(), "a".repeat(32));
+}
+
+#[tokio::test]
+async fn runtime_update_output_is_bounded_without_newlines_and_survives_invalid_utf8() {
+    let (mut writer, reader) = tokio::io::duplex(16 * 1024);
+    let producer = tokio::spawn(async move {
+        writer.write_all(&vec![b'a'; 1_000_000]).await.unwrap();
+        writer.write_all(&[0xff, 0xfe]).await.unwrap();
+        writer
+            .write_all(b"progress\rtrailing output")
+            .await
+            .unwrap();
+    });
+
+    let output = collect_bounded_output(reader).await;
+    producer.await.unwrap();
+    assert!(output.len() <= RUNTIME_UPDATE_OUTPUT_BYTES);
+    assert!(!output.contains('\r'));
+    assert!(output.ends_with("trailing output"));
+}
+
+#[test]
+fn runtime_update_output_preserves_utf8_across_read_boundaries() {
+    let mut output = TailBuffer::new(64);
+    let mut pending = Vec::new();
+    let message = "ready 🚀".as_bytes();
+    let split = message.len() - 2;
+
+    push_runtime_output_bytes(&mut output, &mut pending, &message[..split], false);
+    assert_eq!(output.contents(), "ready ");
+    assert_eq!(pending.len(), 2);
+
+    push_runtime_output_bytes(&mut output, &mut pending, &message[split..], true);
+    assert_eq!(output.contents(), "ready 🚀");
+    assert!(pending.is_empty());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn runtime_update_timeout_kills_the_installer_process_group() {
+    let marker = env::temp_dir().join(format!(
+        "mythra-runtime-timeout-test-{}.pid",
+        uuid::Uuid::new_v4()
+    ));
+    let quoted_marker = marker.to_string_lossy().replace('\'', "'\"'\"'");
+    let script = format!("sleep 30 & echo $! > '{quoted_marker}'; wait");
+    let mut command = background_command("/bin/sh");
+    command.args(["-c", &script]);
+
+    let result = run_runtime_update_command_with_timeouts(
+        command,
+        None,
+        Duration::from_millis(250),
+        Duration::from_millis(250),
+    )
+    .await;
+
+    assert_eq!(result.unwrap_err(), "The runtime update timed out");
+    let child_pid = fs::read_to_string(&marker)
+        .expect("installer should write its child pid before the timeout")
+        .trim()
+        .parse::<u32>()
+        .unwrap();
+    let mut child_stopped = false;
+    for _ in 0..40 {
+        let output = background_std_command("ps")
+            .args(["-o", "stat=", "-p", &child_pid.to_string()])
+            .output()
+            .unwrap();
+        let state = String::from_utf8_lossy(&output.stdout);
+        if !output.status.success()
+            || state.trim().is_empty()
+            || state.trim_start().starts_with('Z')
+        {
+            child_stopped = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    if !child_stopped {
+        kill_process_tree(child_pid);
+    }
+    let _ = fs::remove_file(marker);
+    assert!(
+        child_stopped,
+        "timed-out installer descendant was still running"
+    );
 }
 
 #[test]
@@ -1620,6 +1712,134 @@ fn runtime_update_comparison_handles_labels_and_prereleases() {
         Some("development"),
         Some("2.1.257")
     ));
+}
+
+#[test]
+fn runtime_release_parsers_reject_misleading_responses() {
+    assert_eq!(parse_latest_claude_version("2.1.257"), Ok("2.1.257".into()));
+    assert_eq!(
+        parse_latest_claude_version("v2.1.257"),
+        Ok("2.1.257".into())
+    );
+    assert!(
+        parse_latest_claude_version("<html><script src=\"jquery-3.6.0.js\"></script></html>")
+            .is_err()
+    );
+    assert_eq!(
+        parse_latest_codex_version(r#"{"tag_name":"rust-v0.152.0","assets":[]}"#),
+        Ok("0.152.0".into())
+    );
+    assert!(parse_latest_codex_version(r#"{"assets":[]}"#).is_err());
+}
+
+#[test]
+fn claude_runtime_source_handles_native_package_manager_and_custom_paths() {
+    let cases = [
+        (
+            Path::new("/Users/person/.local/bin/claude"),
+            None,
+            false,
+            "Native installer",
+        ),
+        (
+            Path::new(r"C:\Users\person\.local\bin\claude.exe"),
+            None,
+            false,
+            "Native installer",
+        ),
+        (
+            Path::new("/opt/homebrew/bin/claude"),
+            None,
+            false,
+            "Homebrew",
+        ),
+        (
+            Path::new("/usr/local/bin/claude"),
+            Some(Path::new(
+                "/usr/local/Cellar/claude-code/2.1.257/bin/claude",
+            )),
+            false,
+            "Homebrew",
+        ),
+        (
+            Path::new("/usr/local/bin/claude"),
+            Some(Path::new(
+                "/usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js",
+            )),
+            false,
+            "npm",
+        ),
+        (
+            Path::new(r"C:\Users\person\AppData\Local\Microsoft\WindowsApps\claude.exe"),
+            None,
+            false,
+            "WinGet",
+        ),
+        (
+            Path::new(r"C:\Users\person\AppData\Roaming\npm\claude.cmd"),
+            None,
+            false,
+            "npm",
+        ),
+        (
+            Path::new("/Users/npm/tools/claude"),
+            None,
+            false,
+            "Claude Code",
+        ),
+        (
+            Path::new("/Users/homebrew/tools/claude"),
+            None,
+            false,
+            "Claude Code",
+        ),
+        (Path::new("/custom/claude"), None, true, "Custom path"),
+    ];
+
+    for (path, resolved, custom, expected) in cases {
+        assert_eq!(
+            claude_runtime_source_for_path(path, resolved, custom),
+            expected
+        );
+    }
+}
+
+#[test]
+fn unresolved_custom_runtime_is_truthful_and_cannot_be_overwritten() {
+    let status = developer_runtime_target_status(
+        false,
+        None,
+        Ok("2.1.257".into()),
+        None,
+        true,
+        Some("The configured executable is missing".into()),
+    );
+
+    assert!(!status.installed);
+    assert!(!status.can_update);
+    assert_eq!(status.source.as_deref(), Some("Custom path"));
+    assert_eq!(
+        status.error.as_deref(),
+        Some("The configured executable is missing")
+    );
+}
+
+#[test]
+fn resolved_runtime_with_unknown_version_stays_installed_and_updateable() {
+    let status = developer_runtime_target_status(
+        true,
+        None,
+        Ok("2.1.257".into()),
+        Some("Native installer".into()),
+        false,
+        Some("Claude Code is installed but did not report a valid version".into()),
+    );
+
+    assert!(status.installed);
+    assert!(status.can_update);
+    assert!(!status.update_available);
+    assert_eq!(status.source.as_deref(), Some("Native installer"));
+    assert!(status.error.as_deref().unwrap().contains("installed"));
 }
 
 #[test]

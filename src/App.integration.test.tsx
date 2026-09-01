@@ -695,7 +695,7 @@ describe("Claude model updates", () => {
       await renderApp();
       await user.click(await screen.findByRole("button", { name: /Claude model: Sonnet/i }));
       expect(screen.queryByRole("menuitemradio", { name: /^Fable$/ })).not.toBeInTheDocument();
-      await user.click(await screen.findByRole("menuitemradio", { name: /Fable 5\.1 \(Claude Code update required\)/ }));
+      await user.click(await screen.findByRole("menuitem", { name: /Fable 5\.1 \(Claude Code update required\)/ }));
       expect(localStorage.getItem("kiwi.settings")).toContain('"model":"sonnet"');
       await user.click(await screen.findByRole("button", { name: "Go to Updates" }));
       const settings = await screen.findByRole("dialog", { name: "Settings" });

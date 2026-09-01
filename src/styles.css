@@ -1231,7 +1231,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .settings-nav button > svg:first-child { color: var(--muted-2); }
 .settings-nav button > svg:last-child { justify-self: end; opacity: 0; transition: opacity var(--t-fast) ease; }
 .settings-nav button.active > svg:last-child { opacity: .4; }
-.settings-update-dot { position: absolute; right: 10px; width: 6px; height: 6px; border-radius: 50%; background: var(--green); box-shadow: 0 0 7px color-mix(in srgb, var(--green) 60%, transparent); }
+.settings-update-dot { position: absolute; top: 50%; right: 10px; width: 6px; height: 6px; border-radius: 50%; background: var(--green); box-shadow: 0 0 7px color-mix(in srgb, var(--green) 60%, transparent); transform: translateY(-50%); }
 .settings-nav button.active .settings-update-dot { right: 22px; }
 .settings-pane-heading { display: flex; flex-direction: column; gap: 3px; margin-bottom: var(--s-5); padding-bottom: var(--s-3); border-bottom: 1px solid var(--line); }
 .settings-pane-heading > span { color: var(--text); font-size: var(--fs-lede); font-weight: 650; letter-spacing: var(--track-display); }
@@ -1605,6 +1605,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .developer-runtime-update-grid { display: grid; gap: 8px; }
 .developer-runtime-update-grid + .update-card { margin-top: 8px; }
 .developer-runtime-update-card .update-actions small { margin-right: auto; color: var(--muted-2); }
+.developer-runtime-result .update-status-row span { white-space: pre-wrap; }
 .update-version-row { min-height: 62px; display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
 .update-version-row > span { display: flex; flex-direction: column; gap: 3px; }
 .update-version-row small { color: var(--muted-2); font-size: var(--fs-micro); font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
