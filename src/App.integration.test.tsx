@@ -343,6 +343,17 @@ beforeEach(() => {
 });
 
 describe("Codex cold startup", () => {
+  it("keeps the app visible while the Settings chunk loads for the first time", async () => {
+    await renderApp();
+
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+
+    expect(screen.queryByRole("dialog", { name: "Loading settings…" })).not.toBeInTheDocument();
+    expect(document.querySelector(".settings-backdrop.open .runtime-setup-modal")).not.toBeInTheDocument();
+    expect(document.querySelector(".app-shell")).toBeInTheDocument();
+    expect(await screen.findByRole("dialog", { name: "Settings" })).toBeInTheDocument();
+  });
+
   it("loads local threads without waiting for a forced token refresh", async () => {
     const auth = deferred<{ account: { type: "chatgpt"; email: string; planType: string }; requiresOpenaiAuth: boolean }>();
     accountReadImpl = () => auth.promise;

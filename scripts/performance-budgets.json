@@ -27,20 +27,26 @@
       "decision": "Accept about 0.41% more startup JavaScript and 0.55% more total JavaScript to collect privacy-safe streaming, composer, persistence, and memory-growth evidence. The 4.8–5.0 KB collector is lazy; startup carries only the ordering/provider bridge, whose direct loaded-path calls avoid per-delta closure and collection allocation.",
       "safari13": { "appEntryFromBytes": 367075, "appEntryToBytes": 369835, "appEntryDeltaBytes": 2760, "startupJsFromBytes": 684708, "startupJsToBytes": 687478, "startupJsDeltaBytes": 2770, "totalJsFromBytes": 1405102, "totalJsToBytes": 1412819, "totalJsDeltaBytes": 7717 },
       "chrome105": { "appEntryFromBytes": 347856, "appEntryToBytes": 350574, "appEntryDeltaBytes": 2718, "startupJsFromBytes": 660768, "startupJsToBytes": 663493, "startupJsDeltaBytes": 2725, "totalJsFromBytes": 1372285, "totalJsToBytes": 1379801, "totalJsDeltaBytes": 7516 }
+    },
+    {
+      "change": "Remove the blocking Settings loading backdrop and animate first mount in CSS",
+      "decision": "Accept 474 Safari / 409 Chrome startup CSS bytes for first-mount entry keyframes while removing the JavaScript loading dialog. Combined startup JS plus CSS decreases by 220 bytes on Safari and 299 bytes on Chrome, and the full-screen first-open blackout is eliminated.",
+      "safari13": { "startupJsFromBytes": 687307, "startupJsToBytes": 686613, "startupJsDeltaBytes": -694, "startupCssFromBytes": 336184, "startupCssToBytes": 336658, "startupCssDeltaBytes": 474, "combinedStartupDeltaBytes": -220 },
+      "chrome105": { "startupJsFromBytes": 663322, "startupJsToBytes": 662614, "startupJsDeltaBytes": -708, "startupCssFromBytes": 334097, "startupCssToBytes": 334506, "startupCssDeltaBytes": 409, "combinedStartupDeltaBytes": -299 }
     }
   ],
   "profiles": {
     "safari13-minified": {
-      "appEntryRawBytes": 369664,
-      "startupJsRawBytes": 687307,
-      "startupCssRawBytes": 336184,
-      "totalJsRawBytes": 1412648
+      "appEntryRawBytes": 368970,
+      "startupJsRawBytes": 686613,
+      "startupCssRawBytes": 336658,
+      "totalJsRawBytes": 1411954
     },
     "chrome105-minified": {
-      "appEntryRawBytes": 350403,
-      "startupJsRawBytes": 663322,
-      "startupCssRawBytes": 334097,
-      "totalJsRawBytes": 1379630
+      "appEntryRawBytes": 349695,
+      "startupJsRawBytes": 662614,
+      "startupCssRawBytes": 334506,
+      "totalJsRawBytes": 1378922
     }
   }
 }
