@@ -1,7 +1,23 @@
 import { describe, expect, it } from "vitest";
-import { buildTranscriptMarkdown } from "./transcript";
+import { buildTranscriptMarkdown, mergeTranscriptHistory } from "./transcript";
 
 describe("transcript export", () => {
+  it("combines complete durable history with fresher live entries", () => {
+    const merged = mergeTranscriptHistory(
+      [{ id: "old", role: "user", text: "Old", timelineOrder: 1 }, { id: "live", role: "assistant", text: "stale", timelineOrder: 2 }],
+      [{ id: "tool", kind: "command", title: "Old tool", timelineOrder: 3 }],
+      [{ id: "live", role: "assistant", text: "fresh", timelineOrder: 2 }, { id: "new", role: "user", text: "New", timelineOrder: 4 }],
+      [{ id: "tool", kind: "command", title: "Updated tool", timelineOrder: 3 }],
+    );
+
+    expect(merged.messages.map((message) => [message.id, message.text])).toEqual([
+      ["old", "Old"],
+      ["live", "fresh"],
+      ["new", "New"],
+    ]);
+    expect(merged.activities).toEqual([expect.objectContaining({ id: "tool", title: "Updated tool" })]);
+  });
+
   it("orders entries by timeline order and renders roles", () => {
     const markdown = buildTranscriptMarkdown(
       "My thread",

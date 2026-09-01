@@ -231,7 +231,7 @@ function ReadyStep({ runtimeStatus, claudeStatus, cursorStatus, account, openRou
     <div className="onboarding-copy centered">
       <span className="onboarding-eyebrow">Tour complete</span>
       <h2>Mythra Code is yours to direct.</h2>
-      <p>Connect a provider, choose where the thread belongs, set its permissions, and start building. You can rerun this guide from General Settings at any time.</p>
+      <p>Connect a provider, choose where the thread belongs, set its permissions, and start building. You can rerun this guide from Interface Settings at any time.</p>
     </div>
     <div className="onboarding-checklist">
       <div className={runtimeReady ? "done" : ""}><span>{runtimeReady ? <Check size={13} /> : <TerminalSquare size={13} />}</span><strong>Local runtime</strong><small>{runtimeStatus?.available ? `${runtimeStatus.source ?? "Codex"} detected` : claudeStatus?.available ? "Claude Code detected" : cursorStatus?.available ? "Cursor Agent detected" : "Install a provider runtime"}</small></div>

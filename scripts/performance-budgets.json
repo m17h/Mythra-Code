@@ -39,20 +39,26 @@
       "decision": "Accept about 0.45% more startup CSS and 0.05% more startup JavaScript for a typography choice that ships zero font files and makes no network calls. The startup stylesheet carries the family stacks, scoped chat declarations, and picker presentation; picker labels and descriptions stay in the lazy Settings JavaScript chunk, while the cards reuse existing effort-slider styles. All four stacks are system fonts, so there is no download, no FOUT and no layout-shifting swap at runtime.",
       "safari13": { "appEntryFromBytes": 368970, "appEntryToBytes": 369193, "appEntryDeltaBytes": 223, "startupJsFromBytes": 686613, "startupJsToBytes": 686940, "startupJsDeltaBytes": 327, "startupCssFromBytes": 336658, "startupCssToBytes": 338150, "startupCssDeltaBytes": 1492, "totalJsFromBytes": 1411954, "totalJsToBytes": 1414022, "totalJsDeltaBytes": 2068 },
       "chrome105": { "appEntryFromBytes": 349695, "appEntryToBytes": 349891, "appEntryDeltaBytes": 196, "startupJsFromBytes": 662614, "startupJsToBytes": 662911, "startupJsDeltaBytes": 297, "startupCssFromBytes": 334506, "startupCssToBytes": 335998, "startupCssDeltaBytes": 1492, "totalJsFromBytes": 1378922, "totalJsToBytes": 1380960, "totalJsDeltaBytes": 2038 }
+    },
+    {
+      "change": "Harden bounded thread loading and durable local transcript recovery",
+      "decision": "Accept about 0.27% more startup JavaScript and 0.22% more total JavaScript for archive-safe SQLite discovery, interrupted-tail recovery, deep stale-cursor recovery, complete paginated exports, and stale OpenAI rollout repair. The persistence changes remove full legacy transcript blobs—up to many megabytes—from ordinary page reads and saves under the shared database lock. Transcript export formatting is now lazy, keeping action-only work out of startup.",
+      "safari13": { "appEntryFromBytes": 369193, "appEntryToBytes": 371036, "appEntryDeltaBytes": 1843, "startupJsFromBytes": 686940, "startupJsToBytes": 688783, "startupJsDeltaBytes": 1843, "totalJsFromBytes": 1414022, "totalJsToBytes": 1417082, "totalJsDeltaBytes": 3060 },
+      "chrome105": { "appEntryFromBytes": 349891, "appEntryToBytes": 351760, "appEntryDeltaBytes": 1869, "startupJsFromBytes": 662911, "startupJsToBytes": 664780, "startupJsDeltaBytes": 1869, "totalJsFromBytes": 1380960, "totalJsToBytes": 1383925, "totalJsDeltaBytes": 2965 }
     }
   ],
   "profiles": {
     "safari13-minified": {
-      "appEntryRawBytes": 369193,
-      "startupJsRawBytes": 686940,
+      "appEntryRawBytes": 371036,
+      "startupJsRawBytes": 688783,
       "startupCssRawBytes": 338150,
-      "totalJsRawBytes": 1414022
+      "totalJsRawBytes": 1417082
     },
     "chrome105-minified": {
-      "appEntryRawBytes": 349891,
-      "startupJsRawBytes": 662911,
+      "appEntryRawBytes": 351760,
+      "startupJsRawBytes": 664780,
       "startupCssRawBytes": 335998,
-      "totalJsRawBytes": 1380960
+      "totalJsRawBytes": 1383925
     }
   }
 }

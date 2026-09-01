@@ -97,7 +97,7 @@ const SETTINGS_NAV: ReadonlyArray<{
   {
     group: "Workspace",
     items: [
-      { id: "general", label: "General", icon: Palette, detail: "How Mythra Code looks: theme, effort slider, and chat typography" },
+      { id: "general", label: "Interface", icon: Palette, detail: "How Mythra Code looks: theme, effort slider, and chat typography" },
       { id: "projects", label: "Projects", icon: FolderCog, detail: "Project-specific model and appearance defaults" },
     ],
   },

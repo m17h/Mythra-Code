@@ -277,6 +277,8 @@ pub(super) struct LocalTranscriptPage {
 #[serde(rename_all = "camelCase")]
 pub(super) struct LocalTranscriptSnapshotWrite {
     generation: i64,
+    head_seq: i64,
+    tail_seq: i64,
     rewritten_chunks: usize,
     total_chunks: usize,
     compatibility_snapshot_created: bool,
@@ -288,6 +290,154 @@ pub(super) struct LocalTranscriptWriteState {
     generation: i64,
     head_seq: i64,
     tail_seq: i64,
+}
+
+const MAX_DISCOVERED_LOCAL_TRANSCRIPTS: usize = 5_000;
+
+/// Rebuild the lightweight sidebar index from durable transcript metadata.
+///
+/// `localStorage` is only a paint cache. It can be cleared by the webview and
+/// is intentionally capped, so it must never be the sole way to discover a
+/// Claude or Cursor transcript that still exists in SQLite. Current chunked
+/// rows already keep compact thread metadata separately. Legacy compatibility
+/// rows are projected through SQLite's JSON support so their message arrays do
+/// not cross into Rust or the renderer merely to recover one sidebar row.
+fn read_local_transcript_threads(
+    connection: &Connection,
+    known_thread_ids: &std::collections::HashSet<String>,
+) -> Result<Vec<Value>, String> {
+    let mut candidates: Vec<(i64, String, String, String)> = Vec::new();
+    let mut meta_statement = connection
+        .prepare(
+            "SELECT updated_at, provider, thread_id, thread_json
+             FROM local_transcript_meta ORDER BY updated_at DESC",
+        )
+        .map_err(|error| {
+            format!("Could not prepare local transcript metadata discovery: {error}")
+        })?;
+    let meta_rows = meta_statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(|error| format!("Could not discover local transcript metadata: {error}"))?;
+    for row in meta_rows {
+        candidates.push(
+            row.map_err(|error| format!("Could not read local transcript metadata: {error}"))?,
+        );
+    }
+    drop(meta_statement);
+
+    // The old whole-value row is only parsed when its thread is absent from
+    // both chunk metadata and the renderer's compact sidebar cache. Normal
+    // upgrades therefore stay metadata-only; true cache recovery pays the
+    // unavoidable one-time JSON projection for the missing legacy row.
+    let mut legacy_statement = connection
+        .prepare(
+            "WITH legacy AS (
+               SELECT
+                 CASE WHEN key LIKE 'kiwi.claudeThread.%' THEN 'claude' ELSE 'cursor' END AS provider,
+                 CASE
+                   WHEN key LIKE 'kiwi.claudeThread.%' THEN substr(key, length('kiwi.claudeThread.') + 1)
+                   ELSE substr(key, length('kiwi.cursorThread.') + 1)
+                 END AS thread_id,
+                 updated_at
+               FROM app_state
+               WHERE key LIKE 'kiwi.claudeThread.%' OR key LIKE 'kiwi.cursorThread.%'
+             )
+             SELECT legacy.updated_at, legacy.provider, legacy.thread_id
+             FROM legacy
+             LEFT JOIN local_transcript_meta meta
+               ON meta.provider = legacy.provider AND meta.thread_id = legacy.thread_id
+             WHERE meta.thread_id IS NULL OR legacy.updated_at > meta.legacy_updated_at
+             ORDER BY legacy.updated_at DESC",
+        )
+        .map_err(|error| format!("Could not prepare legacy transcript discovery: {error}"))?;
+    let legacy_rows = legacy_statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(|error| format!("Could not discover legacy transcripts: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Could not read legacy transcript identity: {error}"))?;
+    drop(legacy_statement);
+    for (updated_at, provider, thread_id) in legacy_rows {
+        if known_thread_ids.contains(&thread_id) {
+            continue;
+        }
+        let legacy_key = local_transcript_key(&provider, &thread_id)?;
+        let thread_json = connection
+            .query_row(
+                "SELECT json_extract(value, '$.thread') FROM app_state
+                 WHERE key = ?1 AND json_valid(value)",
+                params![legacy_key],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| format!("Could not project legacy thread metadata: {error}"))?;
+        if let Some(thread_json) = thread_json {
+            candidates.push((updated_at, provider, thread_id, thread_json));
+        }
+    }
+
+    candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.0));
+    let mut discovered = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for (_, provider, thread_id, thread_json) in candidates {
+        let identity = format!("{provider}\0{thread_id}");
+        if seen.contains(&identity) {
+            continue;
+        }
+        let Ok(mut thread) = serde_json::from_str::<Value>(&thread_json) else {
+            // One damaged transcript must not make every healthy thread
+            // disappear from the sidebar. Opening that specific legacy row
+            // will still surface its precise validation error.
+            continue;
+        };
+        if thread.get("id").and_then(Value::as_str) != Some(thread_id.as_str()) {
+            continue;
+        }
+        let Some(object) = thread.as_object_mut() else {
+            continue;
+        };
+        object.insert("modelProvider".into(), Value::String(provider));
+        seen.insert(identity);
+        discovered.push(thread);
+        if discovered.len() >= MAX_DISCOVERED_LOCAL_TRANSCRIPTS {
+            break;
+        }
+    }
+    Ok(discovered)
+}
+
+#[tauri::command]
+pub(super) async fn local_transcript_list(
+    app: AppHandle,
+    known_thread_ids: Vec<String>,
+) -> Result<Vec<Value>, String> {
+    if known_thread_ids.len() > MAX_DISCOVERED_LOCAL_TRANSCRIPTS
+        || known_thread_ids
+            .iter()
+            .any(|thread_id| thread_id.trim().is_empty() || thread_id.len() > 256)
+    {
+        return Err("Local transcript discovery received an invalid sidebar index".to_string());
+    }
+    let known_thread_ids = known_thread_ids.into_iter().collect();
+    let connection = shared_state_db(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let connection = lock_state_db(&connection)?;
+        read_local_transcript_threads(&connection, &known_thread_ids)
+    })
+    .await
+    .map_err(|error| format!("Local transcript discovery task failed: {error}"))?
 }
 
 fn local_transcript_key(provider: &str, thread_id: &str) -> Result<String, String> {
@@ -555,11 +705,11 @@ fn read_local_transcript_page(
     byte_budget: Option<usize>,
 ) -> Result<Option<LocalTranscriptPage>, String> {
     let legacy_key = local_transcript_key(provider, thread_id)?;
-    let legacy = connection
+    let legacy_updated_at = connection
         .query_row(
-            "SELECT value, updated_at FROM app_state WHERE key = ?1",
+            "SELECT updated_at FROM app_state WHERE key = ?1",
             params![legacy_key],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            |row| row.get::<_, i64>(0),
         )
         .optional()
         .map_err(|error| format!("Could not inspect legacy local transcript: {error}"))?;
@@ -573,10 +723,8 @@ fn read_local_transcript_page(
         .map_err(|error| format!("Could not inspect local transcript metadata: {error}"))?;
     let had_migrated_generation = meta_legacy_updated_at.is_some();
     let mut legacy_migration_failed = false;
-    let migrated_legacy = match (&legacy, meta_legacy_updated_at) {
-        (Some((_, legacy_updated_at)), Some(migrated_at)) if *legacy_updated_at <= migrated_at => {
-            false
-        }
+    let migrated_legacy = match (legacy_updated_at, meta_legacy_updated_at) {
+        (Some(legacy_updated_at), Some(migrated_at)) if legacy_updated_at <= migrated_at => false,
         (Some(_), _) => match migrate_legacy_local_transcript(connection, provider, thread_id) {
             Ok(LegacyMigrationOutcome::Migrated) => true,
             Ok(LegacyMigrationOutcome::Missing) => {
@@ -946,6 +1094,8 @@ fn write_local_transcript_snapshot(
         .map_err(|error| format!("Could not commit local transcript snapshot: {error}"))?;
     Ok(LocalTranscriptSnapshotWrite {
         generation,
+        head_seq: chunks.len() as i64 - 1,
+        tail_seq: chunks.len() as i64,
         rewritten_chunks,
         total_chunks: chunks.len(),
         compatibility_snapshot_created,
@@ -1569,6 +1719,63 @@ mod tests {
             chunk_count > 1,
             "fixture must exercise multiple backend pages"
         );
+        drop(connection);
+        std::fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn local_transcript_discovery_recovers_metadata_without_loading_messages() {
+        let (directory, mut connection) = temporary_state_db("transcript-discovery");
+        let mut claude = transcript_fixture(4, 8_000);
+        claude["thread"] = json!({
+            "id": "thread-a",
+            "name": "Claude thread",
+            "preview": "Claude preview",
+            "cwd": "/project",
+            "updatedAt": 10,
+            "modelProvider": "claude"
+        });
+        write_local_transcript_snapshot(&mut connection, "claude", &claude, 100).unwrap();
+
+        let mut cursor = transcript_fixture(4, 8_000);
+        cursor["thread"] = json!({
+            "id": "thread-b",
+            "name": "Cursor thread",
+            "preview": "Cursor preview",
+            "cwd": "/project",
+            "updatedAt": 20,
+            "modelProvider": "cursor"
+        });
+        write_local_transcript_snapshot(&mut connection, "cursor", &cursor, 200).unwrap();
+
+        // Simulate an older build updating only the compatibility row after
+        // chunk metadata already existed. Discovery must prefer this newer
+        // thread metadata without returning the same transcript twice.
+        claude["thread"]["name"] = json!("Renamed by older build");
+        insert_legacy_transcript(&connection, "claude", "thread-a", &claude, 300);
+        connection.execute(
+            "INSERT INTO app_state(key, value, updated_at) VALUES ('kiwi.cursorThread.damaged', '{bad json', 400)",
+            [],
+        ).unwrap();
+
+        let discovered =
+            read_local_transcript_threads(&connection, &std::collections::HashSet::new()).unwrap();
+        assert_eq!(discovered.len(), 2);
+        assert_eq!(discovered[0]["id"], "thread-a");
+        assert_eq!(discovered[0]["name"], "Renamed by older build");
+        assert_eq!(discovered[0]["modelProvider"], "claude");
+        assert!(discovered[0].get("messages").is_none());
+        assert_eq!(discovered[1]["id"], "thread-b");
+        assert_eq!(discovered[1]["modelProvider"], "cursor");
+
+        let known = std::collections::HashSet::from(["thread-a".to_string()]);
+        let discovered_from_compact_index =
+            read_local_transcript_threads(&connection, &known).unwrap();
+        assert_eq!(discovered_from_compact_index.len(), 2);
+        assert_eq!(discovered_from_compact_index[0]["id"], "thread-b");
+        assert_eq!(discovered_from_compact_index[1]["id"], "thread-a");
+        assert_eq!(discovered_from_compact_index[1]["name"], "Claude thread");
+
         drop(connection);
         std::fs::remove_dir_all(directory).expect("remove test directory");
     }

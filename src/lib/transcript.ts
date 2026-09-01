@@ -1,5 +1,29 @@
 import type { Activity, ChatMessage } from "../types";
 
+function mergeById<T extends { id: string; timelineOrder?: number }>(
+  durable: T[],
+  live: T[],
+): T[] {
+  const merged = new Map(durable.map((entry) => [entry.id, entry]));
+  for (const entry of live) merged.set(entry.id, entry);
+  return [...merged.values()].sort(
+    (left, right) => (left.timelineOrder ?? Number.MAX_SAFE_INTEGER) - (right.timelineOrder ?? Number.MAX_SAFE_INTEGER),
+  );
+}
+
+/** Combine complete durable history with fresher in-memory streaming state. */
+export function mergeTranscriptHistory(
+  durableMessages: ChatMessage[],
+  durableActivities: Activity[],
+  liveMessages: ChatMessage[],
+  liveActivities: Activity[],
+): { messages: ChatMessage[]; activities: Activity[] } {
+  return {
+    messages: mergeById(durableMessages, liveMessages),
+    activities: mergeById(durableActivities, liveActivities),
+  };
+}
+
 /**
  * Renders a thread as portable Markdown for export. Ordering matches the
  * timeline (ascending timelineOrder, messages before activities on ties).
