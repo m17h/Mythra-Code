@@ -186,12 +186,21 @@ function modelOptionsForProvider(provider: Provider, selectedModel: string, cata
     }));
   }
   if (selectedModel && !options.some((entry) => entry.value === selectedModel)) {
-    options = [{ value: selectedModel, label: selectedModel, detail: "Current saved model" }, ...options];
+    const savedClaudeModel = provider === "claude"
+      ? catalogs.claudeModels.find((entry) => entry.id === selectedModel)
+      : undefined;
+    options = [{
+      value: selectedModel,
+      label: savedClaudeModel?.displayName ?? selectedModel,
+      detail: savedClaudeModel
+        ? `${savedClaudeModel.description || savedClaudeModel.resolvedModel} · Current saved model`
+        : "Current saved model",
+    }, ...options];
   }
   return options.map((option) => ({ ...option, icon: <ProviderLogo provider={provider} size={15} /> }));
 }
 
-function useDeveloperRuntimeUpdater(
+export function useDeveloperRuntimeUpdater(
   onClaudeRefresh: (() => Promise<ClaudeRuntimeStatus>) | undefined,
   enabled: boolean,
 ): DeveloperRuntimeUpdater {
@@ -242,11 +251,19 @@ function useDeveloperRuntimeUpdater(
       setMessage(result.restartRequired
         ? `${result.message}\n\nRestart Mythra Code when convenient to use the updated Codex runtime.`
         : result.message);
-      if (target === "claude") await onClaudeRefresh?.();
+      if (target === "claude" && onClaudeRefresh) {
+        try {
+          await onClaudeRefresh();
+        } catch (reason) {
+          if (requestRef.current === request) {
+            setMessage(`${result.message}\n\nClaude Code updated, but Mythra Code could not refresh its account and model catalog yet: ${friendlyError(reason)}. Reopen the app or refresh the Claude catalog to try again.`);
+          }
+        }
+      }
     } catch (reason) {
       if (requestRef.current === request) setError(friendlyError(reason));
     } finally {
-      if (requestRef.current === request) setUpdating(null);
+      setUpdating((current) => current === target ? null : current);
     }
   };
 
@@ -857,7 +874,7 @@ export function SettingsModal({
                     onClick={() => setSettingsSection(id)}
                     aria-current={settingsSection === id ? "page" : undefined}
                   >
-                    <Icon size={14} /><span>{label}</span>{id === "updates" && anyUpdateAvailable && <i className="settings-update-dot" aria-label="Update available" />}<ChevronRight size={12} />
+                    <Icon size={14} /><span>{label}</span>{id === "updates" && anyUpdateAvailable && <span className="settings-update-dot" role="img" aria-label="Update available" />}<ChevronRight size={12} />
                   </button>
                 ))}
               </div>
@@ -1847,6 +1864,8 @@ function DeveloperRuntimeUpdateCard({
 }) {
   const updating = updater.updating === target;
   const busy = updater.checking || updater.updating !== null;
+  const provablyCurrent = Boolean(status?.installed && status.currentVersion && status.latestVersion && !status.updateAvailable);
+  const actionAvailable = Boolean(status?.canUpdate && !provablyCurrent);
   const state = status?.error ? "error" : status?.updateAvailable || status?.installed === false ? "available" : "current";
   const detail = updating ? `Updating ${name}…`
     : updater.checking && !status ? `Checking ${name}…`
@@ -1867,10 +1886,10 @@ function DeveloperRuntimeUpdateCard({
       {!updating && status?.updateAvailable && <Download size={15} />}
       <span>{detail}</span>
     </div>
-    {status && (!status.canUpdate || status.canUpdate && (status.updateAvailable || !status.installed)) && (
+    {status && (!status.canUpdate || actionAvailable) && (
       <div className="update-actions">
         {!status.canUpdate && <small>Mythra Code will not overwrite a custom executable path.</small>}
-        {status.canUpdate && (status.updateAvailable || !status.installed) && (
+        {actionAvailable && (
         <button className="primary-button" disabled={busy} onClick={() => void updater.updateRuntime(target)}>
           {updating ? <LoaderCircle className="spin" size={13} /> : <Download size={13} />} {updating ? "Updating…" : actionLabel}
         </button>
@@ -1936,8 +1955,8 @@ function UpdateSettings({ appUpdater, developerRuntimeUpdater }: { appUpdater: A
       <DeveloperRuntimeUpdateCard target="claude" name="Claude Code" status={developerRuntimeUpdater.status?.claude ?? null} updater={developerRuntimeUpdater} />
       <DeveloperRuntimeUpdateCard target="codex" name="Codex" status={developerRuntimeUpdater.status?.codex ?? null} updater={developerRuntimeUpdater} />
     </div>
-    {developerRuntimeUpdater.error && <div className="update-card error"><div className="update-status-row"><Info size={13} /><span>{developerRuntimeUpdater.error}</span></div></div>}
-    {developerRuntimeUpdater.message && <div className="update-card"><div className="update-status-row"><Check size={13} /><span>{developerRuntimeUpdater.message.slice(-2_000)}</span></div></div>}
-    <div className="update-trust-row"><ShieldCheck size={14} /><span><strong>Official, verified release channels</strong><small>Mythra Code packages must match this app’s updater key. Claude Code uses its own updater; Codex uses OpenAI’s official standalone installer, which verifies downloaded release assets.</small></span></div>
+    {developerRuntimeUpdater.error && <div className="update-card developer-runtime-result error" role="alert"><div className="update-status-row"><Info size={13} /><span>{developerRuntimeUpdater.error}</span></div></div>}
+    {developerRuntimeUpdater.message && <div className="update-card developer-runtime-result" role="status"><div className="update-status-row"><Check size={13} /><span>{developerRuntimeUpdater.message.slice(-2_000)}</span></div></div>}
+    <div className="update-trust-row"><ShieldCheck size={14} /><span><strong>Official distribution channels</strong><small>Mythra Code packages must match this app’s updater key. Claude Code and Codex installers are fetched over HTTPS from their official publishers and verify the release assets they install.</small></span></div>
   </section>;
 }

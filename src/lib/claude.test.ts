@@ -107,6 +107,21 @@ describe("Claude model catalog", () => {
     })]);
   });
 
+  it("recognizes the stable update-required id when the CLI changes its prose", () => {
+    expect(parseClaudeModelCatalog({
+      models: [{
+        value: "cc-update-required-2",
+        displayName: "Fable 5.1 (disabled)",
+        description: "Requires a newer Claude Code release",
+        disabled: true,
+      }],
+    })).toEqual([expect.objectContaining({
+      id: "cc-update-required-2",
+      unavailableReason: "update-required",
+      requiredVersion: null,
+    })]);
+  });
+
   it("keeps an update-required successor while hiding only older models in its family", () => {
     const catalog = parseClaudeModelCatalog({
       models: [

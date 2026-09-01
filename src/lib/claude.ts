@@ -142,13 +142,14 @@ export function parseClaudeModelCatalog(payload: unknown): ClaudeModel[] {
     const description = trimmed(entry.description);
     const disabled = entry.isDisabled === true || entry.disabled === true;
     const requiredVersion = disabled ? description.match(UPDATE_REQUIRED_PATTERN)?.[1] ?? null : null;
+    const updateRequired = disabled && (/^cc-update-required(?:-|$)/i.test(id) || requiredVersion !== null);
     catalog.push({
       id,
       displayName: (trimmed(entry.displayName) || id).replace(/\s*\(disabled\)\s*$/i, ""),
       description,
       resolvedModel,
       disabled,
-      unavailableReason: disabled ? (requiredVersion ? "update-required" : "unavailable") : null,
+      unavailableReason: disabled ? (updateRequired ? "update-required" : "unavailable") : null,
       requiredVersion,
       supportedEfforts: Array.isArray(entry.supportedEffortLevels)
         ? entry.supportedEffortLevels.filter((effort): effort is string => typeof effort === "string")

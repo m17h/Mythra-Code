@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS } from "../lib/appConfig";
 import type { AppUpdater } from "../lib/appUpdater";
 import { SettingsModal } from "./SettingsModal";
@@ -119,6 +119,10 @@ function modalProps(overrides: Partial<Parameters<typeof SettingsModal>[0]> = {}
   };
 }
 
+beforeEach(() => {
+  vi.clearAllMocks();
+});
+
 describe("SettingsModal", () => {
   it("orders model providers by the primary subscription choices", () => {
     const { container } = render(<SettingsModal {...modalProps({ initialSection: "models" })} />);
@@ -212,6 +216,27 @@ describe("SettingsModal", () => {
 
     expect(screen.getByText("Mythra Code will not overwrite a custom executable path.")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Update Claude Code" })).not.toBeInTheDocument();
+  });
+
+  it("still offers a runtime action when a failed check cannot prove it is current", () => {
+    render(<SettingsModal {...modalProps({
+      initialSection: "updates",
+      developerRuntimeUpdater: {
+        ...developerRuntimeUpdater,
+        status: {
+          checkedAt: Date.now(),
+          claude: { installed: true, currentVersion: "2.1.250", latestVersion: null, updateAvailable: false, canUpdate: true, source: "Native installer", error: "Could not reach the release service" },
+          codex: { installed: false, currentVersion: null, latestVersion: null, updateAvailable: false, canUpdate: true, source: null, error: "Could not reach the release service" },
+        },
+        error: "A check failed",
+        message: "Runtime update completed.\n\nRestart Mythra Code when convenient.",
+      },
+    })} />);
+
+    expect(screen.getByRole("button", { name: "Update Claude Code" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Install Codex" })).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("A check failed");
+    expect(screen.getByRole("status")).toHaveTextContent(/Runtime update completed.*Restart Mythra Code/s);
   });
 
   it("keeps Interface focused on appearance and moves system controls to their own pane", () => {

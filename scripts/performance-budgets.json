@@ -63,20 +63,32 @@
       "decision": "Accept about 0.53% more startup JavaScript, 0.34% more startup CSS, and 0.58% more total JavaScript for conservative live-model supersession, actionable update-required rows, one delayed and deduplicated non-blocking startup check, and official Claude Code/Codex update controls. The network/update implementation and full Updates UI remain outside the startup closure; a follow-up size review removed 801 Safari startup-JavaScript bytes and 1,239 shared CSS bytes before recording this exception.",
       "safari13": { "appEntryFromBytes": 371061, "appEntryToBytes": 342901, "appEntryDeltaBytes": -28160, "startupJsFromBytes": 688860, "startupJsToBytes": 692514, "startupJsDeltaBytes": 3654, "startupCssFromBytes": 338150, "startupCssToBytes": 339282, "startupCssDeltaBytes": 1132, "totalJsFromBytes": 1417980, "totalJsToBytes": 1426256, "totalJsDeltaBytes": 8276 },
       "chrome105": { "appEntryFromBytes": 351774, "appEntryToBytes": 325401, "appEntryDeltaBytes": -26373, "startupJsFromBytes": 664846, "startupJsToBytes": 668320, "startupJsDeltaBytes": 3474, "startupCssFromBytes": 335998, "startupCssToBytes": 337130, "startupCssDeltaBytes": 1132, "totalJsFromBytes": 1384734, "totalJsToBytes": 1392525, "totalJsDeltaBytes": 7791 }
+    },
+    {
+      "change": "Harden managed developer-runtime updates after review",
+      "decision": "Accept 102 startup JavaScript bytes, 106 startup CSS bytes, and at most 575 total JavaScript bytes for truthful unavailable-runtime actions, accessible updater status output, resilient post-update refresh handling, and friendly labels for superseded saved models. App-entry size is unchanged and its limits are ratcheted down to the measured production sizes.",
+      "safari13": { "appEntryFromBytes": 342901, "appEntryToBytes": 342901, "appEntryDeltaBytes": 0, "startupJsFromBytes": 692514, "startupJsToBytes": 692617, "startupJsDeltaBytes": 103, "startupCssFromBytes": 339282, "startupCssToBytes": 339388, "startupCssDeltaBytes": 106, "totalJsFromBytes": 1426256, "totalJsToBytes": 1426831, "totalJsDeltaBytes": 575 },
+      "chrome105": { "appEntryFromBytes": 325401, "appEntryToBytes": 325401, "appEntryDeltaBytes": 0, "startupJsFromBytes": 668320, "startupJsToBytes": 668422, "startupJsDeltaBytes": 102, "startupCssFromBytes": 337130, "startupCssToBytes": 337236, "startupCssDeltaBytes": 106, "totalJsFromBytes": 1392525, "totalJsToBytes": 1393066, "totalJsDeltaBytes": 541 }
+    },
+    {
+      "change": "Address second-pass runtime updater review findings",
+      "decision": "Accept 77 Safari / 49 Chrome startup and total JavaScript bytes to expose a persisted update-required model's current state to assistive technology and consistently preserve friendly fallback-model metadata. App-entry and CSS sizes remain unchanged.",
+      "safari13": { "appEntryFromBytes": 342901, "appEntryToBytes": 342901, "appEntryDeltaBytes": 0, "startupJsFromBytes": 692617, "startupJsToBytes": 692694, "startupJsDeltaBytes": 77, "startupCssFromBytes": 339388, "startupCssToBytes": 339388, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1426831, "totalJsToBytes": 1426908, "totalJsDeltaBytes": 77 },
+      "chrome105": { "appEntryFromBytes": 325401, "appEntryToBytes": 325401, "appEntryDeltaBytes": 0, "startupJsFromBytes": 668422, "startupJsToBytes": 668471, "startupJsDeltaBytes": 49, "startupCssFromBytes": 337236, "startupCssToBytes": 337236, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1393066, "totalJsToBytes": 1393115, "totalJsDeltaBytes": 49 }
     }
   ],
   "profiles": {
     "safari13-minified": {
-      "appEntryRawBytes": 371061,
-      "startupJsRawBytes": 692514,
-      "startupCssRawBytes": 339282,
-      "totalJsRawBytes": 1426256
+      "appEntryRawBytes": 342901,
+      "startupJsRawBytes": 692694,
+      "startupCssRawBytes": 339388,
+      "totalJsRawBytes": 1426908
     },
     "chrome105-minified": {
-      "appEntryRawBytes": 351774,
-      "startupJsRawBytes": 668320,
-      "startupCssRawBytes": 337130,
-      "totalJsRawBytes": 1392525
+      "appEntryRawBytes": 325401,
+      "startupJsRawBytes": 668471,
+      "startupCssRawBytes": 337236,
+      "totalJsRawBytes": 1393115
     }
   }
 }
