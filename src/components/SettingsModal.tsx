@@ -470,8 +470,7 @@ export function SettingsModal({
       const activeDefaults = projects.find((project) => project.id === activeProjectId)?.overrides?.defaults;
       onThemePreview(activeDefaults?.theme ?? settings.theme);
       onEffortSliderPreview(activeDefaults?.effortSlider ?? settings.effortSlider);
-      // Chat typography is global — projects do not override it.
-      onChatFontPreview(settings.chatFont);
+      onChatFontPreview(activeDefaults?.chatFont ?? settings.chatFont);
       setSettingsSection(initialSection);
       return;
     }
@@ -979,6 +978,7 @@ export function SettingsModal({
             onProjects={setLocalProjects}
             onThemePreview={onThemePreview}
             onEffortSliderPreview={onEffortSliderPreview}
+            onChatFontPreview={onChatFontPreview}
           />}
 
           {settingsSection === "github" &&
@@ -1543,7 +1543,7 @@ function AllTimeUsageSettings({ totals }: { totals: UsageTotals }) {
   </section>;
 }
 
-function ProjectDefaultsSettings({ projects, activeProjectId, settings, runtimeModels, claudeModels, cursorModels, openRouterModels, lmStudioModels, modelFavorites, onToggleModelFavorite, onDiscoverOpenRouterModels, onProjects, onThemePreview, onEffortSliderPreview }: {
+function ProjectDefaultsSettings({ projects, activeProjectId, settings, runtimeModels, claudeModels, cursorModels, openRouterModels, lmStudioModels, modelFavorites, onToggleModelFavorite, onDiscoverOpenRouterModels, onProjects, onThemePreview, onEffortSliderPreview, onChatFontPreview }: {
   projects: Project[];
   activeProjectId: string | null;
   settings: AppSettings;
@@ -1558,6 +1558,7 @@ function ProjectDefaultsSettings({ projects, activeProjectId, settings, runtimeM
   onProjects: (value: Project[]) => void;
   onThemePreview: (theme: ThemeName) => void;
   onEffortSliderPreview: (style: EffortSliderStyle) => void;
+  onChatFontPreview: (font: ChatFont) => void;
 }) {
   const [projectToAdd, setProjectToAdd] = useState("");
   const configured = projects.filter((project) => project.overrides?.defaults);
@@ -1585,6 +1586,15 @@ function ProjectDefaultsSettings({ projects, activeProjectId, settings, runtimeM
       label: style.name,
       detail: style.description,
       icon: <span className={`project-effort-swatch ${style.id}`}><i /><b /></span>,
+    })),
+  ];
+  const fontOptions: AppSelectOption[] = [
+    { value: "", label: "Use global font", detail: CHAT_FONTS.find((font) => font.id === settings.chatFont)?.name ?? settings.chatFont, icon: <RotateCcw size={14} /> },
+    ...CHAT_FONTS.map((font) => ({
+      value: font.id,
+      label: font.name,
+      detail: font.description,
+      icon: <BookOpenCheck size={14} />,
     })),
   ];
 
@@ -1616,6 +1626,7 @@ function ProjectDefaultsSettings({ projects, activeProjectId, settings, runtimeM
     if (project.id === activeProjectId) {
       onThemePreview(settings.theme);
       onEffortSliderPreview(settings.effortSlider);
+      onChatFontPreview(settings.chatFont);
     }
   };
 
@@ -1623,7 +1634,7 @@ function ProjectDefaultsSettings({ projects, activeProjectId, settings, runtimeM
     <section className="settings-section project-defaults-settings">
       <div className="settings-section-heading">
         <div className="settings-icon"><FolderCog size={17} /></div>
-        <div><h3>Project defaults</h3><p>Add a project when you want it to override the global provider, model, app theme, or effort-slider theme. Its choices apply automatically whenever you enter that project.</p></div>
+        <div><h3>Project defaults</h3><p>Add a project when you want it to override the global provider, model, app theme, effort-slider theme, or chat font. Its choices apply automatically whenever you enter that project.</p></div>
       </div>
       <div className="project-prompt-location-note" role="note">
         <Info size={16} />
@@ -1649,11 +1660,12 @@ function ProjectDefaultsSettings({ projects, activeProjectId, settings, runtimeM
               <div className="project-default-field project-default-model"><span>Model</span><AppSelectMenu value={defaults.model} options={modelOptions} ariaLabel={`Default model for ${project.name}`} placeholder="Choose a model…" searchable={modelOptions.length > 8 || defaults.provider === "openrouter" || defaults.provider === "lmstudio" || defaults.provider === "cursor"} favorites={favoriteModels(modelFavorites, defaults.provider)} {...(onToggleModelFavorite ? { onToggleFavorite: (model: string) => onToggleModelFavorite(defaults.provider, model) } : {})} {...(defaults.provider === "openrouter" && onDiscoverOpenRouterModels ? { onSearch: onDiscoverOpenRouterModels } : {})} emptyMessage={defaults.provider === "lmstudio" ? "Connect LM Studio and refresh its catalog first." : "No models are currently available for this provider."} onChange={(model) => updateDefaults(project.id, (current) => ({ ...current, model }))} /></div>
               <div className="project-default-field"><span>App theme</span><AppSelectMenu value={defaults.theme ?? ""} options={themeOptions} ariaLabel={`App theme for ${project.name}`} onChange={(value) => { updateDefaults(project.id, (current) => { const next = { ...current }; if (value) next.theme = value as ThemeName; else delete next.theme; return next; }); if (project.id === activeProjectId) onThemePreview((value || settings.theme) as ThemeName); }} /></div>
               <div className="project-default-field"><span>Effort slider</span><AppSelectMenu value={defaults.effortSlider ?? ""} options={effortOptions} ariaLabel={`Effort slider for ${project.name}`} onChange={(value) => { updateDefaults(project.id, (current) => { const next = { ...current }; if (value) next.effortSlider = value as EffortSliderStyle; else delete next.effortSlider; return next; }); if (project.id === activeProjectId) onEffortSliderPreview((value || settings.effortSlider) as EffortSliderStyle); }} /></div>
+              <div className="project-default-field"><span>Chat font</span><AppSelectMenu value={defaults.chatFont ?? ""} options={fontOptions} ariaLabel={`Chat font for ${project.name}`} onChange={(value) => { updateDefaults(project.id, (current) => { const next = { ...current }; if (value) next.chatFont = value as ChatFont; else delete next.chatFont; return next; }); if (project.id === activeProjectId) onChatFontPreview((value || settings.chatFont) as ChatFont); }} /></div>
             </div>
             {!defaults.model && <p className="project-default-warning">Choose a model before saving these project defaults.</p>}
           </article>
         );
-      })}</div> : <div className="project-default-empty"><FolderCog size={18} /><span><strong>No projects override the global defaults yet</strong><small>Add a project below to give it its own provider, model, app theme, or effort-slider theme.</small></span></div>}
+      })}</div> : <div className="project-default-empty"><FolderCog size={18} /><span><strong>No projects override the global defaults yet</strong><small>Add a project below to give it its own provider, model, app theme, effort-slider theme, or chat font.</small></span></div>}
 
       <div className="project-default-add">
         <div className="project-default-field"><span>Choose a project to override global defaults</span><AppSelectMenu value={projectToAdd} options={projectOptions} ariaLabel="Project to configure" placeholder={projects.length ? "Choose a project…" : "No projects available"} searchable={projectOptions.length > 8} emptyMessage="Every existing project already has project-specific defaults." onChange={setProjectToAdd} /></div>

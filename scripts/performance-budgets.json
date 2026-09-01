@@ -45,20 +45,26 @@
       "decision": "Accept about 0.27% more startup JavaScript and 0.22% more total JavaScript for archive-safe SQLite discovery, interrupted-tail recovery, deep stale-cursor recovery, complete paginated exports, and stale OpenAI rollout repair. The persistence changes remove full legacy transcript blobs—up to many megabytes—from ordinary page reads and saves under the shared database lock. Transcript export formatting is now lazy, keeping action-only work out of startup.",
       "safari13": { "appEntryFromBytes": 369193, "appEntryToBytes": 371036, "appEntryDeltaBytes": 1843, "startupJsFromBytes": 686940, "startupJsToBytes": 688783, "startupJsDeltaBytes": 1843, "totalJsFromBytes": 1414022, "totalJsToBytes": 1417082, "totalJsDeltaBytes": 3060 },
       "chrome105": { "appEntryFromBytes": 349891, "appEntryToBytes": 351760, "appEntryDeltaBytes": 1869, "startupJsFromBytes": 662911, "startupJsToBytes": 664780, "startupJsDeltaBytes": 1869, "totalJsFromBytes": 1380960, "totalJsToBytes": 1383925, "totalJsDeltaBytes": 2965 }
+    },
+    {
+      "change": "Add project-specific chat-font defaults",
+      "decision": "Accept less than 0.02% more startup JavaScript and 0.06% more total JavaScript for a validated, inheritable project chat-font override with live Settings preview. The picker metadata remains in the lazy Settings chunk, no font files or network requests are added, and startup carries only the persisted-value sanitizer plus the active-project shell selection.",
+      "safari13": { "appEntryFromBytes": 371036, "appEntryToBytes": 371061, "appEntryDeltaBytes": 25, "startupJsFromBytes": 688783, "startupJsToBytes": 688860, "startupJsDeltaBytes": 77, "totalJsFromBytes": 1417082, "totalJsToBytes": 1417840, "totalJsDeltaBytes": 758 },
+      "chrome105": { "appEntryFromBytes": 351760, "appEntryToBytes": 351774, "appEntryDeltaBytes": 14, "startupJsFromBytes": 664780, "startupJsToBytes": 664846, "startupJsDeltaBytes": 66, "totalJsFromBytes": 1383925, "totalJsToBytes": 1384594, "totalJsDeltaBytes": 669 }
     }
   ],
   "profiles": {
     "safari13-minified": {
-      "appEntryRawBytes": 371036,
-      "startupJsRawBytes": 688783,
+      "appEntryRawBytes": 371061,
+      "startupJsRawBytes": 688860,
       "startupCssRawBytes": 338150,
-      "totalJsRawBytes": 1417082
+      "totalJsRawBytes": 1417840
     },
     "chrome105-minified": {
-      "appEntryRawBytes": 351760,
-      "startupJsRawBytes": 664780,
+      "appEntryRawBytes": 351774,
+      "startupJsRawBytes": 664846,
       "startupCssRawBytes": 335998,
-      "totalJsRawBytes": 1383925
+      "totalJsRawBytes": 1384594
     }
   }
 }

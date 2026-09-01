@@ -20,6 +20,7 @@ export interface ProjectDefaults {
   /** Omitted appearance values continue to follow the global setting. */
   theme?: ThemeName;
   effortSlider?: EffortSliderStyle;
+  chatFont?: ChatFont;
 }
 
 export interface ProjectOverrides {
