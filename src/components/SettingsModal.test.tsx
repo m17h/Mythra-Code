@@ -574,7 +574,7 @@ describe("SettingsModal", () => {
   it("adds an existing project with app-owned model and appearance pickers", () => {
     const onProjects = vi.fn();
     const onChatFontPreview = vi.fn();
-    render(<SettingsModal {...modalProps({
+    const { container } = render(<SettingsModal {...modalProps({
       initialSection: "projects",
       activeProjectId: "alpha",
       projects: [
@@ -589,9 +589,15 @@ describe("SettingsModal", () => {
     expect(screen.getByText(/give it its own provider, model, app theme, effort-slider theme, or chat font/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Default provider for Alpha" })).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Project to configure" }));
+    const projectPicker = screen.getByRole("button", { name: "Project to configure" });
+    expect(projectPicker.closest(".app-select")).toHaveClass("opens-up");
+    fireEvent.click(projectPicker);
     fireEvent.click(screen.getByRole("menuitemradio", { name: /Alpha/ }));
     fireEvent.click(screen.getByRole("button", { name: "Set defaults" }));
+
+    const projectDefaultsMenus = container.querySelectorAll(".project-default-card .app-select");
+    expect(projectDefaultsMenus).toHaveLength(5);
+    projectDefaultsMenus.forEach((menu) => expect(menu).toHaveClass("opens-up"));
 
     fireEvent.click(screen.getByRole("button", { name: "Default provider for Alpha" }));
     fireEvent.click(screen.getByRole("menuitemradio", { name: /Claude.*Claude Code subscription/ }));
@@ -601,7 +607,9 @@ describe("SettingsModal", () => {
     fireEvent.click(screen.getByRole("menuitemradio", { name: /Midnight/ }));
     fireEvent.click(screen.getByRole("button", { name: "Effort slider for Alpha" }));
     fireEvent.click(screen.getByRole("menuitemradio", { name: /Coil/ }));
-    fireEvent.click(screen.getByRole("button", { name: "Chat font for Alpha" }));
+    const fontPicker = screen.getByRole("button", { name: "Chat font for Alpha" });
+    expect(fontPicker.closest(".app-select")).toHaveClass("opens-up");
+    fireEvent.click(fontPicker);
     fireEvent.click(screen.getByRole("menuitemradio", { name: /Reading serif/ }));
     fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
 
@@ -744,7 +752,9 @@ describe("SettingsModal", () => {
     })} />);
 
     expect(screen.queryByLabelText("Apply presets to")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Apply Review sub-agents" }));
+    const applyPreset = screen.getByRole("button", { name: "Apply Review sub-agents" });
+    expect(applyPreset.closest(".app-select")).toHaveClass("opens-up");
+    fireEvent.click(applyPreset);
     fireEvent.click(screen.getByRole("menuitemradio", { name: /^Kiwi/ }));
     fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
 

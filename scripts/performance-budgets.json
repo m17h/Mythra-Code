@@ -51,6 +51,12 @@
       "decision": "Accept less than 0.02% more startup JavaScript and 0.06% more total JavaScript for a validated, inheritable project chat-font override with live Settings preview. The picker metadata remains in the lazy Settings chunk, no font files or network requests are added, and startup carries only the persisted-value sanitizer plus the active-project shell selection.",
       "safari13": { "appEntryFromBytes": 371036, "appEntryToBytes": 371061, "appEntryDeltaBytes": 25, "startupJsFromBytes": 688783, "startupJsToBytes": 688860, "startupJsDeltaBytes": 77, "totalJsFromBytes": 1417082, "totalJsToBytes": 1417840, "totalJsDeltaBytes": 758 },
       "chrome105": { "appEntryFromBytes": 351760, "appEntryToBytes": 351774, "appEntryDeltaBytes": 14, "startupJsFromBytes": 664780, "startupJsToBytes": 664846, "startupJsDeltaBytes": 66, "totalJsFromBytes": 1383925, "totalJsToBytes": 1384594, "totalJsDeltaBytes": 669 }
+    },
+    {
+      "change": "Keep Settings dropdowns above the fixed footer",
+      "decision": "Accept 140 lazy Settings JavaScript bytes on both targets to explicitly open every Settings-owned menu upward. App-entry, startup JavaScript, startup CSS, and runtime listener counts are unchanged; the fixed placement prevents overflow clipping without adding shared positioning logic.",
+      "safari13": { "appEntryFromBytes": 371061, "appEntryToBytes": 371061, "appEntryDeltaBytes": 0, "startupJsFromBytes": 688860, "startupJsToBytes": 688860, "startupJsDeltaBytes": 0, "startupCssFromBytes": 338150, "startupCssToBytes": 338150, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1417840, "totalJsToBytes": 1417980, "totalJsDeltaBytes": 140 },
+      "chrome105": { "appEntryFromBytes": 351774, "appEntryToBytes": 351774, "appEntryDeltaBytes": 0, "startupJsFromBytes": 664846, "startupJsToBytes": 664846, "startupJsDeltaBytes": 0, "startupCssFromBytes": 335998, "startupCssToBytes": 335998, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1384594, "totalJsToBytes": 1384734, "totalJsDeltaBytes": 140 }
     }
   ],
   "profiles": {
@@ -58,13 +64,13 @@
       "appEntryRawBytes": 371061,
       "startupJsRawBytes": 688860,
       "startupCssRawBytes": 338150,
-      "totalJsRawBytes": 1417840
+      "totalJsRawBytes": 1417980
     },
     "chrome105-minified": {
       "appEntryRawBytes": 351774,
       "startupJsRawBytes": 664846,
       "startupCssRawBytes": 335998,
-      "totalJsRawBytes": 1384594
+      "totalJsRawBytes": 1384734
     }
   }
 }
