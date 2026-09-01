@@ -1231,6 +1231,8 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .settings-nav button > svg:first-child { color: var(--muted-2); }
 .settings-nav button > svg:last-child { justify-self: end; opacity: 0; transition: opacity var(--t-fast) ease; }
 .settings-nav button.active > svg:last-child { opacity: .4; }
+.settings-update-dot { position: absolute; right: 10px; width: 6px; height: 6px; border-radius: 50%; background: var(--green); box-shadow: 0 0 7px color-mix(in srgb, var(--green) 60%, transparent); }
+.settings-nav button.active .settings-update-dot { right: 22px; }
 .settings-pane-heading { display: flex; flex-direction: column; gap: 3px; margin-bottom: var(--s-5); padding-bottom: var(--s-3); border-bottom: 1px solid var(--line); }
 .settings-pane-heading > span { color: var(--text); font-size: var(--fs-lede); font-weight: 650; letter-spacing: var(--track-display); }
 .settings-pane-heading > small { color: var(--muted); font-size: var(--fs-meta); line-height: 1.5; }
@@ -1598,6 +1600,11 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .update-card { overflow: hidden; border: 1px solid var(--line); border-radius: 11px; background: linear-gradient(145deg, color-mix(in srgb, var(--green) 4%, var(--sidebar)), var(--sidebar)); }
 .update-card.available { border-color: color-mix(in srgb, var(--green) 28%, var(--line)); box-shadow: 0 18px 45px rgba(0,0,0,.16), inset 0 1px 0 rgba(255,255,255,.02); }
 .update-card.error { border-color: rgba(239,138,135,.22); }
+.update-group-heading { margin: 0 0 7px; color: var(--muted-2); font-size: var(--fs-micro); font-weight: 750; letter-spacing: var(--track-caps); text-transform: uppercase; }
+.update-card + .update-group-heading { margin-top: 16px; }
+.developer-runtime-update-grid { display: grid; gap: 8px; }
+.developer-runtime-update-grid + .update-card { margin-top: 8px; }
+.developer-runtime-update-card .update-actions small { margin-right: auto; color: var(--muted-2); }
 .update-version-row { min-height: 62px; display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
 .update-version-row > span { display: flex; flex-direction: column; gap: 3px; }
 .update-version-row small { color: var(--muted-2); font-size: var(--fs-micro); font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
@@ -1880,6 +1887,8 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .openrouter-empty strong { color: var(--muted); font-size: var(--fs-micro); }
 .openrouter-empty span { max-width: 320px; font-size: var(--fs-meta); line-height: 1.45; }
 .openrouter-catalog-warning { margin-top: 5px; padding: 6px 7px; border-radius: 6px; color: #c39bff; background: rgba(195,155,255,.055); font-size: var(--fs-micro); }
+.claude-model-menu .openrouter-catalog-warning { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--muted); }
+.claude-model-menu .openrouter-catalog-warning button { flex: 0 0 auto; min-height: 25px; padding: 3px 6px; }
 .openrouter-reasoning { min-width: 0; padding: 0 3px; }
 .openrouter-reasoning-heading { height: 13px; display: flex; align-items: center; gap: 5px; margin: 0 2px 5px; color: var(--muted); font-size: var(--fs-meta); }
 .openrouter-reasoning-heading svg, .openrouter-reasoning-heading strong { color: var(--router-accent); }
@@ -3520,8 +3529,9 @@ body[data-pane-resizing] .sidebar, body[data-pane-resizing] .studio-dock { trans
 .model-show-all { width: 100%; margin-top: 4px; padding: 7px 8px; border: 1px dashed var(--line-strong); border-radius: var(--r-sm); color: var(--muted); background: transparent; font-size: var(--fs-micro); font-weight: 600; cursor: pointer; }
 .model-show-all:hover { color: var(--ink-2); background: rgba(255,255,255,.04); }
 .app-shell[data-color-scheme="light"] .model-show-all:hover { background: rgba(0,0,0,.04); }
-.model-meta-refresh { display: grid; place-items: center; width: 20px; height: 20px; padding: 0; border: 0; border-radius: var(--r-xs); color: var(--muted-2); background: transparent; cursor: pointer; }
-.model-meta-refresh:hover:not(:disabled) { color: var(--ink-2); background: rgba(255,255,255,.06); }
+.model-meta-refresh { display: grid; place-items: center; width: 20px; height: 20px; padding: 0; border: 1px solid var(--green-line); border-radius: var(--r-xs); color: var(--green); background: var(--green-soft); cursor: pointer; }
+.model-meta-refresh:hover:not(:disabled) { color: color-mix(in srgb, var(--green) 82%, #fff); background: color-mix(in srgb, var(--green-soft) 76%, var(--green) 24%); }
 .model-meta-refresh:disabled { cursor: default; opacity: .5; }
+.claude-control .openrouter-options .model-row > button.update-required .openrouter-model-meta { color: var(--green); font-weight: 650; }
 .model-menu .model-row { gap: 2px; }
 .claude-model-menu .openrouter-menu-meta small { margin-left: auto; }

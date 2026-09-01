@@ -1,5 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
+import { isTauri } from "@tauri-apps/api/core";
 import { confirmDialog } from "../lib/confirmDialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
@@ -30,7 +31,7 @@ import {
   X,
 } from "lucide-react";
 import { exportDiagnostics, recentAuditRows, rpc, saveLmStudioKey, saveOpenRouterKey, type AuditRow, type CodexRuntimeStatus } from "../lib/codex";
-import type { ClaudeRuntimeStatus } from "../lib/claude";
+import { visibleClaudeModels, type ClaudeRuntimeStatus } from "../lib/claude";
 import type { CursorModel, CursorRuntimeStatus } from "../lib/cursor";
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_SETTINGS, EFFORT_SLIDER_STYLES, RELEASE_NOTES_URL, THEMES } from "../lib/appConfig";
 import { friendlyError } from "../lib/errors";
@@ -84,6 +85,7 @@ import type { ClaudeModel } from "../lib/claude";
 import type { OpenRouterModel } from "./OpenRouterModelControl";
 import { sanitizeProjectDefaultOverrides } from "../lib/projectDefaults";
 import { modelForProvider } from "../lib/threadProvider";
+import { cachedDeveloperRuntimeUpdates, checkDeveloperRuntimeUpdates, ensureDeveloperRuntimeUpdates, updateDeveloperRuntime, type DeveloperRuntimeTarget, type DeveloperRuntimeTargetStatus, type DeveloperRuntimeUpdater } from "../lib/runtimeUpdates";
 
 /**
  * Single source of truth for the settings navigation: the rail, the pane
@@ -160,7 +162,7 @@ function modelOptionsForProvider(provider: Provider, selectedModel: string, cata
   if (provider === "openai") {
     options = openAiModelOptions(catalogs.runtimeModels).map((entry) => ({ value: entry.id, label: entry.name, detail: entry.tagline }));
   } else if (provider === "claude") {
-    options = (catalogs.claudeModels.length ? catalogs.claudeModels.filter((entry) => !entry.disabled) : CLAUDE_FALLBACK_MODELS).map((entry) => ({
+    options = (catalogs.claudeModels.length ? visibleClaudeModels(catalogs.claudeModels).filter((entry) => !entry.disabled) : CLAUDE_FALLBACK_MODELS).map((entry) => ({
       value: entry.id,
       label: entry.displayName,
       detail: entry.description || entry.resolvedModel,
@@ -189,10 +191,73 @@ function modelOptionsForProvider(provider: Provider, selectedModel: string, cata
   return options.map((option) => ({ ...option, icon: <ProviderLogo provider={provider} size={15} /> }));
 }
 
+function useDeveloperRuntimeUpdater(
+  onClaudeRefresh: (() => Promise<ClaudeRuntimeStatus>) | undefined,
+  enabled: boolean,
+): DeveloperRuntimeUpdater {
+  const [status, setStatus] = useState(() => cachedDeveloperRuntimeUpdates());
+  const [checking, setChecking] = useState(false);
+  const [updating, setUpdating] = useState<DeveloperRuntimeTarget | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const requestRef = useRef(0);
+
+  const checkForUpdates = async () => {
+    const request = ++requestRef.current;
+    setChecking(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const next = await checkDeveloperRuntimeUpdates();
+      if (requestRef.current === request) setStatus(next);
+    } catch (reason) {
+      if (requestRef.current === request) setError(friendlyError(reason));
+    } finally {
+      if (requestRef.current === request) setChecking(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!enabled || !isTauri() || status) return;
+    const request = ++requestRef.current;
+    setChecking(true);
+    void ensureDeveloperRuntimeUpdates()
+      .then((next) => { if (requestRef.current === request) setStatus(next); })
+      .catch((reason) => { if (requestRef.current === request) setError(friendlyError(reason)); })
+      .finally(() => { if (requestRef.current === request) setChecking(false); });
+    // The injected updater and initial cache decision are fixed for this
+    // Settings mount; manual checks own subsequent refreshes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled]);
+
+  const updateRuntime = async (target: DeveloperRuntimeTarget) => {
+    const request = ++requestRef.current;
+    setUpdating(target);
+    setError(null);
+    setMessage(null);
+    try {
+      const result = await updateDeveloperRuntime(target);
+      if (requestRef.current !== request) return;
+      setStatus(result.status);
+      setMessage(result.restartRequired
+        ? `${result.message}\n\nRestart Mythra Code when convenient to use the updated Codex runtime.`
+        : result.message);
+      if (target === "claude") await onClaudeRefresh?.();
+    } catch (reason) {
+      if (requestRef.current === request) setError(friendlyError(reason));
+    } finally {
+      if (requestRef.current === request) setUpdating(null);
+    }
+  };
+
+  return { status, checking, updating, error, message, checkForUpdates, updateRuntime };
+}
+
 export function SettingsModal({
   open,
   initialSection,
   appUpdater,
+  developerRuntimeUpdater: injectedDeveloperRuntimeUpdater,
   settings,
   account,
   runtimeStatus,
@@ -276,6 +341,7 @@ export function SettingsModal({
   open: boolean;
   initialSection: SettingsSection;
   appUpdater: AppUpdater;
+  developerRuntimeUpdater?: DeveloperRuntimeUpdater;
   settings: AppSettings;
   account: Account | null;
   runtimeStatus: CodexRuntimeStatus | null;
@@ -360,6 +426,8 @@ export function SettingsModal({
   onRestoreSkill: (path: string) => Promise<boolean>;
   onOpenOnboarding: () => void;
 }) {
+  const managedDeveloperRuntimeUpdater = useDeveloperRuntimeUpdater(onClaudeRefresh, !injectedDeveloperRuntimeUpdater);
+  const developerRuntimeUpdater = injectedDeveloperRuntimeUpdater ?? managedDeveloperRuntimeUpdater;
   const [local, setLocal] = useState(settings);
   const [localProjects, setLocalProjects] = useState(projects);
   const [expandedPresetId, setExpandedPresetId] = useState<string | null>(null);
@@ -396,7 +464,7 @@ export function SettingsModal({
       detail: entry.tagline,
     })),
     ...(claudeModels.length ? {
-      claude: claudeModels.filter((entry) => !entry.disabled).map((entry) => ({
+      claude: visibleClaudeModels(claudeModels).filter((entry) => !entry.disabled).map((entry) => ({
         id: entry.id,
         label: entry.displayName,
         detail: entry.description || entry.resolvedModel,
@@ -430,6 +498,11 @@ export function SettingsModal({
         : local.provider === "cursor"
           ? "Choose from the live catalog associated with your Cursor subscription."
           : "Availability follows the signed-in ChatGPT account.";
+  const developerUpdateAvailable = Boolean(
+    developerRuntimeUpdater.status?.claude.updateAvailable
+    || developerRuntimeUpdater.status?.codex.updateAvailable,
+  );
+  const anyUpdateAvailable = appUpdater.phase === "available" || developerUpdateAvailable;
 
   // Buffered edits (theme, prompt, toggles) are discarded on close — warn
   // before silently throwing away work like a hand-written system prompt.
@@ -784,7 +857,7 @@ export function SettingsModal({
                     onClick={() => setSettingsSection(id)}
                     aria-current={settingsSection === id ? "page" : undefined}
                   >
-                    <Icon size={14} /><span>{label}</span><ChevronRight size={12} />
+                    <Icon size={14} /><span>{label}</span>{id === "updates" && anyUpdateAvailable && <i className="settings-update-dot" aria-label="Update available" />}<ChevronRight size={12} />
                   </button>
                 ))}
               </div>
@@ -1022,7 +1095,7 @@ export function SettingsModal({
             onRestore={onRestoreSkill}
           />}
 
-          {settingsSection === "updates" && <UpdateSettings appUpdater={appUpdater} />}
+          {settingsSection === "updates" && <UpdateSettings appUpdater={appUpdater} developerRuntimeUpdater={developerRuntimeUpdater} />}
 
           {settingsSection === "system" &&
           <section className="settings-section">
@@ -1761,7 +1834,53 @@ function RecentPerformancePanel({ active }: { active: boolean }) {
   );
 }
 
-function UpdateSettings({ appUpdater }: { appUpdater: AppUpdater }) {
+function DeveloperRuntimeUpdateCard({
+  target,
+  name,
+  status,
+  updater,
+}: {
+  target: DeveloperRuntimeTarget;
+  name: string;
+  status: DeveloperRuntimeTargetStatus | null;
+  updater: DeveloperRuntimeUpdater;
+}) {
+  const updating = updater.updating === target;
+  const busy = updater.checking || updater.updating !== null;
+  const state = status?.error ? "error" : status?.updateAvailable || status?.installed === false ? "available" : "current";
+  const detail = updating ? `Updating ${name}…`
+    : updater.checking && !status ? `Checking ${name}…`
+      : status?.error ? status.error
+        : status?.installed === false ? `${name} is not installed. Install ${status.latestVersion ? `version ${status.latestVersion}` : "the latest version"} here.`
+          : status?.updateAvailable ? `${name} ${status.latestVersion} is available.`
+            : status?.currentVersion ? `${name} is up to date.`
+              : `Check for the latest ${name} release.`;
+  const actionLabel = status?.installed === false ? `Install ${name}` : `Update ${name}`;
+  return <div className={`update-card developer-runtime-update-card ${state}`}>
+    <div className="update-version-row">
+      <span><small>Installed · {status?.source ?? "Local runtime"}</small><strong>{name} {status?.currentVersion ?? (status?.installed === false ? "not installed" : "…")}</strong></span>
+      {status?.latestVersion && <span className="update-version-available"><small>Latest</small><strong>{status.latestVersion}</strong></span>}
+    </div>
+    <div className="update-status-row">
+      {(updating || updater.checking && !status) && <LoaderCircle className="spin" size={15} />}
+      {!updating && status && !status.error && !status.updateAvailable && status.installed && <Check size={15} />}
+      {!updating && status?.updateAvailable && <Download size={15} />}
+      <span>{detail}</span>
+    </div>
+    {status && (!status.canUpdate || status.canUpdate && (status.updateAvailable || !status.installed)) && (
+      <div className="update-actions">
+        {!status.canUpdate && <small>Mythra Code will not overwrite a custom executable path.</small>}
+        {status.canUpdate && (status.updateAvailable || !status.installed) && (
+        <button className="primary-button" disabled={busy} onClick={() => void updater.updateRuntime(target)}>
+          {updating ? <LoaderCircle className="spin" size={13} /> : <Download size={13} />} {updating ? "Updating…" : actionLabel}
+        </button>
+        )}
+      </div>
+    )}
+  </div>;
+}
+
+function UpdateSettings({ appUpdater, developerRuntimeUpdater }: { appUpdater: AppUpdater; developerRuntimeUpdater: DeveloperRuntimeUpdater }) {
   const progress = updateProgress(appUpdater.downloadedBytes, appUpdater.totalBytes);
   const busy = ["checking", "downloading", "installing", "restarting"].includes(appUpdater.phase);
   const detail = appUpdater.phase === "checking" ? "Checking GitHub Releases…"
@@ -1773,11 +1892,19 @@ function UpdateSettings({ appUpdater }: { appUpdater: AppUpdater }) {
               : appUpdater.phase === "error" ? appUpdater.error || "The update could not be completed."
                 : "Check the public Mythra Code repository for a newer signed release.";
 
+  const checkingAll = appUpdater.phase === "checking" || developerRuntimeUpdater.checking;
+  const checkAll = () => void Promise.all([
+    appUpdater.checkForUpdates(),
+    developerRuntimeUpdater.checkForUpdates(),
+  ]);
+
   return <section className="settings-section update-settings-section">
-    <div className="settings-section-heading">
+    <div className="settings-section-heading settings-heading-with-action">
       <div className="settings-icon"><Download size={17} /></div>
-      <div><h3>Mythra Code updates</h3><p>Updates are cryptographically verified before installation and are applied after Mythra Code restarts.</p></div>
+      <div><h3>Updates</h3><p>Keep Mythra Code and its local Claude Code and Codex runtimes current from one place.</p></div>
+      <button className="secondary-button" disabled={checkingAll || busy || developerRuntimeUpdater.updating !== null} onClick={checkAll}>{checkingAll ? <LoaderCircle className="spin" size={13} /> : <RotateCcw size={13} />} Check all</button>
     </div>
+    <h4 className="update-group-heading">Mythra Code</h4>
     <div className={`update-card ${appUpdater.phase}`}>
       <div className="update-version-row">
         <span><small>Installed</small><strong>Mythra Code {appUpdater.currentVersion}</strong></span>
@@ -1804,6 +1931,13 @@ function UpdateSettings({ appUpdater }: { appUpdater: AppUpdater }) {
         )}
       </div>
     </div>
-    <div className="update-trust-row"><ShieldCheck size={14} /><span><strong>Verified release channel</strong><small>Manifest and packages come from github.com/m17h/Mythra-Code and must match the updater key for this platform.</small></span></div>
+    <h4 className="update-group-heading">Developer runtimes</h4>
+    <div className="developer-runtime-update-grid">
+      <DeveloperRuntimeUpdateCard target="claude" name="Claude Code" status={developerRuntimeUpdater.status?.claude ?? null} updater={developerRuntimeUpdater} />
+      <DeveloperRuntimeUpdateCard target="codex" name="Codex" status={developerRuntimeUpdater.status?.codex ?? null} updater={developerRuntimeUpdater} />
+    </div>
+    {developerRuntimeUpdater.error && <div className="update-card error"><div className="update-status-row"><Info size={13} /><span>{developerRuntimeUpdater.error}</span></div></div>}
+    {developerRuntimeUpdater.message && <div className="update-card"><div className="update-status-row"><Check size={13} /><span>{developerRuntimeUpdater.message.slice(-2_000)}</span></div></div>}
+    <div className="update-trust-row"><ShieldCheck size={14} /><span><strong>Official, verified release channels</strong><small>Mythra Code packages must match this app’s updater key. Claude Code uses its own updater; Codex uses OpenAI’s official standalone installer, which verifies downloaded release assets.</small></span></div>
   </section>;
 }

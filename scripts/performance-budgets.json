@@ -57,20 +57,26 @@
       "decision": "Accept 140 lazy Settings JavaScript bytes on both targets to explicitly open every Settings-owned menu upward. App-entry, startup JavaScript, startup CSS, and runtime listener counts are unchanged; the fixed placement prevents overflow clipping without adding shared positioning logic.",
       "safari13": { "appEntryFromBytes": 371061, "appEntryToBytes": 371061, "appEntryDeltaBytes": 0, "startupJsFromBytes": 688860, "startupJsToBytes": 688860, "startupJsDeltaBytes": 0, "startupCssFromBytes": 338150, "startupCssToBytes": 338150, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1417840, "totalJsToBytes": 1417980, "totalJsDeltaBytes": 140 },
       "chrome105": { "appEntryFromBytes": 351774, "appEntryToBytes": 351774, "appEntryDeltaBytes": 0, "startupJsFromBytes": 664846, "startupJsToBytes": 664846, "startupJsDeltaBytes": 0, "startupCssFromBytes": 335998, "startupCssToBytes": 335998, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1384594, "totalJsToBytes": 1384734, "totalJsDeltaBytes": 140 }
+    },
+    {
+      "change": "Add account-aware Claude model replacement and managed developer-runtime updates",
+      "decision": "Accept about 0.53% more startup JavaScript, 0.34% more startup CSS, and 0.58% more total JavaScript for conservative live-model supersession, actionable update-required rows, one delayed and deduplicated non-blocking startup check, and official Claude Code/Codex update controls. The network/update implementation and full Updates UI remain outside the startup closure; a follow-up size review removed 801 Safari startup-JavaScript bytes and 1,239 shared CSS bytes before recording this exception.",
+      "safari13": { "appEntryFromBytes": 371061, "appEntryToBytes": 342901, "appEntryDeltaBytes": -28160, "startupJsFromBytes": 688860, "startupJsToBytes": 692514, "startupJsDeltaBytes": 3654, "startupCssFromBytes": 338150, "startupCssToBytes": 339282, "startupCssDeltaBytes": 1132, "totalJsFromBytes": 1417980, "totalJsToBytes": 1426256, "totalJsDeltaBytes": 8276 },
+      "chrome105": { "appEntryFromBytes": 351774, "appEntryToBytes": 325401, "appEntryDeltaBytes": -26373, "startupJsFromBytes": 664846, "startupJsToBytes": 668320, "startupJsDeltaBytes": 3474, "startupCssFromBytes": 335998, "startupCssToBytes": 337130, "startupCssDeltaBytes": 1132, "totalJsFromBytes": 1384734, "totalJsToBytes": 1392525, "totalJsDeltaBytes": 7791 }
     }
   ],
   "profiles": {
     "safari13-minified": {
       "appEntryRawBytes": 371061,
-      "startupJsRawBytes": 688860,
-      "startupCssRawBytes": 338150,
-      "totalJsRawBytes": 1417980
+      "startupJsRawBytes": 692514,
+      "startupCssRawBytes": 339282,
+      "totalJsRawBytes": 1426256
     },
     "chrome105-minified": {
       "appEntryRawBytes": 351774,
-      "startupJsRawBytes": 664846,
-      "startupCssRawBytes": 335998,
-      "totalJsRawBytes": 1384734
+      "startupJsRawBytes": 668320,
+      "startupCssRawBytes": 337130,
+      "totalJsRawBytes": 1392525
     }
   }
 }

@@ -86,6 +86,8 @@ let rateLimitsImpl: () => unknown;
 let openRouterReadyImpl: () => boolean;
 let openRouterCreditsImpl: () => unknown;
 let commandExecImpl: (params: Record<string, unknown>) => unknown;
+let claudeRuntimeStatusImpl: () => unknown;
+let claudeModelsImpl: () => unknown;
 /** Bumped by every managed app-server restart, real or simulated. */
 let runtimeGeneration: number;
 let runtimeLoadedThreads: Set<string>;
@@ -108,17 +110,9 @@ function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
     };
   }
   if (command === "claude_runtime_status") {
-    return {
-      available: false,
-      path: null,
-      version: null,
-      loggedIn: false,
-      authMethod: null,
-      email: null,
-      subscriptionType: null,
-      warning: null,
-    };
+    return claudeRuntimeStatusImpl();
   }
+  if (command === "claude_models") return claudeModelsImpl();
   if (command === "github_status") {
     return {
       available: true,
@@ -324,6 +318,17 @@ beforeEach(() => {
   openRouterReadyImpl = () => false;
   openRouterCreditsImpl = () => ({ remaining: 0, used: null, source: "account" });
   commandExecImpl = () => ({ exitCode: 0, stdout: "", stderr: "" });
+  claudeRuntimeStatusImpl = () => ({
+    available: false,
+    path: null,
+    version: null,
+    loggedIn: false,
+    authMethod: null,
+    email: null,
+    subscriptionType: null,
+    warning: null,
+  });
+  claudeModelsImpl = () => ({ models: [] });
   runtimeGeneration = 1;
   runtimeLoadedThreads = new Set();
   workspaceGitInfoImpl = () => ({ isRepo: true, isRoot: true, hasCommit: true, branch: "main", head: "head" });
@@ -660,6 +665,44 @@ describe("project defaults", () => {
     expect(shell).toHaveAttribute("data-effort-slider", "aurora");
     expect(shell).toHaveAttribute("data-chat-font", "system");
     expect(screen.getByRole("button", { name: "New thread provider: OpenAI" })).toBeInTheDocument();
+  });
+});
+
+describe("Claude model updates", () => {
+  it("routes an update-required successor to Settings without selecting its sentinel id", async () => {
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { configurable: true, value: {} });
+    localStorage.setItem("kiwi.settings", JSON.stringify({ provider: "claude", model: "sonnet" }));
+    claudeRuntimeStatusImpl = () => ({
+      available: true,
+      path: "/usr/local/bin/claude",
+      version: "2.1.250",
+      loggedIn: true,
+      authMethod: "claude.ai",
+      email: "test@example.com",
+      subscriptionType: "max",
+      warning: null,
+    });
+    claudeModelsImpl = () => ({
+      models: [
+        { value: "sonnet", displayName: "Sonnet", description: "Sonnet 5", resolvedModel: "claude-sonnet-5" },
+        { value: "claude-fable-5[1m]", displayName: "Fable", description: "Fable 5 · Most capable", resolvedModel: "claude-fable-5[1m]" },
+        { value: "cc-update-required-1", displayName: "Fable 5.1 (disabled)", description: "Update to 2.1.255+ to use Fable 5.1", resolvedModel: "cc-update-required-1", isDisabled: true },
+      ],
+    });
+
+    try {
+      const user = userEvent.setup();
+      await renderApp();
+      await user.click(await screen.findByRole("button", { name: /Claude model: Sonnet/i }));
+      expect(screen.queryByRole("menuitemradio", { name: /^Fable$/ })).not.toBeInTheDocument();
+      await user.click(await screen.findByRole("menuitemradio", { name: /Fable 5\.1 \(Claude Code update required\)/ }));
+      expect(localStorage.getItem("kiwi.settings")).toContain('"model":"sonnet"');
+      await user.click(await screen.findByRole("button", { name: "Go to Updates" }));
+      const settings = await screen.findByRole("dialog", { name: "Settings" });
+      expect(within(settings).getByRole("heading", { name: "Updates" })).toBeInTheDocument();
+    } finally {
+      Reflect.deleteProperty(window, "__TAURI_INTERNALS__");
+    }
   });
 });
 

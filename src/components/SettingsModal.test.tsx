@@ -17,6 +17,16 @@ const updater: AppUpdater = {
   downloadAndRestart: vi.fn(async () => undefined),
 };
 
+const developerRuntimeUpdater = {
+  status: null,
+  checking: false,
+  updating: null,
+  error: null,
+  message: null,
+  checkForUpdates: vi.fn(async () => undefined),
+  updateRuntime: vi.fn(async () => undefined),
+};
+
 /** A saved crew, as it comes back out of persisted settings. */
 function preset() {
   return {
@@ -41,6 +51,7 @@ function modalProps(overrides: Partial<Parameters<typeof SettingsModal>[0]> = {}
     open: true,
     initialSection: "general",
     appUpdater: updater,
+    developerRuntimeUpdater,
     settings: { ...DEFAULT_SETTINGS },
     account: null,
     runtimeStatus: null,
@@ -155,6 +166,52 @@ describe("SettingsModal", () => {
       "Runtime & diagnostics",
       "Updates",
     ]);
+  });
+
+  it("shows Claude Code and Codex update alerts and can check every release channel", () => {
+    const checkForUpdates = vi.fn(async () => undefined);
+    const updateRuntime = vi.fn(async () => undefined);
+    render(<SettingsModal {...modalProps({
+      initialSection: "updates",
+      developerRuntimeUpdater: {
+        status: {
+          checkedAt: Date.now(),
+          claude: { installed: true, currentVersion: "2.1.250", latestVersion: "2.1.257", updateAvailable: true, canUpdate: true, source: "Native installer", error: null },
+          codex: { installed: true, currentVersion: "0.151.0-alpha.7.2", latestVersion: "0.152.0", updateAvailable: true, canUpdate: true, source: "ChatGPT app", error: null },
+        },
+        checking: false,
+        updating: null,
+        error: null,
+        message: null,
+        checkForUpdates,
+        updateRuntime,
+      },
+    })} />);
+
+    expect(screen.getByText("Claude Code 2.1.250")).toBeInTheDocument();
+    expect(screen.getByText("Codex 0.151.0-alpha.7.2")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Update Claude Code" }));
+    expect(updateRuntime).toHaveBeenCalledWith("claude");
+    fireEvent.click(screen.getByRole("button", { name: "Check all" }));
+    expect(checkForUpdates).toHaveBeenCalledOnce();
+    expect(updater.checkForUpdates).toHaveBeenCalled();
+  });
+
+  it("does not offer to overwrite a custom developer runtime path", () => {
+    render(<SettingsModal {...modalProps({
+      initialSection: "updates",
+      developerRuntimeUpdater: {
+        ...developerRuntimeUpdater,
+        status: {
+          checkedAt: Date.now(),
+          claude: { installed: true, currentVersion: "2.1.200", latestVersion: "2.1.257", updateAvailable: true, canUpdate: false, source: "Custom path", error: null },
+          codex: { installed: true, currentVersion: "0.152.0", latestVersion: "0.152.0", updateAvailable: false, canUpdate: true, source: "Codex CLI", error: null },
+        },
+      },
+    })} />);
+
+    expect(screen.getByText("Mythra Code will not overwrite a custom executable path.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Update Claude Code" })).not.toBeInTheDocument();
   });
 
   it("keeps Interface focused on appearance and moves system controls to their own pane", () => {

@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type PointerEvent as ReactPointerEvent, type SetStateAction } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open, save } from "@tauri-apps/plugin-dialog";
@@ -7,7 +7,7 @@ import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { Archive, ArchiveRestore, Bot, Check, ChevronDown, Circle, Code2, Download, FileCode2, Folder, FolderOpen, Gauge, GitBranch, GitFork, LoaderCircle, MessageSquare, Paperclip, PanelRight, PanelLeftClose, PanelLeftOpen, Plus, Pin, PinOff, Pencil, Search, Settings, Shield, ShieldAlert, ShieldCheck, TerminalSquare, Trash2, X } from "lucide-react";
 import { getCodexRuntimeStatus, auditEvent, exportTextFile, getNormalChatWorkspace, getOpenRouterCredits, hasLmStudioKey, hasOpenRouterKey, respond, restartRuntime, rpc, runtimeInstanceId, runtimeThreadState, type CodexRuntimeStatus, type JsonObject, type OpenRouterCreditBalance } from "./lib/codex";
-import { deleteClaudeTranscript, getClaudeRateLimits, getClaudeRuntimeStatus, listClaudeModels, loadClaudeTranscript, loadClaudeTranscriptPage, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, type ClaudeModel, type ClaudeRuntimeStatus } from "./lib/claude";
+import { deleteClaudeTranscript, getClaudeRateLimits, getClaudeRuntimeStatus, listClaudeModels, loadClaudeTranscript, loadClaudeTranscriptPage, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, visibleClaudeModels, type ClaudeModel, type ClaudeRuntimeStatus } from "./lib/claude";
 import { deleteCursorTranscript, getCursorRuntimeStatus, listCursorModels, loadCursorTranscript, loadCursorTranscriptPage, respondToCursorPermission, saveCursorTranscript, startCursorLogin, type CursorModel, type CursorRuntimeStatus } from "./lib/cursor";
 import { listLocalTranscriptThreads } from "./lib/localTranscriptPersistence";
 import { loadStored, storeValue } from "./lib/storage";
@@ -755,7 +755,7 @@ export default function App() {
     // A model the Claude plan cannot run is left out entirely here: a
     // destination roster is a promise the child turn will actually start.
     ...(claudeModels.length ? {
-      claude: claudeModels.filter((entry) => !entry.disabled).map((entry) => ({
+      claude: visibleClaudeModels(claudeModels).filter((entry) => !entry.disabled).map((entry) => ({
         id: entry.id,
         label: entry.displayName,
         detail: entry.description || entry.resolvedModel,
@@ -1863,6 +1863,11 @@ export default function App() {
     }
   }, []);
 
+  const refreshClaudeCatalog = useCallback(async () => {
+    const [, models] = await Promise.all([refreshClaudeStatus(), refreshClaudeModels()]);
+    return models;
+  }, [refreshClaudeModels, refreshClaudeStatus]);
+
   const toggleModelFavorite = useCallback((provider: Provider, model: string) => {
     setModelFavorites((current) => toggleFavoriteModel(current, provider, model));
   }, [setModelFavorites]);
@@ -2504,6 +2509,13 @@ export default function App() {
       .then(setLmStudioTokenStored)
       .catch(() => setLmStudioTokenStored(false));
   }, [checkRuntime, refreshAccountData, refreshClaudeStatus, refreshCursorStatus, refreshLMStudioModels, refreshOpenRouterModels]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      if (isTauri()) void import("./lib/runtimeUpdates").then(({ ensureDeveloperRuntimeUpdates }) => ensureDeveloperRuntimeUpdates()).catch(() => undefined);
+    }, 4_000);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   useEffect(() => {
     void refreshLMStudioModels(settings.lmStudioBaseUrl);
@@ -5649,7 +5661,7 @@ export default function App() {
                         onEffort={persistComposerReasoning}
                       />
                     )}
-                    {effectiveSettings.provider === "claude" && <ClaudeModelControl model={effectiveSettings.model || DEFAULT_CLAUDE_MODEL} effort={effectiveSettings.reasoningEffort} models={claudeModels} loading={claudeModelsLoading} error={claudeModelsError} favorites={favoriteModels(modelFavorites, "claude")} onToggleFavorite={(model) => toggleModelFavorite("claude", model)} onRefresh={() => void refreshClaudeModels()} onModel={(model) => persistComposerModel(model)} onEffort={persistComposerReasoning} />}
+                    {effectiveSettings.provider === "claude" && <ClaudeModelControl model={effectiveSettings.model || DEFAULT_CLAUDE_MODEL} effort={effectiveSettings.reasoningEffort} models={claudeModels} loading={claudeModelsLoading} error={claudeModelsError} signedIn={claudeStatus?.loggedIn ?? false} favorites={favoriteModels(modelFavorites, "claude")} onToggleFavorite={(model) => toggleModelFavorite("claude", model)} onRefresh={() => void refreshClaudeCatalog()} onSignInRequired={() => openSettings("models")} onUnavailableModel={(model) => { void confirmDialog(`${model.displayName} needs a Claude Code update\n\n${model.requiredVersion ? `Claude Code ${model.requiredVersion} or newer is required. ` : ""}Open Updates to install the latest version without leaving Mythra Code.`, { confirmLabel: "Go to Updates", cancelLabel: "Not now" }).then((confirmed) => { if (confirmed) openSettings("updates"); }); }} onModel={(model) => persistComposerModel(model)} onEffort={persistComposerReasoning} />}
                     {effectiveSettings.provider === "cursor" && <CursorModelControl model={effectiveSettings.model || DEFAULT_CURSOR_MODEL} models={cursorModels} effort={effectiveSettings.reasoningEffort} loading={cursorModelsLoading} favorites={favoriteModels(modelFavorites, "cursor")} onToggleFavorite={(model) => toggleModelFavorite("cursor", model)} onRefresh={() => void refreshCursorModels()} onModel={(model) => persistComposerModel(model)} onEffort={persistComposerReasoning} />}
                     {running && activeThreadId && deferredReasoningNoticeThreads.has(activeThreadId) && (
                       <p className="composer-reasoning-notice" role="status" aria-live="polite">
@@ -5895,7 +5907,10 @@ export default function App() {
         onChatFontPreview={setPreviewChatFont}
         onSignIn={beginChatGptLogin}
         onClaudeSignIn={beginClaudeLogin}
-        onClaudeRefresh={refreshClaudeStatus}
+        onClaudeRefresh={async () => {
+          const [status] = await Promise.all([refreshClaudeStatus(), refreshClaudeModels()]);
+          return status;
+        }}
         onCursorSignIn={beginCursorLogin}
         onCursorRefresh={async () => {
           const next = await refreshCursorStatus();

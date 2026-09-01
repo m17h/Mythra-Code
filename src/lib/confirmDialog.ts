@@ -3,7 +3,14 @@ import { create } from "zustand";
 export interface ConfirmRequest {
   id: number;
   message: string;
+  confirmLabel: string;
+  cancelLabel: string;
   resolve: (confirmed: boolean) => void;
+}
+
+export interface ConfirmOptions {
+  confirmLabel?: string;
+  cancelLabel?: string;
 }
 
 let nextConfirmId = 0;
@@ -29,11 +36,17 @@ export function settleConfirm(id: number, confirmed: boolean): void {
  * Tauri (tests, plain-browser dev) the environment's native synchronous
  * confirm still works and is kept.
  */
-export function confirmDialog(message: string): Promise<boolean> {
+export function confirmDialog(message: string, options: ConfirmOptions = {}): Promise<boolean> {
   if (!("__TAURI_INTERNALS__" in window)) return Promise.resolve(window.confirm(message));
   return new Promise((resolve) => {
     useConfirmStore.setState((state) => ({
-      queue: [...state.queue, { id: ++nextConfirmId, message, resolve }],
+      queue: [...state.queue, {
+        id: ++nextConfirmId,
+        message,
+        confirmLabel: options.confirmLabel?.trim() || "Confirm",
+        cancelLabel: options.cancelLabel?.trim() || "Cancel",
+        resolve,
+      }],
     }));
   });
 }

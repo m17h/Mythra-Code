@@ -9,7 +9,7 @@ use std::{
         atomic::{AtomicBool, AtomicI64, Ordering},
         Arc, RwLock,
     },
-    time::UNIX_EPOCH,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use axum::{
@@ -25,7 +25,7 @@ use serde_json::{json, Value};
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader},
     process::{Child, ChildStdin, Command},
     sync::{oneshot, Mutex},
     time::{timeout, timeout_at, Duration, Instant},
@@ -420,6 +420,43 @@ struct CodexRuntimeStatus {
     warning: Option<String>,
 }
 
+const CLAUDE_LATEST_VERSION_URL: &str = "https://downloads.claude.ai/claude-code-releases/latest";
+const CODEX_LATEST_RELEASE_URL: &str = "https://releases.openai.com/codex/channels/latest";
+const CLAUDE_INSTALLER_URL: &str = "https://claude.ai/install.sh";
+const CLAUDE_INSTALLER_WINDOWS_URL: &str = "https://claude.ai/install.ps1";
+const CODEX_INSTALLER_URL: &str = "https://chatgpt.com/codex/install.sh";
+const CODEX_INSTALLER_WINDOWS_URL: &str = "https://chatgpt.com/codex/install.ps1";
+const RUNTIME_UPDATE_OUTPUT_BYTES: usize = 32 * 1024;
+const RUNTIME_UPDATE_TIMEOUT: Duration = Duration::from_secs(8 * 60);
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DeveloperRuntimeTargetStatus {
+    installed: bool,
+    current_version: Option<String>,
+    latest_version: Option<String>,
+    update_available: bool,
+    can_update: bool,
+    source: Option<String>,
+    error: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DeveloperRuntimeUpdateStatus {
+    checked_at: i64,
+    codex: DeveloperRuntimeTargetStatus,
+    claude: DeveloperRuntimeTargetStatus,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DeveloperRuntimeUpdateResult {
+    status: DeveloperRuntimeUpdateStatus,
+    message: String,
+    restart_required: bool,
+}
+
 impl AppServer {
     fn track_successful_request(
         &self,
@@ -435,7 +472,11 @@ impl AppServer {
             // Fork returns the new thread, but successfully forking also proves
             // the source is resident. Over-reporting costs a guarded restart;
             // under-reporting can silently ignore startup-only configuration.
-            loaded.extend(successfully_loaded_thread_ids(method, source_thread_id, result));
+            loaded.extend(successfully_loaded_thread_ids(
+                method,
+                source_thread_id,
+                result,
+            ));
         }
         if method == "thread/delete" {
             if let Some(thread_id) = source_thread_id {
@@ -1228,6 +1269,22 @@ async fn resolve_codex_runtime(
         return Ok(resolved);
     }
 
+    // Prefer the official standalone installer location. This lets the
+    // Updates pane move a machine away from a stale npm shim or an embedded
+    // ChatGPT copy without relying on the sparse PATH of a GUI launch.
+    if let Ok(home) = app.path().home_dir() {
+        #[cfg(windows)]
+        if let Some(local_app_data) = env::var_os("LOCALAPPDATA").map(PathBuf::from) {
+            push_candidate(
+                &mut candidates,
+                local_app_data.join("Programs/OpenAI/Codex/bin/codex.exe"),
+            );
+        }
+        for relative in [".local/bin/codex", ".local/bin/codex.exe"] {
+            push_candidate(&mut candidates, home.join(relative));
+        }
+    }
+
     #[cfg(windows)]
     push_windows_npm_codex_candidates(&mut candidates);
 
@@ -1267,8 +1324,6 @@ async fn resolve_codex_runtime(
             home.join("Applications/ChatGPT.app/Contents/Resources/codex"),
         );
         for relative in [
-            ".local/bin/codex",
-            ".local/bin/codex.exe",
             ".cargo/bin/codex",
             ".cargo/bin/codex.exe",
             ".npm-global/bin/codex",
@@ -1412,6 +1467,349 @@ async fn codex_runtime_status(
     Ok(read_codex_runtime_status(&app, &state).await)
 }
 
+fn parsed_runtime_version(value: &str) -> Option<semver::Version> {
+    value
+        .split(|character: char| {
+            !character.is_ascii_alphanumeric()
+                && character != '.'
+                && character != '-'
+                && character != '+'
+        })
+        .filter(|part| !part.is_empty())
+        .find_map(|part| {
+            part.char_indices()
+                .filter(|(_, character)| character.is_ascii_digit())
+                .find_map(|(index, _)| semver::Version::parse(&part[index..]).ok())
+        })
+}
+
+fn normalized_runtime_version(value: &str) -> Option<String> {
+    parsed_runtime_version(value).map(|version| version.to_string())
+}
+
+fn runtime_update_available(current: Option<&str>, latest: Option<&str>) -> bool {
+    let Some(current) = current.and_then(parsed_runtime_version) else {
+        return false;
+    };
+    let Some(latest) = latest.and_then(parsed_runtime_version) else {
+        return false;
+    };
+    current < latest
+}
+
+fn claude_runtime_source(path: &Path) -> String {
+    if env::var_os("MYTHRA_CODE_CLAUDE_PATH")
+        .or_else(|| env::var_os(concat!("OPEN", "KIWI_CLAUDE_PATH")))
+        .is_some_and(|configured| Path::new(&configured) == path)
+    {
+        return "Custom path".into();
+    }
+    let display = path.to_string_lossy().to_lowercase();
+    if display.contains(".local/share/claude") || display.contains(".local/bin/claude") {
+        "Native installer".into()
+    } else if display.contains("homebrew") || display.starts_with("/opt/homebrew/") {
+        "Homebrew".into()
+    } else if display.contains("node_modules") || display.contains("\\npm\\") {
+        "npm".into()
+    } else if display.contains("windowsapps") {
+        "WinGet".into()
+    } else {
+        "Claude Code".into()
+    }
+}
+
+async fn fetch_runtime_text(url: &'static str) -> Result<String, String> {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|error| format!("Could not create the runtime update client: {error}"))?
+        .get(url)
+        .send()
+        .await
+        .map_err(|error| format!("Could not reach the runtime release service: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("The runtime release service returned an error: {error}"))?
+        .text()
+        .await
+        .map(|text| text.trim().to_string())
+        .map_err(|error| format!("Could not read the runtime release response: {error}"))
+}
+
+async fn latest_claude_version() -> Result<String, String> {
+    let response = fetch_runtime_text(CLAUDE_LATEST_VERSION_URL).await?;
+    normalized_runtime_version(&response)
+        .ok_or_else(|| "Claude's release service returned an invalid version".to_string())
+}
+
+async fn latest_codex_version() -> Result<String, String> {
+    let response = fetch_runtime_text(CODEX_LATEST_RELEASE_URL).await?;
+    let payload: Value = serde_json::from_str(&response)
+        .map_err(|error| format!("Could not parse the Codex release response: {error}"))?;
+    payload
+        .get("tag_name")
+        .and_then(Value::as_str)
+        .and_then(normalized_runtime_version)
+        .ok_or_else(|| "Codex's release service returned an invalid version".to_string())
+}
+
+async fn collect_bounded_output<R: AsyncRead + Unpin>(reader: R) -> String {
+    let mut lines = BufReader::new(reader).lines();
+    let mut output = TailBuffer::new(RUNTIME_UPDATE_OUTPUT_BYTES);
+    while let Ok(Some(line)) = lines.next_line().await {
+        let line = line.trim();
+        if !line.is_empty() {
+            output.push_line(line);
+        }
+    }
+    output.contents().to_string()
+}
+
+async fn run_runtime_update_command(
+    mut command: Command,
+    stdin_payload: Option<&[u8]>,
+) -> Result<String, String> {
+    command
+        .stdin(if stdin_payload.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("Could not start the runtime updater: {error}"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "The runtime updater did not provide stdout".to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "The runtime updater did not provide stderr".to_string())?;
+    let stdout_task = tauri::async_runtime::spawn(collect_bounded_output(stdout));
+    let stderr_task = tauri::async_runtime::spawn(collect_bounded_output(stderr));
+    if let Some(payload) = stdin_payload {
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| "The runtime updater did not accept its installer".to_string())?;
+        stdin.write_all(payload).await.map_err(|error| {
+            format!("Could not send the verified installer to the updater: {error}")
+        })?;
+        let _ = stdin.shutdown().await;
+    }
+    let status = match timeout(RUNTIME_UPDATE_TIMEOUT, child.wait()).await {
+        Ok(result) => {
+            result.map_err(|error| format!("Could not wait for the runtime updater: {error}"))?
+        }
+        Err(_) => {
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            return Err("The runtime update timed out".into());
+        }
+    };
+    let stdout = stdout_task.await.unwrap_or_default();
+    let stderr = stderr_task.await.unwrap_or_default();
+    let detail = [stdout.trim(), stderr.trim()]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    if status.success() {
+        Ok(if detail.is_empty() {
+            "Runtime update completed.".into()
+        } else {
+            detail
+        })
+    } else {
+        Err(if detail.is_empty() {
+            format!("The runtime updater exited with {status}")
+        } else {
+            detail
+        })
+    }
+}
+
+async fn run_official_installer(
+    unix_url: &'static str,
+    windows_url: &'static str,
+    codex: bool,
+) -> Result<String, String> {
+    #[cfg(windows)]
+    let (script, mut command) = {
+        let _ = unix_url;
+        let script = fetch_runtime_text(windows_url).await?;
+        let mut command = background_command("powershell.exe");
+        command.args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            "-",
+        ]);
+        (script, command)
+    };
+    #[cfg(not(windows))]
+    let (script, mut command) = {
+        let _ = windows_url;
+        let script = fetch_runtime_text(unix_url).await?;
+        let mut command = background_command("/bin/sh");
+        command.args(["-s", "--"]);
+        (script, command)
+    };
+    if codex {
+        command.env("CODEX_NON_INTERACTIVE", "true");
+    }
+    run_runtime_update_command(command, Some(script.as_bytes())).await
+}
+
+async fn read_developer_runtime_updates(
+    app: &AppHandle,
+    state: &RuntimeState,
+) -> DeveloperRuntimeUpdateStatus {
+    let (codex_runtime, claude_path, codex_latest, claude_latest) = tokio::join!(
+        resolve_codex_runtime(app, state),
+        resolve_claude_binary(app),
+        latest_codex_version(),
+        latest_claude_version(),
+    );
+    let (codex_installed, codex_current, codex_source) = match codex_runtime {
+        Ok(runtime) => (
+            true,
+            normalized_runtime_version(&runtime.version),
+            Some(runtime_source(&runtime.path).to_string()),
+        ),
+        Err(_) => (false, None, None),
+    };
+    let (claude_installed, claude_current, claude_source) = match claude_path {
+        Ok(path) => (
+            true,
+            runtime_version(&path)
+                .await
+                .and_then(|version| normalized_runtime_version(&version)),
+            Some(claude_runtime_source(&path)),
+        ),
+        Err(_) => (false, None, None),
+    };
+    let codex_latest_version = codex_latest.as_ref().ok().cloned();
+    let claude_latest_version = claude_latest.as_ref().ok().cloned();
+    DeveloperRuntimeUpdateStatus {
+        checked_at: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64,
+        codex: DeveloperRuntimeTargetStatus {
+            installed: codex_installed,
+            update_available: runtime_update_available(
+                codex_current.as_deref(),
+                codex_latest_version.as_deref(),
+            ),
+            can_update: codex_source.as_deref() != Some("Custom path"),
+            current_version: codex_current,
+            latest_version: codex_latest_version,
+            source: codex_source,
+            error: codex_latest.err(),
+        },
+        claude: DeveloperRuntimeTargetStatus {
+            installed: claude_installed,
+            update_available: runtime_update_available(
+                claude_current.as_deref(),
+                claude_latest_version.as_deref(),
+            ),
+            can_update: claude_source.as_deref() != Some("Custom path"),
+            current_version: claude_current,
+            latest_version: claude_latest_version,
+            source: claude_source,
+            error: claude_latest.err(),
+        },
+    }
+}
+
+#[tauri::command]
+async fn developer_runtime_updates(
+    app: AppHandle,
+    state: State<'_, RuntimeState>,
+) -> Result<DeveloperRuntimeUpdateStatus, String> {
+    Ok(read_developer_runtime_updates(&app, &state).await)
+}
+
+#[tauri::command]
+async fn developer_runtime_update(
+    target: String,
+    app: AppHandle,
+    runtime_state: State<'_, RuntimeState>,
+    claude_state: State<'_, ClaudeState>,
+) -> Result<DeveloperRuntimeUpdateResult, String> {
+    let (message, restart_required) = match target.as_str() {
+        "claude" => {
+            if !claude_state.turns.lock().await.is_empty() {
+                return Err("Stop active Claude tasks before updating Claude Code.".into());
+            }
+            if env::var_os("MYTHRA_CODE_CLAUDE_PATH")
+                .or_else(|| env::var_os(concat!("OPEN", "KIWI_CLAUDE_PATH")))
+                .is_some()
+            {
+                return Err("Mythra Code will not overwrite a custom Claude Code path. Update that executable yourself or remove MYTHRA_CODE_CLAUDE_PATH.".into());
+            }
+            let message = match resolve_claude_binary(&app).await {
+                Ok(path) => {
+                    // Package-manager installs cannot update themselves
+                    // reliably (`claude update` explicitly excludes Homebrew
+                    // and WinGet). Install the official native distribution in
+                    // that case; resolve_claude_binary prefers it on the next
+                    // probe without mutating the package-manager installation.
+                    let source = claude_runtime_source(&path);
+                    if matches!(source.as_str(), "Homebrew" | "npm" | "WinGet") {
+                        run_official_installer(
+                            CLAUDE_INSTALLER_URL,
+                            CLAUDE_INSTALLER_WINDOWS_URL,
+                            false,
+                        )
+                        .await?
+                    } else {
+                        let mut command = background_command(path);
+                        command.arg("update");
+                        run_runtime_update_command(command, None).await?
+                    }
+                }
+                Err(_) => {
+                    run_official_installer(
+                        CLAUDE_INSTALLER_URL,
+                        CLAUDE_INSTALLER_WINDOWS_URL,
+                        false,
+                    )
+                    .await?
+                }
+            };
+            (message, false)
+        }
+        "codex" => {
+            if env::var_os("MYTHRA_CODE_CODEX_PATH")
+                .or_else(|| env::var_os(concat!("OPEN", "KIWI_CODEX_PATH")))
+                .is_some()
+            {
+                return Err("Mythra Code will not overwrite a custom Codex path. Update that executable yourself or remove MYTHRA_CODE_CODEX_PATH.".into());
+            }
+            let message =
+                run_official_installer(CODEX_INSTALLER_URL, CODEX_INSTALLER_WINDOWS_URL, true)
+                    .await?;
+            *runtime_state.codex_runtime.lock().await = None;
+            (message, true)
+        }
+        _ => return Err("Unknown developer runtime update target".into()),
+    };
+    let status = read_developer_runtime_updates(&app, &runtime_state).await;
+    Ok(DeveloperRuntimeUpdateResult {
+        status,
+        message,
+        restart_required,
+    })
+}
+
 async fn resolve_claude_binary(app: &AppHandle) -> Result<PathBuf, String> {
     let executable_name = if cfg!(windows) {
         "claude.exe"
@@ -1429,6 +1827,13 @@ async fn resolve_claude_binary(app: &AppHandle) -> Result<PathBuf, String> {
     }
 
     let mut candidates = Vec::new();
+    // The native installer is Claude Code's recommended and auto-updating
+    // location. Probe it before package-manager shims and GUI-style PATH.
+    if let Ok(home) = app.path().home_dir() {
+        for relative in [".local/bin/claude", ".local/bin/claude.exe"] {
+            push_candidate(&mut candidates, home.join(relative));
+        }
+    }
     #[cfg(windows)]
     push_windows_npm_claude_candidates(&mut candidates);
     if let Some(candidate) = find_on_path(executable_name).await {
@@ -1441,8 +1846,6 @@ async fn resolve_claude_binary(app: &AppHandle) -> Result<PathBuf, String> {
     }
     if let Ok(home) = app.path().home_dir() {
         for relative in [
-            ".local/bin/claude",
-            ".local/bin/claude.exe",
             ".npm-global/bin/claude",
             ".bun/bin/claude",
             ".volta/bin/claude",
@@ -4218,6 +4621,8 @@ pub fn run() {
         .manage(ChildAgentState::default())
         .invoke_handler(tauri::generate_handler![
             codex_runtime_status,
+            developer_runtime_updates,
+            developer_runtime_update,
             claude_runtime_status,
             claude_models,
             claude_usage,
