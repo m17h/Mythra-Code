@@ -86,20 +86,27 @@ describe("model control browser layout", () => {
     });
   });
 
-  it.each([700, 650])("keeps the widened OpenAI catalog inside a %spx chat column", (chatWidth) => {
+  // The provider column is fractional, so the trigger's own left offset grows
+  // with the chat column. Widths are swept across the whole 680–900px band
+  // rather than sampled at its narrow end, where a fixed reserve happens to be
+  // generous enough.
+  it.each([900, 860, 815, 790, 760, 730, 700, 650])("keeps the widened OpenAI catalog inside a %spx chat column", (chatWidth) => {
     const view = render(
-      <div className="app-shell" data-theme="kiwi" data-color-scheme="dark" style={{ display: "block", width: 900 }}>
+      <div className="app-shell" data-theme="kiwi" data-color-scheme="dark" style={{ display: "block", width: 1200 }}>
         <main className="main-panel" style={{ width: chatWidth, flex: "none" }}>
-          <ModelPowerControl
-            providerControl={<ThreadProviderControl provider="openai" defaultProvider="openai" threadStarted={false} onProvider={vi.fn()} onDefaultSettings={vi.fn()} />}
-            model="gpt-5.6-sol"
-            effort="high"
-            fast={false}
-            runtimeModels={[]}
-            onModel={vi.fn()}
-            onEffort={vi.fn()}
-            onFast={vi.fn()}
-          />
+          {/* Production padding: the composer inset is what the menu overruns. */}
+          <div className="composer-zone">
+            <ModelPowerControl
+              providerControl={<ThreadProviderControl provider="openai" defaultProvider="openai" threadStarted={false} onProvider={vi.fn()} onDefaultSettings={vi.fn()} />}
+              model="gpt-5.6-sol"
+              effort="high"
+              fast={false}
+              runtimeModels={[]}
+              onModel={vi.fn()}
+              onEffort={vi.fn()}
+              onFast={vi.fn()}
+            />
+          </div>
         </main>
       </div>,
     );
@@ -107,9 +114,14 @@ describe("model control browser layout", () => {
     const trigger = view.getByRole("button", { name: /^OpenAI model:/ });
     fireEvent.click(trigger);
     const control = view.container.querySelector<HTMLElement>(".model-power-control")!;
+    const panel = view.container.querySelector<HTMLElement>(".main-panel")!;
     const menu = view.container.querySelector<HTMLElement>(".model-menu")!;
     const controlRect = control.getBoundingClientRect();
+    const panelRect = panel.getBoundingClientRect();
     const menuRect = menu.getBoundingClientRect();
+
+    expect(menuRect.left).toBeGreaterThanOrEqual(panelRect.left - 1);
+    expect(menuRect.right).toBeLessThanOrEqual(panelRect.right + 1);
 
     expect(menu.offsetWidth).toBeGreaterThan(trigger.getBoundingClientRect().width * 1.5);
     expect(menuRect.left).toBeGreaterThanOrEqual(controlRect.left - 1);
