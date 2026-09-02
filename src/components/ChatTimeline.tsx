@@ -312,18 +312,29 @@ const MessageMarkdown = memo(function MessageMarkdown({ text, rootRef }: { text:
  * newest completed render instead of falling back to plain text until the
  * whole response finishes.
  */
-function StreamingMessageMarkdown({ text }: { text: string }) {
+function AssistantMessageMarkdown({ text, streaming }: { text: string; streaming: boolean }) {
   const deferredText = useDeferredValue(text);
+  const shownText = streaming ? deferredText : text;
   const rootRef = useRef<HTMLDivElement>(null);
   const fadeRef = useRef<StreamingTextFade | null>(null);
-  useLayoutEffect(() => {
-    if (!rootRef.current) return;
-    const fade = createStreamingTextFade(rootRef.current);
-    fadeRef.current = fade;
-    return () => { fade.dispose(); fadeRef.current = null; };
+  const wasStreaming = useRef(false);
+  useLayoutEffect(() => () => {
+    fadeRef.current?.dispose();
+    fadeRef.current = null;
+    wasStreaming.current = false;
   }, []);
-  useLayoutEffect(() => { fadeRef.current?.update(deferredText); }, [deferredText]);
-  return <MessageMarkdown text={deferredText} rootRef={rootRef} />;
+  useLayoutEffect(() => {
+    if (streaming && !wasStreaming.current && rootRef.current) {
+      fadeRef.current?.dispose();
+      fadeRef.current = createStreamingTextFade(rootRef.current);
+    }
+    wasStreaming.current = streaming;
+    fadeRef.current?.update(shownText);
+    if (!streaming) fadeRef.current?.finish();
+  }, [shownText, streaming]);
+  // Keep the Markdown DOM alive at completion so the last text can settle.
+  // History mounts never create a controller; final text is not deferred.
+  return <MessageMarkdown text={shownText} rootRef={rootRef} />;
 }
 
 function imagePreviewUrl(path: string): string {
@@ -410,8 +421,8 @@ const MessageRow = memo(function MessageRow({ message, provider, onEdit }: { mes
             )}
           </div>
         )}
-        {message.streaming
-          ? <StreamingMessageMarkdown text={message.text} />
+        {message.role === "assistant"
+          ? <AssistantMessageMarkdown text={message.text} streaming={Boolean(message.streaming)} />
           : <MessageMarkdown text={message.text} />}
         {message.role === "user" && Boolean(message.attachments?.length) && (
           <div className="message-image-previews" aria-label="Attached images">
