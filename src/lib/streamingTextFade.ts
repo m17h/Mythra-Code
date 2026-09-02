@@ -6,9 +6,9 @@ export interface StreamingTextFade {
 }
 
 const NO_FADE: StreamingTextFade = { update() {}, finish() {}, dispose() {} };
-const DURATION = 420;
-const BUCKET_MS = 60;
-const START_OPACITY = 8;
+const DURATION = 140;
+const BUCKET_MS = 20;
+const START_OPACITY = 30;
 const MAX_COHORTS = 24;
 const MAX_RANGES = 64;
 const MAX_STYLE_READS = 64;
@@ -127,7 +127,7 @@ function createSupportedFade(root: HTMLElement): StreamingTextFade {
       if (elapsed >= 1) remove(cohort);
       // Highlight inheritance is separate from element inheritance. currentColor
       // here compounds alpha through ancestors and can also lose the text hue.
-      else rules[cohort.slot].style.color = `color-mix(in srgb, ${cohort.color} ${START_OPACITY + (100 - START_OPACITY) * elapsed * elapsed * (3 - 2 * elapsed)}%, transparent)`;
+      else rules[cohort.slot].style.color = `color-mix(in srgb, ${cohort.color} ${START_OPACITY + (100 - START_OPACITY) * (1 - (1 - elapsed) ** 3)}%, transparent)`;
     }
     cohorts = cohorts.filter((cohort) => now - cohort.born < DURATION);
   };
@@ -168,8 +168,23 @@ function createSupportedFade(root: HTMLElement): StreamingTextFade {
         if (!current) { reset(); return; }
         const prior = previous;
         previous = { source, text: current.text };
-        if (!prior || !source.startsWith(prior.source) || !current.text.startsWith(prior.text)
+        if (!prior || !source.startsWith(prior.source)
           || current.text.length - prior.text.length > 2048) { clear(); return; }
+
+        const renderedAppend = current.text.startsWith(prior.text);
+        if (!renderedAppend) {
+          // Closing Markdown syntax can rewrite just the tail. Keep fading the
+          // unchanged prefix rather than flashing every in-flight word bright.
+          let shared = 0;
+          while (shared < prior.text.length && shared < current.text.length && prior.text[shared] === current.text[shared]) shared++;
+          cohorts = cohorts.filter((cohort) => {
+            cohort.end = Math.min(cohort.end, shared);
+            cohort.sealed = true;
+            if (cohort.start < cohort.end) return true;
+            remove(cohort);
+            return false;
+          });
+        }
 
         const now = view.performance.now();
         paint(now);
@@ -190,7 +205,7 @@ function createSupportedFade(root: HTMLElement): StreamingTextFade {
           if (cohorts.some((cohort) => part.start < cohort.end && part.end > cohort.start)
             && colorOf(part.node) === null) break;
         }
-        if (current.text.length > prior.text.length) {
+        if (renderedAppend && current.text.length > prior.text.length) {
           ensureRules();
           const newColors = new Set<string>();
           for (const part of current.parts) {
@@ -273,7 +288,6 @@ function createSupportedFade(root: HTMLElement): StreamingTextFade {
         });
         paint(now);
         if (cohorts.length && frame === null) frame = view.requestAnimationFrame(tick);
-        else if (!cohorts.length && finishing) dispose();
       } catch { dispose(); }
     },
   };
