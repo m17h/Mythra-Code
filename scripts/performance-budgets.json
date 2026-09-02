@@ -75,19 +75,25 @@
       "decision": "Accept 77 Safari / 49 Chrome startup and total JavaScript bytes to expose a persisted update-required model's current state to assistive technology and consistently preserve friendly fallback-model metadata. App-entry and CSS sizes remain unchanged.",
       "safari13": { "appEntryFromBytes": 342901, "appEntryToBytes": 342901, "appEntryDeltaBytes": 0, "startupJsFromBytes": 692617, "startupJsToBytes": 692694, "startupJsDeltaBytes": 77, "startupCssFromBytes": 339388, "startupCssToBytes": 339388, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1426831, "totalJsToBytes": 1426908, "totalJsDeltaBytes": 77 },
       "chrome105": { "appEntryFromBytes": 325401, "appEntryToBytes": 325401, "appEntryDeltaBytes": 0, "startupJsFromBytes": 668422, "startupJsToBytes": 668471, "startupJsDeltaBytes": 49, "startupCssFromBytes": 337236, "startupCssToBytes": 337236, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1393066, "totalJsToBytes": 1393115, "totalJsDeltaBytes": 49 }
+    },
+    {
+      "change": "Keep the Claude catalog label clear of its refresh control",
+      "decision": "Accept 205 startup CSS bytes on both targets for a fixed refresh-button column, a 10-pixel safety gap, and deterministic single-line truncation at narrow widths. App-entry and JavaScript sizes are unchanged.",
+      "safari13": { "appEntryFromBytes": 342901, "appEntryToBytes": 342901, "appEntryDeltaBytes": 0, "startupJsFromBytes": 692694, "startupJsToBytes": 692694, "startupJsDeltaBytes": 0, "startupCssFromBytes": 339388, "startupCssToBytes": 339593, "startupCssDeltaBytes": 205, "totalJsFromBytes": 1426908, "totalJsToBytes": 1426908, "totalJsDeltaBytes": 0 },
+      "chrome105": { "appEntryFromBytes": 325401, "appEntryToBytes": 325401, "appEntryDeltaBytes": 0, "startupJsFromBytes": 668471, "startupJsToBytes": 668471, "startupJsDeltaBytes": 0, "startupCssFromBytes": 337236, "startupCssToBytes": 337441, "startupCssDeltaBytes": 205, "totalJsFromBytes": 1393115, "totalJsToBytes": 1393115, "totalJsDeltaBytes": 0 }
     }
   ],
   "profiles": {
     "safari13-minified": {
       "appEntryRawBytes": 342901,
       "startupJsRawBytes": 692694,
-      "startupCssRawBytes": 339388,
+      "startupCssRawBytes": 339593,
       "totalJsRawBytes": 1426908
     },
     "chrome105-minified": {
       "appEntryRawBytes": 325401,
       "startupJsRawBytes": 668471,
-      "startupCssRawBytes": 337236,
+      "startupCssRawBytes": 337441,
       "totalJsRawBytes": 1393115
     }
   }
