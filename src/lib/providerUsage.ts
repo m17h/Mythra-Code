@@ -24,17 +24,34 @@ export interface ProviderHeaderUsageView {
   needsConnection?: boolean;
 }
 
+export type HeaderUsageWindows = Partial<Record<"openai" | "claude", string>>;
+
+/** Keep independent provider choices; missing/obsolete windows fall back at render time. */
+export function sanitizeHeaderUsageWindows(value: unknown): HeaderUsageWindows {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const result: HeaderUsageWindows = {};
+  for (const provider of ["openai", "claude"] as const) {
+    const label = (value as Record<string, unknown>)[provider];
+    if (typeof label === "string" && label.trim() && label.length <= 120) result[provider] = label.trim();
+  }
+  return result;
+}
+
+export function selectedUsageWindow(windows: AccountUsageWindowView[], label?: string): AccountUsageWindowView | undefined {
+  return windows.find((window) => window.label === label) ?? windows[0];
+}
+
 export function formatCreditAmount(value: number): string {
   if (!Number.isFinite(value) || value <= 0) return "$0";
   return value >= 0.01 ? `$${value.toFixed(2)}` : `$${value.toFixed(4)}`;
 }
 
-/** Compact quota copy for the persistent chat header. Detailed reset times
- * remain in the Usage panel and in this chip's tooltip. */
+/** One quota in the persistent header; the popover and Usage panel show the rest. */
 export function providerHeaderUsage(
   provider: Provider,
   accountUsage: AccountUsageView,
   options: {
+    selectedWindow?: string;
     openRouterReady?: boolean;
     openRouterCredits?: OpenRouterCreditBalance | null;
     openRouterCreditsRead?: boolean;
@@ -88,7 +105,10 @@ export function providerHeaderUsage(
     return { text: "Usage unavailable", title: `${accountUsage.label} · ${accountUsage.summary}` };
   }
   return {
-    text: windows.map((window) => `${window.label} ${window.percentLabel}`).join(" · "),
+    text: (() => {
+      const window = selectedUsageWindow(windows, options.selectedWindow)!;
+      return `${window.label} ${window.percentLabel}`;
+    })(),
     title: `${accountUsage.label} · ${accountUsage.summary}`,
   };
 }
@@ -201,10 +221,15 @@ function accountUsageWindows(
   mode: UsageDisplayMode,
   now: number,
 ): AccountUsageWindowView[] {
+  const usedLabels = new Set<string>();
   return limits.windows.map((window, index) => {
+    const base = window.label || (limits.windows.length === 1 ? "Current window" : `Window ${index + 1}`);
+    let label = base;
+    for (let suffix = 2; usedLabels.has(label); suffix++) label = `${base} (${suffix})`;
+    usedLabels.add(label);
     const reset = formatResetTime(window.resetsAt, now) || window.resetLabel || "";
     return {
-      label: window.label || (limits.windows.length === 1 ? "Current window" : `Window ${index + 1}`),
+      label,
       percent: displayedPercent(window.usedPercent, mode),
       percentLabel: usagePercentLabel(window.usedPercent, mode),
       resetLabel: compactResetLabel(reset),

@@ -1353,7 +1353,6 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .github-account-panel > div { flex: 1; min-width: 0; }
 .github-account-panel > img, .github-avatar-placeholder { width: 34px; height: 34px; flex: 0 0 auto; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 50%; background: var(--field); object-fit: cover; }
 .settings-external-action { margin-top: var(--s-2); }
-.github-clone-grid { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(140px, .8fr); gap: var(--s-3); margin-bottom: var(--s-3); }
 .usage-settings-hero { display: flex; flex-direction: column; gap: 4px; margin-bottom: var(--s-3); padding: var(--s-5); border: 1px solid color-mix(in srgb, var(--green) 24%, var(--line)); border-radius: var(--r-md); background: linear-gradient(145deg, color-mix(in srgb, var(--green) 8%, transparent), transparent); }
 .usage-settings-hero span { color: var(--muted); font-size: var(--fs-meta); }
 .usage-settings-hero strong { font-size: 32px; letter-spacing: var(--track-display); }
@@ -1772,7 +1771,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 @container chat-main (max-width: 720px) {
   .project-heading { max-width: 136px; }
   .project-heading small { display: none; }
-  .runtime-status, .topbar-usage-chip, .command-palette-trigger, .topbar-export-button { display: none; }
+  .runtime-status, .command-palette-trigger, .topbar-export-button { display: none; }
   .project-prompt-trigger { width: var(--ctl-md); justify-content: center; padding: 0; }
   .project-prompt-trigger small, .project-prompt-trigger > svg:last-child { display: none; }
   .workspace-tools-trigger { width: var(--ctl-md); justify-content: center; padding: 0; }
@@ -1782,6 +1781,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 
 @container chat-main (max-width: 520px) {
   .topbar { padding-inline: var(--s-2); }
+  .topbar-usage-chip > span { display: none; }
   .project-heading { max-width: 104px; }
   .sa-preset-row { grid-template-columns: 1fr; }
   .sa-manage-presets { justify-self: start; }

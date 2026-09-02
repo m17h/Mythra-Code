@@ -3,6 +3,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS } from "../lib/appConfig";
 import type { AppUpdater } from "../lib/appUpdater";
 import { SettingsModal } from "./SettingsModal";
+import { open as openFolderDialog } from "@tauri-apps/plugin-dialog";
+
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(), save: vi.fn() }));
 
 const updater: AppUpdater = {
   phase: "idle",
@@ -603,6 +606,58 @@ describe("SettingsModal", () => {
     expect(screen.getByText("@morgan")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Clone a repository" })).toBeInTheDocument();
     expect(onGitHubRefresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("selects a parent with the native chooser, previews the repository subfolder, and keeps the parent after success", async () => {
+    vi.mocked(openFolderDialog).mockResolvedValueOnce("C:\\Projects").mockResolvedValueOnce(null);
+    const onClone = vi.fn(async () => true);
+    render(<SettingsModal {...modalProps({ initialSection: "github", githubStatus: { available: true, authenticated: true }, onGitHubClone: onClone })} />);
+    expect(screen.queryByRole("textbox", { name: "Local folder name" })).not.toBeInTheDocument();
+    expect(screen.getByText(/Choose the parent folder, not the repository folder itself/)).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("textbox", { name: "Repository URL" }), { target: { value: "https://github.com/owner/my-repo.git" } });
+    expect(screen.getByRole("button", { name: "Clone repository" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Choose parent folder…" }));
+    expect(await screen.findByText("C:\\Projects\\my-repo")).toBeInTheDocument();
+    expect(openFolderDialog).toHaveBeenCalledWith(expect.objectContaining({ directory: true, multiple: false, title: expect.stringMatching(/Choose parent folder/) }));
+    fireEvent.click(screen.getByRole("button", { name: "Change parent folder…" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Clone repository" })).toBeEnabled());
+    expect(screen.getByText("C:\\Projects\\my-repo")).toBeInTheDocument();
+    expect(openFolderDialog).toHaveBeenLastCalledWith(expect.objectContaining({ defaultPath: "C:\\Projects" }));
+    fireEvent.click(screen.getByRole("button", { name: "Clone repository" }));
+    await waitFor(() => expect(onClone).toHaveBeenCalledWith("https://github.com/owner/my-repo.git", "C:\\Projects"));
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Repository URL" })).toHaveValue(""));
+    expect(screen.getByText("C:\\Projects")).toBeInTheDocument();
+  });
+
+  it("shows chooser and clone errors inline and retains retry inputs", async () => {
+    vi.mocked(openFolderDialog).mockRejectedValueOnce(new Error("Folder picker unavailable")).mockResolvedValueOnce("/projects");
+    const onClone = vi.fn(async () => { throw new Error("Repository folder already exists. Nothing was overwritten."); });
+    render(<SettingsModal {...modalProps({ initialSection: "github", githubStatus: { available: true, authenticated: true }, onGitHubClone: onClone })} />);
+    fireEvent.change(screen.getByRole("textbox", { name: "Repository URL" }), { target: { value: "https://github.com/owner/repo" } });
+    fireEvent.click(screen.getByRole("button", { name: "Choose parent folder…" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Folder picker unavailable");
+    fireEvent.click(screen.getByRole("button", { name: "Choose parent folder…" }));
+    await screen.findByText("/projects/repo");
+    fireEvent.click(screen.getByRole("button", { name: "Clone repository" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Nothing was overwritten");
+    expect(screen.getByRole("textbox", { name: "Repository URL" })).toHaveValue("https://github.com/owner/repo");
+    expect(screen.getByText("/projects/repo")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Clone repository" })).toHaveAccessibleDescription("Clone into /projects/repo");
+    fireEvent.change(screen.getByRole("textbox", { name: "Repository URL" }), { target: { value: "https://github.com/owner/other" } });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("does not open a second native folder chooser while the first is pending", async () => {
+    let resolve!: (value: null) => void;
+    vi.mocked(openFolderDialog).mockClear().mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
+    render(<SettingsModal {...modalProps({ initialSection: "github", githubStatus: { available: true, authenticated: true } })} />);
+    const button = screen.getByRole("button", { name: "Choose parent folder…" });
+    fireEvent.click(button);
+    fireEvent.click(button);
+    expect(openFolderDialog).toHaveBeenCalledOnce();
+    expect(button).toBeDisabled();
+    resolve(null);
+    await waitFor(() => expect(button).toBeEnabled());
   });
 
   it("shows LM Studio connection status and refreshes its local catalog", () => {

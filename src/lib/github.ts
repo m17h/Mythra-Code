@@ -1,6 +1,28 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { PermissionMode } from "../types";
 
+export interface GitHubCloneTarget {
+  name: string;
+  url: string;
+}
+
+/** Derive a cross-platform folder name and canonical GitHub URL, never a path from URL text. */
+export function parseGitHubCloneTarget(input: string): GitHubCloneTarget | null {
+  const value = input.trim().split(/[?#]/, 1)[0];
+  const prefixes = ["https://github.com/", "http://github.com/", "git@github.com:", "ssh://git@github.com/"];
+  const prefix = prefixes.find((item) => value.startsWith(item));
+  if (!prefix) return null;
+  const parts = value.slice(prefix.length).replace(/\/+$/, "").split("/");
+  if (parts.length !== 2) return null;
+  const [owner, repository] = parts;
+  const name = repository.endsWith(".git") ? repository.slice(0, -4) : repository;
+  if (!/^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/.test(owner) || !/^[A-Za-z0-9._-]{1,100}$/.test(name)) return null;
+  // Windows trims trailing dots and treats device names (even with extensions) as special files.
+  if (name === "." || name === ".." || name.endsWith(".") || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i.test(name)) return null;
+  const ssh = prefix.startsWith("git@") || prefix.startsWith("ssh:");
+  return { name, url: ssh ? `git@github.com:${owner}/${name}.git` : `https://github.com/${owner}/${name}.git` };
+}
+
 export type GitWorkspaceAction =
   | "status"
   | "diff"

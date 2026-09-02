@@ -111,20 +111,26 @@
       "decision": "Accept 62 Safari / 69 Chrome startup and total JavaScript bytes for immutable-path click dismissal and arrow-key mutual exclusion. This keeps self-replacing menu actions open without weakening outside keyboard dismissal, and fixes intermediate-width overflow with no CSS-size increase. No idle listeners, network, persistence, thread-loading, or transcript-memory work is added.",
       "safari13": { "appEntryFromBytes": 344525, "appEntryToBytes": 344633, "appEntryDeltaBytes": 108, "startupJsFromBytes": 695148, "startupJsToBytes": 695210, "startupJsDeltaBytes": 62, "startupCssFromBytes": 339897, "startupCssToBytes": 339897, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1430484, "totalJsToBytes": 1430546, "totalJsDeltaBytes": 62 },
       "chrome105": { "appEntryFromBytes": 327057, "appEntryToBytes": 327145, "appEntryDeltaBytes": 88, "startupJsFromBytes": 670916, "startupJsToBytes": 670985, "startupJsDeltaBytes": 69, "startupCssFromBytes": 337774, "startupCssToBytes": 337774, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1396641, "totalJsToBytes": 1396710, "totalJsDeltaBytes": 69 }
+    },
+    {
+      "change": "Add native clone-parent selection and interactive subscription quota details",
+      "decision": "Accept about 0.87% more startup JavaScript, 0.70% more startup CSS, and 0.54% more total JavaScript for an accessible, selectable Codex/Claude usage popover and safe native clone-parent selection with exact destination previews. This is measured feature overhead, not a speed improvement. Clone presentation stays in the lazy Settings boundary; the popover reuses existing usage snapshots, attaches global listeners only while open, and adds no network requests, provider processes, polling, streaming work, or thread-payload growth. Limits match measured production output without extra headroom.",
+      "safari13": { "appEntryFromBytes": 344633, "appEntryToBytes": 348377, "appEntryDeltaBytes": 3744, "startupJsFromBytes": 695210, "startupJsToBytes": 701154, "startupJsDeltaBytes": 5944, "startupCssFromBytes": 339897, "startupCssToBytes": 342251, "startupCssDeltaBytes": 2354, "totalJsFromBytes": 1430546, "totalJsToBytes": 1438096, "totalJsDeltaBytes": 7550 },
+      "chrome105": { "appEntryFromBytes": 327145, "appEntryToBytes": 330744, "appEntryDeltaBytes": 3599, "startupJsFromBytes": 670985, "startupJsToBytes": 676746, "startupJsDeltaBytes": 5761, "startupCssFromBytes": 337774, "startupCssToBytes": 340128, "startupCssDeltaBytes": 2354, "totalJsFromBytes": 1396710, "totalJsToBytes": 1404070, "totalJsDeltaBytes": 7360 }
     }
   ],
   "profiles": {
     "safari13-minified": {
-      "appEntryRawBytes": 344633,
-      "startupJsRawBytes": 695210,
-      "startupCssRawBytes": 339897,
-      "totalJsRawBytes": 1430546
+      "appEntryRawBytes": 348377,
+      "startupJsRawBytes": 701154,
+      "startupCssRawBytes": 342251,
+      "totalJsRawBytes": 1438096
     },
     "chrome105-minified": {
-      "appEntryRawBytes": 327145,
-      "startupJsRawBytes": 670985,
-      "startupCssRawBytes": 337774,
-      "totalJsRawBytes": 1396710
+      "appEntryRawBytes": 330744,
+      "startupJsRawBytes": 676746,
+      "startupCssRawBytes": 340128,
+      "totalJsRawBytes": 1404070
     }
   }
 }

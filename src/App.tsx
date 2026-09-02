@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type PointerEvent as ReactPointerEvent, type SetStateAction } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type Dispatch, type PointerEvent as ReactPointerEvent, type SetStateAction } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -67,6 +67,7 @@ import {
   githubCliCommand,
   gitPushCompletionNote,
   gitPushCommand,
+  parseGitHubCloneTarget,
   startGitHubLogin,
   type GitHubAccountStatus,
   type GitHubRepoStatus,
@@ -92,13 +93,14 @@ import { isClaudeThread, isCursorThread, isLocalSubscriptionThread, modelForProv
 import { listLMStudioModels, type LMStudioModel } from "./lib/lmStudio";
 import { EMPTY_MODEL_FAVORITES, MODEL_FAVORITES_KEY, favoriteModels, sanitizeModelFavorites, toggleFavoriteModel, type ModelFavorites } from "./lib/modelFavorites";
 import { fetchOpenRouterCatalog, mergeOpenRouterModels, resolveOpenRouterSlug } from "./lib/openRouterCatalog";
-import { basename, joinPath, normalizedProjectPath } from "./lib/paths";
+import { basename, isAbsolutePath, joinPath, normalizedProjectPath } from "./lib/paths";
 import { attachmentKind, attachmentRecord, withAttachedPaths } from "./lib/attachments";
 import { attachmentsFor, forgetAttachmentDraft, withAttachmentDraft, type AttachmentDrafts } from "./lib/attachmentDrafts";
 import { EMPTY_REVIEW_DIFF } from "./lib/gitDiff";
 import { shellCommand } from "./lib/shellCommand";
 import { resolveProviderSystemPrompt, resolveSystemPrompt } from "./lib/systemPrompt";
-import { parseCodexRateLimits, providerAccountUsage, providerHeaderUsage, sanitizeUsageDisplay, type ProviderRateLimits } from "./lib/providerUsage";
+import { parseCodexRateLimits, providerAccountUsage, providerHeaderUsage, sanitizeUsageDisplay, sanitizeHeaderUsageWindows, type HeaderUsageWindows, type ProviderRateLimits } from "./lib/providerUsage";
+import { UsagePopover } from "./components/UsagePopover";
 import { contextUsagePercent } from "./lib/contextUsage";
 import { mythraCodeDeveloperInstructions } from "./lib/completionPrompt";
 import { runtimeModelProviderId } from "./lib/providerIds";
@@ -371,7 +373,7 @@ function ConversationTimeline({ threadId, running, thinkingLabel, approval, prov
 
 export default function App() {
   const appUpdater = useAppUpdater();
-  const [projects, setProjects] = usePersistedState<Project[]>("kiwi.projects", [], { init: () => initialProjects });
+  const [projects, setProjects, projectsRef] = usePersistedStateRef<Project[]>("kiwi.projects", [], { init: () => initialProjects });
   const [activeProjectId, setActiveProjectId] = useState<string | null>(initialProjects[0]?.id ?? null);
   const [workspaceMode, setWorkspaceMode] = usePersistedState<WorkspaceMode>("kiwi.workspaceMode", "chat", { init: () => initialWorkspaceMode });
   const [chatWorkspacePath, setChatWorkspacePath] = useState("");
@@ -384,6 +386,9 @@ export default function App() {
   // thread cannot make another thread look busy.
   const [startingDraftTurn, setStartingDraftTurn] = useState(false);
   const [settings, persistSettings] = usePersistedState<AppSettings>("kiwi.settings", DEFAULT_SETTINGS, { init: () => initialSettings });
+  const [headerUsageWindows, setHeaderUsageWindows] = usePersistedState<HeaderUsageWindows>("kiwi.headerUsageWindows", {}, {
+    init: (load) => sanitizeHeaderUsageWindows(load()),
+  });
   const [threadModels, setThreadModels] = usePersistedState<Record<string, string>>("kiwi.threadModels", {});
   const [threadReasoning, setThreadReasoning] = usePersistedState<Record<string, ThreadReasoning>>("kiwi.threadReasoning", {}, {
     init: (load) => sanitizeThreadReasoningRecords(load()),
@@ -518,6 +523,7 @@ export default function App() {
   const gitProjectSequenceRef = useRef(0);
   const [githubStatus, setGithubStatus] = useState<GitHubAccountStatus | null>(null);
   const [githubBusy, setGithubBusy] = useState(false);
+  const githubClonePendingRef = useRef(false);
   const [githubLoginPending, setGithubLoginPending] = useState(false);
   const [githubRepoStatus, setGithubRepoStatus] = useState<GitHubRepoStatus | null>(null);
   const githubRepoRefreshSequenceRef = useRef(0);
@@ -996,11 +1002,12 @@ export default function App() {
     });
   }, [account?.type, claudeRateLimits, claudeStatus, cursorStatus, effectiveSettings.provider, lmStudioReady, openAiRateLimits, openAiRateLimitsRead, openRouterCredits, openRouterCreditsError, openRouterCreditsRead, openRouterReady, settings.usageDisplay]);
   const headerUsageView = useMemo(() => providerHeaderUsage(effectiveSettings.provider, accountUsageView, {
+    selectedWindow: effectiveSettings.provider === "openai" || effectiveSettings.provider === "claude" ? headerUsageWindows[effectiveSettings.provider] : undefined,
     openRouterReady,
     openRouterCredits,
     openRouterCreditsRead,
     openRouterCreditsError,
-  }), [accountUsageView, effectiveSettings.provider, openRouterCredits, openRouterCreditsError, openRouterCreditsRead, openRouterReady]);
+  }), [accountUsageView, effectiveSettings.provider, headerUsageWindows, openRouterCredits, openRouterCreditsError, openRouterCreditsRead, openRouterReady]);
 
   // Only offer "Check settings" for failures settings can actually fix, and
   // land on the pane that contains the relevant controls after Interface became
@@ -2836,15 +2843,14 @@ export default function App() {
   const addProject = async () => {
     const selected = await open({ directory: true, multiple: false, title: "Choose a project folder" });
     if (!selected || Array.isArray(selected)) return;
-    const existing = projects.find((project) => project.path === selected);
+    const existing = projectsRef.current.find((project) => normalizedProjectPath(project.path) === normalizedProjectPath(selected));
     if (existing) {
       setActiveProjectId(existing.id);
       setWorkspaceMode("project");
       return;
     }
     const project: Project = { id: crypto.randomUUID(), name: basename(selected), path: selected };
-    const next = [...projects, project];
-    setProjects(next);
+    setProjects((current) => [...current, project]);
     setActiveProjectId(project.id);
     setWorkspaceMode("project");
   };
@@ -4772,29 +4778,29 @@ export default function App() {
     }
   };
 
-  const cloneGitHubProject = async (url: string, folderName: string): Promise<boolean> => {
-    const safeName = folderName.trim();
-    if (!safeName || safeName === "." || safeName === ".." || /[\\/]/.test(safeName)) {
-      setError("Choose a simple local folder name without slashes.");
-      return false;
-    }
-    const parent = await open({ directory: true, multiple: false, title: "Choose where to clone the project" });
-    if (!parent || Array.isArray(parent)) return false;
-    const destination = joinPath(parent, safeName);
+  const cloneGitHubProject = async (url: string, parent: string): Promise<boolean> => {
+    if (githubClonePendingRef.current) return false;
+    const target = parseGitHubCloneTarget(url);
+    if (!target) throw new Error("Enter a valid GitHub repository URL with a cross-platform folder name.");
+    if (!parent || !isAbsolutePath(parent)) throw new Error("Choose a parent folder using the folder picker.");
+    const destination = joinPath(parent, target.name);
+    githubClonePendingRef.current = true;
     setGithubBusy(true);
     try {
-      await cloneGitHubRepository(url.trim(), destination);
-      const project: Project = { id: crypto.randomUUID(), name: safeName, path: destination };
-      const next = [...projects, project];
-      setProjects(next);
+      await cloneGitHubRepository(target.url, destination);
+      const existing = projectsRef.current.find((project) => normalizedProjectPath(project.path) === normalizedProjectPath(destination));
+      const project: Project = existing ?? { id: crypto.randomUUID(), name: target.name, path: destination };
+      // A clone can take minutes. Never replace projects added while it was running.
+      if (!existing) setProjects((current) => [...current, project]);
       setActiveProjectId(project.id);
       setWorkspaceMode("project");
       showSuccessToast("GitHub repository cloned and added");
       return true;
     } catch (reason) {
-      setError(friendlyError(reason));
-      return false;
+      // Settings renders this inline; a global banner would be hidden behind the modal.
+      throw new Error(friendlyError(reason));
     } finally {
+      githubClonePendingRef.current = false;
       setGithubBusy(false);
     }
   };
@@ -5095,7 +5101,7 @@ export default function App() {
   );
 
   return (
-    <div ref={shellRef} className="app-shell" data-theme={previewTheme ?? projectDefaults?.theme ?? settings.theme} data-color-scheme={themeColorScheme(previewTheme ?? projectDefaults?.theme ?? settings.theme)} data-effort-slider={previewEffortSlider ?? projectDefaults?.effortSlider ?? settings.effortSlider} data-chat-font={activeChatFont} data-openai-logo={settings.openAiLogo} data-claude-logo={settings.claudeLogo} data-cursor-logo={settings.cursorLogo} style={{ zoom: (settings.uiScale || 100) / 100 }}>
+    <div ref={shellRef} className="app-shell" data-theme={previewTheme ?? projectDefaults?.theme ?? settings.theme} data-color-scheme={themeColorScheme(previewTheme ?? projectDefaults?.theme ?? settings.theme)} data-effort-slider={previewEffortSlider ?? projectDefaults?.effortSlider ?? settings.effortSlider} data-chat-font={activeChatFont} data-openai-logo={settings.openAiLogo} data-claude-logo={settings.claudeLogo} data-cursor-logo={settings.cursorLogo} style={{ zoom: (settings.uiScale || 100) / 100, "--ui-scale": (settings.uiScale || 100) / 100 } as CSSProperties}>
       {successToast && (
         <div className="app-toast success" role="status" aria-live="polite">
           <span className="app-toast-icon"><Check size={14} strokeWidth={2.5} /></span>
@@ -5420,7 +5426,18 @@ export default function App() {
               {running ? <LoaderCircle className="spin" size={13} /> : <Circle size={8} fill="currentColor" />}
               <span>{status}</span>
             </div>
-            {headerUsageView && (
+            {headerUsageView && (effectiveSettings.provider === "openai" || effectiveSettings.provider === "claude" ? (
+              <UsagePopover
+                key={effectiveSettings.provider}
+                provider={effectiveSettings.provider}
+                usage={accountUsageView}
+                header={headerUsageView}
+                selectedLabel={headerUsageWindows[effectiveSettings.provider]}
+                onSelect={(label) => setHeaderUsageWindows((current) => ({ ...current, [effectiveSettings.provider]: label }))}
+                onConnect={() => openSettings("models")}
+                onDetails={() => activeProject ? openStudio("usage") : openSettings("usage")}
+              />
+            ) : (
               <button
                 className={`topbar-usage-chip ${effectiveSettings.provider}`}
                 type="button"
@@ -5439,7 +5456,7 @@ export default function App() {
                 <Gauge size={13} aria-hidden="true" />
                 <span>{headerUsageView.text}</span>
               </button>
-            )}
+            ))}
             <button className={`workspace-tools-trigger studio-toggle ${studioOpen ? "active" : ""}`} onClick={() => (studioOpen ? setStudioOpen(false) : openStudio(studioTab))} title={activeProject ? `${studioOpen ? "Close" : "Open"} project workspace tools (${workspaceShortcutLabel()})` : "Workspace tools are available inside projects"} aria-label={studioOpen ? "Close workspace tools" : "Open workspace tools"} aria-expanded={studioOpen} disabled={!activeProject}>
               <PanelRight size={17} />
               <span>Workspace</span>

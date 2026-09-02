@@ -1,4 +1,8 @@
-use std::{env, path::PathBuf, process::Stdio};
+use std::{
+    env,
+    path::{Path, PathBuf},
+    process::Stdio,
+};
 
 use super::{find_on_path, find_with_login_shell, git_stdout, optional_git_stdout, push_candidate};
 use crate::process_launch::background_command;
@@ -375,6 +379,24 @@ pub(super) async fn github_create_repository(
     github_repo_status_sync(&cwd)
 }
 
+fn validate_clone_destination(destination_path: &Path) -> Result<(), String> {
+    if !destination_path.is_absolute() {
+        return Err("Choose an absolute parent folder using the folder picker.".into());
+    }
+    match destination_path.symlink_metadata() {
+        Ok(_) => return Err("The repository folder already exists in this location. Choose a different parent folder. Nothing was overwritten.".into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+        Err(error) => return Err(format!("Could not check the clone destination: {error}")),
+    }
+    let parent = destination_path
+        .parent()
+        .ok_or_else(|| "The clone destination is invalid.".to_string())?;
+    if !parent.is_dir() {
+        return Err("The clone destination's parent folder does not exist.".into());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub(super) async fn github_clone_repository(
     app: AppHandle,
@@ -384,17 +406,9 @@ pub(super) async fn github_clone_repository(
     if parse_github_repository(&url).is_none() {
         return Err("Enter a valid GitHub repository URL.".into());
     }
-    let path = resolve_github_binary(&app).await?;
     let destination_path = PathBuf::from(&destination);
-    if destination_path.exists() {
-        return Err("The destination already exists. Choose a new project folder name.".into());
-    }
-    let parent = destination_path
-        .parent()
-        .ok_or_else(|| "The clone destination is invalid.".to_string())?;
-    if !parent.is_dir() {
-        return Err("The clone destination's parent folder does not exist.".into());
-    }
+    validate_clone_destination(&destination_path)?;
+    let path = resolve_github_binary(&app).await?;
     let output = background_command(path)
         .args(["repo", "clone", &url, &destination])
         .stdin(Stdio::null())
@@ -410,5 +424,46 @@ pub(super) async fn github_clone_repository(
         } else {
             detail
         })
+    }
+}
+
+#[cfg(test)]
+mod clone_tests {
+    use super::validate_clone_destination;
+    use std::{fs, path::Path};
+
+    #[test]
+    fn clone_destination_requires_new_child_in_existing_parent() {
+        let parent = std::env::temp_dir().join(format!(
+            "mythra-clone-test-{}-{}",
+            std::process::id(),
+            super::super::unix_timestamp_ms()
+        ));
+        fs::create_dir(&parent).unwrap();
+        assert!(validate_clone_destination(&parent.join("new-repo")).is_ok());
+        assert!(validate_clone_destination(Path::new("relative/repo")).is_err());
+        assert!(validate_clone_destination(&parent.join("missing/repo")).is_err());
+        fs::write(parent.join("existing-file"), "do not overwrite").unwrap();
+        assert!(validate_clone_destination(&parent.join("existing-file"))
+            .unwrap_err()
+            .contains("Nothing was overwritten"));
+        assert!(validate_clone_destination(&parent)
+            .unwrap_err()
+            .contains("already exists"));
+        assert_eq!(
+            fs::read_to_string(parent.join("existing-file")).unwrap(),
+            "do not overwrite"
+        );
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(parent.join("absent"), parent.join("dangling-link"))
+                .unwrap();
+            assert!(validate_clone_destination(&parent.join("dangling-link"))
+                .unwrap_err()
+                .contains("already exists"));
+            fs::remove_file(parent.join("dangling-link")).unwrap();
+        }
+        fs::remove_file(parent.join("existing-file")).unwrap();
+        fs::remove_dir(&parent).unwrap();
     }
 }
