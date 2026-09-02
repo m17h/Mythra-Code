@@ -1666,6 +1666,37 @@ fn pasted_image_cleanup_removes_oldest_files_until_under_the_size_cap() {
 }
 
 #[test]
+fn image_preview_extensions_are_restricted_to_supported_formats() {
+    assert_eq!(
+        supported_preview_image_extension(Path::new("Screenshot.PNG")),
+        Some("png".to_string())
+    );
+    assert_eq!(
+        supported_preview_image_extension(Path::new("photo.HEIC")),
+        Some("heic".to_string())
+    );
+    assert_eq!(
+        supported_preview_image_extension(Path::new("notes.html")),
+        None
+    );
+    assert_eq!(
+        supported_preview_image_extension(Path::new("no-extension")),
+        None
+    );
+    assert_eq!(
+        durable_image_filename(
+            Some(r"C:\Users\Morgan\Screenshot 2026-09-01 at 10.00.48 PM.png"),
+            "png"
+        ),
+        "Screenshot 2026-09-01 at 100048 PM.png"
+    );
+    assert_eq!(
+        durable_image_filename(Some("../../unsafe<script>.jpg"), "jpg"),
+        "unsafescript.jpg"
+    );
+}
+
+#[test]
 fn initialize_negotiates_fields_used_by_project_threads() {
     let params = initialize_params();
     assert_eq!(

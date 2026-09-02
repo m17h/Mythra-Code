@@ -18,6 +18,16 @@ function search(value: string, ariaLabel = "Default model") {
 }
 
 describe("AppSelectMenu", () => {
+  it("shows disabled catalog entries without allowing selection", () => {
+    const onChange = vi.fn();
+    render(<AppSelectMenu value="" ariaLabel="Model" options={[{ value: "next", label: "Next model", disabled: true }]} onChange={onChange} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Model" }));
+    const option = screen.getByRole("menuitemradio", { name: "Next model" });
+    expect(option).toBeDisabled();
+    fireEvent.click(option);
+    expect(onChange).not.toHaveBeenCalled();
+  });
   // The Settings and sub-agent pickers read from the same live catalogs as the
   // composer, so a capped result list would hide models there instead.
   it("shows every match for a search, past the browse limit", () => {

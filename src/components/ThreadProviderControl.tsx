@@ -17,7 +17,6 @@ function providerLabel(provider: Provider): string {
 
 export function ThreadProviderControl({
   provider,
-  model,
   defaultProvider,
   threadStarted,
   disabled,
@@ -25,7 +24,6 @@ export function ThreadProviderControl({
   onDefaultSettings,
 }: {
   provider: Provider;
-  model: string;
   defaultProvider: Provider;
   threadStarted: boolean;
   disabled?: boolean;
@@ -57,9 +55,9 @@ export function ThreadProviderControl({
 
   const label = providerLabel(provider);
   return (
-    <div className={`thread-provider-control ${open ? "open" : ""}`} ref={rootRef}>
+    <div className={`thread-provider-control composer-provider-control ${open ? "open" : ""}`} ref={rootRef}>
       <button
-        className="provider-pill"
+        className="provider-pill openrouter-trigger"
         onClick={() => setOpen((value) => !value)}
         aria-label={`${threadStarted ? "Thread" : "New thread"} provider: ${label}`}
         aria-haspopup="menu"
@@ -67,8 +65,7 @@ export function ThreadProviderControl({
         disabled={disabled}
       >
         <span className={`provider-mark ${provider}`}><ProviderLogo provider={provider} size={13} /></span>
-        <span className="provider-label">{label}</span>
-        {model && <small>{model}</small>}
+        <span className="openrouter-trigger-copy"><small>Provider</small><strong>{label}</strong></span>
         <ChevronDown size={12} />
       </button>
       <div className="thread-provider-menu" role="menu" aria-hidden={!open || undefined} aria-label="Thread provider">

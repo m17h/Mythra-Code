@@ -461,12 +461,13 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .provider-pill > svg:last-child { color: var(--muted-2); transition: color 180ms ease, transform 180ms var(--ease); }
 .thread-provider-control.open .provider-pill > svg:last-child { color: var(--green); transform: rotate(180deg); }
 .thread-provider-control { position: relative; }
+.composer-provider-control { --router-accent: var(--green); }
 .provider-mark { width: 22px; height: 22px; display: grid; place-items: center; flex: 0 0 auto; border-radius: var(--r-xs); color: #fff; background: #1a1d18; }
 .provider-mark.claude { background: #d97757; }
 .provider-mark.openrouter { color: #c8ff00; background: rgba(200,255,0,.08); }
 .provider-mark.lmstudio { background: transparent; }
 .provider-mark.cursor { color: #26251e; background: #edecec; }
-.thread-provider-menu { position: absolute; z-index: 130; top: calc(100% + 7px); right: 0; width: 300px; padding: var(--s-1); border: 1px solid var(--line-strong); border-radius: var(--r-lg); background: var(--panel-2); box-shadow: var(--shadow); opacity: 0; visibility: hidden; transform: translateY(-6px) scale(.972); transform-origin: top right; pointer-events: none; transition: opacity 180ms var(--ease), visibility 0s linear 180ms, transform 180ms var(--ease); }
+.thread-provider-menu { position: absolute; z-index: 130; bottom: calc(100% + 7px); left: 0; width: 300px; padding: var(--s-1); border: 1px solid var(--line-strong); border-radius: var(--r-lg); background: var(--panel-2); box-shadow: var(--shadow); opacity: 0; visibility: hidden; transform: translateY(6px) scale(.972); transform-origin: bottom left; pointer-events: none; transition: opacity 180ms var(--ease), visibility 0s linear 180ms, transform 180ms var(--ease); }
 .thread-provider-control.open .thread-provider-menu { opacity: 1; visibility: visible; transform: none; pointer-events: auto; transition: opacity 180ms var(--ease), visibility 0s, transform 180ms var(--ease); }
 .thread-provider-menu-heading { display: flex; flex-direction: column; gap: 3px; padding: var(--s-2) var(--s-2) var(--s-3); }
 .thread-provider-menu-heading strong { font-size: var(--fs-ui); font-weight: 650; }
@@ -583,7 +584,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .message-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .message-image-previews { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; margin-top: 9px; }
 .message-image-preview { width: 112px; height: 76px; display: block; object-fit: cover; border: 1px solid var(--line-strong); border-radius: var(--r-sm); background: var(--field); box-shadow: 0 2px 8px rgba(0,0,0,.18); }
-.message-image-preview.unavailable { box-sizing: border-box; align-items: center; justify-content: center; gap: 6px; padding: 7px; color: var(--muted); font-size: var(--fs-micro); }
+.message-image-preview.unavailable { box-sizing: border-box; display: flex; align-items: center; justify-content: center; gap: 6px; overflow: hidden; padding: 7px; color: var(--muted); font-size: var(--fs-micro); }
 .message-image-preview.unavailable span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .message-steer-status { display: flex; align-items: center; justify-content: flex-end; gap: 4px; margin-top: 6px; color: var(--muted-2); font-size: var(--fs-micro); line-height: 1.3; }
 .message-steer-status.accepted { color: color-mix(in srgb, var(--info) 78%, var(--text)); }
@@ -935,7 +936,8 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .app-select-search input::placeholder { color: var(--muted-2); }
 .app-select-options { max-height: 210px; overflow-y: auto; }
 .app-select-options > button, .app-select-options .model-row > button:not(.model-star) { width: 100%; min-height: 34px; display: grid; grid-template-columns: minmax(0, 1fr) 14px; align-items: center; gap: 6px; padding: 5px 7px; border: 0; border-radius: var(--r-xs); color: var(--muted); background: transparent; text-align: left; cursor: pointer; }
-.app-select-options > button:hover, .app-select-options > button:focus-visible, .app-select-options .model-row > button:not(.model-star):hover, .app-select-options .model-row > button:not(.model-star):focus-visible { color: var(--text); background: rgba(255,255,255,.05); }
+.app-select-options > button:hover:not(:disabled), .app-select-options > button:focus-visible:not(:disabled), .app-select-options .model-row > button:not(.model-star):hover:not(:disabled), .app-select-options .model-row > button:not(.model-star):focus-visible:not(:disabled) { color: var(--text); background: rgba(255,255,255,.05); }
+.app-select-options .model-row > button:not(.model-star):disabled { opacity: .48; cursor: not-allowed; }
 .app-select-options > button.selected, .app-select-options .model-row > button:not(.model-star).selected { color: var(--text); background: var(--green-soft); }
 .app-select-options > button > svg, .app-select-options .model-row > button:not(.model-star) > svg { justify-self: end; color: var(--green); }
 .app-select-option-copy strong { color: var(--ink-2); font-size: var(--fs-micro); font-weight: 600; }
@@ -1593,7 +1595,6 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .behavior-grid-single { grid-template-columns: 1fr; }
 .behavior-grid > div, .diagnostic-card { min-height: 55px; display: flex; align-items: center; justify-content: space-between; gap: 9px; padding: 9px; border: 1px solid var(--line); border-radius: 8px; background: rgba(255,255,255,.012); }
 .runtime-field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 7px; }
-.interface-size-grid { grid-template-columns: minmax(180px, 1fr); margin-top: 0; }
 .runtime-field-grid label { display: flex; flex-direction: column; gap: 5px; color: var(--muted); font-size: var(--fs-meta); }
 .diagnostic-card { margin-top: 7px; }
 .diagnostic-card .secondary-button { min-height: 29px; font-size: var(--fs-meta); }
@@ -1721,7 +1722,6 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
   .composer-zone { padding-inline: var(--s-4); }
   .command-palette-trigger span { display: none; }
   .command-palette-trigger { padding-inline: var(--s-2); }
-  .provider-pill small { display: none; }
 }
 
 @media (max-width: 860px) {
@@ -1765,7 +1765,6 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
   .project-prompt-trigger > span { display: none; }
   .command-palette-trigger { width: var(--ctl-md); justify-content: center; padding: 0; }
   .command-palette-trigger span, .command-palette-trigger kbd { display: none; }
-  .provider-pill small { display: none; }
   .runtime-status { max-width: 92px; }
   .topbar-usage-chip { max-width: 150px; }
 }
@@ -1776,8 +1775,6 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
   .runtime-status, .topbar-usage-chip, .command-palette-trigger, .topbar-export-button { display: none; }
   .project-prompt-trigger { width: var(--ctl-md); justify-content: center; padding: 0; }
   .project-prompt-trigger small, .project-prompt-trigger > svg:last-child { display: none; }
-  .provider-pill { padding-inline: 7px; }
-  .provider-pill .provider-label { display: none; }
   .workspace-tools-trigger { width: var(--ctl-md); justify-content: center; padding: 0; }
   .workspace-tools-trigger span, .workspace-tools-trigger kbd { display: none; }
   .isolation-chip span, .handoff-chip span { display: none; }
@@ -1786,7 +1783,6 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 @container chat-main (max-width: 520px) {
   .topbar { padding-inline: var(--s-2); }
   .project-heading { max-width: 104px; }
-  .provider-pill > svg:last-child { display: none; }
   .sa-preset-row { grid-template-columns: 1fr; }
   .sa-manage-presets { justify-self: start; }
 }
@@ -1807,7 +1803,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 }
 
 /* OpenRouter model rail */
-.openrouter-control { --router-accent: #c8ff00; --router-fill: 0%; position: relative; z-index: 8; display: grid; grid-template-columns: minmax(280px, 1.08fr) minmax(245px, .92fr); gap: var(--s-3); align-items: center; margin: 0 10px var(--s-1); padding: var(--s-2); overflow: visible; border: 1px solid var(--line); border-radius: var(--r-lg); background: rgba(255,255,255,.014); box-shadow: none; }
+.openrouter-control { --router-accent: #c8ff00; --router-fill: 0%; position: relative; z-index: 8; display: grid; grid-template-columns: minmax(125px, .54fr) minmax(150px, .54fr) minmax(245px, .92fr); gap: var(--s-3); align-items: center; margin: 0 10px var(--s-1); padding: var(--s-2); overflow: visible; border: 1px solid var(--line); border-radius: var(--r-lg); background: rgba(255,255,255,.014); box-shadow: none; }
 .openrouter-control.lmstudio-control { --router-accent: #75d5c7; }
 .lmstudio-logo { background: transparent !important; }
 .provider-mark.lmstudio, .provider-logo.lmstudio, .thread-card-provider.lmstudio, .message-avatar.provider-lmstudio { background: transparent; }
@@ -1907,7 +1903,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 /* ---- Model rail ----
    Each model family keeps an accent for identity, but the accent is carried by
    a mark and a border tint — not by glows, breathing orbs, or shimmer. */
-.model-power-control { --model-accent: #e0a066; --reasoning-fill: 0%; position: relative; z-index: 8; display: grid; grid-template-columns: minmax(280px, 1.08fr) minmax(245px, .92fr); gap: var(--s-3); align-items: center; margin: 0 10px var(--s-1); padding: var(--s-2); overflow: visible; border: 1px solid var(--line); border-radius: var(--r-lg); background: rgba(255,255,255,.014); box-shadow: none; transition: border-color 220ms ease, background 220ms ease; }
+.model-power-control { --model-accent: #e0a066; --reasoning-fill: 0%; position: relative; z-index: 8; display: grid; grid-template-columns: minmax(125px, .54fr) minmax(150px, .54fr) minmax(245px, .92fr); gap: var(--s-3); align-items: center; margin: 0 10px var(--s-1); padding: var(--s-2); overflow: visible; border: 1px solid var(--line); border-radius: var(--r-lg); background: rgba(255,255,255,.014); box-shadow: none; transition: border-color 220ms ease, background 220ms ease; }
 .model-power-control.terra { --model-accent: #a6df72; }
 .model-power-control.luna { --model-accent: #86cdf7; }
 .model-picker { position: relative; z-index: 4; min-width: 0; }
@@ -2385,9 +2381,11 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
   .onboarding-footer { padding: 0 14px; }
   .runtime-options { grid-template-columns: 1fr; }
   .runtime-setup-actions { flex-wrap: wrap; }
-  .openrouter-control { grid-template-columns: 1fr; }
+  .openrouter-control { grid-template-columns: repeat(2, minmax(0,1fr)); }
+  .openrouter-reasoning { grid-column: 1 / -1; }
   .openrouter-menu { width: min(570px, calc(100vw - 32px)); }
-  .model-power-control { grid-template-columns: 1fr; }
+  .model-power-control { grid-template-columns: repeat(2, minmax(0,1fr)); }
+  .reasoning-control { grid-column: 1 / -1; }
   .model-picker-copy em { display: none; }
   .settings-modal { height: calc(100vh - 24px); }
   .settings-layout { grid-template-columns: 1fr; grid-template-rows: auto minmax(0,1fr); }
@@ -2751,18 +2749,15 @@ body[data-pane-resizing] .sidebar, body[data-pane-resizing] .studio-dock { trans
 @container chat-main (max-width: 680px) {
   .composer-zone { padding-inline: var(--s-4); }
   .model-power-control, .openrouter-control { gap: var(--s-2); margin-inline: 6px; }
-  .model-power-control { grid-template-columns: minmax(0, 1fr); }
-  .model-picker { grid-column: 1; grid-row: 1; }
-  .reasoning-control { grid-column: 1; grid-row: 2; }
-  .openrouter-control { grid-template-columns: minmax(0, 1fr); }
-  .openrouter-reasoning { grid-column: 1; }
+  .model-power-control, .openrouter-control { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .reasoning-control, .openrouter-reasoning { grid-column: 1 / -1; }
   .openrouter-menu, .claude-model-menu { width: min(570px, calc(100cqw - 44px)); }
 }
 
 @container chat-main (max-width: 600px) {
   .composer-zone { padding-inline: var(--s-3); }
   .model-power-control, .openrouter-control { margin-inline: var(--s-1); padding: 6px; }
-  .model-power-control { grid-template-columns: minmax(0, 1fr); }
+  .model-power-control, .openrouter-control { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .model-picker-copy em, .openrouter-trigger-copy em { display: none; }
   .composer-toolbar { flex-wrap: wrap; row-gap: var(--s-1); }
   .cursor-model-menu { width: calc(100vw - 28px); }

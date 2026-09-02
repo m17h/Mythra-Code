@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { Check, ChevronDown, Gauge, LoaderCircle, RefreshCw, Search } from "lucide-react";
 import { EffortSlider, effortFlairStyle } from "./effortFlair";
 import { ModelFavoriteStar, type ModelFavoriteProps } from "./ModelFavoriteStar";
@@ -41,6 +41,7 @@ export function OpenRouterModelControl({
   models,
   loading,
   error,
+  providerControl,
   favorites = [],
   searching = false,
   onToggleFavorite,
@@ -54,6 +55,7 @@ export function OpenRouterModelControl({
   models: OpenRouterModel[];
   loading: boolean;
   error: string;
+  providerControl?: ReactNode;
   /** A remote lookup for the current query is in flight. */
   searching?: boolean;
   onModel: (model: string) => void;
@@ -142,6 +144,7 @@ export function OpenRouterModelControl({
 
   return (
     <div className="openrouter-control" ref={rootRef} style={{ "--router-fill": `${fill}%` } as CSSProperties}>
+      {providerControl}
       <div className={`openrouter-picker ${open ? "open" : ""}`}>
         <button type="button" className="openrouter-trigger" aria-haspopup="menu" aria-expanded={open} aria-label={`OpenRouter model: ${selected?.name || model || "not selected"}`} onClick={() => setOpen((value) => !value)} onKeyDown={(event) => { if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); setOpen(true); } }}>
           <span className="openrouter-logo openrouter-brand-logo"><OpenRouterLogo size={16} /></span>

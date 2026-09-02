@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Check, ChevronDown, Gauge, LoaderCircle, RefreshCw, Search, X } from "lucide-react";
 import { EffortSlider, effortFlairStyle } from "./effortFlair";
 import type { CursorModel } from "../lib/cursor";
@@ -52,6 +52,7 @@ export function CursorModelControl({
   models,
   effort,
   loading,
+  providerControl,
   favorites = [],
   onToggleFavorite,
   onRefresh,
@@ -62,6 +63,7 @@ export function CursorModelControl({
   models: CursorModel[];
   effort: ReasoningEffort;
   loading?: boolean;
+  providerControl?: ReactNode;
   onRefresh: () => void;
   onModel: (model: string) => void;
   onEffort: (effort: ReasoningEffort) => void;
@@ -116,6 +118,7 @@ export function CursorModelControl({
 
   return (
     <div className="openrouter-control cursor-control" ref={rootRef} style={{ "--router-fill": `${fill}%` } as CSSProperties}>
+      {providerControl}
       <div className={`openrouter-picker ${open ? "open" : ""}`}>
         <button type="button" className="openrouter-trigger" aria-haspopup="menu" aria-expanded={open} aria-label={`Cursor model: ${selected.name}`} onClick={() => setOpen((value) => !value)} onKeyDown={(event) => { if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); setOpen(true); } }}>
           <span className="openrouter-logo cursor-logo"><CursorProviderLogo size={15} /></span>

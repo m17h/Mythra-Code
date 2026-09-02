@@ -27,7 +27,8 @@
       "assetProtocol": {
         "enable": true,
         "scope": [
-          "$APPDATA/pasted-images/**"
+          "$APPDATA/pasted-images/**",
+          "$APPDATA/message-images/**"
         ]
       }
     }

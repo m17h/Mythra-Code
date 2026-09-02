@@ -81,20 +81,26 @@
       "decision": "Accept 205 startup CSS bytes on both targets for a fixed refresh-button column, a 10-pixel safety gap, and deterministic single-line truncation at narrow widths. App-entry and JavaScript sizes are unchanged.",
       "safari13": { "appEntryFromBytes": 342901, "appEntryToBytes": 342901, "appEntryDeltaBytes": 0, "startupJsFromBytes": 692694, "startupJsToBytes": 692694, "startupJsDeltaBytes": 0, "startupCssFromBytes": 339388, "startupCssToBytes": 339593, "startupCssDeltaBytes": 205, "totalJsFromBytes": 1426908, "totalJsToBytes": 1426908, "totalJsDeltaBytes": 0 },
       "chrome105": { "appEntryFromBytes": 325401, "appEntryToBytes": 325401, "appEntryDeltaBytes": 0, "startupJsFromBytes": 668471, "startupJsToBytes": 668471, "startupJsDeltaBytes": 0, "startupCssFromBytes": 337236, "startupCssToBytes": 337441, "startupCssDeltaBytes": 205, "totalJsFromBytes": 1393115, "totalJsToBytes": 1393115, "totalJsDeltaBytes": 0 }
+    },
+    {
+      "change": "Make thread images durable and move provider selection into the composer",
+      "decision": "Accept about 0.08% more startup JavaScript and 0.09% more total JavaScript for restart-safe image preview authorization, durable on-disk copies of new image inputs, the provider/model split in every composer rail, and consistent Claude supersession in Settings. Interface-size presentation is isolated in the existing lazy Settings boundary; a follow-up size pass kept Safari startup CSS below its previous limit and limited the Chrome CSS increase to 27 bytes. Thread memory still stores image paths rather than bytes.",
+      "safari13": { "appEntryFromBytes": 342901, "appEntryToBytes": 343362, "appEntryDeltaBytes": 461, "startupJsFromBytes": 692694, "startupJsToBytes": 693235, "startupJsDeltaBytes": 541, "startupCssFromBytes": 339593, "startupCssToBytes": 339591, "startupCssDeltaBytes": -2, "totalJsFromBytes": 1426908, "totalJsToBytes": 1428179, "totalJsDeltaBytes": 1271 },
+      "chrome105": { "appEntryFromBytes": 325401, "appEntryToBytes": 325870, "appEntryDeltaBytes": 469, "startupJsFromBytes": 668471, "startupJsToBytes": 669029, "startupJsDeltaBytes": 558, "startupCssFromBytes": 337441, "startupCssToBytes": 337468, "startupCssDeltaBytes": 27, "totalJsFromBytes": 1393115, "totalJsToBytes": 1394403, "totalJsDeltaBytes": 1288 }
     }
   ],
   "profiles": {
     "safari13-minified": {
-      "appEntryRawBytes": 342901,
-      "startupJsRawBytes": 692694,
-      "startupCssRawBytes": 339593,
-      "totalJsRawBytes": 1426908
+      "appEntryRawBytes": 343362,
+      "startupJsRawBytes": 693235,
+      "startupCssRawBytes": 339591,
+      "totalJsRawBytes": 1428179
     },
     "chrome105-minified": {
-      "appEntryRawBytes": 325401,
-      "startupJsRawBytes": 668471,
-      "startupCssRawBytes": 337441,
-      "totalJsRawBytes": 1393115
+      "appEntryRawBytes": 325870,
+      "startupJsRawBytes": 669029,
+      "startupCssRawBytes": 337468,
+      "totalJsRawBytes": 1394403
     }
   }
 }

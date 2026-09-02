@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Check, ChevronDown, Gauge, Zap } from "lucide-react";
 import { EffortSlider, effortFlairStyle } from "./effortFlair";
 import { ProviderLogo } from "./BrandLogos";
@@ -81,6 +81,7 @@ export function ModelPowerControl({
   model,
   effort,
   fast,
+  providerControl,
   runtimeModels,
   disabled,
   favorites = [],
@@ -92,6 +93,7 @@ export function ModelPowerControl({
   model: string;
   effort: ReasoningEffort;
   fast: boolean;
+  providerControl?: ReactNode;
   runtimeModels: RuntimeModel[];
   disabled?: boolean;
   onModel: (model: string) => void;
@@ -157,6 +159,7 @@ export function ModelPowerControl({
       className={`model-power-control ${kind} ${menuOpen ? "menu-open" : ""} ${disabled ? "disabled" : ""} ${effortIndex === EFFORTS.length - 1 ? "effort-max" : ""}`}
       style={{ "--reasoning-fill": `${reasoningFill}%`, ...effortFlairStyle(effortIndex, EFFORTS.length) } as CSSProperties}
     >
+      {providerControl}
       <div className="model-picker">
         <button
           type="button"
