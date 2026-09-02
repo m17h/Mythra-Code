@@ -87,20 +87,26 @@
       "decision": "Accept about 0.08% more startup JavaScript and 0.09% more total JavaScript for restart-safe image preview authorization, durable on-disk copies of new image inputs, the provider/model split in every composer rail, and consistent Claude supersession in Settings. Interface-size presentation is isolated in the existing lazy Settings boundary; a follow-up size pass kept Safari startup CSS below its previous limit and limited the Chrome CSS increase to 27 bytes. Thread memory still stores image paths rather than bytes.",
       "safari13": { "appEntryFromBytes": 342901, "appEntryToBytes": 343362, "appEntryDeltaBytes": 461, "startupJsFromBytes": 692694, "startupJsToBytes": 693235, "startupJsDeltaBytes": 541, "startupCssFromBytes": 339593, "startupCssToBytes": 339591, "startupCssDeltaBytes": -2, "totalJsFromBytes": 1426908, "totalJsToBytes": 1428179, "totalJsDeltaBytes": 1271 },
       "chrome105": { "appEntryFromBytes": 325401, "appEntryToBytes": 325870, "appEntryDeltaBytes": 469, "startupJsFromBytes": 668471, "startupJsToBytes": 669029, "startupJsDeltaBytes": 558, "startupCssFromBytes": 337441, "startupCssToBytes": 337468, "startupCssDeltaBytes": 27, "totalJsFromBytes": 1393115, "totalJsToBytes": 1394403, "totalJsDeltaBytes": 1288 }
+    },
+    {
+      "change": "Close second-pass attachment and model-picker review findings",
+      "decision": "Accept about 0.13% more startup JavaScript and 0.09% more total JavaScript for truthful superseded-model state, runnable project-default selection, disabled-row keyboard recovery, explicit image-persistence failures, and native preview accessibility. The native copy path simultaneously removes a second full in-memory image buffer of up to 50 MB by streaming directly through the filesystem; CSS and thread-memory payloads are unchanged.",
+      "safari13": { "appEntryFromBytes": 343362, "appEntryToBytes": 343748, "appEntryDeltaBytes": 386, "startupJsFromBytes": 693235, "startupJsToBytes": 694135, "startupJsDeltaBytes": 900, "startupCssFromBytes": 339591, "startupCssToBytes": 339591, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1428179, "totalJsToBytes": 1429473, "totalJsDeltaBytes": 1294 },
+      "chrome105": { "appEntryFromBytes": 325870, "appEntryToBytes": 326185, "appEntryDeltaBytes": 315, "startupJsFromBytes": 669029, "startupJsToBytes": 669793, "startupJsDeltaBytes": 764, "startupCssFromBytes": 337468, "startupCssToBytes": 337468, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1394403, "totalJsToBytes": 1395508, "totalJsDeltaBytes": 1105 }
     }
   ],
   "profiles": {
     "safari13-minified": {
-      "appEntryRawBytes": 343362,
-      "startupJsRawBytes": 693235,
+      "appEntryRawBytes": 343748,
+      "startupJsRawBytes": 694135,
       "startupCssRawBytes": 339591,
-      "totalJsRawBytes": 1428179
+      "totalJsRawBytes": 1429473
     },
     "chrome105-minified": {
-      "appEntryRawBytes": 325870,
-      "startupJsRawBytes": 669029,
+      "appEntryRawBytes": 326185,
+      "startupJsRawBytes": 669793,
       "startupCssRawBytes": 337468,
-      "totalJsRawBytes": 1394403
+      "totalJsRawBytes": 1395508
     }
   }
 }

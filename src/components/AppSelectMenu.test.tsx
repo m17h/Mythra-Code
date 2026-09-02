@@ -28,6 +28,32 @@ describe("AppSelectMenu", () => {
     fireEvent.click(option);
     expect(onChange).not.toHaveBeenCalled();
   });
+
+  it("focuses the first selectable row when the saved or first row is disabled", async () => {
+    render(<AppSelectMenu value="old" ariaLabel="Model" options={[
+      { value: "old", label: "Old model", disabled: true },
+      { value: "current", label: "Current model" },
+    ]} onChange={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Model" }));
+    await act(async () => { await new Promise(requestAnimationFrame); });
+
+    expect(screen.getByRole("menuitemradio", { name: "Current model" })).toHaveFocus();
+  });
+
+  it("can describe a saved value without putting it back into the menu", () => {
+    render(<AppSelectMenu
+      value="old"
+      ariaLabel="Model"
+      options={[{ value: "current", label: "Current model" }]}
+      selectedDisplay={{ label: "Superseded model", detail: "Choose a current model" }}
+      onChange={vi.fn()}
+    />);
+
+    expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("Superseded model");
+    fireEvent.click(screen.getByRole("button", { name: "Model" }));
+    expect(screen.queryByRole("menuitemradio", { name: /Superseded model/ })).not.toBeInTheDocument();
+  });
   // The Settings and sub-agent pickers read from the same live catalogs as the
   // composer, so a capped result list would hide models there instead.
   it("shows every match for a search, past the browse limit", () => {

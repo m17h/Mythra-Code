@@ -4468,10 +4468,18 @@ export default function App() {
 
   const addAttachmentPaths = useCallback(async (paths: string[]) => {
     if (!paths.length) return;
-    const durablePaths = await Promise.all(paths.map((path) => attachmentKind(path) === "image"
-      ? invoke<string>("persist_image_attachment", { path, displayName: basename(path) }).then((saved) => saved || path, () => path)
-      : path));
-    setAttachments((current) => withAttachedPaths(current, durablePaths));
+    const prepared = await Promise.all(paths.map(async (path) => {
+      if (attachmentKind(path) !== "image") return { path, error: null };
+      try {
+        const saved = await invoke<string>("persist_image_attachment", { path, displayName: basename(path) });
+        return { path: saved || path, error: null };
+      } catch (reason) {
+        return { path, error: friendlyError(reason) };
+      }
+    }));
+    setAttachments((current) => withAttachedPaths(current, prepared.map((entry) => entry.path)));
+    const failure = prepared.find((entry) => entry.error)?.error;
+    if (failure) setError(`The image was attached from its original location, but Mythra Code could not preserve a durable copy: ${failure}`);
   }, [setAttachments]);
 
   addAttachmentPathsRef.current = addAttachmentPaths;
@@ -4496,7 +4504,12 @@ export default function App() {
         }
         const extension = (item.type.split("/")[1] ?? "png").toLowerCase();
         const temporaryPath = await invoke<string>("save_pasted_image", { dataBase64: btoa(binary), extension });
-        const path = await invoke<string>("persist_image_attachment", { path: temporaryPath, displayName: file.name }).then((saved) => saved || temporaryPath, () => temporaryPath);
+        let path = temporaryPath;
+        try {
+          path = await invoke<string>("persist_image_attachment", { path: temporaryPath, displayName: file.name }) || temporaryPath;
+        } catch (reason) {
+          setError(`The pasted image is attached, but Mythra Code could not preserve a durable copy: ${friendlyError(reason)}`);
+        }
         // Pasted bytes are known to be an image regardless of the extension
         // the native side chose for the temporary file.
         setAttachments((current) => withAttachedPaths(current, [path]));
