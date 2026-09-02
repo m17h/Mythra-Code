@@ -48,6 +48,14 @@ jobs:
       - name: Lint, typecheck, test, and build
         run: npm run verify
 
+      - name: Verify streaming and transcript layout in WebKit
+        if: runner.os == 'macOS'
+        run: |
+          npx playwright install webkit
+          npm run test:browser -- src/lib/streamingTextFade.browser.test.ts src/components/ChatTimeline.streaming.browser.test.tsx src/components/ChatTimeline.layout.browser.test.tsx
+        env:
+          MYTHRA_BROWSER_TEST_ENGINE: webkit
+
       - name: Verify Windows renderer performance profile
         if: runner.os == 'Windows'
         run: npm run build && npm run verify:performance
