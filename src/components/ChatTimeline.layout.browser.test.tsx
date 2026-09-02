@@ -119,6 +119,27 @@ describe("ChatTimeline browser layout", () => {
     expect(preview!.getBoundingClientRect().right).toBeLessThanOrEqual(bubble!.getBoundingClientRect().right + 1);
   });
 
+  it("contains a long filename when an old image source is unavailable", async () => {
+    render(<Shell messages={[{
+      id: "missing-image-prompt",
+      role: "user",
+      text: "Use this old screenshot",
+      attachments: [{ path: "data:image/png;base64,broken", name: "Screenshot 2026-08-23 at 6.34.18 AM with an extremely long descriptive filename.png", kind: "image" }],
+    }]} running={false} activities={[]} />);
+
+    const image = document.querySelector<HTMLImageElement>("img.message-image-preview");
+    expect(image).not.toBeNull();
+    fireEvent.error(image!);
+    await settle();
+
+    const fallback = document.querySelector<HTMLElement>(".message-image-preview.unavailable");
+    const filename = fallback?.querySelector<HTMLElement>("span");
+    expect(fallback).not.toBeNull();
+    expect(filename).not.toBeNull();
+    expect(fallback!.scrollWidth).toBeLessThanOrEqual(fallback!.clientWidth);
+    expect(filename!.getBoundingClientRect().right).toBeLessThanOrEqual(fallback!.getBoundingClientRect().right + 1);
+  });
+
   it("aligns a Relay card with neighbouring timeline activity and keeps its height stable", async () => {
     const relay: Activity = {
       id: "relay",

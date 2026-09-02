@@ -93,7 +93,7 @@ import { listLMStudioModels, type LMStudioModel } from "./lib/lmStudio";
 import { EMPTY_MODEL_FAVORITES, MODEL_FAVORITES_KEY, favoriteModels, sanitizeModelFavorites, toggleFavoriteModel, type ModelFavorites } from "./lib/modelFavorites";
 import { fetchOpenRouterCatalog, mergeOpenRouterModels, resolveOpenRouterSlug } from "./lib/openRouterCatalog";
 import { basename, joinPath, normalizedProjectPath } from "./lib/paths";
-import { attachmentRecord, withAttachedPaths } from "./lib/attachments";
+import { attachmentKind, withAttachedPaths } from "./lib/attachments";
 import { attachmentsFor, forgetAttachmentDraft, withAttachmentDraft, type AttachmentDrafts } from "./lib/attachmentDrafts";
 import { EMPTY_REVIEW_DIFF } from "./lib/gitDiff";
 import { shellCommand } from "./lib/shellCommand";
@@ -4466,9 +4466,12 @@ export default function App() {
     }
   };
 
-  const addAttachmentPaths = useCallback((paths: string[]) => {
+  const addAttachmentPaths = useCallback(async (paths: string[]) => {
     if (!paths.length) return;
-    setAttachments((current) => withAttachedPaths(current, paths));
+    const durablePaths = await Promise.all(paths.map((path) => attachmentKind(path) === "image"
+      ? invoke<string>("persist_image_attachment", { path, displayName: basename(path) }).then((saved) => saved || path, () => path)
+      : path));
+    setAttachments((current) => withAttachedPaths(current, durablePaths));
   }, [setAttachments]);
 
   addAttachmentPathsRef.current = addAttachmentPaths;
@@ -4476,7 +4479,7 @@ export default function App() {
   const addAttachment = async () => {
     const selected = await open({ multiple: true, directory: false, title: "Add context files or images" });
     if (!selected) return;
-    addAttachmentPaths(Array.isArray(selected) ? selected : [selected]);
+    void addAttachmentPaths(Array.isArray(selected) ? selected : [selected]);
   };
 
   const pasteImages = useCallback(async (items: DataTransferItemList) => {
@@ -4492,12 +4495,11 @@ export default function App() {
           binary += String.fromCharCode(...buffer.subarray(offset, offset + chunk));
         }
         const extension = (item.type.split("/")[1] ?? "png").toLowerCase();
-        const path = await invoke<string>("save_pasted_image", { dataBase64: btoa(binary), extension });
+        const temporaryPath = await invoke<string>("save_pasted_image", { dataBase64: btoa(binary), extension });
+        const path = await invoke<string>("persist_image_attachment", { path: temporaryPath, displayName: file.name }).then((saved) => saved || temporaryPath, () => temporaryPath);
         // Pasted bytes are known to be an image regardless of the extension
         // the native side chose for the temporary file.
-        setAttachments((current) => (current.some((entry) => entry.path === path)
-          ? current
-          : [...current, { ...attachmentRecord(path), kind: "image" as const }]));
+        setAttachments((current) => withAttachedPaths(current, [path]));
       } catch (reason) {
         setError(friendlyError(reason));
       }
@@ -5022,6 +5024,16 @@ export default function App() {
   });
 
   const activeChatFont = previewChatFont ?? projectDefaults?.chatFont ?? settings.chatFont;
+  const composerProviderControl = (
+    <ThreadProviderControl
+      provider={effectiveSettings.provider}
+      defaultProvider={projectDefaultProvider}
+      threadStarted={Boolean(activeThread)}
+      disabled={!activeWorkspace || running}
+      onProvider={startNewThreadWithProvider}
+      onDefaultSettings={() => openSettings(activeProject ? "projects" : "models")}
+    />
+  );
 
   return (
     <div ref={shellRef} className="app-shell" data-theme={previewTheme ?? projectDefaults?.theme ?? settings.theme} data-color-scheme={themeColorScheme(previewTheme ?? projectDefaults?.theme ?? settings.theme)} data-effort-slider={previewEffortSlider ?? projectDefaults?.effortSlider ?? settings.effortSlider} data-chat-font={activeChatFont} data-openai-logo={settings.openAiLogo} data-claude-logo={settings.claudeLogo} data-cursor-logo={settings.cursorLogo} style={{ zoom: (settings.uiScale || 100) / 100 }}>
@@ -5369,15 +5381,6 @@ export default function App() {
                 <span>{headerUsageView.text}</span>
               </button>
             )}
-            <ThreadProviderControl
-              provider={effectiveSettings.provider}
-              model={effectiveSettings.model}
-              defaultProvider={projectDefaultProvider}
-              threadStarted={Boolean(activeThread)}
-              disabled={!activeWorkspace || running}
-              onProvider={startNewThreadWithProvider}
-              onDefaultSettings={() => openSettings(activeProject ? "projects" : "models")}
-            />
             <button className={`workspace-tools-trigger studio-toggle ${studioOpen ? "active" : ""}`} onClick={() => (studioOpen ? setStudioOpen(false) : openStudio(studioTab))} title={activeProject ? `${studioOpen ? "Close" : "Open"} project workspace tools (${workspaceShortcutLabel()})` : "Workspace tools are available inside projects"} aria-label={studioOpen ? "Close workspace tools" : "Open workspace tools"} aria-expanded={studioOpen} disabled={!activeProject}>
               <PanelRight size={17} />
               <span>Workspace</span>
@@ -5628,10 +5631,11 @@ export default function App() {
                 onStop={() => void stopTurnAndChildren()}
                 modelControls={
                   <>
-                    {effectiveSettings.provider === "openai" && <ModelPowerControl model={effectiveSettings.model || DEFAULT_OPENAI_MODEL} effort={effectiveSettings.reasoningEffort} fast={settings.serviceTier === "priority"} runtimeModels={runtimeModels} favorites={favoriteModels(modelFavorites, "openai")} onToggleFavorite={(model) => toggleModelFavorite("openai", model)} onModel={persistComposerModel} onEffort={persistComposerReasoning} onFast={(fast) => persistSettings({ ...settings, serviceTier: fast ? "priority" : null })} />}
+                    {effectiveSettings.provider === "openai" && <ModelPowerControl providerControl={composerProviderControl} model={effectiveSettings.model || DEFAULT_OPENAI_MODEL} effort={effectiveSettings.reasoningEffort} fast={settings.serviceTier === "priority"} runtimeModels={runtimeModels} favorites={favoriteModels(modelFavorites, "openai")} onToggleFavorite={(model) => toggleModelFavorite("openai", model)} onModel={persistComposerModel} onEffort={persistComposerReasoning} onFast={(fast) => persistSettings({ ...settings, serviceTier: fast ? "priority" : null })} />}
                     {effectiveSettings.provider === "openrouter" && (
                       <OpenRouterModelControl
                         model={effectiveSettings.model}
+                        providerControl={composerProviderControl}
                         effort={effectiveSettings.reasoningEffort}
                         models={openRouterModels}
                         loading={openRouterModelsLoading}
@@ -5650,6 +5654,7 @@ export default function App() {
                     {effectiveSettings.provider === "lmstudio" && (
                       <LMStudioModelControl
                         model={effectiveSettings.model}
+                        providerControl={composerProviderControl}
                         models={lmStudioModels}
                         effort={effectiveSettings.reasoningEffort}
                         loading={lmStudioModelsLoading}
@@ -5661,8 +5666,8 @@ export default function App() {
                         onEffort={persistComposerReasoning}
                       />
                     )}
-                    {effectiveSettings.provider === "claude" && <ClaudeModelControl model={effectiveSettings.model || DEFAULT_CLAUDE_MODEL} effort={effectiveSettings.reasoningEffort} models={claudeModels} loading={claudeModelsLoading} error={claudeModelsError} signedIn={claudeStatus?.loggedIn ?? false} favorites={favoriteModels(modelFavorites, "claude")} onToggleFavorite={(model) => toggleModelFavorite("claude", model)} onRefresh={() => void refreshClaudeCatalog()} onSignInRequired={() => openSettings("models")} onUnavailableModel={(model) => { void confirmDialog(`${model.displayName} needs a Claude Code update\n\n${model.requiredVersion ? `Claude Code ${model.requiredVersion} or newer is required. ` : ""}Open Updates to install the latest version without leaving Mythra Code.`, { confirmLabel: "Go to Updates", cancelLabel: "Not now" }).then((confirmed) => { if (confirmed) openSettings("updates"); }); }} onModel={(model) => persistComposerModel(model)} onEffort={persistComposerReasoning} />}
-                    {effectiveSettings.provider === "cursor" && <CursorModelControl model={effectiveSettings.model || DEFAULT_CURSOR_MODEL} models={cursorModels} effort={effectiveSettings.reasoningEffort} loading={cursorModelsLoading} favorites={favoriteModels(modelFavorites, "cursor")} onToggleFavorite={(model) => toggleModelFavorite("cursor", model)} onRefresh={() => void refreshCursorModels()} onModel={(model) => persistComposerModel(model)} onEffort={persistComposerReasoning} />}
+                    {effectiveSettings.provider === "claude" && <ClaudeModelControl providerControl={composerProviderControl} model={effectiveSettings.model || DEFAULT_CLAUDE_MODEL} effort={effectiveSettings.reasoningEffort} models={claudeModels} loading={claudeModelsLoading} error={claudeModelsError} signedIn={claudeStatus?.loggedIn ?? false} favorites={favoriteModels(modelFavorites, "claude")} onToggleFavorite={(model) => toggleModelFavorite("claude", model)} onRefresh={() => void refreshClaudeCatalog()} onSignInRequired={() => openSettings("models")} onUnavailableModel={(model) => { void confirmDialog(`${model.displayName} needs a Claude Code update\n\n${model.requiredVersion ? `Claude Code ${model.requiredVersion} or newer is required. ` : ""}Open Updates to install the latest version without leaving Mythra Code.`, { confirmLabel: "Go to Updates", cancelLabel: "Not now" }).then((confirmed) => { if (confirmed) openSettings("updates"); }); }} onModel={(model) => persistComposerModel(model)} onEffort={persistComposerReasoning} />}
+                    {effectiveSettings.provider === "cursor" && <CursorModelControl providerControl={composerProviderControl} model={effectiveSettings.model || DEFAULT_CURSOR_MODEL} models={cursorModels} effort={effectiveSettings.reasoningEffort} loading={cursorModelsLoading} favorites={favoriteModels(modelFavorites, "cursor")} onToggleFavorite={(model) => toggleModelFavorite("cursor", model)} onRefresh={() => void refreshCursorModels()} onModel={(model) => persistComposerModel(model)} onEffort={persistComposerReasoning} />}
                     {running && activeThreadId && deferredReasoningNoticeThreads.has(activeThreadId) && (
                       <p className="composer-reasoning-notice" role="status" aria-live="polite">
                         Reasoning change will apply to the next prompt.

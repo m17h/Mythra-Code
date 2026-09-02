@@ -657,7 +657,8 @@ describe("project defaults", () => {
     expect(shell).toHaveAttribute("data-theme", "synthwave");
     expect(shell).toHaveAttribute("data-effort-slider", "coil");
     expect(shell).toHaveAttribute("data-chat-font", "humanist");
-    expect(screen.getByRole("button", { name: "New thread provider: Claude" })).toHaveTextContent("claude-opus-5");
+    expect(screen.getByRole("button", { name: "New thread provider: Claude" })).toHaveTextContent("Claude");
+    expect(screen.getByRole("button", { name: /Claude model:/ })).toHaveTextContent("Opus");
 
     await user.click(screen.getByRole("button", { name: PROJECT_B.name }));
 

@@ -77,6 +77,7 @@ import type {
 } from "../types";
 import { usagePercentLabel } from "../lib/providerUsage";
 import { AppSelectMenu, type AppSelectOption } from "./AppSelectMenu";
+import "./SettingsModal.css";
 import { CLAUDE_FALLBACK_MODELS } from "./ClaudeModelControl";
 import { openAiModelOptions, type RuntimeModel } from "./ModelPowerControl";
 import { favoriteModels, type ModelFavorites } from "../lib/modelFavorites";
@@ -143,6 +144,13 @@ const CHAT_FONTS: ReadonlyArray<{ id: ChatFont; name: string; description: strin
   { id: "mono", name: "Monospace", description: "Fixed-width throughout, like a terminal" },
 ];
 
+const INTERFACE_SIZE_OPTIONS: AppSelectOption[] = [
+  { value: "90", label: "Compact", detail: "90% · fit more on screen" },
+  { value: "100", label: "Default", detail: "100% · recommended" },
+  { value: "110", label: "Comfortable", detail: "110% · easier to read" },
+  { value: "125", label: "Large", detail: "125% · maximum size" },
+];
+
 const PROJECT_PROVIDER_OPTIONS: AppSelectOption[] = [
   { value: "openai", label: "OpenAI", detail: "ChatGPT subscription", icon: <ProviderLogo provider="openai" size={15} /> },
   { value: "claude", label: "Claude", detail: "Claude Code subscription", icon: <ProviderLogo provider="claude" size={15} /> },
@@ -162,11 +170,13 @@ function modelOptionsForProvider(provider: Provider, selectedModel: string, cata
   if (provider === "openai") {
     options = openAiModelOptions(catalogs.runtimeModels).map((entry) => ({ value: entry.id, label: entry.name, detail: entry.tagline }));
   } else if (provider === "claude") {
-    options = (catalogs.claudeModels.length ? visibleClaudeModels(catalogs.claudeModels).filter((entry) => !entry.disabled) : CLAUDE_FALLBACK_MODELS).map((entry) => ({
+    const source = catalogs.claudeModels.length ? catalogs.claudeModels : CLAUDE_FALLBACK_MODELS;
+    options = visibleClaudeModels(source).map((entry) => ({
       value: entry.id,
       label: entry.displayName,
       detail: entry.description || entry.resolvedModel,
       keywords: entry.resolvedModel,
+      disabled: entry.disabled,
     }));
   } else if (provider === "cursor") {
     options = (catalogs.cursorModels.length ? catalogs.cursorModels : [{ id: DEFAULT_CURSOR_MODEL, name: "Auto", configOptions: [] }])
@@ -185,7 +195,10 @@ function modelOptionsForProvider(provider: Provider, selectedModel: string, cata
       keywords: entry.description,
     }));
   }
-  if (selectedModel && !options.some((entry) => entry.value === selectedModel)) {
+  const selectedClaudeModelWasSuperseded = provider === "claude"
+    && catalogs.claudeModels.some((entry) => entry.id === selectedModel)
+    && !visibleClaudeModels(catalogs.claudeModels).some((entry) => entry.id === selectedModel);
+  if (selectedModel && !selectedClaudeModelWasSuperseded && !options.some((entry) => entry.value === selectedModel)) {
     const savedClaudeModel = provider === "claude"
       ? catalogs.claudeModels.find((entry) => entry.id === selectedModel)
       : undefined;
@@ -925,8 +938,15 @@ export function SettingsModal({
               <strong>Interface size</strong>
               <small>Scale the complete app, including chat text, without changing the selected typeface.</small>
             </div>
-            <div className="runtime-field-grid interface-size-grid">
-              <label><span>Interface size</span><select value={local.uiScale ?? 100} onChange={(event) => setLocal({ ...local, uiScale: Number(event.target.value) })}><option value={90}>Compact (90%)</option><option value={100}>Default (100%)</option><option value={110}>Comfortable (110%)</option><option value={125}>Large (125%)</option></select></label>
+            <div className="interface-size-control">
+              <span className="interface-size-preview" aria-hidden="true">Aa</span>
+              <span className="interface-size-copy"><strong>App scale</strong><small>Choose the density that feels best on this display.</small></span>
+              <AppSelectMenu
+                value={String(local.uiScale ?? 100)}
+                options={INTERFACE_SIZE_OPTIONS}
+                ariaLabel="Interface size"
+                onChange={(value) => setLocal({ ...local, uiScale: Number(value) })}
+              />
             </div>
             <div className="slider-style-heading">
               <strong>Effort slider style</strong>

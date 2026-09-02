@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Check, ChevronDown, Gauge, LoaderCircle, RefreshCw } from "lucide-react";
 import { EffortSlider, effortFlairStyle } from "./effortFlair";
 import { ModelFavoriteStar, type ModelFavoriteProps } from "./ModelFavoriteStar";
@@ -51,6 +51,7 @@ export function ClaudeModelControl({
   loading = false,
   error = "",
   signedIn,
+  providerControl,
   favorites = [],
   onToggleFavorite,
   onModel,
@@ -66,6 +67,7 @@ export function ClaudeModelControl({
   loading?: boolean;
   error?: string;
   signedIn?: boolean;
+  providerControl?: ReactNode;
   onModel: (model: string) => void;
   onEffort: (effort: ReasoningEffort) => void;
   onRefresh?: () => void;
@@ -126,6 +128,7 @@ export function ClaudeModelControl({
       ref={rootRef}
       style={{ "--router-fill": `${fill}%` } as CSSProperties}
     >
+      {providerControl}
       <div className={`openrouter-picker ${open ? "open" : ""}`}>
         <button
           type="button"

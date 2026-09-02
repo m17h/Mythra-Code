@@ -1,6 +1,6 @@
 import { Children, isValidElement, memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Check, ChevronDown, ChevronRight, CircleDot, Clipboard, CornerUpRight, FileCode2, ImageIcon, ListChecks, MessageSquare, Pencil, TerminalSquare, UsersRound } from "lucide-react";
-import { convertFileSrc } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke, isTauri } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -327,8 +327,32 @@ function imagePreviewUrl(path: string): string {
   }
 }
 
+function imagePreviewNeedsNativePermission(path: string): boolean {
+  return !/^(?:asset:|https?:|data:|blob:)/i.test(path) && isTauri();
+}
+
 function MessageImagePreview({ path, name }: { path: string; name: string }) {
   const [failed, setFailed] = useState(false);
+  const [source, setSource] = useState(() => imagePreviewNeedsNativePermission(path) ? "" : imagePreviewUrl(path));
+
+  useEffect(() => {
+    let current = true;
+    setFailed(false);
+    if (!imagePreviewNeedsNativePermission(path)) {
+      setSource(imagePreviewUrl(path));
+      return () => { current = false; };
+    }
+    setSource("");
+    void invoke("prepare_image_preview", { path })
+      .then(() => {
+        if (current) setSource(imagePreviewUrl(path));
+      })
+      .catch(() => {
+        if (current) setFailed(true);
+      });
+    return () => { current = false; };
+  }, [path]);
+
   if (failed) {
     return (
       <span className="message-image-preview unavailable" title={name}>
@@ -337,6 +361,7 @@ function MessageImagePreview({ path, name }: { path: string; name: string }) {
       </span>
     );
   }
+  if (!source) return <span className="message-image-preview loading" aria-label={`Loading attached image: ${name}`} />;
   return (
     <img
       className="message-image-preview"

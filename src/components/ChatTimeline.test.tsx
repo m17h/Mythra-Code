@@ -3,7 +3,11 @@ import { describe, expect, it, vi } from "vitest";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn() }));
-vi.mock("@tauri-apps/api/core", () => ({ convertFileSrc: (path: string) => `asset://localhost/${encodeURIComponent(path)}` }));
+vi.mock("@tauri-apps/api/core", () => ({
+  convertFileSrc: (path: string) => `asset://localhost/${encodeURIComponent(path)}`,
+  invoke: vi.fn(async () => undefined),
+  isTauri: () => false,
+}));
 
 import { ActivityRow, ChatTimeline, CommandDisclosure, CompletedWorkDisclosure, FileDisclosure, ReasoningDisclosure, TIMELINE_MOUNT_ROWS, compactCompletedTurns, formatCompletedDuration, orderedTimelineEntries, type WorkItemEntry } from "./ChatTimeline";
 import { timelineFromTurns } from "../lib/threadTimeline";

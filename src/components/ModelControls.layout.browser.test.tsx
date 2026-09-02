@@ -2,9 +2,38 @@ import { fireEvent, render } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { ClaudeModelControl } from "./ClaudeModelControl";
 import { ModelPowerControl } from "./ModelPowerControl";
+import { ThreadProviderControl } from "./ThreadProviderControl";
 import "../styles.css";
 
 describe("model control browser layout", () => {
+  it("splits the former model area between provider and model while preserving reasoning space", () => {
+    const view = render(
+      <div className="app-shell" data-theme="kiwi" style={{ display: "block", width: 900 }}>
+        <ModelPowerControl
+          providerControl={<ThreadProviderControl provider="openai" defaultProvider="openai" threadStarted={false} onProvider={vi.fn()} onDefaultSettings={vi.fn()} />}
+          model="gpt-5.6-sol"
+          effort="high"
+          fast={false}
+          runtimeModels={[]}
+          onModel={vi.fn()}
+          onEffort={vi.fn()}
+          onFast={vi.fn()}
+        />
+      </div>,
+    );
+
+    const provider = view.container.querySelector<HTMLElement>(".composer-provider-control")!;
+    const model = view.container.querySelector<HTMLElement>(".model-picker")!;
+    const reasoning = view.container.querySelector<HTMLElement>(".reasoning-control")!;
+    const providerRect = provider.getBoundingClientRect();
+    const modelRect = model.getBoundingClientRect();
+    const reasoningRect = reasoning.getBoundingClientRect();
+
+    expect(providerRect.right).toBeLessThanOrEqual(modelRect.left + 1);
+    expect(modelRect.right).toBeLessThanOrEqual(reasoningRect.left + 1);
+    expect(Math.abs(providerRect.width - modelRect.width)).toBeLessThanOrEqual(35);
+    expect(Math.round(providerRect.height)).toBe(Math.round(modelRect.height));
+  });
   it("truncates the Claude catalog label before the refresh button", () => {
     const view = render(
       <div className="app-shell" data-theme="kiwi">

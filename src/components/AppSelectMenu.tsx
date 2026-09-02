@@ -12,6 +12,8 @@ export interface AppSelectOption {
   detail?: string;
   keywords?: string;
   icon?: ReactNode;
+  /** Visible but unavailable choices, such as models that need a CLI update. */
+  disabled?: boolean;
 }
 
 /**
@@ -128,7 +130,7 @@ export function AppSelectMenu({
   }, [normalizedQuery, onSearch, open, query]);
 
   const moveFocus = (current: HTMLButtonElement, direction: number) => {
-    const connected = optionRefs.current.filter((item): item is HTMLButtonElement => Boolean(item?.isConnected));
+    const connected = optionRefs.current.filter((item): item is HTMLButtonElement => Boolean(item?.isConnected && !item.disabled));
     if (!connected.length) return;
     const index = connected.indexOf(current);
     connected[(index + direction + connected.length) % connected.length]?.focus();
@@ -193,11 +195,13 @@ export function AppSelectMenu({
                     role="menuitemradio"
                     aria-checked={option.value === value}
                     className={option.value === value ? "selected" : ""}
+                    disabled={option.disabled}
                     onKeyDown={(event) => {
                       if (event.key === "ArrowDown") { event.preventDefault(); moveFocus(event.currentTarget, 1); }
                       if (event.key === "ArrowUp") { event.preventDefault(); moveFocus(event.currentTarget, -1); }
                     }}
                     onClick={() => {
+                      if (option.disabled) return;
                       onChange(option.value);
                       close();
                       triggerRef.current?.focus();

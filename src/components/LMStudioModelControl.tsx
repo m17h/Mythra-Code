@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Check, ChevronDown, Gauge, LoaderCircle, RefreshCw, Search } from "lucide-react";
 import { EffortSlider, effortFlairStyle } from "./effortFlair";
 import type { LMStudioModel, LMStudioReasoningEffort } from "../lib/lmStudio";
@@ -21,6 +21,7 @@ export function LMStudioModelControl({
   effort,
   loading,
   error,
+  providerControl,
   favorites = [],
   onToggleFavorite,
   onRefresh,
@@ -32,6 +33,7 @@ export function LMStudioModelControl({
   effort: ReasoningEffort;
   loading: boolean;
   error: string;
+  providerControl?: ReactNode;
   onRefresh: () => void;
   onModel: (model: string) => void;
   onEffort: (effort: ReasoningEffort) => void;
@@ -91,6 +93,7 @@ export function LMStudioModelControl({
 
   return (
     <div className="openrouter-control lmstudio-control" ref={rootRef} style={{ "--router-fill": `${fill}%` } as CSSProperties}>
+      {providerControl}
       <div className={`openrouter-picker ${open ? "open" : ""}`}>
         <button type="button" className="openrouter-trigger" aria-haspopup="menu" aria-expanded={open} aria-label={`LM Studio model: ${model || "not selected"}`} onClick={() => setOpen((value) => !value)}>
           <span className="openrouter-logo lmstudio-logo"><LmStudioLogo size={15} /></span>

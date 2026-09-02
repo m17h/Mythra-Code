@@ -245,7 +245,7 @@ describe("SettingsModal", () => {
     expect(within(screen.getByRole("group", { name: "Workspace" })).getByRole("button", { name: /Interface/ })).toBeInTheDocument();
     // Interface is appearance-only: themes, effort-slider styles, chat typeface.
     expect(screen.getByText("Appearance")).toBeInTheDocument();
-    expect(screen.getByRole("combobox", { name: "Interface size" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Interface size" })).toHaveAttribute("aria-haspopup", "menu");
     expect(screen.getByText("Chat typeface")).toBeInTheDocument();
     expect(screen.queryByText("Getting started")).not.toBeInTheDocument();
     expect(screen.queryByText("Runtime behavior")).not.toBeInTheDocument();
@@ -259,7 +259,7 @@ describe("SettingsModal", () => {
     expect(screen.getByText("Desktop notifications")).toBeInTheDocument();
     expect(screen.getByText("Diagnostics")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Export JSON" })).toBeInTheDocument();
-    expect(screen.queryByRole("combobox", { name: "Interface size" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Interface size" })).not.toBeInTheDocument();
     expect(screen.queryByText("Appearance")).not.toBeInTheDocument();
   });
 
@@ -279,6 +279,18 @@ describe("SettingsModal", () => {
     expect(onChatFontPreview).toHaveBeenLastCalledWith("serif");
     expect(onSave).not.toHaveBeenCalled();
     expect(container.querySelector(".chat-font-card.selected")).toHaveTextContent("Reading serif");
+  });
+
+  it("changes interface size through the app-owned menu", () => {
+    const onSave = vi.fn();
+    const { container } = render(<SettingsModal {...modalProps({ onSave })} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Interface size" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Comfortable/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+
+    expect(container.querySelector(".interface-size-control select")).not.toBeInTheDocument();
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ uiScale: 110 }));
   });
 
   it("saves a previewed chat typeface with the rest of the settings", () => {
@@ -490,6 +502,23 @@ describe("SettingsModal", () => {
       provider: "cursor",
       model: "grok-4.5",
     }));
+  });
+
+  it("hides a superseded Claude default and keeps its update-required successor visible", () => {
+    render(<SettingsModal {...modalProps({
+      initialSection: "models",
+      settings: { ...DEFAULT_SETTINGS, provider: "claude", model: "claude-fable-5" },
+      claudeModels: [
+        { id: "claude-fable-5", displayName: "Fable 5", description: "Fable 5 frontier coding", resolvedModel: "claude-fable-5", disabled: false, unavailableReason: null, requiredVersion: null, supportedEfforts: [] },
+        { id: "cc-update-required-1", displayName: "Fable 5.1", description: "Update to 2.1.250+ to use Fable 5.1", resolvedModel: "claude-fable-5-1", disabled: true, unavailableReason: "update-required", requiredVersion: "2.1.250", supportedEfforts: [] },
+      ],
+    })} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Default Claude model" }));
+
+    expect(screen.queryByText("Fable 5")).not.toBeInTheDocument();
+    expect(screen.getByText("Fable 5.1")).toBeInTheDocument();
+    expect(screen.getByRole("menuitemradio", { name: /Fable 5\.1/ })).toBeDisabled();
   });
 
   it("saves the chosen logo for OpenAI models", () => {

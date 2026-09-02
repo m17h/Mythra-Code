@@ -1,0 +1,41 @@
+.interface-size-control {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) minmax(210px, 260px);
+  align-items: center;
+  gap: 11px;
+  padding: 10px 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: rgba(255, 255, 255, .018);
+}
+
+.interface-size-preview {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--green) 22%, var(--line));
+  border-radius: var(--r-sm);
+  color: var(--green);
+  background: var(--green-soft);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -.04em;
+}
+
+.interface-size-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.interface-size-copy strong { color: var(--ink-2); font-size: var(--fs-ui); font-weight: 620; }
+.interface-size-copy small { color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.4; }
+.interface-size-control .app-select { min-width: 0; }
+.interface-size-control .app-select-trigger { min-height: 46px; }
+
+@media (max-width: 760px) {
+  .interface-size-control { grid-template-columns: 38px minmax(0, 1fr); }
+  .interface-size-control .app-select { grid-column: 1 / -1; }
+}

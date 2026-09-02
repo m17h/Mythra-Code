@@ -2690,6 +2690,110 @@ async fn read_image_attachment(path: &Path) -> Result<Vec<u8>, String> {
         .map_err(|error| format!("Could not read {}: {error}", path.display()))
 }
 
+fn supported_preview_image_extension(path: &Path) -> Option<String> {
+    let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+    matches!(
+        extension.as_str(),
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "heic"
+    )
+    .then_some(extension)
+}
+
+fn durable_image_filename(display_name: Option<&str>, extension: &str) -> String {
+    let basename = display_name
+        .and_then(|name| {
+            name.replace('\\', "/")
+                .rsplit('/')
+                .next()
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| "Attached image".to_string());
+    let stem = basename
+        .rsplit_once('.')
+        .map(|(stem, _)| stem)
+        .unwrap_or(&basename)
+        .chars()
+        .filter(|character| {
+            character.is_alphanumeric() || matches!(character, ' ' | '-' | '_' | '(' | ')')
+        })
+        .take(120)
+        .collect::<String>();
+    format!(
+        "{}.{}",
+        if stem.trim().is_empty() {
+            "Attached image"
+        } else {
+            stem.trim()
+        },
+        extension
+    )
+}
+
+/// Re-authorizes a transcript image for the asset protocol after restart.
+/// Dialog scopes are session-local, so an otherwise valid image selected by
+/// the user would render once and then become a broken tile in old threads.
+#[tauri::command]
+async fn prepare_image_preview(app: AppHandle, path: String) -> Result<(), String> {
+    let path = PathBuf::from(path);
+    if supported_preview_image_extension(&path).is_none() {
+        return Err("The attachment is not a supported preview image".into());
+    }
+    let metadata = tokio::fs::metadata(&path)
+        .await
+        .map_err(|error| format!("Could not open the attached image: {error}"))?;
+    if !metadata.is_file() || metadata.len() > MAX_IMAGE_ATTACHMENT_BYTES {
+        return Err("The attached image is unavailable or exceeds 50 MB".into());
+    }
+    app.asset_protocol_scope()
+        .allow_file(&path)
+        .map_err(|error| format!("Could not prepare the attached image preview: {error}"))
+}
+
+/// Copies a newly attached image into durable app data. Thread history keeps
+/// only this path, so previews stay lightweight in memory and do not depend on
+/// a screenshot utility's temporary source file surviving indefinitely.
+#[tauri::command]
+async fn persist_image_attachment(
+    app: AppHandle,
+    path: String,
+    display_name: Option<String>,
+) -> Result<String, String> {
+    let source = PathBuf::from(path);
+    let extension = supported_preview_image_extension(&source)
+        .ok_or_else(|| "The attachment is not a supported image".to_string())?;
+    let bytes = read_image_attachment(&source).await?;
+    let directory = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Could not resolve Mythra Code app data: {error}"))?
+        .join("message-images");
+    tokio::fs::create_dir_all(&directory)
+        .await
+        .map_err(|error| format!("Could not create the message-images folder: {error}"))?;
+
+    if source.starts_with(&directory) {
+        app.asset_protocol_scope()
+            .allow_file(&source)
+            .map_err(|error| format!("Could not prepare the attached image preview: {error}"))?;
+        return Ok(source.to_string_lossy().into_owned());
+    }
+
+    let token = random_hex_token()?;
+    let destination_directory = directory.join(format!("{}-{}", unix_timestamp_ms(), &token[..8]));
+    tokio::fs::create_dir_all(&destination_directory)
+        .await
+        .map_err(|error| format!("Could not create the message-image folder: {error}"))?;
+    let destination =
+        destination_directory.join(durable_image_filename(display_name.as_deref(), &extension));
+    tokio::fs::write(&destination, bytes)
+        .await
+        .map_err(|error| format!("Could not preserve the attached image: {error}"))?;
+    app.asset_protocol_scope()
+        .allow_file(&destination)
+        .map_err(|error| format!("Could not prepare the attached image preview: {error}"))?;
+    Ok(destination.to_string_lossy().into_owned())
+}
+
 /// Directory grant for a non-image attachment. Returns None when the
 /// attachment should be referenced without an `--add-dir` grant: the path
 /// cannot be verified as a regular file, or its parent resolves to the
@@ -4947,6 +5051,8 @@ pub fn run() {
             save_openrouter_key,
             save_lmstudio_key,
             save_pasted_image,
+            prepare_image_preview,
+            persist_image_attachment,
             has_openrouter_key,
             openrouter_credits,
             has_lmstudio_key,
