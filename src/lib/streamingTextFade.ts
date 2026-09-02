@@ -1,12 +1,15 @@
 /** Paint-only decoration. Never changes message text, Markdown nodes, or geometry. */
 export interface StreamingTextFade {
   update(source: string): void;
+  finish(): void;
   dispose(): void;
 }
 
-const NO_FADE: StreamingTextFade = { update() {}, dispose() {} };
-const DURATION = 180;
-const MAX_COHORTS = 8;
+const NO_FADE: StreamingTextFade = { update() {}, finish() {}, dispose() {} };
+const DURATION = 420;
+const BUCKET_MS = 60;
+const START_OPACITY = 8;
+const MAX_COHORTS = 24;
 const MAX_RANGES = 64;
 const MAX_STYLE_READS = 64;
 const MAX_SOURCE = 48_000;
@@ -15,7 +18,7 @@ let nextOwner = 0;
 
 type TextPart = { node: Text; start: number; end: number };
 type Snapshot = { text: string; parts: TextPart[] };
-type Cohort = { start: number; end: number; born: number; slot: number; color: string; highlight: Highlight };
+type Cohort = { start: number; end: number; born: number; slot: number; color: string; highlight: Highlight; sealed?: boolean };
 
 function snapshot(root: HTMLElement): Snapshot | null {
   const parts: TextPart[] = [];
@@ -68,6 +71,7 @@ function createSupportedFade(root: HTMLElement): StreamingTextFade {
   let stylesheet: HTMLStyleElement | null = null;
   let rules: CSSStyleRule[] = [];
   let disposed = false;
+  let finishing = false;
 
   const remove = (cohort: Cohort) => {
     if (registry.get(owner + cohort.slot) === cohort.highlight) registry.delete(owner + cohort.slot);
@@ -79,7 +83,11 @@ function createSupportedFade(root: HTMLElement): StreamingTextFade {
     cohorts.forEach(remove);
     cohorts = [];
   };
-  const reset = () => { clear(); previous = null; };
+  const reset = () => {
+    clear();
+    previous = null;
+    if (finishing && !disposed) dispose();
+  };
   const selecting = () => {
     const selection = doc.getSelection();
     if (!selection || selection.isCollapsed) return false;
@@ -119,7 +127,7 @@ function createSupportedFade(root: HTMLElement): StreamingTextFade {
       if (elapsed >= 1) remove(cohort);
       // Highlight inheritance is separate from element inheritance. currentColor
       // here compounds alpha through ancestors and can also lose the text hue.
-      else rules[cohort.slot].style.color = `color-mix(in srgb, ${cohort.color} ${45 + 55 * (1 - (1 - elapsed) ** 2)}%, transparent)`;
+      else rules[cohort.slot].style.color = `color-mix(in srgb, ${cohort.color} ${START_OPACITY + (100 - START_OPACITY) * elapsed * elapsed * (3 - 2 * elapsed)}%, transparent)`;
     }
     cohorts = cohorts.filter((cohort) => now - cohort.born < DURATION);
   };
@@ -130,6 +138,7 @@ function createSupportedFade(root: HTMLElement): StreamingTextFade {
       if (blocked()) { reset(); return; }
       paint(now);
       if (cohorts.length) frame = view.requestAnimationFrame(tick);
+      else if (finishing) dispose();
     } catch { dispose(); } // Cosmetic failures must never take down a transcript.
   };
 
@@ -139,8 +148,19 @@ function createSupportedFade(root: HTMLElement): StreamingTextFade {
 
   return {
     dispose,
+    finish() {
+      if (disposed) return;
+      finishing = true;
+      if (!cohorts.length) dispose();
+    },
     update(source) {
       if (disposed) return;
+      // A later authoritative edit to a finished message is not a stream.
+      // Show it normally rather than keeping ranges over a changed DOM.
+      if (finishing) {
+        if (previous?.source !== source) dispose();
+        return;
+      }
       try {
         if (blocked() || source.length > MAX_SOURCE) { reset(); return; }
         if (previous?.source === source) return;
@@ -153,6 +173,7 @@ function createSupportedFade(root: HTMLElement): StreamingTextFade {
 
         const now = view.performance.now();
         paint(now);
+        const previousCohorts = cohorts.map((cohort) => ({ ...cohort }));
         const colors = new Map<Element, string>();
         const colorOf = (node: Text) => {
           const parent = node.parentElement!;
@@ -164,17 +185,34 @@ function createSupportedFade(root: HTMLElement): StreamingTextFade {
           }
           return color;
         };
+        // Spend the style budget on already-fading text before new arrivals.
+        for (const part of current.parts) {
+          if (cohorts.some((cohort) => part.start < cohort.end && part.end > cohort.start)
+            && colorOf(part.node) === null) break;
+        }
         if (current.text.length > prior.text.length) {
           ensureRules();
           const newColors = new Set<string>();
           for (const part of current.parts) {
             if (part.end <= prior.text.length) continue;
             const color = colorOf(part.node);
-            if (color === null) { clear(); return; }
+            if (color === null) {
+              newColors.clear();
+              // Do not later extend a group across text shown without fading.
+              cohorts.forEach((cohort) => { cohort.sealed = true; });
+              break;
+            }
             newColors.add(color);
           }
           for (const color of newColors) {
-            if (cohorts.length >= MAX_COHORTS) remove(cohorts.shift()!);
+            // Bucket by time, not commit count: 120 Hz updates must not force
+            // half-faded text to full opacity. Birth times never move backward.
+            const reusable = cohorts.find((cohort) => !cohort.sealed && cohort.color === color
+              && Math.floor(cohort.born / BUCKET_MS) === Math.floor(now / BUCKET_MS));
+            if (reusable) { reusable.end = current.text.length; continue; }
+            // Unusually colorful output may use ordinary rendering for new
+            // text, but must not interrupt fades that are already in progress.
+            if (cohorts.length >= MAX_COHORTS) continue;
             const slot = Array.from({ length: MAX_COHORTS }, (_, index) => index).find((index) => !cohorts.some((cohort) => cohort.slot === index))!;
             cohorts.push({ start: prior.text.length, end: current.text.length, born: now, slot, color, highlight: new view.Highlight() });
           }
@@ -183,26 +221,47 @@ function createSupportedFade(root: HTMLElement): StreamingTextFade {
         // React may replace text nodes or reset Range offsets through nodeValue.
         // Rebuild from committed rendered-text offsets, never Markdown offsets.
         const segments = segmenter.segment(current.text);
-        let rangeCount = 0;
-        for (const cohort of cohorts) {
-          cohort.highlight.clear();
-          const first = segments.containing(cohort.start);
-          const last = cohort.end < current.text.length ? segments.containing(cohort.end) : undefined;
-          const start = first && first.index < cohort.start ? first.index + first.segment.length : cohort.start;
-          const end = last && last.index < cohort.end ? last.index : cohort.end;
-          for (const part of current.parts) {
-            const from = Math.max(start, part.start);
-            const to = Math.min(end, part.end);
-            if (from >= to) continue;
-            // A semantic reparse can change a node's color. Leave that text fully
-            // visible instead of recoloring links/code with a stale cohort hue.
-            const color = colorOf(part.node);
-            if (color === null) { clear(); return; }
-            if (color !== cohort.color) continue;
-            if (++rangeCount > MAX_RANGES) { clear(); return; }
+        const planRanges = (candidates: Cohort[]) => {
+          let rangeCount = 0;
+          const plan: Array<{ cohort: Cohort; ranges: Array<{ node: Text; from: number; to: number }> }> = [];
+          for (const cohort of candidates) {
+            const ranges: Array<{ node: Text; from: number; to: number }> = [];
+            const first = segments.containing(cohort.start);
+            const last = cohort.end < current.text.length ? segments.containing(cohort.end) : undefined;
+            const start = first && first.index < cohort.start ? first.index + first.segment.length : cohort.start;
+            const end = last && last.index < cohort.end ? last.index : cohort.end;
+            for (const part of current.parts) {
+              const from = Math.max(start, part.start);
+              const to = Math.min(end, part.end);
+              if (from >= to) continue;
+              // A semantic reparse can change a node's color. Leave that text fully
+              // visible instead of recoloring links/code with a stale cohort hue.
+              const color = colorOf(part.node);
+              if (color === null) return null;
+              if (color !== cohort.color) continue;
+              if (++rangeCount > MAX_RANGES) return null;
+              ranges.push({ node: part.node, from: from - part.start, to: to - part.start });
+            }
+            plan.push({ cohort, ranges });
+          }
+          return plan;
+        };
+        let plan = planRanges(cohorts);
+        if (!plan) {
+          // Roll back only the proposed append, not the in-flight fades. Plan
+          // atomically so an overflow never leaves stale or partial DOM ranges.
+          cohorts = previousCohorts.map((cohort) => ({ ...cohort, sealed: true }));
+          plan = planRanges(cohorts);
+          // A reparse that makes even the old ranges unrepresentable still
+          // falls back to ordinary text within the same strict work limits.
+          if (!plan) { clear(); return; }
+        }
+        cohorts.forEach((cohort) => cohort.highlight.clear());
+        for (const { cohort, ranges } of plan) {
+          for (const { node, from, to } of ranges) {
             const range = doc.createRange();
-            range.setStart(part.node, from - part.start);
-            range.setEnd(part.node, to - part.start);
+            range.setStart(node, from);
+            range.setEnd(node, to);
             cohort.highlight.add(range);
           }
           registry.set(owner + cohort.slot, cohort.highlight);
@@ -214,6 +273,7 @@ function createSupportedFade(root: HTMLElement): StreamingTextFade {
         });
         paint(now);
         if (cohorts.length && frame === null) frame = view.requestAnimationFrame(tick);
+        else if (!cohorts.length && finishing) dispose();
       } catch { dispose(); }
     },
   };

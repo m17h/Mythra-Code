@@ -34,13 +34,18 @@ describe("live Markdown paint integration", () => {
     expect(highlights()).toHaveLength(0);
   });
 
-  it("removes decoration on completion or switching threads without losing the final append", () => {
+  it("keeps the DOM and final fade through completion, then cleans up without delaying text", async () => {
     const view = render(<Shell text="First " />);
     view.rerender(<Shell text="First streaming" />);
     expect(highlights().length).toBeGreaterThan(0);
+    const body = view.container.querySelector(".rich-markdown");
+    const textNode = body?.querySelector("p")?.firstChild;
     view.rerender(<Shell text="First streaming final." streaming={false} />);
-    expect(highlights()).toHaveLength(0);
+    expect(highlights().length).toBeGreaterThan(0);
+    expect(view.container.querySelector(".rich-markdown")).toBe(body);
+    expect(body?.querySelector("p")?.firstChild).toBe(textNode);
     expect(view.container.querySelector(".rich-markdown")?.textContent).toBe("First streaming final.");
+    await vi.waitFor(() => expect(document.querySelectorAll("style[data-mythra-stream-fade]")).toHaveLength(0), { timeout: 800 });
     view.rerender(<Shell key="other-thread" text="Another live thread" />);
     expect(highlights()).toHaveLength(0);
     view.rerender(<Shell key="other-thread" text="Another live thread continues" />);
@@ -57,15 +62,16 @@ describe("live Markdown paint integration", () => {
     expect(body.querySelector("a")?.getAttribute("href")).toBe("https://example.com");
     expect(body.querySelector("table")).not.toBeNull();
     expect(body.querySelector("code")?.textContent).toBe("const x = 1;\n");
-    const html = body.innerHTML;
     const height = body.getBoundingClientRect().height;
     await act(async () => { fireEvent.click(body.querySelector(".code-copy")!); });
     expect(write).toHaveBeenCalledWith("const x = 1;"); // Existing copy strips the fence's trailing newline.
+    const html = body.innerHTML;
     await vi.waitFor(() => expect(highlights()).toHaveLength(0));
     expect(body.getBoundingClientRect().height).toBe(height);
     view.rerender(<Shell text={text} streaming={false} />);
     const finalBody = view.container.querySelector<HTMLElement>(".rich-markdown")!;
     expect(finalBody.innerHTML).toBe(html);
+    expect(finalBody).toBe(body);
     expect(finalBody.getBoundingClientRect().height).toBe(height);
   });
 
@@ -97,5 +103,35 @@ describe("live Markdown paint integration", () => {
     expect(highlights()).toHaveLength(0);
     view.rerender(<Shell text="Unrelated replacement live" />);
     expect(fadedText()).toBe(" live");
+  });
+
+  it("cleans up a finishing fade on thread switch and an authoritative final-text edit", () => {
+    const view = render(<Shell text="Start" />);
+    view.rerender(<Shell text="Start appended" streaming={false} />);
+    expect(highlights().length).toBeGreaterThan(0);
+    view.rerender(<Shell text="Corrected final message" streaming={false} />);
+    expect(highlights()).toHaveLength(0);
+    expect(document.querySelectorAll("style[data-mythra-stream-fade]")).toHaveLength(0);
+    view.rerender(<Shell text="Resume" />);
+    view.rerender(<Shell text="Resume appended" streaming={false} />);
+    expect(highlights().length).toBeGreaterThan(0);
+    view.rerender(<Shell key="different" text="Opened historical message" streaming={false} />);
+    expect(highlights()).toHaveLength(0);
+    expect(document.querySelectorAll("style[data-mythra-stream-fade]")).toHaveLength(0);
+  });
+
+  it("keeps the final answer mounted when completed-turn compaction hides progress updates", () => {
+    const history: ChatMessage[] = [
+      { id: "prompt", role: "user", text: "Build it", timelineOrder: 1, turnId: "turn" },
+      { id: "progress", role: "assistant", text: "Preparing the changes", timelineOrder: 2, turnId: "turn" },
+    ];
+    const view = render(<Shell history={history} text="The result" />);
+    view.rerender(<Shell history={history} text="The result is ready" />);
+    const body = view.container.querySelectorAll(".message.assistant .rich-markdown")[1];
+    expect(body).toBeDefined();
+    view.rerender(<Shell history={history} text="The result is ready now." streaming={false} />);
+    expect(view.container.querySelectorAll(".message.assistant .rich-markdown")).toHaveLength(1);
+    expect(view.container.querySelector(".message.assistant .rich-markdown")).toBe(body);
+    expect(highlights().length).toBeGreaterThan(0);
   });
 });

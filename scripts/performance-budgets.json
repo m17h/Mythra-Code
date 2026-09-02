@@ -123,6 +123,12 @@
       "decision": "Accept 4,274 Safari / 4,204 Chrome lazy JavaScript bytes (about 0.30% total) for a 180 ms fade of newly appended text. App entry, startup JavaScript and startup CSS are unchanged. The controller stays in the lazy timeline chunk, keeps existing deferred Markdown and DOM geometry, adds no provider/persistence work, and bounds live work to eight groups, 64 ranges/color reads, and a small capped message snapshot. This is measured feature overhead, not a speed improvement. Large or complex messages, rewrites, selection, reduced motion and unsupported browsers use ordinary fully visible text. Limits match measured output with no extra headroom.",
       "safari13": { "appEntryDeltaBytes": 0, "startupJsDeltaBytes": 0, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1438096, "totalJsToBytes": 1442370, "totalJsDeltaBytes": 4274 },
       "chrome105": { "appEntryDeltaBytes": 0, "startupJsDeltaBytes": 0, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1404070, "totalJsToBytes": 1408274, "totalJsDeltaBytes": 4204 }
+    },
+    {
+      "change": "Make live text fades gentler and uninterrupted",
+      "decision": "Accept 817 Safari / 747 Chrome lazy JavaScript bytes (under 0.06% total) for a softer 420 ms curve, fixed time buckets, preserved Markdown DOM at completion, and atomic range-budget fallback. App entry, startup JavaScript and startup CSS are unchanged. Live decoration remains bounded: 24 color/time groups, 64 ranges/color reads, and the original message/snapshot limits. Overflow skips new decoration without evicting representable in-flight fades; completed history creates no controller. This is measured visual-feature overhead, not a speed improvement. No token queue, provider, persistence, thread-loading or transcript-memory changes are introduced. Limits match measured output with no extra headroom.",
+      "safari13": { "appEntryDeltaBytes": 0, "startupJsDeltaBytes": 0, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1442370, "totalJsToBytes": 1443187, "totalJsDeltaBytes": 817 },
+      "chrome105": { "appEntryDeltaBytes": 0, "startupJsDeltaBytes": 0, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1408274, "totalJsToBytes": 1409021, "totalJsDeltaBytes": 747 }
     }
   ],
   "profiles": {
@@ -130,13 +136,13 @@
       "appEntryRawBytes": 348377,
       "startupJsRawBytes": 701154,
       "startupCssRawBytes": 342251,
-      "totalJsRawBytes": 1442370
+      "totalJsRawBytes": 1443187
     },
     "chrome105-minified": {
       "appEntryRawBytes": 330744,
       "startupJsRawBytes": 676746,
       "startupCssRawBytes": 340128,
-      "totalJsRawBytes": 1408274
+      "totalJsRawBytes": 1409021
     }
   }
 }
