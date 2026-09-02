@@ -93,20 +93,26 @@
       "decision": "Accept about 0.13% more startup JavaScript and 0.09% more total JavaScript for truthful superseded-model state, runnable project-default selection, disabled-row keyboard recovery, explicit image-persistence failures, and native preview accessibility. The native copy path simultaneously removes a second full in-memory image buffer of up to 50 MB by streaming directly through the filesystem; CSS and thread-memory payloads are unchanged.",
       "safari13": { "appEntryFromBytes": 343362, "appEntryToBytes": 343748, "appEntryDeltaBytes": 386, "startupJsFromBytes": 693235, "startupJsToBytes": 694135, "startupJsDeltaBytes": 900, "startupCssFromBytes": 339591, "startupCssToBytes": 339591, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1428179, "totalJsToBytes": 1429473, "totalJsDeltaBytes": 1294 },
       "chrome105": { "appEntryFromBytes": 325870, "appEntryToBytes": 326185, "appEntryDeltaBytes": 315, "startupJsFromBytes": 669029, "startupJsToBytes": 669793, "startupJsDeltaBytes": 764, "startupCssFromBytes": 337468, "startupCssToBytes": 337468, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1394403, "totalJsToBytes": 1395508, "totalJsDeltaBytes": 1105 }
+    },
+    {
+      "change": "Make sends wait for durable attachment preparation",
+      "decision": "Accept 648 Safari / 647 Chrome startup and total JavaScript bytes to display selected files immediately while preventing a quick Send from omitting a still-copying image or persisting its temporary source path. The wait exists only when attachment preparation is outstanding; ordinary composer sends add no asynchronous work, and CSS and thread-memory payloads are unchanged.",
+      "safari13": { "appEntryFromBytes": 343748, "appEntryToBytes": 344396, "appEntryDeltaBytes": 648, "startupJsFromBytes": 694135, "startupJsToBytes": 694783, "startupJsDeltaBytes": 648, "startupCssFromBytes": 339591, "startupCssToBytes": 339591, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1429473, "totalJsToBytes": 1430121, "totalJsDeltaBytes": 648 },
+      "chrome105": { "appEntryFromBytes": 326185, "appEntryToBytes": 326832, "appEntryDeltaBytes": 647, "startupJsFromBytes": 669793, "startupJsToBytes": 670440, "startupJsDeltaBytes": 647, "startupCssFromBytes": 337468, "startupCssToBytes": 337468, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1395508, "totalJsToBytes": 1396155, "totalJsDeltaBytes": 647 }
     }
   ],
   "profiles": {
     "safari13-minified": {
-      "appEntryRawBytes": 343748,
-      "startupJsRawBytes": 694135,
+      "appEntryRawBytes": 344396,
+      "startupJsRawBytes": 694783,
       "startupCssRawBytes": 339591,
-      "totalJsRawBytes": 1429473
+      "totalJsRawBytes": 1430121
     },
     "chrome105-minified": {
-      "appEntryRawBytes": 326185,
-      "startupJsRawBytes": 669793,
+      "appEntryRawBytes": 326832,
+      "startupJsRawBytes": 670440,
       "startupCssRawBytes": 337468,
-      "totalJsRawBytes": 1395508
+      "totalJsRawBytes": 1396155
     }
   }
 }

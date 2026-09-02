@@ -93,7 +93,7 @@ import { listLMStudioModels, type LMStudioModel } from "./lib/lmStudio";
 import { EMPTY_MODEL_FAVORITES, MODEL_FAVORITES_KEY, favoriteModels, sanitizeModelFavorites, toggleFavoriteModel, type ModelFavorites } from "./lib/modelFavorites";
 import { fetchOpenRouterCatalog, mergeOpenRouterModels, resolveOpenRouterSlug } from "./lib/openRouterCatalog";
 import { basename, joinPath, normalizedProjectPath } from "./lib/paths";
-import { attachmentKind, withAttachedPaths } from "./lib/attachments";
+import { attachmentKind, attachmentRecord, withAttachedPaths } from "./lib/attachments";
 import { attachmentsFor, forgetAttachmentDraft, withAttachmentDraft, type AttachmentDrafts } from "./lib/attachmentDrafts";
 import { EMPTY_REVIEW_DIFF } from "./lib/gitDiff";
 import { shellCommand } from "./lib/shellCommand";
@@ -4466,20 +4466,45 @@ export default function App() {
     }
   };
 
+  const pendingAttachmentPreparationsRef = useRef(new Set<Promise<void>>());
+
   const addAttachmentPaths = useCallback(async (paths: string[]) => {
     if (!paths.length) return;
-    const prepared = await Promise.all(paths.map(async (path) => {
-      if (attachmentKind(path) !== "image") return { path, error: null };
-      try {
-        const saved = await invoke<string>("persist_image_attachment", { path, displayName: basename(path) });
-        return { path: saved || path, error: null };
-      } catch (reason) {
-        return { path, error: friendlyError(reason) };
-      }
-    }));
-    setAttachments((current) => withAttachedPaths(current, prepared.map((entry) => entry.path)));
-    const failure = prepared.find((entry) => entry.error)?.error;
-    if (failure) setError(`The image was attached from its original location, but Mythra Code could not preserve a durable copy: ${failure}`);
+    // Show selected files immediately. Sending waits for the tracked durable
+    // copies below, so a quick Enter cannot omit a large image or save its
+    // temporary source path into thread history.
+    setAttachments((current) => withAttachedPaths(current, paths));
+    const imagePaths = paths.filter((path) => attachmentKind(path) === "image");
+    if (!imagePaths.length) return;
+    const preparation = (async () => {
+      const prepared = await Promise.all(imagePaths.map(async (original) => {
+        try {
+          const saved = await invoke<string>("persist_image_attachment", { path: original, displayName: basename(original) });
+          return { original, path: saved || original, error: null };
+        } catch (reason) {
+          return { original, path: original, error: friendlyError(reason) };
+        }
+      }));
+      const replacements = new Map(prepared.map((entry) => [entry.original, entry.path]));
+      setAttachments((current) => {
+        let changed = false;
+        const next = current.map((entry) => {
+          const replacement = replacements.get(entry.path);
+          if (!replacement || replacement === entry.path) return entry;
+          changed = true;
+          return attachmentRecord(replacement);
+        });
+        return changed ? next : current;
+      });
+      const failure = prepared.find((entry) => entry.error)?.error;
+      if (failure) setError(`The image was attached from its original location, but Mythra Code could not preserve a durable copy: ${failure}`);
+    })();
+    pendingAttachmentPreparationsRef.current.add(preparation);
+    try {
+      await preparation;
+    } finally {
+      pendingAttachmentPreparationsRef.current.delete(preparation);
+    }
   }, [setAttachments]);
 
   addAttachmentPathsRef.current = addAttachmentPaths;
@@ -4495,7 +4520,7 @@ export default function App() {
       if (!item.type.startsWith("image/")) continue;
       const file = item.getAsFile();
       if (!file) continue;
-      try {
+      const preparation = (async () => {
         const buffer = new Uint8Array(await file.arrayBuffer());
         let binary = "";
         const chunk = 0x8000;
@@ -4504,6 +4529,7 @@ export default function App() {
         }
         const extension = (item.type.split("/")[1] ?? "png").toLowerCase();
         const temporaryPath = await invoke<string>("save_pasted_image", { dataBase64: btoa(binary), extension });
+        setAttachments((current) => withAttachedPaths(current, [temporaryPath]));
         let path = temporaryPath;
         try {
           path = await invoke<string>("persist_image_attachment", { path: temporaryPath, displayName: file.name }) || temporaryPath;
@@ -4512,12 +4538,32 @@ export default function App() {
         }
         // Pasted bytes are known to be an image regardless of the extension
         // the native side chose for the temporary file.
-        setAttachments((current) => withAttachedPaths(current, [path]));
+        setAttachments((current) => current.map((entry) => entry.path === temporaryPath ? attachmentRecord(path) : entry));
+      })();
+      pendingAttachmentPreparationsRef.current.add(preparation);
+      try {
+        await preparation;
       } catch (reason) {
         setError(friendlyError(reason));
+      } finally {
+        pendingAttachmentPreparationsRef.current.delete(preparation);
       }
     }
   }, [setAttachments]);
+
+  const sendMessageRef = useRef(sendMessage);
+  sendMessageRef.current = sendMessage;
+  const sendMessageAfterAttachments = useCallback(async (text: string) => {
+    while (pendingAttachmentPreparationsRef.current.size) {
+      const pending = [...pendingAttachmentPreparationsRef.current];
+      await Promise.allSettled(pending);
+      for (const preparation of pending) pendingAttachmentPreparationsRef.current.delete(preparation);
+    }
+    // Let the durable-path state update commit before the turn runner reads
+    // the current attachment snapshot.
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    return sendMessageRef.current(text);
+  }, []);
 
   const refreshGitHubRepo = useCallback(async (cwd = activeExecutionPath || activeProject?.path || "") => {
     const refreshSequence = ++githubRepoRefreshSequenceRef.current;
@@ -5636,7 +5682,7 @@ export default function App() {
                 skills={composerSkills}
                 onRemoveAttachment={(path) => setAttachments((current) => current.filter((entry) => entry.path !== path))}
                 onPasteImages={(items) => void pasteImages(items)}
-                onSend={sendMessage}
+                onSend={sendMessageAfterAttachments}
                 onSteer={steerMessage}
                 onSteerQueued={(queuedTurnId) => void steerQueuedMessage(queuedTurnId)}
                 onRetryQueued={retryQueuedMessage}

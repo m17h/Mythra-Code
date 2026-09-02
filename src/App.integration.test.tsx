@@ -2438,7 +2438,12 @@ describe("workspace attachments", () => {
 
   it("sends a Files-tab image as a native image input", async () => {
     const user = userEvent.setup();
+    const persisted = deferred<string>();
     resumeImpl = (params) => ({ thread: { ...THREAD_A, id: String(params.threadId), turns: [] } });
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "persist_image_attachment") return persisted.promise;
+      return stubInvoke(command, args);
+    });
     await renderApp();
 
     await user.click(await screen.findByText("Alpha thread"));
@@ -2449,6 +2454,12 @@ describe("workspace attachments", () => {
 
     const composer = await screen.findByPlaceholderText(/Ask Mythra Code to work in/);
     await user.type(composer, "look at this{Enter}");
+    expect(codexCalls("turn/start")).toHaveLength(0);
+
+    await act(async () => {
+      persisted.resolve("/app-data/message-images/durable/diagram.PNG");
+      await persisted.promise;
+    });
 
     await waitFor(() => expect(codexCalls("turn/start")).not.toHaveLength(0));
     const started = codexCalls("turn/start").at(-1) as { input?: Array<Record<string, unknown>> };
@@ -2456,7 +2467,7 @@ describe("workspace attachments", () => {
     // screenshot arrives as an image rather than as a bare path.
     expect(started.input).toContainEqual(expect.objectContaining({
       type: "localImage",
-      path: "/projects/alpha/diagram.PNG",
+      path: "/app-data/message-images/durable/diagram.PNG",
     }));
   });
 });
