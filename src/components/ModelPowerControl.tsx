@@ -4,6 +4,7 @@ import { EffortSlider, effortFlairStyle } from "./effortFlair";
 import { ProviderLogo } from "./BrandLogos";
 import { ModelFavoriteStar, type ModelFavoriteProps } from "./ModelFavoriteStar";
 import { favoriteCount, sortByFavorites } from "../lib/modelFavorites";
+import { closesModelMenu } from "../lib/composerMenus";
 
 export type ModelKind = "sol" | "terra" | "luna";
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
@@ -121,7 +122,7 @@ export function ModelPowerControl({
   useEffect(() => {
     if (!menuOpen) return;
     function handlePointerDown(event: PointerEvent) {
-      if (!rootRef.current?.contains(event.target as Node)) setMenuOpen(false);
+      if (closesModelMenu(event, rootRef.current)) setMenuOpen(false);
     }
     // Capture phase + stopPropagation: Escape closes only this menu and never
     // reaches the app-level handler that stops the running turn.
@@ -133,9 +134,11 @@ export function ModelPowerControl({
       }
     }
     document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("click", handlePointerDown);
     document.addEventListener("keydown", handleKeyDown, true);
     return () => {
       document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("click", handlePointerDown);
       document.removeEventListener("keydown", handleKeyDown, true);
     };
   }, [menuOpen]);
@@ -183,7 +186,7 @@ export function ModelPowerControl({
               : <ProviderLogo provider="openai" size={13} />}
           </span>
           <span className="model-picker-copy">
-            <small>OpenAI model</small>
+            <small>Model</small>
             <strong>{selectedModel?.name ?? "Choose a model"}</strong>
             <em>{selectedModel?.tagline ?? ""}</em>
           </span>

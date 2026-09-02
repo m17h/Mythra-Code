@@ -6,6 +6,7 @@ import type { ReasoningEffort } from "./ModelPowerControl";
 import { CursorProviderLogo } from "./BrandLogos";
 import { ModelFavoriteStar, type ModelFavoriteProps } from "./ModelFavoriteStar";
 import { favoriteCount, sortByFavorites } from "../lib/modelFavorites";
+import { closesModelMenu } from "../lib/composerMenus";
 
 const EFFORTS: Array<{ value: Exclude<ReasoningEffort, "ultra">; label: string }> = [
   { value: "low", label: "Low" },
@@ -89,15 +90,10 @@ export function CursorModelControl({
   const fill = (effortIndex / (EFFORTS.length - 1)) * 100;
 
   useEffect(() => {
-    const close = (event: PointerEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
-    };
-    document.addEventListener("pointerdown", close);
-    return () => document.removeEventListener("pointerdown", close);
-  }, []);
-
-  useEffect(() => {
     if (!open) return;
+    const close = (event: Event) => {
+      if (closesModelMenu(event, rootRef.current)) setOpen(false);
+    };
     // Capture phase + stopPropagation: Escape closes only this menu and never
     // reaches the app-level handler that stops the running turn.
     const escape = (event: KeyboardEvent) => {
@@ -107,8 +103,14 @@ export function CursorModelControl({
         rootRef.current?.querySelector<HTMLButtonElement>(".openrouter-trigger")?.focus();
       }
     };
+    document.addEventListener("pointerdown", close);
+    document.addEventListener("click", close);
     document.addEventListener("keydown", escape, true);
-    return () => document.removeEventListener("keydown", escape, true);
+    return () => {
+      document.removeEventListener("pointerdown", close);
+      document.removeEventListener("click", close);
+      document.removeEventListener("keydown", escape, true);
+    };
   }, [open]);
 
   useEffect(() => {
@@ -123,7 +125,7 @@ export function CursorModelControl({
         <button type="button" className="openrouter-trigger" aria-haspopup="menu" aria-expanded={open} aria-label={`Cursor model: ${selected.name}`} onClick={() => setOpen((value) => !value)} onKeyDown={(event) => { if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); setOpen(true); } }}>
           <span className="openrouter-logo cursor-logo"><CursorProviderLogo size={15} /></span>
           <span className="openrouter-trigger-copy">
-            <small>Cursor subscription model</small>
+            <small>Model</small>
             <strong>{selected.name}</strong>
             <em>{/grok.?4\.5/i.test(`${selected.name} ${selected.id}`) ? "Cursor’s frontier Grok model" : "Uses your Cursor Agent login"}</em>
           </span>

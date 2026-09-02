@@ -6,6 +6,7 @@ import type { ReasoningEffort } from "./ModelPowerControl";
 import { ClaudeProviderLogo } from "./BrandLogos";
 import { visibleClaudeModels, type ClaudeModel } from "../lib/claude";
 import { favoriteCount, sortByFavorites } from "../lib/modelFavorites";
+import { closesModelMenu } from "../lib/composerMenus";
 
 /**
  * Offered only when the CLI's own catalog cannot be read.
@@ -100,15 +101,10 @@ export function ClaudeModelControl({
   const fill = (effortIndex / (EFFORTS.length - 1)) * 100;
 
   useEffect(() => {
-    const close = (event: PointerEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
-    };
-    document.addEventListener("pointerdown", close);
-    return () => document.removeEventListener("pointerdown", close);
-  }, []);
-
-  useEffect(() => {
     if (!open) return;
+    const close = (event: Event) => {
+      if (closesModelMenu(event, rootRef.current)) setOpen(false);
+    };
     // Capture phase + stopPropagation: Escape closes only this menu and never
     // reaches the app-level handler that stops the running turn.
     const escape = (event: KeyboardEvent) => {
@@ -118,8 +114,14 @@ export function ClaudeModelControl({
         rootRef.current?.querySelector<HTMLButtonElement>(".openrouter-trigger")?.focus();
       }
     };
+    document.addEventListener("pointerdown", close);
+    document.addEventListener("click", close);
     document.addEventListener("keydown", escape, true);
-    return () => document.removeEventListener("keydown", escape, true);
+    return () => {
+      document.removeEventListener("pointerdown", close);
+      document.removeEventListener("click", close);
+      document.removeEventListener("keydown", escape, true);
+    };
   }, [open]);
 
   return (
@@ -142,7 +144,7 @@ export function ClaudeModelControl({
             <ClaudeProviderLogo size={15} />
           </span>
           <span className="openrouter-trigger-copy">
-            <small>Claude subscription model</small>
+            <small>Model</small>
             <strong>{selected?.displayName ?? "Choose a model"}</strong>
             <em>{selected?.description || selected?.resolvedModel || "Uses your Claude Code login"}</em>
           </span>

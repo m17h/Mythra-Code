@@ -46,9 +46,11 @@ export function ThreadProviderControl({
       }
     };
     document.addEventListener("pointerdown", close);
+    document.addEventListener("click", close);
     document.addEventListener("keydown", escape, true);
     return () => {
       document.removeEventListener("pointerdown", close);
+      document.removeEventListener("click", close);
       document.removeEventListener("keydown", escape, true);
     };
   }, [open]);
