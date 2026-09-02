@@ -2751,9 +2751,12 @@ body[data-pane-resizing] .sidebar, body[data-pane-resizing] .studio-dock { trans
    the conversation is genuinely cramped. The 900px header compaction above
    must not force the much roomier composer into its stacked layout. */
 @container chat-main (max-width: 900px) {
-  /* The model trigger is the middle column at this width, so reserve the
-     provider column to its left while using every safe pixel to the right. */
-  .model-menu { width: min(570px, calc(100cqw - 220px)); }
+  /* The model trigger is the middle column at this width, so the catalog opens
+     from a left offset that is itself fractional (.54 of 2fr — roughly .27cqw
+     — plus the composer inset). The reserve therefore has to cover the widest
+     column in the range, not the narrowest, or the panel runs past the chat
+     column between roughly 720px and 815px. */
+  .model-menu { width: min(570px, calc(100cqw - 296px)); }
 }
 
 @container chat-main (max-width: 680px) {

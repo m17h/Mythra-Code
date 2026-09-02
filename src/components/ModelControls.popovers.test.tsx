@@ -96,6 +96,66 @@ describe("composer provider and model popovers", () => {
     expect(modelTrigger).toHaveFocus();
   });
 
+  it("closes the model menu for a keyboard-style click on an outside control", () => {
+    render(<div><button type="button">Outside action</button>{CONTROLS[0][1]()}</div>);
+    const modelTrigger = screen.getByRole("button", { name: /^OpenAI model:/ });
+
+    fireEvent.click(modelTrigger);
+    fireEvent.click(screen.getByRole("button", { name: "Outside action" }));
+
+    expect(modelTrigger).toHaveAttribute("aria-expanded", "false");
+  });
+
+  // ArrowDown/ArrowUp opens these catalogs directly from the trigger, so this
+  // keyboard path emits neither pointerdown nor click. The Claude and LM Studio
+  // triggers have no arrow-key shortcut, so they have nothing to assert.
+  it.each(CONTROLS.filter(([name]) => name === "OpenAI" || name === "Cursor" || name === "OpenRouter"))(
+    "%s closes the provider menu when arrow keys open the model menu",
+    (_name, renderControl, modelTriggerName) => {
+      render(renderControl());
+      const modelTrigger = screen.getByRole("button", { name: modelTriggerName });
+      const providerTrigger = screen.getByRole("button", { name: "New thread provider: OpenAI" });
+
+      fireEvent.click(providerTrigger);
+      expect(providerTrigger).toHaveAttribute("aria-expanded", "true");
+
+      fireEvent.keyDown(modelTrigger, { key: "ArrowDown" });
+      expect(modelTrigger).toHaveAttribute("aria-expanded", "true");
+      expect(providerTrigger).toHaveAttribute("aria-expanded", "false");
+    },
+  );
+
+  // An in-menu action may replace its own node before the event reaches the
+  // document dismissal listener. The original propagation path must continue
+  // to count as an inside click.
+  it("keeps the OpenRouter catalog open when Show all unmounts itself", () => {
+    const models = Array.from({ length: 70 }, (_, index) => ({ id: `vendor/model-${index}`, name: `Model ${index}` }));
+    render(
+      <OpenRouterModelControl providerControl={providerControl} model="vendor/model-0" effort="high" models={models} loading={false} error="" onModel={vi.fn()} onEffort={vi.fn()} onRefresh={vi.fn()} />,
+    );
+    const modelTrigger = screen.getByRole("button", { name: /^OpenRouter model:/ });
+
+    press(modelTrigger);
+    press(screen.getByRole("button", { name: /Show all 70 models/ }));
+
+    expect(modelTrigger).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("menuitemradio", { name: /^Model 69,/ })).toBeInTheDocument();
+  });
+
+  it("keeps the Cursor catalog open when clearing the search swaps the button back to refresh", () => {
+    render(
+      <CursorModelControl providerControl={providerControl} model="auto" models={[{ id: "auto", name: "Auto", configOptions: [] }]} effort="high" onRefresh={vi.fn()} onModel={vi.fn()} onEffort={vi.fn()} />,
+    );
+    const modelTrigger = screen.getByRole("button", { name: /^Cursor model:/ });
+
+    press(modelTrigger);
+    fireEvent.change(screen.getByLabelText("Search Cursor models"), { target: { value: "auto" } });
+    press(screen.getByRole("button", { name: "Clear Cursor model search" }));
+
+    expect(modelTrigger).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: "Refresh Cursor model catalog" })).toBeInTheDocument();
+  });
+
   it("leaves both popovers shut while the composer is disabled", () => {
     render(
       <ModelPowerControl

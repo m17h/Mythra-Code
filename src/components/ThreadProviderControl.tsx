@@ -38,20 +38,27 @@ export function ThreadProviderControl({
     const close = (event: PointerEvent) => {
       if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
     };
-    const escape = (event: KeyboardEvent) => {
+    const keys = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         // Escape closes only this menu — never the app-level stop-turn handler.
         event.stopPropagation();
+        setOpen(false);
+        return;
+      }
+      // Arrow keys open a model catalog straight from its trigger, emitting no
+      // pointer or click event, so that path needs its own dismissal or both
+      // popovers end up open at once.
+      if ((event.key === "ArrowDown" || event.key === "ArrowUp") && !rootRef.current?.contains(event.target as Node)) {
         setOpen(false);
       }
     };
     document.addEventListener("pointerdown", close);
     document.addEventListener("click", close);
-    document.addEventListener("keydown", escape, true);
+    document.addEventListener("keydown", keys, true);
     return () => {
       document.removeEventListener("pointerdown", close);
       document.removeEventListener("click", close);
-      document.removeEventListener("keydown", escape, true);
+      document.removeEventListener("keydown", keys, true);
     };
   }, [open]);
 
