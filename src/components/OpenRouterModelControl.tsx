@@ -6,6 +6,7 @@ import type { ReasoningEffort } from "./ModelPowerControl";
 import { OpenRouterLogo } from "./BrandLogos";
 import { filterOpenRouterModels, looksLikeModelSlug, type OpenRouterModel } from "../lib/openRouterCatalog";
 import { favoriteCount, sortByFavorites } from "../lib/modelFavorites";
+import { closesModelMenu } from "../lib/composerMenus";
 
 export type { OpenRouterModel };
 
@@ -95,7 +96,7 @@ export function OpenRouterModelControl({
   useEffect(() => {
     if (!open) return;
     function handlePointerDown(event: PointerEvent) {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+      if (closesModelMenu(event, rootRef.current)) setOpen(false);
     }
     // Capture phase + stopPropagation: Escape closes only this menu and never
     // reaches the app-level handler that stops the running turn.
@@ -107,9 +108,11 @@ export function OpenRouterModelControl({
       }
     }
     document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("click", handlePointerDown);
     document.addEventListener("keydown", handleKeyDown, true);
     return () => {
       document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("click", handlePointerDown);
       document.removeEventListener("keydown", handleKeyDown, true);
     };
   }, [open]);
@@ -149,7 +152,7 @@ export function OpenRouterModelControl({
         <button type="button" className="openrouter-trigger" aria-haspopup="menu" aria-expanded={open} aria-label={`OpenRouter model: ${selected?.name || model || "not selected"}`} onClick={() => setOpen((value) => !value)} onKeyDown={(event) => { if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); setOpen(true); } }}>
           <span className="openrouter-logo openrouter-brand-logo"><OpenRouterLogo size={16} /></span>
           <span className="openrouter-trigger-copy">
-            <small>OpenRouter model</small>
+            <small>Model</small>
             <strong>{selected?.name || model || "Choose a model"}</strong>
             <em>{model ? `${providerName(model)}${selected?.context_length ? ` · ${compactContext(selected.context_length)}` : ""}` : `${models.length || "Live"} tool-capable models`}</em>
           </span>

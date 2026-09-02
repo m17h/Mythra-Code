@@ -99,20 +99,26 @@
       "decision": "Accept 648 Safari / 647 Chrome startup and total JavaScript bytes to display selected files immediately while preventing a quick Send from omitting a still-copying image or persisting its temporary source path. The wait exists only when attachment preparation is outstanding; ordinary composer sends add no asynchronous work, and CSS and thread-memory payloads are unchanged.",
       "safari13": { "appEntryFromBytes": 343748, "appEntryToBytes": 344396, "appEntryDeltaBytes": 648, "startupJsFromBytes": 694135, "startupJsToBytes": 694783, "startupJsDeltaBytes": 648, "startupCssFromBytes": 339591, "startupCssToBytes": 339591, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1429473, "totalJsToBytes": 1430121, "totalJsDeltaBytes": 648 },
       "chrome105": { "appEntryFromBytes": 326185, "appEntryToBytes": 326832, "appEntryDeltaBytes": 647, "startupJsFromBytes": 669793, "startupJsToBytes": 670440, "startupJsDeltaBytes": 647, "startupCssFromBytes": 337468, "startupCssToBytes": 337468, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1395508, "totalJsToBytes": 1396155, "totalJsDeltaBytes": 647 }
+    },
+    {
+      "change": "Make the composer model and provider pickers legible and mutually exclusive",
+      "decision": "Accept at most 476 startup JavaScript bytes and 306 startup CSS bytes for a consistently short Model label, a readable responsive model menu, and symmetric provider/model dismissal for pointer and keyboard activation. The dismissal listeners exist only while a picker is open, and the change adds no network, persistence, thread-loading, or transcript-memory work.",
+      "safari13": { "appEntryFromBytes": 344396, "appEntryToBytes": 344525, "appEntryDeltaBytes": 129, "startupJsFromBytes": 694783, "startupJsToBytes": 695148, "startupJsDeltaBytes": 365, "startupCssFromBytes": 339591, "startupCssToBytes": 339897, "startupCssDeltaBytes": 306, "totalJsFromBytes": 1430121, "totalJsToBytes": 1430484, "totalJsDeltaBytes": 363 },
+      "chrome105": { "appEntryFromBytes": 326832, "appEntryToBytes": 327057, "appEntryDeltaBytes": 225, "startupJsFromBytes": 670440, "startupJsToBytes": 670916, "startupJsDeltaBytes": 476, "startupCssFromBytes": 337468, "startupCssToBytes": 337774, "startupCssDeltaBytes": 306, "totalJsFromBytes": 1396155, "totalJsToBytes": 1396641, "totalJsDeltaBytes": 486 }
     }
   ],
   "profiles": {
     "safari13-minified": {
-      "appEntryRawBytes": 344396,
-      "startupJsRawBytes": 694783,
-      "startupCssRawBytes": 339591,
-      "totalJsRawBytes": 1430121
+      "appEntryRawBytes": 344525,
+      "startupJsRawBytes": 695148,
+      "startupCssRawBytes": 339897,
+      "totalJsRawBytes": 1430484
     },
     "chrome105-minified": {
-      "appEntryRawBytes": 326832,
-      "startupJsRawBytes": 670440,
-      "startupCssRawBytes": 337468,
-      "totalJsRawBytes": 1396155
+      "appEntryRawBytes": 327057,
+      "startupJsRawBytes": 670916,
+      "startupCssRawBytes": 337774,
+      "totalJsRawBytes": 1396641
     }
   }
 }

@@ -2,6 +2,7 @@ import { fireEvent, render } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { ClaudeModelControl } from "./ClaudeModelControl";
 import { ModelPowerControl } from "./ModelPowerControl";
+import { OpenRouterModelControl } from "./OpenRouterModelControl";
 import { ThreadProviderControl } from "./ThreadProviderControl";
 import "../styles.css";
 
@@ -34,6 +35,87 @@ describe("model control browser layout", () => {
     expect(Math.abs(providerRect.width - modelRect.width)).toBeLessThanOrEqual(35);
     expect(Math.round(providerRect.height)).toBe(Math.round(modelRect.height));
   });
+  // The trigger is half its old width now that it shares the cell with the
+  // provider picker, but the catalog it opens must stay as roomy as every
+  // other provider's menu instead of shrinking to its anchor.
+  it("opens the OpenAI catalog at full menu width without widening its trigger", () => {
+    const providerPicker = <ThreadProviderControl provider="openai" defaultProvider="openai" threadStarted={false} onProvider={vi.fn()} onDefaultSettings={vi.fn()} />;
+    const view = render(
+      <div className="app-shell" data-theme="kiwi" data-color-scheme="dark" style={{ display: "block", width: 900 }}>
+        <ModelPowerControl providerControl={providerPicker} model="gpt-5.6-sol" effort="high" fast={false} runtimeModels={[]} onModel={vi.fn()} onEffort={vi.fn()} onFast={vi.fn()} />
+        <OpenRouterModelControl providerControl={providerPicker} model="openai/gpt-5" effort="high" models={[{ id: "openai/gpt-5", name: "GPT-5" }]} loading={false} error="" onModel={vi.fn()} onEffort={vi.fn()} onRefresh={vi.fn()} />
+      </div>,
+    );
+
+    const shell = view.container.firstElementChild as HTMLElement;
+    const trigger = view.container.querySelector<HTMLElement>(".model-picker-trigger")!;
+    const providerTrigger = view.container.querySelector<HTMLElement>(".composer-provider-control .provider-pill")!;
+    const closedTriggerWidth = trigger.offsetWidth;
+
+    fireEvent.click(trigger);
+    fireEvent.click(view.getByRole("button", { name: /OpenRouter model:/ }));
+    const menu = view.container.querySelector<HTMLElement>(".model-menu")!;
+    const routerMenu = view.container.querySelector<HTMLElement>(".openrouter-menu")!;
+
+    // The menus animate in with a scale, so widths are read off the layout box
+    // rather than the mid-transition visual rect.
+    expect(menu.offsetWidth).toBe(routerMenu.offsetWidth);
+    expect(menu.offsetWidth).toBeGreaterThan(closedTriggerWidth * 1.8);
+    // Bounded by the chat container and the viewport.
+    expect(menu.offsetWidth).toBeLessThanOrEqual(window.innerWidth - 42);
+    const menuLeft = menu.getBoundingClientRect().left;
+    const shellRect = shell.getBoundingClientRect();
+    expect(menuLeft).toBeGreaterThanOrEqual(shellRect.left - 1);
+    expect(menuLeft + menu.offsetWidth).toBeLessThanOrEqual(shellRect.right + 1);
+
+    // The half-width trigger is untouched — it still matches the provider pill.
+    expect(trigger.offsetWidth).toBe(closedTriggerWidth);
+    expect(Math.abs(closedTriggerWidth - providerTrigger.offsetWidth)).toBeLessThanOrEqual(35);
+
+    // Header and options lay out inside that width instead of cramming.
+    const heading = menu.querySelector<HTMLElement>(".model-menu-heading")!;
+    const headingLabel = heading.querySelector<HTMLElement>("span")!;
+    const headingMeta = heading.querySelector<HTMLElement>("small")!;
+    expect(heading.scrollWidth).toBeLessThanOrEqual(heading.clientWidth);
+    expect(headingLabel.getBoundingClientRect().right).toBeLessThanOrEqual(headingMeta.getBoundingClientRect().left);
+    const options = menu.querySelectorAll<HTMLElement>(".model-menu-option");
+    expect(options.length).toBeGreaterThan(0);
+    options.forEach((option) => {
+      expect(option.scrollWidth).toBeLessThanOrEqual(option.clientWidth);
+      expect(option.offsetLeft + option.offsetWidth).toBeLessThanOrEqual(menu.clientWidth + menu.clientLeft + 1);
+    });
+  });
+
+  it.each([700, 650])("keeps the widened OpenAI catalog inside a %spx chat column", (chatWidth) => {
+    const view = render(
+      <div className="app-shell" data-theme="kiwi" data-color-scheme="dark" style={{ display: "block", width: 900 }}>
+        <main className="main-panel" style={{ width: chatWidth, flex: "none" }}>
+          <ModelPowerControl
+            providerControl={<ThreadProviderControl provider="openai" defaultProvider="openai" threadStarted={false} onProvider={vi.fn()} onDefaultSettings={vi.fn()} />}
+            model="gpt-5.6-sol"
+            effort="high"
+            fast={false}
+            runtimeModels={[]}
+            onModel={vi.fn()}
+            onEffort={vi.fn()}
+            onFast={vi.fn()}
+          />
+        </main>
+      </div>,
+    );
+
+    const trigger = view.getByRole("button", { name: /^OpenAI model:/ });
+    fireEvent.click(trigger);
+    const control = view.container.querySelector<HTMLElement>(".model-power-control")!;
+    const menu = view.container.querySelector<HTMLElement>(".model-menu")!;
+    const controlRect = control.getBoundingClientRect();
+    const menuRect = menu.getBoundingClientRect();
+
+    expect(menu.offsetWidth).toBeGreaterThan(trigger.getBoundingClientRect().width * 1.5);
+    expect(menuRect.left).toBeGreaterThanOrEqual(controlRect.left - 1);
+    expect(menuRect.right).toBeLessThanOrEqual(controlRect.right + 1);
+  });
+
   it("truncates the Claude catalog label before the refresh button", () => {
     const view = render(
       <div className="app-shell" data-theme="kiwi">

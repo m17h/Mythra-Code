@@ -6,6 +6,7 @@ import type { ReasoningEffort } from "./ModelPowerControl";
 import { LmStudioLogo } from "./BrandLogos";
 import { ModelFavoriteStar, type ModelFavoriteProps } from "./ModelFavoriteStar";
 import { favoriteCount, sortByFavorites } from "../lib/modelFavorites";
+import { closesModelMenu } from "../lib/composerMenus";
 
 const EFFORTS: Array<{ value: LMStudioReasoningEffort; label: string }> = [
   { value: "low", label: "Low" },
@@ -69,7 +70,7 @@ export function LMStudioModelControl({
   useEffect(() => {
     if (!open) return;
     const close = (event: PointerEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+      if (closesModelMenu(event, rootRef.current)) setOpen(false);
     };
     const escape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
@@ -79,9 +80,11 @@ export function LMStudioModelControl({
       }
     };
     document.addEventListener("pointerdown", close);
+    document.addEventListener("click", close);
     document.addEventListener("keydown", escape, true);
     return () => {
       document.removeEventListener("pointerdown", close);
+      document.removeEventListener("click", close);
       document.removeEventListener("keydown", escape, true);
     };
   }, [open]);
@@ -98,7 +101,7 @@ export function LMStudioModelControl({
         <button type="button" className="openrouter-trigger" aria-haspopup="menu" aria-expanded={open} aria-label={`LM Studio model: ${model || "not selected"}`} onClick={() => setOpen((value) => !value)}>
           <span className="openrouter-logo lmstudio-logo"><LmStudioLogo size={15} /></span>
           <span className="openrouter-trigger-copy">
-            <small>LM Studio local model</small>
+            <small>Model</small>
             <strong>{selectedModel?.displayName || model || "Choose a local model"}</strong>
             <em>{models.length ? `${models.length} model${models.length === 1 ? "" : "s"} from your LM Studio server` : "Start the LM Studio local server"}</em>
           </span>

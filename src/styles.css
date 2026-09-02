@@ -1922,10 +1922,14 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .model-orb.provider-model-art, .menu-model-orb.provider-model-art { background: transparent; }
 .model-orb.named-model-art img, .menu-model-orb.named-model-art img { width: 20px; height: 20px; display: block; object-fit: contain; pointer-events: none; }
 .model-picker-trigger .model-orb.named-model-art img { width: 22px; height: 22px; }
-.model-menu { position: absolute; left: 0; right: 0; bottom: calc(100% + 8px); z-index: 90; display: grid; gap: 2px; padding: var(--s-1); border: 1px solid var(--line-strong); border-radius: var(--r-lg); background: color-mix(in srgb, var(--panel-2) 97%, transparent); box-shadow: var(--shadow); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); opacity: 0; visibility: hidden; transform: translateY(6px) scale(.972); transform-origin: bottom left; pointer-events: none; transition: opacity 180ms var(--ease), visibility 0s linear 180ms, transform 180ms var(--ease); }
+/* Sized like every other catalog menu rather than stretched to its trigger:
+   the trigger is only half the old model area now that the provider picker
+   shares it, which is far too narrow for the heading and option rows. */
+.model-menu { position: absolute; left: 0; bottom: calc(100% + 8px); z-index: 90; width: min(570px, calc(100vw - 42px)); display: grid; gap: 2px; padding: var(--s-1); border: 1px solid var(--line-strong); border-radius: var(--r-lg); background: color-mix(in srgb, var(--panel-2) 97%, transparent); box-shadow: var(--shadow); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); opacity: 0; visibility: hidden; transform: translateY(6px) scale(.972); transform-origin: bottom left; pointer-events: none; transition: opacity 180ms var(--ease), visibility 0s linear 180ms, transform 180ms var(--ease); }
 .menu-open .model-menu { opacity: 1; visibility: visible; transform: none; pointer-events: auto; transition: opacity 180ms var(--ease), visibility 0s, transform 180ms var(--ease); }
 .model-menu-heading { display: flex; justify-content: space-between; align-items: center; padding: var(--s-2) var(--s-1) var(--s-2) var(--s-2); color: var(--muted-2); font-size: var(--fs-micro); font-weight: 650; text-transform: uppercase; letter-spacing: var(--track-caps); }
-.model-menu-heading small { color: var(--muted-2); font-size: var(--fs-micro); font-weight: 400; text-transform: none; letter-spacing: 0; }
+.model-menu-heading > span { flex: 0 0 auto; }
+.model-menu-heading small { min-width: 0; overflow: hidden; color: var(--muted-2); font-size: var(--fs-micro); font-weight: 400; text-align: right; text-transform: none; letter-spacing: 0; white-space: nowrap; text-overflow: ellipsis; }
 .model-menu-option { --option-accent: #e0a066; width: 100%; min-height: 44px; display: grid; grid-template-columns: 24px minmax(0,1fr) 16px; align-items: center; gap: var(--s-2); padding: var(--s-1) var(--s-2); border: 1px solid transparent; border-radius: var(--r-sm); color: var(--muted); background: transparent; cursor: pointer; text-align: left; transition: color var(--t-fast) ease, background var(--t-fast) ease; }
 .model-menu-option.luna { --option-accent: #86cdf7; }
 .model-menu-option.terra { --option-accent: #a6df72; }
@@ -2383,7 +2387,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
   .runtime-setup-actions { flex-wrap: wrap; }
   .openrouter-control { grid-template-columns: repeat(2, minmax(0,1fr)); }
   .openrouter-reasoning { grid-column: 1 / -1; }
-  .openrouter-menu { width: min(570px, calc(100vw - 32px)); }
+  .openrouter-menu, .model-menu { width: min(570px, calc(100vw - 32px)); }
   .model-power-control { grid-template-columns: repeat(2, minmax(0,1fr)); }
   .reasoning-control { grid-column: 1 / -1; }
   .model-picker-copy em { display: none; }
@@ -2746,12 +2750,21 @@ body[data-pane-resizing] .sidebar, body[data-pane-resizing] .studio-dock { trans
 /* Composer controls respond to the chat column, but stay side-by-side until
    the conversation is genuinely cramped. The 900px header compaction above
    must not force the much roomier composer into its stacked layout. */
+@container chat-main (max-width: 900px) {
+  /* The model trigger is the middle column at this width, so reserve the
+     provider column to its left while using every safe pixel to the right. */
+  .model-menu { width: min(570px, calc(100cqw - 220px)); }
+}
+
 @container chat-main (max-width: 680px) {
   .composer-zone { padding-inline: var(--s-4); }
   .model-power-control, .openrouter-control { gap: var(--s-2); margin-inline: 6px; }
   .model-power-control, .openrouter-control { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .reasoning-control, .openrouter-reasoning { grid-column: 1 / -1; }
-  .openrouter-menu, .claude-model-menu { width: min(570px, calc(100cqw - 44px)); }
+  .openrouter-menu, .claude-model-menu, .model-menu { width: min(570px, calc(100cqw - 44px)); }
+  /* Once provider and model split the first row, align the catalog to the
+     model trigger's right edge so its wider panel stays inside the composer. */
+  .model-menu { right: 0; left: auto; transform-origin: bottom right; }
 }
 
 @container chat-main (max-width: 600px) {
