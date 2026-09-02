@@ -1,4 +1,4 @@
-import { Children, isValidElement, memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { Children, isValidElement, memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type Ref } from "react";
 import { Check, ChevronDown, ChevronRight, CircleDot, Clipboard, CornerUpRight, FileCode2, ImageIcon, ListChecks, MessageSquare, Pencil, TerminalSquare, UsersRound } from "lucide-react";
 import { convertFileSrc, invoke, isTauri } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -12,6 +12,7 @@ import { decodeHtmlEntities } from "../lib/text";
 import { providerDisplayName } from "../lib/childAgents";
 import { describeSubAgentActivity, subAgentStatusLabel, workerStatusFromAgentRecord, type SubAgentCounts } from "../lib/subAgentActivity";
 import type { ThreadHistoryState } from "../lib/threadHistory";
+import { createStreamingTextFade, type StreamingTextFade } from "../lib/streamingTextFade";
 
 export type WorkItemEntry =
   | { kind: "message"; value: ChatMessage }
@@ -296,9 +297,9 @@ function CodePre({ children }: { children?: ReactNode }) {
 const MARKDOWN_COMPONENTS = { pre: CodePre, a: MarkdownLink };
 const REASONING_MARKDOWN_COMPONENTS = { a: MarkdownLink };
 
-const MessageMarkdown = memo(function MessageMarkdown({ text }: { text: string }) {
+const MessageMarkdown = memo(function MessageMarkdown({ text, rootRef }: { text: string; rootRef?: Ref<HTMLDivElement> }) {
   return (
-    <div className="message-text rich-markdown">
+    <div className="message-text rich-markdown" ref={rootRef}>
       <Markdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>{text}</Markdown>
     </div>
   );
@@ -313,7 +314,16 @@ const MessageMarkdown = memo(function MessageMarkdown({ text }: { text: string }
  */
 function StreamingMessageMarkdown({ text }: { text: string }) {
   const deferredText = useDeferredValue(text);
-  return <MessageMarkdown text={deferredText} />;
+  const rootRef = useRef<HTMLDivElement>(null);
+  const fadeRef = useRef<StreamingTextFade | null>(null);
+  useLayoutEffect(() => {
+    if (!rootRef.current) return;
+    const fade = createStreamingTextFade(rootRef.current);
+    fadeRef.current = fade;
+    return () => { fade.dispose(); fadeRef.current = null; };
+  }, []);
+  useLayoutEffect(() => { fadeRef.current?.update(deferredText); }, [deferredText]);
+  return <MessageMarkdown text={deferredText} rootRef={rootRef} />;
 }
 
 function imagePreviewUrl(path: string): string {
