@@ -3535,4 +3535,5 @@ body[data-pane-resizing] .sidebar, body[data-pane-resizing] .studio-dock { trans
 .model-meta-refresh:disabled { cursor: default; opacity: .5; }
 .claude-control .openrouter-options .model-row > button.update-required .openrouter-model-meta { color: var(--green); font-weight: 650; }
 .model-menu .model-row { gap: 2px; }
-.claude-model-menu .openrouter-menu-meta small { margin-left: auto; }
+.claude-model-menu .openrouter-menu-meta { display: grid; grid-template-columns: auto minmax(0, 1fr) 20px; align-items: center; column-gap: 10px; }
+.claude-model-menu .openrouter-menu-meta small { min-width: 0; overflow: hidden; text-align: right; white-space: nowrap; text-overflow: ellipsis; }

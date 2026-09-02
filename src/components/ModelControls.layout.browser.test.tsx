@@ -1,10 +1,41 @@
-import { render } from "@testing-library/react";
+import { fireEvent, render } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { ClaudeModelControl } from "./ClaudeModelControl";
 import { ModelPowerControl } from "./ModelPowerControl";
 import "../styles.css";
 
 describe("model control browser layout", () => {
+  it("truncates the Claude catalog label before the refresh button", () => {
+    const view = render(
+      <div className="app-shell" data-theme="kiwi">
+        <ClaudeModelControl
+          model="claude-opus-5"
+          effort="high"
+          models={[
+            { id: "claude-opus-5", displayName: "Opus 5", description: "Deep reasoning", resolvedModel: "claude-opus-5", disabled: false, supportedEfforts: [] },
+          ]}
+          onRefresh={vi.fn()}
+          onModel={vi.fn()}
+          onEffort={vi.fn()}
+        />
+      </div>,
+    );
+    fireEvent.click(view.getByRole("button", { name: /Claude model:/ }));
+    const menu = view.container.querySelector<HTMLElement>(".claude-model-menu")!;
+    menu.style.width = "330px";
+    const header = menu.querySelector<HTMLElement>(".openrouter-menu-meta")!;
+    const label = menu.querySelector<HTMLElement>(".openrouter-menu-meta small")!;
+    const refresh = view.getByRole("button", { name: "Refresh Claude model catalog" });
+    const labelRect = label.getBoundingClientRect();
+    const refreshRect = refresh.getBoundingClientRect();
+
+    expect(getComputedStyle(header).display).toBe("grid");
+    expect(refreshRect.left - labelRect.right).toBeGreaterThanOrEqual(9);
+    expect(label.scrollWidth).toBeGreaterThan(label.clientWidth);
+    expect(getComputedStyle(label).textOverflow).toBe("ellipsis");
+    expect(getComputedStyle(label).whiteSpace).toBe("nowrap");
+  });
+
   it("keeps the Codex rail the same height as the other provider rails", () => {
     const view = render(
       <div className="app-shell" data-theme="kiwi" style={{ display: "block", width: 900 }}>
