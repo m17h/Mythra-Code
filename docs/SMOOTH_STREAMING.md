@@ -1,141 +1,69 @@
-# Smooth streaming: scope, safeguards, and rollback
+# Streaming presentation: cadence, evidence, and rollback
 
-## Recovery point
+## Recovery points
 
-The clean, verified pre-change main is
-`a6a64fe96fa38cf1b3cfbd81b84ad1f1524761ec` (PR #69).
-It is preserved locally **and on origin** as
-`codex/checkpoint-before-smooth-text`. The implementation lives on
-`codex/smooth-streaming-text` and goes through a normal reviewed PR.
+- `codex/checkpoint-before-smooth-text`: `a6a64fe96fa38cf1b3cfbd81b84ad1f1524761ec`, before any fade.
+- PR #70 / `48b381b7f3e163dc3c096836ffaff6afa2141058`: first fade.
+- `codex/checkpoint-before-stream-cadence`: `e4b2d5016df61b9ea98cc271b6b2b03d8e0195be`, before display pacing.
 
-Revert this feature's merge through a new topic branch and PR if needed; do not
-reset main or overwrite user changes. No transcript format, preference, database,
-provider protocol, or migration is changed, so rolling back requires no data
-conversion. Removing the decoration hookup in `AssistantMessageMarkdown` alone
-also restores the old rendering path.
+The named checkpoints are preserved on origin. Revert through a topic branch and PR, never reset main. No transcript format, provider protocol, preference, database or migration changes are involved. No release/version change is part of this work.
 
-The gentler follow-up starts from clean main
-`48b381b7f3e163dc3c096836ffaff6afa2141058` (PR #70). Reverting only the follow-up
-restores the first fade implementation; the earlier checkpoint still restores
-the original no-fade behavior.
+## Why the longer fade was insufficient
 
-## Behavior and boundaries
+The first fade started at 45% opacity over 180 ms. PR #71 changed that to an 8% / 420 ms smoothstep and fixed premature fade eviction/completion unmounting. Those lifecycle tests passed, but **did not establish perceptual smoothness**. The user reported worse jitter with Haiku 4.5.
 
-Newly appended assistant text fades from 8% of its normal color opacity to
-100% over 420 ms with a smoothstep curve (a soft start and finish). Text is never
-queued, hidden from the DOM, or delayed for the animation. This is a visual
-feature, not a provider-speed improvement.
+A tools-disabled Claude Code capture of a synthetic rainwater article produced 24 text deltas / 3,262 characters in 7,336 ms. Median delta length was 139 characters; maximum 187; largest arrival gap 384 ms. This is one observed sample, not a universal Haiku speed claim. The fixture contains only synthetic text and relative times, not private messages or account data.
 
-The existing memoized, deferred React Markdown renderer stays intact. Decoration
-runs only after a committed deferred render. Native CSS Custom Highlights paint
-per-text-node ranges; no text splitting, wrapper spans, transforms, height
-animation, alternate Markdown parser, or per-frame React state is introduced.
-Code copying and links still use the original nodes. Literal originating text
-colors avoid the compounded alpha and incorrect hues caused by `currentColor`
-in the highlight inheritance chain.
+Fable 5.1 (high effort, two narrow tools-disabled consultations) identified whole bursts changing geometry/follow-scroll before becoming legible, irregular whole-burst opacity, and closing Markdown syntax clearing every active highlight at once.
 
-The first committed snapshot is always fully visible, including a reopened live
-thread. Only strict appends to both source and rendered text can fade. Markdown
-rewrites are shown immediately, not animated. History mounts create no fade
-controller. App's existing `key={threadId}` boundary disposes controllers on
-thread switches; row identity is not inferred from matching text prefixes.
-The same Markdown DOM survives completion: final text is displayed immediately,
-and existing/new final ranges finish fading before the controller disposes its
-listeners, ranges, pending frames, and runtime stylesheet (within 420 ms of the
-last append). A later authoritative edit to completed text clears any remaining
-decoration. Unmount/thread switch disposes immediately. Text selection, hidden documents, reduced
-motion, and forced colors clear the effect and establish a new baseline before
-resuming. Unsupported browsers and cosmetic failures keep normal rendering.
+## Current approach
 
-Safety limits per live message/controller:
+`AssistantMessageMarkdown` now has a small **display-only** pacing buffer before the existing deferred Markdown renderer. Canonical provider/store text, task status, persistence, search and export are not paced.
 
-- 48,000 source UTF-16 code units, 32,768 rendered code units.
-- 512 visited DOM nodes and 256 text nodes per snapshot.
-- 2,048 newly rendered code units per update; larger bursts appear immediately.
-- Up to 24 active color/time groups, 64 total ranges, and 64 computed-color reads
-  per update. No geometry queries or per-frame color sampling.
-- Grapheme-aligned range boundaries; no partial surrogate, combining, or joined
-  emoji highlighting. Buttons, SVG icons, and hidden controls are excluded.
+- Each arrival contributes a linear reveal window of 240 ms. Overlapping windows preserve order and older deadlines; updates cannot keep restarting a timer indefinitely. Normal publishes are capped near 30 Hz, with a final drain allowed between ordinary publishes.
+- This is an intentional visual delay: ordinarily up to 240 ms plus the next animation frame/deferred render. It is not a hard wall-clock guarantee on a suspended or busy renderer, and not a provider-speed improvement.
+- First mounts, including reopened live threads, display their initial snapshot immediately. No heuristic guesses whether a short message is live or history.
+- Completion lets only the bounded visual tail drain; it does not delay provider/task completion. The same Markdown DOM survives, including completed-turn compaction. Final edits and thread changes discard obsolete scheduling.
+- Copy-message uses complete canonical text. Copy-code explicitly flushes the display tail and bypasses deferral before reading the current code DOM, preventing artificially truncated code after completion.
+- Source replacements, hidden documents, selection in the message, reduced motion, forced colors, unsupported policy APIs and work-limit overflow use ordinary immediate rendering. Unmount removes listeners/frames.
+- The secondary paint-only fade is now 30% to 100% over 140 ms with cubic ease-out and 20 ms buckets. Text becomes legible promptly while paced updates change layout. Native CSS Custom Highlights still avoid wrapper spans, transforms, geometry animation and an alternate Markdown parser.
+- A Markdown-visible tail rewrite retains still-fading unchanged-prefix ranges. Changed semantic regions display normally; already-visible text is never deliberately faded again. Source rewrites reset everything.
 
-Same-color appends share fixed 60 ms time buckets with unchanged birth times.
-This prevents 60–120 Hz commits from exhausting slots merely because frames are
-arriving quickly. A group can span intervening colors, but its ranges include
-only matching-colored text inside that recent append interval. At capacity,
-new excess-color text uses normal rendering; active fades are never evicted to
-make room. Color sampling is still capped per commit.
+## Work limits and tradeoffs
 
-Range rebasing is planned atomically before native ranges are replaced. If new
-text exceeds the range or color-read budget, existing representable fades keep
-their original timing while the new burst displays normally. Those groups are
-sealed so a later same-bucket append cannot fade already-visible skipped text.
-If a Markdown reparse makes even the old intervals exceed the limits, ordinary
-rendering remains the safe fallback.
+Per pacer: 48,000 source UTF-16 units, 2,048 pending units and 64 arrival batches; one scheduled rAF only while pending. Grapheme-aligned slices avoid splitting surrogate/combining/ZWJ clusters. Huge bursts and long messages deliberately skip pacing. Step size is proportional to burst size: the measured 26-character result below is **not a universal cap**. A hard character cap and a fixed latency bound cannot both hold for arbitrary provider throughput.
 
-Crossing a work budget skips decoration, never content. A normal later append
-can recover after a burst/style/range-budget skip. Once a response itself exceeds
-the message/DOM bounds, further text uses ordinary rendering. This conservative
-large-response fallback is intentional; bounded tail-only decoration can be
-investigated separately without weakening these thread-safety guarantees.
-Colors changing without a text commit can retain the previous hue for at most
-the remaining 420 ms; the next streaming text commit discards mismatched-color ranges.
+Per fade: 48,000 source units, 32,768 rendered units, 512 visited DOM nodes, 256 text nodes, 2,048 new units, 24 color/time groups, 64 ranges and 64 computed color reads per update. No geometry queries or per-frame color reads. Range rebasing is planned before replacing native ranges. Overflow preserves representable old fades and seals skipped intervals against retroactive fading; unrepresentable reparses fall back to ordinary rendering. Theme-only color changes can retain an old hue for at most the remaining 140 ms or until the next streaming commit discards mismatched-color ranges.
 
-The first revision started at 45% opacity and used a fast ease-out over 180 ms.
-Its eight per-append groups could evict still-fading text under rapid updates;
-completion also unmounted the renderer and cut off the tail. The follow-up fixes
-those three sources of abruptness rather than simply stretching the duration.
-First snapshots and Markdown rewrites intentionally retain the immediate,
-non-animated fallback. Smoothing provider arrival timing or animating a new
-response's first snapshot would require separate, reliable live-vs-hydrated
-provenance; no length-based guess or artificial token queue is introduced here.
+Pacing adds small renders, not fewer renders: the captured replay went from 24 burst updates to roughly 150–190 paced updates. This is feature overhead bounded to the visible live response, not a global efficiency win. Most implementation code is lazy; copy-flush integration adds 66 startup JavaScript bytes through shared export bookkeeping. CSS and saved-thread payloads are unchanged. The budget exception records exact production sizes without headroom.
 
-The module stays inside the existing lazy timeline chunk. It adds no startup
-JavaScript/CSS, network requests, provider calls, persisted fields, or saved
-transcript bytes. The effect does add bounded live-render work; unchanged startup
-size is not a claim that animation is free. Exact production bundle overhead is
-recorded in the performance-budget exception and the PR.
+## Evidence and its limits
+
+Before/after use the same captured fixture and real Markdown/flow timeline:
+
+| Replay measurement | PR #71 | Paced prototype |
+| --- | ---: | ---: |
+| Largest rendered-text increment, deterministic 60 Hz | 187 chars | 26 chars |
+| Largest opacity-equivalent increment, same replay | ~161 chars | ~25 chars |
+| Largest scroll step, fixed 720 × 300 shell | 81 px | 39 px |
+| Real-time Chromium largest text step | 187 chars | 33 chars |
+| Real-time WebKit largest text step | 187 chars | 39 chars |
+| Real-time largest scroll step, two-pane 1400 × 900 preview | 76 px | 48 px |
+
+The real-time development-browser runs were recorded side by side. Both had identical final rendered text, no page errors and no >50 ms frame gaps. Combined two-pane p95 frame gaps were ~9.6 ms in Chromium and 26 ms in WebKit. These are local recorded runs, not isolated production CPU benchmarks or Windows native FPS guarantees. Native Safari also opened the replay.
+
+A stress replay with 250 formatted sections (~30 KB source before new output) preserved identical final text. Chromium had no >50 ms gaps; WebKit had one 51 ms gap. This does **not** justify a universal no-jank claim.
+
+Automated cadence thresholds are perceptual proxies, not a judge of pleasant motion. Normal-use human feedback is still required. Do not describe passing lifetime/range tests or a still screenshot as proof that streaming feels smooth.
 
 ## Verification
 
-Run `npm run verify` (full Chromium suite, frontend/Rust tests, typecheck, lint,
-production build and performance gate). Also run:
+Run `npm run verify` (frontend/Rust tests, full Chromium suite, lint, clippy, typecheck, build, release configuration and size gate). Also run:
 
 ```sh
-npx playwright install webkit
-MYTHRA_BROWSER_TEST_ENGINE=webkit npm run test:browser -- src/lib/streamingTextFade.browser.test.ts src/components/ChatTimeline.streaming.browser.test.tsx src/components/ChatTimeline.layout.browser.test.tsx
+MYTHRA_BROWSER_TEST_ENGINE=webkit npm run test:browser -- src/lib/streamingTextPacer.browser.test.ts src/lib/streamingTextFade.browser.test.ts src/components/ChatTimeline.streaming.browser.test.tsx src/components/ChatTimeline.cadence.browser.test.tsx src/components/ChatTimeline.layout.browser.test.tsx
 ```
 
-macOS CI now runs that WebKit subset, in addition to full macOS/Windows verify.
-Browser tests exercise within-paragraph fades, nested colors, replacements,
-graphemes, normal/reduced-motion behavior, real selection, bounded work,
-failure fallback, cleanup, deferred Markdown under StrictMode, independent
-streams, completion, reopening history, copy/link/table semantics, stable
-geometry, reader position, and the existing overlap/long-history regressions.
-Deterministic animation-clock tests additionally check low initial opacity,
-smooth intermediate values, uninterrupted 60/120 Hz fades, color-slot pressure,
-cross-color bucket reuse, budget overflow without interrupted fades or subsequent
-retroactive darkening, and completion/visibility cleanup. Integration tests
-assert DOM identity across completion (including completed-turn compaction) and
-immediate cleanup on authoritative edits or thread switches.
+macOS CI runs this subset in addition to full macOS/Windows verification. Coverage includes arrival deadlines, rate bounds, graphemes, history mounts, source edits, overflow, policy failure, selection, completion drain, thread switching, resumed streams, DOM identity, code-copy during a pending tail, reader position, and existing layout/long-history regressions.
 
-A native macOS Tauri/WKWebView preview was exercised with a continuously
-streaming **synthetic** transcript: the newest text visibly faded, old text stayed
-steady, and formatted prose, links, and code rendered correctly. No provider
-requests or real-thread edits were needed. The temporary preview entry point was
-removed before production validation. Automated Windows Chromium coverage is
-not a claim of manual validation in the user's installed Windows WebView2 app.
-A second native A/B preview fed identical irregular chunks to the original and
-revised controllers; the revised leading edge was visibly softer. Subjective
-feel still needs the user's assessment in normal use.
-
-Opus 5 (high effort) reviewed the design and integrated code. Its concrete
-style-budget recovery finding was fixed and regression-tested. Its concern
-about reusing rows between threads is already prevented by App's thread key;
-the deliberately conservative long-response fallback is documented above.
-For the gentler follow-up, Opus separately diagnosed the opacity curve, early
-group eviction, and completion unmount, then reviewed the integrated changes.
-Its additional range-overflow finding led to the atomic budget fallback above,
-verified with targeted Chromium and WebKit regressions rather than increasing
-the range or color-read limits.
-
-API rationale: [CSS Custom Highlight specification](https://www.w3.org/TR/css-highlight-api-1/)
-and [highlight inheritance](https://drafts.csswg.org/css-pseudo-4/).
+Fable's policy-fallback and code-copy findings were fixed and regression-tested. Its warning about burst-dependent step size is documented above; no universal 26-character bound is asserted.

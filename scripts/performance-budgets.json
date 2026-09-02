@@ -129,20 +129,26 @@
       "decision": "Accept 817 Safari / 747 Chrome lazy JavaScript bytes (under 0.06% total) for a softer 420 ms curve, fixed time buckets, preserved Markdown DOM at completion, and atomic range-budget fallback. App entry, startup JavaScript and startup CSS are unchanged. Live decoration remains bounded: 24 color/time groups, 64 ranges/color reads, and the original message/snapshot limits. Overflow skips new decoration without evicting representable in-flight fades; completed history creates no controller. This is measured visual-feature overhead, not a speed improvement. No token queue, provider, persistence, thread-loading or transcript-memory changes are introduced. Limits match measured output with no extra headroom.",
       "safari13": { "appEntryDeltaBytes": 0, "startupJsDeltaBytes": 0, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1442370, "totalJsToBytes": 1443187, "totalJsDeltaBytes": 817 },
       "chrome105": { "appEntryDeltaBytes": 0, "startupJsDeltaBytes": 0, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1408274, "totalJsToBytes": 1409021, "totalJsDeltaBytes": 747 }
+    },
+    {
+      "change": "Pace bursty streaming presentation before Markdown layout",
+      "decision": "Accept 3,084 Safari / 2,882 Chrome total JavaScript bytes for bounded display-only pacing and safe immediate code-copy flush. Most code remains lazy; shared React export bookkeeping adds 66 startup bytes and 59 app-entry bytes on each target. CSS is unchanged. This is measured visual-feature overhead, not an efficiency claim: paced live messages have more small renders, limited near 30 Hz with 240 ms arrival windows, 64 batches, 2,048 pending units and 48,000 source units. Provider/store/persistence text is not delayed. The captured Haiku replay shows smaller text/scroll/brightness steps; these are fixture results, not universal bounds or proof of subjective smoothness. Limits match measured output without headroom.",
+      "safari13": { "appEntryFromBytes": 348377, "appEntryToBytes": 348436, "appEntryDeltaBytes": 59, "startupJsFromBytes": 701154, "startupJsToBytes": 701220, "startupJsDeltaBytes": 66, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1443187, "totalJsToBytes": 1446271, "totalJsDeltaBytes": 3084 },
+      "chrome105": { "appEntryFromBytes": 330744, "appEntryToBytes": 330803, "appEntryDeltaBytes": 59, "startupJsFromBytes": 676746, "startupJsToBytes": 676812, "startupJsDeltaBytes": 66, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1409021, "totalJsToBytes": 1411903, "totalJsDeltaBytes": 2882 }
     }
   ],
   "profiles": {
     "safari13-minified": {
-      "appEntryRawBytes": 348377,
-      "startupJsRawBytes": 701154,
+      "appEntryRawBytes": 348436,
+      "startupJsRawBytes": 701220,
       "startupCssRawBytes": 342251,
-      "totalJsRawBytes": 1443187
+      "totalJsRawBytes": 1446271
     },
     "chrome105-minified": {
-      "appEntryRawBytes": 330744,
-      "startupJsRawBytes": 676746,
+      "appEntryRawBytes": 330803,
+      "startupJsRawBytes": 676812,
       "startupCssRawBytes": 340128,
-      "totalJsRawBytes": 1409021
+      "totalJsRawBytes": 1411903
     }
   }
 }

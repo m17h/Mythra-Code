@@ -68,7 +68,7 @@ describe("paint-only streaming text fade", () => {
     expect(paragraph.textContent).toBe("Already visible. Newly arrived words");
     expect(getComputedStyle(paragraph).color).toBe("rgb(20, 40, 60)");
     const paint = getComputedStyle(paragraph, `::highlight(${highlights()[0][0]})`).color;
-    expect(paint).toMatch(/0\.08/);
+    expect(paint).toMatch(/0\.3/);
     expect(paint).toMatch(/0\.078431\d* 0\.156863 0\.235294/);
   });
 
@@ -80,7 +80,7 @@ describe("paint-only streaming text fade", () => {
     for (const [name, highlight] of highlights()) {
       const range = [...highlight][0] as Range;
       const color = getComputedStyle(range.startContainer.parentElement!, `::highlight(${name})`).color;
-      expect(color).toBe(range.toString() === "red" ? "color(srgb 1 0 0 / 0.08)" : "color(srgb 0 0 1 / 0.08)");
+      expect(color).toBe(range.toString() === "red" ? "color(srgb 1 0 0 / 0.3)" : "color(srgb 0 0 1 / 0.3)");
     }
   });
 
@@ -259,7 +259,7 @@ describe("paint-only streaming text fade", () => {
     expect(highlightedText()).toBe(" red");
     const [name, highlight] = highlights()[0];
     const parent = ([...highlight][0] as Range).startContainer.parentElement!;
-    expect(getComputedStyle(parent, `::highlight(${name})`).color).toBe("color(srgb 1 0 0 / 0.08)");
+    expect(getComputedStyle(parent, `::highlight(${name})`).color).toBe("color(srgb 1 0 0 / 0.3)");
   });
 
   it("starts softly, follows a gentle monotonic curve, and reaches full opacity without a jump", () => {
@@ -267,12 +267,12 @@ describe("paint-only streaming text fade", () => {
     const { append, paragraph } = fixture("old ");
     append("old new");
     const name = highlights()[0][0];
-    expect(opacityOf(name, paragraph)).toBeCloseTo(0.08);
-    clock.advance(60);
-    expect(opacityOf(name, paragraph)).toBeLessThan(0.14);
-    clock.advance(150);
-    expect(opacityOf(name, paragraph)).toBeCloseTo(0.54);
-    clock.advance(209);
+    expect(opacityOf(name, paragraph)).toBeCloseTo(0.3);
+    clock.advance(20);
+    expect(opacityOf(name, paragraph)).toBeGreaterThan(0.55);
+    clock.advance(50);
+    expect(opacityOf(name, paragraph)).toBeCloseTo(0.9125);
+    clock.advance(69);
     expect(opacityOf(name, paragraph)).toBeGreaterThan(0.999);
     clock.advance(1);
     expect(highlights()).toHaveLength(0);
@@ -289,7 +289,7 @@ describe("paint-only streaming text fade", () => {
       append(`old ${"x".repeat(index)}`);
       const after = highlights();
       for (const [name, highlight] of before) {
-        if (CSS.highlights.get(name) !== highlight) expect(clock.now() - births.get(highlight)!).toBeGreaterThanOrEqual(420);
+        if (CSS.highlights.get(name) !== highlight) expect(clock.now() - births.get(highlight)!).toBeGreaterThanOrEqual(140);
       }
       for (const [, highlight] of after) if (!births.has(highlight)) births.set(highlight, clock.now());
       expect(after.length).toBeLessThanOrEqual(8);
@@ -303,10 +303,10 @@ describe("paint-only streaming text fade", () => {
     root.innerHTML = '<p>old <em style="color:red">red</em></p>';
     controller.update("old red");
     const [name, red] = highlights()[0];
-    clock.advance(20);
+    clock.advance(5);
     root.querySelector("p")!.append(document.createTextNode(" plain"));
     controller.update("old red plain");
-    clock.advance(20);
+    clock.advance(5);
     const parent = document.createElement("em");
     parent.style.color = "red";
     parent.textContent = " red again";
@@ -315,8 +315,8 @@ describe("paint-only streaming text fade", () => {
     expect(highlights()).toHaveLength(2);
     expect(CSS.highlights.get(name)).toBe(red);
     expect([...red].map((range) => (range as Range).toString()).join("")).toBe("red red again");
-    expect(opacityOf(name, parent)).toBeGreaterThan(0.08);
-    expect(opacityOf(name, parent)).toBeLessThan(0.11);
+    expect(opacityOf(name, parent)).toBeGreaterThan(0.3);
+    expect(opacityOf(name, parent)).toBeLessThan(0.45);
   });
 
   it("keeps existing fades intact when unusual color variety exhausts the slot budget", () => {
@@ -333,7 +333,7 @@ describe("paint-only streaming text fade", () => {
     }
     expect(highlights()).toHaveLength(24);
     expect(highlights()[0][1]).toBe(first);
-    clock.advance(200);
+    clock.advance(100);
     expect(highlights()[0][1]).toBe(first);
   });
 
@@ -343,7 +343,7 @@ describe("paint-only streaming text fade", () => {
     append("old last words");
     controller.finish();
     expect(highlights().length).toBeGreaterThan(0);
-    clock.advance(419);
+    clock.advance(139);
     expect(highlights().length).toBeGreaterThan(0);
     clock.advance(1);
     expect(document.querySelectorAll("style[data-mythra-stream-fade]")).toHaveLength(0);
@@ -362,7 +362,7 @@ describe("paint-only streaming text fade", () => {
     const { paragraph, controller, append } = fixture("old ");
     append("old fresh");
     const [name, original] = highlights()[0];
-    clock.advance(20);
+    clock.advance(5);
     for (let index = 0; index < 65; index++) {
       const node = budget === "ranges" ? document.createTextNode("x") : document.createElement("em");
       node.textContent = "x";
@@ -372,7 +372,7 @@ describe("paint-only streaming text fade", () => {
     controller.update(burst);
     expect(CSS.highlights.get(name)).toBe(original);
     expect(highlightedText()).toBe("fresh");
-    expect(opacityOf(name, paragraph)).toBeGreaterThan(0.08);
+    expect(opacityOf(name, paragraph)).toBeGreaterThan(0.3);
     // Returning to simple DOM in the same time bucket must not darken the
     // omitted burst retroactively when the earlier group could otherwise grow.
     paragraph.textContent = `${burst} tail`;
@@ -380,5 +380,19 @@ describe("paint-only streaming text fade", () => {
     expect(highlightedText()).toBe("fresh tail");
     expect(paragraph.textContent).toBe(`${burst} tail`);
     expect(highlights().flatMap(([, highlight]) => [...highlight]).length).toBeLessThanOrEqual(64);
+  });
+
+  it("keeps the unchanged fading prefix when closing Markdown rewrites only the tail", () => {
+    const clock = frameClock();
+    const { root, controller } = fixture("old ");
+    root.innerHTML = "<p>old fresh **bold</p>";
+    controller.update("old fresh **bold");
+    const [name, original] = highlights()[0];
+    clock.advance(30);
+    root.innerHTML = "<p>old fresh <strong>bold</strong> tail</p>";
+    controller.update("old fresh **bold** tail");
+    expect(CSS.highlights.get(name)).toBe(original);
+    expect(highlightedText()).toBe("fresh ");
+    expect(opacityOf(name, root.querySelector("p")!)).toBeLessThan(1);
   });
 });

@@ -1,4 +1,5 @@
-import { Children, isValidElement, memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type Ref } from "react";
+import { Children, createContext, isValidElement, memo, useCallback, useContext, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type Ref } from "react";
+import { flushSync } from "react-dom";
 import { Check, ChevronDown, ChevronRight, CircleDot, Clipboard, CornerUpRight, FileCode2, ImageIcon, ListChecks, MessageSquare, Pencil, TerminalSquare, UsersRound } from "lucide-react";
 import { convertFileSrc, invoke, isTauri } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -13,6 +14,7 @@ import { providerDisplayName } from "../lib/childAgents";
 import { describeSubAgentActivity, subAgentStatusLabel, workerStatusFromAgentRecord, type SubAgentCounts } from "../lib/subAgentActivity";
 import type { ThreadHistoryState } from "../lib/threadHistory";
 import { createStreamingTextFade, type StreamingTextFade } from "../lib/streamingTextFade";
+import { createStreamingTextPacer, type StreamingTextPacer } from "../lib/streamingTextPacer";
 
 export type WorkItemEntry =
   | { kind: "message"; value: ChatMessage }
@@ -276,20 +278,29 @@ function MarkdownLink({ href, children }: { href?: string; children?: ReactNode 
   );
 }
 
+const FlushStreamingDisplay = createContext<(() => void) | undefined>(undefined);
+
 function CodePre({ children }: { children?: ReactNode }) {
   const [copied, copy] = useCopyFeedback();
   const text = textFromCodeNode(children);
+  const preRef = useRef<HTMLPreElement>(null);
+  const flushDisplay = useContext(FlushStreamingDisplay);
   return (
     <div className="code-block">
       <button
         className="code-copy"
-        onClick={() => copy(text)}
+        onClick={() => {
+          flushDisplay?.();
+          // A completed response may still have a short presentation tail.
+          // Copy all received code, not an artificially shortened snapshot.
+          copy(preRef.current?.textContent?.replace(/\n$/, "") ?? text);
+        }}
         title="Copy code"
       >
         {copied ? <Check size={12} /> : <Clipboard size={12} />}
         {copied ? "Copied" : "Copy"}
       </button>
-      <pre>{children}</pre>
+      <pre ref={preRef}>{children}</pre>
     </div>
   );
 }
@@ -313,28 +324,64 @@ const MessageMarkdown = memo(function MessageMarkdown({ text, rootRef }: { text:
  * whole response finishes.
  */
 function AssistantMessageMarkdown({ text, streaming }: { text: string; streaming: boolean }) {
-  const deferredText = useDeferredValue(text);
-  const shownText = streaming ? deferredText : text;
+  const [pacedText, setPacedText] = useState<string | null>(null);
+  const [immediateText, setImmediateText] = useState<string | null>(null);
+  const deferredText = useDeferredValue(pacedText ?? text);
+  const presenting = streaming || pacedText !== null;
+  const shownText = immediateText === text ? text : presenting ? deferredText : text;
   const rootRef = useRef<HTMLDivElement>(null);
+  const pacerRef = useRef<StreamingTextPacer | null>(null);
   const fadeRef = useRef<StreamingTextFade | null>(null);
   const wasStreaming = useRef(false);
+  const wasReceiving = useRef(false);
   useLayoutEffect(() => () => {
+    pacerRef.current?.dispose();
+    pacerRef.current = null;
     fadeRef.current?.dispose();
     fadeRef.current = null;
     wasStreaming.current = false;
+    wasReceiving.current = false;
   }, []);
   useLayoutEffect(() => {
-    if (streaming && !wasStreaming.current && rootRef.current) {
+    if (streaming && rootRef.current) {
+      if (!wasReceiving.current) {
+        pacerRef.current?.dispose();
+        setPacedText(text);
+        pacerRef.current = createStreamingTextPacer(rootRef.current, text, setPacedText, () => setPacedText(null));
+      } else pacerRef.current?.update(text);
+    } else if (wasReceiving.current) {
+      // The provider/task is already finished. Let only its bounded visual
+      // tail drain, avoiding a final block-sized jump; stored/copy text is full.
+      pacerRef.current?.update(text);
+      pacerRef.current?.finish();
+    } else {
+      pacerRef.current?.dispose();
+      pacerRef.current = null;
+      setPacedText(null);
+    }
+    wasReceiving.current = streaming;
+  }, [text, streaming]);
+  useLayoutEffect(() => {
+    if (presenting && !wasStreaming.current && rootRef.current) {
       fadeRef.current?.dispose();
       fadeRef.current = createStreamingTextFade(rootRef.current);
     }
-    wasStreaming.current = streaming;
+    wasStreaming.current = presenting;
     fadeRef.current?.update(shownText);
-    if (!streaming) fadeRef.current?.finish();
-  }, [shownText, streaming]);
-  // Keep the Markdown DOM alive at completion so the last text can settle.
-  // History mounts never create a controller; final text is not deferred.
-  return <MessageMarkdown text={shownText} rootRef={rootRef} />;
+    if (!presenting) fadeRef.current?.finish();
+  }, [shownText, presenting]);
+  const flushForCopy = useCallback(() => {
+    flushSync(() => {
+      pacerRef.current?.flush();
+      setPacedText(streaming ? text : null);
+      setImmediateText(text);
+    });
+  }, [text, streaming]);
+  // Keep the same Markdown DOM through the bounded completion tail. History
+  // mounts create no controllers and show their complete text immediately.
+  return <FlushStreamingDisplay.Provider value={presenting ? flushForCopy : undefined}>
+    <MessageMarkdown text={shownText} rootRef={rootRef} />
+  </FlushStreamingDisplay.Provider>;
 }
 
 function imagePreviewUrl(path: string): string {
