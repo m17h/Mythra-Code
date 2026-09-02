@@ -361,11 +361,11 @@ function MessageImagePreview({ path, name }: { path: string; name: string }) {
       </span>
     );
   }
-  if (!source) return <span className="message-image-preview loading" aria-label={`Loading attached image: ${name}`} />;
+  if (!source) return <span className="message-image-preview loading" role="img" aria-label={`Loading attached image: ${name}`} />;
   return (
     <img
       className="message-image-preview"
-      src={imagePreviewUrl(path)}
+      src={source}
       alt={`Attached image: ${name}`}
       title={name}
       loading="lazy"

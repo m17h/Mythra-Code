@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseClaudeModelCatalog, parseClaudeUsageLimits, visibleClaudeModels } from "./claude";
+import { isClaudeModelSuperseded, parseClaudeModelCatalog, parseClaudeUsageLimits, visibleClaudeModels } from "./claude";
 
 describe("Claude subscription usage", () => {
   it("normalizes Claude's structured usage windows", () => {
@@ -137,6 +137,22 @@ describe("Claude model catalog", () => {
       "sonnet",
       "cc-update-required-1",
     ]);
+  });
+
+  it("keeps the older family row hidden after its successor becomes available", () => {
+    const catalog = parseClaudeModelCatalog({
+      models: [
+        { value: "claude-fable-5[1m]", displayName: "Fable", description: "Fable 5 · Most capable" },
+        { value: "claude-fable-5-1[1m]", displayName: "Fable 5.1", description: "Fable 5.1 · Most capable" },
+        { value: "sonnet", displayName: "Sonnet", description: "Sonnet 5 · Efficient" },
+      ],
+    });
+
+    expect(visibleClaudeModels(catalog).map((entry) => entry.id)).toEqual([
+      "claude-fable-5-1[1m]",
+      "sonnet",
+    ]);
+    expect(isClaudeModelSuperseded(catalog, "claude-fable-5[1m]")).toBe(true);
   });
 
   it("drops entries without a model value and de-duplicates the rest", () => {

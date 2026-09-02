@@ -31,7 +31,7 @@ import {
   X,
 } from "lucide-react";
 import { exportDiagnostics, recentAuditRows, rpc, saveLmStudioKey, saveOpenRouterKey, type AuditRow, type CodexRuntimeStatus } from "../lib/codex";
-import { visibleClaudeModels, type ClaudeRuntimeStatus } from "../lib/claude";
+import { isClaudeModelSuperseded, visibleClaudeModels, type ClaudeRuntimeStatus } from "../lib/claude";
 import type { CursorModel, CursorRuntimeStatus } from "../lib/cursor";
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_SETTINGS, EFFORT_SLIDER_STYLES, RELEASE_NOTES_URL, THEMES } from "../lib/appConfig";
 import { friendlyError } from "../lib/errors";
@@ -85,7 +85,6 @@ import type { ChildAgentModelOption } from "./ChildAgentRoster";
 import type { ClaudeModel } from "../lib/claude";
 import type { OpenRouterModel } from "./OpenRouterModelControl";
 import { sanitizeProjectDefaultOverrides } from "../lib/projectDefaults";
-import { modelForProvider } from "../lib/threadProvider";
 import { cachedDeveloperRuntimeUpdates, checkDeveloperRuntimeUpdates, ensureDeveloperRuntimeUpdates, updateDeveloperRuntime, type DeveloperRuntimeTarget, type DeveloperRuntimeTargetStatus, type DeveloperRuntimeUpdater } from "../lib/runtimeUpdates";
 
 /**
@@ -159,13 +158,24 @@ const PROJECT_PROVIDER_OPTIONS: AppSelectOption[] = [
   { value: "lmstudio", label: "LM Studio", detail: "Local models", icon: <ProviderLogo provider="lmstudio" size={15} /> },
 ];
 
-function modelOptionsForProvider(provider: Provider, selectedModel: string, catalogs: {
+type ModelCatalogs = {
   runtimeModels: RuntimeModel[];
   claudeModels: ClaudeModel[];
   cursorModels: CursorModel[];
   openRouterModels: OpenRouterModel[];
   lmStudioModels: LMStudioModel[];
-}): AppSelectOption[] {
+};
+
+function supersededClaudeDisplay(provider: Provider, selectedModel: string, catalogs: ModelCatalogs): Omit<AppSelectOption, "value"> | undefined {
+  if (provider !== "claude" || !isClaudeModelSuperseded(catalogs.claudeModels, selectedModel)) return undefined;
+  return {
+    label: "Superseded Claude model",
+    detail: "Choose a current model before saving",
+    icon: <ProviderLogo provider="claude" size={15} />,
+  };
+}
+
+function modelOptionsForProvider(provider: Provider, selectedModel: string, catalogs: ModelCatalogs): AppSelectOption[] {
   let options: AppSelectOption[];
   if (provider === "openai") {
     options = openAiModelOptions(catalogs.runtimeModels).map((entry) => ({ value: entry.id, label: entry.name, detail: entry.tagline }));
@@ -196,8 +206,7 @@ function modelOptionsForProvider(provider: Provider, selectedModel: string, cata
     }));
   }
   const selectedClaudeModelWasSuperseded = provider === "claude"
-    && catalogs.claudeModels.some((entry) => entry.id === selectedModel)
-    && !visibleClaudeModels(catalogs.claudeModels).some((entry) => entry.id === selectedModel);
+    && isClaudeModelSuperseded(catalogs.claudeModels, selectedModel);
   if (selectedModel && !selectedClaudeModelWasSuperseded && !options.some((entry) => entry.value === selectedModel)) {
     const savedClaudeModel = provider === "claude"
       ? catalogs.claudeModels.find((entry) => entry.id === selectedModel)
@@ -477,15 +486,18 @@ export function SettingsModal({
   const skillsRefreshRef = useRef(onRefreshSkills);
   skillsRefreshRef.current = onRefreshSkills;
 
-  const defaultModelOptions = useMemo<AppSelectOption[]>(() => {
-    return modelOptionsForProvider(local.provider, local.model, {
-      runtimeModels,
-      claudeModels,
-      cursorModels,
-      openRouterModels,
-      lmStudioModels,
-    });
-  }, [claudeModels, cursorModels, lmStudioModels, local.model, local.provider, openRouterModels, runtimeModels]);
+  const modelCatalogs = useMemo<ModelCatalogs>(() => ({
+    runtimeModels,
+    claudeModels,
+    cursorModels,
+    openRouterModels,
+    lmStudioModels,
+  }), [claudeModels, cursorModels, lmStudioModels, openRouterModels, runtimeModels]);
+  const defaultModelOptions = useMemo<AppSelectOption[]>(
+    () => modelOptionsForProvider(local.provider, local.model, modelCatalogs),
+    [local.model, local.provider, modelCatalogs],
+  );
+  const defaultModelSelectedDisplay = supersededClaudeDisplay(local.provider, local.model, modelCatalogs);
 
   const subAgentModelCatalogs = useMemo<Partial<Record<Provider, ChildAgentModelOption[]>>>(() => ({
     openai: openAiModelOptions(runtimeModels).map((entry) => ({
@@ -1443,6 +1455,7 @@ export function SettingsModal({
               <AppSelectMenu
                 value={local.model}
                 options={defaultModelOptions}
+                selectedDisplay={defaultModelSelectedDisplay}
                 ariaLabel={`Default ${local.provider === "openai" ? "OpenAI" : local.provider === "openrouter" ? "OpenRouter" : local.provider === "lmstudio" ? "LM Studio" : local.provider === "claude" ? "Claude" : "Cursor"} model`}
                 placeholder="Choose a default model"
                 searchable={defaultModelOptions.length > 8 || local.provider === "openrouter" || local.provider === "lmstudio" || local.provider === "cursor"}
@@ -1720,7 +1733,9 @@ function ProjectDefaultsSettings({ projects, activeProjectId, settings, runtimeM
     const project = projects.find((entry) => entry.id === projectToAdd && !entry.overrides?.defaults);
     if (!project) return;
     const modelOptions = modelOptionsForProvider(settings.provider, settings.model, catalogs);
-    const model = modelForProvider(settings.provider, settings.model) || modelOptions[0]?.value || "";
+    const model = modelOptions.find((option) => option.value === settings.model && !option.disabled)?.value
+      ?? modelOptions.find((option) => !option.disabled)?.value
+      ?? "";
     onProjects(projects.map((entry) => entry.id === project.id
       ? { ...entry, overrides: { ...(entry.overrides ?? {}), defaults: { provider: settings.provider, model } } }
       : entry));
@@ -1755,9 +1770,12 @@ function ProjectDefaultsSettings({ projects, activeProjectId, settings, runtimeM
       {configured.length ? <div className="project-default-list">{configured.map((project) => {
         const defaults = project.overrides!.defaults!;
         const modelOptions = modelOptionsForProvider(defaults.provider, defaults.model, catalogs);
+        const selectedDisplay = supersededClaudeDisplay(defaults.provider, defaults.model, catalogs);
         const setProvider = (provider: Provider) => {
           const options = modelOptionsForProvider(provider, "", catalogs);
-          const model = provider === defaults.provider ? defaults.model : (options[0]?.value ?? modelForProvider(provider, ""));
+          const model = provider === defaults.provider
+            ? defaults.model
+            : (options.find((option) => !option.disabled)?.value ?? "");
           updateDefaults(project.id, (current) => ({ ...current, provider, model }));
         };
         return (
@@ -1768,7 +1786,7 @@ function ProjectDefaultsSettings({ projects, activeProjectId, settings, runtimeM
             </div>
             <div className="project-default-grid">
               <div className="project-default-field"><span>Provider</span><AppSelectMenu value={defaults.provider} options={PROJECT_PROVIDER_OPTIONS} ariaLabel={`Default provider for ${project.name}`} menuPlacement="top" onChange={(value) => setProvider(value as Provider)} /></div>
-              <div className="project-default-field project-default-model"><span>Model</span><AppSelectMenu value={defaults.model} options={modelOptions} ariaLabel={`Default model for ${project.name}`} placeholder="Choose a model…" searchable={modelOptions.length > 8 || defaults.provider === "openrouter" || defaults.provider === "lmstudio" || defaults.provider === "cursor"} menuPlacement="top" favorites={favoriteModels(modelFavorites, defaults.provider)} {...(onToggleModelFavorite ? { onToggleFavorite: (model: string) => onToggleModelFavorite(defaults.provider, model) } : {})} {...(defaults.provider === "openrouter" && onDiscoverOpenRouterModels ? { onSearch: onDiscoverOpenRouterModels } : {})} emptyMessage={defaults.provider === "lmstudio" ? "Connect LM Studio and refresh its catalog first." : "No models are currently available for this provider."} onChange={(model) => updateDefaults(project.id, (current) => ({ ...current, model }))} /></div>
+              <div className="project-default-field project-default-model"><span>Model</span><AppSelectMenu value={defaults.model} options={modelOptions} selectedDisplay={selectedDisplay} ariaLabel={`Default model for ${project.name}`} placeholder="Choose a model…" searchable={modelOptions.length > 8 || defaults.provider === "openrouter" || defaults.provider === "lmstudio" || defaults.provider === "cursor"} menuPlacement="top" favorites={favoriteModels(modelFavorites, defaults.provider)} {...(onToggleModelFavorite ? { onToggleFavorite: (model: string) => onToggleModelFavorite(defaults.provider, model) } : {})} {...(defaults.provider === "openrouter" && onDiscoverOpenRouterModels ? { onSearch: onDiscoverOpenRouterModels } : {})} emptyMessage={defaults.provider === "lmstudio" ? "Connect LM Studio and refresh its catalog first." : "No models are currently available for this provider."} onChange={(model) => updateDefaults(project.id, (current) => ({ ...current, model }))} /></div>
               <div className="project-default-field"><span>App theme</span><AppSelectMenu value={defaults.theme ?? ""} options={themeOptions} ariaLabel={`App theme for ${project.name}`} menuPlacement="top" onChange={(value) => { updateDefaults(project.id, (current) => { const next = { ...current }; if (value) next.theme = value as ThemeName; else delete next.theme; return next; }); if (project.id === activeProjectId) onThemePreview((value || settings.theme) as ThemeName); }} /></div>
               <div className="project-default-field"><span>Effort slider</span><AppSelectMenu value={defaults.effortSlider ?? ""} options={effortOptions} ariaLabel={`Effort slider for ${project.name}`} menuPlacement="top" onChange={(value) => { updateDefaults(project.id, (current) => { const next = { ...current }; if (value) next.effortSlider = value as EffortSliderStyle; else delete next.effortSlider; return next; }); if (project.id === activeProjectId) onEffortSliderPreview((value || settings.effortSlider) as EffortSliderStyle); }} /></div>
               <div className="project-default-field"><span>Chat font</span><AppSelectMenu value={defaults.chatFont ?? ""} options={fontOptions} ariaLabel={`Chat font for ${project.name}`} menuPlacement="top" onChange={(value) => { updateDefaults(project.id, (current) => { const next = { ...current }; if (value) next.chatFont = value as ChatFont; else delete next.chatFont; return next; }); if (project.id === activeProjectId) onChatFontPreview((value || settings.chatFont) as ChatFont); }} /></div>

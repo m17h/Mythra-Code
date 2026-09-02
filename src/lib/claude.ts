@@ -96,30 +96,55 @@ function compareNumericVersions(left: number[], right: number[]): number {
 
 function modelFamilyVersion(model: ClaudeModel): { family: string; version: number[] } | null {
   if (model.id === "default" || /^default\b/i.test(model.displayName)) return null;
-  const text = `${model.displayName} ${model.description}`;
+  // IDs are the only surviving description for a saved model that disappeared
+  // from a refreshed catalog. Treat separators as word boundaries so
+  // `claude-fable-5[1m]` can still be compared with a live `Fable 5.1` row.
+  const text = `${model.displayName} ${model.description} ${model.id}`.replace(/[-_]+/g, " ");
   const match = text.match(/\b([a-z][a-z0-9-]*)\s+(\d+(?:\.\d+)*)\b/i);
   const version = match ? numericVersion(match[2]) : null;
   return match && version ? { family: match[1].toLowerCase(), version } : null;
 }
 
+function latestClaudeFamilyVersions(catalog: ClaudeModel[]): Map<string, number[]> {
+  const latest = new Map<string, number[]>();
+  for (const model of catalog) {
+    const entry = modelFamilyVersion(model);
+    if (!entry) continue;
+    const current = latest.get(entry.family);
+    if (!current || compareNumericVersions(entry.version, current) > 0) latest.set(entry.family, entry.version);
+  }
+  return latest;
+}
+
+/** True when a saved Claude model has a newer same-family catalog entry. */
+export function isClaudeModelSuperseded(catalog: ClaudeModel[], modelId: string): boolean {
+  if (!modelId) return false;
+  const saved = catalog.find((model) => model.id === modelId) ?? {
+    id: modelId,
+    displayName: modelId,
+    description: "",
+    resolvedModel: modelId,
+    disabled: false,
+    supportedEfforts: [],
+  };
+  const current = modelFamilyVersion(saved);
+  if (!current) return false;
+  const latest = latestClaudeFamilyVersions(catalog).get(current.family);
+  return Boolean(latest && compareNumericVersions(latest, current.version) > 0);
+}
+
 /**
- * Removes a model only when the CLI explicitly advertises a newer disabled
- * successor in the same named family. This keeps update guidance visible
- * without presenting an already-superseded Claude model as a current choice.
+ * Keeps only the newest catalog entry in each named family. The newer row may
+ * be selectable or may carry update guidance; either way, an older duplicate
+ * must not reappear after the CLI update makes its successor available.
  */
 export function visibleClaudeModels(catalog: ClaudeModel[]): ClaudeModel[] {
-  const successors = catalog
-    .filter((model) => model.unavailableReason === "update-required")
-    .map(modelFamilyVersion)
-    .filter((entry): entry is { family: string; version: number[] } => Boolean(entry));
-  if (!successors.length) return catalog;
+  const latest = latestClaudeFamilyVersions(catalog);
   return catalog.filter((model) => {
-    if (model.disabled) return true;
     const current = modelFamilyVersion(model);
-    return !current || !successors.some((successor) => (
-      successor.family === current.family
-      && compareNumericVersions(successor.version, current.version) > 0
-    ));
+    if (!current) return true;
+    const newest = latest.get(current.family);
+    return !newest || compareNumericVersions(newest, current.version) <= 0;
   });
 }
 

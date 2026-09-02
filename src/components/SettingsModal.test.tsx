@@ -514,11 +514,43 @@ describe("SettingsModal", () => {
       ],
     })} />);
 
+    expect(screen.getByRole("button", { name: "Default Claude model" })).toHaveTextContent("Superseded Claude model");
     fireEvent.click(screen.getByRole("button", { name: "Default Claude model" }));
 
     expect(screen.queryByText("Fable 5")).not.toBeInTheDocument();
     expect(screen.getByText("Fable 5.1")).toBeInTheDocument();
     expect(screen.getByRole("menuitemradio", { name: /Fable 5\.1/ })).toBeDisabled();
+  });
+
+  it("chooses the first runnable Claude model when a project switches providers", () => {
+    const onProjects = vi.fn();
+    render(<SettingsModal {...modalProps({
+      initialSection: "projects",
+      projects: [{
+        id: "alpha",
+        name: "Alpha",
+        path: "/projects/alpha",
+        overrides: { defaults: { provider: "openai", model: "gpt-5.6-sol" } },
+      }],
+      claudeModels: [
+        { id: "cc-update-required-1", displayName: "Fable 5.1", description: "Update required", resolvedModel: "claude-fable-5-1", disabled: true, unavailableReason: "update-required", requiredVersion: null, supportedEfforts: [] },
+        { id: "default", displayName: "Default", description: "Recommended", resolvedModel: "claude-opus-5", disabled: false, unavailableReason: null, requiredVersion: null, supportedEfforts: [] },
+      ],
+      onProjects,
+    })} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Default provider for Alpha" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Claude.*Claude Code subscription/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+
+    expect(onProjects).toHaveBeenLastCalledWith([
+      expect.objectContaining({
+        id: "alpha",
+        overrides: expect.objectContaining({
+          defaults: expect.objectContaining({ provider: "claude", model: "default" }),
+        }),
+      }),
+    ]);
   });
 
   it("saves the chosen logo for OpenAI models", () => {

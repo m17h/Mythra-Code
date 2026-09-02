@@ -27,6 +27,7 @@ export interface AppSelectOption {
 export function AppSelectMenu({
   value,
   options,
+  selectedDisplay,
   ariaLabel,
   placeholder = "Choose an option",
   searchable = false,
@@ -39,6 +40,8 @@ export function AppSelectMenu({
 }: {
   value: string;
   options: AppSelectOption[];
+  /** Closed-trigger copy for a saved value intentionally omitted from the menu. */
+  selectedDisplay?: Omit<AppSelectOption, "value">;
   ariaLabel: string;
   placeholder?: string;
   searchable?: boolean;
@@ -62,7 +65,8 @@ export function AppSelectMenu({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
-  const selected = options.find((option) => option.value === value);
+  const selected = options.find((option) => option.value === value)
+    ?? (value && selectedDisplay ? { value, ...selectedDisplay } : undefined);
   const normalizedQuery = query.trim().toLowerCase();
   const ordered = useMemo(
     () => sortByFavorites(options, favorites, (option) => option.value),
@@ -118,8 +122,10 @@ export function AppSelectMenu({
         searchRef.current?.focus();
         return;
       }
-      const selectedIndex = Math.max(0, visible.findIndex((option) => option.value === value));
-      optionRefs.current[selectedIndex]?.focus();
+      const selectedIndex = visible.findIndex((option) => option.value === value && !option.disabled);
+      const selectedButton = selectedIndex >= 0 ? optionRefs.current[selectedIndex] : null;
+      const firstEnabled = optionRefs.current.find((item) => item?.isConnected && !item.disabled);
+      (selectedButton?.isConnected && !selectedButton.disabled ? selectedButton : firstEnabled)?.focus();
     });
   }, [open, searchable, value, visible]);
 
@@ -177,7 +183,7 @@ export function AppSelectMenu({
                 onKeyDown={(event) => {
                   if (event.key === "ArrowDown") {
                     event.preventDefault();
-                    optionRefs.current.find((item) => item?.isConnected)?.focus();
+                    optionRefs.current.find((item) => item?.isConnected && !item.disabled)?.focus();
                   }
                 }}
               />

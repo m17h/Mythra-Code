@@ -1694,6 +1694,17 @@ fn image_preview_extensions_are_restricted_to_supported_formats() {
         durable_image_filename(Some("../../unsafe<script>.jpg"), "jpg"),
         "unsafescript.jpg"
     );
+    assert_eq!(durable_image_filename(Some("CON.png"), "png"), "_CON.png");
+    assert_eq!(
+        durable_image_filename(Some("lpt9.jpeg"), "jpeg"),
+        "_lpt9.jpeg"
+    );
+    let multibyte = durable_image_filename(Some(&format!("{}.png", "界".repeat(120))), "png");
+    assert!(
+        multibyte.len() <= 184,
+        "filename exceeded its UTF-8 byte budget"
+    );
+    assert!(multibyte.ends_with(".png"));
 }
 
 #[test]

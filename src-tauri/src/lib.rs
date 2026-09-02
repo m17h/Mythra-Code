@@ -2667,9 +2667,7 @@ fn claude_image_media_type(path: &Path) -> &'static str {
 /// cap `save_pasted_image` enforces.
 const MAX_IMAGE_ATTACHMENT_BYTES: u64 = 50 * 1024 * 1024;
 
-/// Reads an image attachment after checking that it is a regular file within
-/// the size cap, via tokio::fs so the async runtime is never blocked on disk.
-async fn read_image_attachment(path: &Path) -> Result<Vec<u8>, String> {
+async fn validate_image_attachment(path: &Path) -> Result<(), String> {
     let metadata = tokio::fs::metadata(path)
         .await
         .map_err(|error| format!("Could not read {}: {error}", path.display()))?;
@@ -2685,6 +2683,13 @@ async fn read_image_attachment(path: &Path) -> Result<Vec<u8>, String> {
             path.display()
         ));
     }
+    Ok(())
+}
+
+/// Reads an image attachment after checking that it is a regular file within
+/// the size cap, via tokio::fs so the async runtime is never blocked on disk.
+async fn read_image_attachment(path: &Path) -> Result<Vec<u8>, String> {
+    validate_image_attachment(path).await?;
     tokio::fs::read(path)
         .await
         .map_err(|error| format!("Could not read {}: {error}", path.display()))
@@ -2708,7 +2713,7 @@ fn durable_image_filename(display_name: Option<&str>, extension: &str) -> String
                 .map(str::to_string)
         })
         .unwrap_or_else(|| "Attached image".to_string());
-    let stem = basename
+    let filtered = basename
         .rsplit_once('.')
         .map(|(stem, _)| stem)
         .unwrap_or(&basename)
@@ -2716,14 +2721,33 @@ fn durable_image_filename(display_name: Option<&str>, extension: &str) -> String
         .filter(|character| {
             character.is_alphanumeric() || matches!(character, ' ' | '-' | '_' | '(' | ')')
         })
-        .take(120)
         .collect::<String>();
+    // Keep the complete path component below APFS/ext4's 255-byte ceiling,
+    // not merely below a character count. Multi-byte names otherwise fail to
+    // persist and silently fall back to their temporary source path.
+    let mut stem = String::new();
+    for character in filtered.chars() {
+        if stem.len() + character.len_utf8() > 180 {
+            break;
+        }
+        stem.push(character);
+    }
+    let mut stem = stem.trim().to_string();
+    let upper = stem.to_ascii_uppercase();
+    let reserved_device = matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || upper
+            .strip_prefix("COM")
+            .or_else(|| upper.strip_prefix("LPT"))
+            .is_some_and(|suffix| suffix.len() == 1 && matches!(suffix.as_bytes()[0], b'1'..=b'9'));
+    if reserved_device {
+        stem.insert(0, '_');
+    }
     format!(
         "{}.{}",
-        if stem.trim().is_empty() {
+        if stem.is_empty() {
             "Attached image"
         } else {
-            stem.trim()
+            &stem
         },
         extension
     )
@@ -2761,7 +2785,7 @@ async fn persist_image_attachment(
     let source = PathBuf::from(path);
     let extension = supported_preview_image_extension(&source)
         .ok_or_else(|| "The attachment is not a supported image".to_string())?;
-    let bytes = read_image_attachment(&source).await?;
+    validate_image_attachment(&source).await?;
     let directory = app
         .path()
         .app_data_dir()
@@ -2785,9 +2809,13 @@ async fn persist_image_attachment(
         .map_err(|error| format!("Could not create the message-image folder: {error}"))?;
     let destination =
         destination_directory.join(durable_image_filename(display_name.as_deref(), &extension));
-    tokio::fs::write(&destination, bytes)
+    let copied = tokio::fs::copy(&source, &destination)
         .await
         .map_err(|error| format!("Could not preserve the attached image: {error}"))?;
+    if copied > MAX_IMAGE_ATTACHMENT_BYTES {
+        let _ = tokio::fs::remove_file(&destination).await;
+        return Err("The attached image grew beyond 50 MB while it was being preserved".into());
+    }
     app.asset_protocol_scope()
         .allow_file(&destination)
         .map_err(|error| format!("Could not prepare the attached image preview: {error}"))?;
