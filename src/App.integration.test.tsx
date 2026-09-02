@@ -528,21 +528,40 @@ describe("Codex cold startup", () => {
 });
 
 describe("chat header provider usage", () => {
+  it("persists the chosen OpenAI window separately from Claude and restores it after reopening", async () => {
+    const user = userEvent.setup();
+    rateLimitsImpl = () => ({ rateLimits: { primary: { usedPercent: 42, windowMinutes: 300 }, secondary: { usedPercent: 10, windowMinutes: 10080 } } });
+    localStorage.setItem("kiwi.headerUsageWindows", JSON.stringify({ claude: "Weekly Fable" }));
+    const view = await renderApp();
+    const trigger = await screen.findByRole("button", { name: /OpenAI subscription: 5h 58% left/ });
+    const reads = invokeMock.mock.calls.filter(([, args]) => args?.method === "account/rateLimits/read").length;
+    await user.click(trigger);
+    await user.click(screen.getByRole("radio", { name: "Show Weekly in top bar" }));
+    expect(trigger).toHaveTextContent("Weekly 90% left");
+    expect(invokeMock.mock.calls.filter(([, args]) => args?.method === "account/rateLimits/read")).toHaveLength(reads);
+    expect(JSON.parse(localStorage.getItem("kiwi.headerUsageWindows")!)).toEqual({ openai: "Weekly", claude: "Weekly Fable" });
+    view.unmount();
+    await renderApp();
+    expect(await screen.findByRole("button", { name: /OpenAI subscription: Weekly 90% left/ })).not.toHaveTextContent("5h");
+  });
+
   it("keeps the control visible when Local Dev is signed out and opens account settings", async () => {
     const user = userEvent.setup();
     accountReadImpl = () => ({ account: null, requiresOpenaiAuth: true });
     await renderApp();
 
     const signInUsage = await screen.findByRole("button", {
-      name: /OpenAI subscription.*Sign in to view live limits.*Open Models & accounts/i,
+      name: /OpenAI subscription.*Sign in for usage.*Open usage details/i,
     });
     expect(signInUsage).toHaveTextContent("Sign in for usage");
     expect(screen.queryByRole("button", { name: /^Models & accounts/ })).not.toBeInTheDocument();
     await user.click(signInUsage);
+    await user.click(screen.getByRole("button", { name: "Models & accounts" }));
     expect(await screen.findByText("Official ChatGPT subscription sign-in")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Close settings" }));
     expect(screen.getByText("Official ChatGPT subscription sign-in")).toBeInTheDocument();
     await user.click(signInUsage);
+    await user.click(screen.getByRole("button", { name: "Models & accounts" }));
     expect(screen.getByText("Official ChatGPT subscription sign-in")).toBeInTheDocument();
   });
 
@@ -599,7 +618,7 @@ describe("chat header provider usage", () => {
     await user.click(await screen.findByRole("button", { name: /Models & accounts/ }));
     await user.click(await screen.findByRole("button", { name: "Sign out" }));
 
-    expect(await screen.findByRole("button", { name: /OpenAI subscription.*Sign in to view live limits/i })).toHaveTextContent("Sign in for usage");
+    expect(await screen.findByRole("button", { name: /OpenAI subscription.*Sign in for usage/i })).toHaveTextContent("Sign in for usage");
     expect(screen.queryByRole("button", { name: /OpenAI subscription.*58% left/i })).not.toBeInTheDocument();
   });
 
@@ -627,8 +646,33 @@ describe("chat header provider usage", () => {
       await pendingUsage.promise;
     });
 
-    expect(await screen.findByRole("button", { name: /OpenAI subscription.*Sign in to view live limits/i })).toHaveTextContent("Sign in for usage");
+    expect(await screen.findByRole("button", { name: /OpenAI subscription.*Sign in for usage/i })).toHaveTextContent("Sign in for usage");
     expect(screen.queryByRole("button", { name: /OpenAI subscription.*58% left/i })).not.toBeInTheDocument();
+  });
+});
+
+describe("GitHub clone parent-folder flow", () => {
+  it("clones to the previewed subfolder and preserves projects added while the clone is running", async () => {
+    const user = userEvent.setup();
+    const pendingClone = deferred<null>();
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => command === "github_clone_repository" ? pendingClone.promise : stubInvoke(command, args));
+    await renderApp();
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    vi.mocked(open).mockResolvedValueOnce("/projects").mockResolvedValueOnce("/projects/added-during-clone");
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(await screen.findByRole("button", { name: /^GitHub/ }));
+    await user.type(screen.getByRole("textbox", { name: "Repository URL" }), "https://github.com/owner/cloned.git?tab=readme");
+    await user.click(screen.getByRole("button", { name: "Choose parent folder…" }));
+    expect(await screen.findByText("/projects/cloned")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Clone repository" }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("github_clone_repository", { url: "https://github.com/owner/cloned.git", destination: "/projects/cloned" }));
+    await user.click(screen.getByRole("button", { name: "Close settings" }));
+    await user.click(screen.getByRole("button", { name: "Add project" }));
+    expect(await screen.findByRole("button", { name: "added-during-clone" })).toBeInTheDocument();
+    await act(async () => { pendingClone.resolve(null); await pendingClone.promise; });
+    expect(await screen.findByRole("button", { name: "cloned" })).toBeInTheDocument();
+    const paths = JSON.parse(localStorage.getItem("kiwi.projects")!).map((project: { path: string }) => project.path);
+    expect(paths).toEqual([PROJECT_A.path, PROJECT_B.path, "/projects/added-during-clone", "/projects/cloned"]);
   });
 });
 

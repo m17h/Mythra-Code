@@ -39,3 +39,11 @@
   .interface-size-control { grid-template-columns: 38px minmax(0, 1fr); }
   .interface-size-control .app-select { grid-column: 1 / -1; }
 }
+.github-clone-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s-3); margin-bottom: var(--s-3); }
+.github-clone-location { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; color: var(--muted); font-size: var(--fs-meta); min-width: 0; }
+.github-clone-location > .github-clone-path { flex: 1 1 180px; }
+.github-clone-path { min-width: 0; overflow-wrap: anywhere; color: var(--text); font-size: var(--fs-meta); line-height: 1.5; }
+.github-clone-destination { display: grid; gap: 5px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--field); }
+.github-clone-destination strong { color: var(--muted); font-size: var(--fs-meta); font-weight: 500; }
+.github-clone-hint, .github-clone-error { font-size: var(--fs-meta); color: var(--muted); line-height: 1.5; }
+.github-clone-error { color: var(--red); overflow-wrap: anywhere; }

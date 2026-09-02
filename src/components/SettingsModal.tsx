@@ -1,5 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { save } from "@tauri-apps/plugin-dialog";
+import { open as openFolderDialog, save } from "@tauri-apps/plugin-dialog";
 import { isTauri } from "@tauri-apps/api/core";
 import { confirmDialog } from "../lib/confirmDialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -55,7 +55,8 @@ import { SubagentPolicyEditor } from "./SubagentPolicyEditor";
 import { HarnessSettings } from "./HarnessSettings";
 import { SkillLibrary } from "./SkillLibrary";
 import type { McpView } from "./StudioDock";
-import type { GitHubAccountStatus } from "../lib/github";
+import { parseGitHubCloneTarget, type GitHubAccountStatus } from "../lib/github";
+import { joinPath } from "../lib/paths";
 import { formatEstimatedCost, type UsageTotals } from "../lib/usageLedger";
 import type {
   Account,
@@ -425,7 +426,7 @@ export function SettingsModal({
   onLMStudioTokenChange?: (stored: boolean) => void;
   onGitHubSignIn: () => Promise<void>;
   onGitHubRefresh: () => Promise<void>;
-  onGitHubClone: (url: string, folderName: string) => Promise<boolean>;
+  onGitHubClone: (url: string, parentFolder: string) => Promise<boolean>;
   onError: (error: string | null) => void;
   profiles: PromptProfile[];
   agents: CustomAgentProfile[];
@@ -481,7 +482,7 @@ export function SettingsModal({
   const [busy, setBusy] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>(initialSection);
   const [cloneUrl, setCloneUrl] = useState("");
-  const [cloneFolder, setCloneFolder] = useState("");
+  const [cloneParent, setCloneParent] = useState("");
   const githubRefreshRequestedRef = useRef(false);
   const skillsRefreshRef = useRef(onRefreshSkills);
   skillsRefreshRef.current = onRefreshSkills;
@@ -1108,15 +1109,14 @@ export function SettingsModal({
             status={githubStatus}
             busy={githubBusy}
             cloneUrl={cloneUrl}
-            cloneFolder={cloneFolder}
+            cloneParent={cloneParent}
             onCloneUrl={setCloneUrl}
-            onCloneFolder={setCloneFolder}
+            onCloneParent={setCloneParent}
             onSignIn={onGitHubSignIn}
             onRefresh={onGitHubRefresh}
             onClone={async () => {
-              if (await onGitHubClone(cloneUrl, cloneFolder)) {
+              if (await onGitHubClone(cloneUrl, cloneParent)) {
                 setCloneUrl("");
-                setCloneFolder("");
               }
             }}
           />}
@@ -1541,9 +1541,9 @@ function GitHubSettings({
   status,
   busy,
   cloneUrl,
-  cloneFolder,
+  cloneParent,
   onCloneUrl,
-  onCloneFolder,
+  onCloneParent,
   onSignIn,
   onRefresh,
   onClone,
@@ -1551,13 +1551,36 @@ function GitHubSettings({
   status: GitHubAccountStatus | null;
   busy: boolean;
   cloneUrl: string;
-  cloneFolder: string;
+  cloneParent: string;
   onCloneUrl: (value: string) => void;
-  onCloneFolder: (value: string) => void;
+  onCloneParent: (value: string) => void;
   onSignIn: () => Promise<void>;
   onRefresh: () => Promise<void>;
   onClone: () => Promise<void>;
 }) {
+  const [choosing, setChoosing] = useState(false);
+  const choosingRef = useRef(false);
+  const [folderError, setFolderError] = useState("");
+  const target = parseGitHubCloneTarget(cloneUrl);
+  const chooseParent = async () => {
+    if (choosingRef.current || busy) return;
+    choosingRef.current = true;
+    setChoosing(true);
+    setFolderError("");
+    try {
+      const selected = await openFolderDialog({ directory: true, multiple: false, title: "Choose parent folder — a new repository folder will be created inside", ...(cloneParent ? { defaultPath: cloneParent } : {}) });
+      if (typeof selected === "string" && selected) onCloneParent(selected);
+    } catch (error) {
+      setFolderError(friendlyError(error));
+    } finally {
+      choosingRef.current = false;
+      setChoosing(false);
+    }
+  };
+  const clone = async () => {
+    setFolderError("");
+    try { await onClone(); } catch (error) { setFolderError(friendlyError(error)); }
+  };
   return <>
     <section className="settings-section">
       <div className="settings-section-heading">
@@ -1587,10 +1610,19 @@ function GitHubSettings({
         <div><h3>Clone a repository</h3><p>Download a GitHub repository into a new local folder and add it to Mythra Code as a project.</p></div>
       </div>
       <div className="github-clone-grid">
-        <label className="field-label"><span>Repository URL</span><input value={cloneUrl} onChange={(event) => onCloneUrl(event.target.value)} placeholder="https://github.com/owner/repository.git" /></label>
-        <label className="field-label"><span>Local folder name</span><input value={cloneFolder} onChange={(event) => onCloneFolder(event.target.value)} placeholder="repository" /></label>
+        <label className="field-label"><span>Repository URL</span><input value={cloneUrl} disabled={busy || choosing} onChange={(event) => { setFolderError(""); onCloneUrl(event.target.value); }} placeholder="https://github.com/owner/repository.git" aria-describedby="github-clone-url-help" aria-invalid={Boolean(cloneUrl.trim() && !target)} /></label>
+        <div className="github-clone-location">
+          <span>Parent folder</span>
+          <button type="button" className="secondary-button" onClick={() => void chooseParent()} disabled={busy || choosing} aria-describedby={cloneParent ? "github-clone-parent" : "github-clone-url-help"}>
+            {choosing ? <LoaderCircle size={15} className="spin" /> : <FolderCog size={15} />}{cloneParent ? "Change parent folder…" : "Choose parent folder…"}
+          </button>
+          {cloneParent && <span id="github-clone-parent" className="github-clone-path" role="status">{cloneParent}</span>}
+        </div>
       </div>
-      <button className="primary-button" disabled={!status?.authenticated || busy || !cloneUrl.trim() || !cloneFolder.trim()} onClick={() => void onClone()}>{busy ? <LoaderCircle className="spin" size={13} /> : <Download size={13} />} Choose location and clone</button>
+      <p id="github-clone-url-help" className="github-clone-hint" role="status">{cloneUrl.trim() && !target ? "Enter a GitHub repository URL with a folder name supported on macOS and Windows." : "Choose the parent folder, not the repository folder itself. Mythra Code creates a new repository-named folder inside that parent. Existing folders are never overwritten."}</p>
+      {target && cloneParent && <p id="github-clone-destination" className="github-clone-destination" role="status"><strong>Clone into</strong>{" "}<span className="github-clone-path">{joinPath(cloneParent, target.name)}</span></p>}
+      {folderError && <p className="github-clone-error" role="alert">{folderError}</p>}
+      <button type="button" className="primary-button" disabled={!status?.authenticated || busy || choosing || !target || !cloneParent} aria-describedby={target && cloneParent ? "github-clone-destination" : "github-clone-url-help"} onClick={() => void clone()}>{busy ? <LoaderCircle className="spin" size={13} /> : <Download size={13} />} Clone repository</button>
     </section>
   </>;
 }

@@ -11,6 +11,7 @@ import {
   providerAccountUsage,
   providerHeaderUsage,
   sanitizeUsageDisplay,
+  sanitizeHeaderUsageWindows,
   usagePercentLabel,
 } from "./providerUsage";
 import { DEFAULT_SETTINGS } from "./appConfig";
@@ -374,7 +375,36 @@ describe("chat header provider usage", () => {
       usageDisplay: "consumed",
       now: NOW,
     });
-    expect(providerHeaderUsage("openai", view)?.text).toBe("5h 42% used · Weekly 10% used");
+    expect(providerHeaderUsage("openai", view)?.text).toBe("5h 42% used");
+    expect(providerHeaderUsage("openai", view, { selectedWindow: "Weekly" })?.text).toBe("Weekly 10% used");
+    expect(providerHeaderUsage("openai", view, { selectedWindow: "Removed limit" })?.text).toBe("5h 42% used");
+  });
+
+  it("sanitizes independent provider selections without persisting unknown providers", () => {
+    expect(sanitizeHeaderUsageWindows(null)).toEqual({});
+    expect(sanitizeHeaderUsageWindows(["Weekly"])).toEqual({});
+    expect(sanitizeHeaderUsageWindows({ openai: " Weekly ", claude: "Weekly Fable", cursor: "5h" })).toEqual({ openai: "Weekly", claude: "Weekly Fable" });
+    expect(sanitizeHeaderUsageWindows({ openai: 42, claude: "x".repeat(121) })).toEqual({});
+  });
+
+  it("makes equal-duration provider windows independently selectable", () => {
+    const view = providerAccountUsage("openai", {
+      openAiRateLimits: { windows: [{ label: "Weekly", usedPercent: 10, resetsAt: null }, { label: "Weekly", usedPercent: 70, resetsAt: null }] },
+      claudeStatus: null, openRouterReady: false,
+    });
+    expect(view.windows?.map((window) => window.label)).toEqual(["Weekly", "Weekly (2)"]);
+    expect(providerHeaderUsage("openai", view, { selectedWindow: "Weekly (2)" })?.text).toBe("Weekly (2) 30% left");
+  });
+
+  it("keeps every quota selectable even when provider labels collide with generated suffixes", () => {
+    const view = providerAccountUsage("openai", {
+      openAiRateLimits: { windows: ["Weekly", "Weekly", "Weekly (2)", "Weekly"].map((label, index) => ({ label, usedPercent: index * 10, resetsAt: null })) },
+      claudeStatus: null, openRouterReady: false,
+    });
+    expect(new Set(view.windows?.map((window) => window.label)).size).toBe(4);
+    view.windows?.forEach((window, index) => {
+      expect(providerHeaderUsage("openai", view, { selectedWindow: window.label })?.text).toBe(`${window.label} ${100 - index * 10}% left`);
+    });
   });
 
   it("shows authoritative OpenRouter account credits without calling estimates credits", () => {

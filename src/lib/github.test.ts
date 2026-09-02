@@ -4,7 +4,29 @@ import {
   githubCliCommand,
   gitPushCompletionNote,
   gitPushCommand,
+  parseGitHubCloneTarget,
 } from "./github";
+
+describe("GitHub clone destinations", () => {
+  it.each([
+    "https://github.com/owner/repo", "https://github.com/owner/repo.git/",
+    "http://github.com/owner/repo", "https://github.com/owner/repo?tab=readme#top",
+  ])("derives a repository name and canonical HTTPS URL from %s", (url) => {
+    expect(parseGitHubCloneTarget(url)).toEqual({ name: "repo", url: "https://github.com/owner/repo.git" });
+  });
+  it.each(["git@github.com:owner/repo.git", "ssh://git@github.com/owner/repo"]) ("preserves SSH transport: %s", (url) => {
+    expect(parseGitHubCloneTarget(url)).toEqual({ name: "repo", url: "git@github.com:owner/repo.git" });
+  });
+  it.each([
+    "", "owner/repo", "https://gitlab.com/owner/repo", "https://github.com/owner/repo/tree/main",
+    "https://github.com/owner/..", "https://github.com/owner/repo.", "https://github.com/owner/CON",
+    "https://github.com/owner/nul.txt", "https://github.com/owner/LPT1", "https://github.com/owner/a%2Fb",
+    "https://github.com/owner/a\\b", "https://github.com/ow ner/repo", "https://github.com/owner/na:me",
+    "https://github.com/owner/" + "a".repeat(101), "https://github.com/../repo",
+  ])("rejects unsafe or non-repository input: %s", (url) => {
+    expect(parseGitHubCloneTarget(url)).toBeNull();
+  });
+});
 
 describe("GitHub workspace commands", () => {
   it("allows inspection but blocks mutations and network actions in read-only mode", () => {
