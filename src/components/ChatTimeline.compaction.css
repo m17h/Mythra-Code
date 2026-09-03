@@ -1,0 +1,54 @@
+/* A provider compaction is a fold in the conversation, not another work card. */
+.context-compaction {
+  --compaction-accent: color-mix(in srgb, var(--green) 58%, var(--muted));
+  display: grid;
+  grid-template-columns: minmax(8px, 1fr) auto minmax(8px, 1fr);
+  align-items: center;
+  gap: 10px;
+  margin: 3px 0;
+}
+
+.context-compaction.active { --compaction-accent: var(--info); }
+.context-compaction.incomplete { --compaction-accent: color-mix(in srgb, var(--red) 62%, var(--muted)); }
+
+.context-compaction-seam {
+  position: relative;
+  overflow: hidden;
+  height: 1px;
+  background: color-mix(in srgb, var(--compaction-accent) 25%, transparent);
+}
+
+.context-compaction.active .context-compaction-seam::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, var(--compaction-accent), transparent);
+  animation: compaction-sweep 2.1s ease-in-out infinite;
+}
+
+.context-compaction-pill {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 11px 3px 8px;
+  border: 1px solid color-mix(in srgb, var(--compaction-accent) 24%, var(--line-quiet));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--compaction-accent) 7%, transparent);
+}
+
+.context-compaction-glyph { display: grid; color: var(--compaction-accent); }
+.context-compaction.active .context-compaction-glyph { animation: compaction-fold 1.7s ease-in-out infinite; }
+.context-compaction-pill strong { color: var(--ink-2); font-size: var(--fs-meta); white-space: nowrap; }
+.context-compaction-pill small { min-width: 0; overflow: hidden; padding-left: 8px; border-left: 1px solid var(--line-quiet); color: var(--muted-2); font-size: var(--fs-micro); white-space: nowrap; text-overflow: ellipsis; }
+.flow-timeline .context-compaction { margin-left: 38px; }
+
+@keyframes compaction-sweep { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+@keyframes compaction-fold { 50% { opacity: .55; transform: scaleY(.6); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .context-compaction.active .context-compaction-seam::after,
+  .context-compaction.active .context-compaction-glyph { animation: none; }
+  .context-compaction.active .context-compaction-seam::after { opacity: .5; }
+  .context-compaction.active .context-compaction-glyph { opacity: 1; }
+}

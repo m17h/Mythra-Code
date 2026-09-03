@@ -122,7 +122,7 @@ async function restoreChildTimeline(link: ChildAgentLink): Promise<string> {
     return lastAssistantText(link.childThreadId);
   }
   const result = await rpc<{ thread: Thread }>("thread/read", { threadId: link.childThreadId, includeTurns: true });
-  const timeline = timelineFromTurns(result.thread.turns);
+  const timeline = timelineFromTurns(result.thread.turns, { includeContextCompaction: link.provider === "openai" });
   useTaskStore.getState().hydrateTask(link.childThreadId, timeline.messages, timeline.activities, result.thread.cwd);
   return lastAssistantText(link.childThreadId);
 }

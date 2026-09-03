@@ -204,6 +204,44 @@ describe("local transcript persistence adapters", () => {
     expect(tauri.invoke.mock.calls.some(([command]) => command === "local_transcript_snapshot_write")).toBe(false);
   });
 
+  it("persists a context compaction marker in its chronological place", async () => {
+    const page = {
+      thread,
+      messages: [completed],
+      activities: [],
+      nextCursor: "4:2",
+      headSeq: 3,
+      tailSeq: 4,
+      generation: 4,
+      byteLen: 12_345,
+    };
+    tauri.invoke.mockResolvedValueOnce(page).mockResolvedValueOnce(writeState(5));
+    await loadClaudeTranscriptPage("thread-a");
+    const marker = {
+      id: "claude-compaction-boundary-1",
+      kind: "compaction" as const,
+      title: "Context compacted",
+      detail: "Claude Code · Automatic · 154K tokens before",
+      status: "completed",
+      turnId: "turn-new",
+      timelineOrder: 2,
+    };
+    const compacted = {
+      ...page,
+      messages: [...page.messages, { id: "live", role: "assistant" as const, text: "Part", turnId: "turn-new", timelineOrder: 3 }],
+      activities: [marker],
+    };
+
+    await saveClaudeTranscript(compacted);
+
+    expect(tauri.invoke).toHaveBeenLastCalledWith("local_transcript_tail_write", {
+      provider: "claude",
+      expectedGeneration: 4,
+      seal: false,
+      value: { thread, messages: compacted.messages.slice(1), activities: [marker] },
+    });
+  });
+
   it("refuses to recover a stale partial-page tail with a destructive snapshot", async () => {
     const page = {
       thread,

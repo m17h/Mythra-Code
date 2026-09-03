@@ -159,20 +159,26 @@
       "decision": "Accept 3,991 Safari / 3,853 Chrome startup JavaScript bytes for frozen provider subtotals, launch pricing status, background metadata attribution and deduplicated cost receipts. Removing obsolete usage styles saves 1,105 startup CSS bytes on both targets; combined raw startup JS plus CSS grows 2,886 / 2,748 bytes. The dashboard and its CSS stay in the deferred Settings chunk, unmount when Settings closes, use no chart dependency, read no transcripts and update only on batched ledger writes. Receipts use one aggregate and at most 1,000 recent ids, not one ledger record per request. Native observation forwards original chunks, caps a candidate frame at 256 KiB and skips JSON parsing on text-only frames. No new polling or generation lookup requests. futures-util was already a transitive Rust dependency; no additional resolved package or frontend dependency is introduced. This is reviewed feature overhead, not a speed improvement claim. Exact measured limits, no extra headroom; app-entry/CSS limits ratchet down.",
       "safari13": { "appEntryFromBytes": 350813, "appEntryToBytes": 350471, "appEntryDeltaBytes": -342, "startupJsFromBytes": 706409, "startupJsToBytes": 710400, "startupJsDeltaBytes": 3991, "startupCssFromBytes": 341576, "startupCssToBytes": 340471, "startupCssDeltaBytes": -1105, "totalJsFromBytes": 1451463, "totalJsToBytes": 1460889, "totalJsDeltaBytes": 9426 },
       "chrome105": { "appEntryFromBytes": 333010, "appEntryToBytes": 332822, "appEntryDeltaBytes": -188, "startupJsFromBytes": 681766, "startupJsToBytes": 685619, "startupJsDeltaBytes": 3853, "startupCssFromBytes": 339453, "startupCssToBytes": 338348, "startupCssDeltaBytes": -1105, "totalJsFromBytes": 1416860, "totalJsToBytes": 1426135, "totalJsDeltaBytes": 9275 }
+    },
+    {
+      "change": "Show provider-native context compaction in thread history",
+      "decision": "Accept 2,477 Safari / 2,331 Chrome startup JavaScript bytes for provider-gated Codex lifecycle routing, durable Claude boundary markers, exact timeline ordering and completed-turn visibility. The animated marker adds no startup CSS because its 2.0 KB stylesheet follows the already-lazy ChatTimeline chunk. It adds no polling, provider requests, timers, dependencies or transcript rewriting; OpenRouter and LM Studio are explicitly excluded in live and restored paths. Total JavaScript grows 3,596 / 3,439 bytes, mostly in the lazy renderer and shared persistence presentation logic. This is reviewed UI-feature overhead, not an efficiency claim. Exact measured limits with no extra headroom.",
+      "safari13": { "appEntryFromBytes": 350471, "appEntryToBytes": 352011, "appEntryDeltaBytes": 1540, "startupJsFromBytes": 710400, "startupJsToBytes": 712877, "startupJsDeltaBytes": 2477, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1460889, "totalJsToBytes": 1464485, "totalJsDeltaBytes": 3596 },
+      "chrome105": { "appEntryFromBytes": 332822, "appEntryToBytes": 334222, "appEntryDeltaBytes": 1400, "startupJsFromBytes": 685619, "startupJsToBytes": 687950, "startupJsDeltaBytes": 2331, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1426135, "totalJsToBytes": 1429574, "totalJsDeltaBytes": 3439 }
     }
   ],
   "profiles": {
     "safari13-minified": {
-      "appEntryRawBytes": 350471,
-      "startupJsRawBytes": 710400,
+      "appEntryRawBytes": 352011,
+      "startupJsRawBytes": 712877,
       "startupCssRawBytes": 340471,
-      "totalJsRawBytes": 1460889
+      "totalJsRawBytes": 1464485
     },
     "chrome105-minified": {
-      "appEntryRawBytes": 332822,
-      "startupJsRawBytes": 685619,
+      "appEntryRawBytes": 334222,
+      "startupJsRawBytes": 687950,
       "startupCssRawBytes": 338348,
-      "totalJsRawBytes": 1426135
+      "totalJsRawBytes": 1429574
     }
   }
 }

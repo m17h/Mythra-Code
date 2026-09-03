@@ -1,9 +1,16 @@
 import type { Activity, ChatMessage, ThreadItem, Turn } from "../types";
+import { compactionActivity } from "./contextCompaction";
 import { nativeSubAgentPresentation } from "./nativeSubAgentActivity";
 
 export interface ThreadTimelineSnapshot {
   messages: ChatMessage[];
   activities: Activity[];
+}
+
+export interface ThreadTimelineOptions {
+  /** The app-server transport is shared by multiple providers. Callers must
+   * opt OpenAI threads in so OpenRouter and LM Studio remain unchanged. */
+  includeContextCompaction?: boolean;
 }
 
 function userText(item: ThreadItem): string {
@@ -22,12 +29,30 @@ function userImageAttachments(item: ThreadItem): ChatMessage["attachments"] {
   return images.length ? images : undefined;
 }
 
-function activityFromItem(item: ThreadItem, id: string, timelineOrder: number, turnId: string, turnStatus: Turn["status"]): Activity | null {
+function activityFromItem(
+  item: ThreadItem,
+  id: string,
+  timelineOrder: number,
+  turnId: string,
+  turnStatus: Turn["status"],
+  options: ThreadTimelineOptions,
+): Activity | null {
   if (item.type === "commandExecution") {
     return { id, kind: "command", title: item.command ?? "Run command", detail: item.aggregatedOutput ?? item.cwd, status: item.status, timelineOrder, turnId, turnStatus };
   }
   if (item.type === "fileChange") {
     return { id, kind: "file", title: `${item.changes?.length ?? 0} file change${item.changes?.length === 1 ? "" : "s"}`, itemCount: item.changes?.length, status: item.status, timelineOrder, turnId, turnStatus };
+  }
+  if (item.type === "contextCompaction") {
+    if (!options.includeContextCompaction) return null;
+    // Rebuilt history is by definition no longer running, so a rollout saved
+    // mid-compaction restores as finished rather than animating on open.
+    return {
+      ...compactionActivity({ id, provider: "openai", status: item.status === "failed" ? "failed" : "completed" }),
+      timelineOrder,
+      turnId,
+      turnStatus,
+    };
   }
   if (item.type === "reasoning") {
     const content = (item.content ?? []).filter((entry): entry is string => typeof entry === "string").join("\n\n").trim();
@@ -72,7 +97,7 @@ function activityFromItem(item: ThreadItem, id: string, timelineOrder: number, t
   return null;
 }
 
-export function timelineFromTurns(turns: Turn[] = []): ThreadTimelineSnapshot {
+export function timelineFromTurns(turns: Turn[] = [], options: ThreadTimelineOptions = {}): ThreadTimelineSnapshot {
   const messages: ChatMessage[] = [];
   const activities: Activity[] = [];
   let timelineOrder = 0;
@@ -98,7 +123,7 @@ export function timelineFromTurns(turns: Turn[] = []): ThreadTimelineSnapshot {
         messages.push({ id, role: "assistant", text: item.text ?? "", timelineOrder: order, turnId: turn.id, turnStatus });
         return;
       }
-      const activity = activityFromItem(item, id, order, turn.id, turnStatus);
+      const activity = activityFromItem(item, id, order, turn.id, turnStatus, options);
       if (activity) activities.push(activity);
     });
   }
