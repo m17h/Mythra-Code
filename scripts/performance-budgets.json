@@ -138,23 +138,23 @@
     },
     {
       "change": "Usage countdown and restrained toolbar presentation",
-      "decision": "Accept the measured UI-feature cost of safe timezone-aware Claude reset-label parsing, a minute clock mounted only in open five-hour usage details, friendly Claude trigger names, and action feedback moved out of the fixed-width status text into existing toasts. No dependencies, extra provider reads, transcript changes or closed-panel timers. DST gaps/folds retain absolute labels rather than guessing. Most added JavaScript is shared parsing logic; total raw JS grows by 2,398 Safari / 2,343 Chrome bytes, with 223 startup CSS bytes for subdued selection and neutral notifications. This is feature overhead, not an efficiency claim. Exact measured limits, no extra headroom.",
-      "safari13": { "appEntryFromBytes": 348436, "appEntryToBytes": 349003, "appEntryDeltaBytes": 567, "startupJsFromBytes": 701220, "startupJsToBytes": 703610, "startupJsDeltaBytes": 2390, "startupCssDeltaBytes": 223, "totalJsFromBytes": 1446271, "totalJsToBytes": 1448669, "totalJsDeltaBytes": 2398 },
-      "chrome105": { "appEntryFromBytes": 330803, "appEntryToBytes": 331334, "appEntryDeltaBytes": 531, "startupJsFromBytes": 676812, "startupJsToBytes": 679145, "startupJsDeltaBytes": 2333, "startupCssDeltaBytes": 223, "totalJsFromBytes": 1411903, "totalJsToBytes": 1414246, "totalJsDeltaBytes": 2343 }
+      "decision": "Accept the measured UI-feature cost of safe timezone-aware Claude reset-label parsing, a minute clock mounted only in open five-hour usage details, friendly Claude trigger names, and action feedback moved out of the fixed-width status text into existing toasts. No dependencies, extra provider reads, transcript changes or closed-panel timers. DST gaps/folds retain absolute labels rather than guessing. Most added JavaScript is shared parsing logic; total raw JS grows by 2,355 Safari / 2,300 Chrome bytes, with 223 startup CSS bytes for subdued selection and neutral notifications. This is feature overhead, not an efficiency claim. Exact measured limits, no extra headroom.",
+      "safari13": { "appEntryFromBytes": 348436, "appEntryToBytes": 348960, "appEntryDeltaBytes": 524, "startupJsFromBytes": 701220, "startupJsToBytes": 703567, "startupJsDeltaBytes": 2347, "startupCssDeltaBytes": 223, "totalJsFromBytes": 1446271, "totalJsToBytes": 1448626, "totalJsDeltaBytes": 2355 },
+      "chrome105": { "appEntryFromBytes": 330803, "appEntryToBytes": 331291, "appEntryDeltaBytes": 488, "startupJsFromBytes": 676812, "startupJsToBytes": 679102, "startupJsDeltaBytes": 2290, "startupCssDeltaBytes": 223, "totalJsFromBytes": 1411903, "totalJsToBytes": 1414203, "totalJsDeltaBytes": 2300 }
     }
   ],
   "profiles": {
     "safari13-minified": {
-      "appEntryRawBytes": 349003,
-      "startupJsRawBytes": 703610,
+      "appEntryRawBytes": 348960,
+      "startupJsRawBytes": 703567,
       "startupCssRawBytes": 342474,
-      "totalJsRawBytes": 1448669
+      "totalJsRawBytes": 1448626
     },
     "chrome105-minified": {
-      "appEntryRawBytes": 331334,
-      "startupJsRawBytes": 679145,
+      "appEntryRawBytes": 331291,
+      "startupJsRawBytes": 679102,
       "startupCssRawBytes": 340351,
-      "totalJsRawBytes": 1414246
+      "totalJsRawBytes": 1414203
     }
   }
 }

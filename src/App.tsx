@@ -5427,7 +5427,7 @@ export default function App() {
               <span>Search</span>
               <kbd>{primaryModifierLabel()}+K</kbd>
             </button>
-            <div className="runtime-status" role="status" aria-label="Thread status" title={status}>
+            <div className="runtime-status" title={status}>
               {running || childrenRunning ? <LoaderCircle className="spin" size={13} /> : <Circle size={8} fill="currentColor" />}
               <span>{running || childrenRunning ? "Working" : "Ready"}</span>
             </div>

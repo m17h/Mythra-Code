@@ -19,6 +19,23 @@ describe("usage popover browser layout", () => {
     expect(getComputedStyle(rows[0]).backgroundColor).toBe(getComputedStyle(rows[1]).backgroundColor);
     expect(getComputedStyle(rows[0]).borderColor).not.toBe(getComputedStyle(rows[1]).borderColor);
     expect(view.getByRole("radio", { name: "Show 5h in top bar" })).toBeChecked();
+    const track = view.container.querySelector(".usage-popover-track")!;
+    const canvas = document.createElement("canvas"); canvas.width = canvas.height = 1;
+    const context = canvas.getContext("2d")!;
+    const luminance = (...colors: string[]) => {
+      context.clearRect(0, 0, 1, 1);
+      for (const color of colors) { context.fillStyle = color; context.fillRect(0, 0, 1, 1); }
+      const rgb = [...context.getImageData(0, 0, 1, 1).data].slice(0, 3).map(channel => {
+        const value = channel / 255;
+        return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+      });
+      return rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
+    };
+    const background = getComputedStyle(rows[0]).backgroundColor;
+    const rail = getComputedStyle(track).backgroundColor;
+    const empty = luminance(background, rail);
+    const filled = luminance(background, rail, getComputedStyle(track.firstElementChild!).backgroundColor);
+    expect((Math.max(empty, filled) + 0.05) / (Math.min(empty, filled) + 0.05)).toBeGreaterThanOrEqual(3);
   });
   it.each([0.8, 1, 1.5])("stays inside a narrow chat toolbar at %sx UI scale with scrollable details", (scale) => {
     const usage: AccountUsageView = {

@@ -356,7 +356,7 @@ describe("Codex cold startup", () => {
     resumeImpl = () => ({ thread: { ...threads[0], turns: [] } });
     await renderApp();
     if (kind === "sub-agent") await user.click(within(screen.getByRole("group", { name: "Thread type" })).getByRole("button", { name: /^Sub-agents/ }));
-    const status = screen.getByRole("status", { name: "Thread status" });
+    const status = document.querySelector(".runtime-status")!;
     expect(status.textContent).toBe("Ready");
     await user.click(await screen.findByText("Alpha thread"));
     const { useTaskStore } = await import("./lib/taskStore");
@@ -1042,7 +1042,9 @@ describe("workspace switching during thread selection", () => {
         cwd: PROJECT_A.path,
       });
     });
-    expect(await screen.findByText("Git repository created for Alpha. Isolated worktrees are ready.")).toBeInTheDocument();
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "Git repository created for Alpha. Isolated worktrees are ready.",
+    );
     const isolatedChoice = await screen.findByRole("button", { name: /Isolated worktree/i });
     expect(isolatedChoice).toBeEnabled();
   });
