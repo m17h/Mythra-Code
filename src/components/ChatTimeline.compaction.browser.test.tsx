@@ -29,6 +29,18 @@ function marker(status: string) {
 }
 
 describe("context compaction seam", () => {
+  it.each(["inProgress", "completed", "interrupted"])("keeps %s markers inside a narrow enlarged timeline", (status) => {
+    const view = render(
+      <div style={{ width: 280, fontSize: 18, "--fs-meta": "18px", "--fs-micro": "16px" } as React.CSSProperties}>
+        <ContextCompactionMarker activity={{ id: "compact", kind: "compaction", title: "", status, detail: "Claude Code · Automatic · 154K tokens before" }} />
+      </div>,
+    );
+    const root = view.container.querySelector<HTMLElement>(".context-compaction")!;
+    expect(root.scrollWidth).toBeLessThanOrEqual(root.clientWidth + 1);
+    const pill = root.querySelector<HTMLElement>(".context-compaction-pill")!;
+    expect(pill.scrollWidth).toBeLessThanOrEqual(pill.clientWidth + 1);
+  });
+
   it("animates the seam and glyph only while the provider is still compacting", () => {
     const live = marker("inProgress");
     expect(getComputedStyle(live.glyph).animationName).toBe("compaction-fold");

@@ -429,8 +429,10 @@ describe("ChatTimeline", () => {
       status: "inProgress",
     }} />);
 
-    expect(screen.getByRole("status", { name: "Compacting context" })).toHaveClass("context-compaction", "active");
+    expect(screen.getByRole("status")).toHaveClass("context-compaction", "active");
+    expect(screen.getByRole("status")).toHaveTextContent("Compacting context");
     expect(screen.getByText("Compacting context")).toBeInTheDocument();
+    expect(screen.getByText("Compacting context").closest('[aria-hidden="true"]')).toBeNull();
 
     view.rerender(<ActivityRow activity={{
       id: "compaction",
@@ -440,7 +442,8 @@ describe("ChatTimeline", () => {
       status: "completed",
     }} />);
 
-    const settled = screen.getByRole("group", { name: /^Context compacted\./ });
+    const settled = screen.getByRole("group");
+    expect(settled).toHaveTextContent("Context compacted");
     expect(settled).toHaveClass("complete");
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
     expect(screen.getByText("Claude Code · Automatic · 154K tokens before")).toBeInTheDocument();
@@ -501,7 +504,7 @@ describe("ChatTimeline", () => {
       />,
     );
 
-    expect(screen.getByRole("group", { name: "Context compacted" })).toBeInTheDocument();
+    expect(screen.getByText("Context compacted").closest('[role="group"]')).not.toBeNull();
     expect(screen.getByText("Work completed")).toBeInTheDocument();
     expect(screen.queryByText("npm test")).not.toBeInTheDocument();
   });
@@ -516,7 +519,7 @@ describe("ChatTimeline", () => {
       />,
     );
 
-    expect(screen.getByRole("status", { name: "Compacting context" })).toBeInTheDocument();
+    expect(screen.getByText("Compacting context").closest('[role="status"]')).not.toBeNull();
     expect(screen.queryByText("Thinking")).not.toBeInTheDocument();
   });
 

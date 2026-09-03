@@ -383,6 +383,15 @@ describe("Claude event routing", () => {
     expect(task.messages[0].timelineOrder!).toBeLessThan(task.activities[0].timelineOrder!);
   });
 
+  it("places a compact boundary after earlier text even before the next frame flush", () => {
+    send({ type: "stream_event", event: { type: "message_start", message: { id: "message-1" } } });
+    send({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Before" } } });
+    send({ type: "system", subtype: "compact_boundary", uuid: "boundary-1", compact_metadata: { trigger: "auto", pre_tokens: 100 } });
+    useTaskStore.getState().flushDeltas();
+    const task = useTaskStore.getState().tasks["thread-1"];
+    expect(task.messages[0].timelineOrder!).toBeLessThan(task.activities[0].timelineOrder!);
+  });
+
   it("answers unknown control requests with an error instead of stalling", () => {
     send({
       type: "control_request",
