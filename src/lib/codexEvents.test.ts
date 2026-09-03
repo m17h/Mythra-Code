@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { RUNTIME_THREAD_ID, decodeBase64Utf8, routeCodexEvent, runtimeMessage, type CodexEventContext } from "./codexEvents";
 import { resetTaskStore, useTaskStore } from "./taskStore";
+import { openRouterReportedCost, usageTotals } from "./usageLedger";
 
 function makeContext(overrides: Partial<CodexEventContext> = {}): CodexEventContext {
   return {
@@ -24,6 +25,19 @@ function makeContext(overrides: Partial<CodexEventContext> = {}): CodexEventCont
 
 describe("routeCodexEvent", () => {
   beforeEach(() => resetTaskStore());
+
+  it("captures OpenRouter receipts without assigning them to the active thread or counting tokens again", () => {
+    const before = usageTotals();
+    const ctx = makeContext();
+    useTaskStore.getState().setActiveThread("unrelated-openai-thread");
+    const receipt = { method: "mythra/openrouterCharge", params: { id: "gen-test", cost: 0.25 } };
+    routeCodexEvent(receipt, ctx);
+    routeCodexEvent(receipt, ctx);
+    expect(openRouterReportedCost()).toEqual({ cost: 0.25, requests: 1 });
+    expect(usageTotals()).toEqual(before);
+    expect(useTaskStore.getState().tasks[RUNTIME_THREAD_ID]).toBeUndefined();
+    expect(ctx.onStatus).not.toHaveBeenCalled();
+  });
 
   it("routes deltas to the thread named in the event", () => {
     const ctx = makeContext();

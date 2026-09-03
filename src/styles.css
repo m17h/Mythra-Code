@@ -1354,14 +1354,6 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .github-account-panel > div { flex: 1; min-width: 0; }
 .github-account-panel > img, .github-avatar-placeholder { width: 34px; height: 34px; flex: 0 0 auto; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 50%; background: var(--field); object-fit: cover; }
 .settings-external-action { margin-top: var(--s-2); }
-.usage-settings-hero { display: flex; flex-direction: column; gap: 4px; margin-bottom: var(--s-3); padding: var(--s-5); border: 1px solid color-mix(in srgb, var(--green) 24%, var(--line)); border-radius: var(--r-md); background: linear-gradient(145deg, color-mix(in srgb, var(--green) 8%, transparent), transparent); }
-.usage-settings-hero span { color: var(--muted); font-size: var(--fs-meta); }
-.usage-settings-hero strong { font-size: 32px; letter-spacing: var(--track-display); }
-.usage-settings-hero small { color: var(--muted-2); }
-.usage-settings-metrics { margin-bottom: var(--s-3); }
-.usage-pricing-note { display: flex; align-items: flex-start; gap: var(--s-2); padding: var(--s-3); border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--muted); font-size: var(--fs-meta); line-height: 1.45; }
-.usage-pricing-note svg { flex: 0 0 auto; color: var(--green); }
-.usage-source-links { display: flex; align-items: center; justify-content: flex-end; gap: var(--s-2); margin-top: var(--s-3); color: var(--muted-2); font-size: var(--fs-micro); }
 .credential-status { display: flex; align-items: center; justify-content: space-between; }
 .credential-panel > .credential-actions { flex: 0 0 auto; flex-direction: row; align-items: center; justify-content: flex-end; gap: 8px; }
 .connected-badge { display: flex; align-items: center; gap: 4px; padding: 4px 7px; border-radius: 99px; color: var(--green); background: var(--green-soft); font-size: var(--fs-meta); }
@@ -2180,7 +2172,6 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .usage-hero strong { font-size: 25px; font-weight: 600; letter-spacing: var(--track-display); font-variant-numeric: tabular-nums; }
 .usage-hero small { color: var(--muted-2); font-size: var(--fs-meta); }
 .usage-hero i { position: absolute; left: 0; bottom: 0; height: 2px; background: var(--info); box-shadow: none; transition: width var(--t-mid) var(--ease); }
-.usage-cache-note { margin: calc(var(--s-1) * -1) 0 var(--s-3); color: var(--muted-2); font-size: var(--fs-meta); font-variant-numeric: tabular-nums; }
 .rate-card { display: flex; flex-direction: column; gap: var(--s-1); margin: var(--s-2) 0 var(--s-3); padding: var(--s-3); border: 1px solid var(--line); border-radius: var(--r-sm); }
 .provider-quota-card { overflow: hidden; margin: var(--s-2) 0 var(--s-3); border: 1px solid var(--line); border-radius: var(--r-md); background: rgba(255,255,255,.012); }
 .provider-quota-header { min-height: 40px; display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); padding: 9px var(--s-3); border-bottom: 1px solid var(--line); }

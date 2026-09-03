@@ -10,3 +10,4 @@ src-tauri/target/
 .env.*
 !.env.example
 /build.md
+test-results/

@@ -6,7 +6,7 @@ export interface OpenRouterModel {
   description?: string;
   context_length?: number;
   supported_parameters?: string[];
-  pricing?: { prompt?: string; completion?: string };
+  pricing?: { prompt?: string; completion?: string; input_cache_read?: string; input_cache_write?: string };
 }
 
 /**

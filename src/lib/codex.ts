@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { annotateThreadUsage, usageForThread } from "./usageLedger";
+import { LM_STUDIO_RUNTIME_PROVIDER_ID } from "./providerIds";
 
 export type JsonObject = Record<string, unknown>;
 
@@ -31,7 +33,21 @@ export async function getNormalChatWorkspace(): Promise<string> {
 }
 
 export async function rpc<T = JsonObject>(method: string, params: JsonObject = {}): Promise<T> {
-  return invoke<T>("codex_rpc", { method, params });
+  if (method === "turn/start" && typeof params.threadId === "string" && typeof params.model === "string") {
+    const record = usageForThread(params.threadId);
+    if (record?.provider) annotateThreadUsage(params.threadId, { provider: record.provider, model: params.model, projectPath: record.projectPath });
+  }
+  const result = await invoke<T>("codex_rpc", { method, params });
+  if (method === "thread/start" || method === "thread/resume") {
+    const thread = (result as { thread?: { id?: string; modelProvider?: string } } | null)?.thread;
+    const id = thread?.id ?? params.threadId;
+    const providerId = params.modelProvider ?? thread?.modelProvider;
+    const provider = providerId === "openrouter" ? "openrouter" : providerId === LM_STUDIO_RUNTIME_PROVIDER_ID ? "lmstudio" : providerId === "openai" ? "openai" : undefined;
+    if (typeof id === "string" && provider && typeof params.model === "string") {
+      annotateThreadUsage(id, { provider, model: params.model, projectPath: typeof params.cwd === "string" ? params.cwd : undefined });
+    }
+  }
+  return result;
 }
 
 export async function respond(id: number | string, result: JsonObject): Promise<void> {

@@ -3,6 +3,7 @@ import type { JsonObject } from "./codex";
 import type { TokenUsageView } from "../components/StudioDock";
 import { useTaskStore } from "./taskStore";
 import { consumeProviderStopIntent } from "./providerStopIntent";
+import { annotateThreadUsage } from "./usageLedger";
 
 interface ClaudeBlock {
   id: string;
@@ -318,6 +319,9 @@ export function routeClaudeEvent(
 
   if (type === "assistant") {
     const assistant = object(message.message);
+    if (typeof assistant.model === "string" && assistant.model.trim()) {
+      annotateThreadUsage(threadId, { provider: "claude", model: assistant.model, projectPath: ctx.bindingFor(threadId) });
+    }
     const id =
       text(assistant.id) || assistantIds.get(threadId) || `claude-${turnId}`;
     const content = Array.isArray(assistant.content) ? assistant.content : [];

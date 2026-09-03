@@ -16,6 +16,7 @@ tauri-build = { version = "2.5.6", features = [] }
 axum = "0.8"
 base64 = "0.22"
 getrandom = "0.3"
+futures-util = "0.3"
 keyring = "4.1.5"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider", "stream"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }

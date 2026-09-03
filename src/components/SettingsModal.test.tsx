@@ -4,6 +4,7 @@ import { DEFAULT_SETTINGS } from "../lib/appConfig";
 import type { AppUpdater } from "../lib/appUpdater";
 import { SettingsModal } from "./SettingsModal";
 import { open as openFolderDialog } from "@tauri-apps/plugin-dialog";
+import { resetUsageLedgerCache, USAGE_LEDGER_KEY } from "../lib/usageLedger";
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(), save: vi.fn() }));
 
@@ -61,18 +62,6 @@ function modalProps(overrides: Partial<Parameters<typeof SettingsModal>[0]> = {}
     openRouterReady: false,
     childAgentReadiness: { codexRuntimeAvailable: true, openAiSignedIn: true, openRouterReady: false, claudeReady: true, cursorReady: false },
     githubStatus: null,
-    usageTotals: {
-      inputTokens: 0,
-      cachedInputTokens: 0,
-      cacheWriteInputTokens: 0,
-      outputTokens: 0,
-      reasoningOutputTokens: 0,
-      totalTokens: 0,
-      estimatedCost: 0,
-      pricedTokens: 0,
-      unpricedTokens: 0,
-      threads: 0,
-    },
     onClose: vi.fn(),
     onSave: vi.fn(),
     onThemePreview: vi.fn(),
@@ -735,26 +724,29 @@ describe("SettingsModal", () => {
   });
 
   it("shows cumulative all-time token and API-equivalent usage", () => {
+    resetUsageLedgerCache();
+    localStorage.setItem(USAGE_LEDGER_KEY, JSON.stringify([{
+      threadId: "openkiwi:archived-usage", archivedThreads: 4,
+      usage: { inputTokens: 12_000, cachedInputTokens: 2_000, cacheWriteInputTokens: 0,
+        outputTokens: 3_000, reasoningOutputTokens: 1_000, totalTokens: 15_000 },
+      estimatedCost: 1.25, pricedTokens: 15_000, unpricedTokens: 0, updatedAt: Date.now(),
+    }]));
     render(<SettingsModal {...modalProps({
       initialSection: "usage",
-      usageTotals: {
-        inputTokens: 12_000,
-        cachedInputTokens: 2_000,
-        cacheWriteInputTokens: 0,
-        outputTokens: 3_000,
-        reasoningOutputTokens: 1_000,
-        totalTokens: 15_000,
-        estimatedCost: 1.25,
-        pricedTokens: 15_000,
-        unpricedTokens: 0,
-        threads: 4,
-      },
     })} />);
 
-    expect(screen.getByText("$1.25")).toBeInTheDocument();
-    expect(screen.getByText("12,000")).toBeInTheDocument();
+    expect(screen.getAllByText("≈ $1.25")).toHaveLength(2);
+    expect(screen.getByText("12,000 input · 3,000 output")).toBeInTheDocument();
     expect(screen.getByText("3,000")).toBeInTheDocument();
     expect(screen.getByText("4 tracked threads")).toBeInTheDocument();
+    resetUsageLedgerCache();
+  });
+
+  it("does not keep the usage dashboard mounted when Settings is closed", () => {
+    const view = render(<SettingsModal {...modalProps({ initialSection: "usage" })} />);
+    expect(view.container.querySelector(".usage-dashboard")).not.toBeNull();
+    view.rerender(<SettingsModal {...modalProps({ initialSection: "usage", open: false })} />);
+    expect(view.container.querySelector(".usage-dashboard")).toBeNull();
   });
 
   it("keeps project prompts out of Settings and points to the chat header", () => {

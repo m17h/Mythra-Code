@@ -6,6 +6,7 @@ export const USAGE_LEDGER_KEY = "kiwi.usageLedger";
 export const MODEL_PRICING_CATALOG_KEY = "kiwi.modelPricingCatalog";
 export const MODEL_PRICING_CATALOG_URL = "https://raw.githubusercontent.com/m17h/Mythra-Code/main/model-pricing.json";
 const MAX_EVENT_IDS = 100;
+const MAX_RECEIPT_IDS = 1000;
 const PERSIST_DELAY_MS = 180;
 const PRICING_REFRESH_TIMEOUT_MS = 8_000;
 /** The published catalog is a few kilobytes. Anything larger is a wrong or
@@ -51,6 +52,12 @@ export interface ThreadUsageRecord {
   estimatedCost?: number;
   pricedTokens?: number;
   unpricedTokens?: number;
+  /** Frozen provider attribution survives model/provider changes and retention. */
+  providerUsage?: Partial<Record<UsageProvider, UsageAmounts>>;
+  /** Cost-only receipts never contribute tokens or thread counts. */
+  kind?: "openrouter-charge";
+  reportedCost?: number;
+  reportedRequests?: number;
   eventIds?: string[];
   /** This thread's unique count already lives in the archive record. Its
    * resumed deltas still contribute tokens, but must not add another thread. */
@@ -80,6 +87,53 @@ export interface UsageTotals {
   threads: number;
 }
 
+export type UsageProvider = Provider | "unknown";
+export type UsageAmounts = Omit<UsageTotals, "threads">;
+export interface ProviderUsageTotals extends UsageAmounts { provider: UsageProvider }
+const USAGE_PROVIDERS: UsageProvider[] = ["openai", "claude", "openrouter", "cursor", "lmstudio", "unknown"];
+const AMOUNT_KEYS: Array<keyof UsageAmounts> = ["inputTokens", "cachedInputTokens", "cacheWriteInputTokens", "outputTokens", "reasoningOutputTokens", "totalTokens", "estimatedCost", "pricedTokens", "unpricedTokens"];
+const usageListeners = new Set<() => void>();
+let usageRevision = 0;
+export function subscribeUsage(listener: () => void): () => void {
+  usageListeners.add(listener);
+  return () => { usageListeners.delete(listener); };
+}
+export function getUsageRevision(): number { return usageRevision; }
+function notifyUsage(): void {
+  usageRevision += 1;
+  for (const listener of usageListeners) listener();
+}
+export interface PricingRefreshStatus {
+  checking: boolean;
+  checkedAt?: number;
+  error?: string;
+}
+let pricingStatus: PricingRefreshStatus = { checking: false };
+export function pricingRefreshStatus(): PricingRefreshStatus { return pricingStatus; }
+let openRouterPrices = new Map<string, ModelPricing>();
+export function updateOpenRouterPricing(models: Array<{ id: string; pricing?: { prompt?: string; completion?: string; input_cache_read?: string; input_cache_write?: string } }>): void {
+  const next = new Map<string, ModelPricing>();
+  const rate = (value: unknown): number | undefined => {
+    if (typeof value !== "string" || !value.trim()) return undefined;
+    return finiteRate(Number(value) * 1_000_000);
+  };
+  for (const model of models) {
+    const inputPerMillion = rate(model.pricing?.prompt);
+    const outputPerMillion = rate(model.pricing?.completion);
+    if (inputPerMillion === undefined || outputPerMillion === undefined) continue;
+    next.set(model.id, { inputPerMillion, outputPerMillion,
+      cachedInputPerMillion: rate(model.pricing?.input_cache_read),
+      cacheWriteInputPerMillion: rate(model.pricing?.input_cache_write),
+      source: "OpenRouter", asOf: new Date().toISOString().slice(0, 10),
+    });
+  }
+  if (next.size) openRouterPrices = next;
+}
+
+function tokenCount(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.round(value)) : 0;
+}
+
 function emptyUsage(): TokenUsageView {
   return {
     totalTokens: 0,
@@ -93,23 +147,23 @@ function emptyUsage(): TokenUsageView {
 }
 
 function cleanUsage(usage: TokenUsageView): TokenUsageView {
-  const inputTokens = Math.max(0, Math.round(Number(usage.inputTokens) || 0));
-  const outputTokens = Math.max(0, Math.round(Number(usage.outputTokens) || 0));
-  const cachedInputTokens = Math.min(inputTokens, Math.max(0, Math.round(Number(usage.cachedInputTokens) || 0)));
+  const inputTokens = tokenCount(usage.inputTokens);
+  const outputTokens = tokenCount(usage.outputTokens);
+  const cachedInputTokens = Math.min(inputTokens, tokenCount(usage.cachedInputTokens));
   const cacheWriteInputTokens = Math.min(
     Math.max(0, inputTokens - cachedInputTokens),
-    Math.max(0, Math.round(Number(usage.cacheWriteInputTokens) || 0)),
+    tokenCount(usage.cacheWriteInputTokens),
   );
   return {
-    totalTokens: Math.max(inputTokens + outputTokens, Math.round(Number(usage.totalTokens) || 0)),
+    totalTokens: Math.max(inputTokens + outputTokens, tokenCount(usage.totalTokens)),
     contextTokens: usage.contextTokens === undefined
       ? undefined
-      : Math.max(0, Math.round(Number(usage.contextTokens) || 0)),
+      : tokenCount(usage.contextTokens),
     inputTokens,
     cachedInputTokens,
     cacheWriteInputTokens,
     outputTokens,
-    reasoningOutputTokens: Math.min(outputTokens, Math.max(0, Math.round(Number(usage.reasoningOutputTokens) || 0))),
+    reasoningOutputTokens: Math.min(outputTokens, tokenCount(usage.reasoningOutputTokens)),
     contextWindow: usage.contextWindow ?? null,
   };
 }
@@ -215,6 +269,8 @@ export async function refreshModelPricingCatalog(
   fetcher: typeof fetch = fetch,
   url = MODEL_PRICING_CATALOG_URL,
 ): Promise<ModelPricingCatalog | null> {
+  pricingStatus = { ...pricingStatus, checking: true, error: undefined };
+  notifyUsage();
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), PRICING_REFRESH_TIMEOUT_MS);
   try {
@@ -240,18 +296,24 @@ export async function refreshModelPricingCatalog(
       cachedPricingRaw = null;
     }
     return parsed;
+  } catch (error) {
+    pricingStatus = { ...pricingStatus, error: "Could not refresh pricing. Last known rates remain in use." };
+    throw error;
   } finally {
     clearTimeout(timeout);
+    pricingStatus = { ...pricingStatus, checking: false, checkedAt: Date.now() };
+    notifyUsage();
   }
 }
 
 function ledger(): ThreadUsageRecord[] {
   if (cachedLedger && ledgerDirty) return cachedLedger;
-  const raw = localStorage.getItem(USAGE_LEDGER_KEY);
+  let raw: string | null = null;
+  try { raw = localStorage.getItem(USAGE_LEDGER_KEY); } catch { /* Usage must not prevent starting a provider when storage is unavailable. */ }
   if (cachedLedger && raw === cachedRaw) return cachedLedger;
   cachedRaw = raw;
   const stored = loadStored<ThreadUsageRecord[]>(USAGE_LEDGER_KEY, []);
-  cachedLedger = (Array.isArray(stored) ? stored : []).map((record) => {
+  cachedLedger = (Array.isArray(stored) ? stored : []).filter((record) => record && typeof record.threadId === "string" && record.usage && typeof record.usage === "object").map((record) => {
     const archivedThreadIds = Array.isArray(record.archivedThreadIds)
       ? [...new Set(record.archivedThreadIds.filter((id): id is string => typeof id === "string" && Boolean(id.trim())))]
       : undefined;
@@ -260,13 +322,15 @@ function ledger(): ThreadUsageRecord[] {
           .filter(([threadId, snapshot]) => Boolean(threadId.trim()) && snapshot && typeof snapshot === "object")
           .map(([threadId, snapshot]) => [threadId, cleanUsage(snapshot)]))
       : undefined;
-    return {
+    const normalized: ThreadUsageRecord = {
       ...record,
       usage: cleanUsage(record.usage),
       cumulativeSnapshot: record.cumulativeSnapshot ? cleanUsage(record.cumulativeSnapshot) : undefined,
       archivedThreadIds,
       archivedSnapshots,
     };
+    if (record.providerUsage !== undefined) normalized.providerUsage = readProviderParts(record.providerUsage, normalized);
+    return normalized;
   });
   cachedTotals = null;
   return cachedLedger;
@@ -288,7 +352,7 @@ const USAGE_ARCHIVE_THREAD_ID = "openkiwi:archived-usage";
 export function compactUsageRecords(records: ThreadUsageRecord[], now = Date.now()): ThreadUsageRecord[] {
   const cutoff = now - USAGE_RETENTION_MS;
   const stale = records.filter(
-    (record) => record.threadId !== USAGE_ARCHIVE_THREAD_ID && record.updatedAt < cutoff,
+    (record) => record.threadId !== USAGE_ARCHIVE_THREAD_ID && record.kind !== "openrouter-charge" && record.updatedAt < cutoff,
   );
   if (stale.length === 0) return records;
   let archive = records.find((record) => record.threadId === USAGE_ARCHIVE_THREAD_ID) ?? {
@@ -301,7 +365,8 @@ export function compactUsageRecords(records: ThreadUsageRecord[], now = Date.now
     updatedAt: 0,
   };
   for (const record of stale) {
-    if (tokensIn(record.usage) === 0) continue;
+    if (record.usage.totalTokens === 0 && !record.reportedRequests) continue;
+    const archivedAmounts = amountsFor(archive);
     const cost = record.estimatedCost ?? estimateUsageCost(record.usage, record.pricing);
     const archivedThreadIds = new Set(archive.archivedThreadIds ?? []);
     const alreadyCounted = record.countedInArchive === true || archivedThreadIds.has(record.threadId);
@@ -312,10 +377,13 @@ export function compactUsageRecords(records: ThreadUsageRecord[], now = Date.now
     };
     archive = {
       ...archive,
+      providerUsage: mergeProviderUsage(providerParts(archive), providerParts(record)),
       usage: addUsage(archive.usage, record.usage),
-      estimatedCost: (archive.estimatedCost ?? 0) + (cost ?? 0),
-      pricedTokens: (archive.pricedTokens ?? 0) + (record.pricedTokens ?? (cost === null ? 0 : tokensIn(record.usage))),
-      unpricedTokens: (archive.unpricedTokens ?? 0) + (record.unpricedTokens ?? (cost === null ? tokensIn(record.usage) : 0)),
+      reportedCost: (archive.reportedCost ?? 0) + (record.reportedCost ?? 0),
+      reportedRequests: (archive.reportedRequests ?? 0) + (record.reportedRequests ?? 0),
+      estimatedCost: archivedAmounts.estimatedCost + (cost ?? 0),
+      pricedTokens: archivedAmounts.pricedTokens + (record.pricedTokens ?? (cost === null ? 0 : tokensIn(record.usage))),
+      unpricedTokens: archivedAmounts.unpricedTokens + (record.unpricedTokens ?? (cost === null ? tokensIn(record.usage) : 0)),
       archivedThreads: (archive.archivedThreads ?? 0) + (alreadyCounted ? 0 : 1),
       archivedThreadIds: [...archivedThreadIds],
       archivedSnapshots,
@@ -340,6 +408,7 @@ export function flushUsageLedger(): void {
   cachedRaw = JSON.stringify(records);
   ledgerDirty = false;
   storeValue(USAGE_LEDGER_KEY, records);
+  notifyUsage();
 }
 
 function save(records: ThreadUsageRecord[]): void {
@@ -363,6 +432,9 @@ export function resetUsageLedgerCache(): void {
   ledgerDirty = false;
   cachedPricingCatalog = undefined;
   cachedPricingRaw = undefined;
+  pricingStatus = { checking: false };
+  openRouterPrices = new Map();
+  notifyUsage();
 }
 
 function positiveUsageDelta(next: TokenUsageView, previous: TokenUsageView): TokenUsageView {
@@ -410,19 +482,32 @@ function tokensIn(usage: TokenUsageView): number {
   return usage.inputTokens + usage.outputTokens;
 }
 
-function withCostDelta(record: ThreadUsageRecord, delta: TokenUsageView): Pick<ThreadUsageRecord, "estimatedCost" | "pricedTokens" | "unpricedTokens"> {
+function withCostDelta(record: ThreadUsageRecord, delta: TokenUsageView): Pick<ThreadUsageRecord, "estimatedCost" | "pricedTokens" | "unpricedTokens" | "providerUsage"> {
+  const baseline = amountsFor(record);
   const tokens = tokensIn(delta);
-  const cost = estimateUsageCost(delta, record.pricing);
+  // Background threads also adopt refreshed rates on their next usage event.
+  const pricing = record.provider && record.model
+    ? pricingForModel(record.provider, record.model) ?? record.pricing
+    : record.pricing;
+  const cost = estimateUsageCost(delta, pricing);
+  // Ordinary threads need no duplicate counters: their provider label already
+  // attributes the whole record. Materialize subtotals only after a provider
+  // change (or compaction), when that shortcut would lose history.
+  const providerUsage = record.providerUsage
+    ? mergeProviderUsage(providerParts(record), { [record.provider ?? "unknown"]: amountsFor({ ...record, usage: delta, estimatedCost: cost ?? 0, pricedTokens: cost === null ? 0 : tokens, unpricedTokens: cost === null ? tokens : 0 }) })
+    : undefined;
   return cost === null
     ? {
-        estimatedCost: record.estimatedCost ?? 0,
-        pricedTokens: record.pricedTokens ?? 0,
-        unpricedTokens: (record.unpricedTokens ?? 0) + tokens,
+        providerUsage,
+        estimatedCost: baseline.estimatedCost,
+        pricedTokens: baseline.pricedTokens,
+        unpricedTokens: baseline.unpricedTokens + tokens,
       }
     : {
-        estimatedCost: (record.estimatedCost ?? 0) + cost,
-        pricedTokens: (record.pricedTokens ?? 0) + tokens,
-        unpricedTokens: record.unpricedTokens ?? 0,
+        providerUsage,
+        estimatedCost: baseline.estimatedCost + cost,
+        pricedTokens: baseline.pricedTokens + tokens,
+        unpricedTokens: baseline.unpricedTokens,
       };
 }
 
@@ -520,6 +605,9 @@ export function annotateThreadUsage(
     return {
       ...record,
       ...metadata,
+      // Seal the outgoing provider before replacing its label. A first known
+      // label can still attribute legacy records written before metadata arrived.
+      providerUsage: record.provider && record.provider !== metadata.provider ? providerParts(record) : record.providerUsage,
       pricing,
       ...(stale ? {
         estimatedCost: estimateUsageCost(record.usage, record.pricing) ?? 0,
@@ -558,11 +646,14 @@ export function usageForThread(threadId: string): ThreadUsageRecord | null {
 export function claudeCanonicalModel(model: string): string {
   const value = model.trim().toLowerCase().replace(/\[[^\]]*\]$/, "");
   const dated = value.replace(/[-@]\d{8}$/, "");
+  // A specific version is not a floating family alias. Never silently price
+  // Fable 5.1 (or a future Opus) as an older generation.
+  if (/^(fable|opus|sonnet|haiku)-\d/.test(dated)) return `claude-${dated}`;
   const families: Array<[RegExp, string]> = [
-    [/^fable(-\d.*)?$/, "claude-fable-5"],
-    [/^opus(-\d.*)?$/, "claude-opus-5"],
-    [/^sonnet(-\d.*)?$/, "claude-sonnet-5"],
-    [/^haiku(-\d.*)?$/, "claude-haiku-4-5"],
+    [/^fable$/, "claude-fable-5"],
+    [/^opus$/, "claude-opus-5"],
+    [/^sonnet$/, "claude-sonnet-5"],
+    [/^haiku$/, "claude-haiku-4-5"],
   ];
   for (const [pattern, id] of families) {
     if (pattern.test(dated)) return id;
@@ -571,6 +662,7 @@ export function claudeCanonicalModel(model: string): string {
 }
 
 export function pricingForModel(provider: Provider, model: string, at = new Date()): ModelPricing | undefined {
+  if (provider === "openrouter") return openRouterPrices.get(model);
   if (provider === "claude") model = claudeCanonicalModel(model);
   const refreshed = catalogPricing(provider, model, at);
   if (refreshed) return refreshed;
@@ -636,6 +728,7 @@ export function estimateUsageCost(usage: TokenUsageView, pricing?: ModelPricing)
 }
 
 export function usageTotals(): UsageTotals {
+  const records = ledger(); // Also observe late native hydration / storage changes.
   if (cachedTotals) return cachedTotals;
   const totals: UsageTotals = {
     inputTokens: 0,
@@ -649,9 +742,9 @@ export function usageTotals(): UsageTotals {
     unpricedTokens: 0,
     threads: 0,
   };
-  for (const record of ledger()) {
+  for (const record of records) {
     const { usage } = record;
-    if (tokensIn(usage) === 0) continue;
+    if (usage.totalTokens === 0) continue;
     totals.inputTokens += usage.inputTokens;
     totals.cachedInputTokens += usage.cachedInputTokens;
     totals.cacheWriteInputTokens += usage.cacheWriteInputTokens ?? 0;
@@ -668,6 +761,81 @@ export function usageTotals(): UsageTotals {
   }
   cachedTotals = totals;
   return cachedTotals;
+}
+
+function amountsFor(record: ThreadUsageRecord): UsageAmounts {
+  const usage = cleanUsage(record.usage);
+  const cost = record.estimatedCost ?? estimateUsageCost(usage, record.pricing);
+  return {
+    inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, totalTokens: usage.totalTokens,
+    cachedInputTokens: usage.cachedInputTokens, cacheWriteInputTokens: usage.cacheWriteInputTokens ?? 0,
+    reasoningOutputTokens: usage.reasoningOutputTokens,
+    estimatedCost: cost ?? 0,
+    pricedTokens: record.pricedTokens ?? (cost === null ? 0 : tokensIn(usage)),
+    unpricedTokens: record.unpricedTokens ?? (cost === null ? tokensIn(usage) : 0),
+  };
+}
+
+function providerParts(record: ThreadUsageRecord): Partial<Record<UsageProvider, UsageAmounts>> {
+  if (record.providerUsage) return record.providerUsage;
+  if (!record.usage.totalTokens) return {};
+  const provider = USAGE_PROVIDERS.includes(record.provider as UsageProvider) ? record.provider! : "unknown";
+  return { [provider]: amountsFor(record) };
+}
+
+/** A damaged optional breakdown must not corrupt the authoritative totals. */
+function readProviderParts(raw: unknown, record: ThreadUsageRecord): Partial<Record<UsageProvider, UsageAmounts>> {
+  const fallback = { unknown: amountsFor(record) };
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return fallback;
+  const entries = Object.entries(raw);
+  if (entries.some(([provider, value]) => !USAGE_PROVIDERS.includes(provider as UsageProvider) || !value
+    || AMOUNT_KEYS.some((key) => typeof value[key] !== "number" || !Number.isFinite(value[key]) || value[key] < 0))) return fallback;
+  const expected = amountsFor(record);
+  for (const key of AMOUNT_KEYS) {
+    const total = entries.reduce((sum, [, value]) => sum + value[key], 0);
+    if (Math.abs(total - expected[key]) > Math.max(0.0000001, expected[key] * 1e-12)) return fallback;
+  }
+  return raw as Partial<Record<UsageProvider, UsageAmounts>>;
+}
+
+function mergeProviderUsage(left: Partial<Record<UsageProvider, UsageAmounts>>, right: Partial<Record<UsageProvider, UsageAmounts>>): Partial<Record<UsageProvider, UsageAmounts>> {
+  const merged = { ...left };
+  for (const provider of USAGE_PROVIDERS) {
+    const incoming = right[provider];
+    if (!incoming) continue;
+    const previous = merged[provider];
+    const total = { ...incoming };
+    if (previous) for (const key of AMOUNT_KEYS) total[key] += previous[key];
+    merged[provider] = total;
+  }
+  return merged;
+}
+
+export function providerUsageTotals(): ProviderUsageTotals[] {
+  let parts: Partial<Record<UsageProvider, UsageAmounts>> = {};
+  for (const record of ledger()) parts = mergeProviderUsage(parts, providerParts(record));
+  return USAGE_PROVIDERS.flatMap((provider) => parts[provider] ? [{ provider, ...parts[provider]! }] : [])
+    .sort((a, b) => b.totalTokens - a.totalTokens);
+}
+
+/** Captured receipts are separate from runtime token counters, so streaming
+ * usage never counts twice. No inferred thread association or balance deltas. */
+export function recordOpenRouterCharge(id: unknown, cost: unknown): void {
+  if (typeof id !== "string" || !id.trim() || id.length > 240 || typeof cost !== "number" || !Number.isFinite(cost) || cost < 0) return;
+  // One bounded aggregate, not an ever-growing record for every model call.
+  // These are live HTTP receipts (never history replay); retain recent ids as
+  // protection against duplicate event subscriptions and renderer reloads.
+  upsert("openrouter:captured-charges", (record) => record.eventIds?.includes(id) ? record : {
+    ...record, kind: "openrouter-charge", provider: "openrouter",
+    reportedCost: (record.reportedCost ?? 0) + cost, reportedRequests: (record.reportedRequests ?? 0) + 1,
+    eventIds: [...(record.eventIds ?? []), id].slice(-MAX_RECEIPT_IDS), updatedAt: Date.now(),
+  });
+}
+
+export function openRouterReportedCost(): { cost: number; requests: number } {
+  return ledger().reduce((sum, record) => ({
+    cost: sum.cost + (record.reportedCost ?? 0), requests: sum.requests + (record.reportedRequests ?? 0),
+  }), { cost: 0, requests: 0 });
 }
 
 export function formatEstimatedCost(value: number): string {

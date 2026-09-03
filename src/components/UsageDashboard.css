@@ -1,0 +1,48 @@
+.usage-dashboard { container-type: inline-size; }
+.usage-dashboard-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s-3); }
+.usage-dashboard-stats > div, .usage-dashboard-card, .usage-dashboard-empty { border: 1px solid var(--line); border-radius: var(--r-md); padding: var(--s-4); background: var(--field); min-width: 0; }
+.usage-dashboard-stats > div { display: flex; flex-direction: column; gap: var(--s-2); }
+.usage-dashboard-stats span, .usage-dashboard-stats small, .usage-dashboard-caption, .usage-dashboard-card p, .usage-dashboard-empty p { color: var(--muted); font-size: var(--fs-meta); line-height: 1.55; }
+.usage-dashboard-stats strong { font-size: clamp(20px, 3cqi, 30px); font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.usage-dashboard-caption { margin: var(--s-3) 0 var(--s-5); }
+.usage-dashboard-charts { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-3); margin-bottom: var(--s-3); }
+.usage-dashboard-card h4 { margin: 0; font-size: var(--fs-ui); }
+.usage-dashboard-card p { margin: var(--s-2) 0; }
+.usage-provider-bars { display: grid; gap: var(--s-4); margin-top: var(--s-4); }
+.usage-provider-bars > div > div:first-child { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; font-size: var(--fs-meta); margin-bottom: var(--s-2); }
+.usage-provider-bars strong { font-weight: 500; font-variant-numeric: tabular-nums; }
+.usage-provider-bars small { color: var(--muted); }
+.usage-chart-track { height: 5px; border-radius: 3px; overflow: hidden; background: var(--line); }
+.usage-chart-track > span { display: block; height: 100%; background: color-mix(in srgb, var(--green) 65%, var(--muted)); border-radius: inherit; }
+.usage-composition-bar { height: 14px; display: flex; gap: 2px; border-radius: 4px; overflow: hidden; margin: var(--s-5) 0; }
+.usage-composition-bar > span { flex-basis: 0; }
+.usage-dashboard .input { background: color-mix(in srgb, var(--info) 70%, var(--muted)); }
+.usage-dashboard .cached { background: color-mix(in srgb, var(--green) 70%, var(--muted)); }
+.usage-dashboard .written { background: var(--muted); }
+.usage-dashboard .output { background: color-mix(in srgb, var(--text) 55%, var(--muted)); }
+.usage-dashboard .other { background: var(--muted-2); }
+.usage-composition-legend { margin: 0; display: grid; gap: var(--s-3); font-size: var(--fs-meta); }
+.usage-composition-legend > div { display: flex; justify-content: space-between; gap: var(--s-3); }
+.usage-composition-legend dt { display: flex; align-items: center; gap: var(--s-2); color: var(--muted); }
+.usage-composition-legend i { width: 8px; height: 8px; border-radius: 2px; flex: 0 0 auto; }
+.usage-composition-legend dd { margin: 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.usage-provider-detail, .usage-pricing-status { margin-top: var(--s-3); }
+.usage-dashboard-table-scroll { overflow-x: auto; margin-top: var(--s-3); }
+.usage-dashboard table { border-collapse: collapse; width: 100%; font-size: var(--fs-meta); }
+.usage-dashboard th, .usage-dashboard td { text-align: left; padding: var(--s-3) var(--s-2); border-bottom: 1px solid var(--line); vertical-align: top; font-weight: 400; font-variant-numeric: tabular-nums; }
+.usage-dashboard thead { color: var(--muted); }
+.usage-dashboard tbody th { font-weight: 600; }
+.usage-dashboard td small, .usage-dashboard th small { display: block; color: var(--muted); font-weight: 400; margin-top: 4px; line-height: 1.5; }
+.usage-dashboard tr:last-child > * { border-bottom: 0; }
+.usage-pricing-heading, .usage-dashboard-sources { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); flex-wrap: wrap; }
+.usage-pricing-status ul { color: var(--muted); padding-left: 18px; font-size: var(--fs-meta); line-height: 1.6; }
+.usage-pricing-status li + li { margin-top: var(--s-2); }
+.usage-dashboard-sources { justify-content: flex-start; }
+.usage-dashboard-empty { margin-bottom: var(--s-3); }
+@container (max-width: 640px) {
+  .usage-dashboard-stats { grid-template-columns: 1fr; }
+  .usage-dashboard-stats > div { gap: 4px; }
+  .usage-dashboard-charts { grid-template-columns: 1fr; }
+  .usage-dashboard-stats strong { font-size: 24px; }
+  .usage-dashboard table { min-width: 390px; }
+}

@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { annotateThreadUsage } from "./usageLedger";
 import type { Activity, ChatMessage, PermissionMode, Thread } from "../types";
 import type { ReasoningEffort } from "../components/ModelPowerControl";
 import type { JsonObject } from "./codex";
@@ -66,6 +67,7 @@ export function listCursorModels(): Promise<CursorModel[]> {
 }
 
 export function startCursorTurn(options: CursorTurnOptions): Promise<{ turnId: string; cursorSessionId: string }> {
+  annotateThreadUsage(options.threadId, { provider: "cursor", model: options.model, projectPath: options.cwd });
   return invoke("cursor_turn_start", { options });
 }
 

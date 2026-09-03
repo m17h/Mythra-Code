@@ -15,6 +15,8 @@ import {
   usageForThread,
   usageTotals,
   USAGE_LEDGER_KEY,
+  providerUsageTotals, recordOpenRouterCharge, openRouterReportedCost, updateOpenRouterPricing,
+  subscribeUsage, pricingRefreshStatus,
 } from "./usageLedger";
 
 const usage = (inputTokens: number, outputTokens: number, cachedInputTokens = 0, cacheWriteInputTokens = 0) => ({
@@ -64,6 +66,167 @@ describe("usage ledger", () => {
     expect(totals.threads).toBe(3);
     expect(totals.inputTokens).toBe(350);
     expect(totals.estimatedCost).toBeCloseTo(1.5);
+  });
+
+  it("keeps provider totals and frozen costs through provider changes and retention", () => {
+    annotateThreadUsage("mixed", { provider: "openai", model: "gpt-5.6-luna" });
+    recordUsageDelta("mixed", usage(100, 20), "a");
+    const first = usageTotals().estimatedCost;
+    expect(usageForThread("mixed")?.providerUsage).toBeUndefined();
+    annotateThreadUsage("mixed", { provider: "claude", model: "claude-haiku-4-5" });
+    recordUsageDelta("mixed", usage(200, 30), "b");
+    expect(providerUsageTotals()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ provider: "openai", totalTokens: 120, estimatedCost: first }),
+      expect.objectContaining({ provider: "claude", totalTokens: 230 }),
+    ]));
+    const before = providerUsageTotals();
+    const totalsBefore = usageTotals();
+    flushUsageLedger();
+    const records = JSON.parse(localStorage.getItem(USAGE_LEDGER_KEY)!);
+    localStorage.setItem(USAGE_LEDGER_KEY, JSON.stringify(compactUsageRecords(records, Date.now() + 100 * 86_400_000)));
+    resetUsageLedgerCache();
+    expect(providerUsageTotals()).toEqual(before);
+    expect(usageTotals()).toEqual(totalsBefore);
+  });
+
+  it("retains unknown legacy archive alongside newly attributed archive usage", () => {
+    const stale = Date.now() - 100 * 86_400_000;
+    localStorage.setItem(USAGE_LEDGER_KEY, JSON.stringify(compactUsageRecords([
+      { threadId: "openkiwi:archived-usage", usage: usage(100, 20), archivedThreads: 1, updatedAt: stale },
+      { threadId: "claude", provider: "claude", usage: usage(200, 40), updatedAt: stale },
+    ])));
+    expect(providerUsageTotals().map((row) => [row.provider, row.totalTokens])).toEqual([["claude", 240], ["unknown", 120]]);
+    expect(usageTotals().threads).toBe(2);
+  });
+
+  it("does not double count a resumed archived provider", () => {
+    annotateThreadUsage("codex", { provider: "openai", model: "gpt-5.6-luna" });
+    recordCumulativeUsage("codex", usage(100, 20));
+    flushUsageLedger();
+    localStorage.setItem(USAGE_LEDGER_KEY, JSON.stringify(compactUsageRecords(JSON.parse(localStorage.getItem(USAGE_LEDGER_KEY)!), Date.now() + 100 * 86_400_000)));
+    resetUsageLedgerCache();
+    annotateThreadUsage("codex", { provider: "openai", model: "gpt-5.6-luna" });
+    recordCumulativeUsage("codex", usage(150, 40));
+    expect(providerUsageTotals()[0]).toMatchObject({ provider: "openai", totalTokens: 190 });
+    expect(usageTotals().threads).toBe(1);
+  });
+
+  it("observes native hydration even after totals were cached", () => {
+    expect(usageTotals().totalTokens).toBe(0);
+    localStorage.setItem(USAGE_LEDGER_KEY, JSON.stringify([{ threadId: "hydrated", provider: "claude", usage: usage(200, 40), updatedAt: Date.now() }]));
+    expect(usageTotals().totalTokens).toBe(240);
+    expect(providerUsageTotals()[0].provider).toBe("claude");
+  });
+
+  it("falls back to unattributed totals when a saved breakdown is damaged", () => {
+    localStorage.setItem(USAGE_LEDGER_KEY, JSON.stringify([
+      null,
+      { threadId: "damaged", usage: usage(100, 20), providerUsage: { openai: { totalTokens: "bad" } }, updatedAt: Date.now() },
+    ]));
+    expect(providerUsageTotals()[0]).toMatchObject({ provider: "unknown", totalTokens: 120, unpricedTokens: 120 });
+    expect(usageTotals().totalTokens).toBe(120);
+  });
+
+  it("keeps receipt costs separate, deduplicated and durable, including free requests", () => {
+    annotateThreadUsage("or", { provider: "openrouter", model: "vendor/model" });
+    recordCumulativeUsage("or", usage(100, 20));
+    recordOpenRouterCharge("gen-1", 0.12);
+    recordOpenRouterCharge("gen-1", 0.12);
+    recordOpenRouterCharge("gen-free", 0);
+    recordOpenRouterCharge("gen-invalid", null);
+    recordOpenRouterCharge("gen-negative", -1);
+    recordOpenRouterCharge("gen-infinite", Infinity);
+    recordOpenRouterCharge("gen-string", "0");
+    expect(openRouterReportedCost()).toEqual({ cost: 0.12, requests: 2 });
+    expect(usageTotals()).toMatchObject({ totalTokens: 120, threads: 1, unpricedTokens: 120 });
+    flushUsageLedger();
+    resetUsageLedgerCache();
+    recordOpenRouterCharge("gen-1", 0.12);
+    expect(openRouterReportedCost()).toEqual({ cost: 0.12, requests: 2 });
+    const compacted = compactUsageRecords(JSON.parse(localStorage.getItem(USAGE_LEDGER_KEY)!), Date.now() + 100 * 86_400_000);
+    localStorage.setItem(USAGE_LEDGER_KEY, JSON.stringify(compacted));
+    resetUsageLedgerCache();
+    expect(openRouterReportedCost()).toEqual({ cost: 0.12, requests: 2 });
+    expect(usageTotals()).toMatchObject({ totalTokens: 120, threads: 1 });
+  });
+
+  it("notifies dashboard subscribers once per batched persist, not per token event", () => {
+    const listener = vi.fn();
+    const unsubscribe = subscribeUsage(listener);
+    recordUsageDelta("a", usage(5, 2));
+    recordUsageDelta("a", usage(5, 2));
+    expect(listener).not.toHaveBeenCalled();
+    flushUsageLedger();
+    expect(listener).toHaveBeenCalledOnce();
+    unsubscribe();
+  });
+
+  it("bounds receipt storage independently of the number of requests", () => {
+    for (let index = 0; index < 1200; index++) recordOpenRouterCharge(`gen-${index}`, 0.01);
+    flushUsageLedger();
+    const records = JSON.parse(localStorage.getItem(USAGE_LEDGER_KEY)!);
+    expect(records).toHaveLength(1);
+    expect(records[0].eventIds).toHaveLength(1000);
+    expect(openRouterReportedCost().cost).toBeCloseTo(12);
+    expect(openRouterReportedCost().requests).toBe(1200);
+    expect(usageTotals().threads).toBe(0);
+  });
+
+  it("never prices an explicit newer Claude alias as an older model", () => {
+    expect(claudeCanonicalModel("fable-5-1")).toBe("claude-fable-5-1");
+    expect(pricingForModel("claude", "fable-5-1")).toBeUndefined();
+    expect(claudeCanonicalModel("opus-6[1m]")).toBe("claude-opus-6");
+  });
+
+  it("keeps total-only usage visible without inventing input/output or pricing", () => {
+    annotateThreadUsage("total-only", { provider: "cursor", model: "auto" });
+    recordUsageDelta("total-only", { ...usage(0, 0), totalTokens: 120 });
+    expect(usageTotals()).toMatchObject({ totalTokens: 120, pricedTokens: 0, threads: 1 });
+    expect(providerUsageTotals()[0]).toMatchObject({ provider: "cursor", totalTokens: 120 });
+  });
+
+  it("applies a scheduled pricing reversion to a background thread's next delta", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-08-31T23:00:00Z"));
+      annotateThreadUsage("sonnet", { provider: "claude", model: "claude-sonnet-5" });
+      recordUsageDelta("sonnet", usage(1_000_000, 0));
+      vi.setSystemTime(new Date("2026-09-01T00:00:01Z"));
+      recordUsageDelta("sonnet", usage(1_000_000, 0));
+      expect(usageTotals().estimatedCost).toBe(5);
+    } finally { resetUsageLedgerCache(); vi.useRealTimers(); }
+  });
+
+  it("adopts refreshed OpenRouter cache rates for future background usage only", () => {
+    updateOpenRouterPricing([{ id: "vendor/model", pricing: { prompt: "0.00001", completion: "0.00002", input_cache_read: "0.000001", input_cache_write: "0.0000125" } }]);
+    annotateThreadUsage("or", { provider: "openrouter", model: "vendor/model" });
+    recordUsageDelta("or", usage(100, 10, 20, 10));
+    const before = usageTotals().estimatedCost;
+    expect(before).toBeCloseTo(0.001045);
+    updateOpenRouterPricing([{ id: "vendor/model", pricing: { prompt: "0.00002", completion: "0.00004" } }]);
+    expect(usageTotals().estimatedCost).toBe(before);
+    recordUsageDelta("or", usage(100, 10));
+    expect(usageTotals().estimatedCost).toBeCloseTo(before + 0.0024);
+    expect(providerUsageTotals()[0].estimatedCost).toBeCloseTo(before + 0.0024);
+  });
+
+  it("rejects malformed OpenRouter prices without making unknown models free", () => {
+    updateOpenRouterPricing([
+      { id: "negative", pricing: { prompt: "-1", completion: "0" } },
+      { id: "missing", pricing: { completion: "0" } },
+      { id: "blank", pricing: { prompt: " ", completion: "0" } },
+      { id: "free", pricing: { prompt: "0", completion: "0" } },
+    ]);
+    expect(pricingForModel("openrouter", "negative")).toBeUndefined();
+    expect(pricingForModel("openrouter", "missing")).toBeUndefined();
+    expect(pricingForModel("openrouter", "blank")).toBeUndefined();
+    expect(pricingForModel("openrouter", "free")?.inputPerMillion).toBe(0);
+  });
+
+  it("shows launch refresh failure while retaining validated prices", async () => {
+    await expect(refreshModelPricingCatalog(vi.fn().mockRejectedValue(new Error("offline")))).rejects.toThrow("offline");
+    expect(pricingRefreshStatus()).toMatchObject({ checking: false, checkedAt: expect.any(Number), error: expect.stringContaining("Last known rates") });
+    expect(pricingForModel("claude", "claude-haiku-4-5")).toBeDefined();
   });
 
   it("accumulates cumulative Codex snapshots without double counting them", () => {

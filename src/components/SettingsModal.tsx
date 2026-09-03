@@ -57,7 +57,7 @@ import { SkillLibrary } from "./SkillLibrary";
 import type { McpView } from "./StudioDock";
 import { parseGitHubCloneTarget, type GitHubAccountStatus } from "../lib/github";
 import { joinPath } from "../lib/paths";
-import { formatEstimatedCost, type UsageTotals } from "../lib/usageLedger";
+import { UsageDashboard } from "./UsageDashboard";
 import type {
   Account,
   AppSettings,
@@ -320,7 +320,8 @@ export function SettingsModal({
   childAgentReadiness,
   githubStatus,
   githubBusy = false,
-  usageTotals,
+  onRefreshUsagePricing,
+  openRouterPricingError,
   onClose,
   onSave,
   onThemePreview,
@@ -408,7 +409,8 @@ export function SettingsModal({
   childAgentReadiness: ChildAgentReadiness;
   githubStatus: GitHubAccountStatus | null;
   githubBusy?: boolean;
-  usageTotals: UsageTotals;
+  onRefreshUsagePricing?: () => Promise<void>;
+  openRouterPricingError?: string;
   onClose: () => void;
   onSave: (settings: AppSettings) => void;
   onThemePreview: (theme: ThemeName) => void;
@@ -1123,7 +1125,7 @@ export function SettingsModal({
 
           {settingsSection === "usage" && <>
             <UsageDisplaySettings value={local.usageDisplay} onChange={(usageDisplay) => setLocal({ ...local, usageDisplay })} />
-            <AllTimeUsageSettings totals={usageTotals} />
+            {open && <UsageDashboard onRefreshPricing={onRefreshUsagePricing} openRouterPricingError={openRouterPricingError} />}
           </>}
 
           {settingsSection === "skills" && <SkillLibrary
@@ -1662,39 +1664,6 @@ function UsageDisplaySettings({ value, onChange }: { value: UsageDisplayMode; on
             never describe a format the app does not actually produce. */}
         <div className="usage-display-preview"><Gauge size={13} /><span>Example · 5h window {usagePercentLabel(42, value)}</span></div>
       </div>
-    </div>
-  </section>;
-}
-
-function AllTimeUsageSettings({ totals }: { totals: UsageTotals }) {
-  return <section className="settings-section">
-    <div className="settings-section-heading">
-      <div className="settings-icon"><Gauge size={17} /></div>
-      <div><h3>All-time local usage</h3><p>Accumulated since local usage history was enabled on this device. Dollar values estimate standard API pricing; subscription use is not an API charge.</p></div>
-    </div>
-    <div className="usage-settings-hero">
-      <span>Estimated API-equivalent value</span>
-      <strong>{formatEstimatedCost(totals.estimatedCost)}</strong>
-      <small>{totals.threads.toLocaleString()} tracked thread{totals.threads === 1 ? "" : "s"}</small>
-    </div>
-    <div className="metric-grid three usage-settings-metrics">
-      <div><strong>{totals.inputTokens.toLocaleString()}</strong><span>Input tokens</span></div>
-      <div><strong>{totals.outputTokens.toLocaleString()}</strong><span>Output tokens</span></div>
-      <div><strong>{totals.totalTokens.toLocaleString()}</strong><span>Total tokens</span></div>
-    </div>
-    {(totals.cachedInputTokens > 0 || totals.cacheWriteInputTokens > 0) && (
-      <div className="usage-cache-note">Prompt caching: {totals.cachedInputTokens.toLocaleString()} read · {totals.cacheWriteInputTokens.toLocaleString()} written</div>
-    )}
-    <div className="usage-pricing-note">
-      <ShieldCheck size={14} />
-      <span>{totals.unpricedTokens
-        ? `${totals.unpricedTokens.toLocaleString()} tokens are excluded from the dollar estimate because their model has no official published price.`
-        : "All tracked tokens with model metadata have a published price."} Cache-write premiums are included when providers report them; long-context, regional, batch, and priority pricing adjustments are not.</span>
-    </div>
-    <div className="usage-source-links">
-      <span>Pricing refreshes from Mythra Code's validated catalog each time the app opens. New rates apply only to future usage.</span>
-      <button className="secondary-button" onClick={() => void openUrl("https://developers.openai.com/api/docs/models/compare")}><ExternalLink size={12} /> OpenAI pricing</button>
-      <button className="secondary-button" onClick={() => void openUrl("https://www.anthropic.com/pricing")}><ExternalLink size={12} /> Anthropic pricing</button>
     </div>
   </section>;
 }

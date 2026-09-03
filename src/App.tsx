@@ -53,8 +53,7 @@ import {
   pricingForModel,
   refreshModelPricingCatalog,
   usageForThread,
-  usageTotals,
-  type ModelPricing,
+  updateOpenRouterPricing,
 } from "./lib/usageLedger";
 import { costTotals, formatCost, recordThreadCost } from "./lib/costLedger";
 import {
@@ -955,19 +954,8 @@ export default function App() {
     [skills],
   );
 
-  const activeOpenRouterPricing = useMemo<ModelPricing | undefined>(() => {
-    if (effectiveSettings.provider !== "openrouter") return undefined;
-    const pricing = openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.pricing;
-    const input = Number(pricing?.prompt ?? NaN);
-    const output = Number(pricing?.completion ?? NaN);
-    if (!Number.isFinite(input) || !Number.isFinite(output)) return undefined;
-    return {
-      inputPerMillion: input * 1_000_000,
-      outputPerMillion: output * 1_000_000,
-      source: "OpenRouter",
-      asOf: new Date().toISOString().slice(0, 10),
-    };
-  }, [effectiveSettings.model, effectiveSettings.provider, openRouterModels]);
+  const activeOpenRouterPricing = effectiveSettings.provider === "openrouter"
+    ? pricingForModel("openrouter", effectiveSettings.model) : undefined;
 
   /**
    * Claude's live catalog offers aliases (`default`, `opus[1m]`) rather than
@@ -983,7 +971,7 @@ export default function App() {
     if (!activeThreadId) return;
     annotateThreadUsage(activeThreadId, {
       provider: effectiveSettings.provider,
-      model: effectiveSettings.model,
+      model: pricingModel(effectiveSettings.provider, effectiveSettings.model),
       projectPath: activeWorkspace ? normalizedProjectPath(activeWorkspace.path) : undefined,
       pricing: activeOpenRouterPricing ?? pricingForModel(effectiveSettings.provider, pricingModel(effectiveSettings.provider, effectiveSettings.model)),
     });
@@ -1004,7 +992,6 @@ export default function App() {
     : activeUsageCost === null || activeUsageIsUnpriced
       ? "Price unavailable for this model"
       : `≈ ${formatEstimatedCost(activeUsageCost)} ${activeUsageRecord?.pricing?.source === "OpenRouter" ? "estimated spend" : "API-equivalent"}${activeUsageRecord?.unpricedTokens ? " · partial estimate" : ""}`;
-  const allTimeUsage = usageTotals();
   const costTotalsView = (() => {
     const totals = costTotals(activeProject ? normalizedProjectPath(activeProject.path) : undefined);
     if (!totals.today && !totals.project) return "";
@@ -1862,6 +1849,7 @@ export default function App() {
       // A full refresh is authoritative: retired or newly unavailable models
       // must leave the catalog instead of surviving through an earlier search.
       if (openRouterModelsRequestRef.current === request) {
+        updateOpenRouterPricing(models);
         setOpenRouterModels(models);
         if (!models.length) setOpenRouterModelsError("OpenRouter returned an empty catalog");
       }
@@ -2365,18 +2353,11 @@ export default function App() {
       const completedProvider = providerFromThread(completedThread, "openai");
       const completedModel = threadModels[threadId]
         ?? (activeThreadId === threadId ? effectiveSettings.model : modelForProvider(completedProvider, ""));
-      const pricing = completedProvider === "openrouter"
-        ? openRouterModels.find((entry) => entry.id === completedModel)?.pricing
-        : undefined;
-      const promptRate = Number(pricing?.prompt ?? NaN);
-      const completionRate = Number(pricing?.completion ?? NaN);
       annotateThreadUsage(threadId, {
         provider: completedProvider,
-        model: completedModel,
+        model: pricingModel(completedProvider, completedModel),
         projectPath: projectPath ? normalizedProjectPath(projectPath) : undefined,
-        pricing: Number.isFinite(promptRate) && Number.isFinite(completionRate)
-          ? { inputPerMillion: promptRate * 1_000_000, outputPerMillion: completionRate * 1_000_000, source: "OpenRouter", asOf: new Date().toISOString().slice(0, 10) }
-          : pricingForModel(completedProvider, pricingModel(completedProvider, completedModel)),
+        pricing: pricingForModel(completedProvider, pricingModel(completedProvider, completedModel)),
       });
       if (completedProvider === "openrouter") {
         const completedUsage = usageForThread(threadId);
@@ -6026,7 +6007,13 @@ export default function App() {
         childAgentReadiness={childAgentReadiness}
         githubStatus={githubStatus}
         githubBusy={githubBusy || githubLoginPending}
-        usageTotals={allTimeUsage}
+        onRefreshUsagePricing={async () => {
+          await Promise.all([
+            refreshModelPricingCatalog().then((catalog) => { if (catalog) setPricingCatalogRevision(catalog.updatedAt); }),
+            refreshOpenRouterModels(),
+          ]);
+        }}
+        openRouterPricingError={openRouterModelsError}
         onClose={closeSettings}
         onSave={(next) => {
           persistSettings(next);

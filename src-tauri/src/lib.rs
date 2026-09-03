@@ -19,6 +19,7 @@ use axum::{
     routing::any,
     Router,
 };
+use futures_util::TryStreamExt;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -35,6 +36,7 @@ use unicode_segmentation::UnicodeSegmentation;
 mod agents;
 mod cursor;
 mod github;
+mod openrouter_usage;
 mod persistence;
 mod process_launch;
 mod project_git;
@@ -734,6 +736,7 @@ fn random_hex_token() -> Result<String, String> {
 
 #[derive(Clone)]
 struct OpenRouterProxyState {
+    app: AppHandle,
     client: reqwest::Client,
     api_key: String,
     path_token: String,
@@ -906,6 +909,17 @@ async fn proxy_openrouter_request(
         }
     };
     let status = upstream.status();
+    let content_type = upstream
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    let observe = status.is_success()
+        && (upstream_path == "/responses" || upstream_path == "/chat/completions")
+        && (content_type.starts_with("text/event-stream")
+            || content_type.starts_with("application/json"));
+    let mut receipts =
+        openrouter_usage::ReceiptObserver::new(content_type.starts_with("text/event-stream"));
     let upstream_headers = upstream.headers().clone();
     let mut response = Response::builder().status(status);
     for (name, value) in upstream_headers {
@@ -918,7 +932,18 @@ async fn proxy_openrouter_request(
         }
     }
     response
-        .body(Body::from_stream(upstream.bytes_stream()))
+        .body(Body::from_stream(upstream.bytes_stream().inspect_ok(
+            move |bytes| {
+                if observe {
+                    if let Some(receipt) = receipts.push(bytes) {
+                        let _ = state.app.emit(
+                            "codex-event",
+                            json!({ "method": "mythra/openrouterCharge", "params": receipt }),
+                        );
+                    }
+                }
+            },
+        )))
         .unwrap_or_else(|_| {
             proxy_response(
                 StatusCode::BAD_GATEWAY,
@@ -929,6 +954,7 @@ async fn proxy_openrouter_request(
 
 async fn start_openrouter_proxy(
     api_key: String,
+    app: AppHandle,
 ) -> Result<(String, tokio::task::JoinHandle<()>), String> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -946,6 +972,7 @@ async fn start_openrouter_proxy(
             format!("Could not create the OpenRouter compatibility client: {error}")
         })?;
     let state = Arc::new(OpenRouterProxyState {
+        app,
         client,
         api_key,
         path_token: path_token.clone(),
@@ -3979,7 +4006,7 @@ async fn spawn_server(app: &AppHandle, state: &RuntimeState) -> Result<Arc<AppSe
     let mut openrouter_proxy_url = None;
     let mut openrouter_proxy_task = None;
     if let Some(key) = openrouter_key().await {
-        let (proxy_url, task) = start_openrouter_proxy(key.clone()).await?;
+        let (proxy_url, task) = start_openrouter_proxy(key.clone(), app.clone()).await?;
         command.env("OPENROUTER_API_KEY", key);
         openrouter_proxy_url = Some(proxy_url);
         openrouter_proxy_task = Some(task);
