@@ -533,6 +533,10 @@ describe("Codex cold startup", () => {
     await renderApp();
     await user.click(await screen.findByText("Recovered Claude thread"));
 
+    // This is a persistence assertion, not a cold-module latency benchmark.
+    // Await the real lazy timeline import before starting findBy's 1s clock.
+    await act(async () => { await vi.dynamicImportSettled(); });
+
     expect(await screen.findByText("durable history is visible")).toBeInTheDocument();
     const remembered = JSON.parse(localStorage.getItem("kiwi.knownThreads") ?? "{}") as Record<string, Thread>;
     expect(remembered[claudeThread.id]).toMatchObject({ id: claudeThread.id, modelProvider: "claude" });
