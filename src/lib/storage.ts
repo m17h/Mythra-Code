@@ -50,7 +50,7 @@ export const DURABLE_STORAGE_KEYS = [
  * migrateStorage. Old installs then upgrade their data instead of loading
  * garbage into the new code.
  */
-export const STORAGE_SCHEMA_VERSION = 20;
+export const STORAGE_SCHEMA_VERSION = 21;
 const nativeWriteQueues = new Map<string, Promise<void>>();
 const NATIVE_PENDING_PREFIX = "kiwi.nativePending.";
 let nativeOperationSequence = 0;
@@ -177,6 +177,9 @@ export function migrateStorage(): void {
   // required.
   // Version 19 adds per-provider starred models. The store starts empty and
   // is sanitized on read, so no eager migration is required.
+  // Version 21 adds optional provider usage subtotals and cost-only OpenRouter
+  // receipts. Legacy usage remains authoritative and is interpreted on read;
+  // no eager rewrite or guessed attribution is needed.
   // Version 20 removes accidentally retained turns from sidebar metadata and
   // bounds legacy previews. Canonical transcript messages live in provider
   // history and are not changed.

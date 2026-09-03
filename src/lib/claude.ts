@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { annotateThreadUsage } from "./usageLedger";
 import type {
   Activity,
   ChatMessage,
@@ -248,6 +249,7 @@ export async function startClaudeLogin(): Promise<void> {
 export async function startClaudeTurn(
   options: ClaudeTurnOptions,
 ): Promise<{ turnId: string }> {
+  annotateThreadUsage(options.threadId, { provider: "claude", model: options.model, projectPath: options.cwd });
   return invoke<{ turnId: string }>("claude_turn_start", { options });
 }
 

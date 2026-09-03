@@ -4,6 +4,7 @@ import { useTaskStore } from "./taskStore";
 import { parseCodexRateLimits, type ProviderRateLimits } from "./providerUsage";
 import type { TokenUsageView } from "../components/StudioDock";
 import { nativeSubAgentPresentation } from "./nativeSubAgentActivity";
+import { recordOpenRouterCharge } from "./usageLedger";
 
 /**
  * Events that arrive without a threadId are routed to this bucket instead of
@@ -216,6 +217,10 @@ export function routeCodexEvent(event: CodexEvent, ctx: CodexEventContext): void
 
   const method = event.method ?? "";
   const params = event.params ?? {};
+  if (method === "mythra/openrouterCharge") {
+    recordOpenRouterCharge(params.id, params.cost);
+    return;
+  }
   const eventThreadId = typeof params.threadId === "string" ? params.threadId : RUNTIME_THREAD_ID;
   if (event.id !== undefined && method === "currentTime/read") {
     void ctx.respond(event.id, { currentTimeAt: Math.floor(Date.now() / 1000) })
