@@ -535,7 +535,7 @@ describe("Codex cold startup", () => {
 
     // This is a persistence assertion, not a cold-module latency benchmark.
     // Await the real lazy timeline import before starting findBy's 1s clock.
-    await act(async () => { await vi.dynamicImportSettled(); });
+    await act(async () => { await import("./components/ChatTimeline"); });
 
     expect(await screen.findByText("durable history is visible")).toBeInTheDocument();
     const remembered = JSON.parse(localStorage.getItem("kiwi.knownThreads") ?? "{}") as Record<string, Thread>;
