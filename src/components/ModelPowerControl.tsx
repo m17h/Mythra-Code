@@ -5,6 +5,7 @@ import { ProviderLogo } from "./BrandLogos";
 import { ModelFavoriteStar, type ModelFavoriteProps } from "./ModelFavoriteStar";
 import { favoriteCount, sortByFavorites } from "../lib/modelFavorites";
 import { closesModelMenu } from "../lib/composerMenus";
+import { ModelCatalogHeader } from "./ModelCatalogHeader";
 
 export type ModelKind = "sol" | "terra" | "luna";
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
@@ -85,6 +86,9 @@ export function ModelPowerControl({
   providerControl,
   runtimeModels,
   disabled,
+  loading,
+  error,
+  onRefresh,
   favorites = [],
   onToggleFavorite,
   onModel,
@@ -97,6 +101,9 @@ export function ModelPowerControl({
   providerControl?: ReactNode;
   runtimeModels: RuntimeModel[];
   disabled?: boolean;
+  loading?: boolean;
+  error?: string;
+  onRefresh?: () => void;
   onModel: (model: string) => void;
   onEffort: (effort: ReasoningEffort) => void;
   onFast: (enabled: boolean) => void;
@@ -145,9 +152,15 @@ export function ModelPowerControl({
 
   useEffect(() => {
     if (!menuOpen) return;
-    const selectedIndex = Math.max(0, options.findIndex((entry) => entry.id === selectedModel?.id));
-    requestAnimationFrame(() => optionRefs.current[selectedIndex]?.focus());
-  }, [menuOpen, options, selectedModel?.id]);
+    const frame = requestAnimationFrame(() => {
+      // Focus once on opening, not again when a refresh changes the catalog.
+      if (!rootRef.current?.querySelector(".model-menu")?.contains(document.activeElement)) {
+        const selected = optionRefs.current.find((option) => option?.getAttribute("aria-checked") === "true");
+        (selected ?? optionRefs.current[0])?.focus();
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [menuOpen]);
 
   const moveOptionFocus = (direction: number) => {
     const enabled = optionRefs.current.filter((entry): entry is HTMLButtonElement => Boolean(entry && entry.isConnected && !entry.disabled));
@@ -199,10 +212,7 @@ export function ModelPowerControl({
           if (event.key === "Home") { event.preventDefault(); optionRefs.current.find((entry) => entry && !entry.disabled)?.focus(); }
           if (event.key === "End") { event.preventDefault(); [...optionRefs.current].reverse().find((entry) => entry && !entry.disabled)?.focus(); }
         }}>
-          <div className="model-menu-heading">
-            <span>Choose your model</span>
-            <small>{runtimeModels.length ? `${options.length} from your OpenAI account` : "OpenAI subscription"}</small>
-          </div>
+          <ModelCatalogHeader provider="OpenAI" heading="Choose your model" description={runtimeModels.length ? `${options.length} from your OpenAI account` : "Built-in list — account catalog unavailable"} loading={loading} disabled={disabled} onRefresh={onRefresh} />
           {options.map((entry, index) => {
             const selected = selectedModel?.id === entry.id;
             const modelIconSrc = entry.iconSrc;
@@ -234,6 +244,7 @@ export function ModelPowerControl({
               </div>
             );
           })}
+          {error && <div className="openrouter-catalog-warning" role={menuOpen ? "status" : undefined}>{error} · {runtimeModels.length ? "Showing the last loaded catalog." : "Showing the built-in list."}</div>}
         </div>
       </div>
 

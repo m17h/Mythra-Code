@@ -147,20 +147,26 @@
       "decision": "Accept 2,350 Safari / 2,130 Chrome startup and total JavaScript bytes, plus 53 CSS bytes, for interruptible opacity-only usage-panel presence, a stable asynchronous Settings host, and keyboard-accessible close/retry recovery for failed Settings loads. Countdown stops immediately on logical close, exiting DOM is inert and temporary, animations/listeners clean up, and reduced motion settles instantly. Module-only Settings prewarm is delayed, visibility-aware and cancellable, with no forced idle deadline; it trades loading the separate Settings chunk after idle for less first-click work but does not mount hidden UI or start provider effects. The actual measured latency fix bypasses React.lazy's initial fulfilled-promise suspension: five fresh-context local-browser samples improved settled first-visible medians from 343/367 ms to 29/47 ms in Chromium/WebKit. These are fixture timings, not native Windows guarantees. No dependencies, provider polling, thread-loading or streaming changes. Exact measured limits with no extra headroom.",
       "safari13": { "appEntryFromBytes": 348960, "appEntryToBytes": 351009, "appEntryDeltaBytes": 2049, "startupJsFromBytes": 703567, "startupJsToBytes": 705917, "startupJsDeltaBytes": 2350, "startupCssFromBytes": 342474, "startupCssToBytes": 342527, "startupCssDeltaBytes": 53, "totalJsFromBytes": 1448626, "totalJsToBytes": 1450976, "totalJsDeltaBytes": 2350 },
       "chrome105": { "appEntryFromBytes": 331291, "appEntryToBytes": 333120, "appEntryDeltaBytes": 1829, "startupJsFromBytes": 679102, "startupJsToBytes": 681232, "startupJsDeltaBytes": 2130, "startupCssFromBytes": 340351, "startupCssToBytes": 340404, "startupCssDeltaBytes": 53, "totalJsFromBytes": 1414203, "totalJsToBytes": 1416333, "totalJsDeltaBytes": 2130 }
+    },
+    {
+      "change": "Unify model catalog refresh controls across all providers",
+      "decision": "Accept 492 Safari / 534 Chrome startup JavaScript bytes for a shared accessible refresh header, OpenAI loading/error state and atomic paginated refresh, and picker-local Cursor errors. Removing duplicated refresh markup and obsolete Cursor header CSS reduces startup CSS by 951 bytes on both targets, so combined raw startup JS plus CSS decreases by 459 Safari / 417 Chrome bytes. No dependencies, timers, background polling, provider restarts or thread/streaming changes. This is UI-feature overhead, not a runtime speed claim. Exact measured limits with no extra headroom; app-entry and CSS limits ratchet down.",
+      "safari13": { "appEntryFromBytes": 351009, "appEntryToBytes": 350813, "appEntryDeltaBytes": -196, "startupJsFromBytes": 705917, "startupJsToBytes": 706409, "startupJsDeltaBytes": 492, "startupCssFromBytes": 342527, "startupCssToBytes": 341576, "startupCssDeltaBytes": -951, "totalJsFromBytes": 1450976, "totalJsToBytes": 1451463, "totalJsDeltaBytes": 487 },
+      "chrome105": { "appEntryFromBytes": 333120, "appEntryToBytes": 333010, "appEntryDeltaBytes": -110, "startupJsFromBytes": 681232, "startupJsToBytes": 681766, "startupJsDeltaBytes": 534, "startupCssFromBytes": 340404, "startupCssToBytes": 339453, "startupCssDeltaBytes": -951, "totalJsFromBytes": 1416333, "totalJsToBytes": 1416860, "totalJsDeltaBytes": 527 }
     }
   ],
   "profiles": {
     "safari13-minified": {
-      "appEntryRawBytes": 351009,
-      "startupJsRawBytes": 705917,
-      "startupCssRawBytes": 342527,
-      "totalJsRawBytes": 1450976
+      "appEntryRawBytes": 350813,
+      "startupJsRawBytes": 706409,
+      "startupCssRawBytes": 341576,
+      "totalJsRawBytes": 1451463
     },
     "chrome105-minified": {
-      "appEntryRawBytes": 333120,
-      "startupJsRawBytes": 681232,
-      "startupCssRawBytes": 340404,
-      "totalJsRawBytes": 1416333
+      "appEntryRawBytes": 333010,
+      "startupJsRawBytes": 681766,
+      "startupCssRawBytes": 339453,
+      "totalJsRawBytes": 1416860
     }
   }
 }

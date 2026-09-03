@@ -91,6 +91,8 @@ let openRouterCreditsImpl: () => unknown;
 let commandExecImpl: (params: Record<string, unknown>) => unknown;
 let claudeRuntimeStatusImpl: () => unknown;
 let claudeModelsImpl: () => unknown;
+let modelListImpl: (params: Record<string, unknown>) => unknown;
+let cursorModelsImpl: () => unknown;
 /** Bumped by every managed app-server restart, real or simulated. */
 let runtimeGeneration: number;
 let runtimeLoadedThreads: Set<string>;
@@ -116,6 +118,7 @@ function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
     return claudeRuntimeStatusImpl();
   }
   if (command === "claude_models") return claudeModelsImpl();
+  if (command === "cursor_models") return cursorModelsImpl();
   if (command === "github_status") {
     return {
       available: true,
@@ -286,7 +289,7 @@ function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
       return result;
     }
     if (method === "account/rateLimits/read") return rateLimitsImpl();
-    if (method === "model/list") return { data: [] };
+    if (method === "model/list") return modelListImpl(params);
     return {};
   }
   return null;
@@ -332,6 +335,8 @@ beforeEach(() => {
     warning: null,
   });
   claudeModelsImpl = () => ({ models: [] });
+  modelListImpl = () => ({ data: [] });
+  cursorModelsImpl = () => [];
   runtimeGeneration = 1;
   runtimeLoadedThreads = new Set();
   workspaceGitInfoImpl = () => ({ isRepo: true, isRoot: true, hasCommit: true, branch: "main", head: "head" });
@@ -901,6 +906,95 @@ describe("chat typeface", () => {
 });
 
 describe("model catalog request ordering", () => {
+  const catalogModel = (id: string) => ({ id, model: id, displayName: id, description: "Account model", supportedReasoningEfforts: [], defaultReasoningEffort: "high", isDefault: false });
+
+  it("keeps Cursor refresh failures inside the picker and clears them on retry", async () => {
+    localStorage.setItem("kiwi.settings", JSON.stringify({ provider: "cursor", model: "auto" }));
+    cursorModelsImpl = () => [{ id: "auto", name: "Auto", configOptions: [] }];
+    const user = userEvent.setup();
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: /^Cursor model:/ }));
+    const refresh = screen.getByRole("button", { name: "Refresh Cursor model catalog" });
+    await waitFor(() => expect(refresh).toBeEnabled());
+    cursorModelsImpl = () => { throw new Error("Cursor catalog offline"); };
+    await user.click(refresh);
+    expect(await screen.findByRole("status")).toHaveTextContent("Cursor catalog offline");
+    expect(screen.getAllByText(/Cursor catalog offline/)).toHaveLength(1);
+    cursorModelsImpl = () => [{ id: "auto", name: "Auto", configOptions: [] }];
+    await user.click(refresh);
+    expect(screen.queryByText(/Cursor catalog offline/)).not.toBeInTheDocument();
+    expect(screen.getByRole("menuitemradio", { name: /^Auto,/ })).toBeInTheDocument();
+  });
+
+  it("ignores an older OpenAI refresh that completes after a newer account refresh", async () => {
+    modelListImpl = () => ({ data: [catalogModel("gpt-5.6-sol")] });
+    const user = userEvent.setup();
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: /^OpenAI model:/ }));
+    const refresh = screen.getByRole("button", { name: "Refresh OpenAI model catalog" });
+    await waitFor(() => expect(refresh).toBeEnabled());
+    const oldRequest = deferred<{ data: unknown[] }>();
+    const newRequest = deferred<{ data: unknown[] }>();
+    let calls = 0;
+    modelListImpl = () => ++calls === 1 ? oldRequest.promise : newRequest.promise;
+    await user.click(refresh);
+    await act(async () => { tauriEvents.handlers.get("codex-event")?.({ payload: { method: "account/updated", params: {} } }); });
+    await waitFor(() => expect(calls).toBe(2));
+    await act(async () => { newRequest.resolve({ data: [catalogModel("newest-model")] }); });
+    expect(await screen.findByRole("menuitemradio", { name: /^newest-model:/ })).toBeInTheDocument();
+    expect(refresh).toBeEnabled();
+    await act(async () => { oldRequest.resolve({ data: [] }); });
+    expect(screen.getByRole("menuitemradio", { name: /^newest-model:/ })).toBeInTheDocument();
+    expect(screen.queryByText(/empty model catalog/)).not.toBeInTheDocument();
+    expect(refresh).toBeEnabled();
+  });
+
+  it("refreshes OpenAI pages from the picker without replacing the chosen model or restarting the runtime", async () => {
+    const user = userEvent.setup();
+    modelListImpl = () => ({ data: [catalogModel("gpt-5.6-sol")] });
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: /^OpenAI model:/ }));
+    const refresh = screen.getByRole("button", { name: "Refresh OpenAI model catalog" });
+    await waitFor(() => expect(refresh).toBeEnabled());
+    const nextPage = deferred<{ data: unknown[] }>();
+    modelListImpl = (params) => params.cursor === "page-2" ? nextPage.promise : { data: [catalogModel("new-model")], nextCursor: "page-2" };
+    const requestsBefore = invokeMock.mock.calls.length;
+    await user.click(refresh);
+    expect(refresh).toBeDisabled();
+    expect(screen.queryByRole("menuitemradio", { name: /^new-model:/ })).not.toBeInTheDocument();
+    await act(async () => { nextPage.resolve({ data: [catalogModel("new-model-two")] }); });
+    expect(await screen.findByRole("menuitemradio", { name: /^new-model-two:/ })).toBeInTheDocument();
+    expect(screen.getByRole("menuitemradio", { name: /^new-model:/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^OpenAI model: gpt-5.6-sol/ })).toHaveAttribute("aria-expanded", "true");
+    expect(refresh).toBeEnabled();
+    expect(refresh).toHaveFocus();
+    const calls = invokeMock.mock.calls.slice(requestsBefore);
+    expect(calls.filter(([, args]) => args?.method === "model/list").map(([, args]) => args?.params.cursor)).toEqual([null, "page-2"]);
+    expect(calls.some(([command, args]) => command === "restart_runtime" || ["turn/start", "thread/start", "account/read"].includes(args?.method))).toBe(false);
+  });
+
+  it.each(["failed page", "empty catalog", "endless pages"])("keeps the last complete OpenAI catalog on %s and offers a working retry", async (failure) => {
+    const user = userEvent.setup();
+    modelListImpl = () => ({ data: [catalogModel("gpt-5.6-sol")] });
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: /^OpenAI model:/ }));
+    const refresh = screen.getByRole("button", { name: "Refresh OpenAI model catalog" });
+    await waitFor(() => expect(refresh).toBeEnabled());
+    modelListImpl = (params) => {
+      if (failure === "empty catalog") return { data: [] };
+      if (params.cursor && failure === "failed page") throw new Error("Network unavailable");
+      return { data: [catalogModel("partial-model")], nextCursor: "more" };
+    };
+    await user.click(refresh);
+    expect(await screen.findByRole("status")).toHaveTextContent("Showing the last loaded catalog");
+    expect(screen.getByRole("menuitemradio", { name: /^gpt-5.6-sol:/ })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitemradio", { name: /^partial-model:/ })).not.toBeInTheDocument();
+    expect(refresh).toBeEnabled();
+    modelListImpl = () => ({ data: [catalogModel("recovered-model")] });
+    await user.click(refresh);
+    expect(await screen.findByRole("menuitemradio", { name: /^recovered-model:/ })).toBeInTheDocument();
+    expect(screen.queryByText(/Showing the last loaded catalog/)).not.toBeInTheDocument();
+  });
   it("does not let a slow LM Studio startup probe overwrite a newer manual refresh", { timeout: 15_000 }, async () => {
     const startup = deferred<{ models: unknown[] }>();
     const manual = deferred<{ models: unknown[] }>();

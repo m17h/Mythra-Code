@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
-import { Check, ChevronDown, Gauge, LoaderCircle, RefreshCw, Search } from "lucide-react";
+import { Check, ChevronDown, Gauge, Search } from "lucide-react";
+import { ModelCatalogHeader } from "./ModelCatalogHeader";
 import { EffortSlider, effortFlairStyle } from "./effortFlair";
 import { ModelFavoriteStar, type ModelFavoriteProps } from "./ModelFavoriteStar";
 import type { ReasoningEffort } from "./ModelPowerControl";
@@ -160,14 +161,10 @@ export function OpenRouterModelControl({
         </button>
 
         <div className="openrouter-menu">
+          <ModelCatalogHeader provider="OpenRouter" heading={query ? `${matches.length} match${matches.length === 1 ? "" : "es"}` : `${models.length} available`} description={searching ? "Searching OpenRouter…" : favorites.length ? "Favorites first · tool-capable catalog" : "Tool-capable catalog"} loading={loading} onRefresh={onRefresh} />
           <div className="openrouter-search-row">
             <Search size={14} />
             <input ref={searchRef} aria-label="Search OpenRouter models" value={search} onChange={(event) => setSearch(event.target.value)} onKeyDown={(event) => { if (event.key === "ArrowDown") { event.preventDefault(); optionRefs.current.find((item) => item?.isConnected)?.focus(); } }} placeholder="Search models or enter provider/model…" />
-            <button type="button" onClick={onRefresh} title="Refresh catalog" aria-label="Refresh OpenRouter model catalog" disabled={loading}>{loading ? <LoaderCircle className="spin" size={13} /> : <RefreshCw size={13} />}</button>
-          </div>
-          <div className="openrouter-menu-meta">
-            <span>{query ? `${matches.length} match${matches.length === 1 ? "" : "es"}` : `${models.length} available`}</span>
-            <small>{searching ? "Searching OpenRouter…" : favorites.length ? "Favorites first · tool-capable catalog" : "Tool-capable catalog"}</small>
           </div>
           <div className="openrouter-options" role="menu" aria-label="OpenRouter model selector">
             {visible.map((entry, index) => (
@@ -207,7 +204,7 @@ export function OpenRouterModelControl({
             )}
             {!loading && !searching && !visible.length && !canUseCustom && <div className="openrouter-empty"><strong>No matching models</strong><span>{error || "Enter a complete provider/model slug to use it directly."}</span></div>}
           </div>
-          {error && <div className="openrouter-catalog-warning">{error} · Custom slugs still work.</div>}
+          {error && <div className="openrouter-catalog-warning" role={open ? "status" : undefined}>{error} · Custom slugs still work.</div>}
         </div>
       </div>
 

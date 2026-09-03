@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { Check, ChevronDown, Gauge, LoaderCircle, RefreshCw, Search, X } from "lucide-react";
+import { Check, ChevronDown, Gauge, Search, X } from "lucide-react";
+import { ModelCatalogHeader } from "./ModelCatalogHeader";
 import { EffortSlider, effortFlairStyle } from "./effortFlair";
 import type { CursorModel } from "../lib/cursor";
 import type { ReasoningEffort } from "./ModelPowerControl";
@@ -53,6 +54,7 @@ export function CursorModelControl({
   models,
   effort,
   loading,
+  error,
   providerControl,
   favorites = [],
   onToggleFavorite,
@@ -64,6 +66,7 @@ export function CursorModelControl({
   models: CursorModel[];
   effort: ReasoningEffort;
   loading?: boolean;
+  error?: string;
   providerControl?: ReactNode;
   onRefresh: () => void;
   onModel: (model: string) => void;
@@ -132,15 +135,11 @@ export function CursorModelControl({
           <ChevronDown size={15} />
         </button>
         <div className="openrouter-menu cursor-model-menu">
-          <div className="cursor-model-menu-heading">
-            <span className="cursor-model-menu-logo"><CursorProviderLogo size={19} /></span>
-            <span><strong>Choose a Cursor model</strong><small>Live catalog from your subscription</small></span>
-            <kbd>esc</kbd>
-          </div>
+          <ModelCatalogHeader provider="Cursor" heading="Cursor models" description={models.length ? "Live catalog from your subscription" : "Auto fallback — catalog unavailable"} loading={loading} onRefresh={onRefresh} />
           <div className="cursor-model-search">
             <Search size={16} />
             <input ref={searchRef} aria-label="Search Cursor models" value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "ArrowDown") { event.preventDefault(); optionRefs.current.find((item) => item?.isConnected)?.focus(); } }} placeholder="Search by model, company, or ID…" />
-            {query ? <button type="button" onClick={() => { setQuery(""); searchRef.current?.focus(); }} aria-label="Clear Cursor model search"><X size={14} /></button> : <button type="button" onClick={onRefresh} aria-label="Refresh Cursor model catalog" title="Refresh catalog" disabled={loading}>{loading ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />}</button>}
+            {query && <button type="button" onClick={() => { setQuery(""); searchRef.current?.focus(); }} aria-label="Clear Cursor model search"><X size={14} /></button>}
           </div>
           <div className="cursor-model-results-meta">
             <span>{normalizedQuery ? `${filtered.length} match${filtered.length === 1 ? "" : "es"}` : `${catalog.length} models`}</span>
@@ -167,6 +166,7 @@ export function CursorModelControl({
             ))}
             {!loading && filtered.length === 0 && <div className="cursor-model-empty"><Search size={20} /><strong>No models match “{query.trim()}”</strong><small>Try a company name like xAI, OpenAI, Anthropic, or Google.</small></div>}
           </div>
+          {error && <div className="openrouter-catalog-warning" role={open ? "status" : undefined}>{error} · Refresh to try again.</div>}
         </div>
       </div>
       <div className={`openrouter-reasoning ${effortIndex === EFFORTS.length - 1 ? "effort-max" : ""}`} style={effortFlairStyle(effortIndex, EFFORTS.length)}>
