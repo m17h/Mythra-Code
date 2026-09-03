@@ -10,6 +10,7 @@ import type {
 import type { ReasoningEffort } from "../components/ModelPowerControl";
 import type { JsonObject } from "./codex";
 import { clampUsedPercent, type ProviderRateLimits } from "./providerUsage";
+import { parseResetLabelToEpochSeconds } from "./resetTimeParsing";
 import { forgetLocalTranscriptPersistence, loadLocalTranscript, loadLocalTranscriptPage, saveLocalTranscript, type LocalTranscriptPage } from "./localTranscriptPersistence";
 
 export interface ClaudeRuntimeStatus {
@@ -31,14 +32,15 @@ interface ClaudeUsagePayload {
   }>;
 }
 
-export function parseClaudeUsageLimits(payload: ClaudeUsagePayload | null | undefined): ProviderRateLimits | null {
+export function parseClaudeUsageLimits(payload: ClaudeUsagePayload | null | undefined, now = Date.now()): ProviderRateLimits | null {
   const windows = (payload?.windows ?? []).flatMap((window) => {
     if (typeof window.label !== "string" || window.usedPercent === undefined) return [];
+    const resetLabel = typeof window.resetLabel === "string" && window.resetLabel.trim() ? window.resetLabel.trim() : null;
     return [{
       label: window.label,
       usedPercent: clampUsedPercent(window.usedPercent),
-      resetsAt: null,
-      resetLabel: typeof window.resetLabel === "string" && window.resetLabel.trim() ? window.resetLabel.trim() : null,
+      resetsAt: parseResetLabelToEpochSeconds(resetLabel, now),
+      resetLabel,
     }];
   });
   return windows.length ? { windows } : null;

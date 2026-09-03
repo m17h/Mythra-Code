@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type Dispatch, type PointerEvent as ReactPointerEvent, type SetStateAction } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type CSSProperties, type Dispatch, type PointerEvent as ReactPointerEvent, type SetStateAction } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -87,6 +87,7 @@ import { PANE_BOUNDS, usePaneResize } from "./hooks/usePaneResize";
 import { useSidebarSplitResize } from "./hooks/useSidebarSplitResize";
 import { useWorkflowEngine } from "./hooks/useWorkflowEngine";
 import { isEstablishedMythraCodeInstall, ONBOARDING_EXIT_MS, ONBOARDING_VERSION } from "./lib/onboarding";
+import { scheduleSettingsPreload } from "./lib/settingsPreload";
 import { createLocalSkill, deleteLocalSkill, importLocalSkills, normalizeSkillName, readLocalSkill, resolveLocalSkills, scanLocalSkills, syncLocalSkills, updateLocalSkill, type LocalSkill, type LocalSkillFile } from "./lib/skills";
 import { compactWorkflowRun, normalizeWorkflows, recoverWorkflowRuns, type WorkflowDefinition, type WorkflowRunRecord } from "./lib/workflows";
 import { isClaudeThread, isCursorThread, isLocalSubscriptionThread, modelForProvider, providerFromThread } from "./lib/threadProvider";
@@ -158,8 +159,13 @@ const ChatTimeline = lazy(() => import("./components/ChatTimeline").then((module
 const StudioDock = lazy(() => import("./components/StudioDock").then((module) => ({ default: module.StudioDock })));
 const OnboardingModal = lazy(() => import("./components/OnboardingModal").then((module) => ({ default: module.OnboardingModal })));
 let settingsModalPromise: ReturnType<typeof importSettingsModal> | null = null;
+type SettingsModalComponent = typeof import("./components/SettingsModal").SettingsModal;
+let loadedSettingsModal: SettingsModalComponent | null = null;
 function importSettingsModal() {
-  return import("./components/SettingsModal").then((module) => ({ default: module.SettingsModal }));
+  return import("./components/SettingsModal").then((module) => {
+    loadedSettingsModal = module.SettingsModal;
+    return { default: module.SettingsModal };
+  });
 }
 function loadSettingsModal() {
   settingsModalPromise ??= importSettingsModal().catch((error) => {
@@ -169,7 +175,26 @@ function loadSettingsModal() {
   return settingsModalPromise;
 }
 function preloadSettingsModal() {
-  void loadSettingsModal().catch(() => undefined);
+  return loadSettingsModal().catch(() => undefined);
+}
+
+/** Keep a stable host and render the resolved component directly. A fulfilled
+ * Promise still suspends React.lazy on first read; swapping a committed lazy
+ * child for a plain component can remount it. Neither is needed for Settings. */
+function SettingsModalView(props: ComponentProps<SettingsModalComponent>) {
+  const [Component, setComponent] = useState(() => loadedSettingsModal);
+  const [failure, setFailure] = useState<{ reason: unknown } | null>(null);
+  useEffect(() => {
+    if (Component) return;
+    let disposed = false;
+    void loadSettingsModal().then(
+      module => { if (!disposed) setComponent(() => module.default); },
+      reason => { if (!disposed) setFailure({ reason }); },
+    );
+    return () => { disposed = true; };
+  }, [Component]);
+  if (failure) throw failure.reason;
+  return Component ? <Component {...props} /> : null;
 }
 
 const EMPTY_MESSAGES: ChatMessage[] = [];
@@ -401,6 +426,7 @@ export default function App() {
   const [workspaceGitInfo, setWorkspaceGitInfo] = useState<WorkspaceGitInfo | null>(null);
   const [gitInitializing, setGitInitializing] = useState(false);
   const [successToast, setSuccessToast] = useState<string | null>(null);
+  const [toastKind, setToastKind] = useState<"success" | "info">("success");
   const successToastTimerRef = useRef<number | null>(null);
   const [worktreeStatus, setWorktreeStatus] = useState<WorktreeStatus | null>(null);
   const [worktreeBusy, setWorktreeBusy] = useState(false);
@@ -420,7 +446,6 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsMounted, setSettingsMounted] = useState(false);
   const [settingsLoadAttempt, setSettingsLoadAttempt] = useState(0);
-  const [LazySettingsModal, setLazySettingsModal] = useState(() => lazy(loadSettingsModal));
   const [settingsInitialSection, setSettingsInitialSection] = useState<SettingsSection>("general");
   const [onboardingOpen, setOnboardingOpen] = useState(initialOnboardingOpen);
   const [onboardingMounted, setOnboardingMounted] = useState(initialOnboardingOpen);
@@ -1064,16 +1089,18 @@ export default function App() {
     }
   }, []);
 
-  const showSuccessToast = useCallback((message: string) => {
+  const showToast = useCallback((message: string, kind: "success" | "info") => {
     if (successToastTimerRef.current !== null) {
       window.clearTimeout(successToastTimerRef.current);
     }
     setSuccessToast(message);
+    setToastKind(kind);
     successToastTimerRef.current = window.setTimeout(() => {
       setSuccessToast(null);
       successToastTimerRef.current = null;
     }, 4_500);
   }, []);
+  const showSuccessToast = useCallback((message: string) => showToast(message, "success"), [showToast]);
 
   useEffect(() => {
     if (!githubLoginPending) return;
@@ -1285,12 +1312,14 @@ export default function App() {
   const transientStatusTimerRef = useRef<number | null>(null);
   const setTransientStatus = useCallback((message: string) => {
     setStatus(message);
+    // Action feedback stays visible without making the status chip grow.
+    showToast(message, "info");
     if (transientStatusTimerRef.current !== null) window.clearTimeout(transientStatusTimerRef.current);
     transientStatusTimerRef.current = window.setTimeout(() => {
       transientStatusTimerRef.current = null;
       setStatus((current) => (current === message ? "Ready" : current));
     }, 3000);
-  }, []);
+  }, [showToast]);
 
   /**
    * Stage destination/model/reasoning/limit edits for this conversation only.
@@ -1364,7 +1393,7 @@ export default function App() {
   ]);
 
   const openSettings = useCallback((section: SettingsSection = "general") => {
-    preloadSettingsModal();
+    void preloadSettingsModal();
     setSettingsMounted(true);
     setSettingsInitialSection(section);
     setSettingsOpen(true);
@@ -1376,6 +1405,11 @@ export default function App() {
     setPreviewChatFont(null);
     setSettingsOpen(false);
   }, []);
+
+  useEffect(() => {
+    if (settingsMounted) return;
+    return scheduleSettingsPreload(preloadSettingsModal);
+  }, [settingsMounted]);
 
   const completeOnboarding = useCallback(() => {
     storeValue("kiwi.onboardingVersion", ONBOARDING_VERSION);
@@ -3877,7 +3911,7 @@ export default function App() {
       if (await archiveThreadRecord(thread, false)) archived += 1;
     }
     const failed = ready.length - archived;
-    setStatus(`Archived ${archived} ${kindLabel} ${archived === 1 ? "thread" : "threads"}${active.length ? ` · ${active.length} active skipped` : ""}`);
+    if (archived > 0) showSuccessToast(`Archived ${archived} ${kindLabel} ${archived === 1 ? "thread" : "threads"}${active.length ? ` · ${active.length} active skipped` : ""}`);
     if (failed > 0) {
       setError(`${failed} ${kindLabel} ${failed === 1 ? "thread could" : "threads could"} not be archived. Try ${failed === 1 ? "it" : "them"} individually for details.`);
     }
@@ -4018,7 +4052,7 @@ export default function App() {
       if (await deleteThreadRecord(record.id, record.label, false)) deleted += 1;
     }
     const failed = workspaceArchived.length - deleted;
-    setStatus(`Deleted ${deleted} archived ${kindLabel} ${deleted === 1 ? "thread" : "threads"}`);
+    if (deleted > 0) showSuccessToast(`Deleted ${deleted} archived ${kindLabel} ${deleted === 1 ? "thread" : "threads"}`);
     if (failed > 0) {
       setError(`${failed} archived ${kindLabel} ${failed === 1 ? "thread could" : "threads could"} not be deleted. Try ${failed === 1 ? "it" : "them"} individually for details.`);
     }
@@ -5103,8 +5137,8 @@ export default function App() {
   return (
     <div ref={shellRef} className="app-shell" data-theme={previewTheme ?? projectDefaults?.theme ?? settings.theme} data-color-scheme={themeColorScheme(previewTheme ?? projectDefaults?.theme ?? settings.theme)} data-effort-slider={previewEffortSlider ?? projectDefaults?.effortSlider ?? settings.effortSlider} data-chat-font={activeChatFont} data-openai-logo={settings.openAiLogo} data-claude-logo={settings.claudeLogo} data-cursor-logo={settings.cursorLogo} style={{ zoom: (settings.uiScale || 100) / 100, "--ui-scale": (settings.uiScale || 100) / 100 } as CSSProperties}>
       {successToast && (
-        <div className="app-toast success" role="status" aria-live="polite">
-          <span className="app-toast-icon"><Check size={14} strokeWidth={2.5} /></span>
+        <div className={`app-toast ${toastKind}`} role="status" aria-live="polite">
+          <span className="app-toast-icon">{toastKind === "success" ? <Check size={14} strokeWidth={2.5} /> : <MessageSquare size={14} />}</span>
           <span>{successToast}</span>
           <button onClick={dismissSuccessToast} aria-label="Dismiss notification">
             <X size={13} />
@@ -5359,7 +5393,7 @@ export default function App() {
         </div>
 
         <div className="sidebar-footer">
-          <button className="sidebar-settings" onClick={() => openSettings()} onMouseEnter={preloadSettingsModal} onFocus={preloadSettingsModal}>
+          <button className="sidebar-settings" onClick={() => openSettings()} onMouseEnter={preloadSettingsModal} onFocus={preloadSettingsModal} onPointerDown={preloadSettingsModal}>
             <Settings size={16} />
             <span>Settings</span>
             <span className={`provider-dot ${settings.provider}`} title={`Default provider: ${providerLabel(settings.provider)}`} />
@@ -5422,9 +5456,9 @@ export default function App() {
               <span>Search</span>
               <kbd>{primaryModifierLabel()}+K</kbd>
             </button>
-            <div className="runtime-status">
-              {running ? <LoaderCircle className="spin" size={13} /> : <Circle size={8} fill="currentColor" />}
-              <span>{status}</span>
+            <div className="runtime-status" title={status}>
+              {running || childrenRunning ? <LoaderCircle className="spin" size={13} /> : <Circle size={8} fill="currentColor" />}
+              <span>{running || childrenRunning ? "Working" : "Ready"}</span>
             </div>
             {headerUsageView && (effectiveSettings.provider === "openai" || effectiveSettings.provider === "claude" ? (
               <UsagePopover
@@ -5944,14 +5978,15 @@ export default function App() {
         <ErrorBoundary
           key={settingsLoadAttempt}
           label="settings"
+          onDismiss={() => { closeSettings(); setSettingsMounted(false); }}
           onRetry={() => {
             settingsModalPromise = null;
-            setLazySettingsModal(() => lazy(loadSettingsModal));
+            loadedSettingsModal = null;
             setSettingsLoadAttempt((attempt) => attempt + 1);
           }}
         >
         <Suspense fallback={null}>
-          <LazySettingsModal
+          <SettingsModalView
         open={settingsOpen}
         initialSection={settingsInitialSection}
         appUpdater={appUpdater}

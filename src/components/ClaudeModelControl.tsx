@@ -93,6 +93,15 @@ export function ClaudeModelControl({
     // closed trigger instead of exposing its raw CLI id.
     ?? sourceModels.find((entry) => entry.id === model)
     ?? (model ? { id: model, displayName: model, description: "Saved model", resolvedModel: model, disabled: false, supportedEfforts: [] } : ordered[0]);
+  // Saved concrete IDs may not match the CLI's aliases, including before its
+  // catalog arrives. Keep the trigger terse without changing the selected ID
+  // or hiding version/context details in the expanded menu.
+  const family = [model, selected?.resolvedModel, selected?.displayName]
+    .map((value) => value?.match(/^(?:claude(?:[-_ .]\d+)*[-_ ])?(fable|opus|sonnet|haiku)(?![a-z])/i)?.[1])
+    .find(Boolean);
+  const buttonLabel = family
+    ? family.charAt(0).toUpperCase() + family.slice(1).toLowerCase()
+    : selected?.displayName ?? "Choose a model";
   const normalizedEffort = effort === "ultra" ? "max" : effort;
   const effortIndex = Math.max(
     0,
@@ -137,7 +146,7 @@ export function ClaudeModelControl({
           className="openrouter-trigger"
           aria-haspopup="menu"
           aria-expanded={open}
-          aria-label={`Claude model: ${selected?.displayName ?? "not selected"}`}
+          aria-label={`Claude model: ${buttonLabel}`}
           onClick={() => setOpen((value) => !value)}
         >
           <span className="openrouter-logo claude-logo">
@@ -145,8 +154,7 @@ export function ClaudeModelControl({
           </span>
           <span className="openrouter-trigger-copy">
             <small>Model</small>
-            <strong>{selected?.displayName ?? "Choose a model"}</strong>
-            <em>{selected?.description || selected?.resolvedModel || "Uses your Claude Code login"}</em>
+            <strong>{buttonLabel}</strong>
           </span>
           <ChevronDown size={15} />
         </button>
