@@ -373,6 +373,24 @@ describe("routeCodexEvent", () => {
     expect(ctx.onStatus).not.toHaveBeenCalledWith(expect.stringContaining("Compact"));
   });
 
+  it("flushes earlier frame-batched text before inserting a compaction boundary", () => {
+    const ctx = makeContext();
+    routeCodexEvent({ method: "turn/started", params: { threadId: "thread-c", turn: { id: "turn-1" } } }, ctx);
+    routeCodexEvent({ method: "item/agentMessage/delta", params: { threadId: "thread-c", itemId: "before", delta: "Before compaction" } }, ctx);
+    routeCodexEvent({ method: "item/started", params: { threadId: "thread-c", item: { id: "compact", type: "contextCompaction" } } }, ctx);
+    useTaskStore.getState().flushDeltas();
+    const task = useTaskStore.getState().tasks["thread-c"];
+    expect(task.messages[0].timelineOrder!).toBeLessThan(task.activities[0].timelineOrder!);
+  });
+
+  it("does not reactivate a completed marker on a duplicate start", () => {
+    const ctx = makeContext();
+    const params = { threadId: "thread-c", turnId: "turn-1", item: { id: "compact", type: "contextCompaction" } };
+    routeCodexEvent({ method: "item/completed", params }, ctx);
+    routeCodexEvent({ method: "item/started", params }, ctx);
+    expect(useTaskStore.getState().tasks["thread-c"].activities).toMatchObject([{ status: "completed", turnId: "turn-1" }]);
+  });
+
   it("flags incompatible provider tool schemas for a runtime refresh", () => {
     const ctx = makeContext();
     routeCodexEvent({ method: "error", params: { threadId: "thread-e", error: { message: "400 INVALID_ARGUMENT: function_declarations[9].parameters.required[0] property is not defined" } } }, ctx);

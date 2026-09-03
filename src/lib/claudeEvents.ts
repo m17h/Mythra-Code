@@ -466,6 +466,7 @@ export function routeClaudeEvent(
   }
 
   if (type === "system" && message.subtype === "compact_boundary") {
+    store.flushDeltas();
     const metadata = object(message.compact_metadata);
     // The Agent SDK emits this boundary once the CLI has already compacted, so
     // the marker lands complete rather than animating. Anchoring it to the
@@ -474,7 +475,7 @@ export function routeClaudeEvent(
       id: `claude-compaction-${text(message.uuid) || turnId}`,
       provider: "claude",
       status: "completed",
-      trigger: text(metadata.trigger) === "manual" ? "manual" : "auto",
+      trigger: metadata.trigger === "manual" ? "manual" : metadata.trigger === "auto" ? "auto" : undefined,
       tokensBefore: number(metadata.pre_tokens),
     }));
     ctx.onTranscriptChanged(threadId);

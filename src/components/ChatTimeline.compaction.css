@@ -2,7 +2,7 @@
 .context-compaction {
   --compaction-accent: color-mix(in srgb, var(--green) 58%, var(--muted));
   display: grid;
-  grid-template-columns: minmax(8px, 1fr) auto minmax(8px, 1fr);
+  grid-template-columns: minmax(8px, 1fr) minmax(0, auto) minmax(8px, 1fr);
   align-items: center;
   gap: 10px;
   margin: 3px 0;
@@ -37,9 +37,9 @@
   background: color-mix(in srgb, var(--compaction-accent) 7%, transparent);
 }
 
-.context-compaction-glyph { display: grid; color: var(--compaction-accent); }
+.context-compaction-glyph { display: grid; flex-shrink: 0; color: var(--compaction-accent); }
 .context-compaction.active .context-compaction-glyph { animation: compaction-fold 1.7s ease-in-out infinite; }
-.context-compaction-pill strong { color: var(--ink-2); font-size: var(--fs-meta); white-space: nowrap; }
+.context-compaction-pill strong { min-width: 0; color: var(--ink-2); font-size: var(--fs-meta); overflow-wrap: anywhere; }
 .context-compaction-pill small { min-width: 0; overflow: hidden; padding-left: 8px; border-left: 1px solid var(--line-quiet); color: var(--muted-2); font-size: var(--fs-micro); white-space: nowrap; text-overflow: ellipsis; }
 .flow-timeline .context-compaction { margin-left: 38px; }
 

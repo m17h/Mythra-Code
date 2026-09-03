@@ -84,7 +84,7 @@ export function codexCompactionStatus(
   itemStatus: string | undefined,
   lifecycle: "started" | "completed",
 ): CompactionStatus {
-  if (itemStatus === "failed" || itemStatus === "error") return "failed";
+  if (compactionState(itemStatus) === "incomplete") return "failed";
   if (lifecycle === "completed" || itemStatus === "completed") return "completed";
   return "inProgress";
 }

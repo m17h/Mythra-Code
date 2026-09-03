@@ -16,6 +16,18 @@ describe("task store", () => {
     resetTaskStore();
   });
 
+  it.each(["error", "interrupted", "idle", "completed"] as const)("stops a compaction animation when the thread becomes %s without a turn-completed event", (status) => {
+    const store = useTaskStore.getState();
+    store.setActiveTurn("compact-thread", "turn-1");
+    store.setTaskStatus("compact-thread", "running");
+    store.upsertActivity("compact-thread", { id: "live", kind: "compaction", title: "Compacting context", status: "inProgress" });
+    store.upsertActivity("compact-thread", { id: "done", kind: "compaction", title: "Context compacted", status: "completed" });
+    store.setTaskStatus("compact-thread", status);
+    const task = useTaskStore.getState().tasks["compact-thread"];
+    expect(task.activities.map((activity) => activity.status)).toEqual(["interrupted", "completed"]);
+    expect(task.estimatedTranscriptBytes).toBe(estimateTranscriptBytes(task.messages, task.activities));
+  });
+
   it("clears terminal child activity for a new run but keeps active workers stoppable", () => {
     useTaskStore.getState().upsertAgent("root", { id: "working", prompt: "Work", status: "inProgress" });
     useTaskStore.getState().upsertAgent("root", { id: "failed", prompt: "Old", status: "failed" });

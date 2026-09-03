@@ -4,7 +4,7 @@ import { useTaskStore } from "./taskStore";
 import { parseCodexRateLimits, type ProviderRateLimits } from "./providerUsage";
 import type { TokenUsageView } from "../components/StudioDock";
 import { nativeSubAgentPresentation } from "./nativeSubAgentActivity";
-import { codexCompactionStatus, compactionActivity } from "./contextCompaction";
+import { codexCompactionStatus, compactionActivity, compactionState } from "./contextCompaction";
 import { recordOpenRouterCharge } from "./usageLedger";
 
 /**
@@ -118,6 +118,7 @@ export function handleThreadItem(
   item: ThreadItem,
   ctx: CodexEventContext,
   lifecycle: "started" | "completed" = "started",
+  turnId?: string,
 ): void {
   const taskStore = useTaskStore.getState();
   taskStore.ensureTask(threadId, ctx.bindingFor(threadId));
@@ -126,16 +127,26 @@ export function handleThreadItem(
     // product surface is intentionally limited to provider-owned Codex
     // compaction. Never infer the provider from the item itself.
     if (ctx.providerFor(threadId) !== "openai") return;
+    // Commit already-received text before assigning the seam's order. Deltas
+    // normally wait for the next animation frame, which may follow this event.
+    taskStore.flushDeltas();
+    const task = useTaskStore.getState().tasks[threadId];
     // The started and completed halves must land on one row. A runtime that
     // omits the item id would otherwise deal a second marker on completion,
     // so fall back to the turn this compaction belongs to.
     const compactionId = item.id
-      ?? `context-compaction-${useTaskStore.getState().tasks[threadId]?.activeTurnId ?? "pending"}`;
-    taskStore.upsertActivity(threadId, compactionActivity({
-      id: compactionId,
-      provider: "openai",
-      status: codexCompactionStatus(item.status, lifecycle),
-    }));
+      ?? `context-compaction-${turnId ?? task?.activeTurnId ?? "pending"}`;
+    const existing = task?.activities.find((entry) => entry.id === compactionId);
+    // Replayed starts must not reactivate a settled marker.
+    if (lifecycle === "started" && existing && compactionState(existing.status) !== "active") return;
+    taskStore.upsertActivity(threadId, {
+      ...compactionActivity({
+        id: compactionId,
+        provider: "openai",
+        status: codexCompactionStatus(item.status, lifecycle),
+      }),
+      turnId: turnId ?? existing?.turnId ?? task?.activeTurnId,
+    });
     return;
   }
   const id = item.id ?? crypto.randomUUID();
@@ -283,7 +294,7 @@ export function routeCodexEvent(event: CodexEvent, ctx: CodexEventContext): void
   }
   if (method === "item/started" || method === "item/completed") {
     if (params.item && typeof params.item === "object") {
-      handleThreadItem(eventThreadId, params.item as ThreadItem, ctx, method === "item/completed" ? "completed" : "started");
+      handleThreadItem(eventThreadId, params.item as ThreadItem, ctx, method === "item/completed" ? "completed" : "started", typeof params.turnId === "string" ? params.turnId : undefined);
     }
     return;
   }

@@ -1,5 +1,5 @@
 import type { Activity, ChatMessage, ThreadItem, Turn } from "../types";
-import { compactionActivity } from "./contextCompaction";
+import { compactionActivity, compactionState } from "./contextCompaction";
 import { nativeSubAgentPresentation } from "./nativeSubAgentActivity";
 
 export interface ThreadTimelineSnapshot {
@@ -45,10 +45,15 @@ function activityFromItem(
   }
   if (item.type === "contextCompaction") {
     if (!options.includeContextCompaction) return null;
-    // Rebuilt history is by definition no longer running, so a rollout saved
-    // mid-compaction restores as finished rather than animating on open.
+    // A persisted boundary without a status records a completed compaction.
+    // Explicit lifecycle states must remain truthful: history can also be
+    // loaded while a turn is running, or after it stopped mid-compaction.
+    const state = compactionState(item.status);
+    const status = state === "active"
+      ? turnStatus === "inProgress" ? "inProgress" : turnStatus === "failed" || turnStatus === "interrupted" ? "failed" : "completed"
+      : state === "incomplete" ? "failed" : "completed";
     return {
-      ...compactionActivity({ id, provider: "openai", status: item.status === "failed" ? "failed" : "completed" }),
+      ...compactionActivity({ id, provider: "openai", status }),
       timelineOrder,
       turnId,
       turnStatus,

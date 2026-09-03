@@ -951,6 +951,18 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
         }
       }
     }
+    // Disconnects and systemError may have no turn/completed event. Stop the
+    // compaction animation without inventing a successful provider boundary.
+    const stalledCompaction = (activity: Activity) => activity.kind === "compaction" && activity.status === "inProgress";
+    let estimatedTranscriptBytes = task.estimatedTranscriptBytes;
+    const activities = !isWorking && task.activities.some(stalledCompaction)
+      ? task.activities.map((activity) => {
+          if (!stalledCompaction(activity)) return activity;
+          const settled = { ...activity, status: "interrupted" };
+          estimatedTranscriptBytes = adjustedBytes(estimatedTranscriptBytes, estimateActivityBytes(activity), estimateActivityBytes(settled));
+          return settled;
+        })
+      : task.activities;
     return {
       tasks: {
         ...state.tasks,
@@ -958,6 +970,8 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
           ...task,
           status,
           error,
+          activities,
+          estimatedTranscriptBytes,
           assistantOutputTurnId: isWorking ? task.assistantOutputTurnId : undefined,
           pendingTurnStartOrder: task.pendingTurnStartOrder ?? latestPendingUser,
           workingStartedAt: isWorking ? (wasWorking ? task.workingStartedAt ?? Date.now() : Date.now()) : undefined,

@@ -106,12 +106,40 @@ describe("timelineFromTurns", () => {
     ]);
   });
 
-  it("restores a rollout saved mid-compaction as finished rather than animating", () => {
-    const snapshot = timelineFromTurns([{ id: "turn-1", items: [
+  it("does not report a rollout saved mid-compaction as a success", () => {
+    const snapshot = timelineFromTurns([{ id: "turn-1", status: "interrupted", items: [
       { id: "compaction", type: "contextCompaction", status: "inProgress" },
     ] }], { includeContextCompaction: true });
 
-    expect(snapshot.activities[0]).toMatchObject({ kind: "compaction", status: "completed" });
+    expect(snapshot.activities[0]).toMatchObject({ kind: "compaction", status: "failed" });
+  });
+
+  it("preserves legacy status-less completed history rather than inventing a failure", () => {
+    const snapshot = timelineFromTurns([{ id: "turn-1", items: [
+      { id: "compaction", type: "contextCompaction", status: "inProgress" },
+    ] }], { includeContextCompaction: true });
+    expect(snapshot.activities[0].status).toBe("completed");
+  });
+
+  it.each(["failed", "error", "interrupted", "cancelled"])("preserves an explicit %s compaction outcome in history", (status) => {
+    const snapshot = timelineFromTurns([{ id: "turn-1", status: "interrupted", items: [
+      { id: "compaction", type: "contextCompaction", status },
+    ] }], { includeContextCompaction: true });
+    expect(snapshot.activities[0].status).toBe("failed");
+  });
+
+  it("keeps an explicitly live compaction active while its turn is still running", () => {
+    const snapshot = timelineFromTurns([{ id: "turn-1", status: "inProgress", items: [
+      { id: "compaction", type: "contextCompaction", status: "inProgress" },
+    ] }], { includeContextCompaction: true });
+    expect(snapshot.activities[0].status).toBe("inProgress");
+  });
+
+  it("does not undo a recorded compaction just because the turn later failed", () => {
+    const snapshot = timelineFromTurns([{ id: "turn-1", status: "failed", items: [
+      { id: "compaction", type: "contextCompaction" },
+    ] }], { includeContextCompaction: true });
+    expect(snapshot.activities[0].status).toBe("completed");
   });
 
   it("does not surface shared app-server compaction items without an OpenAI opt-in", () => {

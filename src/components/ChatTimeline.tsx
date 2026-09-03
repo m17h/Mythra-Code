@@ -511,12 +511,10 @@ export const ContextCompactionMarker = memo(function ContextCompactionMarker({ a
   // underneath us, and a stale "Compacting context" would keep implying work.
   const state = compactionState(activity.status);
   const heading = compactionTitle(activity.status);
-  const label = activity.detail ? `${heading}. ${activity.detail}` : heading;
   return (
     <div
       className={`context-compaction ${state}`}
       role={state === "active" ? "status" : "group"}
-      aria-label={label}
     >
       <span className="context-compaction-seam" aria-hidden="true" />
       <span className="context-compaction-pill">
