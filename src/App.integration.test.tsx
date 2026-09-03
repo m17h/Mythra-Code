@@ -380,8 +380,14 @@ describe("Codex cold startup", () => {
     await renderApp();
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     expect(mounted).not.toHaveBeenCalled();
-    await act(async () => { loaded.resolve(); await loaded.promise; });
-    const dialog = await screen.findByRole("dialog", { name: "Loaded settings" });
+    await act(async () => {
+      loaded.resolve();
+      // Resolving the mock gate does not finish Vitest's dynamic-import chain.
+      // Await that boundary before checking the mount, rather than racing the
+      // test runner's cold module loading against findBy's default timeout.
+      await vi.dynamicImportSettled();
+    });
+    const dialog = screen.getByRole("dialog", { name: "Loaded settings" });
     expect(mounted).toHaveBeenCalledOnce();
     fireEvent.click(screen.getByRole("button", { name: "Close test settings" }));
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
