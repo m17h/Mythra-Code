@@ -12,9 +12,9 @@ import type { Activity } from "../types";
 export type CompactionProvider = "openai" | "claude";
 export type CompactionTrigger = "auto" | "manual";
 /** Lifecycle as the provider reports it, before it is mapped to a state. */
-export type CompactionStatus = "inProgress" | "completed" | "failed";
+export type CompactionStatus = "inProgress" | "completed" | "failed" | "unconfirmed";
 /** What the timeline actually renders. */
-export type CompactionState = "active" | "complete" | "incomplete";
+export type CompactionState = "active" | "complete" | "incomplete" | "unconfirmed";
 
 const PROVIDER_LABEL: Record<CompactionProvider, string> = {
   openai: "Codex",
@@ -27,6 +27,7 @@ const PROVIDER_LABEL: Record<CompactionProvider, string> = {
  * both reachable here and must not read as a finished compaction.
  */
 export function compactionState(status: string | undefined): CompactionState {
+  if (status === "unconfirmed") return "unconfirmed";
   if (status === "inProgress" || status === "started") return "active";
   if (status === "failed" || status === "error" || status === "interrupted" || status === "cancelled") return "incomplete";
   return "complete";
@@ -35,6 +36,7 @@ export function compactionState(status: string | undefined): CompactionState {
 export function compactionTitle(status: string | undefined): string {
   const state = compactionState(status);
   if (state === "active") return "Compacting context";
+  if (state === "unconfirmed") return "Compaction ended";
   return state === "incomplete" ? "Context compaction did not finish" : "Context compacted";
 }
 

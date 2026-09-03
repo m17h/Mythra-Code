@@ -9,6 +9,7 @@
 }
 
 .context-compaction.active { --compaction-accent: var(--info); }
+.context-compaction.unconfirmed { --compaction-accent: var(--muted); }
 .context-compaction.incomplete { --compaction-accent: color-mix(in srgb, var(--red) 62%, var(--muted)); }
 
 .context-compaction-seam {

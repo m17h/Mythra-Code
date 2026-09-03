@@ -263,6 +263,7 @@ function estimateActivityBytes(activity: Activity): number {
     + stringBytes(activity.status)
     + stringBytes(activity.turnId)
     + stringBytes(activity.turnStatus)
+    + (activity.compaction ? 32 + stringBytes(activity.compaction.boundaryId) + stringBytes(activity.compaction.endStatusId) : 0)
     + (agent ? AGENT_ACTIVITY_BASE_BYTES
       + stringBytes(agent.action)
       + stringBytes(agent.provider)
