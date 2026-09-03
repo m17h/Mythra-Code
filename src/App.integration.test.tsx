@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useEffect } from "react";
 import type { Thread } from "./types";
 
 /**
@@ -9,6 +10,8 @@ import type { Thread } from "./types";
  */
 
 const invokeMock = vi.fn();
+const settingsPrewarm = vi.hoisted(() => ({ schedule: vi.fn<(preload: () => void) => () => void>(() => () => {}) }));
+vi.mock("./lib/settingsPreload", () => ({ scheduleSettingsPreload: settingsPrewarm.schedule }));
 const tauriEvents = vi.hoisted(() => ({
   handlers: new Map<string, (event: { payload: unknown }) => void>(),
 }));
@@ -348,7 +351,64 @@ beforeEach(() => {
   localStorage.setItem("kiwi.workspaceMode", JSON.stringify("project"));
 });
 
+afterEach(() => vi.doUnmock("./components/SettingsModal"));
+
 describe("Codex cold startup", () => {
+  it.each(["button", "Escape"])("dismisses a failed Settings load with %s and permits a fresh open", async how => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.doMock("./components/SettingsModal", () => { throw new Error("Settings chunk unavailable"); });
+    await renderApp();
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    const reload = await screen.findByRole("button", { name: "Reload view" });
+    expect(reload).toHaveFocus();
+    if (how === "Escape") fireEvent.keyDown(reload, { key: "Escape" });
+    else fireEvent.click(screen.getByRole("button", { name: "Close settings error" }));
+    expect(screen.queryByText("The settings view hit a problem")).not.toBeInTheDocument();
+    expect(document.querySelector(".sidebar")).not.toHaveAttribute("inert");
+    vi.doMock("./components/SettingsModal", () => ({ SettingsModal: () => <div role="dialog" aria-label="Reopened settings" /> }));
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    expect(await screen.findByRole("dialog", { name: "Reopened settings" })).toBeInTheDocument();
+  });
+  it("mounts cold-loaded Settings once and retains the same instance on reopening", async () => {
+    const loaded = deferred<void>();
+    const mounted = vi.fn();
+    function TestSettings({ open, onClose }: { open: boolean; onClose: () => void }) {
+      useEffect(() => { mounted(); }, []);
+      return <div role="dialog" aria-label="Loaded settings" hidden={!open}><button onClick={onClose}>Close test settings</button></div>;
+    }
+    vi.doMock("./components/SettingsModal", async () => { await loaded.promise; return { SettingsModal: TestSettings }; });
+    await renderApp();
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    expect(mounted).not.toHaveBeenCalled();
+    await act(async () => { loaded.resolve(); await loaded.promise; });
+    const dialog = await screen.findByRole("dialog", { name: "Loaded settings" });
+    expect(mounted).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole("button", { name: "Close test settings" }));
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    expect(screen.getByRole("dialog", { name: "Loaded settings" })).toBe(dialog);
+    expect(mounted).toHaveBeenCalledOnce();
+  });
+  it("surfaces a Settings import failure and reloads successfully through the existing boundary", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.doMock("./components/SettingsModal", () => { throw new Error("Settings chunk unavailable"); });
+    await renderApp();
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    expect(await screen.findByText("The settings view hit a problem")).toBeInTheDocument();
+    vi.doMock("./components/SettingsModal", () => ({ SettingsModal: () => <div role="dialog" aria-label="Recovered settings" /> }));
+    fireEvent.click(screen.getByRole("button", { name: "Reload view" }));
+    expect(await screen.findByRole("dialog", { name: "Recovered settings" })).toBeInTheDocument();
+  });
+  it("opens preloaded Settings synchronously without mounting it during prewarm", async () => {
+    await renderApp();
+    const preload = settingsPrewarm.schedule.mock.calls.at(-1)?.[0] as (() => Promise<unknown>) | undefined;
+    expect(preload).toBeTypeOf("function");
+    await act(async () => { await preload!(); });
+    expect(document.querySelector(".settings-backdrop")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    // No findBy/waitFor: a fulfilled preload must bypass React.lazy's initial
+    // Suspense retry, not merely make its promise resolve a little faster.
+    expect(screen.getByRole("dialog", { name: "Settings" })).toBeInTheDocument();
+  });
   it.each(["main", "sub-agent"])("keeps the topbar Ready or Working and reports %s bulk actions outside it", async (kind) => {
     const user = userEvent.setup();
     const threads = [THREAD_A, THREAD_B].map(thread => kind === "sub-agent" ? { ...thread, parentThreadId: "root", threadSource: "subagent" } : thread);

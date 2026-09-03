@@ -1,21 +1,21 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { ChevronDown, Clock3, Gauge, X } from "lucide-react";
 import { hasUsageCountdown, selectedUsageWindow, usageResetText, type AccountUsageView, type AccountUsageWindowView, type ProviderHeaderUsageView } from "../lib/providerUsage";
 import "./UsagePopover.css";
 
-/** Mounted only with the panel, so closed details have no clock or rerenders. */
-function UsageResetLabel({ window: usageWindow }: { window: AccountUsageWindowView }) {
+/** Exit decoration keeps its text, but stops its clock as soon as closed. */
+function UsageResetLabel({ window: usageWindow, active }: { window: AccountUsageWindowView; active: boolean }) {
   const [now, setNow] = useState(Date.now);
   const countdown = hasUsageCountdown(usageWindow);
   useEffect(() => {
-    if (!countdown) return;
+    if (!active || !countdown) return;
     const refresh = () => setNow(Date.now());
     const onVisible = () => { if (!document.hidden) refresh(); };
     refresh();
     const timer = window.setInterval(refresh, 60_000);
     document.addEventListener("visibilitychange", onVisible);
     return () => { window.clearInterval(timer); document.removeEventListener("visibilitychange", onVisible); };
-  }, [countdown, usageWindow.resetsAt]);
+  }, [active, countdown, usageWindow.resetsAt]);
   return <small><Clock3 size={12} aria-hidden="true" />{usageResetText(usageWindow, now)}</small>;
 }
 
@@ -30,6 +30,7 @@ export function UsagePopover({ provider, usage, header, selectedLabel, onSelect,
   onConnect: () => void;
 }) {
   const [mode, setMode] = useState<"closed" | "hover" | "pinned">("closed");
+  const [present, setPresent] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -41,17 +42,48 @@ export function UsagePopover({ provider, usage, header, selectedLabel, onSelect,
   const clearTimer = () => { clearTimeout(timerRef.current); timerRef.current = undefined; };
   const close = (restoreFocus = false) => {
     clearTimer();
+    if (restoreFocus || panelRef.current?.contains(document.activeElement)) triggerRef.current?.focus();
     setMode("closed");
-    if (restoreFocus) triggerRef.current?.focus();
   };
 
   useEffect(() => () => clearTimeout(timerRef.current), []);
+
+  useLayoutEffect(() => {
+    const panel = panelRef.current;
+    if (!panel) return;
+    if (open) setPresent(true);
+    const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)");
+    let animation: Animation | undefined;
+    const finish = () => {
+      panel.style.opacity = open ? "1" : "0";
+      if (animation) { animation.onfinish = null; animation.cancel(); }
+      reduced?.removeEventListener?.("change", onMotionChange);
+      if (!open) setPresent(false);
+    };
+    const onMotionChange = () => { if (reduced?.matches) finish(); };
+    if (!reduced || reduced.matches || !panel.animate) { finish(); return; }
+    try {
+      animation = panel.animate([{ opacity: getComputedStyle(panel).opacity }, { opacity: open ? 1 : 0 }], {
+        duration: open ? 220 : 180, easing: "cubic-bezier(.22, 1, .36, 1)", fill: "forwards",
+      });
+      animation.onfinish = finish;
+      reduced.addEventListener?.("change", onMotionChange);
+    } catch { finish(); }
+    return () => {
+      // Freeze the painted opacity BEFORE cancelling so a quick reversal
+      // continues from that point instead of flashing fully on/off.
+      if (panel.isConnected) panel.style.opacity = getComputedStyle(panel).opacity;
+      if (animation) { animation.onfinish = null; animation.cancel(); }
+      reduced.removeEventListener?.("change", onMotionChange);
+    };
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
     const outside = (event: PointerEvent | FocusEvent) => {
       if (!rootRef.current?.contains(event.target as Node)) {
         clearTimeout(timerRef.current);
+        if (panelRef.current?.contains(document.activeElement)) triggerRef.current?.focus();
         setMode("closed");
       }
     };
@@ -90,7 +122,10 @@ export function UsagePopover({ provider, usage, header, selectedLabel, onSelect,
       onPointerEnter={(event) => {
         if (event.pointerType === "touch") return;
         clearTimer();
-        if (mode === "closed") timerRef.current = setTimeout(() => setMode("hover"), 200);
+        if (mode === "closed") {
+          if (present) setMode("hover");
+          else timerRef.current = setTimeout(() => setMode("hover"), 200);
+        }
       }}
       onPointerLeave={() => {
         clearTimer();
@@ -102,14 +137,14 @@ export function UsagePopover({ provider, usage, header, selectedLabel, onSelect,
       <button ref={triggerRef} className={`topbar-usage-chip ${provider}`} type="button"
         aria-label={`${usage.label}: ${header.text}. Open usage details`}
         aria-haspopup="dialog" aria-expanded={open} aria-controls={open ? id : undefined}
-        onClick={() => { clearTimer(); setMode((current) => current === "pinned" ? "closed" : "pinned"); }}
+        onClick={() => { clearTimer(); if (mode === "pinned") close(true); else setMode("pinned"); }}
         onKeyDown={(event) => {
           if (event.key === "ArrowDown") { event.preventDefault(); clearTimer(); setMode("pinned"); }
         }}
       >
         <Gauge size={13} aria-hidden="true" /><span>{header.text}</span><ChevronDown size={12} aria-hidden="true" />
       </button>
-      {open && <div ref={panelRef} id={id} className="usage-popover" role="dialog" aria-label={`${provider === "claude" ? "Claude" : "Codex"} usage details`}>
+      {(open || present) && <div ref={panelRef} id={id} className="usage-popover" style={{ opacity: 0 }} role="dialog" aria-hidden={!open || undefined} inert={!open || undefined} aria-label={`${provider === "claude" ? "Claude" : "Codex"} usage details`}>
         <div className="usage-popover-heading">
           <div><strong>{provider === "claude" ? "Claude Code" : "Codex"} usage</strong><small>{usage.planLabel || "Subscription limits"}</small></div>
           <button type="button" className="icon-button" aria-label="Close usage details" onClick={() => close(true)}><X size={15} /></button>
@@ -124,7 +159,7 @@ export function UsagePopover({ provider, usage, header, selectedLabel, onSelect,
               <span className="usage-popover-track" role="progressbar" aria-label={`${window.label} quota`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={window.percent} aria-valuetext={window.percentLabel}>
                 <span style={{ width: `${window.percent}%` }} />
               </span>
-              <UsageResetLabel window={window} />
+              <UsageResetLabel window={window} active={open} />
             </span>
           </label>)}
         </fieldset> : <p className="usage-popover-empty">{usage.summary}</p>}

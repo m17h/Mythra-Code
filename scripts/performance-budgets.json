@@ -141,20 +141,26 @@
       "decision": "Accept the measured UI-feature cost of safe timezone-aware Claude reset-label parsing, a minute clock mounted only in open five-hour usage details, friendly Claude trigger names, and action feedback moved out of the fixed-width status text into existing toasts. No dependencies, extra provider reads, transcript changes or closed-panel timers. DST gaps/folds retain absolute labels rather than guessing. Most added JavaScript is shared parsing logic; total raw JS grows by 2,355 Safari / 2,300 Chrome bytes, with 223 startup CSS bytes for subdued selection and neutral notifications. This is feature overhead, not an efficiency claim. Exact measured limits, no extra headroom.",
       "safari13": { "appEntryFromBytes": 348436, "appEntryToBytes": 348960, "appEntryDeltaBytes": 524, "startupJsFromBytes": 701220, "startupJsToBytes": 703567, "startupJsDeltaBytes": 2347, "startupCssDeltaBytes": 223, "totalJsFromBytes": 1446271, "totalJsToBytes": 1448626, "totalJsDeltaBytes": 2355 },
       "chrome105": { "appEntryFromBytes": 330803, "appEntryToBytes": 331291, "appEntryDeltaBytes": 488, "startupJsFromBytes": 676812, "startupJsToBytes": 679102, "startupJsDeltaBytes": 2290, "startupCssDeltaBytes": 223, "totalJsFromBytes": 1411903, "totalJsToBytes": 1414203, "totalJsDeltaBytes": 2300 }
+    },
+    {
+      "change": "Fade usage details and remove the first Settings Suspense retry delay",
+      "decision": "Accept 2,350 Safari / 2,130 Chrome startup and total JavaScript bytes, plus 53 CSS bytes, for interruptible opacity-only usage-panel presence, a stable asynchronous Settings host, and keyboard-accessible close/retry recovery for failed Settings loads. Countdown stops immediately on logical close, exiting DOM is inert and temporary, animations/listeners clean up, and reduced motion settles instantly. Module-only Settings prewarm is delayed, visibility-aware and cancellable, with no forced idle deadline; it trades loading the separate Settings chunk after idle for less first-click work but does not mount hidden UI or start provider effects. The actual measured latency fix bypasses React.lazy's initial fulfilled-promise suspension: five fresh-context local-browser samples improved settled first-visible medians from 343/367 ms to 29/47 ms in Chromium/WebKit. These are fixture timings, not native Windows guarantees. No dependencies, provider polling, thread-loading or streaming changes. Exact measured limits with no extra headroom.",
+      "safari13": { "appEntryFromBytes": 348960, "appEntryToBytes": 351009, "appEntryDeltaBytes": 2049, "startupJsFromBytes": 703567, "startupJsToBytes": 705917, "startupJsDeltaBytes": 2350, "startupCssFromBytes": 342474, "startupCssToBytes": 342527, "startupCssDeltaBytes": 53, "totalJsFromBytes": 1448626, "totalJsToBytes": 1450976, "totalJsDeltaBytes": 2350 },
+      "chrome105": { "appEntryFromBytes": 331291, "appEntryToBytes": 333120, "appEntryDeltaBytes": 1829, "startupJsFromBytes": 679102, "startupJsToBytes": 681232, "startupJsDeltaBytes": 2130, "startupCssFromBytes": 340351, "startupCssToBytes": 340404, "startupCssDeltaBytes": 53, "totalJsFromBytes": 1414203, "totalJsToBytes": 1416333, "totalJsDeltaBytes": 2130 }
     }
   ],
   "profiles": {
     "safari13-minified": {
-      "appEntryRawBytes": 348960,
-      "startupJsRawBytes": 703567,
-      "startupCssRawBytes": 342474,
-      "totalJsRawBytes": 1448626
+      "appEntryRawBytes": 351009,
+      "startupJsRawBytes": 705917,
+      "startupCssRawBytes": 342527,
+      "totalJsRawBytes": 1450976
     },
     "chrome105-minified": {
-      "appEntryRawBytes": 331291,
-      "startupJsRawBytes": 679102,
-      "startupCssRawBytes": 340351,
-      "totalJsRawBytes": 1414203
+      "appEntryRawBytes": 333120,
+      "startupJsRawBytes": 681232,
+      "startupCssRawBytes": 340404,
+      "totalJsRawBytes": 1416333
     }
   }
 }

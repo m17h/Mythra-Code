@@ -7,6 +7,7 @@ interface ErrorBoundaryProps {
   label: string;
   children: ReactNode;
   onRetry?: () => void;
+  onDismiss?: () => void;
 }
 
 interface ErrorBoundaryState {
@@ -29,18 +30,23 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
   render() {
     if (!this.state.error) return this.props.children;
     return (
-      <div className="view-error" role="alert">
+      <div className="view-error" role="alert" onKeyDown={(event) => {
+        if (event.key === "Escape" && this.props.onDismiss) {
+          event.preventDefault(); event.stopPropagation(); this.props.onDismiss();
+        }
+      }}>
         <TriangleAlert size={19} />
         <div>
           <strong>The {this.props.label} view hit a problem</strong>
           <small>{friendlyError(this.state.error)}</small>
         </div>
-        <button className="secondary-button" onClick={() => {
+        <button className="secondary-button" autoFocus={Boolean(this.props.onDismiss)} onClick={() => {
           if (this.props.onRetry) this.props.onRetry();
           else this.setState({ error: null });
         }}>
           <RotateCcw size={13} /> Reload view
         </button>
+        {this.props.onDismiss && <button className="secondary-button" onClick={this.props.onDismiss}>Close {this.props.label} error</button>}
       </div>
     );
   }
