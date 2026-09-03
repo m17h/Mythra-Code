@@ -120,6 +120,9 @@ export interface Activity {
   title: string;
   detail?: string;
   status?: string;
+  /** Claude status/boundary UUIDs differ; retain their association on the row
+   * so event replays remain idempotent after a transcript reload. */
+  compaction?: { boundaryId?: string; endStatusId?: string };
   /** Structured sub-agent identity for the animated timeline dispatch card.
    * Generic agent-shaped activities such as plans intentionally omit this. */
   agent?: {

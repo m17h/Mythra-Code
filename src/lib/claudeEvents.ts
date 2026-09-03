@@ -1,8 +1,9 @@
 import type { ClaudeEvent } from "./claude";
 import type { JsonObject } from "./codex";
+import type { Activity } from "../types";
 import type { TokenUsageView } from "../components/StudioDock";
 import { useTaskStore } from "./taskStore";
-import { compactionActivity } from "./contextCompaction";
+import { compactionActivity, compactionState, compactionTitle } from "./contextCompaction";
 import { consumeProviderStopIntent } from "./providerStopIntent";
 import { annotateThreadUsage } from "./usageLedger";
 
@@ -140,6 +141,66 @@ function recordResultUsage(threadId: string, turnId: string, value: unknown): vo
 
 export function resetClaudeEventUsageState(): void {
   partialUsage.clear();
+}
+
+/**
+ * The newest compaction row this thread's turn owns, newest first. Rows are
+ * matched by lifecycle rather than by uuid: the start status, the closing
+ * status and the boundary each carry their own uuid, so the only durable link
+ * between them is the row already on the turn's timeline. Scoping the scan to
+ * the thread's own activities also keeps concurrent threads isolated.
+ */
+function lastCompactionRow(
+  threadId: string,
+  turnId: string,
+  match: (activity: Activity) => boolean = () => true,
+): Activity | undefined {
+  const activities = useTaskStore.getState().tasks[threadId]?.activities;
+  if (!activities) return undefined;
+  for (let index = activities.length - 1; index >= 0; index -= 1) {
+    const activity = activities[index];
+    if (activity.kind === "compaction" && activity.turnId === turnId && match(activity)) return activity;
+  }
+  return undefined;
+}
+
+const isAnimating = (activity: Activity) => compactionState(activity.status) === "active";
+
+/**
+ * Stop the animation without claiming success for turns that end
+ * mid-compaction: `completeTurn` would otherwise
+ * settle a still-running row to the turn's own status and render a completed
+ * compaction the provider never reported.
+ */
+function settleActiveCompaction(
+  threadId: string,
+  turnId: string,
+  status: "interrupted" | "failed",
+): boolean {
+  const active = lastCompactionRow(threadId, turnId, isAnimating);
+  if (!active) return false;
+  useTaskStore.getState().upsertActivity(threadId, {
+    ...active,
+    title: compactionTitle(status),
+    status,
+    turnId,
+  });
+  return true;
+}
+
+/**
+ * Repeated compactions inside one turn each get their own row. The status
+ * message's uuid keys the row so a replayed start reuses it; the fallback only
+ * runs for CLIs that omit the uuid, where the count of rows already on the
+ * turn keeps the ids distinct.
+ */
+function compactionRowId(threadId: string, turnId: string, uuid: string): string {
+  if (uuid) return `claude-compaction-${uuid}`;
+  const activities = useTaskStore.getState().tasks[threadId]?.activities ?? [];
+  const started = activities.filter(
+    (activity) => activity.kind === "compaction" && activity.turnId === turnId,
+  ).length;
+  return `claude-compaction-${turnId}-${started}`;
 }
 
 function activityKind(name: string): "command" | "file" | "agent" {
@@ -394,6 +455,10 @@ export function routeClaudeEvent(
       );
     if (thinking?.detail)
       store.upsertActivity(threadId, { ...thinking, status: "completed" });
+    // A turn can end while a compaction is still animating — no boundary, no
+    // closing status. Settle it here rather than letting the turn's own result
+    // promote it into a compaction that was never reported as done.
+    settleActiveCompaction(threadId, turnId, failed ? "failed" : "interrupted");
     store.completeTurn(
       threadId,
       turnId,
@@ -440,6 +505,7 @@ export function routeClaudeEvent(
     const detail =
       text(message.message) ||
       "Claude Code exited before completing the turn.";
+    settleActiveCompaction(threadId, turnId, interrupted ? "interrupted" : "failed");
     store.completeTurn(
       threadId,
       turnId,
@@ -466,18 +532,72 @@ export function routeClaudeEvent(
   }
 
   if (type === "system" && message.subtype === "compact_boundary") {
+    const uuid = text(message.uuid);
+    if (uuid && lastCompactionRow(threadId, turnId, (entry) => entry.compaction?.boundaryId === uuid || entry.id === `claude-compaction-${uuid}`)) return;
     store.flushDeltas();
     const metadata = object(message.compact_metadata);
-    // The Agent SDK emits this boundary once the CLI has already compacted, so
-    // the marker lands complete rather than animating. Anchoring it to the
-    // boundary's own uuid keeps a replayed event on the same timeline row.
-    store.upsertActivity(threadId, compactionActivity({
-      id: `claude-compaction-${text(message.uuid) || turnId}`,
-      provider: "claude",
-      status: "completed",
-      trigger: metadata.trigger === "manual" ? "manual" : metadata.trigger === "auto" ? "auto" : undefined,
-      tokensBefore: number(metadata.pre_tokens),
-    }));
+    // Modern CLIs clear status (with compact_result) BEFORE the boundary.
+    // Enrich the latest started row even if already settled, but never search
+    // back through older failed attempts to attach a new boundary to them.
+    const latest = lastCompactionRow(threadId, turnId);
+    const pending = latest?.compaction && !latest.compaction.boundaryId && compactionState(latest.status) !== "incomplete" ? latest : undefined;
+    store.upsertActivity(threadId, {
+      ...compactionActivity({
+        id: pending?.id ?? `claude-compaction-${uuid || turnId}`,
+        provider: "claude",
+        status: "completed",
+        trigger: metadata.trigger === "manual" ? "manual" : metadata.trigger === "auto" ? "auto" : undefined,
+        tokensBefore: number(metadata.pre_tokens),
+      }),
+      compaction: { ...pending?.compaction, boundaryId: uuid || `turn-${turnId}` },
+      turnId,
+    });
+    ctx.onTranscriptChanged(threadId);
+    return;
+  }
+
+  if (type === "system" && message.subtype === "status") {
+    const status = text(message.status);
+    if (status === "compacting") {
+      store.flushDeltas();
+      const id = compactionRowId(threadId, turnId, text(message.uuid));
+      // An exact replay cannot reactivate a completed/interrupted row.
+      if (lastCompactionRow(threadId, turnId, (entry) => entry.id === id)) return;
+      const active = lastCompactionRow(threadId, turnId, isAnimating);
+      if (active) return;
+      // /compact can emit its start before system/init. This event itself is
+      // live turn evidence, unlike a saved activity loaded from history.
+      store.setActiveTurn(threadId, turnId);
+      store.setTaskStatus(threadId, "running");
+      foregroundStatus(ctx, threadId, "Working");
+      store.upsertActivity(threadId, {
+        ...compactionActivity({
+          id,
+          provider: "claude",
+          status: "inProgress",
+        }),
+        compaction: {},
+        turnId,
+      });
+      ctx.onTranscriptChanged(threadId);
+      return;
+    }
+    // Ignore unrelated/malformed status messages (including "requesting").
+    if (message.status !== null) return;
+    const uuid = text(message.uuid);
+    if (uuid && lastCompactionRow(threadId, turnId, (entry) => entry.compaction?.endStatusId === uuid)) return;
+    const latest = lastCompactionRow(threadId, turnId);
+    if (!latest?.compaction) return;
+    // Plain null is not success OR failure evidence. Keep it neutral until a
+    // boundary arrives. Explicit success avoids a red flash on current CLIs.
+    const nextStatus = latest.compaction.boundaryId || latest.status === "completed" || compactionState(latest.status) === "incomplete" ? latest.status
+      : message.compact_result === "success" ? "completed"
+        : message.compact_result === "failed" || message.compact_result === "failure" || message.compact_error ? "failed"
+          : "unconfirmed";
+    store.upsertActivity(threadId, {
+      ...latest, status: nextStatus, title: compactionTitle(nextStatus),
+      compaction: { ...latest.compaction, endStatusId: uuid || latest.compaction.endStatusId },
+    });
     ctx.onTranscriptChanged(threadId);
     return;
   }

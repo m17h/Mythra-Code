@@ -171,20 +171,26 @@
       "decision": "Accept 703 Safari / 621 Chrome startup JavaScript bytes for event-boundary delta flushing, replay deduplication, terminal-state cleanup and truthful restored lifecycle states. Total JavaScript grows 655 / 573 bytes; startup CSS is unchanged and the narrow-layout styling remains lazy. This is a reviewed correctness tradeoff, not a performance improvement: it adds no dependencies, polling, provider requests or timers, and flushes only at compaction boundaries. Exact measured limits without extra headroom.",
       "safari13": { "appEntryFromBytes": 352011, "appEntryToBytes": 352450, "appEntryDeltaBytes": 439, "startupJsFromBytes": 712877, "startupJsToBytes": 713580, "startupJsDeltaBytes": 703, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1464485, "totalJsToBytes": 1465140, "totalJsDeltaBytes": 655 },
       "chrome105": { "appEntryFromBytes": 334222, "appEntryToBytes": 334580, "appEntryDeltaBytes": 358, "startupJsFromBytes": 687950, "startupJsToBytes": 688571, "startupJsDeltaBytes": 621, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1429574, "totalJsToBytes": 1430147, "totalJsDeltaBytes": 573 }
+    },
+    {
+      "change": "Show native Claude compaction progress with durable lifecycle correlation",
+      "decision": "Accept 2,401 Safari / 2,150 Chrome startup and total JavaScript bytes for Claude start/reset/boundary handling, replay-safe identities retained on each compaction row, neutral unconfirmed outcomes, and crash-safe history restoration. Startup CSS is unchanged; the existing lazy marker stylesheet grows 65 bytes. No dependencies, provider requests, polling, hooks or timers are added. Correlation scans only the retained thread activities at lifecycle events, not streaming deltas, and its small persisted metadata is included in transcript memory estimates. This is reviewed feature/correctness overhead rather than an efficiency claim. Limits equal measured production output with no extra headroom.",
+      "safari13": { "appEntryFromBytes": 352450, "appEntryToBytes": 354331, "appEntryDeltaBytes": 1881, "startupJsFromBytes": 713580, "startupJsToBytes": 715981, "startupJsDeltaBytes": 2401, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1465140, "totalJsToBytes": 1467541, "totalJsDeltaBytes": 2401 },
+      "chrome105": { "appEntryFromBytes": 334580, "appEntryToBytes": 336256, "appEntryDeltaBytes": 1676, "startupJsFromBytes": 688571, "startupJsToBytes": 690721, "startupJsDeltaBytes": 2150, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1430147, "totalJsToBytes": 1432297, "totalJsDeltaBytes": 2150 }
     }
   ],
   "profiles": {
     "safari13-minified": {
-      "appEntryRawBytes": 352450,
-      "startupJsRawBytes": 713580,
+      "appEntryRawBytes": 354331,
+      "startupJsRawBytes": 715981,
       "startupCssRawBytes": 340471,
-      "totalJsRawBytes": 1465140
+      "totalJsRawBytes": 1467541
     },
     "chrome105-minified": {
-      "appEntryRawBytes": 334580,
-      "startupJsRawBytes": 688571,
+      "appEntryRawBytes": 336256,
+      "startupJsRawBytes": 690721,
       "startupCssRawBytes": 338348,
-      "totalJsRawBytes": 1430147
+      "totalJsRawBytes": 1432297
     }
   }
 }

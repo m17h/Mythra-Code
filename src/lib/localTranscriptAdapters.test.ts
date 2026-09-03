@@ -220,6 +220,7 @@ describe("local transcript persistence adapters", () => {
     const marker = {
       id: "claude-compaction-boundary-1",
       kind: "compaction" as const,
+      compaction: { boundaryId: "boundary-1", endStatusId: "end-1" },
       title: "Context compacted",
       detail: "Claude Code · Automatic · 154K tokens before",
       status: "completed",

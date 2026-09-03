@@ -263,6 +263,7 @@ function estimateActivityBytes(activity: Activity): number {
     + stringBytes(activity.status)
     + stringBytes(activity.turnId)
     + stringBytes(activity.turnStatus)
+    + (activity.compaction ? 32 + stringBytes(activity.compaction.boundaryId) + stringBytes(activity.compaction.endStatusId) : 0)
     + (agent ? AGENT_ACTIVITY_BASE_BYTES
       + stringBytes(agent.action)
       + stringBytes(agent.provider)
@@ -277,6 +278,18 @@ function estimateActivityBytes(activity: Activity): number {
 export function estimateTranscriptBytes(messages: ChatMessage[], activities: Activity[]): number {
   return messages.reduce((total, message) => total + ARRAY_SLOT_BYTES + estimateMessageBytes(message), 0)
     + activities.reduce((total, activity) => total + ARRAY_SLOT_BYTES + estimateActivityBytes(activity), 0);
+}
+
+/** A saved Claude start is not evidence that its old process is still alive.
+ * Keep live turns intact, but never restart an animation from an idle snapshot.
+ * The metadata gate leaves Codex's separate runtime-history policy unchanged. */
+function restoreCompactionActivity(activity: Activity, task?: ThreadTaskState): Activity {
+  if (activity.kind !== "compaction" || !activity.compaction || activity.status !== "inProgress") return activity;
+  const live = task?.activities.find((entry) => entry.id === activity.id);
+  if (live && live.status !== "inProgress") return live;
+  if ((task?.status === "running" || task?.status === "starting")
+    && task.activeTurnId && activity.turnId === task.activeTurnId) return activity;
+  return { ...activity, status: "unconfirmed", title: "Compaction ended" };
 }
 
 function adjustedBytes(current: number, previous: number, next: number): number {
@@ -429,7 +442,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       ) && !hydratedMessageIds.has(message.id))
       .map((entry) => ({ kind: "message" as const, entry }));
     const hydratedActivities = activities.map((activity) => withTimelineOrder({
-      ...activity,
+      ...restoreCompactionActivity(activity, existing),
       turnDurationMs: activity.turnDurationMs ?? durationForTurn(threadId, activity.turnId),
     }));
     const hydratedActivityIds = new Set(hydratedActivities.map((activity) => activity.id));
@@ -445,7 +458,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     for (const preserved of preservedEntries) {
       const { timelineOrder: _order, ...entry } = preserved.entry;
       if (preserved.kind === "message") inFlight.push(withTimelineOrder(entry as ChatMessage));
-      else inFlightActivities.push(withTimelineOrder(entry as Activity));
+      else inFlightActivities.push(withTimelineOrder(restoreCompactionActivity(entry as Activity, existing)));
     }
     const nextMessages = [...hydratedMessages, ...inFlight];
     const nextActivities = [...hydratedActivities, ...inFlightActivities];
@@ -503,7 +516,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     uniqueIncoming.forEach(({ kind, entry }, index) => {
       const timelineOrder = oldestOrder - uniqueIncoming.length + index;
       if (kind === "message") nextMessages.push({ ...entry, timelineOrder });
-      else nextActivities.push({ ...entry, timelineOrder });
+      else nextActivities.push({ ...restoreCompactionActivity(entry as Activity), timelineOrder });
     });
     if (!nextMessages.length && !nextActivities.length && Object.keys(patch).length === 0) return state;
     return {

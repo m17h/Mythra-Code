@@ -392,6 +392,251 @@ describe("Claude event routing", () => {
     expect(task.messages[0].timelineOrder!).toBeLessThan(task.activities[0].timelineOrder!);
   });
 
+  it("animates a Claude compaction from the status message and never speaks in the status bar", () => {
+    useTaskStore.getState().setActiveThread("thread-1");
+    send({ type: "stream_event", event: { type: "message_start", message: { id: "message-1" } } });
+    send({ type: "system", subtype: "status", status: "compacting", uuid: "status-1" });
+
+    const task = useTaskStore.getState().tasks["thread-1"];
+    expect(task.activities).toMatchObject([{
+      id: "claude-compaction-status-1",
+      kind: "compaction",
+      title: "Compacting context",
+      detail: "Claude Code",
+      status: "inProgress",
+      turnId: "turn-1",
+    }]);
+    expect(context.onTranscriptChanged).toHaveBeenCalledWith("thread-1");
+    expect(context.onStatus).not.toHaveBeenCalledWith(expect.stringContaining("ompact"));
+    expect(context.onStatus).toHaveBeenCalledWith("Working");
+  });
+
+  it("folds the boundary into the animating row instead of adding a second marker", () => {
+    send({ type: "stream_event", event: { type: "message_start", message: { id: "message-1" } } });
+    send({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Before" } } });
+    send({ type: "system", subtype: "status", status: "compacting", uuid: "status-1" });
+    const started = useTaskStore.getState().tasks["thread-1"].activities[0];
+    send({
+      type: "system",
+      subtype: "compact_boundary",
+      uuid: "boundary-1",
+      compact_metadata: { trigger: "auto", pre_tokens: 154_231 },
+    });
+
+    const task = useTaskStore.getState().tasks["thread-1"];
+    expect(task.activities).toMatchObject([{
+      id: "claude-compaction-status-1",
+      title: "Context compacted",
+      detail: "Claude Code · Automatic · 154K tokens before",
+      status: "completed",
+      turnId: "turn-1",
+    }]);
+    expect(task.activities[0].timelineOrder).toBe(started.timelineOrder);
+    expect(task.messages[0].timelineOrder!).toBeLessThan(task.activities[0].timelineOrder!);
+  });
+
+  it("keeps a merged boundary deduplicated when it is replayed", () => {
+    send({ type: "stream_event", event: { type: "message_start", message: { id: "message-1" } } });
+    send({ type: "system", subtype: "status", status: "compacting", uuid: "status-1" });
+    const boundary = {
+      type: "system",
+      subtype: "compact_boundary",
+      uuid: "boundary-1",
+      compact_metadata: { trigger: "auto", pre_tokens: 900 },
+    };
+    send(boundary);
+    send(boundary);
+    send({ type: "system", subtype: "status", status: null, uuid: "status-2" });
+
+    const task = useTaskStore.getState().tasks["thread-1"];
+    expect(task.activities).toHaveLength(1);
+    // The closing status is not evidence either way once the boundary landed.
+    expect(task.activities[0]).toMatchObject({ id: "claude-compaction-status-1", status: "completed" });
+  });
+
+  it("stops the animation on a null status without claiming the compaction finished", () => {
+    send({ type: "stream_event", event: { type: "message_start", message: { id: "message-1" } } });
+    send({ type: "system", subtype: "status", status: "compacting", uuid: "status-1" });
+    send({ type: "system", subtype: "status", status: null, uuid: "status-2" });
+
+    const settled = useTaskStore.getState().tasks["thread-1"].activities;
+    expect(settled).toMatchObject([{
+      id: "claude-compaction-status-1",
+      title: "Compaction ended",
+      status: "unconfirmed",
+    }]);
+
+    // A boundary arriving after the close is still the proof of success, and
+    // it belongs on the same row at the same timeline position.
+    send({
+      type: "system",
+      subtype: "compact_boundary",
+      uuid: "boundary-1",
+      compact_metadata: { trigger: "manual", pre_tokens: 2_000 },
+    });
+    const task = useTaskStore.getState().tasks["thread-1"];
+    expect(task.activities).toMatchObject([{
+      id: "claude-compaction-status-1",
+      title: "Context compacted",
+      detail: "Claude Code · Manual · 2.0K tokens before",
+      status: "completed",
+    }]);
+    expect(task.activities[0].timelineOrder).toBe(settled[0].timelineOrder);
+  });
+
+  it("uses an explicit successful reset before the boundary without flashing a failure", () => {
+    send({ type: "system", subtype: "init" });
+    send({ type: "system", subtype: "status", status: "compacting", uuid: "start" });
+    send({ type: "system", subtype: "status", status: null, compact_result: "success", uuid: "end" });
+    expect(useTaskStore.getState().tasks["thread-1"].activities).toMatchObject([{ status: "completed", title: "Context compacted" }]);
+    send({ type: "system", subtype: "compact_boundary", uuid: "boundary", compact_metadata: { trigger: "manual", pre_tokens: 12320 } });
+    expect(useTaskStore.getState().tasks["thread-1"].activities).toMatchObject([{
+      id: "claude-compaction-start", status: "completed", detail: "Claude Code · Manual · 12K tokens before",
+      compaction: { boundaryId: "boundary", endStatusId: "end" },
+    }]);
+  });
+
+  it("binds the live turn when compaction begins before system/init", () => {
+    useTaskStore.getState().setTaskStatus("thread-1", "starting");
+    send({ type: "system", subtype: "status", status: "compacting", uuid: "start" });
+    const task = useTaskStore.getState().tasks["thread-1"];
+    expect(task).toMatchObject({ activeTurnId: "turn-1", status: "running" });
+    useTaskStore.getState().hydrateTask("thread-1", [], task.activities);
+    expect(useTaskStore.getState().tasks["thread-1"].activities[0].status).toBe("inProgress");
+  });
+
+  it.each([{ compact_result: "failed" }, { compact_error: "too_few_groups" }])("honors an explicit failed reset: %j", (outcome) => {
+    send({ type: "system", subtype: "init" });
+    send({ type: "system", subtype: "status", status: "compacting", uuid: "start" });
+    send({ type: "system", subtype: "status", status: null, uuid: "end", ...outcome });
+    send({ type: "system", subtype: "status", status: null, uuid: "later-reset" });
+    send({ type: "result", subtype: "success" });
+    expect(useTaskStore.getState().tasks["thread-1"].activities).toMatchObject([{ status: "failed" }]);
+  });
+
+  it("retains replay identities through a saved transcript reload while another compaction is active", () => {
+    send({ type: "system", subtype: "init" });
+    const start = { type: "system", subtype: "status", status: "compacting", uuid: "start" };
+    const end = { type: "system", subtype: "status", status: null, compact_result: "success", uuid: "end" };
+    const boundary = { type: "system", subtype: "compact_boundary", uuid: "boundary" };
+    send(start); send(end); send(boundary);
+    const saved = JSON.parse(JSON.stringify(useTaskStore.getState().tasks["thread-1"].activities));
+    resetTaskStore(); resetClaudeEventUsageState();
+    useTaskStore.getState().hydrateTask("thread-1", [], saved);
+    useTaskStore.getState().setActiveTurn("thread-1", "turn-1");
+    send({ ...start, uuid: "next-start" });
+    send(start); send(end); send(boundary);
+    expect(useTaskStore.getState().tasks["thread-1"].activities.map((entry) => entry.status)).toEqual(["completed", "inProgress"]);
+  });
+
+  it("does not overwrite a failed attempt with a later completion-only boundary", () => {
+    send({ type: "system", subtype: "init" });
+    send({ type: "system", subtype: "status", status: "compacting", uuid: "failed-start" });
+    send({ type: "system", subtype: "status", status: null, compact_error: "failed", uuid: "failed-end" });
+    send({ type: "system", subtype: "compact_boundary", uuid: "later-boundary" });
+    expect(useTaskStore.getState().tasks["thread-1"].activities.map((entry) => entry.status)).toEqual(["failed", "completed"]);
+  });
+
+  it.each([undefined, "", "requesting"])("ignores malformed or unrelated status %s", (status) => {
+    send({ type: "system", subtype: "init" });
+    send({ type: "system", subtype: "status", status: "compacting", uuid: "start" });
+    send({ type: "system", subtype: "status", status, uuid: "other" });
+    expect(useTaskStore.getState().tasks["thread-1"].activities[0].status).toBe("inProgress");
+  });
+
+  it("gives each compaction in a turn its own row", () => {
+    send({ type: "stream_event", event: { type: "message_start", message: { id: "message-1" } } });
+    send({ type: "system", subtype: "status", status: "compacting", uuid: "status-1" });
+    send({ type: "system", subtype: "compact_boundary", uuid: "boundary-1", compact_metadata: { trigger: "auto", pre_tokens: 1_000 } });
+    send({ type: "system", subtype: "status", status: "compacting", uuid: "status-2" });
+    send({ type: "system", subtype: "compact_boundary", uuid: "boundary-2", compact_metadata: { trigger: "auto", pre_tokens: 2_000 } });
+
+    const task = useTaskStore.getState().tasks["thread-1"];
+    expect(task.activities.map((activity) => activity.id)).toEqual([
+      "claude-compaction-status-1",
+      "claude-compaction-status-2",
+    ]);
+    expect(task.activities.map((activity) => activity.detail)).toEqual([
+      "Claude Code · Automatic · 1.0K tokens before",
+      "Claude Code · Automatic · 2.0K tokens before",
+    ]);
+  });
+
+  it("repeats a start status onto the row it already opened", () => {
+    send({ type: "stream_event", event: { type: "message_start", message: { id: "message-1" } } });
+    send({ type: "system", subtype: "status", status: "compacting", uuid: "status-1" });
+    send({ type: "system", subtype: "status", status: "compacting", uuid: "status-2" });
+
+    const task = useTaskStore.getState().tasks["thread-1"];
+    expect(task.activities).toMatchObject([{ id: "claude-compaction-status-1", status: "inProgress" }]);
+  });
+
+  it("does not let a completed turn promote an unfinished compaction", () => {
+    useTaskStore.getState().setActiveThread("thread-1");
+    send({ type: "stream_event", event: { type: "message_start", message: { id: "message-1" } } });
+    send({ type: "system", subtype: "status", status: "compacting", uuid: "status-1" });
+    send({ type: "result", subtype: "success", usage: { input_tokens: 5, output_tokens: 5 } });
+
+    const task = useTaskStore.getState().tasks["thread-1"];
+    expect(task.activities).toMatchObject([{
+      title: "Context compaction did not finish",
+      status: "interrupted",
+    }]);
+    expect(task.status).toBe("completed");
+    expect(context.onStatus).toHaveBeenCalledWith("Ready");
+  });
+
+  it("settles a compaction left animating by a provider exit", () => {
+    send({ type: "stream_event", event: { type: "message_start", message: { id: "message-1" } } });
+    send({ type: "system", subtype: "status", status: "compacting", uuid: "status-1" });
+    send({ type: "openkiwi_exit", code: 1, message: "Authentication expired" });
+
+    const task = useTaskStore.getState().tasks["thread-1"];
+    expect(task.activities[0]).toMatchObject({
+      id: "claude-compaction-status-1",
+      title: "Context compaction did not finish",
+      status: "failed",
+    });
+  });
+
+  it("ignores compaction events replayed after the turn is retired", () => {
+    send({ type: "stream_event", event: { type: "message_start", message: { id: "message-1" } } });
+    send({ type: "result", subtype: "success" });
+    send({ type: "system", subtype: "status", status: "compacting", uuid: "status-late" });
+    send({ type: "system", subtype: "compact_boundary", uuid: "boundary-late", compact_metadata: { trigger: "auto", pre_tokens: 100 } });
+
+    expect(useTaskStore.getState().tasks["thread-1"].activities).toHaveLength(0);
+  });
+
+  it("keeps one thread's compaction out of another thread's timeline", () => {
+    send({ type: "stream_event", event: { type: "message_start", message: { id: "message-1" } } });
+    send({ type: "system", subtype: "status", status: "compacting", uuid: "status-1" });
+    routeClaudeEvent(
+      { threadId: "thread-2", turnId: "turn-2", message: { type: "stream_event", event: { type: "message_start", message: { id: "message-2" } } } },
+      context,
+    );
+    routeClaudeEvent(
+      {
+        threadId: "thread-2",
+        turnId: "turn-2",
+        message: { type: "system", subtype: "compact_boundary", uuid: "boundary-1", compact_metadata: { trigger: "auto", pre_tokens: 300 } },
+      },
+      context,
+    );
+
+    const tasks = useTaskStore.getState().tasks;
+    expect(tasks["thread-1"].activities).toMatchObject([{ id: "claude-compaction-status-1", status: "inProgress" }]);
+    expect(tasks["thread-2"].activities).toMatchObject([{ id: "claude-compaction-boundary-1", status: "completed", turnId: "turn-2" }]);
+  });
+
+  it("leaves an unrecognised status message alone", () => {
+    send({ type: "stream_event", event: { type: "message_start", message: { id: "message-1" } } });
+    send({ type: "system", subtype: "status", status: "compacting", uuid: "status-1" });
+    send({ type: "system", subtype: "status", status: "some_future_phase", uuid: "status-2" });
+
+    expect(useTaskStore.getState().tasks["thread-1"].activities).toMatchObject([{ status: "inProgress" }]);
+  });
+
   it("answers unknown control requests with an error instead of stalling", () => {
     send({
       type: "control_request",
