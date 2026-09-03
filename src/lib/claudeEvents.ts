@@ -540,7 +540,7 @@ export function routeClaudeEvent(
     // Enrich the latest started row even if already settled, but never search
     // back through older failed attempts to attach a new boundary to them.
     const latest = lastCompactionRow(threadId, turnId);
-    const pending = latest?.compaction && !latest.compaction.boundaryId ? latest : undefined;
+    const pending = latest?.compaction && !latest.compaction.boundaryId && compactionState(latest.status) !== "incomplete" ? latest : undefined;
     store.upsertActivity(threadId, {
       ...compactionActivity({
         id: pending?.id ?? `claude-compaction-${uuid || turnId}`,
@@ -565,6 +565,11 @@ export function routeClaudeEvent(
       if (lastCompactionRow(threadId, turnId, (entry) => entry.id === id)) return;
       const active = lastCompactionRow(threadId, turnId, isAnimating);
       if (active) return;
+      // /compact can emit its start before system/init. This event itself is
+      // live turn evidence, unlike a saved activity loaded from history.
+      store.setActiveTurn(threadId, turnId);
+      store.setTaskStatus(threadId, "running");
+      foregroundStatus(ctx, threadId, "Working");
       store.upsertActivity(threadId, {
         ...compactionActivity({
           id,

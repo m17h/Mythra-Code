@@ -38,6 +38,43 @@ describe("task store", () => {
     expect(useTaskStore.getState().tasks.root.agentRunStartedAt).toBe(123);
   });
 
+  it.each(["hydrate", "prepend"])("does not animate saved Claude compactions from an idle thread on %s", (mode) => {
+    const store = useTaskStore.getState();
+    store.ensureTask("compact");
+    const activities = [{ id: "compact", kind: "compaction" as const, title: "Compacting context", status: "inProgress", turnId: "old", compaction: {} }];
+    if (mode === "hydrate") store.hydrateTask("compact", [], activities);
+    else store.prependHistory("compact", [], activities, {});
+    const task = useTaskStore.getState().tasks.compact;
+    expect(task.activities[0]).toMatchObject({ status: "unconfirmed", title: "Compaction ended", compaction: {} });
+    expect(task.estimatedTranscriptBytes).toBe(estimateTranscriptBytes(task.messages, task.activities));
+  });
+
+  it("preserves genuinely live compactions while settling older saved ones", () => {
+    const store = useTaskStore.getState();
+    store.setActiveTurn("compact", "current");
+    store.setTaskStatus("compact", "running");
+    store.hydrateTask("compact", [], ["old", "current"].map((turnId) => ({ id: turnId, kind: "compaction", title: "Compacting context", status: "inProgress", turnId, compaction: {} })));
+    expect(useTaskStore.getState().tasks.compact.activities.map((entry) => entry.status)).toEqual(["unconfirmed", "inProgress"]);
+  });
+
+  it.each(["hydrate", "prepend"])("does not revive old compactions during the starting window on %s", (mode) => {
+    const store = useTaskStore.getState();
+    store.setTaskStatus("compact", "starting");
+    const activities = [{ id: "old", kind: "compaction" as const, title: "Compacting context", status: "inProgress", turnId: "old-turn", compaction: {} }];
+    if (mode === "hydrate") store.hydrateTask("compact", [], activities);
+    else store.prependHistory("compact", [], activities, {});
+    expect(useTaskStore.getState().tasks.compact.activities[0].status).toBe("unconfirmed");
+  });
+
+  it("does not let a stale history snapshot reactivate a completed live marker", () => {
+    const store = useTaskStore.getState();
+    store.setActiveTurn("compact", "current");
+    store.setTaskStatus("compact", "running");
+    store.upsertActivity("compact", { id: "compact", kind: "compaction", title: "Context compacted", status: "completed", compaction: { boundaryId: "boundary" } });
+    store.hydrateTask("compact", [], [{ id: "compact", kind: "compaction", title: "Compacting context", status: "inProgress", turnId: "current", compaction: {} }]);
+    expect(useTaskStore.getState().tasks.compact.activities[0]).toMatchObject({ status: "completed", compaction: { boundaryId: "boundary" } });
+  });
+
   it("evicts the coldest idle transcripts beyond the working set on thread switch", () => {
     const store = useTaskStore.getState();
     const old = Date.now() - 10 * 60_000;

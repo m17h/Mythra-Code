@@ -496,6 +496,15 @@ describe("Claude event routing", () => {
     }]);
   });
 
+  it("binds the live turn when compaction begins before system/init", () => {
+    useTaskStore.getState().setTaskStatus("thread-1", "starting");
+    send({ type: "system", subtype: "status", status: "compacting", uuid: "start" });
+    const task = useTaskStore.getState().tasks["thread-1"];
+    expect(task).toMatchObject({ activeTurnId: "turn-1", status: "running" });
+    useTaskStore.getState().hydrateTask("thread-1", [], task.activities);
+    expect(useTaskStore.getState().tasks["thread-1"].activities[0].status).toBe("inProgress");
+  });
+
   it.each([{ compact_result: "failed" }, { compact_error: "too_few_groups" }])("honors an explicit failed reset: %j", (outcome) => {
     send({ type: "system", subtype: "init" });
     send({ type: "system", subtype: "status", status: "compacting", uuid: "start" });
@@ -518,6 +527,14 @@ describe("Claude event routing", () => {
     send({ ...start, uuid: "next-start" });
     send(start); send(end); send(boundary);
     expect(useTaskStore.getState().tasks["thread-1"].activities.map((entry) => entry.status)).toEqual(["completed", "inProgress"]);
+  });
+
+  it("does not overwrite a failed attempt with a later completion-only boundary", () => {
+    send({ type: "system", subtype: "init" });
+    send({ type: "system", subtype: "status", status: "compacting", uuid: "failed-start" });
+    send({ type: "system", subtype: "status", status: null, compact_error: "failed", uuid: "failed-end" });
+    send({ type: "system", subtype: "compact_boundary", uuid: "later-boundary" });
+    expect(useTaskStore.getState().tasks["thread-1"].activities.map((entry) => entry.status)).toEqual(["failed", "completed"]);
   });
 
   it.each([undefined, "", "requesting"])("ignores malformed or unrelated status %s", (status) => {
