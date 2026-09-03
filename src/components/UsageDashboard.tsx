@@ -1,5 +1,5 @@
 import { useState, useSyncExternalStore } from "react";
-import { ExternalLink, Gauge, RefreshCw } from "lucide-react";
+import { ExternalLink, RefreshCw } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   formatEstimatedCost, getUsageRevision, modelPricingCatalogRevision, openRouterReportedCost,
@@ -45,8 +45,7 @@ export function UsageDashboard({ onRefreshPricing, openRouterPricingError }: {
   };
 
   return <section className="settings-section usage-dashboard" aria-label="All-time local usage">
-    <div className="settings-section-heading">
-      <div className="settings-icon"><Gauge size={17} /></div>
+    <div className="settings-section-heading usage-dashboard-heading">
       <div><h3>All-time local usage</h3><p>Usage recorded by Mythra Code on this device, across your threads. Not your entire provider account history.</p></div>
     </div>
     <div className="usage-dashboard-stats">

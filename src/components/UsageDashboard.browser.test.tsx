@@ -14,6 +14,8 @@ describe("usage dashboard layout", () => {
     expect(dashboard.scrollWidth).toBeLessThanOrEqual(dashboard.clientWidth + 1);
     const metrics = [...dashboard.querySelectorAll<HTMLElement>(".usage-dashboard-stats > div")];
     const summary = dashboard.querySelector<HTMLElement>(".usage-dashboard-stats")!;
+    const heading = dashboard.querySelector<HTMLElement>(".usage-dashboard-heading")!;
+    expect(Math.abs(heading.getBoundingClientRect().left - summary.getBoundingClientRect().left)).toBeLessThanOrEqual(1);
     expect(summary.getBoundingClientRect().height).toBeLessThan(width > 640 ? 100 : 190);
     for (const metric of metrics) expect(metric.scrollWidth).toBeLessThanOrEqual(metric.clientWidth + 1);
     for (const bar of dashboard.querySelectorAll<HTMLElement>(".usage-chart-track > span, .usage-composition-bar > span")) {
