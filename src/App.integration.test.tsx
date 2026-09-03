@@ -351,7 +351,14 @@ beforeEach(() => {
   localStorage.setItem("kiwi.workspaceMode", JSON.stringify("project"));
 });
 
-afterEach(() => vi.doUnmock("./components/SettingsModal"));
+afterEach(async () => {
+  // vi.resetModules() does not cancel timers owned by the previous Composer
+  // module. Its debounced save must not overwrite the next test's seeded
+  // storage while a slower runner is importing a fresh App instance.
+  const { resetDraftStoreForTests } = await import("./components/Composer");
+  resetDraftStoreForTests();
+  vi.doUnmock("./components/SettingsModal");
+});
 
 describe("Codex cold startup", () => {
   it.each(["button", "Escape"])("dismisses a failed Settings load with %s and permits a fresh open", async how => {
