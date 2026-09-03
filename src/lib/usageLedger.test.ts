@@ -72,6 +72,7 @@ describe("usage ledger", () => {
     annotateThreadUsage("mixed", { provider: "openai", model: "gpt-5.6-luna" });
     recordUsageDelta("mixed", usage(100, 20), "a");
     const first = usageTotals().estimatedCost;
+    expect(usageForThread("mixed")?.providerUsage).toBeUndefined();
     annotateThreadUsage("mixed", { provider: "claude", model: "claude-haiku-4-5" });
     recordUsageDelta("mixed", usage(200, 30), "b");
     expect(providerUsageTotals()).toEqual(expect.arrayContaining([

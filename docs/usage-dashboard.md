@@ -6,6 +6,7 @@ Settings → Usage now compares locally recorded tokens and estimated API-equiva
 
 - Subscription estimates are not subscription bills. Unknown prices are excluded, not treated as free. Regional, long-context, tool and other pricing adjustments are outside the estimate.
 - Each usage increment retains its cost and provider attribution. Catalog refreshes affect future increments only, including background threads. An explicit Claude version is never silently priced as an older version.
+- Single-provider threads reuse their existing counters; separate provider subtotals are materialized only for mixed-provider threads and archives. This avoids duplicating every ordinary thread's token and cost data.
 - Existing providerless archives appear as earlier/unattributed usage. Retention preserves new provider subtotals, cumulative resume baselines and unique thread counts. Malformed optional subtotals fall back to unattributed authoritative totals.
 - Schema 21 adds optional fields; there is no eager transcript migration or destructive rewrite. The original thread token totals remain the source of truth.
 
@@ -27,8 +28,8 @@ The dashboard is in the deferred Settings chunk, is unmounted while Settings is 
 
 | Profile | App entry | Startup JS | Startup CSS | All JS |
 | --- | ---: | ---: | ---: | ---: |
-| Safari | −342 B | +4,003 B | −1,105 B | +9,438 B |
-| Chrome | −188 B | +3,865 B | −1,105 B | +9,287 B |
+| Safari | −342 B | +3,991 B | −1,105 B | +9,426 B |
+| Chrome | −188 B | +3,853 B | −1,105 B | +9,275 B |
 
 The +2.7–2.9 KB combined startup change is accepted feature overhead, not a runtime speed claim. Exact measured budgets carry no extra allowance. `futures-util` becomes a direct Rust dependency but was already resolved transitively.
 

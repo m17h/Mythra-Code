@@ -490,7 +490,10 @@ function withCostDelta(record: ThreadUsageRecord, delta: TokenUsageView): Pick<T
     ? pricingForModel(record.provider, record.model) ?? record.pricing
     : record.pricing;
   const cost = estimateUsageCost(delta, pricing);
-  const providerUsage = record.provider || record.providerUsage
+  // Ordinary threads need no duplicate counters: their provider label already
+  // attributes the whole record. Materialize subtotals only after a provider
+  // change (or compaction), when that shortcut would lose history.
+  const providerUsage = record.providerUsage
     ? mergeProviderUsage(providerParts(record), { [record.provider ?? "unknown"]: amountsFor({ ...record, usage: delta, estimatedCost: cost ?? 0, pricedTokens: cost === null ? 0 : tokens, unpricedTokens: cost === null ? tokens : 0 }) })
     : undefined;
   return cost === null
