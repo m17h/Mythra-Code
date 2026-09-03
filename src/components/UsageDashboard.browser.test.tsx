@@ -13,6 +13,8 @@ describe("usage dashboard layout", () => {
     await waitFor(() => expect(dashboard.clientWidth).toBeGreaterThan(0));
     expect(dashboard.scrollWidth).toBeLessThanOrEqual(dashboard.clientWidth + 1);
     const metrics = [...dashboard.querySelectorAll<HTMLElement>(".usage-dashboard-stats > div")];
+    const summary = dashboard.querySelector<HTMLElement>(".usage-dashboard-stats")!;
+    expect(summary.getBoundingClientRect().height).toBeLessThan(width > 640 ? 100 : 190);
     for (const metric of metrics) expect(metric.scrollWidth).toBeLessThanOrEqual(metric.clientWidth + 1);
     for (const bar of dashboard.querySelectorAll<HTMLElement>(".usage-chart-track > span, .usage-composition-bar > span")) {
       expect(bar.getBoundingClientRect().width).toBeGreaterThan(0);
