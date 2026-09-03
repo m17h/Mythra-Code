@@ -8,15 +8,16 @@
 .usage-popover-windows { display: grid; gap: 7px; margin: 0; padding: 0; min-width: 0; border: 0; }
 .usage-popover-windows legend { padding: 0 0 8px; color: var(--muted); font-size: var(--fs-meta); }
 .usage-popover-window { display: grid; grid-template-columns: 16px minmax(0, 1fr); gap: 9px; align-items: start; padding: 10px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--field); cursor: pointer; }
-.usage-popover-window:hover, .usage-popover-window.selected { border-color: var(--green); background: var(--green-soft); }
-.usage-popover-window:focus-within { outline: 2px solid var(--green); outline-offset: 2px; }
+.usage-popover-window:hover { border-color: var(--line-strong); }
+.usage-popover-window.selected { border-color: var(--line-strong); border-color: color-mix(in srgb, var(--green) 55%, var(--line-strong)); }
+.usage-popover-window input:focus-visible { outline: 2px solid var(--green); outline-offset: 3px; }
 .usage-popover-window input { width: 14px; height: 14px; margin: 2px 0 0; accent-color: var(--green); }
 .usage-popover-window-body { min-width: 0; display: grid; gap: 8px; }
 .usage-popover-window-heading { display: flex; flex-wrap: wrap; gap: 4px 10px; justify-content: space-between; font-size: var(--fs-meta); }
 .usage-popover-window-heading strong { overflow-wrap: anywhere; }
 .usage-popover-window-heading b { font-variant-numeric: tabular-nums; white-space: nowrap; font-weight: 600; }
 .usage-popover-track { display: block; height: 5px; overflow: hidden; border-radius: 4px; background: var(--line-strong); }
-.usage-popover-track > span { display: block; height: 100%; background: var(--green); border-radius: inherit; }
+.usage-popover-track > span { display: block; height: 100%; background: var(--green); background: color-mix(in srgb, var(--green) 65%, var(--muted)); border-radius: inherit; }
 .usage-popover-window-body > small { display: flex; align-items: flex-start; gap: 5px; color: var(--muted); font-size: var(--fs-micro); line-height: 1.5; overflow-wrap: anywhere; }
 .usage-popover-window-body > small > svg { flex: 0 0 auto; margin-top: 2px; }
 .usage-popover-note, .usage-popover-empty { color: var(--muted); font-size: var(--fs-meta); line-height: 1.5; overflow-wrap: anywhere; }

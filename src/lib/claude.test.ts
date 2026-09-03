@@ -8,12 +8,17 @@ describe("Claude subscription usage", () => {
         { label: "5h", usedPercent: 5, resetLabel: "Aug 21 at 11:29pm (America/New_York)" },
         { label: "Weekly", usedPercent: 29, resetLabel: "Aug 23 at 5:59pm (America/New_York)" },
       ],
-    })).toEqual({
+    }, Date.UTC(2026, 7, 21))).toEqual({
       windows: [
-        { label: "5h", usedPercent: 5, resetsAt: null, resetLabel: "Aug 21 at 11:29pm (America/New_York)" },
-        { label: "Weekly", usedPercent: 29, resetsAt: null, resetLabel: "Aug 23 at 5:59pm (America/New_York)" },
+        { label: "5h", usedPercent: 5, resetsAt: Date.UTC(2026, 7, 22, 3, 29) / 1000, resetLabel: "Aug 21 at 11:29pm (America/New_York)" },
+        { label: "Weekly", usedPercent: 29, resetsAt: Date.UTC(2026, 7, 23, 21, 59) / 1000, resetLabel: "Aug 23 at 5:59pm (America/New_York)" },
       ],
     });
+  });
+
+  it("preserves an unresolvable reset label without inventing a timestamp", () => {
+    expect(parseClaudeUsageLimits({ windows: [{ label: "5h", usedPercent: 5, resetLabel: "11pm" }] })?.windows[0])
+      .toMatchObject({ resetsAt: null, resetLabel: "11pm" });
   });
 
   it("drops malformed windows and invalid reset timestamps", () => {

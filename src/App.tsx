@@ -401,6 +401,7 @@ export default function App() {
   const [workspaceGitInfo, setWorkspaceGitInfo] = useState<WorkspaceGitInfo | null>(null);
   const [gitInitializing, setGitInitializing] = useState(false);
   const [successToast, setSuccessToast] = useState<string | null>(null);
+  const [toastKind, setToastKind] = useState<"success" | "info">("success");
   const successToastTimerRef = useRef<number | null>(null);
   const [worktreeStatus, setWorktreeStatus] = useState<WorktreeStatus | null>(null);
   const [worktreeBusy, setWorktreeBusy] = useState(false);
@@ -1064,16 +1065,18 @@ export default function App() {
     }
   }, []);
 
-  const showSuccessToast = useCallback((message: string) => {
+  const showToast = useCallback((message: string, kind: "success" | "info") => {
     if (successToastTimerRef.current !== null) {
       window.clearTimeout(successToastTimerRef.current);
     }
     setSuccessToast(message);
+    setToastKind(kind);
     successToastTimerRef.current = window.setTimeout(() => {
       setSuccessToast(null);
       successToastTimerRef.current = null;
     }, 4_500);
   }, []);
+  const showSuccessToast = useCallback((message: string) => showToast(message, "success"), [showToast]);
 
   useEffect(() => {
     if (!githubLoginPending) return;
@@ -1285,12 +1288,14 @@ export default function App() {
   const transientStatusTimerRef = useRef<number | null>(null);
   const setTransientStatus = useCallback((message: string) => {
     setStatus(message);
+    // Action feedback stays visible without making the status chip grow.
+    showToast(message, "info");
     if (transientStatusTimerRef.current !== null) window.clearTimeout(transientStatusTimerRef.current);
     transientStatusTimerRef.current = window.setTimeout(() => {
       transientStatusTimerRef.current = null;
       setStatus((current) => (current === message ? "Ready" : current));
     }, 3000);
-  }, []);
+  }, [showToast]);
 
   /**
    * Stage destination/model/reasoning/limit edits for this conversation only.
@@ -3877,7 +3882,7 @@ export default function App() {
       if (await archiveThreadRecord(thread, false)) archived += 1;
     }
     const failed = ready.length - archived;
-    setStatus(`Archived ${archived} ${kindLabel} ${archived === 1 ? "thread" : "threads"}${active.length ? ` · ${active.length} active skipped` : ""}`);
+    if (archived > 0) showSuccessToast(`Archived ${archived} ${kindLabel} ${archived === 1 ? "thread" : "threads"}${active.length ? ` · ${active.length} active skipped` : ""}`);
     if (failed > 0) {
       setError(`${failed} ${kindLabel} ${failed === 1 ? "thread could" : "threads could"} not be archived. Try ${failed === 1 ? "it" : "them"} individually for details.`);
     }
@@ -4018,7 +4023,7 @@ export default function App() {
       if (await deleteThreadRecord(record.id, record.label, false)) deleted += 1;
     }
     const failed = workspaceArchived.length - deleted;
-    setStatus(`Deleted ${deleted} archived ${kindLabel} ${deleted === 1 ? "thread" : "threads"}`);
+    if (deleted > 0) showSuccessToast(`Deleted ${deleted} archived ${kindLabel} ${deleted === 1 ? "thread" : "threads"}`);
     if (failed > 0) {
       setError(`${failed} archived ${kindLabel} ${failed === 1 ? "thread could" : "threads could"} not be deleted. Try ${failed === 1 ? "it" : "them"} individually for details.`);
     }
@@ -5103,8 +5108,8 @@ export default function App() {
   return (
     <div ref={shellRef} className="app-shell" data-theme={previewTheme ?? projectDefaults?.theme ?? settings.theme} data-color-scheme={themeColorScheme(previewTheme ?? projectDefaults?.theme ?? settings.theme)} data-effort-slider={previewEffortSlider ?? projectDefaults?.effortSlider ?? settings.effortSlider} data-chat-font={activeChatFont} data-openai-logo={settings.openAiLogo} data-claude-logo={settings.claudeLogo} data-cursor-logo={settings.cursorLogo} style={{ zoom: (settings.uiScale || 100) / 100, "--ui-scale": (settings.uiScale || 100) / 100 } as CSSProperties}>
       {successToast && (
-        <div className="app-toast success" role="status" aria-live="polite">
-          <span className="app-toast-icon"><Check size={14} strokeWidth={2.5} /></span>
+        <div className={`app-toast ${toastKind}`} role="status" aria-live="polite">
+          <span className="app-toast-icon">{toastKind === "success" ? <Check size={14} strokeWidth={2.5} /> : <MessageSquare size={14} />}</span>
           <span>{successToast}</span>
           <button onClick={dismissSuccessToast} aria-label="Dismiss notification">
             <X size={13} />
@@ -5422,9 +5427,9 @@ export default function App() {
               <span>Search</span>
               <kbd>{primaryModifierLabel()}+K</kbd>
             </button>
-            <div className="runtime-status">
-              {running ? <LoaderCircle className="spin" size={13} /> : <Circle size={8} fill="currentColor" />}
-              <span>{status}</span>
+            <div className="runtime-status" role="status" aria-label="Thread status" title={status}>
+              {running || childrenRunning ? <LoaderCircle className="spin" size={13} /> : <Circle size={8} fill="currentColor" />}
+              <span>{running || childrenRunning ? "Working" : "Ready"}</span>
             </div>
             {headerUsageView && (effectiveSettings.provider === "openai" || effectiveSettings.provider === "claude" ? (
               <UsagePopover

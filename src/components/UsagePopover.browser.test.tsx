@@ -6,6 +6,20 @@ import { UsagePopover } from "./UsagePopover";
 import "../styles.css";
 
 describe("usage popover browser layout", () => {
+  it.each(["dark", "light"])("keeps selected rows neutral with an outline in %s mode", (scheme) => {
+    const usage: AccountUsageView = { label: "Claude subscription", summary: "Max plan", windows: [
+      { label: "5h", percent: 17, percentLabel: "17% used", resetLabel: "11 PM" },
+      { label: "Weekly", percent: 5, percentLabel: "5% used", resetLabel: "Friday" },
+    ] };
+    const view = render(<div className="app-shell" data-theme="mythra" data-color-scheme={scheme}>
+      <UsagePopover provider="claude" usage={usage} header={providerHeaderUsage("claude", usage)!} onSelect={vi.fn()} onDetails={vi.fn()} onConnect={vi.fn()} />
+    </div>);
+    fireEvent.click(view.getByRole("button", { name: /Open usage details/ }));
+    const rows = view.container.querySelectorAll(".usage-popover-window");
+    expect(getComputedStyle(rows[0]).backgroundColor).toBe(getComputedStyle(rows[1]).backgroundColor);
+    expect(getComputedStyle(rows[0]).borderColor).not.toBe(getComputedStyle(rows[1]).borderColor);
+    expect(view.getByRole("radio", { name: "Show 5h in top bar" })).toBeChecked();
+  });
   it.each([0.8, 1, 1.5])("stays inside a narrow chat toolbar at %sx UI scale with scrollable details", (scale) => {
     const usage: AccountUsageView = {
       label: "Claude subscription", summary: "Max plan", planLabel: "Max plan",
@@ -39,7 +53,16 @@ describe("usage popover browser layout", () => {
     const rect = heading.getBoundingClientRect();
     expect(panel.contains(document.elementFromPoint(rect.left + 10, rect.top + 10))).toBe(true);
     for (const row of panel.querySelectorAll<HTMLElement>(".usage-popover-window")) {
-      expect(row.scrollWidth).toBeLessThanOrEqual(row.clientWidth);
+      // WebKit rounds scrollWidth/clientWidth in opposite directions at 150%
+      // zoom (330/329 for a 330.67px row). Also check real child geometry so
+      // this one-CSS-pixel allowance cannot hide clipped content.
+      expect(row.scrollWidth).toBeLessThanOrEqual(row.clientWidth + 1);
+      const rowRect = row.getBoundingClientRect();
+      for (const child of row.children) {
+        const rect = child.getBoundingClientRect();
+        expect(rect.left).toBeGreaterThanOrEqual(rowRect.left);
+        expect(rect.right).toBeLessThanOrEqual(rowRect.right - parseFloat(getComputedStyle(row).paddingRight) * scale + 1);
+      }
     }
   });
 });

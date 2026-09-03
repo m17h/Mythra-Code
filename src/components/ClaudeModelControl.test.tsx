@@ -24,6 +24,35 @@ function open(name = /Claude model:/i) {
 }
 
 describe("ClaudeModelControl", () => {
+  it.each([
+    ["claude-haiku-4-5", "Haiku"],
+    ["claude-haiku-4-5-20251001", "Haiku"],
+    ["claude-opus-5[1m]", "Opus"],
+    ["claude-opus-5", "Opus"],
+    ["claude-fable-5-1", "Fable"],
+    ["claude-sonnet-5", "Sonnet"],
+    ["claude-3-5-sonnet-20241022", "Sonnet"],
+    ["claude-3-opus-20240229", "Opus"],
+    ["Claude 3.5 Sonnet", "Sonnet"],
+  ])("keeps %s friendly before and after the live catalog loads", (saved, label) => {
+    const onModel = vi.fn();
+    const view = render(<ClaudeModelControl model={saved} effort="high" loading onModel={onModel} onEffort={vi.fn()} />);
+    const trigger = screen.getByRole("button", { name: `Claude model: ${label}` });
+    expect(trigger.textContent).toBe(`Model${label}`);
+    view.rerender(<ClaudeModelControl model={saved} effort="high" models={[model(label.toLowerCase(), `${label} (1M context)`, { resolvedModel: `${saved}-20260101` })]} onModel={onModel} onEffort={vi.fn()} />);
+    expect(screen.getByRole("button", { name: `Claude model: ${label}` }).textContent).toBe(`Model${label}`);
+    expect(onModel).not.toHaveBeenCalled();
+  });
+
+  it("shortens selected aliases and resolved defaults only in the trigger", () => {
+    const catalog = [model("opus", "Opus (1M context)", { resolvedModel: "claude-opus-5[1m]" }), model("default", "Default (recommended)", { resolvedModel: "claude-opus-5[1m]" })];
+    const view = render(<ClaudeModelControl model="opus" effort="high" models={catalog} onModel={vi.fn()} onEffort={vi.fn()} />);
+    expect(screen.getByRole("button", { name: "Claude model: Opus" }).textContent).toBe("ModelOpus");
+    open();
+    expect(screen.getByRole("menuitemradio", { name: "Opus (1M context)" })).toHaveAttribute("aria-checked", "true");
+    view.rerender(<ClaudeModelControl model="default" effort="high" models={catalog} onModel={vi.fn()} onEffort={vi.fn()} />);
+    expect(screen.getByRole("button", { name: "Claude model: Opus" }).textContent).toBe("ModelOpus");
+  });
   it("lists every model the CLI reported", () => {
     render(<ClaudeModelControl model="sonnet" effort="medium" models={LIVE} onModel={vi.fn()} onEffort={vi.fn()} />);
     open();

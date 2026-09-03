@@ -16,6 +16,8 @@ export interface AccountUsageWindowView {
   percent: number;
   percentLabel: string;
   resetLabel: string;
+  /** Unix seconds; resolved once when reading the provider, never from display copy. */
+  resetsAt?: number | null;
 }
 
 export interface ProviderHeaderUsageView {
@@ -39,6 +41,22 @@ export function sanitizeHeaderUsageWindows(value: unknown): HeaderUsageWindows {
 
 export function selectedUsageWindow(windows: AccountUsageWindowView[], label?: string): AccountUsageWindowView | undefined {
   return windows.find((window) => window.label === label) ?? windows[0];
+}
+
+export function hasUsageCountdown(window: AccountUsageWindowView): boolean {
+  return /^5h(?: \(\d+\))?$/.test(window.label) && typeof window.resetsAt === "number"
+    && window.resetsAt > 0 && Number.isFinite(new Date(window.resetsAt * 1000).getTime());
+}
+
+export function usageResetText(window: AccountUsageWindowView, now: number): string {
+  if (hasUsageCountdown(window) && Number.isFinite(now)) {
+    const remaining = window.resetsAt! * 1000 - now;
+    if (remaining <= 0) return "Awaiting usage update";
+    const minutes = Math.ceil(remaining / 60_000);
+    const hours = Math.floor(minutes / 60);
+    return `Resets in ${hours ? `${hours}h ${minutes % 60}m` : `${minutes}m`}`;
+  }
+  return window.resetLabel ? `Resets ${window.resetLabel}` : "Reset time unavailable";
 }
 
 export function formatCreditAmount(value: number): string {
@@ -233,6 +251,7 @@ function accountUsageWindows(
       percent: displayedPercent(window.usedPercent, mode),
       percentLabel: usagePercentLabel(window.usedPercent, mode),
       resetLabel: compactResetLabel(reset),
+      resetsAt: window.resetsAt,
     };
   });
 }

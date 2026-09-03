@@ -218,7 +218,7 @@ describe("provider account usage", () => {
     })).toEqual({
       label: "OpenAI subscription",
       summary: "58% left",
-      windows: [{ label: "5h", percent: 58, percentLabel: "58% left", resetLabel: "" }],
+      windows: [{ label: "5h", percent: 58, percentLabel: "58% left", resetLabel: "", resetsAt: null }],
     });
   });
 
@@ -241,7 +241,7 @@ describe("provider account usage", () => {
     })).toEqual({
       label: "OpenAI subscription",
       summary: "42% used",
-      windows: [{ label: "5h", percent: 42, percentLabel: "42% used", resetLabel: "" }],
+      windows: [{ label: "5h", percent: 42, percentLabel: "42% used", resetLabel: "", resetsAt: null }],
     });
   });
 

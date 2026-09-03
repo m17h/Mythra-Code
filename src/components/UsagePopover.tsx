@@ -1,7 +1,23 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { ChevronDown, Clock3, Gauge, X } from "lucide-react";
-import { selectedUsageWindow, type AccountUsageView, type ProviderHeaderUsageView } from "../lib/providerUsage";
+import { hasUsageCountdown, selectedUsageWindow, usageResetText, type AccountUsageView, type AccountUsageWindowView, type ProviderHeaderUsageView } from "../lib/providerUsage";
 import "./UsagePopover.css";
+
+/** Mounted only with the panel, so closed details have no clock or rerenders. */
+function UsageResetLabel({ window: usageWindow }: { window: AccountUsageWindowView }) {
+  const [now, setNow] = useState(Date.now);
+  const countdown = hasUsageCountdown(usageWindow);
+  useEffect(() => {
+    if (!countdown) return;
+    const refresh = () => setNow(Date.now());
+    const onVisible = () => { if (!document.hidden) refresh(); };
+    refresh();
+    const timer = window.setInterval(refresh, 60_000);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { window.clearInterval(timer); document.removeEventListener("visibilitychange", onVisible); };
+  }, [countdown, usageWindow.resetsAt]);
+  return <small><Clock3 size={12} aria-hidden="true" />{usageResetText(usageWindow, now)}</small>;
+}
 
 /** Uses the existing usage snapshot: opening/hovering never starts a provider process. */
 export function UsagePopover({ provider, usage, header, selectedLabel, onSelect, onDetails, onConnect }: {
@@ -108,7 +124,7 @@ export function UsagePopover({ provider, usage, header, selectedLabel, onSelect,
               <span className="usage-popover-track" role="progressbar" aria-label={`${window.label} quota`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={window.percent} aria-valuetext={window.percentLabel}>
                 <span style={{ width: `${window.percent}%` }} />
               </span>
-              <small><Clock3 size={12} aria-hidden="true" />{window.resetLabel ? `Resets ${window.resetLabel}` : "Reset time unavailable"}</small>
+              <UsageResetLabel window={window} />
             </span>
           </label>)}
         </fieldset> : <p className="usage-popover-empty">{usage.summary}</p>}

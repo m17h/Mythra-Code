@@ -349,6 +349,33 @@ beforeEach(() => {
 });
 
 describe("Codex cold startup", () => {
+  it.each(["main", "sub-agent"])("keeps the topbar Ready or Working and reports %s bulk actions outside it", async (kind) => {
+    const user = userEvent.setup();
+    const threads = [THREAD_A, THREAD_B].map(thread => kind === "sub-agent" ? { ...thread, parentThreadId: "root", threadSource: "subagent" } : thread);
+    threadListImpl = (params) => ({ data: params.cwd === PROJECT_A.path ? threads : [], nextCursor: null });
+    resumeImpl = () => ({ thread: { ...threads[0], turns: [] } });
+    await renderApp();
+    if (kind === "sub-agent") await user.click(within(screen.getByRole("group", { name: "Thread type" })).getByRole("button", { name: /^Sub-agents/ }));
+    const status = screen.getByRole("status", { name: "Thread status" });
+    expect(status.textContent).toBe("Ready");
+    await user.click(await screen.findByText("Alpha thread"));
+    const { useTaskStore } = await import("./lib/taskStore");
+    await waitFor(() => expect(useTaskStore.getState().activeThreadId).toBe(THREAD_A.id));
+    act(() => useTaskStore.getState().setTaskStatus(THREAD_A.id, "running"));
+    expect(status.textContent).toBe("Working");
+    act(() => useTaskStore.getState().setTaskStatus(THREAD_A.id, "completed"));
+    expect(status.textContent).toBe("Ready");
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    vi.mocked(save).mockResolvedValueOnce("/tmp/transcript-test.md");
+    await user.click(screen.getByRole("button", { name: "Export conversation as Markdown" }));
+    const exported = await screen.findByText("Transcript exported");
+    expect(exported.closest(".app-toast")).toHaveClass("info");
+    expect(status.textContent).toBe("Ready");
+    await user.click(screen.getByRole("button", { name: "Archive all" }));
+    expect(await screen.findByText(`Archived 2 ${kind} threads`)).toBeInTheDocument();
+    expect(status.textContent).toBe("Ready");
+    expect(status).not.toHaveTextContent("Archived");
+  });
   it("keeps the app visible while the Settings chunk loads for the first time", { timeout: 15_000 }, async () => {
     await renderApp();
 
@@ -1015,9 +1042,7 @@ describe("workspace switching during thread selection", () => {
         cwd: PROJECT_A.path,
       });
     });
-    expect(await screen.findByRole("status")).toHaveTextContent(
-      "Git repository created for Alpha. Isolated worktrees are ready.",
-    );
+    expect(await screen.findByText("Git repository created for Alpha. Isolated worktrees are ready.")).toBeInTheDocument();
     const isolatedChoice = await screen.findByRole("button", { name: /Isolated worktree/i });
     expect(isolatedChoice).toBeEnabled();
   });

@@ -135,20 +135,26 @@
       "decision": "Accept 3,084 Safari / 2,882 Chrome total JavaScript bytes for bounded display-only pacing and safe immediate code-copy flush. Most code remains lazy; shared React export bookkeeping adds 66 startup bytes and 59 app-entry bytes on each target. CSS is unchanged. This is measured visual-feature overhead, not an efficiency claim: paced live messages have more small renders, limited near 30 Hz with 240 ms arrival windows, 64 batches, 2,048 pending units and 48,000 source units. Provider/store/persistence text is not delayed. The captured Haiku replay shows smaller text/scroll/brightness steps; these are fixture results, not universal bounds or proof of subjective smoothness. Limits match measured output without headroom.",
       "safari13": { "appEntryFromBytes": 348377, "appEntryToBytes": 348436, "appEntryDeltaBytes": 59, "startupJsFromBytes": 701154, "startupJsToBytes": 701220, "startupJsDeltaBytes": 66, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1443187, "totalJsToBytes": 1446271, "totalJsDeltaBytes": 3084 },
       "chrome105": { "appEntryFromBytes": 330744, "appEntryToBytes": 330803, "appEntryDeltaBytes": 59, "startupJsFromBytes": 676746, "startupJsToBytes": 676812, "startupJsDeltaBytes": 66, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1409021, "totalJsToBytes": 1411903, "totalJsDeltaBytes": 2882 }
+    },
+    {
+      "change": "Usage countdown and restrained toolbar presentation",
+      "decision": "Accept the measured UI-feature cost of safe timezone-aware Claude reset-label parsing, a minute clock mounted only in open five-hour usage details, friendly Claude trigger names, and action feedback moved out of the fixed-width status text into existing toasts. No dependencies, extra provider reads, transcript changes or closed-panel timers. DST gaps/folds retain absolute labels rather than guessing. Most added JavaScript is shared parsing logic; total raw JS grows by 2,398 Safari / 2,343 Chrome bytes, with 223 startup CSS bytes for subdued selection and neutral notifications. This is feature overhead, not an efficiency claim. Exact measured limits, no extra headroom.",
+      "safari13": { "appEntryFromBytes": 348436, "appEntryToBytes": 349003, "appEntryDeltaBytes": 567, "startupJsFromBytes": 701220, "startupJsToBytes": 703610, "startupJsDeltaBytes": 2390, "startupCssDeltaBytes": 223, "totalJsFromBytes": 1446271, "totalJsToBytes": 1448669, "totalJsDeltaBytes": 2398 },
+      "chrome105": { "appEntryFromBytes": 330803, "appEntryToBytes": 331334, "appEntryDeltaBytes": 531, "startupJsFromBytes": 676812, "startupJsToBytes": 679145, "startupJsDeltaBytes": 2333, "startupCssDeltaBytes": 223, "totalJsFromBytes": 1411903, "totalJsToBytes": 1414246, "totalJsDeltaBytes": 2343 }
     }
   ],
   "profiles": {
     "safari13-minified": {
-      "appEntryRawBytes": 348436,
-      "startupJsRawBytes": 701220,
-      "startupCssRawBytes": 342251,
-      "totalJsRawBytes": 1446271
+      "appEntryRawBytes": 349003,
+      "startupJsRawBytes": 703610,
+      "startupCssRawBytes": 342474,
+      "totalJsRawBytes": 1448669
     },
     "chrome105-minified": {
-      "appEntryRawBytes": 330803,
-      "startupJsRawBytes": 676812,
-      "startupCssRawBytes": 340128,
-      "totalJsRawBytes": 1411903
+      "appEntryRawBytes": 331334,
+      "startupJsRawBytes": 679145,
+      "startupCssRawBytes": 340351,
+      "totalJsRawBytes": 1414246
     }
   }
 }

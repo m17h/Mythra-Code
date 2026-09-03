@@ -22,6 +22,34 @@ function Harness({ data = usage, initial = "5h", onDetails = vi.fn(), onConnect 
 afterEach(() => vi.useRealTimers());
 
 describe("usage popover", () => {
+  it("counts down only while open, refreshes on reopen, and cleans up its clock", () => {
+    vi.useFakeTimers();
+    const start = Date.UTC(2026, 8, 3, 2, 14);
+    vi.setSystemTime(start);
+    const intervals = vi.spyOn(window, "setInterval");
+    const clears = vi.spyOn(window, "clearInterval");
+    const data = { ...usage, windows: usage.windows!.map((window, index) => ({ ...window, resetsAt: start / 1000 + (index ? 86_400 : 8040) })) };
+    const view = render(<Harness data={data} />);
+    const trigger = screen.getByRole("button", { name: /Open usage details/ });
+    expect(vi.getTimerCount()).toBe(0);
+    fireEvent.click(trigger);
+    expect(screen.getByText("Resets in 2h 14m")).toBeInTheDocument();
+    expect(screen.getByText("Resets Fri · 3 PM")).toBeInTheDocument();
+    expect(intervals).toHaveBeenCalledTimes(1);
+    expect(intervals).toHaveBeenLastCalledWith(expect.any(Function), 60_000);
+    act(() => vi.advanceTimersByTime(60_000));
+    expect(screen.getByText("Resets in 2h 13m")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Close usage details" }));
+    expect(clears).toHaveBeenCalledWith(intervals.mock.results[0].value);
+    act(() => vi.advanceTimersByTime(30 * 60_000));
+    fireEvent.click(trigger);
+    expect(screen.getByText("Resets in 1h 43m")).toBeInTheDocument();
+    act(() => { vi.setSystemTime(start + 8040_000); document.dispatchEvent(new Event("visibilitychange")); });
+    expect(screen.getByText("Awaiting usage update")).toBeInTheDocument();
+    view.unmount();
+    expect(intervals).toHaveBeenCalledTimes(2);
+    expect(clears).toHaveBeenCalledWith(intervals.mock.results[1].value);
+  });
   it("does not dismiss on WebKit's null-target blur when clicking a radio", () => {
     render(<Harness />);
     fireEvent.click(screen.getByRole("button", { name: /Open usage details/ }));

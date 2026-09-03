@@ -52,7 +52,7 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           npx playwright install webkit
-          npm run test:browser -- src/lib/streamingTextPacer.browser.test.ts src/lib/streamingTextFade.browser.test.ts src/components/ChatTimeline.streaming.browser.test.tsx src/components/ChatTimeline.cadence.browser.test.tsx src/components/ChatTimeline.layout.browser.test.tsx
+          npm run test:browser -- src/lib/streamingTextPacer.browser.test.ts src/lib/streamingTextFade.browser.test.ts src/components/ChatTimeline.streaming.browser.test.tsx src/components/ChatTimeline.cadence.browser.test.tsx src/components/ChatTimeline.layout.browser.test.tsx src/components/UsagePopover.browser.test.tsx src/components/ModelControls.layout.browser.test.tsx
         env:
           MYTHRA_BROWSER_TEST_ENGINE: webkit
 
