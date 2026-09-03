@@ -1,6 +1,6 @@
 [package]
 name = "mythra-code"
-version = "1.15.0"
+version = "1.15.1"
 description = "A transparent, user-directed AI coding harness"
 authors = ["Mythra Code contributors"]
 edition = "2021"
