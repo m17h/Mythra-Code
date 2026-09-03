@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import type { ReactElement } from "react";
+import { cloneElement, type ReactElement } from "react";
 import { ClaudeModelControl } from "./ClaudeModelControl";
 import { CursorModelControl } from "./CursorModelControl";
 import { LMStudioModelControl } from "./LMStudioModelControl";
@@ -42,6 +42,41 @@ function press(element: HTMLElement) {
 }
 
 describe("composer provider and model popovers", () => {
+  it.each(CONTROLS)("%s exposes header refresh while searching, without changing the selection or closing the menu", (name, renderControl, modelTriggerName) => {
+    const onRefresh = vi.fn();
+    const onModel = vi.fn();
+    const onEffort = vi.fn();
+    type RefreshProps = { loading: boolean; error: string; onRefresh: () => void; onModel: () => void; onEffort: () => void };
+    const control = (loading = false, error = "") => cloneElement(renderControl() as ReactElement<RefreshProps>, { loading, error, onRefresh, onModel, onEffort });
+    const view = render(control());
+    const trigger = screen.getByRole("button", { name: modelTriggerName });
+    press(trigger);
+    const search = screen.queryByRole("textbox", { name: `Search ${name} models` });
+    if (search) fireEvent.change(search, { target: { value: "model" } });
+    const refresh = screen.getByRole("button", { name: `Refresh ${name} model catalog` });
+    expect(refresh.closest(".model-catalog-heading")).not.toBeNull();
+    expect(refresh).toHaveClass("model-meta-refresh");
+    press(refresh);
+    expect(onRefresh).toHaveBeenCalledOnce();
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    if (search) expect(search).toHaveValue("model");
+    expect(onModel).not.toHaveBeenCalled();
+    expect(onEffort).not.toHaveBeenCalled();
+
+    view.rerender(control(true));
+    expect(refresh).toBeDisabled();
+    expect(refresh).toHaveAttribute("aria-busy", "true");
+    press(refresh);
+    expect(onRefresh).toHaveBeenCalledOnce();
+
+    view.rerender(control(false, "Catalog temporarily unavailable"));
+    expect(screen.getByRole("status")).toHaveTextContent("Catalog temporarily unavailable");
+    expect(refresh).toBeEnabled();
+    expect(refresh).toHaveAttribute("aria-busy", "false");
+    press(refresh);
+    expect(onRefresh).toHaveBeenCalledTimes(2);
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+  });
   it.each(CONTROLS)("%s closes the model menu when the provider menu opens", (_name, renderControl, modelTriggerName) => {
     render(renderControl());
     const modelTrigger = screen.getByRole("button", { name: modelTriggerName });
@@ -142,7 +177,7 @@ describe("composer provider and model popovers", () => {
     expect(screen.getByRole("menuitemradio", { name: /^Model 69,/ })).toBeInTheDocument();
   });
 
-  it("keeps the Cursor catalog open when clearing the search swaps the button back to refresh", () => {
+  it("keeps the Cursor catalog open when clearing the search removes its clear button", () => {
     render(
       <CursorModelControl providerControl={providerControl} model="auto" models={[{ id: "auto", name: "Auto", configOptions: [] }]} effort="high" onRefresh={vi.fn()} onModel={vi.fn()} onEffort={vi.fn()} />,
     );

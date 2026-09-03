@@ -493,6 +493,7 @@ export default function App() {
   const [cursorLoginStarting, setCursorLoginStarting] = useState(false);
   const [cursorModels, setCursorModels] = useState<CursorModel[]>([]);
   const [cursorModelsLoading, setCursorModelsLoading] = useState(false);
+  const [cursorModelsError, setCursorModelsError] = useState("");
   const [runtimeSetupOpen, setRuntimeSetupOpen] = useState(false);
   const [runtimeChecking, setRuntimeChecking] = useState(false);
   const [authRequiredOpen, setAuthRequiredOpen] = useState(false);
@@ -554,6 +555,8 @@ export default function App() {
   const githubRepoRefreshSequenceRef = useRef(0);
   const [githubRepoError, setGithubRepoError] = useState("");
   const [runtimeModels, setRuntimeModels] = useState<RuntimeModel[]>([]);
+  const [runtimeModelsLoading, setRuntimeModelsLoading] = useState(false);
+  const [runtimeModelsError, setRuntimeModelsError] = useState("");
   const [openRouterModels, setOpenRouterModels] = useState<OpenRouterModel[]>([]);
   const [openRouterModelsLoading, setOpenRouterModelsLoading] = useState(false);
   const [openRouterModelsError, setOpenRouterModelsError] = useState("");
@@ -1629,20 +1632,24 @@ export default function App() {
   const refreshCursorModels = useCallback(async () => {
     const request = ++cursorModelsRequestRef.current;
     setCursorModelsLoading(true);
+    setCursorModelsError("");
     try {
       const models = await listCursorModels() ?? [];
-      if (cursorModelsRequestRef.current === request) setCursorModels(models);
+      if (cursorModelsRequestRef.current === request) {
+        setCursorModels(models);
+        if (!models.length) setCursorModelsError("Cursor returned no models.");
+      }
       return models;
     } catch (reason) {
       if (cursorModelsRequestRef.current === request) {
         setCursorModels([]);
-        if (cursorStatus?.loggedIn) setError(friendlyError(reason));
+        setCursorModelsError(friendlyError(reason));
       }
       return [];
     } finally {
       if (cursorModelsRequestRef.current === request) setCursorModelsLoading(false);
     }
-  }, [cursorStatus?.loggedIn]);
+  }, []);
 
   const loadThreadsRequestRef = useRef(0);
   const loadThreads = useCallback(
@@ -1822,6 +1829,8 @@ export default function App() {
   const runtimeModelsRequestRef = useRef(0);
   const refreshModels = useCallback(async () => {
     const request = ++runtimeModelsRequestRef.current;
+    setRuntimeModelsLoading(true);
+    setRuntimeModelsError("");
     try {
       const allModels: RuntimeModel[] = [];
       let cursor: string | null = null;
@@ -1831,9 +1840,15 @@ export default function App() {
         cursor = result.nextCursor ?? null;
         if (!cursor) break;
       }
+      if (cursor) throw new Error("OpenAI returned too many catalog pages. Please refresh to try again.");
+      if (!allModels.length) throw new Error("OpenAI returned an empty model catalog.");
       if (runtimeModelsRequestRef.current === request) setRuntimeModels(allModels);
-    } catch {
-      if (runtimeModelsRequestRef.current === request) setRuntimeModels([]);
+    } catch (reason) {
+      // A failed refresh must not replace the last complete catalog or the
+      // selected model with a partial page or the built-in fallback.
+      if (runtimeModelsRequestRef.current === request) setRuntimeModelsError(friendlyError(reason));
+    } finally {
+      if (runtimeModelsRequestRef.current === request) setRuntimeModelsLoading(false);
     }
   }, []);
 
@@ -2511,9 +2526,8 @@ export default function App() {
     },
   });
 
-  // The startup sequence must run exactly once per launch. Some of its
-  // callbacks change identity later (refreshCursorModels depends on the
-  // Cursor login state), and re-running checkRuntime on such a change could
+  // The startup sequence must run exactly once per launch. Re-running
+  // checkRuntime when a startup dependency changes could
   // pop the Codex setup modal in the middle of a session.
   const startupRanRef = useRef(false);
   useEffect(() => {
@@ -5741,7 +5755,7 @@ export default function App() {
                 onStop={() => void stopTurnAndChildren()}
                 modelControls={
                   <>
-                    {effectiveSettings.provider === "openai" && <ModelPowerControl providerControl={composerProviderControl} model={effectiveSettings.model || DEFAULT_OPENAI_MODEL} effort={effectiveSettings.reasoningEffort} fast={settings.serviceTier === "priority"} runtimeModels={runtimeModels} favorites={favoriteModels(modelFavorites, "openai")} onToggleFavorite={(model) => toggleModelFavorite("openai", model)} onModel={persistComposerModel} onEffort={persistComposerReasoning} onFast={(fast) => persistSettings({ ...settings, serviceTier: fast ? "priority" : null })} />}
+                    {effectiveSettings.provider === "openai" && <ModelPowerControl providerControl={composerProviderControl} model={effectiveSettings.model || DEFAULT_OPENAI_MODEL} effort={effectiveSettings.reasoningEffort} fast={settings.serviceTier === "priority"} runtimeModels={runtimeModels} loading={runtimeModelsLoading} error={runtimeModelsError} onRefresh={() => void refreshModels()} favorites={favoriteModels(modelFavorites, "openai")} onToggleFavorite={(model) => toggleModelFavorite("openai", model)} onModel={persistComposerModel} onEffort={persistComposerReasoning} onFast={(fast) => persistSettings({ ...settings, serviceTier: fast ? "priority" : null })} />}
                     {effectiveSettings.provider === "openrouter" && (
                       <OpenRouterModelControl
                         model={effectiveSettings.model}
@@ -5777,7 +5791,7 @@ export default function App() {
                       />
                     )}
                     {effectiveSettings.provider === "claude" && <ClaudeModelControl providerControl={composerProviderControl} model={effectiveSettings.model || DEFAULT_CLAUDE_MODEL} effort={effectiveSettings.reasoningEffort} models={claudeModels} loading={claudeModelsLoading} error={claudeModelsError} signedIn={claudeStatus?.loggedIn ?? false} favorites={favoriteModels(modelFavorites, "claude")} onToggleFavorite={(model) => toggleModelFavorite("claude", model)} onRefresh={() => void refreshClaudeCatalog()} onSignInRequired={() => openSettings("models")} onUnavailableModel={(model) => { void confirmDialog(`${model.displayName} needs a Claude Code update\n\n${model.requiredVersion ? `Claude Code ${model.requiredVersion} or newer is required. ` : ""}Open Updates to install the latest version without leaving Mythra Code.`, { confirmLabel: "Go to Updates", cancelLabel: "Not now" }).then((confirmed) => { if (confirmed) openSettings("updates"); }); }} onModel={(model) => persistComposerModel(model)} onEffort={persistComposerReasoning} />}
-                    {effectiveSettings.provider === "cursor" && <CursorModelControl providerControl={composerProviderControl} model={effectiveSettings.model || DEFAULT_CURSOR_MODEL} models={cursorModels} effort={effectiveSettings.reasoningEffort} loading={cursorModelsLoading} favorites={favoriteModels(modelFavorites, "cursor")} onToggleFavorite={(model) => toggleModelFavorite("cursor", model)} onRefresh={() => void refreshCursorModels()} onModel={(model) => persistComposerModel(model)} onEffort={persistComposerReasoning} />}
+                    {effectiveSettings.provider === "cursor" && <CursorModelControl providerControl={composerProviderControl} model={effectiveSettings.model || DEFAULT_CURSOR_MODEL} models={cursorModels} effort={effectiveSettings.reasoningEffort} loading={cursorModelsLoading} error={cursorModelsError} favorites={favoriteModels(modelFavorites, "cursor")} onToggleFavorite={(model) => toggleModelFavorite("cursor", model)} onRefresh={() => void refreshCursorModels()} onModel={(model) => persistComposerModel(model)} onEffort={persistComposerReasoning} />}
                     {running && activeThreadId && deferredReasoningNoticeThreads.has(activeThreadId) && (
                       <p className="composer-reasoning-notice" role="status" aria-live="polite">
                         Reasoning change will apply to the next prompt.

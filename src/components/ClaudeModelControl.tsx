@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { Check, ChevronDown, Gauge, LoaderCircle, RefreshCw } from "lucide-react";
+import { Check, ChevronDown, Gauge } from "lucide-react";
+import { ModelCatalogHeader } from "./ModelCatalogHeader";
 import { EffortSlider, effortFlairStyle } from "./effortFlair";
 import { ModelFavoriteStar, type ModelFavoriteProps } from "./ModelFavoriteStar";
 import type { ReasoningEffort } from "./ModelPowerControl";
@@ -159,17 +160,9 @@ export function ClaudeModelControl({
           <ChevronDown size={15} />
         </button>
         <div className="openrouter-menu claude-model-menu">
-          <div className="openrouter-menu-meta">
-            <span>{catalog.length} Claude model{catalog.length === 1 ? "" : "s"}</span>
-            <small>{live
+          <ModelCatalogHeader provider="Claude" heading={`${catalog.length} Claude model${catalog.length === 1 ? "" : "s"}`} description={live
               ? signedIn === false ? "Generic CLI catalog — sign in for account models" : "Live catalog from your Claude Code CLI"
-              : "Built-in list — CLI catalog unavailable"}</small>
-            {onRefresh && (
-              <button type="button" className="model-meta-refresh" onClick={onRefresh} title="Refresh Claude models" aria-label="Refresh Claude model catalog" disabled={loading}>
-                {loading ? <LoaderCircle className="spin" size={13} /> : <RefreshCw size={13} />}
-              </button>
-            )}
-          </div>
+              : "Built-in list — CLI catalog unavailable"} loading={loading} onRefresh={onRefresh} />
           <div
             className="openrouter-options"
             role="menu"
@@ -220,9 +213,9 @@ export function ClaudeModelControl({
               {onSignInRequired && <button type="button" className="secondary-button" onClick={() => { setOpen(false); onSignInRequired(); }}>Open account settings</button>}
             </div>
           )}
-          {!live && (
-            <div className="openrouter-catalog-warning">
-              {error || "Could not read the Claude Code model catalog."} Showing Mythra Code’s built-in list, which may not match your plan.
+          {(error || !live) && (
+            <div className="openrouter-catalog-warning" role={open ? "status" : undefined}>
+              {error || "Could not read the Claude Code model catalog."} {live ? "Showing the last loaded catalog." : "Showing Mythra Code’s built-in list, which may not match your plan."}
             </div>
           )}
         </div>

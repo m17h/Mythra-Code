@@ -4,9 +4,32 @@ import { ClaudeModelControl } from "./ClaudeModelControl";
 import { ModelPowerControl } from "./ModelPowerControl";
 import { OpenRouterModelControl } from "./OpenRouterModelControl";
 import { ThreadProviderControl } from "./ThreadProviderControl";
+import { ModelCatalogHeader } from "./ModelCatalogHeader";
 import "../styles.css";
 
 describe("model control browser layout", () => {
+  it.each(["dark", "light"])("reserves header refresh spacing at small widths and UI scales in %s mode", (scheme) => {
+    const view = render(<div className="app-shell" data-color-scheme={scheme} style={{ display: "block" }}>
+      <ModelCatalogHeader provider="OpenAI" heading="Choose your model" description="A deliberately long provider catalog description that needs truncation" onRefresh={vi.fn()} />
+    </div>);
+    const header = view.container.querySelector<HTMLElement>(".model-catalog-heading")!;
+    const label = header.querySelector<HTMLElement>("span")!;
+    const description = header.querySelector<HTMLElement>("small")!;
+    const refresh = header.querySelector<HTMLElement>("button")!;
+    for (const width of [260, 330, 520, 660]) {
+      for (const zoom of [0.8, 1, 1.5]) {
+        header.style.width = `${width}px`;
+        header.style.zoom = String(zoom);
+        expect(getComputedStyle(header).display).toBe("grid");
+        expect(header.scrollWidth).toBeLessThanOrEqual(header.clientWidth);
+        expect(label.getBoundingClientRect().right).toBeLessThanOrEqual(description.getBoundingClientRect().left);
+        expect(refresh.getBoundingClientRect().left - description.getBoundingClientRect().right).toBeGreaterThanOrEqual(9 * zoom);
+        expect(refresh.getBoundingClientRect().right).toBeLessThanOrEqual(header.getBoundingClientRect().right);
+        expect(getComputedStyle(description).textOverflow).toBe("ellipsis");
+        expect(refresh.offsetWidth).toBe(28);
+      }
+    }
+  });
   it("splits the former model area between provider and model while preserving reasoning space", () => {
     const view = render(
       <div className="app-shell" data-theme="kiwi" style={{ display: "block", width: 900 }}>

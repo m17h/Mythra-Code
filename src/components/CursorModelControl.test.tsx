@@ -17,7 +17,7 @@ describe("CursorModelControl", () => {
     render(<CursorModelControl model="auto" models={models} effort="medium" onModel={onModel} onEffort={vi.fn()} onRefresh={vi.fn()} />);
 
     await user.click(screen.getByRole("button", { name: "Cursor model: auto" }));
-    expect(screen.getByText("Choose a Cursor model")).toBeInTheDocument();
+    expect(screen.getByText("Cursor models")).toBeInTheDocument();
     expect(screen.getByText("4 models")).toBeInTheDocument();
 
     await user.type(screen.getByRole("textbox", { name: "Search Cursor models" }), "xAI");

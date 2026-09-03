@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { Check, ChevronDown, Gauge, LoaderCircle, RefreshCw, Search } from "lucide-react";
+import { Check, ChevronDown, Gauge, Search } from "lucide-react";
+import { ModelCatalogHeader } from "./ModelCatalogHeader";
 import { EffortSlider, effortFlairStyle } from "./effortFlair";
 import type { LMStudioModel, LMStudioReasoningEffort } from "../lib/lmStudio";
 import type { ReasoningEffort } from "./ModelPowerControl";
@@ -109,6 +110,7 @@ export function LMStudioModelControl({
         </button>
 
         <div className="openrouter-menu lmstudio-model-menu">
+          <ModelCatalogHeader provider="LM Studio" heading={normalizedQuery ? `${filtered.length} matches` : `${models.length} available`} description={favorites.length ? "Favorites first · local server catalog" : "Local server catalog"} loading={loading} onRefresh={onRefresh} />
           <div className="openrouter-search-row">
             <Search size={14} />
             <input ref={searchRef} aria-label="Search LM Studio models" value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => {
@@ -117,9 +119,7 @@ export function LMStudioModelControl({
                 optionRefs.current.find((item) => item?.isConnected)?.focus();
               }
             }} placeholder="Search or enter a model identifier…" />
-            <button type="button" onClick={onRefresh} title="Refresh local models" aria-label="Refresh LM Studio model catalog" disabled={loading}>{loading ? <LoaderCircle className="spin" size={13} /> : <RefreshCw size={13} />}</button>
           </div>
-          <div className="openrouter-menu-meta"><span>{normalizedQuery ? `${filtered.length} matches` : `${models.length} available`}</span><small>{favorites.length ? "Favorites first · local server catalog" : "Local server catalog"}</small></div>
           <div className="openrouter-options" role="menu" aria-label="LM Studio model selector">
             {filtered.map((entry, entryIndex) => (
               <div className="model-row" key={entry.id} role="none">
@@ -137,8 +137,9 @@ export function LMStudioModelControl({
               </div>
             ))}
             {canUseCustom && <button type="button" role="menuitemradio" aria-checked={false} className="custom-model-option" onClick={() => { onModel(customModel); setQuery(""); setOpen(false); }}><span className="openrouter-provider-mark">+</span><span><strong>Use model identifier</strong><small>{customModel}</small></span></button>}
-            {!loading && filtered.length === 0 && !canUseCustom && <div className="openrouter-empty"><strong>{error ? "LM Studio is not connected" : "No matching models"}</strong><span>{error || "Download or load a model in LM Studio, then refresh this list."}</span></div>}
+            {!loading && !error && filtered.length === 0 && !canUseCustom && <div className="openrouter-empty"><strong>No matching models</strong><span>Download or load a model in LM Studio, then refresh this list.</span></div>}
           </div>
+          {error && <div className="openrouter-catalog-warning" role={open ? "status" : undefined}>{!models.length && <strong>LM Studio is not connected</strong>} {error} · Check your local server, then refresh.</div>}
         </div>
       </div>
 
