@@ -2241,6 +2241,16 @@ export default function App() {
       const logicalPath = threadProjectBindingsRef.current?.[threadId];
       return logicalPath ? executionPathFor(threadId, logicalPath) : undefined;
     },
+    providerFor: (threadId) => {
+      const thread = activeThread?.id === threadId
+        ? activeThread
+        : threads.find((entry) => entry.id === threadId) ?? knownThreadsRef.current?.[threadId];
+      if (!thread) return undefined;
+      const provider = providerFromThread(thread, projectDefaultProvider);
+      return provider === "openai" || provider === "openrouter" || provider === "lmstudio"
+        ? provider
+        : undefined;
+    },
     respond: (id, result) => respond(id, result),
     audit: (kind, payload, threadId) => void auditEvent(kind, payload, threadId).catch(() => {}),
     onStatus: setStatus,
@@ -2922,6 +2932,11 @@ export default function App() {
     const store = useTaskStore.getState();
     const task = store.tasks[threadId];
     if (!task?.history.paginated || !task.history.hasMore || task.history.loading || !task.history.nextCursor) return;
+    const indexedThread = activeThread?.id === threadId
+      ? activeThread
+      : threads.find((entry) => entry.id === threadId) ?? knownThreadsRef.current?.[threadId];
+    const includeContextCompaction = Boolean(indexedThread)
+      && providerFromThread(indexedThread, projectDefaultProvider) === "openai";
     const requestId = ++historyRequestSequenceRef.current;
     historyRequestRef.current.set(threadId, requestId);
     store.setHistory(threadId, { loading: true });
@@ -2990,7 +3005,7 @@ export default function App() {
         || currentState.tasks[threadId]?.history.nextCursor !== task.history.nextCursor
       ) return;
       const olderTurns = turnsFromDescendingPage(page);
-      const history = timelineFromTurns(olderTurns);
+      const history = timelineFromTurns(olderTurns, { includeContextCompaction });
       store.prependHistory(threadId, history.messages, history.activities, {
         nextCursor: page.nextCursor,
         hasMore: Boolean(page.nextCursor),
@@ -3016,7 +3031,7 @@ export default function App() {
             || currentState.activeThreadId !== threadId
             || currentState.tasks[threadId]?.history.nextCursor !== task.history.nextCursor
           ) return;
-          const fullHistory = timelineFromTurns(fallback.thread.turns);
+          const fullHistory = timelineFromTurns(fallback.thread.turns, { includeContextCompaction });
           store.hydrateTask(threadId, fullHistory.messages, fullHistory.activities, task.workspacePath, {
             nextCursor: null,
             hasMore: false,
@@ -3038,7 +3053,7 @@ export default function App() {
         if (currentStore.tasks[threadId]?.history.loading) currentStore.setHistory(threadId, { loading: false });
       }
     }
-  }, [activeThread]);
+  }, [activeThread, projectDefaultProvider, threads]);
 
   const selectThread = async (thread: Thread) => {
     if (!activeWorkspace) return;
@@ -3237,7 +3252,7 @@ export default function App() {
       bindThreadToProject(loaded.thread.id, activeWorkspace.path);
       rememberThread(loaded.thread);
       setActiveThread(loaded.thread);
-      const history = timelineFromTurns(loaded.turns);
+      const history = timelineFromTurns(loaded.turns, { includeContextCompaction: provider === "openai" });
       useTaskStore.getState().hydrateTask(loaded.thread.id, history.messages, history.activities, executionPath, loaded.history);
       useTaskStore.getState().setActiveThread(loaded.thread.id);
       durableHistoryLoaded = true;
@@ -3381,7 +3396,9 @@ export default function App() {
           ));
         } else {
           const complete = await rpc<{ thread: Thread }>("thread/read", { threadId: activeThread.id, includeTurns: true });
-          const durable = timelineFromTurns(complete.thread.turns);
+          const durable = timelineFromTurns(complete.thread.turns, {
+            includeContextCompaction: providerFromThread(activeThread, projectDefaultProvider) === "openai",
+          });
           ({ messages, activities } = mergeTranscriptHistory(
             durable.messages,
             durable.activities,
@@ -4142,7 +4159,9 @@ export default function App() {
     try {
       await waitForThreadPreparation(activeThread.id);
       await rpc("thread/compact/start", { threadId: activeThread.id });
-      setStatus("Compacting context");
+      // The timeline owns detailed compaction progress; the compact top-bar
+      // state intentionally remains limited to Ready/Working.
+      setStatus("Working");
     } catch (reason) {
       setError(friendlyError(reason));
     }
@@ -4223,7 +4242,7 @@ export default function App() {
       persistThreadModel(result.thread.id, effectiveSettings.model);
       persistThreadReasoning(result.thread.id, { reasoningEffort: effectiveSettings.reasoningEffort, ultra: effectiveSettings.ultra });
       setActiveThread(loaded.thread);
-      const history = timelineFromTurns(loaded.turns);
+      const history = timelineFromTurns(loaded.turns, { includeContextCompaction: effectiveSettings.provider === "openai" });
       useTaskStore.getState().hydrateTask(result.thread.id, history.messages, history.activities, activeWorkspace?.path, loaded.history);
       useTaskStore.getState().setActiveThread(result.thread.id);
       setStudioOpen(false);
@@ -4241,7 +4260,9 @@ export default function App() {
       const result = await rpc<{ thread: Thread }>("thread/rollback", { threadId: activeThread.id, numTurns: 1 });
       rememberThread(result.thread);
       setActiveThread(sidebarThread(result.thread));
-      const history = timelineFromTurns(result.thread.turns);
+      const history = timelineFromTurns(result.thread.turns, {
+        includeContextCompaction: providerFromThread(activeThread, projectDefaultProvider) === "openai",
+      });
       useTaskStore.getState().hydrateTask(result.thread.id, history.messages, history.activities, activeExecutionPath, {
         nextCursor: null,
         hasMore: false,

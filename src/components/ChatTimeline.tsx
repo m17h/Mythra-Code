@@ -1,6 +1,6 @@
 import { Children, createContext, isValidElement, memo, useCallback, useContext, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type Ref } from "react";
 import { flushSync } from "react-dom";
-import { Check, ChevronDown, ChevronRight, CircleDot, Clipboard, CornerUpRight, FileCode2, ImageIcon, ListChecks, MessageSquare, Pencil, TerminalSquare, UsersRound } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, CircleDot, Clipboard, CornerUpRight, FileCode2, FoldVertical, ImageIcon, ListChecks, MessageSquare, Pencil, TerminalSquare, UsersRound } from "lucide-react";
 import { convertFileSrc, invoke, isTauri } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import Markdown from "react-markdown";
@@ -11,9 +11,11 @@ import { InlineApprovalCard } from "./ApprovalCenter";
 import { ProviderLogo } from "./BrandLogos";
 import { decodeHtmlEntities } from "../lib/text";
 import { providerDisplayName } from "../lib/childAgents";
+import { compactionState, compactionTitle } from "../lib/contextCompaction";
 import { describeSubAgentActivity, subAgentStatusLabel, workerStatusFromAgentRecord, type SubAgentCounts } from "../lib/subAgentActivity";
 import type { ThreadHistoryState } from "../lib/threadHistory";
 import { createStreamingTextFade, type StreamingTextFade } from "../lib/streamingTextFade";
+import "./ChatTimeline.compaction.css";
 import { createStreamingTextPacer, type StreamingTextPacer } from "../lib/streamingTextPacer";
 
 export type WorkItemEntry =
@@ -141,6 +143,12 @@ export function orderedTimelineEntries(messages: ChatMessage[], activities: Acti
   return groupToolRuns(sorted ? entries : entries.sort((left, right) => entryOrder(left) - entryOrder(right)));
 }
 
+/** Where the provider folded its own history is a landmark, not a work step,
+ * so it survives completed-turn compaction the way user direction does. */
+function isCompactionMarker(entry: WorkItemEntry): boolean {
+  return entry.kind === "activity" && entry.value.kind === "compaction";
+}
+
 function compactTurnSegment(segment: WorkItemEntry[], compact: boolean): TimelineEntry[] {
   if (!compact) return segment;
   const users = segment.filter((entry) => entry.kind === "message" && entry.value.role === "user");
@@ -156,7 +164,9 @@ function compactTurnSegment(segment: WorkItemEntry[], compact: boolean): Timelin
     work = [];
   };
   for (const entry of segment) {
-    const staysVisible = entry === finalAssistant || (entry.kind === "message" && entry.value.role === "user");
+    const staysVisible = entry === finalAssistant
+      || isCompactionMarker(entry)
+      || (entry.kind === "message" && entry.value.role === "user");
     if (staysVisible) {
       flushWork();
       output.push(entry);
@@ -490,8 +500,40 @@ const MessageRow = memo(function MessageRow({ message, provider, onEdit }: { mes
   );
 });
 
+/**
+ * Provider-native context compaction, drawn as a fold in the transcript. The
+ * seam only marks where the provider summarised its own history; nothing the
+ * reader has already seen is removed or rewritten.
+ */
+export const ContextCompactionMarker = memo(function ContextCompactionMarker({ activity }: { activity: Activity }) {
+  // The heading is recomputed rather than read from the stored title: a turn
+  // that ends before its compaction reports completion has the status settled
+  // underneath us, and a stale "Compacting context" would keep implying work.
+  const state = compactionState(activity.status);
+  const heading = compactionTitle(activity.status);
+  const label = activity.detail ? `${heading}. ${activity.detail}` : heading;
+  return (
+    <div
+      className={`context-compaction ${state}`}
+      role={state === "active" ? "status" : "group"}
+      aria-label={label}
+    >
+      <span className="context-compaction-seam" aria-hidden="true" />
+      <span className="context-compaction-pill">
+        <span className="context-compaction-glyph" aria-hidden="true"><FoldVertical size={12} /></span>
+        <strong>{heading}</strong>
+        {activity.detail && <small>{activity.detail}</small>}
+      </span>
+      <span className="context-compaction-seam" aria-hidden="true" />
+    </div>
+  );
+});
+
 export const ActivityRow = memo(function ActivityRow({ activity }: { activity: Activity }) {
   const [expanded, setExpanded] = useState(false);
+  if (activity.kind === "compaction") {
+    return <ContextCompactionMarker activity={activity} />;
+  }
   if (activity.kind === "reasoning") {
     return <ReasoningDisclosure detail={activity.detail ?? ""} inProgress={activity.status === "inProgress"} />;
   }
@@ -1224,7 +1266,9 @@ export function ChatTimeline({
 }) {
   const entries = useMemo<TimelineEntry[]>(() => {
     const next = compactCompletedTurns(orderedTimelineEntries(messages, activities), running);
-    if (running && !approval && !messages.some((message) => message.streaming) && !activities.some((activity) => activity.kind === "reasoning" && activity.status === "inProgress")) {
+    const liveIndicatorPresent = activities.some((activity) =>
+      (activity.kind === "reasoning" || activity.kind === "compaction") && activity.status === "inProgress");
+    if (running && !approval && !messages.some((message) => message.streaming) && !liveIndicatorPresent) {
       next.push({ kind: "thinking", label: thinkingLabel });
     }
     if (approval) next.push({ kind: "approval", value: approval });

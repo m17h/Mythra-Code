@@ -83,6 +83,45 @@ describe("timelineFromTurns", () => {
     });
   });
 
+  it("restores a Codex compaction marker in place without touching the transcript", () => {
+    const snapshot = timelineFromTurns([{ id: "turn-1", items: [
+      { id: "user", type: "userMessage", content: [{ type: "text", text: "keep going" }] },
+      { id: "compaction", type: "contextCompaction", status: "completed" },
+      { id: "assistant", type: "agentMessage", text: "Continued." },
+    ] }], { includeContextCompaction: true });
+
+    expect(snapshot.activities).toMatchObject([{
+      id: "compaction",
+      kind: "compaction",
+      title: "Context compacted",
+      detail: "Codex",
+      status: "completed",
+      timelineOrder: 2,
+      turnId: "turn-1",
+      turnStatus: "completed",
+    }]);
+    expect(snapshot.messages.map((message) => [message.id, message.timelineOrder])).toEqual([
+      ["user", 1],
+      ["assistant", 3],
+    ]);
+  });
+
+  it("restores a rollout saved mid-compaction as finished rather than animating", () => {
+    const snapshot = timelineFromTurns([{ id: "turn-1", items: [
+      { id: "compaction", type: "contextCompaction", status: "inProgress" },
+    ] }], { includeContextCompaction: true });
+
+    expect(snapshot.activities[0]).toMatchObject({ kind: "compaction", status: "completed" });
+  });
+
+  it("does not surface shared app-server compaction items without an OpenAI opt-in", () => {
+    const snapshot = timelineFromTurns([{ id: "turn-1", items: [
+      { id: "compaction", type: "contextCompaction" },
+    ] }]);
+
+    expect(snapshot.activities).toEqual([]);
+  });
+
   it("restores native Codex sub-agents through the same animated Relay path", () => {
     const snapshot = timelineFromTurns([{ id: "turn-1", items: [{
       id: "native-spawn",

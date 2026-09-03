@@ -114,7 +114,9 @@ export interface ChatMessage {
 
 export interface Activity {
   id: string;
-  kind: "command" | "file" | "reasoning" | "agent" | "warning";
+  /** `compaction` marks where a provider summarised its own conversation
+   * history. It is a landmark, not work: the visible transcript is unchanged. */
+  kind: "command" | "file" | "reasoning" | "agent" | "warning" | "compaction";
   title: string;
   detail?: string;
   status?: string;

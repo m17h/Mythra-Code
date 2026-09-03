@@ -4,6 +4,7 @@ import { useTaskStore } from "./taskStore";
 import { parseCodexRateLimits, type ProviderRateLimits } from "./providerUsage";
 import type { TokenUsageView } from "../components/StudioDock";
 import { nativeSubAgentPresentation } from "./nativeSubAgentActivity";
+import { codexCompactionStatus, compactionActivity } from "./contextCompaction";
 import { recordOpenRouterCharge } from "./usageLedger";
 
 /**
@@ -96,6 +97,7 @@ function truncatedDetail(detail: string | undefined): string | undefined {
 
 export interface CodexEventContext {
   bindingFor: (threadId: string) => string | undefined;
+  providerFor: (threadId: string) => "openai" | "openrouter" | "lmstudio" | undefined;
   respond: (id: number | string, result: JsonObject) => Promise<void>;
   audit: (kind: string, payload: JsonObject, threadId?: string) => void;
   onStatus: (status: string) => void;
@@ -111,9 +113,31 @@ export interface CodexEventContext {
   onNativeAgentDiscovered: (rootThreadId: string, childThreadId: string, details: { prompt?: string; path?: string }) => void;
 }
 
-export function handleThreadItem(threadId: string, item: ThreadItem, ctx: CodexEventContext): void {
+export function handleThreadItem(
+  threadId: string,
+  item: ThreadItem,
+  ctx: CodexEventContext,
+  lifecycle: "started" | "completed" = "started",
+): void {
   const taskStore = useTaskStore.getState();
   taskStore.ensureTask(threadId, ctx.bindingFor(threadId));
+  if (item.type === "contextCompaction") {
+    // OpenRouter and LM Studio share the app-server transport, but this
+    // product surface is intentionally limited to provider-owned Codex
+    // compaction. Never infer the provider from the item itself.
+    if (ctx.providerFor(threadId) !== "openai") return;
+    // The started and completed halves must land on one row. A runtime that
+    // omits the item id would otherwise deal a second marker on completion,
+    // so fall back to the turn this compaction belongs to.
+    const compactionId = item.id
+      ?? `context-compaction-${useTaskStore.getState().tasks[threadId]?.activeTurnId ?? "pending"}`;
+    taskStore.upsertActivity(threadId, compactionActivity({
+      id: compactionId,
+      provider: "openai",
+      status: codexCompactionStatus(item.status, lifecycle),
+    }));
+    return;
+  }
   const id = item.id ?? crypto.randomUUID();
   if (item.type === "agentMessage" || item.type === "plan") {
     taskStore.completeMessage(threadId, { id, role: "assistant", text: item.text ?? "", streaming: false });
@@ -258,7 +282,9 @@ export function routeCodexEvent(event: CodexEvent, ctx: CodexEventContext): void
     return;
   }
   if (method === "item/started" || method === "item/completed") {
-    if (params.item && typeof params.item === "object") handleThreadItem(eventThreadId, params.item as ThreadItem, ctx);
+    if (params.item && typeof params.item === "object") {
+      handleThreadItem(eventThreadId, params.item as ThreadItem, ctx, method === "item/completed" ? "completed" : "started");
+    }
     return;
   }
   if (method === "turn/diff/updated") {

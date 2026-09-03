@@ -334,6 +334,55 @@ describe("Claude event routing", () => {
     expect(context.onTurnCompleted).toHaveBeenCalledWith("thread-1");
   });
 
+  it("marks a Claude compact boundary in place and asks for a transcript save", () => {
+    send({
+      type: "stream_event",
+      event: { type: "message_start", message: { id: "message-1" } },
+    });
+    send({
+      type: "system",
+      subtype: "compact_boundary",
+      uuid: "boundary-1",
+      compact_metadata: { trigger: "auto", pre_tokens: 154_231 },
+    });
+
+    const task = useTaskStore.getState().tasks["thread-1"];
+    expect(task.activities).toMatchObject([{
+      id: "claude-compaction-boundary-1",
+      kind: "compaction",
+      title: "Context compacted",
+      detail: "Claude Code · Automatic · 154K tokens before",
+      status: "completed",
+      turnId: "turn-1",
+    }]);
+    expect(context.onTranscriptChanged).toHaveBeenCalledWith("thread-1");
+    // Status-bar copy is Ready/Working only; compaction never speaks there.
+    expect(context.onStatus).not.toHaveBeenCalledWith(expect.stringContaining("ompact"));
+  });
+
+  it("keeps a replayed boundary on one row and leaves the transcript intact", () => {
+    send({ type: "stream_event", event: { type: "message_start", message: { id: "message-1" } } });
+    send({
+      type: "stream_event",
+      event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Before" } },
+    });
+    useTaskStore.getState().flushDeltas();
+    const boundary = {
+      type: "system",
+      subtype: "compact_boundary",
+      uuid: "boundary-1",
+      compact_metadata: { trigger: "manual", pre_tokens: 900 },
+    };
+    send(boundary);
+    send(boundary);
+
+    const task = useTaskStore.getState().tasks["thread-1"];
+    expect(task.activities).toHaveLength(1);
+    expect(task.activities[0].detail).toBe("Claude Code · Manual · 900 tokens before");
+    expect(task.messages.map((message) => message.text)).toEqual(["Before"]);
+    expect(task.messages[0].timelineOrder!).toBeLessThan(task.activities[0].timelineOrder!);
+  });
+
   it("answers unknown control requests with an error instead of stalling", () => {
     send({
       type: "control_request",

@@ -9,7 +9,7 @@ vi.mock("@tauri-apps/api/core", () => ({
   isTauri: () => false,
 }));
 
-import { ActivityRow, ChatTimeline, CommandDisclosure, CompletedWorkDisclosure, FileDisclosure, ReasoningDisclosure, TIMELINE_MOUNT_ROWS, compactCompletedTurns, formatCompletedDuration, orderedTimelineEntries, type WorkItemEntry } from "./ChatTimeline";
+import { ActivityRow, ChatTimeline, CommandDisclosure, CompletedWorkDisclosure, ContextCompactionMarker, FileDisclosure, ReasoningDisclosure, TIMELINE_MOUNT_ROWS, compactCompletedTurns, formatCompletedDuration, orderedTimelineEntries, type WorkItemEntry } from "./ChatTimeline";
 import { timelineFromTurns } from "../lib/threadTimeline";
 
 /** Mirrors the shape of the old thread that exposed the production stall. */
@@ -419,6 +419,105 @@ describe("ChatTimeline", () => {
         { kind: "activity", value: { id: "reasoning" } },
       ],
     });
+  });
+
+  it("announces a running compaction and settles it when the provider finishes", () => {
+    const view = render(<ActivityRow activity={{
+      id: "compaction",
+      kind: "compaction",
+      title: "Compacting context",
+      status: "inProgress",
+    }} />);
+
+    expect(screen.getByRole("status", { name: "Compacting context" })).toHaveClass("context-compaction", "active");
+    expect(screen.getByText("Compacting context")).toBeInTheDocument();
+
+    view.rerender(<ActivityRow activity={{
+      id: "compaction",
+      kind: "compaction",
+      title: "Compacting context",
+      detail: "Claude Code · Automatic · 154K tokens before",
+      status: "completed",
+    }} />);
+
+    const settled = screen.getByRole("group", { name: /^Context compacted\./ });
+    expect(settled).toHaveClass("complete");
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.getByText("Claude Code · Automatic · 154K tokens before")).toBeInTheDocument();
+  });
+
+  it("re-reads the heading from status so a turn that died mid-compaction is honest", () => {
+    render(<ContextCompactionMarker activity={{
+      id: "compaction",
+      kind: "compaction",
+      // Written while the compaction was still running, then settled by the
+      // task store when the turn ended without a completion event.
+      title: "Compacting context",
+      status: "interrupted",
+    }} />);
+
+    expect(screen.getByText("Context compaction did not finish")).toBeInTheDocument();
+    expect(screen.queryByText("Compacting context")).not.toBeInTheDocument();
+  });
+
+  it("keeps the compaction seam visible while the work around it still compacts", () => {
+    const completed = { turnId: "turn-1", turnStatus: "completed" as const };
+    const entries = compactCompletedTurns(orderedTimelineEntries(
+      [
+        { id: "user", role: "user", text: "Keep going", timelineOrder: 1, ...completed },
+        { id: "final", role: "assistant", text: "Done.", timelineOrder: 6, ...completed },
+      ],
+      [
+        { id: "command-one", kind: "command", title: "npm test", timelineOrder: 2, ...completed },
+        { id: "compaction", kind: "compaction", title: "Context compacted", status: "completed", timelineOrder: 3, ...completed },
+        { id: "command-two", kind: "command", title: "npm build", timelineOrder: 4, ...completed },
+        { id: "file", kind: "file", title: "src/App.tsx", timelineOrder: 5, ...completed },
+      ],
+    ), false);
+
+    expect(entries.map((entry) => entry.kind)).toEqual(["message", "work", "activity", "work", "message"]);
+    expect(entries[2]).toMatchObject({ kind: "activity", value: { id: "compaction" } });
+    expect(entries[1]).toMatchObject({ kind: "work", value: [{ kind: "commands", value: [{ id: "command-one" }] }] });
+    expect(entries[3]).toMatchObject({
+      kind: "work",
+      value: [{ kind: "commands", value: [{ id: "command-two" }] }, { kind: "files", value: [{ id: "file" }] }],
+    });
+  });
+
+  it("keeps a restored compaction marker on screen after a history reload", () => {
+    const completed = { turnId: "turn-1", turnStatus: "completed" as const };
+    render(
+      <ChatTimeline
+        messages={[
+          { id: "user", role: "user", text: "Keep going", timelineOrder: 1, ...completed },
+          { id: "final", role: "assistant", text: "Done.", timelineOrder: 4, ...completed },
+        ]}
+        activities={[
+          { id: "command", kind: "command", title: "npm test", status: "completed", timelineOrder: 2, ...completed },
+          { id: "compaction", kind: "compaction", title: "Context compacted", status: "completed", timelineOrder: 3, ...completed },
+        ]}
+        running={false}
+        thinkingLabel="Thinking"
+      />,
+    );
+
+    expect(screen.getByRole("group", { name: "Context compacted" })).toBeInTheDocument();
+    expect(screen.getByText("Work completed")).toBeInTheDocument();
+    expect(screen.queryByText("npm test")).not.toBeInTheDocument();
+  });
+
+  it("lets the live compaction seam replace the generic thinking row", () => {
+    render(
+      <ChatTimeline
+        messages={[{ id: "user", role: "user", text: "Keep going", timelineOrder: 1, turnId: "turn-1" }]}
+        activities={[{ id: "compaction", kind: "compaction", title: "Compacting context", status: "inProgress", timelineOrder: 2, turnId: "turn-1" }]}
+        running
+        thinkingLabel="Thinking"
+      />,
+    );
+
+    expect(screen.getByRole("status", { name: "Compacting context" })).toBeInTheDocument();
+    expect(screen.queryByText("Thinking")).not.toBeInTheDocument();
   });
 
   it("renders a completed Cursor answer as Markdown after collapsed tool work", () => {

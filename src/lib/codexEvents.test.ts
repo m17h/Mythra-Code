@@ -6,6 +6,7 @@ import { openRouterReportedCost, usageTotals } from "./usageLedger";
 function makeContext(overrides: Partial<CodexEventContext> = {}): CodexEventContext {
   return {
     bindingFor: () => undefined,
+    providerFor: () => "openai",
     respond: vi.fn(async () => {}),
     audit: vi.fn(),
     onStatus: vi.fn(),
@@ -314,6 +315,62 @@ describe("routeCodexEvent", () => {
     const ctx = makeContext();
     routeCodexEvent({ method: "error", params: { threadId: "thread-e", error: { message: "Provider failed", code: 400 } } }, ctx);
     expect(useTaskStore.getState().tasks["thread-e"]?.activities[0]?.title).toBe("Provider failed");
+  });
+
+  it("keeps one animated compaction marker across the app-server item lifecycle", () => {
+    const ctx = makeContext();
+    routeCodexEvent({ method: "turn/started", params: { threadId: "thread-c", turn: { id: "turn-1" } } }, ctx);
+    routeCodexEvent({ method: "item/started", params: { threadId: "thread-c", item: { id: "compaction-1", type: "contextCompaction", status: "inProgress" } } }, ctx);
+
+    const live = useTaskStore.getState().tasks["thread-c"].activities;
+    expect(live).toHaveLength(1);
+    expect(live[0]).toMatchObject({
+      id: "compaction-1",
+      kind: "compaction",
+      title: "Compacting context",
+      detail: "Codex",
+      status: "inProgress",
+      turnId: "turn-1",
+    });
+
+    routeCodexEvent({ method: "item/completed", params: { threadId: "thread-c", item: { id: "compaction-1", type: "contextCompaction", status: "completed" } } }, ctx);
+
+    const settled = useTaskStore.getState().tasks["thread-c"].activities;
+    expect(settled).toHaveLength(1);
+    expect(settled[0]).toMatchObject({ id: "compaction-1", title: "Context compacted", status: "completed" });
+    expect(settled[0].timelineOrder).toBe(live[0].timelineOrder);
+  });
+
+  it.each(["openrouter", "lmstudio"] as const)("ignores compaction items for %s threads", (provider) => {
+    const ctx = makeContext({ providerFor: () => provider });
+    routeCodexEvent({ method: "item/started", params: { threadId: "thread-third-party", item: { id: "compaction-1", type: "contextCompaction" } } }, ctx);
+    routeCodexEvent({ method: "item/completed", params: { threadId: "thread-third-party", item: { id: "compaction-1", type: "contextCompaction" } } }, ctx);
+
+    expect(useTaskStore.getState().tasks["thread-third-party"]?.activities ?? []).toEqual([]);
+  });
+
+  it("settles a compaction whose completion still carries a stale in-progress body", () => {
+    const ctx = makeContext();
+    routeCodexEvent({ method: "item/started", params: { threadId: "thread-c", item: { id: "compaction-1", type: "contextCompaction" } } }, ctx);
+    routeCodexEvent({ method: "item/completed", params: { threadId: "thread-c", item: { id: "compaction-1", type: "contextCompaction", status: "inProgress" } } }, ctx);
+
+    expect(useTaskStore.getState().tasks["thread-c"].activities).toMatchObject([
+      { kind: "compaction", status: "completed", title: "Context compacted" },
+    ]);
+  });
+
+  it("places the compaction marker between the work on either side of it", () => {
+    const ctx = makeContext();
+    routeCodexEvent({ method: "turn/started", params: { threadId: "thread-c", turn: { id: "turn-1" } } }, ctx);
+    routeCodexEvent({ method: "item/completed", params: { threadId: "thread-c", item: { id: "cmd-1", type: "commandExecution", command: "ls", status: "completed" } } }, ctx);
+    routeCodexEvent({ method: "item/completed", params: { threadId: "thread-c", item: { id: "compaction-1", type: "contextCompaction", status: "completed" } } }, ctx);
+    routeCodexEvent({ method: "item/completed", params: { threadId: "thread-c", item: { id: "cmd-2", type: "commandExecution", command: "pwd", status: "completed" } } }, ctx);
+
+    const activities = useTaskStore.getState().tasks["thread-c"].activities;
+    expect(activities.map((activity) => activity.id)).toEqual(["cmd-1", "compaction-1", "cmd-2"]);
+    expect(activities[0].timelineOrder!).toBeLessThan(activities[1].timelineOrder!);
+    expect(activities[1].timelineOrder!).toBeLessThan(activities[2].timelineOrder!);
+    expect(ctx.onStatus).not.toHaveBeenCalledWith(expect.stringContaining("Compact"));
   });
 
   it("flags incompatible provider tool schemas for a runtime refresh", () => {
