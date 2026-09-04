@@ -49,21 +49,46 @@
 .github-clone-error { color: var(--red); overflow-wrap: anywhere; }
 /* Astra stays in the lazy Settings stylesheet: its real composer treatment is
    global, while this decorative card preview need not inflate startup CSS. */
+/* `isolation` keeps the rail's z-index: -1 ribbons above the card's own
+   background instead of letting them escape behind it. */
+.slider-style-preview.astra { isolation: isolate; }
 .slider-style-preview.astra::before {
   content: ""; position: absolute; inset: 3px 4px; z-index: 2; pointer-events: none;
   background: radial-gradient(circle at 12% 28%, #fff 0 1px, transparent 1.4px), radial-gradient(circle at 53% 78%, #75e7ff 0 1px, transparent 1.4px), radial-gradient(circle at 89% 22%, #ff8ee1 0 1px, transparent 1.4px);
   opacity: .58; animation: astra-twinkle 4.8s ease-in-out infinite alternate;
 }
+/* Same rule as the composer rail: the band's first and last stop match and the
+   drift covers exactly one tile (200% wide, so 0% -> 200% of the positioning
+   area is one whole tile), which is what keeps the loop from snapping. */
 .slider-style-preview.astra .slider-style-rail {
-  height: 6px; background: linear-gradient(105deg, #17418f, #4edfff 30%, #7c64ff 55%, #c855ee 76%, #ff78cf, #315bc3);
-  background-size: 240% 100%; box-shadow: 0 0 8px rgba(120,102,255,.62); animation: astra-preview-drift 7s linear infinite;
+  height: 6px; background: linear-gradient(105deg, #17418f 0%, #4edfff 30%, #7c64ff 55%, #c855ee 76%, #ff78cf 88%, #315bc3 95%, #17418f 100%);
+  background-size: 200% 100%; box-shadow: 0 0 8px rgba(120,102,255,.62); animation: astra-preview-drift 7s linear infinite;
 }
-@keyframes astra-preview-drift { to { background-position: 100% 50%; } }
+@keyframes astra-preview-drift { to { background-position: 200% 50%; } }
+/* One sine period across the 46px rail, mirrored half a tile away and drifting
+   the other way, so the card shows the same woven ribbons as the real slider. */
+.slider-style-preview.astra .slider-style-rail::before {
+  content: ""; position: absolute; inset: -6px 0; z-index: -1; pointer-events: none;
+  background-image:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 46 18' preserveAspectRatio='none'%3E%3ClinearGradient id='c'%3E%3Cstop offset='0' stop-color='%237ed6ff' stop-opacity='.18'/%3E%3Cstop offset='.5' stop-color='%237ed6ff' stop-opacity='.9'/%3E%3Cstop offset='1' stop-color='%237ed6ff' stop-opacity='.18'/%3E%3C/linearGradient%3E%3Cpath d='M0 9c7.67-7.33 15.33-7.33 23 0s15.33 7.33 23 0' fill='none' stroke='url(%23c)' stroke-width='1.4'/%3E%3C/svg%3E"),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 46 18' preserveAspectRatio='none'%3E%3ClinearGradient id='v'%3E%3Cstop offset='0' stop-color='%23c68cff' stop-opacity='.16'/%3E%3Cstop offset='.5' stop-color='%23c68cff' stop-opacity='.82'/%3E%3Cstop offset='1' stop-color='%23c68cff' stop-opacity='.16'/%3E%3C/linearGradient%3E%3Cpath d='M0 9c7.67-7.33 15.33-7.33 23 0s15.33 7.33 23 0' fill='none' stroke='url(%23v)' stroke-width='1.4'/%3E%3C/svg%3E");
+  background-size: 46px 100%;
+  background-position: 0 50%, 23px 50%;
+  background-repeat: repeat-x;
+  /* Stops at the card's thumb, which sits at 70% of the 58px card and so 75%
+     of the 46px rail — the same "only as far as the setting" rule as the real
+     slider, with the card's fixed geometry resolved up front. */
+  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 6px, #000 58%, transparent 75%);
+  mask-image: linear-gradient(90deg, transparent 0, #000 6px, #000 58%, transparent 75%);
+  animation: astra-preview-wave 7s linear infinite;
+}
+@keyframes astra-preview-wave { to { background-position: 46px 50%, -23px 50%; } }
 .slider-style-preview.astra .slider-style-thumb {
   left: 70%; z-index: 3; width: 12px; height: 12px; border: 0; border-radius: 0;
   clip-path: polygon(50% 0, 61% 36%, 100% 50%, 61% 64%, 50% 100%, 39% 64%, 0 50%, 39% 36%);
   background: radial-gradient(circle, #fff 0 24%, #bcefff 36%, #916cff 72%); filter: drop-shadow(0 0 4px #8d7bff);
 }
 @media (prefers-reduced-motion: reduce) {
-  .slider-style-preview.astra::before, .slider-style-preview.astra .slider-style-rail { animation: none; }
+  .slider-style-preview.astra::before, .slider-style-preview.astra .slider-style-rail,
+  .slider-style-preview.astra .slider-style-rail::before { animation: none; }
 }

@@ -200,7 +200,7 @@ export function EffortSlider({
   return (
     <div
       ref={railRef}
-      className={`${railClass} ${dragging ? "dragging" : ""} ${disabled ? "disabled" : ""}`}
+      className={`${railClass} ${fill <= 0 ? "empty" : ""} ${dragging ? "dragging" : ""} ${disabled ? "disabled" : ""}`}
       style={{ "--reasoning-fill": `${fill}%`, "--effort-heat": String(heat), "--effort-color": paletteColorAt(EFFORT_COLORS, heat) } as CSSProperties}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}

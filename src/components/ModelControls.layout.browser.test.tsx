@@ -334,9 +334,12 @@ describe("model control browser layout", () => {
     expect(pixelsOf(end[2]) - pixelsOf(start[2])).toBeCloseTo(tile, 1);
   });
 
-  // The first pass drew both ribbons with `closest-side` ellipses anchored on an
-  // edge, which resolves to a zero radius: two layers that painted nothing.
-  it("weaves two visible Astra ribbons above and below the bar, drifting right", () => {
+  // A ribbon has to read as one continuous line threading through the bar. The
+  // earlier passes drew it as a row of tiled ellipses — first with `closest-side`
+  // radii anchored on an edge, which resolve to zero and painted nothing, then
+  // as visible blobs. It is now a stroked sine path, so the checks here are
+  // about that curve looping and weaving rather than about blob geometry.
+  it("threads two counter-drifting Astra sine ribbons through the bar", () => {
     const view = renderStyle("astra", "high");
     const rail = view.container.querySelector<HTMLElement>(".reasoning-rail")!;
     const ticks = view.container.querySelector<HTMLElement>(".reasoning-ticks")!;
@@ -346,34 +349,136 @@ describe("model control browser layout", () => {
 
     expect(layers).toHaveLength(2);
     for (const layer of layers) {
-      expect(layer).toContain("radial-gradient");
-      expect(layer).not.toContain("closest-side");
-      // Explicit, non-zero ellipse radii, so each ribbon actually has a body.
-      const [radiusX, radiusY] = layer.match(/(-?[\d.]+)px\s+(-?[\d.]+)px\s+at/)!.slice(1).map(Number);
-      expect(radiusX).toBeGreaterThan(0);
-      expect(radiusY).toBeGreaterThan(0);
-      // Translucent, but well clear of invisible.
-      expect(Number(layer.match(/rgba\([^)]*?,\s*([\d.]+)\)/)![1])).toBeGreaterThan(0.4);
+      // Decoding first means the assertions hold whether or not the engine
+      // percent-encodes the markup's quotes when it serializes the url().
+      const svg = decodeURIComponent(layer);
+      expect(svg).toContain("image/svg+xml");
+      expect(svg).not.toContain("radial-gradient");
+      // A stroked open curve, not a filled shape.
+      expect(svg).toContain("fill='none'");
+      expect(svg).toMatch(/stroke-width='[\d.]+'/);
+
+      // One full period per tile: starts and ends on the same midline, and the
+      // trailing `s` command mirrors the leading curve, so the slope matches
+      // across the seam too. Both are needed for the wave not to kink.
+      expect(svg).toContain("d='M0 13c14-10.67 28-10.67 42 0s28 10.67 42 0'");
+      // A round cap would bulge past the tile edge and into its neighbour.
+      expect(svg).not.toContain("stroke-linecap");
+
+      // The stroke fades in and back out along the tile; matching end stops are
+      // what keep that fade from showing a hard edge every tile width.
+      const opacities = [...svg.matchAll(/stop-opacity='([\d.]+)'/g)].map((match) => Number(match[1]));
+      expect(opacities).toHaveLength(3);
+      expect(opacities[0]).toBeCloseTo(opacities[2], 5);
+      expect(opacities[1]).toBeGreaterThan(opacities[0]);
+      expect(opacities[1]).toBeGreaterThan(0.5);
     }
-    // One crests above the 6px bar, the other below it.
-    expect(layers[0]).toMatch(/at 50% 2[0-9](\.\d+)?%/);
-    expect(layers[1]).toMatch(/at 50% 7[0-9](\.\d+)?%/);
+
+    // The wave has to break clear of the 6px bar on both sides, or the ribbon is
+    // hidden behind it and never reads as passing through.
     expect(pixelsOf(ribbons.height)).toBeGreaterThan(rail.getBoundingClientRect().height);
     expect(pixelsOf(ribbons.top)).toBeLessThan(0);
     expect(pixelsOf(ribbons.bottom)).toBeLessThan(0);
     expect(Number(ribbons.opacity)).toBeGreaterThan(0.5);
     expect(ribbons.pointerEvents).toBe("none");
+    // Behind the bar: the weave is the bar occluding the curve mid-crossing.
+    expect(Number(ribbons.zIndex)).toBeLessThan(0);
 
-    // Opaque at the left, dissolved before the right edge.
-    const maskStops = ribbons.maskImage.match(/rgba?\([^)]*\)\s+[\d.]+%/g)!;
-    expect(maskStops[0]).toContain("rgb(0, 0, 0)");
-    expect(maskStops.at(-1)).toContain("rgba(0, 0, 0, 0)");
+    // Emerges from nothing and dissolves again, so neither end is cut off flat.
+    expect(ribbons.maskImage).toMatch(/^linear-gradient\(90deg, rgba\(0, 0, 0, 0\) 0px/);
+    expect(ribbons.maskImage).toContain("rgb(0, 0, 0)");
 
+    // Half a tile apart, so where one crests above the bar the other troughs below.
     const { start, end } = cycleTravel(ticks, "astra-wave", "::after");
-    expect(pixelsOf(end[0]) - pixelsOf(start[0])).toBeCloseTo(ribbonTile, 1);
-    expect(pixelsOf(end[1]) - pixelsOf(start[1])).toBeCloseTo(ribbonTile, 1);
-    // Half a tile apart, so the crests alternate instead of stacking.
     expect(pixelsOf(start[1]) - pixelsOf(start[0])).toBeCloseTo(ribbonTile / 2, 1);
+    // Exactly one tile each, in opposite directions: the crossings migrate along
+    // the rail instead of the pair sliding as one sheet, and neither snaps.
+    expect(pixelsOf(end[0]) - pixelsOf(start[0])).toBeCloseTo(ribbonTile, 1);
+    expect(pixelsOf(end[1]) - pixelsOf(start[1])).toBeCloseTo(-ribbonTile, 1);
+  });
+
+  // The ribbons are the rail's decoration, so they have to describe the chosen
+  // effort rather than the whole track: before this they ran the full width and
+  // kept weaving across the unfilled remainder, past the thumb.
+  it.each(["low", "high", "max"] as const)("runs the Astra ribbons only as far as %s effort reaches", (effort) => {
+    const view = renderStyle("astra", effort);
+    const control = view.container.querySelector<HTMLElement>(".model-power-control")!;
+    const ticks = view.container.querySelector<HTMLElement>(".reasoning-ticks")!;
+    const fill = getComputedStyle(control).getPropertyValue("--reasoning-fill").trim();
+    const mask = getComputedStyle(ticks, "::after").maskImage;
+
+    // The final stop is fully transparent and sits exactly at the fill point,
+    // which is the same value the colored part of the bar stops at.
+    expect(mask.endsWith(`rgba(0, 0, 0, 0) ${fill})`)).toBe(true);
+    view.unmount();
+  });
+
+  // Light effort fills none of the bar, so there is nothing for a ribbon to
+  // decorate. WebKit does not consistently clamp the mixed-unit `min()` mask
+  // stop to zero, so the rail's explicit empty state must hide any fallback
+  // stub regardless of how that engine serializes the mask.
+  it("hides the Astra ribbons entirely at the lowest effort", () => {
+    const view = renderStyle("astra", "low");
+    const rail = view.container.querySelector<HTMLElement>(".reasoning-rail")!;
+    const ticks = view.container.querySelector<HTMLElement>(".reasoning-ticks")!;
+    const ribbons = getComputedStyle(ticks, "::after");
+
+    expect(rail).toHaveClass("empty");
+    expect(Number(ribbons.opacity)).toBe(0);
+  });
+
+  // Changing animation-duration does not ease an animation's speed: elapsed time
+  // is kept and progress is recomputed against the new duration, so the drift
+  // lands on a different phase, by an amount that grows with
+  // floor(elapsed / duration). The rail republishes --effort-heat on every
+  // pointer frame of a drag and again on every effort change, so a heat-derived
+  // duration was re-timed constantly — measured on a two-minute-old rail, it
+  // threw the nebula 371px in the single frame the thumb was grabbed.
+  it("never re-times Astra's drift, whatever the effort or drag state", () => {
+    const view = renderStyle("astra", "high");
+    const rail = view.container.querySelector<HTMLElement>(".reasoning-rail")!;
+    const track = view.container.querySelector<HTMLElement>(".reasoning-control input[type='range']")!;
+    const ticks = view.container.querySelector<HTMLElement>(".reasoning-ticks")!;
+
+    const durationsAt = (heat: string) => {
+      rail.style.setProperty("--effort-heat", heat);
+      return [
+        getComputedStyle(track).animationDuration,
+        getComputedStyle(ticks, "::after").animationDuration,
+        getComputedStyle(rail, "::before").animationDuration,
+      ].join(" ");
+    };
+
+    // No amount of effort may reach a duration, at rest or mid-drag. Heat still
+    // drives color, glow and reach — just never the clock.
+    const resting = durationsAt("0");
+    expect(durationsAt("0.5")).toBe(resting);
+    expect(durationsAt("1")).toBe(resting);
+    rail.classList.add("dragging");
+    expect(durationsAt("0")).toBe(resting);
+    expect(durationsAt("1")).toBe(resting);
+  });
+
+  // Holding the drift still is the one way to slow it without re-phasing it:
+  // play-state keeps the animation's current time, so pause and resume are both
+  // seamless, which a duration change can never be.
+  it("holds Astra's drift still while dragging but keeps the star field breathing", () => {
+    const view = renderStyle("astra", "high");
+    const rail = view.container.querySelector<HTMLElement>(".reasoning-rail")!;
+    const track = view.container.querySelector<HTMLElement>(".reasoning-control input[type='range']")!;
+    const ticks = view.container.querySelector<HTMLElement>(".reasoning-ticks")!;
+
+    const state = () => ({
+      nebula: getComputedStyle(track).animationPlayState,
+      ribbons: getComputedStyle(ticks, "::after").animationPlayState,
+      stars: getComputedStyle(rail, "::before").animationPlayState,
+    });
+
+    expect(state()).toEqual({ nebula: "running", ribbons: "running", stars: "running" });
+    rail.classList.add("dragging");
+    expect(state()).toEqual({ nebula: "paused", ribbons: "paused", stars: "running" });
+    rail.classList.remove("dragging");
+    expect(state()).toEqual({ nebula: "running", ribbons: "running", stars: "running" });
   });
 
   const renderModel = (model: string) =>
@@ -405,6 +510,18 @@ describe("model control browser layout", () => {
       const y = pixelsOf(style.getPropertyValue("--star-y"));
       expect(Math.hypot(x, y)).toBeGreaterThan(8);
       directions.add(`${Math.sign(x)}:${Math.sign(y)}`);
+
+      // The spark itself lives on the ::before, twinkling on its own timer while
+      // the parent carries it outward. Without both it degrades to the flat
+      // unlit dot this replaced.
+      const spark = getComputedStyle(star, "::before");
+      expect(spark.animationName).toMatch(/^astra-orb-twinkle/);
+      expect(spark.animationName).not.toBe(style.animationName);
+      expect(Number.parseFloat(spark.animationDuration)).toBeGreaterThan(0);
+      // A glow that follows the clipped star, not a box-shadow the clip erases.
+      expect(spark.filter).toContain("drop-shadow");
+      expect(spark.boxShadow).toBe("none");
+      expect(spark.clipPath).toContain("polygon");
     }
     // Emitted outward in genuinely different directions, not one shared vector.
     expect(directions.size).toBeGreaterThanOrEqual(4);
@@ -451,7 +568,8 @@ describe("model control browser layout", () => {
     expect(ribbons.animationName).toBe("none");
     expect(ribbons.pointerEvents).toBe("none");
     // The ribbons keep their shape and color while standing still.
-    expect(ribbons.backgroundImage.match(/radial-gradient/g)).toHaveLength(2);
+    expect(splitLayers(ribbons.backgroundImage)).toHaveLength(2);
+    expect(ribbons.backgroundImage.match(/image\/svg\+xml/g)).toHaveLength(2);
     expect(Number(ribbons.opacity)).toBeGreaterThan(0.5);
 
     // The trigger's stars stop drifting, and stop at their invisible rest state
@@ -460,6 +578,8 @@ describe("model control browser layout", () => {
     for (const star of model.container.querySelectorAll<HTMLElement>(".model-orb-stars i")) {
       expect(getComputedStyle(star).animationName).toBe("none");
       expect(Number(getComputedStyle(star).opacity)).toBe(0);
+      // The twinkle has to stop too, or every spark sits pulsing in place.
+      expect(getComputedStyle(star, "::before").animationName).toBe("none");
     }
     model.unmount();
 
