@@ -414,15 +414,17 @@ describe("model control browser layout", () => {
   });
 
   // Light effort fills none of the bar, so there is nothing for a ribbon to
-  // decorate: the mask has to collapse rather than leave a stub at the far left.
+  // decorate. WebKit does not consistently clamp the mixed-unit `min()` mask
+  // stop to zero, so the rail's explicit empty state must hide any fallback
+  // stub regardless of how that engine serializes the mask.
   it("hides the Astra ribbons entirely at the lowest effort", () => {
     const view = renderStyle("astra", "low");
+    const rail = view.container.querySelector<HTMLElement>(".reasoning-rail")!;
     const ticks = view.container.querySelector<HTMLElement>(".reasoning-ticks")!;
-    const stops = getComputedStyle(ticks, "::after").maskImage.match(/\d+(?:\.\d+)?(?:px|%)(?=[,)])/g)!;
+    const ribbons = getComputedStyle(ticks, "::after");
 
-    expect(stops.length).toBeGreaterThanOrEqual(2);
-    // Every stop collapsed onto the origin, so no band of the mask is opaque.
-    for (const stop of stops) expect(Number.parseFloat(stop)).toBe(0);
+    expect(rail).toHaveClass("empty");
+    expect(Number(ribbons.opacity)).toBe(0);
   });
 
   // Changing animation-duration does not ease an animation's speed: elapsed time

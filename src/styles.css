@@ -3381,8 +3381,16 @@ body[data-pane-resizing] .sidebar, body[data-pane-resizing] .studio-dock { trans
      negative offset. */
   -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 min(10px, var(--astra-fill)), #000 max(0px, calc(var(--astra-fill) - 16px)), transparent var(--astra-fill));
   mask-image: linear-gradient(90deg, transparent 0, #000 min(10px, var(--astra-fill)), #000 max(0px, calc(var(--astra-fill) - 16px)), transparent var(--astra-fill));
+  opacity: .95;
+  transition: opacity 180ms ease;
   animation: astra-wave var(--astra-cycle, 10s) linear infinite;
 }
+/* WebKit 26 and older Safari releases do not consistently clamp a mixed
+   length/percentage `min()` stop when the fill is exactly zero. The rail owns
+   the authoritative visual position, so its explicit empty state guarantees
+   that the fallback 10px stop never leaves a visible ribbon stub. */
+.app-shell[data-effort-slider="astra"] .reasoning-rail.empty .reasoning-ticks::after,
+.app-shell[data-effort-slider="astra"] .openrouter-reasoning-rail.empty .openrouter-reasoning-ticks::after { opacity: 0; }
 /* One tile forward, one tile back — both exact, so neither ribbon snaps. */
 @keyframes astra-wave {
   to { background-position: var(--astra-ribbon-tile) 50%, var(--astra-ribbon-back) 50%; }
