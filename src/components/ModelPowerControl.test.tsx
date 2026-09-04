@@ -67,7 +67,7 @@ describe("ModelPowerControl runtime catalog", () => {
     isDefault: false,
   });
 
-  // Availability is whatever `model/list` says; Mythra Code's three named
+  // Availability is whatever `model/list` says; Mythra Code's named
   // tiers only supply artwork when a runtime model happens to match one.
   it("lists every model the account reported, not just the named tiers", () => {
     render(
@@ -102,6 +102,7 @@ describe("ModelPowerControl runtime catalog", () => {
             runtimeModel("gpt-5.6-sol", "Sol"),
             runtimeModel("gpt-5.6-terra", "Terra"),
             runtimeModel("gpt-5.6-luna", "Luna"),
+            runtimeModel("gpt-6-astra", "Astra"),
             runtimeModel("gpt-6-research", "Research preview"),
           ]}
           onModel={vi.fn()}
@@ -117,9 +118,10 @@ describe("ModelPowerControl runtime catalog", () => {
     expect(screen.getByRole("menuitemradio", { name: /Sol/ }).querySelector(".openai-logo-choice")).not.toBeInTheDocument();
     expect(screen.getByRole("menuitemradio", { name: /Terra/ }).querySelector(".openai-logo-choice")).not.toBeInTheDocument();
     expect(screen.getByRole("menuitemradio", { name: /Luna/ }).querySelector(".openai-logo-choice")).not.toBeInTheDocument();
+    expect(screen.getByRole("menuitemradio", { name: /Astra/ }).querySelector(".openai-logo-choice")).not.toBeInTheDocument();
   });
 
-  it("uses the generated artwork for Sol, Terra, and Luna only", () => {
+  it("uses generated artwork for Sol, Terra, Luna, and Astra only", () => {
     const { container } = render(
       <ModelPowerControl
         model="gpt-5.6-sol"
@@ -129,6 +131,7 @@ describe("ModelPowerControl runtime catalog", () => {
           runtimeModel("gpt-5.6-sol", "Sol"),
           runtimeModel("gpt-5.6-terra", "Terra"),
           runtimeModel("gpt-5.6-luna", "Luna"),
+          runtimeModel("gpt-6-astra", "Astra"),
           runtimeModel("gpt-6-research", "Research preview"),
         ]}
         onModel={vi.fn()}
@@ -141,6 +144,7 @@ describe("ModelPowerControl runtime catalog", () => {
     fireEvent.click(screen.getByRole("button", { name: /OpenAI model: Sol/i }));
     expect(screen.getByRole("menuitemradio", { name: /Terra/ }).querySelector<HTMLImageElement>("img")?.src).toContain("/model-icons/terra.png");
     expect(screen.getByRole("menuitemradio", { name: /Luna/ }).querySelector<HTMLImageElement>("img")?.src).toContain("/model-icons/luna.png");
+    expect(screen.getByRole("menuitemradio", { name: /Astra/ }).querySelector<HTMLImageElement>("img")?.src).toContain("/model-icons/astra.png");
     expect(screen.getByRole("menuitemradio", { name: /Research preview/ }).querySelector("img")).not.toBeInTheDocument();
   });
 
@@ -165,8 +169,9 @@ describe("ModelPowerControl runtime catalog", () => {
   it("falls back to the built-in tiers when the runtime reports nothing", () => {
     render(<ModelPowerControl model="gpt-5.6-sol" effort="medium" fast={false} runtimeModels={[]} onModel={vi.fn()} onEffort={vi.fn()} onFast={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: /OpenAI model: Sol/i }));
-    expect(screen.getAllByRole("menuitemradio")).toHaveLength(3);
+    expect(screen.getAllByRole("menuitemradio")).toHaveLength(4);
     expect(screen.getByRole("menuitemradio", { name: /Luna/ })).toBeInTheDocument();
+    expect(screen.getByRole("menuitemradio", { name: /Astra/ })).toBeInTheDocument();
   });
 
   it("keeps a saved model the runtime no longer lists", () => {

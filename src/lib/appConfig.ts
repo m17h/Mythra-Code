@@ -36,6 +36,7 @@ export function themeColorScheme(theme: ThemeName): "light" | "dark" {
 
 export const EFFORT_SLIDER_STYLES: Array<{ id: EffortSliderStyle; name: string; description: string }> = [
   { id: "aurora", name: "Aurora", description: "A slow drift of northern-light pastels" },
+  { id: "astra", name: "Astra", description: "A living nebula with gentle starlight" },
   { id: "spectrum", name: "Spectrum", description: "Heat colors per level, sparks, and a burning Max" },
   { id: "classic", name: "Classic", description: "The original quiet accent-colored rail" },
   { id: "neon", name: "Neon", description: "Your model's accent, glowing hotter with effort" },

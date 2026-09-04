@@ -7,7 +7,7 @@ export type ClaudeLogoStyle = "claude" | "anthropic";
 export type CursorLogoStyle = "cube" | "app-dark";
 export type PermissionMode = "read-only" | "ask" | "full";
 export type ThemeName = "mythra" | "light-mythra" | "kiwi" | "daylight" | "midnight" | "synthwave";
-export type EffortSliderStyle = "spectrum" | "classic" | "neon" | "pixel" | "aurora" | "ink" | "tide" | "dart" | "coil";
+export type EffortSliderStyle = "spectrum" | "classic" | "neon" | "pixel" | "aurora" | "astra" | "ink" | "tide" | "dart" | "coil";
 /** Typeface family used for chat prose and the composer. Built-in stacks only. */
 export type ChatFont = "system" | "humanist" | "serif" | "mono";
 export type WorkspaceMode = "chat" | "project";

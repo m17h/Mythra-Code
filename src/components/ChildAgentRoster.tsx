@@ -27,6 +27,7 @@ export interface ChildAgentModelOption {
 
 const BUILTIN_MODEL_CATALOGS: Record<Provider, ChildAgentModelOption[]> = {
   openai: [
+    { id: "gpt-6-astra", label: "Astra", detail: "gpt-6-astra · frontier intelligence" },
     { id: "gpt-5.6-sol", label: "Sol", detail: "gpt-5.6-sol · detail & polish" },
     { id: "gpt-5.6-terra", label: "Terra", detail: "gpt-5.6-terra · everyday power" },
     { id: "gpt-5.6-luna", label: "Luna", detail: "gpt-5.6-luna · fast & focused" },

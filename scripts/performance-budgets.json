@@ -183,20 +183,26 @@
       "decision": "Accept 797 Safari / 760 Chrome startup and total JavaScript bytes to recover a result-only final answer when possible and otherwise preserve a visible failed-turn diagnostic instead of silently reporting completion. The check is constant-time at the existing result boundary using current-turn task metadata and the final timeline entries; it adds no transcript scans, streaming-path work, retries, dependencies, provider requests, polling, timers or CSS. Avoiding automatic retry prevents duplicate tool side effects. This is reviewed correctness overhead, not an efficiency claim. Exact measured limits without extra headroom.",
       "safari13": { "appEntryFromBytes": 354331, "appEntryToBytes": 355128, "appEntryDeltaBytes": 797, "startupJsFromBytes": 715981, "startupJsToBytes": 716778, "startupJsDeltaBytes": 797, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1467541, "totalJsToBytes": 1468338, "totalJsDeltaBytes": 797 },
       "chrome105": { "appEntryFromBytes": 336256, "appEntryToBytes": 337016, "appEntryDeltaBytes": 760, "startupJsFromBytes": 690721, "startupJsToBytes": 691481, "startupJsDeltaBytes": 760, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1432297, "totalJsToBytes": 1433057, "totalJsDeltaBytes": 760 }
+    },
+    {
+      "change": "Add GPT-6 Astra identity and an animated astral effort slider",
+      "decision": "Accept 382 Safari / Chrome startup JavaScript bytes and 8,072 Safari / 7,869 Chrome startup CSS bytes for Astra's live-catalog identity, generated transparent model artwork, sub-agent fallbacks, five-level palette, drifting nebula, sparse star field, masked two-ribbon astral swell, star thumb, light-theme contrast and complete reduced-motion treatment. The 32 KB icon is a static asset rather than bundled startup code. Settings-only preview CSS remains in the existing lazy Settings stylesheet. Animation is selected-style-only CSS with no JavaScript timers, per-frame React state, canvas, dependencies, provider work, thread data or persistence cost; all decorative layers ignore pointer input. This is reviewed visual-feature overhead, not an efficiency claim. Exact measured limits without extra headroom.",
+      "safari13": { "appEntryFromBytes": 355128, "appEntryToBytes": 355207, "appEntryDeltaBytes": 79, "startupJsFromBytes": 716778, "startupJsToBytes": 717160, "startupJsDeltaBytes": 382, "startupCssFromBytes": 340471, "startupCssToBytes": 348543, "startupCssDeltaBytes": 8072, "totalJsFromBytes": 1468338, "totalJsToBytes": 1468799, "totalJsDeltaBytes": 461 },
+      "chrome105": { "appEntryFromBytes": 337016, "appEntryToBytes": 337095, "appEntryDeltaBytes": 79, "startupJsFromBytes": 691481, "startupJsToBytes": 691863, "startupJsDeltaBytes": 382, "startupCssFromBytes": 338348, "startupCssToBytes": 346217, "startupCssDeltaBytes": 7869, "totalJsFromBytes": 1433057, "totalJsToBytes": 1433518, "totalJsDeltaBytes": 461 }
     }
   ],
   "profiles": {
     "safari13-minified": {
-      "appEntryRawBytes": 355128,
-      "startupJsRawBytes": 716778,
-      "startupCssRawBytes": 340471,
-      "totalJsRawBytes": 1468338
+      "appEntryRawBytes": 355207,
+      "startupJsRawBytes": 717160,
+      "startupCssRawBytes": 348543,
+      "totalJsRawBytes": 1468799
     },
     "chrome105-minified": {
-      "appEntryRawBytes": 337016,
-      "startupJsRawBytes": 691481,
-      "startupCssRawBytes": 338348,
-      "totalJsRawBytes": 1433057
+      "appEntryRawBytes": 337095,
+      "startupJsRawBytes": 691863,
+      "startupCssRawBytes": 346217,
+      "totalJsRawBytes": 1433518
     }
   }
 }

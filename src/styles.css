@@ -191,9 +191,11 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .app-shell[data-color-scheme="light"] .model-power-control { --model-accent: #b06b1e; }
 .app-shell[data-color-scheme="light"] .model-power-control.terra { --model-accent: #3e8e22; }
 .app-shell[data-color-scheme="light"] .model-power-control.luna { --model-accent: #1668a8; }
+.app-shell[data-color-scheme="light"] .model-power-control.astra { --model-accent: #6847c7; }
 .app-shell[data-color-scheme="light"] .model-menu-option.sol { --option-accent: #b06b1e; }
 .app-shell[data-color-scheme="light"] .model-menu-option.terra { --option-accent: #3e8e22; }
 .app-shell[data-color-scheme="light"] .model-menu-option.luna { --option-accent: #1668a8; }
+.app-shell[data-color-scheme="light"] .model-menu-option.astra { --option-accent: #6847c7; }
 .app-shell[data-color-scheme="light"] .openrouter-control { --router-accent: #7624f4; }
 .app-shell[data-color-scheme="light"] .openrouter-control.lmstudio-control { --router-accent: #16856c; }
 .app-shell[data-color-scheme="light"] .openrouter-control.claude-control { --router-accent: #b75f42; }
@@ -1891,6 +1893,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .model-power-control { --model-accent: #e0a066; --reasoning-fill: 0%; position: relative; z-index: 8; display: grid; grid-template-columns: minmax(125px, .54fr) minmax(150px, .54fr) minmax(245px, .92fr); gap: var(--s-3); align-items: center; margin: 0 10px var(--s-1); padding: var(--s-2); overflow: visible; border: 1px solid var(--line); border-radius: var(--r-lg); background: rgba(255,255,255,.014); box-shadow: none; transition: border-color 220ms ease, background 220ms ease; }
 .model-power-control.terra { --model-accent: #a6df72; }
 .model-power-control.luna { --model-accent: #86cdf7; }
+.model-power-control.astra { --model-accent: #a88cff; }
 .model-picker { position: relative; z-index: 4; min-width: 0; }
 .model-picker-trigger { width: 100%; height: 46px; display: grid; grid-template-columns: 26px minmax(0,1fr) 16px; align-items: center; gap: var(--s-2); padding: 0 10px; border: 1px solid var(--line); border-radius: var(--r-md); color: var(--text); background: var(--field); box-shadow: none; cursor: pointer; text-align: left; transition: border-color var(--t-mid) ease, background var(--t-mid) ease; }
 .model-picker-trigger:hover:not(:disabled), .menu-open .model-picker-trigger { border-color: color-mix(in srgb, var(--model-accent) 34%, var(--line-strong)); background: color-mix(in srgb, var(--model-accent) 5%, var(--field)); }
@@ -1919,6 +1922,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .model-menu-option.luna { --option-accent: #86cdf7; }
 .model-menu-option.terra { --option-accent: #a6df72; }
 .model-menu-option.sol { --option-accent: #e0a066; }
+.model-menu-option.astra { --option-accent: #a88cff; }
 .model-menu-option:hover:not(:disabled) { color: var(--ink-2); background: rgba(255,255,255,.05); }
 .model-menu-option.selected { color: var(--text); background: rgba(255,255,255,.062); }
 .model-menu-option:disabled { opacity: .3; cursor: default; }
@@ -3089,7 +3093,7 @@ body[data-pane-resizing] .sidebar, body[data-pane-resizing] .studio-dock { trans
 .app-shell[data-effort-slider="classic"] .effort-max .openrouter-reasoning-rail::after { display: none; }
 
 /* -- Neon: the active model's accent, glowing hotter with effort.
-   Codex reads --model-accent (Sol/Terra/Luna), the other providers read
+   Codex reads --model-accent (Sol/Terra/Luna/Astra), the other providers read
    their control's --router-accent — same source Classic uses. -- */
 .app-shell[data-effort-slider="neon"] .reasoning-control input[type="range"] {
   background:
@@ -3185,6 +3189,91 @@ body[data-pane-resizing] .sidebar, body[data-pane-resizing] .studio-dock { trans
 .app-shell[data-effort-slider="aurora"] .effort-max .reasoning-heading strong, .app-shell[data-effort-slider="aurora"] .effort-max .openrouter-reasoning-heading strong { animation: effort-pop 280ms var(--ease); text-shadow: 0 0 16px #ff8cd1; }
 .app-shell[data-color-scheme="light"][data-effort-slider="aurora"] .reasoning-heading strong, .app-shell[data-color-scheme="light"][data-effort-slider="aurora"] .openrouter-reasoning-heading strong,
 .app-shell[data-color-scheme="light"][data-effort-slider="aurora"] .reasoning-labels span.active, .app-shell[data-color-scheme="light"][data-effort-slider="aurora"] .openrouter-reasoning-labels span.active { color: #7d5bd6; }
+
+/* -- Astra: a calm living galaxy. A slow nebula drifts inside the rail while
+   a sparse star field breathes above it; both stay confined to the tiny rail and
+   never alter the slider's hit target or layout. -- */
+.app-shell[data-effort-slider="astra"] .reasoning-rail, .app-shell[data-effort-slider="astra"] .openrouter-reasoning-rail {
+  --astra-cycle: calc(10s - var(--effort-heat, 0) * 2.5s);
+  --astra-twinkle: calc(5.8s - var(--effort-heat, 0) * 1.2s);
+}
+.app-shell[data-effort-slider="astra"] .reasoning-control input[type="range"], .app-shell[data-effort-slider="astra"] .openrouter-reasoning input[type="range"] {
+  height: 6px;
+  background:
+    linear-gradient(var(--panel-3), var(--panel-3)) no-repeat right center,
+    radial-gradient(circle at 24% 50%, rgba(255,255,255,.8) 0 1px, transparent 1.8px),
+    linear-gradient(105deg, #133986 0%, #2e78de 20%, #4edfff 35%, #7564ff 52%, #b44ff1 70%, #f86fd0 84%, #355ec5 100%);
+  background-size: calc(100% - var(--reasoning-fill, var(--router-fill, 0%))) 100%, 90px 100%, 260% 100%;
+  background-position: right center, 0 50%, 0 50%;
+  box-shadow: 0 0 calc(4px + var(--effort-heat, 0) * 8px) rgba(105, 108, 255, .48), inset 0 0 3px rgba(255,255,255,.44);
+  animation: astra-nebula var(--astra-cycle) linear infinite;
+}
+@keyframes astra-nebula {
+  to { background-position: right center, 90px 50%, 100% 50%; }
+}
+.app-shell[data-effort-slider="astra"] .reasoning-rail::before, .app-shell[data-effort-slider="astra"] .openrouter-reasoning-rail::before {
+  content: ""; position: absolute; inset: -5px 3px; z-index: 0; width: auto; height: auto; transform: none; border-radius: 0;
+  background:
+    radial-gradient(circle at 8% 62%, rgba(255,255,255,.8) 0 1px, transparent 1.8px),
+    radial-gradient(circle at 31% 22%, rgba(98,224,255,.82) 0 1px, transparent 1.7px),
+    radial-gradient(circle at 57% 76%, rgba(211,171,255,.84) 0 1px, transparent 1.8px),
+    radial-gradient(circle at 79% 28%, rgba(255,255,255,.72) 0 1px, transparent 1.7px),
+    radial-gradient(circle at 94% 69%, rgba(255,126,219,.76) 0 1px, transparent 1.8px);
+  opacity: .34; pointer-events: none;
+  animation: astra-twinkle var(--astra-twinkle) ease-in-out infinite alternate;
+}
+/* Two translucent astral ribbons orbit the rail in opposite phases. The mask
+   lets the swell bloom gently, then dissolve before the far edge. */
+.app-shell[data-effort-slider="astra"] .reasoning-ticks::after, .app-shell[data-effort-slider="astra"] .openrouter-reasoning-ticks::after {
+  content: ""; position: absolute; inset: -5px -2px; z-index: -1; opacity: .5; filter: blur(1.5px); mix-blend-mode: screen; pointer-events: none;
+  background:
+    radial-gradient(closest-side ellipse at 50% 100%, rgba(126,214,255,.5), transparent 78%) 0 20% / 46px 62% repeat-x,
+    radial-gradient(closest-side ellipse at 50% 0, rgba(198,140,255,.42), transparent 78%) 23px 80% / 46px 62% repeat-x;
+  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 14%, #000 60%, transparent 95%);
+  mask-image: linear-gradient(90deg, transparent 0, #000 14%, #000 60%, transparent 95%);
+  animation: astra-wave var(--astra-cycle, 10s) linear infinite;
+}
+@keyframes astra-wave { to { background-position: 46px 20%, 69px 80%; } }
+@keyframes astra-twinkle {
+  45% { opacity: .72; filter: brightness(1.16); transform: translateY(-.5px); }
+  100% { opacity: .46; filter: brightness(.95); transform: translateY(.5px); }
+}
+.app-shell[data-effort-slider="astra"] .reasoning-control input[type="range"]::-webkit-slider-thumb, .app-shell[data-effort-slider="astra"] .openrouter-reasoning input[type="range"]::-webkit-slider-thumb {
+  width: 16px; height: 16px; border: 0; border-radius: 0;
+  clip-path: polygon(50% 0, 61% 36%, 100% 50%, 61% 64%, 50% 100%, 39% 64%, 0 50%, 39% 36%);
+  background: radial-gradient(circle, #fff 0 22%, #b9efff 34%, var(--astra-effort-color, #836dff) 70%);
+  box-shadow: none; filter: drop-shadow(0 0 3px #8bcfff) drop-shadow(0 0 6px rgba(147,105,255,.8));
+}
+.app-shell[data-effort-slider="astra"] .reasoning-control input[type="range"]:focus-visible, .app-shell[data-effort-slider="astra"] .openrouter-reasoning input[type="range"]:focus-visible {
+  outline: 2px solid var(--astra-effort-color, #836dff); outline-offset: 4px;
+}
+.app-shell[data-effort-slider="astra"] .reasoning-ticks i:nth-child(1), .app-shell[data-effort-slider="astra"] .openrouter-reasoning-ticks i:nth-child(1) { color: #58e6ff; }
+.app-shell[data-effort-slider="astra"] .reasoning-ticks i:nth-child(2), .app-shell[data-effort-slider="astra"] .openrouter-reasoning-ticks i:nth-child(2) { color: #5aa0ff; }
+.app-shell[data-effort-slider="astra"] .reasoning-ticks i:nth-child(3), .app-shell[data-effort-slider="astra"] .openrouter-reasoning-ticks i:nth-child(3) { color: #836dff; }
+.app-shell[data-effort-slider="astra"] .reasoning-ticks i:nth-child(4), .app-shell[data-effort-slider="astra"] .openrouter-reasoning-ticks i:nth-child(4) { color: #b85dff; }
+.app-shell[data-effort-slider="astra"] .reasoning-ticks i:nth-child(5), .app-shell[data-effort-slider="astra"] .openrouter-reasoning-ticks i:nth-child(5) { color: #ff6ed8; }
+.app-shell[data-effort-slider="astra"] .reasoning-ticks i.reached, .app-shell[data-effort-slider="astra"] .openrouter-reasoning-ticks i.reached { border-color: currentColor; background: currentColor; box-shadow: 0 0 7px currentColor; }
+.app-shell[data-effort-slider="astra"] .reasoning-heading strong, .app-shell[data-effort-slider="astra"] .openrouter-reasoning-heading strong,
+.app-shell[data-effort-slider="astra"] .reasoning-heading > svg:first-child, .app-shell[data-effort-slider="astra"] .openrouter-reasoning-heading > svg:first-child,
+.app-shell[data-effort-slider="astra"] .reasoning-labels span.active, .app-shell[data-effort-slider="astra"] .openrouter-reasoning-labels span.active { color: var(--astra-effort-color, #836dff); }
+.app-shell[data-effort-slider="astra"] .reasoning-heading strong, .app-shell[data-effort-slider="astra"] .openrouter-reasoning-heading strong,
+.app-shell[data-effort-slider="astra"] .reasoning-labels span.active, .app-shell[data-effort-slider="astra"] .openrouter-reasoning-labels span.active { text-shadow: 0 0 9px color-mix(in srgb, var(--astra-effort-color, #836dff) 58%, transparent); }
+.app-shell[data-effort-slider="astra"] .effort-sparks i {
+  width: 5px; height: 5px; border-radius: 0; clip-path: polygon(50% 0, 62% 38%, 100% 50%, 62% 62%, 50% 100%, 38% 62%, 0 50%, 38% 38%);
+  background: #fff; box-shadow: 0 0 8px 2px var(--astra-effort-color, #836dff);
+}
+.app-shell[data-effort-slider="astra"] .effort-max .reasoning-rail::after, .app-shell[data-effort-slider="astra"] .effort-max .openrouter-reasoning-rail::after { display: none; }
+.app-shell[data-effort-slider="astra"] .effort-max .reasoning-control input[type="range"]::-webkit-slider-thumb,
+.app-shell[data-effort-slider="astra"] .effort-max.openrouter-reasoning input[type="range"]::-webkit-slider-thumb,
+.app-shell[data-effort-slider="astra"] .effort-max .openrouter-reasoning-rail input[type="range"]::-webkit-slider-thumb {
+  animation: none; filter: drop-shadow(0 0 4px #8bcfff) drop-shadow(0 0 9px rgba(147,105,255,.85));
+}
+.app-shell[data-color-scheme="light"][data-effort-slider="astra"] .reasoning-heading strong, .app-shell[data-color-scheme="light"][data-effort-slider="astra"] .openrouter-reasoning-heading strong,
+.app-shell[data-color-scheme="light"][data-effort-slider="astra"] .reasoning-labels span.active, .app-shell[data-color-scheme="light"][data-effort-slider="astra"] .openrouter-reasoning-labels span.active { color: #6847c7; text-shadow: 0 0 7px rgba(104,71,199,.22); }
+.app-shell[data-color-scheme="light"][data-effort-slider="astra"] .reasoning-control input[type="range"]:focus-visible,
+.app-shell[data-color-scheme="light"][data-effort-slider="astra"] .openrouter-reasoning input[type="range"]:focus-visible {
+  outline-color: color-mix(in srgb, var(--astra-effort-color, #836dff) 55%, #2a1c66);
+}
 
 /* -- Ink: a bare monochrome line. No color, no glow, no sparks. -- */
 .app-shell[data-effort-slider="ink"] .reasoning-control input[type="range"], .app-shell[data-effort-slider="ink"] .openrouter-reasoning input[type="range"] {
@@ -3417,7 +3506,10 @@ body[data-pane-resizing] .sidebar, body[data-pane-resizing] .studio-dock { trans
 .app-shell[data-effort-slider="coil"] .effort-max .reasoning-control input[type="range"]::-webkit-slider-thumb, .app-shell[data-effort-slider="coil"] .effort-max.openrouter-reasoning input[type="range"]::-webkit-slider-thumb, .app-shell[data-effort-slider="coil"] .effort-max .openrouter-reasoning-rail input[type="range"]::-webkit-slider-thumb { animation: none; }
 
 @media (prefers-reduced-motion: reduce) {
-  .app-shell[data-effort-slider="aurora"] .reasoning-control input[type="range"], .app-shell[data-effort-slider="aurora"] .openrouter-reasoning input[type="range"] { animation: none; }
+  .app-shell[data-effort-slider="aurora"] .reasoning-control input[type="range"], .app-shell[data-effort-slider="aurora"] .openrouter-reasoning input[type="range"],
+  .app-shell[data-effort-slider="astra"] .reasoning-control input[type="range"], .app-shell[data-effort-slider="astra"] .openrouter-reasoning input[type="range"],
+  .app-shell[data-effort-slider="astra"] .reasoning-rail::before, .app-shell[data-effort-slider="astra"] .openrouter-reasoning-rail::before,
+  .app-shell[data-effort-slider="astra"] .reasoning-ticks::after, .app-shell[data-effort-slider="astra"] .openrouter-reasoning-ticks::after { animation: none; }
   /* Each new style keeps its shape, geometry and colors while the water,
      slipstream and cord stop moving. */
   .app-shell[data-effort-slider="tide"] .reasoning-rail::before, .app-shell[data-effort-slider="tide"] .openrouter-reasoning-rail::before,
