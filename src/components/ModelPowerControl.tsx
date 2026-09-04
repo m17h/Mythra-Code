@@ -199,6 +199,14 @@ export function ModelPowerControl({
             {selectedModelIconSrc
               ? <img src={selectedModelIconSrc} alt="" aria-hidden="true" draggable={false} />
               : <ProviderLogo provider="openai" size={13} />}
+            {/* Astra alone drifts stars off its logo, and only here on the
+                trigger: the menu's rows stay perfectly still. Purely decorative
+                overlay — absolutely positioned inside the orb, hidden from
+                assistive tech and transparent to pointer input, so the trigger's
+                layout and hit target are untouched. */}
+            {kind === "astra" && (
+              <span className="model-orb-stars" aria-hidden="true"><i /><i /><i /><i /><i /><i /></span>
+            )}
           </span>
           <span className="model-picker-copy">
             <small>Model</small>

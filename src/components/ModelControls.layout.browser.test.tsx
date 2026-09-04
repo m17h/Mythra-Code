@@ -267,20 +267,201 @@ describe("model control browser layout", () => {
       </div>,
     );
 
+  // Split "a, b, c" into layers without cutting inside a gradient's own commas.
+  const splitLayers = (value: string): string[] => {
+    const layers: string[] = [];
+    let depth = 0;
+    let current = "";
+    for (const character of value) {
+      if (character === "(") depth += 1;
+      if (character === ")") depth -= 1;
+      if (character === "," && depth === 0) { layers.push(current.trim()); current = ""; continue; }
+      current += character;
+    }
+    if (current.trim()) layers.push(current.trim());
+    return layers;
+  };
+
+  const pixelsOf = (value: string): number => Number.parseFloat(value);
+
+  /**
+   * The rendered background-position of every layer at both ends of one
+   * animation cycle. Reading the paused animation rather than the stylesheet
+   * measures what actually paints, so a keyframe that stops short of a whole
+   * tile shows up as a short travel here.
+   */
+  const cycleTravel = (target: Element, animationName: string, pseudo?: string) => {
+    const animation = target
+      .getAnimations({ subtree: true })
+      .find((entry) => (entry as CSSAnimation).animationName === animationName
+        && (entry.effect as KeyframeEffect | null)?.pseudoElement === (pseudo ?? null));
+    expect(animation).toBeTruthy();
+    animation!.pause();
+    const duration = Number((animation!.effect as KeyframeEffect).getComputedTiming().duration);
+    animation!.currentTime = 0;
+    const start = splitLayers(getComputedStyle(target, pseudo).backgroundPosition);
+    // A hair short of the wrap: at exactly `duration` an infinite animation has
+    // already rolled over to the next iteration's first frame.
+    animation!.currentTime = duration - 0.001;
+    const end = splitLayers(getComputedStyle(target, pseudo).backgroundPosition);
+    animation!.play();
+    return { start, end, duration };
+  };
+
+  // A tile only loops invisibly when both halves hold: its first and last stop
+  // are the same color, and the drift covers exactly one tile per cycle. Miss
+  // either and the rail visibly snaps once per revolution.
+  it("loops Astra's nebula on a seamless tile that travels exactly its own width", () => {
+    const view = renderStyle("astra", "high");
+    const rail = view.container.querySelector<HTMLElement>(".reasoning-rail")!;
+    const track = view.container.querySelector<HTMLElement>(".reasoning-control input[type='range']")!;
+    const tile = pixelsOf(getComputedStyle(rail).getPropertyValue("--astra-tile"));
+    const starTile = pixelsOf(getComputedStyle(rail).getPropertyValue("--astra-star-tile"));
+    const sizes = splitLayers(getComputedStyle(track).backgroundSize);
+    const nebula = splitLayers(getComputedStyle(track).backgroundImage).at(-1)!;
+
+    // Layer order: unfilled cap, star tile, nebula tile.
+    expect(pixelsOf(sizes[1])).toBeCloseTo(starTile, 1);
+    expect(pixelsOf(sizes[2])).toBeCloseTo(tile, 1);
+
+    const stops = nebula.match(/rgba?\([^)]*\)/g)!;
+    expect(stops.length).toBeGreaterThan(2);
+    expect(stops.at(-1)).toBe(stops[0]);
+
+    const { start, end } = cycleTravel(track, "astra-nebula");
+    expect(start[0]).toBe(end[0]); // the unfilled cap stays pinned to the right
+    expect(pixelsOf(end[1]) - pixelsOf(start[1])).toBeCloseTo(starTile, 1);
+    expect(pixelsOf(end[2]) - pixelsOf(start[2])).toBeCloseTo(tile, 1);
+  });
+
+  // The first pass drew both ribbons with `closest-side` ellipses anchored on an
+  // edge, which resolves to a zero radius: two layers that painted nothing.
+  it("weaves two visible Astra ribbons above and below the bar, drifting right", () => {
+    const view = renderStyle("astra", "high");
+    const rail = view.container.querySelector<HTMLElement>(".reasoning-rail")!;
+    const ticks = view.container.querySelector<HTMLElement>(".reasoning-ticks")!;
+    const ribbons = getComputedStyle(ticks, "::after");
+    const ribbonTile = pixelsOf(getComputedStyle(rail).getPropertyValue("--astra-ribbon-tile"));
+    const layers = splitLayers(ribbons.backgroundImage);
+
+    expect(layers).toHaveLength(2);
+    for (const layer of layers) {
+      expect(layer).toContain("radial-gradient");
+      expect(layer).not.toContain("closest-side");
+      // Explicit, non-zero ellipse radii, so each ribbon actually has a body.
+      const [radiusX, radiusY] = layer.match(/(-?[\d.]+)px\s+(-?[\d.]+)px\s+at/)!.slice(1).map(Number);
+      expect(radiusX).toBeGreaterThan(0);
+      expect(radiusY).toBeGreaterThan(0);
+      // Translucent, but well clear of invisible.
+      expect(Number(layer.match(/rgba\([^)]*?,\s*([\d.]+)\)/)![1])).toBeGreaterThan(0.4);
+    }
+    // One crests above the 6px bar, the other below it.
+    expect(layers[0]).toMatch(/at 50% 2[0-9](\.\d+)?%/);
+    expect(layers[1]).toMatch(/at 50% 7[0-9](\.\d+)?%/);
+    expect(pixelsOf(ribbons.height)).toBeGreaterThan(rail.getBoundingClientRect().height);
+    expect(pixelsOf(ribbons.top)).toBeLessThan(0);
+    expect(pixelsOf(ribbons.bottom)).toBeLessThan(0);
+    expect(Number(ribbons.opacity)).toBeGreaterThan(0.5);
+    expect(ribbons.pointerEvents).toBe("none");
+
+    // Opaque at the left, dissolved before the right edge.
+    const maskStops = ribbons.maskImage.match(/rgba?\([^)]*\)\s+[\d.]+%/g)!;
+    expect(maskStops[0]).toContain("rgb(0, 0, 0)");
+    expect(maskStops.at(-1)).toContain("rgba(0, 0, 0, 0)");
+
+    const { start, end } = cycleTravel(ticks, "astra-wave", "::after");
+    expect(pixelsOf(end[0]) - pixelsOf(start[0])).toBeCloseTo(ribbonTile, 1);
+    expect(pixelsOf(end[1]) - pixelsOf(start[1])).toBeCloseTo(ribbonTile, 1);
+    // Half a tile apart, so the crests alternate instead of stacking.
+    expect(pixelsOf(start[1]) - pixelsOf(start[0])).toBeCloseTo(ribbonTile / 2, 1);
+  });
+
+  const renderModel = (model: string) =>
+    render(
+      <div className="app-shell" data-theme="kiwi" data-effort-slider="astra">
+        <ModelPowerControl model={model} effort="high" fast={false} runtimeModels={[]} onModel={vi.fn()} onEffort={vi.fn()} onFast={vi.fn()} />
+      </div>,
+    );
+
+  it("drifts stars only off the selected Astra trigger logo", () => {
+    const view = renderModel("gpt-6-astra");
+    const trigger = view.container.querySelector<HTMLElement>(".model-picker-trigger")!;
+    const field = trigger.querySelector<HTMLElement>(".model-orb-stars")!;
+    const stars = [...field.querySelectorAll<HTMLElement>("i")];
+
+    expect(field.getAttribute("aria-hidden")).toBe("true");
+    expect(getComputedStyle(field).position).toBe("absolute");
+    expect(getComputedStyle(field).pointerEvents).toBe("none");
+    expect(stars.length).toBeGreaterThanOrEqual(4);
+
+    const directions = new Set<string>();
+    for (const star of stars) {
+      const style = getComputedStyle(star);
+      expect(style.animationName).toBe("astra-orb-star");
+      // Slow: a star takes seconds, not a fraction of one, to cross the orb.
+      expect(Number.parseFloat(style.animationDuration)).toBeGreaterThanOrEqual(5);
+      expect(style.position).toBe("absolute");
+      const x = pixelsOf(style.getPropertyValue("--star-x"));
+      const y = pixelsOf(style.getPropertyValue("--star-y"));
+      expect(Math.hypot(x, y)).toBeGreaterThan(8);
+      directions.add(`${Math.sign(x)}:${Math.sign(y)}`);
+    }
+    // Emitted outward in genuinely different directions, not one shared vector.
+    expect(directions.size).toBeGreaterThanOrEqual(4);
+
+    // The menu's own rows never emit, open or closed.
+    fireEvent.click(trigger);
+    expect(view.container.querySelector(".model-menu .model-orb-stars")).toBeNull();
+    expect(view.container.querySelectorAll(".menu-model-orb .model-orb-stars")).toHaveLength(0);
+    expect(view.container.querySelectorAll(".model-orb-stars")).toHaveLength(1);
+  });
+
+  it("leaves the trigger's layout, hit target and other models untouched", () => {
+    const astra = renderModel("gpt-6-astra");
+    const astraTrigger = astra.container.querySelector<HTMLElement>(".model-picker-trigger")!;
+    const astraOrb = astraTrigger.querySelector<HTMLElement>(".model-orb")!.getBoundingClientRect();
+    const astraHeight = astraTrigger.getBoundingClientRect().height;
+    // A star that has drifted clear of the orb still lets the click through.
+    const star = astraTrigger.querySelector<HTMLElement>(".model-orb-stars i")!.getBoundingClientRect();
+    expect(document.elementFromPoint(star.left + star.width / 2, star.top + star.height / 2))
+      .not.toBe(astraTrigger.querySelector(".model-orb-stars i"));
+    astra.unmount();
+
+    const sol = renderModel("gpt-5.6-sol");
+    const solTrigger = sol.container.querySelector<HTMLElement>(".model-picker-trigger")!;
+    expect(sol.container.querySelector(".model-orb-stars")).toBeNull();
+    expect(solTrigger.getBoundingClientRect().height).toBeCloseTo(astraHeight, 2);
+    const solOrb = solTrigger.querySelector<HTMLElement>(".model-orb")!.getBoundingClientRect();
+    expect(solOrb.width).toBeCloseTo(astraOrb.width, 2);
+    expect(solOrb.height).toBeCloseTo(astraOrb.height, 2);
+  });
+
   it("keeps Astra polished but still when reduced motion is requested", async () => {
     await commands.setStreamTestReducedMotion(true);
     const view = renderStyle("astra", "high");
     const rail = view.container.querySelector<HTMLElement>(".reasoning-rail")!;
     const track = view.container.querySelector<HTMLElement>(".reasoning-control input[type='range']")!;
     const stars = getComputedStyle(rail, "::before");
-    const wave = getComputedStyle(view.container.querySelector<HTMLElement>(".reasoning-ticks")!, "::after");
+    const ribbons = getComputedStyle(view.container.querySelector<HTMLElement>(".reasoning-ticks")!, "::after");
 
     expect(getComputedStyle(track).animationName).toBe("none");
     expect(stars.animationName).toBe("none");
     expect(stars.pointerEvents).toBe("none");
     expect(Number(stars.opacity)).toBeGreaterThan(0);
-    expect(wave.animationName).toBe("none");
-    expect(wave.pointerEvents).toBe("none");
+    expect(ribbons.animationName).toBe("none");
+    expect(ribbons.pointerEvents).toBe("none");
+    // The ribbons keep their shape and color while standing still.
+    expect(ribbons.backgroundImage.match(/radial-gradient/g)).toHaveLength(2);
+    expect(Number(ribbons.opacity)).toBeGreaterThan(0.5);
+
+    // The trigger's stars stop drifting, and stop at their invisible rest state
+    // rather than freezing mid-flight around the logo.
+    const model = renderModel("gpt-6-astra");
+    for (const star of model.container.querySelectorAll<HTMLElement>(".model-orb-stars i")) {
+      expect(getComputedStyle(star).animationName).toBe("none");
+      expect(Number(getComputedStyle(star).opacity)).toBe(0);
+    }
+    model.unmount();
 
     const card = document.createElement("span");
     card.className = "slider-style-preview astra";
@@ -289,16 +470,6 @@ describe("model control browser layout", () => {
     expect(getComputedStyle(card, "::before").animationName).toBe("none");
     expect(getComputedStyle(card.querySelector<HTMLElement>(".slider-style-rail")!).animationName).toBe("none");
     card.remove();
-  });
-
-  it("moves Astra's masked astral ribbons gently to the right", () => {
-    const view = renderStyle("astra", "high");
-    const wave = getComputedStyle(view.container.querySelector<HTMLElement>(".reasoning-ticks")!, "::after");
-
-    expect(wave.animationName).toBe("astra-wave");
-    expect(wave.maskImage).toContain("linear-gradient");
-    expect(wave.backgroundImage.match(/radial-gradient/g)).toHaveLength(2);
-    expect(wave.pointerEvents).toBe("none");
   });
 
   // The wake and the cord are drawn on the rail's own ::before, each cut to a

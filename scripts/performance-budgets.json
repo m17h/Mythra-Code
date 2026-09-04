@@ -189,20 +189,26 @@
       "decision": "Accept 382 Safari / Chrome startup JavaScript bytes and 8,072 Safari / 7,869 Chrome startup CSS bytes for Astra's live-catalog identity, generated transparent model artwork, sub-agent fallbacks, five-level palette, drifting nebula, sparse star field, masked two-ribbon astral swell, star thumb, light-theme contrast and complete reduced-motion treatment. The 32 KB icon is a static asset rather than bundled startup code. Settings-only preview CSS remains in the existing lazy Settings stylesheet. Animation is selected-style-only CSS with no JavaScript timers, per-frame React state, canvas, dependencies, provider work, thread data or persistence cost; all decorative layers ignore pointer input. This is reviewed visual-feature overhead, not an efficiency claim. Exact measured limits without extra headroom.",
       "safari13": { "appEntryFromBytes": 355128, "appEntryToBytes": 355207, "appEntryDeltaBytes": 79, "startupJsFromBytes": 716778, "startupJsToBytes": 717160, "startupJsDeltaBytes": 382, "startupCssFromBytes": 340471, "startupCssToBytes": 348543, "startupCssDeltaBytes": 8072, "totalJsFromBytes": 1468338, "totalJsToBytes": 1468799, "totalJsDeltaBytes": 461 },
       "chrome105": { "appEntryFromBytes": 337016, "appEntryToBytes": 337095, "appEntryDeltaBytes": 79, "startupJsFromBytes": 691481, "startupJsToBytes": 691863, "startupJsDeltaBytes": 382, "startupCssFromBytes": 338348, "startupCssToBytes": 346217, "startupCssDeltaBytes": 7869, "totalJsFromBytes": 1433057, "totalJsToBytes": 1433518, "totalJsDeltaBytes": 461 }
+    },
+    {
+      "change": "Fix the Astra rail loop, make its astral ribbons visible, and drift stars off the selected Astra logo",
+      "decision": "Accept 205 Safari / Chrome startup and total JavaScript bytes and 1,645 Safari / 1,623 Chrome startup CSS bytes to repair three defects in the shipped Astra treatment and finish its identity. The nebula now tiles at a fixed width whose first and last stops are the same color and drifts exactly one tile per cycle, replacing a 260%-wide gradient that travelled 140px short of its own tile and snapped once per revolution. The ribbons are explicitly sized ellipses instead of `closest-side` ellipses anchored on an edge, which resolved to a zero radius and painted two layers of nothing. The trigger's star field is six absolutely positioned, aria-hidden, pointer-transparent elements with per-child directions, lifetimes and negative delays. No JavaScript timers, per-frame React state, canvas, dependencies, provider work, thread data or persistence cost; the JavaScript delta is the six static elements on one branch, the emitter is scoped to the selected Astra trigger so menu rows render none, and every added layer is out of flow and ignores pointer input, leaving layout, hit targets and the accessibility tree unchanged. All new motion stops under prefers-reduced-motion, with the stars resting at their invisible base state rather than frozen mid-flight. This is reviewed correctness-and-visual overhead, not an efficiency claim. Exact measured limits without extra headroom.",
+      "safari13": { "appEntryFromBytes": 355207, "appEntryToBytes": 355207, "appEntryDeltaBytes": 0, "startupJsFromBytes": 717160, "startupJsToBytes": 717365, "startupJsDeltaBytes": 205, "startupCssFromBytes": 348543, "startupCssToBytes": 350188, "startupCssDeltaBytes": 1645, "totalJsFromBytes": 1468799, "totalJsToBytes": 1469004, "totalJsDeltaBytes": 205 },
+      "chrome105": { "appEntryFromBytes": 337095, "appEntryToBytes": 337095, "appEntryDeltaBytes": 0, "startupJsFromBytes": 691863, "startupJsToBytes": 692068, "startupJsDeltaBytes": 205, "startupCssFromBytes": 346217, "startupCssToBytes": 347840, "startupCssDeltaBytes": 1623, "totalJsFromBytes": 1433518, "totalJsToBytes": 1433723, "totalJsDeltaBytes": 205 }
     }
   ],
   "profiles": {
     "safari13-minified": {
       "appEntryRawBytes": 355207,
-      "startupJsRawBytes": 717160,
-      "startupCssRawBytes": 348543,
-      "totalJsRawBytes": 1468799
+      "startupJsRawBytes": 717365,
+      "startupCssRawBytes": 350188,
+      "totalJsRawBytes": 1469004
     },
     "chrome105-minified": {
       "appEntryRawBytes": 337095,
-      "startupJsRawBytes": 691863,
-      "startupCssRawBytes": 346217,
-      "totalJsRawBytes": 1433518
+      "startupJsRawBytes": 692068,
+      "startupCssRawBytes": 347840,
+      "totalJsRawBytes": 1433723
     }
   }
 }
