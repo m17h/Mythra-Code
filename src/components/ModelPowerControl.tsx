@@ -205,7 +205,7 @@ export function ModelPowerControl({
                 assistive tech and transparent to pointer input, so the trigger's
                 layout and hit target are untouched. */}
             {kind === "astra" && (
-              <span className="model-orb-stars" aria-hidden="true"><i /><i /><i /><i /><i /><i /></span>
+              <span className="model-orb-stars" aria-hidden="true"><i /><i /><i /><i /><i /><i /><i /><i /><i /></span>
             )}
           </span>
           <span className="model-picker-copy">

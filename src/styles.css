@@ -191,7 +191,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .app-shell[data-color-scheme="light"] .model-power-control { --model-accent: #b06b1e; }
 .app-shell[data-color-scheme="light"] .model-power-control.terra { --model-accent: #3e8e22; }
 .app-shell[data-color-scheme="light"] .model-power-control.luna { --model-accent: #1668a8; }
-.app-shell[data-color-scheme="light"] .model-power-control.astra { --model-accent: #6847c7; }
+.app-shell[data-color-scheme="light"] .model-power-control.astra { --model-accent: #6847c7; --astra-star-core: #52299f; }
 .app-shell[data-color-scheme="light"] .model-menu-option.sol { --option-accent: #b06b1e; }
 .app-shell[data-color-scheme="light"] .model-menu-option.terra { --option-accent: #3e8e22; }
 .app-shell[data-color-scheme="light"] .model-menu-option.luna { --option-accent: #1668a8; }
@@ -1893,7 +1893,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .model-power-control { --model-accent: #e0a066; --reasoning-fill: 0%; position: relative; z-index: 8; display: grid; grid-template-columns: minmax(125px, .54fr) minmax(150px, .54fr) minmax(245px, .92fr); gap: var(--s-3); align-items: center; margin: 0 10px var(--s-1); padding: var(--s-2); overflow: visible; border: 1px solid var(--line); border-radius: var(--r-lg); background: rgba(255,255,255,.014); box-shadow: none; transition: border-color 220ms ease, background 220ms ease; }
 .model-power-control.terra { --model-accent: #a6df72; }
 .model-power-control.luna { --model-accent: #86cdf7; }
-.model-power-control.astra { --model-accent: #a88cff; }
+.model-power-control.astra { --model-accent: #a88cff; --astra-star-core: #ffffff; }
 .model-picker { position: relative; z-index: 4; min-width: 0; }
 .model-picker-trigger { width: 100%; height: 46px; display: grid; grid-template-columns: 26px minmax(0,1fr) 16px; align-items: center; gap: var(--s-2); padding: 0 10px; border: 1px solid var(--line); border-radius: var(--r-md); color: var(--text); background: var(--field); box-shadow: none; cursor: pointer; text-align: left; transition: border-color var(--t-mid) ease, background var(--t-mid) ease; }
 .model-picker-trigger:hover:not(:disabled), .menu-open .model-picker-trigger { border-color: color-mix(in srgb, var(--model-accent) 34%, var(--line-strong)); background: color-mix(in srgb, var(--model-accent) 5%, var(--field)); }
@@ -1962,41 +1962,82 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .fast-tier.on svg { animation: fast-zap 1.6s ease-in-out infinite; }
 @keyframes fast-zap { 0%, 100% { opacity: 1; filter: none; } 50% { opacity: .55; filter: drop-shadow(0 0 3px currentColor); } }
 
-/* Astra's selected logo sheds a few slow stars. The emitter is an absolutely
+/* Astra's selected logo sheds slow sparks of light. The emitter is an absolutely
    positioned, pointer-transparent, aria-hidden overlay inside the trigger orb,
    so it adds no layout box, no hit target and nothing for assistive tech to
-   read. Directions, lifetimes and phases are fixed per child rather than
+   read. Directions, sizes, lifetimes and phases are fixed per child rather than
    generated, so the drift is deterministic and needs no JS timer, and the
-   selector is scoped to the trigger — the menu's own orbs never emit. */
+   selector is scoped to the trigger — the menu's own orbs never emit.
+
+   Two animations, split across the element and its ::before, so neither
+   keyframe list has to restate the other's transform: the `i` carries the
+   particle outward along its own vector while the ::before twinkles in place.
+   Their opacities multiply, which is what makes a spark flicker several times
+   as it travels instead of fading once. */
 .model-orb-stars { position: absolute; inset: 0; pointer-events: none; }
 .model-power-control.astra .model-picker-trigger .model-orb-stars i {
-  position: absolute; left: 50%; top: 50%; width: 3px; height: 3px; margin: -1.5px 0 0 -1.5px;
-  background: var(--model-accent);
-  clip-path: polygon(50% 0, 61% 39%, 100% 50%, 61% 61%, 50% 100%, 39% 61%, 0 50%, 39% 39%);
+  position: absolute; left: 50%; top: 50%;
+  width: var(--star-size, 3px); height: var(--star-size, 3px);
+  margin: var(--star-margin, -1.5px) 0 0 var(--star-margin, -1.5px);
   opacity: 0;
   animation: astra-orb-star var(--star-life, 6s) linear var(--star-delay, 0s) infinite;
 }
-/* Six directions around the orb, each on its own long lifetime and a negative
-   delay so the field is already mid-drift on the first paint instead of firing
-   as one synchronized burst. */
-.model-orb-stars i:nth-child(1) { --star-x: 14px; --star-y: -11px; --star-life: 6.2s; --star-delay: 0s; }
-.model-orb-stars i:nth-child(2) { --star-x: -15px; --star-y: -7px; --star-life: 7.4s; --star-delay: -1.1s; }
-.model-orb-stars i:nth-child(3) { --star-x: 9px; --star-y: 14px; --star-life: 6.8s; --star-delay: -2.4s; }
-.model-orb-stars i:nth-child(4) { --star-x: -10px; --star-y: 13px; --star-life: 8s; --star-delay: -3.6s; }
-.model-orb-stars i:nth-child(5) { --star-x: 17px; --star-y: 3px; --star-life: 7s; --star-delay: -4.8s; }
-.model-orb-stars i:nth-child(6) { --star-x: -16px; --star-y: -2px; --star-life: 6.5s; --star-delay: -5.5s; }
+/* The spark itself: a bright core cut to a four-point star. `drop-shadow`
+   rather than `box-shadow` because the glow has to follow the clipped star
+   shape — a box-shadow is drawn on the border box and then clipped away with
+   it, leaving no glow at all. */
+.model-power-control.astra .model-picker-trigger .model-orb-stars i::before {
+  content: ""; position: absolute; inset: 0;
+  background: var(--astra-star-core, #ffffff);
+  clip-path: polygon(50% 0, 61% 39%, 100% 50%, 61% 61%, 50% 100%, 39% 61%, 0 50%, 39% 39%);
+  filter: drop-shadow(0 0 1px color-mix(in srgb, var(--astra-star-core, #ffffff) 70%, transparent))
+          drop-shadow(0 0 3px var(--model-accent));
+  animation: astra-orb-twinkle var(--star-twinkle, 1.6s) ease-in-out infinite;
+}
+/* On a light trigger the dark core needs one tight halo, not the two soft ones
+   that make a bright core glow on a dark trigger: stacked wide shadows in the
+   same hue as the core just wash the star's points out to a pale smudge. */
+.app-shell[data-color-scheme="light"] .model-power-control.astra .model-picker-trigger .model-orb-stars i::before {
+  filter: drop-shadow(0 0 2px color-mix(in srgb, var(--model-accent) 50%, transparent));
+  /* Only the name changes, so each spark keeps its own twinkle rate. The dark
+     theme can dim a spark to a third and still read as a dim light; the same
+     third of a dark core on a white trigger just reads as a smudge, so the
+     light twinkle swings over a shallower range. */
+  animation-name: astra-orb-twinkle-light;
+}
+@keyframes astra-orb-twinkle-light {
+  0%, 100% { opacity: .62; transform: scale(.78); }
+  50% { opacity: 1; transform: scale(1.16); }
+}
+/* Nine sparks in directions spread around the orb, each on its own size, long
+   lifetime, twinkle rate and negative delay, so the field is already mid-drift
+   and out of step on the first paint rather than firing as one burst. */
+.model-orb-stars i:nth-child(1) { --star-x: 14px; --star-y: -11px; --star-near-x: 2.8px; --star-near-y: -2.2px; --star-size: 3.5px; --star-margin: -1.75px; --star-life: 6.2s; --star-delay: 0s; --star-twinkle: 1.5s; }
+.model-orb-stars i:nth-child(2) { --star-x: -15px; --star-y: -7px; --star-near-x: -3px; --star-near-y: -1.4px; --star-size: 3px; --star-margin: -1.5px; --star-life: 7.4s; --star-delay: -1.1s; --star-twinkle: 1.9s; }
+.model-orb-stars i:nth-child(3) { --star-x: 9px; --star-y: 14px; --star-near-x: 1.8px; --star-near-y: 2.8px; --star-size: 4px; --star-margin: -2px; --star-life: 6.8s; --star-delay: -2.4s; --star-twinkle: 1.3s; }
+.model-orb-stars i:nth-child(4) { --star-x: -10px; --star-y: 13px; --star-near-x: -2px; --star-near-y: 2.6px; --star-size: 3px; --star-margin: -1.5px; --star-life: 8s; --star-delay: -3.6s; --star-twinkle: 2.1s; }
+.model-orb-stars i:nth-child(5) { --star-x: 17px; --star-y: 3px; --star-near-x: 3.4px; --star-near-y: .6px; --star-size: 3.5px; --star-margin: -1.75px; --star-life: 7s; --star-delay: -4.8s; --star-twinkle: 1.7s; }
+.model-orb-stars i:nth-child(6) { --star-x: -16px; --star-y: -2px; --star-near-x: -3.2px; --star-near-y: -.4px; --star-size: 2.5px; --star-margin: -1.25px; --star-life: 6.5s; --star-delay: -5.5s; --star-twinkle: 1.4s; }
+.model-orb-stars i:nth-child(7) { --star-x: 4px; --star-y: -16px; --star-near-x: .8px; --star-near-y: -3.2px; --star-size: 3px; --star-margin: -1.5px; --star-life: 7.8s; --star-delay: -2.9s; --star-twinkle: 2.3s; }
+.model-orb-stars i:nth-child(8) { --star-x: -6px; --star-y: -15px; --star-near-x: -1.2px; --star-near-y: -3px; --star-size: 4px; --star-margin: -2px; --star-life: 6.9s; --star-delay: -6.2s; --star-twinkle: 1.6s; }
+.model-orb-stars i:nth-child(9) { --star-x: 12px; --star-y: 10px; --star-near-x: 2.4px; --star-near-y: 2px; --star-size: 2.5px; --star-margin: -1.25px; --star-life: 7.6s; --star-delay: -.7s; --star-twinkle: 2s; }
 @keyframes astra-orb-star {
-  0% { opacity: 0; transform: translate(0, 0) scale(.35); }
-  14% { opacity: .9; transform: translate(calc(var(--star-x) * .18), calc(var(--star-y) * .18)) scale(1); }
-  62% { opacity: .55; }
-  100% { opacity: 0; transform: translate(var(--star-x), var(--star-y)) scale(.7); }
+  0% { opacity: 0; transform: translate(0, 0) scale(.3) rotate(0deg); }
+  16% { opacity: 1; transform: translate(var(--star-near-x), var(--star-near-y)) scale(1) rotate(22deg); }
+  70% { opacity: .85; }
+  100% { opacity: 0; transform: translate(var(--star-x), var(--star-y)) scale(.8) rotate(90deg); }
+}
+@keyframes astra-orb-twinkle {
+  0%, 100% { opacity: .34; transform: scale(.7); }
+  50% { opacity: 1; transform: scale(1.16); }
 }
 
 @media (prefers-reduced-motion: reduce) {
   /* The stars keep their base `opacity: 0`, so stopping the drift leaves
      nothing frozen mid-flight around the logo. */
   .reasoning-heading strong, .model-orb, .model-picker-trigger .model-orb, .fast-tier.on svg, .model-power-control.max-effort .reasoning-rail::after,
-  .model-power-control.astra .model-picker-trigger .model-orb-stars i { animation: none; }
+  .model-power-control.astra .model-picker-trigger .model-orb-stars i,
+  .model-power-control.astra .model-picker-trigger .model-orb-stars i::before { animation: none; }
 }
 .has-attachments { color: var(--info); background: color-mix(in srgb, var(--info) 8%, transparent); }
 
@@ -3224,31 +3265,65 @@ body[data-pane-resizing] .sidebar, body[data-pane-resizing] .studio-dock { trans
 .app-shell[data-color-scheme="light"][data-effort-slider="aurora"] .reasoning-heading strong, .app-shell[data-color-scheme="light"][data-effort-slider="aurora"] .openrouter-reasoning-heading strong,
 .app-shell[data-color-scheme="light"][data-effort-slider="aurora"] .reasoning-labels span.active, .app-shell[data-color-scheme="light"][data-effort-slider="aurora"] .openrouter-reasoning-labels span.active { color: #7d5bd6; }
 
-/* -- Astra: a calm living galaxy. A seamless nebula tile drifts inside the rail,
-   translucent astral ribbons weave above and below it, and a sparse star field
-   breathes over the top; every layer stays confined to the tiny rail and never
-   alters the slider's hit target or layout. -- */
+/* -- Astra: a calm living galaxy. A wide nebula band drifts inside the rail, two
+   astral ribbons thread through it, and a sparse star field breathes over the
+   top; every layer stays confined to the tiny rail and never alters the
+   slider's hit target or layout. -- */
 .app-shell[data-effort-slider="astra"] .reasoning-rail, .app-shell[data-effort-slider="astra"] .openrouter-reasoning-rail {
-  --astra-cycle: calc(10s - var(--effort-heat, 0) * 2.5s);
-  --astra-twinkle: calc(5.8s - var(--effort-heat, 0) * 1.2s);
-  /* Every drifting layer is a repeating tile whose first and last stop are the
-     same color, and every drift animation travels exactly one tile width. Both
-     halves matter: a mismatched pair of end colors seams, and a travel that is
-     not one whole tile jumps when the animation restarts. */
-  --astra-tile: 240px;
+  /* Deliberately constant, not derived from --effort-heat.
+
+     Changing animation-duration does not change speed gracefully: the elapsed
+     time is kept and progress is recomputed against the new duration, so the
+     drift lands on a different phase. The size of that jump grows with
+     floor(elapsed / duration), so on a rail that has been on screen a while any
+     rewrite reads as the whole animation restarting. The rail republishes heat
+     on every pointer frame of a drag and again on every effort change, so a
+     heat-derived duration was being re-timed constantly. A constant one can
+     never be re-timed, at grab, at release, or on a click.
+
+     Effort still drives the rail's color, its glow, the tick colors and how far
+     the ribbons reach — everything except how fast the drift runs. */
+  --astra-cycle: 9s;
+  --astra-twinkle: 5.2s;
+  /* Every drifting layer is a repeating tile whose first and last stop match,
+     and every drift travels exactly one tile per cycle. Both halves matter: a
+     mismatched pair of ends seams, and a travel that is not one whole tile
+     snaps back once per revolution.
+
+     The nebula band is deliberately much wider than the rail, so only about a
+     third of the ramp is on screen at a time and the color reads as a slow
+     journey rather than a short pattern cycling. */
+  --astra-tile: 520px;
   --astra-star-tile: 90px;
-  /* Keep half = tile / 2 and offset = tile + half. The explicit values avoid
-     relying on newer CSS multiplication while the browser test guards the relationship. */
-  --astra-ribbon-tile: 56px;
-  --astra-ribbon-half: 28px;
-  --astra-ribbon-offset: 84px;
+  /* The ribbons are one sine period per tile. Keep half = tile / 2 so the two
+     run in antiphase, and back = half - tile so the second drifts one whole
+     tile the other way. The explicit values avoid relying on newer CSS
+     multiplication while the browser test guards the relationships. */
+  --astra-ribbon-tile: 84px;
+  --astra-ribbon-half: 42px;
+  --astra-ribbon-back: -42px;
+  /* How far along the rail the chosen effort reaches. Same source the colored
+     fill reads, so the ribbons end exactly where the color does. */
+  --astra-fill: var(--reasoning-fill, var(--router-fill, 0%));
+}
+/* Dragging holds the two drifting layers still rather than re-timing them.
+   `animation-play-state` keeps the animation's current time, so both the pause
+   and the resume are seamless — which a duration change can never be, since it
+   cannot alter speed without also moving the animation to a new phase. The star
+   field keeps breathing throughout, so the rail stays alive while the lateral
+   motion that made aiming hard holds still. */
+.app-shell[data-effort-slider="astra"] .reasoning-rail.dragging input[type="range"],
+.app-shell[data-effort-slider="astra"] .reasoning-rail.dragging .reasoning-ticks::after,
+.app-shell[data-effort-slider="astra"] .openrouter-reasoning-rail.dragging input[type="range"],
+.app-shell[data-effort-slider="astra"] .openrouter-reasoning-rail.dragging .openrouter-reasoning-ticks::after {
+  animation-play-state: paused;
 }
 .app-shell[data-effort-slider="astra"] .reasoning-control input[type="range"], .app-shell[data-effort-slider="astra"] .openrouter-reasoning input[type="range"] {
   height: 6px;
   background-image:
     linear-gradient(var(--panel-3), var(--panel-3)),
     radial-gradient(circle at 24% 50%, rgba(255,255,255,.8) 0 1px, transparent 1.8px),
-    linear-gradient(90deg, #2f6fd6 0%, #4edfff 15%, #7564ff 33%, #b44ff1 50%, #f86fd0 67%, #7564ff 85%, #2f6fd6 100%);
+    linear-gradient(105deg, #133986 0%, #2e78de 20%, #4edfff 35%, #7564ff 52%, #b44ff1 70%, #f86fd0 84%, #355ec5 92%, #133986 100%);
   background-size: calc(100% - var(--reasoning-fill, var(--router-fill, 0%))) 100%, var(--astra-star-tile) 100%, var(--astra-tile) 100%;
   background-position: right center, 0 50%, 0 50%;
   background-repeat: no-repeat, repeat, repeat;
@@ -3271,25 +3346,46 @@ body[data-pane-resizing] .sidebar, body[data-pane-resizing] .studio-dock { trans
   opacity: .34; pointer-events: none;
   animation: astra-twinkle var(--astra-twinkle) ease-in-out infinite alternate;
 }
-/* Two translucent astral ribbons weave along the rail: one crests above the 6px
-   bar, the other below it, offset half a tile so they alternate down its
-   length. Both are explicitly sized ellipses — a `closest-side` ellipse
-   anchored on an edge resolves to a zero radius and draws nothing at all — and
-   both drift one whole tile to the right, dissolving before the far end. */
+/* Two astral ribbons thread through the rail. Each is a single stroked sine
+   wave — one continuous line, not a row of tiled blobs — drawn as an inline SVG
+   so the curve is real geometry rather than something faked from blurred
+   ellipses. This element sits behind the 6px bar, so each ribbon rises clear of
+   the bar, disappears behind it as it crosses the middle, and re-emerges on the
+   other side: the weave is the occlusion, not a blur.
+
+   The two are half a tile apart, so where one crests above the bar the other
+   troughs below, and they drift opposite ways — the crossings migrate slowly
+   along the rail instead of the whole pattern sliding as one sheet.
+
+   The tile is seamless in both directions: the path starts and ends at the
+   midline with the same slope, its stroke is cut with the default butt cap so
+   neighbouring tiles mate exactly along the shared perpendicular (a round cap
+   would bulge into the next tile), and the stroke gradient's first and last
+   stop-opacity match so the ribbon's fade in and out repeats invisibly. */
 .app-shell[data-effort-slider="astra"] .reasoning-ticks::after, .app-shell[data-effort-slider="astra"] .openrouter-reasoning-ticks::after {
-  content: ""; position: absolute; inset: -6px -2px; z-index: -1; opacity: .95; filter: blur(.6px); pointer-events: none;
+  content: ""; position: absolute; inset: -6px -2px; z-index: -1; pointer-events: none;
   background-image:
-    radial-gradient(ellipse 30px 7px at 50% 24%, rgba(126,214,255,.62), rgba(126,214,255,0) 74%),
-    radial-gradient(ellipse 30px 7px at 50% 76%, rgba(198,140,255,.58), rgba(198,140,255,0) 74%);
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 84 26' preserveAspectRatio='none'%3E%3ClinearGradient id='c'%3E%3Cstop offset='0' stop-color='%237ed6ff' stop-opacity='.16'/%3E%3Cstop offset='.5' stop-color='%237ed6ff' stop-opacity='.88'/%3E%3Cstop offset='1' stop-color='%237ed6ff' stop-opacity='.16'/%3E%3C/linearGradient%3E%3Cpath d='M0 13c14-10.67 28-10.67 42 0s28 10.67 42 0' fill='none' stroke='url(%23c)' stroke-width='1.5'/%3E%3C/svg%3E"),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 84 26' preserveAspectRatio='none'%3E%3ClinearGradient id='v'%3E%3Cstop offset='0' stop-color='%23c68cff' stop-opacity='.14'/%3E%3Cstop offset='.5' stop-color='%23c68cff' stop-opacity='.8'/%3E%3Cstop offset='1' stop-color='%23c68cff' stop-opacity='.14'/%3E%3C/linearGradient%3E%3Cpath d='M0 13c14-10.67 28-10.67 42 0s28 10.67 42 0' fill='none' stroke='url(%23v)' stroke-width='1.5'/%3E%3C/svg%3E");
   background-size: var(--astra-ribbon-tile) 100%;
   background-position: 0 50%, var(--astra-ribbon-half) 50%;
   background-repeat: repeat-x;
-  -webkit-mask-image: linear-gradient(90deg, #000 0, #000 58%, transparent 96%);
-  mask-image: linear-gradient(90deg, #000 0, #000 58%, transparent 96%);
+  /* The ribbons run only as far as the selected effort: they emerge from
+     nothing at the left and dissolve into the thumb at the fill point, rather
+     than carrying on across the unfilled remainder of the rail.
+
+     Both inner stops are clamped so the whole mask collapses cleanly at the
+     lowest setting, where the fill is 0%: without `min` the fade-in would sit
+     at a fixed 10px and leave a stub of ribbon showing past the end of a rail
+     that has no fill at all, and without `max` the plateau would land at a
+     negative offset. */
+  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 min(10px, var(--astra-fill)), #000 max(0px, calc(var(--astra-fill) - 16px)), transparent var(--astra-fill));
+  mask-image: linear-gradient(90deg, transparent 0, #000 min(10px, var(--astra-fill)), #000 max(0px, calc(var(--astra-fill) - 16px)), transparent var(--astra-fill));
   animation: astra-wave var(--astra-cycle, 10s) linear infinite;
 }
+/* One tile forward, one tile back — both exact, so neither ribbon snaps. */
 @keyframes astra-wave {
-  to { background-position: var(--astra-ribbon-tile) 50%, var(--astra-ribbon-offset) 50%; }
+  to { background-position: var(--astra-ribbon-tile) 50%, var(--astra-ribbon-back) 50%; }
 }
 @keyframes astra-twinkle {
   45% { opacity: .72; filter: brightness(1.16); transform: translateY(-.5px); }
