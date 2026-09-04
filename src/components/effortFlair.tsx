@@ -9,6 +9,8 @@ import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent as 
 export const EFFORT_COLORS = ["#4db6ff", "#43d97c", "#ffc531", "#ff8a2b", "#ff4655"];
 const PIXEL_EFFORT_COLORS = ["#33d17a", "#33d17a", "#f6d32d", "#f6d32d", "#f66151"];
 const AURORA_EFFORT_COLORS = ["#6ee7d8", "#7aa5ff", "#9d8cff", "#b98cff", "#ff8cd1"];
+/** Astra: cool starlight deepening through a blue-violet nebula. */
+const ASTRA_EFFORT_COLORS = ["#58e6ff", "#5aa0ff", "#836dff", "#b85dff", "#ff6ed8"];
 /** Tide: ocean blue rising into bright seafoam. */
 const TIDE_EFFORT_COLORS = ["#4f7cff", "#3e99f5", "#2db6eb", "#2ed2dc", "#55ead2"];
 /** Dart: deep racing emerald accelerating to acid lime. */
@@ -32,6 +34,7 @@ export function effortFlairStyle(index: number, count: number): CSSProperties {
     "--effort-color": paletteColorAt(EFFORT_COLORS, heat),
     "--pixel-effort-color": paletteColorAt(PIXEL_EFFORT_COLORS, heat),
     "--aurora-effort-color": paletteColorAt(AURORA_EFFORT_COLORS, heat),
+    "--astra-effort-color": paletteColorAt(ASTRA_EFFORT_COLORS, heat),
     "--tide-effort-color": paletteColorAt(TIDE_EFFORT_COLORS, heat),
     "--dart-effort-color": paletteColorAt(DART_EFFORT_COLORS, heat),
     "--coil-effort-color": paletteColorAt(COIL_EFFORT_COLORS, heat),

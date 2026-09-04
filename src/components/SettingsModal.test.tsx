@@ -328,6 +328,7 @@ describe("SettingsModal", () => {
     expect(screen.getByRole("button", { name: /Neon.*model's accent/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Pixel.*VU meter/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Aurora.*northern-light/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Astra.*living nebula/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Ink.*monochrome/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Tide.*glass water channel/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Dart.*arrowhead/ })).toBeInTheDocument();
@@ -354,6 +355,7 @@ describe("SettingsModal", () => {
   });
 
   it.each([
+    [/Astra.*living nebula/, "astra", "slider-style-preview astra"],
     [/Tide.*glass water channel/, "tide", "slider-style-preview tide"],
     [/Dart.*arrowhead/, "dart", "slider-style-preview dart"],
     [/Coil.*twisted cord/, "coil", "slider-style-preview coil"],

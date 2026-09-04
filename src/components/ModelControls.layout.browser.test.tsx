@@ -1,11 +1,15 @@
 import { fireEvent, render } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { commands } from "vitest/browser";
 import { ClaudeModelControl } from "./ClaudeModelControl";
 import { ModelPowerControl } from "./ModelPowerControl";
 import { OpenRouterModelControl } from "./OpenRouterModelControl";
 import { ThreadProviderControl } from "./ThreadProviderControl";
 import { ModelCatalogHeader } from "./ModelCatalogHeader";
 import "../styles.css";
+import "./SettingsModal.css";
+
+afterEach(async () => { await commands.setStreamTestReducedMotion(false); });
 
 describe("model control browser layout", () => {
   it.each(["dark", "light"])("reserves header refresh spacing at small widths and UI scales in %s mode", (scheme) => {
@@ -214,6 +218,7 @@ describe("model control browser layout", () => {
   it.each([
     ["pixel", "low", "rgb(51, 209, 122)"],
     ["aurora", "max", "rgb(255, 140, 209)"],
+    ["astra", "high", "rgb(131, 109, 255)"],
     ["ink", "high", "rgb(236, 238, 235)"],
   ] as const)("uses the %s slider palette for its reasoning gauge", (sliderStyle, effort, expectedColor) => {
     const view = render(
@@ -230,6 +235,7 @@ describe("model control browser layout", () => {
   // .reasoning-* markup and the .openrouter-* one every other provider shares.
   const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
   const NEW_STYLE_PALETTES = {
+    astra: ["rgb(88, 230, 255)", "rgb(90, 160, 255)", "rgb(131, 109, 255)", "rgb(184, 93, 255)", "rgb(255, 110, 216)"],
     tide: ["rgb(79, 124, 255)", "rgb(62, 153, 245)", "rgb(45, 182, 235)", "rgb(46, 210, 220)", "rgb(85, 234, 210)"],
     dart: ["rgb(14, 155, 115)", "rgb(28, 180, 107)", "rgb(67, 203, 92)", "rgb(126, 224, 74)", "rgb(194, 242, 60)"],
     coil: ["rgb(106, 79, 224)", "rgb(138, 76, 230)", "rgb(171, 72, 224)", "rgb(209, 68, 207)", "rgb(244, 63, 174)"],
@@ -261,9 +267,44 @@ describe("model control browser layout", () => {
       </div>,
     );
 
+  it("keeps Astra polished but still when reduced motion is requested", async () => {
+    await commands.setStreamTestReducedMotion(true);
+    const view = renderStyle("astra", "high");
+    const rail = view.container.querySelector<HTMLElement>(".reasoning-rail")!;
+    const track = view.container.querySelector<HTMLElement>(".reasoning-control input[type='range']")!;
+    const stars = getComputedStyle(rail, "::before");
+    const wave = getComputedStyle(view.container.querySelector<HTMLElement>(".reasoning-ticks")!, "::after");
+
+    expect(getComputedStyle(track).animationName).toBe("none");
+    expect(stars.animationName).toBe("none");
+    expect(stars.pointerEvents).toBe("none");
+    expect(Number(stars.opacity)).toBeGreaterThan(0);
+    expect(wave.animationName).toBe("none");
+    expect(wave.pointerEvents).toBe("none");
+
+    const card = document.createElement("span");
+    card.className = "slider-style-preview astra";
+    card.innerHTML = '<i class="slider-style-rail"></i><i class="slider-style-thumb"></i>';
+    document.body.append(card);
+    expect(getComputedStyle(card, "::before").animationName).toBe("none");
+    expect(getComputedStyle(card.querySelector<HTMLElement>(".slider-style-rail")!).animationName).toBe("none");
+    card.remove();
+  });
+
+  it("moves Astra's masked astral ribbons gently to the right", () => {
+    const view = renderStyle("astra", "high");
+    const wave = getComputedStyle(view.container.querySelector<HTMLElement>(".reasoning-ticks")!, "::after");
+
+    expect(wave.animationName).toBe("astra-wave");
+    expect(wave.maskImage).toContain("linear-gradient");
+    expect(wave.backgroundImage.match(/radial-gradient/g)).toHaveLength(2);
+    expect(wave.pointerEvents).toBe("none");
+  });
+
   // The wake and the cord are drawn on the rail's own ::before, each cut to a
   // shape of its own: neither style is a colored bar with a round thumb.
   it.each([
+    ["astra", "astra-twinkle"],
     ["dart", "dart-slipstream"],
     ["coil", "coil-twist"],
   ] as const)("drives the %s rail decoration from its own animation", (sliderStyle, animationName) => {

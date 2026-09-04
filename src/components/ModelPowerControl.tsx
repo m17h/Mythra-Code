@@ -7,7 +7,7 @@ import { favoriteCount, sortByFavorites } from "../lib/modelFavorites";
 import { closesModelMenu } from "../lib/composerMenus";
 import { ModelCatalogHeader } from "./ModelCatalogHeader";
 
-export type ModelKind = "sol" | "terra" | "luna";
+export type ModelKind = "sol" | "terra" | "luna" | "astra";
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 
 export interface RuntimeModel {
@@ -21,7 +21,7 @@ export interface RuntimeModel {
 }
 
 /**
- * The named GPT-5.6 tiers Mythra Code has artwork and copy for. The menu is
+ * The named OpenAI tiers Mythra Code has artwork and copy for. The menu is
  * driven by the account's live `model/list` response; this only supplies the
  * icon, accent, and tagline when a runtime model matches one of them, and
  * stands in as the whole list when the runtime reports nothing at all.
@@ -30,6 +30,7 @@ export const OPENAI_MODELS: Array<{ kind: ModelKind; name: string; id: string; t
   { kind: "sol", name: "Sol", id: "gpt-5.6-sol", tagline: "Detail & polish", iconSrc: "/model-icons/sol.png" },
   { kind: "terra", name: "Terra", id: "gpt-5.6-terra", tagline: "Everyday power", iconSrc: "/model-icons/terra.png" },
   { kind: "luna", name: "Luna", id: "gpt-5.6-luna", tagline: "Fast & focused", iconSrc: "/model-icons/luna.png" },
+  { kind: "astra", name: "Astra", id: "gpt-6-astra", tagline: "Frontier intelligence", iconSrc: "/model-icons/astra.png" },
 ];
 
 interface ModelOption {
@@ -50,6 +51,7 @@ const EFFORTS: Array<{ value: Exclude<ReasoningEffort, "ultra">; label: string; 
 ];
 
 export function modelKind(model: string): ModelKind {
+  if (model.includes("astra")) return "astra";
   if (model.includes("terra")) return "terra";
   if (model.includes("luna")) return "luna";
   return "sol";

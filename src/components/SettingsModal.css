@@ -47,3 +47,23 @@
 .github-clone-destination strong { color: var(--muted); font-size: var(--fs-meta); font-weight: 500; }
 .github-clone-hint, .github-clone-error { font-size: var(--fs-meta); color: var(--muted); line-height: 1.5; }
 .github-clone-error { color: var(--red); overflow-wrap: anywhere; }
+/* Astra stays in the lazy Settings stylesheet: its real composer treatment is
+   global, while this decorative card preview need not inflate startup CSS. */
+.slider-style-preview.astra::before {
+  content: ""; position: absolute; inset: 3px 4px; z-index: 2; pointer-events: none;
+  background: radial-gradient(circle at 12% 28%, #fff 0 1px, transparent 1.4px), radial-gradient(circle at 53% 78%, #75e7ff 0 1px, transparent 1.4px), radial-gradient(circle at 89% 22%, #ff8ee1 0 1px, transparent 1.4px);
+  opacity: .58; animation: astra-twinkle 4.8s ease-in-out infinite alternate;
+}
+.slider-style-preview.astra .slider-style-rail {
+  height: 6px; background: linear-gradient(105deg, #17418f, #4edfff 30%, #7c64ff 55%, #c855ee 76%, #ff78cf, #315bc3);
+  background-size: 240% 100%; box-shadow: 0 0 8px rgba(120,102,255,.62); animation: astra-preview-drift 7s linear infinite;
+}
+@keyframes astra-preview-drift { to { background-position: 100% 50%; } }
+.slider-style-preview.astra .slider-style-thumb {
+  left: 70%; z-index: 3; width: 12px; height: 12px; border: 0; border-radius: 0;
+  clip-path: polygon(50% 0, 61% 36%, 100% 50%, 61% 64%, 50% 100%, 39% 64%, 0 50%, 39% 36%);
+  background: radial-gradient(circle, #fff 0 24%, #bcefff 36%, #916cff 72%); filter: drop-shadow(0 0 4px #8d7bff);
+}
+@media (prefers-reduced-motion: reduce) {
+  .slider-style-preview.astra::before, .slider-style-preview.astra .slider-style-rail { animation: none; }
+}
