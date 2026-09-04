@@ -153,6 +153,209 @@ describe("Claude event routing", () => {
     expect(context.onTurnCompleted).toHaveBeenCalledWith("thread-1");
   });
 
+  it("surfaces a successful Claude result that produced no response", () => {
+    useTaskStore.getState().setActiveThread("thread-1");
+    send({ type: "system", subtype: "init" });
+    send({ type: "result", subtype: "success", is_error: false, result: "" });
+
+    const task = useTaskStore.getState().tasks["thread-1"];
+    expect(task).toMatchObject({
+      status: "error",
+      lastCompletedTurnId: "turn-1",
+      lastCompletedTurnStatus: "error",
+      error: expect.stringContaining("finished without returning a response"),
+    });
+    expect(task.activities).toMatchObject([{
+      id: "claude-empty-result-turn-1",
+      kind: "warning",
+      title: "Claude Code returned no response",
+      status: "failed",
+      turnId: "turn-1",
+      turnStatus: "failed",
+    }]);
+    expect(context.onError).toHaveBeenCalledWith(expect.stringContaining("Your prompt was saved"));
+    expect(context.onStatus).toHaveBeenCalledWith("Task failed");
+    expect(context.onTurnCompleted).toHaveBeenCalledWith("thread-1");
+
+    send({ type: "result", subtype: "success", is_error: false, result: "" });
+    expect(useTaskStore.getState().tasks["thread-1"].activities).toHaveLength(1);
+    expect(context.onTurnCompleted).toHaveBeenCalledTimes(1);
+
+    const savedMessages = JSON.parse(JSON.stringify(task.messages));
+    const savedActivities = JSON.parse(JSON.stringify(task.activities));
+    resetTaskStore();
+    useTaskStore.getState().hydrateTask("thread-1", savedMessages, savedActivities);
+    expect(useTaskStore.getState().tasks["thread-1"].activities).toMatchObject([{
+      id: "claude-empty-result-turn-1",
+      turnStatus: "failed",
+    }]);
+  });
+
+  it("recovers result text when Claude's assistant event was lost", () => {
+    useTaskStore.getState().setActiveThread("thread-1");
+    send({ type: "system", subtype: "init" });
+    send({ type: "result", subtype: "success", is_error: false, result: "Recovered answer" });
+
+    const task = useTaskStore.getState().tasks["thread-1"];
+    expect(task.status).toBe("completed");
+    expect(task.messages).toMatchObject([{
+      id: "claude-turn-1",
+      role: "assistant",
+      text: "Recovered answer",
+      turnId: "turn-1",
+      turnStatus: "completed",
+    }]);
+    expect(task.activities).toHaveLength(0);
+    expect(context.onError).not.toHaveBeenCalled();
+  });
+
+  it("does not duplicate assistant text repeated in the result payload", () => {
+    send({ type: "system", subtype: "init" });
+    send({
+      type: "assistant",
+      message: { id: "message-1", content: [{ type: "text", text: "One answer" }] },
+    });
+    send({ type: "result", subtype: "success", result: "One answer" });
+
+    expect(useTaskStore.getState().tasks["thread-1"].messages).toMatchObject([{
+      id: "message-1",
+      text: "One answer",
+      turnStatus: "completed",
+    }]);
+    expect(useTaskStore.getState().tasks["thread-1"].messages).toHaveLength(1);
+  });
+
+  it("accepts a tool-only Claude turn as meaningful output", () => {
+    useTaskStore.getState().setActiveThread("thread-1");
+    send({ type: "system", subtype: "init" });
+    send({
+      type: "assistant",
+      message: {
+        id: "tool-only-message",
+        content: [{ type: "tool_use", id: "tool-1", name: "Read", input: { file_path: "/tmp/a" } }],
+      },
+    });
+    send({ type: "result", subtype: "success", is_error: false, result: "" });
+
+    const task = useTaskStore.getState().tasks["thread-1"];
+    expect(task.status).toBe("completed");
+    expect(task.activities).toMatchObject([{
+      id: "tool-1",
+      kind: "command",
+      title: "/tmp/a",
+      turnStatus: "completed",
+    }]);
+    expect(context.onError).not.toHaveBeenCalled();
+  });
+
+  it("does not mistake an unrendered thinking-only message for a visible response", () => {
+    useTaskStore.getState().setActiveThread("thread-1");
+    send({ type: "system", subtype: "init" });
+    send({
+      type: "assistant",
+      message: {
+        id: "thinking-only-message",
+        content: [{ type: "thinking", thinking: "Internal thought" }],
+      },
+    });
+    send({ type: "result", subtype: "success", is_error: false, result: "   " });
+
+    const task = useTaskStore.getState().tasks["thread-1"];
+    expect(task.status).toBe("error");
+    expect(task.messages).toHaveLength(0);
+    expect(task.activities[0].title).toBe("Claude Code returned no response");
+    expect(context.onError).toHaveBeenCalledOnce();
+  });
+
+  it("accepts a streamed reasoning-only turn because its activity is visible", () => {
+    send({ type: "system", subtype: "init" });
+    send({
+      type: "stream_event",
+      event: {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "thinking_delta", thinking: "Visible reasoning" },
+      },
+    });
+    send({ type: "result", subtype: "success", result: "" });
+
+    const task = useTaskStore.getState().tasks["thread-1"];
+    expect(task.status).toBe("completed");
+    expect(task.activities).toMatchObject([{
+      kind: "reasoning",
+      detail: "Visible reasoning",
+      turnStatus: "completed",
+    }]);
+    expect(task.activities.find((entry) => entry.kind === "warning")).toBeUndefined();
+  });
+
+  it("keeps empty-result detection isolated between concurrent threads", () => {
+    send({ type: "system", subtype: "init" });
+    send({
+      type: "assistant",
+      message: { id: "message-1", content: [{ type: "text", text: "Thread one answer" }] },
+    });
+    routeClaudeEvent(
+      { threadId: "thread-2", turnId: "turn-2", message: { type: "system", subtype: "init" } },
+      context,
+    );
+    routeClaudeEvent(
+      { threadId: "thread-2", turnId: "turn-2", message: { type: "result", subtype: "success", result: "" } },
+      context,
+    );
+
+    expect(useTaskStore.getState().tasks["thread-2"].status).toBe("error");
+    expect(useTaskStore.getState().tasks["thread-2"].activities[0].title).toBe("Claude Code returned no response");
+    send({ type: "result", subtype: "success", result: "" });
+    expect(useTaskStore.getState().tasks["thread-1"].status).toBe("completed");
+    expect(useTaskStore.getState().tasks["thread-1"].activities).toHaveLength(0);
+  });
+
+  it("recovers result text without overwriting a prior turn after a delayed result", () => {
+    send({ type: "system", subtype: "init" }, "turn-a");
+    send({
+      type: "stream_event",
+      event: { type: "message_start", message: { id: "message-a" } },
+    }, "turn-a");
+    send({
+      type: "assistant",
+      message: { id: "message-a", content: [{ type: "text", text: "Answer A" }] },
+    }, "turn-a");
+
+    send({ type: "system", subtype: "init" }, "turn-b");
+    send({ type: "result", subtype: "success", result: "" }, "turn-a");
+    send({ type: "result", subtype: "success", result: "Recovered B" }, "turn-b");
+
+    const task = useTaskStore.getState().tasks["thread-1"];
+    expect(task.status).toBe("completed");
+    expect(task.messages).toMatchObject([
+      { id: "message-a", text: "Answer A", turnId: "turn-a" },
+      { id: "claude-turn-b", text: "Recovered B", turnId: "turn-b", turnStatus: "completed" },
+    ]);
+  });
+
+  it("accepts a compaction-only Claude turn as visible output", () => {
+    useTaskStore.getState().setActiveThread("thread-1");
+    send({ type: "system", subtype: "init" });
+    send({ type: "system", subtype: "status", status: "compacting", uuid: "start-1" });
+    send({
+      type: "system",
+      subtype: "compact_boundary",
+      uuid: "boundary-1",
+      compact_metadata: { trigger: "auto", pre_tokens: 1234 },
+    });
+    send({ type: "result", subtype: "success", result: "" });
+
+    const task = useTaskStore.getState().tasks["thread-1"];
+    expect(task.status).toBe("completed");
+    expect(task.activities).toMatchObject([{
+      kind: "compaction",
+      status: "completed",
+      turnStatus: "completed",
+    }]);
+    expect(context.onError).not.toHaveBeenCalled();
+  });
+
   it("ignores late output from a completed Claude process", () => {
     useTaskStore.getState().setActiveTurn("thread-1", "turn-old");
     useTaskStore.getState().setTaskStatus("thread-1", "running");
@@ -287,6 +490,19 @@ describe("Claude event routing", () => {
     send({ type: "openkiwi_exit", message: "process ended during kill" });
 
     expect(useTaskStore.getState().tasks["thread-1"].status).toBe("interrupted");
+    expect(context.onError).not.toHaveBeenCalled();
+    expect(context.onStatus).toHaveBeenCalledWith("Stopped");
+  });
+
+  it("honors explicit stop intent when Claude returns an empty success", () => {
+    useTaskStore.getState().setActiveThread("thread-1");
+    send({ type: "system", subtype: "init" });
+    markProviderStopIntent("thread-1", "turn-1");
+    send({ type: "result", subtype: "success", is_error: false, result: "" });
+
+    const task = useTaskStore.getState().tasks["thread-1"];
+    expect(task.status).toBe("interrupted");
+    expect(task.activities).toHaveLength(0);
     expect(context.onError).not.toHaveBeenCalled();
     expect(context.onStatus).toHaveBeenCalledWith("Stopped");
   });
@@ -601,6 +817,7 @@ describe("Claude event routing", () => {
 
   it("ignores compaction events replayed after the turn is retired", () => {
     send({ type: "stream_event", event: { type: "message_start", message: { id: "message-1" } } });
+    send({ type: "assistant", message: { id: "message-1", content: [{ type: "text", text: "Done" }] } });
     send({ type: "result", subtype: "success" });
     send({ type: "system", subtype: "status", status: "compacting", uuid: "status-late" });
     send({ type: "system", subtype: "compact_boundary", uuid: "boundary-late", compact_metadata: { trigger: "auto", pre_tokens: 100 } });
