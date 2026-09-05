@@ -74,6 +74,23 @@ pub(super) async fn resolve_github_binary(app: &AppHandle) -> Result<PathBuf, St
     Err("GitHub CLI is not installed. Install it from cli.github.com, then refresh GitHub settings.".into())
 }
 
+async fn github_probe_output(
+    command: tokio::process::Command,
+) -> Result<std::process::Output, String> {
+    github_probe_output_with_timeout(command, std::time::Duration::from_secs(15)).await
+}
+
+async fn github_probe_output_with_timeout(
+    mut command: tokio::process::Command,
+    limit: std::time::Duration,
+) -> Result<std::process::Output, String> {
+    command.stdin(Stdio::null()).kill_on_drop(true);
+    tokio::time::timeout(limit, command.output())
+        .await
+        .map_err(|_| "GitHub status check timed out".to_string())?
+        .map_err(|error| format!("Could not check GitHub status: {error}"))
+}
+
 #[tauri::command]
 pub(super) async fn github_status(app: AppHandle) -> GitHubAccountStatus {
     let path = match resolve_github_binary(&app).await {
@@ -93,10 +110,9 @@ pub(super) async fn github_status(app: AppHandle) -> GitHubAccountStatus {
             };
         }
     };
-    let version = background_command(&path)
-        .arg("--version")
-        .stdin(Stdio::null())
-        .output()
+    let mut version_command = background_command(&path);
+    version_command.arg("--version");
+    let version = github_probe_output(version_command)
         .await
         .ok()
         .and_then(|output| {
@@ -110,17 +126,16 @@ pub(super) async fn github_status(app: AppHandle) -> GitHubAccountStatus {
             })
         })
         .filter(|value| !value.is_empty());
-    let auth = background_command(&path)
-        .args(["auth", "status", "--hostname", "github.com"])
-        .stdin(Stdio::null())
-        .output()
-        .await;
+    let mut auth_command = background_command(&path);
+    auth_command.args(["auth", "status", "--hostname", "github.com"]);
+    let auth = github_probe_output(auth_command).await;
     let authenticated = auth.as_ref().is_ok_and(|output| output.status.success());
     if !authenticated {
-        let error = auth
-            .ok()
-            .map(|output| String::from_utf8_lossy(&output.stderr).trim().to_string())
-            .filter(|value| !value.is_empty());
+        let error = Some(match auth {
+            Ok(output) => String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            Err(error) => error,
+        })
+        .filter(|value| !value.is_empty());
         return GitHubAccountStatus {
             available: true,
             authenticated: false,
@@ -134,10 +149,9 @@ pub(super) async fn github_status(app: AppHandle) -> GitHubAccountStatus {
             error,
         };
     }
-    let user = background_command(&path)
-        .args(["api", "user"])
-        .stdin(Stdio::null())
-        .output()
+    let mut user_command = background_command(&path);
+    user_command.args(["api", "user"]);
+    let user = github_probe_output(user_command)
         .await
         .ok()
         .filter(|output| output.status.success())
@@ -465,5 +479,32 @@ mod clone_tests {
         }
         fs::remove_file(parent.join("existing-file")).unwrap();
         fs::remove_dir(&parent).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod probe_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn status_probe_times_out_a_stalled_native_process() {
+        #[cfg(windows)]
+        let mut command = background_command("powershell.exe");
+        #[cfg(windows)]
+        command.args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Start-Sleep -Seconds 60",
+        ]);
+        #[cfg(not(windows))]
+        let mut command = background_command("sh");
+        #[cfg(not(windows))]
+        command.args(["-c", "exec sleep 60"]);
+        let started = std::time::Instant::now();
+        let result =
+            github_probe_output_with_timeout(command, std::time::Duration::from_millis(100)).await;
+        assert!(result.unwrap_err().contains("timed out"));
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
     }
 }

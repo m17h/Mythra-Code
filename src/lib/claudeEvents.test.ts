@@ -48,6 +48,7 @@ describe("Claude event routing", () => {
         delta: { type: "text_delta", text: "Done." },
       },
     });
+    expect(context.onTranscriptChanged).toHaveBeenCalledWith("thread-1");
     useTaskStore.getState().flushDeltas();
 
     const task = useTaskStore.getState().tasks["thread-1"];

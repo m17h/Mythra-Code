@@ -92,3 +92,76 @@
   .slider-style-preview.astra::before, .slider-style-preview.astra .slider-style-rail,
   .slider-style-preview.astra .slider-style-rail::before { animation: none; }
 }
+
+/* -- Settings: effort-slider style picker -- */
+.slider-style-heading { display: flex; flex-direction: column; gap: 2px; margin: var(--s-4) 2px var(--s-2); }
+.slider-style-heading strong { color: var(--ink-2); font-size: var(--fs-ui); font-weight: 630; }
+.slider-style-heading small { color: var(--muted-2); font-size: var(--fs-meta); }
+.slider-style-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
+
+/* Chat typeface cards reuse the slider-style card shape; only the specimen
+   well and the two-up grid differ. Each specimen renders in the family it
+   selects, so the card is its own preview — no sample image, nothing to load. */
+.chat-font-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+.slider-style-card, .chat-font-card { min-width: 0; min-height: 62px; display: grid; grid-template-columns: 60px minmax(0, 1fr) 16px; align-items: center; gap: var(--s-2); padding: var(--s-2); border: 1px solid var(--line); border-radius: var(--r-md); color: var(--muted); background: rgba(255,255,255,.014); text-align: left; cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
+.chat-font-card { grid-template-columns: 44px minmax(0, 1fr) 16px; }
+.slider-style-card:hover, .chat-font-card:hover { color: var(--ink-2); border-color: var(--line-strong); background: rgba(255,255,255,.035); }
+.slider-style-card.selected, .chat-font-card.selected { color: var(--text); border-color: color-mix(in srgb, var(--green) 32%, var(--line)); background: var(--green-soft); }
+.slider-style-card > span:nth-child(2), .chat-font-card > span:nth-child(2) { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.slider-style-card strong, .chat-font-card strong { font-size: var(--fs-meta); font-weight: 620; }
+.slider-style-card small, .chat-font-card small { overflow: hidden; display: -webkit-box; color: var(--muted-2); font-size: var(--fs-micro); line-height: 1.35; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.slider-style-card > svg, .chat-font-card > svg { color: var(--green); }
+.slider-style-preview { position: relative; width: 58px; height: 24px; display: block; border-radius: 6px; background: rgba(0,0,0,.24); }
+.chat-font-preview { width: 42px; height: 34px; display: grid; place-items: center; border-radius: 6px; color: var(--ink-2); background: rgba(0,0,0,.24); font-size: 17px; line-height: 1; letter-spacing: 0; }
+.chat-font-card.selected .chat-font-preview { color: var(--text); }
+.app-shell[data-color-scheme="light"] .slider-style-preview, .app-shell[data-color-scheme="light"] .chat-font-preview { background: rgba(0,0,0,.06); }
+.slider-style-rail { position: absolute; left: 6px; right: 6px; top: 50%; height: 4px; transform: translateY(-50%); border-radius: 99px; }
+.slider-style-thumb { position: absolute; top: 50%; width: 10px; height: 10px; border: 2px solid var(--panel); border-radius: 50%; transform: translate(-50%, -50%); }
+.slider-style-preview.classic .slider-style-rail { background: linear-gradient(90deg, var(--green) 0 62%, var(--panel-3) 62%); }
+.slider-style-preview.classic .slider-style-thumb { left: 62%; background: var(--green); }
+.slider-style-preview.spectrum .slider-style-rail { background: linear-gradient(90deg, #4db6ff, #43d97c, #ffc531, #ff8a2b, #ff4655); }
+.slider-style-preview.spectrum .slider-style-thumb { left: 76%; background: #ff8a2b; box-shadow: 0 0 8px #ff8a2b; }
+.slider-style-preview.neon .slider-style-rail { background: var(--green); box-shadow: 0 0 8px color-mix(in srgb, var(--green) 75%, transparent); }
+.slider-style-preview.neon .slider-style-thumb { left: 68%; background: color-mix(in srgb, var(--green) 45%, #fff); box-shadow: 0 0 10px var(--green); }
+
+.slider-style-preview.pixel .slider-style-rail { height: 8px; border-radius: 2px; background: repeating-linear-gradient(90deg, transparent 0 5px, var(--panel) 5px 7px), linear-gradient(90deg, #33d17a 0 42%, #f6d32d 42% 72%, #f66151 72% 100%); }
+.slider-style-preview.pixel .slider-style-thumb { left: 66%; width: 6px; height: 12px; border-radius: 2px; background: var(--text); border-color: var(--bg); }
+.slider-style-preview.aurora .slider-style-rail { background: linear-gradient(110deg, #6ee7d8, #7aa5ff 30%, #b98cff 60%, #ff8cd1 90%); box-shadow: 0 0 8px rgba(185, 140, 255, .6); }
+.slider-style-preview.aurora .slider-style-thumb { left: 72%; background: #fff; box-shadow: 0 0 9px rgba(185, 140, 255, .9); }
+.slider-style-preview.ink .slider-style-rail { height: 2px; border-radius: 0; background: linear-gradient(90deg, var(--text) 0 64%, var(--panel-3) 64%); }
+.slider-style-preview.ink .slider-style-thumb { left: 64%; background: var(--panel); border-color: var(--text); }
+/* Reactor preview uses the same charging cells and concentric core. */
+.slider-style-preview.reactor .slider-style-rail { height: 8px; border-radius: 2px; background: #34213a; }
+.slider-style-preview.reactor .slider-style-rail::after {
+  content: ""; position: absolute; inset: 0 25% 0 0; border-radius: 2px;
+  background: repeating-linear-gradient(90deg, transparent 0 4px, #241c32 4px 6px), linear-gradient(100deg, transparent 20%, #fff9 48%, transparent 70%) 0 0 / 70px 100%, linear-gradient(90deg, #d16bff, #ff8555);
+  animation: reactor-flow 1.2s linear infinite;
+}
+.slider-style-preview.reactor .slider-style-thumb { left: 72%; width: 15px; height: 15px; border: 1px solid #ff8555; background: radial-gradient(circle, white 0 14%, #ff8555 20% 34%, #241c32 40% 59%, #ff8555 64%); box-shadow: 0 0 9px #f65db5; }
+@media (prefers-reduced-motion: reduce) { .slider-style-preview.reactor .slider-style-rail::after { animation: none; } }
+/* Dart: a flight line with the wake widening into the arrowhead. */
+.slider-style-preview.dart .slider-style-rail { height: 1px; border-radius: 0; background: var(--panel-3); }
+.slider-style-preview.dart .slider-style-rail::after {
+  content: ""; position: absolute; left: 0; top: 50%; width: 62%; height: 15px; transform: translateY(-50%);
+  clip-path: polygon(0 46%, 100% 0, 100% 100%, 0 54%);
+  background: linear-gradient(90deg, color-mix(in srgb, #43cb5c 18%, transparent), #7ee04a);
+}
+.slider-style-preview.dart .slider-style-thumb {
+  left: 62%; width: 14px; height: 13px; border: 0; border-radius: 0;
+  clip-path: polygon(0 0, 100% 50%, 0 100%, 30% 50%);
+  background: linear-gradient(180deg, #c2f23c, #7ee04a);
+}
+/* Coil: the cord itself, wound tight, with its hex collar. */
+.slider-style-preview.coil .slider-style-rail {
+  height: 16px; border-radius: 0;
+  background: linear-gradient(90deg, #6a4fe0, #ab48e0 60%, #f43fae) no-repeat left center / 64% 100%;
+  -webkit-mask-image: var(--coil-turn); mask-image: var(--coil-turn);
+  -webkit-mask-size: 11px 100%; mask-size: 11px 100%;
+  -webkit-mask-repeat: repeat-x; mask-repeat: repeat-x;
+  -webkit-mask-position: 0 center; mask-position: 0 center;
+}
+.slider-style-preview.coil .slider-style-thumb {
+  left: 64%; width: 12px; height: 17px; border: 0; border-radius: 0;
+  clip-path: polygon(50% 0, 100% 26%, 100% 74%, 50% 100%, 0 74%, 0 26%);
+  background: linear-gradient(180deg, #e07ae8, #ab48e0 58%, #7c2f9e);
+}

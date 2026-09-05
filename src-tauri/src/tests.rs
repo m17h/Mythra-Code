@@ -2884,3 +2884,32 @@ fn openrouter_credit_balance_falls_back_to_the_key_limit_without_guessing() {
     assert_eq!(balance.source, "keyLimit");
     assert!(parse_openrouter_key_limit(&json!({ "data": { "usage": 7.75 } })).is_none());
 }
+
+#[tokio::test]
+async fn server_input_deadline_covers_a_busy_pipe_lock() {
+    let (writer, _reader) = tokio::io::duplex(1);
+    let input = Mutex::new(writer);
+    let guard = input.lock().await;
+    let result = write_server_message(
+        &input,
+        b"request\n",
+        Instant::now() + Duration::from_millis(20),
+    )
+    .await;
+    assert!(result.unwrap_err().contains("timed out"));
+    drop(guard);
+}
+
+#[tokio::test]
+async fn server_input_deadline_covers_a_provider_that_stops_reading() {
+    let (writer, _reader) = tokio::io::duplex(1);
+    let input = Mutex::new(writer);
+    let result = write_server_message(
+        &input,
+        b"request\n",
+        Instant::now() + Duration::from_millis(20),
+    )
+    .await;
+    assert!(result.unwrap_err().contains("timed out"));
+    assert!(input.try_lock().is_ok());
+}

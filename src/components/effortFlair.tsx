@@ -11,8 +11,8 @@ const PIXEL_EFFORT_COLORS = ["#33d17a", "#33d17a", "#f6d32d", "#f6d32d", "#f6615
 const AURORA_EFFORT_COLORS = ["#6ee7d8", "#7aa5ff", "#9d8cff", "#b98cff", "#ff8cd1"];
 /** Astra: cool starlight deepening through a blue-violet nebula. */
 const ASTRA_EFFORT_COLORS = ["#58e6ff", "#5aa0ff", "#836dff", "#b85dff", "#ff6ed8"];
-/** Tide: ocean blue rising into bright seafoam. */
-const TIDE_EFFORT_COLORS = ["#4f7cff", "#3e99f5", "#2db6eb", "#2ed2dc", "#55ead2"];
+/** Reactor: violet ignition, hot pink plasma, then a golden core. */
+const REACTOR_EFFORT_COLORS = ["#a78bfa", "#d16bff", "#f65db5", "#ff8555", "#ffd166"];
 /** Dart: deep racing emerald accelerating to acid lime. */
 const DART_EFFORT_COLORS = ["#0e9b73", "#1cb46b", "#43cb5c", "#7ee04a", "#c2f23c"];
 /** Coil: a cord under load, indigo winding up into magenta. */
@@ -35,7 +35,7 @@ export function effortFlairStyle(index: number, count: number): CSSProperties {
     "--pixel-effort-color": paletteColorAt(PIXEL_EFFORT_COLORS, heat),
     "--aurora-effort-color": paletteColorAt(AURORA_EFFORT_COLORS, heat),
     "--astra-effort-color": paletteColorAt(ASTRA_EFFORT_COLORS, heat),
-    "--tide-effort-color": paletteColorAt(TIDE_EFFORT_COLORS, heat),
+    "--reactor-effort-color": paletteColorAt(REACTOR_EFFORT_COLORS, heat),
     "--dart-effort-color": paletteColorAt(DART_EFFORT_COLORS, heat),
     "--coil-effort-color": paletteColorAt(COIL_EFFORT_COLORS, heat),
   } as CSSProperties;

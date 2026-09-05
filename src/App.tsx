@@ -1,3 +1,6 @@
+import { useTranscriptSaves } from "./hooks/useTranscriptSaves";
+import { useFlushOnClose } from "./hooks/useFlushOnClose";
+import { useGitHubLogin } from "./hooks/useGitHubLogin";
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type CSSProperties, type Dispatch, type PointerEvent as ReactPointerEvent, type SetStateAction } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -10,7 +13,7 @@ import { getCodexRuntimeStatus, auditEvent, exportTextFile, getNormalChatWorkspa
 import { deleteClaudeTranscript, getClaudeRateLimits, getClaudeRuntimeStatus, listClaudeModels, loadClaudeTranscript, loadClaudeTranscriptPage, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, visibleClaudeModels, type ClaudeModel, type ClaudeRuntimeStatus } from "./lib/claude";
 import { deleteCursorTranscript, getCursorRuntimeStatus, listCursorModels, loadCursorTranscript, loadCursorTranscriptPage, respondToCursorPermission, saveCursorTranscript, startCursorLogin, type CursorModel, type CursorRuntimeStatus } from "./lib/cursor";
 import { listLocalTranscriptThreads } from "./lib/localTranscriptPersistence";
-import { loadStored, storeValue } from "./lib/storage";
+import { flushPendingStateWrites, loadStored, storeValue } from "./lib/storage";
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_PROMPT_PROFILES, DEFAULT_SETTINGS, sanitizeAutoArchiveSubagentThreads, sanitizeChatFont, sanitizeEffortSlider, sanitizeTheme, themeColorScheme } from "./lib/appConfig";
 import { commandSandbox, threadResumeParams, threadRuntimeConfig } from "./lib/turnConfig";
 import { threadSearchParams, threadsForWorkspace, type ThreadSearchResponse } from "./lib/threadSearch";
@@ -32,7 +35,6 @@ import { ProjectPromptControl } from "./components/ProjectPromptControl";
 import { ApprovalCenter } from "./components/ApprovalCenter";
 import { Composer, discardDraft, type ComposerHandle } from "./components/Composer";
 import { SubAgentCommandCenter, type SubAgentModelOption, type SubAgentPolicyMode } from "./components/SubAgentCommandCenter";
-import { CommandPalette } from "./components/CommandPalette";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { AuthRequiredModal, RuntimeSetupModal } from "./components/RuntimeModals";
 import type { AgentRecord, AttachmentRecord, McpView } from "./components/StudioDock";
@@ -79,6 +81,8 @@ import { useAppShortcuts, workspaceShortcutLabel } from "./hooks/useAppShortcuts
 import { useThreadHealth } from "./hooks/useThreadHealth";
 import { useCodexEvents } from "./hooks/useCodexEvents";
 import { useClaudeEvents } from "./hooks/useClaudeEvents";
+import { nextUsageReset, useUsageRefresh } from "./hooks/useUsageRefresh";
+import { PinnedWorkspaceGroup } from "./components/PinnedWorkspaceGroup";
 import { useCursorEvents } from "./hooks/useCursorEvents";
 import { useScheduler } from "./hooks/useScheduler";
 import { useTerminal } from "./hooks/useTerminal";
@@ -135,7 +139,7 @@ import { canOwnThread, nativeAgentLinkFromThread, nativeAgentLinksAfterThreadDel
 import { autoArchiveSubagentCandidates } from "./lib/subAgentArchive";
 import { collectSubAgentWorkers, isSubAgentWorkerActive, type SubAgentWorker } from "./lib/subAgentActivity";
 import { useChildAgents } from "./hooks/useChildAgents";
-import { reorderProjects, type ProjectDropPosition } from "./lib/projectOrdering";
+import { reorderProjects, sortProjectsByPin, toggleProjectPinned, type ProjectDropPosition } from "./lib/projectOrdering";
 import {
   deleteCheckpointSnapshot,
   type CheckpointRecord,
@@ -154,6 +158,7 @@ import {
   type WorkspaceGitInfo,
 } from "./lib/worktrees";
 
+const CommandPalette = lazy(() => import("./components/CommandPalette").then((module) => ({ default: module.CommandPalette })));
 const ChatTimeline = lazy(() => import("./components/ChatTimeline").then((module) => ({ default: module.ChatTimeline })));
 const StudioDock = lazy(() => import("./components/StudioDock").then((module) => ({ default: module.StudioDock })));
 const OnboardingModal = lazy(() => import("./components/OnboardingModal").then((module) => ({ default: module.OnboardingModal })));
@@ -200,7 +205,6 @@ const EMPTY_MESSAGES: ChatMessage[] = [];
 const EMPTY_ACTIVITIES: Activity[] = [];
 const EMPTY_AGENTS: AgentRecord[] = [];
 const EMPTY_QUEUED_TURNS: QueuedTurn[] = [];
-const LOCAL_TRANSCRIPT_SAVE_DEBOUNCE_MS = 900;
 const DEFAULT_GIT_COMMIT_MESSAGE = "Update project files";
 /** Enough to name what is missing from a diff without pasting a build tree. */
 const MAX_LISTED_UNTRACKED_PATHS = 50;
@@ -299,7 +303,7 @@ function sanitizeThreadReasoningRecords(value: unknown): Record<string, ThreadRe
   }));
 }
 
-const initialProjects = sanitizeProjectDefaultOverrides(sanitizeProjectSubagentOverrides(loadStored<Project[]>("kiwi.projects", [])));
+const initialProjects = sortProjectsByPin(sanitizeProjectDefaultOverrides(sanitizeProjectSubagentOverrides(loadStored<Project[]>("kiwi.projects", []))));
 const initialWorkspaceMode: WorkspaceMode = loadStored<WorkspaceMode>("kiwi.workspaceMode", initialProjects.length ? "project" : "chat");
 const initialKnownThreads = compactSidebarIndex(loadStored<ThreadSidebarIndex>("kiwi.knownThreads", {}));
 const initialOnboardingVersion = loadStored<number>("kiwi.onboardingVersion", 0);
@@ -400,6 +404,8 @@ export default function App() {
   const [projects, setProjects, projectsRef] = usePersistedStateRef<Project[]>("kiwi.projects", [], { init: () => initialProjects });
   const [activeProjectId, setActiveProjectId] = useState<string | null>(initialProjects[0]?.id ?? null);
   const [workspaceMode, setWorkspaceMode] = usePersistedState<WorkspaceMode>("kiwi.workspaceMode", "chat", { init: () => initialWorkspaceMode });
+  // Collapsing the pinned block is a way to focus on everything else, so it
+  // outlives the session like the rest of the sidebar layout.
   const [chatWorkspacePath, setChatWorkspacePath] = useState("");
   const [threads, setThreads] = useState<Thread[]>([]);
   const [activeThread, setActiveThread] = useState<Thread | null>(null);
@@ -578,8 +584,6 @@ export default function App() {
   const composerRef = useRef<ComposerHandle>(null);
   const threadSearchRequestRef = useRef(0);
   const pendingTurnStartsRef = useRef(new PendingTurnStarts());
-  const claudeSaveTimersRef = useRef(new Map<string, number>());
-  const cursorSaveTimersRef = useRef(new Map<string, number>());
   const cursorSessionIdsRef = useRef<Record<string, string>>({});
   const permissionControlRef = useRef<HTMLDivElement>(null);
   if (threadProjectBindingsRef.current === null) {
@@ -1092,37 +1096,13 @@ export default function App() {
   }, []);
   const showSuccessToast = useCallback((message: string) => showToast(message, "success"), [showToast]);
 
-  useEffect(() => {
-    if (!githubLoginPending) return;
-    let disposed = false;
-    let attempts = 0;
-    const check = async () => {
-      attempts += 1;
-      try {
-        const next = await getGitHubStatus();
-        if (disposed) return;
-        setGithubStatus(next);
-        if (next.authenticated) {
-          setGithubLoginPending(false);
-          showSuccessToast(`GitHub connected${next.login ? ` as @${next.login}` : ""}`);
-        } else if (attempts >= 45) {
-          setGithubLoginPending(false);
-          setError("GitHub sign-in was not detected. Finish `gh auth login`, then use Refresh in GitHub settings.");
-        }
-      } catch (reason) {
-        if (!disposed && attempts >= 45) {
-          setGithubLoginPending(false);
-          setError(`Could not verify GitHub sign-in: ${friendlyError(reason)}`);
-        }
-      }
-    };
-    const timer = window.setInterval(() => void check(), 2_000);
-    void check();
-    return () => {
-      disposed = true;
-      window.clearInterval(timer);
-    };
-  }, [githubLoginPending, showSuccessToast]);
+  useGitHubLogin({
+    pending: githubLoginPending,
+    onStatus: setGithubStatus,
+    onDone: () => setGithubLoginPending(false),
+    onSuccess: showSuccessToast,
+    onError: setError,
+  });
 
   const dismissSuccessToast = useCallback(() => {
     if (successToastTimerRef.current !== null) {
@@ -1485,78 +1465,22 @@ export default function App() {
     setActiveThread((current) => current ? repairRootThreadMetadata(current, childThreadLinks) : current);
   }, [childThreadLinks]);
 
-  const persistClaudeThread = useCallback(
-    async (threadId: string): Promise<boolean> => {
-      const task = useTaskStore.getState().tasks[threadId];
-      const thread = activeThread?.id === threadId ? activeThread : (threads.find((entry) => entry.id === threadId) ?? knownThreadsRef.current?.[threadId]);
-      if (!task || !thread || !isClaudeThread(thread)) return false;
-      await saveClaudeTranscript({ thread, messages: task.messages.map((message) => ({ ...message, streaming: false })), activities: task.activities });
-      return true;
-    },
-    [activeThread, threads],
-  );
-
-  const scheduleClaudeThreadSave = useCallback(
-    (threadId: string) => {
-      useTaskStore.getState().setTranscriptDirty(threadId, true);
-      const existing = claudeSaveTimersRef.current.get(threadId);
-      if (existing !== undefined) window.clearTimeout(existing);
-      const timer = window.setTimeout(() => {
-        claudeSaveTimersRef.current.delete(threadId);
-        void persistClaudeThread(threadId)
-          .then((saved) => {
-            if (saved) useTaskStore.getState().setTranscriptDirty(threadId, false);
-          })
-          .catch((error) => recordError(`Claude transcript save failed: ${error instanceof Error ? error.message : String(error)}`));
-      }, LOCAL_TRANSCRIPT_SAVE_DEBOUNCE_MS);
-      claudeSaveTimersRef.current.set(threadId, timer);
-    },
-    [persistClaudeThread],
-  );
-
-  const persistCursorThread = useCallback(
-    async (threadId: string): Promise<boolean> => {
-      const task = useTaskStore.getState().tasks[threadId];
-      const thread = activeThread?.id === threadId ? activeThread : (threads.find((entry) => entry.id === threadId) ?? knownThreadsRef.current?.[threadId]);
-      if (!task || !thread || !isCursorThread(thread)) return false;
-      await saveCursorTranscript({
-        thread,
-        cursorSessionId: cursorSessionIdsRef.current[threadId] ?? "",
-        messages: task.messages.map((message) => ({ ...message, streaming: false })),
-        activities: task.activities,
-      });
-      return true;
-    },
-    [activeThread, threads],
-  );
-
-  const scheduleCursorThreadSave = useCallback(
-    (threadId: string) => {
-      useTaskStore.getState().setTranscriptDirty(threadId, true);
-      const existing = cursorSaveTimersRef.current.get(threadId);
-      if (existing !== undefined) window.clearTimeout(existing);
-      const timer = window.setTimeout(() => {
-        cursorSaveTimersRef.current.delete(threadId);
-        void persistCursorThread(threadId)
-          .then((saved) => {
-            if (saved) useTaskStore.getState().setTranscriptDirty(threadId, false);
-          })
-          .catch((error) => recordError(`Cursor transcript save failed: ${error instanceof Error ? error.message : String(error)}`));
-      }, LOCAL_TRANSCRIPT_SAVE_DEBOUNCE_MS);
-      cursorSaveTimersRef.current.set(threadId, timer);
-    },
-    [persistCursorThread],
-  );
-
-  useEffect(
-    () => () => {
-      for (const timer of claudeSaveTimersRef.current.values()) window.clearTimeout(timer);
-      claudeSaveTimersRef.current.clear();
-      for (const timer of cursorSaveTimersRef.current.values()) window.clearTimeout(timer);
-      cursorSaveTimersRef.current.clear();
-    },
-    [],
-  );
+  const localTranscriptSaves = useTranscriptSaves(async (threadId) => {
+    useTaskStore.getState().flushDeltas();
+    const task = useTaskStore.getState().tasks[threadId];
+    const thread = knownThreadsRef.current?.[threadId] ?? (activeThread?.id === threadId ? activeThread : threads.find((entry) => entry.id === threadId));
+    if (!task || !thread || !isLocalSubscriptionThread(thread)) return false;
+    const transcript = { thread, messages: task.messages.map((message) => ({ ...message, streaming: false })), activities: task.activities };
+    if (isClaudeThread(thread)) await saveClaudeTranscript(transcript);
+    else await saveCursorTranscript({ ...transcript, cursorSessionId: cursorSessionIdsRef.current[threadId] ?? "" });
+    return true;
+  });
+  const scheduleClaudeThreadSave = localTranscriptSaves.schedule;
+  const scheduleCursorThreadSave = localTranscriptSaves.schedule;
+  useFlushOnClose(async () => {
+    await localTranscriptSaves.flushAll();
+    await flushPendingStateWrites();
+  }, setError);
 
   const checkRuntime = useCallback(async (showSetupWhenMissing = true): Promise<CodexRuntimeStatus> => {
     setRuntimeChecking(true);
@@ -1951,11 +1875,21 @@ export default function App() {
         setOpenAiRateLimitsRead(true);
       }
     } catch {
-      if (openAiUsageRequestRef.current === request) {
-        setOpenAiRateLimits(null);
-        setOpenAiRateLimitsRead(false);
-      }
+      // Deliberately keeps whatever was last read. Usage is polled now, so a
+      // single flaky round trip would otherwise blank a bar the user is
+      // watching for a minute; sign-out and account switches clear it through
+      // `account/read` instead. When nothing has ever been read the state is
+      // already empty, which still renders as "temporarily unavailable".
     }
+  }, []);
+
+  /**
+   * Re-reads the Claude subscription quota without re-running the whole
+   * runtime status probe. Errors propagate so the caller can keep the last
+   * good reading rather than blanking the header.
+   */
+  const refreshClaudeUsage = useCallback(async () => {
+    setClaudeRateLimits(await getClaudeRateLimits());
   }, []);
 
   const openRouterCreditsRequestRef = useRef(0);
@@ -1996,6 +1930,40 @@ export default function App() {
       setOpenRouterCreditsError("");
     }
   }, [openRouterReady, refreshOpenRouterCredits]);
+
+  /**
+   * Keeps the header quota honest while the app stays open.
+   *
+   * Every provider only reports usage when it is asked, and the only thing
+   * that used to ask was a finished turn. Reading a long transcript, working
+   * in another client, or simply letting a 5h window roll over left the chip
+   * showing a number from whenever the last turn happened to end. The
+   * scheduler below re-reads the provider the header is actually showing,
+   * collapsing the bursts (several threads finishing at once, alt-tabbing)
+   * into a single round trip.
+   */
+  const activeUsageProvider = effectiveSettings.provider;
+  const refreshActiveProviderUsage = useCallback(async () => {
+    if (activeUsageProvider === "claude") return refreshClaudeUsage();
+    if (activeUsageProvider === "openrouter") return refreshOpenRouterCredits();
+    if (activeUsageProvider === "openai") return refreshUsage();
+  }, [activeUsageProvider, refreshClaudeUsage, refreshOpenRouterCredits, refreshUsage]);
+
+  const usageRefreshEnabled =
+    activeUsageProvider === "claude"
+      ? Boolean(claudeStatus?.available && claudeStatus.loggedIn)
+      : activeUsageProvider === "openrouter"
+        ? openRouterReady
+        : activeUsageProvider === "openai" && account?.type === "chatgpt";
+
+  const requestUsageRefresh = useUsageRefresh({
+    // Identity, not just provider: signing into a different account invalidates
+    // the previous snapshot even though the provider never changed.
+    key: `${activeUsageProvider}:${activeUsageProvider === "claude" ? claudeStatus?.email ?? "" : activeUsageProvider === "openai" ? account?.email ?? "" : ""}`,
+    enabled: usageRefreshEnabled,
+    refresh: refreshActiveProviderUsage,
+    resetsAt: nextUsageReset(accountUsageView.windows ?? []),
+  });
 
   const prepareLocalSkills = useCallback(
     async (folder: string, files: LocalSkillFile[], aliases: Record<string, string>, disabled: string[], removed: string[]) => {
@@ -2378,10 +2346,12 @@ export default function App() {
             completedUsage.estimatedCost,
           );
         }
-        void refreshOpenRouterCredits();
-      } else if (completedProvider === "openai") {
-        void refreshUsage();
       }
+      // Ask the scheduler rather than the provider directly: several threads
+      // finishing together become one read, and only the quota the header is
+      // actually showing is worth a round trip — switching provider forces a
+      // fresh read of its own.
+      requestUsageRefresh({ force: true });
       if (projectPath && activeWorkspace && normalizedProjectPath(projectPath) === normalizedProjectPath(activeWorkspace.path)) {
         // Bump just the finished thread instead of re-paging the entire
         // thread list from the runtime after every turn.
@@ -2431,22 +2401,14 @@ export default function App() {
       const task = useTaskStore.getState().tasks[threadId];
       const known = knownThreadsRef.current?.[threadId];
       if (known) {
-        // Cancel the debounced save only when this final save replaces it;
-        // otherwise a thread no longer in the index would lose the last
-        // scheduled persist of its final turn.
-        const timer = claudeSaveTimersRef.current.get(threadId);
-        if (timer !== undefined) window.clearTimeout(timer);
-        claudeSaveTimersRef.current.delete(threadId);
         const latestUser = [...(task?.messages ?? [])].reverse().find((message) => message.role === "user")?.text;
         const updated = { ...known, preview: latestUser?.slice(0, 140) || known.preview, updatedAt: Math.floor(Date.now() / 1000) };
         rememberThread(updated);
         if (activeWorkspace && threadBelongsToWorkspace(updated, activeWorkspace.path, threadProjectBindingsRef.current ?? {})) {
           setThreads((current) => upsertThread(current, updated));
         }
-        useTaskStore.getState().setTranscriptDirty(threadId, true);
-        void saveClaudeTranscript({ thread: updated, messages: (task?.messages ?? []).map((message) => ({ ...message, streaming: false })), activities: task?.activities ?? [] })
-          .then(() => useTaskStore.getState().setTranscriptDirty(threadId, false))
-          .catch((error) => recordError(`Claude transcript save failed: ${error instanceof Error ? error.message : String(error)}`));
+        void localTranscriptSaves.flush(threadId)
+          .catch((error) => recordError(`Claude transcript save failed: ${String(error)}`));
       }
       if (settings.notificationsEnabled && useTaskStore.getState().activeThreadId !== threadId) {
         void (async () => {
@@ -2459,9 +2421,7 @@ export default function App() {
       if (runtimeStatus?.available && projectPath && !projectPath.includes("normal-chats")) {
         void refreshDiffFor(threadId, executionPathFor(threadId, projectPath));
       }
-      void getClaudeRateLimits()
-        .then(setClaudeRateLimits)
-        .catch(() => setClaudeRateLimits(null));
+      requestUsageRefresh({ force: true });
     },
   });
 
@@ -2488,22 +2448,14 @@ export default function App() {
       const task = useTaskStore.getState().tasks[threadId];
       const known = knownThreadsRef.current?.[threadId];
       if (known) {
-        // Cancel the debounced save only when this final save replaces it;
-        // otherwise a thread no longer in the index would lose the last
-        // scheduled persist of its final turn.
-        const timer = cursorSaveTimersRef.current.get(threadId);
-        if (timer !== undefined) window.clearTimeout(timer);
-        cursorSaveTimersRef.current.delete(threadId);
         const latestUser = [...(task?.messages ?? [])].reverse().find((message) => message.role === "user")?.text;
         const updated = { ...known, preview: latestUser?.slice(0, 140) || known.preview, updatedAt: Math.floor(Date.now() / 1000) };
         rememberThread(updated);
         if (activeWorkspace && threadBelongsToWorkspace(updated, activeWorkspace.path, threadProjectBindingsRef.current ?? {})) {
           setThreads((current) => upsertThread(current, updated));
         }
-        useTaskStore.getState().setTranscriptDirty(threadId, true);
-        void saveCursorTranscript({ thread: updated, cursorSessionId: cursorSessionIdsRef.current[threadId] ?? "", messages: (task?.messages ?? []).map((message) => ({ ...message, streaming: false })), activities: task?.activities ?? [] })
-          .then(() => useTaskStore.getState().setTranscriptDirty(threadId, false))
-          .catch((error) => recordError(`Cursor transcript save failed: ${error instanceof Error ? error.message : String(error)}`));
+        void localTranscriptSaves.flush(threadId)
+          .catch((error) => recordError(`Cursor transcript save failed: ${String(error)}`));
       }
       if (settings.notificationsEnabled && useTaskStore.getState().activeThreadId !== threadId) {
         void (async () => {
@@ -2803,6 +2755,13 @@ export default function App() {
     const isCurrentPointer = (candidate: number | undefined) =>
       pointerId === undefined || candidate === undefined || candidate === pointerId;
 
+    // A drag reorders within the pinned or the unpinned block, never across
+    // them, so only same-group rows are offered as drop targets. The indicator
+    // then always sits where the project will actually land, instead of
+    // promising a slot the pinned-first order would immediately take back.
+    const sourcePinned = Boolean(projectsRef.current.find((project) => project.id === projectId)?.pinned);
+    const inSourceGroup = (row: HTMLElement) => (row.dataset.projectPinned === "true") === sourcePinned;
+
     const updateTarget = (clientX: number, clientY: number) => {
       if (!workspaceList) return;
       const listBounds = workspaceList.getBoundingClientRect();
@@ -2821,8 +2780,8 @@ export default function App() {
         return;
       }
       const rows = [...workspaceList.querySelectorAll<HTMLElement>("[data-project-id]")]
-        .filter((row) => row.dataset.projectId !== projectId);
-      const targetRow = pointedRow && pointedRow.dataset.projectId !== projectId && workspaceList.contains(pointedRow)
+        .filter((row) => row.dataset.projectId !== projectId && inSourceGroup(row));
+      const targetRow = pointedRow && pointedRow.dataset.projectId !== projectId && inSourceGroup(pointedRow) && workspaceList.contains(pointedRow)
         ? pointedRow
         : rows.reduce<HTMLElement | null>((nearest, row) => {
             if (!nearest) return row;
@@ -2894,11 +2853,70 @@ export default function App() {
     setWorkspaceMode("project");
   };
 
+  // `projects` is kept pinned-first by projectOrdering, so the split is just
+  // where the two groups meet rather than a second sort.
+  const pinnedProjects = useMemo(() => projects.filter((project) => project.pinned), [projects]);
+  const unpinnedProjects = useMemo(() => projects.filter((project) => !project.pinned), [projects]);
+
   const toggleProjectPin = (project: Project) => {
-    const updated = { ...project, pinned: !project.pinned };
-    const remaining = projects.filter((entry) => entry.id !== project.id);
-    const next = updated.pinned ? [updated, ...remaining] : projects.map((entry) => entry.id === project.id ? updated : entry);
-    setProjects(next);
+    setProjects((current) => toggleProjectPinned(current, project.id));
+  };
+
+  /**
+   * One workspace row. Pinned and unpinned projects render identically and
+   * differ only in which group they are listed under, so the row itself is
+   * written once and the group decides where it appears.
+   */
+  const renderProjectRow = (project: Project) => {
+    const workingCount = projectThreadCounts[normalizedProjectPath(project.path)] ?? 0;
+    const workingLabel = `${workingCount} thread${workingCount === 1 ? "" : "s"} working`;
+    return <div
+      key={project.id}
+      className={[
+        "workspace-row-wrap",
+        workspaceMode === "project" && project.id === activeProjectId ? "active" : "",
+        draggedProjectId === project.id ? "dragging" : "",
+        projectDropTarget?.id === project.id ? `drop-${projectDropTarget.position}` : "",
+      ].filter(Boolean).join(" ")}
+      data-project-id={project.id}
+      data-project-pinned={project.pinned ? "true" : "false"}
+      onPointerDown={(event) => startProjectPointerDrag(event, project.id)}
+    >
+      <button
+        className="workspace-row"
+        aria-label={workingCount > 0 ? `${project.name}, ${workingLabel}` : project.name}
+        onClick={(event) => {
+          if (suppressProjectClickRef.current) {
+            event.preventDefault();
+            return;
+          }
+          setActiveProjectId(project.id);
+          setWorkspaceMode("project");
+        }}
+        title={project.path}
+      >
+        <span className="workspace-icon">{project.pinned ? <Pin size={13} /> : <Folder size={14} />}</span>
+        <span className="workspace-name">{project.name}</span>
+        {workingCount > 0 && (
+          <span
+            className="workspace-thread-count"
+            title={workingLabel}
+            aria-hidden="true"
+          >
+            {workingCount}
+          </span>
+        )}
+      </button>
+      <RowMenu
+        label={`Options for ${project.name}`}
+        scale={(settings.uiScale || 100) / 100}
+        items={[
+          { label: project.pinned ? "Unpin project" : "Pin project", icon: project.pinned ? <PinOff size={13} /> : <Pin size={13} />, onSelect: () => toggleProjectPin(project) },
+          { label: "Project settings", icon: <Settings size={13} />, onSelect: () => openSettings("projects") },
+          { label: "Remove from Mythra Code", icon: <Trash2 size={13} />, danger: true, onSelect: () => removeProject(project) },
+        ]}
+      />
+    </div>;
   };
 
   const removeProject = async (project: Project) => {
@@ -3997,12 +4015,7 @@ export default function App() {
     const localSubscription = provider === "claude" || provider === "cursor";
     if (confirmDelete && !await confirmDialog(`Permanently delete “${label}”?\n\nThis removes the conversation from ${localSubscription ? "Mythra Code" : "the Codex runtime"} and cannot be undone.`)) return false;
     try {
-      const saveTimer = claudeSaveTimersRef.current.get(threadId);
-      if (saveTimer !== undefined) window.clearTimeout(saveTimer);
-      claudeSaveTimersRef.current.delete(threadId);
-      const cursorSaveTimer = cursorSaveTimersRef.current.get(threadId);
-      if (cursorSaveTimer !== undefined) window.clearTimeout(cursorSaveTimer);
-      cursorSaveTimersRef.current.delete(threadId);
+      localTranscriptSaves.cancel(threadId);
       if (provider === "claude") await deleteClaudeTranscript(threadId);
       else if (provider === "cursor") await deleteCursorTranscript(threadId);
       else await rpc("thread/delete", { threadId });
@@ -5222,56 +5235,12 @@ export default function App() {
               </span>
               <span className="workspace-name">Chats</span>
             </button>
-            {projects.map((project) => {
-              const workingCount = projectThreadCounts[normalizedProjectPath(project.path)] ?? 0;
-              const workingLabel = `${workingCount} thread${workingCount === 1 ? "" : "s"} working`;
-              return <div
-                key={project.id}
-                className={[
-                  "workspace-row-wrap",
-                  workspaceMode === "project" && project.id === activeProjectId ? "active" : "",
-                  draggedProjectId === project.id ? "dragging" : "",
-                  projectDropTarget?.id === project.id ? `drop-${projectDropTarget.position}` : "",
-                ].filter(Boolean).join(" ")}
-                data-project-id={project.id}
-                onPointerDown={(event) => startProjectPointerDrag(event, project.id)}
-              >
-                <button
-                  className="workspace-row"
-                  aria-label={workingCount > 0 ? `${project.name}, ${workingLabel}` : project.name}
-                  onClick={(event) => {
-                    if (suppressProjectClickRef.current) {
-                      event.preventDefault();
-                      return;
-                    }
-                    setActiveProjectId(project.id);
-                    setWorkspaceMode("project");
-                  }}
-                  title={project.path}
-                >
-                  <span className="workspace-icon">{project.pinned ? <Pin size={13} /> : <Folder size={14} />}</span>
-                  <span className="workspace-name">{project.name}</span>
-                  {workingCount > 0 && (
-                    <span
-                      className="workspace-thread-count"
-                      title={workingLabel}
-                      aria-hidden="true"
-                    >
-                      {workingCount}
-                    </span>
-                  )}
-                </button>
-                <RowMenu
-                  label={`Options for ${project.name}`}
-                  scale={(settings.uiScale || 100) / 100}
-                  items={[
-                    { label: project.pinned ? "Unpin project" : "Pin project", icon: project.pinned ? <PinOff size={13} /> : <Pin size={13} />, onSelect: () => toggleProjectPin(project) },
-                    { label: "Project settings", icon: <Settings size={13} />, onSelect: () => openSettings("projects") },
-                    { label: "Remove from Mythra Code", icon: <Trash2 size={13} />, danger: true, onSelect: () => removeProject(project) },
-                  ]}
-                />
-              </div>;
-            })}
+            {pinnedProjects.length > 0 && (
+              <PinnedWorkspaceGroup count={pinnedProjects.length} containsActiveWorkspace={workspaceMode === "project" && pinnedProjects.some((project) => project.id === activeProjectId)}>
+                {pinnedProjects.map(renderProjectRow)}
+              </PinnedWorkspaceGroup>
+            )}
+            {unpinnedProjects.map(renderProjectRow)}
             {!projects.length && (
               <button className="empty-project-button" onClick={addProject}>
                 <FolderOpen size={17} />
@@ -5486,6 +5455,7 @@ export default function App() {
                 onSelect={(label) => setHeaderUsageWindows((current) => ({ ...current, [effectiveSettings.provider]: label }))}
                 onConnect={() => openSettings("models")}
                 onDetails={() => activeProject ? openStudio("usage") : openSettings("usage")}
+                onOpen={requestUsageRefresh}
               />
             ) : (
               <button
@@ -6145,6 +6115,7 @@ export default function App() {
           onRespond={(result) => respondToApproval(pendingApproval, result)}
         />
       )}
+      {commandPaletteOpen && <Suspense fallback={null}>
       <CommandPalette
         open={commandPaletteOpen}
         projects={projects}
@@ -6162,6 +6133,7 @@ export default function App() {
         onSettings={() => openSettings()}
         onTool={openStudio}
       />
+      </Suspense>}
       <ConfirmDialogModal />
     </div>
   );

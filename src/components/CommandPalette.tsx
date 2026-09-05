@@ -6,6 +6,19 @@ import type { StudioTab } from "../lib/studioTabs";
 
 interface PaletteAction { id: string; label: string; detail: string; group: string; icon: typeof Command; run: () => void }
 
+const TOOL_ACTIONS: Array<[StudioTab, string, string, typeof Command]> = [
+  ["files", "Browse project files", "Navigate, preview, search, and attach files", FileCode2],
+  ["review", "Review working changes", "Inspect and approve the current diff", SearchCode],
+  ["terminal", "Open project terminal", "Run commands in the active project folder", TerminalSquare],
+  ["agents", "Open agent control", "Watch and manage delegated work", UsersRound],
+  ["checkpoints", "Open checkpoints", "Restore, reapply, accept, and preview saved project states", History],
+  ["worktrees", "Open worktrees", "Review, apply, merge, recover, and clean up isolated branches", GitFork],
+  ["context", "Open context attachments", "Files and images sent with the next message", Paperclip],
+  ["usage", "Open usage & audit", "Thread tokens, context pressure, plan limits, and request fields", Gauge],
+  ["git", "Open Git workspace", "Status, stage, commit, and review CI", GitBranch],
+  ["tools", "Open tools & skills", "Project actions, skills, and MCP servers", Wrench],
+];
+
 export function CommandPalette({ open, projects, threads, workflows, projectActive, onClose, onProject, onThread, onWorkflow, onNewThread, onSettings, onTool }: {
   open: boolean;
   projects: Project[];
@@ -27,18 +40,7 @@ export function CommandPalette({ open, projects, threads, workflows, projectActi
   const actions = useMemo<PaletteAction[]>(() => [
     { id: "new", label: "New thread", detail: "Start in the active workspace", group: "Commands", icon: Plus, run: onNewThread },
     { id: "settings", label: "Open settings", detail: "Models, prompts, tools, and appearance", group: "Commands", icon: Settings, run: onSettings },
-    ...(projectActive ? [
-      { id: "files", label: "Browse project files", detail: "Navigate, preview, search, and attach files", group: "Commands", icon: FileCode2, run: () => onTool("files") },
-      { id: "review", label: "Review working changes", detail: "Inspect and approve the current diff", group: "Commands", icon: SearchCode, run: () => onTool("review") },
-      { id: "terminal", label: "Open project terminal", detail: "Run commands in the active project folder", group: "Commands", icon: TerminalSquare, run: () => onTool("terminal") },
-      { id: "agents", label: "Open agent control", detail: "Watch and manage delegated work", group: "Commands", icon: UsersRound, run: () => onTool("agents") },
-      { id: "checkpoints", label: "Open checkpoints", detail: "Restore, reapply, accept, and preview saved project states", group: "Commands", icon: History, run: () => onTool("checkpoints") },
-      { id: "worktrees", label: "Open worktrees", detail: "Review, apply, merge, recover, and clean up isolated branches", group: "Commands", icon: GitFork, run: () => onTool("worktrees") },
-      { id: "context", label: "Open context attachments", detail: "Files and images sent with the next message", group: "Commands", icon: Paperclip, run: () => onTool("context") },
-      { id: "usage", label: "Open usage & audit", detail: "Thread tokens, context pressure, plan limits, and request fields", group: "Commands", icon: Gauge, run: () => onTool("usage") },
-      { id: "git", label: "Open Git workspace", detail: "Status, stage, commit, and review CI", group: "Commands", icon: GitBranch, run: () => onTool("git") },
-      { id: "tools", label: "Open tools & skills", detail: "Project actions, skills, and MCP servers", group: "Commands", icon: Wrench, run: () => onTool("tools") },
-    ] : []),
+    ...(projectActive ? TOOL_ACTIONS.map(([id, label, detail, icon]) => ({ id, label, detail, icon, group: "Commands", run: () => onTool(id) })) : []),
     ...workflows.filter((workflow) => workflow.enabled).map((workflow) => ({
       id: `workflow-${workflow.id}`,
       label: `Run workflow: ${workflow.name}`,

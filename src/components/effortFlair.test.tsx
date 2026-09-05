@@ -8,7 +8,7 @@ import { EffortSlider, effortFlairStyle } from "./effortFlair";
  * effort levels — otherwise a style silently falls back to its default color.
  */
 describe("effortFlairStyle", () => {
-  const LEVEL_VARIABLES = ["--effort-color", "--pixel-effort-color", "--aurora-effort-color", "--astra-effort-color", "--tide-effort-color", "--dart-effort-color", "--coil-effort-color"] as const;
+  const LEVEL_VARIABLES = ["--effort-color", "--pixel-effort-color", "--aurora-effort-color", "--astra-effort-color", "--reactor-effort-color", "--dart-effort-color", "--coil-effort-color"] as const;
 
   it.each([0, 1, 2, 3, 4])("publishes every palette's color for level %i", (index) => {
     const flair = effortFlairStyle(index, 5) as Record<string, string>;
@@ -19,7 +19,7 @@ describe("effortFlairStyle", () => {
 
   it.each([
     ["--astra-effort-color", ["#58e6ff", "#5aa0ff", "#836dff", "#b85dff", "#ff6ed8"]],
-    ["--tide-effort-color", ["#4f7cff", "#3e99f5", "#2db6eb", "#2ed2dc", "#55ead2"]],
+    ["--reactor-effort-color", ["#a78bfa", "#d16bff", "#f65db5", "#ff8555", "#ffd166"]],
     ["--dart-effort-color", ["#0e9b73", "#1cb46b", "#43cb5c", "#7ee04a", "#c2f23c"]],
     ["--coil-effort-color", ["#6a4fe0", "#8a4ce6", "#ab48e0", "#d144cf", "#f43fae"]],
   ] as const)("walks %s across its own five colors", (variable, palette) => {

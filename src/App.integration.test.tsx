@@ -647,7 +647,9 @@ describe("chat header provider usage", () => {
     await user.click(trigger);
     await user.click(screen.getByRole("radio", { name: "Show Weekly in top bar" }));
     expect(trigger).toHaveTextContent("Weekly 90% left");
-    expect(invokeMock.mock.calls.filter(([, args]) => args?.method === "account/rateLimits/read")).toHaveLength(reads);
+    // Opening asks for one fresh reading; picking a window inside the same
+    // panel is a display choice and must not ask the provider again.
+    expect(invokeMock.mock.calls.filter(([, args]) => args?.method === "account/rateLimits/read")).toHaveLength(reads + 1);
     expect(JSON.parse(localStorage.getItem("kiwi.headerUsageWindows")!)).toEqual({ openai: "Weekly", claude: "Weekly Fable" });
     view.unmount();
     await renderApp();
@@ -1257,6 +1259,74 @@ describe("workspace switching during thread selection", () => {
       const stored = JSON.parse(localStorage.getItem("kiwi.projects") ?? "[]") as Array<{ id: string }>;
       expect(stored.map((project) => project.id)).toEqual([PROJECT_B.id, PROJECT_A.id]);
     });
+  });
+
+  it("refuses to drag an unpinned project above a pinned one", async () => {
+    const user = userEvent.setup();
+    localStorage.setItem("kiwi.projects", JSON.stringify([{ ...PROJECT_A, pinned: true }, PROJECT_B]));
+    await renderApp();
+    const alphaRow = screen.getByRole("button", { name: PROJECT_A.name }).closest(".workspace-row-wrap");
+    const betaRow = screen.getByRole("button", { name: PROJECT_B.name }).closest(".workspace-row-wrap");
+    const workspaceList = betaRow?.closest(".workspace-list");
+    vi.spyOn(workspaceList!, "getBoundingClientRect").mockReturnValue({ top: 0, bottom: 200, height: 200 } as DOMRect);
+    vi.spyOn(alphaRow!, "getBoundingClientRect").mockReturnValue({ top: 0, height: 34 } as DOMRect);
+    Object.defineProperty(document, "elementFromPoint", { configurable: true, value: vi.fn(() => alphaRow) });
+
+    await user.pointer([
+      { keys: "[MouseLeft>]", target: betaRow!, coords: { clientX: 10, clientY: 40 } },
+      { target: alphaRow!, coords: { clientX: 10, clientY: 4 } },
+    ]);
+    expect(betaRow).toHaveClass("dragging");
+    // The pinned row is not a legal target, so nothing is marked as a drop.
+    expect(document.querySelector(".workspace-row-wrap.drop-before")).toBeNull();
+    expect(document.querySelector(".workspace-row-wrap.drop-after")).toBeNull();
+    await user.pointer({ keys: "[/MouseLeft]", target: alphaRow!, coords: { clientX: 10, clientY: 4 } });
+
+    expect([...document.querySelectorAll(".workspace-row-wrap .workspace-name")].map((node) => node.textContent))
+      .toEqual([PROJECT_A.name, PROJECT_B.name]);
+  });
+
+  it("keeps a newly pinned project above the unpinned ones, wherever it was dragged", async () => {
+    const user = userEvent.setup();
+    localStorage.setItem("kiwi.projects", JSON.stringify([PROJECT_A, PROJECT_B]));
+    await renderApp();
+    expect([...document.querySelectorAll(".workspace-row-wrap .workspace-name")].map((node) => node.textContent))
+      .toEqual([PROJECT_A.name, PROJECT_B.name]);
+
+    await user.click(screen.getByRole("button", { name: `Options for ${PROJECT_B.name}` }));
+    await user.click(await screen.findByRole("menuitem", { name: "Pin project" }));
+
+    expect([...document.querySelectorAll(".workspace-row-wrap .workspace-name")].map((node) => node.textContent))
+      .toEqual([PROJECT_B.name, PROJECT_A.name]);
+    await waitFor(() => {
+      const stored = JSON.parse(localStorage.getItem("kiwi.projects") ?? "[]") as Array<{ id: string; pinned?: boolean }>;
+      expect(stored.map((project) => [project.id, Boolean(project.pinned)]))
+        .toEqual([[PROJECT_B.id, true], [PROJECT_A.id, false]]);
+    });
+  });
+
+  it("collapses the pinned group and remembers it across reopens", async () => {
+    const user = userEvent.setup();
+    localStorage.setItem("kiwi.projects", JSON.stringify([{ ...PROJECT_A, pinned: true }, PROJECT_B]));
+    const view = await renderApp();
+
+    const toggle = screen.getByRole("button", { name: /Pinned/ });
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: PROJECT_A.name })).toBeInTheDocument();
+
+    await user.click(toggle);
+    expect(screen.queryByRole("button", { name: PROJECT_A.name })).toBeNull();
+    // The unpinned list keeps the sidebar to itself, and the count is the only
+    // trace of what was hidden.
+    expect(screen.getByRole("button", { name: PROJECT_B.name })).toBeInTheDocument();
+    expect(toggle).toHaveTextContent("1");
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+
+    view.unmount();
+    await renderApp();
+    expect(screen.queryByRole("button", { name: PROJECT_A.name })).toBeNull();
+    await user.click(screen.getByRole("button", { name: /Pinned/ }));
+    expect(screen.getByRole("button", { name: PROJECT_A.name })).toBeInTheDocument();
   });
 
   it("tracks the pointer live while dragging the sidebar edge", async () => {
