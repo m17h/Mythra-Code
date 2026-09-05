@@ -236,7 +236,7 @@ describe("model control browser layout", () => {
   const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
   const NEW_STYLE_PALETTES = {
     astra: ["rgb(88, 230, 255)", "rgb(90, 160, 255)", "rgb(131, 109, 255)", "rgb(184, 93, 255)", "rgb(255, 110, 216)"],
-    tide: ["rgb(79, 124, 255)", "rgb(62, 153, 245)", "rgb(45, 182, 235)", "rgb(46, 210, 220)", "rgb(85, 234, 210)"],
+    reactor: ["rgb(167, 139, 250)", "rgb(209, 107, 255)", "rgb(246, 93, 181)", "rgb(255, 133, 85)", "rgb(255, 209, 102)"],
     dart: ["rgb(14, 155, 115)", "rgb(28, 180, 107)", "rgb(67, 203, 92)", "rgb(126, 224, 74)", "rgb(194, 242, 60)"],
     coil: ["rgb(106, 79, 224)", "rgb(138, 76, 230)", "rgb(171, 72, 224)", "rgb(209, 68, 207)", "rgb(244, 63, 174)"],
   } as const;
@@ -615,15 +615,22 @@ describe("model control browser layout", () => {
     expect(getComputedStyle(track!).backgroundSize).toContain("1px");
   });
 
-  it("renders tide as a smooth animated water channel with bubble markers", () => {
-    const view = renderStyle("tide", "high");
+  it("renders reactor as animated energy cells with rectangular markers", () => {
+    const view = renderStyle("reactor", "high");
 
     const rail = view.container.querySelector<HTMLElement>(".reasoning-rail");
     const track = view.container.querySelector<HTMLElement>(".reasoning-control input[type='range']");
     const tick = view.container.querySelector<HTMLElement>(".reasoning-ticks i");
-    expect(getComputedStyle(rail!, "::before").animationName).toBe("tide-flow");
+    expect(getComputedStyle(rail!, "::before").animationName).toBe("reactor-flow");
     expect(getComputedStyle(track!).borderRadius).not.toBe("0px");
-    expect(getComputedStyle(tick!).borderRadius).toBe("50%");
+    expect(getComputedStyle(tick!).borderRadius).toBe("1px");
+  });
+
+  it("keeps Reactor still when reduced motion is requested", async () => {
+    await commands.setStreamTestReducedMotion(true);
+    const view = renderStyle("reactor", "max");
+    const rail = view.container.querySelector<HTMLElement>(".reasoning-rail")!;
+    expect(getComputedStyle(rail, "::before").animationName).toBe("none");
   });
 
   // Coil reads effort as tension: the winding tightens level by level, which
@@ -651,12 +658,12 @@ describe("model control browser layout", () => {
     expect(cord.backgroundRepeat).toBe("no-repeat");
   });
 
-  // Water flows, the slipstream runs and the cord turns faster the harder
+  // Energy pulses, the slipstream runs and the cord turns faster the harder
   // the model works — again, straight off the rail's live --effort-heat.
   it.each([
     ["dart", "--dart-rush"],
     ["coil", "--coil-spin"],
-    ["tide", "--tide-flow"],
+    ["reactor", "--reactor-flow"],
   ] as const)("shortens the %s motion as effort rises", (sliderStyle, timingVariable) => {
     const secondsAt = (effort: "low" | "max") => {
       const view = renderStyle(sliderStyle, effort);

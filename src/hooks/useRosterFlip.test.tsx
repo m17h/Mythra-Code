@@ -150,3 +150,17 @@ describe("useRosterFlip", () => {
     expect(() => rerender(<Roster heights={{ one: 200, two: 40 }} />)).not.toThrow();
   });
 });
+
+it("ignores late cancellation events from the animation a new resize replaced", () => {
+  stubAnimate();
+  const { rerender, getByTestId } = render(<Roster heights={{ one: 40, two: 40 }} />);
+  rerender(<Roster heights={{ one: 200, two: 40 }} />);
+  const tile = getByTestId("grid").querySelector<HTMLElement>('[data-flip-key="one"]')!;
+  const old = animations.find((animation) => animation.element === tile)!;
+  const lateCancel = old.oncancel;
+  rerender(<Roster heights={{ one: 100, two: 40 }} />);
+  lateCancel?.();
+  expect(tile.dataset.flipResizing).toBe("true");
+  animations.filter((animation) => animation.element === tile).at(-1)?.onfinish?.();
+  expect(tile.dataset.flipResizing).toBeUndefined();
+});

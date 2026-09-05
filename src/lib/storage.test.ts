@@ -1,12 +1,13 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 
-import { DURABLE_STORAGE_KEYS, STORAGE_SCHEMA_VERSION, flushPendingStateWrites, hydrateNativeStorage, loadStored, migrateStorage, removeStoredValue, storeValue } from "./storage";
+import { DURABLE_STORAGE_KEYS, STORAGE_SCHEMA_VERSION, resetStorageMemoryForTests, flushPendingStateWrites, hydrateNativeStorage, loadStored, migrateStorage, removeStoredValue, storeValue } from "./storage";
 
 describe("durable storage", () => {
+  afterEach(resetStorageMemoryForTests);
   beforeEach(async () => {
     await flushPendingStateWrites();
     localStorage.clear();
@@ -160,5 +161,65 @@ describe("durable storage", () => {
     expect(invoke).toHaveBeenLastCalledWith("state_delete", { key: "kiwi.usageLedger" });
     releases.shift()?.();
     await flushPendingStateWrites();
+  });
+});
+
+function failCacheWrites() {
+  const setItem = localStorage.setItem.bind(localStorage);
+  vi.spyOn(localStorage, "setItem").mockImplementation((key, value) => {
+    if (key === "kiwi.projects") throw new DOMException("full", "QuotaExceededError");
+    setItem(key, value);
+  });
+}
+
+describe("storage quota recovery", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    localStorage.setItem("kiwi.schemaVersion", String(STORAGE_SCHEMA_VERSION));
+    invoke.mockReset();
+  });
+  afterEach(async () => {
+    await flushPendingStateWrites();
+    resetStorageMemoryForTests();
+  });
+  it("reads native state even when hydration cannot update the cache", async () => {
+    localStorage.setItem("kiwi.projects", '[{"id":"stale"}]');
+    failCacheWrites();
+    invoke.mockResolvedValue([{ id: "durable" }]);
+    await hydrateNativeStorage(["kiwi.projects"]);
+    expect(loadStored("kiwi.projects", [])).toEqual([{ id: "durable" }]);
+  });
+  it("does not mark a failed cache write for replay, and still reads the new value", async () => {
+    localStorage.setItem("kiwi.projects", '[{"id":"stale"}]');
+    localStorage.setItem("kiwi.nativePending.kiwi.projects", "older-write");
+    failCacheWrites();
+    invoke.mockRejectedValue(new Error("database unavailable"));
+    storeValue("kiwi.projects", [{ id: "latest" }]);
+    expect(loadStored("kiwi.projects", [])).toEqual([{ id: "latest" }]);
+    expect(localStorage.getItem("kiwi.nativePending.kiwi.projects")).toBeNull();
+    await flushPendingStateWrites();
+    resetStorageMemoryForTests();
+    invoke.mockReset().mockResolvedValue([{ id: "durable" }]);
+    await hydrateNativeStorage(["kiwi.projects"]);
+    expect(invoke).not.toHaveBeenCalledWith("state_write", expect.anything());
+    expect(loadStored("kiwi.projects", [])).toEqual([{ id: "durable" }]);
+  });
+  it("hydrates even when cache reads are unavailable", async () => {
+    vi.spyOn(localStorage, "getItem").mockImplementation(() => { throw new Error("unavailable"); });
+    vi.spyOn(localStorage, "setItem").mockImplementation(() => { throw new Error("unavailable"); });
+    invoke.mockImplementation(async (method, args) => method === "state_read" && args.key === "kiwi.projects" ? [{ id: "durable" }] : null);
+    await hydrateNativeStorage(["kiwi.projects"]);
+    expect(loadStored("kiwi.projects", [])).toEqual([{ id: "durable" }]);
+  });
+  it("snapshots mutable values before their native write is queued", async () => {
+    let release!: () => void;
+    invoke.mockImplementationOnce(() => new Promise<void>((resolve) => { release = resolve; })).mockResolvedValue(undefined);
+    storeValue("kiwi.projects", []);
+    const value = [{ id: "saved" }];
+    storeValue("kiwi.projects", value);
+    value[0].id = "later-mutation";
+    release();
+    await flushPendingStateWrites();
+    expect(invoke).toHaveBeenLastCalledWith("state_write", { key: "kiwi.projects", value: [{ id: "saved" }] });
   });
 });

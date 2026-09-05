@@ -5,6 +5,7 @@ export const DURABLE_STORAGE_KEYS = [
   "kiwi.schemaVersion",
   "kiwi.projects",
   "kiwi.workspaceMode",
+  "kiwi.pinnedWorkspacesCollapsed",
   "kiwi.settings",
   "kiwi.headerUsageWindows",
   "kiwi.threadProjects",
@@ -50,10 +51,35 @@ export const DURABLE_STORAGE_KEYS = [
  * migrateStorage. Old installs then upgrade their data instead of loading
  * garbage into the new code.
  */
-export const STORAGE_SCHEMA_VERSION = 21;
+export const STORAGE_SCHEMA_VERSION = 22;
 const nativeWriteQueues = new Map<string, Promise<void>>();
 const NATIVE_PENDING_PREFIX = "kiwi.nativePending.";
 let nativeOperationSequence = 0;
+// Keep a readable copy when the webview cache is full or unavailable. The
+// observed cache value lets explicit external cache changes supersede it.
+const uncachedValues = new Map<string, { cached: string | null; value: string | null }>();
+
+function readCache(key: string): string | null {
+  try { return localStorage.getItem(key); } catch { return null; }
+}
+
+function cacheValue(key: string, value: string | null): boolean {
+  try {
+    if (value === null) localStorage.removeItem(key);
+    else localStorage.setItem(key, value);
+    uncachedValues.delete(key);
+    return true;
+  } catch {
+    uncachedValues.set(key, { cached: readCache(key), value });
+    return false;
+  }
+}
+
+export function resetStorageMemoryForTests(): void { uncachedValues.clear(); }
+
+function invalidatePendingMarker(key: string): void {
+  try { localStorage.removeItem(pendingMarkerKey(key)); } catch { /* Cache unavailable. */ }
+}
 
 function pendingMarkerKey(key: string): string {
   return `${NATIVE_PENDING_PREFIX}${key}`;
@@ -180,6 +206,10 @@ export function migrateStorage(): void {
   // Version 21 adds optional provider usage subtotals and cost-only OpenRouter
   // receipts. Legacy usage remains authoritative and is interpreted on read;
   // no eager rewrite or guessed attribution is needed.
+  // Version 22 sorts pinned projects ahead of unpinned ones in the stored
+  // project order and adds the collapsed state of that pinned group. The order
+  // is normalized on read and the new flag defaults to expanded, so no eager
+  // rewrite is required.
   // Version 20 removes accidentally retained turns from sidebar metadata and
   // bounds legacy previews. Canonical transcript messages live in provider
   // history and are not changed.
@@ -210,7 +240,10 @@ export function migrateStorage(): void {
 
 export function loadStored<T>(key: string, fallback: T): T {
   try {
-    const value = localStorage.getItem(key);
+    const cached = readCache(key);
+    const uncached = uncachedValues.get(key);
+    const value = uncached && uncached.cached === cached ? uncached.value : cached;
+    if (uncached && uncached.cached !== cached) uncachedValues.delete(key);
     return value ? (JSON.parse(value) as T) : fallback;
   } catch {
     return fallback;
@@ -218,33 +251,25 @@ export function loadStored<T>(key: string, fallback: T): T {
 }
 
 export function storeValue<T>(key: string, value: T): void {
-  try {
-    localStorage.setItem(key, JSON.stringify(value));
-  } catch {
-    // Quota or privacy-mode failures must not abort the calling flow;
-    // the SQLite mirror below still persists the value on desktop builds.
-  }
-  // Writes for the same key are serialized so an older async SQLite write can
-  // never finish after and overwrite a newer value. The marker survives a
-  // renderer/app crash and tells the next launch that localStorage is newer
-  // than SQLite and must be replayed rather than overwritten.
-  const token = markNativeOperationPending(key);
+  // Capture the exact revision now: callers such as drafts mutate their maps
+  // while earlier writes are still queued.
+  const serialized = JSON.stringify(value);
+  const cached = cacheValue(key, serialized);
+  const token = cached ? markNativeOperationPending(key) : null;
+  if (!cached) invalidatePendingMarker(key);
   queueNativeStateOperation(key, async () => {
-    await invoke("state_write", { key, value });
-    clearNativeOperationPending(key, token);
+    await invoke("state_write", { key, value: JSON.parse(serialized) });
+    if (token) clearNativeOperationPending(key, token);
   });
 }
 
 export function removeStoredValue(key: string): void {
-  try {
-    localStorage.removeItem(key);
-  } catch {
-    // The native mirror can still remove the durable value.
-  }
-  const token = markNativeOperationPending(key);
+  const cached = cacheValue(key, null);
+  const token = cached ? markNativeOperationPending(key) : null;
+  if (!cached) invalidatePendingMarker(key);
   queueNativeStateOperation(key, async () => {
     await invoke("state_delete", { key });
-    clearNativeOperationPending(key, token);
+    if (token) clearNativeOperationPending(key, token);
   });
 }
 
@@ -255,9 +280,9 @@ export async function hydrateNativeStorage(
     keys.map(async (key) => {
       try {
         const marker = pendingMarkerKey(key);
-        const pendingToken = localStorage.getItem(marker);
+        const pendingToken = readCache(marker);
         if (pendingToken !== null) {
-          const cached = localStorage.getItem(key);
+          const cached = readCache(key);
           if (cached === null) {
             await invoke("state_delete", { key });
             clearNativeOperationPending(key, pendingToken);
@@ -282,10 +307,10 @@ export async function hydrateNativeStorage(
         }
         const nativeValue = await invoke<unknown | null>("state_read", { key });
         if (nativeValue !== null) {
-          localStorage.setItem(key, JSON.stringify(nativeValue));
+          cacheValue(key, JSON.stringify(nativeValue));
           return;
         }
-        const legacy = localStorage.getItem(key);
+        const legacy = readCache(key);
         if (legacy !== null) {
           await invoke("state_write", { key, value: JSON.parse(legacy) });
         }

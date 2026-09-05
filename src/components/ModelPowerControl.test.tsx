@@ -145,7 +145,9 @@ describe("ModelPowerControl runtime catalog", () => {
     expect(screen.getByRole("menuitemradio", { name: /Terra/ }).querySelector<HTMLImageElement>("img")?.src).toContain("/model-icons/terra.png");
     expect(screen.getByRole("menuitemradio", { name: /Luna/ }).querySelector<HTMLImageElement>("img")?.src).toContain("/model-icons/luna.png");
     expect(screen.getByRole("menuitemradio", { name: /Astra/ }).querySelector<HTMLImageElement>("img")?.src).toContain("/model-icons/astra.png");
-    expect(screen.getByRole("menuitemradio", { name: /Research preview/ }).querySelector("img")).not.toBeInTheDocument();
+    const researchModel = screen.getByRole("menuitemradio", { name: /Research preview/ });
+    expect(researchModel.querySelector(".named-model-art img")).not.toBeInTheDocument();
+    expect(researchModel.querySelector(".openai-logo-choice")).toBeInTheDocument();
   });
 
   it("selects a runtime model that has no built-in tier", () => {

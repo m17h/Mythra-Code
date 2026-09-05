@@ -330,7 +330,7 @@ describe("SettingsModal", () => {
     expect(screen.getByRole("button", { name: /Aurora.*northern-light/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Astra.*living nebula/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Ink.*monochrome/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Tide.*glass water channel/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Reactor.*Pulsing energy cells/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Dart.*arrowhead/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Coil.*twisted cord/ })).toBeInTheDocument();
 
@@ -356,7 +356,7 @@ describe("SettingsModal", () => {
 
   it.each([
     [/Astra.*living nebula/, "astra", "slider-style-preview astra"],
-    [/Tide.*glass water channel/, "tide", "slider-style-preview tide"],
+    [/Reactor.*Pulsing energy cells/, "reactor", "slider-style-preview reactor"],
     [/Dart.*arrowhead/, "dart", "slider-style-preview dart"],
     [/Coil.*twisted cord/, "coil", "slider-style-preview coil"],
   ])("previews and selects the %s effort-slider style", (name, id, previewClass) => {

@@ -46,7 +46,8 @@ export function useRosterFlip(signature: string): RosterFlip {
   const firstRef = useRef<FlipSnapshot | null>(null);
   const surfaceHeightRef = useRef<number | null>(null);
   const measuredRef = useRef<string | null>(null);
-  const runningRef = useRef<Animation[]>([]);
+  const runningRef = useRef<Array<{ animation: Animation; settle: () => void }>>([]);
+  const ownersRef = useRef(new WeakMap<HTMLElement, Animation>());
 
   // Measured during render, while the DOM still holds the layout this commit
   // is about to replace — the "First" of FLIP. Taking it here rather than
@@ -61,7 +62,12 @@ export function useRosterFlip(signature: string): RosterFlip {
   }
 
   const stop = useCallback(() => {
-    for (const animation of runningRef.current) animation.cancel();
+    for (const { animation, settle } of runningRef.current) {
+      animation.onfinish = null;
+      animation.oncancel = null;
+      settle();
+      animation.cancel();
+    }
     runningRef.current = [];
   }, []);
 
@@ -94,7 +100,7 @@ export function useRosterFlip(signature: string): RosterFlip {
     const surfaceFrom = surfaceHeightRef.current;
     const surfaceTo = surface ? surface.offsetHeight : null;
 
-    const animations: Animation[] = [];
+    const animations: Array<{ animation: Animation; settle: () => void }> = [];
     const play = (element: HTMLElement, keyframes: Keyframe[], clip: boolean) => {
       // jsdom and other layout-less hosts have no Web Animations API. The
       // committed layout is already correct there, so skipping is harmless.
@@ -104,10 +110,19 @@ export function useRosterFlip(signature: string): RosterFlip {
       // neighbours.
       if (clip) element.dataset.flipResizing = "true";
       const animation = element.animate(keyframes, { duration: ROSTER_FLIP_MS, easing: ROSTER_FLIP_EASING });
-      const settle = () => { delete element.dataset.flipResizing; };
+      const owners = ownersRef.current;
+      if (clip) owners.set(element, animation);
+      const settle = () => {
+        if (owners.get(element) !== animation) return;
+        owners.delete(element);
+        delete element.dataset.flipResizing;
+      };
       animation.onfinish = settle;
       animation.oncancel = settle;
-      animations.push(animation);
+      // WebKit may resolve finished before dispatching the finish event.
+      // Both paths are safe, including delayed events from a replaced run.
+      void animation.finished?.then(settle, settle);
+      animations.push({ animation, settle });
     };
 
     // The surface first: it is what the moved items are positioned inside, so

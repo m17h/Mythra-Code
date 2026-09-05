@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Check, ChevronDown, NotebookPen, Settings } from "lucide-react";
+import { usePopoverFade } from "../hooks/usePopoverFade";
 import type { ProjectPromptMode, Provider } from "../types";
 
 export function ProjectPromptControl({
@@ -22,6 +23,7 @@ export function ProjectPromptControl({
   onAppPromptSettings: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  const { ref: panelRef, present } = usePopoverFade(open);
   const [custom, setCustom] = useState(Boolean(projectPrompt?.trim()));
   const [draft, setDraft] = useState(projectPrompt ?? "");
   const [mode, setMode] = useState<ProjectPromptMode>(promptMode);
@@ -75,8 +77,8 @@ export function ProjectPromptControl({
         <ChevronDown size={12} />
       </button>
 
-      {open && (
-        <div className="project-prompt-popover" role="dialog" aria-label={`Project instructions for ${projectName}`}>
+      {present && (
+        <div ref={panelRef} className="project-prompt-popover" style={{ opacity: 0 }} aria-hidden={!open || undefined} inert={!open || undefined} role="dialog" aria-label={`Project instructions for ${projectName}`}>
           <div className="project-prompt-heading">
             <span className="project-prompt-icon"><NotebookPen size={16} /></span>
             <div>

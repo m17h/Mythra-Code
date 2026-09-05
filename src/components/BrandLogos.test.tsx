@@ -18,7 +18,7 @@ describe("BrandLogos", () => {
     const glyph = container.querySelector("svg");
     expect(glyph).toHaveAttribute("viewBox", "0 0 401.4 293.7");
     expect(glyph).toHaveAttribute("fill", "currentColor");
-    expect(container.querySelectorAll("path")).toHaveLength(1);
+    expect(container.querySelector("use")).toHaveAttribute("href", "/provider-marks.svg#openrouter");
   });
 
   it("provides both selectable OpenAI and Codex marks for OpenAI providers", () => {
@@ -49,21 +49,20 @@ describe("BrandLogos", () => {
     expect(container.querySelector("img")).toHaveAttribute("src", "/lm-studio-icon.svg");
   });
 
-  it("renders the Anthropic AI monogram as a self-contained vector", () => {
+  it("renders the Anthropic AI monogram from the bundled vector sprite", () => {
     const { container } = render(<AnthropicLogo />);
     expect(container.querySelector("svg")).toHaveAttribute("fill", "currentColor");
-    expect(container.querySelectorAll("path")).toHaveLength(2);
+    expect(container.querySelector("use")).toHaveAttribute("href", "/provider-marks.svg#anthropic");
   });
 
-  it("renders the Codex terminal-cloud mark as a self-contained vector", () => {
+  it("loads the Codex gradient and terminal together from a self-contained SVG", () => {
     const { container } = render(<CodexLogo />);
-    expect(container.querySelector("linearGradient")).toBeInTheDocument();
-    expect(container.querySelectorAll("path")).toHaveLength(2);
+    expect(container.querySelector("img")).toHaveAttribute("src", "/codex-icon.svg");
   });
 
-  it("renders the standalone OpenRouter mark as a self-contained vector", () => {
+  it("renders the standalone OpenRouter mark from the bundled vector sprite", () => {
     const { container } = render(<OpenRouterLogo />);
     expect(container.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
-    expect(container.querySelectorAll("path")).toHaveLength(1);
+    expect(container.querySelector("use")).toHaveAttribute("href", "/provider-marks.svg#openrouter");
   });
 });

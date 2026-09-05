@@ -26,7 +26,7 @@ use serde_json::{json, Value};
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::{
-    io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader},
     process::{Child, ChildStdin, Command},
     sync::{oneshot, Mutex},
     time::{timeout, timeout_at, Duration, Instant},
@@ -95,6 +95,23 @@ const OPENROUTER_ACCOUNT: &str = "openrouter-api-key";
 const LMSTUDIO_ACCOUNT: &str = "lmstudio-api-key";
 
 type PendingMap = Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, String>>>>>;
+
+// The pipe lock and a blocked write must consume the same deadline as the
+// response. A provider that stops reading must not wedge every later RPC.
+async fn write_server_message<W: AsyncWrite + Unpin>(
+    stdin: &Mutex<W>,
+    message: &[u8],
+    deadline: Instant,
+) -> Result<(), String> {
+    timeout_at(deadline, async {
+        let mut stdin = stdin.lock().await;
+        stdin.write_all(message).await?;
+        stdin.flush().await
+    })
+    .await
+    .map_err(|_| "Codex App Server timed out while writing input".to_string())?
+    .map_err(|error: std::io::Error| format!("Could not write Codex App Server input: {error}"))
+}
 
 struct AppServer {
     stdin: Mutex<ChildStdin>,
@@ -562,21 +579,18 @@ impl AppServer {
             .and_then(Value::as_str)
             .map(str::to_owned);
         let message = json!({ "method": method, "id": id, "params": params });
-        let mut stdin = self.stdin.lock().await;
-        if let Err(error) = stdin.write_all(format!("{}\n", message).as_bytes()).await {
+        let deadline = Instant::now() + request_timeout;
+        if let Err(error) =
+            write_server_message(&self.stdin, format!("{message}\n").as_bytes(), deadline).await
+        {
+            // A timed-out write may have sent a partial JSON line. Do not
+            // reuse this stream for another request.
             self.alive.store(false, Ordering::Release);
             self.pending.lock().await.remove(&id);
-            return Err(format!("Could not write to Codex App Server: {error}"));
+            return Err(error);
         }
-        if let Err(error) = stdin.flush().await {
-            self.alive.store(false, Ordering::Release);
-            drop(stdin);
-            self.pending.lock().await.remove(&id);
-            return Err(format!("Could not flush Codex App Server input: {error}"));
-        }
-        drop(stdin);
 
-        match timeout(request_timeout, receiver).await {
+        match timeout_at(deadline, receiver).await {
             Ok(Ok(result)) => {
                 if let Ok(value) = &result {
                     self.track_successful_request(method, tracking_thread_id.as_deref(), value);
@@ -595,28 +609,30 @@ impl AppServer {
 
     async fn notify(&self, method: &str, params: Value) -> Result<(), String> {
         let message = json!({ "method": method, "params": params });
-        let mut stdin = self.stdin.lock().await;
-        stdin
-            .write_all(format!("{}\n", message).as_bytes())
-            .await
-            .map_err(|error| format!("Could not write notification: {error}"))?;
-        stdin
-            .flush()
-            .await
-            .map_err(|error| format!("Could not flush notification: {error}"))
+        let result = write_server_message(
+            &self.stdin,
+            format!("{message}\n").as_bytes(),
+            Instant::now() + Duration::from_secs(120),
+        )
+        .await;
+        if result.is_err() {
+            self.alive.store(false, Ordering::Release);
+        }
+        result
     }
 
     async fn respond(&self, id: Value, result: Value) -> Result<(), String> {
         let message = json!({ "id": id, "result": result });
-        let mut stdin = self.stdin.lock().await;
-        stdin
-            .write_all(format!("{}\n", message).as_bytes())
-            .await
-            .map_err(|error| format!("Could not write server response: {error}"))?;
-        stdin
-            .flush()
-            .await
-            .map_err(|error| format!("Could not flush server response: {error}"))
+        let result = write_server_message(
+            &self.stdin,
+            format!("{message}\n").as_bytes(),
+            Instant::now() + Duration::from_secs(120),
+        )
+        .await;
+        if result.is_err() {
+            self.alive.store(false, Ordering::Release);
+        }
+        result
     }
 
     async fn shutdown(&self) {
@@ -5125,6 +5141,23 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while running Mythra Code")
         .run(|app_handle, event| {
+            // Menu Quit (including Cmd-Q) must use the same renderer flush as
+            // the window close button. Once the last window is destroyed this
+            // path is skipped and normal runtime shutdown proceeds. Preserve
+            // nonzero exit codes, including the updater's restart request.
+            if let tauri::RunEvent::ExitRequested {
+                code: None | Some(0),
+                api,
+                ..
+            } = &event
+            {
+                if let Some(window) = app_handle.get_webview_window("main") {
+                    if window.close().is_ok() {
+                        api.prevent_exit();
+                        return;
+                    }
+                }
+            }
             if matches!(
                 event,
                 tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit

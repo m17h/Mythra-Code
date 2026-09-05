@@ -1,7 +1,8 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { ChevronDown, Clock3, Gauge, X } from "lucide-react";
 import { hasUsageCountdown, selectedUsageWindow, usageResetText, type AccountUsageView, type AccountUsageWindowView, type ProviderHeaderUsageView } from "../lib/providerUsage";
 import "./UsagePopover.css";
+import { usePopoverFade } from "../hooks/usePopoverFade";
 
 /** Exit decoration keeps its text, but stops its clock as soon as closed. */
 function UsageResetLabel({ window: usageWindow, active }: { window: AccountUsageWindowView; active: boolean }) {
@@ -19,8 +20,13 @@ function UsageResetLabel({ window: usageWindow, active }: { window: AccountUsage
   return <small><Clock3 size={12} aria-hidden="true" />{usageResetText(usageWindow, now)}</small>;
 }
 
-/** Uses the existing usage snapshot: opening/hovering never starts a provider process. */
-export function UsagePopover({ provider, usage, header, selectedLabel, onSelect, onDetails, onConnect }: {
+/**
+ * Opening asks for a fresh reading rather than rendering the last one blindly:
+ * looking at the panel is the clearest signal that the number on screen is the
+ * one the user cares about right now. The request is throttled upstream, so a
+ * hover sweep or a panel opened twice in a row costs a single round trip.
+ */
+export function UsagePopover({ provider, usage, header, selectedLabel, onSelect, onDetails, onConnect, onOpen }: {
   provider: "openai" | "claude";
   usage: AccountUsageView;
   header: ProviderHeaderUsageView;
@@ -28,15 +34,15 @@ export function UsagePopover({ provider, usage, header, selectedLabel, onSelect,
   onSelect: (label: string) => void;
   onDetails: () => void;
   onConnect: () => void;
+  onOpen?: () => void;
 }) {
   const [mode, setMode] = useState<"closed" | "hover" | "pinned">("closed");
-  const [present, setPresent] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
-  const panelRef = useRef<HTMLDivElement>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const id = useId();
   const open = mode !== "closed";
+  const { ref: panelRef, present } = usePopoverFade(open);
   const windows = usage.windows ?? [];
   const selected = selectedUsageWindow(windows, selectedLabel);
   const clearTimer = () => { clearTimeout(timerRef.current); timerRef.current = undefined; };
@@ -48,35 +54,12 @@ export function UsagePopover({ provider, usage, header, selectedLabel, onSelect,
 
   useEffect(() => () => clearTimeout(timerRef.current), []);
 
-  useLayoutEffect(() => {
-    const panel = panelRef.current;
-    if (!panel) return;
-    if (open) setPresent(true);
-    const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)");
-    let animation: Animation | undefined;
-    const finish = () => {
-      panel.style.opacity = open ? "1" : "0";
-      if (animation) { animation.onfinish = null; animation.cancel(); }
-      reduced?.removeEventListener?.("change", onMotionChange);
-      if (!open) setPresent(false);
-    };
-    const onMotionChange = () => { if (reduced?.matches) finish(); };
-    if (!reduced || reduced.matches || !panel.animate) { finish(); return; }
-    try {
-      animation = panel.animate([{ opacity: getComputedStyle(panel).opacity }, { opacity: open ? 1 : 0 }], {
-        duration: open ? 220 : 180, easing: "cubic-bezier(.22, 1, .36, 1)", fill: "forwards",
-      });
-      animation.onfinish = finish;
-      reduced.addEventListener?.("change", onMotionChange);
-    } catch { finish(); }
-    return () => {
-      // Freeze the painted opacity BEFORE cancelling so a quick reversal
-      // continues from that point instead of flashing fully on/off.
-      if (panel.isConnected) panel.style.opacity = getComputedStyle(panel).opacity;
-      if (animation) { animation.onfinish = null; animation.cancel(); }
-      reduced.removeEventListener?.("change", onMotionChange);
-    };
-  }, [open]);
+  const onOpenRef = useRef(onOpen);
+  onOpenRef.current = onOpen;
+  useEffect(() => {
+    if (open) onOpenRef.current?.();
+  }, [open, panelRef]);
+
 
   useEffect(() => {
     if (!open) return;
@@ -107,14 +90,14 @@ export function UsagePopover({ provider, usage, header, selectedLabel, onSelect,
       document.removeEventListener("focusin", outside);
       document.removeEventListener("keydown", escape, true);
     };
-  }, [mode, open]);
+  }, [mode, open, panelRef]);
 
   useEffect(() => {
     if (mode === "pinned") {
       (panelRef.current?.querySelector<HTMLInputElement>("input:checked")
         ?? panelRef.current?.querySelector<HTMLButtonElement>("button"))?.focus();
     }
-  }, [mode]);
+  }, [mode, panelRef]);
 
   return (
     <div className="usage-popover-anchor" ref={rootRef}
@@ -144,7 +127,7 @@ export function UsagePopover({ provider, usage, header, selectedLabel, onSelect,
       >
         <Gauge size={13} aria-hidden="true" /><span>{header.text}</span><ChevronDown size={12} aria-hidden="true" />
       </button>
-      {(open || present) && <div ref={panelRef} id={id} className="usage-popover" style={{ opacity: 0 }} role="dialog" aria-hidden={!open || undefined} inert={!open || undefined} aria-label={`${provider === "claude" ? "Claude" : "Codex"} usage details`}>
+      {present && <div ref={panelRef} id={id} className="usage-popover" style={{ opacity: 0 }} role="dialog" aria-hidden={!open || undefined} inert={!open || undefined} aria-label={`${provider === "claude" ? "Claude" : "Codex"} usage details`}>
         <div className="usage-popover-heading">
           <div><strong>{provider === "claude" ? "Claude Code" : "Codex"} usage</strong><small>{usage.planLabel || "Subscription limits"}</small></div>
           <button type="button" className="icon-button" aria-label="Close usage details" onClick={() => close(true)}><X size={15} /></button>

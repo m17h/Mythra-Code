@@ -42,7 +42,7 @@ export const EFFORT_SLIDER_STYLES: Array<{ id: EffortSliderStyle; name: string; 
   { id: "neon", name: "Neon", description: "Your model's accent, glowing hotter with effort" },
   { id: "pixel", name: "Pixel", description: "A chunky retro VU meter with a square thumb" },
   { id: "ink", name: "Ink", description: "A bare monochrome line for zero distraction" },
-  { id: "tide", name: "Tide", description: "A glass water channel with a flowing surface and droplet selector" },
+  { id: "reactor", name: "Reactor", description: "Pulsing energy cells and a glowing reactor core" },
   { id: "dart", name: "Dart", description: "An arrowhead cutting a widening wake down the rail" },
   { id: "coil", name: "Coil", description: "A twisted cord that winds tighter the harder it works" },
 ];
@@ -87,7 +87,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
 /** Retired slider ids migrate to their direct replacement; malformed values
  * still fall back to the default instead of leaving the shell unstyled. */
 export function sanitizeEffortSlider(value: unknown): EffortSliderStyle {
-  if (value === "shard") return "tide";
+  if (value === "shard" || value === "tide") return "reactor";
   return EFFORT_SLIDER_STYLES.some((style) => style.id === value)
     ? value as EffortSliderStyle
     : DEFAULT_SETTINGS.effortSlider;

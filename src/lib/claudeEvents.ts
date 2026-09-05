@@ -385,6 +385,7 @@ export function routeClaudeEvent(
         const block = blocks.get(threadId)?.get(Number(stream.index ?? 0));
         if (block) block.input += text(delta.partial_json);
       }
+      if (delta.type === "text_delta" || delta.type === "thinking_delta") ctx.onTranscriptChanged(threadId);
       return;
     }
     if (streamType === "content_block_stop") {
