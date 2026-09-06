@@ -43,7 +43,7 @@ import type { GitPanelAction, GitRepositoryState } from "./components/GitPanel";
 import type { Account, Activity, AppSettings, ArchivedThread, ChatFont, ChatMessage, CustomAgentProfile, PendingApproval, PermissionMode, Project, ProjectAction, ProjectPromptMode, ProjectSubagentSettings, EffortSliderStyle, PromptProfile, Provider, ScheduledTask, ScheduleRunRecord, SettingsSection, Thread, ThreadHandoff, ThreadReasoning, ThemeName, WorkspaceMode } from "./types";
 import { PendingTurnStarts } from "./lib/pendingTurnStarts";
 import { useTaskStore, type QueuedTurn } from "./lib/taskStore";
-import { friendlyError } from "./lib/errors";
+import { friendlyError, isAuthenticationError } from "./lib/errors";
 import { recordError } from "./lib/errorLog";
 import { beginThreadOpen, failThreadOpen, markThreadHistoryHydrated, markThreadRenderMetrics, markThreadRuntimeReady, markThreadShellCommitted, markThreadTimelineCommitted, projectedJsonBytes, threadOpenAwaitingRenderMetrics, threadOpenAwaitingTimeline } from "./lib/performanceDiagnostics";
 import { forgetRuntimePerformanceProvider, registerRuntimePerformanceProvider } from "./lib/runtimePerformanceBridge";
@@ -1330,7 +1330,7 @@ export default function App() {
       return;
     }
     const targets = next.childAgents.targets;
-    if (!readyChildAgentTargets({ enabled: true, targets }, childAgentReadiness).length) {
+    if (targets.length && !readyChildAgentTargets({ enabled: true, targets }, childAgentReadiness).length) {
       setTransientStatus("Keep one ready destination, or switch cross-provider sub-agents off");
       return;
     }
@@ -1702,6 +1702,16 @@ export default function App() {
     [bindThreadToProject, persistNativeAgentLinks, runtimeStatus?.available, runtimeStatus?.dataHome],
   );
 
+  const requireOpenAiLogin = useCallback(() => {
+    openAiAccountRequestRef.current += 1;
+    openAiUsageRequestRef.current += 1;
+    setAccount(null);
+    setOpenAiRateLimits(null);
+    setOpenAiRateLimitsRead(false);
+    setAuthRequiredOpen(true);
+    setStatus("Sign-in required");
+  }, []);
+
   const refreshAccount = useCallback(async (refreshToken = false): Promise<{ account: Account | null; requiresOpenaiAuth?: boolean } | null> => {
     const request = ++openAiAccountRequestRef.current;
     try {
@@ -1722,20 +1732,18 @@ export default function App() {
       if (openAiAccountRequestRef.current !== request) return null;
       const message = friendlyError(reason);
       setError(message);
-      if (/\b401\b|oauth|access token|authenticate|authentication|sign in/i.test(message)) {
-        setAccount(null);
-        openAiUsageRequestRef.current += 1;
-        setOpenAiRateLimits(null);
-        setOpenAiRateLimitsRead(false);
-        setAuthRequiredOpen(true);
-        setStatus("Sign-in required");
-      }
+      if (isAuthenticationError(reason)) requireOpenAiLogin();
+
       return null;
     }
   // Babel's TS-7-compatible parser treats the `result.account` property as
   // the unrelated component state named `account`.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [requireOpenAiLogin]);
+
+  useEffect(() => {
+    if (settingsOpen && runtimeStatus?.available) void refreshAccount(true);
+  }, [settingsOpen, runtimeStatus?.available, refreshAccount]);
 
   const runtimeModelsRequestRef = useRef(0);
   const refreshModels = useCallback(async () => {
@@ -1874,14 +1882,15 @@ export default function App() {
         setOpenAiRateLimits(parseCodexRateLimits(result));
         setOpenAiRateLimitsRead(true);
       }
-    } catch {
+    } catch (reason) {
+      if (openAiUsageRequestRef.current === request && isAuthenticationError(reason)) requireOpenAiLogin();
       // Deliberately keeps whatever was last read. Usage is polled now, so a
       // single flaky round trip would otherwise blank a bar the user is
       // watching for a minute; sign-out and account switches clear it through
       // `account/read` instead. When nothing has ever been read the state is
       // already empty, which still renders as "temporarily unavailable".
     }
-  }, []);
+  }, [requireOpenAiLogin]);
 
   /**
    * Re-reads the Claude subscription quota without re-running the whole
@@ -2223,7 +2232,7 @@ export default function App() {
     audit: (kind, payload, threadId) => void auditEvent(kind, payload, threadId).catch(() => {}),
     onStatus: setStatus,
     onError: setError,
-    onAuthRequired: () => setAuthRequiredOpen(true),
+    onAuthRequired: requireOpenAiLogin,
     onRateLimits: (limits) => {
       setOpenAiRateLimits(limits);
       setOpenAiRateLimitsRead(true);

@@ -35,14 +35,14 @@ export function RuntimeSetupModal({
   onRetry: () => void;
 }) {
   return (
-    <RuntimeDialog open={open} onClose={onClose} mark={<TerminalSquare size={25} />} eyebrow="One-time setup" title="Connect the Codex runtime" description="Mythra Code uses Codex App Server locally for ChatGPT subscription sign-in, OpenRouter, tools, approvals, and threads. Install the official Codex CLI to continue.">
+    <RuntimeDialog open={open} onClose={onClose} mark={<TerminalSquare size={25} />} eyebrow="One-time setup" title="Connect the Codex runtime" description="Install the official Codex CLI for ChatGPT sign-in, OpenRouter, tools, approvals, and threads.">
         <div className="runtime-options">
           <div className="runtime-option recommended">
             <span className="runtime-option-icon"><Download size={17} /></span>
-            <div><strong>Codex CLI <em>Recommended</em></strong><small>The dependable cross-platform option and easiest runtime to keep current.</small></div>
+            <div><strong>Codex CLI <em>Recommended</em></strong><small>For macOS and Windows.</small></div>
           </div>
         </div>
-        <div className="runtime-note"><Check size={13} /> Your ChatGPT login still happens in the official browser flow and remains isolated to Mythra Code.</div>
+        <div className="runtime-note"><Check size={13} /> ChatGPT sign-in uses your browser and Mythra Code’s isolated credential store.</div>
         <div className="runtime-setup-actions">
           <button className="secondary-button" onClick={onClose}>Not now</button>
           <button className="secondary-button" onClick={() => void openUrl("https://learn.chatgpt.com/docs/codex/cli")}><ExternalLink size={13} /> Installation guide</button>
@@ -64,10 +64,10 @@ export function AuthRequiredModal({
   onSignIn: () => void;
 }) {
   return (
-    <RuntimeDialog open={open} onClose={onClose} auth mark={<KeyRound size={24} />} eyebrow="ChatGPT authentication" title="Sign in before sending" description="OpenAI models cannot receive this prompt until a ChatGPT account is connected. Your draft is still waiting in the composer and has not been sent.">
+    <RuntimeDialog open={open} onClose={onClose} auth mark={<KeyRound size={24} />} eyebrow="ChatGPT authentication" title="Sign in before sending" description="Sign in to reconnect your ChatGPT subscription.">
         <div className="auth-required-detail">
           <ShieldCheck size={17} />
-          <div><strong>Official browser sign-in</strong><small>Codex opens ChatGPT in your default browser and stores the resulting session inside Mythra Code’s isolated credential store.</small></div>
+          <div><strong>Official browser sign-in</strong><small>Browser sign-in keeps credentials in Mythra Code’s isolated store.</small></div>
         </div>
         <div className="runtime-setup-actions">
           <button className="secondary-button" onClick={onClose}>Not now</button>

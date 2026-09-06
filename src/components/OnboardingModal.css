@@ -1,0 +1,15 @@
+.onboarding-style-demo { display: grid; grid-template-columns: 1fr 140px; gap: 20px; align-items: center; margin: 20px 0 0; padding: 18px; border: 1px solid var(--line-strong); border-radius: 14px; background: linear-gradient(125deg, color-mix(in srgb, var(--green) 10%, var(--panel)), var(--panel)); }
+.onboarding-style-demo > div { display: grid; gap: 6px; }
+.onboarding-style-demo strong { font-family: Georgia, serif; font-size: 21px; color: var(--text); }
+.onboarding-style-demo small { color: var(--muted); font-size: var(--fs-meta); }
+.onboarding-swatches { display: flex; gap: 5px; }
+.onboarding-swatches i { width: 12px; height: 12px; border-radius: 50%; background: #a78bfa; }
+.onboarding-swatches i:nth-child(2) { background: #ff8555; }
+.onboarding-swatches i:nth-child(3) { background: #73d7b5; }
+.onboarding-style-demo input { appearance: none; width: 100%; height: 9px; border-radius: 3px; background: repeating-linear-gradient(90deg, transparent 0 7px, var(--panel) 7px 10px), linear-gradient(90deg, #a78bfa, #ff8555, #a78bfa) 0 0 / 200% 100%; animation: onboarding-charge var(--demo-speed) linear infinite; cursor: ew-resize; }
+.onboarding-style-demo input::-webkit-slider-thumb { appearance: none; width: 21px; height: 21px; border: 2px solid #ff8555; border-radius: 50%; background: radial-gradient(circle, #fff 15%, #ff8555 20% 38%, #241c32 42% 60%, #ff8555 65%); box-shadow: 0 0 12px #f65db580; }
+.onboarding-style-demo input:focus-visible { outline: 2px solid var(--green); outline-offset: 7px; }
+@keyframes onboarding-charge { to { background-position: 0 0, 200% 0; } }
+.onboarding-rail nav { min-height: 0; overflow-y: auto; }
+@media (max-width: 520px) { .onboarding-style-demo { grid-template-columns: 1fr; } }
+@media (prefers-reduced-motion: reduce) { .onboarding-style-demo input { animation: none; } }

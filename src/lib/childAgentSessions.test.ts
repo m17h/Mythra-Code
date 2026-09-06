@@ -268,19 +268,28 @@ describe("ensureChildAgentBridge", () => {
     );
   });
 
-  it("ignores an approved roster that no longer has a usable destination", async () => {
-    const staged = policy({
-      pendingRecapture: { maxConcurrent: 1, targets: [], approvedAt: 99 },
-    });
+  it("revokes a cleared roster on the next prompt instead of restoring defaults", async () => {
+    const staged = policy({ pendingRecapture: { maxConcurrent: 1, targets: [], approvedAt: 99 } });
     const result = await ensureChildAgentBridge(input({
-      threadId: "thread-1",
-      policies: { "session-existing": staged },
+      threadId: "thread-1", policies: { "session-existing": staged }, promoteStagedEdits: true,
     }));
-    // Promoting an empty roster would build a policy the backend refuses,
-    // turning the next prompt into a failed turn.
-    expect(result?.captured).toBe(false);
-    expect(result?.policy.maxConcurrent).toBe(2);
-    expect(result?.policy.targets.map((entry) => entry.id)).toEqual(["frozen"]);
+    expect(result).toBeNull();
+    expect(bridge.endChildAgentSession).toHaveBeenCalledWith("session-existing");
+    expect(bridge.startChildAgentSession).not.toHaveBeenCalled();
+  });
+
+  it("retains the clear marker when the thread still needs a settings proposal bridge", async () => {
+    const staged = policy({ pendingRecapture: { maxConcurrent: 1, targets: [], approvedAt: 99 } });
+    vi.mocked(bridge.startChildAgentSession).mockResolvedValue(PROPOSAL_LAUNCH);
+    for (let turn = 0; turn < 2; turn++) {
+      const result = await ensureChildAgentBridge(input({
+        threadId: "thread-1", policies: { "session-existing": staged },
+        promoteStagedEdits: true, settingsProposalsEnabled: true,
+      }));
+      expect(result?.policy.targets).toEqual([]);
+      expect(result?.policy.pendingRecapture?.targets).toEqual([]);
+      expect(result?.launch.toolNames).not.toContain("spawn_mythra_agent");
+    }
   });
 
   it("re-seeds the children a resumed thread already owns", async () => {

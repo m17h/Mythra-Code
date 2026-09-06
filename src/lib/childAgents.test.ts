@@ -527,3 +527,13 @@ describe("roster summary", () => {
     expect(describeChildAgentRoster(settings, NOTHING_READY)).toBe("No destination ready");
   });
 });
+
+
+it("preserves an explicitly cleared thread roster across storage reloads", () => {
+  const restored = sanitizeChildAgentPolicies({ session: {
+    rootThreadId: "thread", targets: [],
+    pendingRecapture: { targets: [], maxConcurrent: 1, approvedAt: 42 },
+  } });
+  expect(restored.session.pendingRecapture).toEqual({ targets: [], maxConcurrent: 1, approvedAt: 42 });
+  expect(sanitizeChildAgentPolicies({ session: { targets: [], pendingRecapture: {} } }).session.pendingRecapture).toBeUndefined();
+});

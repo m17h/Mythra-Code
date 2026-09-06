@@ -1,3 +1,4 @@
+import { isAuthenticationError } from "./errors";
 import type { CodexEvent, JsonObject } from "./codex";
 import type { ThreadItem, Turn } from "../types";
 import { useTaskStore } from "./taskStore";
@@ -240,7 +241,7 @@ export function handleThreadItem(
 export function routeCodexEvent(event: CodexEvent, ctx: CodexEventContext): void {
   if (event.stream === "stderr") {
     const line = event.line?.toLowerCase() ?? "";
-    if (line.includes("401 unauthorized")) {
+    if (isAuthenticationError(line)) {
       ctx.onStatus("Sign-in required");
       ctx.onError("Sign in to your ChatGPT account in Settings before using OpenAI models.");
       ctx.onAuthRequired();
@@ -398,7 +399,8 @@ export function routeCodexEvent(event: CodexEvent, ctx: CodexEventContext): void
     return;
   }
   if (method === "account/updated") {
-    ctx.onAccountUpdated();
+    if (params.authMode === null) ctx.onAuthRequired();
+    else ctx.onAccountUpdated();
     return;
   }
   if (method === "account/login/completed" && params.success === false) {

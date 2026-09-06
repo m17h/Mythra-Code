@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { friendlyError } from "./errors";
+import { friendlyError, isAuthenticationError } from "./errors";
 
 describe("friendlyError", () => {
   it("turns protocol capability failures into recovery guidance", () => {
@@ -15,4 +15,12 @@ describe("friendlyError", () => {
   it("removes noisy transport prefixes from unknown errors", () => {
     expect(friendlyError("App Server error: useful detail")).toBe("useful detail");
   });
+});
+
+
+it.each(["401 Unauthorized", "refresh_token_reused", "Your token has expired", "Please sign in again"])("recognizes auth rejection: %s", (message) => {
+  expect(isAuthenticationError(new Error(message))).toBe(true);
+});
+it.each(["500 Internal Server Error", "Timed out contacting OAuth server", "Network offline"])("does not sign out on transient failure: %s", (message) => {
+  expect(isAuthenticationError(new Error(message))).toBe(false);
 });

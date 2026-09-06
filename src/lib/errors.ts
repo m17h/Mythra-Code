@@ -20,3 +20,9 @@ export function friendlyError(reason: unknown): string {
     .trim();
   return cleaned || "Something went wrong. Try again, or export diagnostics from Settings if it keeps happening.";
 }
+
+
+/** Authentication rejection, not a transient error while contacting auth. */
+export function isAuthenticationError(reason: unknown): boolean {
+  return /\b401\b|unauthori[sz]ed|refresh_token_(?:reused|expired|invalidated)|(?:token|authentication|sign.in).*(?:expired|invalid|revoked|required)|(?:sign|log) in again/i.test(String(reason));
+}

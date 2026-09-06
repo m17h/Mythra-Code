@@ -111,13 +111,12 @@ export async function ensureChildAgentBridge(
     ? childAgentPolicyForSession(input.policies, persistedStored.sessionId)
     : undefined;
   const stored = immediateStored?.pendingRecapture ? immediateStored : persistedStored;
-  // A roster the user explicitly approved replaces the frozen one — but only
-  // when it still has somewhere to send work. An empty approved roster would
-  // otherwise be promoted into a policy the backend rejects, turning the next
-  // prompt into a failed turn instead of a thread without delegation.
-  const recapture = input.promoteStagedEdits && stored?.pendingRecapture?.targets.length
-    ? stored.pendingRecapture
-    : undefined;
+  // An explicit empty draft is a durable thread-local revocation. Keep it
+  // until the user supplies another roster: dropping it would let the old
+  // frozen crew or global defaults silently repopulate the cleared thread.
+  const pending = input.promoteStagedEdits ? stored?.pendingRecapture : undefined;
+  const clearedRoster = pending?.targets.length === 0;
+  const recapture = pending?.targets.length ? pending : undefined;
   const frozenExisting = recapture ? {
     ...stored!,
     // The staged budget was clamped against every *enabled* destination, but
@@ -149,7 +148,7 @@ export async function ensureChildAgentBridge(
   // backend unconditionally also closes a reload-shaped gap: the renderer can
   // reload without the Tauri process being replaced, which empties the maps
   // above while leaving a registered bridge alive in Rust.
-  const delegationEnabled = input.settings.subagentsEnabled && input.settings.childAgents.enabled;
+  const delegationEnabled = !clearedRoster && input.settings.subagentsEnabled && input.settings.childAgents.enabled;
   if (!delegationEnabled) {
     if (!input.settingsProposalsEnabled) {
       if (existing) await releaseChildAgentSession(existing.sessionId);

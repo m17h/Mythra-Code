@@ -20,6 +20,7 @@ import {
   TerminalSquare,
   X,
 } from "lucide-react";
+import "./OnboardingModal.css";
 import type { CodexRuntimeStatus } from "../lib/codex";
 import type { ClaudeRuntimeStatus } from "../lib/claude";
 import type { CursorRuntimeStatus } from "../lib/cursor";
@@ -39,6 +40,9 @@ const STEPS = [
   { id: "providers", label: "Connect AI", icon: KeyRound },
   { id: "workspaces", label: "Projects & chats", icon: FolderOpen },
   { id: "controls", label: "Your controls", icon: ShieldCheck },
+  { id: "appearance", label: "Make it yours", icon: Compass },
+  { id: "agents", label: "Build your crew", icon: Bot },
+  { id: "tools", label: "Everyday tools", icon: TerminalSquare },
   { id: "skills", label: "Local skills", icon: Boxes },
   { id: "ready", label: "Ready to build", icon: Rocket },
 ] as const;
@@ -56,88 +60,61 @@ function ProviderStep({ runtimeStatus, claudeStatus, cursorStatus, account, open
   lmStudioReady: boolean;
 }) {
   const runtimeReady = Boolean(runtimeStatus?.available);
-  const chatGptReady = account?.type === "chatgpt";
+  const providers = [
+    { id: "openai", title: "ChatGPT subscription", Icon: OpenAILogo, runtime: runtimeReady, connected: account?.type === "chatgpt", guide: CODEX_INSTALL_URL,
+      steps: ["Install the official Codex CLI; Mythra Code detects it automatically.", "Choose OpenAI in Settings → Models & accounts, then Sign in.", "Finish ChatGPT sign-in in your browser and pick a model beneath the composer."] },
+    { id: "claude", title: "Claude subscription", Icon: ClaudeLogo, runtime: Boolean(claudeStatus?.available), connected: Boolean(claudeStatus?.loggedIn), guide: CLAUDE_INSTALL_URL,
+      steps: ["Install Claude Code.", "Choose Claude in Models & accounts and Sign in, or run claude auth login.", "Pick an available model from your subscription beneath the composer."] },
+    { id: "cursor", title: "Cursor subscription", Icon: CursorLogo, runtime: Boolean(cursorStatus?.available), connected: Boolean(cursorStatus?.loggedIn), guide: CURSOR_INSTALL_URL,
+      steps: ["Install Cursor Agent.", "Choose Cursor in Models & accounts and complete browser sign-in.", "Choose from the live model catalog attached to your subscription."] },
+    { id: "openrouter", title: "OpenRouter", Icon: OpenRouterLogo, runtime: runtimeReady, connected: openRouterReady, guide: OPENROUTER_GUIDE_URL,
+      steps: ["Create or sign in to OpenRouter, add credits for paid models, and create an API key.", "Save the key in Models & accounts; it stays in your OS credential store.", "Install Codex CLI, then search the OpenRouter model picker."] },
+    { id: "lmstudio", title: "LM Studio", Icon: LmStudioLogo, runtime: runtimeReady, connected: lmStudioReady, guide: LM_STUDIO_SERVER_URL,
+      steps: ["Download a coding-capable model in LM Studio and start its Local Server.", "Choose LM Studio in Models & accounts. The default address is 127.0.0.1:1234.", "Install Codex CLI, test the server connection, and select a discovered model."] },
+  ];
   return <div className="onboarding-page providers-page">
-    <div className="onboarding-copy">
-      <span className="onboarding-eyebrow">Choose your provider</span>
-      <h2>Connect the models you want to use.</h2>
-      <p>Subscription providers use their official local coding runtime and browser login. OpenRouter uses your API key, while LM Studio runs models from your own local server.</p>
-    </div>
-    <div className="onboarding-provider-grid">
-      <article className="onboarding-provider-card openai">
-        <div className="onboarding-card-title"><span><OpenAILogo size={18} /></span><div><strong>ChatGPT subscription</strong><small>OpenAI authentication</small></div></div>
-        <ol>
-          <li><b>1</b><span>Install the official <strong>Codex CLI</strong>. Mythra Code detects the runtime automatically.</span></li>
-          <li><b>2</b><span>Open <strong>Settings → Models & accounts</strong> and choose OpenAI.</span></li>
-          <li><b>3</b><span>Select <strong>Sign in</strong>. The official ChatGPT flow opens in your browser.</span></li>
-        </ol>
-        <div className="onboarding-card-footer">
-          <StatusPill ready={runtimeReady}>{runtimeReady ? `${runtimeStatus?.source ?? "Codex"} detected` : "Codex runtime needed"}</StatusPill>
-          <StatusPill ready={chatGptReady}>{chatGptReady ? "ChatGPT connected" : "Not signed in"}</StatusPill>
-        </div>
-        <button className="onboarding-link-button" onClick={() => void openUrl(CODEX_INSTALL_URL)}><ExternalLink size={12} /> Codex installation guide</button>
-      </article>
+    <div className="onboarding-copy"><span className="onboarding-eyebrow">Choose your provider</span><h2>Connect the models you want to use.</h2><p>Connect one provider or mix several. Subscriptions use official browser sign-in, OpenRouter uses API credits, and LM Studio runs local models.</p></div>
+    <div className="onboarding-provider-grid">{providers.map(({ id, title, Icon, runtime, connected, guide, steps }) => <article key={id} className={`onboarding-provider-card ${id}`}>
+      <div className="onboarding-card-title"><span><Icon size={18} /></span><div><strong>{title}</strong></div></div>
+      <ol>{steps.map((text, index) => <li key={text}><b>{index + 1}</b><span>{text}</span></li>)}</ol>
+      <div className="onboarding-card-footer"><StatusPill ready={runtime}>{runtime ? "Runtime detected" : "Runtime needed"}</StatusPill><StatusPill ready={connected}>{connected ? "Connected" : "Not connected"}</StatusPill></div>
+      <div className="onboarding-card-links"><button className="onboarding-link-button" onClick={() => void openUrl(guide)}><ExternalLink size={12} /> {title} setup guide</button>{id === "openrouter" && <button className="onboarding-link-button" onClick={() => void openUrl(OPENROUTER_KEYS_URL)}>Create API key</button>}</div>
+    </article>)}</div>
+    <div className="onboarding-note"><ShieldCheck size={14} /><span>Never paste a subscription password into Mythra Code. Connect accounts in Settings → Models & accounts.</span></div>
+  </div>;
+}
 
-      <article className="onboarding-provider-card claude">
-        <div className="onboarding-card-title"><span><ClaudeLogo size={18} /></span><div><strong>Claude subscription</strong><small>Claude Code authentication</small></div></div>
-        <ol>
-          <li><b>1</b><span>Install <strong>Claude Code</strong>. Mythra Code detects the local executable automatically.</span></li>
-          <li><b>2</b><span>Run <strong>claude auth login</strong>, or select Sign in from Models & accounts.</span></li>
-          <li><b>3</b><span>Choose Claude, then select Fable, Opus, Sonnet, or Haiku beneath the composer.</span></li>
-        </ol>
-        <div className="onboarding-card-footer">
-          <StatusPill ready={Boolean(claudeStatus?.available)}>{claudeStatus?.available ? "Claude Code detected" : "Claude Code needed"}</StatusPill>
-          <StatusPill ready={Boolean(claudeStatus?.loggedIn)}>{claudeStatus?.loggedIn ? "Claude connected" : "Not signed in"}</StatusPill>
-        </div>
-        <button className="onboarding-link-button" onClick={() => void openUrl(CLAUDE_INSTALL_URL)}><ExternalLink size={12} /> Claude Code setup</button>
-      </article>
+const TOUR_PAGES = {
+  appearance: { eyebrow: "Make it yours", title: "Your workspace, your style.", intro: "Open Settings → Interface to preview your choices, then save the combination that feels right.", cards: [
+    ["Themes", "Choose a light or dark theme and a color palette. Project defaults can give each workspace its own look."],
+    ["Chat fonts & UI scale", "Pick a typeface for conversation text and adjust interface scale for comfortable reading. Code keeps its monospace font."],
+    ["Animated effort sliders", "Try Reactor’s energy cells, Astra’s starlight, or a quieter style. The look changes; your selected reasoning effort keeps the same meaning."],
+  ] },
+  agents: { eyebrow: "Build your crew", title: "Different models. One team.", intro: "Open Sub-agents beneath the composer. Choose any available model from your connected providers for each worker, independently of the parent model.", cards: [
+    ["Mix providers and roles", "Turn on Cross-provider to combine OpenAI, Claude, Cursor, OpenRouter, and LM Studio. Try one model for implementation and another for review; set each worker’s model and reasoning."],
+    ["Your roster, your limits", "Choose how many may run at once, up to 24 and within your configured crew. Change or clear an idle thread’s crew; changes apply on its next message. Workers inherit the parent’s permissions."],
+    ["Reuse and follow the work", "Save crews as presets in Settings → Sub-agents. Watch live workers in the Sub-agents panel. Connected subscriptions, API credits, and local compute still apply—model choice is yours."],
+  ] },
+  tools: { eyebrow: "Everyday tools", title: "More than a chat window.", intro: "Start with a conversation and reach for these tools as your project grows.", cards: [
+    ["Instructions & organization", "Use Project instructions beside the project name to replace or add to your app-wide prompt. Pin workspaces for quick access and collapse the pinned group when you need space."],
+    ["Usage & model favorites", "Hover over a subscription’s usage chip for a quick reading, or click to keep it open. Star models in the picker so favorites are easy to find."],
+    ["Files, Git & automation", "Explore files, terminal, and Git in the workspace panel. Set up reusable workflows, scheduled tasks, and connected tools from Settings. Review changes before you commit."],
+  ] },
+} as const;
 
-      <article className="onboarding-provider-card cursor">
-        <div className="onboarding-card-title"><span><CursorLogo size={18} /></span><div><strong>Cursor subscription</strong><small>Cursor Agent authentication</small></div></div>
-        <ol>
-          <li><b>1</b><span>Install <strong>Cursor Agent</strong>. Mythra Code detects the official local executable automatically.</span></li>
-          <li><b>2</b><span>Choose Cursor in <strong>Models & accounts</strong>, then complete its official browser sign-in.</span></li>
-          <li><b>3</b><span>Select Grok 4.5 or another model from the live catalog attached to your subscription.</span></li>
-        </ol>
-        <div className="onboarding-card-footer">
-          <StatusPill ready={Boolean(cursorStatus?.available)}>{cursorStatus?.available ? "Cursor Agent detected" : "Cursor Agent needed"}</StatusPill>
-          <StatusPill ready={Boolean(cursorStatus?.loggedIn)}>{cursorStatus?.loggedIn ? "Cursor connected" : "Not signed in"}</StatusPill>
-        </div>
-        <button className="onboarding-link-button" onClick={() => void openUrl(CURSOR_INSTALL_URL)}><ExternalLink size={12} /> Cursor Agent setup</button>
-      </article>
+function TourStep({ page }: { page: keyof typeof TOUR_PAGES }) {
+  const content = TOUR_PAGES[page];
+  return <div className="onboarding-page"><div className="onboarding-copy"><span className="onboarding-eyebrow">{content.eyebrow}</span><h2>{content.title}</h2><p>{content.intro}</p></div>
+    {page === "appearance" && <AppearancePreview />}
+    <div className="onboarding-control-list">{content.cards.map(([title, detail], index) => <div key={title}><span className="control-icon prompt">{index + 1}</span><span><strong>{title}</strong><small>{detail}</small></span></div>)}</div>
+  </div>;
+}
 
-      <article className="onboarding-provider-card openrouter">
-        <div className="onboarding-card-title"><span><OpenRouterLogo size={18} /></span><div><strong>OpenRouter</strong><small>One key, broad model catalog</small></div></div>
-        <ol>
-          <li><b>1</b><span>Create or sign in to OpenRouter, add credits if your chosen model requires them, and create an <strong>API key</strong>.</span></li>
-          <li><b>2</b><span>Paste the key in <strong>Settings → Models & accounts</strong>. It is stored in your OS credential store.</span></li>
-          <li><b>3</b><span>Choose OpenRouter, then search its model picker beneath the composer.</span></li>
-        </ol>
-        <div className="onboarding-card-footer">
-          <StatusPill ready={runtimeReady}>{runtimeReady ? "Runtime ready" : "Codex runtime needed"}</StatusPill>
-          <StatusPill ready={openRouterReady}>{openRouterReady ? "API key stored" : "API key needed"}</StatusPill>
-        </div>
-        <div className="onboarding-card-links">
-          <button className="onboarding-link-button" onClick={() => void openUrl(OPENROUTER_KEYS_URL)}><ExternalLink size={12} /> Create API key</button>
-          <button className="onboarding-link-button" onClick={() => void openUrl(OPENROUTER_GUIDE_URL)}><ExternalLink size={12} /> Quickstart</button>
-        </div>
-      </article>
-
-      <article className="onboarding-provider-card lmstudio">
-        <div className="onboarding-card-title"><span><LmStudioLogo size={18} /></span><div><strong>LM Studio</strong><small>Models running on your machine</small></div></div>
-        <ol>
-          <li><b>1</b><span>Install LM Studio, download a coding-capable model, and start its <strong>Local Server</strong>.</span></li>
-          <li><b>2</b><span>Choose LM Studio in <strong>Settings → Models & accounts</strong>. The default server is <code>127.0.0.1:1234</code>.</span></li>
-          <li><b>3</b><span>Test the connection, then choose a discovered model beneath the composer.</span></li>
-        </ol>
-        <div className="onboarding-card-footer">
-          <StatusPill ready={runtimeReady}>{runtimeReady ? "Runtime ready" : "Codex runtime needed"}</StatusPill>
-          <StatusPill ready={lmStudioReady}>{lmStudioReady ? "Local server connected" : "Start local server"}</StatusPill>
-        </div>
-        <button className="onboarding-link-button" onClick={() => void openUrl(LM_STUDIO_SERVER_URL)}><ExternalLink size={12} /> LM Studio server guide</button>
-      </article>
-    </div>
-    <div className="onboarding-note"><ShieldCheck size={14} /><span>Mythra Code never asks you to paste a subscription password. ChatGPT, Claude, and Cursor use their official local login; OpenRouter uses your API key; LM Studio uses its local server and an optional token.</span></div>
+function AppearancePreview() {
+  const [effort, setEffort] = useState(50);
+  return <div className="onboarding-style-demo" style={{ "--demo-speed": `${2.4 - effort / 65}s` } as React.CSSProperties}>
+    <div><span className="onboarding-swatches" aria-hidden="true"><i /><i /><i /></span><strong>Your next great idea.</strong><small>Try the motion · preview only</small></div>
+    <input type="range" min="0" max="100" value={effort} onChange={(event) => setEffort(Number(event.target.value))} aria-label="Preview slider animation speed" />
   </div>;
 }
 
@@ -178,7 +155,7 @@ function ControlsStep() {
     </div>
     <div className="onboarding-control-list">
       <div><span className="control-icon prompt">Aa</span><span><strong>Your harness prompt</strong><small>Mythra Code starts with an empty base instruction. Add your own in Settings → Prompts; the app does not add a hidden harness prompt.</small></span></div>
-      <div><span className="control-icon agents"><Bot size={14} /></span><span><strong>Sub-agents are opt-in</strong><small>Enable them per new thread and choose a maximum of 1–24 direct child agents. They inherit the thread’s permissions.</small></span></div>
+      <div><span className="control-icon agents"><Bot size={14} /></span><span><strong>Sub-agents are opt-in</strong><small>Enable them per new thread and build a crew from your connected models. They inherit the thread’s permissions.</small></span></div>
       <div><span className="control-icon stop"><X size={14} /></span><span><strong>You can stop and inspect</strong><small>Stop an active turn at any time. Thinking and executed commands stay compact and expandable in the conversation.</small></span></div>
     </div>
   </div>;
@@ -189,7 +166,7 @@ function SkillsStep({ skillsFolder, onChooseSkillsFolder }: { skillsFolder: stri
     <div className="onboarding-copy">
       <span className="onboarding-eyebrow">Reusable instructions you own</span>
       <h2>Skills are local Markdown playbooks.</h2>
-      <p>Choose one folder as your skills library. Mythra Code scans it and exposes enabled skills by their app name to OpenAI, Claude, and OpenRouter models.</p>
+      <p>Choose one folder as your skills library. Mythra Code scans it and makes enabled skills available by their app name.</p>
     </div>
     <div className="onboarding-skills-layout">
       <div className="onboarding-folder-tree">
@@ -316,11 +293,12 @@ export function OnboardingModal({
       <div><TerminalSquare size={16} /><span><strong>Your computer</strong><small>Projects and commands stay local</small></span></div>
       <div><NotebookPen size={16} /><span><strong>Your instructions</strong><small>The base prompt starts empty</small></span></div>
     </div>
-    <div className="onboarding-time"><i /><span>About two minutes</span><i /></div>
+    <div className="onboarding-time"><i /><span>Explore at your own pace</span><i /></div>
   </div>;
   else if (step.id === "providers") content = <ProviderStep runtimeStatus={runtimeStatus} claudeStatus={claudeStatus} cursorStatus={cursorStatus} account={account} openRouterReady={openRouterReady} lmStudioReady={lmStudioReady} />;
   else if (step.id === "workspaces") content = <WorkspacesStep />;
   else if (step.id === "controls") content = <ControlsStep />;
+  else if (step.id === "appearance" || step.id === "agents" || step.id === "tools") content = <TourStep page={step.id} />;
   else if (step.id === "skills") content = <SkillsStep skillsFolder={skillsFolder} onChooseSkillsFolder={onChooseSkillsFolder} />;
   else content = <ReadyStep runtimeStatus={runtimeStatus} claudeStatus={claudeStatus} cursorStatus={cursorStatus} account={account} openRouterReady={openRouterReady} lmStudioReady={lmStudioReady} skillsFolder={skillsFolder} onDestination={destination} />;
 
