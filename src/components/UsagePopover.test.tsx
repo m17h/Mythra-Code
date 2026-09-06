@@ -174,3 +174,16 @@ describe("usage popover", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   });
 });
+
+it("shares one clock across multiple countdown windows", () => {
+  vi.useFakeTimers();
+  const intervals = vi.spyOn(window, "setInterval");
+  intervals.mockClear();
+  const clears = vi.spyOn(window, "clearInterval");
+  const data = { ...usage, windows: ["5h", "5h (2)"].map((label) => ({ label, percent: 50, percentLabel: "50% left", resetLabel: "", resetsAt: Date.now() / 1000 + 300 })) };
+  const view = render(<Harness data={data} />);
+  fireEvent.click(screen.getByRole("button", { name: /Open usage details/ }));
+  expect(intervals).toHaveBeenCalledTimes(1);
+  view.unmount();
+  expect(clears).toHaveBeenCalledWith(intervals.mock.results[0].value);
+});

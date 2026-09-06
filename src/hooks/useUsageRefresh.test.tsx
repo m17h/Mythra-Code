@@ -4,6 +4,7 @@ import { nextUsageReset, USAGE_MIN_GAP_MS, USAGE_POLL_MS, useUsageRefresh } from
 
 function setVisibility(state: "visible" | "hidden"): void {
   Object.defineProperty(document, "visibilityState", { configurable: true, get: () => state });
+  Object.defineProperty(document, "hidden", { configurable: true, get: () => state === "hidden" });
 }
 
 describe("useUsageRefresh", () => {
@@ -143,4 +144,29 @@ describe("nextUsageReset", () => {
     expect(nextUsageReset([{ resetsAt: null }, { resetsAt: now / 1000 - 10 }, {}], now)).toBeNull();
     expect(nextUsageReset([], now)).toBeNull();
   });
+});
+
+it("reads a newly selected provider while the previous provider is still pending", async () => {
+  let finish = () => {};
+  const slow = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+  const fast = vi.fn().mockResolvedValue(null);
+  const onStatus = vi.fn();
+  const { result, rerender } = renderHook(({ key, refresh }) => useUsageRefresh({ key, refresh, enabled: true, onStatus }), {
+    initialProps: { key: "claude:one", refresh: slow },
+  });
+  await act(async () => { result.current({ force: true }); });
+  rerender({ key: "openai:two", refresh: fast });
+  await act(async () => { await Promise.resolve(); });
+  expect(fast).toHaveBeenCalledTimes(1);
+  const calls = onStatus.mock.calls.length;
+  await act(async () => { finish(); });
+  expect(onStatus).toHaveBeenCalledTimes(calls);
+});
+
+it("reports failed refreshes without exposing provider error content", async () => {
+  const onStatus = vi.fn();
+  const { result } = renderHook(() => useUsageRefresh({ key: "claude:one", enabled: true,
+    refresh: () => Promise.reject(new Error("private account details")), onStatus }));
+  await act(async () => { result.current({ force: true }); });
+  expect(onStatus).toHaveBeenLastCalledWith("Refresh unavailable · last reading");
 });

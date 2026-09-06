@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef } from "react";
+import { auditEvent } from "../lib/codex";
 
 /**
  * How often a visible window re-reads the active provider's quota.
@@ -21,7 +22,7 @@ export const USAGE_MIN_GAP_MS = 15_000;
 const RESET_GRACE_MS = 5_000;
 
 /** `setTimeout` silently fires immediately past this, so long waits re-arm. */
-const MAX_TIMEOUT_MS = 6 * 60 * 60 * 1000;
+const MAX_TIMEOUT_MS = 21_600_000;
 
 export interface UsageRefreshOptions {
   /**
@@ -41,6 +42,7 @@ export interface UsageRefreshOptions {
   resetsAt?: number | null;
   pollMs?: number;
   minGapMs?: number;
+  onStatus?: (status: string) => void;
 }
 
 /**
@@ -58,40 +60,43 @@ export function useUsageRefresh({
   resetsAt,
   pollMs = USAGE_POLL_MS,
   minGapMs = USAGE_MIN_GAP_MS,
+  onStatus,
 }: UsageRefreshOptions): (options?: { force?: boolean }) => void {
-  const refreshRef = useRef(refresh);
-  const enabledRef = useRef(enabled);
-  const inFlightRef = useRef(false);
+  const latestRef = useRef({ key, enabled, refresh, minGapMs, onStatus });
+  latestRef.current = { key, enabled, refresh, minGapMs, onStatus };
+  const inFlightRef = useRef<Record<string, true>>({});
   const lastReadRef = useRef(0);
-  const minGapRef = useRef(minGapMs);
-  refreshRef.current = refresh;
-  enabledRef.current = enabled;
-  minGapRef.current = minGapMs;
 
   const request = useCallback((options: { force?: boolean } = {}) => {
-    if (!enabledRef.current || inFlightRef.current) return;
-    if (!options.force && Date.now() - lastReadRef.current < minGapRef.current) return;
-    inFlightRef.current = true;
-    void Promise.resolve()
-      .then(() => refreshRef.current())
-      .catch(() => {})
-      .finally(() => {
-        // Stamp on completion, not on start: a slow read should not let the
-        // very next tick fire the moment it lands.
+    const current = latestRef.current;
+    if (!current.enabled || inFlightRef.current[current.key]) return;
+    if (!options.force && Date.now() - lastReadRef.current < current.minGapMs) return;
+    const identity = current.key;
+    inFlightRef.current[identity] = true;
+    current.onStatus?.("Refreshing usage…");
+    const complete = (failed = false) => {
+      const active = latestRef.current;
+      if (active.enabled && active.key === identity) {
+        active.onStatus?.(failed ? "Refresh unavailable · last reading" : "Updated");
         lastReadRef.current = Date.now();
-        inFlightRef.current = false;
-      });
+      }
+      void auditEvent("usage.read", { provider: identity.split(":")[0], outcome: failed ? "unavailable" : "success" }).catch(() => {});
+      delete inFlightRef.current[identity];
+    };
+    void Promise.resolve()
+      .then(current.refresh)
+      .then(() => complete(), () => complete(true));
   }, []);
 
   // Switching provider or account puts a quota on screen that nothing has read
   // yet, so it ignores the burst floor. The first account this hook ever sees is
   // the exception: connecting it is what read it in the first place, and a
   // second read on launch would only duplicate that one.
-  const firstKeyRef = useRef<string | null>(null);
+  const initializedRef = useRef(false);
   useEffect(() => {
     if (!enabled) return;
-    if (firstKeyRef.current === null) {
-      firstKeyRef.current = key;
+    if (!initializedRef.current) {
+      initializedRef.current = true;
       return;
     }
     request({ force: true });
@@ -100,7 +105,7 @@ export function useUsageRefresh({
   useEffect(() => {
     if (!enabled) return;
     const poll = () => {
-      if (document.visibilityState === "visible") request();
+      if (!document.hidden) request();
     };
     const timer = window.setInterval(poll, pollMs);
     // Returning to the app is the moment a stale number is most visible, and
@@ -115,7 +120,7 @@ export function useUsageRefresh({
   }, [enabled, key, pollMs, request]);
 
   useEffect(() => {
-    if (!enabled || typeof resetsAt !== "number" || !Number.isFinite(resetsAt) || resetsAt <= 0) return;
+    if (!enabled || !resetsAt || !Number.isFinite(resetsAt)) return;
     const delay = resetsAt * 1000 + RESET_GRACE_MS - Date.now();
     if (delay <= 0 || delay > MAX_TIMEOUT_MS) return;
     const timer = window.setTimeout(() => request({ force: true }), delay);

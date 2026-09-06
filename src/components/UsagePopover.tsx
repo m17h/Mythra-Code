@@ -1,24 +1,8 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { ChevronDown, Clock3, Gauge, X } from "lucide-react";
-import { hasUsageCountdown, selectedUsageWindow, usageResetText, type AccountUsageView, type AccountUsageWindowView, type ProviderHeaderUsageView } from "../lib/providerUsage";
+import { hasUsageCountdown, selectedUsageWindow, usageResetText, type AccountUsageView, type ProviderHeaderUsageView } from "../lib/providerUsage";
 import "./UsagePopover.css";
 import { usePopoverFade } from "../hooks/usePopoverFade";
-
-/** Exit decoration keeps its text, but stops its clock as soon as closed. */
-function UsageResetLabel({ window: usageWindow, active }: { window: AccountUsageWindowView; active: boolean }) {
-  const [now, setNow] = useState(Date.now);
-  const countdown = hasUsageCountdown(usageWindow);
-  useEffect(() => {
-    if (!active || !countdown) return;
-    const refresh = () => setNow(Date.now());
-    const onVisible = () => { if (!document.hidden) refresh(); };
-    refresh();
-    const timer = window.setInterval(refresh, 60_000);
-    document.addEventListener("visibilitychange", onVisible);
-    return () => { window.clearInterval(timer); document.removeEventListener("visibilitychange", onVisible); };
-  }, [active, countdown, usageWindow.resetsAt]);
-  return <small><Clock3 size={12} aria-hidden="true" />{usageResetText(usageWindow, now)}</small>;
-}
 
 /**
  * Opening asks for a fresh reading rather than rendering the last one blindly:
@@ -26,7 +10,7 @@ function UsageResetLabel({ window: usageWindow, active }: { window: AccountUsage
  * one the user cares about right now. The request is throttled upstream, so a
  * hover sweep or a panel opened twice in a row costs a single round trip.
  */
-export function UsagePopover({ provider, usage, header, selectedLabel, onSelect, onDetails, onConnect, onOpen }: {
+export function UsagePopover({ provider, usage, header, selectedLabel, onSelect, onDetails, onConnect, onOpen, readStatus }: {
   provider: "openai" | "claude";
   usage: AccountUsageView;
   header: ProviderHeaderUsageView;
@@ -35,6 +19,7 @@ export function UsagePopover({ provider, usage, header, selectedLabel, onSelect,
   onDetails: () => void;
   onConnect: () => void;
   onOpen?: () => void;
+  readStatus?: string;
 }) {
   const [mode, setMode] = useState<"closed" | "hover" | "pinned">("closed");
   const rootRef = useRef<HTMLDivElement>(null);
@@ -45,6 +30,16 @@ export function UsagePopover({ provider, usage, header, selectedLabel, onSelect,
   const { ref: panelRef, present } = usePopoverFade(open);
   const windows = usage.windows ?? [];
   const selected = selectedUsageWindow(windows, selectedLabel);
+  const [now, setNow] = useState(Date.now);
+  const countdown = open && windows.some(hasUsageCountdown);
+  useEffect(() => {
+    if (!countdown) return;
+    const refresh = () => { if (!document.hidden) setNow(Date.now()); };
+    refresh();
+    const timer = window.setInterval(refresh, 60_000);
+    document.addEventListener("visibilitychange", refresh);
+    return () => { window.clearInterval(timer); document.removeEventListener("visibilitychange", refresh); };
+  }, [countdown]);
   const clearTimer = () => { clearTimeout(timerRef.current); timerRef.current = undefined; };
   const close = (restoreFocus = false) => {
     clearTimer();
@@ -142,11 +137,12 @@ export function UsagePopover({ provider, usage, header, selectedLabel, onSelect,
               <span className="usage-popover-track" role="progressbar" aria-label={`${window.label} quota`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={window.percent} aria-valuetext={window.percentLabel}>
                 <span style={{ width: `${window.percent}%` }} />
               </span>
-              <UsageResetLabel window={window} active={open} />
+              <small><Clock3 size={12} aria-hidden="true" />{usageResetText(window, now)}</small>
             </span>
           </label>)}
         </fieldset> : <p className="usage-popover-empty">{usage.summary}</p>}
-        <p className="usage-popover-note">Account-wide limits, shared across your threads. Only limits reported by the provider are shown.</p>
+        {readStatus && <p className="usage-popover-note" role="status">{readStatus}</p>}
+        <p className="usage-popover-note">Provider-reported limits, shared across devices.</p>
         <button type="button" className="usage-popover-details" onClick={() => { close(); if (header.needsConnection) onConnect(); else onDetails(); }}>
           {header.needsConnection ? "Models & accounts" : "More usage details"}
         </button>

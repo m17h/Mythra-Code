@@ -380,8 +380,47 @@ async fn reap_claude_process(
     }
 }
 
-fn claude_message_ends_turn(message: &Value) -> bool {
-    message.get("type").and_then(Value::as_str) == Some("result")
+/// A resumed CLI can finish restored background notifications before it starts
+/// our queued prompt. Match the CLI's command lifecycle to the UUID we sent;
+/// that zero-turn result must not close stdin or retire the process.
+struct ClaudeTurnBoundary {
+    prompt_id: String,
+    prompt_queued: bool,
+}
+
+impl ClaudeTurnBoundary {
+    fn new(prompt_id: String) -> Self {
+        Self {
+            prompt_id,
+            prompt_queued: false,
+        }
+    }
+
+    fn ends_turn(&mut self, message: &Value) -> bool {
+        let kind = message.get("type").and_then(Value::as_str);
+        if kind == Some("command_lifecycle")
+            && message.get("command_uuid").and_then(Value::as_str) == Some(&self.prompt_id)
+        {
+            match message.get("state").and_then(Value::as_str) {
+                Some("queued") => self.prompt_queued = true,
+                Some("started" | "completed") => self.prompt_queued = false,
+                _ => {}
+            }
+        }
+        if kind != Some("result") {
+            return false;
+        }
+        // Preserve errors and legacy CLI behavior, and preserve genuine empty
+        // answers after the prompt starts so the UI can report them normally.
+        !(self.prompt_queued
+            && message.get("subtype").and_then(Value::as_str) == Some("success")
+            && message.get("is_error").and_then(Value::as_bool) == Some(false)
+            && message.get("num_turns").and_then(Value::as_u64) == Some(0)
+            && message
+                .get("result")
+                .and_then(Value::as_str)
+                .is_some_and(|text| text.trim().is_empty()))
+    }
 }
 
 /// How much provider stderr is retained per turn. Only the tail is ever
@@ -2951,6 +2990,7 @@ async fn claude_user_message(
     }
     Ok(json!({
         "type": "user",
+        "uuid": uuid::Uuid::new_v4().to_string(),
         "message": { "role": "user", "content": content },
         "parent_tool_use_id": Value::Null,
         "session_id": thread_id,
@@ -3227,6 +3267,12 @@ async fn claude_turn_start(
         }
     });
 
+    let mut turn_boundary = ClaudeTurnBoundary::new(
+        user_message["uuid"]
+            .as_str()
+            .expect("user message UUID")
+            .to_string(),
+    );
     let stdout_app = app.clone();
     let stdout_thread = options.thread_id;
     let stdout_turn = turn_id.clone();
@@ -3336,7 +3382,13 @@ async fn claude_turn_start(
                 continue;
             }
             flush_deltas(&mut delta_buffer, &stdout_app);
-            if claude_message_ends_turn(&message) {
+            let ends_turn = turn_boundary.ends_turn(&message);
+            if message.get("type").and_then(Value::as_str) == Some("result") && !ends_turn {
+                // This result belongs to restored work, not the queued prompt.
+                // Do not forward it to the UI's terminal-result handler either.
+                continue;
+            }
+            if ends_turn {
                 // Result delivery is not a transcript flush acknowledgement.
                 // Keep the slot until EOF lets the CLI save and exit, then
                 // publish completion so a queued resume cannot race that save.
@@ -3562,6 +3614,8 @@ async fn audit_append(
                 params![unix_timestamp_ms(), kind, thread_id, json],
             )
             .map_err(|error| format!("Could not append audit event: {error}"))?;
+        persistence::prune_audit_events(&connection)
+            .map_err(|error| format!("Could not prune audit history: {error}"))?;
         Ok(())
     })
     .await

@@ -206,6 +206,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .app-shell[data-color-scheme="light"] .provider-logo.lmstudio { color: #16856c; }
 .app-shell[data-color-scheme="light"] .provider-logo.claude { color: #fff; background: #d97757; }
 .app-shell[data-color-scheme="light"] .provider-logo.cursor { color: #26251e; background: #edecec; }
+.app-shell[data-color-scheme="light"][data-openai-logo="codex"] .provider-mark.openai { background: #ffffff; }
 .app-shell[data-color-scheme="light"] .provider-mark.openrouter { color: #7624f4; background: rgba(118,36,244,.07); }
 .app-shell[data-color-scheme="light"] .sa-tile.openrouter { --sa-accent: #7624f4; --sa-avatar-bg: rgba(118,36,244,.07); --sa-avatar-ink: #7624f4; }
 .app-shell[data-color-scheme="light"] .onboarding-provider-card.openrouter { border-color: color-mix(in srgb, #7624f4 19%, var(--line)); }

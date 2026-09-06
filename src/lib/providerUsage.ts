@@ -91,44 +91,28 @@ export function providerHeaderUsage(
       ? {
           text: "Credits unavailable",
           title: options.openRouterCreditsError?.toLowerCase().includes("does not expose")
-            ? "This OpenRouter key does not expose an account balance or spending limit"
-            : "OpenRouter credits are temporarily unavailable. Try refreshing usage.",
+            ? "This key exposes no balance or spending limit"
+            : "OpenRouter credits unavailable. Try refreshing.",
         }
       : { text: "Checking credits…", title: "Checking OpenRouter credits" };
   }
   if (provider !== "openai" && provider !== "claude") return null;
+  const title = `${accountUsage.label} · ${accountUsage.summary}`;
   const windows = accountUsage.windows ?? [];
   if (!windows.length) {
     const summary = accountUsage.summary.toLowerCase();
-    if (summary.includes("checking")) {
-      return { text: "Checking usage…", title: `${accountUsage.label} · ${accountUsage.summary}` };
-    }
-    if (summary.includes("sign in")) {
-      return {
-        text: "Sign in for usage",
-        title: `${accountUsage.label} · ${accountUsage.summary}`,
-        needsConnection: true,
-      };
-    }
-    if (summary.includes("install")) {
-      return {
-        text: provider === "claude" ? "Connect Claude" : "Connect provider",
-        title: `${accountUsage.label} · ${accountUsage.summary}`,
-        needsConnection: true,
-      };
-    }
-    if (summary.includes("no active limit")) {
-      return { text: "No active limit", title: `${accountUsage.label} · ${accountUsage.summary}` };
-    }
-    return { text: "Usage unavailable", title: `${accountUsage.label} · ${accountUsage.summary}` };
+    const signIn = summary.includes("sign in");
+    const install = summary.includes("install");
+    return {
+      text: summary.includes("checking") ? "Checking usage…" : signIn ? "Sign in for usage"
+        : install ? provider === "claude" ? "Connect Claude" : "Connect provider"
+        : summary.includes("no active limit") ? "No active limit" : "Usage unavailable",
+      title,
+      ...(signIn || install ? { needsConnection: true } : {}),
+    };
   }
-  return {
-    text: (() => {
-      const window = selectedUsageWindow(windows, options.selectedWindow)!;
-      return `${window.label} ${window.percentLabel}`;
-    })(),
-    title: `${accountUsage.label} · ${accountUsage.summary}`,
-  };
+  const window = selectedUsageWindow(windows, options.selectedWindow)!;
+  return { text: `${window.label} ${window.percentLabel}`, title };
 }
 
 /**
@@ -284,7 +268,9 @@ export function formatRateLimits(
 function readWindow(value: unknown, fallbackLabel: string): RateLimitWindow | null {
   if (!value || typeof value !== "object") return null;
   const record = value as Record<string, unknown>;
-  if (record.usedPercent === undefined || record.usedPercent === null) return null;
+  const percent = record.usedPercent;
+  if ((typeof percent !== "number" && typeof percent !== "string")
+    || (typeof percent === "string" && !percent.trim()) || !Number.isFinite(Number(percent))) return null;
   const resetsAt = Number(record.resetsAt);
   return {
     label: formatWindowLabel(record.windowMinutes) || fallbackLabel,
@@ -303,7 +289,11 @@ export function parseCodexRateLimits(value: unknown): ProviderRateLimits | null 
   const limits = (value as Record<string, unknown>).rateLimits;
   if (!limits || typeof limits !== "object") return null;
   const record = limits as Record<string, unknown>;
-  const windows = [readWindow(record.primary, ""), readWindow(record.secondary, "")].filter(
+  const windows = [record.primary, record.secondary].map((value) => {
+    const window = readWindow(value, "");
+    if (value != null && !window) throw new Error("Invalid usage data");
+    return window;
+  }).filter(
     (window): window is RateLimitWindow => window !== null,
   );
   return windows.length ? { windows } : null;
@@ -331,15 +321,20 @@ export function providerAccountUsage(
 ): AccountUsageView {
   const mode = options.usageDisplay ?? DEFAULT_USAGE_DISPLAY;
   const now = options.now ?? Date.now();
-  if (provider === "claude") {
-    if (!options.claudeStatus) return { label: "Claude subscription", summary: "Checking Claude Code…" };
-    if (!options.claudeStatus.available) return { label: "Claude subscription", summary: "Install Claude Code to view this account" };
-    if (!options.claudeStatus.loggedIn) return { label: "Claude subscription", summary: "Sign in to Claude Code to view this account" };
+  const label = `${provider === "claude" ? "Claude" : provider === "cursor" ? "Cursor" : "OpenAI"} subscription`;
+  if (provider === "claude" || provider === "cursor") {
+    const status = provider === "claude" ? options.claudeStatus : options.cursorStatus;
+    const name = provider === "claude" ? "Claude Code" : "Cursor Agent";
+    const summary = !status ? `Checking ${name}…` : !status.available
+      ? `Install ${name} to view this account` : !status.loggedIn ? `Sign in to ${name} to view this account` : "";
+    if (summary) return { label, summary };
+  }
+  if (provider === "claude" && options.claudeStatus) {
     const plan = options.claudeStatus.subscriptionType || options.claudeStatus.authMethod || "Claude";
     const planLabel = `${plan.charAt(0).toUpperCase()}${plan.slice(1)}`;
     const limits = formatRateLimits(options.claudeRateLimits, mode, now);
     return {
-      label: "Claude subscription",
+      label,
       summary: limits
         ? `${planLabel} plan · ${limits}`
         : `${planLabel} plan connected · live limits are managed by Claude Code`,
@@ -351,12 +346,9 @@ export function providerAccountUsage(
         : {}),
     };
   }
-  if (provider === "cursor") {
-    if (!options.cursorStatus) return { label: "Cursor subscription", summary: "Checking Cursor Agent…" };
-    if (!options.cursorStatus.available) return { label: "Cursor subscription", summary: "Install Cursor Agent to view this account" };
-    if (!options.cursorStatus.loggedIn) return { label: "Cursor subscription", summary: "Sign in to Cursor Agent to view this account" };
+  if (provider === "cursor" && options.cursorStatus) {
     const plan = options.cursorStatus.subscriptionType || "Cursor";
-    return { label: "Cursor subscription", summary: `${plan} connected · live usage and limits are managed by Cursor` };
+    return { label, summary: `${plan} connected · live usage and limits are managed by Cursor` };
   }
   if (provider === "openrouter") {
     const balance = options.openRouterCredits;
@@ -374,30 +366,30 @@ export function providerAccountUsage(
         label: "OpenRouter credits",
         summary: options.openRouterReady
           ? options.openRouterCreditsError?.toLowerCase().includes("does not expose")
-            ? "This API key does not expose an account balance or spending limit"
+            ? "This API key exposes no balance or spending limit"
             : "Credits are temporarily unavailable · try refreshing usage"
           : "Add an OpenRouter API key to track credits",
       };
     }
     return {
       label: "OpenRouter usage",
-      summary: options.openRouterReady ? "Pay as you go · tracked spend appears below" : "Add an OpenRouter API key to track spend",
+      summary: options.openRouterReady ? "Pay as you go · tracked spend below" : "Add an OpenRouter API key to track spend",
     };
   }
   if (provider === "lmstudio") {
     return {
       label: "LM Studio local inference",
-      summary: options.lmStudioReady ? "Connected locally · inference runs on your computer with no provider billing" : "Start LM Studio and load a model",
+      summary: options.lmStudioReady ? "Connected locally · inference runs here with no provider billing" : "Start LM Studio and load a model",
     };
   }
   const openAi = formatRateLimits(options.openAiRateLimits, mode, now);
   if (openAi && options.openAiRateLimits) return {
-    label: "OpenAI subscription",
+    label,
     summary: openAi,
     windows: accountUsageWindows(options.openAiRateLimits, mode, now),
   };
   return {
-    label: "OpenAI subscription",
+    label,
     summary: options.openAiRateLimitsRead
       ? "No active limit window"
       : options.openAiConnected

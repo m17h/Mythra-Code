@@ -300,6 +300,7 @@ export function SettingsModal({
   developerRuntimeUpdater: injectedDeveloperRuntimeUpdater,
   settings,
   account,
+  accountChecks = {},
   runtimeStatus,
   claudeStatus = null,
   claudeLoginStarting = false,
@@ -385,6 +386,7 @@ export function SettingsModal({
   developerRuntimeUpdater?: DeveloperRuntimeUpdater;
   settings: AppSettings;
   account: Account | null;
+  accountChecks?: Partial<Record<Provider, string>>;
   runtimeStatus: CodexRuntimeStatus | null;
   claudeStatus?: ClaudeRuntimeStatus | null;
   claudeLoginStarting?: boolean;
@@ -1365,11 +1367,11 @@ export function SettingsModal({
               <div className="credential-panel">
                 <div>
                   <strong>{account?.type === "chatgpt" ? account.email || "ChatGPT account" : "ChatGPT subscription"}</strong>
-                  <small>{account?.type === "chatgpt" ? `${account.planType ?? "ChatGPT"} plan connected` : runtimeStatus?.available ? `Official browser sign-in · ${runtimeStatus.source} detected` : "Codex CLI required"}</small>
+                  <small>{accountChecks.openai || (account?.type === "chatgpt" ? `${account.planType ?? "ChatGPT"} plan connected` : runtimeStatus?.available ? `Official browser sign-in · ${runtimeStatus.source} detected` : "Codex CLI required")}</small>
                 </div>
                 {account?.type === "chatgpt" ? (
                   <div className="credential-actions">
-                    <span className="connected-badge"><Check size={12} /> Connected</span>
+                    <span className="connected-badge"><Check size={12} /> {accountChecks.openai ? "Unverified" : "Connected"}</span>
                     <button className="secondary-button" onClick={() => void signOut()} disabled={busy}>Sign out</button>
                   </div>
                 ) : (
@@ -1417,12 +1419,12 @@ export function SettingsModal({
               <div className="credential-panel">
                 <div>
                   <strong>{claudeStatus?.loggedIn ? claudeStatus.email || "Claude subscription" : "Claude Code subscription"}</strong>
-                  <small>{claudeStatus?.loggedIn
+                  <small>{accountChecks.claude || (claudeStatus?.loggedIn
                     ? `${claudeStatus.subscriptionType || claudeStatus.authMethod || "Claude"} plan connected · ${claudeStatus.version || "Claude Code"}`
-                    : claudeStatus?.warning || (claudeStatus?.available ? "Claude Code detected · sign in to continue" : "Claude Code must be installed first")}</small>
+                    : claudeStatus?.warning || (claudeStatus?.available ? "Claude Code detected · sign in to continue" : "Claude Code must be installed first"))}</small>
                 </div>
                 {claudeStatus?.loggedIn ? (
-                  <span className="connected-badge"><Check size={12} /> Connected</span>
+                  <span className="connected-badge"><Check size={12} /> {accountChecks.claude ? "Unverified" : "Connected"}</span>
                 ) : (
                   <button className="secondary-button" onClick={() => void (claudeStatus?.available ? onClaudeSignIn() : openUrl("https://docs.anthropic.com/en/docs/claude-code/setup"))} disabled={claudeLoginStarting}>
                     {claudeLoginStarting ? <LoaderCircle className="spin" size={14} /> : !claudeStatus?.available ? <Download size={14} /> : null}
