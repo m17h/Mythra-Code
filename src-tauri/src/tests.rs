@@ -1484,15 +1484,16 @@ async fn runtime_update_timeout_kills_the_installer_process_group() {
 
 #[test]
 fn claude_result_is_the_terminal_boundary_for_one_process_per_turn() {
-    assert!(claude_message_ends_turn(&json!({
+    let mut boundary = ClaudeTurnBoundary::new("prompt".into());
+    assert!(boundary.ends_turn(&json!({
         "type": "result",
         "subtype": "success"
     })));
-    assert!(!claude_message_ends_turn(&json!({
+    assert!(!boundary.ends_turn(&json!({
         "type": "assistant",
         "message": { "content": [] }
     })));
-    assert!(!claude_message_ends_turn(&json!({
+    assert!(!boundary.ends_turn(&json!({
         "type": "stream_event",
         "event": { "type": "message_stop" }
     })));
@@ -3009,4 +3010,85 @@ async fn claude_completion_reaps_a_process_that_ignores_eof() {
     assert!(child.try_wait().unwrap().is_some());
     assert!(!marker.exists());
     fs::remove_dir_all(marker.parent().unwrap()).unwrap();
+}
+
+#[test]
+fn claude_resume_completion_waits_for_the_submitted_command() {
+    let mut boundary = ClaudeTurnBoundary::new("our-prompt".into());
+    let empty =
+        json!({"type":"result","subtype":"success","is_error":false,"num_turns":0,"result":""});
+    assert!(!boundary.ends_turn(&json!({"type":"system","subtype":"task_notification"})));
+    assert!(!boundary.ends_turn(
+        &json!({"type":"command_lifecycle","command_uuid":"our-prompt","state":"queued"})
+    ));
+    assert!(
+        !boundary.ends_turn(&empty),
+        "restored notification must not terminate the prompt"
+    );
+    // An unrelated command starting cannot change ownership of the result.
+    assert!(!boundary
+        .ends_turn(&json!({"type":"command_lifecycle","command_uuid":"other","state":"started"})));
+    assert!(!boundary.ends_turn(&empty));
+    assert!(!boundary.ends_turn(
+        &json!({"type":"command_lifecycle","command_uuid":"our-prompt","state":"started"})
+    ));
+    assert!(!boundary.ends_turn(
+        &json!({"type":"assistant","message":{"content":[{"type":"text","text":"answer"}]}})
+    ));
+    assert!(boundary.ends_turn(&json!({"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"answer"})));
+    assert!(
+        boundary.ends_turn(&empty),
+        "a genuinely empty answer must still finish"
+    );
+}
+
+#[test]
+fn claude_resume_completion_preserves_errors_and_legacy_results() {
+    let empty =
+        json!({"type":"result","subtype":"success","is_error":false,"num_turns":0,"result":""});
+    let mut boundary = ClaudeTurnBoundary::new("our-prompt".into());
+    assert!(
+        boundary.ends_turn(&empty),
+        "no lifecycle evidence means legacy behavior"
+    );
+    boundary
+        .ends_turn(&json!({"type":"command_lifecycle","command_uuid":"other","state":"queued"}));
+    assert!(boundary.ends_turn(&empty));
+    boundary.ends_turn(
+        &json!({"type":"command_lifecycle","command_uuid":"our-prompt","state":"queued"}),
+    );
+    for result in [
+        json!({"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":0,"result":"Sign in required"}),
+        json!({"type":"result","subtype":"success","is_error":true,"num_turns":0,"result":""}),
+        json!({"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":""}),
+        json!({"type":"result","subtype":"success","is_error":false,"num_turns":0,"result":"answer"}),
+        json!({"type":"result","subtype":"success"}),
+    ] {
+        assert!(
+            boundary.ends_turn(&result),
+            "must retain terminal result: {result}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn claude_resume_completion_prompt_has_a_unique_lifecycle_identity() {
+    let first = claude_user_message("session", "hello", &[]).await.unwrap();
+    let second = claude_user_message("session", "hello", &[]).await.unwrap();
+    assert!(uuid::Uuid::parse_str(first["uuid"].as_str().unwrap()).is_ok());
+    assert_ne!(first["uuid"], second["uuid"]);
+}
+
+#[test]
+fn audit_history_is_bounded_without_restarting() {
+    let connection = rusqlite::Connection::open_in_memory().unwrap();
+    connection.execute_batch("CREATE TABLE audit_events(id INTEGER PRIMARY KEY, payload TEXT);
+        WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n WHERE x < 20003)
+        INSERT INTO audit_events SELECT x, 'metadata' FROM n;").unwrap();
+    assert_eq!(persistence::prune_audit_events(&connection).unwrap(), 3);
+    let count: i64 = connection.query_row("SELECT COUNT(*) FROM audit_events", [], |row| row.get(0)).unwrap();
+    assert_eq!(count, 20000);
+    let oldest: i64 = connection.query_row("SELECT MIN(id) FROM audit_events", [], |row| row.get(0)).unwrap();
+    assert_eq!(oldest, 4);
+    assert_eq!(persistence::prune_audit_events(&connection).unwrap(), 0);
 }

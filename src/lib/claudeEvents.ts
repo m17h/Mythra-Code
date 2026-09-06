@@ -1,5 +1,5 @@
 import type { ClaudeEvent } from "./claude";
-import type { JsonObject } from "./codex";
+import { auditEvent, type JsonObject } from "./codex";
 import type { Activity } from "../types";
 import type { TokenUsageView } from "../components/StudioDock";
 import { useTaskStore } from "./taskStore";
@@ -488,6 +488,7 @@ export function routeClaudeEvent(
       hasOutput = true;
     }
     const emptySuccess = !interrupted && !failed && !hasOutput;
+    void auditEvent("claude.turn.completed", { empty: emptySuccess, failed, interrupted }, threadId).catch(() => {});
     const thinking = useTaskStore
       .getState()
       .tasks[threadId]?.activities.find(

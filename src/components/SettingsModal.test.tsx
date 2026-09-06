@@ -1255,3 +1255,9 @@ describe("SettingsModal", () => {
     expect(screen.getByPlaceholderText("Empty — add your own instructions here")).toHaveValue(DEFAULT_SETTINGS.systemPrompt);
   });
 });
+
+it("labels a cached account as unverified when its connection check fails", () => {
+  render(<SettingsModal {...modalProps({ initialSection: "models", account: { type: "chatgpt", email: "test@example.com", planType: "plus" }, accountChecks: { openai: "Connection check unavailable" } })} />);
+  expect(screen.getByText("Connection check unavailable")).toBeInTheDocument();
+  expect(screen.getByText("Unverified")).toBeInTheDocument();
+});

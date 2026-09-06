@@ -206,9 +206,55 @@ const EMPTY_ACTIVITIES: Activity[] = [];
 const EMPTY_AGENTS: AgentRecord[] = [];
 const EMPTY_QUEUED_TURNS: QueuedTurn[] = [];
 const DEFAULT_GIT_COMMIT_MESSAGE = "Update project files";
+const DISCONNECTED_SUBSCRIPTION_STATUS = {
+  available: false, path: null, version: null, loggedIn: false,
+  authMethod: null, email: null, subscriptionType: null, warning: null,
+} as const;
 /** Enough to name what is missing from a diff without pasting a build tree. */
 const MAX_LISTED_UNTRACKED_PATHS = 50;
 const COMPOSER_REASONING_EFFORTS: ThreadReasoning["reasoningEffort"][] = ["low", "medium", "high", "xhigh", "max"];
+
+async function refreshProviderModels<T>(
+  requestRef: { current: number },
+  read: () => Promise<T[] | null | undefined>,
+  setLoading: (value: boolean) => void,
+  setModels: (value: T[]) => void,
+  setError: (value: string) => void,
+  emptyError: string,
+  clearOnError = true,
+): Promise<T[]> {
+  const request = ++requestRef.current;
+  setLoading(true);
+  setError("");
+  try {
+    const models = await read() ?? [];
+    if (requestRef.current === request) {
+      setModels(models);
+      if (!models.length) setError(emptyError);
+    }
+    return models;
+  } catch (reason) {
+    if (requestRef.current === request) {
+      if (clearOnError) setModels([]);
+      setError(friendlyError(reason));
+    }
+    return [];
+  } finally {
+    if (requestRef.current === request) setLoading(false);
+  }
+}
+
+async function listRuntimeModels(): Promise<RuntimeModel[]> {
+  const models: RuntimeModel[] = [];
+  let cursor: string | null = null;
+  for (let page = 0; page < 10; page += 1) {
+    const result: { data: RuntimeModel[]; nextCursor?: string | null } = await rpc("model/list", { limit: 100, includeHidden: false, cursor });
+    models.push(...(result.data ?? []));
+    cursor = result.nextCursor ?? null;
+    if (!cursor) return models;
+  }
+  throw new Error("OpenAI returned too many catalog pages. Please refresh to try again.");
+}
 
 interface LoadedThreadHistory {
   thread: Thread;
@@ -504,6 +550,12 @@ export default function App() {
   const [authRequiredOpen, setAuthRequiredOpen] = useState(false);
   const [loginStarting, setLoginStarting] = useState(false);
   const [account, setAccount] = useState<Account | null>(null);
+  const [accountChecks, setAccountChecks] = useState<Partial<Record<Provider, string>>>({});
+  const setAccountCheck = useCallback((provider: Provider, value: string) => {
+    setAccountChecks((current) => ({ ...current, [provider]: value }));
+  }, []);
+  const claudeUsageRequestRef = useRef(0);
+  const claudeStatusRequestRef = useRef(0);
   const threadProjectBindingsRef = useRef<Record<string, string> | null>(null);
   const knownThreadsRef = useRef<ThreadSidebarIndex | null>(null);
   const historyRequestRef = useRef(new Map<string, number>());
@@ -1507,60 +1559,48 @@ export default function App() {
   }, []);
 
   const refreshClaudeStatus = useCallback(async () => {
+    const request = ++claudeStatusRequestRef.current;
+    const usageRequest = ++claudeUsageRequestRef.current;
+    setAccountCheck("claude", "Checking connection…");
     try {
       const result = await getClaudeRuntimeStatus();
+      if (claudeStatusRequestRef.current !== request) return result;
       setClaudeStatus(result);
+      setAccountCheck("claude", result.loggedIn ? "" : "Sign-in required");
       if (result.loggedIn) {
-        setClaudeRateLimits(await getClaudeRateLimits().catch(() => null));
+        const limits = await getClaudeRateLimits().catch(() => undefined);
+        if (claudeUsageRequestRef.current === usageRequest && limits !== undefined) setClaudeRateLimits(limits);
       } else {
         setClaudeRateLimits(null);
       }
       return result;
     } catch (reason) {
-      const result: ClaudeRuntimeStatus = { available: false, path: null, version: null, loggedIn: false, authMethod: null, email: null, subscriptionType: null, warning: null };
-      setClaudeStatus(result);
-      setClaudeRateLimits(null);
-      setError(friendlyError(reason));
-      return result;
+      if (claudeStatusRequestRef.current === request) {
+        setAccountCheck("claude", "Connection check unavailable");
+        setError(friendlyError(reason));
+      }
+      return DISCONNECTED_SUBSCRIPTION_STATUS;
     }
-  }, []);
+  }, [setAccountCheck]);
 
   const refreshCursorStatus = useCallback(async () => {
     try {
       const result = await getCursorRuntimeStatus();
-      const normalized = result ?? { available: false, path: null, version: null, loggedIn: false, email: null, subscriptionType: null, warning: null };
+      const normalized = result ?? DISCONNECTED_SUBSCRIPTION_STATUS;
       setCursorStatus(normalized);
       return normalized;
     } catch (reason) {
-      const result: CursorRuntimeStatus = { available: false, path: null, version: null, loggedIn: false, email: null, subscriptionType: null, warning: null };
-      setCursorStatus(result);
+      setCursorStatus(DISCONNECTED_SUBSCRIPTION_STATUS);
       setError(friendlyError(reason));
-      return result;
+      return DISCONNECTED_SUBSCRIPTION_STATUS;
     }
   }, []);
 
   const cursorModelsRequestRef = useRef(0);
-  const refreshCursorModels = useCallback(async () => {
-    const request = ++cursorModelsRequestRef.current;
-    setCursorModelsLoading(true);
-    setCursorModelsError("");
-    try {
-      const models = await listCursorModels() ?? [];
-      if (cursorModelsRequestRef.current === request) {
-        setCursorModels(models);
-        if (!models.length) setCursorModelsError("Cursor returned no models.");
-      }
-      return models;
-    } catch (reason) {
-      if (cursorModelsRequestRef.current === request) {
-        setCursorModels([]);
-        setCursorModelsError(friendlyError(reason));
-      }
-      return [];
-    } finally {
-      if (cursorModelsRequestRef.current === request) setCursorModelsLoading(false);
-    }
-  }, []);
+  const refreshCursorModels = useCallback(() => refreshProviderModels(
+    cursorModelsRequestRef, listCursorModels, setCursorModelsLoading,
+    setCursorModels, setCursorModelsError, "Cursor returned no models.",
+  ), []);
 
   const loadThreadsRequestRef = useRef(0);
   const loadThreads = useCallback(
@@ -1706,18 +1746,21 @@ export default function App() {
     openAiAccountRequestRef.current += 1;
     openAiUsageRequestRef.current += 1;
     setAccount(null);
+    setAccountCheck("openai", "Sign-in required");
     setOpenAiRateLimits(null);
     setOpenAiRateLimitsRead(false);
     setAuthRequiredOpen(true);
     setStatus("Sign-in required");
-  }, []);
+  }, [setAccountCheck]);
 
   const refreshAccount = useCallback(async (refreshToken = false): Promise<{ account: Account | null; requiresOpenaiAuth?: boolean } | null> => {
     const request = ++openAiAccountRequestRef.current;
+    setAccountCheck("openai", "Checking connection…");
     try {
       const result = await rpc<{ account: Account | null; requiresOpenaiAuth?: boolean }>("account/read", { refreshToken });
       if (openAiAccountRequestRef.current !== request) return null;
       setAccount(result.account);
+      setAccountCheck("openai", result.account ? "" : "Sign-in required");
       if (result.account?.type === "chatgpt") {
         setAuthRequiredOpen(false);
         setError(null);
@@ -1733,64 +1776,37 @@ export default function App() {
       const message = friendlyError(reason);
       setError(message);
       if (isAuthenticationError(reason)) requireOpenAiLogin();
-
+      else setAccountCheck("openai", "Connection check unavailable");
       return null;
     }
   // Babel's TS-7-compatible parser treats the `result.account` property as
   // the unrelated component state named `account`.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [requireOpenAiLogin]);
+  }, [requireOpenAiLogin, setAccountCheck]);
 
   useEffect(() => {
-    if (settingsOpen && runtimeStatus?.available) void refreshAccount(true);
-  }, [settingsOpen, runtimeStatus?.available, refreshAccount]);
+    if (!settingsOpen) return;
+    if (effectiveSettings.provider === "claude") void refreshClaudeStatus();
+    else if (runtimeStatus?.available) void refreshAccount(true);
+  }, [settingsOpen, effectiveSettings.provider, runtimeStatus?.available, refreshAccount, refreshClaudeStatus]);
 
   const runtimeModelsRequestRef = useRef(0);
-  const refreshModels = useCallback(async () => {
-    const request = ++runtimeModelsRequestRef.current;
-    setRuntimeModelsLoading(true);
-    setRuntimeModelsError("");
-    try {
-      const allModels: RuntimeModel[] = [];
-      let cursor: string | null = null;
-      for (let page = 0; page < 10; page += 1) {
-        const result: { data: RuntimeModel[]; nextCursor?: string | null } = await rpc("model/list", { limit: 100, includeHidden: false, cursor });
-        allModels.push(...(result.data ?? []));
-        cursor = result.nextCursor ?? null;
-        if (!cursor) break;
-      }
-      if (cursor) throw new Error("OpenAI returned too many catalog pages. Please refresh to try again.");
-      if (!allModels.length) throw new Error("OpenAI returned an empty model catalog.");
-      if (runtimeModelsRequestRef.current === request) setRuntimeModels(allModels);
-    } catch (reason) {
-      // A failed refresh must not replace the last complete catalog or the
-      // selected model with a partial page or the built-in fallback.
-      if (runtimeModelsRequestRef.current === request) setRuntimeModelsError(friendlyError(reason));
-    } finally {
-      if (runtimeModelsRequestRef.current === request) setRuntimeModelsLoading(false);
-    }
-  }, []);
+  const refreshModels = useCallback(() => refreshProviderModels(
+    runtimeModelsRequestRef, listRuntimeModels, setRuntimeModelsLoading,
+    (models) => { if (models.length) setRuntimeModels(models); },
+    setRuntimeModelsError, "OpenAI returned an empty model catalog.", false,
+  ), []);
 
   const openRouterModelsRequestRef = useRef(0);
-  const refreshOpenRouterModels = useCallback(async () => {
-    const request = ++openRouterModelsRequestRef.current;
-    setOpenRouterModelsLoading(true);
-    setOpenRouterModelsError("");
-    try {
-      const models = await fetchOpenRouterCatalog();
+  const refreshOpenRouterModels = useCallback(() => refreshProviderModels(
+    openRouterModelsRequestRef, fetchOpenRouterCatalog, setOpenRouterModelsLoading,
+    (models) => {
       // A full refresh is authoritative: retired or newly unavailable models
       // must leave the catalog instead of surviving through an earlier search.
-      if (openRouterModelsRequestRef.current === request) {
         updateOpenRouterPricing(models);
         setOpenRouterModels(models);
-        if (!models.length) setOpenRouterModelsError("OpenRouter returned an empty catalog");
-      }
-    } catch (reason) {
-      if (openRouterModelsRequestRef.current === request) setOpenRouterModelsError(friendlyError(reason));
-    } finally {
-      if (openRouterModelsRequestRef.current === request) setOpenRouterModelsLoading(false);
-    }
-  }, []);
+    }, setOpenRouterModelsError, "OpenRouter returned an empty catalog", false,
+  ), []);
 
   /** Resolve a complete typed slug that is absent from the full account list. */
   const openRouterDiscoveryRef = useRef(0);
@@ -1817,27 +1833,10 @@ export default function App() {
    * or a signed-out install leaves the labelled built-in list in place.
    */
   const claudeModelsRequestRef = useRef(0);
-  const refreshClaudeModels = useCallback(async () => {
-    const request = ++claudeModelsRequestRef.current;
-    setClaudeModelsLoading(true);
-    setClaudeModelsError("");
-    try {
-      const models = await listClaudeModels();
-      if (claudeModelsRequestRef.current === request) {
-        setClaudeModels(models);
-        if (!models.length) setClaudeModelsError("Claude Code returned no models.");
-      }
-      return models;
-    } catch (reason) {
-      if (claudeModelsRequestRef.current === request) {
-        setClaudeModels([]);
-        setClaudeModelsError(friendlyError(reason));
-      }
-      return [];
-    } finally {
-      if (claudeModelsRequestRef.current === request) setClaudeModelsLoading(false);
-    }
-  }, []);
+  const refreshClaudeModels = useCallback(() => refreshProviderModels(
+    claudeModelsRequestRef, listClaudeModels, setClaudeModelsLoading,
+    setClaudeModels, setClaudeModelsError, "Claude Code returned no models.",
+  ), []);
 
   const refreshClaudeCatalog = useCallback(async () => {
     const [, models] = await Promise.all([refreshClaudeStatus(), refreshClaudeModels()]);
@@ -1849,32 +1848,12 @@ export default function App() {
   }, [setModelFavorites]);
 
   const lmStudioModelsRequestRef = useRef(0);
-  const refreshLMStudioModels = useCallback(async (baseUrl: string) => {
-    const request = ++lmStudioModelsRequestRef.current;
-    setLMStudioModelsLoading(true);
-    setLMStudioModelsError("");
-    try {
-      const models = await listLMStudioModels(baseUrl);
-      // A startup probe can still be in flight when Settings tests a newly
-      // entered server URL. Only the newest request may publish its catalog;
-      // otherwise the slow old server replaces a successful fresh result.
-      if (lmStudioModelsRequestRef.current === request) {
-        setLMStudioModels(models);
-        if (!models.length) setLMStudioModelsError("LM Studio is connected, but it did not report any models");
-      }
-      return models;
-    } catch (reason) {
-      if (lmStudioModelsRequestRef.current === request) {
-        setLMStudioModels([]);
-        setLMStudioModelsError(friendlyError(reason));
-      }
-      return [];
-    } finally {
-      if (lmStudioModelsRequestRef.current === request) setLMStudioModelsLoading(false);
-    }
-  }, []);
+  const refreshLMStudioModels = useCallback((baseUrl: string) => refreshProviderModels(
+    lmStudioModelsRequestRef, () => listLMStudioModels(baseUrl), setLMStudioModelsLoading,
+    setLMStudioModels, setLMStudioModelsError, "LM Studio is connected, but it did not report any models",
+  ), []);
 
-  const refreshUsage = useCallback(async () => {
+  const refreshUsage = useCallback(async (reportFailure = false) => {
     const request = ++openAiUsageRequestRef.current;
     try {
       const result = await rpc<unknown>("account/rateLimits/read");
@@ -1884,6 +1863,7 @@ export default function App() {
       }
     } catch (reason) {
       if (openAiUsageRequestRef.current === request && isAuthenticationError(reason)) requireOpenAiLogin();
+      if (reportFailure) throw reason;
       // Deliberately keeps whatever was last read. Usage is polled now, so a
       // single flaky round trip would otherwise blank a bar the user is
       // watching for a minute; sign-out and account switches clear it through
@@ -1898,7 +1878,9 @@ export default function App() {
    * good reading rather than blanking the header.
    */
   const refreshClaudeUsage = useCallback(async () => {
-    setClaudeRateLimits(await getClaudeRateLimits());
+    const request = ++claudeUsageRequestRef.current;
+    const limits = await getClaudeRateLimits();
+    if (claudeUsageRequestRef.current === request) setClaudeRateLimits(limits);
   }, []);
 
   const openRouterCreditsRequestRef = useRef(0);
@@ -1955,7 +1937,7 @@ export default function App() {
   const refreshActiveProviderUsage = useCallback(async () => {
     if (activeUsageProvider === "claude") return refreshClaudeUsage();
     if (activeUsageProvider === "openrouter") return refreshOpenRouterCredits();
-    if (activeUsageProvider === "openai") return refreshUsage();
+    if (activeUsageProvider === "openai") return refreshUsage(true);
   }, [activeUsageProvider, refreshClaudeUsage, refreshOpenRouterCredits, refreshUsage]);
 
   const usageRefreshEnabled =
@@ -1965,7 +1947,9 @@ export default function App() {
         ? openRouterReady
         : activeUsageProvider === "openai" && account?.type === "chatgpt";
 
+  const [usageReadStatus, setUsageReadStatus] = useState("");
   const requestUsageRefresh = useUsageRefresh({
+    onStatus: setUsageReadStatus,
     // Identity, not just provider: signing into a different account invalidates
     // the previous snapshot even though the provider never changed.
     key: `${activeUsageProvider}:${activeUsageProvider === "claude" ? claudeStatus?.email ?? "" : activeUsageProvider === "openai" ? account?.email ?? "" : ""}`,
@@ -5465,6 +5449,7 @@ export default function App() {
                 onConnect={() => openSettings("models")}
                 onDetails={() => activeProject ? openStudio("usage") : openSettings("usage")}
                 onOpen={requestUsageRefresh}
+                readStatus={usageRefreshEnabled ? usageReadStatus : ""}
               />
             ) : (
               <button
@@ -5987,6 +5972,7 @@ export default function App() {
         appUpdater={appUpdater}
         settings={settings}
         account={account}
+        accountChecks={accountChecks}
         runtimeStatus={runtimeStatus}
         claudeStatus={claudeStatus}
         claudeLoginStarting={claudeLoginStarting}

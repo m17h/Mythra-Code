@@ -33,6 +33,13 @@ pub(super) fn state_db_path(app: &AppHandle) -> Result<PathBuf, String> {
 const STATE_DB_SCHEMA_VERSION: i64 = 1;
 
 /// Startup cap for the audit log; the newest rows win.
+pub(crate) fn prune_audit_events(connection: &Connection) -> rusqlite::Result<usize> {
+    connection.execute(
+        "DELETE FROM audit_events WHERE id <= (SELECT MAX(id) FROM audit_events) - ?1",
+        params![MAX_AUDIT_EVENT_ROWS],
+    )
+}
+
 const MAX_AUDIT_EVENT_ROWS: i64 = 20_000;
 const LOCAL_TRANSCRIPT_CHUNK_TARGET_BYTES: usize = 32 * 1024;
 const LOCAL_TRANSCRIPT_PAGE_DEFAULT_BYTES: usize = 40 * 1024;

@@ -325,7 +325,7 @@ describe("provider account usage", () => {
       openRouterReady: true,
     })).toEqual({
       label: "OpenRouter usage",
-      summary: "Pay as you go · tracked spend appears below",
+      summary: "Pay as you go · tracked spend below",
     });
   });
 
@@ -449,11 +449,18 @@ describe("chat header provider usage", () => {
       openRouterReady: true,
       openRouterCreditsRead: true,
       openRouterCreditsError: "Could not reach OpenRouter usage: connection timed out",
-    })?.title).toBe("OpenRouter credits are temporarily unavailable. Try refreshing usage.");
+    })?.title).toBe("OpenRouter credits unavailable. Try refreshing.");
   });
 
   it("formats tiny balances without rounding them away", () => {
     expect(formatCreditAmount(0)).toBe("$0");
     expect(formatCreditAmount(0.0049)).toBe("$0.0049");
   });
+});
+
+it("does not turn malformed provider percentages into unused quota", () => {
+  for (const usedPercent of [null, undefined, "", " ", "unknown", false, {}, NaN, Infinity]) {
+    expect(() => parseCodexRateLimits({ rateLimits: { primary: { usedPercent, windowMinutes: 300 } } })).toThrow("Invalid usage data");
+  }
+  expect(parseCodexRateLimits({ rateLimits: { primary: { usedPercent: "0", windowMinutes: 300 } } })?.windows[0].usedPercent).toBe(0);
 });
