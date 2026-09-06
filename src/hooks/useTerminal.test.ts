@@ -231,3 +231,31 @@ describe("terminal scoping", () => {
     expect(result.current.outputStore.read(0).text).toBe("a output\n");
   });
 });
+
+describe("useTerminal scoped runs", () => {
+  it("runs under an explicit scope and exposes its state and output to callers", async () => {
+    let finish: ((value: { exitCode: number; stdout: string; stderr: string }) => void) | undefined;
+    rpcMock.mockImplementation((method: string) => {
+      if (method === "command/exec") return new Promise((resolve) => { finish = resolve; });
+      return Promise.resolve({});
+    });
+    const { result } = terminal(1_000, "/project");
+    let done: Promise<void> | undefined;
+    act(() => {
+      done = result.current.run("npm run dev", [], "/elsewhere");
+    });
+
+    expect(rpcMock).toHaveBeenCalledWith("command/exec", expect.objectContaining({ cwd: "/elsewhere", tty: true }));
+    expect(result.current.runningIn("/elsewhere")).toEqual({ running: true, command: "npm run dev" });
+    expect(result.current.running).toBe(false);
+    expect(result.current.tail("/elsewhere", 200)).toBe("$ npm run dev\n");
+    expect(result.current.tail("/never", 200)).toBe("");
+
+    await act(async () => {
+      finish?.({ exitCode: 0, stdout: "ready\n", stderr: "" });
+      await done;
+    });
+    expect(result.current.runningIn("/elsewhere").running).toBe(false);
+    expect(result.current.tail("/elsewhere", 10)).toBe("\n[exit 0]\n");
+  });
+});

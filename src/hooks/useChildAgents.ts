@@ -79,9 +79,25 @@ export interface ChildAgentContext {
   applyProjectSubagentSettings: (rootThreadId: string, settings: ProjectSubagentSettings) => void | Promise<void>;
   /** Save (or clear, with null) the project's top-bar Run button command. */
   applyProjectRunCommand: (rootThreadId: string, run: ProjectRunCommand | null) => void | Promise<void>;
+  projectRunCommandForThread: (rootThreadId: string) => ProjectRunCommand | undefined;
+  /**
+   * Start a run command in the Terminal panel for the thread's project.
+   * Resolves once the process has either exited quickly or run for a moment,
+   * with the output so far, so the model can report an immediate failure.
+   */
+  runProjectCommand: (rootThreadId: string, run: ProjectRunCommand) => Promise<ProjectRunOutcome>;
   /** Automatic pre-turn file snapshots for child turns, same as user turns. */
   beginRunCheckpoint: (threadId: string, workspacePath: string, prompt: string, provider: Provider, model: string) => Promise<string | undefined>;
   discardRunCheckpoint: (threadId: string) => void;
+}
+
+export interface ProjectRunOutcome {
+  started: boolean;
+  /** Why it did not start, in words the model can relay. */
+  reason?: string;
+  /** True when the process already exited during the short wait. */
+  exited?: boolean;
+  output?: string;
 }
 
 function taskStatusOf(threadId: string): TaskStatus {
@@ -699,26 +715,66 @@ export function useChildAgents(context: ChildAgentContext): {
     const ctx = contextRef.current;
     const policy = childAgentPolicyForSession(ctx.policies, request.sessionId);
     if (!policy?.rootThreadId) throw new Error("This conversation is not inside a saved project, so it has no Run button.");
+    const rootThreadId = policy.rootThreadId;
     const command = typeof request.arguments.command === "string" ? request.arguments.command.trim() : "";
     const label = typeof request.arguments.label === "string" ? request.arguments.label : "";
-    const next = command ? sanitizeProjectRunCommand({ command, label }) : undefined;
-    if (command && !next) {
-      throw new Error(`\`command\` must be a shell command of at most ${MAX_RUN_COMMAND_LENGTH} characters.`);
-    }
-    await ctx.applyProjectRunCommand(policy.rootThreadId, next ?? null);
-    useTaskStore.getState().upsertActivity(policy.rootThreadId, {
+    const wantsRun = request.arguments.run === true;
+    const existing = ctx.projectRunCommandForThread(rootThreadId);
+    const activity = (title: string, detail: string, kind: "agent" | "warning" = "agent") => useTaskStore.getState().upsertActivity(rootThreadId, {
       id: `run-command-${request.requestId}`,
-      kind: "agent",
-      title: next ? "Run button updated" : "Run button cleared",
-      detail: next
-        ? `Click Run in the top bar to execute: ${next.command}`
-        : "The top-bar Run button has no command for this project now.",
+      kind,
+      title,
+      detail,
       status: "completed",
     });
-    void auditEvent("project.runCommand.set", { command: next?.command ?? null }, policy.rootThreadId);
-    return next
-      ? { saved: true, command: next.command, label: next.label ?? null, note: "Saved for this project. Nothing was executed; the user runs it by clicking the Run button in the top bar." }
-      : { saved: true, command: null, note: "The Run button is now cleared for this project." };
+
+    let run: ProjectRunCommand | null;
+    let saved = false;
+    if (command) {
+      const next = sanitizeProjectRunCommand({ command, label });
+      if (!next) throw new Error(`\`command\` must be a shell command of at most ${MAX_RUN_COMMAND_LENGTH} characters.`);
+      // Re-saving an identical command is harmless, but a run request must
+      // never silently replace a different saved command with a label-less
+      // copy of it; the model passed a new command, so that is what it wants.
+      if (!existing || existing.command !== next.command || (existing.label ?? "") !== (next.label ?? "")) {
+        await ctx.applyProjectRunCommand(rootThreadId, next);
+        saved = true;
+      }
+      run = next;
+    } else if (wantsRun) {
+      if (!existing) throw new Error("Nothing is saved for the Run button yet. Pass the command to run; it is saved for next time.");
+      run = existing;
+    } else {
+      await ctx.applyProjectRunCommand(rootThreadId, null);
+      activity("Run button cleared", "The top-bar Run button has no command for this project now.");
+      void auditEvent("project.runCommand.set", { command: null }, rootThreadId);
+      return { saved: true, command: null, note: "The Run button is now cleared for this project." };
+    }
+    if (saved) void auditEvent("project.runCommand.set", { command: run.command }, rootThreadId);
+
+    if (!wantsRun) {
+      activity("Run button updated", `Click Run in the top bar to execute: ${run.command}`);
+      return { saved: true, command: run.command, label: run.label ?? null, note: "Saved for this project. Nothing was executed; the user runs it by clicking the Run button in the top bar." };
+    }
+
+    const outcome = await ctx.runProjectCommand(rootThreadId, run);
+    if (!outcome.started) {
+      activity("Run command not started", outcome.reason ?? "The Terminal panel could not start it.", "warning");
+      return { saved, command: run.command, label: run.label ?? null, started: false, reason: outcome.reason ?? "The Terminal panel could not start it." };
+    }
+    activity(saved ? "Run button set and started" : "Run button started", `Running in the Terminal panel: ${run.command}`);
+    void auditEvent("project.run", { command: run.command, source: "model" }, rootThreadId);
+    return {
+      saved,
+      command: run.command,
+      label: run.label ?? null,
+      started: true,
+      exited: Boolean(outcome.exited),
+      output: (outcome.output ?? "").slice(-1_500),
+      note: outcome.exited
+        ? "The command already exited; read the output above before telling the user it works."
+        : "Running in the app's Terminal panel. The user can stop it with the Stop button next to Run in the top bar; you cannot see further output from here.",
+    };
   }, []);
 
   const handleRequest = useCallback(async (request: ChildAgentRequest): Promise<void> => {

@@ -591,17 +591,21 @@ pub(super) fn tool_catalog(targets: &[ChildAgentTarget], max_concurrent: usize) 
         {
             "name": TOOL_SET_RUN,
             "title": "Set the project Run button",
-            "description": "Save the shell command behind the Run button in Mythra Code's top bar for this project — typically the command that builds the app, starts the dev server, or runs it. Saving never executes anything: the user runs it later by clicking the button, which is greyed out until a command is saved. Pass an empty command to clear the button. Use one command that works from a fresh checkout, chaining steps with && when needed.",
+            "description": "Save the shell command behind the Run button in Mythra Code's top bar for this project — typically the command that builds the app, starts the dev server, or runs it. The button is greyed out until a command is saved. Saving alone never executes anything; the user clicks the button. Set run: true to also start it now in the app's Terminal panel, where the user can watch and stop it — use that whenever the user asks you to run, start, or serve the project, instead of your own shell. With run: true and an empty command the saved command is started; without run, an empty command clears the button. Use one command that works from a fresh checkout, chaining steps with && when needed.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "command": {
                         "type": "string",
-                        "description": "The exact shell command, run from the project folder. Empty clears the button.",
+                        "description": "The exact shell command, run from the project folder. Empty means: clear the button, or with run: true, start the saved command.",
                     },
                     "label": {
                         "type": "string",
                         "description": "Optional short label shown on the button, such as “Dev server”.",
+                    },
+                    "run": {
+                        "type": "boolean",
+                        "description": "Also start the command now in the Terminal panel. The result carries the first seconds of output.",
                     },
                 },
                 "required": ["command"],
@@ -784,6 +788,11 @@ pub(super) fn validate_tool_call(
                     return Err(format!(
                         "`label` is limited to {MAX_RUN_LABEL_BYTES} bytes."
                     ));
+                }
+            }
+            if let Some(run) = object.get("run") {
+                if !run.is_boolean() {
+                    return Err("`run` must be true or false.".into());
                 }
             }
             Ok(())
@@ -1320,7 +1329,7 @@ pub(super) fn bridge_local_response(method: &str, id: Option<&Value>) -> Option<
                 "protocolVersion": "2025-06-18",
                 "capabilities": { "tools": { "listChanged": false } },
                 "serverInfo": { "name": AGENT_BRIDGE_SERVER, "version": env!("CARGO_PKG_VERSION") },
-                "instructions": "Mythra Code project sub-agent controls. Use propose_agent_settings when the user asks to change this project's crew, even when delegation is currently off; never claim a proposed change was applied until the user approves it. When spawn_mythra_agent is available, it is the authoritative delegation route: collect every child result, recover a failed child at most twice, and never use collaboration.spawn_agent or another provider-native task, team, or agent-spawning tool. Use set_project_run_command when the user asks what the project's top-bar Run button should do; it only saves the command, the user clicks the button to run it.",
+                "instructions": "Mythra Code project sub-agent controls. Use propose_agent_settings when the user asks to change this project's crew, even when delegation is currently off; never claim a proposed change was applied until the user approves it. When spawn_mythra_agent is available, it is the authoritative delegation route: collect every child result, recover a failed child at most twice, and never use collaboration.spawn_agent or another provider-native task, team, or agent-spawning tool. Use set_project_run_command when the user asks what the project's top-bar Run button should do, and with run: true whenever the user asks you to run, start, or serve the project so it runs in the app's Terminal panel rather than your shell.",
             }
         }))),
         "ping" => Some(Some(json!({ "jsonrpc": "2.0", "id": id, "result": {} }))),

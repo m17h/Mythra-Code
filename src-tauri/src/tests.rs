@@ -2623,6 +2623,21 @@ fn project_run_command_tool_accepts_a_command_and_bounds_it() {
         &json!({ "command": "make", "label": "l".repeat(321) })
     )
     .is_err());
+    // `run: true` starts the command; the flag must be a real boolean.
+    assert!(validate_tool_call(
+        &[],
+        &none,
+        "set_project_run_command",
+        &json!({ "command": "", "run": true })
+    )
+    .is_ok());
+    assert!(validate_tool_call(
+        &[],
+        &none,
+        "set_project_run_command",
+        &json!({ "command": "make", "run": "yes" })
+    )
+    .is_err());
 }
 
 #[test]

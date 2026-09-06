@@ -53,7 +53,8 @@ export function runButtonInstructions(run: ProjectRunCommand | null | undefined)
   return [
     "Mythra Code shows a Run button in the top bar of this project. Clicking it runs one saved shell command from the project folder in the app's Terminal panel, typically to build, start a dev server, or run the app.",
     current,
-    `When the user asks you to set, change, or clear what the Run button does, call the mythra_agents tool ${RUN_COMMAND_TOOL} with the exact shell command (an empty command clears the button) and an optional short label.`,
-    "The tool only saves the command; it does not run it. After saving, tell the user the Run button is ready and what it will run. Prefer one command that works from a fresh checkout, chaining steps with && when needed.",
+    `When the user asks you to set, change, or clear what the Run button does, call the mythra_agents tool ${RUN_COMMAND_TOOL} with the exact shell command (an empty command clears the button) and an optional short label. Saving alone does not run anything.`,
+    `When the user asks you to run, start, launch, or serve the project (for example so they can test it), start it with ${RUN_COMMAND_TOOL} and run: true instead of your own shell, so it runs in the app's Terminal panel where the user can watch it and stop it. Reuse the saved command when one exists and fits (pass an empty command with run: true); otherwise pass the command you would use, which also saves it so the button works next time. One-off checks such as tests, linters, or builds you need to read still belong in your own shell.`,
+    "The tool returns the first seconds of output; report a quick failure to the user, otherwise tell them it is running and how to stop it. Prefer one command that works from a fresh checkout, chaining steps with && when needed.",
   ].join(" ");
 }

@@ -91,6 +91,8 @@ function context(overrides: Partial<ChildAgentContext> = {}): ChildAgentContext 
     projectSubagentSettingsForThread: () => ({ enabled: true, maxConcurrent: 2, childAgents: { enabled: true, targets: TARGETS } }),
     applyProjectSubagentSettings: vi.fn(),
     applyProjectRunCommand: vi.fn(),
+    projectRunCommandForThread: () => undefined,
+    runProjectCommand: vi.fn(async () => ({ started: true, exited: false, output: "$ npm run dev\nready on :5173\n" })),
     ...overrides,
   };
 }
@@ -301,6 +303,43 @@ describe("useChildAgents", () => {
       await view.send(request({ requestId: "request-2", tool: "set_project_run_command", arguments: { command: "" } }));
       expect(applyProjectRunCommand).toHaveBeenLastCalledWith("root-1", null);
       expect(lastResponse()?.[1]).toMatchObject({ saved: true, command: null });
+    });
+
+    it("starts the project in the Terminal panel on run: true and saves a new command for next time", async () => {
+      const applyProjectRunCommand = vi.fn();
+      const runProjectCommand = vi.fn(async () => ({ started: true, exited: false, output: "$ npm run dev\nready on :5173\n" }));
+      const view = await mount({ applyProjectRunCommand, runProjectCommand });
+      await view.send(request({ tool: "set_project_run_command", arguments: { command: "npm run dev", run: true } }));
+
+      expect(applyProjectRunCommand).toHaveBeenCalledWith("root-1", expect.objectContaining({ command: "npm run dev" }));
+      expect(runProjectCommand).toHaveBeenCalledWith("root-1", expect.objectContaining({ command: "npm run dev" }));
+      expect(lastResponse()?.[1]).toMatchObject({ saved: true, started: true, exited: false, output: expect.stringContaining("ready on :5173") });
+      expect(useTaskStore.getState().tasks["root-1"].activities.at(-1)).toMatchObject({ title: "Run button set and started" });
+    });
+
+    it("reuses the saved command on run: true with an empty command and reports a quick failure", async () => {
+      const applyProjectRunCommand = vi.fn();
+      const runProjectCommand = vi.fn(async () => ({ started: true, exited: true, output: "$ make dev\nmake: *** No rule to make target 'dev'.\n[exit 2]\n" }));
+      const view = await mount({
+        applyProjectRunCommand,
+        runProjectCommand,
+        projectRunCommandForThread: () => ({ command: "make dev", updatedAt: 1 }),
+      });
+      await view.send(request({ tool: "set_project_run_command", arguments: { command: "", run: true } }));
+
+      expect(applyProjectRunCommand).not.toHaveBeenCalled();
+      expect(runProjectCommand).toHaveBeenCalledWith("root-1", expect.objectContaining({ command: "make dev" }));
+      expect(lastResponse()?.[1]).toMatchObject({ saved: false, started: true, exited: true, output: expect.stringContaining("[exit 2]") });
+    });
+
+    it("explains when nothing is saved to run, or the terminal is busy", async () => {
+      const runProjectCommand = vi.fn(async () => ({ started: false, reason: "The Terminal panel is already running `npm test` for this project." }));
+      const view = await mount({ runProjectCommand });
+      await view.send(request({ tool: "set_project_run_command", arguments: { command: "", run: true } }));
+      expect(lastResponse()?.[2]).toMatch(/Nothing is saved for the Run button yet/);
+
+      await view.send(request({ requestId: "request-2", tool: "set_project_run_command", arguments: { command: "npm run dev", run: true } }));
+      expect(lastResponse()?.[1]).toMatchObject({ started: false, reason: expect.stringContaining("already running") });
     });
 
     it("refuses a Run button change outside a saved project", async () => {

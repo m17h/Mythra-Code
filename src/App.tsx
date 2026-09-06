@@ -142,7 +142,7 @@ import { forgetSubagentCapabilities, planSubagentCapabilities, recordSubagentCap
 import { canOwnThread, nativeAgentLinkFromThread, nativeAgentLinksAfterThreadDeletion, sanitizeNativeAgentLinks, type NativeAgentLink, type OwnershipLinks } from "./lib/nativeAgentLinks";
 import { autoArchiveSubagentCandidates } from "./lib/subAgentArchive";
 import { collectSubAgentWorkers, isSubAgentWorkerActive, type SubAgentWorker } from "./lib/subAgentActivity";
-import { useChildAgents } from "./hooks/useChildAgents";
+import { useChildAgents, type ProjectRunOutcome } from "./hooks/useChildAgents";
 import { reorderProjects, sortProjectsByPin, toggleProjectPinned, type ProjectDropPosition } from "./lib/projectOrdering";
 import {
   deleteCheckpointSnapshot,
@@ -3679,6 +3679,36 @@ export default function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projects, setProjects]);
 
+  const projectForThread = useCallback((rootThreadId: string) => {
+    const projectPath = threadProjectBindingsRef.current?.[rootThreadId];
+    return projects.find((entry) => projectPath && normalizedProjectPath(entry.path) === normalizedProjectPath(projectPath));
+  }, [projects]);
+
+  /**
+   * A model asked to start the project's run command. It runs in the Terminal
+   * panel under the thread's own execution path, exactly as the header button
+   * would, and the first moments of output go back so an immediate failure
+   * is visible to the model as well as the user.
+   */
+  const runProjectCommandForThread = useCallback(async (rootThreadId: string, run: ProjectRunCommand): Promise<ProjectRunOutcome> => {
+    const project = projectForThread(rootThreadId);
+    if (!project) return { started: false, reason: "This conversation is not inside a saved project." };
+    if (!runtimeStatus?.available) return { started: false, reason: "The Codex runtime that powers the Terminal panel is not installed, so the command cannot be started from here." };
+    const scope = executionPathFor(rootThreadId, project.path);
+    const busy = terminal.runningIn(scope);
+    if (busy.running) {
+      return { started: false, reason: `The Terminal panel is already running \`${busy.command}\` for this project. Ask the user to stop it with the Stop button first.` };
+    }
+    if (rootThreadId === activeThreadId) openStudio("terminal");
+    const gitDir = threadWorktreesRef.current[rootThreadId]?.gitDir;
+    const finished = terminal.run(run.command, gitDir ? [gitDir] : [], scope).then(() => true);
+    const exited = await Promise.race([finished, new Promise<boolean>((resolve) => window.setTimeout(() => resolve(false), 2_500))]);
+    return { started: true, exited, output: terminal.tail(scope, 1_500) };
+  // openStudio and terminal are re-created each render; the callback reads
+  // the latest ones because the hook consumes it through a ref.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeThreadId, executionPathFor, projectForThread, runtimeStatus?.available]);
+
   const { cancelChildAgentsFor, respondToSettingsProposal, stopChildAgent } = useChildAgents({
     policies: childAgentPolicies,
     links: childAgentLinks,
@@ -3707,6 +3737,8 @@ export default function App() {
     projectSubagentSettingsForThread,
     applyProjectSubagentSettings: applyProposedProjectSubagents,
     applyProjectRunCommand,
+    projectRunCommandForThread: (rootThreadId) => projectForThread(rootThreadId)?.overrides?.run,
+    runProjectCommand: runProjectCommandForThread,
     beginRunCheckpoint,
     discardRunCheckpoint,
   });

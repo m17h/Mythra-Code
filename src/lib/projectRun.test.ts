@@ -46,7 +46,10 @@ describe("runButtonInstructions", () => {
     expect(text).toContain("`npm run dev`");
     expect(text).toContain("“Dev server”");
     expect(text).toContain("set_project_run_command");
-    expect(text).toContain("does not run it");
+    expect(text).toContain("Saving alone does not run anything");
+    // "Run the project" requests go through the button, not the model's shell.
+    expect(text).toContain("run: true");
+    expect(text).toContain("Terminal panel");
   });
 
   it("explains the greyed-out state when nothing is saved", () => {
