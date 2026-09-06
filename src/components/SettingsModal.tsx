@@ -1186,7 +1186,7 @@ export function SettingsModal({
             onOpenRun={onOpenRun}
           />}
 
-          {settingsSection === "tools" && <div className="settings-workspace-link"><div><strong>Live tool controls</strong><small>{workspaceToolsAvailable ? "Inspect skills, connect configured MCP servers, and run project actions in the active workspace." : "Select a project to inspect live skills, MCP servers, and project actions."}</small></div><button className="secondary-button" onClick={onWorkspaceTools} disabled={!workspaceToolsAvailable}><PanelRight size={13} /> Open workspace tools</button></div>}
+          {settingsSection === "tools" && <div className="settings-workspace-link"><div><strong>Live tool controls</strong><small>{workspaceToolsAvailable ? "Inspect skills, finish MCP sign-in, connect configured servers, and run project actions in the active workspace." : "Open a project first to inspect its live skills, MCP servers, and project actions."}</small></div><button className="secondary-button" onClick={onWorkspaceTools} disabled={!workspaceToolsAvailable}><PanelRight size={13} /> Open workspace tools</button></div>}
 
           {settingsSection === "projects" && <ProjectDefaultsSettings
             projects={localProjects}
@@ -1264,7 +1264,7 @@ export function SettingsModal({
                 <AppSelectMenu value={String(local.terminalScrollback)} options={TERMINAL_SCROLLBACK_OPTIONS} ariaLabel="Terminal scrollback" onChange={(value) => setLocal({ ...local, terminalScrollback: Number(value) })} />
               </div>
             </div>
-            <div className="diagnostic-card"><span><strong>Diagnostics</strong><small>{runtimeStatus?.version ?? "Runtime version unavailable"}{runtimeStatus?.warning ? ` · ${runtimeStatus.warning}` : runtimeStatus?.compatible ? " · compatible" : ""} · includes local performance samples</small></span><button className="secondary-button" onClick={() => void exportDiagnosticBundle()}>Export JSON</button></div>
+            <div className="diagnostic-card"><span><strong>Diagnostics</strong><small>Export a JSON bundle with runtime details, recent errors, and performance samples · {runtimeStatus?.version ?? "runtime version unavailable"}{runtimeStatus?.warning ? ` · ${runtimeStatus.warning}` : ""}</small></span><button className="secondary-button" onClick={() => void exportDiagnosticBundle()}>Export JSON</button></div>
             <RecentPerformancePanel active={open && settingsSection === "system"} />
             <RecentErrorsPanel active={open && settingsSection === "system"} />
           </section>}
@@ -1437,9 +1437,9 @@ export function SettingsModal({
 
           {settingsSection === "models" &&
           <section className="settings-section">
-            <div className="settings-section-heading">
-              <div className="settings-icon"><KeyRound size={17} /></div>
-              <div><h3>Default model provider</h3><p>New threads start with this provider. Each thread keeps its own provider after it starts.</p></div>
+            <div className="settings-subheading first">
+              <strong>Default provider</strong>
+              <small>New threads start with this provider. Each thread keeps its own provider after it starts.</small>
             </div>
             <div className="provider-cards">
               <button className={`provider-card ${local.provider === "openai" ? "selected" : ""}`} onClick={() => setLocal({ ...local, provider: "openai", model: local.provider === "openai" ? (local.model || DEFAULT_OPENAI_MODEL) : DEFAULT_OPENAI_MODEL, ultra: false })}>
@@ -1659,14 +1659,15 @@ function GitHubSettings({
         </div>
         {status?.authenticated ? (
           <span className="connected-badge"><Check size={12} /> Connected</span>
-        ) : (
-          <button className="secondary-button" onClick={() => void onSignIn()} disabled={busy || !status?.available}>
+        ) : status?.available ? (
+          <button className="secondary-button" onClick={() => void onSignIn()} disabled={busy}>
             {busy ? <LoaderCircle className="spin" size={14} /> : <GitFork size={14} />} Sign in
           </button>
+        ) : (
+          <button className="secondary-button" onClick={() => void openUrl("https://cli.github.com/")}><ExternalLink size={13} /> Install GitHub CLI</button>
         )}
         <button className="icon-button" onClick={() => void onRefresh()} disabled={busy} title="Refresh GitHub status" aria-label="Refresh GitHub status"><RotateCcw size={14} /></button>
       </div>
-      {!status?.available && <button className="secondary-button settings-external-action" onClick={() => void openUrl("https://cli.github.com/")}><ExternalLink size={13} /> Install GitHub CLI</button>}
     </section>
     <section className="settings-section">
       <div className="settings-section-heading">
@@ -1675,12 +1676,14 @@ function GitHubSettings({
       </div>
       <div className="github-clone-grid">
         <label className="field-label"><span>Repository URL</span><input value={cloneUrl} disabled={busy || choosing} onChange={(event) => { setFolderError(""); onCloneUrl(event.target.value); }} placeholder="https://github.com/owner/repository.git" aria-describedby="github-clone-url-help" aria-invalid={Boolean(cloneUrl.trim() && !target)} /></label>
-        <div className="github-clone-location">
+        <div className="field-label github-clone-parent-field">
           <span>Parent folder</span>
+          <div className="github-clone-location">
           <button type="button" className="secondary-button" onClick={() => void chooseParent()} disabled={busy || choosing} aria-describedby={cloneParent ? "github-clone-parent" : "github-clone-url-help"}>
             {choosing ? <LoaderCircle size={15} className="spin" /> : <FolderCog size={15} />}{cloneParent ? "Change parent folder…" : "Choose parent folder…"}
           </button>
           {cloneParent && <span id="github-clone-parent" className="github-clone-path" role="status">{cloneParent}</span>}
+          </div>
         </div>
       </div>
       <p id="github-clone-url-help" className="github-clone-hint" role="status">{cloneUrl.trim() && !target ? "Enter a GitHub repository URL with a folder name supported on macOS and Windows." : "Choose the parent folder, not the repository folder itself. Mythra Code creates a new repository-named folder inside that parent. Existing folders are never overwritten."}</p>

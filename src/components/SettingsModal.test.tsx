@@ -382,7 +382,7 @@ describe("SettingsModal", () => {
     render(<SettingsModal {...modalProps({ initialSection: "models" })} />);
 
     expect(screen.getByRole("button", { name: /Models & accounts/ })).toHaveAttribute("aria-current", "page");
-    expect(screen.getByRole("heading", { name: "Default model provider" })).toBeInTheDocument();
+    expect(screen.getByText("Default provider")).toBeInTheDocument();
     expect(screen.getByText(/Each thread keeps its own provider/)).toBeInTheDocument();
   });
 
