@@ -485,6 +485,7 @@ export default function App() {
   const [previewTheme, setPreviewTheme] = useState<ThemeName | null>(null);
   const [previewEffortSlider, setPreviewEffortSlider] = useState<EffortSliderStyle | null>(null);
   const [previewChatFont, setPreviewChatFont] = useState<ChatFont | null>(null);
+  const [previewUiScale, setPreviewUiScale] = useState<number | null>(null);
   const [promptProfiles, setPromptProfiles] = usePersistedState<PromptProfile[]>("kiwi.promptProfiles", DEFAULT_PROMPT_PROFILES);
   const [customAgents, setCustomAgents] = usePersistedState<CustomAgentProfile[]>("kiwi.customAgents", []);
   const [projectActions, setProjectActions] = usePersistedState<ProjectAction[]>("kiwi.projectActions", []);
@@ -1426,6 +1427,7 @@ export default function App() {
     setPreviewTheme(null);
     setPreviewEffortSlider(null);
     setPreviewChatFont(null);
+    setPreviewUiScale(null);
     setSettingsOpen(false);
   }, []);
 
@@ -5214,7 +5216,7 @@ export default function App() {
   );
 
   return (
-    <div ref={shellRef} className="app-shell" data-theme={previewTheme ?? projectDefaults?.theme ?? settings.theme} data-color-scheme={themeColorScheme(previewTheme ?? projectDefaults?.theme ?? settings.theme)} data-effort-slider={previewEffortSlider ?? projectDefaults?.effortSlider ?? settings.effortSlider} data-chat-font={activeChatFont} data-openai-logo={settings.openAiLogo} data-claude-logo={settings.claudeLogo} data-cursor-logo={settings.cursorLogo} style={{ zoom: (settings.uiScale || 100) / 100, "--ui-scale": (settings.uiScale || 100) / 100 } as CSSProperties}>
+    <div ref={shellRef} className="app-shell" data-theme={previewTheme ?? projectDefaults?.theme ?? settings.theme} data-color-scheme={themeColorScheme(previewTheme ?? projectDefaults?.theme ?? settings.theme)} data-effort-slider={previewEffortSlider ?? projectDefaults?.effortSlider ?? settings.effortSlider} data-chat-font={activeChatFont} data-openai-logo={settings.openAiLogo} data-claude-logo={settings.claudeLogo} data-cursor-logo={settings.cursorLogo} style={{ zoom: ((previewUiScale ?? settings.uiScale) || 100) / 100, "--ui-scale": ((previewUiScale ?? settings.uiScale) || 100) / 100 } as CSSProperties}>
       {successToast && (
         <div className={`app-toast ${toastKind}`} role="status" aria-live="polite">
           <span className="app-toast-icon">{toastKind === "success" ? <Check size={14} strokeWidth={2.5} /> : <MessageSquare size={14} />}</span>
@@ -6065,6 +6067,7 @@ export default function App() {
         onThemePreview={setPreviewTheme}
         onEffortSliderPreview={setPreviewEffortSlider}
         onChatFontPreview={setPreviewChatFont}
+        onUiScalePreview={setPreviewUiScale}
         onSignIn={beginChatGptLogin}
         onSignOut={signOutChatGpt}
         onClaudeSignIn={beginClaudeLogin}

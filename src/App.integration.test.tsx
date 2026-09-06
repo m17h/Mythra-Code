@@ -732,12 +732,12 @@ describe("chat header provider usage", () => {
     expect(screen.queryByRole("button", { name: /^Models & accounts/ })).not.toBeInTheDocument();
     await user.click(signInUsage);
     await user.click(screen.getByRole("button", { name: "Models & accounts" }));
-    expect(await screen.findByText("Official ChatGPT subscription sign-in")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Sign in" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Close settings" }));
-    expect(screen.getByText("Official ChatGPT subscription sign-in")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sign in", hidden: true })).toBeInTheDocument();
     await user.click(signInUsage);
     await user.click(screen.getByRole("button", { name: "Models & accounts" }));
-    expect(screen.getByText("Official ChatGPT subscription sign-in")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sign in", hidden: true })).toBeInTheDocument();
   });
 
   it("shows live OpenRouter credits and opens the detailed usage surface", async () => {
@@ -764,7 +764,7 @@ describe("chat header provider usage", () => {
     expect(await screen.findByRole("button", { name: /\$10\.00 credits left/i })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Settings" }));
     await user.click(await screen.findByRole("button", { name: /Models & accounts/ }));
-    await user.click(screen.getByRole("button", { name: /OpenRouter.*Responses-compatible model routing/ }));
+    await user.click(screen.getByRole("button", { name: /OpenRouter.*Pay-as-you-go API key/ }));
     await user.type(screen.getByPlaceholderText("sk-or-v1-…"), "sk-or-v1-new");
     await user.click(screen.getByRole("button", { name: "Save key" }));
 

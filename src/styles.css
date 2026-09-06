@@ -1266,10 +1266,34 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .settings-nav button.active > svg:last-child { opacity: .4; }
 .settings-update-dot { position: absolute; top: 50%; right: 10px; width: 6px; height: 6px; border-radius: 50%; background: var(--green); box-shadow: 0 0 7px color-mix(in srgb, var(--green) 60%, transparent); transform: translateY(-50%); }
 .settings-nav button.active .settings-update-dot { right: 22px; }
-.settings-pane-heading { display: flex; flex-direction: column; gap: 3px; margin-bottom: var(--s-5); padding-bottom: var(--s-3); border-bottom: 1px solid var(--line); }
-.settings-pane-heading > span { color: var(--text); font-size: var(--fs-lede); font-weight: 650; letter-spacing: var(--track-display); }
-.settings-pane-heading > small { color: var(--muted); font-size: var(--fs-meta); line-height: 1.5; }
-.settings-content { min-width: 0; overflow-y: auto; overflow-x: hidden; padding: var(--s-5) var(--s-6) var(--s-3); scroll-padding-top: var(--s-5); }
+.settings-pane-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--s-4); margin-bottom: var(--s-5); padding-bottom: var(--s-3); border-bottom: 1px solid var(--line); }
+.settings-pane-heading > div { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.settings-pane-heading > div > h3 { margin: 0; color: var(--text); font-size: var(--fs-lede); font-weight: 650; letter-spacing: var(--track-display); }
+.settings-pane-heading > div > small { max-width: 62ch; color: var(--muted); font-size: var(--fs-meta); line-height: 1.5; text-wrap: pretty; }
+.settings-pane-heading > button { flex: 0 0 auto; margin-top: 2px; }
+.settings-content { position: relative; min-width: 0; overflow-y: auto; overflow-x: hidden; padding: var(--s-5) var(--s-6) var(--s-6); scroll-padding-top: var(--s-5); }
+/* Sticky fade that only shows while there is more pane below the fold. */
+.settings-content::after { content: ""; position: sticky; bottom: calc(-1 * var(--s-6)); z-index: 1; display: block; height: 30px; margin-top: -30px; pointer-events: none; background: linear-gradient(to bottom, transparent, var(--panel)); opacity: 0; transition: opacity var(--t-fast) ease; }
+.settings-content.has-more-below::after { opacity: 1; }
+/* Shared secondary heading for every pane. */
+.settings-subheading { display: flex; flex-direction: column; gap: 2px; margin: var(--s-5) 2px var(--s-2); }
+.settings-subheading.first { margin-top: 0; }
+.settings-subheading strong { color: var(--ink-2); font-size: var(--fs-ui); font-weight: 630; }
+.settings-subheading small { color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.45; }
+.settings-notice { display: flex; align-items: center; gap: var(--s-2); margin-top: var(--s-2); padding: var(--s-2) var(--s-2) var(--s-2) var(--s-3); border: 1px solid color-mix(in srgb, var(--amber) 32%, var(--line)); border-radius: var(--r-sm); color: var(--muted); background: color-mix(in srgb, var(--amber) 6%, transparent); font-size: var(--fs-meta); line-height: 1.45; }
+.settings-notice > svg { flex: 0 0 auto; color: var(--amber); }
+.settings-notice > span { flex: 1; min-width: 0; }
+.settings-notice > button { flex: 0 0 auto; min-height: 28px; }
+.settings-footnote { display: flex; align-items: flex-start; gap: var(--s-2); margin: var(--s-4) 0 0; color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.5; }
+.settings-footnote > svg { flex: 0 0 auto; margin-top: 2px; color: var(--muted-2); }
+.settings-footnote strong { color: var(--muted); font-weight: 600; }
+/* Short windows: group labels give way so every destination stays visible. */
+@media (max-height: 720px) {
+  .settings-nav { gap: 0; }
+  .settings-nav-label { display: none; }
+  .settings-nav-group + .settings-nav-group { margin-top: var(--s-1); padding-top: var(--s-1); border-top: 1px solid var(--line); }
+  .settings-nav button { min-height: 29px; }
+}
 .settings-section { padding-bottom: var(--s-6); }
 .settings-section + .settings-section { padding-top: var(--s-6); border-top: 1px solid var(--line); }
 .custom-agent-settings { padding-bottom: var(--s-4); }
@@ -1346,8 +1370,11 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .number-stepper button:hover:not(:disabled) { color: var(--text); background: rgba(255,255,255,.05); }
 .number-stepper button:disabled { opacity: .3; cursor: default; }
 .number-stepper strong { text-align: center; font-size: var(--fs-ui); font-weight: 600; font-variant-numeric: tabular-nums; }
-.provider-cards { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; }
-.provider-card { display: grid; grid-template-columns: 32px minmax(0, 1fr) 18px; align-items: center; gap: var(--s-3); min-height: 64px; padding: var(--s-3); border: 1px solid var(--line); border-radius: var(--r-md); color: var(--muted); background: rgba(255,255,255,.014); text-align: left; cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
+.provider-cards { display: grid; grid-template-columns: minmax(0,1fr); gap: 6px; }
+.provider-status { flex: 0 0 auto; padding: 3px 8px; border: 1px solid var(--line); border-radius: var(--r-pill); color: var(--muted-2); font-size: var(--fs-micro); font-weight: 550; white-space: nowrap; }
+.provider-status.on { color: var(--green); border-color: var(--green-line); background: var(--green-soft); }
+.provider-card.selected .provider-status:not(.on) { color: var(--muted); }
+.provider-card { display: grid; grid-template-columns: 32px minmax(0, 1fr) auto 18px; align-items: center; gap: var(--s-3); min-height: 54px; padding: var(--s-2) var(--s-3); border: 1px solid var(--line); border-radius: var(--r-md); color: var(--muted); background: rgba(255,255,255,.014); text-align: left; cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
 .provider-card:hover { color: var(--ink-2); border-color: var(--line-strong); background: rgba(255,255,255,.035); }
 .provider-card.selected { color: var(--text); border-color: var(--green-line); background: var(--green-soft); }
 .provider-card > span:nth-child(2) { display: flex; flex-direction: column; gap: 3px; }
@@ -1385,6 +1412,9 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .github-account-panel > img, .github-avatar-placeholder { width: 34px; height: 34px; flex: 0 0 auto; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 50%; background: var(--field); object-fit: cover; }
 .settings-external-action { margin-top: var(--s-2); }
 .credential-status { display: flex; align-items: center; justify-content: space-between; }
+.credential-panel > .credential-status { flex-direction: row; align-items: center; text-align: left; }
+.credential-panel .icon-button { flex: 0 0 auto; border: 1px solid var(--line); color: var(--ink-2); background: rgba(255,255,255,.02); }
+.credential-panel .icon-button:hover { border-color: var(--line-strong); color: var(--text); }
 .credential-panel > .credential-actions { flex: 0 0 auto; flex-direction: row; align-items: center; justify-content: flex-end; gap: 8px; }
 .connected-badge { display: flex; align-items: center; gap: 4px; padding: 4px 7px; border-radius: 99px; color: var(--green); background: var(--green-soft); font-size: var(--fs-meta); }
 .key-input-row { display: flex !important; flex-direction: row !important; gap: 7px !important; }
@@ -1618,6 +1648,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .behavior-grid > div, .diagnostic-card { min-height: 55px; display: flex; align-items: center; justify-content: space-between; gap: 9px; padding: 9px; border: 1px solid var(--line); border-radius: 8px; background: rgba(255,255,255,.012); }
 .runtime-field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 7px; }
 .runtime-field-grid label { display: flex; flex-direction: column; gap: 5px; color: var(--muted); font-size: var(--fs-meta); }
+.runtime-field-grid .field-label { margin-top: 0; }
 .diagnostic-card { margin-top: 7px; }
 .diagnostic-card .secondary-button { min-height: 29px; font-size: var(--fs-meta); }
 .update-card { overflow: hidden; border: 1px solid var(--line); border-radius: 11px; background: linear-gradient(145deg, color-mix(in srgb, var(--green) 4%, var(--sidebar)), var(--sidebar)); }

@@ -278,12 +278,6 @@ export function SkillLibrary({
 
   return (
     <section className="settings-section skill-library-section">
-      <div className="settings-section-heading settings-heading-with-action">
-        <div className="settings-icon"><Boxes size={17} /></div>
-        <div><h3>Local skill library</h3><p>Markdown workflows that Mythra Code exposes by name to OpenAI, OpenRouter, and LM Studio models.</p></div>
-        {folder && <button className="secondary-button" onClick={() => beginLibraryAction(onRefresh)} disabled={busy}>{busy ? <LoaderCircle className="spin" size={12} /> : <RefreshCw size={12} />} Rescan</button>}
-      </div>
-
       <div className={`skill-folder-card ${folder ? "selected" : "empty"}`}>
         <span className="skill-folder-icon"><FolderOpen size={19} /></span>
         <span className="skill-folder-copy">
@@ -291,6 +285,7 @@ export function SkillLibrary({
           <small title={folder || undefined}>{folder || "Pick any local folder containing Markdown skill files."}</small>
         </span>
         <span className="skill-folder-actions">
+          {folder && <button className="secondary-button" onClick={() => beginLibraryAction(onRefresh)} disabled={busy}>{busy ? <LoaderCircle className="spin" size={12} /> : <RefreshCw size={12} />} Rescan</button>}
           {folder && <button className="secondary-button" onClick={() => void revealItemInDir(folder)}><FolderOpen size={13} /> Show folder</button>}
           <button className={folder ? "secondary-button" : "primary-button"} onClick={() => beginLibraryAction(onChooseFolder)}>{folder ? "Change" : "Choose folder"}</button>
         </span>

@@ -94,9 +94,14 @@
 }
 
 /* -- Settings: effort-slider style picker -- */
-.slider-style-heading { display: flex; flex-direction: column; gap: 2px; margin: var(--s-4) 2px var(--s-2); }
-.slider-style-heading strong { color: var(--ink-2); font-size: var(--fs-ui); font-weight: 630; }
-.slider-style-heading small { color: var(--muted-2); font-size: var(--fs-meta); }
+/* Provider marks: one compact radiogroup per subscription, side by side. */
+.provider-mark-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s-3); }
+.provider-mark-group { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.provider-mark-group > span { color: var(--muted-2); font-size: var(--fs-micro); font-weight: 600; letter-spacing: var(--track-caps); text-transform: uppercase; }
+.provider-mark-group .provider-logo-options { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+.provider-mark-group .provider-logo-options > button { min-height: 44px; grid-template-columns: 30px minmax(0, 1fr) 14px; gap: 8px; padding: 6px 8px; }
+.provider-mark-group .provider-logo-options strong { font-size: var(--fs-meta); }
+@media (max-width: 760px) { .provider-mark-grid { grid-template-columns: minmax(0, 1fr); } }
 .slider-style-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
 
 /* Chat typeface cards reuse the slider-style card shape; only the specimen
