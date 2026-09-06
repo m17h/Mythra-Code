@@ -555,7 +555,7 @@ export function sanitizeChildAgentPolicies(stored: unknown): Record<string, Chil
       serviceTier: typeof entry.serviceTier === "string" ? entry.serviceTier : null,
       targets,
       capturedAt: Number(entry.capturedAt) || 0,
-      ...(pendingCandidate && pendingTargets.length ? {
+      ...(pendingCandidate && Array.isArray(pendingCandidate.targets) ? {
         pendingRecapture: {
           maxConcurrent: crewSafeConcurrency(pendingCandidate.maxConcurrent, { enabled: true, targets: pendingTargets }),
           targets: pendingTargets,

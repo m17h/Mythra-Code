@@ -238,13 +238,12 @@ struct ClaudeState {
 const CLAUDE_INTERRUPT_GRACE: Duration = Duration::from_secs(10);
 
 /// A Claude `result` is the terminal protocol event for one Mythra Code turn.
-/// After signalling its process group, give the direct CLI a brief chance to
-/// reap cleanly so no provider output or foreground tool child can leak into
-/// a later turn in the same thread.
-const CLAUDE_RESULT_EXIT_GRACE: Duration = Duration::from_secs(2);
+/// Close stdin and let the CLI persist its transcript before reaping it.
+/// The result can be emitted before that asynchronous persistence completes.
+const CLAUDE_RESULT_EXIT_GRACE: Duration = Duration::from_secs(10);
 
 struct ClaudeTurn {
-    stdin: Mutex<ChildStdin>,
+    stdin: Mutex<Option<ChildStdin>>,
     child: Arc<Mutex<Child>>,
     pid: Option<u32>,
     alive: Arc<AtomicBool>,
@@ -328,7 +327,8 @@ impl ClaudeTurn {
         if !self.alive.load(Ordering::Acquire) {
             return Err("This Claude turn is no longer running".into());
         }
-        let mut stdin = self.stdin.lock().await;
+        let mut input = self.stdin.lock().await;
+        let stdin = input.as_mut().ok_or("This Claude turn is finishing")?;
         stdin
             .write_all(format!("{message}\n").as_bytes())
             .await
@@ -348,7 +348,35 @@ impl ClaudeTurn {
     }
 
     async fn close_input(&self) {
-        let _ = self.stdin.lock().await.shutdown().await;
+        // Dropping the pipe guarantees EOF; shutdown alone can leave its
+        // handle alive while stream-input mode waits for another prompt.
+        self.stdin.lock().await.take();
+    }
+}
+
+/// Drain post-result output without forwarding it while the CLI saves history.
+/// Waiting for the direct child (not EOF) also tolerates inherited stdout pipes.
+async fn reap_claude_process(
+    child: &mut Child,
+    stdout: &mut (impl AsyncRead + Unpin),
+    grace: Duration,
+) -> Option<std::process::ExitStatus> {
+    let mut sink = tokio::io::sink();
+    let graceful = async {
+        tokio::select! {
+            exit = child.wait() => exit,
+            _ = tokio::io::copy(stdout, &mut sink) => child.wait().await,
+        }
+    };
+    match timeout(grace, graceful).await {
+        Ok(exit) => exit.ok(),
+        Err(_) => {
+            if let Some(pid) = child.id() {
+                kill_process_tree(pid);
+            }
+            let _ = child.kill().await;
+            None
+        }
     }
 }
 
@@ -3157,7 +3185,7 @@ async fn claude_turn_start(
         .ok_or_else(|| "Claude Code did not provide an error stream".to_string())?;
     let alive = Arc::new(AtomicBool::new(true));
     let turn = Arc::new(ClaudeTurn {
-        stdin: Mutex::new(stdin),
+        stdin: Mutex::new(Some(stdin)),
         child: Arc::new(Mutex::new(child)),
         pid,
         alive: alive.clone(),
@@ -3208,7 +3236,7 @@ async fn claude_turn_start(
     tauri::async_runtime::spawn(async move {
         const DELTA_FLUSH_INTERVAL: Duration = Duration::from_millis(25);
         let mut lines = BufReader::new(stdout).lines();
-        let mut saw_result = false;
+        let mut terminal_result = None;
         // High-frequency `stream_event` messages are coalesced into a single
         // "claude-events" array emit (mirroring the Codex reader), flushed on
         // a ~25ms tick or before any non-delta message so ordering is
@@ -3309,43 +3337,17 @@ async fn claude_turn_start(
             }
             flush_deltas(&mut delta_buffer, &stdout_app);
             if claude_message_ends_turn(&message) {
-                saw_result = true;
-                // Stream-input mode waits indefinitely for another message.
-                // Mythra Code deliberately uses one process per turn, so stop
-                // accepting provider output at the result boundary and reap
-                // this process before its slot can be reused. Continuing to
-                // read here used to leave completed Claude processes alive for
-                // hours; several could then write interleaved messages into
-                // one conversation and make a finished turn look active.
+                // Result delivery is not a transcript flush acknowledgement.
+                // Keep the slot until EOF lets the CLI save and exit, then
+                // publish completion so a queued resume cannot race that save.
                 stdout_runtime.close_input().await;
-                // Signal every process owned by this turn before freeing the
-                // slot. The frontend may allow the next prompt immediately
-                // after receiving `result`; by then the old process tree must
-                // already be unable to produce more transcript events.
-                if let Some(pid) = stdout_runtime.pid {
-                    kill_process_tree(pid);
-                }
-                stdout_runtime.alive.store(false, Ordering::Release);
-                remove_claude_turn_if_current(&turns, &stdout_thread, &stdout_runtime).await;
-                // A terminal event makes the renderer pump the next queued
-                // prompt immediately. Publish it only after the old process is
-                // unable to emit and its per-thread slot has been released.
-                // This ordering matters on Windows, where `taskkill /T` can
-                // otherwise leave the next Claude start racing a live slot.
-                emit_claude_event(&stdout_app, &stdout_thread, &stdout_turn, message).await;
+                terminal_result = Some(message);
                 break;
             }
             emit_claude_event(&stdout_app, &stdout_thread, &stdout_turn, message).await;
         }
         flush_deltas(&mut delta_buffer, &stdout_app);
-        // Close our read half immediately. A provider that writes after its
-        // terminal result gets a broken pipe instead of another chance to
-        // mutate the transcript.
-        drop(lines);
-        // Reap the completed child so repeated Claude turns cannot accumulate
-        // zombie processes during a long-running Mythra Code session. Bounded
-        // like the Codex reaper: a child that closed stdout but refuses to
-        // exit is force-killed along with its descendants.
+        let saw_result = terminal_result.is_some();
         let exit = if observed_exit.is_some() {
             observed_exit
         } else {
@@ -3355,18 +3357,13 @@ async fn claude_turn_start(
             } else {
                 Duration::from_secs(5)
             };
-            match timeout(grace, child.wait()).await {
-                Ok(exit) => exit.ok(),
-                Err(_) => {
-                    if let Some(pid) = stdout_runtime.pid {
-                        kill_process_tree(pid);
-                    }
-                    // `kill` also awaits the child, so it is reaped either way.
-                    let _ = child.kill().await;
-                    None
-                }
-            }
+            reap_claude_process(&mut child, &mut lines.into_inner(), grace).await
         };
+        if let Some(message) = terminal_result {
+            stdout_runtime.alive.store(false, Ordering::Release);
+            remove_claude_turn_if_current(&turns, &stdout_thread, &stdout_runtime).await;
+            emit_claude_event(&stdout_app, &stdout_thread, &stdout_turn, message).await;
+        }
         // A descendant can inherit stderr just as it can stdout. Never let an
         // orphaned pipe retain the turn slot after the direct Claude process
         // has been reaped; the captured tail is diagnostic, not a lifecycle

@@ -2913,3 +2913,100 @@ async fn server_input_deadline_covers_a_provider_that_stops_reading() {
     assert!(result.unwrap_err().contains("timed out"));
     assert!(input.try_lock().is_ok());
 }
+
+// A real child process models a CLI which reports its result before flushing
+// history, then waits for EOF and writes enough output to fill an unread pipe.
+#[test]
+fn claude_exit_fixture() {
+    let Ok(marker) = env::var("MYTHRA_TEST_CLAUDE_FLUSH_MARKER") else {
+        return;
+    };
+    use std::io::{Read, Write};
+    println!("RESULT_READY");
+    std::io::stdout().flush().unwrap();
+    let mut input = String::new();
+    std::io::stdin().read_to_string(&mut input).unwrap();
+    if env::var_os("MYTHRA_TEST_CLAUDE_HANG").is_some() {
+        std::thread::sleep(Duration::from_secs(60));
+    }
+    std::io::stdout()
+        .write_all(&vec![b'x'; 1024 * 1024])
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(75));
+    fs::write(marker, "assessment saved after result").unwrap();
+}
+
+async fn claude_flush_fixture(
+    hang: bool,
+) -> (ClaudeTurn, BufReader<tokio::process::ChildStdout>, PathBuf) {
+    let directory = skill_test_directory(&format!("claude-flush-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&directory).unwrap();
+    let marker = directory.join("history.txt");
+    let mut command = Command::new(env::current_exe().unwrap());
+    command
+        .args(["--exact", "tests::claude_exit_fixture", "--nocapture"])
+        .env("MYTHRA_TEST_CLAUDE_FLUSH_MARKER", &marker)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    if hang {
+        command.env("MYTHRA_TEST_CLAUDE_HANG", "1");
+    }
+    #[cfg(unix)]
+    command.process_group(0);
+    let mut child = command.spawn().unwrap();
+    let stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    timeout(Duration::from_secs(5), async {
+        loop {
+            let mut line = String::new();
+            assert!(stdout.read_line(&mut line).await.unwrap() > 0);
+            if line.contains("RESULT_READY") {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    let turn = ClaudeTurn {
+        stdin: Mutex::new(Some(stdin)),
+        pid: child.id(),
+        child: Arc::new(Mutex::new(child)),
+        alive: Arc::new(AtomicBool::new(true)),
+    };
+    (turn, stdout, marker)
+}
+
+#[tokio::test]
+async fn claude_completion_allows_post_result_history_flush() {
+    let (turn, mut stdout, marker) = claude_flush_fixture(false).await;
+    assert!(!marker.exists(), "fixture must not save until input closes");
+    turn.close_input().await;
+    assert!(turn.write(&json!({"late": "prompt"})).await.is_err());
+    let mut child = turn.child.lock().await;
+    let exit = reap_claude_process(&mut child, &mut stdout, Duration::from_secs(5)).await;
+    assert!(exit.is_some_and(|status| status.success()));
+    assert_eq!(
+        fs::read_to_string(&marker).unwrap(),
+        "assessment saved after result"
+    );
+    fs::remove_dir_all(marker.parent().unwrap()).unwrap();
+}
+
+#[tokio::test]
+async fn claude_completion_reaps_a_process_that_ignores_eof() {
+    let (turn, mut stdout, marker) = claude_flush_fixture(true).await;
+    turn.close_input().await;
+    let mut child = turn.child.lock().await;
+    let exit = timeout(
+        Duration::from_secs(5),
+        reap_claude_process(&mut child, &mut stdout, Duration::from_millis(100)),
+    )
+    .await
+    .unwrap();
+    assert!(exit.is_none());
+    assert!(child.try_wait().unwrap().is_some());
+    assert!(!marker.exists());
+    fs::remove_dir_all(marker.parent().unwrap()).unwrap();
+}

@@ -637,6 +637,44 @@ describe("Codex cold startup", () => {
 });
 
 describe("chat header provider usage", () => {
+  it("revalidates the saved OpenAI session when Settings opens", async () => {
+    await renderApp();
+    await screen.findByRole("button", { name: /OpenAI subscription/ });
+    accountReadImpl = ({ refreshToken }) => {
+      if (refreshToken) throw new Error("refresh_token_expired");
+      return { account: { type: "chatgpt", email: "old@example.com", planType: "pro" } };
+    };
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("codex_rpc", expect.objectContaining({ method: "account/read", params: { refreshToken: true } })));
+    await screen.findByRole("button", { name: /OpenAI subscription.*Sign in for usage/ });
+  });
+
+  it("clears stale OpenAI identity on auth failure and ignores an older account response", async () => {
+    await renderApp();
+    await screen.findByRole("button", { name: /OpenAI subscription/ });
+    const stale = deferred<{ account: { type: string; email: string; planType: string } }>();
+    accountReadImpl = () => stale.promise;
+    await act(async () => { tauriEvents.handlers.get("codex-event")?.({ payload: { method: "account/updated", params: {} } }); });
+    await act(async () => { tauriEvents.handlers.get("codex-event")?.({ payload: { stream: "stderr", line: "401 Unauthorized" } }); });
+    expect(screen.getByRole("button", { name: /OpenAI subscription.*Sign in for usage/ })).toBeInTheDocument();
+    await act(async () => {
+      stale.resolve({ account: { type: "chatgpt", email: "stale@example.com", planType: "pro" } });
+      await stale.promise;
+    });
+    expect(screen.getByRole("button", { name: /OpenAI subscription.*Sign in for usage/ })).toBeInTheDocument();
+  });
+
+  it.each([true, false])("only clears identity for authentication failures during usage refresh (%s)", async (authFailure) => {
+    const user = userEvent.setup();
+    await renderApp();
+    const trigger = await screen.findByRole("button", { name: /OpenAI subscription/ });
+    rateLimitsImpl = () => { throw new Error(authFailure ? "refresh_token_reused" : "500 Internal Server Error"); };
+    await user.click(trigger);
+    await waitFor(() => expect(invokeMock.mock.calls.filter(([, args]) => args?.method === "account/rateLimits/read").length).toBeGreaterThan(1));
+    if (authFailure) await screen.findByRole("button", { name: /OpenAI subscription.*Sign in for usage/ });
+    else expect(screen.queryByRole("button", { name: /OpenAI subscription.*Sign in for usage/ })).not.toBeInTheDocument();
+  });
+
   it("persists the chosen OpenAI window separately from Claude and restores it after reopening", async () => {
     const user = userEvent.setup();
     rateLimitsImpl = () => ({ rateLimits: { primary: { usedPercent: 42, windowMinutes: 300 }, secondary: { usedPercent: 10, windowMinutes: 10080 } } });
@@ -2621,6 +2659,53 @@ describe("composer sub-agent command center", () => {
           expect.objectContaining({ id: "frozen", provider: "claude" }),
           expect.objectContaining({ id: "openai", provider: "openai" }),
         ],
+      });
+    });
+    // This edit belongs to THREAD_A only. New chats and other project threads
+    // continue to inherit the defaults they had before the click.
+    const storedSettings = JSON.parse(localStorage.getItem("kiwi.settings") ?? "{}");
+    expect(storedSettings.subagentMax).toBe(5);
+    expect(storedSettings.childAgents.targets).toEqual([expect.objectContaining({ id: "cursor" })]);
+    expect(projectSubagents(PROJECT_A.id)).toBeUndefined();
+  });
+
+  it("clears an idle captured crew without rewriting defaults", async () => {
+    const user = userEvent.setup();
+    localStorage.setItem("kiwi.settings", JSON.stringify({
+      subagentsEnabled: true,
+      subagentMax: 5,
+      childAgents: { enabled: true, targets: [{ id: "cursor", provider: "cursor", model: "auto", label: "Cursor", description: "", enabled: true }] },
+    }));
+    localStorage.setItem("kiwi.childAgentPolicies", JSON.stringify({
+      "session-a": {
+        rootThreadId: THREAD_A.id,
+        maxConcurrent: 2,
+        permission: "ask",
+        systemPrompt: "",
+        projectInstructionsEnabled: false,
+        reasoningEffort: "medium",
+        serviceTier: null,
+        targets: [{ id: "frozen", provider: "claude", model: "claude-fable-5", label: "Frozen reviewer", description: "", enabled: true }],
+        capturedAt: 1,
+      },
+    }));
+    await renderApp();
+    pendingResume.resolve({ thread: { ...THREAD_A, turns: [] } });
+    await user.click(await screen.findByText("Alpha thread"));
+    const crew = await openCrew(user);
+
+    expect(screen.getByText("Editing this thread")).toBeInTheDocument();
+    expect(screen.getByText(/Sub-agent and limit changes stay in this thread/)).toBeInTheDocument();
+    expect(within(crew).getByText("Frozen reviewer")).toBeInTheDocument();
+    // The destination configured since is not one this thread may reach.
+    expect(within(crew).queryByText("Cursor")).not.toBeInTheDocument();
+    await user.click(within(crew).getByRole("button", { name: "Clear all" }));
+    await waitFor(() => expect(within(crew).queryByText("Frozen reviewer")).not.toBeInTheDocument());
+
+    await waitFor(() => {
+      const policies = JSON.parse(localStorage.getItem("kiwi.childAgentPolicies") ?? "{}");
+      expect(policies["session-a"].pendingRecapture).toMatchObject({
+        targets: [],
       });
     });
     // This edit belongs to THREAD_A only. New chats and other project threads

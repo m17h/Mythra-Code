@@ -66,6 +66,24 @@ describe("OnboardingModal", () => {
     expect(onOpenSettings).toHaveBeenCalledWith("models");
   });
 
+  it("previews appearance without changing settings and explains model flexibility", () => {
+    const props = onboardingProps();
+    render(<OnboardingModal {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: /Make it yours/ }));
+    const slider = screen.getByRole("slider", { name: "Preview slider animation speed" });
+    fireEvent.change(slider, { target: { value: "90" } });
+    expect(slider).toHaveValue("90");
+    expect(props.onOpenSettings).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: /Continue/ }));
+    expect(screen.getByRole("heading", { name: "Different models. One team." })).toBeInTheDocument();
+    expect(screen.getByText(/independently of the parent model/)).toBeInTheDocument();
+    expect(screen.getByText(/Change or clear an idle thread/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Continue/ }));
+    expect(screen.getByRole("heading", { name: "More than a chat window." })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Back/ }));
+    expect(screen.getByRole("heading", { name: "Different models. One team." })).toBeInTheDocument();
+  });
+
   it("does not treat a genuinely empty install as established", () => {
     expect(isEstablishedMythraCodeInstall({ projects: 0, knownThreads: 0, hasStoredSettings: false, hasSkillsFolder: false })).toBe(false);
     expect(isEstablishedMythraCodeInstall({ projects: 1, knownThreads: 0, hasStoredSettings: false, hasSkillsFolder: false })).toBe(true);
