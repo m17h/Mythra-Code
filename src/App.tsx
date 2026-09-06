@@ -33,6 +33,7 @@ import { LMStudioModelControl } from "./components/LMStudioModelControl";
 import { ThreadProviderControl } from "./components/ThreadProviderControl";
 import { ThreadInboxCard } from "./components/ThreadInboxCard";
 import { ProjectPromptControl } from "./components/ProjectPromptControl";
+import { ProjectRunControl } from "./components/ProjectRunControl";
 import { ApprovalCenter } from "./components/ApprovalCenter";
 import { Composer, discardDraft, type ComposerHandle } from "./components/Composer";
 import { SubAgentCommandCenter, type SubAgentModelOption, type SubAgentPolicyMode } from "./components/SubAgentCommandCenter";
@@ -42,6 +43,7 @@ import type { AgentRecord, AttachmentRecord, McpView } from "./components/Studio
 import { isStudioTab, type StudioTab } from "./lib/studioTabs";
 import type { GitPanelAction, GitRepositoryState } from "./components/GitPanel";
 import type { Account, Activity, AppSettings, ArchivedThread, ChatFont, ChatMessage, CustomAgentProfile, PendingApproval, PermissionMode, Project, ProjectAction, ProjectPromptMode, ProjectSubagentSettings, EffortSliderStyle, PromptProfile, Provider, ScheduledTask, ScheduleRunRecord, SettingsSection, Thread, ThreadHandoff, ThreadReasoning, ThemeName, WorkspaceMode } from "./types";
+import type { ProjectRunCommand } from "./types";
 import { PendingTurnStarts } from "./lib/pendingTurnStarts";
 import { useTaskStore, type QueuedTurn } from "./lib/taskStore";
 import { friendlyError, isAuthenticationError } from "./lib/errors";
@@ -108,6 +110,7 @@ import { parseCodexRateLimits, providerAccountUsage, providerHeaderUsage, saniti
 import { UsagePopover } from "./components/UsagePopover";
 import { contextUsagePercent } from "./lib/contextUsage";
 import { mythraCodeDeveloperInstructions } from "./lib/completionPrompt";
+import { sanitizeProjectRunCommand, sanitizeProjectRunOverrides } from "./lib/projectRun";
 import { runtimeModelProviderId } from "./lib/providerIds";
 import { primaryModifierLabel } from "./lib/platform";
 import { archivedThreadsForInbox, providerForArchivedThread } from "./lib/threadArchive";
@@ -350,7 +353,7 @@ function sanitizeThreadReasoningRecords(value: unknown): Record<string, ThreadRe
   }));
 }
 
-const initialProjects = sortProjectsByPin(sanitizeProjectDefaultOverrides(sanitizeProjectSubagentOverrides(loadStored<Project[]>("kiwi.projects", []))));
+const initialProjects = sortProjectsByPin(sanitizeProjectRunOverrides(sanitizeProjectDefaultOverrides(sanitizeProjectSubagentOverrides(loadStored<Project[]>("kiwi.projects", [])))));
 const initialWorkspaceMode: WorkspaceMode = loadStored<WorkspaceMode>("kiwi.workspaceMode", initialProjects.length ? "project" : "chat");
 const initialKnownThreads = compactSidebarIndex(loadStored<ThreadSidebarIndex>("kiwi.knownThreads", {}));
 const initialOnboardingVersion = loadStored<number>("kiwi.onboardingVersion", 0);
@@ -1303,6 +1306,20 @@ export default function App() {
     },
     [activeProject, persistSettings, setProjects, settings],
   );
+
+  /** Replace or clear one project's Run button command. */
+  const withProjectRun = (project: Project, run: ProjectRunCommand | null): Project => {
+    const overrides = { ...(project.overrides ?? {}) };
+    if (run) overrides.run = run;
+    else delete overrides.run;
+    return { ...project, overrides: Object.keys(overrides).length ? overrides : undefined };
+  };
+
+  const persistActiveProjectRun = useCallback((draft: { command: string; label: string } | null) => {
+    if (!activeProject) return;
+    const run = draft ? sanitizeProjectRunCommand(draft) ?? null : null;
+    setProjects((current) => current.map((project) => (project.id === activeProject.id ? withProjectRun(project, run) : project)));
+  }, [activeProject, setProjects]);
 
   const persistActiveProjectPrompt = useCallback(
     (systemPrompt: string | undefined, mode: ProjectPromptMode) => {
@@ -3376,7 +3393,7 @@ export default function App() {
         }
       }
       if (selectThreadRequestRef.current !== requestId) return;
-      const resumeParams = threadResumeParams(resumedSettings, thread.id, executionPath, { customAgents, modelContextWindow: provider === "openrouter" ? openRouterModels.find((entry) => entry.id === resumedSettings.model)?.context_length : provider === "lmstudio" ? lmStudioModels.find((entry) => entry.id === resumedSettings.model)?.maxContextLength : undefined, additionalWorkspaceRoots: isolation?.gitDir ? [isolation.gitDir] : [], childAgentBridge: childBridge?.launch, refreshRuntimeConfig: true });
+      const resumeParams = threadResumeParams(resumedSettings, thread.id, executionPath, { projectRunCommand: activeProject?.overrides?.run ?? null, customAgents, modelContextWindow: provider === "openrouter" ? openRouterModels.find((entry) => entry.id === resumedSettings.model)?.context_length : provider === "lmstudio" ? lmStudioModels.find((entry) => entry.id === resumedSettings.model)?.maxContextLength : undefined, additionalWorkspaceRoots: isolation?.gitDir ? [isolation.gitDir] : [], childAgentBridge: childBridge?.launch, refreshRuntimeConfig: true });
       if (isolation?.status !== "missing" && isolation?.status !== "removed" && !capabilityRefreshDeferred) {
         const resumed = await rpc<{ thread: Thread }>("thread/resume", { ...resumeParams, excludeTurns: true });
         if (selectThreadRequestRef.current !== requestId) return;
@@ -3646,6 +3663,22 @@ export default function App() {
     return projectSubagentSettingsFromApp(settingsWithProjectSubagents(settings, project.overrides?.subagents));
   }, [projects, settings]);
 
+  /**
+   * A model asked (through the bridge) to set this project's Run button. The
+   * request is already sanitized; this only has to find the project the
+   * conversation belongs to.
+   */
+  const applyProjectRunCommand = useCallback(async (rootThreadId: string, run: ProjectRunCommand | null) => {
+    const projectPath = threadProjectBindingsRef.current?.[rootThreadId];
+    const project = projects.find((entry) => projectPath
+      && normalizedProjectPath(entry.path) === normalizedProjectPath(projectPath));
+    if (!project) throw new Error("The Run button only exists for saved projects, and this conversation is not in one.");
+    setProjects((current) => current.map((entry) => (entry.id === project.id ? withProjectRun(entry, run) : entry)));
+    setTransientStatus(run ? `Run button set for ${project.name}` : `Run button cleared for ${project.name}`);
+  // withProjectRun is a pure helper declared in render scope.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projects, setProjects]);
+
   const { cancelChildAgentsFor, respondToSettingsProposal, stopChildAgent } = useChildAgents({
     policies: childAgentPolicies,
     links: childAgentLinks,
@@ -3673,6 +3706,7 @@ export default function App() {
     scheduleCursorThreadSave,
     projectSubagentSettingsForThread,
     applyProjectSubagentSettings: applyProposedProjectSubagents,
+    applyProjectRunCommand,
     beginRunCheckpoint,
     discardRunCheckpoint,
   });
@@ -4920,6 +4954,23 @@ export default function App() {
     }
   };
 
+  const projectRun = activeProject?.overrides?.run;
+  const projectRunRunning = Boolean(projectRun && terminal.running && terminal.runningCommand === projectRun.command);
+  const runProjectCommand = () => {
+    if (!activeProject || !projectRun) return;
+    if (!runtimeStatus?.available) {
+      setRuntimeSetupOpen(true);
+      return;
+    }
+    if (terminal.running) {
+      setError(`The terminal is still running \`${terminal.runningCommand}\`. Stop it before starting the Run command.`);
+      return;
+    }
+    openStudio("terminal");
+    void terminal.run(projectRun.command, activeThreadWorktree?.gitDir ? [activeThreadWorktree.gitDir] : []);
+    void auditEvent("project.run", { command: projectRun.command }, activeThreadId ?? undefined).catch(() => {});
+  };
+
   const runProjectAction = async (action: ProjectAction) => {
     if (!activeProject) return;
     // The action's output belongs to the folder it runs in, not to whichever
@@ -5479,6 +5530,18 @@ export default function App() {
                 threadStarted={Boolean(activeThread)}
                 onSave={persistActiveProjectPrompt}
                 onAppPromptSettings={() => openSettings("prompts")}
+              />
+            )}
+            {activeProject && !activeWorkspace?.isChat && (
+              <ProjectRunControl
+                key={`run-${activeProject.id}`}
+                projectName={activeProject.name}
+                run={projectRun}
+                running={projectRunRunning}
+                terminalBusy={Boolean(terminal.running && !projectRunRunning)}
+                onRun={runProjectCommand}
+                onStop={() => void terminal.stop()}
+                onSave={persistActiveProjectRun}
               />
             )}
           </div>

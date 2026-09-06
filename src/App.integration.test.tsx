@@ -3041,3 +3041,44 @@ describe("workspace review diff", () => {
     expect(screen.queryByText("console.ts")).not.toBeInTheDocument();
   });
 });
+
+describe("project Run button", () => {
+  it("lights up with the project's saved command and runs it in the Terminal panel", async () => {
+    const user = userEvent.setup();
+    localStorage.setItem("kiwi.projects", JSON.stringify([
+      { ...PROJECT_A, overrides: { run: { command: "npm run dev", label: "Dev server", updatedAt: 1 } } },
+      PROJECT_B,
+    ]));
+    const executed: Array<Record<string, unknown>> = [];
+    commandExecImpl = (params) => {
+      executed.push(params);
+      return { exitCode: 0, stdout: "ready\n", stderr: "" };
+    };
+    await renderApp();
+
+    const trigger = await screen.findByRole("button", { name: "Run: ready" });
+    expect(trigger).toHaveTextContent("Dev server");
+    await user.click(trigger);
+
+    await waitFor(() => expect(executed.some((params) => (params.command as string[]).join(" ").includes("npm run dev"))).toBe(true));
+    const call = executed.find((params) => (params.command as string[]).join(" ").includes("npm run dev"))!;
+    expect(call.cwd).toBe("/projects/alpha");
+    expect(call.tty).toBe(true);
+  });
+
+  it("is greyed out until a command is saved from the header editor, per project", async () => {
+    const user = userEvent.setup();
+    await renderApp();
+
+    await user.click(await screen.findByRole("button", { name: "Run: not set" }));
+    await user.type(screen.getByRole("textbox", { name: "Run command for Alpha" }), "make dev");
+    await user.click(screen.getByRole("button", { name: "Save run command" }));
+
+    expect(await screen.findByRole("button", { name: "Run: ready" })).toHaveTextContent("make dev");
+    await waitFor(() => {
+      const stored = JSON.parse(localStorage.getItem("kiwi.projects")!) as Array<{ id: string; overrides?: { run?: { command: string } } }>;
+      expect(stored.find((project) => project.id === "project-a")?.overrides?.run?.command).toBe("make dev");
+      expect(stored.find((project) => project.id === "project-b")?.overrides?.run).toBeUndefined();
+    });
+  });
+});

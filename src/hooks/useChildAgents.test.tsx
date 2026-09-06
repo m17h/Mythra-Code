@@ -90,6 +90,7 @@ function context(overrides: Partial<ChildAgentContext> = {}): ChildAgentContext 
     scheduleCursorThreadSave: vi.fn(),
     projectSubagentSettingsForThread: () => ({ enabled: true, maxConcurrent: 2, childAgents: { enabled: true, targets: TARGETS } }),
     applyProjectSubagentSettings: vi.fn(),
+    applyProjectRunCommand: vi.fn(),
     ...overrides,
   };
 }
@@ -282,6 +283,33 @@ describe("useChildAgents", () => {
       renderHook(() => useChildAgents(ctx));
       await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
       expect(ctx.cursorSessionIdsRef.current["child-fast"]).toBe("cursor-session");
+    });
+
+    it("saves the project's Run button command without executing anything", async () => {
+      const applyProjectRunCommand = vi.fn();
+      const view = await mount({ applyProjectRunCommand });
+      await view.send(request({
+        tool: "set_project_run_command",
+        arguments: { command: "  npm run dev ", label: "Dev server" },
+      }));
+
+      expect(applyProjectRunCommand).toHaveBeenCalledWith("root-1", expect.objectContaining({ command: "npm run dev", label: "Dev server" }));
+      expect(lastResponse()?.[1]).toMatchObject({ saved: true, command: "npm run dev", label: "Dev server" });
+      expect(useTaskStore.getState().tasks["root-1"].activities.at(-1)).toMatchObject({ title: "Run button updated" });
+      expect(useTaskStore.getState().tasks["root-1"].approvals).toHaveLength(0);
+
+      await view.send(request({ requestId: "request-2", tool: "set_project_run_command", arguments: { command: "" } }));
+      expect(applyProjectRunCommand).toHaveBeenLastCalledWith("root-1", null);
+      expect(lastResponse()?.[1]).toMatchObject({ saved: true, command: null });
+    });
+
+    it("refuses a Run button change outside a saved project", async () => {
+      const applyProjectRunCommand = vi.fn();
+      const view = await mount({ applyProjectRunCommand, policies: { "session-1": { ...POLICY, rootThreadId: "" } } });
+      await view.send(request({ tool: "set_project_run_command", arguments: { command: "make" } }));
+
+      expect(applyProjectRunCommand).not.toHaveBeenCalled();
+      expect(lastResponse()?.[2]).toMatch(/not inside a saved project/);
     });
 
     it("queues a project-scoped settings proposal and applies it only after approval", async () => {

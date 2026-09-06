@@ -31,7 +31,8 @@ import { useTaskStore, type TaskStatus } from "../lib/taskStore";
 import type { OpenRouterModel } from "../components/OpenRouterModelControl";
 import type { LMStudioModel } from "../lib/lmStudio";
 import type { SetPersisted } from "./usePersistedState";
-import type { PendingApproval, ProjectSubagentSettings, Provider, Thread, ThreadReasoning } from "../types";
+import { MAX_RUN_COMMAND_LENGTH, sanitizeProjectRunCommand } from "../lib/projectRun";
+import type { PendingApproval, ProjectRunCommand, ProjectSubagentSettings, Provider, Thread, ThreadReasoning } from "../types";
 
 /**
  * Routes the delegation requests a root agent makes through the Mythra Code
@@ -76,6 +77,8 @@ export interface ChildAgentContext {
   scheduleCursorThreadSave: (threadId: string) => void;
   projectSubagentSettingsForThread: (rootThreadId: string) => ProjectSubagentSettings;
   applyProjectSubagentSettings: (rootThreadId: string, settings: ProjectSubagentSettings) => void | Promise<void>;
+  /** Save (or clear, with null) the project's top-bar Run button command. */
+  applyProjectRunCommand: (rootThreadId: string, run: ProjectRunCommand | null) => void | Promise<void>;
   /** Automatic pre-turn file snapshots for child turns, same as user turns. */
   beginRunCheckpoint: (threadId: string, workspacePath: string, prompt: string, provider: Provider, model: string) => Promise<string | undefined>;
   discardRunCheckpoint: (threadId: string) => void;
@@ -687,6 +690,37 @@ export function useChildAgents(context: ChildAgentContext): {
     );
   }, []);
 
+  /**
+   * Save what the top-bar Run button executes for this thread's project. This
+   * is deliberately not an approval: nothing runs until the user clicks the
+   * button, and the saved command is shown on it and in its editor.
+   */
+  const setRunCommand = useCallback(async (request: ChildAgentRequest): Promise<Record<string, unknown>> => {
+    const ctx = contextRef.current;
+    const policy = childAgentPolicyForSession(ctx.policies, request.sessionId);
+    if (!policy?.rootThreadId) throw new Error("This conversation is not inside a saved project, so it has no Run button.");
+    const command = typeof request.arguments.command === "string" ? request.arguments.command.trim() : "";
+    const label = typeof request.arguments.label === "string" ? request.arguments.label : "";
+    const next = command ? sanitizeProjectRunCommand({ command, label }) : undefined;
+    if (command && !next) {
+      throw new Error(`\`command\` must be a shell command of at most ${MAX_RUN_COMMAND_LENGTH} characters.`);
+    }
+    await ctx.applyProjectRunCommand(policy.rootThreadId, next ?? null);
+    useTaskStore.getState().upsertActivity(policy.rootThreadId, {
+      id: `run-command-${request.requestId}`,
+      kind: "agent",
+      title: next ? "Run button updated" : "Run button cleared",
+      detail: next
+        ? `Click Run in the top bar to execute: ${next.command}`
+        : "The top-bar Run button has no command for this project now.",
+      status: "completed",
+    });
+    void auditEvent("project.runCommand.set", { command: next?.command ?? null }, policy.rootThreadId);
+    return next
+      ? { saved: true, command: next.command, label: next.label ?? null, note: "Saved for this project. Nothing was executed; the user runs it by clicking the Run button in the top bar." }
+      : { saved: true, command: null, note: "The Run button is now cleared for this project." };
+  }, []);
+
   const handleRequest = useCallback(async (request: ChildAgentRequest): Promise<void> => {
     try {
       let result: Record<string, unknown>;
@@ -695,6 +729,7 @@ export function useChildAgents(context: ChildAgentContext): {
       else if (request.tool === "collect_agent") result = await collectChild(request);
       else if (request.tool === "cancel_agent") result = await cancelChild(request);
       else if (request.tool === "propose_agent_settings") result = await proposeSettings(request);
+      else if (request.tool === "set_project_run_command") result = await setRunCommand(request);
       else throw new Error(`\`${request.tool}\` is not a sub-agent tool.`);
       await respondToChildAgentRequest(request.requestId, result);
     } catch (reason) {
@@ -704,7 +739,7 @@ export function useChildAgents(context: ChildAgentContext): {
       // the parent model can read why and choose a different destination.
       await respondToChildAgentRequest(request.requestId, null, message).catch(() => undefined);
     }
-  }, [cancelChild, collectChild, proposeSettings, reportStatus, spawnChild]);
+  }, [cancelChild, collectChild, proposeSettings, reportStatus, setRunCommand, spawnChild]);
 
   // Tauri events are fire-and-forget. Re-subscribing this listener whenever a
   // child changes state creates a small window with no receiver at all; a tool

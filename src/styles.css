@@ -472,6 +472,34 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .project-prompt-global-link { display: flex; align-items: center; gap: 6px; margin-top: var(--s-2); padding: 5px 2px; border: 0; color: var(--muted); background: transparent; font-size: var(--fs-meta); cursor: pointer; }
 .project-prompt-global-link:hover { color: var(--text); }
 .project-prompt-actions { display: flex; justify-content: flex-end; gap: var(--s-2); margin-top: var(--s-2); padding-top: var(--s-2); border-top: 1px solid var(--line); }
+/* Top-bar Run button: grey until the project has a command, lit when it does,
+   amber while that command is running in the Terminal panel. */
+.project-run-control { position: relative; flex: 0 0 auto; display: flex; align-items: center; }
+.project-run-trigger { height: var(--ctl-md); display: flex; align-items: center; gap: 6px; padding: 0 9px; border: 1px solid var(--line); border-radius: var(--r-sm) 0 0 var(--r-sm); color: var(--muted-2); background: transparent; font-size: var(--fs-meta); cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease, box-shadow var(--t-fast) ease; }
+.project-run-trigger > svg { flex: 0 0 auto; color: var(--muted-2); transition: color var(--t-fast) ease; }
+.project-run-trigger:hover { color: var(--muted); border-color: var(--line-strong); background: rgba(255,255,255,.03); }
+.project-run-trigger small { max-width: 150px; overflow: hidden; padding: 2px 5px; border-radius: 5px; color: var(--muted-2); background: rgba(255,255,255,.045); font-size: var(--fs-micro); text-overflow: ellipsis; white-space: nowrap; }
+.project-run-trigger.ready { color: var(--text); border-color: var(--green-line); background: var(--green-soft); box-shadow: 0 0 0 1px color-mix(in srgb, var(--green) 10%, transparent), 0 0 12px color-mix(in srgb, var(--green) 14%, transparent); }
+.project-run-trigger.ready > svg { color: var(--green); }
+.project-run-trigger.ready small { color: var(--green); background: color-mix(in srgb, var(--green) 14%, transparent); }
+.project-run-trigger.ready:hover { background: color-mix(in srgb, var(--green) 18%, transparent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--green) 22%, transparent), 0 0 16px color-mix(in srgb, var(--green) 24%, transparent); }
+.project-run-trigger.running { color: var(--text); border-color: color-mix(in srgb, var(--amber) 48%, var(--line)); background: color-mix(in srgb, var(--amber) 10%, transparent); box-shadow: none; }
+.project-run-trigger.running > svg { color: var(--amber); animation: project-run-pulse 1.4s ease-in-out infinite; }
+.project-run-trigger.running small { color: var(--amber); background: color-mix(in srgb, var(--amber) 14%, transparent); }
+@keyframes project-run-pulse { 50% { opacity: .45; } }
+@media (prefers-reduced-motion: reduce) { .project-run-trigger.running > svg { animation: none; } }
+.project-run-edit { height: var(--ctl-md); width: 24px; display: grid; place-items: center; margin-left: -1px; padding: 0; border: 1px solid var(--line); border-radius: 0 var(--r-sm) var(--r-sm) 0; color: var(--muted-2); background: transparent; cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
+.project-run-edit:hover { color: var(--text); border-color: var(--line-strong); background: rgba(255,255,255,.035); }
+.project-run-control.ready .project-run-edit { border-color: var(--green-line); }
+.project-run-control.running .project-run-edit { border-color: color-mix(in srgb, var(--amber) 48%, var(--line)); }
+.project-run-popover { width: min(470px, calc(100vw - 36px)); }
+.project-run-popover .project-prompt-editor textarea { min-height: 76px; font-family: var(--font-mono); font-size: var(--fs-meta); }
+.project-run-popover .project-prompt-editor input { height: 34px; padding: 0 11px; border: 1px solid var(--line); border-radius: var(--r-sm); outline: none; color: var(--text); background: var(--field); font-size: var(--fs-meta); }
+.project-run-popover .project-prompt-editor input:focus { border-color: color-mix(in srgb, var(--green) 42%, var(--line-strong)); box-shadow: 0 0 0 3px var(--green-soft); }
+.project-run-popover .project-prompt-editor em { color: var(--muted-2); font-style: normal; font-weight: 400; }
+.project-run-hint { display: flex; align-items: flex-start; gap: 7px; margin-top: var(--s-3); padding: var(--s-2) var(--s-3); border: 1px solid color-mix(in srgb, var(--green) 16%, var(--line)); border-radius: var(--r-sm); color: var(--muted); background: color-mix(in srgb, var(--green) 4%, transparent); font-size: var(--fs-meta); line-height: 1.45; }
+.project-run-hint > svg { flex: 0 0 auto; margin-top: 2px; color: var(--green); }
+.project-run-clear { margin-right: auto; }
 .runtime-status { display: flex; align-items: center; gap: 6px; max-width: 240px; color: var(--muted-2); font-size: var(--fs-meta); }
 .runtime-status span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .topbar-usage-chip { height: var(--ctl-md); max-width: 270px; display: flex; align-items: center; gap: 6px; padding: 0 9px; border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--muted); background: rgba(255,255,255,.018); font-size: var(--fs-meta); letter-spacing: var(--track-tight); cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }

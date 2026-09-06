@@ -23,9 +23,24 @@ export interface ProjectDefaults {
   chatFont?: ChatFont;
 }
 
+/**
+ * The command behind the top-bar Run button. Saved per project, never per
+ * thread, so every conversation in the project shares one way to build or
+ * start the app.
+ */
+export interface ProjectRunCommand {
+  /** Shell command, run from the project folder (or the thread's worktree). */
+  command: string;
+  /** Optional short label shown on the button, e.g. "Dev server". */
+  label?: string;
+  updatedAt: number;
+}
+
 export interface ProjectOverrides {
   /** Opt-in defaults configured from Settings → Projects. */
   defaults?: ProjectDefaults;
+  /** What the top-bar Run button executes for this project. */
+  run?: ProjectRunCommand;
   systemPrompt?: string;
   /** Existing projects default to replace; append layers app instructions first. */
   systemPromptMode?: ProjectPromptMode;

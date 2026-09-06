@@ -66,13 +66,23 @@ const TOOL_STATUS: &str = "agent_status";
 const TOOL_COLLECT: &str = "collect_agent";
 const TOOL_CANCEL: &str = "cancel_agent";
 const TOOL_PROPOSE_SETTINGS: &str = "propose_agent_settings";
-pub(super) const AGENT_BRIDGE_TOOLS: [&str; 5] = [
+/// Saves the command behind the project's top-bar Run button. Every project
+/// thread gets it, delegation or not, because the button itself is a project
+/// feature rather than a sub-agent one.
+const TOOL_SET_RUN: &str = "set_project_run_command";
+pub(super) const AGENT_BRIDGE_TOOLS: [&str; 6] = [
     TOOL_SPAWN,
     TOOL_STATUS,
     TOOL_COLLECT,
     TOOL_CANCEL,
     TOOL_PROPOSE_SETTINGS,
+    TOOL_SET_RUN,
 ];
+
+/// Bytes, not characters, so a multi-line script with a few Unicode paths
+/// still fits comfortably under the webview's own character limit.
+const MAX_RUN_COMMAND_BYTES: usize = 16_384;
+const MAX_RUN_LABEL_BYTES: usize = 320;
 
 /// How long the backend waits for the webview to answer a delegation request.
 /// A cold provider start can take longer than an MCP client's own tool wait.
@@ -578,6 +588,26 @@ pub(super) fn tool_catalog(targets: &[ChildAgentTarget], max_concurrent: usize) 
                 "additionalProperties": false,
             },
         },
+        {
+            "name": TOOL_SET_RUN,
+            "title": "Set the project Run button",
+            "description": "Save the shell command behind the Run button in Mythra Code's top bar for this project — typically the command that builds the app, starts the dev server, or runs it. Saving never executes anything: the user runs it later by clicking the button, which is greyed out until a command is saved. Pass an empty command to clear the button. Use one command that works from a fresh checkout, chaining steps with && when needed.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "The exact shell command, run from the project folder. Empty clears the button.",
+                    },
+                    "label": {
+                        "type": "string",
+                        "description": "Optional short label shown on the button, such as “Dev server”.",
+                    },
+                },
+                "required": ["command"],
+                "additionalProperties": false,
+            },
+        },
     ]);
     if targets.is_empty() {
         return Value::Array(
@@ -586,7 +616,10 @@ pub(super) fn tool_catalog(targets: &[ChildAgentTarget], max_concurrent: usize) 
                 .expect("tool catalog is an array")
                 .iter()
                 .filter(|tool| {
-                    tool.get("name").and_then(Value::as_str) == Some(TOOL_PROPOSE_SETTINGS)
+                    matches!(
+                        tool.get("name").and_then(Value::as_str),
+                        Some(TOOL_PROPOSE_SETTINGS) | Some(TOOL_SET_RUN)
+                    )
                 })
                 .cloned()
                 .collect(),
@@ -725,6 +758,33 @@ pub(super) fn validate_tool_call(
                 let targets: Vec<ChildAgentTarget> = serde_json::from_value(targets.clone())
                     .map_err(|error| format!("The proposed crew is invalid: {error}"))?;
                 validate_targets(&targets)?;
+            }
+            Ok(())
+        }
+        TOOL_SET_RUN => {
+            let command = object
+                .get("command")
+                .ok_or_else(|| {
+                    "`command` is required; pass an empty string to clear the Run button."
+                        .to_string()
+                })?
+                .as_str()
+                .ok_or_else(|| "`command` must be a string.".to_string())?;
+            if command.len() > MAX_RUN_COMMAND_BYTES {
+                return Err(format!(
+                    "`command` is too long ({} bytes); the limit is {MAX_RUN_COMMAND_BYTES}.",
+                    command.len()
+                ));
+            }
+            if let Some(label) = object.get("label") {
+                let label = label
+                    .as_str()
+                    .ok_or_else(|| "`label` must be a string.".to_string())?;
+                if label.len() > MAX_RUN_LABEL_BYTES {
+                    return Err(format!(
+                        "`label` is limited to {MAX_RUN_LABEL_BYTES} bytes."
+                    ));
+                }
             }
             Ok(())
         }
@@ -1062,7 +1122,7 @@ pub(super) async fn child_agent_session_start(
         args: vec![AGENT_BRIDGE_ARG.to_string(), session_argument.clone()],
         config_path: directory.join("mcp.json").to_string_lossy().to_string(),
         tool_names: if options.targets.is_empty() {
-            vec![TOOL_PROPOSE_SETTINGS.to_string()]
+            vec![TOOL_PROPOSE_SETTINGS.to_string(), TOOL_SET_RUN.to_string()]
         } else {
             AGENT_BRIDGE_TOOLS
                 .iter()
@@ -1260,7 +1320,7 @@ pub(super) fn bridge_local_response(method: &str, id: Option<&Value>) -> Option<
                 "protocolVersion": "2025-06-18",
                 "capabilities": { "tools": { "listChanged": false } },
                 "serverInfo": { "name": AGENT_BRIDGE_SERVER, "version": env!("CARGO_PKG_VERSION") },
-                "instructions": "Mythra Code project sub-agent controls. Use propose_agent_settings when the user asks to change this project's crew, even when delegation is currently off; never claim a proposed change was applied until the user approves it. When spawn_mythra_agent is available, it is the authoritative delegation route: collect every child result, recover a failed child at most twice, and never use collaboration.spawn_agent or another provider-native task, team, or agent-spawning tool.",
+                "instructions": "Mythra Code project sub-agent controls. Use propose_agent_settings when the user asks to change this project's crew, even when delegation is currently off; never claim a proposed change was applied until the user approves it. When spawn_mythra_agent is available, it is the authoritative delegation route: collect every child result, recover a failed child at most twice, and never use collaboration.spawn_agent or another provider-native task, team, or agent-spawning tool. Use set_project_run_command when the user asks what the project's top-bar Run button should do; it only saves the command, the user clicks the button to run it.",
             }
         }))),
         "ping" => Some(Some(json!({ "jsonrpc": "2.0", "id": id, "result": {} }))),

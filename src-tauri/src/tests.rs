@@ -270,13 +270,8 @@ fn windows_git_runtime_path_covers_machine_and_per_user_installs() {
     let machine = Path::new(r"C:\Program Files");
     let local = Path::new(r"C:\Users\Person\AppData\Local");
     let roaming = Path::new(r"C:\Users\Person\AppData\Roaming");
-    let directories = windows_git_runtime_directories(
-        Some(machine),
-        None,
-        Some(local),
-        Some(roaming),
-        None,
-    );
+    let directories =
+        windows_git_runtime_directories(Some(machine), None, Some(local), Some(roaming), None);
 
     assert!(directories.contains(&machine.join("Git").join("cmd")));
     assert!(directories.contains(&machine.join("Git").join("bin")));
@@ -1737,11 +1732,9 @@ fn managed_runtime_config_pins_encrypted_auth_storage_on_windows() {
     // callback. The reconcile pass must flip it back on inside [features].
     let existing = "cli_auth_credentials_store = \"keyring\"\n\n[features]\nsecret_auth_storage = false\nmulti_agent = false\nmulti_agent_v2 = false\n";
     let managed = managed_runtime_config(OPENROUTER_DEFAULT_BASE_URL);
-    let pinned = managed
-        .iter()
-        .any(|(section, key, value)| {
-            *section == "features" && *key == "secret_auth_storage" && value == "true"
-        });
+    let pinned = managed.iter().any(|(section, key, value)| {
+        *section == "features" && *key == "secret_auth_storage" && value == "true"
+    });
     assert_eq!(pinned, cfg!(windows));
     let updated = reconcile_config_toml(existing, &managed)
         .expect("a disabled feature and missing keys must be rewritten");
@@ -2000,12 +1993,9 @@ fn runtime_loaded_thread_tracking_distinguishes_reads_from_live_operations() {
         "turn/steer",
         "turn/interrupt",
     ] {
-        assert!(successfully_loaded_thread_ids(
-            method,
-            Some("source"),
-            &json!({})
-        )
-        .contains("source"));
+        assert!(
+            successfully_loaded_thread_ids(method, Some("source"), &json!({})).contains("source")
+        );
     }
 }
 
@@ -2292,9 +2282,13 @@ fn local_skill_editor_reads_and_updates_only_detected_skill_sources() {
         "# Details\n\nSupporting material.\n"
     );
 
-    let error =
-        update_local_skill_source(&root, &source, "   ", "# Review\n\nUpdated in Mythra Code.\n")
-            .unwrap_err();
+    let error = update_local_skill_source(
+        &root,
+        &source,
+        "   ",
+        "# Review\n\nUpdated in Mythra Code.\n",
+    )
+    .unwrap_err();
     assert!(error.contains("cannot be empty"));
     assert_eq!(
         fs::read_to_string(&source).unwrap(),
@@ -2450,11 +2444,13 @@ fn config_bridge_is_limited_to_mcp_server_settings() {
     assert!(validate_rpc_params(
         "config/value/write",
         &json!({ "keyPath": "mcp_servers.example", "value": null }),
-    ).is_ok());
+    )
+    .is_ok());
     assert!(validate_rpc_params(
         "config/value/write",
         &json!({ "keyPath": "approval_policy", "value": "never" }),
-    ).is_err());
+    )
+    .is_err());
 }
 
 // --- Cross-provider sub-agents ---------------------------------------------
@@ -2571,7 +2567,9 @@ fn child_agent_tool_catalog_offers_only_approved_destinations() {
 }
 
 #[test]
-fn child_agent_empty_roster_exposes_only_project_settings_proposals() {
+fn child_agent_empty_roster_exposes_only_project_level_tools() {
+    // No approved destination means no spawning, but the project-level tools
+    // (settings proposals and the Run button) stay available.
     let catalog = tool_catalog(&[], 1);
     let names = catalog
         .as_array()
@@ -2579,7 +2577,52 @@ fn child_agent_empty_roster_exposes_only_project_settings_proposals() {
         .iter()
         .filter_map(|tool| tool.get("name").and_then(Value::as_str))
         .collect::<Vec<_>>();
-    assert_eq!(names, vec!["propose_agent_settings"]);
+    assert_eq!(
+        names,
+        vec!["propose_agent_settings", "set_project_run_command"]
+    );
+}
+
+#[test]
+fn project_run_command_tool_accepts_a_command_and_bounds_it() {
+    let none = HashSet::new();
+    assert!(validate_tool_call(
+        &[],
+        &none,
+        "set_project_run_command",
+        &json!({ "command": "npm install && npm run dev", "label": "Dev server" })
+    )
+    .is_ok());
+    // An empty command clears the button.
+    assert!(validate_tool_call(
+        &[],
+        &none,
+        "set_project_run_command",
+        &json!({ "command": "" })
+    )
+    .is_ok());
+    assert!(validate_tool_call(&[], &none, "set_project_run_command", &json!({})).is_err());
+    assert!(validate_tool_call(
+        &[],
+        &none,
+        "set_project_run_command",
+        &json!({ "command": 7 })
+    )
+    .is_err());
+    assert!(validate_tool_call(
+        &[],
+        &none,
+        "set_project_run_command",
+        &json!({ "command": "x".repeat(16_385) })
+    )
+    .is_err());
+    assert!(validate_tool_call(
+        &[],
+        &none,
+        "set_project_run_command",
+        &json!({ "command": "make", "label": "l".repeat(321) })
+    )
+    .is_err());
 }
 
 #[test]
@@ -3133,13 +3176,21 @@ async fn claude_resume_completion_prompt_has_a_unique_lifecycle_identity() {
 #[test]
 fn audit_history_is_bounded_without_restarting() {
     let connection = rusqlite::Connection::open_in_memory().unwrap();
-    connection.execute_batch("CREATE TABLE audit_events(id INTEGER PRIMARY KEY, payload TEXT);
+    connection
+        .execute_batch(
+            "CREATE TABLE audit_events(id INTEGER PRIMARY KEY, payload TEXT);
         WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n WHERE x < 20003)
-        INSERT INTO audit_events SELECT x, 'metadata' FROM n;").unwrap();
+        INSERT INTO audit_events SELECT x, 'metadata' FROM n;",
+        )
+        .unwrap();
     assert_eq!(persistence::prune_audit_events(&connection).unwrap(), 3);
-    let count: i64 = connection.query_row("SELECT COUNT(*) FROM audit_events", [], |row| row.get(0)).unwrap();
+    let count: i64 = connection
+        .query_row("SELECT COUNT(*) FROM audit_events", [], |row| row.get(0))
+        .unwrap();
     assert_eq!(count, 20000);
-    let oldest: i64 = connection.query_row("SELECT MIN(id) FROM audit_events", [], |row| row.get(0)).unwrap();
+    let oldest: i64 = connection
+        .query_row("SELECT MIN(id) FROM audit_events", [], |row| row.get(0))
+        .unwrap();
     assert_eq!(oldest, 4);
     assert_eq!(persistence::prune_audit_events(&connection).unwrap(), 0);
 }
