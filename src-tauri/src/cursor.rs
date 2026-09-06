@@ -461,6 +461,9 @@ async fn resolve_cursor_runtime(app: &AppHandle) -> Result<CursorRuntime, String
     Err("Mythra Code could not find Cursor Agent. Install it from cursor.com/docs/cli, then sign in with `cursor-agent login`.".into())
 }
 
+/// Upper bound for the `agent about` sign-in probe.
+const CURSOR_ABOUT_TIMEOUT: Duration = Duration::from_secs(15);
+
 async fn read_cursor_runtime_status(app: &AppHandle) -> CursorRuntimeStatus {
     let runtime = match resolve_cursor_runtime(app).await {
         Ok(runtime) => runtime,
@@ -476,14 +479,21 @@ async fn read_cursor_runtime_status(app: &AppHandle) -> CursorRuntimeStatus {
             };
         }
     };
-    let output = runtime
-        .background(None)
-        .arg("about")
-        .env("NO_COLOR", "1")
-        .stdin(Stdio::null())
-        .output()
-        .await
-        .ok();
+    // Bounded like the Claude probe: a wedged CLI must not pin the account
+    // panel on "checking" forever.
+    let output = timeout(
+        CURSOR_ABOUT_TIMEOUT,
+        runtime
+            .background(None)
+            .arg("about")
+            .env("NO_COLOR", "1")
+            .stdin(Stdio::null())
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .ok()
+    .and_then(Result::ok);
     let plain = output
         .as_ref()
         .map(|value| {

@@ -1081,7 +1081,7 @@ fn managed_runtime_config(openrouter_base_url: &str) -> Vec<(&'static str, &'sta
         .unwrap_or_else(|_| format!("\"{OPENROUTER_DEFAULT_BASE_URL}\""));
     let native_delegation_policy = serde_json::to_string(MYTHRA_CODE_NATIVE_DELEGATION_POLICY)
         .expect("static native delegation policy must encode as a TOML string");
-    vec![
+    let mut managed = vec![
         ("", "cli_auth_credentials_store", "\"keyring\"".into()),
         ("", "project_doc_max_bytes", "0".into()),
         // Codex also keys native team delegation off a host-level mode. This
@@ -1101,7 +1101,19 @@ fn managed_runtime_config(openrouter_base_url: &str) -> Vec<(&'static str, &'sta
         ("features", "multi_agent", "false".into()),
         ("features", "multi_agent_v2", "false".into()),
         ("model_providers.openrouter", "base_url", base_url),
-    ]
+    ];
+    // Windows Credential Manager caps a generic credential at 2,560 bytes,
+    // and a ChatGPT token bundle is larger. With the plain keyring store the
+    // browser sign-in ends on the callback page with a 500 "Unable to
+    // persist auth file" right after the identity provider step. Codex
+    // ≥ 0.140 keeps only an encryption key in the keyring and the payload in
+    // an encrypted local-secrets file when this feature is on; it defaults on
+    // for Windows, but a user-level or stale profile setting must not be able
+    // to turn it back off.
+    if cfg!(windows) {
+        managed.push(("features", "secret_auth_storage", "true".into()));
+    }
+    managed
 }
 
 /// Line-based TOML reconcile: re-asserts each managed `key = value` inside
@@ -1218,6 +1230,12 @@ async fn write_runtime_config(
                 serde_json::to_string(MYTHRA_CODE_NATIVE_DELEGATION_POLICY).map_err(|error| {
                     format!("Could not encode the native delegation policy: {error}")
                 })?;
+            // See managed_runtime_config for why Windows pins this feature.
+            let secret_auth_storage = if cfg!(windows) {
+                "\nsecret_auth_storage = true"
+            } else {
+                ""
+            };
             Some(format!(
                 r#"cli_auth_credentials_store = "keyring"
 model_provider = "openai"
@@ -1232,7 +1250,7 @@ max_depth = 1
 
 [features]
 multi_agent = false
-multi_agent_v2 = false
+multi_agent_v2 = false{secret_auth_storage}
 
 [model_providers.openrouter]
 name = "OpenRouter"
@@ -2293,13 +2311,25 @@ fn claude_credential_override_present() -> bool {
     .any(|key| env::var_os(key).is_some())
 }
 
+/// How long a `claude auth status` probe may take before Mythra Code reports
+/// the account as unverified instead of leaving the connection check hanging.
+/// A healthy probe answers in well under a second; a stuck keychain prompt or
+/// a wedged CLI would otherwise pin "Checking connection…" forever.
+const CLAUDE_AUTH_STATUS_TIMEOUT: Duration = Duration::from_secs(15);
+
 fn parse_claude_auth_status(stdout: &[u8]) -> Option<Value> {
     serde_json::from_slice(stdout).ok().or_else(|| {
-        let compact = String::from_utf8_lossy(stdout)
-            .lines()
-            .map(str::trim)
-            .collect::<String>();
-        serde_json::from_str(&compact).ok()
+        // Claude Code can print a notice (update banner, deprecation warning)
+        // ahead of the status object, and a narrow terminal may wrap long
+        // values. Keep only the outermost object and rejoin wrapped lines.
+        let text = String::from_utf8_lossy(stdout);
+        let start = text.find('{')?;
+        let end = text.rfind('}')?;
+        let body = text.get(start..=end)?;
+        serde_json::from_str(body).ok().or_else(|| {
+            let compact = body.lines().map(str::trim).collect::<String>();
+            serde_json::from_str(&compact).ok()
+        })
     })
 }
 
@@ -2499,15 +2529,20 @@ async fn read_claude_runtime_status(app: &AppHandle) -> ClaudeRuntimeStatus {
 
     let version = runtime_version(&path).await;
     let home = app.path().home_dir().ok();
-    let auth = subscription_only_command(&path, home.as_deref())
-        .args(["--setting-sources", "", "auth", "status"])
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .await
-        .ok()
-        .filter(|output| output.status.success())
-        .and_then(|output| parse_claude_auth_status(&output.stdout));
+    let auth = timeout(
+        CLAUDE_AUTH_STATUS_TIMEOUT,
+        subscription_only_command(&path, home.as_deref())
+            .args(["--setting-sources", "", "auth", "status"])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .ok()
+    .and_then(Result::ok)
+    .filter(|output| output.status.success())
+    .and_then(|output| parse_claude_auth_status(&output.stdout));
     ClaudeRuntimeStatus {
         available: true,
         path: Some(path.to_string_lossy().into_owned()),

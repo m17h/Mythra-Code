@@ -12,6 +12,7 @@ function makeContext(overrides: Partial<CodexEventContext> = {}): CodexEventCont
     onStatus: vi.fn(),
     onError: vi.fn(),
     onAuthRequired: vi.fn(),
+    onAuthSuspected: vi.fn(),
     onRateLimits: vi.fn(),
     onTerminalOutput: vi.fn(),
     onTurnCompleted: vi.fn(),
@@ -145,11 +146,36 @@ describe("routeCodexEvent", () => {
     expect(ctx.onTurnCompleted).toHaveBeenCalledWith("thread-b", { id: "t1", items: [] });
   });
 
-  it("surfaces sign-in problems from stderr", () => {
+  it("asks for verification instead of signing out on a stderr auth hint", () => {
     const ctx = makeContext();
     routeCodexEvent({ stream: "stderr", line: "request failed: 401 Unauthorized" }, ctx);
-    expect(ctx.onAuthRequired).toHaveBeenCalled();
-    expect(ctx.onStatus).toHaveBeenCalledWith("Sign-in required");
+    expect(ctx.onAuthSuspected).toHaveBeenCalledTimes(1);
+    // An MCP server or OpenRouter rejection shares this stream, so the
+    // ChatGPT account must not be dropped before the runtime is asked.
+    expect(ctx.onAuthRequired).not.toHaveBeenCalled();
+    expect(ctx.onStatus).not.toHaveBeenCalledWith("Sign-in required");
+    expect(ctx.onError).not.toHaveBeenCalled();
+  });
+
+  it("loads the account once a browser sign-in completes", () => {
+    const ctx = makeContext();
+    routeCodexEvent({ method: "account/login/completed", params: { loginId: "login-1", success: true } }, ctx);
+    expect(ctx.onAccountUpdated).toHaveBeenCalledTimes(1);
+    expect(ctx.onLoginFailed).not.toHaveBeenCalled();
+
+    routeCodexEvent({ method: "account/login/completed", params: { loginId: "login-2", success: false, error: "browser closed" } }, ctx);
+    expect(ctx.onLoginFailed).toHaveBeenCalledWith("browser closed");
+    expect(ctx.onAccountUpdated).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats a signed-out account notification as a sign-in requirement", () => {
+    const ctx = makeContext();
+    routeCodexEvent({ method: "account/updated", params: { authMode: null, planType: null } }, ctx);
+    expect(ctx.onAuthRequired).toHaveBeenCalledTimes(1);
+    expect(ctx.onAccountUpdated).not.toHaveBeenCalled();
+
+    routeCodexEvent({ method: "account/updated", params: { authMode: "chatgpt", planType: "pro" } }, ctx);
+    expect(ctx.onAccountUpdated).toHaveBeenCalledTimes(1);
   });
 
   it("preserves an interrupted turn as stopped when its completion event arrives", () => {

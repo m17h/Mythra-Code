@@ -329,6 +329,9 @@ export function SettingsModal({
   onEffortSliderPreview,
   onChatFontPreview,
   onSignIn,
+  onSignOut = async () => {
+    await rpc("account/logout");
+  },
   onClaudeSignIn = async () => {},
   onClaudeRefresh = async () => ({ available: false, path: null, version: null, loggedIn: false, authMethod: null, email: null, subscriptionType: null, warning: null }),
   onCursorSignIn = async () => {},
@@ -419,6 +422,8 @@ export function SettingsModal({
   onEffortSliderPreview: (style: EffortSliderStyle) => void;
   onChatFontPreview: (font: ChatFont) => void;
   onSignIn: () => Promise<void>;
+  /** Signs the ChatGPT account out; defaults to a bare `account/logout`. */
+  onSignOut?: () => Promise<void>;
   onClaudeSignIn?: () => Promise<void>;
   onClaudeRefresh?: () => Promise<ClaudeRuntimeStatus>;
   onCursorSignIn?: () => Promise<void>;
@@ -701,7 +706,7 @@ export function SettingsModal({
   const signOut = async () => {
     setBusy(true);
     try {
-      await rpc("account/logout");
+      await onSignOut();
     } catch (reason) {
       onError(friendlyError(reason));
     } finally {

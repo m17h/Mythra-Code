@@ -285,7 +285,9 @@ function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
     }
     if (method === "account/logout") {
       const result = accountLogoutImpl();
-      queueMicrotask(() => tauriEvents.handlers.get("codex-event")?.({ payload: { method: "account/updated", params: {} } }));
+      // Codex confirms a logout with the same notification an expired session
+      // produces.
+      queueMicrotask(() => tauriEvents.handlers.get("codex-event")?.({ payload: { method: "account/updated", params: { authMode: null, planType: null } } }));
       return result;
     }
     if (method === "account/rateLimits/read") return rateLimitsImpl();
@@ -649,19 +651,43 @@ describe("chat header provider usage", () => {
     await screen.findByRole("button", { name: /OpenAI subscription.*Sign in for usage/ });
   });
 
-  it("clears stale OpenAI identity on auth failure and ignores an older account response", async () => {
+  it("clears stale OpenAI identity when the runtime drops the session and ignores an older account response", async () => {
     await renderApp();
     await screen.findByRole("button", { name: /OpenAI subscription/ });
     const stale = deferred<{ account: { type: string; email: string; planType: string } }>();
     accountReadImpl = () => stale.promise;
-    await act(async () => { tauriEvents.handlers.get("codex-event")?.({ payload: { method: "account/updated", params: {} } }); });
-    await act(async () => { tauriEvents.handlers.get("codex-event")?.({ payload: { stream: "stderr", line: "401 Unauthorized" } }); });
+    await act(async () => { tauriEvents.handlers.get("codex-event")?.({ payload: { method: "account/updated", params: { authMode: "chatgpt", planType: "pro" } } }); });
+    await act(async () => { tauriEvents.handlers.get("codex-event")?.({ payload: { method: "account/updated", params: { authMode: null, planType: null } } }); });
     expect(screen.getByRole("button", { name: /OpenAI subscription.*Sign in for usage/ })).toBeInTheDocument();
     await act(async () => {
       stale.resolve({ account: { type: "chatgpt", email: "stale@example.com", planType: "pro" } });
       await stale.promise;
     });
     expect(screen.getByRole("button", { name: /OpenAI subscription.*Sign in for usage/ })).toBeInTheDocument();
+  });
+
+  it("keeps the ChatGPT account when a stderr 401 belongs to something else", async () => {
+    rateLimitsImpl = () => ({ rateLimits: { primary: { usedPercent: 42, windowMinutes: 300 } } });
+    await renderApp();
+    await screen.findByRole("button", { name: /OpenAI subscription.*58% left/ });
+    const readsBefore = invokeMock.mock.calls.filter(([, args]) => args?.method === "account/read").length;
+    // An MCP server or OpenRouter rejection shares the runtime's stderr.
+    await act(async () => { tauriEvents.handlers.get("codex-event")?.({ payload: { stream: "stderr", line: "mcp server github: 401 Unauthorized" } }); });
+    await waitFor(() => expect(invokeMock.mock.calls.filter(([, args]) => args?.method === "account/read").length).toBe(readsBefore + 1));
+    const verification = invokeMock.mock.calls.filter(([, args]) => args?.method === "account/read").at(-1)?.[1] as { params?: { refreshToken?: boolean } } | undefined;
+    expect(verification?.params?.refreshToken).toBe(true);
+    expect(screen.getByRole("button", { name: /OpenAI subscription.*58% left/ })).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Sign in before sending" })).not.toBeInTheDocument();
+  });
+
+  it("signs out when the verification triggered by a stderr 401 is itself rejected", async () => {
+    rateLimitsImpl = () => ({ rateLimits: { primary: { usedPercent: 42, windowMinutes: 300 } } });
+    await renderApp();
+    await screen.findByRole("button", { name: /OpenAI subscription.*58% left/ });
+    accountReadImpl = () => { throw new Error("refresh_token_expired"); };
+    await act(async () => { tauriEvents.handlers.get("codex-event")?.({ payload: { stream: "stderr", line: "401 Unauthorized" } }); });
+    expect(await screen.findByRole("button", { name: /OpenAI subscription.*Sign in for usage/ })).toBeInTheDocument();
+    expect(await screen.findByRole("dialog", { name: "Sign in before sending" })).toBeInTheDocument();
   });
 
   it.each([true, false])("only clears identity for authentication failures during usage refresh (%s)", async (authFailure) => {
@@ -769,6 +795,29 @@ describe("chat header provider usage", () => {
 
     expect(await screen.findByRole("button", { name: /OpenAI subscription.*Sign in for usage/i })).toHaveTextContent("Sign in for usage");
     expect(screen.queryByRole("button", { name: /OpenAI subscription.*58% left/i })).not.toBeInTheDocument();
+    // A deliberate sign-out must not nag with the sign-in prompt that an
+    // expired session raises.
+    expect(screen.queryByRole("dialog", { name: "Sign in before sending" })).not.toBeInTheDocument();
+
+    await act(async () => {
+      tauriEvents.handlers.get("codex-event")?.({ payload: { method: "account/updated", params: { authMode: null, planType: null } } });
+    });
+    expect(screen.queryByRole("dialog", { name: "Sign in before sending" })).not.toBeInTheDocument();
+  });
+
+  it("prompts for sign-in when the runtime loses the session on its own", async () => {
+    accountReadImpl = () => ({
+      account: { type: "chatgpt", email: "test@example.com", planType: "pro" },
+      requiresOpenaiAuth: true,
+    });
+    await renderApp();
+    expect(await screen.findByRole("button", { name: /OpenAI subscription/i })).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Sign in before sending" })).not.toBeInTheDocument();
+
+    await act(async () => {
+      tauriEvents.handlers.get("codex-event")?.({ payload: { method: "account/updated", params: { authMode: null, planType: null } } });
+    });
+    expect(await screen.findByRole("dialog", { name: "Sign in before sending" })).toBeInTheDocument();
   });
 
   it("ignores an old quota request that completes after sign-out", async () => {

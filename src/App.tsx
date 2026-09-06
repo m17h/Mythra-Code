@@ -12,6 +12,7 @@ import { Archive, ArchiveRestore, Bot, Check, ChevronDown, Circle, Code2, Downlo
 import { getCodexRuntimeStatus, auditEvent, exportTextFile, getNormalChatWorkspace, getOpenRouterCredits, hasLmStudioKey, hasOpenRouterKey, respond, restartRuntime, rpc, runtimeInstanceId, runtimeThreadState, type CodexRuntimeStatus, type JsonObject, type OpenRouterCreditBalance } from "./lib/codex";
 import { deleteClaudeTranscript, getClaudeRateLimits, getClaudeRuntimeStatus, listClaudeModels, loadClaudeTranscript, loadClaudeTranscriptPage, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, visibleClaudeModels, type ClaudeModel, type ClaudeRuntimeStatus } from "./lib/claude";
 import { deleteCursorTranscript, getCursorRuntimeStatus, listCursorModels, loadCursorTranscript, loadCursorTranscriptPage, respondToCursorPermission, saveCursorTranscript, startCursorLogin, type CursorModel, type CursorRuntimeStatus } from "./lib/cursor";
+import { waitForSignIn } from "./lib/signInPolling";
 import { listLocalTranscriptThreads } from "./lib/localTranscriptPersistence";
 import { flushPendingStateWrites, loadStored, storeValue } from "./lib/storage";
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_PROMPT_PROFILES, DEFAULT_SETTINGS, sanitizeAutoArchiveSubagentThreads, sanitizeChatFont, sanitizeEffortSlider, sanitizeTheme, themeColorScheme } from "./lib/appConfig";
@@ -1742,16 +1743,42 @@ export default function App() {
     [bindThreadToProject, persistNativeAgentLinks, runtimeStatus?.available, runtimeStatus?.dataHome],
   );
 
-  const requireOpenAiLogin = useCallback(() => {
+  const clearOpenAiAccount = useCallback(() => {
     openAiAccountRequestRef.current += 1;
     openAiUsageRequestRef.current += 1;
     setAccount(null);
     setAccountCheck("openai", "Sign-in required");
     setOpenAiRateLimits(null);
     setOpenAiRateLimitsRead(false);
+  }, [setAccountCheck]);
+
+  const requireOpenAiLogin = useCallback(() => {
+    clearOpenAiAccount();
     setAuthRequiredOpen(true);
     setStatus("Sign-in required");
-  }, [setAccountCheck]);
+  }, [clearOpenAiAccount]);
+
+  // Set while the user is signing out on purpose. Codex confirms a logout
+  // with `account/updated { authMode: null }`, the same notification an
+  // expired session produces, and only the latter should raise the
+  // "sign in before sending" prompt.
+  const deliberateSignOutRef = useRef(false);
+  const signOutChatGpt = useCallback(async () => {
+    deliberateSignOutRef.current = true;
+    try {
+      await rpc("account/logout");
+      clearOpenAiAccount();
+      setAuthRequiredOpen(false);
+      setStatus("Signed out of ChatGPT");
+    } finally {
+      window.setTimeout(() => { deliberateSignOutRef.current = false; }, 5_000);
+    }
+  }, [clearOpenAiAccount]);
+
+  const handleOpenAiAuthRequired = useCallback(() => {
+    if (deliberateSignOutRef.current) clearOpenAiAccount();
+    else requireOpenAiLogin();
+  }, [clearOpenAiAccount, requireOpenAiLogin]);
 
   const refreshAccount = useCallback(async (refreshToken = false): Promise<{ account: Account | null; requiresOpenaiAuth?: boolean } | null> => {
     const request = ++openAiAccountRequestRef.current;
@@ -1910,6 +1937,18 @@ export default function App() {
     }
     return result;
   }, [refreshAccount, refreshModels, refreshUsage]);
+
+  // A 401 on the runtime's stderr may belong to an MCP server, OpenRouter,
+  // or LM Studio rather than ChatGPT. Re-read the account with a forced
+  // token refresh; only a rejection of that read signs the user out. Bursts
+  // of log lines collapse into one verification.
+  const openAiVerifyAtRef = useRef(0);
+  const verifyOpenAiSession = useCallback(() => {
+    const now = Date.now();
+    if (now - openAiVerifyAtRef.current < 10_000) return;
+    openAiVerifyAtRef.current = now;
+    void refreshAccountData(true);
+  }, [refreshAccountData]);
 
   useEffect(() => {
     if (openRouterReady) {
@@ -2216,7 +2255,8 @@ export default function App() {
     audit: (kind, payload, threadId) => void auditEvent(kind, payload, threadId).catch(() => {}),
     onStatus: setStatus,
     onError: setError,
-    onAuthRequired: requireOpenAiLogin,
+    onAuthRequired: handleOpenAiAuthRequired,
+    onAuthSuspected: verifyOpenAiSession,
     onRateLimits: (limits) => {
       setOpenAiRateLimits(limits);
       setOpenAiRateLimitsRead(true);
@@ -3740,6 +3780,22 @@ export default function App() {
     }
   };
 
+  // One live watch per provider: launching sign-in again replaces the
+  // previous watch, and unmounting stops them all.
+  const signInWatchesRef = useRef<Partial<Record<"claude" | "cursor", AbortController>>>({});
+  useEffect(() => () => {
+    for (const watch of Object.values(signInWatchesRef.current)) watch?.abort();
+  }, []);
+  const watchSignIn = (provider: "claude" | "cursor", check: () => Promise<boolean>, onSignedIn: () => Promise<void>) => {
+    signInWatchesRef.current[provider]?.abort();
+    const controller = new AbortController();
+    signInWatchesRef.current[provider] = controller;
+    void waitForSignIn(check, { signal: controller.signal }).then((signedIn) => {
+      if (!signedIn || controller.signal.aborted) return;
+      return onSignedIn();
+    }).catch((reason) => setError(friendlyError(reason)));
+  };
+
   const beginClaudeLogin = async () => {
     if (!claudeStatus?.available) {
       openSettings("models");
@@ -3752,11 +3808,13 @@ export default function App() {
     try {
       await startClaudeLogin();
       setStatus("Finish sign-in in Terminal");
-      window.setTimeout(() => {
-        void refreshClaudeStatus().then((next) => {
-          if (next.loggedIn) setStatus("Ready");
-        });
-      }, 2500);
+      // The browser flow takes as long as the user needs, so keep probing
+      // quietly (a raw status read, not the full refresh that flashes
+      // "Checking connection…") until Claude Code reports the login.
+      watchSignIn("claude", async () => (await getClaudeRuntimeStatus()).loggedIn, async () => {
+        const [next] = await Promise.all([refreshClaudeStatus(), refreshClaudeModels()]);
+        if (next.loggedIn) setStatus("Ready");
+      });
     } catch (reason) {
       setStatus("Setup required");
       setError(friendlyError(reason));
@@ -3777,14 +3835,13 @@ export default function App() {
     try {
       await startCursorLogin();
       setStatus("Finish sign-in in Terminal");
-      window.setTimeout(() => {
-        void refreshCursorStatus().then((next) => {
-          if (next.loggedIn) {
-            setStatus("Ready");
-            void refreshCursorModels();
-          }
-        });
-      }, 2500);
+      watchSignIn("cursor", async () => Boolean((await getCursorRuntimeStatus())?.loggedIn), async () => {
+        const next = await refreshCursorStatus();
+        if (next.loggedIn) {
+          setStatus("Ready");
+          await refreshCursorModels();
+        }
+      });
     } catch (reason) {
       setStatus("Setup required");
       setError(friendlyError(reason));
@@ -6009,6 +6066,7 @@ export default function App() {
         onEffortSliderPreview={setPreviewEffortSlider}
         onChatFontPreview={setPreviewChatFont}
         onSignIn={beginChatGptLogin}
+        onSignOut={signOutChatGpt}
         onClaudeSignIn={beginClaudeLogin}
         onClaudeRefresh={async () => {
           const [status] = await Promise.all([refreshClaudeStatus(), refreshClaudeModels()]);

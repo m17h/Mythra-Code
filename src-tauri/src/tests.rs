@@ -1587,6 +1587,11 @@ base_url = \"https://openrouter.ai/api/v1\"
     assert!(updated.contains("max_depth = 1"));
     assert!(!updated.contains("max_depth = 3"));
     assert!(updated.contains("\n[features]\nmulti_agent = false\nmulti_agent_v2 = false"));
+    assert_eq!(
+        updated.contains("secret_auth_storage = true"),
+        cfg!(windows),
+        "encrypted auth storage is pinned on Windows only"
+    );
     assert!(updated.contains("base_url = \"http://127.0.0.1:9999/secret-token\""));
     // …while user content is preserved verbatim.
     assert!(updated.contains("model_provider = \"openrouter\""));
@@ -1722,6 +1727,32 @@ fn initialize_negotiates_fields_used_by_project_threads() {
     assert_eq!(
         params.pointer("/capabilities/requestAttestation"),
         Some(&Value::Bool(false))
+    );
+}
+
+#[test]
+fn managed_runtime_config_pins_encrypted_auth_storage_on_windows() {
+    // A Windows profile that turned the feature off would send ChatGPT tokens
+    // straight to Credential Manager, whose 2,560-byte cap fails the sign-in
+    // callback. The reconcile pass must flip it back on inside [features].
+    let existing = "cli_auth_credentials_store = \"keyring\"\n\n[features]\nsecret_auth_storage = false\nmulti_agent = false\nmulti_agent_v2 = false\n";
+    let managed = managed_runtime_config(OPENROUTER_DEFAULT_BASE_URL);
+    let pinned = managed
+        .iter()
+        .any(|(section, key, value)| {
+            *section == "features" && *key == "secret_auth_storage" && value == "true"
+        });
+    assert_eq!(pinned, cfg!(windows));
+    let updated = reconcile_config_toml(existing, &managed)
+        .expect("a disabled feature and missing keys must be rewritten");
+    assert_eq!(
+        updated.contains("secret_auth_storage = true"),
+        cfg!(windows)
+    );
+    assert_eq!(
+        updated.contains("secret_auth_storage = false"),
+        !cfg!(windows),
+        "off Windows the user's feature choice is left alone"
     );
 }
 
@@ -2008,6 +2039,26 @@ fn claude_auth_status_tolerates_terminal_wrapping() {
         parsed.get("email").and_then(Value::as_str),
         Some("a-very-long-address@example.com")
     );
+}
+
+#[test]
+fn claude_auth_status_skips_notices_printed_before_the_object() {
+    let noisy = br#"Update available: 2.2.0 -> run `claude update`
+{
+  "loggedIn": true,
+  "authMethod": "claude.ai",
+  "email": "person@example.com",
+  "subscriptionType": "max"
+}
+"#;
+    let parsed = parse_claude_auth_status(noisy).unwrap();
+    assert_eq!(parsed.get("loggedIn"), Some(&Value::Bool(true)));
+    assert_eq!(
+        parsed.get("email").and_then(Value::as_str),
+        Some("person@example.com")
+    );
+    assert!(parse_claude_auth_status(b"not signed in").is_none());
+    assert!(parse_claude_auth_status(b"} {").is_none());
 }
 
 #[test]

@@ -103,7 +103,14 @@ export interface CodexEventContext {
   audit: (kind: string, payload: JsonObject, threadId?: string) => void;
   onStatus: (status: string) => void;
   onError: (message: string) => void;
+  /** The runtime confirmed there is no signed-in account. */
   onAuthRequired: () => void;
+  /**
+   * Something on the runtime's stderr looked like an auth rejection. That
+   * stream is shared with MCP servers, OpenRouter, and LM Studio, so this
+   * asks the app to verify the ChatGPT session rather than drop it.
+   */
+  onAuthSuspected: () => void;
   onRateLimits: (limits: ProviderRateLimits | null) => void;
   onTerminalOutput: (delta: string, processId?: string) => void;
   onTurnCompleted: (threadId: string, turn: Turn | null) => void;
@@ -242,9 +249,7 @@ export function routeCodexEvent(event: CodexEvent, ctx: CodexEventContext): void
   if (event.stream === "stderr") {
     const line = event.line?.toLowerCase() ?? "";
     if (isAuthenticationError(line)) {
-      ctx.onStatus("Sign-in required");
-      ctx.onError("Sign in to your ChatGPT account in Settings before using OpenAI models.");
-      ctx.onAuthRequired();
+      ctx.onAuthSuspected();
     } else if (line.includes("error")) {
       ctx.onStatus("Runtime issue");
     }
@@ -403,8 +408,12 @@ export function routeCodexEvent(event: CodexEvent, ctx: CodexEventContext): void
     else ctx.onAccountUpdated();
     return;
   }
-  if (method === "account/login/completed" && params.success === false) {
-    ctx.onLoginFailed(String(params.error ?? "Sign in did not complete"));
+  if (method === "account/login/completed") {
+    // A successful browser sign-in is confirmed here. Runtimes also announce
+    // `account/updated`, but the app must not depend on that second
+    // notification to leave "Waiting for sign-in" and load the account.
+    if (params.success === false) ctx.onLoginFailed(String(params.error ?? "Sign in did not complete"));
+    else ctx.onAccountUpdated();
     return;
   }
   if (event.id !== undefined) {
