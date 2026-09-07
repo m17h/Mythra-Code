@@ -39,7 +39,7 @@ function recordRecoveredStatus(threadId: string, task: ThreadTaskState, status: 
 
 /** A health probe needs one status record, not a potentially multi-megabyte
  * transcript. Retain the full read only for app-server compatibility. */
-async function latestCodexTurn(threadId: string): Promise<Turn | undefined> {
+export async function latestCodexTurn(threadId: string): Promise<Turn | undefined> {
   try {
     const page = normalizeThreadTurnsPage(await rpc<unknown>("thread/turns/list", {
       threadId,

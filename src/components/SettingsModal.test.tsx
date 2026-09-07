@@ -1050,14 +1050,14 @@ describe("SettingsModal", () => {
     render(<SettingsModal {...modalProps({ initialSection: "agents", onSave })} />);
 
     const toggle = screen.getByRole("switch", { name: "Archive sub-agent threads automatically" });
-    expect(toggle).toHaveAttribute("aria-checked", "true");
+    expect(toggle).toHaveAttribute("aria-checked", "false");
     fireEvent.click(toggle);
     fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
 
-    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ autoArchiveSubagentThreads: false }));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ autoArchiveSubagentThreads: true }));
   });
 
-  it("shows one preset workflow without exposing a separate policy editor", () => {
+  it("keeps the defaults editor collapsed beside the preset workflow", () => {
     render(<SettingsModal {...modalProps({ initialSection: "agents" })} />);
 
     const archiveToggle = screen.getByRole("switch", { name: "Archive sub-agent threads automatically" });
@@ -1267,4 +1267,15 @@ it("labels a cached account as unverified when its connection check fails", () =
   render(<SettingsModal {...modalProps({ initialSection: "models", account: { type: "chatgpt", email: "test@example.com", planType: "plus" }, accountChecks: { openai: "Connection check unavailable" } })} />);
   expect(screen.getByText("Connection check unavailable")).toBeInTheDocument();
   expect(screen.getByText("Unverified")).toBeInTheDocument();
+});
+
+
+it("edits app sub-agent defaults without creating a preset", () => {
+  const onSave = vi.fn();
+  render(<SettingsModal {...modalProps({ initialSection: "agents", onSave })} />);
+  fireEvent.click(screen.getByRole("button", { name: "Edit sub-agent defaults" }));
+  const editor = screen.getByRole("group", { name: "Sub-agent defaults editor" });
+  fireEvent.click(within(editor).getByRole("switch", { name: "Allow sub-agent spawning" }));
+  fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+  expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ subagentsEnabled: true, childAgentPresets: [] }));
 });

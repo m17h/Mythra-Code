@@ -36,6 +36,7 @@ import { ProjectPromptControl } from "./components/ProjectPromptControl";
 import { ProjectRunControl } from "./components/ProjectRunControl";
 import { ApprovalCenter } from "./components/ApprovalCenter";
 import { Composer, discardDraft, type ComposerHandle } from "./components/Composer";
+import { SubAgentControlsProvider } from "./components/SubAgentControls";
 import { SubAgentCommandCenter, type SubAgentModelOption, type SubAgentPolicyMode } from "./components/SubAgentCommandCenter";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { AuthRequiredModal, RuntimeSetupModal } from "./components/RuntimeModals";
@@ -118,6 +119,8 @@ import { sanitizeProjectDefaultOverrides } from "./lib/projectDefaults";
 import { buildProviderHandoffPrompt, sanitizePendingHandoff } from "./lib/providerHandoff";
 import { deleteThreadTurnDurations } from "./lib/turnDurations";
 import {
+  uniqueChildAgentPresetId,
+  MAX_CHILD_AGENT_PRESETS,
   childAgentLinksAfterThreadDeletion,
   childAgentModel,
   describeChildAgentRoster,
@@ -137,11 +140,11 @@ import {
   type ChildAgentPolicy,
   type ChildAgentReadiness,
 } from "./lib/childAgents";
-import { cacheChildAgentPolicy, ensureChildAgentBridge, invalidateChildAgentLaunch, releaseChildAgentSession, releaseChildAgentSessions } from "./lib/childAgentSessions";
+import { assertChildAgentProposalAvailable, cacheChildAgentPolicy, ensureChildAgentBridge, invalidateChildAgentLaunch, releaseChildAgentSession, releaseChildAgentSessions } from "./lib/childAgentSessions";
 import { forgetSubagentCapabilities, planSubagentCapabilities, recordSubagentCapabilities, subagentCapabilitySignature } from "./lib/threadCapabilities";
 import { canOwnThread, nativeAgentLinkFromThread, nativeAgentLinksAfterThreadDeletion, sanitizeNativeAgentLinks, type NativeAgentLink, type OwnershipLinks } from "./lib/nativeAgentLinks";
 import { autoArchiveSubagentCandidates } from "./lib/subAgentArchive";
-import { collectSubAgentWorkers, isSubAgentWorkerActive, type SubAgentWorker } from "./lib/subAgentActivity";
+import { collectSubAgentWorkers, isActiveAgentRecord, isSubAgentWorkerActive, type SubAgentWorker } from "./lib/subAgentActivity";
 import { useChildAgents, type ProjectRunOutcome } from "./hooks/useChildAgents";
 import { reorderProjects, sortProjectsByPin, toggleProjectPinned, type ProjectDropPosition } from "./lib/projectOrdering";
 import {
@@ -720,12 +723,12 @@ export default function App() {
     return settingsWithProjectSubagents(projectResolved, overrides?.subagents);
   }, [activeProject, settings]);
   const subscriptionSystemPrompts = useMemo(() => {
-    const resolveFor = (provider: "openai" | "claude") => resolveSystemPrompt(
+    const resolveFor = (provider: Provider) => resolveSystemPrompt(
       resolveProviderSystemPrompt(projectSettings.systemPrompt, provider, projectSettings.codexSystemPrompt, projectSettings.claudeSystemPrompt),
       activeProject?.overrides?.systemPrompt,
       activeProject?.overrides?.systemPromptMode,
     );
-    return { openai: resolveFor("openai"), claude: resolveFor("claude") };
+    return { openai: resolveFor("openai"), claude: resolveFor("claude"), cursor: resolveFor("cursor"), openrouter: resolveFor("openrouter"), lmstudio: resolveFor("lmstudio") };
   }, [activeProject, projectSettings]);
   // Opt-in project defaults win over global defaults, while provider and model
   // are resolved for the active thread (or the unsent new-thread draft).
@@ -3628,6 +3631,7 @@ export default function App() {
     const project = projects.find((entry) => projectPath
       && normalizedProjectPath(entry.path) === normalizedProjectPath(projectPath));
     if (!project) throw new Error("Project sub-agent settings only exist for saved projects, and this conversation is not in one.");
+    assertChildAgentProposalAvailable(childAgentPolicies, childAgentLinks, rootThreadId);
     setProjects((current) => current.map((entry) => (entry.id === project.id
       ? { ...entry, overrides: { ...(entry.overrides ?? {}), subagents: next } }
       : entry)));
@@ -3653,7 +3657,7 @@ export default function App() {
       return { ...current, [existing.sessionId]: base };
     });
     invalidateChildAgentLaunch(existing.sessionId);
-  }, [childAgentPolicies, childAgentReadiness, persistChildAgentPolicies, projects, setProjects, setTransientStatus]);
+  }, [childAgentLinks, childAgentPolicies, childAgentReadiness, persistChildAgentPolicies, projects, setProjects, setTransientStatus]);
 
   const projectSubagentSettingsForThread = useCallback((rootThreadId: string): ProjectSubagentSettings => {
     const projectPath = threadProjectBindingsRef.current?.[rootThreadId];
@@ -4009,6 +4013,11 @@ export default function App() {
       if (confirmArchive) setError(`Stop “${label}” before archiving it so its final output and transcript are preserved.`);
       return false;
     }
+    if (Object.values(childAgentLinksRef.current).some((link) => link.rootThreadId === thread.id && !link.terminalStatus)
+      || useTaskStore.getState().tasks[thread.id]?.agents.some((agent) => isActiveAgentRecord(agent.status))) {
+      if (confirmArchive) setError("Finish or stop this task’s sub-agents before archiving it.");
+      return false;
+    }
     if (archivingThreadIdsRef.current.has(thread.id)) return false;
     if (confirmArchive && !await confirmDialog(`Archive “${label}”?\n\nIt moves to the Archived list in the sidebar, where you can restore or permanently delete it.`)) return false;
     archivingThreadIdsRef.current.add(thread.id);
@@ -4113,6 +4122,11 @@ export default function App() {
     const taskStatus = useTaskStore.getState().statuses[threadId];
     if (taskStatus === "starting" || taskStatus === "running") {
       setError(`Stop “${label}” before deleting it so no model process continues working after the conversation is removed.`);
+      return false;
+    }
+    if (Object.values(childAgentLinksRef.current).some((link) => link.rootThreadId === threadId && !link.terminalStatus)
+      || useTaskStore.getState().tasks[threadId]?.agents.some((agent) => isActiveAgentRecord(agent.status))) {
+      setError("Finish or stop this task’s sub-agents before deleting it.");
       return false;
     }
     const archived = archivedThreads.find((record) => record.id === threadId);
@@ -5829,7 +5843,9 @@ export default function App() {
                       </div>
                     }
                   >
+                    <SubAgentControlsProvider workers={subAgentWorkers} onOpen={openSubAgentWorker} onStop={stopSubAgentWorker}>
                     <ConversationTimeline threadId={activeThreadId} running={running} thinkingLabel={activeWorkspace.isChat ? "Thinking in normal chat" : `Working in ${activeProject?.name}`} approval={inlineApproval} provider={effectiveSettings.provider} onLoadEarlier={() => void loadEarlier(activeThreadId)} searchQuery={convSearchOpen ? convSearchQuery : ""} searchActiveMatch={convSearchIndex} onSearchMatches={setConvSearchCount} onEditMessage={editMessageIntoComposer} onApprovalRespond={respondToApproval} />
+                    </SubAgentControlsProvider>
                   </Suspense>
                 </ErrorBoundary>
               )}
@@ -5956,14 +5972,22 @@ export default function App() {
                       readiness={childAgentReadiness}
                       workers={subAgentWorkers}
                       parentActive={running || queuedTurns.length > 0}
-                      scopeLabel={activeProject ? activeProject.name : "Chats & project defaults"}
+                      scopeLabel={activeProject ? activeProject.name : "app defaults · projects without an override"}
                       projectOverride={!activeDelegationPolicy && Boolean(activeProject?.overrides?.subagents)}
                       presets={settings.childAgentPresets}
+                      onSavePreset={(name, policy) => {
+                        persistSettings((current) => {
+                          if (current.childAgentPresets.length >= MAX_CHILD_AGENT_PRESETS) return current;
+                          const preset = { id: uniqueChildAgentPresetId(name, current.childAgentPresets), name, policy };
+                          return { ...current, childAgentPresets: sanitizeChildAgentPresets([...current.childAgentPresets, preset]) };
+                        });
+                      }}
                       modelCatalogs={subAgentModelCatalogs}
                       modelFavorites={modelFavorites}
                       onToggleModelFavorite={toggleModelFavorite}
                       onChange={activeDelegationPolicy ? persistActiveThreadSubagentPolicy : persistComposerSubagentPolicy}
                       onOpenSettings={() => openSettings("agents")}
+                      onOpenAccounts={() => openSettings("models")}
                       onOpenWorker={openSubAgentWorker}
                       onStopWorker={stopSubAgentWorker}
                       onReplaceWorker={replaceSubAgentWorker}

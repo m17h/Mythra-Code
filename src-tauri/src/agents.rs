@@ -49,7 +49,7 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    sync::{oneshot, Mutex},
+    sync::{oneshot, watch, Mutex},
     time::{timeout, Duration},
 };
 
@@ -238,6 +238,22 @@ pub(super) fn record_finished_child(runtime: &mut SessionRuntime, child_id: &str
     }
 }
 
+pub(super) async fn rearm_child_runtime(
+    previous: Option<Arc<Mutex<SessionRuntime>>>,
+    known: &[String],
+    finished: &[String],
+) -> Arc<Mutex<SessionRuntime>> {
+    let runtime = previous.unwrap_or_default();
+    {
+        let mut accounting = runtime.lock().await;
+        accounting.known.extend(known.iter().take(256).cloned());
+        for child in finished {
+            record_finished_child(&mut accounting, child);
+        }
+    }
+    runtime
+}
+
 struct ChildAgentSession {
     /// Client-generated identity for this root thread's delegation session.
     /// Deliberately not the thread id: for app-server providers the bridge has
@@ -247,7 +263,8 @@ struct ChildAgentSession {
     targets: Vec<ChildAgentTarget>,
     max_concurrent: usize,
     directory: PathBuf,
-    runtime: Mutex<SessionRuntime>,
+    runtime: Arc<Mutex<SessionRuntime>>,
+    ended: watch::Sender<bool>,
 }
 
 impl ChildAgentSession {
@@ -382,6 +399,8 @@ pub(super) struct ChildAgentSessionOptions {
     /// backend session had to be rebuilt.
     #[serde(default)]
     known_children: Vec<String>,
+    #[serde(default)]
+    finished_children: Vec<String>,
 }
 
 fn bridge_root(app: &AppHandle) -> Result<PathBuf, String> {
@@ -389,7 +408,8 @@ fn bridge_root(app: &AppHandle) -> Result<PathBuf, String> {
         .path()
         .app_data_dir()
         .map_err(|error| format!("Could not resolve Mythra Code app data: {error}"))?
-        .join("child-agents");
+        .join("child-agents")
+        .join(std::process::id().to_string());
     std::fs::create_dir_all(&directory)
         .map_err(|error| format!("Could not create the sub-agent bridge directory: {error}"))?;
     Ok(directory)
@@ -411,9 +431,8 @@ fn write_private_file(path: &std::path::Path, contents: &str) -> Result<(), Stri
     Ok(())
 }
 
-/// Remove bridge material left behind by a previous run. A session file is
-/// only ever useful while its backend is listening, so nothing here can be
-/// live at startup.
+/// Remove stale material for this process identity only. Other app instances
+/// own separate directories and may still have live bridges.
 pub(super) fn purge_stale_agent_bridges(app: &AppHandle) {
     if let Ok(directory) = bridge_root(app) {
         let _ = std::fs::remove_dir_all(&directory);
@@ -811,12 +830,28 @@ enum RelayOutcome {
     },
 }
 
+async fn await_relay_response(
+    receiver: oneshot::Receiver<RelayPayload>,
+    ended: &mut watch::Receiver<bool>,
+    wait: Duration,
+) -> Result<Result<RelayPayload, oneshot::error::RecvError>, tokio::time::error::Elapsed> {
+    tokio::select! {
+        biased;
+        _ = ended.changed() => Ok(Ok(Err("This sub-agent session has ended.".into()))),
+        response = timeout(wait, receiver) => response,
+    }
+}
+
 async fn relay_to_app_inner(
     state: &BridgeHttpState,
     session: &ChildAgentSession,
     tool: &str,
     arguments: Value,
 ) -> RelayOutcome {
+    let mut ended = session.ended.subscribe();
+    if *ended.borrow() {
+        return RelayOutcome::Answered(Err("This sub-agent session has ended.".into()));
+    }
     let request_id = uuid::Uuid::new_v4().to_string();
     let (sender, receiver) = oneshot::channel();
     state
@@ -844,7 +879,8 @@ async fn relay_to_app_inner(
         TOOL_COLLECT => COLLECT_RELAY_TIMEOUT,
         _ => RELAY_TIMEOUT,
     };
-    match timeout(wait, receiver).await {
+    let response = await_relay_response(receiver, &mut ended, wait).await;
+    match response {
         Ok(Ok(result)) => {
             // The responder keeps a registry copy until the receiver confirms
             // it won the deadline race. Remove that backup only now.
@@ -1156,11 +1192,22 @@ pub(super) async fn child_agent_session_start(
     // Replacing an existing session for the same root thread is how a restart
     // of that thread's runtime re-arms delegation; the old material is removed
     // so a stale bridge process cannot keep talking to the app.
-    let mut runtime = SessionRuntime::default();
-    for child in options.known_children.iter().take(256) {
-        runtime.known.insert(child.clone());
-    }
-    let previous = state.sessions.lock().await.insert(
+    let mut sessions = state.sessions.lock().await;
+    // Late relay responses still hold the old session. Share its accounting
+    // so reservations, live children and late answers survive re-registration.
+    let runtime = rearm_child_runtime(
+        sessions
+            .get(&options.session_id)
+            .map(|session| session.runtime.clone()),
+        &options.known_children,
+        &options.finished_children,
+    )
+    .await;
+    let ended = sessions
+        .get(&options.session_id)
+        .map(|session| session.ended.clone())
+        .unwrap_or_else(|| watch::channel(false).0);
+    let previous = sessions.insert(
         options.session_id.clone(),
         Arc::new(ChildAgentSession {
             session_id: options.session_id.clone(),
@@ -1168,9 +1215,11 @@ pub(super) async fn child_agent_session_start(
             targets: options.targets,
             max_concurrent,
             directory,
-            runtime: Mutex::new(runtime),
+            runtime,
+            ended,
         }),
     );
+    drop(sessions);
     if let Some(previous) = previous {
         let _ = std::fs::remove_dir_all(&previous.directory);
     }
@@ -1183,6 +1232,7 @@ pub(super) async fn child_agent_session_end(
     session_id: String,
 ) -> Result<(), String> {
     if let Some(session) = state.sessions.lock().await.remove(&session_id) {
+        session.ended.send_replace(true);
         let _ = std::fs::remove_dir_all(&session.directory);
     }
     Ok(())
@@ -1260,6 +1310,7 @@ pub(super) fn shutdown_agent_bridges_on_exit(app: &AppHandle) {
         return;
     };
     for (_, session) in sessions.drain() {
+        session.ended.send_replace(true);
         let _ = std::fs::remove_dir_all(&session.directory);
     }
 }
@@ -1438,6 +1489,24 @@ pub(super) fn run_agent_bridge(session_path: &str) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn child_agent_session_end_interrupts_pending_relay() {
+        let (sender, receiver) = oneshot::channel();
+        let (ended, mut observer) = watch::channel(false);
+        let waiter = tokio::spawn(async move {
+            await_relay_response(receiver, &mut observer, Duration::from_secs(300)).await
+        });
+        ended.send_replace(true);
+        let result = timeout(Duration::from_secs(1), waiter)
+            .await
+            .expect("session end must not wait for the relay deadline")
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(result, Err("This sub-agent session has ended.".into()));
+        assert!(sender.send(Ok(json!({"threadId": "late-child"}))).is_err());
+    }
 
     #[tokio::test]
     async fn response_after_receiver_timeout_is_preserved_for_dispatch() {

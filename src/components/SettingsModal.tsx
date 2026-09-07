@@ -800,6 +800,10 @@ export function SettingsModal({
     } catch (reason) { onError(friendlyError(reason)); }
   };
 
+  const [agentDefaultsOpen, setAgentDefaultsOpen] = useState(false);
+  const [agentEditScope, setAgentEditScope] = useState("global");
+  const editedAgentProject = localProjects.find((project) => project.id === agentEditScope);
+  const editedAgentPolicy = editedAgentProject?.overrides?.subagents ?? projectSubagentSettingsFromApp(local);
   const activeAgentProject = activeProjectId
     ? localProjects.find((project) => project.id === activeProjectId) ?? null
     : null;
@@ -1271,6 +1275,23 @@ export function SettingsModal({
 
           {settingsSection === "agents" &&
           <section className="settings-section subagent-settings">
+            <div className="settings-subheading first"><strong>Sub-agent defaults</strong><small>Changes apply to new tasks. Existing tasks keep their own sub-agent setup.</small></div>
+            <button type="button" className="secondary-button" aria-expanded={agentDefaultsOpen} onClick={() => setAgentDefaultsOpen((open) => !open)}>Edit sub-agent defaults</button>
+            {agentDefaultsOpen && <div role="group" aria-label="Sub-agent defaults editor">
+            <div className="field-label">
+              <span>Edit defaults for</span>
+              <AppSelectMenu ariaLabel="Sub-agent defaults scope" value={agentEditScope} options={[
+                { value: "global", label: "App defaults", detail: "Chats and projects without an override" },
+                ...localProjects.map((project) => ({ value: project.id, label: project.name, detail: "This project only" })),
+              ]} onChange={setAgentEditScope} />
+            </div>
+            <SubagentPolicyEditor policy={editedAgentPolicy} readiness={childAgentReadiness} disabled={false}
+              modelCatalogs={subAgentModelCatalogs} modelFavorites={modelFavorites}
+              onToggleModelFavorite={onToggleModelFavorite} onDiscoverOpenRouterModels={onDiscoverOpenRouterModels}
+              onChange={(policy) => updateAgentPolicy(policy, agentEditScope)} />
+            {editedAgentProject?.overrides?.subagents && <button type="button" className="secondary-button" onClick={() => clearProjectAgentPolicy(editedAgentProject.id)}>Use app defaults for this project</button>}
+            </div>}
+
             <div className="subagent-archive-setting">
               <div className="settings-subheading first"><strong>Thread cleanup</strong><small>What happens to sub-agent conversations once their parent finishes.</small></div>
               <div className={`agent-settings-card single ${local.autoArchiveSubagentThreads ? "enabled" : ""}`}>

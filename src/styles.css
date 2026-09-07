@@ -952,6 +952,8 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .sa-tile-note { color: var(--muted-2); font-size: 9.5px; }
 .sa-tile-issue { display: flex; align-items: flex-start; gap: 4px; margin: 0; color: color-mix(in srgb, var(--orange) 66%, var(--text)); font-size: 9.5px; line-height: 1.4; }
 .sa-tile-issue svg { flex: 0 0 auto; margin-top: 1px; }
+.app-shell[data-color-scheme="dark"] .sa-tile-issue button { flex: 0 0 auto; min-height: 25px; padding: 2px 7px; border: 1px solid color-mix(in srgb, var(--orange) 28%, var(--line)); border-radius: var(--r-xs); color: color-mix(in srgb, var(--orange) 78%, var(--text)); background: color-mix(in srgb, var(--orange) 8%, var(--panel-3)); font-size: inherit; line-height: 1.3; cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
+.app-shell[data-color-scheme="dark"] .sa-tile-issue button:hover { color: var(--text); border-color: color-mix(in srgb, var(--orange) 46%, var(--line-strong)); background: color-mix(in srgb, var(--orange) 14%, var(--panel-3)); }
 /* The editor is laid out at its final size the instant it opens or closes —
    no height transition of its own. The roster's FLIP pass then animates every
    tile, the expanded one included, from the previous layout to this one, so a
@@ -3780,3 +3782,8 @@ body[data-pane-resizing] .sidebar, body[data-pane-resizing] .studio-dock { trans
 .model-catalog-heading { display: grid; flex-shrink: 0; grid-template-columns: minmax(0, auto) minmax(0, 1fr) 28px; align-items: center; column-gap: 10px; }
 .model-catalog-heading > span { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .openrouter-catalog-warning { overflow-wrap: anywhere; }
+
+.subagent-relay-actions { display: flex; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
+.subagent-relay-actions button { border: 1px solid var(--line); border-radius: var(--r-sm); padding: 3px 7px; color: var(--text); background: transparent; font: inherit; font-size: var(--fs-micro); cursor: pointer; }
+.subagent-relay-actions button:disabled { opacity: .5; cursor: wait; }
+.sa-preset-row > input { width: 100%; min-width: 0; padding: 7px; border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--text); background: var(--bg); font: inherit; }

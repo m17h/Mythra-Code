@@ -12,8 +12,8 @@ const bridge = vi.hoisted(() => ({
 }));
 const childRun = vi.hoisted(() => ({ startChildAgentTurn: vi.fn() }));
 const codex = vi.hoisted(() => ({ rpc: vi.fn(), auditEvent: vi.fn() }));
-const claude = vi.hoisted(() => ({ interruptClaudeTurn: vi.fn(), killClaudeTurn: vi.fn(), loadClaudeTranscript: vi.fn() }));
-const cursor = vi.hoisted(() => ({ interruptCursorTurn: vi.fn(), killCursorTurn: vi.fn(), loadCursorTranscript: vi.fn() }));
+const claude = vi.hoisted(() => ({ isClaudeTurnActive: vi.fn(), interruptClaudeTurn: vi.fn(), killClaudeTurn: vi.fn(), loadClaudeTranscript: vi.fn() }));
+const cursor = vi.hoisted(() => ({ isCursorTurnActive: vi.fn(), interruptCursorTurn: vi.fn(), killCursorTurn: vi.fn(), loadCursorTranscript: vi.fn() }));
 
 vi.mock("../lib/agentBridge", () => bridge);
 vi.mock("../lib/childRun", () => childRun);
@@ -679,7 +679,7 @@ describe("useChildAgents", () => {
       expect(lastResponse()?.[1]).toEqual({
         children: expect.arrayContaining([
           expect.objectContaining({ childId: "child-failed", status: "failed" }),
-          expect.objectContaining({ childId: "child-interrupted", status: "cancelled" }),
+          expect.objectContaining({ childId: "child-interrupted", status: "unknown" }),
         ]),
       });
     });
@@ -884,6 +884,57 @@ describe("useChildAgents", () => {
         .toEqual(["interrupted", "interrupted"]);
     });
   });
+it("does not report an unhydrated live child as finished on reload", async () => {
+  persistedLinks = { "child-1": link() };
+  const view = await mount();
+  expect(bridge.reportChildAgentFinished).not.toHaveBeenCalled();
+  claude.isClaudeTurnActive.mockResolvedValue(true);
+  persistedLinks = { "child-1": link({ provider: "claude" }) };
+  view.rerender({ links: persistedLinks });
+  await view.send(request({ tool: "collect_agent", arguments: { childId: "child-1" } }));
+  expect(lastResponse()?.[1]).toMatchObject({ status: "running", result: "" });
+  expect(bridge.reportChildAgentFinished).not.toHaveBeenCalled();
+});
+
+it("rejects a disabled destination even if an older policy contains it", async () => {
+  const view = await mount({ policies: { "session-1": { ...POLICY, targets: [{ ...TARGETS[0], enabled: false }] } } });
+  await view.send(request());
+  expect(childRun.startChildAgentTurn).not.toHaveBeenCalled();
+  expect(lastResponse()?.[2]).toMatch(/not an approved/);
+});
+
+it("keeps the beginning and conclusion of an oversized final answer", async () => {
+  childRun.startChildAgentTurn.mockResolvedValueOnce({ thread: childThread("child-1", "openai"), turnId: "turn-1", provider: "openai", model: "gpt-5.6-terra" });
+  const view = await mount();
+  await view.send(request());
+  act(() => {
+    useTaskStore.getState().completeMessage("child-1", { id: "answer", role: "assistant", text: "START " + "x".repeat(30000) + " FINAL CONCLUSION", turnId: "turn-1" });
+    useTaskStore.getState().setTaskStatus("child-1", "completed");
+  });
+  await view.send(request({ tool: "collect_agent", arguments: { childId: "child-1" } }));
+  const response = lastResponse()?.[1] as { result: string; truncated: boolean };
+  expect(response.truncated).toBe(true);
+  expect(response.result).toHaveLength(24000);
+  expect(response.result.startsWith("START")).toBe(true);
+  expect(response.result.endsWith("FINAL CONCLUSION")).toBe(true);
+  expect(response.result).toContain("middle omitted");
+});
+
+it("retries a lost slot-release acknowledgement", async () => {
+  vi.useFakeTimers();
+  try {
+    persistedLinks = { "child-1": link({ terminalStatus: "completed" }) };
+    bridge.reportChildAgentFinished.mockRejectedValueOnce(new Error("temporary disconnect"));
+    const view = await mount();
+    expect(bridge.reportChildAgentFinished).toHaveBeenCalledTimes(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(bridge.reportChildAgentFinished).toHaveBeenCalledTimes(2);
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(bridge.reportChildAgentFinished).toHaveBeenCalledTimes(2);
+    view.unmount();
+  } finally { vi.useRealTimers(); }
+});
+
 });
 
 describe("child lifecycle helpers", () => {
@@ -896,7 +947,7 @@ describe("child lifecycle helpers", () => {
     expect(childLifecycle("starting")).toBe("starting");
     expect(childLifecycle("idle")).toBe("completed");
     expect(childLifecycleForLink(link({ terminalStatus: "failed" }), "idle")).toBe("failed");
-    expect(childLifecycleForLink(link(), "idle")).toBe("cancelled");
+    expect(childLifecycleForLink(link(), "idle")).toBe("unknown");
   });
 
   it("counts only children of the requested session that are still working", () => {

@@ -38,7 +38,7 @@ export function SubagentPolicyEditor({ policy, readiness, disabled, modelCatalog
             <strong>Sub-agents</strong>
             <small>{policy.enabled
               ? "The model may split a turn across parallel sub-agents."
-              : "Delegation tools stay hidden from the model."}</small>
+              : "Sub-agents are off for this setup."}</small>
           </span>
           <button
             type="button"

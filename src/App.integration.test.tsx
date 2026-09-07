@@ -456,6 +456,20 @@ describe("Codex cold startup", () => {
     expect(status.textContent).toBe("Ready");
     expect(status).not.toHaveTextContent("Archived");
   });
+  it("does not archive a parent while a persisted sub-agent still has an unknown outcome", async () => {
+    localStorage.setItem("kiwi.childAgentLinks", JSON.stringify({
+      "unfinished-child": { childThreadId: "unfinished-child", rootThreadId: THREAD_A.id,
+        sessionId: "session-guard", targetId: "reviewer", provider: "claude", model: "claude-fable-5",
+        reasoningEffort: "high", title: "Unfinished review", createdAt: Date.now() },
+    }));
+    threadListImpl = (params) => ({ data: params.cwd === PROJECT_A.path ? [THREAD_A, THREAD_B] : [], nextCursor: null });
+    await renderApp();
+    await screen.findByText("Alpha thread");
+    fireEvent.click(screen.getByRole("button", { name: "Archive all" }));
+    expect(await screen.findByText("Archived 1 main thread")).toBeInTheDocument();
+    expect(screen.getByText("Alpha thread")).toBeInTheDocument();
+    expect(JSON.parse(localStorage.getItem("kiwi.childAgentLinks") ?? "{}")["unfinished-child"].terminalStatus).toBeUndefined();
+  });
   it("keeps the app visible while the Settings chunk loads for the first time", { timeout: 15_000 }, async () => {
     await renderApp();
 
@@ -2621,7 +2635,7 @@ describe("composer sub-agent command center", () => {
     await user.click(screen.getByRole("button", { name: /Chats/ }));
 
     await openCrew(user);
-    expect(screen.getByText("Editing Chats & project defaults")).toBeInTheDocument();
+    expect(screen.getByText("Editing app defaults · projects without an override")).toBeInTheDocument();
     await user.click(screen.getByRole("switch", { name: "Allow sub-agent spawning" }));
     await user.click(screen.getByRole("button", { name: "More concurrent sub-agents" }));
     await user.click(screen.getByRole("button", { name: "Add Claude sub-agent" }));

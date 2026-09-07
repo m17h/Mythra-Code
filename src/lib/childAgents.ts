@@ -56,7 +56,7 @@ export interface ChildAgentPolicy {
   systemPrompt: string;
   /** Fully composed prompt for subscription destinations. Legacy policies
    * fall back to the root's frozen systemPrompt. */
-  providerSystemPrompts?: Partial<Record<"openai" | "claude", string>>;
+  providerSystemPrompts?: Partial<Record<Provider, string>>;
   projectInstructionsEnabled: boolean;
   reasoningEffort: ReasoningEffort;
   serviceTier: string | null;
@@ -85,6 +85,7 @@ export interface ChildAgentLink {
   createdAt: number;
   /** Persisted once the child settles so reloads never invent an outcome. */
   terminalStatus?: "completed" | "cancelled" | "failed";
+  finishedAt?: number;
 }
 
 /**
@@ -107,10 +108,9 @@ export function childLifecycle(status: TaskStatus): string {
 /** Preserve a persisted outcome when no task from this app process exists. */
 export function childLifecycleForLink(link: ChildAgentLink, status: TaskStatus): string {
   if (status !== "idle") return childLifecycle(status);
-  // An unterminated link from an earlier process cannot still be running. It
-  // was interrupted by that process ending, so cancellation is the only
-  // outcome we can assert without fabricating a successful completion.
-  return link.terminalStatus ?? "cancelled";
+  // A webview reload loses local status while native processes keep running.
+  // Missing state is not proof of either completion or cancellation.
+  return link.terminalStatus ?? "unknown";
 }
 
 export function isChildActive(status: TaskStatus): boolean {
@@ -140,8 +140,9 @@ export function childAgentReasoningEffort(
 }
 
 export function describeChildAgentReasoning(target: ChildAgentTarget): string {
-  if (target.reasoningMode === "fixed") return target.reasoningEffort;
-  if (target.reasoningMode === "agent") return `Main agent decides · up to ${target.reasoningMaxEffort}`;
+  const label = (effort: ReasoningEffort) => effort === "xhigh" ? "Extra high" : effort === "max" ? "Maximum" : effort.charAt(0).toUpperCase() + effort.slice(1);
+  if (target.reasoningMode === "fixed") return label(target.reasoningEffort);
+  if (target.reasoningMode === "agent") return `Main agent decides · up to ${label(target.reasoningMaxEffort)}`;
   return "Inherit parent";
 }
 
@@ -453,7 +454,7 @@ export interface ChildAgentPolicyInput {
   subagentMax: number;
   permission: PermissionMode;
   systemPrompt: string;
-  providerSystemPrompts?: Partial<Record<"openai" | "claude", string>>;
+  providerSystemPrompts?: Partial<Record<Provider, string>>;
   projectInstructionsEnabled: boolean;
   reasoningEffort: ReasoningEffort;
   serviceTier: string | null;
@@ -506,7 +507,7 @@ export function childAgentSessionOptions(policy: ChildAgentPolicy, knownChildren
     sessionId: policy.sessionId,
     maxConcurrent: policy.maxConcurrent,
     knownChildren: [...knownChildren],
-    targets: policy.targets.map((target) => ({
+    targets: policy.targets.filter((target) => target.enabled).map((target) => ({
       id: target.id,
       provider: target.provider,
       model: childAgentModel(target),
@@ -544,8 +545,8 @@ export function sanitizeChildAgentPolicies(stored: unknown): Record<string, Chil
       ...(entry.providerSystemPrompts && typeof entry.providerSystemPrompts === "object" ? {
         providerSystemPrompts: Object.fromEntries(
           Object.entries(entry.providerSystemPrompts as Record<string, unknown>)
-            .filter(([provider, prompt]) => (provider === "openai" || provider === "claude") && typeof prompt === "string"),
-        ) as Partial<Record<"openai" | "claude", string>>,
+            .filter(([provider, prompt]) => ["openai", "claude", "cursor", "openrouter", "lmstudio"].includes(provider) && typeof prompt === "string"),
+        ) as Partial<Record<Provider, string>>,
       } : {}),
       projectInstructionsEnabled: entry.projectInstructionsEnabled === true,
       reasoningEffort: reasoningEffort === "low" || reasoningEffort === "medium" || reasoningEffort === "high"
@@ -609,6 +610,7 @@ export function sanitizeChildAgentLinks(stored: unknown): Record<string, ChildAg
       reasoningEffort: isReasoningEffort(entry.reasoningEffort) ? entry.reasoningEffort : "medium",
       title: sanitizeText(entry.title, 200),
       createdAt: Number(entry.createdAt) || 0,
+      ...(typeof entry.finishedAt === "number" && Number.isFinite(entry.finishedAt) && entry.finishedAt > 0 ? { finishedAt: entry.finishedAt } : {}),
       ...(entry.terminalStatus === "completed" || entry.terminalStatus === "cancelled" || entry.terminalStatus === "failed"
         ? { terminalStatus: entry.terminalStatus }
         : {}),

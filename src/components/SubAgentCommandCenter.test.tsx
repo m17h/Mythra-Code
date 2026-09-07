@@ -453,7 +453,7 @@ describe("SubAgentCommandCenter editing a draft policy", () => {
       policy: { ...POLICY, childAgents: { enabled: true, targets: [{ ...REVIEWER, reasoningMode: "agent" }] } },
     });
     await userEvent.click(screen.getByRole("button", { name: "Configure Reviewer" }));
-    expect(screen.getByText("Main agent decides · up to high")).toBeInTheDocument();
+    expect(screen.getByText("Main agent decides · up to High")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Maximum reasoning for reviewer" }));
     await userEvent.click(screen.getByRole("menuitemradio", { name: "Maximum" }));
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
@@ -552,7 +552,7 @@ describe("SubAgentCommandCenter on a thread that froze a roster", () => {
       policy: { ...POLICY, enabled: false, childAgents: { enabled: false, targets: [] } },
     });
     expect(trigger()).toHaveTextContent("Sub-agents off");
-    expect(screen.getByText("No sub-agent tools are exposed.")).toBeInTheDocument();
+    expect(screen.getByText("Sub-agents are off for this task.")).toBeInTheDocument();
     expect(screen.getByText("Sub-agents stay inside this thread's own provider.")).toBeInTheDocument();
   });
 
@@ -750,5 +750,18 @@ describe("SubAgentCommandCenter live activity", () => {
   it("omits the open action when the host offers no way to select a thread", async () => {
     await open({ workers: [worker()] });
     expect(screen.queryByRole("button", { name: /^Open / })).not.toBeInTheDocument();
+  });
+});
+
+
+describe("saving the composer setup", () => {
+  it("saves the named current policy without applying a different preset", async () => {
+    const onSavePreset = vi.fn();
+    const { onChange } = await open({ onSavePreset });
+    await userEvent.type(screen.getByRole("textbox", { name: "New sub-agent preset name" }), "Review setup");
+    await userEvent.click(screen.getByRole("button", { name: "Save as preset" }));
+    expect(onSavePreset).toHaveBeenCalledWith("Review setup", POLICY);
+    expect(onChange).not.toHaveBeenCalled();
+    expect(screen.getByRole("textbox", { name: "New sub-agent preset name" })).toHaveValue("");
   });
 });

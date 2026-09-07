@@ -3209,3 +3209,24 @@ fn audit_history_is_bounded_without_restarting() {
     assert_eq!(oldest, 4);
     assert_eq!(persistence::prune_audit_events(&connection).unwrap(), 0);
 }
+
+#[tokio::test]
+async fn child_agent_rearm_preserves_live_and_late_children() {
+    let original = super::agents::rearm_child_runtime(None, &[], &[]).await;
+    super::agents::record_spawned_child(
+        &mut *original.lock().await,
+        &json!({"childId":"live","status":"running"}),
+    );
+    let replacement =
+        super::agents::rearm_child_runtime(Some(original.clone()), &["old".into()], &[]).await;
+    assert!(Arc::ptr_eq(&original, &replacement));
+    assert!(replacement.lock().await.live.contains("live"));
+    super::agents::record_spawned_child(
+        &mut *original.lock().await,
+        &json!({"childId":"late","status":"running"}),
+    );
+    assert!(replacement.lock().await.known.contains("late"));
+    super::agents::rearm_child_runtime(Some(replacement.clone()), &[], &["live".into()]).await;
+    assert!(!replacement.lock().await.live.contains("live"));
+    assert!(replacement.lock().await.live.contains("late"));
+}

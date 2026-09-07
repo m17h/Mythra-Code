@@ -8,6 +8,8 @@ import remarkGfm from "remark-gfm";
 import type { Activity, ChatMessage, PendingApproval, Provider } from "../types";
 import type { JsonObject } from "../lib/codex";
 import { InlineApprovalCard } from "./ApprovalCenter";
+import { SubAgentControls } from "./SubAgentControls";
+import { useTaskStore } from "../lib/taskStore";
 import { ProviderLogo } from "./BrandLogos";
 import { decodeHtmlEntities } from "../lib/text";
 import { providerDisplayName } from "../lib/childAgents";
@@ -577,15 +579,32 @@ function subAgentCountsFromActivities(activities: Activity[]): SubAgentCounts {
     const status = workerStatusFromAgentRecord(activity.status ?? "");
     counts.total += count;
     if (status === "starting" || status === "working") counts.active += count;
-    if (status !== "idle") counts[status] += count;
+    if (status !== "idle" && status !== "unknown") counts[status] += count;
   }
   return counts;
 }
 
 export const SubAgentRelayCard = memo(function SubAgentRelayCard({ activity, dealIndex }: { activity: Activity; dealIndex?: number }) {
   const metadata = activity.agent;
+  const controls = useContext(SubAgentControls);
+  const childId = metadata?.threadIds?.length === 1 ? metadata.threadIds[0] : undefined;
+  const worker = controls?.workers.find((entry) => entry.id === childId);
+  const failure = useTaskStore((state) => childId ? state.tasks[childId]?.error : undefined);
+  const [action, setAction] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const active = worker?.status === "starting" || worker?.status === "working";
+  const elapsed = worker && worker.createdAt > 0 && (active || worker.finishedAt)
+    ? Math.max(0, Math.floor(((worker.finishedAt ?? controls!.now) - worker.createdAt) / 1000)) : null;
+  const runAction = async (kind: "open" | "stop") => {
+    if (!worker || !controls || action) return;
+    setAction(kind);
+    setActionError(null);
+    try { await (kind === "open" ? controls.onOpen(worker) : controls.onStop(worker)); }
+    catch (error) { setActionError(error instanceof Error ? error.message : String(error)); }
+    finally { setAction(null); }
+  };
   const provider = metadata?.provider;
-  const status = workerStatusFromAgentRecord(activity.status ?? "");
+  const status = worker?.status ?? workerStatusFromAgentRecord(activity.status ?? "");
   const statusLabel = subAgentStatusLabel(status);
   const providerLabel = provider ? providerDisplayName(provider) : "Mythra Code";
   const task = decodeHtmlEntities(metadata?.task?.trim() || activity.title || "Delegated task");
@@ -615,6 +634,13 @@ export const SubAgentRelayCard = memo(function SubAgentRelayCard({ activity, dea
           {model && <code>{model}</code>}
         </div>
         <strong>{task}</strong>
+        {elapsed !== null && <small>{Math.floor(elapsed / 60)}m {elapsed % 60}s{active ? " elapsed" : " total"}</small>}
+        {status === "failed" && failure && <small role="status">{failure}</small>}
+        {worker && <div className="subagent-relay-actions">
+          <button type="button" disabled={Boolean(action)} onClick={() => void runAction("open")}>Open sub-agent</button>
+          {active && <button type="button" disabled={Boolean(action)} onClick={() => void runAction("stop")}>Stop sub-agent</button>}
+        </div>}
+        {actionError && <small role="alert">{actionError}</small>}
       </div>
       <span className="subagent-relay-status">
         <i aria-hidden="true" />

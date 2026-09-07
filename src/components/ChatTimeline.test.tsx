@@ -10,6 +10,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 import { ActivityRow, ChatTimeline, CommandDisclosure, CompletedWorkDisclosure, ContextCompactionMarker, FileDisclosure, ReasoningDisclosure, TIMELINE_MOUNT_ROWS, compactCompletedTurns, formatCompletedDuration, orderedTimelineEntries, type WorkItemEntry } from "./ChatTimeline";
+import { SubAgentControls } from "./SubAgentControls";
 import { timelineFromTurns } from "../lib/threadTimeline";
 
 /** Mirrors the shape of the old thread that exposed the production stall. */
@@ -802,4 +803,20 @@ describe("ChatTimeline", () => {
     fireEvent.click(screen.getByTitle("Copy message"));
     await waitFor(() => expect(screen.getByText("Copied")).toBeInTheDocument());
   });
+});
+
+
+it("opens and stops the owned child from its timeline card and shows elapsed time", async () => {
+  const worker = { id: "timeline-child", kind: "cross-provider" as const, status: "working" as const, title: "Review", detail: "Claude", createdAt: 1000 };
+  const onOpen = vi.fn(async () => undefined);
+  const onStop = vi.fn(async () => undefined);
+  render(<SubAgentControls.Provider value={{ workers: [worker], onOpen, onStop, now: 62000 }}>
+    <ActivityRow activity={{ id: "spawn", kind: "agent", title: "Review", status: "inProgress", agent: { action: "spawn", threadIds: [worker.id] } }} />
+  </SubAgentControls.Provider>);
+  expect(screen.getByText("1m 1s elapsed")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Open sub-agent" }));
+  await waitFor(() => expect(onOpen).toHaveBeenCalledWith(worker));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Stop sub-agent" })).toBeEnabled());
+  fireEvent.click(screen.getByRole("button", { name: "Stop sub-agent" }));
+  await waitFor(() => expect(onStop).toHaveBeenCalledWith(worker));
 });

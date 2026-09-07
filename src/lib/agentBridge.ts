@@ -31,9 +31,10 @@ export interface ChildAgentRequest {
 export async function startChildAgentSession(
   policy: ChildAgentPolicy,
   knownChildren: string[] = [],
+  finishedChildren: string[] = [],
 ): Promise<ChildAgentBridgeLaunch> {
   return invoke<ChildAgentBridgeLaunch>("child_agent_session_start", {
-    options: childAgentSessionOptions(policy, knownChildren),
+    options: { ...childAgentSessionOptions(policy, knownChildren), finishedChildren },
   });
 }
 

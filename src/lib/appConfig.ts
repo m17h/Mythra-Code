@@ -4,9 +4,9 @@ import type { AppSettings, ChatFont, ChildAgentSettings, EffortSliderStyle, Prom
 /** Cross-provider delegation is off by default; every enabled destination is user-approved. */
 export const DEFAULT_CHILD_AGENT_SETTINGS: ChildAgentSettings = { enabled: false, targets: [] };
 
-/** Missing or malformed saved values adopt the safer cleanup default. */
+/** Keep finished conversations visible unless automatic archiving was explicitly enabled. */
 export function sanitizeAutoArchiveSubagentThreads(value: unknown): boolean {
-  return value === false ? false : true;
+  return value === true;
 }
 
 export const DEFAULT_OPENAI_MODEL = "gpt-5.6-sol";
@@ -69,7 +69,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   projectInstructionsEnabled: false,
   subagentsEnabled: false,
   subagentMax: 3,
-  autoArchiveSubagentThreads: true,
+  autoArchiveSubagentThreads: false,
   childAgents: DEFAULT_CHILD_AGENT_SETTINGS,
   childAgentPresets: [],
   reasoningEffort: "medium",

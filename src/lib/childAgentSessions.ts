@@ -5,12 +5,13 @@ import {
 } from "./agentBridge";
 import {
   childAgentPolicyFor,
+  readyChildAgentTargets,
   childAgentPolicyForThread,
   type ChildAgentLink,
   type ChildAgentPolicy,
   type ChildAgentReadiness,
 } from "./childAgents";
-import type { AppSettings, PermissionMode } from "../types";
+import type { AppSettings, PermissionMode, Provider } from "../types";
 
 /**
  * Owns the lifetime of a root thread's delegation bridge.
@@ -69,7 +70,7 @@ export interface ChildAgentBridgeInput {
   settings: Pick<AppSettings, "childAgents" | "subagentsEnabled" | "subagentMax">;
   permission: PermissionMode;
   systemPrompt: string;
-  providerSystemPrompts?: Partial<Record<"openai" | "claude", string>>;
+  providerSystemPrompts?: Partial<Record<Provider, string>>;
   projectInstructionsEnabled: boolean;
   reasoningEffort: ChildAgentPolicy["reasoningEffort"];
   serviceTier: string | null;
@@ -115,8 +116,9 @@ export async function ensureChildAgentBridge(
   // until the user supplies another roster: dropping it would let the old
   // frozen crew or global defaults silently repopulate the cleared thread.
   const pending = input.promoteStagedEdits ? stored?.pendingRecapture : undefined;
-  const clearedRoster = pending?.targets.length === 0;
-  const recapture = pending?.targets.length ? pending : undefined;
+  const readyTargets = pending ? readyChildAgentTargets({ enabled: true, targets: pending.targets }, input.readiness) : [];
+  const clearedRoster = Boolean(pending && !readyTargets.length);
+  const recapture = pending && readyTargets.length ? { ...pending, targets: readyTargets } : undefined;
   const frozenExisting = recapture ? {
     ...stored!,
     // The staged budget was clamped against every *enabled* destination, but
@@ -132,10 +134,16 @@ export async function ensureChildAgentBridge(
   // parent turn's current mode. Refresh it in both directions so an old Ask
   // policy cannot prompt under Full access—and an old Full policy cannot stay
   // over-privileged after the user tightens it.
-  const existing = frozenExisting && frozenExisting.permission !== input.permission
-    ? { ...frozenExisting, permission: input.permission }
-    : frozenExisting;
-  const policyUpdated = Boolean(stored && existing && stored.permission !== existing.permission);
+  const existing = frozenExisting && input.promoteStagedEdits ? {
+    ...frozenExisting,
+    permission: input.permission,
+    reasoningEffort: input.reasoningEffort,
+    systemPrompt: input.systemPrompt,
+    providerSystemPrompts: input.providerSystemPrompts,
+    projectInstructionsEnabled: input.projectInstructionsEnabled,
+    serviceTier: input.serviceTier,
+  } : frozenExisting ? { ...frozenExisting, permission: input.permission } : undefined;
+  const policyUpdated = Boolean(stored && existing && JSON.stringify(stored) !== JSON.stringify(existing));
   // The switch is read fresh every turn, in both directions. Switching
   // sub-agents (or cross-provider delegation) off has to remove the powers a
   // thread already holds, not just decline to hand out new ones.
@@ -171,8 +179,8 @@ export async function ensureChildAgentBridge(
     };
     cacheChildAgentPolicy(policy);
     const cached = launches.get(policy.sessionId);
-    if (cached?.toolNames.length === 1 && cached.toolNames[0] === "propose_agent_settings") {
-      return { policy, launch: cached, captured: !stored, ...(policyUpdated ? { policyUpdated: true } : {}) };
+    if (cached?.toolNames.includes("propose_agent_settings") && !cached.toolNames.includes("spawn_mythra_agent")) {
+      return { policy, launch: cached, captured: !stored };
     }
     if (cached || existing) await releaseChildAgentSession(policy.sessionId);
     cacheChildAgentPolicy(policy);
@@ -182,7 +190,7 @@ export async function ensureChildAgentBridge(
     // a stored policy would erase the frozen destinations (and any approved
     // recapture) that switching delegation back on is documented to restore,
     // so the policy is captured only when the thread never had one.
-    return { policy, launch, captured: !stored, ...(policyUpdated ? { policyUpdated: true } : {}) };
+    return { policy, launch, captured: !stored };
   }
 
   // An existing thread with no policy has never run with a cross-provider
@@ -235,7 +243,8 @@ export async function ensureChildAgentBridge(
   const knownChildren = Object.values(input.links)
     .filter((link) => policy.rootThreadId && link.rootThreadId === policy.rootThreadId)
     .map((link) => link.childThreadId);
-  const launch = await startChildAgentSession(policy, knownChildren);
+  const finishedChildren = Object.values(input.links).filter((link) => link.rootThreadId === policy.rootThreadId && link.terminalStatus).map((link) => link.childThreadId);
+  const launch = await startChildAgentSession(policy, knownChildren, ...(finishedChildren.length ? [finishedChildren] : []));
   launches.set(policy.sessionId, launch);
   return {
     policy,
@@ -264,4 +273,14 @@ export async function releaseChildAgentSession(sessionId: string): Promise<void>
   launches.delete(sessionId);
   activePolicies.delete(sessionId);
   await endChildAgentSession(sessionId).catch(() => undefined);
+}
+
+/** An approval must not silently replace a direct edit or a live child's policy. */
+export function assertChildAgentProposalAvailable(policies: Record<string, ChildAgentPolicy>, links: Record<string, ChildAgentLink>, rootThreadId: string): void {
+  const stored = childAgentPolicyForThread(policies, rootThreadId);
+  const policy = stored && childAgentPolicyForSession(policies, stored.sessionId);
+  if (policy?.pendingRecapture) throw new Error("This task has unsent sub-agent changes. Apply or clear them before accepting a proposal.");
+  if (Object.values(links).some((link) => link.rootThreadId === rootThreadId && !link.terminalStatus)) {
+    throw new Error("Wait for this task's sub-agents to finish before applying a proposal.");
+  }
 }

@@ -16,7 +16,7 @@ import { decodeHtmlEntities } from "./text";
  * without a runtime.
  */
 
-export type SubAgentWorkerStatus = "idle" | "starting" | "working" | "completed" | "cancelled" | "failed";
+export type SubAgentWorkerStatus = "unknown" | "idle" | "starting" | "working" | "completed" | "cancelled" | "failed";
 
 export type SubAgentWorkerKind = "cross-provider" | "native";
 
@@ -34,6 +34,7 @@ export interface SubAgentWorker {
   /** One-line "who is doing this" summary, e.g. `Claude · claude-fable-5`. */
   detail: string;
   createdAt: number;
+  finishedAt?: number;
 }
 
 export interface SubAgentCounts {
@@ -57,6 +58,7 @@ const STATUS_ORDER: Record<SubAgentWorkerStatus, number> = {
   cancelled: 3,
   completed: 4,
   idle: 5,
+  unknown: 1,
 };
 
 export function isSubAgentWorkerActive(status: SubAgentWorkerStatus): boolean {
@@ -71,7 +73,7 @@ export function isSubAgentWorkerActive(status: SubAgentWorkerStatus): boolean {
 export function workerStatusFromLifecycle(lifecycle: string): SubAgentWorkerStatus {
   if (lifecycle === "running") return "working";
   if (lifecycle === "starting") return "starting";
-  if (lifecycle === "completed" || lifecycle === "cancelled" || lifecycle === "failed") return lifecycle;
+  if (lifecycle === "unknown" || lifecycle === "completed" || lifecycle === "cancelled" || lifecycle === "failed") return lifecycle;
   return "idle";
 }
 
@@ -106,6 +108,7 @@ export function isActiveAgentRecord(status: string): boolean {
 }
 
 export function subAgentStatusLabel(status: SubAgentWorkerStatus): string {
+  if (status === "unknown") return "Status unknown";
   if (status === "working") return "Working";
   if (status === "starting") return "Starting";
   if (status === "completed") return "Completed";
@@ -181,6 +184,7 @@ export function collectSubAgentWorkers(input: SubAgentWorkerInput): SubAgentWork
       model,
       detail: `${providerDisplayName(link.provider)} · ${model || "provider default"}`,
       createdAt: link.createdAt,
+      ...(link.finishedAt ? { finishedAt: link.finishedAt } : {}),
     });
   }
 
@@ -221,7 +225,7 @@ export function collectSubAgentWorkers(input: SubAgentWorkerInput): SubAgentWork
 export function summarizeSubAgentWorkers(workers: SubAgentWorker[]): SubAgentCounts {
   const counts: SubAgentCounts = { total: workers.length, active: 0, starting: 0, working: 0, completed: 0, cancelled: 0, failed: 0 };
   for (const worker of workers) {
-    if (worker.status !== "idle") counts[worker.status] += 1;
+    if (worker.status !== "idle" && worker.status !== "unknown") counts[worker.status] += 1;
     if (isSubAgentWorkerActive(worker.status)) counts.active += 1;
   }
   return counts;
