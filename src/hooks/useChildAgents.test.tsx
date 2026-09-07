@@ -12,8 +12,8 @@ const bridge = vi.hoisted(() => ({
 }));
 const childRun = vi.hoisted(() => ({ startChildAgentTurn: vi.fn() }));
 const codex = vi.hoisted(() => ({ rpc: vi.fn(), auditEvent: vi.fn() }));
-const claude = vi.hoisted(() => ({ interruptClaudeTurn: vi.fn(), killClaudeTurn: vi.fn(), loadClaudeTranscript: vi.fn() }));
-const cursor = vi.hoisted(() => ({ interruptCursorTurn: vi.fn(), killCursorTurn: vi.fn(), loadCursorTranscript: vi.fn() }));
+const claude = vi.hoisted(() => ({ isClaudeTurnActive: vi.fn(), interruptClaudeTurn: vi.fn(), killClaudeTurn: vi.fn(), loadClaudeTranscript: vi.fn() }));
+const cursor = vi.hoisted(() => ({ isCursorTurnActive: vi.fn(), interruptCursorTurn: vi.fn(), killCursorTurn: vi.fn(), loadCursorTranscript: vi.fn() }));
 
 vi.mock("../lib/agentBridge", () => bridge);
 vi.mock("../lib/childRun", () => childRun);
@@ -90,6 +90,9 @@ function context(overrides: Partial<ChildAgentContext> = {}): ChildAgentContext 
     scheduleCursorThreadSave: vi.fn(),
     projectSubagentSettingsForThread: () => ({ enabled: true, maxConcurrent: 2, childAgents: { enabled: true, targets: TARGETS } }),
     applyProjectSubagentSettings: vi.fn(),
+    applyProjectRunCommand: vi.fn(),
+    projectRunCommandForThread: () => undefined,
+    runProjectCommand: vi.fn(async () => ({ started: true, exited: false, output: "$ npm run dev\nready on :5173\n" })),
     ...overrides,
   };
 }
@@ -282,6 +285,70 @@ describe("useChildAgents", () => {
       renderHook(() => useChildAgents(ctx));
       await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
       expect(ctx.cursorSessionIdsRef.current["child-fast"]).toBe("cursor-session");
+    });
+
+    it("saves the project's Run button command without executing anything", async () => {
+      const applyProjectRunCommand = vi.fn();
+      const view = await mount({ applyProjectRunCommand });
+      await view.send(request({
+        tool: "set_project_run_command",
+        arguments: { command: "  npm run dev ", label: "Dev server" },
+      }));
+
+      expect(applyProjectRunCommand).toHaveBeenCalledWith("root-1", expect.objectContaining({ command: "npm run dev", label: "Dev server" }));
+      expect(lastResponse()?.[1]).toMatchObject({ saved: true, command: "npm run dev", label: "Dev server" });
+      expect(useTaskStore.getState().tasks["root-1"].activities.at(-1)).toMatchObject({ title: "Run button updated" });
+      expect(useTaskStore.getState().tasks["root-1"].approvals).toHaveLength(0);
+
+      await view.send(request({ requestId: "request-2", tool: "set_project_run_command", arguments: { command: "" } }));
+      expect(applyProjectRunCommand).toHaveBeenLastCalledWith("root-1", null);
+      expect(lastResponse()?.[1]).toMatchObject({ saved: true, command: null });
+    });
+
+    it("starts the project in the Terminal panel on run: true and saves a new command for next time", async () => {
+      const applyProjectRunCommand = vi.fn();
+      const runProjectCommand = vi.fn(async () => ({ started: true, exited: false, output: "$ npm run dev\nready on :5173\n" }));
+      const view = await mount({ applyProjectRunCommand, runProjectCommand });
+      await view.send(request({ tool: "set_project_run_command", arguments: { command: "npm run dev", run: true } }));
+
+      expect(applyProjectRunCommand).toHaveBeenCalledWith("root-1", expect.objectContaining({ command: "npm run dev" }));
+      expect(runProjectCommand).toHaveBeenCalledWith("root-1", expect.objectContaining({ command: "npm run dev" }));
+      expect(lastResponse()?.[1]).toMatchObject({ saved: true, started: true, exited: false, output: expect.stringContaining("ready on :5173") });
+      expect(useTaskStore.getState().tasks["root-1"].activities.at(-1)).toMatchObject({ title: "Run button set and started" });
+    });
+
+    it("reuses the saved command on run: true with an empty command and reports a quick failure", async () => {
+      const applyProjectRunCommand = vi.fn();
+      const runProjectCommand = vi.fn(async () => ({ started: true, exited: true, output: "$ make dev\nmake: *** No rule to make target 'dev'.\n[exit 2]\n" }));
+      const view = await mount({
+        applyProjectRunCommand,
+        runProjectCommand,
+        projectRunCommandForThread: () => ({ command: "make dev", updatedAt: 1 }),
+      });
+      await view.send(request({ tool: "set_project_run_command", arguments: { command: "", run: true } }));
+
+      expect(applyProjectRunCommand).not.toHaveBeenCalled();
+      expect(runProjectCommand).toHaveBeenCalledWith("root-1", expect.objectContaining({ command: "make dev" }));
+      expect(lastResponse()?.[1]).toMatchObject({ saved: false, started: true, exited: true, output: expect.stringContaining("[exit 2]") });
+    });
+
+    it("explains when nothing is saved to run, or the terminal is busy", async () => {
+      const runProjectCommand = vi.fn(async () => ({ started: false, reason: "The Terminal panel is already running `npm test` for this project." }));
+      const view = await mount({ runProjectCommand });
+      await view.send(request({ tool: "set_project_run_command", arguments: { command: "", run: true } }));
+      expect(lastResponse()?.[2]).toMatch(/Nothing is saved for the Run button yet/);
+
+      await view.send(request({ requestId: "request-2", tool: "set_project_run_command", arguments: { command: "npm run dev", run: true } }));
+      expect(lastResponse()?.[1]).toMatchObject({ started: false, reason: expect.stringContaining("already running") });
+    });
+
+    it("refuses a Run button change outside a saved project", async () => {
+      const applyProjectRunCommand = vi.fn();
+      const view = await mount({ applyProjectRunCommand, policies: { "session-1": { ...POLICY, rootThreadId: "" } } });
+      await view.send(request({ tool: "set_project_run_command", arguments: { command: "make" } }));
+
+      expect(applyProjectRunCommand).not.toHaveBeenCalled();
+      expect(lastResponse()?.[2]).toMatch(/not inside a saved project/);
     });
 
     it("queues a project-scoped settings proposal and applies it only after approval", async () => {
@@ -612,7 +679,7 @@ describe("useChildAgents", () => {
       expect(lastResponse()?.[1]).toEqual({
         children: expect.arrayContaining([
           expect.objectContaining({ childId: "child-failed", status: "failed" }),
-          expect.objectContaining({ childId: "child-interrupted", status: "cancelled" }),
+          expect.objectContaining({ childId: "child-interrupted", status: "unknown" }),
         ]),
       });
     });
@@ -817,6 +884,57 @@ describe("useChildAgents", () => {
         .toEqual(["interrupted", "interrupted"]);
     });
   });
+it("does not report an unhydrated live child as finished on reload", async () => {
+  persistedLinks = { "child-1": link() };
+  const view = await mount();
+  expect(bridge.reportChildAgentFinished).not.toHaveBeenCalled();
+  claude.isClaudeTurnActive.mockResolvedValue(true);
+  persistedLinks = { "child-1": link({ provider: "claude" }) };
+  view.rerender({ links: persistedLinks });
+  await view.send(request({ tool: "collect_agent", arguments: { childId: "child-1" } }));
+  expect(lastResponse()?.[1]).toMatchObject({ status: "running", result: "" });
+  expect(bridge.reportChildAgentFinished).not.toHaveBeenCalled();
+});
+
+it("rejects a disabled destination even if an older policy contains it", async () => {
+  const view = await mount({ policies: { "session-1": { ...POLICY, targets: [{ ...TARGETS[0], enabled: false }] } } });
+  await view.send(request());
+  expect(childRun.startChildAgentTurn).not.toHaveBeenCalled();
+  expect(lastResponse()?.[2]).toMatch(/not an approved/);
+});
+
+it("keeps the beginning and conclusion of an oversized final answer", async () => {
+  childRun.startChildAgentTurn.mockResolvedValueOnce({ thread: childThread("child-1", "openai"), turnId: "turn-1", provider: "openai", model: "gpt-5.6-terra" });
+  const view = await mount();
+  await view.send(request());
+  act(() => {
+    useTaskStore.getState().completeMessage("child-1", { id: "answer", role: "assistant", text: "START " + "x".repeat(30000) + " FINAL CONCLUSION", turnId: "turn-1" });
+    useTaskStore.getState().setTaskStatus("child-1", "completed");
+  });
+  await view.send(request({ tool: "collect_agent", arguments: { childId: "child-1" } }));
+  const response = lastResponse()?.[1] as { result: string; truncated: boolean };
+  expect(response.truncated).toBe(true);
+  expect(response.result).toHaveLength(24000);
+  expect(response.result.startsWith("START")).toBe(true);
+  expect(response.result.endsWith("FINAL CONCLUSION")).toBe(true);
+  expect(response.result).toContain("middle omitted");
+});
+
+it("retries a lost slot-release acknowledgement", async () => {
+  vi.useFakeTimers();
+  try {
+    persistedLinks = { "child-1": link({ terminalStatus: "completed" }) };
+    bridge.reportChildAgentFinished.mockRejectedValueOnce(new Error("temporary disconnect"));
+    const view = await mount();
+    expect(bridge.reportChildAgentFinished).toHaveBeenCalledTimes(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(bridge.reportChildAgentFinished).toHaveBeenCalledTimes(2);
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(bridge.reportChildAgentFinished).toHaveBeenCalledTimes(2);
+    view.unmount();
+  } finally { vi.useRealTimers(); }
+});
+
 });
 
 describe("child lifecycle helpers", () => {
@@ -829,7 +947,7 @@ describe("child lifecycle helpers", () => {
     expect(childLifecycle("starting")).toBe("starting");
     expect(childLifecycle("idle")).toBe("completed");
     expect(childLifecycleForLink(link({ terminalStatus: "failed" }), "idle")).toBe("failed");
-    expect(childLifecycleForLink(link(), "idle")).toBe("cancelled");
+    expect(childLifecycleForLink(link(), "idle")).toBe("unknown");
   });
 
   it("counts only children of the requested session that are still working", () => {

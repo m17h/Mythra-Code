@@ -49,7 +49,7 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    sync::{oneshot, Mutex},
+    sync::{oneshot, watch, Mutex},
     time::{timeout, Duration},
 };
 
@@ -66,13 +66,23 @@ const TOOL_STATUS: &str = "agent_status";
 const TOOL_COLLECT: &str = "collect_agent";
 const TOOL_CANCEL: &str = "cancel_agent";
 const TOOL_PROPOSE_SETTINGS: &str = "propose_agent_settings";
-pub(super) const AGENT_BRIDGE_TOOLS: [&str; 5] = [
+/// Saves the command behind the project's top-bar Run button. Every project
+/// thread gets it, delegation or not, because the button itself is a project
+/// feature rather than a sub-agent one.
+const TOOL_SET_RUN: &str = "set_project_run_command";
+pub(super) const AGENT_BRIDGE_TOOLS: [&str; 6] = [
     TOOL_SPAWN,
     TOOL_STATUS,
     TOOL_COLLECT,
     TOOL_CANCEL,
     TOOL_PROPOSE_SETTINGS,
+    TOOL_SET_RUN,
 ];
+
+/// Bytes, not characters, so a multi-line script with a few Unicode paths
+/// still fits comfortably under the webview's own character limit.
+const MAX_RUN_COMMAND_BYTES: usize = 16_384;
+const MAX_RUN_LABEL_BYTES: usize = 320;
 
 /// How long the backend waits for the webview to answer a delegation request.
 /// A cold provider start can take longer than an MCP client's own tool wait.
@@ -228,6 +238,22 @@ pub(super) fn record_finished_child(runtime: &mut SessionRuntime, child_id: &str
     }
 }
 
+pub(super) async fn rearm_child_runtime(
+    previous: Option<Arc<Mutex<SessionRuntime>>>,
+    known: &[String],
+    finished: &[String],
+) -> Arc<Mutex<SessionRuntime>> {
+    let runtime = previous.unwrap_or_default();
+    {
+        let mut accounting = runtime.lock().await;
+        accounting.known.extend(known.iter().take(256).cloned());
+        for child in finished {
+            record_finished_child(&mut accounting, child);
+        }
+    }
+    runtime
+}
+
 struct ChildAgentSession {
     /// Client-generated identity for this root thread's delegation session.
     /// Deliberately not the thread id: for app-server providers the bridge has
@@ -237,7 +263,8 @@ struct ChildAgentSession {
     targets: Vec<ChildAgentTarget>,
     max_concurrent: usize,
     directory: PathBuf,
-    runtime: Mutex<SessionRuntime>,
+    runtime: Arc<Mutex<SessionRuntime>>,
+    ended: watch::Sender<bool>,
 }
 
 impl ChildAgentSession {
@@ -372,6 +399,8 @@ pub(super) struct ChildAgentSessionOptions {
     /// backend session had to be rebuilt.
     #[serde(default)]
     known_children: Vec<String>,
+    #[serde(default)]
+    finished_children: Vec<String>,
 }
 
 fn bridge_root(app: &AppHandle) -> Result<PathBuf, String> {
@@ -379,7 +408,8 @@ fn bridge_root(app: &AppHandle) -> Result<PathBuf, String> {
         .path()
         .app_data_dir()
         .map_err(|error| format!("Could not resolve Mythra Code app data: {error}"))?
-        .join("child-agents");
+        .join("child-agents")
+        .join(std::process::id().to_string());
     std::fs::create_dir_all(&directory)
         .map_err(|error| format!("Could not create the sub-agent bridge directory: {error}"))?;
     Ok(directory)
@@ -401,9 +431,8 @@ fn write_private_file(path: &std::path::Path, contents: &str) -> Result<(), Stri
     Ok(())
 }
 
-/// Remove bridge material left behind by a previous run. A session file is
-/// only ever useful while its backend is listening, so nothing here can be
-/// live at startup.
+/// Remove stale material for this process identity only. Other app instances
+/// own separate directories and may still have live bridges.
 pub(super) fn purge_stale_agent_bridges(app: &AppHandle) {
     if let Ok(directory) = bridge_root(app) {
         let _ = std::fs::remove_dir_all(&directory);
@@ -578,6 +607,30 @@ pub(super) fn tool_catalog(targets: &[ChildAgentTarget], max_concurrent: usize) 
                 "additionalProperties": false,
             },
         },
+        {
+            "name": TOOL_SET_RUN,
+            "title": "Set the project Run button",
+            "description": "Save the shell command behind the Run button in Mythra Code's top bar for this project — typically the command that builds the app, starts the dev server, or runs it. The button is greyed out until a command is saved. Saving alone never executes anything; the user clicks the button. Set run: true to also start it now in the app's Terminal panel, where the user can watch and stop it — use that whenever the user asks you to run, start, or serve the project, instead of your own shell. With run: true and an empty command the saved command is started; without run, an empty command clears the button. Use one command that works from a fresh checkout, chaining steps with && when needed.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "The exact shell command, run from the project folder. Empty means: clear the button, or with run: true, start the saved command.",
+                    },
+                    "label": {
+                        "type": "string",
+                        "description": "Optional short label shown on the button, such as “Dev server”.",
+                    },
+                    "run": {
+                        "type": "boolean",
+                        "description": "Also start the command now in the Terminal panel. The result carries the first seconds of output.",
+                    },
+                },
+                "required": ["command"],
+                "additionalProperties": false,
+            },
+        },
     ]);
     if targets.is_empty() {
         return Value::Array(
@@ -586,7 +639,10 @@ pub(super) fn tool_catalog(targets: &[ChildAgentTarget], max_concurrent: usize) 
                 .expect("tool catalog is an array")
                 .iter()
                 .filter(|tool| {
-                    tool.get("name").and_then(Value::as_str) == Some(TOOL_PROPOSE_SETTINGS)
+                    matches!(
+                        tool.get("name").and_then(Value::as_str),
+                        Some(TOOL_PROPOSE_SETTINGS) | Some(TOOL_SET_RUN)
+                    )
                 })
                 .cloned()
                 .collect(),
@@ -728,6 +784,38 @@ pub(super) fn validate_tool_call(
             }
             Ok(())
         }
+        TOOL_SET_RUN => {
+            let command = object
+                .get("command")
+                .ok_or_else(|| {
+                    "`command` is required; pass an empty string to clear the Run button."
+                        .to_string()
+                })?
+                .as_str()
+                .ok_or_else(|| "`command` must be a string.".to_string())?;
+            if command.len() > MAX_RUN_COMMAND_BYTES {
+                return Err(format!(
+                    "`command` is too long ({} bytes); the limit is {MAX_RUN_COMMAND_BYTES}.",
+                    command.len()
+                ));
+            }
+            if let Some(label) = object.get("label") {
+                let label = label
+                    .as_str()
+                    .ok_or_else(|| "`label` must be a string.".to_string())?;
+                if label.len() > MAX_RUN_LABEL_BYTES {
+                    return Err(format!(
+                        "`label` is limited to {MAX_RUN_LABEL_BYTES} bytes."
+                    ));
+                }
+            }
+            if let Some(run) = object.get("run") {
+                if !run.is_boolean() {
+                    return Err("`run` must be true or false.".into());
+                }
+            }
+            Ok(())
+        }
         other => Err(format!("`{other}` is not a sub-agent tool.")),
     }
 }
@@ -742,12 +830,28 @@ enum RelayOutcome {
     },
 }
 
+async fn await_relay_response(
+    receiver: oneshot::Receiver<RelayPayload>,
+    ended: &mut watch::Receiver<bool>,
+    wait: Duration,
+) -> Result<Result<RelayPayload, oneshot::error::RecvError>, tokio::time::error::Elapsed> {
+    tokio::select! {
+        biased;
+        _ = ended.changed() => Ok(Ok(Err("This sub-agent session has ended.".into()))),
+        response = timeout(wait, receiver) => response,
+    }
+}
+
 async fn relay_to_app_inner(
     state: &BridgeHttpState,
     session: &ChildAgentSession,
     tool: &str,
     arguments: Value,
 ) -> RelayOutcome {
+    let mut ended = session.ended.subscribe();
+    if *ended.borrow() {
+        return RelayOutcome::Answered(Err("This sub-agent session has ended.".into()));
+    }
     let request_id = uuid::Uuid::new_v4().to_string();
     let (sender, receiver) = oneshot::channel();
     state
@@ -775,7 +879,8 @@ async fn relay_to_app_inner(
         TOOL_COLLECT => COLLECT_RELAY_TIMEOUT,
         _ => RELAY_TIMEOUT,
     };
-    match timeout(wait, receiver).await {
+    let response = await_relay_response(receiver, &mut ended, wait).await;
+    match response {
         Ok(Ok(result)) => {
             // The responder keeps a registry copy until the receiver confirms
             // it won the deadline race. Remove that backup only now.
@@ -1062,7 +1167,7 @@ pub(super) async fn child_agent_session_start(
         args: vec![AGENT_BRIDGE_ARG.to_string(), session_argument.clone()],
         config_path: directory.join("mcp.json").to_string_lossy().to_string(),
         tool_names: if options.targets.is_empty() {
-            vec![TOOL_PROPOSE_SETTINGS.to_string()]
+            vec![TOOL_PROPOSE_SETTINGS.to_string(), TOOL_SET_RUN.to_string()]
         } else {
             AGENT_BRIDGE_TOOLS
                 .iter()
@@ -1087,11 +1192,22 @@ pub(super) async fn child_agent_session_start(
     // Replacing an existing session for the same root thread is how a restart
     // of that thread's runtime re-arms delegation; the old material is removed
     // so a stale bridge process cannot keep talking to the app.
-    let mut runtime = SessionRuntime::default();
-    for child in options.known_children.iter().take(256) {
-        runtime.known.insert(child.clone());
-    }
-    let previous = state.sessions.lock().await.insert(
+    let mut sessions = state.sessions.lock().await;
+    // Late relay responses still hold the old session. Share its accounting
+    // so reservations, live children and late answers survive re-registration.
+    let runtime = rearm_child_runtime(
+        sessions
+            .get(&options.session_id)
+            .map(|session| session.runtime.clone()),
+        &options.known_children,
+        &options.finished_children,
+    )
+    .await;
+    let ended = sessions
+        .get(&options.session_id)
+        .map(|session| session.ended.clone())
+        .unwrap_or_else(|| watch::channel(false).0);
+    let previous = sessions.insert(
         options.session_id.clone(),
         Arc::new(ChildAgentSession {
             session_id: options.session_id.clone(),
@@ -1099,9 +1215,11 @@ pub(super) async fn child_agent_session_start(
             targets: options.targets,
             max_concurrent,
             directory,
-            runtime: Mutex::new(runtime),
+            runtime,
+            ended,
         }),
     );
+    drop(sessions);
     if let Some(previous) = previous {
         let _ = std::fs::remove_dir_all(&previous.directory);
     }
@@ -1114,6 +1232,7 @@ pub(super) async fn child_agent_session_end(
     session_id: String,
 ) -> Result<(), String> {
     if let Some(session) = state.sessions.lock().await.remove(&session_id) {
+        session.ended.send_replace(true);
         let _ = std::fs::remove_dir_all(&session.directory);
     }
     Ok(())
@@ -1191,6 +1310,7 @@ pub(super) fn shutdown_agent_bridges_on_exit(app: &AppHandle) {
         return;
     };
     for (_, session) in sessions.drain() {
+        session.ended.send_replace(true);
         let _ = std::fs::remove_dir_all(&session.directory);
     }
 }
@@ -1260,7 +1380,7 @@ pub(super) fn bridge_local_response(method: &str, id: Option<&Value>) -> Option<
                 "protocolVersion": "2025-06-18",
                 "capabilities": { "tools": { "listChanged": false } },
                 "serverInfo": { "name": AGENT_BRIDGE_SERVER, "version": env!("CARGO_PKG_VERSION") },
-                "instructions": "Mythra Code project sub-agent controls. Use propose_agent_settings when the user asks to change this project's crew, even when delegation is currently off; never claim a proposed change was applied until the user approves it. When spawn_mythra_agent is available, it is the authoritative delegation route: collect every child result, recover a failed child at most twice, and never use collaboration.spawn_agent or another provider-native task, team, or agent-spawning tool.",
+                "instructions": "Mythra Code project sub-agent controls. Use propose_agent_settings when the user asks to change this project's crew, even when delegation is currently off; never claim a proposed change was applied until the user approves it. When spawn_mythra_agent is available, it is the authoritative delegation route: collect every child result, recover a failed child at most twice, and never use collaboration.spawn_agent or another provider-native task, team, or agent-spawning tool. Use set_project_run_command when the user asks what the project's top-bar Run button should do, and with run: true whenever the user asks you to run, start, or serve the project so it runs in the app's Terminal panel rather than your shell.",
             }
         }))),
         "ping" => Some(Some(json!({ "jsonrpc": "2.0", "id": id, "result": {} }))),
@@ -1369,6 +1489,24 @@ pub(super) fn run_agent_bridge(session_path: &str) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn child_agent_session_end_interrupts_pending_relay() {
+        let (sender, receiver) = oneshot::channel();
+        let (ended, mut observer) = watch::channel(false);
+        let waiter = tokio::spawn(async move {
+            await_relay_response(receiver, &mut observer, Duration::from_secs(300)).await
+        });
+        ended.send_replace(true);
+        let result = timeout(Duration::from_secs(1), waiter)
+            .await
+            .expect("session end must not wait for the relay deadline")
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(result, Err("This sub-agent session has ended.".into()));
+        assert!(sender.send(Ok(json!({"threadId": "late-child"}))).is_err());
+    }
 
     #[tokio::test]
     async fn response_after_receiver_timeout_is_preserved_for_dispatch() {

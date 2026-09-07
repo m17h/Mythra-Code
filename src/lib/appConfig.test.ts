@@ -66,10 +66,10 @@ describe("chat typeface catalog", () => {
 });
 
 describe("sub-agent cleanup defaults", () => {
-  it("archives automatically unless the user explicitly turned it off", () => {
-    expect(DEFAULT_SETTINGS.autoArchiveSubagentThreads).toBe(true);
-    expect(sanitizeAutoArchiveSubagentThreads(undefined)).toBe(true);
-    expect(sanitizeAutoArchiveSubagentThreads("invalid")).toBe(true);
+  it("keeps conversations visible unless the user explicitly enables archiving", () => {
+    expect(DEFAULT_SETTINGS.autoArchiveSubagentThreads).toBe(false);
+    expect(sanitizeAutoArchiveSubagentThreads(undefined)).toBe(false);
+    expect(sanitizeAutoArchiveSubagentThreads("invalid")).toBe(false);
     expect(sanitizeAutoArchiveSubagentThreads(true)).toBe(true);
     expect(sanitizeAutoArchiveSubagentThreads(false)).toBe(false);
   });

@@ -72,9 +72,13 @@ export interface TerminalController {
   appendProcess: (text: string, processId?: string) => void;
   /** Characters appended so far under `scope`, defaulting to the selected one. */
   appendedLength: (scope?: string) => number;
-  /** Runs `command` in the selected execution path. */
-  run: (command: string, additionalWritableRoots?: string[]) => Promise<void>;
+  /** Runs `command` in the selected execution path, or in `scope` when given. */
+  run: (command: string, additionalWritableRoots?: string[], scope?: string) => Promise<void>;
   stop: () => Promise<void>;
+  /** Whether `scope` has a live process, and which command it is. */
+  runningIn: (scope: string) => { running: boolean; command: string };
+  /** The last `characters` of `scope`'s buffer, for callers that cannot watch the panel. */
+  tail: (scope: string, characters: number) => string;
   clear: () => void;
   write: (value: string) => void;
   resize: (columns: number, rows: number) => void;
@@ -241,8 +245,8 @@ export function useTerminal(options: {
     [],
   );
 
-  const run = useCallback(async (command: string, additionalWritableRoots: string[] = []) => {
-    const cwd = optionsRef.current.scope;
+  const run = useCallback(async (command: string, additionalWritableRoots: string[] = [], scope?: string) => {
+    const cwd = scope ?? optionsRef.current.scope;
     if (!cwd) return;
     const session = sessionFor(cwd);
     const trimmed = session.running ? "" : command.trim();
@@ -293,6 +297,17 @@ export function useTerminal(options: {
     }
   }, []);
 
+  const runningIn = useCallback((scope: string) => {
+    const session = sessionsRef.current.get(scope);
+    return { running: Boolean(session?.running), command: session?.runningCommand ?? "" };
+  }, []);
+
+  const tail = useCallback((scope: string, characters: number) => {
+    const session = sessionsRef.current.get(scope);
+    if (!session) return "";
+    return session.store.read(Math.max(0, session.appended - Math.max(0, characters))).text;
+  }, []);
+
   const clear = useCallback(() => {
     const session = sessionFor(optionsRef.current.scope);
     if (!session.appended && !session.chunks.length) return;
@@ -338,6 +353,8 @@ export function useTerminal(options: {
     appendedLength,
     run,
     stop,
+    runningIn,
+    tail,
     clear,
     write,
     resize,

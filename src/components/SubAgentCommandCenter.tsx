@@ -6,11 +6,13 @@ import {
   CHILD_AGENT_PROVIDERS,
   CHILD_AGENT_REASONING_EFFORTS,
   MAX_CHILD_AGENT_TARGETS,
+  SUGGESTED_CHILD_AGENT_TARGETS,
   MAX_SUBAGENT_CONCURRENCY,
   childAgentCrewSize,
   childAgentModel,
   childAgentTargetIssue,
   crewSafeConcurrency,
+  MAX_CHILD_AGENT_PRESETS,
   describeChildAgentReasoning,
   providerDisplayName,
   readyChildAgentTargets,
@@ -82,8 +84,10 @@ export interface SubAgentCommandCenterProps {
   projectOverride: boolean;
   /** User-created complete crew policies, managed in Settings. */
   presets?: ChildAgentPreset[];
+  onSavePreset?: (name: string, policy: ProjectSubagentSettings) => void;
   onChange: (next: ProjectSubagentSettings) => void;
   onOpenSettings: () => void;
+  onOpenAccounts?: () => void;
   /** Live provider catalogs used by the app's own model pickers. */
   modelCatalogs?: Partial<Record<Provider, SubAgentModelOption[]>>;
   /** Starred models, shared with the composer and Settings pickers. */
@@ -185,7 +189,7 @@ function newTargetFor(provider: Provider, existing: ChildAgentTarget[]): ChildAg
     provider,
     model: provider === "cursor" ? "auto" : "",
     label: providerDisplayName(provider),
-    description: "",
+    description: SUGGESTED_CHILD_AGENT_TARGETS.find((entry) => entry.provider === provider)?.description ?? "",
     enabled: true,
     reasoningMode: "inherit",
     reasoningEffort: "medium",
@@ -200,6 +204,7 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
   const [selectedPresetId, setSelectedPresetId] = useState("");
   const [replaceWorkerId, setReplaceWorkerId] = useState<string | null>(null);
   const [workerAction, setWorkerAction] = useState<{ workerId: string; kind: "stop" | "replace" | "open" } | null>(null);
+  const [presetName, setPresetName] = useState("");
   const [workerActionError, setWorkerActionError] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -213,7 +218,8 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
   const captured = mode === "captured";
   /** A sub-agent conversation, which may never delegate again. */
   const isChild = mode === "child";
-  const crewActive = Boolean(props.parentActive) || counts.active > 0;
+  const statusUnknown = workers.some((worker) => worker.status === "unknown");
+  const crewActive = Boolean(props.parentActive) || counts.active > 0 || statusUnknown;
   /** Whether the destination roster and the parallel limit may be edited. */
   const editable = mode === "open" || (captured && !crewActive);
   // App resolves a captured thread's policy to its current or staged roster,
@@ -562,7 +568,7 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
             <div className={`sa-row ${delegationOn ? "on" : ""}`}>
               <span className="sa-row-copy">
                 <strong>Sub-agents</strong>
-                <small>{delegationOn ? "The model may split work across parallel sub-agents." : "No sub-agent tools are exposed."}</small>
+                <small>{delegationOn ? "The model may split work across parallel sub-agents." : "Sub-agents are off for this task."}</small>
               </span>
               {isChild ? (
                 <span className="sa-readout">Off</span>
@@ -587,7 +593,7 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
                 <small>
                   {editable
                     ? crewSize > 0
-                      ? `How many sub-agents may run at once (1–${MAX_SUBAGENT_CONCURRENCY}), chosen from ${crewSize} configured sub-agent${crewSize === 1 ? "" : "s"}.`
+                      ? `How many sub-agents may run at once (1–${MAX_SUBAGENT_CONCURRENCY}), chosen from ${crewSize} configured sub-agent${crewSize === 1 ? "" : "s"}. Adding or removing sub-agents adjusts this limit.`
                       : `How many sub-agents may run at once (1–${MAX_SUBAGENT_CONCURRENCY}).`
                     : captured
                       ? "Locked until the parent and every sub-agent are idle."
@@ -672,6 +678,16 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
               </div>
             )}
 
+            {editable && props.onSavePreset && (
+              <div className="sa-preset-row">
+                <input aria-label="New sub-agent preset name" placeholder="Preset name" maxLength={60} value={presetName} onChange={(event) => setPresetName(event.target.value)} />
+                <button type="button" className="sa-manage-presets" disabled={!presetName.trim() || (props.presets?.length ?? 0) >= MAX_CHILD_AGENT_PRESETS} onClick={() => {
+                  props.onSavePreset?.(presetName.trim(), policy);
+                  setPresetName("");
+                }}>Save as preset</button>
+              </div>
+            )}
+
             <div className={`sa-crew ${crossProviderOn && !dimmed ? "" : "muted"}`}>
               {editable && targets.length > 0 && (
                 <div className="sa-crew-toolbar">
@@ -734,7 +750,7 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
                       </div>
                       {!editable && <span className="sa-tile-note">{describeChildAgentReasoning(target)}</span>}
                       {issue && target.enabled && (
-                        <p className="sa-tile-issue"><AlertTriangle size={11} aria-hidden="true" /> {issue}</p>
+                        <p className="sa-tile-issue"><AlertTriangle size={11} aria-hidden="true" /> {issue.replaceAll("`", "")} <button type="button" onClick={() => { close(); (props.onOpenAccounts ?? props.onOpenSettings)(); }}>Models &amp; accounts</button></p>
                       )}
                       {editable && (
                         <div className={`sa-tile-config-shell ${expanded ? "open" : ""}`} aria-hidden={!expanded || undefined} inert={!expanded ? true : undefined}>
@@ -819,6 +835,11 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
                               />
                             </div>
                           )}
+                          <label className="sa-config-field">
+                            <span>When to use</span>
+                            <input aria-label={`When to use ${target.id}`} maxLength={600} value={target.description}
+                              onChange={(event) => updateTarget(target.id, { description: event.target.value })} />
+                          </label>
                           <p className="sa-tile-reasoning">{describeChildAgentReasoning(target)}</p>
                           <button
                             type="button"
@@ -862,7 +883,7 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
                   {isChild
                     ? "A sub-agent cannot start sub-agents of its own."
                     : captured
-                      ? "This thread captured no cross-provider sub-agents."
+                      ? "No cross-provider sub-agents are configured for this task."
                       : "No sub-agents yet. Add one to let the model delegate across providers."}
                 </p>
               )}
@@ -876,6 +897,7 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
                 <span key={describeSubAgentActivity(counts)} className="sa-flash">{describeSubAgentActivity(counts)}</span>
               </span>
             </div>
+            {statusUnknown && <p className="sa-worker-error" role="status">Open the sub-agent conversation to check its status before changing this task’s setup.</p>}
             {workers.length > 0 ? (
               <ul className="sa-worker-list">
                 {workers.map((worker) => {

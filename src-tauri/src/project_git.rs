@@ -1152,8 +1152,9 @@ pub(super) async fn worktree_create(
                 .unwrap_or("project"),
         );
         let root = app_data.join("worktrees").join(project_slug);
-        fs::create_dir_all(&root)
-            .map_err(|error| format!("Could not create the Mythra Code worktree folder: {error}"))?;
+        fs::create_dir_all(&root).map_err(|error| {
+            format!("Could not create the Mythra Code worktree folder: {error}")
+        })?;
         let path = root.join(format!("{slug}-{suffix}"));
         let path_string = path.to_string_lossy().into_owned();
         git_stdout(
@@ -1208,8 +1209,9 @@ pub(super) async fn worktree_recreate(
                 .unwrap_or("project"),
         );
         let root = app_data.join("worktrees").join(project_slug);
-        fs::create_dir_all(&root)
-            .map_err(|error| format!("Could not create the Mythra Code worktree folder: {error}"))?;
+        fs::create_dir_all(&root).map_err(|error| {
+            format!("Could not create the Mythra Code worktree folder: {error}")
+        })?;
         // A worktree folder can be deleted outside Mythra Code while Git still
         // has a stale registration for it. Prune that dead administrative
         // entry before attaching the surviving branch to its replacement.

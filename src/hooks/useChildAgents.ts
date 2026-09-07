@@ -1,3 +1,4 @@
+import { latestCodexTurn, terminalTurnStatus } from "./useThreadHealth";
 import { useCallback, useEffect, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import {
   onChildAgentRequest,
@@ -20,8 +21,8 @@ import {
 import { childAgentPolicyForSession } from "../lib/childAgentSessions";
 import { startChildAgentTurn } from "../lib/childRun";
 import { auditEvent, rpc, type JsonObject } from "../lib/codex";
-import { killClaudeTurn, loadClaudeTranscript } from "../lib/claude";
-import { killCursorTurn, loadCursorTranscript } from "../lib/cursor";
+import { isClaudeTurnActive, killClaudeTurn, loadClaudeTranscript } from "../lib/claude";
+import { isCursorTurnActive, killCursorTurn, loadCursorTranscript } from "../lib/cursor";
 import { friendlyError } from "../lib/errors";
 import { isActiveAgentRecord } from "../lib/subAgentActivity";
 import { decodeHtmlEntities } from "../lib/text";
@@ -31,7 +32,8 @@ import { useTaskStore, type TaskStatus } from "../lib/taskStore";
 import type { OpenRouterModel } from "../components/OpenRouterModelControl";
 import type { LMStudioModel } from "../lib/lmStudio";
 import type { SetPersisted } from "./usePersistedState";
-import type { PendingApproval, ProjectSubagentSettings, Provider, Thread, ThreadReasoning } from "../types";
+import { MAX_RUN_COMMAND_LENGTH, sanitizeProjectRunCommand } from "../lib/projectRun";
+import type { PendingApproval, ProjectRunCommand, ProjectSubagentSettings, Provider, Thread, ThreadReasoning } from "../types";
 
 /**
  * Routes the delegation requests a root agent makes through the Mythra Code
@@ -76,9 +78,27 @@ export interface ChildAgentContext {
   scheduleCursorThreadSave: (threadId: string) => void;
   projectSubagentSettingsForThread: (rootThreadId: string) => ProjectSubagentSettings;
   applyProjectSubagentSettings: (rootThreadId: string, settings: ProjectSubagentSettings) => void | Promise<void>;
+  /** Save (or clear, with null) the project's top-bar Run button command. */
+  applyProjectRunCommand: (rootThreadId: string, run: ProjectRunCommand | null) => void | Promise<void>;
+  projectRunCommandForThread: (rootThreadId: string) => ProjectRunCommand | undefined;
+  /**
+   * Start a run command in the Terminal panel for the thread's project.
+   * Resolves once the process has either exited quickly or run for a moment,
+   * with the output so far, so the model can report an immediate failure.
+   */
+  runProjectCommand: (rootThreadId: string, run: ProjectRunCommand) => Promise<ProjectRunOutcome>;
   /** Automatic pre-turn file snapshots for child turns, same as user turns. */
   beginRunCheckpoint: (threadId: string, workspacePath: string, prompt: string, provider: Provider, model: string) => Promise<string | undefined>;
   discardRunCheckpoint: (threadId: string) => void;
+}
+
+export interface ProjectRunOutcome {
+  started: boolean;
+  /** Why it did not start, in words the model can relay. */
+  reason?: string;
+  /** True when the process already exited during the short wait. */
+  exited?: boolean;
+  output?: string;
 }
 
 function taskStatusOf(threadId: string): TaskStatus {
@@ -129,7 +149,8 @@ async function restoreChildTimeline(link: ChildAgentLink): Promise<string> {
 
 function truncateResult(text: string): { text: string; truncated: boolean } {
   if (text.length <= MAX_RESULT_CHARACTERS) return { text, truncated: false };
-  return { text: text.slice(0, MAX_RESULT_CHARACTERS), truncated: true };
+  const marker = "\n… [middle omitted] …\n";
+  return { text: text.slice(0, 4000) + marker + text.slice(-(MAX_RESULT_CHARACTERS - 4000 - marker.length)), truncated: true };
 }
 
 /**
@@ -233,6 +254,21 @@ export function useChildAgents(context: ChildAgentContext): {
   contextRef.current = context;
   /** Roots already reported finished, so a slot is released exactly once. */
   const releasedRef = useRef(new Set<string>());
+  const releases = useRef(new Map<string, ChildAgentLink>());
+  const releasing = useRef(new Set<string>());
+  const releaseSlot = useCallback((link: ChildAgentLink) => {
+    const id = link.childThreadId;
+    releases.current.set(id, link);
+    if (releasing.current.has(id)) return;
+    releasing.current.add(id);
+    void reportChildAgentFinished(link.sessionId, id).then(() => {
+      releases.current.delete(id);
+    }).catch(() => {}).finally(() => releasing.current.delete(id));
+  }, []);
+  useEffect(() => {
+    const timer = setInterval(() => { for (const link of releases.current.values()) releaseSlot(link); }, 5000);
+    return () => clearInterval(timer);
+  }, [releaseSlot]);
   /**
    * Children this hook created that the rendered link map has not caught up
    * with yet, keyed by bridge session. Two tool calls can arrive between
@@ -291,7 +327,7 @@ export function useChildAgents(context: ChildAgentContext): {
 
     const targetId = String(request.arguments.target ?? "");
     const target = policy.targets.find((entry) => entry.id === targetId);
-    if (!target) {
+    if (!target || !target.enabled) {
       throw new Error(`\`${targetId}\` is not an approved destination for this thread.`);
     }
     const prompt = String(request.arguments.prompt ?? "").trim();
@@ -302,9 +338,7 @@ export function useChildAgents(context: ChildAgentContext): {
       policy.reasoningEffort,
       request.arguments.reasoningEffort,
     );
-    const targetSystemPrompt = target.provider === "openai" || target.provider === "claude"
-      ? policy.providerSystemPrompts?.[target.provider]
-      : undefined;
+    const targetSystemPrompt = policy.providerSystemPrompts?.[target.provider];
 
     const reservation = `pending-${crypto.randomUUID()}`;
     const stopGeneration = stopGenerationRef.current.get(rootThreadId) ?? 0;
@@ -407,7 +441,7 @@ export function useChildAgents(context: ChildAgentContext): {
       title,
       createdAt: Date.now(),
       ...(!isChildActive(taskStatusOf(childThreadId))
-        ? { terminalStatus: lifecycle as "completed" | "cancelled" | "failed" }
+        ? { terminalStatus: lifecycle as "completed" | "cancelled" | "failed", finishedAt: Date.now() }
         : {}),
     };
     releasedRef.current.delete(childThreadId);
@@ -433,7 +467,7 @@ export function useChildAgents(context: ChildAgentContext): {
           taskStore.setActiveTurn(childThreadId, undefined);
           taskStore.setTaskStatus(childThreadId, "interrupted");
           settleChildInParent(rootThreadId, childThreadId, title, "interrupted", "cancelled");
-          const interrupted = { ...link, terminalStatus: "cancelled" as const };
+          const interrupted = { ...link, terminalStatus: "cancelled" as const, finishedAt: Date.now() };
           pendingLinksRef.current.set(childThreadId, interrupted);
           ctx.persistChildAgentLinks((current) => ({ ...current, [childThreadId]: interrupted }));
         }
@@ -488,13 +522,41 @@ export function useChildAgents(context: ChildAgentContext): {
     if (!link || link.sessionId !== request.sessionId) {
       throw new Error(`\`${childId}\` was not started from this thread.`);
     }
+    if (taskStatusOf(childId) === "idle" && !link.terminalStatus) {
+      let recovered: TaskStatus | null = null;
+      if (link.provider === "claude" || link.provider === "cursor") {
+        const active = await (link.provider === "claude" ? isClaudeTurnActive(childId) : isCursorTurnActive(childId));
+        if (active) return { childId, status: "running", result: "", note: "Still working. Collect again to wait for the result." };
+        await restoreChildTimeline(link);
+        const last = useTaskStore.getState().tasks[childId]?.messages.at(-1)?.turnStatus;
+        recovered = last === "completed" ? "completed" : last === "failed" ? "error" : "interrupted";
+      } else {
+        const turn = await latestCodexTurn(childId);
+        recovered = terminalTurnStatus(turn);
+        if (!recovered) return { childId, status: turn?.status === "inProgress" ? "running" : "unknown", result: "", note: "Awaiting runtime status. Collect again to check." };
+      }
+      if (taskStatusOf(childId) === "idle") useTaskStore.getState().setTaskStatus(childId, recovered);
+    }
     const requested = Number(request.arguments.timeoutSeconds);
     const seconds = Number.isFinite(requested) && requested > 0
       ? Math.min(MAX_COLLECT_SECONDS, requested)
       : DEFAULT_COLLECT_SECONDS;
-    const status = await waitForChildTerminalStatus(childId, seconds * 1000);
+    const waitId = `child-wait-${request.requestId}`;
+    const waiting = isChildActive(taskStatusOf(childId));
+    if (waiting) useTaskStore.getState().upsertActivity(link.rootThreadId, {
+      id: waitId, kind: "agent", title: `Waiting for sub-agent: ${link.title}`, status: "inProgress",
+      agent: { action: "wait", threadIds: [childId] },
+    });
+    let status: TaskStatus;
+    try { status = await waitForChildTerminalStatus(childId, seconds * 1000); }
+    finally {
+      if (waiting) useTaskStore.getState().upsertActivity(link.rootThreadId, {
+        id: waitId, kind: "agent", title: `Checked sub-agent: ${link.title}`, status: "completed",
+        agent: { action: "wait", threadIds: [childId] },
+      });
+    }
     const lifecycle = childLifecycleForLink(link, status);
-    if (isChildActive(status)) {
+    if (isChildActive(status) || (status === "idle" && !link.terminalStatus)) {
       return { childId, status: lifecycle, result: "", note: "Still working. Call collect_agent again to keep waiting." };
     }
     const storedText = lastAssistantText(childId) || await restoreChildTimeline(link).catch(() => "");
@@ -506,6 +568,7 @@ export function useChildAgents(context: ChildAgentContext): {
       model: link.model,
       status: lifecycle,
       result: text,
+      ...(!text ? { note: "No final text was returned. Inspect the sub-agent task for tool activity or errors." } : {}),
       truncated,
       ...(useTaskStore.getState().tasks[childId]?.error ? { error: useTaskStore.getState().tasks[childId]?.error } : {}),
       ...(lifecycle === "failed" ? {
@@ -687,6 +750,77 @@ export function useChildAgents(context: ChildAgentContext): {
     );
   }, []);
 
+  /**
+   * Save what the top-bar Run button executes for this thread's project. This
+   * is deliberately not an approval: nothing runs until the user clicks the
+   * button, and the saved command is shown on it and in its editor.
+   */
+  const setRunCommand = useCallback(async (request: ChildAgentRequest): Promise<Record<string, unknown>> => {
+    const ctx = contextRef.current;
+    const policy = childAgentPolicyForSession(ctx.policies, request.sessionId);
+    if (!policy?.rootThreadId) throw new Error("This conversation is not inside a saved project, so it has no Run button.");
+    const rootThreadId = policy.rootThreadId;
+    const command = typeof request.arguments.command === "string" ? request.arguments.command.trim() : "";
+    const label = typeof request.arguments.label === "string" ? request.arguments.label : "";
+    const wantsRun = request.arguments.run === true;
+    const existing = ctx.projectRunCommandForThread(rootThreadId);
+    const activity = (title: string, detail: string, kind: "agent" | "warning" = "agent") => useTaskStore.getState().upsertActivity(rootThreadId, {
+      id: `run-command-${request.requestId}`,
+      kind,
+      title,
+      detail,
+      status: "completed",
+    });
+
+    let run: ProjectRunCommand | null;
+    let saved = false;
+    if (command) {
+      const next = sanitizeProjectRunCommand({ command, label });
+      if (!next) throw new Error(`\`command\` must be a shell command of at most ${MAX_RUN_COMMAND_LENGTH} characters.`);
+      // Re-saving an identical command is harmless, but a run request must
+      // never silently replace a different saved command with a label-less
+      // copy of it; the model passed a new command, so that is what it wants.
+      if (!existing || existing.command !== next.command || (existing.label ?? "") !== (next.label ?? "")) {
+        await ctx.applyProjectRunCommand(rootThreadId, next);
+        saved = true;
+      }
+      run = next;
+    } else if (wantsRun) {
+      if (!existing) throw new Error("Nothing is saved for the Run button yet. Pass the command to run; it is saved for next time.");
+      run = existing;
+    } else {
+      await ctx.applyProjectRunCommand(rootThreadId, null);
+      activity("Run button cleared", "The top-bar Run button has no command for this project now.");
+      void auditEvent("project.runCommand.set", { command: null }, rootThreadId);
+      return { saved: true, command: null, note: "The Run button is now cleared for this project." };
+    }
+    if (saved) void auditEvent("project.runCommand.set", { command: run.command }, rootThreadId);
+
+    if (!wantsRun) {
+      activity("Run button updated", `Click Run in the top bar to execute: ${run.command}`);
+      return { saved: true, command: run.command, label: run.label ?? null, note: "Saved for this project. Nothing was executed; the user runs it by clicking the Run button in the top bar." };
+    }
+
+    const outcome = await ctx.runProjectCommand(rootThreadId, run);
+    if (!outcome.started) {
+      activity("Run command not started", outcome.reason ?? "The Terminal panel could not start it.", "warning");
+      return { saved, command: run.command, label: run.label ?? null, started: false, reason: outcome.reason ?? "The Terminal panel could not start it." };
+    }
+    activity(saved ? "Run button set and started" : "Run button started", `Running in the Terminal panel: ${run.command}`);
+    void auditEvent("project.run", { command: run.command, source: "model" }, rootThreadId);
+    return {
+      saved,
+      command: run.command,
+      label: run.label ?? null,
+      started: true,
+      exited: Boolean(outcome.exited),
+      output: (outcome.output ?? "").slice(-1_500),
+      note: outcome.exited
+        ? "The command already exited; read the output above before telling the user it works."
+        : "Running in the app's Terminal panel. The user can stop it with the Stop button next to Run in the top bar; you cannot see further output from here.",
+    };
+  }, []);
+
   const handleRequest = useCallback(async (request: ChildAgentRequest): Promise<void> => {
     try {
       let result: Record<string, unknown>;
@@ -695,6 +829,7 @@ export function useChildAgents(context: ChildAgentContext): {
       else if (request.tool === "collect_agent") result = await collectChild(request);
       else if (request.tool === "cancel_agent") result = await cancelChild(request);
       else if (request.tool === "propose_agent_settings") result = await proposeSettings(request);
+      else if (request.tool === "set_project_run_command") result = await setRunCommand(request);
       else throw new Error(`\`${request.tool}\` is not a sub-agent tool.`);
       await respondToChildAgentRequest(request.requestId, result);
     } catch (reason) {
@@ -704,7 +839,7 @@ export function useChildAgents(context: ChildAgentContext): {
       // the parent model can read why and choose a different destination.
       await respondToChildAgentRequest(request.requestId, null, message).catch(() => undefined);
     }
-  }, [cancelChild, collectChild, proposeSettings, reportStatus, spawnChild]);
+  }, [cancelChild, collectChild, proposeSettings, reportStatus, setRunCommand, spawnChild]);
 
   // Tauri events are fire-and-forget. Re-subscribing this listener whenever a
   // child changes state creates a small window with no receiver at all; a tool
@@ -736,7 +871,7 @@ export function useChildAgents(context: ChildAgentContext): {
     for (const childThreadId of pendingLinksRef.current.keys()) {
       if (context.links[childThreadId]) pendingLinksRef.current.delete(childThreadId);
     }
-  }, [context.links]);
+  }, [context.links, releaseSlot]);
 
   // Release the backend's concurrency slot as soon as a child's turn reaches a
   // terminal state, and mirror the outcome onto the parent's agent list.
@@ -746,18 +881,16 @@ export function useChildAgents(context: ChildAgentContext): {
       const { links } = contextRef.current;
       for (const link of Object.values(links)) {
         const status = state.statuses[link.childThreadId];
-        if (!status) continue;
+        if (!status || status === "idle") continue;
         if (isChildActive(status)) {
-          // A renderer reload settles unhydrated links as cancelled, but a
-          // webview reload does not kill backend-held provider processes:
-          // this child's events are streaming again, so it never actually
-          // stopped. Reopen the record so its real outcome can settle.
+          // A resumed child can become active after a persisted terminal
+          // record. Reopen it so the new turn's actual outcome can settle.
           if (releasedRef.current.has(link.childThreadId)) {
             releasedRef.current.delete(link.childThreadId);
             contextRef.current.persistChildAgentLinks((current) => {
               const latest = current[link.childThreadId];
               if (!latest?.terminalStatus) return current;
-              const { terminalStatus: _settled, ...reopened } = latest;
+              const { terminalStatus: _settled, finishedAt: _finishedAt, ...reopened } = latest;
               return { ...current, [link.childThreadId]: reopened };
             });
             const store = useTaskStore.getState();
@@ -773,12 +906,12 @@ export function useChildAgents(context: ChildAgentContext): {
         }
         if (releasedRef.current.has(link.childThreadId)) continue;
         releasedRef.current.add(link.childThreadId);
-        void reportChildAgentFinished(link.sessionId, link.childThreadId).catch(() => undefined);
+        releaseSlot(link);
         const terminalStatus = childLifecycle(status) as "completed" | "cancelled" | "failed";
         contextRef.current.persistChildAgentLinks((current) => {
           const latest = current[link.childThreadId];
           if (!latest || latest.terminalStatus === terminalStatus) return current;
-          return { ...current, [link.childThreadId]: { ...latest, terminalStatus } };
+          return { ...current, [link.childThreadId]: { ...latest, terminalStatus, finishedAt: latest.finishedAt ?? Date.now() } };
         });
         settleChildInParent(
           link.rootThreadId,
@@ -790,7 +923,7 @@ export function useChildAgents(context: ChildAgentContext): {
       }
     });
     return unsubscribe;
-  }, []);
+  }, [releaseSlot]);
 
   // A very fast child can finish before its persisted ownership link reaches
   // this hook. Reconcile on every link update so that early completion still
@@ -798,14 +931,14 @@ export function useChildAgents(context: ChildAgentContext): {
   useEffect(() => {
     for (const link of Object.values(context.links)) {
       const status = taskStatusOf(link.childThreadId);
-      if (isChildActive(status) || releasedRef.current.has(link.childThreadId)) continue;
+      if ((status === "idle" && !link.terminalStatus) || isChildActive(status) || releasedRef.current.has(link.childThreadId)) continue;
       releasedRef.current.add(link.childThreadId);
-      void reportChildAgentFinished(link.sessionId, link.childThreadId).catch(() => undefined);
+      releaseSlot(link);
       const terminalStatus = childLifecycleForLink(link, status) as "completed" | "cancelled" | "failed";
       contextRef.current.persistChildAgentLinks((current) => {
         const latest = current[link.childThreadId];
         if (!latest || latest.terminalStatus === terminalStatus) return current;
-        return { ...current, [link.childThreadId]: { ...latest, terminalStatus } };
+        return { ...current, [link.childThreadId]: { ...latest, terminalStatus, finishedAt: latest.finishedAt ?? Date.now() } };
       });
       settleChildInParent(
         link.rootThreadId,
@@ -815,7 +948,7 @@ export function useChildAgents(context: ChildAgentContext): {
         terminalStatus,
       );
     }
-  }, [context.links]);
+  }, [context.links, releaseSlot]);
 
   const cancelChildAgentsFor = useCallback(async (rootThreadId: string): Promise<void> => {
     const ctx = contextRef.current;

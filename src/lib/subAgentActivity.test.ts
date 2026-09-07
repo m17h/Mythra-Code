@@ -132,9 +132,9 @@ describe("collectSubAgentWorkers", () => {
     expect(workers[0].status).toBe("failed");
   });
 
-  it("treats an unterminated link from an earlier process as cancelled", () => {
+  it("treats an unterminated link from an earlier process as unknown", () => {
     const workers = collectSubAgentWorkers({ rootThreadId: "root-1", links: links(link()), statuses: {}, agents: [] });
-    expect(workers[0].status).toBe("cancelled");
+    expect(workers[0].status).toBe("unknown");
   });
 
   it("includes native provider agents the root task reported", () => {

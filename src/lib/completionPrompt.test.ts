@@ -21,6 +21,16 @@ describe("Mythra Code completion instructions", () => {
     );
   });
 
+  it("describes the project Run button only when the bridge can change it", () => {
+    const run = { command: "npm run dev", updatedAt: 1 };
+    expect(mythraCodeDeveloperInstructions(false, true, { toolAvailable: false, run })).not.toContain("Run button");
+    const withButton = mythraCodeDeveloperInstructions(false, true, { toolAvailable: true, run });
+    expect(withButton).toContain("Run button");
+    expect(withButton).toContain("`npm run dev`");
+    expect(withButton).toContain("set_project_run_command");
+    expect(withMythraCodeCompletionInstructions("Style.", false, true, { toolAvailable: true, run: null })).toContain("greyed out");
+  });
+
   it("makes Mythra Code the authoritative sub-agent route when its bridge is active", () => {
     expect(mythraCodeDeveloperInstructions(true)).toBe(
       `${ALWAYS_ON}\n\n${MYTHRA_CODE_DELEGATION_INSTRUCTIONS}`,

@@ -9,7 +9,7 @@ import { childAgentSessionOptions } from "./childAgents";
  * launch descriptor is only an executable path plus a session-file path.
  */
 
-export type ChildAgentTool = "spawn_mythra_agent" | "agent_status" | "collect_agent" | "cancel_agent" | "propose_agent_settings";
+export type ChildAgentTool = "spawn_mythra_agent" | "agent_status" | "collect_agent" | "cancel_agent" | "propose_agent_settings" | "set_project_run_command";
 
 /** How a provider runtime should register the bridge as an MCP server. */
 export interface ChildAgentBridgeLaunch {
@@ -31,9 +31,10 @@ export interface ChildAgentRequest {
 export async function startChildAgentSession(
   policy: ChildAgentPolicy,
   knownChildren: string[] = [],
+  finishedChildren: string[] = [],
 ): Promise<ChildAgentBridgeLaunch> {
   return invoke<ChildAgentBridgeLaunch>("child_agent_session_start", {
-    options: childAgentSessionOptions(policy, knownChildren),
+    options: { ...childAgentSessionOptions(policy, knownChildren), finishedChildren },
   });
 }
 

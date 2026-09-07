@@ -32,6 +32,7 @@ import { confirmDialog } from "../lib/confirmDialog";
 import { clearProviderStopIntent, markProviderStopIntent } from "../lib/providerStopIntent";
 import { isClaudeThread, isCursorThread } from "../lib/threadProvider";
 import { withMythraCodeCompletionInstructions } from "../lib/completionPrompt";
+import { RUN_COMMAND_TOOL } from "../lib/projectRun";
 import {
   createThreadWorktree,
   removeThreadWorktree,
@@ -564,6 +565,12 @@ export function useTurnRunner(context: TurnRunnerContext): {
       const runtimeSettings = runtimeSubagentMax === effectiveSettings.subagentMax
         ? effectiveSettings
         : { ...effectiveSettings, subagentMax: runtimeSubagentMax };
+      // The Run button is a project feature: the model is told about it (and
+      // its current command) only when this thread's bridge can change it.
+      const runButton = {
+        toolAvailable: Boolean(childBridge?.launch.toolNames.includes(RUN_COMMAND_TOOL)),
+        run: activeProject?.overrides?.run ?? null,
+      };
       if (effectiveSettings.provider === "claude") {
         if (skillsFolder && !skillRuntimeRootRef.current) await refreshLocalSkills();
         return await runLocalTurn("claude", executionPath, {
@@ -572,7 +579,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
             // presence, so resume detection is unaffected by running after it.
             const canResumeClaude = Boolean(activeThread && useTaskStore.getState().tasks[thread.id]?.messages.some((message) => message.role === "assistant"));
             await saveClaudeTranscript({ thread: updatedThread, messages: useTaskStore.getState().tasks[thread.id]?.messages ?? [], activities: useTaskStore.getState().tasks[thread.id]?.activities ?? [] });
-            const result = await startClaudeTurn({ threadId: thread.id, cwd: executionPath, prompt: text, model: effectiveSettings.model || DEFAULT_CLAUDE_MODEL, effort: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort, permission: effectiveSettings.permission, systemPrompt: withMythraCodeCompletionInstructions(effectiveSettings.systemPrompt, Boolean(childBridge?.launch.toolNames.includes("spawn_mythra_agent")), Boolean(childBridge?.launch.toolNames.includes("propose_agent_settings"))), resume: canResumeClaude, attachments: sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })), subagentMax: runtimeSubagentMax, customAgents, skillsPluginPath: skillRuntimeRootRef.current || undefined, childAgentBridgeConfig: childBridge?.launch.configPath });
+            const result = await startClaudeTurn({ threadId: thread.id, cwd: executionPath, prompt: text, model: effectiveSettings.model || DEFAULT_CLAUDE_MODEL, effort: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort, permission: effectiveSettings.permission, systemPrompt: withMythraCodeCompletionInstructions(effectiveSettings.systemPrompt, Boolean(childBridge?.launch.toolNames.includes("spawn_mythra_agent")), Boolean(childBridge?.launch.toolNames.includes("propose_agent_settings")), runButton), resume: canResumeClaude, attachments: sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })), subagentMax: runtimeSubagentMax, customAgents, skillsPluginPath: skillRuntimeRootRef.current || undefined, childAgentBridgeConfig: childBridge?.launch.configPath });
             return { turnId: result.turnId };
           },
           hardStop: (threadId) => killClaudeTurn(threadId),
@@ -591,7 +598,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
               model: effectiveSettings.model || DEFAULT_CURSOR_MODEL,
               effort: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort,
               permission: effectiveSettings.permission,
-              systemPrompt: withMythraCodeCompletionInstructions(effectiveSettings.systemPrompt, Boolean(childBridge?.launch.toolNames.includes("spawn_mythra_agent")), Boolean(childBridge?.launch.toolNames.includes("propose_agent_settings"))),
+              systemPrompt: withMythraCodeCompletionInstructions(effectiveSettings.systemPrompt, Boolean(childBridge?.launch.toolNames.includes("spawn_mythra_agent")), Boolean(childBridge?.launch.toolNames.includes("propose_agent_settings")), runButton),
               resumeSessionId: priorSessionId || undefined,
               attachments: sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })),
               childAgentBridge: childBridge
@@ -628,7 +635,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       let threadId = activeThread?.id;
       startedThreadId = threadId;
       if (!threadId) {
-        const result = await rpc<{ thread: Thread }>("thread/start", threadStartParams(runtimeSettings, executionPath, { serviceName: activeWorkspace.isChat ? "Mythra Code Chat" : "Mythra Code", customAgents, modelContextWindow, interactive: true, additionalWorkspaceRoots, childAgentBridge: childBridge?.launch }));
+        const result = await rpc<{ thread: Thread }>("thread/start", threadStartParams(runtimeSettings, executionPath, { serviceName: activeWorkspace.isChat ? "Mythra Code Chat" : "Mythra Code", customAgents, modelContextWindow, interactive: true, additionalWorkspaceRoots, childAgentBridge: childBridge?.launch, projectRunCommand: runButton.run }));
         const startedThread = optimisticStartedThread(result.thread, text);
         threadId = startedThread.id;
         startedThreadId = threadId;
@@ -661,7 +668,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         const plan = planSubagentCapabilities(threadId, runtimeInstance, capabilities, currentRuntime.loaded);
         if (plan.restartRuntime) runtimeInstance = await restartRuntimeForCapabilities(threadId);
         if (effectiveSettings.provider === "openrouter" || effectiveSettings.provider === "lmstudio" || plan.resume) {
-          const resume = threadResumeParams(runtimeSettings, threadId, executionPath, { customAgents, modelContextWindow, excludeTurns: true, additionalWorkspaceRoots, childAgentBridge: childBridge?.launch, refreshRuntimeConfig: true });
+          const resume = threadResumeParams(runtimeSettings, threadId, executionPath, { customAgents, modelContextWindow, excludeTurns: true, additionalWorkspaceRoots, childAgentBridge: childBridge?.launch, refreshRuntimeConfig: true, projectRunCommand: runButton.run });
           await rpc("thread/resume", effectiveSettings.provider === "openrouter" || effectiveSettings.provider === "lmstudio" ? { ...resume, model: effectiveSettings.model } : resume);
           recordSubagentCapabilities(threadId, runtimeInstance, capabilities);
         }

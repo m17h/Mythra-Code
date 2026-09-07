@@ -12,6 +12,7 @@ import { Archive, ArchiveRestore, Bot, Check, ChevronDown, Circle, Code2, Downlo
 import { getCodexRuntimeStatus, auditEvent, exportTextFile, getNormalChatWorkspace, getOpenRouterCredits, hasLmStudioKey, hasOpenRouterKey, respond, restartRuntime, rpc, runtimeInstanceId, runtimeThreadState, type CodexRuntimeStatus, type JsonObject, type OpenRouterCreditBalance } from "./lib/codex";
 import { deleteClaudeTranscript, getClaudeRateLimits, getClaudeRuntimeStatus, listClaudeModels, loadClaudeTranscript, loadClaudeTranscriptPage, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, visibleClaudeModels, type ClaudeModel, type ClaudeRuntimeStatus } from "./lib/claude";
 import { deleteCursorTranscript, getCursorRuntimeStatus, listCursorModels, loadCursorTranscript, loadCursorTranscriptPage, respondToCursorPermission, saveCursorTranscript, startCursorLogin, type CursorModel, type CursorRuntimeStatus } from "./lib/cursor";
+import { waitForSignIn } from "./lib/signInPolling";
 import { listLocalTranscriptThreads } from "./lib/localTranscriptPersistence";
 import { flushPendingStateWrites, loadStored, storeValue } from "./lib/storage";
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_PROMPT_PROFILES, DEFAULT_SETTINGS, sanitizeAutoArchiveSubagentThreads, sanitizeChatFont, sanitizeEffortSlider, sanitizeTheme, themeColorScheme } from "./lib/appConfig";
@@ -32,8 +33,10 @@ import { LMStudioModelControl } from "./components/LMStudioModelControl";
 import { ThreadProviderControl } from "./components/ThreadProviderControl";
 import { ThreadInboxCard } from "./components/ThreadInboxCard";
 import { ProjectPromptControl } from "./components/ProjectPromptControl";
+import { ProjectRunControl } from "./components/ProjectRunControl";
 import { ApprovalCenter } from "./components/ApprovalCenter";
 import { Composer, discardDraft, type ComposerHandle } from "./components/Composer";
+import { SubAgentControlsProvider } from "./components/SubAgentControls";
 import { SubAgentCommandCenter, type SubAgentModelOption, type SubAgentPolicyMode } from "./components/SubAgentCommandCenter";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { AuthRequiredModal, RuntimeSetupModal } from "./components/RuntimeModals";
@@ -41,6 +44,7 @@ import type { AgentRecord, AttachmentRecord, McpView } from "./components/Studio
 import { isStudioTab, type StudioTab } from "./lib/studioTabs";
 import type { GitPanelAction, GitRepositoryState } from "./components/GitPanel";
 import type { Account, Activity, AppSettings, ArchivedThread, ChatFont, ChatMessage, CustomAgentProfile, PendingApproval, PermissionMode, Project, ProjectAction, ProjectPromptMode, ProjectSubagentSettings, EffortSliderStyle, PromptProfile, Provider, ScheduledTask, ScheduleRunRecord, SettingsSection, Thread, ThreadHandoff, ThreadReasoning, ThemeName, WorkspaceMode } from "./types";
+import type { ProjectRunCommand } from "./types";
 import { PendingTurnStarts } from "./lib/pendingTurnStarts";
 import { useTaskStore, type QueuedTurn } from "./lib/taskStore";
 import { friendlyError, isAuthenticationError } from "./lib/errors";
@@ -107,6 +111,7 @@ import { parseCodexRateLimits, providerAccountUsage, providerHeaderUsage, saniti
 import { UsagePopover } from "./components/UsagePopover";
 import { contextUsagePercent } from "./lib/contextUsage";
 import { mythraCodeDeveloperInstructions } from "./lib/completionPrompt";
+import { sanitizeProjectRunCommand, sanitizeProjectRunOverrides } from "./lib/projectRun";
 import { runtimeModelProviderId } from "./lib/providerIds";
 import { primaryModifierLabel } from "./lib/platform";
 import { archivedThreadsForInbox, providerForArchivedThread } from "./lib/threadArchive";
@@ -114,6 +119,8 @@ import { sanitizeProjectDefaultOverrides } from "./lib/projectDefaults";
 import { buildProviderHandoffPrompt, sanitizePendingHandoff } from "./lib/providerHandoff";
 import { deleteThreadTurnDurations } from "./lib/turnDurations";
 import {
+  uniqueChildAgentPresetId,
+  MAX_CHILD_AGENT_PRESETS,
   childAgentLinksAfterThreadDeletion,
   childAgentModel,
   describeChildAgentRoster,
@@ -133,12 +140,12 @@ import {
   type ChildAgentPolicy,
   type ChildAgentReadiness,
 } from "./lib/childAgents";
-import { cacheChildAgentPolicy, ensureChildAgentBridge, invalidateChildAgentLaunch, releaseChildAgentSession, releaseChildAgentSessions } from "./lib/childAgentSessions";
+import { assertChildAgentProposalAvailable, cacheChildAgentPolicy, ensureChildAgentBridge, invalidateChildAgentLaunch, releaseChildAgentSession, releaseChildAgentSessions } from "./lib/childAgentSessions";
 import { forgetSubagentCapabilities, planSubagentCapabilities, recordSubagentCapabilities, subagentCapabilitySignature } from "./lib/threadCapabilities";
 import { canOwnThread, nativeAgentLinkFromThread, nativeAgentLinksAfterThreadDeletion, sanitizeNativeAgentLinks, type NativeAgentLink, type OwnershipLinks } from "./lib/nativeAgentLinks";
 import { autoArchiveSubagentCandidates } from "./lib/subAgentArchive";
-import { collectSubAgentWorkers, isSubAgentWorkerActive, type SubAgentWorker } from "./lib/subAgentActivity";
-import { useChildAgents } from "./hooks/useChildAgents";
+import { collectSubAgentWorkers, isActiveAgentRecord, isSubAgentWorkerActive, type SubAgentWorker } from "./lib/subAgentActivity";
+import { useChildAgents, type ProjectRunOutcome } from "./hooks/useChildAgents";
 import { reorderProjects, sortProjectsByPin, toggleProjectPinned, type ProjectDropPosition } from "./lib/projectOrdering";
 import {
   deleteCheckpointSnapshot,
@@ -349,7 +356,7 @@ function sanitizeThreadReasoningRecords(value: unknown): Record<string, ThreadRe
   }));
 }
 
-const initialProjects = sortProjectsByPin(sanitizeProjectDefaultOverrides(sanitizeProjectSubagentOverrides(loadStored<Project[]>("kiwi.projects", []))));
+const initialProjects = sortProjectsByPin(sanitizeProjectRunOverrides(sanitizeProjectDefaultOverrides(sanitizeProjectSubagentOverrides(loadStored<Project[]>("kiwi.projects", [])))));
 const initialWorkspaceMode: WorkspaceMode = loadStored<WorkspaceMode>("kiwi.workspaceMode", initialProjects.length ? "project" : "chat");
 const initialKnownThreads = compactSidebarIndex(loadStored<ThreadSidebarIndex>("kiwi.knownThreads", {}));
 const initialOnboardingVersion = loadStored<number>("kiwi.onboardingVersion", 0);
@@ -484,6 +491,7 @@ export default function App() {
   const [previewTheme, setPreviewTheme] = useState<ThemeName | null>(null);
   const [previewEffortSlider, setPreviewEffortSlider] = useState<EffortSliderStyle | null>(null);
   const [previewChatFont, setPreviewChatFont] = useState<ChatFont | null>(null);
+  const [previewUiScale, setPreviewUiScale] = useState<number | null>(null);
   const [promptProfiles, setPromptProfiles] = usePersistedState<PromptProfile[]>("kiwi.promptProfiles", DEFAULT_PROMPT_PROFILES);
   const [customAgents, setCustomAgents] = usePersistedState<CustomAgentProfile[]>("kiwi.customAgents", []);
   const [projectActions, setProjectActions] = usePersistedState<ProjectAction[]>("kiwi.projectActions", []);
@@ -715,12 +723,12 @@ export default function App() {
     return settingsWithProjectSubagents(projectResolved, overrides?.subagents);
   }, [activeProject, settings]);
   const subscriptionSystemPrompts = useMemo(() => {
-    const resolveFor = (provider: "openai" | "claude") => resolveSystemPrompt(
+    const resolveFor = (provider: Provider) => resolveSystemPrompt(
       resolveProviderSystemPrompt(projectSettings.systemPrompt, provider, projectSettings.codexSystemPrompt, projectSettings.claudeSystemPrompt),
       activeProject?.overrides?.systemPrompt,
       activeProject?.overrides?.systemPromptMode,
     );
-    return { openai: resolveFor("openai"), claude: resolveFor("claude") };
+    return { openai: resolveFor("openai"), claude: resolveFor("claude"), cursor: resolveFor("cursor"), openrouter: resolveFor("openrouter"), lmstudio: resolveFor("lmstudio") };
   }, [activeProject, projectSettings]);
   // Opt-in project defaults win over global defaults, while provider and model
   // are resolved for the active thread (or the unsent new-thread draft).
@@ -1302,6 +1310,20 @@ export default function App() {
     [activeProject, persistSettings, setProjects, settings],
   );
 
+  /** Replace or clear one project's Run button command. */
+  const withProjectRun = (project: Project, run: ProjectRunCommand | null): Project => {
+    const overrides = { ...(project.overrides ?? {}) };
+    if (run) overrides.run = run;
+    else delete overrides.run;
+    return { ...project, overrides: Object.keys(overrides).length ? overrides : undefined };
+  };
+
+  const persistActiveProjectRun = useCallback((draft: { command: string; label: string } | null) => {
+    if (!activeProject) return;
+    const run = draft ? sanitizeProjectRunCommand(draft) ?? null : null;
+    setProjects((current) => current.map((project) => (project.id === activeProject.id ? withProjectRun(project, run) : project)));
+  }, [activeProject, setProjects]);
+
   const persistActiveProjectPrompt = useCallback(
     (systemPrompt: string | undefined, mode: ProjectPromptMode) => {
       if (!activeProject) return;
@@ -1425,6 +1447,7 @@ export default function App() {
     setPreviewTheme(null);
     setPreviewEffortSlider(null);
     setPreviewChatFont(null);
+    setPreviewUiScale(null);
     setSettingsOpen(false);
   }, []);
 
@@ -1742,16 +1765,42 @@ export default function App() {
     [bindThreadToProject, persistNativeAgentLinks, runtimeStatus?.available, runtimeStatus?.dataHome],
   );
 
-  const requireOpenAiLogin = useCallback(() => {
+  const clearOpenAiAccount = useCallback(() => {
     openAiAccountRequestRef.current += 1;
     openAiUsageRequestRef.current += 1;
     setAccount(null);
     setAccountCheck("openai", "Sign-in required");
     setOpenAiRateLimits(null);
     setOpenAiRateLimitsRead(false);
+  }, [setAccountCheck]);
+
+  const requireOpenAiLogin = useCallback(() => {
+    clearOpenAiAccount();
     setAuthRequiredOpen(true);
     setStatus("Sign-in required");
-  }, [setAccountCheck]);
+  }, [clearOpenAiAccount]);
+
+  // Set while the user is signing out on purpose. Codex confirms a logout
+  // with `account/updated { authMode: null }`, the same notification an
+  // expired session produces, and only the latter should raise the
+  // "sign in before sending" prompt.
+  const deliberateSignOutRef = useRef(false);
+  const signOutChatGpt = useCallback(async () => {
+    deliberateSignOutRef.current = true;
+    try {
+      await rpc("account/logout");
+      clearOpenAiAccount();
+      setAuthRequiredOpen(false);
+      setStatus("Signed out of ChatGPT");
+    } finally {
+      window.setTimeout(() => { deliberateSignOutRef.current = false; }, 5_000);
+    }
+  }, [clearOpenAiAccount]);
+
+  const handleOpenAiAuthRequired = useCallback(() => {
+    if (deliberateSignOutRef.current) clearOpenAiAccount();
+    else requireOpenAiLogin();
+  }, [clearOpenAiAccount, requireOpenAiLogin]);
 
   const refreshAccount = useCallback(async (refreshToken = false): Promise<{ account: Account | null; requiresOpenaiAuth?: boolean } | null> => {
     const request = ++openAiAccountRequestRef.current;
@@ -1910,6 +1959,18 @@ export default function App() {
     }
     return result;
   }, [refreshAccount, refreshModels, refreshUsage]);
+
+  // A 401 on the runtime's stderr may belong to an MCP server, OpenRouter,
+  // or LM Studio rather than ChatGPT. Re-read the account with a forced
+  // token refresh; only a rejection of that read signs the user out. Bursts
+  // of log lines collapse into one verification.
+  const openAiVerifyAtRef = useRef(0);
+  const verifyOpenAiSession = useCallback(() => {
+    const now = Date.now();
+    if (now - openAiVerifyAtRef.current < 10_000) return;
+    openAiVerifyAtRef.current = now;
+    void refreshAccountData(true);
+  }, [refreshAccountData]);
 
   useEffect(() => {
     if (openRouterReady) {
@@ -2216,7 +2277,8 @@ export default function App() {
     audit: (kind, payload, threadId) => void auditEvent(kind, payload, threadId).catch(() => {}),
     onStatus: setStatus,
     onError: setError,
-    onAuthRequired: requireOpenAiLogin,
+    onAuthRequired: handleOpenAiAuthRequired,
+    onAuthSuspected: verifyOpenAiSession,
     onRateLimits: (limits) => {
       setOpenAiRateLimits(limits);
       setOpenAiRateLimitsRead(true);
@@ -3334,7 +3396,7 @@ export default function App() {
         }
       }
       if (selectThreadRequestRef.current !== requestId) return;
-      const resumeParams = threadResumeParams(resumedSettings, thread.id, executionPath, { customAgents, modelContextWindow: provider === "openrouter" ? openRouterModels.find((entry) => entry.id === resumedSettings.model)?.context_length : provider === "lmstudio" ? lmStudioModels.find((entry) => entry.id === resumedSettings.model)?.maxContextLength : undefined, additionalWorkspaceRoots: isolation?.gitDir ? [isolation.gitDir] : [], childAgentBridge: childBridge?.launch, refreshRuntimeConfig: true });
+      const resumeParams = threadResumeParams(resumedSettings, thread.id, executionPath, { projectRunCommand: activeProject?.overrides?.run ?? null, customAgents, modelContextWindow: provider === "openrouter" ? openRouterModels.find((entry) => entry.id === resumedSettings.model)?.context_length : provider === "lmstudio" ? lmStudioModels.find((entry) => entry.id === resumedSettings.model)?.maxContextLength : undefined, additionalWorkspaceRoots: isolation?.gitDir ? [isolation.gitDir] : [], childAgentBridge: childBridge?.launch, refreshRuntimeConfig: true });
       if (isolation?.status !== "missing" && isolation?.status !== "removed" && !capabilityRefreshDeferred) {
         const resumed = await rpc<{ thread: Thread }>("thread/resume", { ...resumeParams, excludeTurns: true });
         if (selectThreadRequestRef.current !== requestId) return;
@@ -3569,6 +3631,7 @@ export default function App() {
     const project = projects.find((entry) => projectPath
       && normalizedProjectPath(entry.path) === normalizedProjectPath(projectPath));
     if (!project) throw new Error("Project sub-agent settings only exist for saved projects, and this conversation is not in one.");
+    assertChildAgentProposalAvailable(childAgentPolicies, childAgentLinks, rootThreadId);
     setProjects((current) => current.map((entry) => (entry.id === project.id
       ? { ...entry, overrides: { ...(entry.overrides ?? {}), subagents: next } }
       : entry)));
@@ -3594,7 +3657,7 @@ export default function App() {
       return { ...current, [existing.sessionId]: base };
     });
     invalidateChildAgentLaunch(existing.sessionId);
-  }, [childAgentPolicies, childAgentReadiness, persistChildAgentPolicies, projects, setProjects, setTransientStatus]);
+  }, [childAgentLinks, childAgentPolicies, childAgentReadiness, persistChildAgentPolicies, projects, setProjects, setTransientStatus]);
 
   const projectSubagentSettingsForThread = useCallback((rootThreadId: string): ProjectSubagentSettings => {
     const projectPath = threadProjectBindingsRef.current?.[rootThreadId];
@@ -3603,6 +3666,52 @@ export default function App() {
     if (!project) throw new Error("Project sub-agent settings only exist for saved projects, and this conversation is not in one.");
     return projectSubagentSettingsFromApp(settingsWithProjectSubagents(settings, project.overrides?.subagents));
   }, [projects, settings]);
+
+  /**
+   * A model asked (through the bridge) to set this project's Run button. The
+   * request is already sanitized; this only has to find the project the
+   * conversation belongs to.
+   */
+  const applyProjectRunCommand = useCallback(async (rootThreadId: string, run: ProjectRunCommand | null) => {
+    const projectPath = threadProjectBindingsRef.current?.[rootThreadId];
+    const project = projects.find((entry) => projectPath
+      && normalizedProjectPath(entry.path) === normalizedProjectPath(projectPath));
+    if (!project) throw new Error("The Run button only exists for saved projects, and this conversation is not in one.");
+    setProjects((current) => current.map((entry) => (entry.id === project.id ? withProjectRun(entry, run) : entry)));
+    setTransientStatus(run ? `Run button set for ${project.name}` : `Run button cleared for ${project.name}`);
+  // withProjectRun is a pure helper declared in render scope.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projects, setProjects]);
+
+  const projectForThread = useCallback((rootThreadId: string) => {
+    const projectPath = threadProjectBindingsRef.current?.[rootThreadId];
+    return projects.find((entry) => projectPath && normalizedProjectPath(entry.path) === normalizedProjectPath(projectPath));
+  }, [projects]);
+
+  /**
+   * A model asked to start the project's run command. It runs in the Terminal
+   * panel under the thread's own execution path, exactly as the header button
+   * would, and the first moments of output go back so an immediate failure
+   * is visible to the model as well as the user.
+   */
+  const runProjectCommandForThread = useCallback(async (rootThreadId: string, run: ProjectRunCommand): Promise<ProjectRunOutcome> => {
+    const project = projectForThread(rootThreadId);
+    if (!project) return { started: false, reason: "This conversation is not inside a saved project." };
+    if (!runtimeStatus?.available) return { started: false, reason: "The Codex runtime that powers the Terminal panel is not installed, so the command cannot be started from here." };
+    const scope = executionPathFor(rootThreadId, project.path);
+    const busy = terminal.runningIn(scope);
+    if (busy.running) {
+      return { started: false, reason: `The Terminal panel is already running \`${busy.command}\` for this project. Ask the user to stop it with the Stop button first.` };
+    }
+    if (rootThreadId === activeThreadId) openStudio("terminal");
+    const gitDir = threadWorktreesRef.current[rootThreadId]?.gitDir;
+    const finished = terminal.run(run.command, gitDir ? [gitDir] : [], scope).then(() => true);
+    const exited = await Promise.race([finished, new Promise<boolean>((resolve) => window.setTimeout(() => resolve(false), 2_500))]);
+    return { started: true, exited, output: terminal.tail(scope, 1_500) };
+  // openStudio and terminal are re-created each render; the callback reads
+  // the latest ones because the hook consumes it through a ref.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeThreadId, executionPathFor, projectForThread, runtimeStatus?.available]);
 
   const { cancelChildAgentsFor, respondToSettingsProposal, stopChildAgent } = useChildAgents({
     policies: childAgentPolicies,
@@ -3631,6 +3740,9 @@ export default function App() {
     scheduleCursorThreadSave,
     projectSubagentSettingsForThread,
     applyProjectSubagentSettings: applyProposedProjectSubagents,
+    applyProjectRunCommand,
+    projectRunCommandForThread: (rootThreadId) => projectForThread(rootThreadId)?.overrides?.run,
+    runProjectCommand: runProjectCommandForThread,
     beginRunCheckpoint,
     discardRunCheckpoint,
   });
@@ -3740,6 +3852,22 @@ export default function App() {
     }
   };
 
+  // One live watch per provider: launching sign-in again replaces the
+  // previous watch, and unmounting stops them all.
+  const signInWatchesRef = useRef<Partial<Record<"claude" | "cursor", AbortController>>>({});
+  useEffect(() => () => {
+    for (const watch of Object.values(signInWatchesRef.current)) watch?.abort();
+  }, []);
+  const watchSignIn = (provider: "claude" | "cursor", check: () => Promise<boolean>, onSignedIn: () => Promise<void>) => {
+    signInWatchesRef.current[provider]?.abort();
+    const controller = new AbortController();
+    signInWatchesRef.current[provider] = controller;
+    void waitForSignIn(check, { signal: controller.signal }).then((signedIn) => {
+      if (!signedIn || controller.signal.aborted) return;
+      return onSignedIn();
+    }).catch((reason) => setError(friendlyError(reason)));
+  };
+
   const beginClaudeLogin = async () => {
     if (!claudeStatus?.available) {
       openSettings("models");
@@ -3752,11 +3880,13 @@ export default function App() {
     try {
       await startClaudeLogin();
       setStatus("Finish sign-in in Terminal");
-      window.setTimeout(() => {
-        void refreshClaudeStatus().then((next) => {
-          if (next.loggedIn) setStatus("Ready");
-        });
-      }, 2500);
+      // The browser flow takes as long as the user needs, so keep probing
+      // quietly (a raw status read, not the full refresh that flashes
+      // "Checking connection…") until Claude Code reports the login.
+      watchSignIn("claude", async () => (await getClaudeRuntimeStatus()).loggedIn, async () => {
+        const [next] = await Promise.all([refreshClaudeStatus(), refreshClaudeModels()]);
+        if (next.loggedIn) setStatus("Ready");
+      });
     } catch (reason) {
       setStatus("Setup required");
       setError(friendlyError(reason));
@@ -3777,14 +3907,13 @@ export default function App() {
     try {
       await startCursorLogin();
       setStatus("Finish sign-in in Terminal");
-      window.setTimeout(() => {
-        void refreshCursorStatus().then((next) => {
-          if (next.loggedIn) {
-            setStatus("Ready");
-            void refreshCursorModels();
-          }
-        });
-      }, 2500);
+      watchSignIn("cursor", async () => Boolean((await getCursorRuntimeStatus())?.loggedIn), async () => {
+        const next = await refreshCursorStatus();
+        if (next.loggedIn) {
+          setStatus("Ready");
+          await refreshCursorModels();
+        }
+      });
     } catch (reason) {
       setStatus("Setup required");
       setError(friendlyError(reason));
@@ -3882,6 +4011,11 @@ export default function App() {
     const taskStatus = useTaskStore.getState().statuses[thread.id];
     if (taskStatus === "starting" || taskStatus === "running") {
       if (confirmArchive) setError(`Stop “${label}” before archiving it so its final output and transcript are preserved.`);
+      return false;
+    }
+    if (Object.values(childAgentLinksRef.current).some((link) => link.rootThreadId === thread.id && !link.terminalStatus)
+      || useTaskStore.getState().tasks[thread.id]?.agents.some((agent) => isActiveAgentRecord(agent.status))) {
+      if (confirmArchive) setError("Finish or stop this task’s sub-agents before archiving it.");
       return false;
     }
     if (archivingThreadIdsRef.current.has(thread.id)) return false;
@@ -3988,6 +4122,11 @@ export default function App() {
     const taskStatus = useTaskStore.getState().statuses[threadId];
     if (taskStatus === "starting" || taskStatus === "running") {
       setError(`Stop “${label}” before deleting it so no model process continues working after the conversation is removed.`);
+      return false;
+    }
+    if (Object.values(childAgentLinksRef.current).some((link) => link.rootThreadId === threadId && !link.terminalStatus)
+      || useTaskStore.getState().tasks[threadId]?.agents.some((agent) => isActiveAgentRecord(agent.status))) {
+      setError("Finish or stop this task’s sub-agents before deleting it.");
       return false;
     }
     const archived = archivedThreads.find((record) => record.id === threadId);
@@ -4861,6 +5000,23 @@ export default function App() {
     }
   };
 
+  const projectRun = activeProject?.overrides?.run;
+  const projectRunRunning = Boolean(projectRun && terminal.running && terminal.runningCommand === projectRun.command);
+  const runProjectCommand = () => {
+    if (!activeProject || !projectRun) return;
+    if (!runtimeStatus?.available) {
+      setRuntimeSetupOpen(true);
+      return;
+    }
+    if (terminal.running) {
+      setError(`The terminal is still running \`${terminal.runningCommand}\`. Stop it before starting the Run command.`);
+      return;
+    }
+    openStudio("terminal");
+    void terminal.run(projectRun.command, activeThreadWorktree?.gitDir ? [activeThreadWorktree.gitDir] : []);
+    void auditEvent("project.run", { command: projectRun.command }, activeThreadId ?? undefined).catch(() => {});
+  };
+
   const runProjectAction = async (action: ProjectAction) => {
     if (!activeProject) return;
     // The action's output belongs to the folder it runs in, not to whichever
@@ -5157,7 +5313,7 @@ export default function App() {
   );
 
   return (
-    <div ref={shellRef} className="app-shell" data-theme={previewTheme ?? projectDefaults?.theme ?? settings.theme} data-color-scheme={themeColorScheme(previewTheme ?? projectDefaults?.theme ?? settings.theme)} data-effort-slider={previewEffortSlider ?? projectDefaults?.effortSlider ?? settings.effortSlider} data-chat-font={activeChatFont} data-openai-logo={settings.openAiLogo} data-claude-logo={settings.claudeLogo} data-cursor-logo={settings.cursorLogo} style={{ zoom: (settings.uiScale || 100) / 100, "--ui-scale": (settings.uiScale || 100) / 100 } as CSSProperties}>
+    <div ref={shellRef} className="app-shell" data-theme={previewTheme ?? projectDefaults?.theme ?? settings.theme} data-color-scheme={themeColorScheme(previewTheme ?? projectDefaults?.theme ?? settings.theme)} data-effort-slider={previewEffortSlider ?? projectDefaults?.effortSlider ?? settings.effortSlider} data-chat-font={activeChatFont} data-openai-logo={settings.openAiLogo} data-claude-logo={settings.claudeLogo} data-cursor-logo={settings.cursorLogo} style={{ zoom: ((previewUiScale ?? settings.uiScale) || 100) / 100, "--ui-scale": ((previewUiScale ?? settings.uiScale) || 100) / 100 } as CSSProperties}>
       {successToast && (
         <div className={`app-toast ${toastKind}`} role="status" aria-live="polite">
           <span className="app-toast-icon">{toastKind === "success" ? <Check size={14} strokeWidth={2.5} /> : <MessageSquare size={14} />}</span>
@@ -5422,6 +5578,18 @@ export default function App() {
                 onAppPromptSettings={() => openSettings("prompts")}
               />
             )}
+            {activeProject && !activeWorkspace?.isChat && (
+              <ProjectRunControl
+                key={`run-${activeProject.id}`}
+                projectName={activeProject.name}
+                run={projectRun}
+                running={projectRunRunning}
+                terminalBusy={Boolean(terminal.running && !projectRunRunning)}
+                onRun={runProjectCommand}
+                onStop={() => void terminal.stop()}
+                onSave={persistActiveProjectRun}
+              />
+            )}
           </div>
           <div className="topbar-right">
             {activeThread && (
@@ -5675,7 +5843,9 @@ export default function App() {
                       </div>
                     }
                   >
+                    <SubAgentControlsProvider workers={subAgentWorkers} onOpen={openSubAgentWorker} onStop={stopSubAgentWorker}>
                     <ConversationTimeline threadId={activeThreadId} running={running} thinkingLabel={activeWorkspace.isChat ? "Thinking in normal chat" : `Working in ${activeProject?.name}`} approval={inlineApproval} provider={effectiveSettings.provider} onLoadEarlier={() => void loadEarlier(activeThreadId)} searchQuery={convSearchOpen ? convSearchQuery : ""} searchActiveMatch={convSearchIndex} onSearchMatches={setConvSearchCount} onEditMessage={editMessageIntoComposer} onApprovalRespond={respondToApproval} />
+                    </SubAgentControlsProvider>
                   </Suspense>
                 </ErrorBoundary>
               )}
@@ -5802,14 +5972,22 @@ export default function App() {
                       readiness={childAgentReadiness}
                       workers={subAgentWorkers}
                       parentActive={running || queuedTurns.length > 0}
-                      scopeLabel={activeProject ? activeProject.name : "Chats & project defaults"}
+                      scopeLabel={activeProject ? activeProject.name : "app defaults · projects without an override"}
                       projectOverride={!activeDelegationPolicy && Boolean(activeProject?.overrides?.subagents)}
                       presets={settings.childAgentPresets}
+                      onSavePreset={(name, policy) => {
+                        persistSettings((current) => {
+                          if (current.childAgentPresets.length >= MAX_CHILD_AGENT_PRESETS) return current;
+                          const preset = { id: uniqueChildAgentPresetId(name, current.childAgentPresets), name, policy };
+                          return { ...current, childAgentPresets: sanitizeChildAgentPresets([...current.childAgentPresets, preset]) };
+                        });
+                      }}
                       modelCatalogs={subAgentModelCatalogs}
                       modelFavorites={modelFavorites}
                       onToggleModelFavorite={toggleModelFavorite}
                       onChange={activeDelegationPolicy ? persistActiveThreadSubagentPolicy : persistComposerSubagentPolicy}
                       onOpenSettings={() => openSettings("agents")}
+                      onOpenAccounts={() => openSettings("models")}
                       onOpenWorker={openSubAgentWorker}
                       onStopWorker={stopSubAgentWorker}
                       onReplaceWorker={replaceSubAgentWorker}
@@ -6008,7 +6186,9 @@ export default function App() {
         onThemePreview={setPreviewTheme}
         onEffortSliderPreview={setPreviewEffortSlider}
         onChatFontPreview={setPreviewChatFont}
+        onUiScalePreview={setPreviewUiScale}
         onSignIn={beginChatGptLogin}
+        onSignOut={signOutChatGpt}
         onClaudeSignIn={beginClaudeLogin}
         onClaudeRefresh={async () => {
           const [status] = await Promise.all([refreshClaudeStatus(), refreshClaudeModels()]);

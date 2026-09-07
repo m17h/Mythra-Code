@@ -285,7 +285,9 @@ function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
     }
     if (method === "account/logout") {
       const result = accountLogoutImpl();
-      queueMicrotask(() => tauriEvents.handlers.get("codex-event")?.({ payload: { method: "account/updated", params: {} } }));
+      // Codex confirms a logout with the same notification an expired session
+      // produces.
+      queueMicrotask(() => tauriEvents.handlers.get("codex-event")?.({ payload: { method: "account/updated", params: { authMode: null, planType: null } } }));
       return result;
     }
     if (method === "account/rateLimits/read") return rateLimitsImpl();
@@ -453,6 +455,20 @@ describe("Codex cold startup", () => {
     expect(await screen.findByText(`Archived 2 ${kind} threads`)).toBeInTheDocument();
     expect(status.textContent).toBe("Ready");
     expect(status).not.toHaveTextContent("Archived");
+  });
+  it("does not archive a parent while a persisted sub-agent still has an unknown outcome", async () => {
+    localStorage.setItem("kiwi.childAgentLinks", JSON.stringify({
+      "unfinished-child": { childThreadId: "unfinished-child", rootThreadId: THREAD_A.id,
+        sessionId: "session-guard", targetId: "reviewer", provider: "claude", model: "claude-fable-5",
+        reasoningEffort: "high", title: "Unfinished review", createdAt: Date.now() },
+    }));
+    threadListImpl = (params) => ({ data: params.cwd === PROJECT_A.path ? [THREAD_A, THREAD_B] : [], nextCursor: null });
+    await renderApp();
+    await screen.findByText("Alpha thread");
+    fireEvent.click(screen.getByRole("button", { name: "Archive all" }));
+    expect(await screen.findByText("Archived 1 main thread")).toBeInTheDocument();
+    expect(screen.getByText("Alpha thread")).toBeInTheDocument();
+    expect(JSON.parse(localStorage.getItem("kiwi.childAgentLinks") ?? "{}")["unfinished-child"].terminalStatus).toBeUndefined();
   });
   it("keeps the app visible while the Settings chunk loads for the first time", { timeout: 15_000 }, async () => {
     await renderApp();
@@ -649,19 +665,43 @@ describe("chat header provider usage", () => {
     await screen.findByRole("button", { name: /OpenAI subscription.*Sign in for usage/ });
   });
 
-  it("clears stale OpenAI identity on auth failure and ignores an older account response", async () => {
+  it("clears stale OpenAI identity when the runtime drops the session and ignores an older account response", async () => {
     await renderApp();
     await screen.findByRole("button", { name: /OpenAI subscription/ });
     const stale = deferred<{ account: { type: string; email: string; planType: string } }>();
     accountReadImpl = () => stale.promise;
-    await act(async () => { tauriEvents.handlers.get("codex-event")?.({ payload: { method: "account/updated", params: {} } }); });
-    await act(async () => { tauriEvents.handlers.get("codex-event")?.({ payload: { stream: "stderr", line: "401 Unauthorized" } }); });
+    await act(async () => { tauriEvents.handlers.get("codex-event")?.({ payload: { method: "account/updated", params: { authMode: "chatgpt", planType: "pro" } } }); });
+    await act(async () => { tauriEvents.handlers.get("codex-event")?.({ payload: { method: "account/updated", params: { authMode: null, planType: null } } }); });
     expect(screen.getByRole("button", { name: /OpenAI subscription.*Sign in for usage/ })).toBeInTheDocument();
     await act(async () => {
       stale.resolve({ account: { type: "chatgpt", email: "stale@example.com", planType: "pro" } });
       await stale.promise;
     });
     expect(screen.getByRole("button", { name: /OpenAI subscription.*Sign in for usage/ })).toBeInTheDocument();
+  });
+
+  it("keeps the ChatGPT account when a stderr 401 belongs to something else", async () => {
+    rateLimitsImpl = () => ({ rateLimits: { primary: { usedPercent: 42, windowMinutes: 300 } } });
+    await renderApp();
+    await screen.findByRole("button", { name: /OpenAI subscription.*58% left/ });
+    const readsBefore = invokeMock.mock.calls.filter(([, args]) => args?.method === "account/read").length;
+    // An MCP server or OpenRouter rejection shares the runtime's stderr.
+    await act(async () => { tauriEvents.handlers.get("codex-event")?.({ payload: { stream: "stderr", line: "mcp server github: 401 Unauthorized" } }); });
+    await waitFor(() => expect(invokeMock.mock.calls.filter(([, args]) => args?.method === "account/read").length).toBe(readsBefore + 1));
+    const verification = invokeMock.mock.calls.filter(([, args]) => args?.method === "account/read").at(-1)?.[1] as { params?: { refreshToken?: boolean } } | undefined;
+    expect(verification?.params?.refreshToken).toBe(true);
+    expect(screen.getByRole("button", { name: /OpenAI subscription.*58% left/ })).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Sign in before sending" })).not.toBeInTheDocument();
+  });
+
+  it("signs out when the verification triggered by a stderr 401 is itself rejected", async () => {
+    rateLimitsImpl = () => ({ rateLimits: { primary: { usedPercent: 42, windowMinutes: 300 } } });
+    await renderApp();
+    await screen.findByRole("button", { name: /OpenAI subscription.*58% left/ });
+    accountReadImpl = () => { throw new Error("refresh_token_expired"); };
+    await act(async () => { tauriEvents.handlers.get("codex-event")?.({ payload: { stream: "stderr", line: "401 Unauthorized" } }); });
+    expect(await screen.findByRole("button", { name: /OpenAI subscription.*Sign in for usage/ })).toBeInTheDocument();
+    expect(await screen.findByRole("dialog", { name: "Sign in before sending" })).toBeInTheDocument();
   });
 
   it.each([true, false])("only clears identity for authentication failures during usage refresh (%s)", async (authFailure) => {
@@ -706,12 +746,12 @@ describe("chat header provider usage", () => {
     expect(screen.queryByRole("button", { name: /^Models & accounts/ })).not.toBeInTheDocument();
     await user.click(signInUsage);
     await user.click(screen.getByRole("button", { name: "Models & accounts" }));
-    expect(await screen.findByText("Official ChatGPT subscription sign-in")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Sign in" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Close settings" }));
-    expect(screen.getByText("Official ChatGPT subscription sign-in")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sign in", hidden: true })).toBeInTheDocument();
     await user.click(signInUsage);
     await user.click(screen.getByRole("button", { name: "Models & accounts" }));
-    expect(screen.getByText("Official ChatGPT subscription sign-in")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sign in", hidden: true })).toBeInTheDocument();
   });
 
   it("shows live OpenRouter credits and opens the detailed usage surface", async () => {
@@ -738,7 +778,7 @@ describe("chat header provider usage", () => {
     expect(await screen.findByRole("button", { name: /\$10\.00 credits left/i })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Settings" }));
     await user.click(await screen.findByRole("button", { name: /Models & accounts/ }));
-    await user.click(screen.getByRole("button", { name: /OpenRouter.*Responses-compatible model routing/ }));
+    await user.click(screen.getByRole("button", { name: /OpenRouter.*Pay-as-you-go API key/ }));
     await user.type(screen.getByPlaceholderText("sk-or-v1-…"), "sk-or-v1-new");
     await user.click(screen.getByRole("button", { name: "Save key" }));
 
@@ -769,6 +809,29 @@ describe("chat header provider usage", () => {
 
     expect(await screen.findByRole("button", { name: /OpenAI subscription.*Sign in for usage/i })).toHaveTextContent("Sign in for usage");
     expect(screen.queryByRole("button", { name: /OpenAI subscription.*58% left/i })).not.toBeInTheDocument();
+    // A deliberate sign-out must not nag with the sign-in prompt that an
+    // expired session raises.
+    expect(screen.queryByRole("dialog", { name: "Sign in before sending" })).not.toBeInTheDocument();
+
+    await act(async () => {
+      tauriEvents.handlers.get("codex-event")?.({ payload: { method: "account/updated", params: { authMode: null, planType: null } } });
+    });
+    expect(screen.queryByRole("dialog", { name: "Sign in before sending" })).not.toBeInTheDocument();
+  });
+
+  it("prompts for sign-in when the runtime loses the session on its own", async () => {
+    accountReadImpl = () => ({
+      account: { type: "chatgpt", email: "test@example.com", planType: "pro" },
+      requiresOpenaiAuth: true,
+    });
+    await renderApp();
+    expect(await screen.findByRole("button", { name: /OpenAI subscription/i })).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Sign in before sending" })).not.toBeInTheDocument();
+
+    await act(async () => {
+      tauriEvents.handlers.get("codex-event")?.({ payload: { method: "account/updated", params: { authMode: null, planType: null } } });
+    });
+    expect(await screen.findByRole("dialog", { name: "Sign in before sending" })).toBeInTheDocument();
   });
 
   it("ignores an old quota request that completes after sign-out", async () => {
@@ -2572,7 +2635,7 @@ describe("composer sub-agent command center", () => {
     await user.click(screen.getByRole("button", { name: /Chats/ }));
 
     await openCrew(user);
-    expect(screen.getByText("Editing Chats & project defaults")).toBeInTheDocument();
+    expect(screen.getByText("Editing app defaults · projects without an override")).toBeInTheDocument();
     await user.click(screen.getByRole("switch", { name: "Allow sub-agent spawning" }));
     await user.click(screen.getByRole("button", { name: "More concurrent sub-agents" }));
     await user.click(screen.getByRole("button", { name: "Add Claude sub-agent" }));
@@ -2990,5 +3053,46 @@ describe("workspace review diff", () => {
     await user.click(screen.getByRole("tab", { name: "Review workspace tool" }));
     expect(await screen.findByText("No changes loaded · against the tracked remote branch")).toBeInTheDocument();
     expect(screen.queryByText("console.ts")).not.toBeInTheDocument();
+  });
+});
+
+describe("project Run button", () => {
+  it("lights up with the project's saved command and runs it in the Terminal panel", async () => {
+    const user = userEvent.setup();
+    localStorage.setItem("kiwi.projects", JSON.stringify([
+      { ...PROJECT_A, overrides: { run: { command: "npm run dev", label: "Dev server", updatedAt: 1 } } },
+      PROJECT_B,
+    ]));
+    const executed: Array<Record<string, unknown>> = [];
+    commandExecImpl = (params) => {
+      executed.push(params);
+      return { exitCode: 0, stdout: "ready\n", stderr: "" };
+    };
+    await renderApp();
+
+    const trigger = await screen.findByRole("button", { name: "Run: ready" });
+    expect(trigger).toHaveTextContent("Dev server");
+    await user.click(trigger);
+
+    await waitFor(() => expect(executed.some((params) => (params.command as string[]).join(" ").includes("npm run dev"))).toBe(true));
+    const call = executed.find((params) => (params.command as string[]).join(" ").includes("npm run dev"))!;
+    expect(call.cwd).toBe("/projects/alpha");
+    expect(call.tty).toBe(true);
+  });
+
+  it("is greyed out until a command is saved from the header editor, per project", async () => {
+    const user = userEvent.setup();
+    await renderApp();
+
+    await user.click(await screen.findByRole("button", { name: "Run: not set" }));
+    await user.type(screen.getByRole("textbox", { name: "Run command for Alpha" }), "make dev");
+    await user.click(screen.getByRole("button", { name: "Save run command" }));
+
+    expect(await screen.findByRole("button", { name: "Run: ready" })).toHaveTextContent("make dev");
+    await waitFor(() => {
+      const stored = JSON.parse(localStorage.getItem("kiwi.projects")!) as Array<{ id: string; overrides?: { run?: { command: string } } }>;
+      expect(stored.find((project) => project.id === "project-a")?.overrides?.run?.command).toBe("make dev");
+      expect(stored.find((project) => project.id === "project-b")?.overrides?.run).toBeUndefined();
+    });
   });
 });

@@ -37,19 +37,20 @@ const POLICY: ProjectSubagentSettings = {
 };
 
 /** Bottom-anchored over a composer, the way the real control sits. */
-async function open() {
+async function open(readiness = READY) {
   const view = render(
-    <div className="app-shell" data-theme="midnight" style={{ display: "flex", alignItems: "flex-end", width: 900, height: 860, padding: 20 }}>
+    <div className="app-shell" data-theme="midnight" data-color-scheme="dark" style={{ display: "flex", alignItems: "flex-end", width: 900, height: 860, padding: 20 }}>
       <SubAgentCommandCenter
         policy={POLICY}
         capturedPolicy={null}
         mode="open"
-        readiness={READY}
+        readiness={readiness}
         workers={[]}
         scopeLabel="Chats & project defaults"
         projectOverride={false}
         onChange={vi.fn()}
         onOpenSettings={vi.fn()}
+        onSavePreset={vi.fn()}
       />
     </div>,
   );
@@ -98,6 +99,16 @@ async function settle(...elements: HTMLElement[]) {
 }
 
 describe("sub-agent roster transition", () => {
+  it("themes the signed-out account action for dark palettes", async () => {
+    const { view } = await open({ ...READY, openAiSignedIn: false });
+    const action = view.getByRole("button", { name: "Models & accounts" });
+    const style = getComputedStyle(action);
+
+    expect(style.backgroundColor).not.toBe("rgb(255, 255, 255)");
+    expect(style.color).not.toBe("rgb(255, 255, 255)");
+    expect(style.borderTopStyle).toBe("solid");
+  });
+
   it("animates every displaced tile rather than re-placing it", async () => {
     const { view, panel, grid } = await open();
     const before = boxes(panel, grid);
@@ -153,4 +164,19 @@ describe("sub-agent roster transition", () => {
       expect(tile.className).not.toContain("expanded");
     }
   });
+});
+
+
+it("keeps preset controls and routing instructions within the popover", async () => {
+  const { view, panel, grid } = await open();
+  fireEvent.click(view.getByRole("button", { name: "Configure one" }));
+  await settle(panel, grid);
+  const fields = [view.getByRole("textbox", { name: "New sub-agent preset name" }), view.getByRole("textbox", { name: "When to use one" }), view.getByRole("button", { name: "Save as preset" })];
+  const bounds = panel.getBoundingClientRect();
+  for (const field of fields) {
+    const rect = field.getBoundingClientRect();
+    expect(rect.width).toBeGreaterThan(40);
+    expect(rect.left).toBeGreaterThanOrEqual(bounds.left);
+    expect(rect.right).toBeLessThanOrEqual(bounds.right);
+  }
 });

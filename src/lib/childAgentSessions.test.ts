@@ -6,7 +6,7 @@ const bridge = vi.hoisted(() => ({
 }));
 vi.mock("./agentBridge", () => bridge);
 
-import { cacheChildAgentPolicy, ensureChildAgentBridge, releaseChildAgentSessions, resetChildAgentLaunches } from "./childAgentSessions";
+import { assertChildAgentProposalAvailable, cacheChildAgentPolicy, ensureChildAgentBridge, releaseChildAgentSessions, resetChildAgentLaunches } from "./childAgentSessions";
 import type { ChildAgentBridgeLaunch } from "./agentBridge";
 import type { ChildAgentLink, ChildAgentPolicy, ChildAgentReadiness } from "./childAgents";
 import type { ChildAgentSettings, ChildAgentTarget } from "../types";
@@ -141,6 +141,19 @@ describe("ensureChildAgentBridge", () => {
       expect.objectContaining({ targets: [] }),
       [],
     );
+  });
+
+  it("does not persist a temporary empty roster when inherited settings refresh while delegation is off", async () => {
+    const stored = policy();
+    const result = await ensureChildAgentBridge(input({
+      threadId: "thread-1", policies: { [stored.sessionId]: stored },
+      promoteStagedEdits: true, settingsProposalsEnabled: true,
+      settings: { childAgents: CHILD_AGENTS, subagentsEnabled: false, subagentMax: 3 },
+    }));
+    expect(result?.policy.targets).toEqual([]);
+    expect(result?.captured).toBe(false);
+    expect(result?.policyUpdated).not.toBe(true);
+    expect(stored.targets).toHaveLength(1);
   });
 
   it("upgrades a proposal-only session to the approved live crew when enabled", async () => {
@@ -479,4 +492,35 @@ describe("releaseChildAgentSessions", () => {
     bridge.endChildAgentSession.mockRejectedValue(new Error("gone"));
     await expect(releaseChildAgentSessions({ "session-existing": policy() }, "thread-1")).resolves.toEqual(["session-existing"]);
   });
+});
+
+it("does not promote disabled or unavailable staged sub-agents", async () => {
+  const staged = policy({ pendingRecapture: { targets: [TARGET, { ...TARGET, id: "off", enabled: false }, { ...TARGET, id: "offline", provider: "claude" }], maxConcurrent: 3, approvedAt: 20 } });
+  const result = await ensureChildAgentBridge(input({ threadId: "thread-1", policies: { "session-existing": staged }, promoteStagedEdits: true, readiness: { ...READY, claudeReady: false } }));
+  expect(result?.policy.targets.map((entry) => entry.id)).toEqual([TARGET.id]);
+  expect(result?.policy.maxConcurrent).toBe(1);
+});
+
+it("refreshes inherited execution settings at the next turn without replacing explicit targets", async () => {
+  resetChildAgentLaunches();
+  const frozen = policy();
+  const result = await ensureChildAgentBridge(input({ threadId: "thread-1", policies: { "session-existing": frozen }, promoteStagedEdits: true, systemPrompt: "New instructions", providerSystemPrompts: { cursor: "Cursor instructions" }, reasoningEffort: "high", serviceTier: null, projectInstructionsEnabled: true }));
+  expect(result?.policy).toMatchObject({ systemPrompt: "New instructions", reasoningEffort: "high", serviceTier: null, projectInstructionsEnabled: true, providerSystemPrompts: { cursor: "Cursor instructions" }, targets: frozen.targets });
+});
+
+it("reconciles persisted completions when registering a bridge again", async () => {
+  resetChildAgentLaunches();
+  const frozen = policy();
+  await ensureChildAgentBridge(input({ threadId: "thread-1", policies: { "session-existing": frozen }, links: { "child-1": link({ terminalStatus: "completed" }) } }));
+  expect(bridge.startChildAgentSession).toHaveBeenLastCalledWith(expect.anything(), ["child-1"], ["child-1"]);
+});
+
+it("keeps direct staged edits and unresolved children safe from proposal approval", () => {
+  resetChildAgentLaunches();
+  const policies = { "session-existing": policy() };
+  cacheChildAgentPolicy(policy({ pendingRecapture: { targets: [], maxConcurrent: 1, approvedAt: 1 } }));
+  expect(() => assertChildAgentProposalAvailable(policies, {}, "thread-1")).toThrow(/unsent/);
+  resetChildAgentLaunches();
+  expect(() => assertChildAgentProposalAvailable(policies, { child: link() }, "thread-1")).toThrow(/finish/);
+  expect(() => assertChildAgentProposalAvailable(policies, { child: link({ terminalStatus: "completed" }) }, "thread-1")).not.toThrow();
 });

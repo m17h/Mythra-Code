@@ -159,7 +159,7 @@ describe("SettingsModal", () => {
       "Tools & MCP",
     ]);
     expect(within(screen.getByRole("group", { name: "System" })).getAllByRole("button").map((button) => button.textContent)).toEqual([
-      "Runtime & diagnostics",
+      "Runtime",
       "Updates",
     ]);
   });
@@ -235,15 +235,19 @@ describe("SettingsModal", () => {
     render(<SettingsModal {...modalProps()} />);
 
     expect(within(screen.getByRole("group", { name: "Workspace" })).getByRole("button", { name: /Interface/ })).toBeInTheDocument();
-    // Interface is appearance-only: themes, effort-slider styles, chat typeface.
-    expect(screen.getByText("Appearance")).toBeInTheDocument();
+    // Interface is appearance-only: theme, size, effort-slider styles, chat
+    // typeface, and provider marks. The pane heading carries the description,
+    // so no section repeats it.
+    expect(screen.getByText("Theme")).toBeInTheDocument();
+    expect(screen.queryByText("Appearance")).not.toBeInTheDocument();
+    expect(screen.getByText("Provider marks")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Interface size" })).toHaveAttribute("aria-haspopup", "menu");
     expect(screen.getByText("Chat typeface")).toBeInTheDocument();
     expect(screen.queryByText("Getting started")).not.toBeInTheDocument();
     expect(screen.queryByText("Runtime behavior")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Run onboarding" })).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: /Runtime & diagnostics/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Runtime" }));
 
     expect(screen.getByText("Getting started")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Run onboarding" })).toBeInTheDocument();
@@ -252,7 +256,10 @@ describe("SettingsModal", () => {
     expect(screen.getByText("Diagnostics")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Export JSON" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Interface size" })).not.toBeInTheDocument();
-    expect(screen.queryByText("Appearance")).not.toBeInTheDocument();
+    expect(screen.queryByText("Theme")).not.toBeInTheDocument();
+    // Runtime fields use the shared menu, not native selects.
+    expect(screen.getByRole("button", { name: "OpenAI service tier" })).toHaveAttribute("aria-haspopup", "menu");
+    expect(screen.getByRole("button", { name: "Terminal scrollback" })).toHaveAttribute("aria-haspopup", "menu");
   });
 
   it("offers the curated chat typefaces and previews one without saving it", () => {
@@ -375,7 +382,7 @@ describe("SettingsModal", () => {
     render(<SettingsModal {...modalProps({ initialSection: "models" })} />);
 
     expect(screen.getByRole("button", { name: /Models & accounts/ })).toHaveAttribute("aria-current", "page");
-    expect(screen.getByRole("heading", { name: "Default model provider" })).toBeInTheDocument();
+    expect(screen.getByText("Default provider")).toBeInTheDocument();
     expect(screen.getByText(/Each thread keeps its own provider/)).toBeInTheDocument();
   });
 
@@ -549,7 +556,7 @@ describe("SettingsModal", () => {
 
   it("saves the chosen logo for OpenAI models", () => {
     const onSave = vi.fn();
-    render(<SettingsModal {...modalProps({ initialSection: "models", onSave })} />);
+    render(<SettingsModal {...modalProps({ initialSection: "general", onSave })} />);
 
     fireEvent.click(screen.getByRole("radio", { name: "Codex" }));
     expect(screen.getByRole("radio", { name: "Codex" })).toHaveAttribute("aria-checked", "true");
@@ -560,7 +567,7 @@ describe("SettingsModal", () => {
 
   it("saves the chosen logo for Claude models", () => {
     const onSave = vi.fn();
-    render(<SettingsModal {...modalProps({ initialSection: "models", onSave })} />);
+    render(<SettingsModal {...modalProps({ initialSection: "general", onSave })} />);
 
     fireEvent.click(screen.getByRole("radio", { name: "Anthropic" }));
     expect(screen.getByRole("radio", { name: "Anthropic" })).toHaveAttribute("aria-checked", "true");
@@ -571,7 +578,7 @@ describe("SettingsModal", () => {
 
   it("saves the official dark app icon for Cursor models", () => {
     const onSave = vi.fn();
-    render(<SettingsModal {...modalProps({ initialSection: "models", onSave })} />);
+    render(<SettingsModal {...modalProps({ initialSection: "general", onSave })} />);
 
     fireEvent.click(screen.getByRole("radio", { name: /Cursor Dark/ }));
     expect(screen.getByRole("radio", { name: /Cursor Dark/ })).toHaveAttribute("aria-checked", "true");
@@ -663,7 +670,7 @@ describe("SettingsModal", () => {
       onLMStudioRefresh,
     })} />);
 
-    fireEvent.click(screen.getByRole("button", { name: /LM Studio.*Local models through your LM Studio server/ }));
+    fireEvent.click(screen.getByRole("button", { name: /LM Studio.*Local models on this computer/ }));
     expect(screen.getByText("2 models available")).toBeInTheDocument();
     expect(screen.getByText("Connected", { selector: ".connected-badge" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Test connection/ }));
@@ -890,7 +897,7 @@ describe("SettingsModal", () => {
     expect(document.activeElement).toBe(focusable[0]);
   });
 
-  it("offers the onboarding guide again from Runtime & diagnostics", () => {
+  it("offers the onboarding guide again from Runtime", () => {
     const onOpenOnboarding = vi.fn();
     render(<SettingsModal {...modalProps({ initialSection: "system", onOpenOnboarding })} />);
 
@@ -1043,14 +1050,14 @@ describe("SettingsModal", () => {
     render(<SettingsModal {...modalProps({ initialSection: "agents", onSave })} />);
 
     const toggle = screen.getByRole("switch", { name: "Archive sub-agent threads automatically" });
-    expect(toggle).toHaveAttribute("aria-checked", "true");
+    expect(toggle).toHaveAttribute("aria-checked", "false");
     fireEvent.click(toggle);
     fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
 
-    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ autoArchiveSubagentThreads: false }));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ autoArchiveSubagentThreads: true }));
   });
 
-  it("shows one preset workflow without exposing a separate policy editor", () => {
+  it("keeps the defaults editor collapsed beside the preset workflow", () => {
     render(<SettingsModal {...modalProps({ initialSection: "agents" })} />);
 
     const archiveToggle = screen.getByRole("switch", { name: "Archive sub-agent threads automatically" });
@@ -1260,4 +1267,15 @@ it("labels a cached account as unverified when its connection check fails", () =
   render(<SettingsModal {...modalProps({ initialSection: "models", account: { type: "chatgpt", email: "test@example.com", planType: "plus" }, accountChecks: { openai: "Connection check unavailable" } })} />);
   expect(screen.getByText("Connection check unavailable")).toBeInTheDocument();
   expect(screen.getByText("Unverified")).toBeInTheDocument();
+});
+
+
+it("edits app sub-agent defaults without creating a preset", () => {
+  const onSave = vi.fn();
+  render(<SettingsModal {...modalProps({ initialSection: "agents", onSave })} />);
+  fireEvent.click(screen.getByRole("button", { name: "Edit sub-agent defaults" }));
+  const editor = screen.getByRole("group", { name: "Sub-agent defaults editor" });
+  fireEvent.click(within(editor).getByRole("switch", { name: "Allow sub-agent spawning" }));
+  fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+  expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ subagentsEnabled: true, childAgentPresets: [] }));
 });
