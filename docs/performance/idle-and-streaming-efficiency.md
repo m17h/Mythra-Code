@@ -49,7 +49,9 @@ measured reduction in overall CPU, battery consumption, or typing latency.
 The baseline was reconstructed from HEAD plus the exact uncommitted diff present
 before this pass. Both baseline and changed sources used the same dependencies
 and build settings. Both frontend profiles were built on macOS; this table is
-not a native Windows executable benchmark. Existing budget values were retained.
+not a native Windows executable benchmark. This efficiency pass did not further
+raise the candidate's budget values; the same 1.15.7 candidate separately records
+an exact reviewed size increase for its correctness and security hardening.
 
 | Profile / metric | Before, bytes | After, bytes | Change |
 | --- | ---: | ---: | ---: |
@@ -68,7 +70,7 @@ Startup CSS is unchanged. Both profiles pass the existing size budgets.
   unmount cleanup.
 - Unicode tests cover combining characters, flags, joined emoji, Indic text,
   changing source text, segmentation reuse, and complete final output.
-- `npm run verify` passes: 1,622 unit tests, 157 Chromium browser tests, 145 native
+- `npm run verify` passes: 1,624 unit tests, 157 Chromium browser tests, 145 native
   Rust tests, lint, type checks, production build, and performance budgets.
 - Two additional handoff integration cases pass for formatter load failure and
   changing tasks during loading. The Windows focused run also passes 259 unit
@@ -77,7 +79,7 @@ Startup CSS is unchanged. Both profiles pass the existing size budgets.
   (18 tests per engine), including Markdown structure, copy behavior, selection,
   scroll position, simultaneous streams, and completion cleanup.
 
-No release version, native implementation, user data, inference setting, or
-performance-budget value was changed by this pass. Existing checkout changes
-were preserved. Long-session native-app profiling remains useful future work;
-this pass does not establish an app-wide frame-time or memory improvement.
+No native implementation, user data, or inference setting was changed by this
+efficiency pass. Existing checkout changes were preserved and the release version
+was bumped separately. Long-session native-app profiling remains useful future
+work; this pass does not establish an app-wide frame-time or memory improvement.
