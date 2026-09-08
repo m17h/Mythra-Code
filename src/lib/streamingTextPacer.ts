@@ -29,6 +29,7 @@ function createSupportedPacer(root: HTMLElement, initial: string, publish: (text
   const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
   const policy = view.matchMedia("(prefers-reduced-motion: reduce), (forced-colors: active)");
   let source = initial;
+  let segments: ReturnType<Intl.Segmenter["segment"]> | undefined;
   let shown = initial.length;
   let settled = shown;
   let batches: Array<{ size: number; at: number }> = [];
@@ -70,7 +71,7 @@ function createSupportedPacer(root: HTMLElement, initial: string, publish: (text
     for (const batch of batches) available += batch.size * Math.max(0, Math.min(1, (now - batch.at) / WINDOW_MS));
     const candidate = Math.min(source.length, Math.max(shown, Math.floor(available)));
     if (now - lastPublish >= FRAME_MS - 0.1 || !batches.length) {
-      const grapheme = candidate < source.length ? segmenter.segment(source).containing(candidate) : undefined;
+      const grapheme = candidate < source.length ? (segments ??= segmenter.segment(source)).containing(candidate) : undefined;
       const end = grapheme ? grapheme.index : candidate;
       if (end > shown) {
         shown = end;
@@ -104,6 +105,7 @@ function createSupportedPacer(root: HTMLElement, initial: string, publish: (text
       if (disposed || text === source) return;
       const previous = source;
       source = text;
+      segments = undefined;
       if (!text.startsWith(previous)) {
         clear(); settled = shown = text.length; publish(text); return;
       }

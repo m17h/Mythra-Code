@@ -608,6 +608,56 @@ describe("useChildAgents", () => {
       expect(lastResponse()?.[2]).toMatch(/stopped this run/);
     });
 
+    it("reports a start as in flight until the child's ownership record exists", async () => {
+      let resolveStart!: (value: unknown) => void;
+      childRun.startChildAgentTurn.mockImplementationOnce(() => new Promise((resolve) => { resolveStart = resolve; }));
+      const view = await mount();
+      expect(view.result.current.hasChildStartInFlight("root-1")).toBe(false);
+      await view.send(request());
+      expect(view.result.current.hasChildStartInFlight("root-1")).toBe(true);
+      expect(persistedLinks).toEqual({});
+      await act(async () => {
+        resolveStart({ thread: childThread("late-child", "openai"), turnId: "late-turn", provider: "openai", model: "gpt-5.6-terra" });
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(persistedLinks["late-child"]).toEqual(expect.objectContaining({ rootThreadId: "root-1" }));
+      expect(view.result.current.hasChildStartInFlight("root-1")).toBe(false);
+    });
+
+    it("clears the in-flight start when the provider refuses to start the child", async () => {
+      let rejectStart!: (reason: unknown) => void;
+      childRun.startChildAgentTurn.mockImplementationOnce(() => new Promise((_, reject) => { rejectStart = reject; }));
+      const view = await mount();
+      await view.send(request());
+      expect(view.result.current.hasChildStartInFlight("root-1")).toBe(true);
+      await act(async () => {
+        rejectStart(new Error("provider offline"));
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(view.result.current.hasChildStartInFlight("root-1")).toBe(false);
+      expect(lastResponse()?.[2]).toMatch(/provider offline/);
+    });
+
+    it("cuts off a child whose start resolves after its root thread was removed", async () => {
+      let resolveStart!: (value: unknown) => void;
+      childRun.startChildAgentTurn.mockImplementationOnce(() => new Promise((resolve) => { resolveStart = resolve; }));
+      const view = await mount();
+      await view.send(request());
+      // Deleting the root drops its frozen policy before the provider answers.
+      await view.rerender({ policies: {} });
+      await act(async () => {
+        resolveStart({ thread: childThread("orphan-child", "openai"), turnId: "orphan-turn", provider: "openai", model: "gpt-5.6-terra" });
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(codex.rpc).toHaveBeenCalledWith("turn/interrupt", { threadId: "orphan-child", turnId: "orphan-turn" });
+      expect(persistedLinks["orphan-child"]).toEqual(expect.objectContaining({ rootThreadId: "root-1", terminalStatus: "cancelled" }));
+      expect(useTaskStore.getState().statuses["orphan-child"]).toBe("interrupted");
+      expect(lastResponse()?.[2]).toMatch(/removed while the sub-agent was starting/);
+    });
+
     it("keeps a late child visible when its post-Stop cutoff cannot be confirmed", async () => {
       let resolveStart!: (value: unknown) => void;
       childRun.startChildAgentTurn.mockImplementationOnce(() => new Promise((resolve) => { resolveStart = resolve; }));
@@ -920,6 +970,19 @@ it("keeps the beginning and conclusion of an oversized final answer", async () =
   expect(response.result).toContain("middle omitted");
 });
 
+it("does not run a retry timer while idle or after a successful first acknowledgement", async () => {
+  const interval = vi.spyOn(globalThis, "setInterval");
+  try {
+    const view = await mount();
+    expect(interval.mock.calls.filter((call) => call[1] === 5000)).toHaveLength(0);
+    persistedLinks = { "child-1": link({ terminalStatus: "completed" }) };
+    await act(async () => { view.rerender({ links: persistedLinks }); });
+    expect(bridge.reportChildAgentFinished).toHaveBeenCalledTimes(1);
+    expect(interval.mock.calls.filter((call) => call[1] === 5000)).toHaveLength(0);
+    view.unmount();
+  } finally { interval.mockRestore(); }
+});
+
 it("retries a lost slot-release acknowledgement", async () => {
   vi.useFakeTimers();
   try {
@@ -931,6 +994,7 @@ it("retries a lost slot-release acknowledgement", async () => {
     expect(bridge.reportChildAgentFinished).toHaveBeenCalledTimes(2);
     await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
     expect(bridge.reportChildAgentFinished).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
     view.unmount();
   } finally { vi.useRealTimers(); }
 });

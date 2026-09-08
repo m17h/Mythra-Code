@@ -116,7 +116,7 @@ import { runtimeModelProviderId } from "./lib/providerIds";
 import { primaryModifierLabel } from "./lib/platform";
 import { archivedThreadsForInbox, providerForArchivedThread } from "./lib/threadArchive";
 import { sanitizeProjectDefaultOverrides } from "./lib/projectDefaults";
-import { buildProviderHandoffPrompt, sanitizePendingHandoff } from "./lib/providerHandoff";
+import { sanitizePendingHandoff } from "./lib/providerHandoff";
 import { deleteThreadTurnDurations } from "./lib/turnDurations";
 import {
   uniqueChildAgentPresetId,
@@ -564,6 +564,7 @@ export default function App() {
   }, []);
   const claudeUsageRequestRef = useRef(0);
   const claudeStatusRequestRef = useRef(0);
+  const cursorStatusRequestRef = useRef(0);
   const threadProjectBindingsRef = useRef<Record<string, string> | null>(null);
   const knownThreadsRef = useRef<ThreadSidebarIndex | null>(null);
   const historyRequestRef = useRef(new Map<string, number>());
@@ -602,6 +603,7 @@ export default function App() {
   const skillRuntimeRootRef = useRef("");
   const skillFilesRef = useRef<LocalSkillFile[]>([]);
   const skillScanSequenceRef = useRef(0);
+  const skillPrepareQueueRef = useRef<Promise<void>>(Promise.resolve());
   const skillsBusyCountRef = useRef(0);
   const removedSkills = useMemo(
     () => resolveLocalSkills(skillFiles.filter((file) => removedSkillPaths.includes(file.path)), skillAliases, disabledSkillPaths),
@@ -1607,14 +1609,20 @@ export default function App() {
   }, [setAccountCheck]);
 
   const refreshCursorStatus = useCallback(async () => {
+    // Startup, provider switches, sign-in polling, and the Settings refresh
+    // button can overlap. Only the newest request may publish, so a slow
+    // older check cannot land after a newer one and show a stale sign-in state.
+    const request = ++cursorStatusRequestRef.current;
     try {
       const result = await getCursorRuntimeStatus();
       const normalized = result ?? DISCONNECTED_SUBSCRIPTION_STATUS;
-      setCursorStatus(normalized);
+      if (cursorStatusRequestRef.current === request) setCursorStatus(normalized);
       return normalized;
     } catch (reason) {
-      setCursorStatus(DISCONNECTED_SUBSCRIPTION_STATUS);
-      setError(friendlyError(reason));
+      if (cursorStatusRequestRef.current === request) {
+        setCursorStatus(DISCONNECTED_SUBSCRIPTION_STATUS);
+        setError(friendlyError(reason));
+      }
       return DISCONNECTED_SUBSCRIPTION_STATUS;
     }
   }, []);
@@ -2020,21 +2028,33 @@ export default function App() {
   });
 
   const prepareLocalSkills = useCallback(
-    async (folder: string, files: LocalSkillFile[], aliases: Record<string, string>, disabled: string[], removed: string[]) => {
+    async (folder: string, files: LocalSkillFile[], aliases: Record<string, string>, disabled: string[], removed: string[], scanSequence: number) => {
       const resolved = resolveLocalSkills(files, aliases, disabled, removed);
-      if (!folder) {
+      const superseded = () => scanSequence !== skillScanSequenceRef.current;
+      const run = async () => {
+        if (superseded()) return resolved;
+        if (!folder) {
+          setSkills(resolved);
+          skillRuntimeRootRef.current = "";
+          if (runtimeStatus?.available) await rpc("skills/extraRoots/set", { extraRoots: [] });
+          return resolved;
+        }
+        // The native sync replaces one shared runtime directory. Serialize it
+        // so an older scan cannot finish last and overwrite the files prepared
+        // by a newer scan even when its renderer state is correctly ignored.
+        const runtimeRoot = await syncLocalSkills(folder, resolved);
+        if (superseded()) return resolved;
+        if (runtimeStatus?.available) {
+          await rpc("skills/extraRoots/set", { extraRoots: [runtimeRoot] });
+          if (superseded()) return resolved;
+        }
+        skillRuntimeRootRef.current = runtimeRoot;
         setSkills(resolved);
-        skillRuntimeRootRef.current = "";
-        if (runtimeStatus?.available) await rpc("skills/extraRoots/set", { extraRoots: [] });
         return resolved;
-      }
-      const runtimeRoot = await syncLocalSkills(folder, resolved);
-      if (runtimeStatus?.available) {
-        await rpc("skills/extraRoots/set", { extraRoots: [runtimeRoot] });
-      }
-      skillRuntimeRootRef.current = runtimeRoot;
-      setSkills(resolved);
-      return resolved;
+      };
+      const prepared = skillPrepareQueueRef.current.then(run, run);
+      skillPrepareQueueRef.current = prepared.then(() => undefined, () => undefined);
+      return prepared;
     },
     [runtimeStatus?.available],
   );
@@ -2053,7 +2073,7 @@ export default function App() {
         setSkillFiles([]);
         setSkills([]);
         setSkillsError("");
-        return prepareLocalSkills("", [], aliases, disabled, removed);
+        return prepareLocalSkills("", [], aliases, disabled, removed, scanSequence);
       }
       if (!silent) {
         skillsBusyCountRef.current += 1;
@@ -2070,7 +2090,7 @@ export default function App() {
         if (silent && unchanged) return resolveLocalSkills(files, aliases, disabled, removed);
         skillFilesRef.current = files;
         setSkillFiles(files);
-        return await prepareLocalSkills(folder, files, aliases, disabled, removed);
+        return await prepareLocalSkills(folder, files, aliases, disabled, removed, scanSequence);
       } catch (reason) {
         // Editors, sync clients, and antivirus can briefly lock Markdown on
         // Windows. Background refreshes keep the last known-good library and
@@ -2081,7 +2101,7 @@ export default function App() {
         setSkillFiles([]);
         setSkills([]);
         try {
-          await prepareLocalSkills("", [], aliases, disabled, removed);
+          await prepareLocalSkills("", [], aliases, disabled, removed, scanSequence);
         } catch {
           /* Keep the scan error as the useful message. */
         }
@@ -3527,7 +3547,13 @@ export default function App() {
         targetProvider: provider,
         createdAt: Date.now(),
       };
-      const prompt = buildProviderHandoffPrompt({
+      const selection = selectThreadRequestRef.current;
+      const formatter = await import("./lib/providerHandoffPrompt").catch((reason) => {
+        setError(friendlyError(reason));
+        return null;
+      });
+      if (!formatter || selection !== selectThreadRequestRef.current) return;
+      const prompt = formatter.buildProviderHandoffPrompt({
         title: sourceTitle,
         sourceProvider,
         sourceModel: handoff.sourceModel,
@@ -3713,7 +3739,7 @@ export default function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeThreadId, executionPathFor, projectForThread, runtimeStatus?.available]);
 
-  const { cancelChildAgentsFor, respondToSettingsProposal, stopChildAgent } = useChildAgents({
+  const { cancelChildAgentsFor, hasChildStartInFlight, respondToSettingsProposal, stopChildAgent } = useChildAgents({
     policies: childAgentPolicies,
     links: childAgentLinks,
     persistChildAgentLinks,
@@ -4013,8 +4039,11 @@ export default function App() {
       if (confirmArchive) setError(`Stop “${label}” before archiving it so its final output and transcript are preserved.`);
       return false;
     }
+    // A child whose provider is still starting has no link or agent record
+    // yet; the in-flight check keeps that window from slipping past the guard.
     if (Object.values(childAgentLinksRef.current).some((link) => link.rootThreadId === thread.id && !link.terminalStatus)
-      || useTaskStore.getState().tasks[thread.id]?.agents.some((agent) => isActiveAgentRecord(agent.status))) {
+      || useTaskStore.getState().tasks[thread.id]?.agents.some((agent) => isActiveAgentRecord(agent.status))
+      || hasChildStartInFlight(thread.id)) {
       if (confirmArchive) setError("Finish or stop this task’s sub-agents before archiving it.");
       return false;
     }
@@ -4125,7 +4154,8 @@ export default function App() {
       return false;
     }
     if (Object.values(childAgentLinksRef.current).some((link) => link.rootThreadId === threadId && !link.terminalStatus)
-      || useTaskStore.getState().tasks[threadId]?.agents.some((agent) => isActiveAgentRecord(agent.status))) {
+      || useTaskStore.getState().tasks[threadId]?.agents.some((agent) => isActiveAgentRecord(agent.status))
+      || hasChildStartInFlight(threadId)) {
       setError("Finish or stop this task’s sub-agents before deleting it.");
       return false;
     }

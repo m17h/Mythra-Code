@@ -207,20 +207,26 @@
       "decision": "Accept the exact measured feature and correctness cost of the project-scoped Run control, terminal-panel execution bridge, externally completed provider sign-in detection, restart-safe sub-agent lifecycle recovery, retryable slot release, and clearer sub-agent and Settings status controls. Safari grows by 15,009 app-entry bytes, 13,368 startup JavaScript bytes, 5,796 startup CSS bytes and 20,162 total JavaScript bytes; Chrome grows by 13,913, 12,231, 1,815 and 18,629 bytes respectively. The Run control is an always-visible shell feature; its document listeners exist only while its editor is open. Sign-in probes run only after the user launches an external login, are spaced four seconds apart by default, ignore transient probe failures, stop on success or a ten-minute deadline, and are aborted on cleanup. The shared sub-agent clock runs only while a child is active and replaces per-card clocks. Settings JavaScript remains in the existing lazy chunk. No frontend or Rust dependency is added, and the change adds no idle provider polling, transcript scan, streaming-path timer, or per-frame React work. This is reviewed UI-feature and reliability overhead, not an efficiency claim. Limits match measured production output on both configured targets with no extra headroom.",
       "safari13": { "appEntryFromBytes": 355207, "appEntryToBytes": 370216, "appEntryDeltaBytes": 15009, "startupJsFromBytes": 717438, "startupJsToBytes": 730806, "startupJsDeltaBytes": 13368, "startupCssFromBytes": 354173, "startupCssToBytes": 359969, "startupCssDeltaBytes": 5796, "totalJsFromBytes": 1469077, "totalJsToBytes": 1489239, "totalJsDeltaBytes": 20162 },
       "chrome105": { "appEntryFromBytes": 337095, "appEntryToBytes": 351008, "appEntryDeltaBytes": 13913, "startupJsFromBytes": 692141, "startupJsToBytes": 704372, "startupJsDeltaBytes": 12231, "startupCssFromBytes": 351803, "startupCssToBytes": 353618, "startupCssDeltaBytes": 1815, "totalJsFromBytes": 1433796, "totalJsToBytes": 1452425, "totalJsDeltaBytes": 18629 }
+    },
+    {
+      "change": "Harden provider trust boundaries, child-agent lifecycle, and asynchronous state cleanup",
+      "decision": "Accept 631 Safari / 635 Chrome startup and total JavaScript bytes for last-write-wins provider refreshes, serialized local-skill runtime preparation, fail-closed one-level child ownership, archive/delete guards during provider startup, and terminal reasoning-buffer cleanup. The native sandbox, approval-request, and process-identity hardening adds no renderer bytes. The browser-test change adds no production code, dependencies, provider requests, polling, timers, per-frame work, CSS, or retained transcript data. This is reviewed correctness and security overhead rather than an efficiency claim. Limits match measured production output on both configured targets with no extra headroom.",
+      "safari13": { "appEntryFromBytes": 370216, "appEntryToBytes": 370936, "appEntryDeltaBytes": 720, "startupJsFromBytes": 730806, "startupJsToBytes": 731437, "startupJsDeltaBytes": 631, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1489239, "totalJsToBytes": 1489870, "totalJsDeltaBytes": 631 },
+      "chrome105": { "appEntryFromBytes": 351008, "appEntryToBytes": 351699, "appEntryDeltaBytes": 691, "startupJsFromBytes": 704372, "startupJsToBytes": 705007, "startupJsDeltaBytes": 635, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1452425, "totalJsToBytes": 1453060, "totalJsDeltaBytes": 635 }
     }
   ],
   "profiles": {
     "safari13-minified": {
-      "appEntryRawBytes": 370216,
-      "startupJsRawBytes": 730806,
+      "appEntryRawBytes": 370936,
+      "startupJsRawBytes": 731437,
       "startupCssRawBytes": 359969,
-      "totalJsRawBytes": 1489239
+      "totalJsRawBytes": 1489870
     },
     "chrome105-minified": {
-      "appEntryRawBytes": 351008,
-      "startupJsRawBytes": 704372,
+      "appEntryRawBytes": 351699,
+      "startupJsRawBytes": 705007,
       "startupCssRawBytes": 353618,
-      "totalJsRawBytes": 1452425
+      "totalJsRawBytes": 1453060
     }
   }
 }

@@ -116,7 +116,11 @@ async fn write_server_message<W: AsyncWrite + Unpin>(
 struct AppServer {
     stdin: Mutex<ChildStdin>,
     child: Arc<Mutex<Child>>,
-    pid: Option<u32>,
+    /// Pid and start time of the child, `None` only if the OS reported no pid.
+    identity: Option<ManagedProcessIdentity>,
+    /// The runtime-wide slot the exit handler reads. This server clears it
+    /// when its own process is gone, and never when a newer server owns it.
+    identity_slot: ServerIdentitySlot,
     /// Identity of this exact app-server process. A restart — deliberate or
     /// after a crash — produces a new one, and every thread the old process
     /// had loaded is gone with it. The webview keys its record of "what this
@@ -184,12 +188,113 @@ struct RuntimeState {
     /// status checks and app-server startup cannot repeat `where.exe` and
     /// `codex --version` during one cold launch.
     codex_runtime: Mutex<Option<ResolvedCodexRuntime>>,
-    /// Pid of the most recently spawned app-server child. Unlike `server`,
-    /// this is always accessible without awaiting the async mutex, so the
-    /// exit handler can still tear the process tree down while `ensure_server`
-    /// holds the lock during a slow spawn/initialize.
-    server_pid: std::sync::Mutex<Option<u32>>,
+    /// Identity of the live app-server child, published the moment it is
+    /// spawned and cleared on every path that ends it. Unlike `server`, this
+    /// is accessible without awaiting the async mutex, so the exit handler
+    /// can still tear the process tree down while `ensure_server` holds the
+    /// lock during a slow spawn/initialize.
+    server_identity: ServerIdentitySlot,
     process_memory: Mutex<ProcessMemoryCache>,
+}
+
+/// Identity of a managed child, captured when it is spawned. A pid alone
+/// cannot name a process later: once the child exits the OS may hand the
+/// same number to an unrelated process, so fallback termination checks
+/// parentage and start time before signalling anything.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ManagedProcessIdentity {
+    pid: u32,
+    /// OS-reported start time in seconds since the epoch, or 0 when it could
+    /// not be read at spawn, in which case only parentage is checked.
+    start_time: u64,
+}
+
+type ServerIdentitySlot = Arc<std::sync::Mutex<Option<ManagedProcessIdentity>>>;
+
+/// What the OS currently reports for a pid.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ObservedProcess {
+    parent: Option<u32>,
+    start_time: u64,
+}
+
+fn observe_process(pid: u32) -> Option<ObservedProcess> {
+    let target = sysinfo::Pid::from_u32(pid);
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[target]),
+        true,
+        ProcessRefreshKind::nothing(),
+    );
+    let process = system.process(target)?;
+    Some(ObservedProcess {
+        parent: process.parent().map(|parent| parent.as_u32()),
+        start_time: process.start_time(),
+    })
+}
+
+fn managed_identity_for(pid: u32) -> ManagedProcessIdentity {
+    ManagedProcessIdentity {
+        pid,
+        start_time: observe_process(pid)
+            .map(|observed| observed.start_time)
+            .unwrap_or(0),
+    }
+}
+
+/// Whether the process the OS currently reports for `identity.pid` is still
+/// the child Mythra Code spawned: it must be our direct child, and its start
+/// time must agree whenever both sides could read one.
+fn identity_still_managed(
+    identity: ManagedProcessIdentity,
+    observed: Option<ObservedProcess>,
+    own_pid: u32,
+) -> bool {
+    let Some(observed) = observed else {
+        return false;
+    };
+    if observed.parent != Some(own_pid) {
+        return false;
+    }
+    identity.start_time == 0
+        || observed.start_time == 0
+        || identity.start_time == observed.start_time
+}
+
+/// Fallback termination by identity. Signals the tree only while the pid
+/// still names the child we spawned; returns whether anything was signalled.
+fn kill_managed_process_tree(identity: ManagedProcessIdentity) -> bool {
+    if !identity_still_managed(identity, observe_process(identity.pid), std::process::id()) {
+        return false;
+    }
+    kill_process_tree(identity.pid);
+    true
+}
+
+fn server_identity(slot: &ServerIdentitySlot) -> Option<ManagedProcessIdentity> {
+    *slot
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn publish_server_identity(slot: &ServerIdentitySlot, identity: Option<ManagedProcessIdentity>) {
+    *slot
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = identity;
+}
+
+/// Clear the slot only if it still names `identity`. A stale server shutting
+/// down after a restart must not erase the newer server's entry.
+fn clear_server_identity(slot: &ServerIdentitySlot, identity: Option<ManagedProcessIdentity>) {
+    let Some(identity) = identity else {
+        return;
+    };
+    let mut guard = slot
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if *guard == Some(identity) {
+        *guard = None;
+    }
 }
 
 #[derive(Clone)]
@@ -247,6 +352,11 @@ struct ClaudeTurn {
     child: Arc<Mutex<Child>>,
     pid: Option<u32>,
     alive: Arc<AtomicBool>,
+    /// Ids of `control_request` messages this CLI process has sent and the
+    /// renderer has not answered yet. A control response is only accepted
+    /// for one of these, so the webview cannot answer a request this turn
+    /// never issued (mirrors the Codex bridge's server-request set).
+    control_requests: Mutex<HashSet<String>>,
 }
 
 #[derive(Serialize)]
@@ -704,10 +814,13 @@ impl AppServer {
 
     async fn shutdown(&self) {
         self.alive.store(false, Ordering::Release);
-        if let Some(pid) = self.pid {
-            kill_process_tree(pid);
+        // The reader may already have reaped the child, after which the OS
+        // can reuse its pid; only signal the tree while it is still ours.
+        if let Some(identity) = self.identity {
+            kill_managed_process_tree(identity);
         }
         let _ = self.child.lock().await.kill().await;
+        clear_server_identity(&self.identity_slot, self.identity);
         if let Some(task) = &self.openrouter_proxy_task {
             task.abort();
         }
@@ -3264,6 +3377,7 @@ async fn claude_turn_start(
         child: Arc::new(Mutex::new(child)),
         pid,
         alive: alive.clone(),
+        control_requests: Mutex::new(HashSet::new()),
     });
     if !claim_turn_slot(&state.turns, &options.thread_id, &turn, |existing| {
         existing.alive.load(Ordering::Acquire)
@@ -3431,6 +3545,18 @@ async fn claude_turn_start(
                 terminal_result = Some(message);
                 break;
             }
+            if message.get("type").and_then(Value::as_str) == Some("control_request") {
+                // Record the request id (before emitting) so the approval
+                // commands can verify a response targets a request this
+                // exact turn is still waiting on.
+                if let Some(request_id) = message.get("request_id").and_then(Value::as_str) {
+                    stdout_runtime
+                        .control_requests
+                        .lock()
+                        .await
+                        .insert(request_id.to_string());
+                }
+            }
             emit_claude_event(&stdout_app, &stdout_thread, &stdout_turn, message).await;
         }
         flush_deltas(&mut delta_buffer, &stdout_app);
@@ -3593,6 +3719,9 @@ async fn claude_permission_respond(
         .get(&thread_id)
         .cloned()
         .ok_or_else(|| "This Claude turn is no longer waiting for approval".to_string())?;
+    if !turn.control_requests.lock().await.remove(&request_id) {
+        return Err("This Claude turn is no longer waiting for that request".into());
+    }
     turn.write(&json!({
         "type": "control_response",
         "response": {
@@ -3620,6 +3749,9 @@ async fn claude_control_error(
         .get(&thread_id)
         .cloned()
         .ok_or_else(|| "This Claude turn is no longer running".to_string())?;
+    if !turn.control_requests.lock().await.remove(&request_id) {
+        return Err("This Claude turn is no longer waiting for that request".into());
+    }
     turn.write(&json!({
         "type": "control_response",
         "response": {
@@ -3861,10 +3993,7 @@ async fn collect_process_memory_snapshot(
 async fn cached_process_memory_snapshot(
     state: &RuntimeState,
 ) -> Result<ProcessMemorySnapshot, String> {
-    let app_server_pid = *state
-        .server_pid
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let app_server_pid = server_identity(&state.server_identity).map(|identity| identity.pid);
     let mut cache = state.process_memory.lock().await;
     if cache.app_server_pid == app_server_pid {
         if let (Some(sampled_at), Some(snapshot)) = (cache.sampled_at, &cache.snapshot) {
@@ -4146,6 +4275,13 @@ async fn spawn_server(app: &AppHandle, state: &RuntimeState) -> Result<Arc<AppSe
             ));
         }
     };
+    // Publish the child's identity before anything else can fail or wait.
+    // `ensure_server` holds the async server lock for the whole
+    // spawn/initialize window, so this slot is what lets a quit during a
+    // hung handshake still tear the process tree down.
+    let pid = child.id();
+    let identity = pid.map(managed_identity_for);
+    publish_server_identity(&state.server_identity, identity);
     let abort_proxy = |task: &Option<tokio::task::JoinHandle<()>>| {
         if let Some(task) = task {
             task.abort();
@@ -4156,6 +4292,7 @@ async fn spawn_server(app: &AppHandle, state: &RuntimeState) -> Result<Arc<AppSe
         None => {
             abort_proxy(&openrouter_proxy_task);
             let _ = child.start_kill();
+            clear_server_identity(&state.server_identity, identity);
             return Err("Codex App Server did not expose stdin".to_string());
         }
     };
@@ -4164,11 +4301,12 @@ async fn spawn_server(app: &AppHandle, state: &RuntimeState) -> Result<Arc<AppSe
         None => {
             abort_proxy(&openrouter_proxy_task);
             let _ = child.start_kill();
+            clear_server_identity(&state.server_identity, identity);
             return Err("Codex App Server did not expose stdout".to_string());
         }
     };
     let stderr = child.stderr.take();
-    let pid = child.id();
+    let identity_slot_for_reader = state.server_identity.clone();
     let child = Arc::new(Mutex::new(child));
     let child_for_reader = child.clone();
     let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
@@ -4288,6 +4426,10 @@ async fn spawn_server(app: &AppHandle, state: &RuntimeState) -> Result<Arc<AppSe
             // `kill` also awaits the child, so it is reaped either way.
             let _ = child.kill().await;
         }
+        drop(child);
+        // The pid is free for reuse from here on, so it must no longer be
+        // published as ours.
+        clear_server_identity(&identity_slot_for_reader, identity);
     });
 
     if let Some(stderr) = stderr {
@@ -4304,7 +4446,8 @@ async fn spawn_server(app: &AppHandle, state: &RuntimeState) -> Result<Arc<AppSe
     let server = Arc::new(AppServer {
         stdin: Mutex::new(stdin),
         child,
-        pid,
+        identity,
+        identity_slot: state.server_identity.clone(),
         instance: uuid::Uuid::new_v4().to_string(),
         pending,
         next_id: AtomicI64::new(1),
@@ -4343,23 +4486,20 @@ async fn ensure_server(app: &AppHandle, state: &RuntimeState) -> Result<Arc<AppS
         guard = state.server.lock().await;
     }
 
+    // The child's identity was published by spawn_server before initialize,
+    // so the exit handler could already reach it during that window.
     let server = spawn_server(app, state).await?;
     *guard = Some(server.clone());
-    // Record the pid where the exit handler can reach it without the async
-    // server lock (which this function holds during spawn/initialize).
-    *state
-        .server_pid
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = server.pid;
     Ok(server)
 }
 
 /// Validate the high-impact RPCs that the webview is allowed to forward.
 /// The Codex app-server normally enforces its own approval policy for agent
 /// turns, but Mythra Code also exposes a user-operated terminal and workflows via
-/// `command/exec`. Requiring an explicit, bounded sandbox policy here keeps a
-/// malformed renderer request from silently omitting the sandbox or widening
-/// a workspace-write request beyond its workspace (except for the shared Git
+/// `command/exec`, and every agent turn re-sends its sandbox on `turn/start`.
+/// Requiring an explicit, bounded sandbox policy on both keeps a malformed
+/// renderer request from silently omitting the sandbox or widening a
+/// workspace-write request beyond its workspace (except for the shared Git
 /// directory required by an isolated linked worktree).
 fn validate_rpc_params(method: &str, params: &Value) -> Result<(), String> {
     if method == "command/exec" {
@@ -4377,65 +4517,18 @@ fn validate_rpc_params(method: &str, params: &Value) -> Result<(), String> {
         {
             return Err("command/exec received an invalid or oversized command".into());
         }
-        let cwd = params
-            .get("cwd")
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| "command/exec requires a working directory".to_string())?;
-        let cwd = PathBuf::from(cwd)
-            .canonicalize()
-            .map_err(|error| format!("command/exec working directory is unavailable: {error}"))?;
-        if !cwd.is_dir() {
-            return Err("command/exec working directory is not a folder".into());
-        }
-        let sandbox = params
-            .get("sandboxPolicy")
-            .and_then(Value::as_object)
-            .ok_or_else(|| "command/exec requires an explicit sandbox policy".to_string())?;
-        let sandbox_type = sandbox
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        if !matches!(
-            sandbox_type,
-            "readOnly" | "workspaceWrite" | "dangerFullAccess"
-        ) {
-            return Err("command/exec received an unknown sandbox policy".into());
-        }
-        if sandbox_type == "workspaceWrite" {
-            let roots = sandbox
-                .get("writableRoots")
-                .and_then(Value::as_array)
-                .ok_or_else(|| "workspaceWrite requires writable roots".to_string())?;
-            if roots.is_empty() || roots.len() > 16 {
-                return Err("workspaceWrite requires 1–16 writable roots".into());
-            }
-            let shared_git_dir = git_common_dir(&cwd).ok();
-            let mut grants_working_directory = false;
-            for root in roots {
-                let root = root
-                    .as_str()
-                    .ok_or_else(|| "workspaceWrite roots must be paths".to_string())?;
-                let canonical = PathBuf::from(root).canonicalize().map_err(|error| {
-                    format!("workspaceWrite root `{root}` is unavailable: {error}")
-                })?;
-                if !canonical.is_dir() || canonical.parent().is_none() {
-                    return Err("workspaceWrite cannot grant a filesystem root".into());
-                }
-                grants_working_directory |= canonical == cwd;
-                if !canonical.starts_with(&cwd)
-                    && shared_git_dir
-                        .as_ref()
-                        .is_none_or(|git_dir| canonical != *git_dir)
-                {
-                    return Err(
-                        "workspaceWrite roots must stay inside the working directory or match its shared Git directory"
-                            .into(),
-                    );
-                }
-            }
-            if !grants_working_directory {
-                return Err("workspaceWrite must grant its working directory".into());
+    }
+    if matches!(method, "command/exec" | "turn/start") {
+        validate_sandbox_policy(method, params)?;
+    }
+    if matches!(method, "thread/start" | "thread/resume" | "thread/fork") {
+        // The thread-level mode is a plain string; the renderer only ever
+        // sends one of Codex's three modes, so anything else is malformed.
+        if let Some(sandbox) = params.get("sandbox") {
+            if !sandbox.as_str().is_some_and(|mode| {
+                matches!(mode, "read-only" | "workspace-write" | "danger-full-access")
+            }) {
+                return Err(format!("{method} received an unknown sandbox mode"));
             }
         }
     }
@@ -4448,6 +4541,75 @@ fn validate_rpc_params(method: &str, params: &Value) -> Result<(), String> {
             return Err(
                 "Mythra Code only permits MCP server settings through the desktop bridge".into(),
             );
+        }
+    }
+    Ok(())
+}
+
+/// `command/exec` and `turn/start` both carry a working directory and an
+/// explicit `sandboxPolicy` object. A `workspaceWrite` policy must grant the
+/// working directory itself and may only add roots inside it or the shared
+/// Git directory of an isolated linked worktree.
+fn validate_sandbox_policy(method: &str, params: &Value) -> Result<(), String> {
+    let cwd = params
+        .get("cwd")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("{method} requires a working directory"))?;
+    let cwd = PathBuf::from(cwd)
+        .canonicalize()
+        .map_err(|error| format!("{method} working directory is unavailable: {error}"))?;
+    if !cwd.is_dir() {
+        return Err(format!("{method} working directory is not a folder"));
+    }
+    let sandbox = params
+        .get("sandboxPolicy")
+        .and_then(Value::as_object)
+        .ok_or_else(|| format!("{method} requires an explicit sandbox policy"))?;
+    let sandbox_type = sandbox
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if !matches!(
+        sandbox_type,
+        "readOnly" | "workspaceWrite" | "dangerFullAccess"
+    ) {
+        return Err(format!("{method} received an unknown sandbox policy"));
+    }
+    if sandbox_type == "workspaceWrite" {
+        let roots = sandbox
+            .get("writableRoots")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "workspaceWrite requires writable roots".to_string())?;
+        if roots.is_empty() || roots.len() > 16 {
+            return Err("workspaceWrite requires 1–16 writable roots".into());
+        }
+        let shared_git_dir = git_common_dir(&cwd).ok();
+        let mut grants_working_directory = false;
+        for root in roots {
+            let root = root
+                .as_str()
+                .ok_or_else(|| "workspaceWrite roots must be paths".to_string())?;
+            let canonical = PathBuf::from(root)
+                .canonicalize()
+                .map_err(|error| format!("workspaceWrite root `{root}` is unavailable: {error}"))?;
+            if !canonical.is_dir() || canonical.parent().is_none() {
+                return Err("workspaceWrite cannot grant a filesystem root".into());
+            }
+            grants_working_directory |= canonical == cwd;
+            if !canonical.starts_with(&cwd)
+                && shared_git_dir
+                    .as_ref()
+                    .is_none_or(|git_dir| canonical != *git_dir)
+            {
+                return Err(
+                    "workspaceWrite roots must stay inside the working directory or match its shared Git directory"
+                        .into(),
+                );
+            }
+        }
+        if !grants_working_directory {
+            return Err("workspaceWrite must grant its working directory".into());
         }
     }
     Ok(())
@@ -5049,9 +5211,10 @@ fn shutdown_runtime_on_exit(app: &AppHandle) {
                     .is_ok()
             });
             if !graceful {
-                // Last resort: signal the tree by pid without touching locks.
-                if let Some(pid) = server.pid {
-                    kill_process_tree(pid);
+                // Last resort: signal the tree by identity without touching
+                // locks. The check inside refuses a pid the OS has reused.
+                if let Some(identity) = server.identity {
+                    kill_managed_process_tree(identity);
                 }
             }
         }
@@ -5059,14 +5222,11 @@ fn shutdown_runtime_on_exit(app: &AppHandle) {
         Err(()) => {
             // `ensure_server` can hold the server lock for the whole
             // spawn/initialize window (up to ~2 minutes). Fall back to the
-            // separately recorded pid so the child's process tree is still
-            // torn down instead of being orphaned.
-            let pid = *state
-                .server_pid
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(pid) = pid {
-                kill_process_tree(pid);
+            // identity spawn_server published before initialize so the
+            // child's process tree is still torn down instead of orphaned.
+            if let Some(identity) = server_identity(&state.server_identity) {
+                kill_managed_process_tree(identity);
+                clear_server_identity(&state.server_identity, Some(identity));
             }
         }
     }

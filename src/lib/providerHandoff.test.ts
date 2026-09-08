@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { buildProviderHandoffPrompt, sanitizePendingHandoff } from "./providerHandoff";
+import { sanitizePendingHandoff } from "./providerHandoff";
+import { buildProviderHandoffPrompt } from "./providerHandoffPrompt";
 
 describe("provider handoff prompt", () => {
   it("preserves the original goal and newest context while identifying provenance", () => {

@@ -48,11 +48,14 @@ jobs:
       - name: Lint, typecheck, test, and build
         run: npm run verify
 
-      - name: Verify streaming and transcript layout in WebKit
+      # The full browser suite already ran in Chromium as part of `verify`.
+      # Repeat every configured browser spec in WebKit rather than a hand-kept
+      # subset, so a new spec is covered on the macOS engine automatically.
+      - name: Verify the browser suite in WebKit
         if: runner.os == 'macOS'
         run: |
           npx playwright install webkit
-          npm run test:browser -- src/lib/streamingTextPacer.browser.test.ts src/lib/streamingTextFade.browser.test.ts src/components/ChatTimeline.streaming.browser.test.tsx src/components/ChatTimeline.cadence.browser.test.tsx src/components/ChatTimeline.layout.browser.test.tsx src/components/ChatTimeline.compaction.browser.test.tsx src/components/UsagePopover.browser.test.tsx src/components/ModelControls.layout.browser.test.tsx src/components/SettingsModal.animation.browser.test.tsx src/components/UsageDashboard.browser.test.tsx
+          npm run test:browser
         env:
           MYTHRA_BROWSER_TEST_ENGINE: webkit
 

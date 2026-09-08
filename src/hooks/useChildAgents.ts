@@ -1,5 +1,5 @@
 import { latestCodexTurn, terminalTurnStatus } from "./useThreadHealth";
-import { useCallback, useEffect, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
+import { useCallback, useEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import {
   onChildAgentRequest,
   reportChildAgentFinished,
@@ -249,6 +249,12 @@ export function useChildAgents(context: ChildAgentContext): {
   cancelChildAgentsFor: (rootThreadId: string) => Promise<void>;
   stopChildAgent: (rootThreadId: string, childThreadId: string) => Promise<void>;
   respondToSettingsProposal: (approval: PendingApproval, result: JsonObject) => Promise<void>;
+  /**
+   * Whether a provider is still starting a child for this root, before the
+   * child's durable ownership link exists. Archive and delete must treat such
+   * a root as busy: its link map and agent roster cannot see the child yet.
+   */
+  hasChildStartInFlight: (rootThreadId: string) => boolean;
 } {
   const contextRef = useRef(context);
   contextRef.current = context;
@@ -256,6 +262,7 @@ export function useChildAgents(context: ChildAgentContext): {
   const releasedRef = useRef(new Set<string>());
   const releases = useRef(new Map<string, ChildAgentLink>());
   const releasing = useRef(new Set<string>());
+  const [retryNeeded, setRetryNeeded] = useState(false);
   const releaseSlot = useCallback((link: ChildAgentLink) => {
     const id = link.childThreadId;
     releases.current.set(id, link);
@@ -263,12 +270,14 @@ export function useChildAgents(context: ChildAgentContext): {
     releasing.current.add(id);
     void reportChildAgentFinished(link.sessionId, id).then(() => {
       releases.current.delete(id);
-    }).catch(() => {}).finally(() => releasing.current.delete(id));
+      if (!releases.current.size) setRetryNeeded(false);
+    }).catch(() => setRetryNeeded(true)).finally(() => releasing.current.delete(id));
   }, []);
   useEffect(() => {
+    if (!retryNeeded) return;
     const timer = setInterval(() => { for (const link of releases.current.values()) releaseSlot(link); }, 5000);
     return () => clearInterval(timer);
-  }, [releaseSlot]);
+  }, [releaseSlot, retryNeeded]);
   /**
    * Children this hook created that the rendered link map has not caught up
    * with yet, keyed by bridge session. Two tool calls can arrive between
@@ -281,6 +290,16 @@ export function useChildAgents(context: ChildAgentContext): {
   /** Monotonic per-root stop generation. A child whose provider start resolves
    * after Stop was pressed is killed before it can escape into the background. */
   const stopGenerationRef = useRef<Map<string, number>>(new Map());
+  /**
+   * Provider starts in progress per root. A start holds this from the moment
+   * the provider is asked until the child's ownership link is persisted, the
+   * window in which neither the link map nor the agent roster knows the child.
+   */
+  const inFlightStartsRef = useRef<Map<string, number>>(new Map());
+  const hasChildStartInFlight = useCallback(
+    (rootThreadId: string): boolean => (inFlightStartsRef.current.get(rootThreadId) ?? 0) > 0,
+    [],
+  );
 
   const linksIncludingPending = useCallback((links: Record<string, ChildAgentLink>): Record<string, ChildAgentLink> => {
     if (!pendingLinksRef.current.size) return links;
@@ -357,6 +376,16 @@ export function useChildAgents(context: ChildAgentContext): {
     const pending = pendingChildrenRef.current.get(policy.sessionId) ?? new Set<string>();
     pending.add(reservation);
     pendingChildrenRef.current.set(policy.sessionId, pending);
+    const inFlight = inFlightStartsRef.current;
+    inFlight.set(rootThreadId, (inFlight.get(rootThreadId) ?? 0) + 1);
+    let startSettled = false;
+    const settleStart = () => {
+      if (startSettled) return;
+      startSettled = true;
+      const remaining = (inFlight.get(rootThreadId) ?? 1) - 1;
+      if (remaining > 0) inFlight.set(rootThreadId, remaining);
+      else inFlight.delete(rootThreadId);
+    };
     let result;
     try {
       result = await startChildAgentTurn(target, prompt, {
@@ -379,6 +408,9 @@ export function useChildAgents(context: ChildAgentContext): {
         },
         discardCheckpoint: ctx.discardRunCheckpoint,
       });
+    } catch (reason) {
+      settleStart();
+      throw reason;
     } finally {
       pending.delete(reservation);
     }
@@ -388,6 +420,10 @@ export function useChildAgents(context: ChildAgentContext): {
 
     const childThreadId = result.thread.id;
     const stoppedWhileStarting = (stopGenerationRef.current.get(rootThreadId) ?? 0) !== stopGeneration;
+    // The root was deleted while the provider was starting: its frozen policy
+    // (and the live session cache) are gone. The child is still recorded and
+    // cut off below, exactly like a Stop, so it can never run unowned.
+    const rootForgotten = !childAgentPolicyForSession(contextRef.current.policies, request.sessionId);
     ctx.bindThreadToProject(childThreadId, logicalPath);
     ctx.rememberThread(result.thread);
     ctx.setThreads((current) => upsertThread(current, result.thread));
@@ -447,6 +483,9 @@ export function useChildAgents(context: ChildAgentContext): {
     releasedRef.current.delete(childThreadId);
     pendingLinksRef.current.set(childThreadId, link);
     ctx.persistChildAgentLinks((current) => ({ ...current, [childThreadId]: link }));
+    // The durable ownership record now exists, so archive and delete can see
+    // this child through the link map from here on.
+    settleStart();
     void auditEvent("childAgent.spawned", {
       target: target.id,
       provider: target.provider,
@@ -460,7 +499,7 @@ export function useChildAgents(context: ChildAgentContext): {
     // leave invisible work editing the project. Only claim success after the
     // provider confirms the hard cutoff; otherwise the still-live child stays
     // in the roster for the user to see and retry stopping.
-    if (stoppedWhileStarting) {
+    if (stoppedWhileStarting || rootForgotten) {
       try {
         if (isChildActive(taskStatusOf(childThreadId))) {
           await hardStopChild(target.provider, childThreadId, result.turnId);
@@ -474,7 +513,9 @@ export function useChildAgents(context: ChildAgentContext): {
       } catch (reason) {
         throw new Error(`The run was stopped, but Mythra Code could not confirm the ${target.label || target.id} sub-agent cutoff: ${friendlyError(reason)}. It remains visible in Live agents so you can stop it again.`);
       }
-      throw new Error("The user stopped this run while the sub-agent was starting.");
+      throw new Error(rootForgotten
+        ? "This thread was removed while the sub-agent was starting, so the sub-agent was stopped."
+        : "The user stopped this run while the sub-agent was starting.");
     }
 
     return {
@@ -998,5 +1039,5 @@ export function useChildAgents(context: ChildAgentContext): {
     if (failures.length) throw new Error(failures.join("\n"));
   }, [linksIncludingPending]);
 
-  return { cancelChildAgentsFor, respondToSettingsProposal, stopChildAgent };
+  return { cancelChildAgentsFor, hasChildStartInFlight, respondToSettingsProposal, stopChildAgent };
 }
