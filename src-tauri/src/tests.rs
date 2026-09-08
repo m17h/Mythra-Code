@@ -1478,6 +1478,109 @@ async fn runtime_update_timeout_kills_the_installer_process_group() {
 }
 
 #[test]
+fn server_identity_slot_is_cleared_only_by_the_server_that_published_it() {
+    let slot: ServerIdentitySlot = Default::default();
+    let first = ManagedProcessIdentity {
+        pid: 4242,
+        start_time: 100,
+    };
+    // The OS handed the same pid to the replacement server.
+    let reused = ManagedProcessIdentity {
+        pid: 4242,
+        start_time: 200,
+    };
+    publish_server_identity(&slot, Some(first));
+    assert_eq!(server_identity(&slot), Some(first));
+    publish_server_identity(&slot, Some(reused));
+    clear_server_identity(&slot, Some(first));
+    assert_eq!(
+        server_identity(&slot),
+        Some(reused),
+        "a stale server's shutdown must not erase the newer server's identity"
+    );
+    clear_server_identity(&slot, None);
+    assert_eq!(server_identity(&slot), Some(reused));
+    clear_server_identity(&slot, Some(reused));
+    assert_eq!(server_identity(&slot), None);
+    clear_server_identity(&slot, Some(reused));
+    assert_eq!(server_identity(&slot), None);
+}
+
+#[test]
+fn managed_identity_check_rejects_gone_foreign_and_reused_processes() {
+    let own = 77;
+    let identity = ManagedProcessIdentity {
+        pid: 500,
+        start_time: 1_000,
+    };
+    let ours = ObservedProcess {
+        parent: Some(own),
+        start_time: 1_000,
+    };
+    assert!(identity_still_managed(identity, Some(ours), own));
+    assert!(!identity_still_managed(identity, None, own));
+    let foreign = ObservedProcess {
+        parent: Some(1),
+        start_time: 1_000,
+    };
+    assert!(!identity_still_managed(identity, Some(foreign), own));
+    let reused_by_our_other_child = ObservedProcess {
+        parent: Some(own),
+        start_time: 2_000,
+    };
+    assert!(!identity_still_managed(
+        identity,
+        Some(reused_by_our_other_child),
+        own
+    ));
+    // An unreadable start time on either side falls back to parentage alone.
+    let unread = ManagedProcessIdentity {
+        pid: 500,
+        start_time: 0,
+    };
+    assert!(identity_still_managed(unread, Some(ours), own));
+    let unread_now = ObservedProcess {
+        parent: Some(own),
+        start_time: 0,
+    };
+    assert!(identity_still_managed(identity, Some(unread_now), own));
+    assert!(!identity_still_managed(unread, Some(foreign), own));
+}
+
+#[test]
+fn observes_a_spawned_child_as_our_own_until_it_is_reaped() {
+    #[cfg(unix)]
+    let mut child = StdCommand::new("/bin/sh")
+        .args(["-c", "sleep 30"])
+        .spawn()
+        .unwrap();
+    #[cfg(windows)]
+    let mut child = StdCommand::new("cmd")
+        .args(["/C", "ping -n 30 127.0.0.1 > nul"])
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    let own = std::process::id();
+    let identity = managed_identity_for(pid);
+    let observed = observe_process(pid).expect("a live child is observable");
+    assert_eq!(observed.parent, Some(own));
+    assert!(identity_still_managed(identity, Some(observed), own));
+    if identity.start_time > 0 {
+        let later = ManagedProcessIdentity {
+            pid,
+            start_time: identity.start_time + 60,
+        };
+        assert!(!identity_still_managed(later, Some(observed), own));
+    }
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert!(
+        !identity_still_managed(identity, observe_process(pid), own),
+        "a reaped child must no longer verify as ours"
+    );
+}
+
+#[test]
 fn claude_result_is_the_terminal_boundary_for_one_process_per_turn() {
     let mut boundary = ClaudeTurnBoundary::new("prompt".into());
     assert!(boundary.ends_turn(&json!({
@@ -2453,6 +2556,89 @@ fn config_bridge_is_limited_to_mcp_server_settings() {
     .is_err());
 }
 
+#[test]
+fn turn_start_bridge_requires_the_same_bounded_sandbox() {
+    let root = skill_test_directory("rpc-turn-sandbox");
+    let sibling = skill_test_directory("rpc-turn-sibling");
+    fs::create_dir_all(&root).unwrap();
+    fs::create_dir_all(&sibling).unwrap();
+    let valid = json!({
+        "threadId": "thread-1",
+        "input": [{ "type": "text", "text": "hello" }],
+        "cwd": root,
+        "approvalPolicy": "never",
+        "sandboxPolicy": { "type": "workspaceWrite", "writableRoots": [root], "networkAccess": true },
+    });
+    assert!(validate_rpc_params("turn/start", &valid).is_ok());
+
+    let read_only = json!({
+        "threadId": "thread-1",
+        "input": [],
+        "cwd": root,
+        "sandboxPolicy": { "type": "readOnly", "networkAccess": false },
+    });
+    assert!(validate_rpc_params("turn/start", &read_only).is_ok());
+
+    let mut missing_sandbox = valid.clone();
+    missing_sandbox
+        .as_object_mut()
+        .unwrap()
+        .remove("sandboxPolicy");
+    assert!(validate_rpc_params("turn/start", &missing_sandbox)
+        .unwrap_err()
+        .contains("explicit sandbox"));
+
+    let mut missing_cwd = valid.clone();
+    missing_cwd.as_object_mut().unwrap().remove("cwd");
+    assert!(validate_rpc_params("turn/start", &missing_cwd)
+        .unwrap_err()
+        .contains("working directory"));
+
+    let unknown_type = json!({
+        "threadId": "thread-1",
+        "input": [],
+        "cwd": root,
+        "sandboxPolicy": { "type": "externalSandbox" },
+    });
+    assert!(validate_rpc_params("turn/start", &unknown_type)
+        .unwrap_err()
+        .contains("unknown sandbox policy"));
+
+    let sibling_grant = json!({
+        "threadId": "thread-1",
+        "input": [],
+        "cwd": root,
+        "sandboxPolicy": { "type": "workspaceWrite", "writableRoots": [root, sibling] },
+    });
+    assert!(validate_rpc_params("turn/start", &sibling_grant)
+        .unwrap_err()
+        .contains("inside the working directory"));
+
+    // Other methods that carry no sandbox are untouched.
+    assert!(validate_rpc_params("turn/steer", &json!({ "threadId": "thread-1" })).is_ok());
+    fs::remove_dir_all(root).unwrap();
+    fs::remove_dir_all(sibling).unwrap();
+}
+
+#[test]
+fn thread_bridge_only_accepts_known_sandbox_modes() {
+    for method in ["thread/start", "thread/resume", "thread/fork"] {
+        for mode in ["read-only", "workspace-write", "danger-full-access"] {
+            assert!(validate_rpc_params(method, &json!({ "sandbox": mode })).is_ok());
+        }
+        assert!(validate_rpc_params(method, &json!({ "threadId": "thread-1" })).is_ok());
+        assert!(validate_rpc_params(method, &json!({ "sandbox": "full" }))
+            .unwrap_err()
+            .contains("unknown sandbox mode"));
+        assert!(validate_rpc_params(
+            method,
+            &json!({ "sandbox": { "type": "dangerFullAccess" } })
+        )
+        .unwrap_err()
+        .contains("unknown sandbox mode"));
+    }
+}
+
 // --- Cross-provider sub-agents ---------------------------------------------
 
 fn child_target(id: &str, provider: &str, model: &str) -> ChildAgentTarget {
@@ -3084,6 +3270,7 @@ async fn claude_flush_fixture(
         pid: child.id(),
         child: Arc::new(Mutex::new(child)),
         alive: Arc::new(AtomicBool::new(true)),
+        control_requests: Mutex::new(HashSet::new()),
     };
     (turn, stdout, marker)
 }

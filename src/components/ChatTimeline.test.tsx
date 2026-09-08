@@ -390,7 +390,13 @@ describe("ChatTimeline", () => {
       />,
     );
 
-    await waitFor(() => expect(screen.getByText("formatted live").tagName).toBe("STRONG"));
+    // Windows CI can heavily contend the jsdom animation-frame shim while the
+    // full suite runs in parallel. Keep exercising the real paced path, but do
+    // not turn scheduler starvation into a one-second correctness failure.
+    await waitFor(
+      () => expect(screen.getByText("formatted live").tagName).toBe("STRONG"),
+      { timeout: 5_000 },
+    );
     expect(screen.queryByRole("button", { name: "Copy message" })).not.toBeInTheDocument();
   });
 

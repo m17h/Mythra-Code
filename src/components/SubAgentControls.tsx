@@ -14,8 +14,20 @@ export function SubAgentControlsProvider({ children, ...controls }: Controls & {
   const active = controls.workers.some((worker) => isSubAgentWorkerActive(worker.status));
   useEffect(() => {
     if (!active) return;
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
+    let timer: number | undefined;
+    const refreshVisibility = () => {
+      if (timer !== undefined) window.clearInterval(timer);
+      timer = undefined;
+      if (document.hidden) return;
+      setNow(Date.now());
+      timer = window.setInterval(() => setNow(Date.now()), 1000);
+    };
+    refreshVisibility();
+    document.addEventListener("visibilitychange", refreshVisibility);
+    return () => {
+      if (timer !== undefined) window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refreshVisibility);
+    };
   }, [active]);
   const { workers, onOpen, onStop } = controls;
   const value = useMemo(() => ({ workers, onOpen, onStop, now }), [workers, onOpen, onStop, now]);

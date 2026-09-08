@@ -405,6 +405,14 @@ describe("cross-provider ownership records", () => {
     });
     expect(Object.keys(restored)).toEqual(["child"]);
   });
+
+  it("drops a nested grandchild so restored delegation stays one level deep", () => {
+    const restored = sanitizeChildAgentLinks({
+      child: record("child", "root"),
+      grandchild: record("grandchild", "child"),
+    });
+    expect(Object.keys(restored)).toEqual(["child"]);
+  });
 });
 
 describe("project sub-agent policies", () => {

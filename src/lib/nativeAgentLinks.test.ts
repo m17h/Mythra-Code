@@ -60,6 +60,22 @@ describe("ownership graph guards", () => {
     // `child` already owns work of its own, so it is a root and can never be
     // recorded as somebody else's child.
     expect(canOwnThread({ grandchild: { rootThreadId: "child" } }, "root", "child")).toBe(false);
+    // And a thread that is somebody's child can never become a root itself.
+    expect(canOwnThread(graph, "child", "grandchild")).toBe(false);
+  });
+
+  it("keeps a child with its first owner instead of handing it to another root", () => {
+    expect(canOwnThread(graph, "other-root", "child")).toBe(false);
+    // The same owner may re-assert the record, which is how discovery refreshes it.
+    expect(canOwnThread(graph, "root", "child")).toBe(true);
+  });
+
+  it("drops a persisted grandchild so restored delegation stays one level deep", () => {
+    const restored = sanitizeNativeAgentLinks({
+      child: { childThreadId: "child", rootThreadId: "root", title: "work", createdAt: 1 },
+      grandchild: { childThreadId: "grandchild", rootThreadId: "child", title: "nested", createdAt: 2 },
+    });
+    expect(Object.keys(restored)).toEqual(["child"]);
   });
 
   it("drops cyclic pairs from persisted storage instead of trusting file order", () => {
@@ -70,9 +86,12 @@ describe("ownership graph guards", () => {
     expect(Object.keys(restored)).toEqual(["child"]);
   });
 
-  it("terminates on a cycle that was already written to storage", () => {
+  it("fails closed on a cycle that was already written to storage", () => {
+    // Both members of the cycle are recorded as children, so neither may own
+    // anything further; the corrupt pair cannot grow and cannot loop here.
     const cyclic = { a: { rootThreadId: "b" }, b: { rootThreadId: "a" } };
-    expect(canOwnThread(cyclic, "a", "c")).toBe(true);
+    expect(canOwnThread(cyclic, "a", "c")).toBe(false);
     expect(canOwnThread(cyclic, "a", "b")).toBe(false);
+    expect(canOwnThread(cyclic, "fresh-root", "c")).toBe(true);
   });
 });

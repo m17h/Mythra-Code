@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   estimateTranscriptBytes,
+  hasBufferedReasoningForTests,
   isAssistantOutputActive,
   resetTaskStore,
   sanitizeStoredQueuedTurns,
@@ -420,6 +421,67 @@ describe("task store", () => {
       status: "failed",
       turnStatus: "failed",
     });
+  });
+
+  it.each(["completed", "cancelled", "interrupted", "failed", "error"] as const)("releases a reasoning buffer once its row reaches %s", (status) => {
+    const store = useTaskStore.getState();
+    store.ensureTask("thread-a");
+    store.setActiveTurn("thread-a", "turn-a");
+    store.setTaskStatus("thread-a", "running");
+    store.queueReasoningDelta("thread-a", "reasoning-1", "thinking", "content");
+    store.flushDeltas();
+    expect(hasBufferedReasoningForTests("thread-a", "reasoning-1")).toBe(true);
+
+    store.upsertActivity("thread-a", { id: "reasoning-1", kind: "reasoning", title: "Model thinking", detail: "thinking", status });
+
+    expect(hasBufferedReasoningForTests("thread-a", "reasoning-1")).toBe(false);
+    // The row itself keeps the final detail; only the buffer goes.
+    expect(useTaskStore.getState().tasks["thread-a"].activities[0]).toMatchObject({ id: "reasoning-1", detail: "thinking", status });
+  });
+
+  it("keeps a reasoning buffer while its row is still in progress", () => {
+    const store = useTaskStore.getState();
+    store.ensureTask("thread-a");
+    store.queueReasoningDelta("thread-a", "reasoning-1", "first ", "content");
+    store.flushDeltas();
+    store.upsertActivity("thread-a", { id: "reasoning-1", kind: "reasoning", title: "Model thinking", status: "inProgress" });
+    store.queueReasoningDelta("thread-a", "reasoning-1", "second", "content");
+    store.flushDeltas();
+    expect(useTaskStore.getState().tasks["thread-a"].activities[0].detail).toBe("first second");
+  });
+
+  it.each(["completed", "interrupted", "error"] as const)("drops every reasoning buffer of a thread when its turn ends as %s", (status) => {
+    const store = useTaskStore.getState();
+    store.ensureTask("thread-a");
+    store.setActiveTurn("thread-a", "turn-a");
+    store.setTaskStatus("thread-a", "running");
+    store.queueReasoningDelta("thread-a", "reasoning-1", "one", "content");
+    store.queueReasoningDelta("thread-a", "reasoning-2", "two", "summary");
+    store.flushDeltas();
+    // A row the provider never marked terminal would otherwise leak forever.
+    store.queueReasoningDelta("thread-a", "reasoning-3", "unflushed", "content");
+
+    store.completeTurn("thread-a", "turn-a", status);
+
+    for (const itemId of ["reasoning-1", "reasoning-2", "reasoning-3"]) {
+      expect(hasBufferedReasoningForTests("thread-a", itemId)).toBe(false);
+    }
+    const before = useTaskStore.getState().tasks["thread-a"].activities;
+    store.flushDeltas();
+    expect(useTaskStore.getState().tasks["thread-a"].activities).toBe(before);
+  });
+
+  it("keeps buffers when a completion belongs to an older turn than the active one", () => {
+    const store = useTaskStore.getState();
+    store.ensureTask("thread-a");
+    store.setActiveTurn("thread-a", "turn-b");
+    store.setTaskStatus("thread-a", "running");
+    store.queueReasoningDelta("thread-a", "reasoning-b", "still going", "content");
+    store.flushDeltas();
+
+    store.completeTurn("thread-a", "turn-a", "completed");
+
+    expect(hasBufferedReasoningForTests("thread-a", "reasoning-b")).toBe(true);
   });
 
   it("batches reasoning deltas and keeps them separate by thread", () => {

@@ -19,18 +19,6 @@ export interface NativeAgentLink {
  */
 export type OwnershipLinks = Record<string, { rootThreadId: string }>;
 
-/** Every thread above `threadId`, following the chain root-ward. */
-function ancestorsOf(links: OwnershipLinks, threadId: string): Set<string> {
-  const seen = new Set<string>();
-  let current = links[threadId]?.rootThreadId;
-  // A pre-existing cycle in storage would otherwise spin here forever.
-  while (current && !seen.has(current)) {
-    seen.add(current);
-    current = links[current]?.rootThreadId;
-  }
-  return seen;
-}
-
 /** A thread that owns children is a root; depth is capped at one by design. */
 export function ownsChildren(links: OwnershipLinks, threadId: string): boolean {
   if (!threadId) return false;
@@ -41,21 +29,24 @@ export function ownsChildren(links: OwnershipLinks, threadId: string): boolean {
  * Whether `rootThreadId` may be recorded as the owner of `childThreadId`.
  *
  * Ownership is durable and it decides which inbox a conversation lives in, so
- * a late or malformed runtime event must never be able to turn an established
- * root into somebody's child. Three ways that happens, all refused here:
+ * a late or malformed runtime event must never be able to move a conversation
+ * between owners or turn an established root into somebody's child. The graph
+ * is bounded to a forest of depth one, and every claim that would break that
+ * shape is refused rather than repaired:
  *
  * - self ownership, where a thread is reported as its own child;
- * - reversed ownership, where a child reports its own parent as its child;
- * - longer cycles, where the proposed child is any ancestor of the proposed
- *   root.
- *
- * A thread that already owns children is refused outright: it is a root, and
- * Mythra Code never nests delegation deeper than one level.
+ * - a second owner, where a child that already belongs to one root is claimed
+ *   by another (the first durable record wins; re-asserting it is fine);
+ * - a child that is itself a root, which would nest delegation two deep;
+ * - a root that is itself somebody's child, which would nest it two deep the
+ *   other way round (and covers every reversed claim and cycle).
  */
 export function canOwnThread(links: OwnershipLinks, rootThreadId: string, childThreadId: string): boolean {
   if (!rootThreadId || !childThreadId || rootThreadId === childThreadId) return false;
+  const existing = links[childThreadId];
+  if (existing && existing.rootThreadId !== rootThreadId) return false;
   if (ownsChildren(links, childThreadId)) return false;
-  return !ancestorsOf(links, rootThreadId).has(childThreadId);
+  return !links[rootThreadId];
 }
 
 export function sanitizeNativeAgentLinks(value: unknown): Record<string, NativeAgentLink> {

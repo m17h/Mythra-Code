@@ -90,6 +90,9 @@ let openRouterReadyImpl: () => boolean;
 let openRouterCreditsImpl: () => unknown;
 let commandExecImpl: (params: Record<string, unknown>) => unknown;
 let claudeRuntimeStatusImpl: () => unknown;
+let cursorRuntimeStatusImpl: () => unknown;
+let localSkillsScanImpl: (folder: string) => unknown;
+let localSkillsSyncImpl: (folder: string) => unknown;
 let claudeModelsImpl: () => unknown;
 let modelListImpl: (params: Record<string, unknown>) => unknown;
 let cursorModelsImpl: () => unknown;
@@ -117,6 +120,9 @@ function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
   if (command === "claude_runtime_status") {
     return claudeRuntimeStatusImpl();
   }
+  if (command === "cursor_runtime_status") return cursorRuntimeStatusImpl();
+  if (command === "local_skills_scan") return localSkillsScanImpl(String(args?.folder ?? ""));
+  if (command === "local_skills_sync") return localSkillsSyncImpl(String(args?.folder ?? ""));
   if (command === "claude_models") return claudeModelsImpl();
   if (command === "cursor_models") return cursorModelsImpl();
   if (command === "github_status") {
@@ -326,6 +332,9 @@ beforeEach(() => {
   openRouterReadyImpl = () => false;
   openRouterCreditsImpl = () => ({ remaining: 0, used: null, source: "account" });
   commandExecImpl = () => ({ exitCode: 0, stdout: "", stderr: "" });
+  cursorRuntimeStatusImpl = () => null;
+  localSkillsScanImpl = () => [];
+  localSkillsSyncImpl = () => "/runtime/skills";
   claudeRuntimeStatusImpl = () => ({
     available: false,
     path: null,
@@ -1008,6 +1017,73 @@ describe("chat typeface", () => {
 
     await waitFor(() => expect(JSON.parse(localStorage.getItem("kiwi.settings") ?? "{}").chatFont).toBe("mono"));
     expect(document.querySelector(".app-shell")).toHaveAttribute("data-chat-font", "mono");
+  });
+});
+
+describe("overlapping refresh ordering", () => {
+  it("ignores an older Cursor status check that completes after a newer one", async () => {
+    localStorage.setItem("kiwi.settings", JSON.stringify({ provider: "cursor", model: "auto" }));
+    const checks: Array<Deferred<unknown>> = [];
+    cursorRuntimeStatusImpl = () => {
+      const check = deferred<unknown>();
+      checks.push(check);
+      return check.promise;
+    };
+    const user = userEvent.setup();
+    await renderApp();
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    const dialog = await screen.findByRole("dialog", { name: "Settings" });
+    await user.click(screen.getByRole("button", { name: "Models & accounts" }));
+    const started = checks.length;
+    await user.click(await screen.findByRole("button", { name: "Refresh Cursor status" }));
+    await waitFor(() => expect(checks.length).toBeGreaterThan(started));
+    expect(checks.length).toBeGreaterThanOrEqual(2);
+    const newest = checks[checks.length - 1];
+    const older = checks.slice(0, -1);
+    const signedIn = { available: true, path: "/usr/local/bin/cursor-agent", version: "2026.07.23", loggedIn: true, email: "person@example.com", subscriptionType: "Pro", warning: null };
+    await act(async () => { newest.resolve(signedIn); });
+    await waitFor(() => expect(dialog.querySelector(".credential-panel .connected-badge")).toBeInTheDocument());
+    // The slower, older checks land afterwards and must not undo the sign-in.
+    await act(async () => {
+      for (const check of older) check.resolve({ ...signedIn, loggedIn: false, email: null, subscriptionType: null });
+    });
+    await act(async () => { await Promise.resolve(); });
+    expect(dialog.querySelector(".credential-panel .connected-badge")).toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "Sign in" })).not.toBeInTheDocument();
+  });
+
+  it("serializes skills sync so an older scan cannot overwrite a newer runtime", async () => {
+    localStorage.setItem("kiwi.skillsFolder", JSON.stringify("/skills"));
+    let scans = 0;
+    // Every scan reports a different library so a silent refresh never
+    // short-circuits as unchanged.
+    localSkillsScanImpl = () => {
+      scans += 1;
+      return [{ path: `/skills/skill-${scans}/SKILL.md`, relativePath: `skill-${scans}/SKILL.md`, fileName: "SKILL.md", defaultName: `skill-${scans}`, description: "", supportingMarkdownCount: 0 }];
+    };
+    const syncs: Array<Deferred<string>> = [];
+    localSkillsSyncImpl = () => {
+      const sync = deferred<string>();
+      syncs.push(sync);
+      return sync.promise;
+    };
+    await renderApp();
+    await screen.findByText("Alpha thread");
+    await waitFor(() => expect(syncs.length).toBeGreaterThanOrEqual(1));
+    const oldest = syncs[0];
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    // The newer native sync is queued behind the old one because both replace
+    // the same app-managed runtime directory.
+    expect(syncs).toHaveLength(1);
+    await act(async () => { oldest.resolve("/runtime/stale"); });
+    await waitFor(() => expect(syncs.length).toBeGreaterThanOrEqual(2));
+    const newest = syncs[syncs.length - 1];
+    const extraRootsCalls = () => invokeMock.mock.calls
+      .filter(([command, args]) => command === "codex_rpc" && args?.method === "skills/extraRoots/set")
+      .map(([, args]) => ((args?.params ?? {}) as { extraRoots: string[] }).extraRoots);
+    await act(async () => { newest.resolve("/runtime/newest"); });
+    await waitFor(() => expect(extraRootsCalls().at(-1)).toEqual(["/runtime/newest"]));
+    expect(extraRootsCalls().flat()).not.toContain("/runtime/stale");
   });
 });
 
@@ -2371,6 +2447,43 @@ describe("workspace switching during thread selection", () => {
     await waitFor(() => expect(screen.getByRole("slider", { name: "Reasoning effort" })).toHaveValue("1"));
   });
 
+  it("keeps the source task when the handoff formatter cannot load", async () => {
+    vi.doMock("./lib/providerHandoffPrompt", () => { throw new Error("Handoff formatter unavailable"); });
+    try {
+      const user = userEvent.setup();
+      await renderApp();
+      const { useTaskStore } = await import("./lib/taskStore");
+      await user.click(await screen.findByText("Alpha thread"));
+      await waitFor(() => expect(useTaskStore.getState().activeThreadId).toBe(THREAD_A.id));
+      await user.click(screen.getByRole("button", { name: "Thread provider: OpenAI" }));
+      await user.click(screen.getByRole("menuitemradio", { name: /Hand off to Claude/ }));
+      expect(await screen.findByText(/Handoff formatter unavailable|error when mocking a module/i)).toBeInTheDocument();
+      expect(useTaskStore.getState().activeThreadId).toBe(THREAD_A.id);
+      expect(JSON.parse(localStorage.getItem("kiwi.pendingHandoff") ?? "null")).toBeNull();
+    } finally { vi.doUnmock("./lib/providerHandoffPrompt"); }
+  });
+
+  it("does not replace a newly selected task when a handoff formatter loads late", async () => {
+    let resolveFormatter!: (module: { buildProviderHandoffPrompt: () => string }) => void;
+    vi.doMock("./lib/providerHandoffPrompt", () => new Promise((resolve) => { resolveFormatter = resolve; }));
+    try {
+      const user = userEvent.setup();
+      resumeImpl = (params) => ({ thread: { ...(params.threadId === THREAD_B.id ? THREAD_B : THREAD_A), turns: [] } });
+      await renderApp();
+      const { useTaskStore } = await import("./lib/taskStore");
+      await user.click(await screen.findByText("Alpha thread"));
+      await waitFor(() => expect(useTaskStore.getState().activeThreadId).toBe(THREAD_A.id));
+      await user.click(screen.getByRole("button", { name: "Thread provider: OpenAI" }));
+      await user.click(screen.getByRole("menuitemradio", { name: /Hand off to Claude/ }));
+      await waitFor(() => expect(resolveFormatter).toBeTypeOf("function"));
+      await user.click(screen.getByText("Beta thread"));
+      await waitFor(() => expect(useTaskStore.getState().activeThreadId).toBe(THREAD_B.id));
+      await act(async () => { resolveFormatter({ buildProviderHandoffPrompt: () => "Stale handoff" }); });
+      expect(useTaskStore.getState().activeThreadId).toBe(THREAD_B.id);
+      expect(JSON.parse(localStorage.getItem("kiwi.pendingHandoff") ?? "null")).toBeNull();
+    } finally { vi.doUnmock("./lib/providerHandoffPrompt"); }
+  });
+
   it("creates an editable provider handoff draft without changing the source thread", async () => {
     const user = userEvent.setup();
     resumeImpl = (params) => ({ thread: { ...THREAD_A, id: String(params.threadId), turns: [] } });
@@ -3077,6 +3190,18 @@ describe("project Run button", () => {
     const call = executed.find((params) => (params.command as string[]).join(" ").includes("npm run dev"))!;
     expect(call.cwd).toBe("/projects/alpha");
     expect(call.tty).toBe(true);
+  });
+
+  it("keeps the real terminal panel rendered instead of tripping the workspace tools boundary", async () => {
+    const user = userEvent.setup();
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
+    await user.click(await screen.findByRole("tab", { name: "Terminal workspace tool" }));
+
+    // xterm mounts its own element inside the host once `open` succeeds.
+    await waitFor(() => expect(document.querySelector(".xterm-host .xterm")).toBeInTheDocument());
+    expect(screen.queryByText("The workspace tools view hit a problem")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Reload view" })).not.toBeInTheDocument();
   });
 
   it("is greyed out until a command is saved from the header editor, per project", async () => {

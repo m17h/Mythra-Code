@@ -81,6 +81,35 @@ describe("bounded display-only streaming cadence", () => {
     expect(f.root.textContent?.length).toBe(48002); expect(f.frames.size).toBe(0);
   });
 
+  it("reuses boundaries between frames and rebuilds them whenever Unicode text changes", () => {
+    const first = "👨‍👩‍👧‍👦 e\u0301 🇺🇸 🧑‍💻 ".repeat(12);
+    const next = first + "किरण 🐈‍⬛ ".repeat(10);
+    const reference = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+    const boundaries = (text: string) => new Set([0, text.length, ...Array.from(reference.segment(text), (entry) => entry.index)]);
+    const firstBoundaries = boundaries(first);
+    const nextBoundaries = boundaries(next);
+    const segment = vi.spyOn(Intl.Segmenter.prototype, "segment");
+    const f = fixture("");
+    f.pacer.update(first);
+    for (let frame = 0; frame < 3; frame++) {
+      f.advance(40);
+      expect(firstBoundaries.has(f.root.textContent!.length)).toBe(true);
+    }
+    expect(segment.mock.calls.filter(([text]) => text === first)).toHaveLength(1);
+    f.pacer.update(next);
+    for (let frame = 0; frame < 5; frame++) {
+      f.advance(40);
+      expect(next.startsWith(f.root.textContent!)).toBe(true);
+      expect(nextBoundaries.has(f.root.textContent!.length)).toBe(true);
+    }
+    expect(segment.mock.calls.filter(([text]) => text === next)).toHaveLength(1);
+    f.pacer.finish();
+    f.advance(240);
+    expect(f.root.textContent).toBe(next);
+    expect(f.settled).toHaveBeenCalledOnce();
+    expect(f.frames.size).toBe(0);
+  });
+
   it("flushes on selection, hidden-page notification, and reduced motion; cancellation publishes nothing", async () => {
     const f = fixture(); f.pacer.update("old pending");
     const selection = window.getSelection()!; const range = document.createRange(); range.selectNodeContents(f.root); selection.addRange(range);

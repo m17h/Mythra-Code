@@ -1,7 +1,7 @@
 #[cfg(windows)]
 use std::fs;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     env,
     path::{Path, PathBuf},
     process::Stdio,
@@ -66,6 +66,11 @@ struct CursorProcess {
     session_id: Mutex<Option<String>>,
     turn_id: Option<String>,
     wsl: bool,
+    /// Ids of agent-initiated requests that were forwarded to the renderer
+    /// and not answered yet. `cursor_permission_respond` only accepts one of
+    /// these, so the webview cannot answer a request this process never
+    /// asked (mirrors the Codex bridge's server-request set).
+    server_requests: Arc<Mutex<HashSet<String>>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -648,6 +653,8 @@ async fn spawn_cursor_process(
     let child = Arc::new(Mutex::new(child));
     let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
     let alive = Arc::new(AtomicBool::new(true));
+    let server_requests: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
+    let server_requests_for_reader = server_requests.clone();
     let process = Arc::new(CursorProcess {
         stdin: stdin.clone(),
         child: child.clone(),
@@ -661,6 +668,7 @@ async fn spawn_cursor_process(
             .as_ref()
             .map(|(_, turn_id, _)| turn_id.clone()),
         wsl: runtime.is_wsl(),
+        server_requests,
     });
 
     let app_for_reader = app.clone();
@@ -746,6 +754,12 @@ async fn spawn_cursor_process(
                     (message.get("id").cloned(), event_for_reader.as_ref())
                 {
                     if permission == "ask" {
+                        // Record the id (before emitting) so the response
+                        // command can verify it targets a live request.
+                        server_requests_for_reader
+                            .lock()
+                            .await
+                            .insert(id.to_string());
                         let _ = app_for_reader.emit("cursor-event", json!({
                             "threadId": thread_id, "turnId": turn_id,
                             "message": { "type": "permission_request", "requestId": id, "params": params }
@@ -766,6 +780,10 @@ async fn spawn_cursor_process(
                 if let (Some(id), Some((thread_id, turn_id, _))) =
                     (message.get("id").cloned(), event_for_reader.as_ref())
                 {
+                    server_requests_for_reader
+                        .lock()
+                        .await
+                        .insert(id.to_string());
                     let _ = app_for_reader.emit("cursor-event", json!({
                         "threadId": thread_id, "turnId": turn_id,
                         "message": { "type": "cursor_request", "method": method, "requestId": id, "params": message.get("params").cloned().unwrap_or(Value::Null) }
@@ -1355,6 +1373,14 @@ pub async fn cursor_permission_respond(
         .get(&thread_id)
         .cloned()
         .ok_or("Cursor is not currently running in this thread")?;
+    if !turn
+        .server_requests
+        .lock()
+        .await
+        .remove(&request_id.to_string())
+    {
+        return Err("Cursor is no longer waiting for that request".into());
+    }
     turn.respond(request_id, result).await
 }
 

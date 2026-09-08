@@ -184,6 +184,21 @@ interface TaskStoreState {
 const pendingDeltas = new Map<string, Map<string, string>>();
 const pendingReasoningItems = new Map<string, Set<string>>();
 const reasoningStreams = new Map<string, { summary: string; content: string }>();
+/** Activity statuses after which no further deltas belong to the row. */
+const TERMINAL_ACTIVITY_STATUSES = new Set(["completed", "cancelled", "interrupted", "failed", "error"]);
+
+/** Drop every buffered reasoning stream (and its pending flush) for a thread. */
+function clearReasoningBuffers(threadId: string): void {
+  pendingReasoningItems.delete(threadId);
+  for (const key of reasoningStreams.keys()) {
+    if (key.startsWith(`${threadId}\0`)) reasoningStreams.delete(key);
+  }
+}
+
+/** Test seam: whether a reasoning item still holds a streaming buffer. */
+export function hasBufferedReasoningForTests(threadId: string, itemId: string): boolean {
+  return reasoningStreams.has(`${threadId}\0${itemId}`);
+}
 let deltaFrame: number | ReturnType<typeof setTimeout> | null = null;
 let timelineSequence = 0;
 
@@ -365,10 +380,7 @@ function evictColdTranscripts(
     hydratedCount -= 1;
     hydratedBytes = Math.max(0, hydratedBytes - task.estimatedTranscriptBytes);
     pendingDeltas.delete(task.threadId);
-    pendingReasoningItems.delete(task.threadId);
-    for (const key of reasoningStreams.keys()) {
-      if (key.startsWith(`${task.threadId}\0`)) reasoningStreams.delete(key);
-    }
+    clearReasoningBuffers(task.threadId);
   }
   return hydratedCount === hydrated.length ? null : tasks;
 }
@@ -742,7 +754,12 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     });
   },
   upsertActivity: (threadId, activity) => {
-    if (activity.kind === "reasoning" && activity.status === "completed") reasoningStreams.delete(`${threadId}\0${activity.id}`);
+    // A reasoning row that reached any terminal state keeps its detail in the
+    // activity; the streaming buffer behind it would otherwise live until the
+    // thread is evicted or removed.
+    if (activity.kind === "reasoning" && TERMINAL_ACTIVITY_STATUSES.has(activity.status ?? "")) {
+      reasoningStreams.delete(`${threadId}\0${activity.id}`);
+    }
     set((state) => {
       const task = state.tasks[threadId] ?? emptyTask(threadId);
       const existingIndex = task.activities.findIndex((entry) => entry.id === activity.id);
@@ -933,6 +950,9 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     };
     });
     if (!newerTurnActive) {
+      // The runtime confirmed the turn is over, whatever the outcome, so no
+      // reasoning row of this thread can still be streaming.
+      clearReasoningBuffers(threadId);
       completeRuntimePerformanceTurn(
         threadId,
         status === "completed" ? "completed" : status === "interrupted" ? "interrupted" : "error",
@@ -1093,10 +1113,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     // Clear queued streaming buffers so a pending flush cannot resurrect the
     // deleted thread as a ghost task.
     pendingDeltas.delete(threadId);
-    pendingReasoningItems.delete(threadId);
-    for (const key of reasoningStreams.keys()) {
-      if (key.startsWith(`${threadId}\0`)) reasoningStreams.delete(key);
-    }
+    clearReasoningBuffers(threadId);
     return set((state) => {
       const tasks = { ...state.tasks };
       const statuses = { ...state.statuses };
