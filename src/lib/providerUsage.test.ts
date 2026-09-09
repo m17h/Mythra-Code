@@ -2,17 +2,24 @@ import { describe, expect, it } from "vitest";
 import {
   clampUsedPercent,
   compactResetLabel,
+  currentAccountUsageSnapshot,
   displayedPercent,
   formatRateLimits,
   formatCreditAmount,
   formatResetTime,
   formatWindowLabel,
+  mergeAccountUsageSnapshot,
+  mergeProviderRateLimits,
   parseCodexRateLimits,
   providerAccountUsage,
   providerHeaderUsage,
   sanitizeUsageDisplay,
   sanitizeHeaderUsageWindows,
+  sanitizedUsageProviderVersion,
   usagePercentLabel,
+  usageFreshnessText,
+  usageReadFailureKind,
+  usageReadFailureStatus,
 } from "./providerUsage";
 import { DEFAULT_SETTINGS } from "./appConfig";
 import type { AppSettings } from "../types";
@@ -191,6 +198,45 @@ describe("codex rate limit parsing", () => {
     });
   });
 
+  it("reads the documented windowDurationMins field", () => {
+    expect(parseCodexRateLimits({ rateLimits: {
+      primary: { usedPercent: 25, windowDurationMins: 15, resetsAt: resetAt(30) },
+    } })).toEqual({
+      windows: [{ label: "15m", usedPercent: 25, resetsAt: resetAt(30) }],
+    });
+  });
+
+  it("prefers and labels every documented multi-bucket limit", () => {
+    expect(parseCodexRateLimits({
+      rateLimits: { primary: { usedPercent: 99, windowDurationMins: 5 } },
+      rateLimitsByLimitId: {
+        codex: { limitId: "codex", primary: { usedPercent: 25, windowDurationMins: 15, resetsAt: resetAt(30) } },
+        codex_other: { limitId: "codex_other", limitName: "Research", primary: { usedPercent: 42, windowDurationMins: 60 } },
+      },
+    })).toEqual({ windows: [
+      { label: "Codex 15m", usedPercent: 25, resetsAt: resetAt(30) },
+      { label: "Research 1h", usedPercent: 42, resetsAt: null },
+    ] });
+  });
+
+  it("falls back to the legacy bucket when the multi-bucket map reports nothing", () => {
+    const legacy = { windows: [{ label: "5h", usedPercent: 10, resetsAt: null }] };
+    expect(parseCodexRateLimits({
+      rateLimits: { primary: { usedPercent: 10, windowDurationMins: 300 } },
+      rateLimitsByLimitId: {},
+    })).toEqual(legacy);
+    // A present-but-window-less map is not a report of "no limits".
+    expect(parseCodexRateLimits({
+      rateLimits: { primary: { usedPercent: 10, windowDurationMins: 300 } },
+      rateLimitsByLimitId: { codex: { limitId: "codex" } },
+    })).toEqual(legacy);
+  });
+
+  it("treats a malformed legacy bucket as nothing to report rather than throwing", () => {
+    expect(parseCodexRateLimits({ rateLimits: [] })).toBeNull();
+    expect(parseCodexRateLimits({ rateLimits: [], rateLimitsByLimitId: {} })).toBeNull();
+  });
+
   it("clamps an out-of-range percentage at the parse boundary", () => {
     expect(parseCodexRateLimits({ rateLimits: { primary: { usedPercent: 105 } } })).toEqual({
       windows: [{ label: "", usedPercent: 100, resetsAt: null }],
@@ -203,6 +249,91 @@ describe("codex rate limit parsing", () => {
     expect(parseCodexRateLimits({})).toBeNull();
     expect(parseCodexRateLimits(null)).toBeNull();
     expect(parseCodexRateLimits("nonsense")).toBeNull();
+  });
+});
+
+describe("account-owned usage snapshots", () => {
+  const snapshot = { accountKey: "claude:email:a@example.com", limits: { windows: [] }, updatedAt: 1_000 };
+
+  it("retains a fresh reading only for the account that produced it", () => {
+    expect(currentAccountUsageSnapshot(snapshot, snapshot.accountKey, 2_000)).toBe(snapshot);
+    expect(currentAccountUsageSnapshot(snapshot, "claude:email:b@example.com", 2_000)).toBeNull();
+  });
+
+  it("expires a last-known reading after one hour", () => {
+    expect(currentAccountUsageSnapshot(snapshot, snapshot.accountKey, 1_000 + 60 * 60_000)).toBe(snapshot);
+    expect(currentAccountUsageSnapshot(snapshot, snapshot.accountKey, 1_001 + 60 * 60_000)).toBeNull();
+  });
+
+  it("keeps the older reading's age when an event updates only one window", () => {
+    const stored = {
+      accountKey: "claude:email:a@example.com",
+      limits: { windows: [
+        { label: "5h", usedPercent: 10, resetsAt: null },
+        { label: "Weekly", usedPercent: 20, resetsAt: null },
+      ] },
+      updatedAt: 1_000,
+    };
+    const update = { windows: [{ label: "5h", usedPercent: 30, resetsAt: null }] };
+    // "Weekly" is still the 1_000 reading, so the card must not claim it was
+    // confirmed now — that would also restart its one-hour expiry forever.
+    expect(mergeAccountUsageSnapshot(stored, stored.accountKey, update, 500_000)).toEqual({
+      accountKey: stored.accountKey,
+      limits: { windows: [
+        { label: "5h", usedPercent: 30, resetsAt: null },
+        { label: "Weekly", usedPercent: 20, resetsAt: null },
+      ] },
+      updatedAt: 1_000,
+    });
+    // Once everything on the card came from this event, the age is current.
+    expect(mergeAccountUsageSnapshot(stored, stored.accountKey, { windows: [
+      { label: "5h", usedPercent: 30, resetsAt: null },
+      { label: "Weekly", usedPercent: 40, resetsAt: null },
+    ] }, 500_000).updatedAt).toBe(500_000);
+  });
+
+  it("drops an expired or foreign snapshot instead of merging into it", () => {
+    const stored = {
+      accountKey: "claude:email:a@example.com",
+      limits: { windows: [{ label: "Weekly", usedPercent: 20, resetsAt: null }] },
+      updatedAt: 1_000,
+    };
+    const update = { windows: [{ label: "5h", usedPercent: 30, resetsAt: null }] };
+    const expired = mergeAccountUsageSnapshot(stored, stored.accountKey, update, 1_001 + 60 * 60_000);
+    expect(expired.limits).toEqual(update);
+    expect(expired.updatedAt).toBe(1_001 + 60 * 60_000);
+    expect(mergeAccountUsageSnapshot(stored, "claude:email:b@example.com", update, 2_000)).toEqual({
+      accountKey: "claude:email:b@example.com",
+      limits: update,
+      updatedAt: 2_000,
+    });
+  });
+
+  it("merges one structured window without erasing the others", () => {
+    expect(mergeProviderRateLimits(
+      { windows: [{ label: "5h", usedPercent: 10, resetsAt: null }, { label: "Weekly", usedPercent: 20, resetsAt: null }] },
+      { windows: [{ label: "5h", usedPercent: 30, resetsAt: 123 }] },
+    )).toEqual({ windows: [
+      { label: "5h", usedPercent: 30, resetsAt: 123 },
+      { label: "Weekly", usedPercent: 20, resetsAt: null },
+    ] });
+  });
+});
+
+describe("usage freshness and safe diagnostics", () => {
+  it("shows age without exposing provider output", () => {
+    expect(usageFreshnessText(1_000, 20_000)).toBe("Updated just now");
+    expect(usageFreshnessText(1_000, 181_000)).toBe("Updated 3m ago");
+    expect(usageFreshnessText(1_000, 7_201_000)).toBe("Last updated 2h ago");
+  });
+
+  it("classifies failures into sanitized support categories", () => {
+    expect(usageReadFailureKind("CLAUDE_USAGE_TIMEOUT secret")).toBe("timeout");
+    expect(usageReadFailureKind("401 private details")).toBe("authentication");
+    expect(usageReadFailureKind("Invalid usage data private details")).toBe("invalid-response");
+    expect(usageReadFailureStatus("unavailable", true)).toBe("Usage refresh unavailable · last reading retained");
+    expect(sanitizedUsageProviderVersion("Claude Code 2.1.266 private/path")).toBe("2.1.266");
+    expect(sanitizedUsageProviderVersion("private/path only")).toBeUndefined();
   });
 });
 

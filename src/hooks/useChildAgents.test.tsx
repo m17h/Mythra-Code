@@ -81,6 +81,7 @@ function context(overrides: Partial<ChildAgentContext> = {}): ChildAgentContext 
     bindThreadToProject: vi.fn(),
     beginRunCheckpoint: vi.fn(async () => undefined),
     discardRunCheckpoint: vi.fn(),
+    resolveSkillPrompt: vi.fn(async (message: string) => message),
     rememberThread: vi.fn(),
     persistThreadModel: vi.fn(),
     persistThreadReasoning: vi.fn(),

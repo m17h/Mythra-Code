@@ -696,6 +696,7 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
                           <div className="sa-config-field">
                             <span>Provider</span>
                             <AppSelectMenu
+                              portal
                               ariaLabel={`Provider for ${target.id}`}
                               value={target.provider}
                               options={CHILD_AGENT_PROVIDERS.map((provider) => ({
@@ -725,6 +726,7 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
                           <div className="sa-config-field">
                             <span>Model</span>
                             <AppSelectMenu
+                              portal
                               ariaLabel={`Model for ${target.id}`}
                               value={selectedModel}
                               options={modelOptions}
@@ -773,11 +775,6 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
                               />
                             </div>
                           )}
-                          <label className="sa-config-field">
-                            <span>When to use</span>
-                            <input aria-label={`When to use ${target.id}`} maxLength={600} value={target.description}
-                              onChange={(event) => updateTarget(target.id, { description: event.target.value })} />
-                          </label>
                           <p className="sa-tile-reasoning">{describeChildAgentReasoning(target)}</p>
                           <button
                             type="button"

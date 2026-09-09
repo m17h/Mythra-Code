@@ -44,10 +44,9 @@ export function UsageDashboard({ onRefreshPricing, openRouterPricingError }: {
     finally { setRefreshing(false); }
   };
 
-  return <section className="settings-section usage-dashboard" aria-label="All-time local usage">
-    <div className="settings-section-heading usage-dashboard-heading">
-      <div><h3>All-time local usage</h3><p>Usage recorded by Mythra Code on this device, across your threads. Not your entire provider account history.</p></div>
-    </div>
+  return <section className="set-group usage-dashboard" aria-label="All-time local usage">
+    <h4 className="usage-dashboard-heading">All-time local usage</h4>
+    <p>Usage recorded by Mythra Code on this device, across your threads. Not your entire provider account history.</p>
     <div className="usage-dashboard-stats">
       <div><span>Total tokens</span><strong>{number(totals.totalTokens)}</strong><small>{number(totals.threads)} tracked thread{totals.threads === 1 ? "" : "s"}</small></div>
       <div><span>Estimated API-equivalent value</span><strong>{totals.pricedTokens ? `≈ ${formatEstimatedCost(totals.estimatedCost)}` : "—"}</strong><small>{coverage === null ? "No usage recorded yet" : `${coverage}% of input/output tokens priced`}</small></div>

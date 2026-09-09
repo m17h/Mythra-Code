@@ -24,6 +24,7 @@ import {
   Play,
   Plus,
   RotateCcw,
+  Search,
   ShieldCheck,
   Trash2,
   UsersRound,
@@ -93,44 +94,62 @@ import { cachedDeveloperRuntimeUpdates, checkDeveloperRuntimeUpdates, ensureDeve
  * heading, and its supporting line all read from here, so a label can never
  * drift between the button and the pane it opens.
  */
+/**
+ * The settings map, in the order a person actually sets one up: how it looks,
+ * what it thinks with, what it does on its own, then the machine underneath.
+ *
+ * `keywords` is what makes the sidebar's search worth having. People look for
+ * the *setting* ("api key", "dark mode", "mcp"), not the section it was filed
+ * under, so every pane carries the vocabulary of the settings inside it.
+ */
 const SETTINGS_NAV: ReadonlyArray<{
   group: string;
-  items: ReadonlyArray<{ id: SettingsSection; label: string; icon: typeof Palette; detail: string }>;
+  items: ReadonlyArray<{ id: SettingsSection; label: string; icon: typeof Palette; detail: string; keywords: string }>;
 }> = [
   {
     group: "Workspace",
     items: [
-      { id: "general", label: "Interface", icon: Palette, detail: "Theme, size, effort-slider style, chat typeface, and provider marks. Everything previews instantly; save to keep it." },
-      { id: "projects", label: "Projects", icon: FolderCog, detail: "Give a project its own provider, model, and look. Those choices apply whenever you enter it." },
+      { id: "general", label: "Interface", icon: Palette, detail: "Theme, size, effort-slider style, chat typeface, and provider marks. Everything previews instantly; save to keep it.", keywords: "theme dark light appearance colour color scheme font typeface text size scale zoom density effort slider logo icon mark look" },
+      { id: "projects", label: "Projects", icon: FolderCog, detail: "Give a project its own provider, model, and look. Those choices apply whenever you enter it.", keywords: "project folder workspace default override per-project repository" },
     ],
   },
   {
     group: "Intelligence",
     items: [
-      { id: "models", label: "Models & accounts", icon: KeyRound, detail: "Choose the default provider, connect your accounts, and pick a default model." },
-      { id: "github", label: "GitHub", icon: GitFork, detail: "Connect your GitHub account and clone repositories into new projects." },
-      { id: "usage", label: "Usage", icon: Gauge, detail: "How quotas are shown, plus everything this device has used." },
-      { id: "prompts", label: "Prompts", icon: NotebookPen, detail: "Instructions sent with every thread: the global prompt first, then the selected subscription’s own prompt." },
-      { id: "agents", label: "Sub-agents", icon: UsersRound, detail: "Thread cleanup and reusable sub-agent setups." },
+      { id: "models", label: "Models & accounts", icon: KeyRound, detail: "Choose the default provider, connect your accounts, and pick a default model.", keywords: "model provider account sign in login api key openai chatgpt codex anthropic claude cursor openrouter lm studio subscription credentials token default" },
+      { id: "github", label: "GitHub", icon: GitFork, detail: "Connect your GitHub account and clone repositories into new projects.", keywords: "github git clone repository repo account sign in gh cli remote" },
+      { id: "usage", label: "Usage", icon: Gauge, detail: "How quotas are shown, plus everything this device has used.", keywords: "usage quota limit tokens cost price pricing spend billing rate percentage remaining consumed" },
+      { id: "prompts", label: "Prompts", icon: NotebookPen, detail: "Instructions sent with every thread: the global prompt first, then the selected subscription\u2019s own prompt.", keywords: "prompt system instructions agents.md claude.md guidance context profile global memory" },
+      { id: "agents", label: "Sub-agents", icon: UsersRound, detail: "Thread cleanup and reusable sub-agent setups.", keywords: "sub-agent subagent child agent delegate parallel concurrency preset archive cleanup crew" },
     ],
   },
   {
     group: "Automation",
     items: [
-      { id: "workflows", label: "Workflows", icon: Play, detail: "Multi-step agent recipes and one-click project actions." },
-      { id: "scheduled-tasks", label: "Scheduled tasks", icon: CalendarClock, detail: "Prompts that run on their own in a chat or a project." },
-      { id: "skills", label: "Skills", icon: Boxes, detail: "Markdown skills in a local folder that models can call by name." },
-      { id: "tools", label: "Tools & MCP", icon: Wrench, detail: "Local MCP servers and live tool controls." },
+      { id: "workflows", label: "Workflows", icon: Play, detail: "Multi-step agent recipes and one-click project actions.", keywords: "workflow automation recipe steps pipeline action command run trigger" },
+      { id: "scheduled-tasks", label: "Scheduled tasks", icon: CalendarClock, detail: "Prompts that run on their own in a chat or a project.", keywords: "schedule scheduled cron timer interval recurring unattended background task reminder" },
+      { id: "skills", label: "Skills", icon: Boxes, detail: "Markdown skills in a local folder that models can call by name.", keywords: "skill skills markdown folder library import capability" },
+      { id: "tools", label: "Tools & MCP", icon: Wrench, detail: "Local MCP servers and live tool controls.", keywords: "mcp tool tools server stdio model context protocol integration workspace" },
     ],
   },
   {
     group: "System",
     items: [
-      { id: "system", label: "Runtime", icon: Wrench, detail: "Onboarding, notifications, service tier, terminal memory, and diagnostics." },
-      { id: "updates", label: "Updates", icon: Download, detail: "Mythra Code, Claude Code, and Codex updates in one place, always from their official channels." },
+      { id: "system", label: "Runtime", icon: Wrench, detail: "Onboarding, notifications, service tier, terminal memory, and diagnostics.", keywords: "runtime notification alert service tier terminal scrollback memory diagnostics logs errors performance onboarding getting started" },
+      { id: "updates", label: "Updates", icon: Download, detail: "Mythra Code, Claude Code, and Codex updates in one place, always from their official channels.", keywords: "update upgrade version release install download changelog notes" },
     ],
   },
 ];
+
+/** Does a pane match what someone typed into the sidebar's search field? */
+function settingsNavMatches(item: { label: string; detail: string; keywords: string }, query: string): boolean {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return true;
+  const haystack = `${item.label} ${item.detail} ${item.keywords}`.toLowerCase();
+  // Every word has to land somewhere, so "claude key" reaches Models & accounts
+  // without dragging in every pane that merely mentions Claude.
+  return needle.split(/\s+/).every((word) => haystack.includes(word));
+}
 
 const SETTINGS_PANES = new Map(SETTINGS_NAV.flatMap((section) => section.items.map((item) => [item.id, item] as const)));
 
@@ -899,6 +918,15 @@ export function SettingsModal({
     }
     if (action.startsWith("apply:")) applyPresetToScope(preset, action.slice("apply:".length));
   };
+  // Thirteen panes is more than anyone scans reliably, so the sidebar can be
+  // searched. Filtering only hides nav rows: the pane in front of you is never
+  // swapped out mid-edit just because you started typing.
+  const [navQuery, setNavQuery] = useState("");
+  const navGroups = useMemo(() => SETTINGS_NAV
+    .map((section) => ({ ...section, items: section.items.filter((item) => settingsNavMatches(item, navQuery)) }))
+    .filter((section) => section.items.length > 0), [navQuery]);
+  const navMatches = useMemo(() => navGroups.flatMap((section) => section.items), [navGroups]);
+
   // A soft fade at the bottom of the pane says "there is more" without
   // adding chrome; it disappears once the pane is scrolled to its end.
   const contentRef = useRef<HTMLDivElement>(null);
@@ -942,224 +970,292 @@ export function SettingsModal({
   return (
     <div className={`modal-backdrop settings-backdrop ${open ? "open" : "closed"}`} onMouseDown={requestClose} aria-hidden={!open} inert={!open ? true : undefined}>
       <div ref={dialogRef} className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" onMouseDown={(event) => event.stopPropagation()}>
-        <div className="modal-header">
-          <div><h2 id="settings-title">Settings</h2><p>Customize Mythra Code without hidden configuration.</p></div>
-          <button className="icon-button" onClick={requestClose} aria-label="Close settings"><X size={18} /></button>
-        </div>
-
         <div className="settings-layout">
           <nav className="settings-nav" aria-label="Settings categories">
-            {SETTINGS_NAV.map((section) => (
-              <div className="settings-nav-group" key={section.group} role="group" aria-label={section.group}>
-                <span className="settings-nav-label" aria-hidden>{section.group}</span>
-                {section.items.map(({ id, label, icon: Icon }) => (
-                  <button
-                    key={id}
-                    className={settingsSection === id ? "active" : ""}
-                    onClick={() => setSettingsSection(id)}
-                    aria-current={settingsSection === id ? "page" : undefined}
-                  >
-                    <Icon size={14} /><span>{label}</span>{id === "updates" && anyUpdateAvailable && <span className="settings-update-dot" role="img" aria-label="Update available" />}<ChevronRight size={12} />
-                  </button>
-                ))}
+            <div className="settings-nav-head">
+              <h2 id="settings-title">Settings</h2>
+              <div className="settings-search">
+                <Search size={13} aria-hidden="true" />
+                <input
+                  type="text"
+                  value={navQuery}
+                  aria-label="Search settings"
+                  placeholder="Search settings"
+                  onChange={(event) => setNavQuery(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape" && navQuery) { event.stopPropagation(); setNavQuery(""); }
+                    // Once a search has narrowed to one answer, Enter goes
+                    // there: no second aim with the mouse.
+                    if (event.key === "Enter" && navMatches.length === 1) setSettingsSection(navMatches[0]!.id);
+                  }}
+                />
+                {navQuery && <button type="button" className="settings-search-clear" aria-label="Clear search" onClick={() => setNavQuery("")}><X size={12} /></button>}
               </div>
-            ))}
+            </div>
+            <div className="settings-nav-scroll">
+              {navGroups.map((section) => (
+                <div className="settings-nav-group" key={section.group} role="group" aria-label={section.group}>
+                  <span className="settings-nav-label" aria-hidden>{section.group}</span>
+                  {section.items.map(({ id, label, icon: Icon }) => (
+                    <button
+                      key={id}
+                      className={settingsSection === id ? "active" : ""}
+                      onClick={() => setSettingsSection(id)}
+                      aria-current={settingsSection === id ? "page" : undefined}
+                    >
+                      <Icon size={14} aria-hidden="true" /><span>{label}</span>{id === "updates" && anyUpdateAvailable && <span className="settings-update-dot" role="img" aria-label="Update available" />}
+                    </button>
+                  ))}
+                </div>
+              ))}
+              {!navGroups.length && <p className="settings-nav-empty">Nothing matches &ldquo;{navQuery.trim()}&rdquo;.</p>}
+            </div>
           </nav>
-          <div className={`settings-content ${moreBelow ? "has-more-below" : ""}`} ref={contentRef}>
-          <div className="settings-pane-heading">
-            <div>
-              <h3>{SETTINGS_PANES.get(settingsSection)?.label}</h3>
-              <small>{SETTINGS_PANES.get(settingsSection)?.detail}</small>
-            </div>
-            {paneAction}
-          </div>
+          <div className="settings-pane">
+            <header className="settings-pane-heading">
+              <div>
+                <h3>{SETTINGS_PANES.get(settingsSection)?.label}</h3>
+                <small>{SETTINGS_PANES.get(settingsSection)?.detail}</small>
+              </div>
+              {paneAction}
+              <button className="icon-button settings-close" onClick={requestClose} aria-label="Close settings"><X size={17} /></button>
+            </header>
+            <div className={`settings-content ${moreBelow ? "has-more-below" : ""}`} ref={contentRef}>
           {settingsSection === "system" &&
-          <section className="settings-section getting-started-settings">
-            <div className="settings-section-heading settings-heading-with-action">
-              <div className="settings-icon"><BookOpenCheck size={17} /></div>
-              <div><h3>Getting started</h3><p>Review model setup, projects and chats, permissions, and local skills.</p></div>
-              <button type="button" className="secondary-button" onClick={requestOnboarding}>Run onboarding</button>
-            </div>
-          </section>}
+          <div className="set-group">
+            <h4>Getting started</h4>
+            <div className="set-card"><div className="set-row">
+              <div className="set-copy">
+                <strong>Guided setup</strong>
+                <small>Review model setup, projects and chats, permissions, and local skills.</small>
+              </div>
+              <div className="set-control">
+                <button type="button" className="secondary-button" onClick={requestOnboarding}><BookOpenCheck size={13} /> Run onboarding</button>
+              </div>
+            </div></div>
+          </div>}
 
           {settingsSection === "general" &&
           <section className="settings-section theme-settings-section">
-            <div className="settings-subheading first">
-              <strong>Theme</strong>
-              <small>Colors for the whole app.</small>
-            </div>
-            <div className="theme-grid">
-              {THEMES.map((theme) => (
-                <button
-                  type="button"
-                  key={theme.id}
-                  className={`theme-card ${local.theme === theme.id ? "selected" : ""}`}
-                  aria-pressed={local.theme === theme.id}
-                  onClick={() => previewTheme(theme.id)}
-                >
-                  <span className="theme-preview" style={{ background: theme.swatches[0] }}>
-                    <i style={{ background: theme.swatches[1] }} />
-                    <i style={{ background: theme.swatches[2] }} />
-                  </span>
-                  <span><strong>{theme.name}</strong><small>{theme.description}</small></span>
-                  {local.theme === theme.id && <Check size={14} />}
-                </button>
-              ))}
-            </div>
-            <div className="settings-subheading">
-              <strong>Interface size</strong>
-              <small>Scales the whole app, including chat text, without changing the typeface.</small>
-            </div>
-            <div className="interface-size-control">
-              <span className="interface-size-preview" aria-hidden="true">Aa</span>
-              <span className="interface-size-copy"><strong>App scale</strong><small>Pick the density that feels best on this display.</small></span>
-              <AppSelectMenu
-                value={String(local.uiScale ?? 100)}
-                options={INTERFACE_SIZE_OPTIONS}
-                ariaLabel="Interface size"
-                onChange={(value) => previewUiScale(Number(value))}
-              />
-            </div>
-            <div className="settings-subheading">
-              <strong>Effort slider style</strong>
-              <small>How the reasoning-effort slider looks for every provider.</small>
-            </div>
-            <div className="slider-style-grid">
-              {EFFORT_SLIDER_STYLES.map((style) => (
-                <button
-                  type="button"
-                  key={style.id}
-                  className={`slider-style-card ${local.effortSlider === style.id ? "selected" : ""}`}
-                  aria-pressed={local.effortSlider === style.id}
-                  onClick={() => previewEffortSlider(style.id)}
-                >
-                  <span className={`slider-style-preview ${style.id}`} aria-hidden="true">
-                    <i className="slider-style-rail" /><i className="slider-style-thumb" />
-                  </span>
-                  <span><strong>{style.name}</strong><small>{style.description}</small></span>
-                  {local.effortSlider === style.id && <Check size={14} />}
-                </button>
-              ))}
-            </div>
-            <div className="settings-subheading">
-              <strong>Chat typeface</strong>
-              <small>Conversation text and the composer only. The rest of the interface keeps its own type, and code stays monospaced.</small>
-            </div>
-            <div className="chat-font-grid">
-              {CHAT_FONTS.map((font) => (
-                <button
-                  type="button"
-                  key={font.id}
-                  className={`chat-font-card ${local.chatFont === font.id ? "selected" : ""}`}
-                  data-chat-font-option={font.id}
-                  aria-pressed={local.chatFont === font.id}
-                  onClick={() => previewChatFont(font.id)}
-                >
-                  <span className="chat-font-preview" style={{ fontFamily: `var(--chat-font-${font.id})` }} aria-hidden="true">Ag</span>
-                  <span><strong>{font.name}</strong><small>{font.description}</small></span>
-                  {local.chatFont === font.id && <Check size={14} />}
-                </button>
-              ))}
-            </div>
-            <div className="settings-subheading">
-              <strong>Provider marks</strong>
-              <small>The logo shown on threads, responses, and provider controls for each subscription.</small>
-            </div>
-            <div className="provider-mark-grid">
-              <div className="provider-mark-group">
-                <span>OpenAI threads</span>
-                <div className="provider-logo-options" role="radiogroup" aria-label="OpenAI model logo">
-                  <button type="button" className={local.openAiLogo === "openai" ? "selected" : ""} role="radio" aria-checked={local.openAiLogo === "openai"} onClick={() => setLocal({ ...local, openAiLogo: "openai" })}>
-                    <span className="provider-logo-preview openai"><OpenAILogo size={18} /></span>
-                    <span><strong>OpenAI</strong></span>
-                    {local.openAiLogo === "openai" && <Check size={13} />}
-                  </button>
-                  <button type="button" className={local.openAiLogo === "codex" ? "selected" : ""} role="radio" aria-checked={local.openAiLogo === "codex"} onClick={() => setLocal({ ...local, openAiLogo: "codex" })}>
-                    <span className="provider-logo-preview codex"><CodexLogo size={20} /></span>
-                    <span><strong>Codex</strong></span>
-                    {local.openAiLogo === "codex" && <Check size={13} />}
-                  </button>
+            <div className="set-group">
+              <h4>Theme</h4>
+              <div className="set-card bare"><div className="set-body">
+                <div className="theme-grid">
+                  {THEMES.map((theme) => (
+                    <button
+                      type="button"
+                      key={theme.id}
+                      className={`theme-card ${local.theme === theme.id ? "selected" : ""}`}
+                      aria-pressed={local.theme === theme.id}
+                      onClick={() => previewTheme(theme.id)}
+                    >
+                      {/* A miniature of the app itself — ground, sidebar, content,
+                          and the accent doing the one job it does in the real
+                          window — rather than three anonymous colour chips. */}
+                      <span className="theme-preview" style={{ background: theme.swatches[0] }} aria-hidden="true">
+                        <i className="theme-preview-rail" style={{ background: theme.swatches[1] }} />
+                        <i className="theme-preview-body" style={{ background: theme.swatches[1] }} />
+                        <i className="theme-preview-active" style={{ background: theme.swatches[2], color: theme.swatches[2] }} />
+                        <i className="theme-preview-accent" style={{ background: theme.swatches[2] }} />
+                      </span>
+                      <span><strong>{theme.name}</strong><small>{theme.description}</small></span>
+                      {local.theme === theme.id && <Check size={14} />}
+                    </button>
+                  ))}
                 </div>
-              </div>
-              <div className="provider-mark-group">
-                <span>Claude threads</span>
-                <div className="provider-logo-options" role="radiogroup" aria-label="Claude model logo">
-                  <button type="button" className={local.claudeLogo === "claude" ? "selected" : ""} role="radio" aria-checked={local.claudeLogo === "claude"} onClick={() => setLocal({ ...local, claudeLogo: "claude" })}>
-                    <span className="provider-logo-preview claude"><ClaudeLogo size={18} /></span>
-                    <span><strong>Claude</strong></span>
-                    {local.claudeLogo === "claude" && <Check size={13} />}
-                  </button>
-                  <button type="button" className={local.claudeLogo === "anthropic" ? "selected" : ""} role="radio" aria-checked={local.claudeLogo === "anthropic"} onClick={() => setLocal({ ...local, claudeLogo: "anthropic" })}>
-                    <span className="provider-logo-preview anthropic"><AnthropicLogo size={18} /></span>
-                    <span><strong>Anthropic</strong></span>
-                    {local.claudeLogo === "anthropic" && <Check size={13} />}
-                  </button>
+              </div></div>
+            </div>
+
+            <div className="set-group">
+              <h4>Interface size</h4>
+              <div className="set-card"><div className="set-row">
+                <div className="set-copy">
+                  <strong>App scale</strong>
+                  <small>Scales the whole app, including chat text, without changing the typeface.</small>
                 </div>
-              </div>
-              <div className="provider-mark-group">
-                <span>Cursor threads</span>
-                <div className="provider-logo-options" role="radiogroup" aria-label="Cursor model logo">
-                  <button type="button" className={local.cursorLogo === "cube" ? "selected" : ""} role="radio" aria-checked={local.cursorLogo === "cube"} onClick={() => setLocal({ ...local, cursorLogo: "cube" })}>
-                    <span className="provider-logo-preview cursor"><CursorLogo size={19} /></span>
-                    <span><strong>Cursor</strong></span>
-                    {local.cursorLogo === "cube" && <Check size={13} />}
-                  </button>
-                  <button type="button" className={local.cursorLogo === "app-dark" ? "selected" : ""} role="radio" aria-checked={local.cursorLogo === "app-dark"} onClick={() => setLocal({ ...local, cursorLogo: "app-dark" })}>
-                    <span className="provider-logo-preview cursor-app-dark"><CursorDarkAppIcon size={26} /></span>
-                    <span><strong>Cursor Dark</strong></span>
-                    {local.cursorLogo === "app-dark" && <Check size={13} />}
-                  </button>
+                <div className="set-control">
+                  <AppSelectMenu
+                    value={String(local.uiScale ?? 100)}
+                    options={INTERFACE_SIZE_OPTIONS}
+                    ariaLabel="Interface size"
+                    onChange={(value) => previewUiScale(Number(value))}
+                  />
                 </div>
-              </div>
+              </div></div>
+            </div>
+
+            <div className="set-group">
+              <h4>Chat typeface</h4>
+              <p>Conversation text and the composer only. The rest of the interface keeps its own type, and code stays monospaced.</p>
+              <div className="set-card bare"><div className="set-body">
+                    <div className="chat-font-grid">
+                      {CHAT_FONTS.map((font) => (
+                        <button
+                          type="button"
+                          key={font.id}
+                          className={`chat-font-card ${local.chatFont === font.id ? "selected" : ""}`}
+                          data-chat-font-option={font.id}
+                          aria-pressed={local.chatFont === font.id}
+                          onClick={() => previewChatFont(font.id)}
+                        >
+                          <span className="chat-font-preview" style={{ fontFamily: `var(--chat-font-${font.id})` }} aria-hidden="true">Ag</span>
+                          <span><strong>{font.name}</strong><small>{font.description}</small></span>
+                          {local.chatFont === font.id && <Check size={14} />}
+                        </button>
+                      ))}
+                    </div>
+              </div></div>
+            </div>
+
+            <div className="set-group">
+              <h4>Effort slider style</h4>
+              <p>How the reasoning-effort slider looks for every provider.</p>
+              <div className="set-card bare"><div className="set-body">
+                    <div className="slider-style-grid">
+                      {EFFORT_SLIDER_STYLES.map((style) => (
+                        <button
+                          type="button"
+                          key={style.id}
+                          className={`slider-style-card ${local.effortSlider === style.id ? "selected" : ""}`}
+                          aria-pressed={local.effortSlider === style.id}
+                          onClick={() => previewEffortSlider(style.id)}
+                        >
+                          <span className={`slider-style-preview ${style.id}`} aria-hidden="true">
+                            <i className="slider-style-rail" /><i className="slider-style-thumb" />
+                          </span>
+                          <span><strong>{style.name}</strong><small>{style.description}</small></span>
+                          {local.effortSlider === style.id && <Check size={14} />}
+                        </button>
+                      ))}
+                    </div>
+              </div></div>
+            </div>
+
+            <div className="set-group">
+              <h4>Provider marks</h4>
+              <p>The logo shown on threads, responses, and provider controls for each subscription.</p>
+              <div className="set-card bare"><div className="set-body">
+                    <div className="provider-mark-grid">
+                      <div className="provider-mark-group">
+                        <span>OpenAI threads</span>
+                        <div className="provider-logo-options" role="radiogroup" aria-label="OpenAI model logo">
+                          <button type="button" className={local.openAiLogo === "openai" ? "selected" : ""} role="radio" aria-checked={local.openAiLogo === "openai"} onClick={() => setLocal({ ...local, openAiLogo: "openai" })}>
+                            <span className="provider-logo-preview openai"><OpenAILogo size={18} /></span>
+                            <span><strong>OpenAI</strong></span>
+                            {local.openAiLogo === "openai" && <Check size={13} />}
+                          </button>
+                          <button type="button" className={local.openAiLogo === "codex" ? "selected" : ""} role="radio" aria-checked={local.openAiLogo === "codex"} onClick={() => setLocal({ ...local, openAiLogo: "codex" })}>
+                            <span className="provider-logo-preview codex"><CodexLogo size={20} /></span>
+                            <span><strong>Codex</strong></span>
+                            {local.openAiLogo === "codex" && <Check size={13} />}
+                          </button>
+                        </div>
+                      </div>
+                      <div className="provider-mark-group">
+                        <span>Claude threads</span>
+                        <div className="provider-logo-options" role="radiogroup" aria-label="Claude model logo">
+                          <button type="button" className={local.claudeLogo === "claude" ? "selected" : ""} role="radio" aria-checked={local.claudeLogo === "claude"} onClick={() => setLocal({ ...local, claudeLogo: "claude" })}>
+                            <span className="provider-logo-preview claude"><ClaudeLogo size={18} /></span>
+                            <span><strong>Claude</strong></span>
+                            {local.claudeLogo === "claude" && <Check size={13} />}
+                          </button>
+                          <button type="button" className={local.claudeLogo === "anthropic" ? "selected" : ""} role="radio" aria-checked={local.claudeLogo === "anthropic"} onClick={() => setLocal({ ...local, claudeLogo: "anthropic" })}>
+                            <span className="provider-logo-preview anthropic"><AnthropicLogo size={18} /></span>
+                            <span><strong>Anthropic</strong></span>
+                            {local.claudeLogo === "anthropic" && <Check size={13} />}
+                          </button>
+                        </div>
+                      </div>
+                      <div className="provider-mark-group">
+                        <span>Cursor threads</span>
+                        <div className="provider-logo-options" role="radiogroup" aria-label="Cursor model logo">
+                          <button type="button" className={local.cursorLogo === "cube" ? "selected" : ""} role="radio" aria-checked={local.cursorLogo === "cube"} onClick={() => setLocal({ ...local, cursorLogo: "cube" })}>
+                            <span className="provider-logo-preview cursor"><CursorLogo size={19} /></span>
+                            <span><strong>Cursor</strong></span>
+                            {local.cursorLogo === "cube" && <Check size={13} />}
+                          </button>
+                          <button type="button" className={local.cursorLogo === "app-dark" ? "selected" : ""} role="radio" aria-checked={local.cursorLogo === "app-dark"} onClick={() => setLocal({ ...local, cursorLogo: "app-dark" })}>
+                            <span className="provider-logo-preview cursor-app-dark"><CursorDarkAppIcon size={26} /></span>
+                            <span><strong>Cursor Dark</strong></span>
+                            {local.cursorLogo === "app-dark" && <Check size={13} />}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+              </div></div>
             </div>
           </section>}
 
           {settingsSection === "prompts" &&
           <section className="settings-section">
-            <div className="prompt-file-notice" role="note">
-              <Info size={16} />
-              <p><strong>Global instruction files are not inherited.</strong> Your global <code>CLAUDE.md</code> and <code>AGENTS.md</code> do not affect Mythra Code. Add those instructions to the prompt fields below instead. Project-level <code>AGENTS.md</code> files can still be discovered when that setting is enabled.</p>
+            <div className="set-group">
+              <h4>Project instructions</h4>
+              <div className="set-card">
+                <div className="set-row">
+                  <div className="set-copy">
+                    <strong>Project AGENTS.md discovery</strong>
+                    <small>Allow AGENTS.md guidance from the active project for its threads, up to 32&nbsp;KB.</small>
+                  </div>
+                  <div className="set-control">
+                    <button type="button" role="switch" aria-label="Project AGENTS.md discovery" aria-checked={local.projectInstructionsEnabled} className={`toggle-switch ${local.projectInstructionsEnabled ? "on" : ""}`} onClick={() => setLocal({ ...local, projectInstructionsEnabled: !local.projectInstructionsEnabled })}><span /></button>
+                  </div>
+                </div>
+                <div className="set-body">
+                  <div className="prompt-file-notice" role="note">
+                    <Info size={16} />
+                    <p><strong>Global instruction files are not inherited.</strong> Your global <code>CLAUDE.md</code> and <code>AGENTS.md</code> do not affect Mythra Code. Add those instructions to the prompt fields below instead. Project-level AGENTS.md files can still be discovered when the setting above is enabled.</p>
+                  </div>
+                </div>
+              </div>
             </div>
-            <div className="prompt-guidance-control">
-              <span><strong>Project AGENTS.md discovery</strong><small>Allow AGENTS.md guidance from the active project for its threads (up to 32 KB).</small></span>
-              <button type="button" role="switch" aria-label="Project AGENTS.md discovery" aria-checked={local.projectInstructionsEnabled} className={`toggle-switch ${local.projectInstructionsEnabled ? "on" : ""}`} onClick={() => setLocal({ ...local, projectInstructionsEnabled: !local.projectInstructionsEnabled })}><span /></button>
-            </div>
-            <label className="prompt-layer-field">
-              <span><strong>Global Mythra Code prompt</strong><small>Used by every provider.</small></span>
-              <textarea
-                className="prompt-editor"
-                value={local.systemPrompt}
-                onChange={(event) => setLocal({ ...local, systemPrompt: event.target.value })}
-                placeholder="Empty — add your own instructions here"
-                rows={5}
-              />
-            </label>
-            <div className="provider-prompt-grid">
-              <label className="prompt-layer-field">
-                <span><strong>Codex subscription prompt</strong><small>Appended after the global prompt for ChatGPT subscription threads.</small></span>
-                <textarea
-                  className="prompt-editor"
-                  value={local.codexSystemPrompt}
-                  onChange={(event) => setLocal({ ...local, codexSystemPrompt: event.target.value })}
-                  placeholder="Optional Codex-specific instructions"
-                  rows={4}
-                />
-              </label>
-              <label className="prompt-layer-field">
-                <span><strong>Claude Code subscription prompt</strong><small>Appended after the global prompt for Claude subscription threads.</small></span>
-                <textarea
-                  className="prompt-editor"
-                  value={local.claudeSystemPrompt}
-                  onChange={(event) => setLocal({ ...local, claudeSystemPrompt: event.target.value })}
-                  placeholder="Optional Claude-specific instructions"
-                  rows={4}
-                />
-              </label>
-            </div>
-            <div className="prompt-audit-row">
-              <span><Check size={13} /> Global layer first</span>
-              <span><Check size={13} /> Subscription layer second</span>
-              <span><Check size={13} /> AGENTS.md discovery {local.projectInstructionsEnabled ? "enabled" : "disabled"}</span>
+
+            <div className="set-group">
+              <div className="set-group-head"><h4>Prompt layers</h4><span className="set-group-note">sent in this order, every thread</span></div>
+              <div className="set-card">
+                <label className="set-row stack">
+                  <div className="set-copy"><strong>Global Mythra Code prompt</strong><small>Used by every provider.</small></div>
+                  <div className="set-control">
+                    <textarea
+                      className="prompt-editor"
+                      value={local.systemPrompt}
+                      onChange={(event) => setLocal({ ...local, systemPrompt: event.target.value })}
+                      placeholder="Empty — add your own instructions here"
+                      rows={5}
+                    />
+                  </div>
+                </label>
+                <label className="set-row stack">
+                  <div className="set-copy"><strong>Codex subscription prompt</strong><small>Appended after the global prompt for ChatGPT subscription threads.</small></div>
+                  <div className="set-control">
+                    <textarea
+                      className="prompt-editor"
+                      value={local.codexSystemPrompt}
+                      onChange={(event) => setLocal({ ...local, codexSystemPrompt: event.target.value })}
+                      placeholder="Optional Codex-specific instructions"
+                      rows={4}
+                    />
+                  </div>
+                </label>
+                <label className="set-row stack">
+                  <div className="set-copy"><strong>Claude Code subscription prompt</strong><small>Appended after the global prompt for Claude subscription threads.</small></div>
+                  <div className="set-control">
+                    <textarea
+                      className="prompt-editor"
+                      value={local.claudeSystemPrompt}
+                      onChange={(event) => setLocal({ ...local, claudeSystemPrompt: event.target.value })}
+                      placeholder="Optional Claude-specific instructions"
+                      rows={4}
+                    />
+                  </div>
+                </label>
+                <div className="set-body">
+                  <div className="prompt-audit-row">
+                    <span><Check size={13} /> Global layer first</span>
+                    <span><Check size={13} /> Subscription layer second</span>
+                    <span><Check size={13} /> AGENTS.md discovery {local.projectInstructionsEnabled ? "enabled" : "disabled"}</span>
+                  </div>
+                </div>
+              </div>
             </div>
           </section>}
 
@@ -1190,7 +1286,19 @@ export function SettingsModal({
             onOpenRun={onOpenRun}
           />}
 
-          {settingsSection === "tools" && <div className="settings-workspace-link"><div><strong>Live tool controls</strong><small>{workspaceToolsAvailable ? "Inspect skills, finish MCP sign-in, connect configured servers, and run project actions in the active workspace." : "Open a project first to inspect its live skills, MCP servers, and project actions."}</small></div><button className="secondary-button" onClick={onWorkspaceTools} disabled={!workspaceToolsAvailable}><PanelRight size={13} /> Open workspace tools</button></div>}
+          {settingsSection === "tools" &&
+          <div className="set-group">
+            <h4>Live tools</h4>
+            <div className="set-card"><div className="set-row">
+              <div className="set-copy">
+                <strong>Live tool controls</strong>
+                <small>{workspaceToolsAvailable ? "Inspect skills, finish MCP sign-in, connect configured servers, and run project actions in the active workspace." : "Open a project first to inspect its live skills, MCP servers, and project actions."}</small>
+              </div>
+              <div className="set-control">
+                <button className="secondary-button" onClick={onWorkspaceTools} disabled={!workspaceToolsAvailable}><PanelRight size={13} /> Open workspace tools</button>
+              </div>
+            </div></div>
+          </div>}
 
           {settingsSection === "projects" && <ProjectDefaultsSettings
             projects={localProjects}
@@ -1252,32 +1360,73 @@ export function SettingsModal({
 
           {settingsSection === "updates" && <UpdateSettings appUpdater={appUpdater} developerRuntimeUpdater={developerRuntimeUpdater} />}
 
-          {settingsSection === "system" &&
-          <section className="settings-section">
-            <div className="settings-section-heading"><div className="settings-icon"><Wrench size={17} /></div><div><h3>Runtime behavior</h3><p>Control background alerts, service tier, and terminal memory.</p></div></div>
-            <div className="behavior-grid behavior-grid-single">
-              <div><span><strong>Desktop notifications</strong><small>Notify when a background task finishes.</small></span><button type="button" role="switch" aria-checked={local.notificationsEnabled} className={`toggle-switch ${local.notificationsEnabled ? "on" : ""}`} onClick={() => setLocal({ ...local, notificationsEnabled: !local.notificationsEnabled })}><span /></button></div>
-            </div>
-            <div className="runtime-field-grid">
-              <div className="field-label">
-                <span>OpenAI service tier</span>
-                <AppSelectMenu value={local.serviceTier ?? ""} options={SERVICE_TIER_OPTIONS} ariaLabel="OpenAI service tier" onChange={(value) => setLocal({ ...local, serviceTier: value || null })} />
+          {settingsSection === "system" && <>
+          <div className="set-group">
+            <h4>Runtime behavior</h4>
+            <div className="set-card">
+              <div className="set-row">
+                <div className="set-copy">
+                  <strong>Desktop notifications</strong>
+                  <small>Notify when a background task finishes.</small>
+                </div>
+                <div className="set-control">
+                  <button type="button" role="switch" aria-label="Desktop notifications" aria-checked={local.notificationsEnabled} className={`toggle-switch ${local.notificationsEnabled ? "on" : ""}`} onClick={() => setLocal({ ...local, notificationsEnabled: !local.notificationsEnabled })}><span /></button>
+                </div>
               </div>
-              <div className="field-label">
-                <span>Terminal scrollback</span>
-                <AppSelectMenu value={String(local.terminalScrollback)} options={TERMINAL_SCROLLBACK_OPTIONS} ariaLabel="Terminal scrollback" onChange={(value) => setLocal({ ...local, terminalScrollback: Number(value) })} />
+              <div className="set-row">
+                <div className="set-copy">
+                  <strong>OpenAI service tier</strong>
+                  <small>How ChatGPT subscription requests are scheduled.</small>
+                </div>
+                <div className="set-control">
+                  <AppSelectMenu value={local.serviceTier ?? ""} options={SERVICE_TIER_OPTIONS} ariaLabel="OpenAI service tier" onChange={(value) => setLocal({ ...local, serviceTier: value || null })} />
+                </div>
+              </div>
+              <div className="set-row">
+                <div className="set-copy">
+                  <strong>Terminal scrollback</strong>
+                  <small>How much output each terminal keeps in memory.</small>
+                </div>
+                <div className="set-control">
+                  <AppSelectMenu value={String(local.terminalScrollback)} options={TERMINAL_SCROLLBACK_OPTIONS} ariaLabel="Terminal scrollback" onChange={(value) => setLocal({ ...local, terminalScrollback: Number(value) })} />
+                </div>
               </div>
             </div>
-            <div className="diagnostic-card"><span><strong>Diagnostics</strong><small>Export a JSON bundle with runtime details, recent errors, and performance samples · {runtimeStatus?.version ?? "runtime version unavailable"}{runtimeStatus?.warning ? ` · ${runtimeStatus.warning}` : ""}</small></span><button className="secondary-button" onClick={() => void exportDiagnosticBundle()}>Export JSON</button></div>
-            <RecentPerformancePanel active={open && settingsSection === "system"} />
-            <RecentErrorsPanel active={open && settingsSection === "system"} />
-          </section>}
+          </div>
+
+          <div className="set-group">
+            <h4>Diagnostics</h4>
+            <div className="set-card">
+              <div className="set-row">
+                <div className="set-copy">
+                  <strong>Export a diagnostic bundle</strong>
+                  <small>Runtime details, recent errors, and performance samples as JSON · {runtimeStatus?.version ?? "runtime version unavailable"}{runtimeStatus?.warning ? ` · ${runtimeStatus.warning}` : ""}</small>
+                </div>
+                <div className="set-control">
+                  <button className="secondary-button" onClick={() => void exportDiagnosticBundle()}>Export JSON</button>
+                </div>
+              </div>
+              <RecentPerformancePanel active={open && settingsSection === "system"} />
+              <RecentErrorsPanel active={open && settingsSection === "system"} />
+            </div>
+          </div>
+          </>}
 
           {settingsSection === "agents" &&
           <section className="settings-section subagent-settings">
-            <div className="settings-subheading first"><strong>Sub-agent defaults</strong><small>Changes apply to new tasks. Existing tasks keep their own sub-agent setup.</small></div>
-            <button type="button" className="secondary-button" aria-expanded={agentDefaultsOpen} onClick={() => setAgentDefaultsOpen((open) => !open)}>Edit sub-agent defaults</button>
-            {agentDefaultsOpen && <div role="group" aria-label="Sub-agent defaults editor">
+            <div className="set-group">
+              <h4>Sub-agent defaults</h4>
+              <div className="set-card">
+                <div className="set-row">
+                  <div className="set-copy">
+                    <strong>Default setup for new tasks</strong>
+                    <small>Changes apply to new tasks. Existing tasks keep the setup they started with.</small>
+                  </div>
+                  <div className="set-control">
+                    <button type="button" className="secondary-button" aria-expanded={agentDefaultsOpen} onClick={() => setAgentDefaultsOpen((open) => !open)}>{agentDefaultsOpen ? "Done editing" : "Edit defaults"}</button>
+                  </div>
+                </div>
+            {agentDefaultsOpen && <div className="set-body" role="group" aria-label="Sub-agent defaults editor">
             <div className="field-label">
               <span>Edit defaults for</span>
               <AppSelectMenu ariaLabel="Sub-agent defaults scope" value={agentEditScope} options={[
@@ -1291,36 +1440,37 @@ export function SettingsModal({
               onChange={(policy) => updateAgentPolicy(policy, agentEditScope)} />
             {editedAgentProject?.overrides?.subagents && <button type="button" className="secondary-button" onClick={() => clearProjectAgentPolicy(editedAgentProject.id)}>Use app defaults for this project</button>}
             </div>}
+              </div>
+            </div>
 
-            <div className="subagent-archive-setting">
-              <div className="settings-subheading first"><strong>Thread cleanup</strong><small>What happens to sub-agent conversations once their parent finishes.</small></div>
-              <div className={`agent-settings-card single ${local.autoArchiveSubagentThreads ? "enabled" : ""}`}>
-                <div className="agent-toggle-copy">
+            <div className="set-group">
+              <h4>Thread cleanup</h4>
+              <div className="set-card"><div className="set-row">
+                <div className="set-copy">
                   <strong>Archive sub-agent threads automatically</strong>
                   <small>Move each settled sub-agent conversation to Archived once its parent finishes. Sub-agents still working stay visible.</small>
                 </div>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-label="Archive sub-agent threads automatically"
-                  aria-checked={local.autoArchiveSubagentThreads}
-                  className={`toggle-switch ${local.autoArchiveSubagentThreads ? "on" : ""}`}
-                  onClick={() => setLocal({ ...local, autoArchiveSubagentThreads: !local.autoArchiveSubagentThreads })}
-                >
-                  <span />
-                </button>
-              </div>
+                <div className="set-control">
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-label="Archive sub-agent threads automatically"
+                    aria-checked={local.autoArchiveSubagentThreads}
+                    className={`toggle-switch ${local.autoArchiveSubagentThreads ? "on" : ""}`}
+                    onClick={() => setLocal({ ...local, autoArchiveSubagentThreads: !local.autoArchiveSubagentThreads })}
+                  >
+                    <span />
+                  </button>
+                </div>
+              </div></div>
             </div>
 
             {policyNotice && <p className="subagent-applied-note" role="status"><Check size={13} aria-hidden="true" /> {policyNotice}</p>}
 
-            <div className="preset-panel">
-                  <div className="preset-section-heading">
+            <div className="set-group preset-panel">
+                  <div className="set-group-head">
                     <h4>Sub-agent presets</h4>
-                    <p>Save providers, models, reasoning, and concurrency as one reusable setup.</p>
-                  </div>
-                  <div className="preset-toolbar">
-                    <span>{local.childAgentPresets.length} of {MAX_CHILD_AGENT_PRESETS} sub-agent presets</span>
+                    <span className="set-group-note">{local.childAgentPresets.length} of {MAX_CHILD_AGENT_PRESETS}</span>
                     <button
                       type="button"
                       className="secondary-button"
@@ -1328,6 +1478,7 @@ export function SettingsModal({
                       disabled={presetsFull || creatingPreset}
                     ><Plus size={12} /> Create preset</button>
                   </div>
+                  <p>Save providers, models, reasoning, and concurrency as one reusable setup.</p>
                   {creatingPreset && (
                     <div className="preset-create-card">
                       <span className="preset-create-heading"><strong>Create a preset</strong><small>Name the reusable setup before configuring it.</small></span>
@@ -1458,10 +1609,9 @@ export function SettingsModal({
 
           {settingsSection === "models" &&
           <section className="settings-section">
-            <div className="settings-subheading first">
-              <strong>Default provider</strong>
-              <small>New threads start with this provider. Each thread keeps its own provider after it starts.</small>
-            </div>
+            <div className="set-group">
+              <h4>Default provider</h4>
+              <p>New threads start with this provider. Each thread keeps its own provider after it starts.</p>
             <div className="provider-cards">
               <button className={`provider-card ${local.provider === "openai" ? "selected" : ""}`} onClick={() => setLocal({ ...local, provider: "openai", model: local.provider === "openai" ? (local.model || DEFAULT_OPENAI_MODEL) : DEFAULT_OPENAI_MODEL, ultra: false })}>
                 <span className="provider-logo openai">{local.openAiLogo === "codex" ? <CodexLogo size={18} /> : <OpenAILogo size={17} />}</span>
@@ -1587,8 +1737,11 @@ export function SettingsModal({
               </div>
             )}
 
-            <div className="field-label default-model-picker">
-              <span>Default model</span>
+            </div>
+            <div className="set-group">
+              <h4>Default model</h4>
+              <div className="set-card"><div className="set-row stack default-model-picker">
+              <div className="set-control">
               <AppSelectMenu
                 value={local.model}
                 options={defaultModelOptions}
@@ -1605,17 +1758,18 @@ export function SettingsModal({
               />
               {local.provider === "claude" && !claudeModels.length
                 ? <div className="settings-notice" role="status"><Info size={13} /><span>Showing Mythra Code’s built-in Claude list because the Claude Code catalog could not be read.</span><button type="button" className="secondary-button" onClick={() => void onClaudeRefresh()}>Retry</button></div>
-                : <small>{defaultModelHelp}</small>}
+                : <small className="set-control-help">{defaultModelHelp}</small>}
+              </div>
+              </div></div>
             </div>
-
           </section>}
+            </div>
+            <div className="modal-footer">
+              {dirty && <span className="unsaved-hint">Unsaved changes</span>}
+              <button className="secondary-button" onClick={requestClose}>Cancel</button>
+              <button className="primary-button" onClick={saveSettings} disabled={!projectDefaultsComplete}>Save settings</button>
+            </div>
           </div>
-        </div>
-
-        <div className="modal-footer">
-          {dirty && <span className="unsaved-hint">Unsaved changes</span>}
-          <button className="secondary-button" onClick={requestClose}>Cancel</button>
-          <button className="primary-button" onClick={saveSettings} disabled={!projectDefaultsComplete}>Save settings</button>
         </div>
       </div>
     </div>
@@ -1667,11 +1821,9 @@ function GitHubSettings({
     try { await onClone(); } catch (error) { setFolderError(friendlyError(error)); }
   };
   return <>
-    <section className="settings-section">
-      <div className="settings-section-heading">
-        <div className="settings-icon"><GitFork size={17} /></div>
-        <div><h3>GitHub account</h3><p>Mythra Code uses the official GitHub CLI and never injects its token into prompts or project files. Agents with command access can still run credential-aware CLI tools, so use the same care you would in a terminal.</p></div>
-      </div>
+    <section className="set-group">
+      <h4>GitHub account</h4>
+      <p>Mythra Code uses the official GitHub CLI and never injects its token into prompts or project files. Agents with command access can still run credential-aware CLI tools, so use the same care you would in a terminal.</p>
       <div className="credential-panel github-account-panel">
         <span className="github-avatar-placeholder"><GitFork size={18} /></span>
         <div>
@@ -1690,11 +1842,10 @@ function GitHubSettings({
         <button className="icon-button" onClick={() => void onRefresh()} disabled={busy} title="Refresh GitHub status" aria-label="Refresh GitHub status"><RotateCcw size={14} /></button>
       </div>
     </section>
-    <section className="settings-section">
-      <div className="settings-section-heading">
-        <div className="settings-icon"><Download size={17} /></div>
-        <div><h3>Clone a repository</h3><p>Download a GitHub repository into a new local folder and add it to Mythra Code as a project.</p></div>
-      </div>
+    <section className="set-group">
+      <h4>Clone a repository</h4>
+      <p>Download a GitHub repository into a new local folder and add it to Mythra Code as a project.</p>
+      <div className="set-card"><div className="set-body">
       <div className="github-clone-grid">
         <label className="field-label"><span>Repository URL</span><input value={cloneUrl} disabled={busy || choosing} onChange={(event) => { setFolderError(""); onCloneUrl(event.target.value); }} placeholder="https://github.com/owner/repository.git" aria-describedby="github-clone-url-help" aria-invalid={Boolean(cloneUrl.trim() && !target)} /></label>
         <div className="field-label github-clone-parent-field">
@@ -1711,6 +1862,7 @@ function GitHubSettings({
       {target && cloneParent && <p id="github-clone-destination" className="github-clone-destination" role="status"><strong>Clone into</strong>{" "}<span className="github-clone-path">{joinPath(cloneParent, target.name)}</span></p>}
       {folderError && <p className="github-clone-error" role="alert">{folderError}</p>}
       <button type="button" className="primary-button" disabled={!status?.authenticated || busy || choosing || !target || !cloneParent} aria-describedby={target && cloneParent ? "github-clone-destination" : "github-clone-url-help"} onClick={() => void clone()}>{busy ? <LoaderCircle className="spin" size={13} /> : <Download size={13} />} Clone repository</button>
+      </div></div>
     </section>
   </>;
 }
@@ -1721,16 +1873,14 @@ const USAGE_DISPLAY_OPTIONS: ReadonlyArray<{ id: UsageDisplayMode; label: string
 ];
 
 function UsageDisplaySettings({ value, onChange }: { value: UsageDisplayMode; onChange: (value: UsageDisplayMode) => void }) {
-  return <section className="settings-section">
-    <div className="usage-display-layout">
-      <div className="settings-section-heading">
-        <div className="settings-icon"><Gauge size={17} /></div>
-        <div>
-          <h3>Provider quota display</h3>
-          <p id="usage-display-help">Choose the direction Mythra Code reads subscription limits in. The choice applies everywhere a live provider quota appears — the usage card in the studio dock, OpenAI/Codex rate limits, and Claude Code rate limits — including each window&rsquo;s length and reset time.</p>
-        </div>
+  return <section className="set-group">
+    <h4>Provider quota display</h4>
+    <div className="set-card"><div className="set-row usage-display-layout">
+      <div className="set-copy">
+        <strong>Read limits as</strong>
+        <small id="usage-display-help">Choose the direction Mythra Code reads subscription limits in. The choice applies everywhere a live provider quota appears — the usage card in the studio dock, OpenAI/Codex rate limits, and Claude Code rate limits — including each window&rsquo;s length and reset time.</small>
       </div>
-      <div className="usage-display-controls">
+      <div className="set-control usage-display-controls">
         <div className="usage-display-options" role="radiogroup" aria-label="Provider quota display" aria-describedby="usage-display-help">
           {USAGE_DISPLAY_OPTIONS.map((option) => (
             <button
@@ -1750,7 +1900,7 @@ function UsageDisplaySettings({ value, onChange }: { value: UsageDisplayMode; on
             never describe a format the app does not actually produce. */}
         <div className="usage-display-preview"><Gauge size={13} /><span>Example · 5h window {usagePercentLabel(42, value)}</span></div>
       </div>
-    </div>
+    </div></div>
   </section>;
 }
 
@@ -1996,7 +2146,9 @@ function DeveloperRuntimeUpdateCard({
   const actionLabel = status?.installed === false ? `Install ${name}` : `Update ${name}`;
   return <div className={`update-card developer-runtime-update-card ${state}`}>
     <div className="update-version-row">
-      <span><small>Installed · {status?.source ?? "Local runtime"}</small><strong>{name} {status?.currentVersion ?? (status?.installed === false ? "not installed" : "…")}</strong></span>
+      {/* Before the first check there is no version to report, so the card says
+          so plainly instead of printing a name trailed by an ellipsis. */}
+      <span><small>{status ? `Installed · ${status.source ?? "Local runtime"}` : "Local runtime"}</small><strong>{status?.currentVersion ? `${name} ${status.currentVersion}` : status?.installed === false ? `${name} · not installed` : name}</strong></span>
       {status?.latestVersion && <span className="update-version-available"><small>Latest</small><strong>{status.latestVersion}</strong></span>}
     </div>
     <div className="update-status-row">
@@ -2031,8 +2183,9 @@ function UpdateSettings({ appUpdater, developerRuntimeUpdater }: { appUpdater: A
                 : "Check the public Mythra Code repository for a newer signed release.";
 
 
-  return <section className="settings-section update-settings-section">
-    <div className="settings-subheading first"><strong>Mythra Code</strong><small>Signed releases from the public Mythra Code repository.</small></div>
+  return <section className="update-settings-section">
+    <div className="set-group">
+    <div className="set-group-head"><h4>Mythra Code</h4><span className="set-group-note">signed releases from the public repository</span></div>
     <div className={`update-card ${appUpdater.phase}`}>
       <div className="update-version-row">
         <span><small>Installed</small><strong>Mythra Code {appUpdater.currentVersion}</strong></span>
@@ -2059,13 +2212,16 @@ function UpdateSettings({ appUpdater, developerRuntimeUpdater }: { appUpdater: A
         ) : null}
       </div>
     </div>
-    <div className="settings-subheading"><strong>Developer runtimes</strong><small>The local Claude Code and Codex installs Mythra Code drives.</small></div>
+    </div>
+    <div className="set-group">
+    <div className="set-group-head"><h4>Developer runtimes</h4><span className="set-group-note">the local Claude Code and Codex installs Mythra Code drives</span></div>
     <div className="developer-runtime-update-grid">
       <DeveloperRuntimeUpdateCard target="claude" name="Claude Code" status={developerRuntimeUpdater.status?.claude ?? null} updater={developerRuntimeUpdater} />
       <DeveloperRuntimeUpdateCard target="codex" name="Codex" status={developerRuntimeUpdater.status?.codex ?? null} updater={developerRuntimeUpdater} />
     </div>
     {developerRuntimeUpdater.error && <div className="update-card developer-runtime-result error" role="alert"><div className="update-status-row"><Info size={13} /><span>{developerRuntimeUpdater.error}</span></div></div>}
     {developerRuntimeUpdater.message && <div className="update-card developer-runtime-result" role="status"><div className="update-status-row"><Check size={13} /><span>{developerRuntimeUpdater.message.slice(-2_000)}</span></div></div>}
+    </div>
     <div className="update-trust-row"><ShieldCheck size={14} /><span><strong>Official distribution channels</strong><small>Mythra Code packages must match this app’s updater key. Claude Code and Codex installers are fetched over HTTPS from their official publishers and verify the release assets they install.</small></span></div>
   </section>;
 }

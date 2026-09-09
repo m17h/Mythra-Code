@@ -229,6 +229,14 @@ export function childAgentModel(target: Pick<ChildAgentTarget, "provider" | "mod
  * Why a destination cannot be used right now, or null when it is usable.
  * Configuration problems (a model that provider cannot address) are reported
  * before authentication problems, because the user has to fix them first.
+ *
+ * Anything Mythra Code offers in a provider's picker has to survive this
+ * function: a roster is a promise that the child turn will actually start.
+ * So a model identity is judged only by what the spawn path can carry, never
+ * by how a vendor happens to spell its ids today. Claude Code's live catalog
+ * alone answers with `default`, `sonnet`, `haiku`, `opus[1m]`, and
+ * `claude-fable-5-1[1m]`; any rule shaped around one of those spellings
+ * rejects the others.
  */
 export function childAgentTargetIssue(
   target: ChildAgentTarget,
@@ -242,11 +250,18 @@ export function childAgentTargetIssue(
   if (target.provider === "lmstudio" && !model) {
     return "Choose a model available from the LM Studio server.";
   }
-  if (target.provider === "claude" && !model.startsWith("claude-")) {
-    return "Claude Code only accepts Claude model identities.";
-  }
-  if (target.provider === "openai" && (model.includes("/") || model.startsWith("claude-"))) {
+  // OpenAI, OpenRouter, and LM Studio all reach the same Codex runtime, and
+  // only the two local/routed providers use namespaced ids. A namespaced id
+  // under `openai` is therefore a real mis-route to the ChatGPT subscription,
+  // not a guess about which vendors exist.
+  if (target.provider === "openai" && model.includes("/")) {
     return "That model is not addressable through the OpenAI provider.";
+  }
+  // Claude is the one destination whose model becomes a CLI argument value.
+  // The native bridge refuses a flag-shaped one (`validate_cli_value`), so the
+  // roster must not advertise a destination that the spawn path will reject.
+  if (target.provider === "claude" && model.startsWith("-")) {
+    return "That model identity cannot be passed to the Claude Code CLI.";
   }
   if (target.provider === "openai" || target.provider === "openrouter" || target.provider === "lmstudio") {
     if (!readiness.codexRuntimeAvailable) return "The OpenAI runtime is not installed.";

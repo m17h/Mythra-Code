@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isClaudeModelSuperseded, parseClaudeModelCatalog, parseClaudeUsageLimits, visibleClaudeModels } from "./claude";
+import { isClaudeModelSuperseded, parseClaudeModelCatalog, parseClaudeRateLimitEvent, parseClaudeUsageLimits, visibleClaudeModels } from "./claude";
 
 describe("Claude subscription usage", () => {
   it("normalizes Claude's structured usage windows", () => {
@@ -31,6 +31,24 @@ describe("Claude subscription usage", () => {
       windows: [{ label: "5h", usedPercent: 100, resetsAt: null, resetLabel: null }],
     });
     expect(parseClaudeUsageLimits({ windows: [] })).toBeNull();
+  });
+
+  it("normalizes structured rate-limit events emitted during turns", () => {
+    expect(parseClaudeRateLimitEvent({
+      type: "rate_limit_event",
+      rate_limit_info: { status: "allowed_warning", rateLimitType: "five_hour", utilization: 0.625, resetsAt: 1234 },
+    })).toEqual({ windows: [{ label: "5h", usedPercent: 62.5, resetsAt: 1234 }] });
+    expect(parseClaudeRateLimitEvent({
+      type: "rate_limit_event",
+      rate_limit_info: { status: "rejected", rateLimitType: "seven_day_opus", utilization: 105 },
+    })).toEqual({ windows: [{ label: "Weekly Opus", usedPercent: 100, resetsAt: null }] });
+  });
+
+  it("ignores ordinary structured events that carry no utilization", () => {
+    expect(parseClaudeRateLimitEvent({
+      type: "rate_limit_event",
+      rate_limit_info: { status: "allowed", rateLimitType: "five_hour", resetsAt: 1234 },
+    })).toBeNull();
   });
 });
 

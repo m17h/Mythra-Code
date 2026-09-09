@@ -97,14 +97,120 @@ fn process_memory_snapshot_rejects_reused_parent_pids() {
     assert_eq!(snapshot.app_server_resident_bytes, None);
 }
 
+/// Tool names Claude Code has used, or could plausibly use, for spawning or
+/// driving a provider-native agent. The point of the allowlist is that none of
+/// them has to be known in advance, so this list is free to be wrong about the
+/// future: whatever it names, and whatever it misses, must stay unavailable.
+const NATIVE_SPAWN_TOOL_NAMES: &[&str] = &[
+    // The current name, and the pre-2.1.63 name the deny list was pinned to.
+    "Agent",
+    "Task",
+    "Workflow",
+    "TaskCreate",
+    "TaskGet",
+    "TaskList",
+    "TaskUpdate",
+    "TaskStop",
+    "TaskOutput",
+    "TeamCreate",
+    "SendMessage",
+    "ListAgents",
+    "CronCreate",
+    "ScheduleWakeup",
+    "RemoteTrigger",
+    // Names this build has never seen. A rename must not reopen delegation.
+    "AgentTool",
+    "SpawnAgent",
+    "Delegate",
+];
+
 #[test]
 fn claude_always_uses_mythra_code_as_its_only_subagent_route() {
-    let disallowed = claude_disallowed_tools("ask");
-    assert!(disallowed.contains(&"Task"));
-    assert!(disallowed.contains(&"SendMessage"));
-    assert!(disallowed.contains(&"TaskCreate"));
-    assert!(disallowed.contains(&"TaskUpdate"));
-    assert!(disallowed.contains(&"TeamCreate"));
+    for permission in ["ask", "read-only", "full"] {
+        let arguments = claude_tool_arguments(permission);
+        let allowed = arguments
+            .iter()
+            .position(|argument| argument == "--tools")
+            .and_then(|index| arguments.get(index + 1))
+            .expect("every Claude turn pins the built-in tool allowlist")
+            .split(',')
+            .collect::<Vec<_>>();
+        let denied = arguments
+            .iter()
+            .position(|argument| argument == "--disallowedTools")
+            .and_then(|index| arguments.get(index + 1))
+            .expect("every Claude turn also denies the spawning tools")
+            .split(',')
+            .collect::<Vec<_>>();
+
+        assert!(!allowed.is_empty() && !allowed.contains(&""));
+        for spawner in CLAUDE_SPAWN_TOOLS {
+            assert!(
+                !allowed.contains(spawner),
+                "{permission}: known native spawner `{spawner}` must not be allowed"
+            );
+            assert!(
+                denied.contains(spawner),
+                "{permission}: known native spawner `{spawner}` must also be denied by name"
+            );
+        }
+        for spawner in NATIVE_SPAWN_TOOL_NAMES {
+            // The allowlist is what makes this hold for names Mythra Code has
+            // never heard of; the deny list repeats it for the ones it has.
+            assert!(
+                !allowed.contains(spawner),
+                "{permission}: `{spawner}` must not be an available built-in tool"
+            );
+        }
+    }
+}
+
+#[test]
+fn claude_keeps_its_normal_coding_tools_and_read_only_stays_read_only() {
+    let asking = claude_allowed_builtin_tools("ask");
+    for tool in [
+        "Read",
+        "Edit",
+        "Write",
+        "Grep",
+        "Glob",
+        "Bash",
+        "Skill",
+        "TodoWrite",
+    ] {
+        assert!(asking.contains(&tool), "`{tool}` must stay available");
+    }
+
+    let read_only = claude_allowed_builtin_tools("read-only");
+    for tool in ["Read", "Grep", "Glob", "Skill"] {
+        assert!(read_only.contains(&tool));
+    }
+    // PowerShell, BashOutput and KillShell were reachable in read-only
+    // threads while the deny list named only Write/Edit/NotebookEdit/Bash.
+    for tool in [
+        "Write",
+        "Edit",
+        "NotebookEdit",
+        "Bash",
+        "BashOutput",
+        "KillShell",
+        "PowerShell",
+    ] {
+        assert!(
+            !read_only.contains(&tool),
+            "read-only must not expose `{tool}`"
+        );
+        assert!(claude_disallowed_tools("read-only").contains(&tool));
+    }
+}
+
+#[test]
+fn claude_tool_containment_leaves_mcp_delegation_alone() {
+    // `--tools` governs the built-in set only, so no MCP tool — the Mythra
+    // Code bridge included — may be named on either list.
+    let arguments = claude_tool_arguments("ask").join(",");
+    assert!(!arguments.contains("mcp__"));
+    assert!(!arguments.contains("spawn_mythra_agent"));
 }
 
 #[test]
@@ -154,6 +260,18 @@ fn claude_usage_skips_missing_or_malformed_windows() {
     )
     .windows
     .is_empty());
+}
+
+#[test]
+fn claude_usage_errors_are_categorized_without_exposing_provider_output() {
+    assert_eq!(
+        claude_usage_failure_code(b"request failed: 401 bearer token abc-secret"),
+        "CLAUDE_USAGE_AUTH_REQUIRED"
+    );
+    assert_eq!(
+        claude_usage_failure_code(b"network route included private-host.example"),
+        "CLAUDE_USAGE_UNAVAILABLE"
+    );
 }
 
 #[test]
@@ -1582,7 +1700,7 @@ fn observes_a_spawned_child_as_our_own_until_it_is_reaped() {
 
 #[test]
 fn claude_result_is_the_terminal_boundary_for_one_process_per_turn() {
-    let mut boundary = ClaudeTurnBoundary::new("prompt".into());
+    let mut boundary = ClaudeTurnBoundary::new("prompt".into(), false);
     assert!(boundary.ends_turn(&json!({
         "type": "result",
         "subtype": "success"
@@ -1595,6 +1713,94 @@ fn claude_result_is_the_terminal_boundary_for_one_process_per_turn() {
         "type": "stream_event",
         "event": { "type": "message_stop" }
     })));
+}
+
+#[test]
+fn claude_terminal_assistant_is_valid_exit_recovery_evidence() {
+    assert!(claude_assistant_ends_turn(&json!({
+        "type": "assistant",
+        "message": {
+            "stop_reason": "end_turn",
+            "content": [{ "type": "text", "text": "done" }]
+        }
+    })));
+    for message in [
+        json!({"type":"assistant","message":{"stop_reason":"tool_use"}}),
+        json!({"type":"assistant","message":{"content":[]}}),
+        json!({"type":"stream_event","event":{"type":"message_stop"}}),
+        json!({"type":"result","subtype":"success"}),
+        // A nested agent finishing is that agent's boundary, not this turn's.
+        json!({
+            "type": "assistant",
+            "parent_tool_use_id": "toolu_01",
+            "message": { "stop_reason": "end_turn" }
+        }),
+    ] {
+        assert!(
+            !claude_assistant_ends_turn(&message),
+            "must not recover from {message}"
+        );
+    }
+}
+
+#[test]
+fn claude_recovery_evidence_is_withdrawn_when_the_cli_keeps_working() {
+    // Tool use, a nested assistant, a tool result, a steered follow-up, or a
+    // permission request all prove the turn reopened after its assistant said
+    // `end_turn`.
+    for message in [
+        json!({"type":"stream_event","event":{"type":"message_start"}}),
+        json!({"type":"assistant","message":{"stop_reason":"tool_use"}}),
+        json!({"type":"assistant","parent_tool_use_id":"toolu_01","message":{"stop_reason":"end_turn"}}),
+        json!({"type":"user","message":{"content":[{"type":"tool_result"}]}}),
+        json!({"type":"control_request","request":{"subtype":"can_use_tool"}}),
+    ] {
+        assert!(claude_reopens_turn(&message), "{message} reopens the turn");
+    }
+    // Ordinary trailing chatter must not withdraw it.
+    for message in [
+        json!({"type":"system","subtype":"compact_boundary"}),
+        json!({"type":"command_lifecycle","state":"completed"}),
+        json!({"type":"control_response","response":{"subtype":"success"}}),
+        json!({"type":"assistant","message":{"stop_reason":"end_turn"}}),
+    ] {
+        assert!(
+            !claude_reopens_turn(&message),
+            "{message} must leave the evidence standing"
+        );
+    }
+}
+
+#[test]
+fn a_queued_prompt_has_not_started_until_the_cli_says_so() {
+    // Recovery uses this to refuse a resumed session's restored work: output
+    // that lands while our prompt is still queued was never our answer.
+    let mut boundary = ClaudeTurnBoundary::new("prompt".into(), true);
+    assert!(
+        boundary.prompt_pending(),
+        "a resumed process may emit restored output before acknowledging our prompt"
+    );
+    boundary.ends_turn(&json!({
+        "type": "command_lifecycle",
+        "command_uuid": "prompt",
+        "state": "queued"
+    }));
+    assert!(boundary.prompt_pending());
+    boundary.ends_turn(&json!({
+        "type": "command_lifecycle",
+        "command_uuid": "other",
+        "state": "started"
+    }));
+    assert!(
+        boundary.prompt_pending(),
+        "another command starting says nothing about ours"
+    );
+    boundary.ends_turn(&json!({
+        "type": "command_lifecycle",
+        "command_uuid": "prompt",
+        "state": "started"
+    }));
+    assert!(!boundary.prompt_pending());
 }
 
 #[tokio::test]
@@ -3310,7 +3516,7 @@ async fn claude_completion_reaps_a_process_that_ignores_eof() {
 
 #[test]
 fn claude_resume_completion_waits_for_the_submitted_command() {
-    let mut boundary = ClaudeTurnBoundary::new("our-prompt".into());
+    let mut boundary = ClaudeTurnBoundary::new("our-prompt".into(), true);
     let empty =
         json!({"type":"result","subtype":"success","is_error":false,"num_turns":0,"result":""});
     assert!(!boundary.ends_turn(&json!({"type":"system","subtype":"task_notification"})));
@@ -3342,7 +3548,7 @@ fn claude_resume_completion_waits_for_the_submitted_command() {
 fn claude_resume_completion_preserves_errors_and_legacy_results() {
     let empty =
         json!({"type":"result","subtype":"success","is_error":false,"num_turns":0,"result":""});
-    let mut boundary = ClaudeTurnBoundary::new("our-prompt".into());
+    let mut boundary = ClaudeTurnBoundary::new("our-prompt".into(), false);
     assert!(
         boundary.ends_turn(&empty),
         "no lifecycle evidence means legacy behavior"
@@ -3416,4 +3622,25 @@ async fn child_agent_rearm_preserves_live_and_late_children() {
     super::agents::rearm_child_runtime(Some(replacement.clone()), &[], &["live".into()]).await;
     assert!(!replacement.lock().await.live.contains("live"));
     assert!(replacement.lock().await.live.contains("late"));
+}
+
+#[test]
+fn claude_exit_recovery_requires_a_successful_native_process_exit() {
+    let exit_with = |code: u8| {
+        #[cfg(windows)]
+        let mut command = std::process::Command::new("cmd");
+        #[cfg(windows)]
+        command.args(["/C", &format!("exit {code}")]);
+        #[cfg(not(windows))]
+        let mut command = std::process::Command::new("sh");
+        #[cfg(not(windows))]
+        command.args(["-c", &format!("exit {code}")]);
+        command.status().unwrap()
+    };
+    let success = exit_with(0);
+    let failure = exit_with(7);
+    assert!(claude_can_recover_at_exit(true, Some(&success)));
+    assert!(!claude_can_recover_at_exit(false, Some(&success)));
+    assert!(!claude_can_recover_at_exit(true, Some(&failure)));
+    assert!(!claude_can_recover_at_exit(true, None));
 }

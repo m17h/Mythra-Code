@@ -116,6 +116,57 @@ beforeEach(() => {
 });
 
 describe("SettingsModal", () => {
+  it("finds a pane by what the setting is called, not just its section name", () => {
+    render(<SettingsModal {...modalProps()} />);
+    const nav = screen.getByRole("navigation", { name: "Settings categories" });
+
+    // "api key" appears nowhere in a nav label; it is why someone opens Settings.
+    fireEvent.change(screen.getByRole("textbox", { name: "Search settings" }), { target: { value: "api key" } });
+
+    expect(within(nav).getByRole("button", { name: /Models & accounts/ })).toBeInTheDocument();
+    expect(within(nav).queryByRole("button", { name: /^Skills/ })).not.toBeInTheDocument();
+  });
+
+  it("requires every search word to match, and says so when none do", () => {
+    render(<SettingsModal {...modalProps()} />);
+    const nav = screen.getByRole("navigation", { name: "Settings categories" });
+    const search = screen.getByRole("textbox", { name: "Search settings" });
+
+    // The search field's own clear button lives in the nav too; destinations
+    // are the rows that can become the current page.
+    const destinations = () => within(nav).queryAllByRole("button").filter((button) => button.getAttribute("aria-label") !== "Clear search");
+
+    // Both words have to land on the same pane, so "claude" alone is not enough.
+    fireEvent.change(search, { target: { value: "claude key" } });
+    expect(destinations()).toHaveLength(1);
+    expect(within(nav).getByRole("button", { name: /Models & accounts/ })).toBeInTheDocument();
+
+    fireEvent.change(search, { target: { value: "zzzz" } });
+    expect(destinations()).toHaveLength(0);
+    expect(screen.getByText(/Nothing matches/)).toBeInTheDocument();
+  });
+
+  it("never swaps the open pane out from under an edit while searching", () => {
+    render(<SettingsModal {...modalProps({ initialSection: "prompts" })} />);
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Search settings" }), { target: { value: "theme" } });
+
+    // Prompts is filtered out of the sidebar, but it is still the pane in front
+    // of you: a half-typed prompt must not vanish because you started a search.
+    expect(screen.getByRole("heading", { name: "Prompts" })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: /Global Mythra Code prompt/i })).toBeInTheDocument();
+  });
+
+  it("jumps to the last remaining match on Enter", () => {
+    render(<SettingsModal {...modalProps()} />);
+    const search = screen.getByRole("textbox", { name: "Search settings" });
+
+    fireEvent.change(search, { target: { value: "scrollback" } });
+    fireEvent.keyDown(search, { key: "Enter" });
+
+    expect(screen.getByRole("heading", { name: "Runtime" })).toBeInTheDocument();
+  });
+
   it("orders model providers by the primary subscription choices", () => {
     const { container } = render(<SettingsModal {...modalProps({ initialSection: "models" })} />);
     const providers = [...container.querySelectorAll(".provider-card strong")].map((node) => node.textContent);
@@ -1273,7 +1324,7 @@ it("labels a cached account as unverified when its connection check fails", () =
 it("edits app sub-agent defaults without creating a preset", () => {
   const onSave = vi.fn();
   render(<SettingsModal {...modalProps({ initialSection: "agents", onSave })} />);
-  fireEvent.click(screen.getByRole("button", { name: "Edit sub-agent defaults" }));
+  fireEvent.click(screen.getByRole("button", { name: "Edit defaults" }));
   const editor = screen.getByRole("group", { name: "Sub-agent defaults editor" });
   fireEvent.click(within(editor).getByRole("switch", { name: "Allow sub-agent spawning" }));
   fireEvent.click(screen.getByRole("button", { name: "Save settings" }));

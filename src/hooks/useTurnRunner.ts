@@ -156,6 +156,7 @@ export interface TurnRunnerContext {
   draftThreadIsolated: boolean;
   worktreeBusy: boolean;
   skillsFolder: string;
+  resolveSkillPrompt: (message: string) => Promise<string>;
   /** Bridge sessions for cross-provider sub-agents, keyed by session id. */
   childAgentPolicies: Record<string, ChildAgentPolicy>;
   childAgentLinks: Record<string, ChildAgentLink>;
@@ -232,7 +233,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       activeThread, activeWorkspace, activeProject, running, attachments, deferredDelivery,
       effectiveSettings, subscriptionSystemPrompts, customAgents, openRouterModels, lmStudioModels = [],
       runtimeStatus, claudeStatus, cursorStatus, account, openRouterReady, lmStudioReady,
-      workspaceGitInfo, draftThreadIsolated, worktreeBusy, skillsFolder,
+      workspaceGitInfo, draftThreadIsolated, worktreeBusy, skillsFolder, resolveSkillPrompt,
       childAgentPolicies, childAgentLinks, activeThreadIsChild, childAgentReadiness, persistChildAgentPolicies,
       threadWorktreesRef, threadProjectBindingsRef, activeWorkspacePathRef,
       pendingTurnStartsRef, skillRuntimeRootRef, cursorSessionIdsRef,
@@ -298,7 +299,14 @@ export function useTurnRunner(context: TurnRunnerContext): {
       : effectiveSettings.provider === "lmstudio"
         ? lmStudioModels.find((entry) => entry.id === effectiveSettings.model)?.maxContextLength
         : undefined;
+    let providerText: string;
     if (mode === "steer" && running && activeThread) {
+      try {
+        providerText = await resolveSkillPrompt(text);
+      } catch (reason) {
+        setError(friendlyError(reason));
+        return false;
+      }
       const sentAttachments = [...attachments];
       setError(null);
       const steerMessageId = `local-${crypto.randomUUID()}`;
@@ -313,14 +321,14 @@ export function useTurnRunner(context: TurnRunnerContext): {
         if (isClaudeThread(activeThread)) {
           await steerClaudeTurn(
             activeThread.id,
-            text,
+            providerText,
             sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })),
           );
           scheduleClaudeThreadSave(activeThread.id);
         } else if (isCursorThread(activeThread)) {
           await steerCursorTurn(
             activeThread.id,
-            text,
+            providerText,
             sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })),
           );
           scheduleCursorThreadSave(activeThread.id);
@@ -330,7 +338,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
           await rpc("turn/steer", {
             threadId: activeThread.id,
             expectedTurnId,
-            input: buildTurnInput(text, sentAttachments),
+            input: buildTurnInput(providerText, sentAttachments),
           });
         }
         useTaskStore.getState().setMessageSteerStatus(activeThread.id, steerMessageId, "accepted");
@@ -523,6 +531,20 @@ export function useTurnRunner(context: TurnRunnerContext): {
     };
 
     try {
+      // Skill scans can wait on disk or startup preparation. They are part of
+      // starting a turn, so expose Stop before awaiting them and honor it
+      // before creating any workspace, bridge, or provider process.
+      providerText = await resolveSkillPrompt(text);
+      if (pendingStart?.cancelRequested || (!activeThread && draftGeneration !== draftGenerationRef.current)) {
+        if (startingThreadId && pendingStart) {
+          pendingTurnStartsRef.current.finish(startingThreadId, pendingStart);
+          useTaskStore.getState().setTaskStatus(startingThreadId, "interrupted");
+        }
+        if (!activeThread) setStartingDraftTurn(false);
+        setStatus("Ready");
+        setTransientStatus("Stopped");
+        return false;
+      }
       let executionPath = activeWorkspace.path;
       if (!activeThread && draftThreadIsolated && activeProject) {
         provisionalWorktree = await createThreadWorktree(activeProject.path, text);
@@ -579,7 +601,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
             // presence, so resume detection is unaffected by running after it.
             const canResumeClaude = Boolean(activeThread && useTaskStore.getState().tasks[thread.id]?.messages.some((message) => message.role === "assistant"));
             await saveClaudeTranscript({ thread: updatedThread, messages: useTaskStore.getState().tasks[thread.id]?.messages ?? [], activities: useTaskStore.getState().tasks[thread.id]?.activities ?? [] });
-            const result = await startClaudeTurn({ threadId: thread.id, cwd: executionPath, prompt: text, model: effectiveSettings.model || DEFAULT_CLAUDE_MODEL, effort: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort, permission: effectiveSettings.permission, systemPrompt: withMythraCodeCompletionInstructions(effectiveSettings.systemPrompt, Boolean(childBridge?.launch.toolNames.includes("spawn_mythra_agent")), Boolean(childBridge?.launch.toolNames.includes("propose_agent_settings")), runButton), resume: canResumeClaude, attachments: sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })), subagentMax: runtimeSubagentMax, customAgents, skillsPluginPath: skillRuntimeRootRef.current || undefined, childAgentBridgeConfig: childBridge?.launch.configPath });
+            const result = await startClaudeTurn({ threadId: thread.id, cwd: executionPath, prompt: providerText, model: effectiveSettings.model || DEFAULT_CLAUDE_MODEL, effort: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort, permission: effectiveSettings.permission, systemPrompt: withMythraCodeCompletionInstructions(effectiveSettings.systemPrompt, Boolean(childBridge?.launch.toolNames.includes("spawn_mythra_agent")), Boolean(childBridge?.launch.toolNames.includes("propose_agent_settings")), runButton), resume: canResumeClaude, attachments: sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })), subagentMax: runtimeSubagentMax, customAgents, skillsPluginPath: skillRuntimeRootRef.current || undefined, childAgentBridgeConfig: childBridge?.launch.configPath });
             return { turnId: result.turnId };
           },
           hardStop: (threadId) => killClaudeTurn(threadId),
@@ -594,7 +616,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
             const result = await startCursorTurn({
               threadId: thread.id,
               cwd: executionPath,
-              prompt: text,
+              prompt: providerText,
               model: effectiveSettings.model || DEFAULT_CURSOR_MODEL,
               effort: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort,
               permission: effectiveSettings.permission,
@@ -614,7 +636,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       }
 
       await ensureSkillRoots();
-      const input = buildTurnInput(text, sentAttachments);
+      const input = buildTurnInput(providerText, sentAttachments);
       // The Codex app server keeps one thread alive across turns and only reads
       // this config when a thread is started or resumed, so the capabilities it
       // is holding have to be compared against the ones this turn wants — and

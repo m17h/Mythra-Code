@@ -1,10 +1,13 @@
-import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Check, ChevronDown, Search } from "lucide-react";
 import { ModelFavoriteStar } from "./ModelFavoriteStar";
 import { favoriteCount, sortByFavorites } from "../lib/modelFavorites";
 
 /** Options rendered before the menu offers to reveal the rest of a long list. */
 const BROWSE_LIMIT = 80;
+const POPOVER_VIEWPORT_MARGIN = 8;
+const POPOVER_GAP = 4;
+const POPOVER_WIDTH = 320;
 
 export interface AppSelectOption {
   value: string;
@@ -32,6 +35,7 @@ export function AppSelectMenu({
   placeholder = "Choose an option",
   searchable = false,
   menuPlacement = "bottom",
+  portal = false,
   emptyMessage = "No options available",
   favorites = [],
   onToggleFavorite,
@@ -46,6 +50,8 @@ export function AppSelectMenu({
   placeholder?: string;
   searchable?: boolean;
   menuPlacement?: "top" | "bottom";
+  /** Render above clipping/scroll containers and track the trigger in viewport space. */
+  portal?: boolean;
   emptyMessage?: string;
   /** Starred option values, floated to the top of the list. */
   favorites?: string[];
@@ -65,6 +71,8 @@ export function AppSelectMenu({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [popoverStyle, setPopoverStyle] = useState<CSSProperties>({});
   const selected = options.find((option) => option.value === value)
     ?? (value && selectedDisplay ? { value, ...selectedDisplay } : undefined);
   const normalizedQuery = query.trim().toLowerCase();
@@ -88,12 +96,62 @@ export function AppSelectMenu({
   const visible = normalizedQuery || showAll ? filtered : filtered.slice(0, BROWSE_LIMIT);
   const hidden = filtered.length - visible.length;
   const starredVisible = favoriteCount(visible, favorites, (option) => option.value);
+  const topLayer = portal && !!HTMLElement.prototype.showPopover;
 
   const close = () => {
     setOpen(false);
     setQuery("");
     setShowAll(false);
+    setPopoverStyle({});
   };
+
+  const positionPopover = useCallback(() => {
+    if (!open || !topLayer) return;
+    const trigger = triggerRef.current;
+    const menu = menuRef.current;
+    if (!trigger || !menu) return;
+
+    const triggerRect = trigger.getBoundingClientRect();
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+    const maxWidth = Math.max(1, viewportWidth - POPOVER_VIEWPORT_MARGIN * 2);
+    const width = Math.min(POPOVER_WIDTH, maxWidth);
+    const height = menu.offsetHeight;
+    const above = triggerRect.top - POPOVER_GAP - height;
+    const below = triggerRect.bottom + POPOVER_GAP;
+    const openAbove = menuPlacement === "top"
+      ? above >= POPOVER_VIEWPORT_MARGIN || below + height > viewportHeight - POPOVER_VIEWPORT_MARGIN
+      : below + height > viewportHeight - POPOVER_VIEWPORT_MARGIN && above >= POPOVER_VIEWPORT_MARGIN;
+    const preferredTop = openAbove ? above : below;
+    const maxTop = Math.max(POPOVER_VIEWPORT_MARGIN, viewportHeight - height - POPOVER_VIEWPORT_MARGIN);
+    const top = Math.min(Math.max(preferredTop, POPOVER_VIEWPORT_MARGIN), maxTop);
+    const left = Math.max(
+      POPOVER_VIEWPORT_MARGIN,
+      Math.min(triggerRect.left, viewportWidth - width - POPOVER_VIEWPORT_MARGIN),
+    );
+    setPopoverStyle({ top, left, width, visibility: "visible" });
+  }, [open, topLayer, menuPlacement]);
+
+  const setMenuRef = useCallback((node: HTMLDivElement | null) => {
+    menuRef.current = node;
+    if (node && topLayer) node.showPopover?.();
+  }, [topLayer]);
+
+  useEffect(() => {
+    if (!open || !topLayer) return;
+    positionPopover();
+    const onViewportChange = () => positionPopover();
+    window.addEventListener("resize", onViewportChange);
+    window.addEventListener("scroll", onViewportChange, true);
+    const resizeObserver = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(positionPopover);
+    const menu = menuRef.current;
+    if (menu) resizeObserver?.observe(menu);
+    return () => {
+      window.removeEventListener("resize", onViewportChange);
+      window.removeEventListener("scroll", onViewportChange, true);
+      resizeObserver?.disconnect();
+    };
+  }, [open, topLayer, menuPlacement, normalizedQuery, searchable, value, visible.length, positionPopover]);
 
   useEffect(() => {
     if (!open) return;
@@ -142,6 +200,84 @@ export function AppSelectMenu({
     connected[(index + direction + connected.length) % connected.length]?.focus();
   };
 
+  const menu = open ? (
+    <div
+      ref={setMenuRef}
+      className="app-select-menu"
+      popover={topLayer ? "manual" : undefined}
+      style={topLayer ? {
+        position: "fixed",
+        inset: "auto",
+        width: `min(${POPOVER_WIDTH}px, calc(100vw - ${POPOVER_VIEWPORT_MARGIN * 2}px))`,
+        right: "auto",
+        bottom: "auto",
+        margin: 0,
+        visibility: "hidden",
+        ...popoverStyle,
+      } : undefined}
+    >
+      {searchable && (
+        <label className="app-select-search">
+          <Search size={12} aria-hidden="true" />
+          <input
+            ref={searchRef}
+            aria-label={`Search ${ariaLabel}`}
+            value={query}
+            placeholder="Search models…"
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "ArrowDown") {
+                event.preventDefault();
+                optionRefs.current.find((item) => item?.isConnected && !item.disabled)?.focus();
+              }
+            }}
+          />
+        </label>
+      )}
+      <div className="app-select-options" role="menu" aria-label={`${ariaLabel} choices`}>
+        {visible.map((option, index) => (
+          <Fragment key={option.value}>
+            {starredVisible > 0 && index === 0 && <p className="model-group-label">Favorites</p>}
+            {starredVisible > 0 && index === starredVisible && <p className="model-group-label">All models</p>}
+            <div className="model-row" role="none">
+              <button
+                ref={(node) => { optionRefs.current[index] = node; }}
+                type="button"
+                role="menuitemradio"
+                aria-checked={option.value === value}
+                className={option.value === value ? "selected" : ""}
+                disabled={option.disabled}
+                onKeyDown={(event) => {
+                  if (event.key === "ArrowDown") { event.preventDefault(); moveFocus(event.currentTarget, 1); }
+                  if (event.key === "ArrowUp") { event.preventDefault(); moveFocus(event.currentTarget, -1); }
+                }}
+                onClick={() => {
+                  if (option.disabled) return;
+                  onChange(option.value);
+                  close();
+                  triggerRef.current?.focus();
+                }}
+              >
+                <span className="app-select-option-copy">
+                  {option.icon}
+                  <span><strong>{option.label}</strong>{option.detail && <small>{option.detail}</small>}</span>
+                </span>
+                {option.value === value && <Check size={12} aria-hidden="true" />}
+              </button>
+              {onToggleFavorite && <ModelFavoriteStar model={option.value} label={option.label} favorite={favorites.includes(option.value)} onToggle={onToggleFavorite} />}
+            </div>
+          </Fragment>
+        ))}
+        {hidden > 0 && (
+          <button type="button" className="model-show-all" onClick={() => setShowAll(true)}>
+            Show all {filtered.length} options ({hidden} more)
+          </button>
+        )}
+        {visible.length === 0 && <p className="app-select-empty">{emptyMessage}</p>}
+      </div>
+    </div>
+  ) : null;
+
   return (
     <div className={`app-select ${open ? "open" : ""} ${menuPlacement === "top" ? "opens-up" : ""}`} ref={rootRef} data-app-select-open={open || undefined}>
       <button
@@ -169,69 +305,7 @@ export function AppSelectMenu({
         <ChevronDown size={12} aria-hidden="true" />
       </button>
 
-      {open && (
-        <div className="app-select-menu">
-          {searchable && (
-            <label className="app-select-search">
-              <Search size={12} aria-hidden="true" />
-              <input
-                ref={searchRef}
-                aria-label={`Search ${ariaLabel}`}
-                value={query}
-                placeholder="Search models…"
-                onChange={(event) => setQuery(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "ArrowDown") {
-                    event.preventDefault();
-                    optionRefs.current.find((item) => item?.isConnected && !item.disabled)?.focus();
-                  }
-                }}
-              />
-            </label>
-          )}
-          <div className="app-select-options" role="menu" aria-label={`${ariaLabel} choices`}>
-            {visible.map((option, index) => (
-              <Fragment key={option.value}>
-                {starredVisible > 0 && index === 0 && <p className="model-group-label">Favorites</p>}
-                {starredVisible > 0 && index === starredVisible && <p className="model-group-label">All models</p>}
-                <div className="model-row" role="none">
-                  <button
-                    ref={(node) => { optionRefs.current[index] = node; }}
-                    type="button"
-                    role="menuitemradio"
-                    aria-checked={option.value === value}
-                    className={option.value === value ? "selected" : ""}
-                    disabled={option.disabled}
-                    onKeyDown={(event) => {
-                      if (event.key === "ArrowDown") { event.preventDefault(); moveFocus(event.currentTarget, 1); }
-                      if (event.key === "ArrowUp") { event.preventDefault(); moveFocus(event.currentTarget, -1); }
-                    }}
-                    onClick={() => {
-                      if (option.disabled) return;
-                      onChange(option.value);
-                      close();
-                      triggerRef.current?.focus();
-                    }}
-                  >
-                    <span className="app-select-option-copy">
-                      {option.icon}
-                      <span><strong>{option.label}</strong>{option.detail && <small>{option.detail}</small>}</span>
-                    </span>
-                    {option.value === value && <Check size={12} aria-hidden="true" />}
-                  </button>
-                  {onToggleFavorite && <ModelFavoriteStar model={option.value} label={option.label} favorite={favorites.includes(option.value)} onToggle={onToggleFavorite} />}
-                </div>
-              </Fragment>
-            ))}
-            {hidden > 0 && (
-              <button type="button" className="model-show-all" onClick={() => setShowAll(true)}>
-                Show all {filtered.length} options ({hidden} more)
-              </button>
-            )}
-            {visible.length === 0 && <p className="app-select-empty">{emptyMessage}</p>}
-          </div>
-        </div>
-      )}
+      {menu}
     </div>
   );
 }

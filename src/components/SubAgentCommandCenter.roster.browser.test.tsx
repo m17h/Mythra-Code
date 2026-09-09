@@ -1,6 +1,6 @@
 import { fireEvent, render } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { SubAgentCommandCenter } from "./SubAgentCommandCenter";
+import { SubAgentCommandCenter, type SubAgentCommandCenterProps } from "./SubAgentCommandCenter";
 import type { ChildAgentReadiness } from "../lib/childAgents";
 import type { ChildAgentTarget, ProjectSubagentSettings } from "../types";
 import "../styles.css";
@@ -37,7 +37,8 @@ const POLICY: ProjectSubagentSettings = {
 };
 
 /** Bottom-anchored over a composer, the way the real control sits. */
-async function open(readiness = READY) {
+async function open(readiness = READY, modelCatalogs?: SubAgentCommandCenterProps["modelCatalogs"]) {
+  const onChange = vi.fn();
   const view = render(
     <div className="app-shell" data-theme="midnight" data-color-scheme="dark" style={{ display: "flex", alignItems: "flex-end", width: 900, height: 860, padding: 20 }}>
       <SubAgentCommandCenter
@@ -48,9 +49,10 @@ async function open(readiness = READY) {
         workers={[]}
         scopeLabel="Chats & project defaults"
         projectOverride={false}
-        onChange={vi.fn()}
+        onChange={onChange}
         onOpenSettings={vi.fn()}
         onSavePreset={vi.fn()}
+        modelCatalogs={modelCatalogs}
       />
     </div>,
   );
@@ -63,7 +65,7 @@ async function open(readiness = READY) {
     ? undefined
     : new Promise((resolve) => { image.onload = image.onerror = () => resolve(undefined); })));
   await new Promise((resolve) => requestAnimationFrame(resolve));
-  return { view, panel, grid };
+  return { view, panel, grid, onChange };
 }
 
 /**
@@ -167,11 +169,12 @@ describe("sub-agent roster transition", () => {
 });
 
 
-it("keeps preset controls and routing instructions within the popover", async () => {
+it("keeps preset controls and the compact editor within the popover", async () => {
   const { view, panel, grid } = await open();
   fireEvent.click(view.getByRole("button", { name: "Configure one" }));
   await settle(panel, grid);
-  const fields = [view.getByRole("textbox", { name: "New sub-agent preset name" }), view.getByRole("textbox", { name: "When to use one" }), view.getByRole("button", { name: "Save as preset" })];
+  expect(view.queryByRole("textbox", { name: "When to use one" })).not.toBeInTheDocument();
+  const fields = [view.getByRole("textbox", { name: "New sub-agent preset name" }), view.getByRole("button", { name: "Provider for one" }), view.getByRole("button", { name: "Save as preset" })];
   const bounds = panel.getBoundingClientRect();
   for (const field of fields) {
     const rect = field.getBoundingClientRect();
@@ -179,4 +182,55 @@ it("keeps preset controls and routing instructions within the popover", async ()
     expect(rect.left).toBeGreaterThanOrEqual(bounds.left);
     expect(rect.right).toBeLessThanOrEqual(bounds.right);
   }
+});
+
+it("promotes provider and model menus above the scrollable popover", async () => {
+  const { view, panel, grid } = await open();
+  fireEvent.click(view.getByRole("button", { name: "Configure one" }));
+  await settle(panel, grid);
+
+  for (const name of ["Provider for one", "Model for one"]) {
+    fireEvent.click(view.getByRole("button", { name }));
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    const menu = view.getByRole("menu", { name: `${name} choices` });
+    const popup = menu.closest<HTMLElement>(".app-select-menu")!;
+    const trigger = view.getByRole("button", { name });
+    expect(panel.contains(menu)).toBe(true);
+    expect(popup.matches(":popover-open")).toBe(true);
+    const bounds = popup.getBoundingClientRect();
+    const triggerBounds = trigger.getBoundingClientRect();
+    expect(bounds.top).toBeGreaterThanOrEqual(0);
+    expect(bounds.left).toBeGreaterThanOrEqual(0);
+    expect(bounds.right).toBeLessThanOrEqual(window.innerWidth);
+    expect(bounds.bottom).toBeLessThanOrEqual(window.innerHeight);
+    // A centered popup can satisfy all viewport bounds while still being
+    // detached from the selector. The top-layer menu must remain adjacent to
+    // its trigger, flipping above when the lower edge has no room.
+    const verticalGap = Math.min(
+      Math.abs(bounds.top - (triggerBounds.bottom + 4)),
+      Math.abs(bounds.bottom - (triggerBounds.top - 4)),
+    );
+    // The menu's short entrance transform can still contribute a few pixels
+    // on this frame; a centered popup is hundreds of pixels away.
+    expect(verticalGap).toBeLessThan(8);
+    expect(bounds.left).toBeGreaterThanOrEqual(triggerBounds.left - 1);
+    expect(bounds.left).toBeLessThan(triggerBounds.right);
+    fireEvent.click(view.getByRole("button", { name }));
+  }
+});
+
+it("scrolls to and selects a model at the end of a long catalog", async () => {
+  const models = Array.from({ length: 30 }, (_, index) => ({ id: `model-${index}`, label: `Model ${index}` }));
+  const { view, panel, grid, onChange } = await open(READY, { claude: models });
+  fireEvent.click(view.getByRole("button", { name: "Configure one" }));
+  await settle(panel, grid);
+  fireEvent.click(view.getByRole("button", { name: "Model for one" }));
+  const menu = view.getByRole("menu", { name: "Model for one choices" });
+  expect(menu.scrollHeight).toBeGreaterThan(menu.clientHeight);
+  menu.scrollTop = menu.scrollHeight;
+  fireEvent.scroll(menu);
+  fireEvent.click(view.getByRole("menuitemradio", { name: "Model 29 model-29" }));
+  expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
+    childAgents: expect.objectContaining({ targets: expect.arrayContaining([expect.objectContaining({ id: "one", model: "model-29" })]) }),
+  }));
 });

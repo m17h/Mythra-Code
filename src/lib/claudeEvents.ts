@@ -1,5 +1,6 @@
-import type { ClaudeEvent } from "./claude";
+import { parseClaudeRateLimitEvent, type ClaudeEvent } from "./claude";
 import { auditEvent, type JsonObject } from "./codex";
+import type { ProviderRateLimits } from "./providerUsage";
 import type { Activity } from "../types";
 import type { TokenUsageView } from "../components/StudioDock";
 import { useTaskStore } from "./taskStore";
@@ -283,6 +284,8 @@ export interface ClaudeEventContext {
   onTurnCompleted: (threadId: string) => void;
   onApprovalRequested: (threadId: string) => void;
   onTranscriptChanged: (threadId: string) => void;
+  /** Structured quota updates emitted by Claude Code during real turns. */
+  onRateLimits?: (limits: ProviderRateLimits) => void;
   onUnsupportedControlRequest: (
     threadId: string,
     requestId: string,
@@ -308,6 +311,12 @@ export function routeClaudeEvent(
   const store = useTaskStore.getState();
   store.ensureTask(threadId, ctx.bindingFor(threadId));
   if (isRetiredClaudeTurn(threadId, turnId)) return;
+
+  if (type === "rate_limit_event") {
+    const limits = parseClaudeRateLimitEvent(message);
+    if (limits) ctx.onRateLimits?.(limits);
+    return;
+  }
 
   if (type === "control_request") {
     const request = object(message.request);

@@ -137,6 +137,7 @@ function context(overrides: Partial<TurnRunnerContext> = {}): TurnRunnerContext 
     draftThreadIsolated: false,
     worktreeBusy: false,
     skillsFolder: "",
+    resolveSkillPrompt: vi.fn(async (message: string) => message),
     childAgentPolicies: {},
     childAgentLinks: {},
     childAgentReadiness: {
@@ -243,6 +244,53 @@ describe("useTurnRunner", () => {
     childSessions.ensureChildAgentBridge.mockResolvedValue(null);
   });
 
+  it("sends resolved skill instructions to Cursor while keeping the visible message unchanged", async () => {
+    const resolveSkillPrompt = vi.fn(async () => "resolved skill context\n\n@review this");
+    const deps = context({ resolveSkillPrompt });
+    const { result } = renderHook(() => useTurnRunner(deps));
+
+    await act(async () => { await result.current.sendMessage("@review this"); });
+
+    expect(resolveSkillPrompt).toHaveBeenCalledExactlyOnceWith("@review this");
+    expect(cursor.startCursorTurn).toHaveBeenCalledWith(expect.objectContaining({
+      prompt: "resolved skill context\n\n@review this",
+    }));
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]?.messages.at(-1)?.text).toBe("@review this");
+  });
+
+  it("sends resolved skill instructions to Claude while keeping the visible message unchanged", async () => {
+    const resolveSkillPrompt = vi.fn(async () => "resolved skill context\n\n@review this");
+    const deps = claudeContext({ running: false, resolveSkillPrompt });
+    const { result } = renderHook(() => useTurnRunner(deps));
+
+    await act(async () => { await result.current.sendMessage("@review this"); });
+
+    expect(resolveSkillPrompt).toHaveBeenCalledExactlyOnceWith("@review this");
+    expect(claude.startClaudeTurn).toHaveBeenCalledWith(expect.objectContaining({
+      prompt: "resolved skill context\n\n@review this",
+    }));
+    expect(useTaskStore.getState().tasks[CLAUDE_THREAD.id]?.messages.at(-1)?.text).toBe("@review this");
+  });
+
+  it("uses resolved skill instructions for an active Claude steer", async () => {
+    const resolveSkillPrompt = vi.fn(async () => "resolved skill context\n\n@review this");
+    const store = useTaskStore.getState();
+    store.ensureTask(CLAUDE_THREAD.id, CLAUDE_THREAD.cwd);
+    store.setActiveTurn(CLAUDE_THREAD.id, "turn-live");
+    store.setTaskStatus(CLAUDE_THREAD.id, "running");
+    const deps = claudeContext({ resolveSkillPrompt });
+    const { result } = renderHook(() => useTurnRunner(deps));
+
+    await act(async () => { await result.current.steerMessage("@review this"); });
+
+    expect(claude.steerClaudeTurn).toHaveBeenCalledWith(
+      CLAUDE_THREAD.id,
+      "resolved skill context\n\n@review this",
+      [],
+    );
+    expect(useTaskStore.getState().tasks[CLAUDE_THREAD.id]?.messages.at(-1)?.text).toBe("@review this");
+  });
+
   it("uses the effective project sub-agent policy when preparing the bridge", async () => {
     const effectiveSettings = {
       ...DEFAULT_SETTINGS,
@@ -329,6 +377,32 @@ describe("useTurnRunner", () => {
     // Undelivered, so the composer hands the user their prompt back.
     expect(delivered).toBe(false);
     expect(deps.setTransientStatus).toHaveBeenCalledWith("Stopped");
+  });
+
+  it.each([true, false])("allows Stop during skill loading (existing thread: %s)", async (existing) => {
+    let resolve!: (value: string) => void;
+    const deps = context({
+      activeThread: existing ? CURSOR_THREAD : null,
+      running: false,
+      resolveSkillPrompt: vi.fn(() => new Promise<string>((done) => { resolve = done; })),
+    });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    let delivered: boolean | undefined;
+    await act(async () => {
+      const sent = result.current.sendMessage("@review this").then((value) => { delivered = value; });
+      await Promise.resolve();
+      if (existing) expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]?.status).toBe("starting");
+      else expect(deps.setStartingDraftTurn).toHaveBeenCalledWith(true);
+      deps.running = true;
+      await result.current.stopTurn();
+      resolve("resolved instructions");
+      await sent;
+    });
+    expect(delivered).toBe(false);
+    expect(cursor.startCursorTurn).not.toHaveBeenCalled();
+    expect(childSessions.ensureChildAgentBridge).not.toHaveBeenCalled();
+    expect(deps.setTransientStatus).toHaveBeenCalledWith("Stopped");
+    if (existing) expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]?.status).toBe("interrupted");
   });
 
   it("records cancellation only for a start that is actually in flight", async () => {
@@ -539,14 +613,15 @@ describe("useTurnRunner", () => {
     const deps = context({
       running: true,
       attachments: [{ path: "/tmp/reference.png", name: "reference.png", kind: "image" }],
+      resolveSkillPrompt: vi.fn(async () => "resolved steer skill context"),
     });
     const { result } = renderHook(() => useTurnRunner(deps));
 
-    await act(async () => { await result.current.steerMessage("match this reference"); });
+    await act(async () => { await result.current.steerMessage("@review match this reference"); });
 
     expect(cursor.steerCursorTurn).toHaveBeenCalledWith(
       CURSOR_THREAD.id,
-      "match this reference",
+      "resolved steer skill context",
       [{ path: "/tmp/reference.png", kind: "image" }],
     );
     expect(deps.setAttachments).toHaveBeenCalled();
@@ -568,17 +643,19 @@ describe("useTurnRunner", () => {
       runtimeStatus: { available: true, source: "Codex CLI", path: "/usr/local/bin/codex", version: "test", compatible: true, warning: null },
       account: { type: "chatgpt", email: "test@example.com", planType: "pro" },
       threadProjectBindingsRef: { current: { [OPENAI_THREAD.id]: "/tmp/project" } },
+      resolveSkillPrompt: vi.fn(async () => "resolved Codex steer skill context"),
     });
     const { result } = renderHook(() => useTurnRunner(deps));
 
-    await act(async () => { await result.current.steerMessage("spin up Opus now"); });
+    await act(async () => { await result.current.steerMessage("@review spin up Opus now"); });
 
     expect(codex.rpc).toHaveBeenCalledWith("turn/steer", expect.objectContaining({
       threadId: OPENAI_THREAD.id,
       expectedTurnId: "turn-live",
+      input: [expect.objectContaining({ text: "resolved Codex steer skill context" })],
     }));
     expect(useTaskStore.getState().tasks[OPENAI_THREAD.id]?.messages).toContainEqual(
-      expect.objectContaining({ text: "spin up Opus now", turnId: "turn-live", steerStatus: "accepted" }),
+      expect.objectContaining({ text: "@review spin up Opus now", turnId: "turn-live", steerStatus: "accepted" }),
     );
     expect(deps.setTransientStatus).toHaveBeenCalledWith("Steer accepted by the active turn");
   });
@@ -787,6 +864,18 @@ describe("useTurnRunner activating sub-agents mid-conversation", () => {
     cursor.saveCursorTranscript.mockResolvedValue(undefined);
     cursor.startCursorTurn.mockResolvedValue({ turnId: "turn-new", cursorSessionId: "session-new" });
     childSessions.ensureChildAgentBridge.mockResolvedValue(null);
+  });
+
+  it("passes resolved skill instructions through the Codex-family turn input", async () => {
+    const resolveSkillPrompt = vi.fn(async () => "resolved skill context\n\n@review this");
+    const deps = openAiContext({ resolveSkillPrompt });
+    const { result } = renderHook(() => useTurnRunner(deps));
+
+    await act(async () => { await result.current.sendMessage("@review this"); });
+
+    expect(codex.rpc).toHaveBeenCalledWith("turn/start", expect.objectContaining({
+      input: [expect.objectContaining({ text: "resolved skill context\n\n@review this" })],
+    }));
   });
 
   it("reattaches the bridge to an existing OpenAI thread on the very next turn", async () => {

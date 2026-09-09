@@ -25,17 +25,17 @@ export function isLocalSubscriptionThread(thread: Pick<Thread, "modelProvider"> 
 
 export function modelForProvider(provider: Provider, model: string | null | undefined): string {
   const candidate = model?.trim() ?? "";
-  // Claude Code's live catalog includes account-scoped aliases such as
-  // `default`, `sonnet`, and `opus[1m]` alongside concrete `claude-*` ids.
-  // Reject obvious cross-provider values while preserving every Claude alias
-  // the CLI can return instead of silently rewriting it to the default.
+  // Model ids belong to the provider catalog, not to Mythra Code. Preserve
+  // every non-flag value Claude Code advertises, including aliases, decorated
+  // ids, and any future name that does not follow today's vendor prefixes.
   if (provider === "claude") {
-    return candidate && !candidate.includes("/") && !candidate.startsWith("gpt-")
-      ? candidate
-      : DEFAULT_CLAUDE_MODEL;
+    return candidate && !candidate.startsWith("-") ? candidate : DEFAULT_CLAUDE_MODEL;
   }
   if (provider === "cursor") return candidate || DEFAULT_CURSOR_MODEL;
   if (provider === "openrouter") return candidate.includes("/") ? candidate : "";
   if (provider === "lmstudio") return candidate;
-  return candidate && !candidate.includes("/") && !candidate.startsWith("claude-") ? candidate : DEFAULT_OPENAI_MODEL;
+  // Namespaced ids select a routed/local provider in the shared app-server;
+  // all other ids are owned by the signed-in OpenAI catalog regardless of
+  // how they happen to be named.
+  return candidate && !candidate.includes("/") ? candidate : DEFAULT_OPENAI_MODEL;
 }

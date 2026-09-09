@@ -90,6 +90,8 @@ export interface ChildAgentContext {
   /** Automatic pre-turn file snapshots for child turns, same as user turns. */
   beginRunCheckpoint: (threadId: string, workspacePath: string, prompt: string, provider: Provider, model: string) => Promise<string | undefined>;
   discardRunCheckpoint: (threadId: string) => void;
+  /** Materialize enabled selected-folder skills for any child-provider prompt. */
+  resolveSkillPrompt: (message: string) => Promise<string>;
 }
 
 export interface ProjectRunOutcome {
@@ -403,6 +405,7 @@ export function useChildAgents(context: ChildAgentContext): {
             ? ctx.lmStudioModels?.find((entry) => entry.id === childAgentModel(target))?.maxContextLength
             : undefined,
         lmStudioBaseUrl: ctx.lmStudioBaseUrl,
+        resolveSkillPrompt: ctx.resolveSkillPrompt,
         beginCheckpoint: async (childThreadId) => {
           await ctx.beginRunCheckpoint(childThreadId, executionPath, prompt, target.provider, childAgentModel(target));
         },

@@ -47,10 +47,10 @@ describe("Mythra Code completion instructions", () => {
 
   it("treats exact @skill tokens as explicit skill requests, and other @words as text", () => {
     // Read at the top of every turn, not buried in the how-to-finish block.
-    expect(mythraCodeDeveloperInstructions(false).indexOf("exact @name token"))
+    expect(mythraCodeDeveloperInstructions(false).indexOf("mythra_code_invoked_skills"))
       .toBeLessThan(mythraCodeDeveloperInstructions(false).indexOf("finish completed coding tasks"));
-    expect(MYTHRA_CODE_SKILL_MENTION_INSTRUCTIONS).toContain("load and follow that skill");
-    expect(MYTHRA_CODE_SKILL_MENTION_INSTRUCTIONS).toContain("never invent a skill");
+    expect(MYTHRA_CODE_SKILL_MENTION_INSTRUCTIONS).toContain("follow exactly those resolved instructions");
+    expect(MYTHRA_CODE_SKILL_MENTION_INSTRUCTIONS).toContain("Never substitute a provider");
     expect(MYTHRA_CODE_COMPLETION_INSTRUCTIONS).not.toContain("@name");
   });
 

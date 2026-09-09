@@ -43,6 +43,7 @@ function testSchedulerDeps(
     chatGptConnected: true,
     openRouterReady: false,
     ensureSkillRoots: vi.fn(async () => undefined),
+    resolveSkillPrompt: vi.fn(async (message: string) => message),
     bindThreadToProject: vi.fn(),
     beginRunCheckpoint: vi.fn(async () => undefined),
     discardRunCheckpoint: vi.fn(),
@@ -85,6 +86,30 @@ describe("useScheduler", () => {
     expect(codex.rpc).toHaveBeenCalledWith("turn/start", expect.anything());
     expect(runs.at(-1)).toMatchObject({ status: "started", threadId: "thread-1" });
     expect(useTaskStore.getState().statuses["thread-1"]).toBe("starting");
+  });
+
+  it("delivers resolved skill context while storing the raw scheduled prompt", async () => {
+    const runs: ScheduleRunRecord[] = [];
+    const resolveSkillPrompt = vi.fn(async () => "resolved schedule skill context");
+    codex.rpc.mockImplementation((method: string) => {
+      if (method === "thread/start") return Promise.resolve({ thread: { id: "thread-1" } });
+      return Promise.resolve({});
+    });
+    renderHook(() => useScheduler(testSchedulerDeps(
+      testSchedule({ prompt: "@review the release" }),
+      runs,
+      { resolveSkillPrompt },
+    )));
+
+    await act(async () => {
+      await flushMicrotasks();
+    });
+
+    expect(resolveSkillPrompt).toHaveBeenCalledExactlyOnceWith("@review the release");
+    expect(codex.rpc).toHaveBeenCalledWith("turn/start", expect.objectContaining({
+      input: [{ type: "text", text: "resolved schedule skill context", text_elements: [] }],
+    }));
+    expect(useTaskStore.getState().tasks["thread-1"].messages.at(-1)?.text).toBe("@review the release");
   });
 
   it("runs a projectless schedule in the normal Chats workspace", async () => {

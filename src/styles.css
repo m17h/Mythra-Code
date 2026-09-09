@@ -710,7 +710,8 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .activity-copy pre { max-height: 140px; overflow: auto; margin: 0; padding: 8px; border-radius: 5px; color: #858c92; background: rgba(0,0,0,.2); font: 11px/1.45 ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; white-space: pre-wrap; }
 .activity-row > small { color: var(--muted-2); font-size: var(--fs-micro); }
 /* Relay makes delegation feel directional without turning it into a spinner.
-   Provider colour owns the 2px baton rail; lifecycle colour owns the orb. */
+   Provider colour owns the 2px rail; lifecycle colour owns the orb. All of
+   the running-state motion is defined once, on one clock, further down. */
 .subagent-relay-card {
   --relay-accent: #a9b6a0;
   --relay-plate: #1a1d18;
@@ -730,8 +731,6 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
   transition: border-color var(--t-fast) ease, background var(--t-fast) ease;
 }
 .subagent-relay-card::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 2px; background: var(--relay-accent); opacity: .68; }
-.subagent-relay-card.status-starting::after, .subagent-relay-card.status-working::after { content: ""; position: absolute; top: -16px; left: 0; width: 2px; height: 16px; background: #fff; opacity: 0; animation: relay-baton 620ms var(--ease) both; }
-@keyframes relay-baton { 10% { opacity: .9; } 90% { opacity: .9; } to { opacity: 0; transform: translateY(74px); } }
 .subagent-relay-card:hover { border-color: var(--line); background: rgba(255,255,255,.026); }
 .subagent-relay-card.provider-claude { --relay-accent: #dd8b6a; --relay-plate: #d97757; --relay-ink: #fff; }
 .subagent-relay-card.provider-cursor { --relay-accent: #d9d8d3; --relay-plate: #edecec; --relay-ink: #26251e; }
@@ -748,8 +747,6 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .subagent-relay-emblem { width: 28px; height: 28px; display: grid; place-items: center; }
 .subagent-relay-avatar { --sa-accent: var(--relay-accent); position: relative; width: 28px; height: 28px; display: grid; place-items: center; border-radius: var(--r-sm); color: var(--relay-ink); background: var(--relay-plate); }
 .subagent-relay-avatar .openai-logo-choice, .subagent-relay-avatar .claude-logo-choice, .subagent-relay-avatar .cursor-logo-choice { display: grid; place-items: center; }
-.subagent-relay-card.status-working .sa-avatar-trace { opacity: 1; }
-.subagent-relay-card.status-starting .sa-avatar-trace { opacity: .35; }
 
 .subagent-relay-copy { min-width: 0; min-height: 34px; display: flex; flex-direction: column; justify-content: center; gap: 2px; }
 .subagent-relay-identity { min-width: 0; display: flex; align-items: center; gap: 7px; }
@@ -757,10 +754,8 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .subagent-relay-identity code { overflow: hidden; padding-left: 7px; border-left: 1px solid var(--line); color: var(--muted-2); font: 10px/1.25 var(--font-mono); white-space: nowrap; text-overflow: ellipsis; }
 .subagent-relay-copy > strong { overflow: hidden; display: -webkit-box; color: var(--ink-2); font-size: var(--fs-ui); font-weight: 590; line-height: 1.35; letter-spacing: -.006em; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .subagent-relay-status { min-height: 22px; display: inline-flex; align-items: center; gap: 6px; padding: 0 7px; color: color-mix(in srgb, var(--relay-status) 72%, var(--ink-2)); font-size: var(--fs-micro); font-weight: 640; white-space: nowrap; }
-.subagent-relay-status > i { width: 6px; height: 6px; border-radius: 50%; background: var(--relay-status); box-shadow: 0 0 0 3px color-mix(in srgb, var(--relay-status) 13%, transparent); }
+.subagent-relay-status > i { position: relative; width: 6px; height: 6px; border-radius: 50%; background: var(--relay-status); box-shadow: 0 0 0 3px color-mix(in srgb, var(--relay-status) 13%, transparent); }
 .subagent-relay-card.status-cancelled .subagent-relay-status > i { width: 9px; height: 2px; border-radius: 2px; box-shadow: none; }
-.subagent-relay-card.status-working .subagent-relay-status > i { animation: sa-breathe 1.7s ease-in-out infinite; }
-.subagent-relay-card.status-starting .subagent-relay-status > i { animation: sa-breathe 1.1s ease-in-out infinite; }
 
 .flow-timeline .subagent-relay-card, .flow-timeline .subagent-relay-manifest { margin-left: 38px; }
 .completed-work-list .subagent-relay-card, .completed-work-list .subagent-relay-manifest { margin-left: 0; }
@@ -1060,7 +1055,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 @media (prefers-reduced-motion: reduce) {
   .subagent-panel, .subagent-panel.closing, .sa-flash, .app-select-menu, .sa-worker.completed, .sa-worker.failed,
   .sa-avatar-trace-runner, .sa-trigger-trace, .sa-trigger-trace-halo, .sa-trigger-trace-outline, .sa-worker.working .sa-worker-orb, .sa-worker.starting .sa-worker-orb,
-  .subagent-relay-card::after, .subagent-relay-status > i { animation: none; }
+  .subagent-relay-status > i { animation: none; }
   .sa-avatar-trace-runner { stroke-dasharray: none; opacity: .55; }
   .sa-trigger-trace { opacity: 1; }
   .sa-trigger-trace-halo { opacity: .12; }
@@ -1277,52 +1272,133 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .onboarding-destination > div { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .onboarding-destination strong { overflow: hidden; color: var(--text); font-size: var(--fs-ui); font-weight: 600; white-space: nowrap; text-overflow: ellipsis; }
 .onboarding-destination small { overflow: hidden; color: var(--muted-2); font-size: var(--fs-meta); white-space: nowrap; text-overflow: ellipsis; }
-.getting-started-settings .settings-section-heading { margin-bottom: 0; }
 @keyframes onboarding-page-in { from { opacity: 0; transform: translateX(10px); } }
 .modal-header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--s-4); padding: var(--s-5) var(--s-6); border-bottom: 1px solid var(--line); }
 .modal-header h2 { margin: 0 0 var(--s-1); font-size: var(--fs-title); font-weight: 640; letter-spacing: var(--track-display); }
 .modal-header p { margin: 0; color: var(--muted); font-size: var(--fs-ui); line-height: 1.5; }
-.settings-layout { min-height: 0; flex: 1; display: grid; grid-template-columns: 196px minmax(0,1fr); overflow: hidden; }
-.settings-nav { min-width: 0; display: flex; flex-direction: column; gap: var(--s-3); padding: var(--s-3) var(--s-2); border-right: 1px solid var(--line); background: color-mix(in srgb, var(--sidebar) 80%, var(--panel)); overflow-y: auto; }
+/* ===== Settings =====
+   One structure, everywhere: a full-height sidebar you can search, a pane
+   whose title lives in its own sticky header, and a body built from exactly
+   two primitives — a labelled group (.set-group) holding rows (.set-row).
+   Every individual setting is a row: copy on the left, control on the right,
+   hairline between neighbours. Controls never float loose on the pane
+   background, which is what previously made each pane look like a different
+   product. */
+.settings-layout { min-height: 0; flex: 1; display: grid; grid-template-columns: 224px minmax(0,1fr); overflow: hidden; }
+
+/* -- Sidebar -- */
+.settings-nav { min-width: 0; display: flex; flex-direction: column; border-right: 1px solid var(--line); background: color-mix(in srgb, var(--sidebar) 76%, var(--panel)); }
+.settings-nav-head { display: flex; flex-direction: column; gap: var(--s-3); padding: var(--s-4) var(--s-3) var(--s-3); }
+.settings-nav-head h2 { margin: 0; padding: 0 var(--s-1); color: var(--text); font-size: var(--fs-lede); font-weight: 660; letter-spacing: var(--track-display); }
+.settings-search { position: relative; display: grid; grid-template-columns: 26px minmax(0,1fr) auto; align-items: center; height: var(--ctl-md); border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--field); transition: border-color var(--t-fast) ease, box-shadow var(--t-fast) ease; }
+.settings-search:focus-within { border-color: var(--green-line); box-shadow: var(--ring); }
+.settings-search > svg { justify-self: center; color: var(--muted-2); }
+.settings-search input { min-width: 0; height: 100%; padding: 0; border: 0; color: var(--text); background: transparent; font: inherit; font-size: var(--fs-ui); outline: none; }
+.settings-search input::placeholder { color: var(--muted-2); }
+.settings-search-clear { display: grid; place-items: center; width: 24px; height: 24px; margin-right: 3px; border: 0; border-radius: var(--r-xs); color: var(--muted-2); background: transparent; cursor: pointer; }
+.settings-search-clear:hover { color: var(--text); background: rgba(255,255,255,.06); }
+.settings-nav-scroll { min-height: 0; flex: 1; display: flex; flex-direction: column; gap: var(--s-3); padding: 0 var(--s-3) var(--s-4); overflow-y: auto; scrollbar-gutter: stable; }
 .settings-nav-group { display: flex; flex-direction: column; gap: 1px; }
-.settings-nav-label { padding: 0 var(--s-2) var(--s-1); color: var(--muted-2); font-size: var(--fs-micro); font-weight: 650; text-transform: uppercase; letter-spacing: var(--track-caps); }
-.settings-nav button { position: relative; width: 100%; min-height: 34px; display: grid; grid-template-columns: 18px minmax(0,1fr) 13px; align-items: center; gap: var(--s-2); padding: 0 var(--s-2); border: 0; border-radius: var(--r-sm); color: var(--muted); background: transparent; font-size: var(--fs-ui); font-weight: 500; letter-spacing: var(--track-tight); text-align: left; cursor: pointer; transition: color var(--t-fast) ease, background var(--t-fast) ease; }
-.settings-nav button:hover { color: var(--ink-2); background: rgba(255,255,255,.035); }
-.settings-nav button.active { color: var(--text); font-weight: 600; background: rgba(255,255,255,.062); }
-.settings-nav button.active::before { content: ""; position: absolute; left: 0; top: 8px; bottom: 8px; width: 2px; border-radius: var(--r-pill); background: var(--green); }
+.settings-nav-label { padding: 0 var(--s-2) 5px; color: var(--muted-2); font-size: var(--fs-micro); font-weight: 650; text-transform: uppercase; letter-spacing: var(--track-caps); }
+.settings-nav button { position: relative; width: 100%; min-height: 32px; display: grid; grid-template-columns: 18px minmax(0,1fr); align-items: center; gap: var(--s-2); padding: 0 var(--s-2); border: 0; border-radius: var(--r-sm); color: var(--muted); background: transparent; font-size: var(--fs-ui); font-weight: 500; letter-spacing: var(--track-tight); text-align: left; cursor: pointer; transition: color var(--t-fast) ease, background var(--t-fast) ease; }
+.settings-nav button > span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.settings-nav button:hover { color: var(--ink-2); background: rgba(255,255,255,.04); }
+.settings-nav button.active { color: var(--text); font-weight: 600; background: color-mix(in srgb, var(--green) 13%, transparent); }
 .settings-nav button.active > svg:first-child { color: var(--green); }
-.settings-nav button > svg:first-child { color: var(--muted-2); }
-.settings-nav button > svg:last-child { justify-self: end; opacity: 0; transition: opacity var(--t-fast) ease; }
-.settings-nav button.active > svg:last-child { opacity: .4; }
+.settings-nav button > svg:first-child { color: var(--muted-2); transition: color var(--t-fast) ease; }
+.settings-nav-empty { margin: var(--s-2) var(--s-2) 0; color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.5; }
 .settings-update-dot { position: absolute; top: 50%; right: 10px; width: 6px; height: 6px; border-radius: 50%; background: var(--green); box-shadow: 0 0 7px color-mix(in srgb, var(--green) 60%, transparent); transform: translateY(-50%); }
-.settings-nav button.active .settings-update-dot { right: 22px; }
-.settings-pane-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--s-4); margin-bottom: var(--s-5); padding-bottom: var(--s-3); border-bottom: 1px solid var(--line); }
+
+/* -- Pane -- */
+.settings-pane { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.settings-pane-heading { flex: 0 0 auto; display: grid; grid-template-columns: minmax(0,1fr) auto auto; align-items: start; gap: var(--s-3); padding: var(--s-4) var(--s-5) var(--s-4) var(--s-6); border-bottom: 1px solid var(--line); }
 .settings-pane-heading > div { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .settings-pane-heading > div > h3 { margin: 0; color: var(--text); font-size: var(--fs-lede); font-weight: 650; letter-spacing: var(--track-display); }
-.settings-pane-heading > div > small { max-width: 62ch; color: var(--muted); font-size: var(--fs-meta); line-height: 1.5; text-wrap: pretty; }
-.settings-pane-heading > button { flex: 0 0 auto; margin-top: 2px; }
-.settings-content { position: relative; min-width: 0; overflow-y: auto; overflow-x: hidden; padding: var(--s-5) var(--s-6) var(--s-6); scroll-padding-top: var(--s-5); }
+.settings-pane-heading > div > small { max-width: 68ch; color: var(--muted); font-size: var(--fs-meta); line-height: 1.5; text-wrap: pretty; }
+.settings-pane-heading > .secondary-button { margin-top: 2px; }
+.settings-close { flex: 0 0 auto; margin-top: -2px; }
+.settings-content { position: relative; min-width: 0; flex: 1; overflow-y: auto; overflow-x: hidden; padding: var(--s-5) var(--s-6) var(--s-6); scroll-padding-top: var(--s-5); }
 /* Sticky fade that only shows while there is more pane below the fold. */
 .settings-content::after { content: ""; position: sticky; bottom: calc(-1 * var(--s-6)); z-index: 1; display: block; height: 30px; margin-top: -30px; pointer-events: none; background: linear-gradient(to bottom, transparent, var(--panel)); opacity: 0; transition: opacity var(--t-fast) ease; }
 .settings-content.has-more-below::after { opacity: 1; }
-/* Shared secondary heading for every pane. */
-.settings-subheading { display: flex; flex-direction: column; gap: 2px; margin: var(--s-5) 2px var(--s-2); }
-.settings-subheading.first { margin-top: 0; }
-.settings-subheading strong { color: var(--ink-2); font-size: var(--fs-ui); font-weight: 630; }
-.settings-subheading small { color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.45; }
-.settings-notice { display: flex; align-items: center; gap: var(--s-2); margin-top: var(--s-2); padding: var(--s-2) var(--s-2) var(--s-2) var(--s-3); border: 1px solid color-mix(in srgb, var(--amber) 32%, var(--line)); border-radius: var(--r-sm); color: var(--muted); background: color-mix(in srgb, var(--amber) 6%, transparent); font-size: var(--fs-meta); line-height: 1.45; }
-.settings-notice > svg { flex: 0 0 auto; color: var(--amber); }
-.settings-notice > span { flex: 1; min-width: 0; }
-.settings-notice > button { flex: 0 0 auto; min-height: 28px; }
-.settings-footnote { display: flex; align-items: flex-start; gap: var(--s-2); margin: var(--s-4) 0 0; color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.5; }
-.settings-footnote > svg { flex: 0 0 auto; margin-top: 2px; color: var(--muted-2); }
-.settings-footnote strong { color: var(--muted); font-weight: 600; }
-/* Short windows: group labels give way so every destination stays visible. */
+.settings-modal .modal-footer { flex: 0 0 auto; }
+
+/* -- The two primitives every pane is built from -- */
+/* A labelled group of related settings. The label is the only heading level
+   inside a pane, so scanning a pane is reading one column of short captions. */
+.set-group { display: flex; flex-direction: column; gap: var(--s-2); }
+.set-group + .set-group { margin-top: var(--s-5); }
+.set-group > h4, .set-group-head > h4 { display: flex; align-items: baseline; gap: var(--s-2); margin: 0; padding: 0 2px; color: var(--muted-2); font-size: var(--fs-micro); font-weight: 650; text-transform: uppercase; letter-spacing: var(--track-caps); }
+/* A note or an action beside a group label is always a *sibling* of the
+   heading, never a child: a heading whose accessible name reads "Sub-agent
+   presets 0 of 12" is no longer a heading anyone can navigate by. */
+.set-group-head { display: flex; align-items: baseline; gap: var(--s-2) var(--s-3); min-height: var(--ctl-sm); }
+.set-group-head > h4 { flex: 0 0 auto; }
+.set-group-head > .set-group-note { flex: 1 1 auto; }
+.set-group-head > .secondary-button, .set-group-head > button { flex: 0 0 auto; margin-left: auto; align-self: center; }
+.set-group-note { min-width: 0; color: var(--muted-2); font-size: var(--fs-meta); font-weight: 500; }
+.set-group > h4 + p, .set-group > .set-group-head + p { margin: -2px 2px 2px; max-width: 68ch; color: var(--muted); font-size: var(--fs-meta); line-height: 1.5; text-wrap: pretty; }
+/* The card. Rows inside are separated by hairlines, never by gaps, so a group
+   reads as one object instead of a pile of boxes. */
+.set-card { overflow: hidden; border: 1px solid var(--line); border-radius: var(--r-md); background: color-mix(in srgb, var(--panel-2) 46%, transparent); }
+.set-card > * + * { border-top: 1px solid var(--line); }
+/* One setting. Copy claims the space; the control takes only what it needs. */
+.set-row { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: var(--s-3) var(--s-4); padding: var(--s-3) var(--s-4); }
+.set-row > .set-copy { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.set-copy > strong { color: var(--ink-2); font-size: var(--fs-ui); font-weight: 600; letter-spacing: var(--track-tight); }
+.set-copy > small { max-width: 64ch; color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.5; text-wrap: pretty; }
+.set-row > .set-control { min-width: 0; justify-self: end; display: flex; align-items: center; gap: var(--s-2); }
+.set-row > .set-control > .app-select { min-width: 190px; }
+/* A line of help under a stacked control, in the muted voice of a caption. */
+.set-control-help { display: block; margin-top: 6px; color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.5; }
+/* Controls too big to sit beside their label drop underneath it instead. */
+.set-row.stack { grid-template-columns: minmax(0,1fr); }
+.set-row.stack > .set-control { justify-self: stretch; display: block; }
+.set-row.stack > .set-control > .app-select { min-width: 0; }
+/* Some groups are a chooser grid, not a list of rows. Those already carry
+   their own card-shaped options, so the group drops its container rather than
+   drawing a box around a box. */
+.set-card.bare { border: 0; border-radius: 0; background: none; }
+.set-card.bare > .set-body { padding: 0; }
+/* Loose form rows that belong to a group — an "add" row, a list of saved
+   things, a create form — are given the card's own surface rather than being
+   left to float on the pane background, which is what made half the panes
+   read as unfinished. */
+.set-group > .manager-list,
+.set-group > .inline-create,
+.set-group > .stacked-create,
+.set-group > .schedule-create,
+.set-group > .compact-note,
+.set-group > .github-clone-grid { padding: var(--s-3); border: 1px solid var(--line); border-radius: var(--r-md); background: color-mix(in srgb, var(--panel-2) 46%, transparent); }
+/* A list followed by its own "add" row is one object with one seam. */
+.set-group > .manager-list + .inline-create,
+.set-group > .manager-list + .stacked-create,
+.set-group > .manager-list + .schedule-create { margin-top: -9px; border-top-left-radius: 0; border-top-right-radius: 0; }
+.set-group > .manager-list:has(+ .inline-create),
+.set-group > .manager-list:has(+ .stacked-create),
+.set-group > .manager-list:has(+ .schedule-create) { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.set-group > .inline-create { margin-top: 0; }
+/* An empty list is not an empty box: nothing saved yet means nothing drawn. */
+.set-group > .manager-list:empty { display: none; }
+/* A region of card that is pure content — a chooser grid, a table, a list —
+   rather than a labelled row. */
+.set-body { padding: var(--s-3); }
+.set-body.tight { padding: var(--s-2); }
+.set-body > p:first-child { margin-top: 0; }
+.set-body > :last-child { margin-bottom: 0; }
+/* Panels that render themselves (diagnostics, rosters) sit in a card as their
+   own row and inherit its padding rather than carrying separate margins. */
+.set-card > .recent-errors { margin: 0; padding: var(--s-3); }
+.set-card > .recent-errors .panel-label { margin-top: 0; }
+.set-row > .set-copy > .settings-notice:first-of-type { margin-top: 6px; }
+
+/* -- Short windows: the sidebar gives up its group labels before its rows -- */
 @media (max-height: 720px) {
-  .settings-nav { gap: 0; }
+  .settings-nav-scroll { gap: 0; }
   .settings-nav-label { display: none; }
   .settings-nav-group + .settings-nav-group { margin-top: var(--s-1); padding-top: var(--s-1); border-top: 1px solid var(--line); }
   .settings-nav button { min-height: 29px; }
+  .settings-nav-head { padding-top: var(--s-3); }
 }
 .settings-section { padding-bottom: var(--s-6); }
 .settings-section + .settings-section { padding-top: var(--s-6); border-top: 1px solid var(--line); }
@@ -1337,19 +1413,13 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .custom-agent-summary > svg { color: var(--muted-2); transition: transform var(--t-mid) var(--ease); }
 .custom-agent-settings[open] .custom-agent-summary > svg { transform: rotate(180deg); }
 .custom-agent-content { padding-top: var(--s-3); }
-.settings-workspace-link { min-height: 60px; display: flex; align-items: center; justify-content: space-between; gap: var(--s-4); margin: 0 0 var(--s-5); padding: var(--s-3); border: 1px solid color-mix(in srgb, var(--green) 17%, var(--line)); border-radius: var(--r-md); background: var(--green-soft); }
-.settings-workspace-link > div { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
-.settings-workspace-link strong { font-size: var(--fs-ui); font-weight: 600; }
-.settings-workspace-link small { color: var(--muted); font-size: var(--fs-meta); line-height: 1.45; }
-.settings-workspace-link button { flex: 0 0 auto; }
-/* Section headings: icon column, then title and supporting line. The optional
-   third column carries the section's primary action. */
-.settings-section-heading { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: var(--s-3); margin-bottom: var(--s-4); }
-.settings-heading-with-action { grid-template-columns: 30px minmax(0,1fr) auto; align-items: start; }
-.settings-icon { width: 28px; height: 28px; display: grid; place-items: center; border-radius: var(--r-sm); color: var(--green); background: var(--green-soft); }
-.settings-section-heading h3 { margin: 0 0 3px; font-size: var(--fs-body); font-weight: 620; letter-spacing: var(--track-tight); }
-.settings-section-heading p { margin: 0; max-width: 62ch; color: var(--muted); font-size: var(--fs-meta); line-height: 1.55; text-wrap: pretty; }
-.settings-heading-with-action > .secondary-button { margin-top: 1px; }
+.settings-notice { display: flex; align-items: center; gap: var(--s-2); margin-top: var(--s-2); padding: var(--s-2) var(--s-2) var(--s-2) var(--s-3); border: 1px solid color-mix(in srgb, var(--amber) 32%, var(--line)); border-radius: var(--r-sm); color: var(--muted); background: color-mix(in srgb, var(--amber) 6%, transparent); font-size: var(--fs-meta); line-height: 1.45; }
+.settings-notice > svg { flex: 0 0 auto; color: var(--amber); }
+.settings-notice > span { flex: 1; min-width: 0; }
+.settings-notice > button { flex: 0 0 auto; min-height: 28px; }
+.settings-footnote { display: flex; align-items: flex-start; gap: var(--s-2); margin: var(--s-4) 0 0; color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.5; }
+.settings-footnote > svg { flex: 0 0 auto; margin-top: 2px; color: var(--muted-2); }
+.settings-footnote strong { color: var(--muted); font-weight: 600; }
 .default-theme-button { min-height: 27px; display: flex; align-items: center; gap: 5px; padding: 0 8px; border: 1px solid var(--line); border-radius: 7px; color: var(--muted); background: rgba(255,255,255,.02); font-size: var(--fs-meta); cursor: pointer; }
 .default-theme-button:hover:not(:disabled) { color: var(--text); border-color: var(--line-strong); background: rgba(255,255,255,.045); }
 .default-theme-button:disabled { opacity: .36; cursor: default; }
@@ -1361,9 +1431,12 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .theme-card strong { font-size: var(--fs-ui); font-weight: 600; }
 .theme-card small { overflow: hidden; color: var(--muted-2); font-size: var(--fs-meta); white-space: nowrap; text-overflow: ellipsis; }
 .theme-card > svg { color: var(--green); }
-.theme-preview { position: relative; width: 47px; height: 36px; overflow: hidden; border: 1px solid var(--line-strong); border-radius: var(--r-sm); }
-.theme-preview i:first-child { position: absolute; inset: 5px 5px 5px 13px; border-radius: 4px; }
-.theme-preview i:last-child { position: absolute; left: 4px; top: 5px; width: 5px; height: 26px; border-radius: 99px; box-shadow: 0 0 8px currentColor; }
+.theme-preview { position: relative; width: 48px; height: 36px; overflow: hidden; border: 1px solid var(--line-strong); border-radius: var(--r-sm); }
+.theme-preview > i { position: absolute; }
+.theme-preview-rail { inset: 0 auto 0 0; width: 15px; }
+.theme-preview-body { inset: 6px 5px 6px 20px; border-radius: 3px; }
+.theme-preview-active { left: 3px; top: 7px; width: 9px; height: 3px; border-radius: 99px; box-shadow: 0 0 7px currentColor; }
+.theme-preview-accent { left: 24px; bottom: 10px; width: 13px; height: 2px; border-radius: 99px; opacity: .85; }
 .prompt-editor { width: 100%; resize: vertical; min-height: 118px; padding: var(--s-3); border: 1px solid var(--line); border-radius: var(--r-md); outline: 0; color: var(--text); background: var(--field); font: 11px/1.6 var(--font-mono); transition: border-color var(--t-fast) ease, box-shadow var(--t-fast) ease; }
 .prompt-editor:focus { border-color: var(--green-line); box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 9%, transparent); }
 .prompt-editor::placeholder { color: var(--muted-2); }
@@ -1372,25 +1445,9 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .prompt-file-notice p { margin: 0; font-size: var(--fs-meta); line-height: 1.55; }
 .prompt-file-notice strong { color: var(--ink-2); font-weight: 600; }
 .prompt-file-notice code { color: var(--ink-2); font: .95em var(--font-mono); }
-.prompt-guidance-control { min-height: 55px; display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); margin-bottom: var(--s-4); padding: var(--s-3); border: 1px solid var(--line); border-radius: var(--r-md); background: rgba(255,255,255,.012); }
-.prompt-guidance-control > span { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
-.prompt-guidance-control strong { color: var(--ink-2); font-size: var(--fs-ui); font-weight: 600; }
-.prompt-guidance-control small { color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.4; }
-.prompt-layer-field { display: flex; min-width: 0; flex-direction: column; gap: 7px; }
-.prompt-layer-field > span { display: flex; flex-direction: column; gap: 2px; }
-.prompt-layer-field strong { color: var(--ink-2); font-size: var(--fs-ui); font-weight: 600; }
-.prompt-layer-field small { color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.4; }
-.provider-prompt-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-3); margin-top: var(--s-3); }
-.provider-prompt-grid .prompt-editor { min-height: 96px; }
 .prompt-audit-row { display: flex; flex-wrap: wrap; gap: 13px; margin-top: 9px; color: #707770; font-size: var(--fs-micro); }
 .prompt-audit-row span { display: flex; align-items: center; gap: 4px; }
 .prompt-audit-row svg { color: var(--green); }
-.agent-settings-card { display: flex; align-items: center; justify-content: space-between; gap: var(--s-4); padding: var(--s-3); border: 1px solid var(--line); border-radius: 10px 10px 0 0; background: rgba(255,255,255,.014); }
-.agent-settings-card.single { border-radius: var(--r-md); }
-.agent-settings-card.enabled { border-color: color-mix(in srgb, var(--info) 22%, var(--line)); background: color-mix(in srgb, var(--info) 5%, transparent); }
-.agent-toggle-copy { display: flex; min-width: 0; flex-direction: column; gap: 4px; }
-.agent-toggle-copy strong { font-size: var(--fs-ui); font-weight: 600; }
-.agent-toggle-copy small { color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.5; }
 .toggle-switch { flex: 0 0 auto; width: 36px; height: 20px; padding: 2px; border: 0; border-radius: 99px; background: #34383d; cursor: pointer; transition: background 140ms ease; }
 .toggle-switch span { display: block; width: 16px; height: 16px; border-radius: 50%; background: #92989e; transition: transform 140ms ease, background 140ms ease; }
 .toggle-switch.on { background: var(--toggle-active-track); }
@@ -1462,8 +1519,10 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .default-model-picker .app-select-value strong, .default-model-picker .app-select-option-copy strong { font-size: var(--fs-meta); }
 .default-model-picker .app-select-value small, .default-model-picker .app-select-option-copy small { font-size: var(--fs-micro); }
 .usage-display-layout { display: grid; grid-template-columns: minmax(0, 1fr) max-content; align-items: start; gap: var(--s-5); }
-.usage-display-layout .settings-section-heading { margin-bottom: 0; }
-.usage-display-controls { width: max-content; max-width: 100%; display: grid; justify-self: end; }
+/* Specific enough to beat .set-row > .set-control's flex row: the example
+   line belongs under the choices, not beside them, or the two together eat
+   the width the description needs. */
+.set-row > .set-control.usage-display-controls { width: max-content; max-width: 100%; display: grid; justify-self: end; }
 .usage-display-options { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s-2); }
 .usage-display-options > button { min-width: 0; min-height: 48px; display: grid; grid-template-columns: max-content 16px; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-md); color: var(--muted); background: rgba(255,255,255,.014); text-align: left; cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
 .usage-display-options > button:hover { color: var(--ink-2); border-color: var(--line-strong); background: rgba(255,255,255,.035); }
@@ -1519,9 +1578,9 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .profile-apply { min-width: 0; display: grid; grid-template-columns: minmax(0,1fr) 15px; align-items: center; gap: var(--s-1); padding: 10px; border: 0; color: inherit; background: transparent; text-align: left; cursor: pointer; }
 .profile-delete { width: 28px; display: grid; place-items: center; padding: 0; border: 0; border-left: 1px solid var(--line); color: var(--muted-2); background: transparent; cursor: pointer; }
 .profile-delete:hover { color: var(--red); background: color-mix(in srgb, var(--red) 8%, transparent); }
-.profile-grid button > span, .manager-list > div > span, .compact-note > span, .behavior-grid > div > span, .diagnostic-card > span { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
-.profile-grid strong, .manager-list strong, .compact-note strong, .behavior-grid strong, .diagnostic-card strong { color: var(--ink-2); font-size: var(--fs-ui); font-weight: 600; }
-.profile-grid small, .manager-list small, .compact-note small, .behavior-grid small, .diagnostic-card small { overflow: hidden; color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.4; white-space: nowrap; text-overflow: ellipsis; }
+.profile-grid button > span, .manager-list > div > span, .compact-note > span { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.profile-grid strong, .manager-list strong, .compact-note strong { color: var(--ink-2); font-size: var(--fs-ui); font-weight: 600; }
+.profile-grid small, .manager-list small, .compact-note small { overflow: hidden; color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.4; white-space: nowrap; text-overflow: ellipsis; }
 .inline-create { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 6px; margin-top: 7px; }
 .inline-create.two { grid-template-columns: .7fr 1.3fr auto; }
 .inline-create select { min-width: 0; min-height: 33px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 7px; outline: 0; color: var(--text); background: var(--field); font-size: var(--fs-micro); }
@@ -1594,10 +1653,6 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 /* Presets: the saved crews, never shown next to the policy they would
    replace. */
 .preset-panel { display: flex; flex-direction: column; gap: var(--s-3); }
-.subagent-archive-setting { margin-bottom: var(--s-5); }
-.preset-section-heading { display: flex; flex-direction: column; gap: 3px; padding-top: var(--s-4); border-top: 1px solid var(--line); }
-.preset-section-heading h4 { margin: 0; color: var(--ink-2); font-size: var(--fs-ui); font-weight: 650; }
-.preset-section-heading p { margin: 0; color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.5; }
 .preset-toolbar { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); }
 .preset-toolbar > span { min-width: 0; color: var(--muted-2); font-size: var(--fs-micro); }
 .preset-create-card { display: grid; gap: var(--s-3); padding: var(--s-4); border: 1px solid var(--green-line); border-radius: var(--r-md); background: color-mix(in srgb, var(--green) 4%, rgba(255,255,255,.012)); }
@@ -1637,11 +1692,11 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .preset-card-editor { min-height: 0; overflow: hidden; }
 .preset-card-body.open .preset-card-editor { padding: var(--s-3); border-top: 1px solid var(--line); background: rgba(0,0,0,.08); }
 .preset-card-body.open .preset-card-editor { overflow: visible; }
-.preset-empty { margin: 0; padding: var(--s-4); border: 1px dashed var(--line); border-radius: var(--r-sm); color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.5; text-align: center; }
+.preset-empty { margin: 0; padding: var(--s-5) var(--s-4); border: 1px dashed var(--line); border-radius: var(--r-md); color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.5; text-align: center; }
 
 .settings-subgroup { margin-top: var(--s-5); padding-top: var(--s-4); border-top: 1px solid var(--line); }
 .settings-subgroup-label { display: block; margin-bottom: var(--s-2); color: var(--muted-2); font-size: var(--fs-micro); text-transform: uppercase; letter-spacing: var(--track-caps); }
-.inline-create input, .stacked-create input, .stacked-create textarea, .schedule-create input, .schedule-create textarea, .schedule-create select, .runtime-field-grid select { min-width: 0; min-height: 33px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 7px; outline: 0; color: var(--text); background: var(--field); font-size: var(--fs-micro); resize: vertical; }
+.inline-create input, .stacked-create input, .stacked-create textarea, .schedule-create input, .schedule-create textarea, .schedule-create select { min-width: 0; min-height: 33px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 7px; outline: 0; color: var(--text); background: var(--field); font-size: var(--fs-micro); resize: vertical; }
 .inline-create button, .stacked-create button, .schedule-create > button { min-height: 33px; display: flex; align-items: center; justify-content: center; gap: 5px; padding: 0 9px; border: 1px solid var(--line); border-radius: 7px; color: var(--green); background: var(--green-soft); font-size: var(--fs-meta); cursor: pointer; }
 .inline-create button:disabled, .stacked-create button:disabled, .schedule-create > button:disabled { opacity: .4; cursor: default; }
 .manager-list { display: flex; flex-direction: column; gap: 5px; }
@@ -1673,14 +1728,6 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .schedule-runtime-note { display: flex; align-items: center; gap: 6px; margin: 0; color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.45; }
 .schedule-runtime-note svg { flex: 0 0 auto; color: var(--green); }
 .compact-note { display: grid; grid-template-columns: 23px minmax(0,1fr); align-items: center; gap: 7px; color: var(--green); }
-.behavior-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-.behavior-grid-single { grid-template-columns: 1fr; }
-.behavior-grid > div, .diagnostic-card { min-height: 55px; display: flex; align-items: center; justify-content: space-between; gap: 9px; padding: 9px; border: 1px solid var(--line); border-radius: 8px; background: rgba(255,255,255,.012); }
-.runtime-field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 7px; }
-.runtime-field-grid label { display: flex; flex-direction: column; gap: 5px; color: var(--muted); font-size: var(--fs-meta); }
-.runtime-field-grid .field-label { margin-top: 0; }
-.diagnostic-card { margin-top: 7px; }
-.diagnostic-card .secondary-button { min-height: 29px; font-size: var(--fs-meta); }
 .update-card { overflow: hidden; border: 1px solid var(--line); border-radius: 11px; background: linear-gradient(145deg, color-mix(in srgb, var(--green) 4%, var(--sidebar)), var(--sidebar)); }
 .update-card.available { border-color: color-mix(in srgb, var(--green) 28%, var(--line)); box-shadow: 0 18px 45px rgba(0,0,0,.16), inset 0 1px 0 rgba(255,255,255,.02); }
 .update-card.error { border-color: rgba(239,138,135,.22); }
@@ -1690,12 +1737,12 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .developer-runtime-update-grid + .update-card { margin-top: 8px; }
 .developer-runtime-update-card .update-actions small { margin-right: auto; color: var(--muted-2); }
 .developer-runtime-result .update-status-row span { white-space: pre-wrap; }
-.update-version-row { min-height: 62px; display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+.update-version-row { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
 .update-version-row > span { display: flex; flex-direction: column; gap: 3px; }
 .update-version-row small { color: var(--muted-2); font-size: var(--fs-micro); font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
 .update-version-row strong { font-size: var(--fs-body); font-weight: 620; letter-spacing: var(--track-tight); }
 .update-version-available { align-items: flex-end; color: var(--green); }
-.update-status-row { min-height: 43px; display: flex; align-items: center; gap: 8px; padding: 0 14px; color: var(--muted); font-size: var(--fs-micro); }
+.update-status-row { min-height: 38px; display: flex; align-items: center; gap: 8px; padding: 0 14px; color: var(--muted); font-size: var(--fs-micro); }
 .update-status-row svg { flex: 0 0 auto; color: var(--green); }
 .update-card.error .update-status-row, .update-card.error .update-status-row svg { color: var(--red); }
 .update-progress { position: relative; height: 4px; overflow: hidden; margin: 0 14px 12px; border-radius: 999px; background: rgba(255,255,255,.055); }
@@ -1705,7 +1752,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .update-notes strong { display: block; margin-bottom: 5px; font-size: var(--fs-micro); }
 .update-notes p { max-height: 110px; overflow: auto; margin: 0; color: var(--muted); font-size: var(--fs-meta); line-height: 1.55; white-space: pre-wrap; }
 .update-notes small { display: block; margin-top: 7px; color: var(--muted-2); font-size: var(--fs-meta); }
-.update-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; padding: 0 14px 14px; }
+.update-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; padding: 0 14px 12px; }
 .update-actions button { min-height: 33px; font-size: var(--fs-micro); }
 .update-trust-row { display: grid; grid-template-columns: 23px minmax(0,1fr); align-items: start; gap: 8px; margin-top: 10px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; color: var(--green); background: color-mix(in srgb, var(--green) 4%, transparent); }
 .update-trust-row > span { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
@@ -2545,21 +2592,33 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
   .model-picker-copy em { display: none; }
   .settings-modal { height: calc(100vh - 24px); }
   .settings-layout { grid-template-columns: 1fr; grid-template-rows: auto minmax(0,1fr); }
-  /* The rail becomes a scrolling tab strip; group labels would only add noise,
-     so the groups collapse and their buttons flow inline. */
-  .settings-nav { flex-direction: row; gap: var(--s-1); overflow-x: auto; padding: var(--s-2); border-right: 0; border-bottom: 1px solid var(--line); }
+  /* The rail becomes a scrolling tab strip above the pane. The window title
+     goes with it — the pane header already says where you are — but the search
+     field stays, because it is the fastest way through thirteen destinations
+     on a narrow window. */
+  .settings-nav { border-right: 0; border-bottom: 1px solid var(--line); }
+  .settings-nav-head { padding: var(--s-2) var(--s-2) 0; }
+  .settings-nav-head h2 { display: none; }
+  .settings-nav-scroll { flex-direction: row; gap: var(--s-1); padding: var(--s-2); overflow-x: auto; overflow-y: hidden; }
   .settings-nav-group { display: contents; }
   .settings-nav-label { display: none; }
   .settings-nav button { flex: 0 0 auto; width: auto; grid-template-columns: 18px auto; padding: 0 10px; }
-  .settings-nav button.active::before { top: auto; bottom: 0; left: 8px; right: 8px; width: auto; height: 2px; }
+  .settings-nav-empty { flex: 0 0 auto; margin: 0; align-self: center; white-space: nowrap; }
   .worker-config, .worker-add { grid-template-columns: 1fr; }
   .preset-create-actions { flex-wrap: wrap; justify-content: flex-start; }
-  .settings-nav button > svg:last-child { display: none; }
+  .settings-pane-heading { padding: var(--s-3) var(--s-3) var(--s-3) var(--s-4); }
   .settings-content { padding: 16px; }
+  /* Narrow rows put the control under its label instead of squeezing both —
+     except a toggle, which is small enough to stay on the right where the
+     eye already expects to find it. */
+  .set-row { grid-template-columns: minmax(0,1fr); }
+  .set-row > .set-control { justify-self: stretch; }
+  .set-row > .set-control > .app-select { min-width: 0; }
+  .set-row:has(> .set-control > .toggle-switch) { grid-template-columns: minmax(0,1fr) auto; }
+  .set-row:has(> .set-control > .toggle-switch) > .set-control { justify-self: end; }
   .usage-display-layout { grid-template-columns: 1fr; gap: var(--s-3); }
-  .usage-display-layout .settings-section-heading { margin-bottom: 0; }
-  .usage-display-controls { justify-self: start; }
-  .theme-grid, .chat-font-grid, .behavior-grid, .runtime-field-grid, .provider-cards, .provider-prompt-grid { grid-template-columns: 1fr; }
+  .set-row > .set-control.usage-display-controls { justify-self: start; }
+  .theme-grid, .chat-font-grid, .provider-cards { grid-template-columns: 1fr; }
   .profile-grid { grid-template-columns: 1fr 1fr; }
   .inline-create.two, .schedule-create-grid { grid-template-columns: 1fr; }
   /* Skills: the folder actions and composer buttons stop competing for a
@@ -2951,28 +3010,95 @@ body[data-pane-resizing] .sidebar, body[data-pane-resizing] .studio-dock { trans
    layer can be tuned (or ripped out) as one unit; every animation is
    disarmed under prefers-reduced-motion at the bottom. ===== */
 
-/* -- Sub-agent mission control (timeline relay manifest) -- */
-/* Crew launch: cards deal in one-by-one (delay set inline, capped). */
-.subagent-relay-card { animation: sa-pop 300ms var(--ease) both; animation-delay: var(--deal-delay, 0ms); }
-/* While a child runs, its provider rail becomes a downward-flowing beam. */
-.subagent-relay-card.status-starting::before, .subagent-relay-card.status-working::before {
-  opacity: 1;
-  background: repeating-linear-gradient(180deg,
-    var(--relay-accent) 0 7px,
-    color-mix(in srgb, var(--relay-accent) 28%, transparent) 7px 16px);
-  animation: relay-flow 800ms linear infinite;
+/* -- Sub-agent mission control (timeline relay manifest) --
+   One idea on one clock. Every running card derives its motion from a single
+   --relay-beat: a comet of light travels down the provider rail, and the
+   instant it lands the status orb pings and brightens. Cause and effect, read
+   left-to-right, instead of four loops competing at four tempos. Amplitude
+   stays deliberately low — a delegated worker is ambient information, not an
+   alert, and a timeline can hold a dozen of these at once. */
+.subagent-relay-card { --relay-beat: 2600ms; --relay-comet-core: color-mix(in srgb, var(--relay-accent) 60%, #fff); animation: sa-pop 300ms var(--ease) both; animation-delay: var(--deal-delay, 0ms); }
+/* Spinning up runs the same figure faster: the only difference between
+   "starting" and "working" is the tempo, so the two never look unrelated. */
+.subagent-relay-card.status-starting { --relay-beat: 1600ms; }
+
+/* The rail dims while a comet is on it, so the travelling light is the
+   brightest thing on the card rather than one stripe among many. */
+.subagent-relay-card.status-starting::before, .subagent-relay-card.status-working::before { opacity: .3; }
+.subagent-relay-card.status-starting::after, .subagent-relay-card.status-working::after {
+  content: ""; position: absolute; inset: 0 auto 0 0; width: 2px; z-index: 1; pointer-events: none;
+  background: linear-gradient(180deg,
+    transparent 0%,
+    color-mix(in srgb, var(--relay-accent) 55%, transparent) 30%,
+    var(--relay-comet-core) 52%,
+    color-mix(in srgb, var(--relay-accent) 55%, transparent) 74%,
+    transparent 100%) no-repeat;
+  /* drop-shadow follows the gradient's own alpha, so the bloom is the comet's
+     shape rather than a rectangle, and the card's overflow clip spills the
+     left half of it inward like real light. */
+  background-size: 100% 24px;
+  filter: drop-shadow(0 0 5px color-mix(in srgb, var(--relay-accent) 72%, transparent));
+  animation: relay-comet var(--relay-beat) linear infinite;
 }
-@keyframes relay-flow { to { background-position-y: 32px; } }
-/* The manifest grows a shared dispatch spine while any child is live: a
-   faint beam behind the cards that reads as one feed powering the crew. */
+/* Move the layer instead of repainting its background every frame. The
+   percentage uses the card height; subtracting the same fraction of 24px
+   keeps the comet's original path from flush top to flush bottom. */
+@keyframes relay-comet {
+  0%   { opacity: 0;   transform: translateY(0); }
+  10%  { opacity: .95; transform: translateY(calc(7% - 1.68px)); }
+  48%  { opacity: .95; transform: translateY(calc(84% - 20.16px)); }
+  58%, 100% { opacity: 0; transform: translateY(calc(100% - 24px)); }
+}
+
+/* A white-hot core only reads as light against a dark ground; on paper the
+   comet has to be the densest point of the accent instead of the brightest. */
+.app-shell[data-color-scheme="light"] .subagent-relay-card { --relay-comet-core: color-mix(in srgb, var(--relay-accent) 84%, #000); }
+.app-shell[data-color-scheme="light"] .subagent-relay-card.status-starting::before,
+.app-shell[data-color-scheme="light"] .subagent-relay-card.status-working::before { opacity: .4; }
+
+/* The avatar is the card's power plant: it charges as the comet runs and
+   settles as it lands. Glow only — no ring, no spinner, no layout cost. */
+.subagent-relay-card.status-starting .subagent-relay-avatar::before,
+.subagent-relay-card.status-working .subagent-relay-avatar::before {
+  content: ""; position: absolute; inset: -1px; border-radius: calc(var(--r-sm) + 1px); pointer-events: none;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--relay-accent) 30%, transparent),
+    0 0 11px -3px color-mix(in srgb, var(--relay-accent) 55%, transparent);
+  animation: relay-charge var(--relay-beat) ease-in-out infinite;
+}
+@keyframes relay-charge { 0% { opacity: .15; } 46% { opacity: .68; } 100% { opacity: .15; } }
+
+/* Arrival. The orb dims while the light is in transit and lifts the moment
+   it lands, shedding one ring — the payoff beat that makes the rail read as
+   delivery rather than decoration. */
+.subagent-relay-card.status-starting .subagent-relay-status > i,
+.subagent-relay-card.status-working .subagent-relay-status > i { animation: relay-orb var(--relay-beat) ease-in-out infinite; }
+@keyframes relay-orb { 0%, 46% { opacity: .5; } 60% { opacity: 1; } 100% { opacity: .5; } }
+.subagent-relay-card.status-starting .subagent-relay-status > i::after,
+.subagent-relay-card.status-working .subagent-relay-status > i::after {
+  content: ""; position: absolute; inset: 0; border-radius: 50%; pointer-events: none;
+  border: 1px solid var(--relay-status);
+  animation: relay-ping var(--relay-beat) cubic-bezier(.25,.6,.3,1) infinite;
+}
+@keyframes relay-ping {
+  0%, 55% { opacity: 0;  transform: scale(1); }
+  59%     { opacity: .8; transform: scale(1); }
+  78%     { opacity: .4; transform: scale(2); }
+  100%    { opacity: 0;  transform: scale(2.7); }
+}
+
+/* The manifest ties a wave together with structure, not a second animation:
+   one static spine behind the cards, and a header mark that breathes on the
+   same beat the cards do. */
 .subagent-relay-list { position: relative; }
 .subagent-relay-list .subagent-relay-card { z-index: 1; }
 .subagent-relay-manifest.live .subagent-relay-list::before {
   content: ""; position: absolute; top: -6px; bottom: 4px; left: 5px; width: 2px; z-index: 0;
-  background: repeating-linear-gradient(180deg, var(--info) 0 7px, color-mix(in srgb, var(--info) 20%, transparent) 7px 16px);
-  opacity: .38; animation: relay-flow 800ms linear infinite; pointer-events: none;
+  background: linear-gradient(180deg, transparent, var(--info) 14%, var(--info) 86%, transparent);
+  opacity: .26; pointer-events: none;
 }
-.subagent-relay-manifest.live > header > svg { animation: reasoning-pulse 1.5s ease-in-out infinite; }
+.subagent-relay-manifest.live > header > svg { animation: relay-charge 2600ms ease-in-out infinite; }
+
 /* Settle burst: an expanding ring off the avatar when a child completes
    (replays whenever the status-completed class lands). */
 .subagent-relay-card.status-completed .subagent-relay-avatar::after {
@@ -3068,8 +3194,9 @@ body[data-pane-resizing] .sidebar, body[data-pane-resizing] .studio-dock { trans
 
 @media (prefers-reduced-motion: reduce) {
   .subagent-relay-card,
-  .subagent-relay-card.status-starting::before, .subagent-relay-card.status-working::before,
-  .subagent-relay-manifest.live .subagent-relay-list::before,
+  .subagent-relay-card.status-starting .subagent-relay-avatar::before,
+  .subagent-relay-card.status-working .subagent-relay-avatar::before,
+  .subagent-relay-status > i::after,
   .subagent-relay-manifest.live > header > svg,
   .subagent-relay-card.status-completed .subagent-relay-avatar::after,
   .subagent-relay-card.status-completed .subagent-relay-status,
@@ -3080,6 +3207,13 @@ body[data-pane-resizing] .sidebar, body[data-pane-resizing] .studio-dock { trans
   .thread-card.live, .thread-card.attention, .thread-card.settled::after,
   .composer-zone.ambiance-live::before { animation: none; }
   .odometer-reel > span { transition: none; }
+  /* No comet, so the rail simply returns to its full-strength resting state
+     and the avatar keeps a static charge ring instead of breathing. */
+  .subagent-relay-card.status-starting::after, .subagent-relay-card.status-working::after { display: none; }
+  .subagent-relay-card.status-starting::before, .subagent-relay-card.status-working::before { opacity: .68; }
+  .subagent-relay-card.status-starting .subagent-relay-avatar::before,
+  .subagent-relay-card.status-working .subagent-relay-avatar::before { opacity: .55; }
+  .subagent-relay-manifest.live > header > svg { opacity: .9; }
 }
 
 /* ===== Effort slider, unified across every provider =====

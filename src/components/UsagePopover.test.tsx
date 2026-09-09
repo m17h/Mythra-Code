@@ -22,18 +22,19 @@ function Harness({ data = usage, initial = "5h", onDetails = vi.fn(), onConnect 
 afterEach(() => vi.useRealTimers());
 
 describe("usage popover", () => {
-  it("counts down only while open, refreshes on reopen, and cleans up its clock", () => {
+  it("updates reset and freshness text only while open and cleans up its clock", () => {
     vi.useFakeTimers();
     const start = Date.UTC(2026, 8, 3, 2, 14);
     vi.setSystemTime(start);
     const intervals = vi.spyOn(window, "setInterval");
     const clears = vi.spyOn(window, "clearInterval");
-    const data = { ...usage, windows: usage.windows!.map((window, index) => ({ ...window, resetsAt: start / 1000 + (index ? 86_400 : 8040) })) };
+    const data = { ...usage, updatedAt: start - 181_000, windows: usage.windows!.map((window, index) => ({ ...window, resetsAt: start / 1000 + (index ? 86_400 : 8040) })) };
     const view = render(<Harness data={data} />);
     const trigger = screen.getByRole("button", { name: /Open usage details/ });
     expect(vi.getTimerCount()).toBe(0);
     fireEvent.click(trigger);
     expect(screen.getByText("Resets in 2h 14m")).toBeInTheDocument();
+    expect(screen.getByText("Updated 3m ago")).toBeInTheDocument();
     expect(screen.getByText("Resets Fri · 3 PM")).toBeInTheDocument();
     expect(intervals).toHaveBeenCalledTimes(1);
     expect(intervals).toHaveBeenLastCalledWith(expect.any(Function), 60_000);

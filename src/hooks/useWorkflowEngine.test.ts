@@ -46,6 +46,7 @@ function testEngineDeps(
     openRouterReady: false,
     customAgents: [],
     ensureSkillRoots: vi.fn(async () => undefined),
+    resolveSkillPrompt: vi.fn(async (message: string) => message),
     bindThreadToProject: vi.fn(),
     beginRunCheckpoint: vi.fn(async () => undefined),
     finalizeRunCheckpoint: vi.fn(async () => undefined),
@@ -148,6 +149,7 @@ describe("workflow turn waiting", () => {
       openRouterReady: false,
       customAgents: [],
       ensureSkillRoots: vi.fn(async () => undefined),
+      resolveSkillPrompt: vi.fn(async (message: string) => message),
       bindThreadToProject: vi.fn(),
       beginRunCheckpoint: vi.fn(async () => undefined),
       finalizeRunCheckpoint: vi.fn(async () => undefined),
@@ -223,6 +225,7 @@ describe("workflow turn waiting", () => {
       openRouterReady: false,
       customAgents: [],
       ensureSkillRoots: vi.fn(async () => undefined),
+      resolveSkillPrompt: vi.fn(async (message: string) => message),
       bindThreadToProject: vi.fn(),
       beginRunCheckpoint: vi.fn(async () => undefined),
       finalizeRunCheckpoint: vi.fn(async () => undefined),
@@ -289,6 +292,7 @@ describe("workflow turn waiting", () => {
       openRouterReady: false,
       customAgents: [],
       ensureSkillRoots: vi.fn(async () => undefined),
+      resolveSkillPrompt: vi.fn(async (message: string) => message),
       bindThreadToProject: vi.fn(),
       beginRunCheckpoint: vi.fn(async () => undefined),
       finalizeRunCheckpoint: vi.fn(async () => undefined),
@@ -360,6 +364,57 @@ describe("workflow turn waiting", () => {
     });
     expect(codex.rpc.mock.calls.filter(([method]) => method === "turn/start")).toHaveLength(1);
     expect(runs.at(-1)).toMatchObject({ status: "interrupted" });
+  });
+
+  it("does not send a workflow step stopped during skill loading", async () => {
+    const workflow = testWorkflow({
+      steps: [{ id: "step-1", type: "agent", name: "Review", prompt: "@review it", continueOnError: false }],
+    });
+    const runs: WorkflowRunRecord[] = [];
+    let resolve!: (value: string) => void;
+    const deps = testEngineDeps(workflow, runs, {
+      resolveSkillPrompt: vi.fn(() => new Promise<string>((done) => { resolve = done; })),
+    });
+    codex.rpc.mockImplementation((method: string) => Promise.resolve(
+      method === "thread/start" ? { thread: { id: "thread-1" } } : {},
+    ));
+    const { result } = renderHook(() => useWorkflowEngine(deps));
+    await act(async () => {
+      const pending = result.current.runWorkflow("workflow-1");
+      await flushMicrotasks();
+      expect(deps.resolveSkillPrompt).toHaveBeenCalled();
+      expect(await result.current.stopWorkflow("workflow-1")).toBe(true);
+      resolve("resolved instructions");
+      await pending;
+    });
+    expect(codex.rpc.mock.calls.some(([method]) => method === "turn/start")).toBe(false);
+    expect(deps.beginRunCheckpoint).not.toHaveBeenCalled();
+    expect(runs.at(-1)).toMatchObject({ status: "interrupted" });
+  });
+
+  it("resolves selected Mythra skills before delivering a workflow agent step", async () => {
+    const workflow = testWorkflow({
+      skillNames: ["review"],
+      steps: [{ id: "step-1", type: "agent", name: "Review", prompt: "Review it", continueOnError: false }],
+    });
+    const runs: WorkflowRunRecord[] = [];
+    const resolveSkillPrompt = vi.fn(async () => "resolved workflow skill context");
+    codex.rpc.mockImplementation((method: string) => {
+      if (method === "thread/start") return Promise.resolve({ thread: { id: "thread-1" } });
+      if (method === "turn/start") {
+        queueMicrotask(() => useTaskStore.getState().completeTurn("thread-1", "turn-1", "completed"));
+        return Promise.resolve({ turn: { id: "turn-1" } });
+      }
+      return Promise.resolve({});
+    });
+    const { result } = renderHook(() => useWorkflowEngine(testEngineDeps(workflow, runs, { resolveSkillPrompt })));
+
+    await act(async () => { await result.current.runWorkflow("workflow-1"); });
+
+    expect(resolveSkillPrompt).toHaveBeenCalledWith(expect.stringContaining("@review"));
+    expect(codex.rpc).toHaveBeenCalledWith("turn/start", expect.objectContaining({
+      input: [{ type: "text", text: "resolved workflow skill context", text_elements: [] }],
+    }));
   });
 
   it("interrupts the exact outstanding turn before a timed-out step fails", async () => {

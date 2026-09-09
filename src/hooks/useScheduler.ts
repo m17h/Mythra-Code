@@ -17,6 +17,7 @@ export interface SchedulerDeps {
   lmStudioReady?: boolean;
   lmStudioModels?: LMStudioModel[];
   ensureSkillRoots: () => Promise<void>;
+  resolveSkillPrompt: (message: string) => Promise<string>;
   bindThreadToProject: (threadId: string, projectPath: string) => void;
   /** Automatic pre-turn file snapshot, same lifecycle user turns get. */
   beginRunCheckpoint: (threadId: string, workspacePath: string, prompt: string, provider: Provider, model: string) => Promise<string | undefined>;
@@ -102,6 +103,7 @@ export function useScheduler(deps: SchedulerDeps): void {
     let turnStarted = false;
     try {
       await current.ensureSkillRoots();
+      const providerPrompt = await current.resolveSkillPrompt(scheduled.prompt);
       const modelContextWindow = run.provider === "lmstudio"
         ? current.lmStudioModels?.find((entry) => entry.id === run.model)?.maxContextLength
         : undefined;
@@ -138,7 +140,7 @@ export function useScheduler(deps: SchedulerDeps): void {
       await current.beginRunCheckpoint(started.thread.id, project.path, scheduled.prompt, run.provider, run.model);
       try {
         await rpc("turn/start", turnStartParams(run, started.thread.id, project.path, [
-          { type: "text", text: scheduled.prompt, text_elements: [] },
+          { type: "text", text: providerPrompt, text_elements: [] },
         ], [], false));
       } catch (reason) {
         // No turn started, so no completion event will finalize the snapshot.
