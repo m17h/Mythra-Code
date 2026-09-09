@@ -243,20 +243,26 @@
       "decision": "Accept 3.0 KB more total JavaScript and 538 Safari / 415 Chrome bytes of startup CSS; startup JavaScript and the app entry are unchanged on both targets. The JavaScript is entirely inside the lazy Settings chunk: per-pane search keywords, plus panes rewritten from five ad-hoc heading and container patterns onto two primitives. The stylesheet nets out flat because the new system deleted more CSS than it added \u2014 the retired icon tiles, section and sub headings, workspace link, prompt layer fields, behavior and runtime grids, diagnostic card, and interface-size card are all gone. None of it runs before Settings is opened.",
       "safari13": { "appEntryFromBytes": 372561, "appEntryToBytes": 372561, "appEntryDeltaBytes": 0, "startupJsFromBytes": 737984, "startupJsToBytes": 737984, "startupJsDeltaBytes": 0, "startupCssFromBytes": 361961, "startupCssToBytes": 362499, "startupCssDeltaBytes": 538, "totalJsFromBytes": 1496706, "totalJsToBytes": 1499714, "totalJsDeltaBytes": 3008 },
       "chrome105": { "appEntryFromBytes": 352936, "appEntryToBytes": 352936, "appEntryDeltaBytes": 0, "startupJsFromBytes": 710948, "startupJsToBytes": 710948, "startupJsDeltaBytes": 0, "startupCssFromBytes": 355541, "startupCssToBytes": 355956, "startupCssDeltaBytes": 415, "totalJsFromBytes": 1459321, "totalJsToBytes": 1462346, "totalJsDeltaBytes": 3025 }
+    },
+    {
+      "change": "Anchor top-layer selector menus to their triggers",
+      "decision": "Accept the exact measured cost of positioning portal-backed selector menus beside their triggers instead of at the viewport center. The menu respects requested top or bottom placement, flips when space requires it, stays within viewport margins, and follows trigger, viewport, and menu-size changes while preserving the non-popover fallback and existing focus behavior. A browser geometry assertion now rejects centered-but-in-bounds regressions. Safari startup and total JavaScript grow by 1,030 and 1,024 bytes; Chrome grows by 990 and 984 bytes. App-entry JavaScript remains below its prior cap and CSS is unchanged. The implementation adds no dependency, polling, provider request, transcript retention, or per-frame work; listeners and observation exist only while a top-layer menu is open. This is reviewed correctness overhead, not a performance improvement. Limits match measured production output on both configured targets with no extra headroom.",
+      "safari13": { "appEntryFromBytes": 372561, "appEntryToBytes": 372337, "appEntryDeltaBytes": -224, "startupJsFromBytes": 737984, "startupJsToBytes": 739014, "startupJsDeltaBytes": 1030, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1499714, "totalJsToBytes": 1500738, "totalJsDeltaBytes": 1024 },
+      "chrome105": { "appEntryFromBytes": 352936, "appEntryToBytes": 352712, "appEntryDeltaBytes": -224, "startupJsFromBytes": 710948, "startupJsToBytes": 711938, "startupJsDeltaBytes": 990, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1462346, "totalJsToBytes": 1463330, "totalJsDeltaBytes": 984 }
     }
   ],
   "profiles": {
     "safari13-minified": {
       "appEntryRawBytes": 372561,
-      "startupJsRawBytes": 737984,
+      "startupJsRawBytes": 739014,
       "startupCssRawBytes": 362499,
-      "totalJsRawBytes": 1499714
+      "totalJsRawBytes": 1500738
     },
     "chrome105-minified": {
       "appEntryRawBytes": 352936,
-      "startupJsRawBytes": 710948,
+      "startupJsRawBytes": 711938,
       "startupCssRawBytes": 355956,
-      "totalJsRawBytes": 1462346
+      "totalJsRawBytes": 1463330
     }
   }
 }

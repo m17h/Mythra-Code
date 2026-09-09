@@ -194,13 +194,27 @@ it("promotes provider and model menus above the scrollable popover", async () =>
     await new Promise((resolve) => requestAnimationFrame(resolve));
     const menu = view.getByRole("menu", { name: `${name} choices` });
     const popup = menu.closest<HTMLElement>(".app-select-menu")!;
+    const trigger = view.getByRole("button", { name });
     expect(panel.contains(menu)).toBe(true);
     expect(popup.matches(":popover-open")).toBe(true);
     const bounds = popup.getBoundingClientRect();
+    const triggerBounds = trigger.getBoundingClientRect();
     expect(bounds.top).toBeGreaterThanOrEqual(0);
     expect(bounds.left).toBeGreaterThanOrEqual(0);
     expect(bounds.right).toBeLessThanOrEqual(window.innerWidth);
     expect(bounds.bottom).toBeLessThanOrEqual(window.innerHeight);
+    // A centered popup can satisfy all viewport bounds while still being
+    // detached from the selector. The top-layer menu must remain adjacent to
+    // its trigger, flipping above when the lower edge has no room.
+    const verticalGap = Math.min(
+      Math.abs(bounds.top - (triggerBounds.bottom + 4)),
+      Math.abs(bounds.bottom - (triggerBounds.top - 4)),
+    );
+    // The menu's short entrance transform can still contribute a few pixels
+    // on this frame; a centered popup is hundreds of pixels away.
+    expect(verticalGap).toBeLessThan(8);
+    expect(bounds.left).toBeGreaterThanOrEqual(triggerBounds.left - 1);
+    expect(bounds.left).toBeLessThan(triggerBounds.right);
     fireEvent.click(view.getByRole("button", { name }));
   }
 });

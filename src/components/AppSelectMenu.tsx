@@ -1,11 +1,13 @@
-import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Check, ChevronDown, Search } from "lucide-react";
 import { ModelFavoriteStar } from "./ModelFavoriteStar";
 import { favoriteCount, sortByFavorites } from "../lib/modelFavorites";
 
 /** Options rendered before the menu offers to reveal the rest of a long list. */
 const BROWSE_LIMIT = 80;
-const showTopLayer = (node: HTMLDivElement | null) => node?.showPopover?.();
+const POPOVER_VIEWPORT_MARGIN = 8;
+const POPOVER_GAP = 4;
+const POPOVER_WIDTH = 320;
 
 export interface AppSelectOption {
   value: string;
@@ -69,6 +71,8 @@ export function AppSelectMenu({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [popoverStyle, setPopoverStyle] = useState<CSSProperties>({});
   const selected = options.find((option) => option.value === value)
     ?? (value && selectedDisplay ? { value, ...selectedDisplay } : undefined);
   const normalizedQuery = query.trim().toLowerCase();
@@ -98,7 +102,56 @@ export function AppSelectMenu({
     setOpen(false);
     setQuery("");
     setShowAll(false);
+    setPopoverStyle({});
   };
+
+  const positionPopover = useCallback(() => {
+    if (!open || !topLayer) return;
+    const trigger = triggerRef.current;
+    const menu = menuRef.current;
+    if (!trigger || !menu) return;
+
+    const triggerRect = trigger.getBoundingClientRect();
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+    const maxWidth = Math.max(1, viewportWidth - POPOVER_VIEWPORT_MARGIN * 2);
+    const width = Math.min(POPOVER_WIDTH, maxWidth);
+    const height = menu.offsetHeight;
+    const above = triggerRect.top - POPOVER_GAP - height;
+    const below = triggerRect.bottom + POPOVER_GAP;
+    const openAbove = menuPlacement === "top"
+      ? above >= POPOVER_VIEWPORT_MARGIN || below + height > viewportHeight - POPOVER_VIEWPORT_MARGIN
+      : below + height > viewportHeight - POPOVER_VIEWPORT_MARGIN && above >= POPOVER_VIEWPORT_MARGIN;
+    const preferredTop = openAbove ? above : below;
+    const maxTop = Math.max(POPOVER_VIEWPORT_MARGIN, viewportHeight - height - POPOVER_VIEWPORT_MARGIN);
+    const top = Math.min(Math.max(preferredTop, POPOVER_VIEWPORT_MARGIN), maxTop);
+    const left = Math.max(
+      POPOVER_VIEWPORT_MARGIN,
+      Math.min(triggerRect.left, viewportWidth - width - POPOVER_VIEWPORT_MARGIN),
+    );
+    setPopoverStyle({ top, left, width, visibility: "visible" });
+  }, [open, topLayer, menuPlacement]);
+
+  const setMenuRef = useCallback((node: HTMLDivElement | null) => {
+    menuRef.current = node;
+    if (node && topLayer) node.showPopover?.();
+  }, [topLayer]);
+
+  useEffect(() => {
+    if (!open || !topLayer) return;
+    positionPopover();
+    const onViewportChange = () => positionPopover();
+    window.addEventListener("resize", onViewportChange);
+    window.addEventListener("scroll", onViewportChange, true);
+    const resizeObserver = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(positionPopover);
+    const menu = menuRef.current;
+    if (menu) resizeObserver?.observe(menu);
+    return () => {
+      window.removeEventListener("resize", onViewportChange);
+      window.removeEventListener("scroll", onViewportChange, true);
+      resizeObserver?.disconnect();
+    };
+  }, [open, topLayer, menuPlacement, normalizedQuery, searchable, value, visible.length, positionPopover]);
 
   useEffect(() => {
     if (!open) return;
@@ -149,12 +202,18 @@ export function AppSelectMenu({
 
   const menu = open ? (
     <div
-      ref={topLayer ? showTopLayer : undefined}
+      ref={setMenuRef}
       className="app-select-menu"
       popover={topLayer ? "manual" : undefined}
       style={topLayer ? {
-        inset: 0,
-        width: 320,
+        position: "fixed",
+        inset: "auto",
+        width: `min(${POPOVER_WIDTH}px, calc(100vw - ${POPOVER_VIEWPORT_MARGIN * 2}px))`,
+        right: "auto",
+        bottom: "auto",
+        margin: 0,
+        visibility: "hidden",
+        ...popoverStyle,
       } : undefined}
     >
       {searchable && (
