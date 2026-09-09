@@ -1519,7 +1519,10 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .default-model-picker .app-select-value strong, .default-model-picker .app-select-option-copy strong { font-size: var(--fs-meta); }
 .default-model-picker .app-select-value small, .default-model-picker .app-select-option-copy small { font-size: var(--fs-micro); }
 .usage-display-layout { display: grid; grid-template-columns: minmax(0, 1fr) max-content; align-items: start; gap: var(--s-5); }
-.usage-display-controls { width: max-content; max-width: 100%; display: grid; justify-self: end; }
+/* Specific enough to beat .set-row > .set-control's flex row: the example
+   line belongs under the choices, not beside them, or the two together eat
+   the width the description needs. */
+.set-row > .set-control.usage-display-controls { width: max-content; max-width: 100%; display: grid; justify-self: end; }
 .usage-display-options { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s-2); }
 .usage-display-options > button { min-width: 0; min-height: 48px; display: grid; grid-template-columns: max-content 16px; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-md); color: var(--muted); background: rgba(255,255,255,.014); text-align: left; cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
 .usage-display-options > button:hover { color: var(--ink-2); border-color: var(--line-strong); background: rgba(255,255,255,.035); }
@@ -2614,7 +2617,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
   .set-row:has(> .set-control > .toggle-switch) { grid-template-columns: minmax(0,1fr) auto; }
   .set-row:has(> .set-control > .toggle-switch) > .set-control { justify-self: end; }
   .usage-display-layout { grid-template-columns: 1fr; gap: var(--s-3); }
-  .usage-display-controls { justify-self: start; }
+  .set-row > .set-control.usage-display-controls { justify-self: start; }
   .theme-grid, .chat-font-grid, .provider-cards { grid-template-columns: 1fr; }
   .profile-grid { grid-template-columns: 1fr 1fr; }
   .inline-create.two, .schedule-create-grid { grid-template-columns: 1fr; }

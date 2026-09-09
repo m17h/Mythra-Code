@@ -1875,7 +1875,7 @@ const USAGE_DISPLAY_OPTIONS: ReadonlyArray<{ id: UsageDisplayMode; label: string
 function UsageDisplaySettings({ value, onChange }: { value: UsageDisplayMode; onChange: (value: UsageDisplayMode) => void }) {
   return <section className="set-group">
     <h4>Provider quota display</h4>
-    <div className="set-card"><div className="set-row stack usage-display-layout">
+    <div className="set-card"><div className="set-row usage-display-layout">
       <div className="set-copy">
         <strong>Read limits as</strong>
         <small id="usage-display-help">Choose the direction Mythra Code reads subscription limits in. The choice applies everywhere a live provider quota appears — the usage card in the studio dock, OpenAI/Codex rate limits, and Claude Code rate limits — including each window&rsquo;s length and reset time.</small>

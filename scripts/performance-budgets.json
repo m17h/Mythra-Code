@@ -240,22 +240,22 @@
     },
     {
       "change": "Rebuild Settings on one labelled-group/row system with a searchable sidebar",
-      "decision": "Accept 3.0 KB more total JavaScript and 496 Safari / 373 Chrome bytes of startup CSS; startup JavaScript and the app entry are unchanged on both targets. The JavaScript is entirely inside the lazy Settings chunk: per-pane search keywords, plus panes rewritten from five ad-hoc heading and container patterns onto two primitives. The stylesheet nets out flat because the new system deleted more CSS than it added \u2014 the retired icon tiles, section and sub headings, workspace link, prompt layer fields, behavior and runtime grids, diagnostic card, and interface-size card are all gone. None of it runs before Settings is opened.",
-      "safari13": { "appEntryFromBytes": 372561, "appEntryToBytes": 372561, "appEntryDeltaBytes": 0, "startupJsFromBytes": 737984, "startupJsToBytes": 737984, "startupJsDeltaBytes": 0, "startupCssFromBytes": 361961, "startupCssToBytes": 362457, "startupCssDeltaBytes": 496, "totalJsFromBytes": 1496706, "totalJsToBytes": 1499714, "totalJsDeltaBytes": 3008 },
-      "chrome105": { "appEntryFromBytes": 352936, "appEntryToBytes": 352936, "appEntryDeltaBytes": 0, "startupJsFromBytes": 710948, "startupJsToBytes": 710948, "startupJsDeltaBytes": 0, "startupCssFromBytes": 355541, "startupCssToBytes": 355914, "startupCssDeltaBytes": 373, "totalJsFromBytes": 1459321, "totalJsToBytes": 1462346, "totalJsDeltaBytes": 3025 }
+      "decision": "Accept 3.0 KB more total JavaScript and 538 Safari / 415 Chrome bytes of startup CSS; startup JavaScript and the app entry are unchanged on both targets. The JavaScript is entirely inside the lazy Settings chunk: per-pane search keywords, plus panes rewritten from five ad-hoc heading and container patterns onto two primitives. The stylesheet nets out flat because the new system deleted more CSS than it added \u2014 the retired icon tiles, section and sub headings, workspace link, prompt layer fields, behavior and runtime grids, diagnostic card, and interface-size card are all gone. None of it runs before Settings is opened.",
+      "safari13": { "appEntryFromBytes": 372561, "appEntryToBytes": 372561, "appEntryDeltaBytes": 0, "startupJsFromBytes": 737984, "startupJsToBytes": 737984, "startupJsDeltaBytes": 0, "startupCssFromBytes": 361961, "startupCssToBytes": 362499, "startupCssDeltaBytes": 538, "totalJsFromBytes": 1496706, "totalJsToBytes": 1499714, "totalJsDeltaBytes": 3008 },
+      "chrome105": { "appEntryFromBytes": 352936, "appEntryToBytes": 352936, "appEntryDeltaBytes": 0, "startupJsFromBytes": 710948, "startupJsToBytes": 710948, "startupJsDeltaBytes": 0, "startupCssFromBytes": 355541, "startupCssToBytes": 355956, "startupCssDeltaBytes": 415, "totalJsFromBytes": 1459321, "totalJsToBytes": 1462346, "totalJsDeltaBytes": 3025 }
     }
   ],
   "profiles": {
     "safari13-minified": {
       "appEntryRawBytes": 372561,
       "startupJsRawBytes": 737984,
-      "startupCssRawBytes": 362457,
+      "startupCssRawBytes": 362499,
       "totalJsRawBytes": 1499714
     },
     "chrome105-minified": {
       "appEntryRawBytes": 352936,
       "startupJsRawBytes": 710948,
-      "startupCssRawBytes": 355914,
+      "startupCssRawBytes": 355956,
       "totalJsRawBytes": 1462346
     }
   }
