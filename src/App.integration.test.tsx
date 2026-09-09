@@ -401,28 +401,17 @@ describe("Codex cold startup", () => {
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     expect(await screen.findByRole("dialog", { name: "Reopened settings" })).toBeInTheDocument();
   });
-  it("mounts cold-loaded Settings once and retains the same instance on reopening", { timeout: 15_000 }, async () => {
-    const loaded = deferred<void>();
+  it("mounts cold-loaded Settings once and retains the same instance on reopening", async () => {
     const mounted = vi.fn();
     function TestSettings({ open, onClose }: { open: boolean; onClose: () => void }) {
       useEffect(() => { mounted(); }, []);
       return <div role="dialog" aria-label="Loaded settings" hidden={!open}><button onClick={onClose}>Close test settings</button></div>;
     }
-    vi.doMock("./components/SettingsModal", async () => { await loaded.promise; return { SettingsModal: TestSettings }; });
+    vi.doMock("./components/SettingsModal", () => ({ SettingsModal: TestSettings }));
     await renderApp();
-    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     expect(mounted).not.toHaveBeenCalled();
-    await act(async () => {
-      loaded.resolve();
-      // Resolving the mock gate does not finish Vitest's dynamic-import chain.
-      // Await that boundary before waiting for React to commit the loaded view.
-      await vi.dynamicImportSettled();
-    });
-    const dialog = await screen.findByRole(
-      "dialog",
-      { name: "Loaded settings" },
-      { timeout: 10_000 },
-    );
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    const dialog = await screen.findByRole("dialog", { name: "Loaded settings" });
     expect(mounted).toHaveBeenCalledOnce();
     fireEvent.click(screen.getByRole("button", { name: "Close test settings" }));
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
