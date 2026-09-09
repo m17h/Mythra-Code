@@ -419,6 +419,7 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
             } else {
               const prompt = workflowPrompt(workflow, step, index, stepInputVariables);
               const providerPrompt = await current.resolveSkillPrompt(prompt);
+              if (active.stopRequested) throw new WorkflowStoppedError();
               variables.previousExitCode = "";
               const beforeMessages = useTaskStore.getState().tasks[threadId]?.messages.length ?? 0;
               useTaskStore.getState().appendUserMessage(threadId, {

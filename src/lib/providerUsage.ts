@@ -8,6 +8,8 @@ export interface AccountUsageView {
   summary: string;
   planLabel?: string;
   windows?: AccountUsageWindowView[];
+  /** Wall-clock time of the last provider-confirmed reading. */
+  updatedAt?: number;
 }
 
 /** Presentation-ready quota data kept structured for an at-a-glance card. */
@@ -149,6 +151,101 @@ export interface ProviderRateLimits {
   windows: RateLimitWindow[];
 }
 
+/** Claude itself keeps a failed `/usage` snapshot for at most an hour. */
+export const USAGE_SNAPSHOT_MAX_AGE_MS = 60 * 60_000;
+
+/** A quota reading is owned by one account and must never cross that boundary. */
+export interface AccountUsageSnapshot {
+  accountKey: string;
+  limits: ProviderRateLimits | null;
+  updatedAt: number;
+}
+
+export function currentAccountUsageSnapshot(
+  snapshot: AccountUsageSnapshot | null | undefined,
+  accountKey: string,
+  now = Date.now(),
+  maxAgeMs = USAGE_SNAPSHOT_MAX_AGE_MS,
+): AccountUsageSnapshot | null {
+  if (!snapshot || !accountKey || snapshot.accountKey !== accountKey) return null;
+  if (!Number.isFinite(snapshot.updatedAt) || now - snapshot.updatedAt > maxAgeMs) return null;
+  return snapshot;
+}
+
+export function usageFreshnessText(updatedAt: number | null | undefined, now = Date.now()): string {
+  if (typeof updatedAt !== "number" || !Number.isFinite(updatedAt) || updatedAt <= 0) return "";
+  const elapsed = Math.max(0, now - updatedAt);
+  if (elapsed < 60_000) return "Updated just now";
+  const minutes = Math.floor(elapsed / 60_000);
+  if (minutes < 60) return `Updated ${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  return `Last updated ${hours}h ago`;
+}
+
+export type UsageReadFailureKind = "timeout" | "authentication" | "invalid-response" | "unavailable";
+
+/** Reduce provider errors to supportable categories without putting raw output in the UI or audit log. */
+export function usageReadFailureKind(reason: unknown): UsageReadFailureKind {
+  const message = String(reason).toLowerCase();
+  if (/usage_timeout|timed?\s*out|timeout/.test(message)) return "timeout";
+  if (/usage_auth_required|authentication|not logged|sign[ -]?in|unauthorized|\b401\b/.test(message)) return "authentication";
+  if (/usage_(unsupported|empty|parse_failed)|invalid usage data|unsupported usage response|no active usage windows/.test(message)) return "invalid-response";
+  return "unavailable";
+}
+
+export function usageReadFailureStatus(kind: UsageReadFailureKind, hasLastReading: boolean): string {
+  const suffix = hasLastReading ? " · last reading retained" : "";
+  if (kind === "timeout") return `Usage refresh timed out${suffix}`;
+  if (kind === "authentication") return `Usage auth unverified${suffix}`;
+  if (kind === "invalid-response") return `Provider usage format changed${suffix}`;
+  return `Usage refresh unavailable${suffix}`;
+}
+
+/** Keep only a harmless semantic version in diagnostics, never raw CLI output. */
+export function sanitizedUsageProviderVersion(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  return value.match(/\b\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?\b/)?.[0];
+}
+
+/** Merge a structured provider event without erasing windows it did not carry. */
+export function mergeProviderRateLimits(
+  current: ProviderRateLimits | null | undefined,
+  update: ProviderRateLimits,
+): ProviderRateLimits {
+  const windows = [...(current?.windows ?? [])];
+  for (const incoming of update.windows) {
+    const index = windows.findIndex((window) => window.label === incoming.label);
+    if (index === -1) windows.push(incoming);
+    else windows[index] = incoming;
+  }
+  return { windows };
+}
+
+/**
+ * Folds a structured provider event into the account's stored snapshot.
+ *
+ * A `rate_limit_event` carries one window, so every other window on the card is
+ * still the previous reading. Stamping the whole snapshot with the event's
+ * arrival time would both label those as freshly confirmed and restart the
+ * one-hour cap on them, so a snapshot that carries anything over ages from the
+ * older reading instead. Windows already past the cap are dropped rather than
+ * merged forward.
+ */
+export function mergeAccountUsageSnapshot(
+  current: AccountUsageSnapshot | null | undefined,
+  accountKey: string,
+  update: ProviderRateLimits,
+  now = Date.now(),
+  maxAgeMs = USAGE_SNAPSHOT_MAX_AGE_MS,
+): AccountUsageSnapshot {
+  const retained = currentAccountUsageSnapshot(current, accountKey, now, maxAgeMs);
+  const limits = mergeProviderRateLimits(retained?.limits, update);
+  const carriedOver = limits.windows.some(
+    (window) => !update.windows.some((incoming) => incoming.label === window.label),
+  );
+  return { accountKey, limits, updatedAt: retained && carriedOver ? retained.updatedAt : now };
+}
+
 /**
  * Providers send percentages as numbers, numeric strings, and occasionally
  * values slightly outside 0–100 after their own rounding. Clamp rather than
@@ -273,10 +370,30 @@ function readWindow(value: unknown, fallbackLabel: string): RateLimitWindow | nu
     || (typeof percent === "string" && !percent.trim()) || !Number.isFinite(Number(percent))) return null;
   const resetsAt = Number(record.resetsAt);
   return {
-    label: formatWindowLabel(record.windowMinutes) || fallbackLabel,
+    // `windowDurationMins` is the current app-server field. Keep the older
+    // alias for runtimes released before the field was documented.
+    label: formatWindowLabel(record.windowDurationMins ?? record.windowMinutes) || fallbackLabel,
     usedPercent: clampUsedPercent(record.usedPercent),
     resetsAt: Number.isFinite(resetsAt) && resetsAt > 0 ? resetsAt : null,
   };
+}
+
+function bucketLabel(value: unknown, fallback: string): string {
+  const label = typeof value === "string" ? value.trim() : "";
+  const source = (label || fallback).slice(0, 120).replaceAll("_", " ");
+  return source ? `${source.charAt(0).toUpperCase()}${source.slice(1)}` : "";
+}
+
+function readRateLimitBucket(value: unknown, fallbackName: string, showBucket: boolean): RateLimitWindow[] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid usage data");
+  const record = value as Record<string, unknown>;
+  const name = bucketLabel(record.limitName, fallbackName);
+  return [record.primary, record.secondary].map((entry) => {
+    const window = readWindow(entry, "");
+    if (entry != null && !window) throw new Error("Invalid usage data");
+    if (!window) return null;
+    return showBucket && name ? { ...window, label: `${name}${window.label ? ` ${window.label}` : ""}` } : window;
+  }).filter((window): window is RateLimitWindow => window !== null);
 }
 
 /**
@@ -286,16 +403,29 @@ function readWindow(value: unknown, fallbackLabel: string): RateLimitWindow | nu
  */
 export function parseCodexRateLimits(value: unknown): ProviderRateLimits | null {
   if (!value || typeof value !== "object") return null;
-  const limits = (value as Record<string, unknown>).rateLimits;
-  if (!limits || typeof limits !== "object") return null;
-  const record = limits as Record<string, unknown>;
-  const windows = [record.primary, record.secondary].map((value) => {
-    const window = readWindow(value, "");
-    if (value != null && !window) throw new Error("Invalid usage data");
-    return window;
-  }).filter(
-    (window): window is RateLimitWindow => window !== null,
-  );
+  const payload = value as Record<string, unknown>;
+  const byId = payload.rateLimitsByLimitId;
+  if (byId && typeof byId === "object" && !Array.isArray(byId)) {
+    const entries = Object.entries(byId as Record<string, unknown>).filter(([, bucket]) => bucket != null);
+    const multiple = entries.length > 1;
+    const windows = entries.flatMap(([id, bucket]) => {
+      const record = bucket && typeof bucket === "object" && !Array.isArray(bucket)
+        ? bucket as Record<string, unknown>
+        : null;
+      const explicitName = record && typeof record.limitName === "string" && record.limitName.trim();
+      const showBucket = multiple || Boolean(explicitName) || id !== "codex";
+      return readRateLimitBucket(bucket, id, showBucket);
+    });
+    // A map that is absent, empty, or carries no window is not the runtime
+    // reporting "no limits": the legacy bucket in the same payload still holds
+    // its own answer, so fall through rather than blanking the card.
+    if (windows.length) return { windows };
+  }
+  const limits = payload.rateLimits;
+  // An array reaches `readRateLimitBucket` as malformed; the legacy shape has
+  // always been tolerated as "nothing to report" instead.
+  if (!limits || typeof limits !== "object" || Array.isArray(limits)) return null;
+  const windows = readRateLimitBucket(limits, "", false);
   return windows.length ? { windows } : null;
 }
 
@@ -305,10 +435,12 @@ export function providerAccountUsage(
     openAiRateLimits: ProviderRateLimits | null;
     /** True once a rate-limit read succeeded, even if it reported no window. */
     openAiRateLimitsRead?: boolean;
+    openAiUpdatedAt?: number;
     /** Distinguishes a connected account with a transient read failure from no account. */
     openAiConnected?: boolean;
     claudeStatus: ClaudeRuntimeStatus | null;
     claudeRateLimits?: ProviderRateLimits | null;
+    claudeUpdatedAt?: number;
     cursorStatus?: CursorRuntimeStatus | null;
     openRouterReady: boolean;
     openRouterCredits?: OpenRouterCreditBalance | null;
@@ -335,6 +467,7 @@ export function providerAccountUsage(
     const limits = formatRateLimits(options.claudeRateLimits, mode, now);
     return {
       label,
+      ...(options.claudeUpdatedAt ? { updatedAt: options.claudeUpdatedAt } : {}),
       summary: limits
         ? `${planLabel} plan · ${limits}`
         : `${planLabel} plan connected · live limits are managed by Claude Code`,
@@ -387,9 +520,11 @@ export function providerAccountUsage(
     label,
     summary: openAi,
     windows: accountUsageWindows(options.openAiRateLimits, mode, now),
+    ...(options.openAiUpdatedAt ? { updatedAt: options.openAiUpdatedAt } : {}),
   };
   return {
     label,
+    ...(options.openAiUpdatedAt ? { updatedAt: options.openAiUpdatedAt } : {}),
     summary: options.openAiRateLimitsRead
       ? "No active limit window"
       : options.openAiConnected

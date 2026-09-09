@@ -147,21 +147,65 @@ describe("destination readiness", () => {
       target({ provider: "openrouter", model: "x-ai/grok-4.5" }),
       target({ provider: "lmstudio", model: "qwen/local-coder" }),
       target({ provider: "claude", model: "claude-fable-5" }),
+      target({ provider: "claude", model: "default" }),
+      target({ provider: "claude", model: "fable" }),
+      target({ provider: "claude", model: "opus" }),
+      target({ provider: "claude", model: "sonnet" }),
+      target({ provider: "claude", model: "haiku" }),
       target({ provider: "cursor", model: "auto" }),
     ]) {
       expect(childAgentTargetIssue(entry, EVERYTHING_READY)).toBeNull();
     }
   });
 
+  it("accepts every id a live provider catalog can put in the picker", () => {
+    // Verbatim ids observed from each provider's own catalog. A roster row the
+    // user can select must never be refused by readiness or the spawn path.
+    for (const entry of [
+      // Claude Code `list_models`: aliases, a `[1m]` context suffix, and a
+      // versioned concrete id all coexist in one account's catalog.
+      target({ provider: "claude", model: "default" }),
+      target({ provider: "claude", model: "opus[1m]" }),
+      target({ provider: "claude", model: "claude-fable-5-1[1m]" }),
+      target({ provider: "claude", model: "sonnet" }),
+      target({ provider: "claude", model: "haiku" }),
+      // Cursor `cursor/list_available_models`.
+      target({ provider: "cursor", model: "auto" }),
+      target({ provider: "cursor", model: "claude-4.5-sonnet" }),
+      target({ provider: "cursor", model: "gpt-5.6-terra" }),
+      // Codex `model/list` for the signed-in ChatGPT account.
+      target({ provider: "openai", model: "gpt-6-astra" }),
+      target({ provider: "openai", model: "gpt-5.6-luna" }),
+      // OpenRouter and LM Studio both use namespaced ids.
+      target({ provider: "openrouter", model: "anthropic/claude-fable-5" }),
+      target({ provider: "openrouter", model: "openrouter/auto" }),
+      target({ provider: "lmstudio", model: "qwen/qwen3-coder-30b" }),
+      target({ provider: "lmstudio", model: "gpt-oss-20b" }),
+    ]) {
+      expect(childAgentTargetIssue(entry, EVERYTHING_READY)).toBeNull();
+    }
+  });
+
+  it("lets Claude Code resolve current and future model aliases", () => {
+    expect(childAgentTargetIssue(target({ provider: "claude", model: "swift" }), EVERYTHING_READY)).toBeNull();
+  });
+
   it("rejects a model the chosen provider cannot address", () => {
     expect(childAgentTargetIssue(target({ provider: "openrouter", model: "grok-4.5" }), EVERYTHING_READY))
       .toMatch(/fully qualified/);
-    expect(childAgentTargetIssue(target({ provider: "claude", model: "gpt-5.6-terra" }), EVERYTHING_READY))
-      .toMatch(/Claude model/);
     expect(childAgentTargetIssue(target({ provider: "openai", model: "x-ai/grok-4.5" }), EVERYTHING_READY))
       .toMatch(/not addressable/);
     expect(childAgentTargetIssue(target({ provider: "lmstudio", model: "" }), EVERYTHING_READY))
       .toMatch(/Choose a model/);
+  });
+
+  it("refuses a Claude model the native bridge would reject as a flag", () => {
+    // `validate_cli_value` in the Tauri bridge rejects a leading `-`, so the
+    // roster must agree rather than promising a destination that cannot start.
+    expect(childAgentTargetIssue(target({ provider: "claude", model: "--dangerously-skip-permissions" }), EVERYTHING_READY))
+      .toMatch(/Claude Code CLI/);
+    expect(childAgentTargetIssue(target({ provider: "claude", model: "-p" }), EVERYTHING_READY))
+      .toMatch(/Claude Code CLI/);
   });
 
   it("reports the missing sign-in for each provider", () => {

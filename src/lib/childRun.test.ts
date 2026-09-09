@@ -73,13 +73,21 @@ describe("startChildAgentTurn", () => {
       : { turn: { id: "turn-codex", items: [] } }));
   });
 
-  it("starts a Claude child with no delegation bridge and no inherited context", async () => {
-    const result = await startChildAgentTurn(target({ provider: "claude", model: "claude-fable-5" }), "Review the diff.", context());
+  it.each([
+    "default",
+    "opus[1m]",
+    "claude-fable-5-1[1m]",
+    "sonnet",
+    "haiku",
+  ])("starts a Claude catalog model (%s) unchanged, with no delegation bridge or inherited context", async (model) => {
+    const result = await startChildAgentTurn(target({ provider: "claude", model }), "Review the diff.", context());
 
     expect(claude.startClaudeTurn).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
       cwd: "/tmp/project/.worktrees/a",
       prompt: "Review the diff.",
-      model: "claude-fable-5",
+      // Provider aliases and decorated ids are model identities too. The
+      // selected value must reach Claude Code unchanged.
+      model,
       permission: "read-only",
       resume: false,
       attachments: [],

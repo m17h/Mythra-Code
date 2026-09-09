@@ -366,6 +366,32 @@ describe("workflow turn waiting", () => {
     expect(runs.at(-1)).toMatchObject({ status: "interrupted" });
   });
 
+  it("does not send a workflow step stopped during skill loading", async () => {
+    const workflow = testWorkflow({
+      steps: [{ id: "step-1", type: "agent", name: "Review", prompt: "@review it", continueOnError: false }],
+    });
+    const runs: WorkflowRunRecord[] = [];
+    let resolve!: (value: string) => void;
+    const deps = testEngineDeps(workflow, runs, {
+      resolveSkillPrompt: vi.fn(() => new Promise<string>((done) => { resolve = done; })),
+    });
+    codex.rpc.mockImplementation((method: string) => Promise.resolve(
+      method === "thread/start" ? { thread: { id: "thread-1" } } : {},
+    ));
+    const { result } = renderHook(() => useWorkflowEngine(deps));
+    await act(async () => {
+      const pending = result.current.runWorkflow("workflow-1");
+      await flushMicrotasks();
+      expect(deps.resolveSkillPrompt).toHaveBeenCalled();
+      expect(await result.current.stopWorkflow("workflow-1")).toBe(true);
+      resolve("resolved instructions");
+      await pending;
+    });
+    expect(codex.rpc.mock.calls.some(([method]) => method === "turn/start")).toBe(false);
+    expect(deps.beginRunCheckpoint).not.toHaveBeenCalled();
+    expect(runs.at(-1)).toMatchObject({ status: "interrupted" });
+  });
+
   it("resolves selected Mythra skills before delivering a workflow agent step", async () => {
     const workflow = testWorkflow({
       skillNames: ["review"],

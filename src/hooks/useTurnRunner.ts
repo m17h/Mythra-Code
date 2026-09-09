@@ -300,13 +300,13 @@ export function useTurnRunner(context: TurnRunnerContext): {
         ? lmStudioModels.find((entry) => entry.id === effectiveSettings.model)?.maxContextLength
         : undefined;
     let providerText: string;
-    try {
-      providerText = await resolveSkillPrompt(text);
-    } catch (reason) {
-      setError(friendlyError(reason));
-      return false;
-    }
     if (mode === "steer" && running && activeThread) {
+      try {
+        providerText = await resolveSkillPrompt(text);
+      } catch (reason) {
+        setError(friendlyError(reason));
+        return false;
+      }
       const sentAttachments = [...attachments];
       setError(null);
       const steerMessageId = `local-${crypto.randomUUID()}`;
@@ -531,6 +531,20 @@ export function useTurnRunner(context: TurnRunnerContext): {
     };
 
     try {
+      // Skill scans can wait on disk or startup preparation. They are part of
+      // starting a turn, so expose Stop before awaiting them and honor it
+      // before creating any workspace, bridge, or provider process.
+      providerText = await resolveSkillPrompt(text);
+      if (pendingStart?.cancelRequested || (!activeThread && draftGeneration !== draftGenerationRef.current)) {
+        if (startingThreadId && pendingStart) {
+          pendingTurnStartsRef.current.finish(startingThreadId, pendingStart);
+          useTaskStore.getState().setTaskStatus(startingThreadId, "interrupted");
+        }
+        if (!activeThread) setStartingDraftTurn(false);
+        setStatus("Ready");
+        setTransientStatus("Stopped");
+        return false;
+      }
       let executionPath = activeWorkspace.path;
       if (!activeThread && draftThreadIsolated && activeProject) {
         provisionalWorktree = await createThreadWorktree(activeProject.path, text);

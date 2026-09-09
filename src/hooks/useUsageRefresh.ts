@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef } from "react";
 import { auditEvent } from "../lib/codex";
+import { sanitizedUsageProviderVersion, usageReadFailureKind, usageReadFailureStatus } from "../lib/providerUsage";
 
 /**
  * How often a visible window re-reads the active provider's quota.
@@ -10,6 +11,9 @@ import { auditEvent } from "../lib/codex";
  * or a window that rolled over on its own.
  */
 export const USAGE_POLL_MS = 60_000;
+
+/** `/usage` starts a Claude process, so ordinary background checks are calmer. */
+export const CLAUDE_USAGE_POLL_MS = 3 * 60_000;
 
 /**
  * Floor between two reads. Focus, visibility and turn completions all arrive in
@@ -23,6 +27,7 @@ const RESET_GRACE_MS = 5_000;
 
 /** `setTimeout` silently fires immediately past this, so long waits re-arm. */
 const MAX_TIMEOUT_MS = 21_600_000;
+const MAX_FAILURE_BACKOFF_MS = 15 * 60_000;
 
 export interface UsageRefreshOptions {
   /**
@@ -42,6 +47,10 @@ export interface UsageRefreshOptions {
   resetsAt?: number | null;
   pollMs?: number;
   minGapMs?: number;
+  /** Whether a failure can safely retain a same-account snapshot. */
+  hasLastReading?: boolean;
+  /** Provider version recorded in sanitized diagnostics when available. */
+  providerVersion?: string | null;
   onStatus?: (status: string) => void;
 }
 
@@ -60,32 +69,54 @@ export function useUsageRefresh({
   resetsAt,
   pollMs = USAGE_POLL_MS,
   minGapMs = USAGE_MIN_GAP_MS,
+  hasLastReading = false,
+  providerVersion = null,
   onStatus,
 }: UsageRefreshOptions): (options?: { force?: boolean }) => void {
-  const latestRef = useRef({ key, enabled, refresh, minGapMs, onStatus });
-  latestRef.current = { key, enabled, refresh, minGapMs, onStatus };
+  const latestRef = useRef({ key, enabled, refresh, minGapMs, pollMs, hasLastReading, providerVersion, onStatus });
+  latestRef.current = { key, enabled, refresh, minGapMs, pollMs, hasLastReading, providerVersion, onStatus };
   const inFlightRef = useRef<Record<string, true>>({});
+  const failureCountRef = useRef<Record<string, number>>({});
+  const retryAtRef = useRef<Record<string, number>>({});
   const lastReadRef = useRef(0);
 
   const request = useCallback((options: { force?: boolean } = {}) => {
     const current = latestRef.current;
     if (!current.enabled || inFlightRef.current[current.key]) return;
-    if (!options.force && Date.now() - lastReadRef.current < current.minGapMs) return;
+    const now = Date.now();
+    if (!options.force && (now - lastReadRef.current < current.minGapMs || now < (retryAtRef.current[current.key] ?? 0))) return;
     const identity = current.key;
     inFlightRef.current[identity] = true;
     current.onStatus?.("Refreshing usage…");
-    const complete = (failed = false) => {
+    const complete = (failed: boolean, reason?: unknown) => {
+      const failureKind = failed ? usageReadFailureKind(reason) : null;
       const active = latestRef.current;
       if (active.enabled && active.key === identity) {
-        active.onStatus?.(failed ? "Refresh unavailable · last reading" : "Updated");
+        active.onStatus?.(failureKind ? usageReadFailureStatus(failureKind, active.hasLastReading) : "Updated");
         lastReadRef.current = Date.now();
       }
-      void auditEvent("usage.read", { provider: identity.split(":")[0], outcome: failed ? "unavailable" : "success" }).catch(() => {});
+      if (failureKind) {
+        const failures = (failureCountRef.current[identity] ?? 0) + 1;
+        failureCountRef.current[identity] = failures;
+        retryAtRef.current[identity] = Date.now() + Math.min(
+          current.pollMs * 2 ** Math.max(0, failures - 1),
+          MAX_FAILURE_BACKOFF_MS,
+        );
+      } else {
+        delete failureCountRef.current[identity];
+        delete retryAtRef.current[identity];
+      }
+      const providerVersion = sanitizedUsageProviderVersion(current.providerVersion);
+      void auditEvent("usage.read", {
+        provider: identity.split(":")[0],
+        outcome: failureKind ?? "success",
+        ...(providerVersion ? { providerVersion } : {}),
+      }).catch(() => {});
       delete inFlightRef.current[identity];
     };
     void Promise.resolve()
       .then(current.refresh)
-      .then(() => complete(), () => complete(true));
+      .then(() => complete(false), (reason) => complete(true, reason));
   }, []);
 
   // Switching provider or account puts a quota on screen that nothing has read

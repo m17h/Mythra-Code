@@ -47,6 +47,41 @@ export function parseClaudeUsageLimits(payload: ClaudeUsagePayload | null | unde
   return windows.length ? { windows } : null;
 }
 
+const CLAUDE_RATE_LIMIT_LABELS: Record<string, string> = {
+  five_hour: "5h",
+  seven_day: "Weekly",
+  seven_day_opus: "Weekly Opus",
+  seven_day_sonnet: "Weekly Sonnet",
+  seven_day_overage_included: "Weekly extra usage",
+  overage: "Extra usage",
+};
+
+/**
+ * Normalize the structured subscription update Claude Code emits during real
+ * turns. The CLI currently sources `utilization` from a 0–1 response header,
+ * while tolerating a future percentage-shaped value keeps the bridge robust.
+ * Most ordinary `allowed` events omit utilization, so `/usage` remains the
+ * initial/idle source and an empty event deliberately changes nothing.
+ */
+export function parseClaudeRateLimitEvent(payload: unknown): ProviderRateLimits | null {
+  const event = payload && typeof payload === "object" ? payload as Record<string, unknown> : null;
+  const info = event?.rate_limit_info && typeof event.rate_limit_info === "object"
+    ? event.rate_limit_info as Record<string, unknown>
+    : null;
+  const type = typeof info?.rateLimitType === "string" ? info.rateLimitType : "";
+  const utilization = Number(info?.utilization);
+  const label = CLAUDE_RATE_LIMIT_LABELS[type];
+  if (!label || info?.utilization == null || !Number.isFinite(utilization) || utilization < 0) return null;
+  const resetsAt = Number(info.resetsAt);
+  return {
+    windows: [{
+      label,
+      usedPercent: clampUsedPercent(utilization <= 1 ? utilization * 100 : utilization),
+      resetsAt: Number.isFinite(resetsAt) && resetsAt > 0 ? resetsAt : null,
+    }],
+  };
+}
+
 /**
  * One selectable model from the Claude Code CLI's own catalog.
  *

@@ -27,6 +27,23 @@ describe("Claude event routing", () => {
     vi.clearAllMocks();
   });
 
+  it("forwards structured subscription usage without putting it in the timeline", () => {
+    const onRateLimits = vi.fn();
+    routeClaudeEvent({
+      threadId: "thread-1",
+      turnId: "turn-1",
+      message: {
+        type: "rate_limit_event",
+        rate_limit_info: { status: "allowed_warning", rateLimitType: "seven_day", utilization: 0.42, resetsAt: 4567 },
+      },
+    }, { ...context, onRateLimits });
+
+    expect(onRateLimits).toHaveBeenCalledWith({
+      windows: [{ label: "Weekly", usedPercent: 42, resetsAt: 4567 }],
+    });
+    expect(useTaskStore.getState().tasks["thread-1"].messages).toHaveLength(0);
+  });
+
   it("streams thinking and answer text into the compact timeline", () => {
     send({
       type: "stream_event",

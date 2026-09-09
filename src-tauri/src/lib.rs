@@ -496,13 +496,18 @@ async fn reap_claude_process(
 /// that zero-turn result must not close stdin or retire the process.
 struct ClaudeTurnBoundary {
     prompt_id: String,
+    prompt_started: bool,
     prompt_queued: bool,
 }
 
 impl ClaudeTurnBoundary {
-    fn new(prompt_id: String) -> Self {
+    fn new(prompt_id: String, resumed: bool) -> Self {
         Self {
             prompt_id,
+            // A fresh process cannot emit restored work. A resumed process can,
+            // so its output is not attributable to our prompt until the CLI
+            // acknowledges that prompt's lifecycle.
+            prompt_started: !resumed,
             prompt_queued: false,
         }
     }
@@ -514,7 +519,10 @@ impl ClaudeTurnBoundary {
         {
             match message.get("state").and_then(Value::as_str) {
                 Some("queued") => self.prompt_queued = true,
-                Some("started" | "completed") => self.prompt_queued = false,
+                Some("started" | "completed") => {
+                    self.prompt_started = true;
+                    self.prompt_queued = false;
+                }
                 _ => {}
             }
         }
@@ -523,7 +531,7 @@ impl ClaudeTurnBoundary {
         }
         // Preserve errors and legacy CLI behavior, and preserve genuine empty
         // answers after the prompt starts so the UI can report them normally.
-        !(self.prompt_queued
+        !(self.prompt_pending()
             && message.get("subtype").and_then(Value::as_str) == Some("success")
             && message.get("is_error").and_then(Value::as_bool) == Some(false)
             && message.get("num_turns").and_then(Value::as_u64) == Some(0)
@@ -532,6 +540,58 @@ impl ClaudeTurnBoundary {
                 .and_then(Value::as_str)
                 .is_some_and(|text| text.trim().is_empty()))
     }
+
+    /// True until a resumed CLI has started our prompt. This includes both the
+    /// interval before its first lifecycle acknowledgement and an explicitly
+    /// queued prompt, when terminal output can still belong to restored work.
+    fn prompt_pending(&self) -> bool {
+        !self.prompt_started || self.prompt_queued
+    }
+}
+
+/// Claude Code normally follows a terminal assistant message with a top-level
+/// `result` envelope. Some short alias-selected turns have been observed to
+/// exit after the assistant's explicit `end_turn` without writing that final
+/// envelope. Preserve the stronger result boundary when it arrives, but use
+/// this provider-authored stop reason as recovery evidence after process exit.
+fn claude_assistant_ends_turn(message: &Value) -> bool {
+    message.get("type").and_then(Value::as_str) == Some("assistant")
+        // A nested agent's final message ends that agent's turn, not the root
+        // turn Mythra Code is waiting on.
+        && message
+            .get("parent_tool_use_id")
+            .is_none_or(Value::is_null)
+        && message
+            .get("message")
+            .and_then(|message| message.get("stop_reason"))
+            .and_then(Value::as_str)
+            == Some("end_turn")
+}
+
+/// Output proving the CLI kept working after an assistant ended its turn: a
+/// non-terminal assistant activity, a tool result, a steered follow-up prompt,
+/// or a permission request. Recovery is only sound while an `end_turn` is still
+/// the last thing the CLI did, so any of these withdraws the evidence.
+fn claude_reopens_turn(message: &Value) -> bool {
+    match message.get("type").and_then(Value::as_str) {
+        Some("assistant") => !claude_assistant_ends_turn(message),
+        Some("user" | "control_request") => true,
+        Some("stream_event") => message
+            .get("event")
+            .and_then(|event| event.get("type"))
+            .and_then(Value::as_str)
+            == Some("message_start"),
+        _ => false,
+    }
+}
+
+fn claude_can_recover_at_exit(
+    saw_terminal_assistant: bool,
+    exit: Option<&std::process::ExitStatus>,
+) -> bool {
+    // A crash, signal, cancellation, or forced reap must remain a failure even
+    // when the CLI emitted an answer before failing to finish/save the turn.
+    saw_terminal_assistant && exit.is_some_and(std::process::ExitStatus::success)
 }
 
 /// How much provider stderr is retained per turn. Only the tail is ever
@@ -2480,6 +2540,25 @@ fn parse_claude_usage_result(result: &str) -> ClaudeUsageLimits {
     ClaudeUsageLimits { windows }
 }
 
+fn claude_usage_failure_code(stderr: &[u8]) -> &'static str {
+    let stderr = String::from_utf8_lossy(stderr).to_lowercase();
+    if [
+        "unauthorized",
+        "not logged in",
+        "sign in",
+        "login",
+        "oauth",
+        "401",
+    ]
+    .iter()
+    .any(|needle| stderr.contains(needle))
+    {
+        "CLAUDE_USAGE_AUTH_REQUIRED"
+    } else {
+        "CLAUDE_USAGE_UNAVAILABLE"
+    }
+}
+
 #[tauri::command]
 async fn claude_usage(app: AppHandle) -> Result<ClaudeUsageLimits, String> {
     let path = resolve_claude_binary(&app).await?;
@@ -2501,25 +2580,26 @@ async fn claude_usage(app: AppHandle) -> Result<ClaudeUsageLimits, String> {
                 "haiku",
             ])
             .stdin(Stdio::null())
-            .stderr(Stdio::null())
             .kill_on_drop(true)
             .output(),
     )
     .await
-    .map_err(|_| "Claude Code usage timed out".to_string())?
-    .map_err(|error| format!("Could not start Claude Code usage: {error}"))?;
+    .map_err(|_| "CLAUDE_USAGE_TIMEOUT".to_string())?
+    .map_err(|_| "CLAUDE_USAGE_START_FAILED".to_string())?;
     if !output.status.success() {
-        return Err("Claude Code could not read subscription usage".into());
+        // Keep provider output out of renderer errors and audit logs, but
+        // preserve the one distinction that changes the user's next action.
+        return Err(claude_usage_failure_code(&output.stderr).into());
     }
     let envelope = parse_claude_auth_status(&output.stdout)
-        .ok_or_else(|| "Claude Code returned an unsupported usage response".to_string())?;
+        .ok_or_else(|| "CLAUDE_USAGE_UNSUPPORTED".to_string())?;
     let result = envelope
         .get("result")
         .and_then(Value::as_str)
-        .ok_or_else(|| "Claude Code returned no subscription usage".to_string())?;
+        .ok_or_else(|| "CLAUDE_USAGE_EMPTY".to_string())?;
     let usage = parse_claude_usage_result(result);
     if usage.windows.is_empty() {
-        return Err("Claude Code returned no active usage windows".into());
+        return Err("CLAUDE_USAGE_PARSE_FAILED".into());
     }
     Ok(usage)
 }
@@ -3191,29 +3271,117 @@ fn validate_cli_value(value: &str, label: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The built-in tools a Claude thread may use.
+///
+/// `--tools` is an allowlist over the CLI's built-in set, so containment no
+/// longer depends on Mythra Code knowing the name of every spawning tool. A
+/// deny list only holds while the names hold: Claude Code renamed `Task` to
+/// `Agent` in 2.1.63, while `Workflow`, cron, remote-trigger, and peer-message
+/// tools were not in the old list. Those gaps left native fan-out routes
+/// available. Anything absent from this allowlist —
+/// `Agent`, `Workflow`, the background `Task*` family, cron and remote
+/// triggers, peer messaging, and whatever a later release adds or renames —
+/// is simply not available to the model.
+///
+/// MCP tools are not governed by `--tools`, so the Mythra Code delegation
+/// bridge still reaches Claude as the one approved way to delegate.
+const CLAUDE_BUILTIN_TOOLS: &[&str] = &[
+    "Bash",
+    "BashOutput",
+    "KillShell",
+    "PowerShell",
+    "Read",
+    "Edit",
+    "Write",
+    "NotebookEdit",
+    "Glob",
+    "Grep",
+    "LSP",
+    "TodoWrite",
+    "Skill",
+    "WebFetch",
+    "WebSearch",
+    "ListMcpResourcesTool",
+    "ReadMcpResourceTool",
+];
+
+/// Built-in tools a read-only thread must not reach. Every executing or
+/// writing tool in `CLAUDE_BUILTIN_TOOLS` belongs here.
+const CLAUDE_WRITE_TOOLS: &[&str] = &[
+    "Bash",
+    "BashOutput",
+    "KillShell",
+    "PowerShell",
+    "Write",
+    "Edit",
+    "NotebookEdit",
+    "WebFetch",
+    "WebSearch",
+];
+
+/// Provider-native spawning, scheduling, and agent-messaging surfaces.
+///
+/// Mythra Code is the sole delegation authority: these bypass the approved
+/// roster, concurrency budget, ownership records, and child inbox. The
+/// allowlist above already withholds them; naming them again as a deny list
+/// keeps containment if a future CLI widens or ignores `--tools`, and covers
+/// both the current `Agent` name and the pre-2.1.63 `Task` name. Only names
+/// the CLI still knows belong here — it warns on stderr for the rest — so
+/// retired names such as `TeamCreate` are left to the allowlist alone.
+const CLAUDE_SPAWN_TOOLS: &[&str] = &[
+    "Agent",
+    "Task",
+    "Workflow",
+    "TaskCreate",
+    "TaskGet",
+    "TaskList",
+    "TaskUpdate",
+    "TaskStop",
+    "TaskOutput",
+    "SendMessage",
+    "SendUserMessage",
+    "ListAgents",
+    "ListPeers",
+    "CronCreate",
+    "CronDelete",
+    "CronList",
+    "ScheduleWakeup",
+    "RemoteTrigger",
+];
+
+fn claude_allowed_builtin_tools(permission: &str) -> Vec<&'static str> {
+    CLAUDE_BUILTIN_TOOLS
+        .iter()
+        .copied()
+        .filter(|tool| permission != "read-only" || !CLAUDE_WRITE_TOOLS.contains(tool))
+        // Belt and braces: a spawning tool must never reach the allowlist,
+        // whatever a later edit to CLAUDE_BUILTIN_TOOLS adds.
+        .filter(|tool| !CLAUDE_SPAWN_TOOLS.contains(tool))
+        .collect()
+}
+
 fn claude_disallowed_tools(permission: &str) -> Vec<&'static str> {
     let mut disallowed = Vec::new();
     if permission == "read-only" {
-        disallowed.extend([
-            "Write",
-            "Edit",
-            "NotebookEdit",
-            "Bash",
-            "WebFetch",
-            "WebSearch",
-        ]);
+        disallowed.extend(CLAUDE_WRITE_TOOLS.iter().copied());
     }
-    // Mythra Code is the sole delegation authority. Claude's native Task/team
-    // surface bypasses the approved roster, concurrency budget, ownership
-    // records, and child inbox, so it is never exposed from Mythra Code.
-    disallowed.extend([
-        "Task",
-        "SendMessage",
-        "TaskCreate",
-        "TaskUpdate",
-        "TeamCreate",
-    ]);
+    disallowed.extend(CLAUDE_SPAWN_TOOLS.iter().copied());
     disallowed
+}
+
+/// The tool-availability arguments handed to the Claude CLI, built once so a
+/// test can assert on exactly what the spawned command receives.
+fn claude_tool_arguments(permission: &str) -> Vec<String> {
+    let mut arguments = vec![
+        "--tools".to_string(),
+        claude_allowed_builtin_tools(permission).join(","),
+    ];
+    let disallowed = claude_disallowed_tools(permission);
+    if !disallowed.is_empty() {
+        arguments.push("--disallowedTools".to_string());
+        arguments.push(disallowed.join(","));
+    }
+    arguments
 }
 
 #[tauri::command]
@@ -3314,10 +3482,7 @@ async fn claude_turn_start(
             ]);
         }
     }
-    let disallowed = claude_disallowed_tools(&options.permission);
-    if !disallowed.is_empty() {
-        command.args(["--disallowedTools", &disallowed.join(",")]);
-    }
+    command.args(claude_tool_arguments(&options.permission));
     if let Some(plugin_path) = options
         .skills_plugin_path
         .as_deref()
@@ -3422,6 +3587,7 @@ async fn claude_turn_start(
             .as_str()
             .expect("user message UUID")
             .to_string(),
+        options.resume,
     );
     let stdout_app = app.clone();
     let stdout_thread = options.thread_id;
@@ -3433,6 +3599,7 @@ async fn claude_turn_start(
         const DELTA_FLUSH_INTERVAL: Duration = Duration::from_millis(25);
         let mut lines = BufReader::new(stdout).lines();
         let mut terminal_result = None;
+        let mut saw_terminal_assistant = false;
         // High-frequency `stream_event` messages are coalesced into a single
         // "claude-events" array emit (mirroring the Codex reader), flushed on
         // a ~25ms tick or before any non-delta message so ordering is
@@ -3521,6 +3688,9 @@ async fn claude_turn_start(
                 continue;
             };
             if message.get("type").and_then(Value::as_str) == Some("stream_event") {
+                if claude_reopens_turn(&message) {
+                    saw_terminal_assistant = false;
+                }
                 if delta_buffer.is_empty() {
                     flush_deadline = Instant::now() + DELTA_FLUSH_INTERVAL;
                 }
@@ -3537,6 +3707,17 @@ async fn claude_turn_start(
                 // This result belongs to restored work, not the queued prompt.
                 // Do not forward it to the UI's terminal-result handler either.
                 continue;
+            }
+            // Recovery evidence, never a boundary: only an `end_turn` that is
+            // still the CLI's last word when the process dies may seal a turn.
+            // A prompt the CLI has queued but not started cannot have produced
+            // one — that output belongs to a resumed session's restored work —
+            // and later tool results or a steered follow-up mean work was
+            // still in flight at exit.
+            if claude_assistant_ends_turn(&message) {
+                saw_terminal_assistant = !turn_boundary.prompt_pending();
+            } else if claude_reopens_turn(&message) {
+                saw_terminal_assistant = false;
             }
             if ends_turn {
                 // Result delivery is not a transcript flush acknowledgement.
@@ -3573,10 +3754,32 @@ async fn claude_turn_start(
             };
             reap_claude_process(&mut child, &mut lines.into_inner(), grace).await
         };
+        let recovered = claude_can_recover_at_exit(saw_terminal_assistant, exit.as_ref());
         if let Some(message) = terminal_result {
             stdout_runtime.alive.store(false, Ordering::Release);
             remove_claude_turn_if_current(&turns, &stdout_thread, &stdout_runtime).await;
             emit_claude_event(&stdout_app, &stdout_thread, &stdout_turn, message).await;
+        } else if recovered {
+            // The direct process is gone, so no later result can carry usage
+            // or a different terminal state. The assistant event was already
+            // forwarded and contains its own usage; synthesize only the
+            // missing lifecycle envelope so the renderer can seal the turn.
+            stdout_runtime.alive.store(false, Ordering::Release);
+            remove_claude_turn_if_current(&turns, &stdout_thread, &stdout_runtime).await;
+            emit_claude_event(
+                &stdout_app,
+                &stdout_thread,
+                &stdout_turn,
+                json!({
+                    "type": "result",
+                    "subtype": "success",
+                    "is_error": false,
+                    "num_turns": 1,
+                    "result": "",
+                    "openkiwi_recovered_from_assistant_end_turn": true,
+                }),
+            )
+            .await;
         }
         // A descendant can inherit stderr just as it can stdout. Never let an
         // orphaned pipe retain the turn slot after the direct Claude process
@@ -3588,7 +3791,7 @@ async fn claude_turn_start(
         {
             stderr_task.abort();
         }
-        if !saw_result {
+        if !saw_result && !recovered {
             let stderr = stderr_lines.lock().await.contents().to_string();
             let detail = if stderr.trim().is_empty() {
                 "Claude Code exited before completing the turn.".to_string()

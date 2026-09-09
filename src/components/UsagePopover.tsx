@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { ChevronDown, Clock3, Gauge, X } from "lucide-react";
-import { hasUsageCountdown, selectedUsageWindow, usageResetText, type AccountUsageView, type ProviderHeaderUsageView } from "../lib/providerUsage";
+import { hasUsageCountdown, selectedUsageWindow, usageFreshnessText, usageResetText, type AccountUsageView, type ProviderHeaderUsageView } from "../lib/providerUsage";
 import "./UsagePopover.css";
 import { usePopoverFade } from "../hooks/usePopoverFade";
 
@@ -31,15 +31,18 @@ export function UsagePopover({ provider, usage, header, selectedLabel, onSelect,
   const windows = usage.windows ?? [];
   const selected = selectedUsageWindow(windows, selectedLabel);
   const [now, setNow] = useState(Date.now);
-  const countdown = open && windows.some(hasUsageCountdown);
+  const freshness = usageFreshnessText(usage.updatedAt, now);
+  // Both the countdown and the reading age are minute-resolution, so the clock
+  // only runs when one of them is actually on screen.
+  const ticking = open && (Boolean(usage.updatedAt) || windows.some(hasUsageCountdown));
   useEffect(() => {
-    if (!countdown) return;
+    if (!ticking) return;
     const refresh = () => { if (!document.hidden) setNow(Date.now()); };
     refresh();
     const timer = window.setInterval(refresh, 60_000);
     document.addEventListener("visibilitychange", refresh);
     return () => { window.clearInterval(timer); document.removeEventListener("visibilitychange", refresh); };
-  }, [countdown]);
+  }, [ticking]);
   const clearTimer = () => { clearTimeout(timerRef.current); timerRef.current = undefined; };
   const close = (restoreFocus = false) => {
     clearTimer();
@@ -142,6 +145,7 @@ export function UsagePopover({ provider, usage, header, selectedLabel, onSelect,
           </label>)}
         </fieldset> : <p className="usage-popover-empty">{usage.summary}</p>}
         {readStatus && <p className="usage-popover-note" role="status">{readStatus}</p>}
+        {freshness && <p className="usage-popover-note">{freshness}</p>}
         <p className="usage-popover-note">Provider-reported limits, shared across devices.</p>
         <button type="button" className="usage-popover-details" onClick={() => { close(); if (header.needsConnection) onConnect(); else onDetails(); }}>
           {header.needsConnection ? "Models & accounts" : "More usage details"}

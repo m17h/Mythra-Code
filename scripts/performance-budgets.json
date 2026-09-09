@@ -219,20 +219,38 @@
       "decision": "Accept the exact measured correctness cost of deterministic selected-folder skill resolution across OpenAI, Claude, Cursor, OpenRouter, LM Studio, child agents, workflows, scheduled turns, queues, and steering. Exact enabled names are matched natively, source files are revalidated as detected skills inside the selected folder, unrelated @words and file paths remain ordinary prompt text, and the original user message remains unchanged in Mythra Code's transcript. A first send waits on the startup scan; provider-runtime signatures keep aliases and enablement synchronized; one native scan validates every skill in a resolved prompt; reserved envelope delimiters are escaped; and eight-skill and 120,000-character limits bound expansion. Mention classification is native, so ordinary @ text never fails for an unreadable folder, and send-triggered refreshes cannot tear down the last known-good library. Opening or closing Settings no longer causes an extra scan. No dependency, permanent timer, per-frame work, transcript retention, CSS, or performance-budget headroom is added. Moving matching, classification, and content assembly into Rust keeps app entry below its prior limit by 928 Safari and 1,087 Chrome bytes; Safari startup and total JavaScript grow by 964 and 1,401 bytes, and Chrome by 742 and 1,193 bytes. This is reviewed cross-provider correctness and trust-boundary overhead, not an efficiency claim. Limits match measured production output on both configured targets with no extra headroom.",
       "safari13": { "appEntryFromBytes": 370936, "appEntryToBytes": 370008, "appEntryDeltaBytes": -928, "startupJsFromBytes": 731437, "startupJsToBytes": 732401, "startupJsDeltaBytes": 964, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1489870, "totalJsToBytes": 1491271, "totalJsDeltaBytes": 1401 },
       "chrome105": { "appEntryFromBytes": 351699, "appEntryToBytes": 350612, "appEntryDeltaBytes": -1087, "startupJsFromBytes": 705007, "startupJsToBytes": 705749, "startupJsDeltaBytes": 742, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1453060, "totalJsToBytes": 1454253, "totalJsDeltaBytes": 1193 }
+    },
+    {
+      "change": "Make provider usage readings account-safe, structured, fresh, and failure-aware",
+      "decision": "Accept the exact measured correctness and resilience cost of account-owned Claude and Codex quota snapshots, a one-hour last-known cap with visible reading age, current Codex multi-bucket parsing, structured Claude rate-limit event updates, and privacy-safe diagnostic categories with provider semantic versions only when the version belongs to the runtime that performed the read. Claude's visible-window fallback poll changes from every 60 seconds to every 180 seconds, cutting healthy idle CLI process starts by two thirds; repeated failures back off exponentially to 15 minutes, which turn-completion, reset-time, and account-change reads force past while focus and panel-open reads respect it, and in-flight reads still coalesce. Structured events reuse normal Claude turns and add no provider request; `/usage` remains the initial and idle fallback because allowed events may omit utilization. An event refreshes only the window it names, so a card still carrying an untouched window keeps that older reading's age and its expiry rather than being restamped as current. A Codex payload whose `rateLimitsByLimitId` map reports no window falls through to the legacy bucket instead of blanking the card. A changed account invalidates its predecessor before a new read, while transient failures retain data only for the same account and never beyond one hour. No dependency, CSS, transcript scan, per-frame work, credential access, private endpoint, or user status-line modification is added. Safari grows by 2,350 app-entry bytes, 5,450 startup JavaScript bytes and 5,435 total JavaScript bytes; Chrome grows by 2,136, 5,081 and 5,068 bytes. This is reviewed provider-correctness overhead paired with a material reduction in recurring native-process work, not a renderer-speed claim. Limits match measured production output on both configured targets with no extra headroom.",
+      "safari13": { "appEntryFromBytes": 370008, "appEntryToBytes": 372358, "appEntryDeltaBytes": 2350, "startupJsFromBytes": 732401, "startupJsToBytes": 737851, "startupJsDeltaBytes": 5450, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1491271, "totalJsToBytes": 1496706, "totalJsDeltaBytes": 5435 },
+      "chrome105": { "appEntryFromBytes": 350612, "appEntryToBytes": 352748, "appEntryDeltaBytes": 2136, "startupJsFromBytes": 705749, "startupJsToBytes": 710830, "startupJsDeltaBytes": 5081, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1454253, "totalJsToBytes": 1459321, "totalJsDeltaBytes": 5068 }
+    },
+    {
+      "change": "Unify the sub-agent relay animation around one delivery beat",
+      "decision": "Accept the exact measured stylesheet cost of replacing the independent relay rail, avatar trace, status pulse, and manifest loops with one synchronized comet, charge, arrival, and reduced-motion treatment. The animation remains CSS-only, adds no JavaScript, timers, DOM measurement, dependency, or permanent listener, and keeps the existing provider and lifecycle colour semantics. Safari startup CSS grows by 1,986 bytes and Chrome startup CSS by 1,917 bytes. Limits match measured production output on both configured targets with no extra headroom.",
+      "safari13": { "startupCssFromBytes": 359969, "startupCssToBytes": 361955, "startupCssDeltaBytes": 1986 },
+      "chrome105": { "startupCssFromBytes": 353618, "startupCssToBytes": 355535, "startupCssDeltaBytes": 1917 }
+    },
+    {
+      "change": "Review post-1.15.7 turn cancellation and relay painting",
+      "decision": "Accept 203 Safari / 188 Chrome app-entry bytes and 133 Safari / 118 Chrome startup JavaScript bytes above the existing limits for honoring Stop during skill resolution in ordinary turns and workflows, and classifying payload-less quota failures correctly. Native Claude recovery now requires a clean process exit and rejects interrupted follow-up streams without adding renderer bytes. The transform-based relay path adds 6 stylesheet bytes; an alternating 12-card Chromium fixture eliminates recurring Paint events compared with the prior background-position animation. Geometry and reduced-motion checks pass in Chromium and WebKit. This is a local animation measurement, not an app-wide speed claim. App-entry, startup JavaScript, and CSS caps match measured output exactly; the total JavaScript caps remain unchanged. See docs/performance/post-1.15.7-review.md.",
+      "safari13": { "appEntryFromBytes": 372358, "appEntryToBytes": 372561, "startupJsFromBytes": 737851, "startupJsToBytes": 737984, "startupCssFromBytes": 361955, "startupCssToBytes": 361961 },
+      "chrome105": { "appEntryFromBytes": 352748, "appEntryToBytes": 352936, "startupJsFromBytes": 710830, "startupJsToBytes": 710948, "startupCssFromBytes": 355535, "startupCssToBytes": 355541 }
     }
   ],
   "profiles": {
     "safari13-minified": {
-      "appEntryRawBytes": 370008,
-      "startupJsRawBytes": 732401,
-      "startupCssRawBytes": 359969,
-      "totalJsRawBytes": 1491271
+      "appEntryRawBytes": 372561,
+      "startupJsRawBytes": 737984,
+      "startupCssRawBytes": 361961,
+      "totalJsRawBytes": 1496706
     },
     "chrome105-minified": {
-      "appEntryRawBytes": 350612,
-      "startupJsRawBytes": 705749,
-      "startupCssRawBytes": 353618,
-      "totalJsRawBytes": 1454253
+      "appEntryRawBytes": 352936,
+      "startupJsRawBytes": 710948,
+      "startupCssRawBytes": 355541,
+      "totalJsRawBytes": 1459321
     }
   }
 }

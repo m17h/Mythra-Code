@@ -670,6 +670,38 @@ describe("Codex cold startup", () => {
 });
 
 describe("chat header provider usage", () => {
+  it("does not reuse another account's quota or accept its late response", async () => {
+    rateLimitsImpl = () => ({ rateLimits: { primary: { usedPercent: 42, windowDurationMins: 300 } } });
+    await renderApp();
+    const trigger = await screen.findByRole("button", { name: /OpenAI subscription: 5h 58% left/ });
+    const oldRead = deferred<unknown>();
+    rateLimitsImpl = () => oldRead.promise;
+    fireEvent.click(trigger);
+    await waitFor(() => expect(invokeMock.mock.calls.filter(([, args]) => args?.method === "account/rateLimits/read").length).toBeGreaterThan(1));
+    const newRead = deferred<unknown>();
+    rateLimitsImpl = () => newRead.promise;
+    accountReadImpl = () => ({ account: { type: "chatgpt", email: "different@example.com", planType: "pro" } });
+    await act(async () => {
+      tauriEvents.handlers.get("codex-event")?.({ payload: { method: "account/updated", params: { authMode: "chatgpt" } } });
+    });
+    expect(screen.queryByRole("button", { name: /OpenAI subscription: 5h 58% left/ })).not.toBeInTheDocument();
+    await act(async () => { newRead.resolve({ rateLimits: { primary: { usedPercent: 70, windowDurationMins: 300 } } }); });
+    await screen.findByRole("button", { name: /OpenAI subscription: 5h 30% left/ });
+    await act(async () => { oldRead.resolve({ rateLimits: { primary: { usedPercent: 99, windowDurationMins: 300 } } }); });
+    expect(screen.getByRole("button", { name: /OpenAI subscription: 5h 30% left/ })).toBeInTheDocument();
+  });
+
+  it("retains a same-account quota with its age when a refresh fails", async () => {
+    rateLimitsImpl = () => ({ rateLimits: { primary: { usedPercent: 42, windowDurationMins: 300 } } });
+    await renderApp();
+    const trigger = await screen.findByRole("button", { name: /OpenAI subscription: 5h 58% left/ });
+    rateLimitsImpl = () => { throw new Error("500 Internal Server Error"); };
+    fireEvent.click(trigger);
+    await screen.findByText("Usage refresh unavailable · last reading retained");
+    expect(screen.getByRole("button", { name: /OpenAI subscription: 5h 58% left/ })).toBeInTheDocument();
+    expect(screen.getByText("Updated just now")).toBeInTheDocument();
+  });
+
   it("revalidates the saved OpenAI session when Settings opens", async () => {
     await renderApp();
     await screen.findByRole("button", { name: /OpenAI subscription/ });

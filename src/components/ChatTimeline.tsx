@@ -622,10 +622,6 @@ export const SubAgentRelayCard = memo(function SubAgentRelayCard({ activity, dea
       <div className="subagent-relay-emblem" aria-hidden="true">
         <span className="subagent-relay-avatar">
           {provider ? <ProviderLogo provider={provider} size={15} /> : <UsersRound size={15} />}
-          <svg className="sa-avatar-trace" viewBox="0 0 34 34" focusable="false">
-            <rect className="sa-avatar-trace-rail" x="1.5" y="1.5" width="31" height="31" rx="8" pathLength="100" />
-            <rect className="sa-avatar-trace-runner" x="1.5" y="1.5" width="31" height="31" rx="8" pathLength="100" />
-          </svg>
         </span>
       </div>
       <div className="subagent-relay-copy">

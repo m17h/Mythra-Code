@@ -22,6 +22,33 @@ Source: [OpenRouter usage accounting](https://openrouter.ai/docs/cookbook/admini
 
 ## Freshness and performance
 
+Provider quota cards are account-scoped. A successful reading carries the
+current account identity and capture time; an account change clears it before
+the replacement read starts. A transient provider failure may retain the last
+reading only for that same account, and the card shows its age. After one hour
+the numbers are hidden as expired rather than presented as current.
+
+Codex quota reads use the documented app-server rate-limit surface, preferring
+`rateLimitsByLimitId` and falling back to the legacy `rateLimits` bucket.
+Claude consumes structured `rate_limit_event` utilization from ordinary turns
+when it is present. Because normal allowed events may omit utilization, the CLI
+`/usage` result remains the initial and idle fallback. An event updates only the
+window it names, so a card that still carries an untouched window keeps the age
+of that older reading: a stream of events cannot present a stale window as
+freshly confirmed, nor postpone its one-hour expiry.
+
+Visible Claude polling runs every three minutes, is coalesced across triggers,
+and exponentially backs off after repeated failures to a maximum fifteen-minute
+delay. A finished turn, a known reset time and an account change force a read
+past both the burst floor and the backoff. Focus, returning visibility and
+opening the usage card ask for a read but still respect them, so alt-tabbing
+cannot re-poll a provider that is already failing.
+
+Usage failures are reduced to timeout, authentication, unsupported-response,
+or unavailable categories. Diagnostics may include a semantic provider version
+but never provider stderr, credentials, paths, account identifiers, or other
+free-form failure text.
+
 The existing once-per-launch, non-blocking refresh checks Mythra's validated pricing catalog and OpenRouter's model catalog. Settings exposes the catalog publication date, check status, offline failure and manual refresh. A successful check does not imply every model has a newly published price; unavailable rates stay unpriced. The last valid catalog remains available offline. OpenRouter's current catalog supplies prompt, completion and optional cache rates; existing thread rates are retained when unavailable.
 
 The dashboard is in the deferred Settings chunk, is unmounted while Settings is closed, does not open transcripts and subscribes to batched ledger writes rather than streaming text. No chart package or new polling is introduced. Explicit raw bundle review against `82db8e0`:

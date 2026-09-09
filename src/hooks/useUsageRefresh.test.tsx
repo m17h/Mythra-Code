@@ -1,6 +1,6 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { nextUsageReset, USAGE_MIN_GAP_MS, USAGE_POLL_MS, useUsageRefresh } from "./useUsageRefresh";
+import { CLAUDE_USAGE_POLL_MS, nextUsageReset, USAGE_MIN_GAP_MS, USAGE_POLL_MS, useUsageRefresh } from "./useUsageRefresh";
 
 function setVisibility(state: "visible" | "hidden"): void {
   Object.defineProperty(document, "visibilityState", { configurable: true, get: () => state });
@@ -127,6 +127,35 @@ describe("useUsageRefresh", () => {
     await act(async () => { vi.advanceTimersByTime(USAGE_POLL_MS); await Promise.resolve(); });
     expect(refresh).toHaveBeenCalledTimes(2);
   });
+
+  it("backs repeated failures off while keeping forced refresh available", async () => {
+    const refresh = vi.fn().mockRejectedValue(new Error("provider unavailable"));
+    const { result } = renderHook(() => useUsageRefresh({ key: "claude:me", enabled: true, refresh }));
+    act(() => { result.current({ force: true }); });
+    await flush();
+    await act(async () => { vi.advanceTimersByTime(USAGE_POLL_MS); await Promise.resolve(); });
+    expect(refresh).toHaveBeenCalledTimes(2);
+    await act(async () => { vi.advanceTimersByTime(USAGE_POLL_MS); await Promise.resolve(); });
+    expect(refresh).toHaveBeenCalledTimes(2);
+    // Backoff exists to stop hammering a failing provider, so the ambient
+    // triggers respect it; only a deliberate read forces past it.
+    await act(async () => { window.dispatchEvent(new Event("focus")); await Promise.resolve(); });
+    expect(refresh).toHaveBeenCalledTimes(2);
+    act(() => { result.current({ force: true }); });
+    await flush();
+    expect(refresh).toHaveBeenCalledTimes(3);
+  });
+
+  it("polls on the calmer three-minute cadence the app selects for Claude", async () => {
+    expect(CLAUDE_USAGE_POLL_MS).toBe(3 * USAGE_POLL_MS);
+    const refresh = vi.fn().mockResolvedValue(null);
+    renderHook(() => useUsageRefresh({ key: "claude:me", enabled: true, refresh, pollMs: CLAUDE_USAGE_POLL_MS }));
+    await flush();
+    await act(async () => { vi.advanceTimersByTime(USAGE_POLL_MS); await Promise.resolve(); });
+    expect(refresh).not.toHaveBeenCalled();
+    await act(async () => { vi.advanceTimersByTime(CLAUDE_USAGE_POLL_MS - USAGE_POLL_MS); await Promise.resolve(); });
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("nextUsageReset", () => {
@@ -168,5 +197,13 @@ it("reports failed refreshes without exposing provider error content", async () 
   const { result } = renderHook(() => useUsageRefresh({ key: "claude:one", enabled: true,
     refresh: () => Promise.reject(new Error("private account details")), onStatus }));
   await act(async () => { result.current({ force: true }); });
-  expect(onStatus).toHaveBeenLastCalledWith("Refresh unavailable · last reading");
+  expect(onStatus).toHaveBeenLastCalledWith("Usage refresh unavailable");
+});
+
+it("treats a rejection without an error payload as a failed reading", async () => {
+  const onStatus = vi.fn();
+  const { result } = renderHook(() => useUsageRefresh({ key: "claude:one", enabled: true,
+    refresh: () => Promise.reject(), onStatus }));
+  await act(async () => { result.current({ force: true }); });
+  expect(onStatus).toHaveBeenLastCalledWith("Usage refresh unavailable");
 });

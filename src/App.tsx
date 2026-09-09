@@ -25,7 +25,7 @@ import { RowMenu } from "./components/RowMenu";
 import { Odometer } from "./components/Odometer";
 import { confirmDialog } from "./lib/confirmDialog";
 import { ConfirmDialogModal } from "./components/ConfirmDialogModal";
-import { ModelPowerControl, type RuntimeModel } from "./components/ModelPowerControl";
+import { ModelPowerControl, openAiModelOptions, type RuntimeModel } from "./components/ModelPowerControl";
 import { OpenRouterModelControl, type OpenRouterModel } from "./components/OpenRouterModelControl";
 import { ClaudeModelControl } from "./components/ClaudeModelControl";
 import { CursorModelControl } from "./components/CursorModelControl";
@@ -85,7 +85,7 @@ import { useAppShortcuts, workspaceShortcutLabel } from "./hooks/useAppShortcuts
 import { useThreadHealth } from "./hooks/useThreadHealth";
 import { useCodexEvents } from "./hooks/useCodexEvents";
 import { useClaudeEvents } from "./hooks/useClaudeEvents";
-import { nextUsageReset, useUsageRefresh } from "./hooks/useUsageRefresh";
+import { CLAUDE_USAGE_POLL_MS, nextUsageReset, useUsageRefresh } from "./hooks/useUsageRefresh";
 import { PinnedWorkspaceGroup } from "./components/PinnedWorkspaceGroup";
 import { useCursorEvents } from "./hooks/useCursorEvents";
 import { useScheduler } from "./hooks/useScheduler";
@@ -107,7 +107,7 @@ import { attachmentsFor, forgetAttachmentDraft, withAttachmentDraft, type Attach
 import { EMPTY_REVIEW_DIFF } from "./lib/gitDiff";
 import { shellCommand } from "./lib/shellCommand";
 import { resolveProviderSystemPrompt, resolveSystemPrompt } from "./lib/systemPrompt";
-import { parseCodexRateLimits, providerAccountUsage, providerHeaderUsage, sanitizeUsageDisplay, sanitizeHeaderUsageWindows, type HeaderUsageWindows, type ProviderRateLimits } from "./lib/providerUsage";
+import { currentAccountUsageSnapshot, mergeAccountUsageSnapshot, parseCodexRateLimits, providerAccountUsage, providerHeaderUsage, sanitizeUsageDisplay, sanitizeHeaderUsageWindows, USAGE_SNAPSHOT_MAX_AGE_MS, type AccountUsageSnapshot, type HeaderUsageWindows } from "./lib/providerUsage";
 import { UsagePopover } from "./components/UsagePopover";
 import { contextUsagePercent } from "./lib/contextUsage";
 import { mythraCodeDeveloperInstructions } from "./lib/completionPrompt";
@@ -217,6 +217,20 @@ const DISCONNECTED_SUBSCRIPTION_STATUS = {
   available: false, path: null, version: null, loggedIn: false,
   authMethod: null, email: null, subscriptionType: null, warning: null,
 } as const;
+
+function subscriptionAccountKey(
+  provider: "openai" | "claude",
+  email: string | null | undefined,
+  fallback: number,
+  current = "",
+): string {
+  const normalized = email?.trim().toLowerCase();
+  if (normalized) return `${provider}:email:${normalized}`;
+  // The provider exposes no stronger identity for email-less accounts. Keep
+  // one opaque key for the observed signed-in session; a witnessed sign-out
+  // clears it, so the next login still receives a new boundary.
+  return current.startsWith(`${provider}:session:`) ? current : `${provider}:session:${fallback}`;
+}
 /** Enough to name what is missing from a diff without pasting a build tree. */
 const MAX_LISTED_UNTRACKED_PATHS = 50;
 const COMPOSER_REASONING_EFFORTS: ThreadReasoning["reasoningEffort"][] = ["low", "medium", "high", "xhigh", "max"];
@@ -587,11 +601,15 @@ export default function App() {
     },
   });
   const [attachmentDrafts, setAttachmentDrafts] = useState<AttachmentDrafts>({});
-  const [openAiRateLimits, setOpenAiRateLimits] = useState<ProviderRateLimits | null>(null);
-  const [openAiRateLimitsRead, setOpenAiRateLimitsRead] = useState(false);
+  const [openAiUsageSnapshot, setOpenAiUsageSnapshot] = useState<AccountUsageSnapshot | null>(null);
+  const [openAiAccountKey, setOpenAiAccountKey] = useState("");
+  const openAiAccountKeyRef = useRef("");
   const openAiAccountRequestRef = useRef(0);
   const openAiUsageRequestRef = useRef(0);
-  const [claudeRateLimits, setClaudeRateLimits] = useState<ProviderRateLimits | null>(null);
+  const [claudeUsageSnapshot, setClaudeUsageSnapshot] = useState<AccountUsageSnapshot | null>(null);
+  const [claudeAccountKey, setClaudeAccountKey] = useState("");
+  const claudeAccountKeyRef = useRef("");
+  const [usageSnapshotClock, setUsageSnapshotClock] = useState(0);
   const [skillsFolder, setSkillsFolder] = usePersistedState<string>("kiwi.skillsFolder", "");
   const [skillFiles, setSkillFiles] = useState<LocalSkillFile[]>([]);
   const [skillAliases, setSkillAliases] = usePersistedState<Record<string, string>>("kiwi.skillAliases", {});
@@ -840,12 +858,15 @@ export default function App() {
       },
     };
   }, [activeDelegationPolicy, composerSubagentPolicy, effectiveSettings.childAgents.enabled, effectiveSettings.subagentsEnabled]);
+  // Must stay the same catalog the Settings roster builds: a destination the
+  // user configured in one picker has to be the same provider/model pair in
+  // the other, and both are the pair readiness and the spawn path receive.
   const subAgentModelCatalogs = useMemo<Partial<Record<Provider, SubAgentModelOption[]>>>(() => ({
     ...(runtimeModels.length ? {
-      openai: runtimeModels.map((entry) => ({
-        id: entry.model || entry.id,
-        label: entry.displayName || entry.model || entry.id,
-        detail: entry.description || entry.model || entry.id,
+      openai: openAiModelOptions(runtimeModels).map((entry) => ({
+        id: entry.id,
+        label: entry.name,
+        detail: entry.tagline,
       })),
     } : {}),
     ...(cursorModels.length ? {
@@ -873,7 +894,7 @@ export default function App() {
     })),
     lmstudio: lmStudioModels.map((entry) => ({
       id: entry.id,
-      label: entry.id,
+      label: entry.displayName || entry.id,
       detail: `${entry.publisher}${entry.trainedForToolUse ? " · tool use" : ""}`,
     })),
   }), [claudeModels, cursorModels, lmStudioModels, openRouterModels, runtimeModels]);
@@ -1072,13 +1093,33 @@ export default function App() {
       : `${formatCost(totals.today)} today`;
   })();
 
+  const activeSubscriptionSnapshot = effectiveSettings.provider === "openai"
+    ? openAiUsageSnapshot
+    : effectiveSettings.provider === "claude" ? claudeUsageSnapshot : null;
+  useEffect(() => {
+    if (!activeSubscriptionSnapshot?.updatedAt) return;
+    const delay = activeSubscriptionSnapshot.updatedAt + USAGE_SNAPSHOT_MAX_AGE_MS - Date.now();
+    if (delay <= 0) return;
+    const timer = window.setTimeout(() => setUsageSnapshotClock((revision) => revision + 1), delay + 50);
+    return () => window.clearTimeout(timer);
+  }, [activeSubscriptionSnapshot?.updatedAt]);
+
   const accountUsageView = useMemo(() => {
+    // Re-evaluate exactly when a retained snapshot reaches its one-hour cap.
+    void usageSnapshotClock;
+    const now = Date.now();
+    const openAiOwned = openAiUsageSnapshot?.accountKey === openAiAccountKey ? openAiUsageSnapshot : null;
+    const claudeOwned = claudeUsageSnapshot?.accountKey === claudeAccountKey ? claudeUsageSnapshot : null;
+    const openAiCurrent = currentAccountUsageSnapshot(openAiOwned, openAiAccountKey, now);
+    const claudeCurrent = currentAccountUsageSnapshot(claudeOwned, claudeAccountKey, now);
     return providerAccountUsage(effectiveSettings.provider, {
-      openAiRateLimits,
-      openAiRateLimitsRead,
+      openAiRateLimits: openAiCurrent?.limits ?? null,
+      openAiRateLimitsRead: Boolean(openAiCurrent),
+      openAiUpdatedAt: openAiOwned?.updatedAt,
       openAiConnected: account?.type === "chatgpt",
       claudeStatus,
-      claudeRateLimits,
+      claudeRateLimits: claudeCurrent?.limits ?? null,
+      claudeUpdatedAt: claudeOwned?.updatedAt,
       cursorStatus,
       openRouterReady,
       openRouterCredits,
@@ -1086,8 +1127,9 @@ export default function App() {
       openRouterCreditsError,
       lmStudioReady,
       usageDisplay: settings.usageDisplay,
+      now,
     });
-  }, [account?.type, claudeRateLimits, claudeStatus, cursorStatus, effectiveSettings.provider, lmStudioReady, openAiRateLimits, openAiRateLimitsRead, openRouterCredits, openRouterCreditsError, openRouterCreditsRead, openRouterReady, settings.usageDisplay]);
+  }, [account?.type, claudeAccountKey, claudeStatus, claudeUsageSnapshot, cursorStatus, effectiveSettings.provider, lmStudioReady, openAiAccountKey, openAiUsageSnapshot, openRouterCredits, openRouterCreditsError, openRouterCreditsRead, openRouterReady, settings.usageDisplay, usageSnapshotClock]);
   const headerUsageView = useMemo(() => providerHeaderUsage(effectiveSettings.provider, accountUsageView, {
     selectedWindow: effectiveSettings.provider === "openai" || effectiveSettings.provider === "claude" ? headerUsageWindows[effectiveSettings.provider] : undefined,
     openRouterReady,
@@ -1591,7 +1633,6 @@ export default function App() {
 
   const refreshClaudeStatus = useCallback(async () => {
     const request = ++claudeStatusRequestRef.current;
-    const usageRequest = ++claudeUsageRequestRef.current;
     setAccountCheck("claude", "Checking connection…");
     try {
       const result = await getClaudeRuntimeStatus();
@@ -1599,10 +1640,25 @@ export default function App() {
       setClaudeStatus(result);
       setAccountCheck("claude", result.loggedIn ? "" : "Sign-in required");
       if (result.loggedIn) {
+        const accountKey = subscriptionAccountKey("claude", result.email, request, claudeAccountKeyRef.current);
+        if (claudeAccountKeyRef.current !== accountKey) {
+          claudeUsageRequestRef.current += 1;
+          claudeAccountKeyRef.current = accountKey;
+          setClaudeAccountKey(accountKey);
+          setClaudeUsageSnapshot(null);
+        }
+        const usageRequest = ++claudeUsageRequestRef.current;
         const limits = await getClaudeRateLimits().catch(() => undefined);
-        if (claudeUsageRequestRef.current === usageRequest && limits !== undefined) setClaudeRateLimits(limits);
+        if (claudeUsageRequestRef.current === usageRequest
+          && claudeAccountKeyRef.current === accountKey
+          && limits !== undefined) {
+          setClaudeUsageSnapshot({ accountKey, limits, updatedAt: Date.now() });
+        }
       } else {
-        setClaudeRateLimits(null);
+        claudeUsageRequestRef.current += 1;
+        claudeAccountKeyRef.current = "";
+        setClaudeAccountKey("");
+        setClaudeUsageSnapshot(null);
       }
       return result;
     } catch (reason) {
@@ -1782,10 +1838,11 @@ export default function App() {
   const clearOpenAiAccount = useCallback(() => {
     openAiAccountRequestRef.current += 1;
     openAiUsageRequestRef.current += 1;
+    openAiAccountKeyRef.current = "";
+    setOpenAiAccountKey("");
     setAccount(null);
     setAccountCheck("openai", "Sign-in required");
-    setOpenAiRateLimits(null);
-    setOpenAiRateLimitsRead(false);
+    setOpenAiUsageSnapshot(null);
   }, [setAccountCheck]);
 
   const requireOpenAiLogin = useCallback(() => {
@@ -1825,13 +1882,21 @@ export default function App() {
       setAccount(result.account);
       setAccountCheck("openai", result.account ? "" : "Sign-in required");
       if (result.account?.type === "chatgpt") {
+        const accountKey = subscriptionAccountKey("openai", result.account.email, request, openAiAccountKeyRef.current);
+        if (openAiAccountKeyRef.current !== accountKey) {
+          openAiUsageRequestRef.current += 1;
+          openAiAccountKeyRef.current = accountKey;
+          setOpenAiAccountKey(accountKey);
+          setOpenAiUsageSnapshot(null);
+        }
         setAuthRequiredOpen(false);
         setError(null);
         setStatus("Ready");
       } else {
         openAiUsageRequestRef.current += 1;
-        setOpenAiRateLimits(null);
-        setOpenAiRateLimitsRead(false);
+        openAiAccountKeyRef.current = "";
+        setOpenAiAccountKey("");
+        setOpenAiUsageSnapshot(null);
       }
       return result;
     } catch (reason) {
@@ -1918,11 +1983,12 @@ export default function App() {
 
   const refreshUsage = useCallback(async (reportFailure = false) => {
     const request = ++openAiUsageRequestRef.current;
+    const accountKey = openAiAccountKeyRef.current;
+    if (!accountKey) return;
     try {
       const result = await rpc<unknown>("account/rateLimits/read");
-      if (openAiUsageRequestRef.current === request) {
-        setOpenAiRateLimits(parseCodexRateLimits(result));
-        setOpenAiRateLimitsRead(true);
+      if (openAiUsageRequestRef.current === request && openAiAccountKeyRef.current === accountKey) {
+        setOpenAiUsageSnapshot({ accountKey, limits: parseCodexRateLimits(result), updatedAt: Date.now() });
       }
     } catch (reason) {
       if (openAiUsageRequestRef.current === request && isAuthenticationError(reason)) requireOpenAiLogin();
@@ -1942,8 +2008,12 @@ export default function App() {
    */
   const refreshClaudeUsage = useCallback(async () => {
     const request = ++claudeUsageRequestRef.current;
+    const accountKey = claudeAccountKeyRef.current;
+    if (!accountKey) return;
     const limits = await getClaudeRateLimits();
-    if (claudeUsageRequestRef.current === request) setClaudeRateLimits(limits);
+    if (claudeUsageRequestRef.current === request && claudeAccountKeyRef.current === accountKey) {
+      setClaudeUsageSnapshot({ accountKey, limits, updatedAt: Date.now() });
+    }
   }, []);
 
   const openRouterCreditsRequestRef = useRef(0);
@@ -2027,10 +2097,21 @@ export default function App() {
     onStatus: setUsageReadStatus,
     // Identity, not just provider: signing into a different account invalidates
     // the previous snapshot even though the provider never changed.
-    key: `${activeUsageProvider}:${activeUsageProvider === "claude" ? claudeStatus?.email ?? "" : activeUsageProvider === "openai" ? account?.email ?? "" : ""}`,
+    key: activeUsageProvider === "claude"
+      ? claudeAccountKey || "claude:disconnected"
+      : activeUsageProvider === "openai" ? openAiAccountKey || "openai:disconnected" : activeUsageProvider,
     enabled: usageRefreshEnabled,
     refresh: refreshActiveProviderUsage,
     resetsAt: nextUsageReset(accountUsageView.windows ?? []),
+    pollMs: activeUsageProvider === "claude" ? CLAUDE_USAGE_POLL_MS : undefined,
+    hasLastReading: Boolean(accountUsageView.updatedAt
+      && Date.now() - accountUsageView.updatedAt <= USAGE_SNAPSHOT_MAX_AGE_MS),
+    // A version is useful only when it belongs to the runtime that performed
+    // this read. OpenRouter is an HTTP account check, so attaching the local
+    // Codex app-server version would make its diagnostics actively misleading.
+    providerVersion: activeUsageProvider === "claude"
+      ? claudeStatus?.version
+      : activeUsageProvider === "openai" ? runtimeStatus?.version : null,
   });
 
   const prepareLocalSkills = useCallback(
@@ -2358,8 +2439,8 @@ export default function App() {
     onAuthRequired: handleOpenAiAuthRequired,
     onAuthSuspected: verifyOpenAiSession,
     onRateLimits: (limits) => {
-      setOpenAiRateLimits(limits);
-      setOpenAiRateLimitsRead(true);
+      const accountKey = openAiAccountKeyRef.current;
+      if (accountKey) setOpenAiUsageSnapshot({ accountKey, limits, updatedAt: Date.now() });
     },
     onTerminalOutput: terminal.appendProcess,
     onAccountUpdated: () => void refreshAccountData(),
@@ -2514,6 +2595,11 @@ export default function App() {
     },
     onStatus: setStatus,
     onError: setError,
+    onRateLimits: (update) => {
+      const accountKey = claudeAccountKeyRef.current;
+      if (!accountKey) return;
+      setClaudeUsageSnapshot((current) => mergeAccountUsageSnapshot(current, accountKey, update));
+    },
     onTranscriptChanged: scheduleClaudeThreadSave,
     onUnsupportedControlRequest: (threadId, requestId, subtype) => {
       void respondClaudeControlError(threadId, requestId, `Mythra Code does not support ${subtype} requests yet.`).catch(() => undefined);

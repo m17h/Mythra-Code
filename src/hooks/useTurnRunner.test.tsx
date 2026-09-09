@@ -379,6 +379,32 @@ describe("useTurnRunner", () => {
     expect(deps.setTransientStatus).toHaveBeenCalledWith("Stopped");
   });
 
+  it.each([true, false])("allows Stop during skill loading (existing thread: %s)", async (existing) => {
+    let resolve!: (value: string) => void;
+    const deps = context({
+      activeThread: existing ? CURSOR_THREAD : null,
+      running: false,
+      resolveSkillPrompt: vi.fn(() => new Promise<string>((done) => { resolve = done; })),
+    });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    let delivered: boolean | undefined;
+    await act(async () => {
+      const sent = result.current.sendMessage("@review this").then((value) => { delivered = value; });
+      await Promise.resolve();
+      if (existing) expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]?.status).toBe("starting");
+      else expect(deps.setStartingDraftTurn).toHaveBeenCalledWith(true);
+      deps.running = true;
+      await result.current.stopTurn();
+      resolve("resolved instructions");
+      await sent;
+    });
+    expect(delivered).toBe(false);
+    expect(cursor.startCursorTurn).not.toHaveBeenCalled();
+    expect(childSessions.ensureChildAgentBridge).not.toHaveBeenCalled();
+    expect(deps.setTransientStatus).toHaveBeenCalledWith("Stopped");
+    if (existing) expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]?.status).toBe("interrupted");
+  });
+
   it("records cancellation only for a start that is actually in flight", async () => {
     const deps = context({ running: true });
     const pending = deps.pendingTurnStartsRef.current.begin(CURSOR_THREAD.id);
