@@ -5,6 +5,7 @@ import { favoriteCount, sortByFavorites } from "../lib/modelFavorites";
 
 /** Options rendered before the menu offers to reveal the rest of a long list. */
 const BROWSE_LIMIT = 80;
+const showTopLayer = (node: HTMLDivElement | null) => node?.showPopover?.();
 
 export interface AppSelectOption {
   value: string;
@@ -32,6 +33,7 @@ export function AppSelectMenu({
   placeholder = "Choose an option",
   searchable = false,
   menuPlacement = "bottom",
+  portal = false,
   emptyMessage = "No options available",
   favorites = [],
   onToggleFavorite,
@@ -46,6 +48,8 @@ export function AppSelectMenu({
   placeholder?: string;
   searchable?: boolean;
   menuPlacement?: "top" | "bottom";
+  /** Render above clipping/scroll containers and track the trigger in viewport space. */
+  portal?: boolean;
   emptyMessage?: string;
   /** Starred option values, floated to the top of the list. */
   favorites?: string[];
@@ -88,6 +92,7 @@ export function AppSelectMenu({
   const visible = normalizedQuery || showAll ? filtered : filtered.slice(0, BROWSE_LIMIT);
   const hidden = filtered.length - visible.length;
   const starredVisible = favoriteCount(visible, favorites, (option) => option.value);
+  const topLayer = portal && !!HTMLElement.prototype.showPopover;
 
   const close = () => {
     setOpen(false);
@@ -142,6 +147,78 @@ export function AppSelectMenu({
     connected[(index + direction + connected.length) % connected.length]?.focus();
   };
 
+  const menu = open ? (
+    <div
+      ref={topLayer ? showTopLayer : undefined}
+      className="app-select-menu"
+      popover={topLayer ? "manual" : undefined}
+      style={topLayer ? {
+        inset: 0,
+        width: 320,
+      } : undefined}
+    >
+      {searchable && (
+        <label className="app-select-search">
+          <Search size={12} aria-hidden="true" />
+          <input
+            ref={searchRef}
+            aria-label={`Search ${ariaLabel}`}
+            value={query}
+            placeholder="Search models…"
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "ArrowDown") {
+                event.preventDefault();
+                optionRefs.current.find((item) => item?.isConnected && !item.disabled)?.focus();
+              }
+            }}
+          />
+        </label>
+      )}
+      <div className="app-select-options" role="menu" aria-label={`${ariaLabel} choices`}>
+        {visible.map((option, index) => (
+          <Fragment key={option.value}>
+            {starredVisible > 0 && index === 0 && <p className="model-group-label">Favorites</p>}
+            {starredVisible > 0 && index === starredVisible && <p className="model-group-label">All models</p>}
+            <div className="model-row" role="none">
+              <button
+                ref={(node) => { optionRefs.current[index] = node; }}
+                type="button"
+                role="menuitemradio"
+                aria-checked={option.value === value}
+                className={option.value === value ? "selected" : ""}
+                disabled={option.disabled}
+                onKeyDown={(event) => {
+                  if (event.key === "ArrowDown") { event.preventDefault(); moveFocus(event.currentTarget, 1); }
+                  if (event.key === "ArrowUp") { event.preventDefault(); moveFocus(event.currentTarget, -1); }
+                }}
+                onClick={() => {
+                  if (option.disabled) return;
+                  onChange(option.value);
+                  close();
+                  triggerRef.current?.focus();
+                }}
+              >
+                <span className="app-select-option-copy">
+                  {option.icon}
+                  <span><strong>{option.label}</strong>{option.detail && <small>{option.detail}</small>}</span>
+                </span>
+                {option.value === value && <Check size={12} aria-hidden="true" />}
+              </button>
+              {onToggleFavorite && <ModelFavoriteStar model={option.value} label={option.label} favorite={favorites.includes(option.value)} onToggle={onToggleFavorite} />}
+            </div>
+          </Fragment>
+        ))}
+        {hidden > 0 && (
+          <button type="button" className="model-show-all" onClick={() => setShowAll(true)}>
+            Show all {filtered.length} options ({hidden} more)
+          </button>
+        )}
+        {visible.length === 0 && <p className="app-select-empty">{emptyMessage}</p>}
+      </div>
+    </div>
+  ) : null;
+
   return (
     <div className={`app-select ${open ? "open" : ""} ${menuPlacement === "top" ? "opens-up" : ""}`} ref={rootRef} data-app-select-open={open || undefined}>
       <button
@@ -169,69 +246,7 @@ export function AppSelectMenu({
         <ChevronDown size={12} aria-hidden="true" />
       </button>
 
-      {open && (
-        <div className="app-select-menu">
-          {searchable && (
-            <label className="app-select-search">
-              <Search size={12} aria-hidden="true" />
-              <input
-                ref={searchRef}
-                aria-label={`Search ${ariaLabel}`}
-                value={query}
-                placeholder="Search models…"
-                onChange={(event) => setQuery(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "ArrowDown") {
-                    event.preventDefault();
-                    optionRefs.current.find((item) => item?.isConnected && !item.disabled)?.focus();
-                  }
-                }}
-              />
-            </label>
-          )}
-          <div className="app-select-options" role="menu" aria-label={`${ariaLabel} choices`}>
-            {visible.map((option, index) => (
-              <Fragment key={option.value}>
-                {starredVisible > 0 && index === 0 && <p className="model-group-label">Favorites</p>}
-                {starredVisible > 0 && index === starredVisible && <p className="model-group-label">All models</p>}
-                <div className="model-row" role="none">
-                  <button
-                    ref={(node) => { optionRefs.current[index] = node; }}
-                    type="button"
-                    role="menuitemradio"
-                    aria-checked={option.value === value}
-                    className={option.value === value ? "selected" : ""}
-                    disabled={option.disabled}
-                    onKeyDown={(event) => {
-                      if (event.key === "ArrowDown") { event.preventDefault(); moveFocus(event.currentTarget, 1); }
-                      if (event.key === "ArrowUp") { event.preventDefault(); moveFocus(event.currentTarget, -1); }
-                    }}
-                    onClick={() => {
-                      if (option.disabled) return;
-                      onChange(option.value);
-                      close();
-                      triggerRef.current?.focus();
-                    }}
-                  >
-                    <span className="app-select-option-copy">
-                      {option.icon}
-                      <span><strong>{option.label}</strong>{option.detail && <small>{option.detail}</small>}</span>
-                    </span>
-                    {option.value === value && <Check size={12} aria-hidden="true" />}
-                  </button>
-                  {onToggleFavorite && <ModelFavoriteStar model={option.value} label={option.label} favorite={favorites.includes(option.value)} onToggle={onToggleFavorite} />}
-                </div>
-              </Fragment>
-            ))}
-            {hidden > 0 && (
-              <button type="button" className="model-show-all" onClick={() => setShowAll(true)}>
-                Show all {filtered.length} options ({hidden} more)
-              </button>
-            )}
-            {visible.length === 0 && <p className="app-select-empty">{emptyMessage}</p>}
-          </div>
-        </div>
-      )}
+      {menu}
     </div>
   );
 }
