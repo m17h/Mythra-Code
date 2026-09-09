@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeSkillName, resolveLocalSkills, type LocalSkillFile } from "./skills";
+import { normalizeSkillName, resolveLocalSkills, skillRuntimeSignature, type LocalSkillFile } from "./skills";
 
 const file = (path: string, defaultName: string): LocalSkillFile => ({
   path,
@@ -44,5 +44,15 @@ describe("local skills", () => {
       ["/skills/review.md"],
     );
     expect(skills.map((skill) => skill.path)).toEqual(["/skills/release.md"]);
+  });
+
+  it("changes the provider-runtime signature for aliases, enablement, and content", () => {
+    const base = { ...file("/skills/review.md", "review"), name: "review", enabled: true };
+    const signature = skillRuntimeSignature("/skills", [base]);
+
+    expect(skillRuntimeSignature("/skills", [{ ...base, name: "audit" }])).not.toBe(signature);
+    expect(skillRuntimeSignature("/skills", [{ ...base, enabled: false }])).not.toBe(signature);
+    expect(skillRuntimeSignature("/skills", [{ ...base, contentFingerprint: "changed" }])).not.toBe(signature);
+    expect(skillRuntimeSignature("/other-skills", [base])).not.toBe(signature);
   });
 });

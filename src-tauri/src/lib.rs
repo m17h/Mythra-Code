@@ -86,8 +86,9 @@ use project_git::{
 #[cfg(test)]
 use skills::*;
 use skills::{
-    local_skills_create, local_skills_delete, local_skills_import, local_skills_read,
-    local_skills_scan, local_skills_sync, local_skills_update, normalize_skill_name,
+    local_skills_create, local_skills_delete, local_skills_import, local_skills_mention_names,
+    local_skills_read, local_skills_resolve_prompt, local_skills_scan, local_skills_sync,
+    local_skills_update, normalize_skill_name,
 };
 
 const KEYRING_SERVICE: &str = "com.kiwi.harness";
@@ -5360,6 +5361,8 @@ pub fn run() {
             local_skills_import,
             local_skills_create,
             local_skills_read,
+            local_skills_mention_names,
+            local_skills_resolve_prompt,
             local_skills_update,
             local_skills_delete,
             normal_chat_workspace,

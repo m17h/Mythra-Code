@@ -93,6 +93,8 @@ let claudeRuntimeStatusImpl: () => unknown;
 let cursorRuntimeStatusImpl: () => unknown;
 let localSkillsScanImpl: (folder: string) => unknown;
 let localSkillsSyncImpl: (folder: string) => unknown;
+let localSkillsResolvePromptImpl: (params: Record<string, unknown>) => unknown;
+let localSkillsMentionNamesImpl: (message: string) => unknown;
 let claudeModelsImpl: () => unknown;
 let modelListImpl: (params: Record<string, unknown>) => unknown;
 let cursorModelsImpl: () => unknown;
@@ -123,6 +125,8 @@ function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
   if (command === "cursor_runtime_status") return cursorRuntimeStatusImpl();
   if (command === "local_skills_scan") return localSkillsScanImpl(String(args?.folder ?? ""));
   if (command === "local_skills_sync") return localSkillsSyncImpl(String(args?.folder ?? ""));
+  if (command === "local_skills_resolve_prompt") return localSkillsResolvePromptImpl(args ?? {});
+  if (command === "local_skills_mention_names") return localSkillsMentionNamesImpl(String(args?.message ?? ""));
   if (command === "claude_models") return claudeModelsImpl();
   if (command === "cursor_models") return cursorModelsImpl();
   if (command === "github_status") {
@@ -335,6 +339,11 @@ beforeEach(() => {
   cursorRuntimeStatusImpl = () => null;
   localSkillsScanImpl = () => [];
   localSkillsSyncImpl = () => "/runtime/skills";
+  localSkillsResolvePromptImpl = (params) => params.message;
+  // Stands in for the native parser: an @ token only counts when it starts a
+  // word and ends at one, which is what keeps e-mail addresses and file paths
+  // out of the skill path.
+  localSkillsMentionNamesImpl = (message) => Array.from(message.matchAll(/(?:^|\s)@([a-z0-9][a-z0-9-]*)(?=$|\s|[.,;:!?](?:\s|$))/gi)).map((match) => match[1].toLowerCase());
   claudeRuntimeStatusImpl = () => ({
     available: false,
     path: null,
@@ -1084,6 +1093,90 @@ describe("overlapping refresh ordering", () => {
     await act(async () => { newest.resolve("/runtime/newest"); });
     await waitFor(() => expect(extraRootsCalls().at(-1)).toEqual(["/runtime/newest"]));
     expect(extraRootsCalls().flat()).not.toContain("/runtime/stale");
+  });
+
+  it("waits for the persisted skills folder before resolving the first @skill prompt", async () => {
+    localStorage.setItem("kiwi.skillsFolder", JSON.stringify("/skills"));
+    const scan = deferred<unknown>();
+    localSkillsScanImpl = () => scan.promise;
+    localSkillsResolvePromptImpl = (params) => `resolved selected skill\n\n${String(params.message)}`;
+    const user = userEvent.setup();
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: PROJECT_A.name }));
+    const composer = await screen.findByPlaceholderText(/Ask Mythra Code to work in/);
+
+    await user.type(composer, "@review inspect this{Enter}");
+    expect(invokeMock.mock.calls.some(([command, args]) => command === "codex_rpc" && args?.method === "turn/start")).toBe(false);
+
+    await act(async () => {
+      scan.resolve([{
+        path: "/skills/review/SKILL.md",
+        relativePath: "review/SKILL.md",
+        fileName: "SKILL.md",
+        defaultName: "review",
+        description: "Review carefully",
+        supportingMarkdownCount: 0,
+      }]);
+    });
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("local_skills_resolve_prompt", expect.objectContaining({
+      folder: "/skills",
+      message: "@review inspect this",
+      skills: [expect.objectContaining({ name: "review", enabled: true })],
+    })));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("codex_rpc", expect.objectContaining({
+      method: "turn/start",
+      params: expect.objectContaining({
+        input: [expect.objectContaining({ text: "resolved selected skill\n\n@review inspect this" })],
+      }),
+    })));
+  });
+
+  it("sends a message whose only @ words are not skills while the folder cannot be read", async () => {
+    localStorage.setItem("kiwi.skillsFolder", JSON.stringify("/skills"));
+    localSkillsScanImpl = () => { throw new Error("Folder is locked by another process"); };
+    const user = userEvent.setup();
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: PROJECT_A.name }));
+    const composer = await screen.findByPlaceholderText(/Ask Mythra Code to work in/);
+
+    // Mount's own visible refresh already failed; let it settle so the only
+    // skills work left to attribute is the send's.
+    const scans = () => invokeMock.mock.calls.filter(([command]) => command === "local_skills_scan").length;
+    await waitFor(() => expect(scans()).toBeGreaterThan(0));
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    const scansBeforeSend = scans();
+
+    await user.type(composer, "mail me@example.com about @src/App.tsx today{Enter}");
+
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("codex_rpc", expect.objectContaining({
+      method: "turn/start",
+      params: expect.objectContaining({
+        input: [expect.objectContaining({ text: "mail me@example.com about @src/App.tsx today" })],
+      }),
+    })));
+    // Nothing skill-shaped was mentioned, so the send never re-read the
+    // unreadable folder and never tore the library down retrying it.
+    expect(scans()).toBe(scansBeforeSend);
+    expect(invokeMock).toHaveBeenCalledWith("local_skills_resolve_prompt", expect.objectContaining({
+      folder: "",
+      message: "mail me@example.com about @src/App.tsx today",
+      skills: [],
+    }));
+    expect(invokeMock).toHaveBeenCalledWith("local_skills_mention_names", { message: "mail me@example.com about @src/App.tsx today" });
+  });
+
+  it("still refuses a real @skill send while the folder cannot be read", async () => {
+    localStorage.setItem("kiwi.skillsFolder", JSON.stringify("/skills"));
+    localSkillsScanImpl = () => { throw new Error("Folder is locked by another process"); };
+    const user = userEvent.setup();
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: PROJECT_A.name }));
+    const composer = await screen.findByPlaceholderText(/Ask Mythra Code to work in/);
+
+    await user.type(composer, "@review inspect this{Enter}");
+
+    expect(await screen.findByText(/could not load the selected skills folder/)).toBeInTheDocument();
+    expect(invokeMock.mock.calls.some(([command, args]) => command === "codex_rpc" && args?.method === "turn/start")).toBe(false);
   });
 });
 

@@ -196,6 +196,7 @@ interface WorkflowEngineDeps {
   lmStudioModels?: LMStudioModel[];
   customAgents: CustomAgentProfile[];
   ensureSkillRoots: () => Promise<void>;
+  resolveSkillPrompt: (message: string) => Promise<string>;
   bindThreadToProject: (threadId: string, projectPath: string) => void;
   /** Automatic per-step file snapshots, same lifecycle user turns get. */
   beginRunCheckpoint: (threadId: string, workspacePath: string, prompt: string, provider: Provider, model: string) => Promise<string | undefined>;
@@ -417,6 +418,7 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
               if (result.exitCode !== 0) throw new Error(`Command exited with code ${result.exitCode}.`);
             } else {
               const prompt = workflowPrompt(workflow, step, index, stepInputVariables);
+              const providerPrompt = await current.resolveSkillPrompt(prompt);
               variables.previousExitCode = "";
               const beforeMessages = useTaskStore.getState().tasks[threadId]?.messages.length ?? 0;
               useTaskStore.getState().appendUserMessage(threadId, {
@@ -435,7 +437,7 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
                   workflow.run,
                   threadId,
                   project.path,
-                  [{ type: "text", text: prompt, text_elements: [] }],
+                  [{ type: "text", text: providerPrompt, text_elements: [] }],
                   [],
                   source === "manual",
                 ));

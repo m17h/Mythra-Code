@@ -213,20 +213,26 @@
       "decision": "Accept 631 Safari / 635 Chrome startup and total JavaScript bytes for last-write-wins provider refreshes, serialized local-skill runtime preparation, fail-closed one-level child ownership, archive/delete guards during provider startup, and terminal reasoning-buffer cleanup. The native sandbox, approval-request, and process-identity hardening adds no renderer bytes. The browser-test change adds no production code, dependencies, provider requests, polling, timers, per-frame work, CSS, or retained transcript data. This is reviewed correctness and security overhead rather than an efficiency claim. Limits match measured production output on both configured targets with no extra headroom.",
       "safari13": { "appEntryFromBytes": 370216, "appEntryToBytes": 370936, "appEntryDeltaBytes": 720, "startupJsFromBytes": 730806, "startupJsToBytes": 731437, "startupJsDeltaBytes": 631, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1489239, "totalJsToBytes": 1489870, "totalJsDeltaBytes": 631 },
       "chrome105": { "appEntryFromBytes": 351008, "appEntryToBytes": 351699, "appEntryDeltaBytes": 691, "startupJsFromBytes": 704372, "startupJsToBytes": 705007, "startupJsDeltaBytes": 635, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1452425, "totalJsToBytes": 1453060, "totalJsDeltaBytes": 635 }
+    },
+    {
+      "change": "Resolve Mythra Code @skill mentions before provider delivery",
+      "decision": "Accept the exact measured correctness cost of deterministic selected-folder skill resolution across OpenAI, Claude, Cursor, OpenRouter, LM Studio, child agents, workflows, scheduled turns, queues, and steering. Exact enabled names are matched natively, source files are revalidated as detected skills inside the selected folder, unrelated @words and file paths remain ordinary prompt text, and the original user message remains unchanged in Mythra Code's transcript. A first send waits on the startup scan; provider-runtime signatures keep aliases and enablement synchronized; one native scan validates every skill in a resolved prompt; reserved envelope delimiters are escaped; and eight-skill and 120,000-character limits bound expansion. Mention classification is native, so ordinary @ text never fails for an unreadable folder, and send-triggered refreshes cannot tear down the last known-good library. Opening or closing Settings no longer causes an extra scan. No dependency, permanent timer, per-frame work, transcript retention, CSS, or performance-budget headroom is added. Moving matching, classification, and content assembly into Rust keeps app entry below its prior limit by 928 Safari and 1,087 Chrome bytes; Safari startup and total JavaScript grow by 964 and 1,401 bytes, and Chrome by 742 and 1,193 bytes. This is reviewed cross-provider correctness and trust-boundary overhead, not an efficiency claim. Limits match measured production output on both configured targets with no extra headroom.",
+      "safari13": { "appEntryFromBytes": 370936, "appEntryToBytes": 370008, "appEntryDeltaBytes": -928, "startupJsFromBytes": 731437, "startupJsToBytes": 732401, "startupJsDeltaBytes": 964, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1489870, "totalJsToBytes": 1491271, "totalJsDeltaBytes": 1401 },
+      "chrome105": { "appEntryFromBytes": 351699, "appEntryToBytes": 350612, "appEntryDeltaBytes": -1087, "startupJsFromBytes": 705007, "startupJsToBytes": 705749, "startupJsDeltaBytes": 742, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1453060, "totalJsToBytes": 1454253, "totalJsDeltaBytes": 1193 }
     }
   ],
   "profiles": {
     "safari13-minified": {
-      "appEntryRawBytes": 370936,
-      "startupJsRawBytes": 731437,
+      "appEntryRawBytes": 370008,
+      "startupJsRawBytes": 732401,
       "startupCssRawBytes": 359969,
-      "totalJsRawBytes": 1489870
+      "totalJsRawBytes": 1491271
     },
     "chrome105-minified": {
-      "appEntryRawBytes": 351699,
-      "startupJsRawBytes": 705007,
+      "appEntryRawBytes": 350612,
+      "startupJsRawBytes": 705749,
       "startupCssRawBytes": 353618,
-      "totalJsRawBytes": 1453060
+      "totalJsRawBytes": 1454253
     }
   }
 }

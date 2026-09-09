@@ -35,6 +35,8 @@ export interface ChildRunContext {
   modelContextWindow?: number;
   /** Current LM Studio Responses endpoint used by local-model destinations. */
   lmStudioBaseUrl?: string;
+  /** Resolve exact enabled Mythra Code skill mentions before provider delivery. */
+  resolveSkillPrompt: (message: string) => Promise<string>;
   /**
    * Snapshot the execution folder just before the child's first turn starts,
    * keyed by the child's thread id so the provider's turn-completion handler
@@ -93,6 +95,7 @@ export async function startChildAgentTurn(
 ): Promise<ChildRunResult> {
   const run = childRunSettings(target, context);
   const systemPrompt = withMythraCodeCompletionInstructions(context.systemPrompt);
+  const providerPrompt = await context.resolveSkillPrompt(prompt);
 
   if (target.provider === "claude") {
     const thread = childThreadRecord(crypto.randomUUID(), target, prompt, context.executionPath);
@@ -104,7 +107,7 @@ export async function startChildAgentTurn(
       result = await startClaudeTurn({
         threadId,
         cwd: context.executionPath,
-        prompt,
+        prompt: providerPrompt,
         model: run.model,
         effort: context.reasoningEffort,
         permission: run.permission,
@@ -131,7 +134,7 @@ export async function startChildAgentTurn(
       result = await startCursorTurn({
         threadId,
         cwd: context.executionPath,
-        prompt,
+        prompt: providerPrompt,
         model: run.model,
         effort: context.reasoningEffort,
         permission: run.permission,
@@ -166,7 +169,7 @@ export async function startChildAgentTurn(
       run,
       thread.id,
       context.executionPath,
-      buildTurnInput(prompt, []),
+      buildTurnInput(providerPrompt, []),
       context.additionalWorkspaceRoots,
     ));
   } catch (reason) {

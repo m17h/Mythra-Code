@@ -95,7 +95,7 @@ import { useSidebarSplitResize } from "./hooks/useSidebarSplitResize";
 import { useWorkflowEngine } from "./hooks/useWorkflowEngine";
 import { isEstablishedMythraCodeInstall, ONBOARDING_EXIT_MS, ONBOARDING_VERSION } from "./lib/onboarding";
 import { scheduleSettingsPreload } from "./lib/settingsPreload";
-import { createLocalSkill, deleteLocalSkill, importLocalSkills, normalizeSkillName, readLocalSkill, resolveLocalSkills, scanLocalSkills, syncLocalSkills, updateLocalSkill, type LocalSkill, type LocalSkillFile } from "./lib/skills";
+import { createLocalSkill, deleteLocalSkill, importLocalSkills, normalizeSkillName, readLocalSkill, resolveLocalSkills, resolveSkillPrompt as resolveSelectedSkillPrompt, scanLocalSkills, skillMentionNames, skillRuntimeSignature, syncLocalSkills, updateLocalSkill, type LocalSkill, type LocalSkillFile } from "./lib/skills";
 import { compactWorkflowRun, normalizeWorkflows, recoverWorkflowRuns, type WorkflowDefinition, type WorkflowRunRecord } from "./lib/workflows";
 import { isClaudeThread, isCursorThread, isLocalSubscriptionThread, modelForProvider, providerFromThread } from "./lib/threadProvider";
 import { listLMStudioModels, type LMStudioModel } from "./lib/lmStudio";
@@ -605,6 +605,10 @@ export default function App() {
   const skillScanSequenceRef = useRef(0);
   const skillPrepareQueueRef = useRef<Promise<void>>(Promise.resolve());
   const skillsBusyCountRef = useRef(0);
+  const preparedSkillsFolderRef = useRef("");
+  const preparedSkillsSignatureRef = useRef("");
+  const refreshSkillsForInvocationRef = useRef<((folder: string) => Promise<LocalSkill[]>) | null>(null);
+  const skillWarmupRef = useRef<{ folder: string; promise: Promise<LocalSkill[]> } | null>(null);
   const removedSkills = useMemo(
     () => resolveLocalSkills(skillFiles.filter((file) => removedSkillPaths.includes(file.path)), skillAliases, disabledSkillPaths),
     [disabledSkillPaths, removedSkillPaths, skillAliases, skillFiles],
@@ -1019,6 +1023,8 @@ export default function App() {
     () => skills.filter((skill) => skill.enabled).map((skill) => ({ name: skill.name, description: skill.description })),
     [skills],
   );
+  const selectedSkillsRef = useRef({ folder: skillsFolder, skills });
+  selectedSkillsRef.current = { folder: skillsFolder, skills };
 
   const activeOpenRouterPricing = effectiveSettings.provider === "openrouter"
     ? pricingForModel("openrouter", effectiveSettings.model) : undefined;
@@ -2030,12 +2036,16 @@ export default function App() {
   const prepareLocalSkills = useCallback(
     async (folder: string, files: LocalSkillFile[], aliases: Record<string, string>, disabled: string[], removed: string[], scanSequence: number) => {
       const resolved = resolveLocalSkills(files, aliases, disabled, removed);
+      const signature = skillRuntimeSignature(folder, resolved);
       const superseded = () => scanSequence !== skillScanSequenceRef.current;
       const run = async () => {
         if (superseded()) return resolved;
         if (!folder) {
           setSkills(resolved);
+          selectedSkillsRef.current = { folder: "", skills: resolved };
           skillRuntimeRootRef.current = "";
+          preparedSkillsFolderRef.current = "";
+          preparedSkillsSignatureRef.current = "";
           if (runtimeStatus?.available) await rpc("skills/extraRoots/set", { extraRoots: [] });
           return resolved;
         }
@@ -2049,6 +2059,9 @@ export default function App() {
           if (superseded()) return resolved;
         }
         skillRuntimeRootRef.current = runtimeRoot;
+        selectedSkillsRef.current = { folder, skills: resolved };
+        preparedSkillsFolderRef.current = folder;
+        preparedSkillsSignatureRef.current = signature;
         setSkills(resolved);
         return resolved;
       };
@@ -2087,7 +2100,14 @@ export default function App() {
         if (scanSequence !== skillScanSequenceRef.current) return [];
         const unchanged = JSON.stringify(files) === JSON.stringify(skillFilesRef.current);
         setSkillsError("");
-        if (silent && unchanged) return resolveLocalSkills(files, aliases, disabled, removed);
+        if (silent && unchanged) {
+          const resolved = resolveLocalSkills(files, aliases, disabled, removed);
+          if (preparedSkillsFolderRef.current === folder
+            && preparedSkillsSignatureRef.current === skillRuntimeSignature(folder, resolved)) {
+            return resolved;
+          }
+          return await prepareLocalSkills(folder, files, aliases, disabled, removed, scanSequence);
+        }
         skillFilesRef.current = files;
         setSkillFiles(files);
         return await prepareLocalSkills(folder, files, aliases, disabled, removed, scanSequence);
@@ -2115,24 +2135,62 @@ export default function App() {
     },
     [disabledSkillPaths, prepareLocalSkills, removedSkillPaths, skillAliases, skillsFolder],
   );
+  // Silent, like the folder poller: a send must never be the reason the Skills
+  // library and its model runtime are torn down for a folder that is only
+  // briefly unreadable.
+  refreshSkillsForInvocationRef.current = (folder) => refreshLocalSkills(folder, undefined, undefined, undefined, true);
+  const resolveSkillPrompt = useCallback(async (message: string) => {
+    const selected = selectedSkillsRef.current;
+    let available = selected.skills;
+    if (message.includes("@") && selected.folder && preparedSkillsFolderRef.current !== selected.folder) {
+      // Only a skill-shaped mention makes a send depend on the skills folder at
+      // all. Classification comes from the same native parser that resolves
+      // skills, so an e-mail address or a file path never waits on — or fails
+      // for — a folder it was never going to read, and reaches the model as the
+      // ordinary text it already was.
+      if ((await skillMentionNames(message)).length === 0) {
+        return resolveSelectedSkillPrompt(message, "", []);
+      }
+      const warmup = skillWarmupRef.current;
+      if (warmup?.folder === selected.folder) available = await warmup.promise;
+      if (preparedSkillsFolderRef.current !== selected.folder) {
+        available = await refreshSkillsForInvocationRef.current?.(selected.folder) ?? [];
+      }
+      if (preparedSkillsFolderRef.current !== selected.folder) {
+        throw new Error("Mythra Code could not load the selected skills folder. Refresh the Skills library and try again.");
+      }
+    }
+    return resolveSelectedSkillPrompt(message, selected.folder, available);
+  }, []);
 
-  // Polling the skills folder every five seconds is only worth doing where a
-  // change is visible: the Tools surface or the Settings skills library. Away
-  // from those it ran forever against a folder nobody was looking at. Window
-  // focus still refreshes unconditionally, so returning to the app after an
-  // external edit is up to date wherever the user lands.
+  // Load once for this selected library/configuration and refresh when the app
+  // regains focus. The periodic watcher is managed separately so merely
+  // opening or closing Settings cannot start another one-off scan.
   const skillsSurfaceVisible = settingsOpen || (studioOpen && studioTab === "tools");
   useEffect(() => {
     if (!skillsFolder) return;
     const refresh = () => {
       if (document.visibilityState === "visible") void refreshLocalSkills(skillsFolder, skillAliases, disabledSkillPaths, removedSkillPaths, true);
     };
-    const interval = skillsSurfaceVisible ? window.setInterval(refresh, 5_000) : null;
+    const promise = refreshLocalSkills(skillsFolder, skillAliases, disabledSkillPaths, removedSkillPaths, true);
+    skillWarmupRef.current = { folder: skillsFolder, promise };
+    void promise.finally(() => {
+      if (skillWarmupRef.current?.promise === promise) skillWarmupRef.current = null;
+    });
     window.addEventListener("focus", refresh);
     return () => {
-      if (interval !== null) window.clearInterval(interval);
       window.removeEventListener("focus", refresh);
     };
+  }, [disabledSkillPaths, refreshLocalSkills, removedSkillPaths, skillAliases, skillsFolder]);
+
+  // While a skill surface is visible, detect external edits promptly without
+  // paying for permanent background polling elsewhere in the app.
+  useEffect(() => {
+    if (!skillsFolder || !skillsSurfaceVisible) return;
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === "visible") void refreshLocalSkills(skillsFolder, skillAliases, disabledSkillPaths, removedSkillPaths, true);
+    }, 5_000);
+    return () => window.clearInterval(interval);
   }, [disabledSkillPaths, refreshLocalSkills, removedSkillPaths, skillAliases, skillsFolder, skillsSurfaceVisible]);
 
   const refreshTools = useCallback(
@@ -3610,6 +3668,7 @@ export default function App() {
     draftThreadIsolated,
     worktreeBusy,
     skillsFolder,
+    resolveSkillPrompt,
     childAgentPolicies,
     childAgentLinks,
     activeThreadIsChild,
@@ -3771,6 +3830,7 @@ export default function App() {
     runProjectCommand: runProjectCommandForThread,
     beginRunCheckpoint,
     discardRunCheckpoint,
+    resolveSkillPrompt,
   });
 
   /**
@@ -5266,6 +5326,7 @@ export default function App() {
     lmStudioModels,
     customAgents,
     ensureSkillRoots,
+    resolveSkillPrompt,
     bindThreadToProject,
     beginRunCheckpoint,
     finalizeRunCheckpoint,
@@ -5320,6 +5381,7 @@ export default function App() {
     lmStudioReady,
     lmStudioModels,
     ensureSkillRoots,
+    resolveSkillPrompt,
     bindThreadToProject,
     beginRunCheckpoint,
     discardRunCheckpoint,

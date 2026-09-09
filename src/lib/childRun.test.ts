@@ -35,6 +35,7 @@ function context(overrides: Partial<ChildRunContext> = {}): ChildRunContext {
     reasoningEffort: "high",
     serviceTier: "priority",
     serviceName: "Mythra Code",
+    resolveSkillPrompt: async (message) => message,
     ...overrides,
   };
 }
@@ -105,6 +106,37 @@ describe("startChildAgentTurn", () => {
     }));
     expect(cursor.startCursorTurn.mock.calls[0][0]).not.toHaveProperty("childAgentBridge");
     expect(result.cursorSessionId).toBe("cursor-1");
+  });
+
+  it.each([
+    { provider: "claude", model: "claude-fable-5" },
+    { provider: "cursor", model: "auto" },
+    { provider: "openai", model: "gpt-5.6-terra" },
+    { provider: "openrouter", model: "x-ai/grok-4.5" },
+    { provider: "lmstudio", model: "local/qwen3-coder" },
+  ] as const)("delivers resolved Mythra skill context to a $provider child without changing its visible prompt", async ({ provider, model }) => {
+    const resolveSkillPrompt = vi.fn(async () => "resolved skill context\n\n@review the diff");
+    const result = await startChildAgentTurn(
+      target({ provider, model }),
+      "@review the diff",
+      context({ resolveSkillPrompt, lmStudioBaseUrl: "http://127.0.0.1:1234/v1" }),
+    );
+
+    expect(resolveSkillPrompt).toHaveBeenCalledExactlyOnceWith("@review the diff");
+    if (provider === "claude") {
+      expect(claude.startClaudeTurn).toHaveBeenCalledWith(expect.objectContaining({
+        prompt: "resolved skill context\n\n@review the diff",
+      }));
+    } else if (provider === "cursor") {
+      expect(cursor.startCursorTurn).toHaveBeenCalledWith(expect.objectContaining({
+        prompt: "resolved skill context\n\n@review the diff",
+      }));
+    } else {
+      expect(codex.rpc).toHaveBeenCalledWith("turn/start", expect.objectContaining({
+        input: [expect.objectContaining({ text: "resolved skill context\n\n@review the diff" })],
+      }));
+    }
+    expect(result.thread.preview).toBe("@review the diff");
   });
 
   it.each([

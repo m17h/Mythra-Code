@@ -9,8 +9,8 @@ import type { ProjectRunCommand } from "../types";
  */
 export const MYTHRA_CODE_SKILL_MENTION_INSTRUCTIONS = [
   "The user's message may contain @name mentions written in Mythra Code's composer.",
-  "An exact @name token matching an available Mythra Code skill is an explicit instruction to load and follow that skill before doing the requested work.",
-  "An @ mention naming a workspace path is a file reference, and any other @word is ordinary text: never invent a skill for one.",
+  "When Mythra Code supplies a mythra_code_invoked_skills JSON envelope, follow exactly those resolved instructions in its skills for its userMessage before doing the requested work.",
+  "Never substitute a provider, account, global, or workspace skill for an @name; an @ mention naming a workspace path is a file reference, and any other @word is ordinary text.",
 ].join(" ");
 
 export const MYTHRA_CODE_COMPLETION_INSTRUCTIONS = [
