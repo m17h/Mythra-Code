@@ -277,7 +277,7 @@ export function SkillLibrary({
   const sectionError = inlineCreateError ? "" : error;
 
   return (
-    <section className="settings-section skill-library-section">
+    <section className="skill-library-section">
       <div className={`skill-folder-card ${folder ? "selected" : "empty"}`}>
         <span className="skill-folder-icon"><FolderOpen size={19} /></span>
         <span className="skill-folder-copy">

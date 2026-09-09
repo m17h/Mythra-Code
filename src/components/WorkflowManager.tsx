@@ -192,13 +192,11 @@ export function WorkflowManager({
   };
 
   return (
-    <section className="settings-section workflow-manager">
-      <div className="settings-section-heading settings-heading-with-action">
-        <div className="settings-icon"><Workflow size={17} /></div>
-        <div>
-          <h3>Agent workflows</h3>
-          <p>Build ordered recipes from agent prompts and deterministic commands. Run them manually, on an interval, or whenever Mythra Code starts.</p>
-        </div>
+    <section className="set-group workflow-manager">
+      {/* The action sits beside the heading, never inside it: a heading named
+          "Agent workflows New workflow" is no heading at all to a screen reader. */}
+      <div className="set-group-head">
+        <h4>Agent workflows</h4>
         <button
           className="secondary-button compact"
           onClick={() => {
@@ -210,6 +208,7 @@ export function WorkflowManager({
           <Plus size={12} /> New workflow
         </button>
       </div>
+      <p>Build ordered recipes from agent prompts and deterministic commands. Run them manually, on an interval, or whenever Mythra Code starts.</p>
 
       <div className="workflow-safety-note">
         <Check size={13} />

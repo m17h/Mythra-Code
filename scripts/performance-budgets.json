@@ -237,20 +237,26 @@
       "decision": "Accept 203 Safari / 188 Chrome app-entry bytes and 133 Safari / 118 Chrome startup JavaScript bytes above the existing limits for honoring Stop during skill resolution in ordinary turns and workflows, and classifying payload-less quota failures correctly. Native Claude recovery now requires a clean process exit and rejects interrupted follow-up streams without adding renderer bytes. The transform-based relay path adds 6 stylesheet bytes; an alternating 12-card Chromium fixture eliminates recurring Paint events compared with the prior background-position animation. Geometry and reduced-motion checks pass in Chromium and WebKit. This is a local animation measurement, not an app-wide speed claim. App-entry, startup JavaScript, and CSS caps match measured output exactly; the total JavaScript caps remain unchanged. See docs/performance/post-1.15.7-review.md.",
       "safari13": { "appEntryFromBytes": 372358, "appEntryToBytes": 372561, "startupJsFromBytes": 737851, "startupJsToBytes": 737984, "startupCssFromBytes": 361955, "startupCssToBytes": 361961 },
       "chrome105": { "appEntryFromBytes": 352748, "appEntryToBytes": 352936, "startupJsFromBytes": 710830, "startupJsToBytes": 710948, "startupCssFromBytes": 355535, "startupCssToBytes": 355541 }
+    },
+    {
+      "change": "Rebuild Settings on one labelled-group/row system with a searchable sidebar",
+      "decision": "Accept 3.0 KB more total JavaScript and 496 Safari / 373 Chrome bytes of startup CSS; startup JavaScript and the app entry are unchanged on both targets. The JavaScript is entirely inside the lazy Settings chunk: per-pane search keywords, plus panes rewritten from five ad-hoc heading and container patterns onto two primitives. The stylesheet nets out flat because the new system deleted more CSS than it added \u2014 the retired icon tiles, section and sub headings, workspace link, prompt layer fields, behavior and runtime grids, diagnostic card, and interface-size card are all gone. None of it runs before Settings is opened.",
+      "safari13": { "appEntryFromBytes": 372561, "appEntryToBytes": 372561, "appEntryDeltaBytes": 0, "startupJsFromBytes": 737984, "startupJsToBytes": 737984, "startupJsDeltaBytes": 0, "startupCssFromBytes": 361961, "startupCssToBytes": 362457, "startupCssDeltaBytes": 496, "totalJsFromBytes": 1496706, "totalJsToBytes": 1499714, "totalJsDeltaBytes": 3008 },
+      "chrome105": { "appEntryFromBytes": 352936, "appEntryToBytes": 352936, "appEntryDeltaBytes": 0, "startupJsFromBytes": 710948, "startupJsToBytes": 710948, "startupJsDeltaBytes": 0, "startupCssFromBytes": 355541, "startupCssToBytes": 355914, "startupCssDeltaBytes": 373, "totalJsFromBytes": 1459321, "totalJsToBytes": 1462346, "totalJsDeltaBytes": 3025 }
     }
   ],
   "profiles": {
     "safari13-minified": {
       "appEntryRawBytes": 372561,
       "startupJsRawBytes": 737984,
-      "startupCssRawBytes": 361961,
-      "totalJsRawBytes": 1496706
+      "startupCssRawBytes": 362457,
+      "totalJsRawBytes": 1499714
     },
     "chrome105-minified": {
       "appEntryRawBytes": 352936,
       "startupJsRawBytes": 710948,
-      "startupCssRawBytes": 355541,
-      "totalJsRawBytes": 1459321
+      "startupCssRawBytes": 355914,
+      "totalJsRawBytes": 1462346
     }
   }
 }
