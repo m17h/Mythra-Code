@@ -1692,8 +1692,25 @@ fn observes_a_spawned_child_as_our_own_until_it_is_reaped() {
     }
     child.kill().unwrap();
     child.wait().unwrap();
+    // Windows keeps the process object (and therefore its PID) observable
+    // while Child still owns its process handle, even after wait returns.
+    drop(child);
+    #[cfg(windows)]
+    let mut observed_after_reap = observe_process(pid);
+    #[cfg(not(windows))]
+    let observed_after_reap = observe_process(pid);
+    #[cfg(windows)]
+    {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while identity_still_managed(identity, observed_after_reap, own)
+            && Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(10));
+            observed_after_reap = observe_process(pid);
+        }
+    }
     assert!(
-        !identity_still_managed(identity, observe_process(pid), own),
+        !identity_still_managed(identity, observed_after_reap, own),
         "a reaped child must no longer verify as ours"
     );
 }
