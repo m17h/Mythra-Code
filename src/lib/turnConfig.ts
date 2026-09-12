@@ -101,7 +101,7 @@ export function childAgentMcpConfig(bridge: ChildAgentBridgeLaunch | undefined):
  * ChatGPT connected-app tools are fetched independently by the runtime and
  * can contain provider-specific schemas that OpenRouter destinations reject.
  */
-export function threadRuntimeConfig(run: ScheduleRunSettings, options: Pick<ThreadStartOptions, "customAgents" | "modelContextWindow" | "childAgentBridge" | "projectRunCommand"> = {}): JsonObject {
+export function threadRuntimeConfig(run: ScheduleRunSettings, options: Partial<Pick<ThreadStartOptions, "interactive" | "customAgents" | "modelContextWindow" | "childAgentBridge" | "projectRunCommand">> = {}): JsonObject {
   const contextWindow = Number(options.modelContextWindow);
   const mythraDelegation = Boolean(options.childAgentBridge?.toolNames.includes("spawn_mythra_agent"));
   const mythraSettings = Boolean(options.childAgentBridge?.toolNames.includes("propose_agent_settings"));
@@ -132,6 +132,7 @@ export function threadRuntimeConfig(run: ScheduleRunSettings, options: Pick<Thre
       ...customAgentConfig(options.customAgents ?? []),
     },
     features: {
+      ...(run.provider === "openai" ? { default_mode_request_user_input: options.interactive !== false } : {}),
       // Mythra Code is the only delegation authority. Provider-native spawning
       // bypasses the user's approved destinations, frozen concurrency budget,
       // ownership records, and child inbox. With no managed destination the
@@ -174,7 +175,7 @@ export function threadResumeParams(
   run: ScheduleRunSettings,
   threadId: string,
   cwd: string,
-  options: Pick<ThreadStartOptions, "customAgents" | "modelContextWindow" | "additionalWorkspaceRoots" | "childAgentBridge" | "projectRunCommand"> & {
+  options: Partial<Pick<ThreadStartOptions, "interactive" | "customAgents" | "modelContextWindow" | "additionalWorkspaceRoots" | "childAgentBridge" | "projectRunCommand">> & {
     excludeTurns?: boolean;
     /**
      * Re-send the whole runtime config even with no bridge attached. This is
@@ -198,7 +199,7 @@ export function threadResumeParams(
     // A thread may have been created under a different permission mode. Resume
     // it with the mode currently shown in the composer so a stale `on-request`
     // policy cannot survive after the user switches to Full access.
-    approvalPolicy: run.permission === "ask" ? "on-request" : "never",
+    approvalPolicy: options.interactive !== false && run.permission === "ask" ? "on-request" : "never",
     sandbox: sandboxMode(run.permission),
     developerInstructions,
     ...(options.excludeTurns ? { excludeTurns: true } : {}),

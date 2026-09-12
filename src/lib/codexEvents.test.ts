@@ -26,7 +26,55 @@ function makeContext(overrides: Partial<CodexEventContext> = {}): CodexEventCont
 }
 
 describe("routeCodexEvent", () => {
-  beforeEach(() => resetTaskStore());
+  beforeEach(() => { localStorage.clear(); resetTaskStore(); });
+
+  it("reconciles live user echoes and retains nonblocking questions after request cleanup", () => {
+    const ctx = makeContext();
+    const store = useTaskStore.getState();
+    store.setActiveTurn("thread", "turn");
+    store.appendUserMessage("thread", { id: "local-1", role: "user", text: "Please review" });
+    const event = { method: "item/completed", params: { threadId: "thread", turnId: "turn", item: { id: "runtime-1", type: "userMessage", content: [{ type: "text", text: "Please review" }] } } };
+    routeCodexEvent(event, ctx);
+    routeCodexEvent(event, ctx);
+    expect(useTaskStore.getState().tasks.thread.messages).toHaveLength(1);
+    routeCodexEvent({ method: "item/tool/requestUserInput", id: 42, params: { threadId: "thread", turnId: "turn", isBlocking: false, questions: [{ id: "layout", question: "Which layout?", options: [{ label: "Compact", description: "Dense" }] }] } }, ctx);
+    routeCodexEvent({ method: "serverRequest/resolved", params: { threadId: "thread", requestId: 42 } }, ctx);
+    expect(useTaskStore.getState().tasks.thread.approvals).toEqual([]);
+    expect(ctx.onApprovalRequested).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().tasks.thread.messages.at(-1)).toMatchObject({ questionRequestId: 42, questions: [{ id: "layout", title: "Which layout?", options: ["Compact"] }] });
+  });
+
+  it("replaces a stale pending question when a new request reuses its ID", () => {
+    const ctx = makeContext();
+    for (const turnId of ["old", "new"]) {
+      routeCodexEvent({ method: "item/tool/requestUserInput", id: 42, params: { threadId: "thread", turnId, itemId: `${turnId}-item`, isBlocking: false, questions: [{ id: "layout", question: `Question from ${turnId}` }] } }, ctx);
+    }
+    const task = useTaskStore.getState().tasks.thread;
+    expect(task.messages).toHaveLength(2);
+    expect(task.approvals).toEqual([expect.objectContaining({ params: expect.objectContaining({ turnId: "new", itemId: "new-item" }) })]);
+    const pending = task.approvals[0];
+    routeCodexEvent({ method: pending.method, id: pending.id, params: pending.params }, ctx);
+    expect(useTaskStore.getState().tasks.thread.approvals[0]).toBe(pending);
+  });
+
+  it("does not overwrite an earlier question when request IDs are reused", () => {
+    const ctx = makeContext();
+    for (const turnId of ["old-turn", "new-turn"]) {
+      routeCodexEvent({ method: "item/tool/requestUserInput", id: 42, params: { threadId: "thread", turnId, itemId: `${turnId}-item`, isBlocking: false, questions: [{ id: "layout", question: `Question from ${turnId}` }] } }, ctx);
+      routeCodexEvent({ method: "serverRequest/resolved", params: { threadId: "thread", requestId: 42 } }, ctx);
+    }
+    const messages = useTaskStore.getState().tasks.thread.messages;
+    expect(messages).toHaveLength(2);
+    expect(new Set(messages.map((message) => message.id)).size).toBe(2);
+  });
+
+  it("keeps Astra assistant questions with streaming text and history", () => {
+    const ctx = makeContext();
+    const questions = [{ title: "Which layout?", options: ["Compact"] }];
+    routeCodexEvent({ method: "item/completed", params: { threadId: "thread", turnId: "turn", item: { type: "agentMessage", id: "answer", text: "I will keep working.", questions } } }, ctx);
+    expect(useTaskStore.getState().tasks.thread.messages[0].questions).toEqual(questions);
+    expect(useTaskStore.getState().tasks.thread.approvals).toEqual([]);
+  });
 
   it("captures OpenRouter receipts without assigning them to the active thread or counting tokens again", () => {
     const before = usageTotals();

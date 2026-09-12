@@ -1,3 +1,4 @@
+import { AgentQuestionForm, type FormQuestion } from "./AgentQuestionForm";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { ExternalLink, MessageSquare, ShieldAlert } from "lucide-react";
@@ -163,15 +164,20 @@ function StandardApproval({ approval, onRespond, threadLabel, pendingCount }: { 
   return <Modal title={title} description={reason} threadLabel={threadLabel} pendingCount={pendingCount}>{command && <pre className="approval-command">{command}</pre>}<ApprovalResponseError error={error} /><ApprovalButtons disabled={locked} allowSession={!projectSubagents} denyLabel={projectSubagents ? "Keep current settings" : "Deny"} acceptLabel={projectSubagents ? "Apply to project" : "Allow once"} dangerDeny={!projectSubagents} onDecision={(decision) => decide(() => onRespond(approvalResponse(approval, decision)))} /></Modal>;
 }
 
-interface UserQuestion { id: string; header: string; question: string; isSecret?: boolean; options?: Array<{ label: string; description: string }> | null }
-
 function UserInputRequest({ approval, onRespond, threadLabel, pendingCount }: { approval: PendingApproval; onRespond: (value: JsonObject) => void | Promise<void> } & ApprovalContext) {
-  const questions = (approval.params.questions ?? []) as UserQuestion[];
-  // Every question gets an entry up front so untouched ones still reach the
-  // submitted payload instead of being silently dropped.
-  const [answers, setAnswers] = useState<Record<string, string>>(() => Object.fromEntries(questions.map((question) => [question.id, ""])));
-  const { locked, error, decide } = useDecisionLock();
-  return <Modal title="The agent needs your input" description="Answer these questions to continue the task." threadLabel={threadLabel} pendingCount={pendingCount}><div className="request-fields">{questions.map((question) => <label key={question.id}><span>{question.header}</span><small>{question.question}</small>{question.options?.length ? <select value={answers[question.id] ?? ""} onChange={(event) => setAnswers((current) => ({ ...current, [question.id]: event.target.value }))}><option value="">Choose…</option>{question.options.map((option, index) => <option key={index} value={option.label}>{option.label} — {option.description}</option>)}</select> : <input type={question.isSecret ? "password" : "text"} value={answers[question.id] ?? ""} onChange={(event) => setAnswers((current) => ({ ...current, [question.id]: event.target.value }))} />}</label>)}</div><ApprovalResponseError error={error} /><div className="approval-actions"><button className="secondary-button danger" disabled={locked} onClick={() => decide(() => onRespond({ answers: {} }))}>Cancel</button><button className="primary-button" disabled={locked} onClick={() => decide(() => onRespond({ answers: Object.fromEntries(Object.entries(answers).map(([id, value]) => [id, { answers: [value] }])) }))}>Continue</button></div></Modal>;
+  const claude = approval.method === "claude/can_use_tool";
+  const input = (claude ? approval.params.input : approval.params) as JsonObject;
+  const raw = (Array.isArray(input?.questions) ? input.questions : []) as Array<{ id?: string; question: string; isSecret?: boolean; multiSelect?: boolean; options?: FormQuestion["options"] }>;
+  const questions = raw.map((question, index) => ({ id: question.id ?? String(index), title: question.question,
+    options: question.options, multiSelect: question.multiSelect, secret: question.isSecret }));
+  const { locked } = useDecisionLock();
+  return <Modal title="The agent needs your input" description="Answer these questions to continue the task." threadLabel={threadLabel} pendingCount={pendingCount}>
+    <AgentQuestionForm focusOnMount draftKey={`approval:${JSON.stringify([approval.threadId, approval.id, approval.params.turnId, approval.params.itemId, approval.receivedAt])}`} questions={questions} disabled={locked} submitLabel="Continue"
+      onCancel={() => onRespond(claude ? { behavior: "deny", message: "The user cancelled the questions." } : { answers: {} })}
+      onSubmit={(answers) => onRespond(claude ? { behavior: "allow", updatedInput: { ...input,
+        answers: Object.fromEntries(questions.map((question) => [question.title, answers[question.id].join(", ")])) } }
+        : { answers: Object.fromEntries(questions.map((question) => [question.id, { answers: answers[question.id] }])) })} />
+  </Modal>;
 }
 
 interface JsonSchemaProperty { type?: string; title?: string; description?: string; default?: unknown; enum?: unknown[] }
@@ -242,7 +248,7 @@ function Modal({ title, description, threadLabel, pendingCount, children }: { ti
 
 export function ApprovalCenter({ approval, threadLabel, pendingCount, onRespond }: { approval: PendingApproval; threadLabel?: string; pendingCount?: number; onRespond: (value: JsonObject) => void | Promise<void> }) {
   const context = { threadLabel, pendingCount };
-  if (approval.method === "item/tool/requestUserInput" || approval.method === "cursor/ask_question") return <UserInputRequest approval={approval} onRespond={onRespond} {...context} />;
+  if ((approval.method === "claude/can_use_tool" && approval.params.tool_name === "AskUserQuestion") || approval.method === "item/tool/requestUserInput" || approval.method === "cursor/ask_question") return <UserInputRequest approval={approval} onRespond={onRespond} {...context} />;
   if (approval.method === "mcpServer/elicitation/request") return <McpRequest approval={approval} onRespond={onRespond} {...context} />;
   return <StandardApproval approval={approval} onRespond={onRespond} {...context} />;
 }

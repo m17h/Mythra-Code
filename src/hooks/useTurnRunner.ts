@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
-import { rpc, runtimeInstanceId, runtimeThreadState, type CodexRuntimeStatus } from "../lib/codex";
+import { respond, rpc, runtimeInstanceId, runtimeThreadState, type CodexRuntimeStatus } from "../lib/codex";
 import {
   isClaudeThreadBusyError,
   killClaudeTurn,
@@ -15,6 +15,7 @@ import {
   steerCursorTurn,
   type CursorRuntimeStatus,
 } from "../lib/cursor";
+import type { AgentQuestionSubmission } from "../lib/agentQuestionContext";
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL } from "../lib/appConfig";
 import { cacheChildAgentPolicy, ensureChildAgentBridge, releaseChildAgentSession, type ChildAgentBridgeResult } from "../lib/childAgentSessions";
 import { childAgentPolicyForThread, type ChildAgentLink, type ChildAgentPolicy, type ChildAgentReadiness } from "../lib/childAgents";
@@ -60,6 +61,7 @@ function isUnavailableSteerError(reason: unknown): boolean {
     /(?:Claude|Cursor).*(?:not currently running|no longer running)/i,
     /Could not (?:write to|flush) (?:Claude Code|Cursor Agent)/i,
     /Cursor session is still starting/i,
+    /no active turn|active turn is still starting|expected turn(?: id)?.*(?:does not match|mismatch)/i,
   ].some((pattern) => pattern.test(raw));
 }
 
@@ -211,6 +213,7 @@ export interface TurnRunnerContext {
  */
 export function useTurnRunner(context: TurnRunnerContext): {
   sendMessage: (text: string) => Promise<boolean>;
+  answerQuestions: (threadId: string, text: string, submission?: AgentQuestionSubmission) => Promise<boolean>;
   steerMessage: (text: string) => Promise<boolean>;
   steerQueuedMessage: (queuedTurnId: string) => Promise<void>;
   retryQueuedMessage: (queuedTurnId: string) => void;
@@ -920,6 +923,41 @@ export function useTurnRunner(context: TurnRunnerContext): {
     return true;
   }, [pumpQueuedThread]);
 
+  const answerQuestions = useCallback(async (threadId: string, text: string, submission?: AgentQuestionSubmission): Promise<boolean> => {
+    const current = contextRef.current;
+    const requestId = submission?.message.questionRequestId;
+    const pending = submission && requestId !== undefined ? useTaskStore.getState().tasks[threadId]?.approvals.find((entry) => entry.id === requestId
+      && entry.method === "item/tool/requestUserInput"
+      && typeof submission.message.turnId === "string" && entry.params.turnId === submission.message.turnId
+      && typeof submission.message.questionRequestItemId === "string" && entry.params.itemId === submission.message.questionRequestItemId) : undefined;
+    const resolvePending = () => {
+      if (pending && useTaskStore.getState().tasks[threadId]?.approvals.includes(pending)) useTaskStore.getState().resolveApproval(threadId, pending.id);
+    };
+    if (submission && pending) {
+      try {
+        await respond(pending.id, { answers: Object.fromEntries(Object.entries(submission.answers).map(([id, answers]) => [id, { answers }])) },
+          { method: "item/tool/requestUserInput", threadId, turnId: submission.message.turnId, itemId: submission.message.questionRequestItemId });
+        resolvePending();
+        return true;
+      } catch (reason) {
+        if (!/unknown request|not found|no longer|closed/i.test(friendlyError(reason))) throw reason;
+        resolvePending();
+      }
+    }
+    if (requestId !== undefined && submission?.message.questions?.some((question) => question.secret)) {
+      throw new Error("This private question has expired. Ask the agent to request it again.");
+    }
+    if (current.activeThread?.id !== threadId) throw new Error("Open the conversation that asked these questions before answering.");
+    const status = useTaskStore.getState().tasks[threadId]?.status;
+    // Answers belong to this request, not the composer's unrelated draft or
+    // attachments. Treat any @ words in answers literally.
+    const ctx = { ...current, attachments: [], running: status === "running" || status === "starting", resolveSkillPrompt: async (message: string) => message };
+    if (status === "starting") return queueFollowUp(ctx, text);
+    let unavailable = false;
+    const delivered = await deliverMessage(ctx, text, ctx.running ? "steer" : "turn", () => { unavailable = true; });
+    return !delivered && unavailable ? queueFollowUp(ctx, text) : delivered;
+  }, [deliverMessage, queueFollowUp]);
+
   const sendMessage = useCallback(async (text: string): Promise<boolean> => {
     const ctx = contextRef.current;
     if (!text || !ctx.activeWorkspace) return false;
@@ -1053,5 +1091,5 @@ export function useTurnRunner(context: TurnRunnerContext): {
     }
   }, []);
 
-  return { sendMessage, steerMessage, steerQueuedMessage, retryQueuedMessage, removeQueuedMessage, stopTurn };
+  return { sendMessage, answerQuestions, steerMessage, steerQueuedMessage, retryQueuedMessage, removeQueuedMessage, stopTurn };
 }

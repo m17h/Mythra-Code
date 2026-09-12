@@ -3494,6 +3494,7 @@ async fn claude_flush_fixture(
         child: Arc::new(Mutex::new(child)),
         alive: Arc::new(AtomicBool::new(true)),
         control_requests: Mutex::new(HashSet::new()),
+        control_response: Mutex::new(()),
     };
     (turn, stdout, marker)
 }
@@ -3660,4 +3661,172 @@ fn claude_exit_recovery_requires_a_successful_native_process_exit() {
     assert!(!claude_can_recover_at_exit(false, Some(&success)));
     assert!(!claude_can_recover_at_exit(true, Some(&failure)));
     assert!(!claude_can_recover_at_exit(true, None));
+}
+
+#[test]
+fn claude_questions_use_stdio_in_every_permission_mode() {
+    for permission in ["ask", "full", "read-only"] {
+        assert!(claude_allowed_builtin_tools(permission).contains(&"AskUserQuestion"));
+        let arguments = claude_permission_arguments(permission);
+        assert!(arguments
+            .windows(2)
+            .any(|pair| pair == ["--permission-prompt-tool", "stdio"]));
+        assert!(!arguments.contains(&"dontAsk"));
+        assert_eq!(
+            arguments.contains(&"bypassPermissions"),
+            permission == "full"
+        );
+    }
+}
+
+#[test]
+fn read_only_question_support_does_not_allow_other_permission_requests() {
+    let question = json!({ "type": "control_request", "request_id": "question-1",
+        "request": { "subtype": "can_use_tool", "tool_name": "AskUserQuestion", "input": { "questions": [] } } });
+    assert!(claude_read_only_denial(true, &question).is_none());
+    for tool in ["Bash", "Edit", "mcp__external__write", "UnknownTool"] {
+        let mut request = question.clone();
+        request["request"]["tool_name"] = json!(tool);
+        let denial = claude_read_only_denial(true, &request).unwrap();
+        assert_eq!(denial["response"]["response"]["behavior"], "deny");
+        assert_eq!(denial["response"]["request_id"], "question-1");
+        assert!(claude_read_only_denial(false, &request).is_none());
+    }
+}
+
+#[tokio::test]
+async fn claude_control_response_does_not_block_cancellation_or_allow_a_duplicate() {
+    let response_lock = Arc::new(Mutex::new(()));
+    let requests = Arc::new(Mutex::new(HashSet::from(["question-1".to_string()])));
+    let write_started = Arc::new(tokio::sync::Notify::new());
+    let release_write = Arc::new(tokio::sync::Notify::new());
+    let writes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+    let first = tokio::spawn({
+        let response_lock = response_lock.clone();
+        let requests = requests.clone();
+        let write_started = write_started.clone();
+        let release_write = release_write.clone();
+        let writes = writes.clone();
+        async move {
+            write_claude_control_response(&response_lock, &requests, "question-1", || async move {
+                writes.fetch_add(1, Ordering::SeqCst);
+                write_started.notify_one();
+                release_write.notified().await;
+                Ok(())
+            })
+            .await
+        }
+    });
+    timeout(Duration::from_secs(1), write_started.notified())
+        .await
+        .expect("first response should reach its write");
+
+    let duplicate = tokio::spawn({
+        let response_lock = response_lock.clone();
+        let requests = requests.clone();
+        let writes = writes.clone();
+        async move {
+            write_claude_control_response(&response_lock, &requests, "question-1", || async move {
+                writes.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+            .await
+        }
+    });
+
+    // The stdout reader can remove a cancellation while the first write is
+    // blocked. The waiting duplicate then observes that removal and never
+    // writes a second response.
+    timeout(Duration::from_secs(1), requests.lock())
+        .await
+        .expect("a response write must not hold the request registry")
+        .remove("question-1");
+    release_write.notify_one();
+
+    assert!(first.await.unwrap().is_ok());
+    assert!(duplicate.await.unwrap().is_err());
+    assert_eq!(writes.load(Ordering::SeqCst), 1);
+    assert!(!requests.lock().await.contains("question-1"));
+}
+
+#[tokio::test]
+async fn claude_control_response_keeps_a_failed_write_pending_for_retry() {
+    let response_lock = Mutex::new(());
+    let requests = Mutex::new(HashSet::from(["question-1".to_string()]));
+
+    let error = write_claude_control_response(&response_lock, &requests, "question-1", || async {
+        Err("pipe full".to_string())
+    })
+    .await
+    .unwrap_err();
+    assert_eq!(error, "pipe full");
+    assert!(requests.lock().await.contains("question-1"));
+
+    write_claude_control_response(&response_lock, &requests, "question-1", || async { Ok(()) })
+        .await
+        .unwrap();
+    assert!(!requests.lock().await.contains("question-1"));
+}
+
+#[test]
+fn resolved_codex_requests_use_the_same_keys_as_pending_requests() {
+    for id in [json!(42), json!("question-42")] {
+        assert_eq!(
+            resolved_server_request_id(&json!({
+                "method": "serverRequest/resolved", "params": { "requestId": id }
+            })),
+            Some(id.to_string())
+        );
+    }
+    assert_eq!(
+        resolved_server_request_id(
+            &json!({ "method": "turn/completed", "params": { "requestId": 42 } })
+        ),
+        None
+    );
+    assert_eq!(
+        resolved_server_request_id(&json!({ "method": "serverRequest/resolved", "params": {} })),
+        None
+    );
+}
+
+#[test]
+fn codex_question_response_identity_rejects_a_reused_id_without_consuming_it() {
+    let current_message = json!({
+        "id": 42,
+        "method": "item/tool/requestUserInput",
+        "params": { "threadId": "new-thread", "turnId": "new-turn", "itemId": "new-item" }
+    });
+    let current = codex_server_request_identity(&current_message).unwrap();
+    let stale = CodexServerRequestIdentity {
+        method: "item/tool/requestUserInput".into(),
+        thread_id: Some("old-thread".into()),
+        turn_id: Some("old-turn".into()),
+        item_id: Some("old-item".into()),
+    };
+    let mut requests = HashMap::from([("42".to_string(), current.clone())]);
+
+    let error = consume_codex_server_request(&mut requests, &json!(42), Some(&stale)).unwrap_err();
+    assert!(error.contains("no longer"));
+    assert_eq!(requests.get("42"), Some(&current));
+
+    consume_codex_server_request(&mut requests, &json!(42), Some(&current)).unwrap();
+    assert!(!requests.contains_key("42"));
+}
+
+#[test]
+fn codex_non_question_responses_remain_backwards_compatible() {
+    let message = json!({
+        "id": "approval-1",
+        "method": "item/commandExecution/requestApproval",
+        "params": { "threadId": "thread-1", "turnId": "turn-1", "itemId": "item-1" }
+    });
+    let mut requests = HashMap::from([(
+        json!("approval-1").to_string(),
+        codex_server_request_identity(&message).unwrap(),
+    )]);
+
+    consume_codex_server_request(&mut requests, &json!("approval-1"), None).unwrap();
+    assert!(requests.is_empty());
 }

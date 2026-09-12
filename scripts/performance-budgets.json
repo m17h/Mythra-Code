@@ -249,20 +249,70 @@
       "decision": "Accept the exact measured cost of positioning portal-backed selector menus beside their triggers instead of at the viewport center. The menu respects requested top or bottom placement, flips when space requires it, stays within viewport margins, and follows trigger, viewport, and menu-size changes while preserving the non-popover fallback and existing focus behavior. A browser geometry assertion now rejects centered-but-in-bounds regressions. Safari startup and total JavaScript grow by 1,030 and 1,024 bytes; Chrome grows by 990 and 984 bytes. App-entry JavaScript remains below its prior cap and CSS is unchanged. The implementation adds no dependency, polling, provider request, transcript retention, or per-frame work; listeners and observation exist only while a top-layer menu is open. This is reviewed correctness overhead, not a performance improvement. Limits match measured production output on both configured targets with no extra headroom.",
       "safari13": { "appEntryFromBytes": 372561, "appEntryToBytes": 372337, "appEntryDeltaBytes": -224, "startupJsFromBytes": 737984, "startupJsToBytes": 739014, "startupJsDeltaBytes": 1030, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1499714, "totalJsToBytes": 1500738, "totalJsDeltaBytes": 1024 },
       "chrome105": { "appEntryFromBytes": 352936, "appEntryToBytes": 352712, "appEntryDeltaBytes": -224, "startupJsFromBytes": 710948, "startupJsToBytes": 711938, "startupJsDeltaBytes": 990, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1462346, "totalJsToBytes": 1463330, "totalJsDeltaBytes": 984 }
+    },
+    {
+      "change": "Reconcile submitted prompts and support native agent questions",
+      "decision": "Accept the measured feature cost of one-to-one prompt reconciliation, Claude blocking questions, and Codex asynchronous questions with safe late-answer delivery, scoped request identity, and durable question recovery. Question fields and their stylesheet load only when a question is displayed. Startup CSS is unchanged. No dependency, polling loop, background provider polling, or continuous animation is added. Drafts are bounded to 100 forms and live transcript reconciliation indexes by ID and turn. These are functional costs, not a claimed speedup. See docs/performance/agent-questions-and-prompt-echoes.md for the required performance-regression review; raised limits equal production measurements with no extra headroom.",
+      "measurements": {
+        "safari13": {
+          "appEntryRawBytes": {
+            "before": 372561,
+            "after": 375756,
+            "delta": 3195
+          },
+          "startupJsRawBytes": {
+            "before": 739014,
+            "after": 747226,
+            "delta": 8212
+          },
+          "startupCssRawBytes": {
+            "before": 362499,
+            "after": 362499,
+            "delta": 0
+          },
+          "totalJsRawBytes": {
+            "before": 1500738,
+            "after": 1513778,
+            "delta": 13040
+          }
+        },
+        "chrome105": {
+          "appEntryRawBytes": {
+            "before": 352936,
+            "after": 355880,
+            "delta": 2944
+          },
+          "startupJsRawBytes": {
+            "before": 711938,
+            "after": 719545,
+            "delta": 7607
+          },
+          "startupCssRawBytes": {
+            "before": 355956,
+            "after": 355956,
+            "delta": 0
+          },
+          "totalJsRawBytes": {
+            "before": 1463330,
+            "after": 1475233,
+            "delta": 11903
+          }
+        }
+      }
     }
   ],
   "profiles": {
     "safari13-minified": {
-      "appEntryRawBytes": 372561,
-      "startupJsRawBytes": 739014,
+      "appEntryRawBytes": 375756,
+      "startupJsRawBytes": 747226,
       "startupCssRawBytes": 362499,
-      "totalJsRawBytes": 1500738
+      "totalJsRawBytes": 1513778
     },
     "chrome105-minified": {
-      "appEntryRawBytes": 352936,
-      "startupJsRawBytes": 711938,
+      "appEntryRawBytes": 355880,
+      "startupJsRawBytes": 719545,
       "startupCssRawBytes": 355956,
-      "totalJsRawBytes": 1463330
+      "totalJsRawBytes": 1475233
     }
   }
 }

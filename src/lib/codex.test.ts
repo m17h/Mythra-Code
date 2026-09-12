@@ -8,7 +8,7 @@ const { invoke, listen } = vi.hoisted(() => ({
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 vi.mock("@tauri-apps/api/event", () => ({ listen }));
 
-import { onCodexEvent, rpc } from "./codex";
+import { onCodexEvent, respond, rpc } from "./codex";
 import { resetUsageLedgerCache, recordCumulativeUsage, providerUsageTotals, usageForThread } from "./usageLedger";
 
 describe("Codex event subscriptions", () => {
@@ -17,6 +17,12 @@ describe("Codex event subscriptions", () => {
     listen.mockReset();
     resetUsageLedgerCache();
     localStorage.clear();
+  });
+
+  it("carries question identity across the native response bridge", async () => {
+    const expected = { method: "item/tool/requestUserInput", threadId: "thread", turnId: "turn", itemId: "item" };
+    await respond(42, { answers: {} }, expected);
+    expect(invoke).toHaveBeenCalledWith("codex_respond", { id: 42, result: { answers: {} }, expected });
   });
 
   it("records background provider metadata before its first usage event", async () => {

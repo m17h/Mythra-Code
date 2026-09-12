@@ -386,20 +386,34 @@ afterEach(async () => {
 });
 
 describe("Codex cold startup", () => {
-  it.each(["button", "Escape"])("dismisses a failed Settings load with %s and permits a fresh open", async how => {
-    vi.spyOn(console, "error").mockImplementation(() => {});
-    vi.doMock("./components/SettingsModal", () => { throw new Error("Settings chunk unavailable"); });
-    await renderApp();
-    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
-    const reload = await screen.findByRole("button", { name: "Reload view" });
-    expect(reload).toHaveFocus();
-    if (how === "Escape") fireEvent.keyDown(reload, { key: "Escape" });
-    else fireEvent.click(screen.getByRole("button", { name: "Close settings error" }));
-    expect(screen.queryByText("The settings view hit a problem")).not.toBeInTheDocument();
-    expect(document.querySelector(".sidebar")).not.toHaveAttribute("inert");
-    vi.doMock("./components/SettingsModal", () => ({ SettingsModal: () => <div role="dialog" aria-label="Reopened settings" /> }));
-    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
-    expect(await screen.findByRole("dialog", { name: "Reopened settings" })).toBeInTheDocument();
+  describe("failed Settings load dismissal", () => {
+    let PreparedApp: (typeof import("./App"))["default"];
+
+    beforeEach(async () => {
+      // Keep the deliberately cold module evaluation in the hook timeout so
+      // the test's five seconds measure the Settings failure interaction. A
+      // contended Windows runner can otherwise spend that budget importing
+      // App before the first behavioral assertion executes.
+      vi.resetModules();
+      ({ default: PreparedApp } = await import("./App"));
+    });
+
+    it.each(["button", "Escape"])("dismisses with %s and permits a fresh open", async how => {
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      vi.doMock("./components/SettingsModal", () => { throw new Error("Settings chunk unavailable"); });
+      render(<PreparedApp />);
+      await screen.findByRole("button", { name: PROJECT_B.name });
+      fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+      const reload = await screen.findByRole("button", { name: "Reload view" });
+      expect(reload).toHaveFocus();
+      if (how === "Escape") fireEvent.keyDown(reload, { key: "Escape" });
+      else fireEvent.click(screen.getByRole("button", { name: "Close settings error" }));
+      expect(screen.queryByText("The settings view hit a problem")).not.toBeInTheDocument();
+      expect(document.querySelector(".sidebar")).not.toHaveAttribute("inert");
+      vi.doMock("./components/SettingsModal", () => ({ SettingsModal: () => <div role="dialog" aria-label="Reopened settings" /> }));
+      fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+      expect(await screen.findByRole("dialog", { name: "Reopened settings" })).toBeInTheDocument();
+    });
   });
   it("mounts cold-loaded Settings once and retains the same instance on reopening", async () => {
     const mounted = vi.fn();
@@ -412,7 +426,8 @@ describe("Codex cold startup", () => {
     expect(mounted).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     const dialog = await screen.findByRole("dialog", { name: "Loaded settings" });
-    expect(mounted).toHaveBeenCalledOnce();
+    // The DOM can commit before passive effects run on a slower host.
+    await waitFor(() => expect(mounted).toHaveBeenCalledOnce());
     fireEvent.click(screen.getByRole("button", { name: "Close test settings" }));
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     expect(screen.getByRole("dialog", { name: "Loaded settings" })).toBe(dialog);
