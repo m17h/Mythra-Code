@@ -1,3 +1,4 @@
+import { AsyncAgentQuestions } from "./AsyncAgentQuestions";
 import { Children, createContext, isValidElement, memo, useCallback, useContext, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type Ref } from "react";
 import { flushSync } from "react-dom";
 import { Check, ChevronDown, ChevronRight, CircleDot, Clipboard, CornerUpRight, FileCode2, FoldVertical, ImageIcon, ListChecks, MessageSquare, Pencil, TerminalSquare, UsersRound } from "lucide-react";
@@ -168,6 +169,7 @@ function compactTurnSegment(segment: WorkItemEntry[], compact: boolean): Timelin
   for (const entry of segment) {
     const staysVisible = entry === finalAssistant
       || isCompactionMarker(entry)
+      || (entry.kind === "message" && Boolean(entry.value.questions?.length))
       || (entry.kind === "message" && entry.value.role === "user");
     if (staysVisible) {
       flushWork();
@@ -483,6 +485,7 @@ const MessageRow = memo(function MessageRow({ message, provider, onEdit }: { mes
         {message.role === "assistant"
           ? <AssistantMessageMarkdown text={message.text} streaming={Boolean(message.streaming)} />
           : <MessageMarkdown text={message.text} />}
+        {message.role === "assistant" && message.questions?.length ? <AsyncAgentQuestions message={message} /> : null}
         {message.role === "user" && Boolean(message.attachments?.length) && (
           <div className="message-image-previews" aria-label="Attached images">
             {message.attachments?.map((attachment) => (
@@ -1154,10 +1157,19 @@ function FlowTimeline({
         data-flow-timeline="true"
         data-testid="timeline-scroller"
         tabIndex={0}
+        onFocusCapture={(event) => {
+          if (!event.target.closest(".agent-question-form")) return;
+          // Keep the question in place while the user answers, even as new
+          // output grows below it or the transcript window advances.
+          followingEndRef.current = false;
+          setHiddenPrefixOverride((current) => current ?? hiddenPrefixCount);
+          setShowScrollToLatest(true);
+        }}
         onScroll={(event) => {
           const scroller = event.currentTarget;
           const atEnd = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= TIMELINE_FOLLOW_REARM_THRESHOLD_PX;
-          if (atEnd) {
+          const answeringQuestion = scroller.contains(document.activeElement) && document.activeElement?.closest(".agent-question-form");
+          if (atEnd && !answeringQuestion) {
             followingEndRef.current = true;
             setHiddenPrefixOverride(null);
             setShowScrollToLatest(false);

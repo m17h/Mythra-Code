@@ -1,3 +1,4 @@
+import { displayedUserPrompt } from "./userMessageEcho";
 import type { Activity, ChatMessage, ThreadItem, Turn } from "../types";
 import { compactionActivity, compactionState } from "./contextCompaction";
 import { nativeSubAgentPresentation } from "./nativeSubAgentActivity";
@@ -116,7 +117,7 @@ export function timelineFromTurns(turns: Turn[] = [], options: ThreadTimelineOpt
         messages.push({
           id,
           role: "user",
-          text: userText(item),
+          text: displayedUserPrompt(userText(item)),
           attachments: userImageAttachments(item),
           timelineOrder: order,
           turnId: turn.id,
@@ -125,7 +126,7 @@ export function timelineFromTurns(turns: Turn[] = [], options: ThreadTimelineOpt
         return;
       }
       if (item.type === "agentMessage" || item.type === "plan") {
-        messages.push({ id, role: "assistant", text: item.text ?? "", timelineOrder: order, turnId: turn.id, turnStatus });
+        messages.push({ id, role: "assistant", text: item.text ?? "", questions: item.questions ?? undefined, timelineOrder: order, turnId: turn.id, turnStatus });
         return;
       }
       const activity = activityFromItem(item, id, order, turn.id, turnStatus, options);

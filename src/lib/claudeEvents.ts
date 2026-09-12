@@ -318,6 +318,11 @@ export function routeClaudeEvent(
     return;
   }
 
+  if (type === "control_cancel_request") {
+    store.resolveApproval(threadId, text(message.request_id));
+    return;
+  }
+
   if (type === "control_request") {
     const request = object(message.request);
     if (request.subtype === "can_use_tool") {
@@ -327,6 +332,7 @@ export function routeClaudeEvent(
         method: "claude/can_use_tool",
         params: {
           ...request,
+          turnId,
           command: input.command,
           reason: request.decision_reason || request.description,
         },

@@ -1,3 +1,5 @@
+import { reconcileUserMessages, userEchoIndex } from "./userMessageEcho";
+import { restoreQuestionRequests } from "./agentQuestionRecords";
 import { create } from "zustand";
 import type { Activity, ChatMessage, PendingApproval, Turn } from "../types";
 import type { AgentRecord, TokenUsageView } from "../components/StudioDock";
@@ -257,6 +259,8 @@ function estimateMessageBytes(message: ChatMessage): number {
     + stringBytes(message.id)
     + stringBytes(message.role)
     + stringBytes(message.text)
+    + stringBytes(message.clientMessageId)
+    + (message.questions ? stringBytes(JSON.stringify(message.questions)) : 0)
     + stringBytes(message.turnId)
     + stringBytes(message.turnStatus)
     + stringBytes(message.steerStatus)
@@ -309,6 +313,28 @@ function restoreCompactionActivity(activity: Activity, task?: ThreadTaskState): 
 
 function adjustedBytes(current: number, previous: number, next: number): number {
   return Math.max(0, current - previous + next);
+}
+
+/** A Codex user-item event can beat the turn/start response that supplies the
+ * turn id. Correlate it only with unacknowledged rows inside the pending-start
+ * boundary, and never let a replay from an older known turn consume them. */
+function pendingStartUserEchoIndex(task: ThreadTaskState, incoming: ChatMessage): number {
+  const turnId = incoming.turnId;
+  const threshold = task.pendingTurnStartOrder;
+  if (incoming.role !== "user" || !turnId || threshold === undefined || task.status !== "starting" || task.activeTurnId) return -1;
+  if (task.lastCompletedTurnId === turnId) return -1;
+  const knownBeforePendingStart = [...task.messages, ...task.activities].some((entry) => (
+    entry.turnId === turnId
+    && entry.timelineOrder !== undefined
+    && entry.timelineOrder < threshold
+  ));
+  if (knownBeforePendingStart) return -1;
+  return task.messages.findIndex((entry) => (
+    !entry.turnId
+    && entry.timelineOrder !== undefined
+    && entry.timelineOrder >= threshold
+    && userEchoIndex([{ ...entry, turnId }], incoming) === 0
+  ));
 }
 
 /** Keeps byte-budget tests small instead of allocating tens of megabytes. */
@@ -434,7 +460,9 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
   }),
   hydrateTask: (threadId, messages, activities, workspacePath, history) => set((state) => {
     const existing = state.tasks[threadId];
-    const hydratedMessages = messages.map((message) => withTimelineOrder({
+    const restoredMessages = restoreQuestionRequests(threadId, messages, activities, !history?.hasMore);
+    const reconciled = reconcileUserMessages(restoredMessages, existing?.messages ?? []);
+    const hydratedMessages = reconciled.messages.map((message) => withTimelineOrder({
       ...message,
       turnDurationMs: message.turnDurationMs ?? durationForTurn(threadId, message.turnId),
     }));
@@ -449,9 +477,10 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     > = (existing?.messages ?? [])
       .filter((message) => (
         message.streaming
+        || Boolean(message.questions?.length)
         || (message.role === "user" && !message.turnId)
         || Boolean(existing?.activeTurnId && message.turnId === existing.activeTurnId)
-      ) && !hydratedMessageIds.has(message.id))
+      ) && !hydratedMessageIds.has(message.id) && !reconciled.matchedIds.has(message.id))
       .map((entry) => ({ kind: "message" as const, entry }));
     const hydratedActivities = activities.map((activity) => withTimelineOrder({
       ...restoreCompactionActivity(activity, existing),
@@ -500,6 +529,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
   prependHistory: (threadId, messages, activities, patch) => set((state) => {
     const task = state.tasks[threadId];
     if (!task) return state;
+    const restoredMessages = restoreQuestionRequests(threadId, messages, activities, patch.hasMore === false);
     const existingIds = new Set<string>();
     let oldestOrder = 0;
     let hasOrder = false;
@@ -516,7 +546,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       hasOrder = true;
     }
     const seenIds = new Set(existingIds);
-    const incoming = [...messages.map((entry) => ({ kind: "message" as const, entry })), ...activities.map((entry) => ({ kind: "activity" as const, entry }))]
+    const incoming = [...restoredMessages.map((entry) => ({ kind: "message" as const, entry })), ...activities.map((entry) => ({ kind: "activity" as const, entry }))]
       .sort((left, right) => (left.entry.timelineOrder ?? 0) - (right.entry.timelineOrder ?? 0));
     const uniqueIncoming = incoming.filter(({ entry }) => {
       if (seenIds.has(entry.id)) return false;
@@ -558,7 +588,19 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
   }),
   appendUserMessage: (threadId, message) => set((state) => {
     const task = state.tasks[threadId] ?? emptyTask(threadId);
-    const nextMessage = withTimelineOrder({ ...message, turnId: message.turnId ?? task.activeTurnId });
+    if (task.messages.some((entry) => entry.id === message.id || entry.clientMessageId === message.id)) return state;
+    const candidate = { ...message, clientMessageId: message.id, turnId: message.turnId ?? task.activeTurnId };
+    // A very fast child can deliver its runtime echo before spawn returns.
+    const echoedIndex = task.messages.findIndex((entry) => Boolean(message.turnId) && entry.role === "user" && !entry.clientMessageId
+      && userEchoIndex([candidate], entry) === 0);
+    if (echoedIndex >= 0) {
+      const previous = task.messages[echoedIndex];
+      const messages = [...task.messages];
+      messages[echoedIndex] = { ...previous, text: candidate.text, attachments: candidate.attachments, clientMessageId: candidate.id };
+      return { tasks: { ...state.tasks, [threadId]: { ...task, messages,
+        estimatedTranscriptBytes: adjustedBytes(task.estimatedTranscriptBytes, estimateMessageBytes(previous), estimateMessageBytes(messages[echoedIndex])) } } };
+    }
+    const nextMessage = withTimelineOrder(candidate);
     const pendingTurnStartOrder = task.pendingTurnStartOrder
       ?? (task.status === "starting" && !task.activeTurnId ? nextMessage.timelineOrder : undefined);
     return { tasks: { ...state.tasks, [threadId]: {
@@ -572,7 +614,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
   setMessageSteerStatus: (threadId, messageId, status) => set((state) => {
     const task = state.tasks[threadId];
     if (!task) return state;
-    const index = task.messages.findIndex((message) => message.id === messageId);
+    const index = task.messages.findIndex((message) => message.id === messageId || message.clientMessageId === messageId);
     if (index < 0 || task.messages[index].steerStatus === status) return state;
     const messages = [...task.messages];
     const previous = messages[index];
@@ -733,9 +775,20 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     pendingDeltas.get(threadId)?.delete(message.id);
     return set((state) => {
     const task = state.tasks[threadId] ?? emptyTask(threadId);
-    const existingIndex = task.messages.findIndex((entry) => entry.id === message.id);
+    const byId = task.messages.findIndex((entry) => entry.id === message.id);
+    const incoming = { ...message, turnId: message.turnId ?? task.activeTurnId };
+    const regularEchoIndex = byId >= 0 ? -1 : userEchoIndex(task.messages, incoming);
+    const existingIndex = byId >= 0
+      ? byId
+      : regularEchoIndex >= 0
+        ? regularEchoIndex
+        : pendingStartUserEchoIndex(task, incoming);
+    const original = task.messages[existingIndex];
+    const display = original && message.role === "user" && (original.clientMessageId || original.id !== message.id)
+      ? { text: original.text, attachments: original.attachments ?? message.attachments, clientMessageId: original.clientMessageId ?? original.id, steerStatus: original.steerStatus }
+      : {};
     const nextMessage = existingIndex >= 0
-      ? { ...message, streaming: false, turnId: message.turnId ?? task.messages[existingIndex].turnId ?? task.activeTurnId, turnStatus: message.turnStatus ?? task.messages[existingIndex].turnStatus, timelineOrder: task.messages[existingIndex].timelineOrder }
+      ? { ...original, ...message, ...display, streaming: false, turnId: message.turnId ?? task.messages[existingIndex].turnId ?? task.activeTurnId, turnStatus: message.turnStatus ?? task.messages[existingIndex].turnStatus, timelineOrder: task.messages[existingIndex].timelineOrder }
       : withTimelineOrder({ ...message, streaming: false, turnId: message.turnId ?? task.activeTurnId });
     const messages = existingIndex >= 0
       ? task.messages.map((entry, index) => index === existingIndex ? nextMessage : entry)
@@ -929,6 +982,10 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
             ? estimateTranscriptBytes(messages, activities)
             : task.estimatedTranscriptBytes,
           agents,
+          // Runtime requests belong to the finished turn. Local settings
+          // proposals have their own lifetime and remain answerable.
+          approvals: task.approvals.filter((approval) => approval.method.startsWith("openkiwi/")
+            || (newerTurnActive && approval.params.turnId !== completedTurnId)),
           activeTurnId: task.activeTurnId === turnId || !turnId ? undefined : task.activeTurnId,
           assistantOutputTurnId: completedTurnId === task.assistantOutputTurnId
             ? undefined
@@ -1062,8 +1119,13 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
   }),
   enqueueApproval: (approval) => set((state) => {
     const task = state.tasks[approval.threadId] ?? emptyTask(approval.threadId);
-    if (task.approvals.some((entry) => entry.id === approval.id)) return state;
-    return { tasks: { ...state.tasks, [approval.threadId]: { ...task, approvals: [...task.approvals, approval], unread: state.activeThreadId !== approval.threadId, updatedAt: Date.now() } } };
+    const previous = task.approvals.find((entry) => entry.id === approval.id);
+    if (previous && !(approval.method === "item/tool/requestUserInput"
+      && (previous.method !== approval.method || previous.params.turnId !== approval.params.turnId || previous.params.itemId !== approval.params.itemId))) return state;
+    // A fresh question can reuse an expired process's numeric ID. Keep exact
+    // duplicate events idempotent, but never hide a different question behind it.
+    const approvals = previous ? task.approvals.map((entry) => entry === previous ? approval : entry) : [...task.approvals, approval];
+    return { tasks: { ...state.tasks, [approval.threadId]: { ...task, approvals, unread: state.activeThreadId !== approval.threadId, updatedAt: Date.now() } } };
   }),
   resolveApproval: (threadId, approvalId) => set((state) => {
     const task = state.tasks[threadId];

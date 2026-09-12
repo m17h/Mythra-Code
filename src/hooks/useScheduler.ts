@@ -119,7 +119,7 @@ export function useScheduler(deps: SchedulerDeps): void {
             run,
             scheduled.lastThreadId,
             project.path,
-            { modelContextWindow, refreshRuntimeConfig: true },
+            { modelContextWindow, refreshRuntimeConfig: true, interactive: false },
           ));
         } catch {
           // The user may have deleted the earlier run's conversation. Keep the

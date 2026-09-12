@@ -50,8 +50,10 @@ export async function rpc<T = JsonObject>(method: string, params: JsonObject = {
   return result;
 }
 
-export async function respond(id: number | string, result: JsonObject): Promise<void> {
-  await invoke("codex_respond", { id, result });
+export interface CodexServerRequestIdentity { method: string; threadId?: string; turnId?: string; itemId?: string }
+
+export async function respond(id: number | string, result: JsonObject, expected?: CodexServerRequestIdentity): Promise<void> {
+  await invoke("codex_respond", { id, result, ...(expected ? { expected } : {}) });
 }
 
 export async function onCodexEvent(handler: (event: CodexEvent) => void): Promise<UnlistenFn> {

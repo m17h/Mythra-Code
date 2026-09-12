@@ -7,6 +7,7 @@ import type { Thread } from "../types";
 
 const codex = vi.hoisted(() => ({
   rpc: vi.fn(),
+  respond: vi.fn(async () => {}),
   // Identity of the app-server that will serve the next RPC; a restart makes
   // this change, which is how a turn knows nothing is loaded any more.
   runtimeInstanceId: vi.fn(async () => "runtime-1"),
@@ -843,6 +844,84 @@ describe("useTurnRunner activating sub-agents mid-conversation", () => {
       ...overrides,
     });
   }
+
+  it.each(["running", "completed"] as const)("delivers question answers when the turn is %s without consuming the draft or attachments", async (status) => {
+    codex.rpc.mockResolvedValue({ turn: { id: "turn-answered" } });
+    const deps = openAiContext({ attachments: [{ path: "/draft.png", name: "Draft", kind: "image" }] });
+    useTaskStore.getState().setActiveTurn(OPENAI_THREAD.id, "turn-live");
+    useTaskStore.getState().setTaskStatus(OPENAI_THREAD.id, status);
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { expect(await result.current.answerQuestions(OPENAI_THREAD.id, "Use @compact" )).toBe(true); });
+    expect(codex.rpc).toHaveBeenCalledWith(status === "running" ? "turn/steer" : "turn/start", expect.objectContaining({
+      threadId: OPENAI_THREAD.id, input: [expect.objectContaining({ type: "text", text: "Use @compact" })],
+    }));
+    expect(deps.resolveSkillPrompt).not.toHaveBeenCalled();
+    const attachmentUpdater = (deps.setAttachments as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0];
+    if (attachmentUpdater) expect(attachmentUpdater(deps.attachments)).toEqual(deps.attachments);
+  });
+
+  it("continues with answers if the active turn finishes during submission", async () => {
+    const deps = openAiContext();
+    const store = useTaskStore.getState();
+    store.setActiveTurn(OPENAI_THREAD.id, "turn-live");
+    store.setTaskStatus(OPENAI_THREAD.id, "running");
+    codex.rpc.mockImplementation(async (method) => {
+      if (method === "turn/steer") {
+        store.completeTurn(OPENAI_THREAD.id, "turn-live", "completed");
+        throw new Error("No active turn to steer");
+      }
+      return { turn: { id: "turn-answers" } };
+    });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { expect(await result.current.answerQuestions(OPENAI_THREAD.id, "Use compact")).toBe(true); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(codex.rpc).toHaveBeenCalledWith("turn/start", expect.objectContaining({ input: [expect.objectContaining({ text: "Use compact" })] }));
+    expect(useTaskStore.getState().tasks[OPENAI_THREAD.id].messages.filter((message) => message.role === "user")).toHaveLength(1);
+  });
+
+  it("answers a still-open nonblocking RPC through its native response channel", async () => {
+    const deps = openAiContext();
+    useTaskStore.getState().enqueueApproval({ id: 42, method: "item/tool/requestUserInput", params: { isBlocking: false, turnId: "turn", itemId: "item" }, threadId: OPENAI_THREAD.id, receivedAt: 1 });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { expect(await result.current.answerQuestions(OPENAI_THREAD.id, "Compact", {
+      message: { id: "questions", role: "assistant", text: "", questionRequestId: 42, turnId: "turn", questionRequestItemId: "item" }, answers: { layout: ["Compact"] },
+    })).toBe(true); });
+    expect(codex.respond).toHaveBeenCalledExactlyOnceWith(42, { answers: { layout: { answers: ["Compact"] } } }, { method: "item/tool/requestUserInput", threadId: OPENAI_THREAD.id, turnId: "turn", itemId: "item" });
+    expect(codex.rpc).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().tasks[OPENAI_THREAD.id].approvals).toEqual([]);
+  });
+
+  it("does not clear a replacement request when an earlier response finishes", async () => {
+    const deps = openAiContext();
+    const store = useTaskStore.getState();
+    const request = { id: 42, method: "item/tool/requestUserInput", params: { isBlocking: false, turnId: "turn", itemId: "item" }, threadId: OPENAI_THREAD.id, receivedAt: 1 };
+    store.enqueueApproval(request);
+    let finish!: () => void;
+    codex.respond.mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const { result } = renderHook(() => useTurnRunner(deps));
+    let sending!: Promise<boolean>;
+    act(() => { sending = result.current.answerQuestions(OPENAI_THREAD.id, "Compact", {
+      message: { id: "questions", role: "assistant", text: "", questionRequestId: 42, turnId: "turn", questionRequestItemId: "item" }, answers: { layout: ["Compact"] },
+    }); });
+    act(() => { store.resolveApproval(OPENAI_THREAD.id, 42); store.enqueueApproval({ ...request, receivedAt: 2, params: { ...request.params, turnId: "new-turn", itemId: "new-item" } }); });
+    await act(async () => { finish(); expect(await sending).toBe(true); });
+    expect(useTaskStore.getState().tasks[OPENAI_THREAD.id].approvals).toEqual([expect.objectContaining({ receivedAt: 2 })]);
+  });
+
+  it("does not send an old answer to a reused runtime request ID", async () => {
+    const deps = openAiContext();
+    const store = useTaskStore.getState();
+    store.setActiveTurn(OPENAI_THREAD.id, "new-turn");
+    store.setTaskStatus(OPENAI_THREAD.id, "running");
+    store.enqueueApproval({ id: 42, method: "item/tool/requestUserInput", params: { isBlocking: false, turnId: "new-turn", itemId: "new-item" }, threadId: OPENAI_THREAD.id, receivedAt: 1 });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { await result.current.answerQuestions(OPENAI_THREAD.id, "An answer to the old question", {
+      message: { id: "old-question", role: "assistant", text: "", turnId: "old-turn", questionRequestId: 42 }, answers: { old: ["Answer"] },
+    }); });
+    expect(codex.respond).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().tasks[OPENAI_THREAD.id].approvals).toHaveLength(1);
+    expect(codex.rpc).toHaveBeenCalledWith("turn/steer", expect.objectContaining({ expectedTurnId: "new-turn" }));
+  });
 
   function resumeCall() {
     return codex.rpc.mock.calls.find(([method]) => method === "thread/resume");

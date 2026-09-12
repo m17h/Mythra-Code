@@ -9,6 +9,7 @@ import {
   useTaskStore,
 } from "./taskStore";
 import { durationForTurn, resetTurnDurationsForTests } from "./turnDurations";
+import { saveQuestionAnswers, savedQuestionAnswers, saveQuestionRequest } from "./agentQuestionRecords";
 
 describe("task store", () => {
   beforeEach(() => {
@@ -299,6 +300,59 @@ describe("task store", () => {
     expect(task.messages.map((message) => message.id)).toEqual(["old", "current"]);
     expect(task.messages[0].timelineOrder).toBeLessThan(task.messages[1].timelineOrder!);
     expect(task.history).toMatchObject({ nextCursor: null, hasMore: false, paginated: true });
+  });
+
+  it("restores a saved nonblocking question and its answer state without reviving an approval", () => {
+    const question = {
+      id: "question-request",
+      role: "assistant" as const,
+      text: "",
+      questions: [{ id: "layout", title: "Which layout?", options: ["Compact", "Spacious"] }],
+      questionRequestId: 42,
+      questionRequestItemId: "question-item",
+      turnId: "turn-1",
+    };
+    saveQuestionRequest("thread-a", question);
+    saveQuestionAnswers("thread-a", question.id, { layout: ["Compact"] });
+    resetTaskStore();
+
+    useTaskStore.getState().hydrateTask("thread-a", [
+      { id: "prompt", role: "user", text: "Build it", turnId: "turn-1", timelineOrder: 1 },
+      { id: "answer", role: "assistant", text: "Working", turnId: "turn-1", timelineOrder: 2 },
+    ], [], "/p", { nextCursor: null, hasMore: false, loading: false, paginated: true });
+
+    const task = useTaskStore.getState().tasks["thread-a"];
+    expect(task.messages.map((message) => message.id)).toEqual(["prompt", "answer", "question-request"]);
+    expect(savedQuestionAnswers("thread-a", question.id)).toEqual({ layout: ["Compact"] });
+    expect(task.approvals).toEqual([]);
+  });
+
+  it("restores saved questions with their represented older page", () => {
+    saveQuestionRequest("thread-a", {
+      id: "older-question",
+      role: "assistant",
+      text: "",
+      questions: [{ title: "Keep going?" }],
+      turnId: "old-turn",
+    });
+    const store = useTaskStore.getState();
+    store.hydrateTask("thread-a", [{ id: "current", role: "assistant", text: "Current", turnId: "new-turn" }], [], "/p", {
+      nextCursor: "older",
+      hasMore: true,
+      loading: false,
+      paginated: true,
+    });
+    store.prependHistory("thread-a", [{ id: "old", role: "user", text: "Old", turnId: "old-turn", timelineOrder: 1 }], [], {
+      nextCursor: null,
+      hasMore: false,
+      loading: false,
+    });
+
+    expect(useTaskStore.getState().tasks["thread-a"].messages.map((message) => message.id)).toEqual([
+      "old",
+      "older-question",
+      "current",
+    ]);
   });
 
   it("keeps an optimistic user message appended while paged hydration is in flight", () => {

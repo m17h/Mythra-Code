@@ -1,3 +1,5 @@
+import { forgetQuestionRecords } from "./lib/agentQuestionRecords";
+import { AgentQuestionDelivery } from "./lib/agentQuestionContext";
 import { useTranscriptSaves } from "./hooks/useTranscriptSaves";
 import { useFlushOnClose } from "./hooks/useFlushOnClose";
 import { useGitHubLogin } from "./hooks/useGitHubLogin";
@@ -961,17 +963,17 @@ export default function App() {
   // input/elicitation forms.
   const inlineApproval = useTaskStore((state) => {
     if (!state.activeThreadId) return null;
-    const candidate = state.tasks[state.activeThreadId]?.approvals[0] ?? null;
+    const candidate = state.tasks[state.activeThreadId]?.approvals.find((entry) => !(entry.method === "item/tool/requestUserInput" && entry.params.isBlocking === false)) ?? null;
     if (!candidate) return null;
-    if (candidate.method === "item/tool/requestUserInput" || candidate.method === "cursor/ask_question" || candidate.method === "mcpServer/elicitation/request") return null;
+    if ((candidate.method === "claude/can_use_tool" && candidate.params.tool_name === "AskUserQuestion") || candidate.method === "item/tool/requestUserInput" || candidate.method === "cursor/ask_question" || candidate.method === "mcpServer/elicitation/request") return null;
     return candidate;
   });
   const pendingApproval = useTaskStore((state) => {
     let earliest: PendingApproval | null = null;
     for (const task of Object.values(state.tasks)) {
-      const candidate = task.approvals[0];
+      const candidate = task.approvals.find((entry) => !(entry.method === "item/tool/requestUserInput" && entry.params.isBlocking === false));
       if (!candidate) continue;
-      const handledInline = candidate.threadId === state.activeThreadId && candidate.method !== "item/tool/requestUserInput" && candidate.method !== "cursor/ask_question" && candidate.method !== "mcpServer/elicitation/request";
+      const handledInline = candidate.threadId === state.activeThreadId && !(candidate.method === "claude/can_use_tool" && candidate.params.tool_name === "AskUserQuestion") && candidate.method !== "item/tool/requestUserInput" && candidate.method !== "cursor/ask_question" && candidate.method !== "mcpServer/elicitation/request";
       if (handledInline) continue;
       if (!earliest || candidate.receivedAt < earliest.receivedAt) earliest = candidate;
     }
@@ -979,7 +981,7 @@ export default function App() {
   });
   const pendingApprovalCount = useTaskStore((state) => {
     let count = 0;
-    for (const task of Object.values(state.tasks)) count += task.approvals.length;
+    for (const task of Object.values(state.tasks)) count += task.approvals.filter((entry) => !(entry.method === "item/tool/requestUserInput" && entry.params.isBlocking === false)).length;
     return count;
   });
   const projectThreadCounts = countActiveThreadsByWorkspace(
@@ -1557,6 +1559,7 @@ export default function App() {
 
   const forgetThread = useCallback((threadId: string) => {
     forgetRuntimePerformanceProvider(threadId);
+    forgetQuestionRecords(threadId);
     const next = forgetSidebarThread(knownThreadsRef.current ?? {}, threadId);
     knownThreadsRef.current = next;
     storeValue("kiwi.knownThreads", next);
@@ -3733,7 +3736,7 @@ export default function App() {
     setPendingHandoff(null);
   }, [pendingHandoffForWorkspace, persistThreadHandoffs, setPendingHandoff]);
 
-  const { sendMessage, steerMessage, steerQueuedMessage, retryQueuedMessage, removeQueuedMessage, stopTurn } = useTurnRunner({
+  const { sendMessage, answerQuestions, steerMessage, steerQueuedMessage, retryQueuedMessage, removeQueuedMessage, stopTurn } = useTurnRunner({
     activeThread,
     activeWorkspace,
     activeProject,
@@ -4095,6 +4098,10 @@ export default function App() {
   };
 
   const respondToApproval = useCallback(async (approval: PendingApproval, result: JsonObject) => {
+    const resolveCurrent = () => {
+      const store = useTaskStore.getState();
+      if (store.tasks[approval.threadId]?.approvals.includes(approval)) store.resolveApproval(approval.threadId, approval.id);
+    };
     try {
       if (approval.method === "openkiwi/subagents/change") {
         await respondToSettingsProposal(approval, result);
@@ -4103,10 +4110,14 @@ export default function App() {
       } else if (approval.method === "cursor/request_permission" || approval.method === "cursor/ask_question") {
         await respondToCursorPermission(approval.threadId, approval.id, result);
       } else {
-        await respond(approval.id, result);
+        await respond(approval.id, result, approval.method === "item/tool/requestUserInput" ? {
+          method: approval.method, threadId: approval.threadId,
+          turnId: typeof approval.params.turnId === "string" ? approval.params.turnId : undefined,
+          itemId: typeof approval.params.itemId === "string" ? approval.params.itemId : undefined,
+        } : undefined);
       }
       void auditEvent("approval.resolved", { method: approval.method, responseRecorded: true }, approval.threadId).catch(() => {});
-      useTaskStore.getState().resolveApproval(approval.threadId, approval.id);
+      resolveCurrent();
     } catch (reason) {
       const message = friendlyError(reason);
       // A rejection that says the runtime no longer knows this request (the
@@ -4117,9 +4128,7 @@ export default function App() {
       const terminal = approval.method.startsWith("openkiwi/")
         || /no longer|not currently running|unknown request|not found|closed/i.test(message);
       if (terminal) {
-        useTaskStore
-          .getState()
-          .resolveApproval(approval.threadId, approval.id);
+        resolveCurrent();
       }
       setError(message);
       if (!terminal) throw reason instanceof Error ? reason : new Error(message);
@@ -6022,7 +6031,7 @@ export default function App() {
                     }
                   >
                     <SubAgentControlsProvider workers={subAgentWorkers} onOpen={openSubAgentWorker} onStop={stopSubAgentWorker}>
-                    <ConversationTimeline threadId={activeThreadId} running={running} thinkingLabel={activeWorkspace.isChat ? "Thinking in normal chat" : `Working in ${activeProject?.name}`} approval={inlineApproval} provider={effectiveSettings.provider} onLoadEarlier={() => void loadEarlier(activeThreadId)} searchQuery={convSearchOpen ? convSearchQuery : ""} searchActiveMatch={convSearchIndex} onSearchMatches={setConvSearchCount} onEditMessage={editMessageIntoComposer} onApprovalRespond={respondToApproval} />
+                    <AgentQuestionDelivery value={{ threadId: activeThreadId, send: answerQuestions }}><ConversationTimeline threadId={activeThreadId} running={running} thinkingLabel={activeWorkspace.isChat ? "Thinking in normal chat" : `Working in ${activeProject?.name}`} approval={inlineApproval} provider={effectiveSettings.provider} onLoadEarlier={() => void loadEarlier(activeThreadId)} searchQuery={convSearchOpen ? convSearchQuery : ""} searchActiveMatch={convSearchIndex} onSearchMatches={setConvSearchCount} onEditMessage={editMessageIntoComposer} onApprovalRespond={respondToApproval} /></AgentQuestionDelivery>
                     </SubAgentControlsProvider>
                   </Suspense>
                 </ErrorBoundary>
@@ -6456,7 +6465,7 @@ export default function App() {
 
       {pendingApproval && (
         <ApprovalCenter
-          key={`${pendingApproval.threadId}:${pendingApproval.id}`}
+          key={`${pendingApproval.threadId}:${pendingApproval.id}:${pendingApproval.receivedAt}`}
           approval={pendingApproval}
           threadLabel={(() => {
             if (pendingApproval.threadId === "runtime") return undefined;

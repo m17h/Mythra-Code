@@ -25,6 +25,30 @@ describe("ApprovalCenter", () => {
     vi.useRealTimers();
   });
 
+  it("answers Claude questions with the original input and waits for explicit submission", async () => {
+    const onRespond = vi.fn();
+    const input = { questions: [{ question: "Which features?", header: "Features", multiSelect: true, options: [{ label: "Search", description: "Find text" }, { label: "Export", description: "Save work" }] }], metadata: { source: "test" } };
+    render(<ApprovalCenter approval={approval("claude/can_use_tool", { tool_name: "AskUserQuestion", input })} onRespond={onRespond} />);
+    await act(async () => { await vi.dynamicImportSettled(); });
+    passGrace();
+    expect(screen.queryByRole("button", { name: "Allow once" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("checkbox", { name: /Search/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /Export/ }));
+    expect(onRespond).not.toHaveBeenCalled();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Continue" })));
+    expect(onRespond).toHaveBeenCalledWith({ behavior: "allow", updatedInput: { ...input, answers: { "Which features?": "Search, Export" } } });
+  });
+
+  it("does not transfer a cancelled request's draft to a reused request ID", async () => {
+    const request = { ...approval("item/tool/requestUserInput", { turnId: "old", itemId: "old", questions: [{ id: "target", question: "Where?" }] }), receivedAt: 123 };
+    const mounted = render(<ApprovalCenter approval={request} onRespond={vi.fn()} />);
+    await act(async () => { await vi.dynamicImportSettled(); });
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "Old private draft" } });
+    mounted.rerender(<ApprovalCenter approval={{ ...request, receivedAt: 456, params: { ...request.params, turnId: "new", itemId: "new" } }} onRespond={vi.fn()} />);
+    await act(async () => { await vi.dynamicImportSettled(); });
+    expect(screen.getByRole("textbox")).toHaveValue("");
+  });
+
   it("uses the legacy approval vocabulary for legacy requests", () => {
     const onRespond = vi.fn();
     render(<ApprovalCenter approval={approval("execCommandApproval", { command: "npm test" })} onRespond={onRespond} />);
@@ -33,25 +57,30 @@ describe("ApprovalCenter", () => {
     expect(onRespond).toHaveBeenCalledWith({ decision: "approved_for_session" });
   });
 
-  it("returns structured answers for agent questions", () => {
+  it("returns structured answers for agent questions", async () => {
     const onRespond = vi.fn();
     render(<ApprovalCenter approval={approval("item/tool/requestUserInput", { questions: [{ id: "target", header: "Target", question: "Where?", isOther: false, isSecret: false, options: [{ label: "Web", description: "Browser" }] }] })} onRespond={onRespond} />);
+    await act(async () => { await vi.dynamicImportSettled(); });
+    await act(async () => { await vi.dynamicImportSettled(); });
     passGrace();
-    fireEvent.change(screen.getByRole("combobox"), { target: { value: "Web" } });
+    fireEvent.click(screen.getByRole("radio", { name: /Web/ }));
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     expect(onRespond).toHaveBeenCalledWith({ answers: { target: { answers: ["Web"] } } });
   });
 
-  it("includes untouched questions in the submitted answers", () => {
+  it("requires answers before submitting and preserves question IDs", async () => {
     const onRespond = vi.fn();
     render(<ApprovalCenter approval={approval("item/tool/requestUserInput", { questions: [
       { id: "first", header: "First", question: "Answered", isOther: false, isSecret: false, options: null },
       { id: "second", header: "Second", question: "Skipped", isOther: false, isSecret: false, options: null },
     ] })} onRespond={onRespond} />);
+    await act(async () => { await vi.dynamicImportSettled(); });
     passGrace();
     fireEvent.change(screen.getAllByRole("textbox")[0], { target: { value: "yes" } });
+    expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+    fireEvent.change(screen.getAllByRole("textbox")[1], { target: { value: "later" } });
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-    expect(onRespond).toHaveBeenCalledWith({ answers: { first: { answers: ["yes"] }, second: { answers: [""] } } });
+    expect(onRespond).toHaveBeenCalledWith({ answers: { first: { answers: ["yes"] }, second: { answers: ["later"] } } });
   });
 
   it("returns the requested permission profile with session scope", () => {
@@ -127,8 +156,9 @@ describe("ApprovalCenter", () => {
     expect(onRespond).toHaveBeenCalledWith({ action: "accept", content: { port: 8080, note: "" }, _meta: null });
   });
 
-  it("moves initial focus into the input request modal", () => {
+  it("moves initial focus into the input request modal", async () => {
     render(<ApprovalCenter approval={approval("item/tool/requestUserInput", { questions: [{ id: "target", header: "Target", question: "Where?", isOther: false, isSecret: false, options: null }] })} onRespond={vi.fn()} />);
+    await act(async () => { await vi.dynamicImportSettled(); });
     expect(screen.getByRole("textbox")).toHaveFocus();
   });
 

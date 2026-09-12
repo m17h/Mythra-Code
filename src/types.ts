@@ -84,10 +84,18 @@ export interface Turn {
   status?: "completed" | "interrupted" | "failed" | "inProgress";
 }
 
+export interface AgentQuestion {
+  id?: string;
+  secret?: boolean;
+  title: string;
+  options?: string[] | null;
+}
+
 export interface ThreadItem {
   id?: string;
   type: string;
   text?: string;
+  questions?: AgentQuestion[] | null;
   content?: Array<{ type: string; text?: string; path?: string; name?: string }> | string[];
   command?: string;
   cwd?: string;
@@ -114,6 +122,11 @@ export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
   text: string;
+  questions?: AgentQuestion[];
+  questionRequestId?: string | number;
+  questionRequestItemId?: string;
+  /** Correlates an optimistic send with its provider-assigned item ID. */
+  clientMessageId?: string;
   /** Images submitted with this user turn, retained for the transcript UI. */
   attachments?: MessageAttachment[];
   streaming?: boolean;

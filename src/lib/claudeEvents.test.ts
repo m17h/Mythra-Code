@@ -81,6 +81,13 @@ describe("Claude event routing", () => {
     });
   });
 
+  it("routes Claude questions without answering them and removes cancelled requests", () => {
+    send({ type: "control_request", request_id: "question-1", request: { subtype: "can_use_tool", tool_name: "AskUserQuestion", input: { questions: [{ question: "Which layout?" }] } } });
+    expect(useTaskStore.getState().tasks["thread-1"].approvals[0]).toMatchObject({ params: { tool_name: "AskUserQuestion", input: { questions: [{ question: "Which layout?" }] } } });
+    send({ type: "control_cancel_request", request_id: "question-1" });
+    expect(useTaskStore.getState().tasks["thread-1"].approvals).toEqual([]);
+  });
+
   it("turns Claude permission callbacks into normal Mythra Code approvals", () => {
     send({
       type: "control_request",

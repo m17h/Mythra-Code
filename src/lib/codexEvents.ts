@@ -1,6 +1,8 @@
+import { saveQuestionRequest } from "./agentQuestionRecords";
+import { timelineFromTurns } from "./threadTimeline";
 import { isAuthenticationError } from "./errors";
 import type { CodexEvent, JsonObject } from "./codex";
-import type { ThreadItem, Turn } from "../types";
+import type { ChatMessage, ThreadItem, Turn } from "../types";
 import { useTaskStore } from "./taskStore";
 import { parseCodexRateLimits, type ProviderRateLimits } from "./providerUsage";
 import type { TokenUsageView } from "../components/StudioDock";
@@ -158,8 +160,13 @@ export function handleThreadItem(
     return;
   }
   const id = item.id ?? crypto.randomUUID();
+  if (item.type === "userMessage") {
+    const message = timelineFromTurns([{ id: turnId ?? taskStore.tasks[threadId]?.activeTurnId ?? "", items: [{ ...item, id }] }]).messages[0];
+    if (message) taskStore.completeMessage(threadId, message);
+    return;
+  }
   if (item.type === "agentMessage" || item.type === "plan") {
-    taskStore.completeMessage(threadId, { id, role: "assistant", text: item.text ?? "", streaming: false });
+    taskStore.completeMessage(threadId, { id, role: "assistant", text: item.text ?? "", questions: item.questions ?? undefined, turnId, streaming: false });
     return;
   }
   if (item.type === "commandExecution") {
@@ -263,6 +270,10 @@ export function routeCodexEvent(event: CodexEvent, ctx: CodexEventContext): void
     return;
   }
   const eventThreadId = typeof params.threadId === "string" ? params.threadId : RUNTIME_THREAD_ID;
+  if (method === "serverRequest/resolved") {
+    if (typeof params.requestId === "string" || typeof params.requestId === "number") useTaskStore.getState().resolveApproval(eventThreadId, params.requestId);
+    return;
+  }
   if (event.id !== undefined && method === "currentTime/read") {
     void ctx.respond(event.id, { currentTimeAt: Math.floor(Date.now() / 1000) })
       .catch((reason) => ctx.audit("rpc.respondFailed", { method, error: String(reason) }, eventThreadId));
@@ -274,6 +285,16 @@ export function routeCodexEvent(event: CodexEvent, ctx: CodexEventContext): void
     || method === "item/tool/requestUserInput"
     || method === "mcpServer/elicitation/request"
   )) {
+    if (method === "item/tool/requestUserInput" && params.isBlocking === false && Array.isArray(params.questions)) {
+      const questions = (params.questions as Array<{ id: string; question: string; isSecret?: boolean; options?: Array<{ label: string }> }>).map((question) => ({ id: question.id, title: question.question, secret: question.isSecret, options: question.options?.map((option) => option.label) }));
+      const questionMessage: ChatMessage = {
+        id: `question-request-${JSON.stringify([params.turnId, params.itemId, event.id])}`, role: "assistant", text: "", questions, questionRequestId: event.id,
+        questionRequestItemId: typeof params.itemId === "string" ? params.itemId : undefined,
+        turnId: typeof params.turnId === "string" ? params.turnId : undefined,
+      };
+      saveQuestionRequest(eventThreadId, questionMessage);
+      useTaskStore.getState().completeMessage(eventThreadId, questionMessage);
+    }
     useTaskStore.getState().enqueueApproval({
       id: event.id,
       method,
@@ -282,7 +303,7 @@ export function routeCodexEvent(event: CodexEvent, ctx: CodexEventContext): void
       receivedAt: Date.now(),
     });
     ctx.audit("approval.requested", { method, params }, eventThreadId);
-    ctx.onApprovalRequested(eventThreadId);
+    if (!(method === "item/tool/requestUserInput" && params.isBlocking === false)) ctx.onApprovalRequested(eventThreadId);
     return;
   }
   if (method === "item/agentMessage/delta") {

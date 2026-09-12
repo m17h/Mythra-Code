@@ -27,6 +27,7 @@ export const DURABLE_STORAGE_KEYS = [
   "kiwi.disabledSkills",
   "kiwi.removedSkills",
   "kiwi.drafts",
+  "kiwi.agentQuestions",
   "kiwi.scheduleRuns",
   "kiwi.workflows",
   "kiwi.workflowRuns",

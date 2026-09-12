@@ -42,7 +42,7 @@ describe("permission policy", () => {
 
   it("never pauses an unattended Ask to act run for approval", () => {
     const run = { ...baseRun, permission: "ask" as const };
-    expect(threadStartParams(run, "/tmp/project", { interactive: false })).toMatchObject({ approvalPolicy: "never" });
+    expect(threadStartParams(run, "/tmp/project", { interactive: false })).toMatchObject({ approvalPolicy: "never", config: { features: { default_mode_request_user_input: false } } });
     expect(turnStartParams(run, "thread-1", "/tmp/project", [], [], false)).toMatchObject({
       approvalPolicy: "never",
       sandboxPolicy: { type: "workspaceWrite" },
@@ -61,11 +61,11 @@ describe("OpenRouter runtime isolation", () => {
     expect(config).not.toHaveProperty("features.shell_tool");
   });
 
-  it("does not change the OpenAI tool configuration", () => {
+  it("enables interactive OpenAI questions while retaining the delegation boundary", () => {
     const config = threadRuntimeConfig(baseRun, { modelContextWindow: 1_000_000 });
     expect(config).not.toHaveProperty("model_context_window");
     expect(config).not.toHaveProperty("apps");
-    expect(config.features).toEqual({ multi_agent: false, multi_agent_v2: false });
+    expect(config.features).toEqual({ default_mode_request_user_input: true, multi_agent: false, multi_agent_v2: false });
   });
 
   it("applies the isolation to new OpenRouter threads", () => {

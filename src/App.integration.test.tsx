@@ -412,7 +412,8 @@ describe("Codex cold startup", () => {
     expect(mounted).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     const dialog = await screen.findByRole("dialog", { name: "Loaded settings" });
-    expect(mounted).toHaveBeenCalledOnce();
+    // The DOM can commit before passive effects run on a slower host.
+    await waitFor(() => expect(mounted).toHaveBeenCalledOnce());
     fireEvent.click(screen.getByRole("button", { name: "Close test settings" }));
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     expect(screen.getByRole("dialog", { name: "Loaded settings" })).toBe(dialog);

@@ -3,6 +3,7 @@ use std::{
     env,
     ffi::OsString,
     fs,
+    future::Future,
     path::{Path, PathBuf},
     process::Stdio,
     sync::{
@@ -131,10 +132,10 @@ struct AppServer {
     pending: PendingMap,
     next_id: AtomicI64,
     alive: Arc<AtomicBool>,
-    /// Ids of server-initiated requests this exact instance is waiting on.
-    /// `codex_respond` consults it so a response can never be sent to a
-    /// different (respawned) server than the one that asked.
-    server_requests: Arc<Mutex<HashSet<String>>>,
+    /// Server-initiated requests this exact instance is waiting on, keyed by
+    /// protocol id. The stored identity lets question replies verify their
+    /// thread/turn/item target if a restarted runtime reuses an id.
+    server_requests: Arc<Mutex<HashMap<String, CodexServerRequestIdentity>>>,
     /// Threads successfully loaded into this exact app-server process. This
     /// avoids pessimistically restarting a fresh runtime merely because the
     /// renderer has no durable capability record for an older thread.
@@ -196,6 +197,53 @@ struct RuntimeState {
     /// lock during a slow spawn/initialize.
     server_identity: ServerIdentitySlot,
     process_memory: Mutex<ProcessMemoryCache>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct CodexServerRequestIdentity {
+    method: String,
+    thread_id: Option<String>,
+    turn_id: Option<String>,
+    item_id: Option<String>,
+}
+
+fn codex_server_request_identity(message: &Value) -> Option<CodexServerRequestIdentity> {
+    let params = message.get("params").unwrap_or(&Value::Null);
+    Some(CodexServerRequestIdentity {
+        method: message.get("method")?.as_str()?.to_string(),
+        thread_id: params
+            .get("threadId")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        turn_id: params
+            .get("turnId")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        item_id: params
+            .get("itemId")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    })
+}
+
+fn consume_codex_server_request(
+    requests: &mut HashMap<String, CodexServerRequestIdentity>,
+    id: &Value,
+    expected: Option<&CodexServerRequestIdentity>,
+) -> Result<(), String> {
+    let key = id.to_string();
+    let actual = requests.get(&key).ok_or_else(|| {
+        "This Codex request is no longer pending and can no longer be answered.".to_string()
+    })?;
+    if expected.is_some_and(|expected| expected != actual) {
+        return Err(
+            "This Codex request no longer matches the question that is waiting for an answer."
+                .into(),
+        );
+    }
+    requests.remove(&key);
+    Ok(())
 }
 
 /// Identity of a managed child, captured when it is spawned. A pid alone
@@ -358,6 +406,10 @@ struct ClaudeTurn {
     /// for one of these, so the webview cannot answer a request this turn
     /// never issued (mirrors the Codex bridge's server-request set).
     control_requests: Mutex<HashSet<String>>,
+    /// Serializes replies without holding `control_requests` across pipe IO.
+    /// That keeps duplicate renderer replies out while allowing the stdout
+    /// reader to register or cancel requests if Claude stops reading stdin.
+    control_response: Mutex<()>,
 }
 
 #[derive(Serialize)]
@@ -463,6 +515,29 @@ impl ClaudeTurn {
         // handle alive while stream-input mode waits for another prompt.
         self.stdin.lock().await.take();
     }
+}
+
+async fn write_claude_control_response<F, Fut>(
+    response_lock: &Mutex<()>,
+    requests: &Mutex<HashSet<String>>,
+    request_id: &str,
+    write: F,
+) -> Result<(), String>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<(), String>>,
+{
+    let _response = response_lock.lock().await;
+    if !requests.lock().await.contains(request_id) {
+        return Err("This Claude turn is no longer waiting for that request".into());
+    }
+
+    // Keep the request pending on IO failure so the renderer can retry. The
+    // pending-set lock must not cross this await: Claude can cancel this
+    // request or send another one while its stdin is backpressured.
+    write().await?;
+    requests.lock().await.remove(request_id);
+    Ok(())
 }
 
 /// Drain post-result output without forwarding it while the CLI saves history.
@@ -576,11 +651,13 @@ fn claude_reopens_turn(message: &Value) -> bool {
     match message.get("type").and_then(Value::as_str) {
         Some("assistant") => !claude_assistant_ends_turn(message),
         Some("user" | "control_request") => true,
-        Some("stream_event") => message
-            .get("event")
-            .and_then(|event| event.get("type"))
-            .and_then(Value::as_str)
-            == Some("message_start"),
+        Some("stream_event") => {
+            message
+                .get("event")
+                .and_then(|event| event.get("type"))
+                .and_then(Value::as_str)
+                == Some("message_start")
+        }
         _ => false,
     }
 }
@@ -3286,6 +3363,7 @@ fn validate_cli_value(value: &str, label: &str) -> Result<(), String> {
 /// MCP tools are not governed by `--tools`, so the Mythra Code delegation
 /// bridge still reaches Claude as the one approved way to delegate.
 const CLAUDE_BUILTIN_TOOLS: &[&str] = &[
+    "AskUserQuestion",
     "Bash",
     "BashOutput",
     "KillShell",
@@ -3384,6 +3462,38 @@ fn claude_tool_arguments(permission: &str) -> Vec<String> {
     arguments
 }
 
+fn claude_permission_arguments(permission: &str) -> Vec<&'static str> {
+    // Interactive questions always use the control channel, including full
+    // access. dontAsk suppresses AskUserQuestion itself, so read-only uses
+    // manual mode with an automatic denial for ordinary permission requests.
+    let mut arguments = vec!["--permission-prompt-tool", "stdio", "--permission-mode"];
+    if permission == "full" {
+        arguments.extend(["bypassPermissions", "--allow-dangerously-skip-permissions"]);
+    } else {
+        arguments.push("manual");
+    }
+    arguments
+}
+
+fn claude_read_only_denial(read_only: bool, message: &Value) -> Option<Value> {
+    let request = &message["request"];
+    if !read_only
+        || message["type"] != "control_request"
+        || request["subtype"] != "can_use_tool"
+        || request["tool_name"] == "AskUserQuestion"
+    {
+        return None;
+    }
+    let request_id = message["request_id"].as_str()?;
+    Some(json!({
+        "type": "control_response",
+        "response": {
+            "subtype": "success", "request_id": request_id,
+            "response": { "behavior": "deny", "message": "This task is read-only." }
+        }
+    }))
+}
+
 #[tauri::command]
 async fn claude_turn_start(
     app: AppHandle,
@@ -3462,26 +3572,7 @@ async fn claude_turn_start(
     } else {
         command.args(["--session-id", &options.thread_id]);
     }
-    match options.permission.as_str() {
-        "full" => {
-            command.args([
-                "--permission-mode",
-                "bypassPermissions",
-                "--allow-dangerously-skip-permissions",
-            ]);
-        }
-        "read-only" => {
-            command.args(["--permission-mode", "dontAsk"]);
-        }
-        _ => {
-            command.args([
-                "--permission-mode",
-                "manual",
-                "--permission-prompt-tool",
-                "stdio",
-            ]);
-        }
-    }
+    command.args(claude_permission_arguments(&options.permission));
     command.args(claude_tool_arguments(&options.permission));
     if let Some(plugin_path) = options
         .skills_plugin_path
@@ -3544,6 +3635,7 @@ async fn claude_turn_start(
         pid,
         alive: alive.clone(),
         control_requests: Mutex::new(HashSet::new()),
+        control_response: Mutex::new(()),
     });
     if !claim_turn_slot(&state.turns, &options.thread_id, &turn, |existing| {
         existing.alive.load(Ordering::Acquire)
@@ -3590,6 +3682,7 @@ async fn claude_turn_start(
         options.resume,
     );
     let stdout_app = app.clone();
+    let read_only = options.permission == "read-only";
     let stdout_thread = options.thread_id;
     let stdout_turn = turn_id.clone();
     let turns = state.turns.clone();
@@ -3728,6 +3821,12 @@ async fn claude_turn_start(
                 break;
             }
             if message.get("type").and_then(Value::as_str) == Some("control_request") {
+                if let Some(response) = claude_read_only_denial(read_only, &message) {
+                    if stdout_runtime.write(&response).await.is_err() {
+                        break;
+                    }
+                    continue;
+                }
                 // Record the request id (before emitting) so the approval
                 // commands can verify a response targets a request this
                 // exact turn is still waiting on.
@@ -3737,6 +3836,15 @@ async fn claude_turn_start(
                         .lock()
                         .await
                         .insert(request_id.to_string());
+                }
+            }
+            if message.get("type").and_then(Value::as_str) == Some("control_cancel_request") {
+                if let Some(request_id) = message.get("request_id").and_then(Value::as_str) {
+                    stdout_runtime
+                        .control_requests
+                        .lock()
+                        .await
+                        .remove(request_id);
                 }
             }
             emit_claude_event(&stdout_app, &stdout_thread, &stdout_turn, message).await;
@@ -3923,17 +4031,20 @@ async fn claude_permission_respond(
         .get(&thread_id)
         .cloned()
         .ok_or_else(|| "This Claude turn is no longer waiting for approval".to_string())?;
-    if !turn.control_requests.lock().await.remove(&request_id) {
-        return Err("This Claude turn is no longer waiting for that request".into());
-    }
-    turn.write(&json!({
+    let response = json!({
         "type": "control_response",
         "response": {
             "subtype": "success",
-            "request_id": request_id,
+            "request_id": &request_id,
             "response": result,
         }
-    }))
+    });
+    write_claude_control_response(
+        &turn.control_response,
+        &turn.control_requests,
+        &request_id,
+        || turn.write(&response),
+    )
     .await
 }
 
@@ -3953,17 +4064,20 @@ async fn claude_control_error(
         .get(&thread_id)
         .cloned()
         .ok_or_else(|| "This Claude turn is no longer running".to_string())?;
-    if !turn.control_requests.lock().await.remove(&request_id) {
-        return Err("This Claude turn is no longer waiting for that request".into());
-    }
-    turn.write(&json!({
+    let response = json!({
         "type": "control_response",
         "response": {
             "subtype": "error",
-            "request_id": request_id,
+            "request_id": &request_id,
             "error": message,
         }
-    }))
+    });
+    write_claude_control_response(
+        &turn.control_response,
+        &turn.control_requests,
+        &request_id,
+        || turn.write(&response),
+    )
     .await
 }
 
@@ -4400,6 +4514,14 @@ fn runtime_path(codex_binary: &Path, home: Option<&Path>) -> Option<OsString> {
     env::join_paths(directories).ok()
 }
 
+fn resolved_server_request_id(message: &Value) -> Option<String> {
+    if message["method"] != "serverRequest/resolved" {
+        return None;
+    }
+    let id = &message["params"]["requestId"];
+    (id.is_string() || id.is_number()).then(|| id.to_string())
+}
+
 fn initialize_params() -> Value {
     json!({
         "clientInfo": {
@@ -4518,7 +4640,8 @@ async fn spawn_server(app: &AppHandle, state: &RuntimeState) -> Result<Arc<AppSe
     let app_for_reader = app.clone();
     let alive = Arc::new(AtomicBool::new(true));
     let alive_for_reader = alive.clone();
-    let server_requests: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
+    let server_requests: Arc<Mutex<HashMap<String, CodexServerRequestIdentity>>> =
+        Arc::new(Mutex::new(HashMap::new()));
     let server_requests_for_reader = server_requests.clone();
 
     tauri::async_runtime::spawn(async move {
@@ -4595,15 +4718,23 @@ async fn spawn_server(app: &AppHandle, state: &RuntimeState) -> Result<Arc<AppSe
                     delta_buffer.push(message);
                 } else {
                     flush_deltas(&mut delta_buffer, &app_for_reader);
+                    // Expiry and turn completion invalidate nonblocking input
+                    // requests too. Reject stale UI responses before writing
+                    // them to a runtime that would silently ignore them.
+                    if let Some(id) = resolved_server_request_id(&message) {
+                        server_requests_for_reader.lock().await.remove(&id);
+                    }
                     if message.get("id").is_some() && message.get("method").is_some() {
                         // A server-initiated request: record its id (before
                         // emitting) so codex_respond can verify the response
                         // targets this exact server instance.
-                        if let Some(id) = message.get("id") {
+                        if let (Some(id), Some(identity)) =
+                            (message.get("id"), codex_server_request_identity(&message))
+                        {
                             server_requests_for_reader
                                 .lock()
                                 .await
-                                .insert(id.to_string());
+                                .insert(id.to_string(), identity);
                         }
                     }
                     let _ = app_for_reader.emit("codex-event", message);
@@ -4996,6 +5127,7 @@ async fn codex_respond(
     state: State<'_, RuntimeState>,
     id: Value,
     result: Value,
+    expected: Option<CodexServerRequestIdentity>,
 ) -> Result<(), String> {
     // Deliberately not ensure_server: a response to a server-initiated
     // request is only meaningful for the exact instance that asked. Spawning
@@ -5011,10 +5143,9 @@ async fn codex_respond(
             "The Codex runtime is no longer running, so this request can no longer be answered."
                 .to_string()
         })?;
-    if !server.server_requests.lock().await.remove(&id.to_string()) {
-        return Err(
-            "The Codex runtime restarted, so this request can no longer be answered.".into(),
-        );
+    {
+        let mut requests = server.server_requests.lock().await;
+        consume_codex_server_request(&mut requests, &id, expected.as_ref())?;
     }
     server.respond(id, result).await
 }

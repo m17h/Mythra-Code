@@ -436,7 +436,7 @@ export function useChildAgents(context: ChildAgentContext): {
 
     const taskStore = useTaskStore.getState();
     taskStore.ensureTask(childThreadId, executionPath);
-    taskStore.appendUserMessage(childThreadId, { id: `local-${crypto.randomUUID()}`, role: "user", text: prompt });
+    taskStore.appendUserMessage(childThreadId, { id: `local-${crypto.randomUUID()}`, role: "user", text: prompt, turnId: result.turnId });
     const completedBeforeStartReturned = Boolean(
       result.turnId && taskStore.tasks[childThreadId]?.lastCompletedTurnId === result.turnId,
     );
