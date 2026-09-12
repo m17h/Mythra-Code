@@ -262,8 +262,8 @@
           },
           "startupJsRawBytes": {
             "before": 739014,
-            "after": 747206,
-            "delta": 8192
+            "after": 747226,
+            "delta": 8212
           },
           "startupCssRawBytes": {
             "before": 362499,
@@ -272,8 +272,8 @@
           },
           "totalJsRawBytes": {
             "before": 1500738,
-            "after": 1513758,
-            "delta": 13020
+            "after": 1513778,
+            "delta": 13040
           }
         },
         "chrome105": {
@@ -284,8 +284,8 @@
           },
           "startupJsRawBytes": {
             "before": 711938,
-            "after": 719525,
-            "delta": 7587
+            "after": 719545,
+            "delta": 7607
           },
           "startupCssRawBytes": {
             "before": 355956,
@@ -294,8 +294,8 @@
           },
           "totalJsRawBytes": {
             "before": 1463330,
-            "after": 1475213,
-            "delta": 11883
+            "after": 1475233,
+            "delta": 11903
           }
         }
       }
@@ -304,15 +304,15 @@
   "profiles": {
     "safari13-minified": {
       "appEntryRawBytes": 375756,
-      "startupJsRawBytes": 747206,
+      "startupJsRawBytes": 747226,
       "startupCssRawBytes": 362499,
-      "totalJsRawBytes": 1513758
+      "totalJsRawBytes": 1513778
     },
     "chrome105-minified": {
       "appEntryRawBytes": 355880,
-      "startupJsRawBytes": 719525,
+      "startupJsRawBytes": 719545,
       "startupCssRawBytes": 355956,
-      "totalJsRawBytes": 1475213
+      "totalJsRawBytes": 1475233
     }
   }
 }

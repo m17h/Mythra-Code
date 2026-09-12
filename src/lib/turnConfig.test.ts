@@ -43,6 +43,10 @@ describe("permission policy", () => {
   it("never pauses an unattended Ask to act run for approval", () => {
     const run = { ...baseRun, permission: "ask" as const };
     expect(threadStartParams(run, "/tmp/project", { interactive: false })).toMatchObject({ approvalPolicy: "never", config: { features: { default_mode_request_user_input: false } } });
+    expect(threadResumeParams(run, "thread-1", "/tmp/project", { interactive: false, refreshRuntimeConfig: true })).toMatchObject({
+      approvalPolicy: "never",
+      config: { features: { default_mode_request_user_input: false } },
+    });
     expect(turnStartParams(run, "thread-1", "/tmp/project", [], [], false)).toMatchObject({
       approvalPolicy: "never",
       sandboxPolicy: { type: "workspaceWrite" },

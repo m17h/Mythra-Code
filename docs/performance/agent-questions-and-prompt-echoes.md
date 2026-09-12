@@ -78,9 +78,9 @@ emptied before measurement to avoid counting stale chunks twice.
 | Metric | Safari 13 target | Change from prior cap | Chrome 105 target | Change from prior cap |
 | --- | ---: | ---: | ---: | ---: |
 | App entry JS | 375,756 | +3,195 | 355,880 | +2,944 |
-| Startup JS | 747,206 | +8,192 | 719,525 | +7,587 |
+| Startup JS | 747,226 | +8,212 | 719,545 | +7,607 |
 | Startup CSS | 362,499 | 0 | 355,956 | 0 |
-| Total JS | 1,513,758 | +13,020 | 1,475,213 | +11,883 |
+| Total JS | 1,513,778 | +13,040 | 1,475,233 | +11,903 |
 
 The startup JavaScript increase is about 1.1%. The reviewed exception in
 `scripts/performance-budgets.json` records these exact costs without adding

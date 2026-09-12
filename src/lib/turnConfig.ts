@@ -199,7 +199,7 @@ export function threadResumeParams(
     // A thread may have been created under a different permission mode. Resume
     // it with the mode currently shown in the composer so a stale `on-request`
     // policy cannot survive after the user switches to Full access.
-    approvalPolicy: run.permission === "ask" ? "on-request" : "never",
+    approvalPolicy: options.interactive !== false && run.permission === "ask" ? "on-request" : "never",
     sandbox: sandboxMode(run.permission),
     developerInstructions,
     ...(options.excludeTurns ? { excludeTurns: true } : {}),
