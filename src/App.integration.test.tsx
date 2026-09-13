@@ -3107,6 +3107,23 @@ describe("composer sub-agent command center", () => {
   });
 });
 
+describe("local thread renaming", () => {
+  it.each(["claude", "cursor"])("renames an unopened %s thread using metadata only", async (provider) => {
+    const user = userEvent.setup();
+    const thread = { ...THREAD_A, modelProvider: provider };
+    threadListImpl = () => ({ data: [thread], nextCursor: null });
+    localStorage.setItem("kiwi.knownThreads", JSON.stringify({ [thread.id]: thread }));
+    await renderApp();
+    await user.click(await screen.findByRole("button", { name: "Options for Alpha thread" }));
+    await user.click(await screen.findByText("Rename"));
+    const input = screen.getByRole("textbox", { name: "Thread name" });
+    await user.clear(input);
+    await user.type(input, "Renamed safely{Enter}");
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("local_transcript_rename", { provider, threadId: thread.id, name: "Renamed safely" }));
+    expect(invokeMock.mock.calls.some(([command]) => command === "local_transcript_snapshot_write" || command === "local_transcript_tail_write")).toBe(false);
+  });
+});
+
 describe("workspace attachments", () => {
   function codexCalls(method: string): Record<string, unknown>[] {
     return invokeMock.mock.calls
@@ -3139,6 +3156,87 @@ describe("workspace attachments", () => {
     // Returning to the original thread finds the file still chosen for it.
     await user.click(threadRow("Alpha thread"));
     expect(await screen.findByRole("button", { name: "Remove attachment notes.md" })).toBeInTheDocument();
+  });
+
+  it("captures all pasted images before clipboard access is sealed", async () => {
+    const user = userEvent.setup();
+    resumeImpl = (params) => ({ thread: { ...THREAD_A, id: String(params.threadId), turns: [] } });
+    let counter = 0;
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "save_pasted_image") return `/app-data/message-images/paste-${++counter}.png`;
+      if (command === "persist_image_attachment") return args?.path;
+      return stubInvoke(command, args);
+    });
+    await renderApp();
+    await user.click(await screen.findByText("Alpha thread"));
+    const composer = await screen.findByPlaceholderText(/Ask Mythra Code to work in/);
+    let sealed = false;
+    const files = [new File(["one"], "one.png", { type: "image/png" }), new File(["two"], "two.png", { type: "image/png" })];
+    fireEvent.paste(composer, { clipboardData: { items: files.map((file) => ({ type: file.type, getAsFile: () => sealed ? null : file })) } });
+    sealed = true;
+    await user.type(composer, "Review both images{Enter}");
+    await waitFor(() => expect(codexCalls("turn/start")).toHaveLength(1));
+    expect((codexCalls("turn/start")[0].input as Array<{ type: string; path?: string }>).filter((item) => item.type === "localImage").map((item) => item.path)).toEqual([
+      "/app-data/message-images/paste-1.png", "/app-data/message-images/paste-2.png",
+    ]);
+  });
+
+  it("keeps a waiting attachment send out of a newly selected thread", async () => {
+    const user = userEvent.setup();
+    const pasted = deferred<string>();
+    resumeImpl = (params) => ({ thread: { ...THREAD_A, id: String(params.threadId), turns: [] } });
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "save_pasted_image") return pasted.promise;
+      return stubInvoke(command, args);
+    });
+    await renderApp();
+    await user.click(await screen.findByText("Alpha thread"));
+    const composer = await screen.findByPlaceholderText(/Ask Mythra Code to work in/);
+    const file = new File(["image"], "image.png", { type: "image/png" });
+    fireEvent.paste(composer, { clipboardData: { items: [{ type: file.type, getAsFile: () => file }] } });
+    await user.type(composer, "Keep this in Alpha{Enter}");
+    await user.click(threadRow("Beta thread"));
+    await act(async () => { pasted.resolve("/app-data/message-images/alpha/image.png"); });
+    await waitFor(() => expect(JSON.parse(localStorage.getItem("kiwi.drafts") ?? "{}")[THREAD_A.id]).toContain("Keep this in Alpha"));
+    expect(codexCalls("turn/start")).toHaveLength(0);
+    expect(screen.queryByRole("button", { name: "Remove attachment image.png" })).not.toBeInTheDocument();
+  });
+
+  it("rejects unsupported pasted image formats before creating an attachment", async () => {
+    const user = userEvent.setup();
+    resumeImpl = (params) => ({ thread: { ...THREAD_A, id: String(params.threadId), turns: [] } });
+    await renderApp();
+    await user.click(await screen.findByText("Alpha thread"));
+    const file = new File(["heic"], "photo.heic", { type: "image/heic" });
+    fireEvent.paste(await screen.findByPlaceholderText(/Ask Mythra Code to work in/), { clipboardData: { items: [{ type: file.type, getAsFile: () => file }] } });
+    expect(await screen.findByText(/HEIC\/HEIF images are not supported/)).toBeInTheDocument();
+    expect(invokeMock.mock.calls.some(([command]) => command === "save_pasted_image")).toBe(false);
+  });
+
+  it("waits for the durable image before steering and clears the sent chip", async () => {
+    const user = userEvent.setup();
+    const persisted = deferred<string>();
+    resumeImpl = (params) => ({ thread: { ...THREAD_A, id: String(params.threadId), turns: [] } });
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "persist_image_attachment") return persisted.promise;
+      return stubInvoke(command, args);
+    });
+    await renderApp();
+    await user.click(await screen.findByText("Alpha thread"));
+    await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
+    await user.click(await screen.findByRole("tab", { name: "Files workspace tool" }));
+    await user.click(await screen.findByRole("button", { name: "diagram.PNG" }));
+    await user.click(await screen.findByRole("button", { name: "Attach diagram.PNG" }));
+    const composer = await screen.findByPlaceholderText(/Ask Mythra Code to work in/);
+    const { useTaskStore } = await import("./lib/taskStore");
+    act(() => { useTaskStore.getState().setActiveTurn(THREAD_A.id, "working-turn"); useTaskStore.getState().setTaskStatus(THREAD_A.id, "running"); });
+    await user.type(composer, "Use this image");
+    await user.click(await screen.findByRole("button", { name: "Steer" }));
+    expect(codexCalls("turn/steer")).toHaveLength(0);
+    await act(async () => { persisted.resolve("/app-data/message-images/steered/diagram.PNG"); });
+    await waitFor(() => expect(codexCalls("turn/steer")).toHaveLength(1));
+    expect(codexCalls("turn/steer")[0].input).toContainEqual(expect.objectContaining({ type: "localImage", path: "/app-data/message-images/steered/diagram.PNG" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Remove attachment diagram.PNG" })).not.toBeInTheDocument());
   });
 
   it("sends a Files-tab image as a native image input", async () => {

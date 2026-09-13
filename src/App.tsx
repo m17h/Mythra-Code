@@ -1,7 +1,10 @@
+import { flushSync } from "react-dom";
+import { renameLocalTranscript } from "./lib/localTranscriptPersistence";
+import { clipboardImages, createAttachmentPreparationTracker, imageBase64 } from "./lib/clipboardImages";
 import { forgetQuestionRecords } from "./lib/agentQuestionRecords";
 import { AgentQuestionDelivery } from "./lib/agentQuestionContext";
 import { useTranscriptSaves } from "./hooks/useTranscriptSaves";
-import { useFlushOnClose } from "./hooks/useFlushOnClose";
+import { flushBeforeClose, useFlushOnClose } from "./hooks/useFlushOnClose";
 import { useGitHubLogin } from "./hooks/useGitHubLogin";
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type CSSProperties, type Dispatch, type PointerEvent as ReactPointerEvent, type SetStateAction } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
@@ -104,7 +107,7 @@ import { listLMStudioModels, type LMStudioModel } from "./lib/lmStudio";
 import { EMPTY_MODEL_FAVORITES, MODEL_FAVORITES_KEY, favoriteModels, sanitizeModelFavorites, toggleFavoriteModel, type ModelFavorites } from "./lib/modelFavorites";
 import { fetchOpenRouterCatalog, mergeOpenRouterModels, resolveOpenRouterSlug } from "./lib/openRouterCatalog";
 import { basename, isAbsolutePath, joinPath, normalizedProjectPath } from "./lib/paths";
-import { attachmentKind, attachmentRecord, withAttachedPaths } from "./lib/attachments";
+import { attachmentKind, attachmentRecord, unsupportedImageReason, withAttachedPaths } from "./lib/attachments";
 import { attachmentsFor, forgetAttachmentDraft, withAttachmentDraft, type AttachmentDrafts } from "./lib/attachmentDrafts";
 import { EMPTY_REVIEW_DIFF } from "./lib/gitDiff";
 import { shellCommand } from "./lib/shellCommand";
@@ -901,6 +904,14 @@ export default function App() {
     })),
   }), [claudeModels, cursorModels, lmStudioModels, openRouterModels, runtimeModels]);
 
+  const runDiscoveryCatalogs = useMemo(() => ({
+    openai: subAgentModelCatalogs.openai?.map((entry) => ({ ...entry, efforts: runtimeModels.find((model) => (model.model || model.id) === entry.id)?.supportedReasoningEfforts.map((option) => option.reasoningEffort) })),
+    claude: subAgentModelCatalogs.claude?.map((entry) => ({ ...entry, efforts: claudeModels.find((model) => model.id === entry.id)?.supportedEfforts })),
+    cursor: subAgentModelCatalogs.cursor?.map((entry) => ({ ...entry, efforts: [] })),
+    openrouter: subAgentModelCatalogs.openrouter?.map((entry) => ({ ...entry, efforts: openRouterModels.find((model) => model.id === entry.id)?.supported_parameters?.some((parameter) => parameter === "reasoning" || parameter === "reasoning_effort") ? ["default", "low", "medium", "high", "xhigh", "max"] : [] })),
+    lmstudio: subAgentModelCatalogs.lmstudio?.map((entry) => ({ ...entry, efforts: lmStudioModels.find((model) => model.id === entry.id)?.reasoningEfforts ?? [] })),
+  }), [subAgentModelCatalogs, runtimeModels, claudeModels, openRouterModels, lmStudioModels]);
+
   const terminal = useTerminal({ scrollback: settings.terminalScrollback, permission: effectiveSettings.permission, scope: activeExecutionPath, onError: setError });
   const timelineEmpty = useTaskStore((state) => {
     if (!activeThreadId) return true;
@@ -1605,10 +1616,10 @@ export default function App() {
   });
   const scheduleClaudeThreadSave = localTranscriptSaves.schedule;
   const scheduleCursorThreadSave = localTranscriptSaves.schedule;
-  useFlushOnClose(async () => {
-    await localTranscriptSaves.flushAll();
-    await flushPendingStateWrites();
-  }, setError);
+  useFlushOnClose(() => flushBeforeClose([localTranscriptSaves.flushAll, flushPendingStateWrites]), setError, () => confirmDialog(
+    "Some recent changes could not be saved. Close without saving them? You can keep the window open and retry after resolving the storage problem.",
+    { confirmLabel: "Close without saving", cancelLabel: "Keep open" },
+  ));
 
   const checkRuntime = useCallback(async (showSetupWhenMissing = true): Promise<CodexRuntimeStatus> => {
     setRuntimeChecking(true);
@@ -4150,12 +4161,8 @@ export default function App() {
       rememberThread(updated);
       setThreads((current) => current.map((entry) => (entry.id === thread.id ? updated : entry)));
       setActiveThread((current) => (current?.id === thread.id ? { ...current, name } : current));
-      if (isClaudeThread(thread)) {
-        const task = useTaskStore.getState().tasks[thread.id];
-        await saveClaudeTranscript({ thread: updated, messages: task?.messages ?? [], activities: task?.activities ?? [] });
-      } else if (isCursorThread(thread)) {
-        const task = useTaskStore.getState().tasks[thread.id];
-        await saveCursorTranscript({ thread: updated, cursorSessionId: cursorSessionIdsRef.current[thread.id] ?? "", messages: task?.messages ?? [], activities: task?.activities ?? [] });
+      if (isLocalSubscriptionThread(thread)) {
+        await renameLocalTranscript(isClaudeThread(thread) ? "claude" : "cursor", thread.id, name);
       }
     } catch (reason) {
       setError(friendlyError(reason));
@@ -4852,9 +4859,14 @@ export default function App() {
     }
   };
 
-  const pendingAttachmentPreparationsRef = useRef(new Set<Promise<void>>());
+  const [attachmentPreparations] = useState(createAttachmentPreparationTracker);
+  const attachmentKeyRef = useRef(attachmentKey);
+  attachmentKeyRef.current = attachmentKey;
 
   const addAttachmentPaths = useCallback(async (paths: string[]) => {
+    const unsupported = paths.map(unsupportedImageReason).find(Boolean);
+    if (unsupported) setError(unsupported);
+    paths = paths.filter((path) => !unsupportedImageReason(path));
     if (!paths.length) return;
     // Show selected files immediately. Sending waits for the tracked durable
     // copies below, so a quick Enter cannot omit a large image or save its
@@ -4872,7 +4884,7 @@ export default function App() {
         }
       }));
       const replacements = new Map(prepared.map((entry) => [entry.original, entry.path]));
-      setAttachments((current) => {
+      flushSync(() => setAttachments((current) => {
         let changed = false;
         const next = current.map((entry) => {
           const replacement = replacements.get(entry.path);
@@ -4881,17 +4893,12 @@ export default function App() {
           return attachmentRecord(replacement);
         });
         return changed ? next : current;
-      });
+      }));
       const failure = prepared.find((entry) => entry.error)?.error;
       if (failure) setError(`The image was attached from its original location, but Mythra Code could not preserve a durable copy: ${failure}`);
     })();
-    pendingAttachmentPreparationsRef.current.add(preparation);
-    try {
-      await preparation;
-    } finally {
-      pendingAttachmentPreparationsRef.current.delete(preparation);
-    }
-  }, [setAttachments]);
+    await attachmentPreparations.track(attachmentKey, preparation);
+  }, [attachmentKey, attachmentPreparations, setAttachments]);
 
   addAttachmentPathsRef.current = addAttachmentPaths;
 
@@ -4902,54 +4909,33 @@ export default function App() {
   };
 
   const pasteImages = useCallback(async (items: DataTransferItemList) => {
-    for (const item of Array.from(items)) {
-      if (!item.type.startsWith("image/")) continue;
-      const file = item.getAsFile();
-      if (!file) continue;
-      const preparation = (async () => {
-        const buffer = new Uint8Array(await file.arrayBuffer());
-        let binary = "";
-        const chunk = 0x8000;
-        for (let offset = 0; offset < buffer.length; offset += chunk) {
-          binary += String.fromCharCode(...buffer.subarray(offset, offset + chunk));
-        }
-        const extension = (item.type.split("/")[1] ?? "png").toLowerCase();
-        const temporaryPath = await invoke<string>("save_pasted_image", { dataBase64: btoa(binary), extension });
-        setAttachments((current) => withAttachedPaths(current, [temporaryPath]));
-        let path = temporaryPath;
+    const files = clipboardImages(items);
+    const preparation = (async () => {
+      for (const file of files) {
         try {
-          path = await invoke<string>("persist_image_attachment", { path: temporaryPath, displayName: file.name }) || temporaryPath;
+          const unsupported = unsupportedImageReason(file.name) ?? unsupportedImageReason(`clipboard.${file.type.split("/")[1]}`);
+          if (unsupported) { setError(unsupported); continue; }
+          const extension = (file.type.split("/")[1] ?? "png").toLowerCase();
+          const path = await invoke<string>("save_pasted_image", { dataBase64: await imageBase64(file), extension, displayName: file.name });
+          flushSync(() => setAttachments((current) => withAttachedPaths(current, [path])));
         } catch (reason) {
-          setError(`The pasted image is attached, but Mythra Code could not preserve a durable copy: ${friendlyError(reason)}`);
+          setError(friendlyError(reason));
         }
-        // Pasted bytes are known to be an image regardless of the extension
-        // the native side chose for the temporary file.
-        setAttachments((current) => current.map((entry) => entry.path === temporaryPath ? attachmentRecord(path) : entry));
-      })();
-      pendingAttachmentPreparationsRef.current.add(preparation);
-      try {
-        await preparation;
-      } catch (reason) {
-        setError(friendlyError(reason));
-      } finally {
-        pendingAttachmentPreparationsRef.current.delete(preparation);
       }
-    }
-  }, [setAttachments]);
+    })();
+    await attachmentPreparations.track(attachmentKey, preparation);
+  }, [attachmentKey, attachmentPreparations, setAttachments]);
 
-  const sendMessageRef = useRef(sendMessage);
-  sendMessageRef.current = sendMessage;
-  const sendMessageAfterAttachments = useCallback(async (text: string) => {
-    while (pendingAttachmentPreparationsRef.current.size) {
-      const pending = [...pendingAttachmentPreparationsRef.current];
-      await Promise.allSettled(pending);
-      for (const preparation of pending) pendingAttachmentPreparationsRef.current.delete(preparation);
-    }
-    // Let the durable-path state update commit before the turn runner reads
-    // the current attachment snapshot.
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-    return sendMessageRef.current(text);
-  }, []);
+  const attachmentDeliveryRef = useRef({ sendMessage, steerMessage });
+  attachmentDeliveryRef.current = { sendMessage, steerMessage };
+  const deliverAfterAttachments = useCallback(async (text: string, mode: "sendMessage" | "steerMessage") => {
+    await attachmentPreparations.wait(attachmentKey);
+    // Preparations synchronously commit durable paths before resolving. If the user
+    // selected another draft meanwhile, let Composer restore this prompt into
+    // the original draft instead of sending it into the new conversation.
+    if (attachmentKeyRef.current !== attachmentKey) return false;
+    return attachmentDeliveryRef.current[mode](text);
+  }, [attachmentKey, attachmentPreparations]);
 
   const refreshGitHubRepo = useCallback(async (cwd = activeExecutionPath || activeProject?.path || "") => {
     const refreshSequence = ++githubRepoRefreshSequenceRef.current;
@@ -5769,6 +5755,10 @@ export default function App() {
               <ProjectRunControl
                 key={`run-${activeProject.id}`}
                 projectName={activeProject.name}
+                projectPath={activeProject.path}
+                discoveryCatalogs={runDiscoveryCatalogs}
+                lmStudioBaseUrl={settings.lmStudioBaseUrl}
+                onDiscoveryAccounts={() => openSettings("models")}
                 run={projectRun}
                 running={projectRunRunning}
                 terminalBusy={Boolean(terminal.running && !projectRunRunning)}
@@ -6070,8 +6060,8 @@ export default function App() {
                 skills={composerSkills}
                 onRemoveAttachment={(path) => setAttachments((current) => current.filter((entry) => entry.path !== path))}
                 onPasteImages={(items) => void pasteImages(items)}
-                onSend={sendMessageAfterAttachments}
-                onSteer={steerMessage}
+                onSend={(text) => deliverAfterAttachments(text, "sendMessage")}
+                onSteer={(text) => deliverAfterAttachments(text, "steerMessage")}
                 onSteerQueued={(queuedTurnId) => void steerQueuedMessage(queuedTurnId)}
                 onRetryQueued={retryQueuedMessage}
                 onRemoveQueued={removeQueuedMessage}

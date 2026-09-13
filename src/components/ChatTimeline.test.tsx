@@ -49,13 +49,16 @@ function oldLongThread(): { messages: Array<{
 }
 
 describe("ChatTimeline", () => {
-  it("shows sent image attachments as compact previews in the user message", () => {
-    render(<ChatTimeline
+  it("shows sent images in their own bubble with the prompt text in a bubble underneath", () => {
+    const view = render(<ChatTimeline
       messages={[{
         id: "user-with-image",
         role: "user",
         text: "Use this screenshot",
-        attachments: [{ path: "/tmp/pasted image.png", name: "pasted image.png", kind: "image" }],
+        attachments: [
+          { path: "/tmp/pasted image.png", name: "pasted image.png", kind: "image" },
+          { path: "/tmp/second.png", name: "second.png", kind: "image" },
+        ],
       }]}
       activities={[]}
       running={false}
@@ -65,7 +68,30 @@ describe("ChatTimeline", () => {
     const preview = screen.getByRole("img", { name: "Attached image: pasted image.png" });
     expect(preview).toHaveClass("message-image-preview");
     expect(preview).toHaveAttribute("src", "asset://localhost/%2Ftmp%2Fpasted%20image.png");
-    expect(screen.getByLabelText("Attached images")).toContainElement(preview);
+    const gallery = screen.getByLabelText("Attached images");
+    expect(gallery).toContainElement(preview);
+    expect(gallery).toContainElement(screen.getByRole("img", { name: "Attached image: second.png" }));
+
+    const bubbles = Array.from(view.container.querySelectorAll(".message.user .message-stack > .message-body"));
+    expect(bubbles).toHaveLength(2);
+    expect(bubbles[0]).toHaveClass("message-attachments");
+    expect(bubbles[0]).toHaveAttribute("data-count", "2");
+    expect(bubbles[0]).toContainElement(gallery);
+    expect(bubbles[0]).not.toHaveTextContent("Use this screenshot");
+    expect(bubbles[1]).not.toHaveClass("message-attachments");
+    expect(bubbles[1]).toHaveTextContent("Use this screenshot");
+    expect(bubbles[1].querySelector(".message-image-preview")).toBeNull();
+  });
+
+  it("keeps a text-only user message in a single bubble", () => {
+    const view = render(<ChatTimeline
+      messages={[{ id: "plain", role: "user", text: "No pictures here" }]}
+      activities={[]}
+      running={false}
+      thinkingLabel="Working"
+    />);
+    expect(view.container.querySelector(".message.user .message-stack")).toBeNull();
+    expect(view.container.querySelectorAll(".message.user .message-body")).toHaveLength(1);
   });
 
   it("shows when the active turn accepted a steer", () => {

@@ -60,7 +60,7 @@ export function reconcileUserMessages(incoming: ChatMessage[], live: ChatMessage
     const existing = byId.get(message.id) ?? candidates[userEchoIndex(candidates, message)];
     if (!existing) return message;
     matchedIds.add(existing.id);
-    return { ...message, ...(existing.id === message.id ? existing : {}), text: existing.text, attachments: existing.attachments ?? message.attachments,
+    return { ...message, ...(existing.id === message.id ? existing : {}), timelineOrder: message.timelineOrder ?? existing.timelineOrder, text: existing.text, attachments: existing.attachments ?? message.attachments,
       clientMessageId: existing.clientMessageId ?? (existing.id !== message.id ? existing.id : undefined), steerStatus: existing.steerStatus };
   });
   return { messages, matchedIds };

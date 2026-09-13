@@ -375,12 +375,22 @@ export function saveLocalTranscript(
   provider: LocalTranscriptProvider,
   transcript: LocalTranscriptValue,
 ): Promise<void> {
-  const key = persistenceKey(provider, transcript.thread.id);
+  return queueTranscriptWrite(provider, transcript.thread.id, () => persistTranscript(provider, transcript));
+}
+
+/** Renaming must never synthesize a transcript from a missing/evicted window.
+ * Serialize metadata-only renames with saves and deletes for this thread. */
+export function renameLocalTranscript(provider: LocalTranscriptProvider, threadId: string, name: string): Promise<void> {
+  return queueTranscriptWrite(provider, threadId, () => invoke("local_transcript_rename", { provider, threadId, name }));
+}
+
+function queueTranscriptWrite(provider: LocalTranscriptProvider, threadId: string, write: () => Promise<void>): Promise<void> {
+  const key = persistenceKey(provider, threadId);
   if (deletingTranscripts.has(key)) {
     return Promise.reject(new Error("Local transcript is being deleted"));
   }
   const previous = saveQueues.get(key) ?? Promise.resolve();
-  const queued = previous.catch(() => undefined).then(() => persistTranscript(provider, transcript));
+  const queued = previous.catch(() => undefined).then(write);
   saveQueues.set(key, queued);
   void queued.finally(() => {
     if (saveQueues.get(key) === queued) saveQueues.delete(key);

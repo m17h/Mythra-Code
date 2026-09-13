@@ -120,6 +120,18 @@ describe("provider prompt echoes", () => {
     store().completeTurn("thread", "old", "completed");
     expect(store().tasks.thread.approvals).toHaveLength(1);
   });
+  it("keeps history ordering when an echoed prompt already has its runtime ID", () => {
+    const history = [{ ...user("runtime"), timelineOrder: 1 }, { id: "answer", role: "assistant" as const, text: "Reply", turnId: "turn-1", timelineOrder: 2 }];
+    const live = [{ ...user("runtime"), clientMessageId: "local-1", timelineOrder: 900, steerStatus: "accepted" as const }];
+    const merged = mergeTranscriptHistory(history, [], live, []);
+    expect(merged.messages.map((message) => message.id)).toEqual(["runtime", "answer"]);
+    expect(merged.messages[0]).toMatchObject({ clientMessageId: "local-1", steerStatus: "accepted", timelineOrder: 1 });
+    store().hydrateTask("thread", live, []);
+    store().hydrateTask("thread", history, []);
+    expect(store().tasks.thread.messages.map((message) => message.id)).toEqual(["runtime", "answer"]);
+    expect(store().tasks.thread.messages[0].timelineOrder).toBeLessThan(store().tasks.thread.messages[1].timelineOrder!);
+  });
+
   it("retains structured questions in runtime history", () => {
     const questions = [{ title: "Which layout?", options: ["Compact", "Spacious"] }];
     expect(timelineFromTurns([{ id: "turn-1", items: [{ id: "question", type: "agentMessage", text: "", questions }] }]).messages[0].questions).toEqual(questions);

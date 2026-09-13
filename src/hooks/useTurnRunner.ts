@@ -42,6 +42,7 @@ import {
   type WorkspaceGitInfo,
 } from "../lib/worktrees";
 import { normalizedProjectPath } from "../lib/paths";
+import { unsupportedImageReason } from "../lib/attachments";
 import { PendingTurnStarts, type PendingTurnStart } from "../lib/pendingTurnStarts";
 import type { SetPersisted } from "./usePersistedState";
 import type { OpenRouterModel } from "../components/OpenRouterModelControl";
@@ -248,6 +249,13 @@ export function useTurnRunner(context: TurnRunnerContext): {
       setRuntimeSetupOpen, setAuthRequiredOpen, openSettings,
     } = ctx;
     if (!text || !activeWorkspace) return false;
+    for (const attachment of attachments) {
+      const reason = attachment.kind === "image" ? unsupportedImageReason(attachment.path) : undefined;
+      if (reason) {
+        setError(reason);
+        return false;
+      }
+    }
     const currentIsolation = activeThread ? threadWorktreesRef.current[activeThread.id] : undefined;
     if (currentIsolation && worktreeBusy) {
       setError("Wait for the isolated worktree operation to finish before starting another model turn.");
@@ -402,7 +410,13 @@ export function useTurnRunner(context: TurnRunnerContext): {
     // visible UI (thread list, active thread) is then skipped, while the
     // thread itself still starts and stays bound to its own project.
     const sendWorkspacePath = normalizedProjectPath(activeWorkspace.path);
+    const selectedThreadAtSend = useTaskStore.getState().activeThreadId;
+    let activatedCreatedThreadId: string | undefined;
     const workspaceChangedMidSend = () => activeWorkspacePathRef.current !== sendWorkspacePath;
+    const threadSelectionChangedMidSend = () => {
+      const selectedThread = useTaskStore.getState().activeThreadId;
+      return selectedThread !== selectedThreadAtSend && selectedThread !== activatedCreatedThreadId;
+    };
     let pendingStart: PendingTurnStart | undefined;
     let draftGeneration: number | undefined;
     // Mark the start synchronously, before the first await, so Stop and the
@@ -472,8 +486,11 @@ export function useTurnRunner(context: TurnRunnerContext): {
         useTaskStore.getState().ensureTask(thread.id, executionPath);
         if (!workspaceChangedMidSend()) {
           setThreads((current) => upsertThread(current, thread!));
-          setActiveThread(thread);
-          useTaskStore.getState().setActiveThread(thread.id);
+          if (!threadSelectionChangedMidSend()) {
+            activatedCreatedThreadId = thread.id;
+            setActiveThread(thread);
+            useTaskStore.getState().setActiveThread(thread.id);
+          }
         }
       }
       startedThreadId = thread.id;
@@ -491,7 +508,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       rememberThread(updatedThread);
       if (!workspaceChangedMidSend()) {
         setThreads((current) => upsertThread(current, updatedThread));
-        setActiveThread(updatedThread);
+        if (!threadSelectionChangedMidSend()) setActiveThread(updatedThread);
       }
       useTaskStore.getState().ensureTask(thread.id, executionPath);
       if (!activeThread) useTaskStore.getState().beginAgentRun(thread.id);
@@ -679,8 +696,11 @@ export function useTurnRunner(context: TurnRunnerContext): {
         useTaskStore.getState().ensureTask(startedThread.id, executionPath);
         if (!workspaceChangedMidSend()) {
           setThreads((current) => upsertThread(current, startedThread));
-          setActiveThread(startedThread);
-          useTaskStore.getState().setActiveThread(startedThread.id);
+          if (!threadSelectionChangedMidSend()) {
+            activatedCreatedThreadId = startedThread.id;
+            setActiveThread(startedThread);
+            useTaskStore.getState().setActiveThread(startedThread.id);
+          }
         }
       } else {
         // Startup-only config overrides are intentionally ignored by Codex
@@ -704,7 +724,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         rememberThread(updatedThread);
         if (!workspaceChangedMidSend()) {
           setThreads((current) => upsertThread(current, updatedThread));
-          setActiveThread(updatedThread);
+          if (!threadSelectionChangedMidSend()) setActiveThread(updatedThread);
         }
       }
       rememberChildAgentPolicy(threadId);

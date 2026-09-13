@@ -232,7 +232,7 @@ fn field_after_label(output: &str, label: &str) -> Option<String> {
 }
 
 #[derive(Clone, Debug)]
-enum CursorRuntime {
+pub(super) enum CursorRuntime {
     Native(PathBuf),
     #[cfg(windows)]
     WindowsNode {
@@ -293,6 +293,123 @@ impl CursorRuntime {
                 command
             }
         }
+    }
+
+    pub(super) fn discovery_background(
+        &self,
+        workspace: &Path,
+        config_dir: &Path,
+        data_dir: &Path,
+    ) -> Result<tokio::process::Command, String> {
+        match self {
+            Self::Native(path) => {
+                let mut command = background_command(path);
+                command
+                    .current_dir(workspace)
+                    .env("CURSOR_CONFIG_DIR", config_dir)
+                    .env("CURSOR_DATA_DIR", data_dir)
+                    .env("CURSOR_AGENT_STORE", data_dir.join("agent-store"))
+                    .env(
+                        "CURSOR_AGENT_STORE_FILES_DIR",
+                        data_dir.join("agent-store-files"),
+                    )
+                    .env("CURSOR_AGENT_STORE_DIR", data_dir.join("agent-store-dir"));
+                Ok(command)
+            }
+            #[cfg(windows)]
+            Self::WindowsNode { node, script, .. } => {
+                let mut command = background_command(node);
+                command
+                    .arg(script)
+                    .current_dir(workspace)
+                    .env("CURSOR_CONFIG_DIR", config_dir)
+                    .env("CURSOR_DATA_DIR", data_dir)
+                    .env("CURSOR_AGENT_STORE", data_dir.join("agent-store"))
+                    .env(
+                        "CURSOR_AGENT_STORE_FILES_DIR",
+                        data_dir.join("agent-store-files"),
+                    )
+                    .env("CURSOR_AGENT_STORE_DIR", data_dir.join("agent-store-dir"));
+                Ok(command)
+            }
+            #[cfg(windows)]
+            Self::Wsl(path) => {
+                let config = cursor_runtime_path(&config_dir.to_string_lossy(), true)?;
+                let data = cursor_runtime_path(&data_dir.to_string_lossy(), true)?;
+                let mut command = background_command("wsl.exe");
+                command.arg("--cd").arg(workspace).args([
+                    "--exec",
+                    "env",
+                    &format!("CURSOR_CONFIG_DIR={config}"),
+                    &format!("CURSOR_DATA_DIR={data}"),
+                    &format!("CURSOR_AGENT_STORE={data}/agent-store"),
+                    &format!("CURSOR_AGENT_STORE_FILES_DIR={data}/agent-store-files"),
+                    &format!("CURSOR_AGENT_STORE_DIR={data}/agent-store-dir"),
+                    path,
+                ]);
+                Ok(command)
+            }
+        }
+    }
+
+    pub(super) fn discovery_workspace_argument(&self, workspace: &Path) -> Result<String, String> {
+        cursor_runtime_path(&workspace.to_string_lossy(), self.is_wsl())
+    }
+
+    pub(super) async fn discovery_auth_config(&self, app: &AppHandle) -> Result<Value, String> {
+        let bytes = match self {
+            #[cfg(windows)]
+            Self::Wsl(_) => {
+                let output = timeout(
+                    Duration::from_secs(5),
+                    background_command("wsl.exe")
+                        .args([
+                            "--exec",
+                            "sh",
+                            "-lc",
+                            "head -c 65537 \"$HOME/.cursor/cli-config.json\"",
+                        ])
+                        .stdin(Stdio::null())
+                        .stderr(Stdio::null())
+                        .output(),
+                )
+                .await
+                .map_err(|_| "Cursor account configuration took too long to read.".to_string())?
+                .map_err(|error| format!("Could not read Cursor account configuration: {error}"))?;
+                if !output.status.success() || output.stdout.len() > 65_536 {
+                    return Err(
+                        "Cursor is not signed in. Sign in with Cursor Agent, then try again."
+                            .into(),
+                    );
+                }
+                output.stdout
+            }
+            _ => {
+                let home = app.path().home_dir().map_err(|error| {
+                    format!("Could not locate the Cursor account configuration: {error}")
+                })?;
+                let path = home.join(".cursor/cli-config.json");
+                let metadata = tokio::fs::metadata(&path).await.map_err(|_| {
+                    "Cursor is not signed in. Sign in with Cursor Agent, then try again."
+                        .to_string()
+                })?;
+                if metadata.len() > 65_536 {
+                    return Err("Cursor account configuration is unexpectedly large.".into());
+                }
+                tokio::fs::read(path).await.map_err(|error| {
+                    format!("Could not read Cursor account configuration: {error}")
+                })?
+            }
+        };
+        let source: Value = serde_json::from_slice(&bytes)
+            .map_err(|_| "Cursor account configuration is malformed.".to_string())?;
+        let auth = source
+            .get("authInfo")
+            .filter(|value| value.is_object())
+            .ok_or_else(|| {
+                "Cursor is not signed in. Sign in with Cursor Agent, then try again.".to_string()
+            })?;
+        Ok(json!({ "authInfo": auth }))
     }
 
     #[cfg(windows)]
@@ -405,7 +522,7 @@ fn resolve_windows_cursor_install_at(local_app_data: &Path) -> Option<CursorRunt
     })
 }
 
-async fn resolve_cursor_runtime(app: &AppHandle) -> Result<CursorRuntime, String> {
+pub(super) async fn resolve_cursor_runtime(app: &AppHandle) -> Result<CursorRuntime, String> {
     let legacy_override = concat!("OPEN", "KIWI_CURSOR_PATH");
     if let Some(override_path) =
         env::var_os("MYTHRA_CODE_CURSOR_PATH").or_else(|| env::var_os(legacy_override))
@@ -1003,17 +1120,7 @@ async fn cursor_prompt_blocks_for(
         let runtime_path = cursor_runtime_path(&attachment.path, wsl)?;
         if attachment.kind == "image" {
             let bytes = super::read_image_attachment(Path::new(&attachment.path)).await?;
-            let extension = Path::new(&attachment.path)
-                .extension()
-                .and_then(|value| value.to_str())
-                .unwrap_or("png")
-                .to_lowercase();
-            let mime = match extension.as_str() {
-                "jpg" | "jpeg" => "image/jpeg",
-                "gif" => "image/gif",
-                "webp" => "image/webp",
-                _ => "image/png",
-            };
+            let mime = super::image_attachment_media_type(Path::new(&attachment.path))?;
             blocks.push(json!({
                 "type": "image", "mimeType": mime,
                 "data": base64::engine::general_purpose::STANDARD.encode(bytes),

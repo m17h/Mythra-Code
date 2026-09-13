@@ -8,7 +8,7 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: tauri.listen }));
 
 import { deleteClaudeTranscript, loadClaudeTranscript, loadClaudeTranscriptPage, saveClaudeTranscript } from "./claude";
 import { loadCursorTranscript, saveCursorTranscript } from "./cursor";
-import { listLocalTranscriptThreads, resetLocalTranscriptPersistenceForTests } from "./localTranscriptPersistence";
+import { listLocalTranscriptThreads, renameLocalTranscript, resetLocalTranscriptPersistenceForTests } from "./localTranscriptPersistence";
 
 const thread = { id: "thread-a", name: "Local task", preview: "Hello", cwd: "/project", updatedAt: 1, modelProvider: "claude" };
 const completed = { id: "old-answer", role: "assistant" as const, text: "Done", turnId: "turn-old", turnStatus: "completed" as const, timelineOrder: 1 };
@@ -18,6 +18,24 @@ describe("local transcript persistence adapters", () => {
   beforeEach(() => {
     tauri.invoke.mockReset();
     resetLocalTranscriptPersistenceForTests();
+  });
+
+  it.each(["claude", "cursor"] as const)("renames an unopened %s thread without writing a snapshot or empty session ID", async (provider) => {
+    tauri.invoke.mockResolvedValue(undefined);
+    await renameLocalTranscript(provider, thread.id, "Renamed");
+    expect(tauri.invoke).toHaveBeenCalledExactlyOnceWith("local_transcript_rename", { provider, threadId: thread.id, name: "Renamed" });
+  });
+
+  it("serializes renames after an in-flight transcript save", async () => {
+    let finish!: (value: unknown) => void;
+    tauri.invoke.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; })).mockResolvedValue(undefined);
+    const saving = saveClaudeTranscript({ thread, messages: [completed], activities: [] });
+    await Promise.resolve(); await Promise.resolve();
+    const renaming = renameLocalTranscript("claude", thread.id, "Renamed");
+    expect(tauri.invoke).not.toHaveBeenCalledWith("local_transcript_rename", expect.anything());
+    finish({ ...writeState(1), rewrittenChunks: 1, totalChunks: 1, compatibilitySnapshotCreated: true });
+    await saving; await renaming;
+    expect(tauri.invoke.mock.calls.at(-1)).toEqual(["local_transcript_rename", { provider: "claude", threadId: thread.id, name: "Renamed" }]);
   });
 
   it("discovers durable local threads without loading their transcripts", async () => {

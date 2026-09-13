@@ -1,8 +1,12 @@
-import { useEffect, useRef, useState } from "react";
-import { ChevronDown, Play, Sparkles, Square } from "lucide-react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { CircleAlert, ChevronDown, LoaderCircle, Play, Sparkles, Square } from "lucide-react";
 import { usePopoverFade } from "../hooks/usePopoverFade";
 import { MAX_RUN_COMMAND_LENGTH, MAX_RUN_LABEL_LENGTH, runCommandTitle } from "../lib/projectRun";
+import { useRunCommandDiscovery } from "../hooks/useRunCommandDiscovery";
+import type { RunDiscoveryCatalogs } from "../lib/runDiscovery";
 import type { ProjectRunCommand } from "../types";
+
+const RunCommandDiscovery = lazy(() => import("./RunCommandDiscovery"));
 
 /**
  * The top-bar Run button. Grey until the project has a command, lit once it
@@ -12,6 +16,10 @@ import type { ProjectRunCommand } from "../types";
  */
 export function ProjectRunControl({
   projectName,
+  projectPath,
+  discoveryCatalogs,
+  lmStudioBaseUrl,
+  onDiscoveryAccounts,
   run,
   running,
   terminalBusy = false,
@@ -20,6 +28,10 @@ export function ProjectRunControl({
   onSave,
 }: {
   projectName: string;
+  projectPath?: string;
+  discoveryCatalogs?: RunDiscoveryCatalogs;
+  lmStudioBaseUrl?: string;
+  onDiscoveryAccounts?: () => void;
   run?: ProjectRunCommand;
   running: boolean;
   /** The Terminal panel is busy with something else, so Run would have to wait. */
@@ -28,6 +40,7 @@ export function ProjectRunControl({
   onStop: () => void;
   onSave: (run: { command: string; label: string } | null) => void;
 }) {
+  const discovery = useRunCommandDiscovery(projectPath, lmStudioBaseUrl);
   const [open, setOpen] = useState(false);
   const { ref: panelRef, present } = usePopoverFade(open);
   const [command, setCommand] = useState(run?.command ?? "");
@@ -48,6 +61,7 @@ export function ProjectRunControl({
     };
     const escape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
+        if (rootRef.current?.querySelector('[role="menu"]')) return;
         // Escape closes only this popover — never the app-level stop-turn handler.
         event.stopPropagation();
         setOpen(false);
@@ -93,9 +107,9 @@ export function ProjectRunControl({
         aria-label="Edit run command"
         aria-haspopup="dialog"
         aria-expanded={open}
-        title="Edit what the Run button does"
+        title={discovery.pending ? "Finding a run command…" : discovery.suggestion ? "Run command suggestion ready" : discovery.error ? "Run command discovery failed — open for details" : "Edit what the Run button does"}
       >
-        <ChevronDown size={12} />
+        {discovery.pending ? <LoaderCircle size={12} className="spin" /> : discovery.suggestion ? <Sparkles size={12} /> : discovery.error ? <CircleAlert size={12} /> : <ChevronDown size={12} />}
       </button>
 
       {present && (
@@ -129,10 +143,11 @@ export function ProjectRunControl({
             <small>Runs from the project folder in the Terminal panel. A thread working in an isolated worktree runs it there instead.</small>
           </div>
 
-          <div className="project-run-hint">
-            <Sparkles size={13} aria-hidden="true" />
-            <span>You can also ask the assistant, for example “Set the Run button to start the dev server”.</span>
-          </div>
+          {projectPath && <Suspense fallback={<small>Loading discovery…</small>}>
+            <RunCommandDiscovery discovery={discovery} catalogs={discoveryCatalogs} onAccounts={onDiscoveryAccounts} onUse={(suggestion) => {
+              setCommand(suggestion.command.slice(0, MAX_RUN_COMMAND_LENGTH)); setLabel(suggestion.label.slice(0, MAX_RUN_LABEL_LENGTH));
+            }} />
+          </Suspense>}
 
           <div className="project-prompt-actions">
             {ready && (
@@ -154,6 +169,7 @@ export function ProjectRunControl({
               disabled={!draft}
               onClick={() => {
                 onSave({ command: draft, label: label.trim() });
+                discovery.clearSuggestion();
                 setOpen(false);
               }}
             >
