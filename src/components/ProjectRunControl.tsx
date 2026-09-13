@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
-import { CircleAlert, ChevronDown, LoaderCircle, Play, Sparkles, Square } from "lucide-react";
+import { CircleAlert, ChevronDown, LoaderCircle, Play, Square } from "lucide-react";
 import { usePopoverFade } from "../hooks/usePopoverFade";
 import { MAX_RUN_COMMAND_LENGTH, MAX_RUN_LABEL_LENGTH, runCommandTitle } from "../lib/projectRun";
 import { useRunCommandDiscovery } from "../hooks/useRunCommandDiscovery";
@@ -107,9 +107,9 @@ export function ProjectRunControl({
         aria-label="Edit run command"
         aria-haspopup="dialog"
         aria-expanded={open}
-        title={discovery.pending ? "Finding a run command…" : discovery.suggestion ? "Run command suggestion ready" : discovery.error ? "Run command discovery failed — open for details" : "Edit what the Run button does"}
+        title={discovery.pending ? "Finding dev command…" : discovery.error ? "Discovery failed — open for details" : "Edit run command"}
       >
-        {discovery.pending ? <LoaderCircle size={12} className="spin" /> : discovery.suggestion ? <Sparkles size={12} /> : discovery.error ? <CircleAlert size={12} /> : <ChevronDown size={12} />}
+        {discovery.pending ? <LoaderCircle size={12} className="spin" /> : discovery.error ? <CircleAlert size={12} /> : <ChevronDown size={12} />}
       </button>
 
       {present && (
@@ -126,6 +126,7 @@ export function ProjectRunControl({
             <span>Command</span>
             <textarea
               value={command}
+              disabled={discovery.pending}
               onChange={(event) => setCommand(event.target.value.slice(0, MAX_RUN_COMMAND_LENGTH))}
               aria-label={`Run command for ${projectName}`}
               placeholder="npm install && npm run dev"
@@ -136,6 +137,7 @@ export function ProjectRunControl({
             <span>Label <em>(optional)</em></span>
             <input
               value={label}
+              disabled={discovery.pending}
               onChange={(event) => setLabel(event.target.value.slice(0, MAX_RUN_LABEL_LENGTH))}
               aria-label="Run button label"
               placeholder="Dev server"
@@ -144,9 +146,7 @@ export function ProjectRunControl({
           </div>
 
           {projectPath && <Suspense fallback={<small>Loading discovery…</small>}>
-            <RunCommandDiscovery discovery={discovery} catalogs={discoveryCatalogs} onAccounts={onDiscoveryAccounts} onUse={(suggestion) => {
-              setCommand(suggestion.command.slice(0, MAX_RUN_COMMAND_LENGTH)); setLabel(suggestion.label.slice(0, MAX_RUN_LABEL_LENGTH));
-            }} />
+            <RunCommandDiscovery discovery={discovery} catalogs={discoveryCatalogs} onAccounts={onDiscoveryAccounts} onFound={onSave} />
           </Suspense>}
 
           <div className="project-prompt-actions">
@@ -154,8 +154,10 @@ export function ProjectRunControl({
               <button
                 type="button"
                 className="secondary-button project-run-clear"
+                disabled={discovery.pending}
                 onClick={() => {
                   onSave(null);
+                  discovery.clearSuggestion();
                   setOpen(false);
                 }}
               >
@@ -166,7 +168,7 @@ export function ProjectRunControl({
             <button
               type="button"
               className="primary-button"
-              disabled={!draft}
+              disabled={!draft || discovery.pending}
               onClick={() => {
                 onSave({ command: draft, label: label.trim() });
                 discovery.clearSuggestion();

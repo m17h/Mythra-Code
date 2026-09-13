@@ -29,7 +29,7 @@ export function useRunCommandDiscovery(cwd?: string, lmStudioBaseUrl?: string) {
     } catch (reason) { if (active.current === id) setError(`Could not confirm discovery cleanup: ${String(reason)}`); }
     finally { if (stopping.current === id) stopping.current = null; }
   };
-  const discover = async (preferences: RunDiscoveryPreferences) => {
+  const discover = async (preferences: RunDiscoveryPreferences, onFound?: (result: RunDiscoverySuggestion) => void) => {
     if (!cwd || active.current) return;
     const id = crypto.randomUUID();
     active.current = id;
@@ -37,7 +37,10 @@ export function useRunCommandDiscovery(cwd?: string, lmStudioBaseUrl?: string) {
     setPending(true); setError(""); setSuggestion(null);
     try {
       const result = await discoverRunCommand(id, cwd, preferences, lmStudioBaseUrl);
-      if (active.current === id && stopped.current !== id) setSuggestion(result);
+      if (active.current === id && stopped.current !== id) {
+        onFound?.(result);
+        setSuggestion(result);
+      }
     } catch (reason) {
       if (active.current === id && stopped.current !== id) setError(String(reason));
     } finally {

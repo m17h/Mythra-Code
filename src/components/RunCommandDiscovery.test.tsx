@@ -6,28 +6,37 @@ import { loadStored } from "../lib/storage";
 import { DISCOVERY_PROVIDERS, RUN_DISCOVERY_PREFERENCES_KEY } from "../lib/runDiscovery";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 beforeEach(() => { vi.mocked(invoke).mockReset(); localStorage.clear(); });
-it("discovers while closed, keeps manual edits, and only saves an explicitly chosen suggestion", async () => {
+it("finds and saves the command while closed without launching it", async () => {
   let finish!: (value: unknown) => void;
   vi.mocked(invoke).mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
   const onSave = vi.fn(), onRun = vi.fn();
   render(<ProjectRunControl projectName="Alpha" projectPath="/alpha" running={false} onRun={onRun} onStop={vi.fn()} onSave={onSave} />);
   fireEvent.click(screen.getByRole("button", { name: "Edit run command" }));
   fireEvent.click(await screen.findByRole("button", { name: "Find run command" }));
-  fireEvent.change(screen.getByRole("textbox", { name: "Run command for Alpha" }), { target: { value: "manual command" } });
+  expect(screen.getByRole("textbox", { name: "Run command for Alpha" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Save run command" })).toBeDisabled();
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-  await waitFor(() => expect(finish).toBeTypeOf("function"));
-  await act(async () => finish({ command: "npm run dev", label: "Dev server", explanation: "Defined in package.json." }));
-  expect(onSave).not.toHaveBeenCalled(); expect(onRun).not.toHaveBeenCalled();
+  await act(async () => finish({ command: ".venv/bin/python main.py", label: "Dev game", explanation: "Uses the installed project environment." }));
+  expect(onSave).toHaveBeenCalledExactlyOnceWith({ command: ".venv/bin/python main.py", label: "Dev game" });
+  expect(onRun).not.toHaveBeenCalled();
   expect(vi.mocked(invoke)).toHaveBeenCalledOnce();
   fireEvent.click(screen.getByRole("button", { name: "Edit run command" }));
-  expect(await screen.findByText("Suggested command")).toBeInTheDocument();
-  fireEvent.change(screen.getByRole("textbox", { name: "Run command for Alpha" }), { target: { value: "my edit" } });
-  expect(screen.getByRole("textbox", { name: "Run command for Alpha" })).toHaveValue("my edit");
-  fireEvent.click(screen.getByRole("button", { name: "Use suggestion" }));
-  expect(screen.getByRole("textbox", { name: "Run command for Alpha" })).toHaveValue("npm run dev");
+  expect(await screen.findByText("Saved to Run")).toBeInTheDocument();
+});
+it("stopping or navigating never saves a late result to either project", async () => {
+  let finish!: (value: unknown) => void;
+  vi.mocked(invoke).mockImplementation((name) => name === "run_discovery_start" ? new Promise((resolve) => { finish = resolve; }) : Promise.resolve());
+  const onSave = vi.fn();
+  const { rerender } = render(<ProjectRunControl projectName="Alpha" projectPath="/alpha" running={false} onRun={vi.fn()} onStop={vi.fn()} onSave={onSave} />);
+  fireEvent.click(screen.getByRole("button", { name: "Edit run command" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Find run command" }));
+  fireEvent.click(screen.getByRole("button", { name: "Stop discovery" }));
+  await act(async () => finish({ command: "old command", label: "Old", explanation: "Stopped" }));
   expect(onSave).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole("button", { name: "Save run command" }));
-  expect(onSave).toHaveBeenCalledWith({ command: "npm run dev", label: "Dev server" });
+  fireEvent.click(screen.getByRole("button", { name: "Find run command" }));
+  rerender(<ProjectRunControl projectName="Beta" projectPath="/beta" running={false} onRun={vi.fn()} onStop={vi.fn()} onSave={onSave} />);
+  await act(async () => finish({ command: "wrong project", label: "Old", explanation: "Late" }));
+  expect(onSave).not.toHaveBeenCalled();
 });
 it("persists model settings and passes Fast with the selected live model effort", async () => {
   vi.mocked(invoke).mockRejectedValue(new Error("Fixture offline"));
@@ -38,10 +47,10 @@ it("persists model settings and passes Fast with the selected live model effort"
   expect(loadStored(RUN_DISCOVERY_PREFERENCES_KEY, null)).toMatchObject({ model: "gpt-5.6-luna", fast: false });
   fireEvent.click(screen.getByRole("button", { name: "Find run command" }));
   await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Fixture offline"));
-  expect(vi.mocked(invoke)).toHaveBeenCalledWith("run_discovery_start", { options: expect.objectContaining({ model: "gpt-5.6-luna", effort: "low", fast: false }) });
+  expect(vi.mocked(invoke)).toHaveBeenCalledWith("run_discovery_start", { options: expect.objectContaining({ model: "gpt-5.6-luna", effort: "high", fast: false }) });
   expect(screen.getByRole("button", { name: "Find run command" })).toBeEnabled();
 });
-it("Escape dismisses only a nested menu and an accepted suggestion survives accidental close", async () => {
+it("Escape dismisses only a nested menu and a saved result survives accidental close", async () => {
   vi.mocked(invoke).mockResolvedValue({ command: "npm run dev", label: "Dev server", explanation: "Package script" });
   render(<ProjectRunControl projectName="Alpha" projectPath="/alpha" discoveryCatalogs={{ openai: [{ id: "gpt-5.6-luna", label: "Luna" }] }} running={false} onRun={vi.fn()} onStop={vi.fn()} onSave={vi.fn()} />);
   fireEvent.click(screen.getByRole("button", { name: "Edit run command" }));
@@ -53,10 +62,10 @@ it("Escape dismisses only a nested menu and an accepted suggestion survives acci
   expect(screen.queryByRole("menu")).not.toBeInTheDocument();
   expect(screen.getByRole("textbox", { name: "Run command for Alpha" })).toHaveValue("manual edit");
   fireEvent.click(screen.getByRole("button", { name: "Find run command" }));
-  fireEvent.click(await screen.findByRole("button", { name: "Use suggestion" }));
+  await screen.findByText("Saved to Run");
   fireEvent.keyDown(document, { key: "Escape" });
   fireEvent.click(screen.getByRole("button", { name: "Edit run command" }));
-  expect(await screen.findByRole("button", { name: "Use suggestion" })).toBeInTheDocument();
+  expect(await screen.findByText("Saved to Run")).toBeInTheDocument();
   expect(vi.mocked(invoke)).toHaveBeenCalledOnce();
 });
 
@@ -77,8 +86,8 @@ it.each(DISCOVERY_PROVIDERS)("routes discovery through $label with only supporte
   fireEvent.click(screen.getByRole("button", { name: "Models and accounts" }));
   expect(onAccounts).toHaveBeenCalledOnce();
   fireEvent.click(screen.getByRole("button", { name: "Find run command" }));
-  await screen.findByText("Suggested command");
-  expect(invoke).toHaveBeenCalledWith("run_discovery_start", { options: expect.objectContaining({ provider, model: `${provider}-model`, fast: provider === "openai", effort: provider === "openai" ? "minimal" : provider === "claude" ? "low" : "default", ...(provider === "lmstudio" ? { lmStudioBaseUrl: "http://localhost:4567/v1" } : {}) }) });
+  await screen.findByText("Saved to Run");
+  expect(invoke).toHaveBeenCalledWith("run_discovery_start", { options: expect.objectContaining({ provider, model: `${provider}-model`, fast: provider === "openai", effort: provider === "openai" ? "high" : provider === "claude" ? "low" : "default", ...(provider === "lmstudio" ? { lmStudioBaseUrl: "http://localhost:4567/v1" } : {}) }) });
 });
 it("edits custom model IDs without persisting each keystroke", async () => {
   vi.mocked(invoke).mockRejectedValue(new Error("Offline"));
@@ -92,5 +101,5 @@ it("edits custom model IDs without persisting each keystroke", async () => {
   expect(loadStored(RUN_DISCOVERY_PREFERENCES_KEY, null)).toMatchObject({ model: "my-model" });
   fireEvent.click(screen.getByRole("button", { name: "Find run command" }));
   await screen.findByRole("alert");
-  expect(screen.getByRole("button", { name: "Edit run command" })).toHaveAttribute("title", "Run command discovery failed — open for details");
+  expect(screen.getByRole("button", { name: "Edit run command" })).toHaveAttribute("title", "Discovery failed — open for details");
 });

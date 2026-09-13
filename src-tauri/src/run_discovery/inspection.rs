@@ -2,7 +2,7 @@
 use super::*;
 use std::io::{Seek, SeekFrom};
 
-pub(super) const MAX_INSPECTION_ROUNDS: usize = 4;
+pub(super) const MAX_INSPECTION_ROUNDS: usize = 12;
 const MAX_REQUESTS: usize = 8;
 const ROUND_BYTES: usize = 16 * 1024;
 const READ_BYTES: usize = 8 * 1024;
@@ -48,7 +48,10 @@ fn omitted(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     if matches!(
         lower.as_str(),
-        ".vscode"
+        ".venv"
+            | "venv"
+            | "env"
+            | ".vscode"
             | ".github"
             | ".devcontainer"
             | ".gitignore"
@@ -154,7 +157,7 @@ fn entries(path: &Path, flag: &AtomicBool) -> Result<Vec<fs::DirEntry>, String> 
     Ok(found)
 }
 
-fn locate_executable(name: &str) -> Result<String, String> {
+fn locate_executable(name: &str, root: Option<&Path>) -> Result<String, String> {
     if name.is_empty()
         || name.len() > 80
         || !name
@@ -169,6 +172,19 @@ fn locate_executable(name: &str) -> Result<String, String> {
     let mut paths = std::env::var_os("PATH")
         .map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
         .unwrap_or_default();
+    if let Some(root) = root {
+        let mut project_paths = Vec::new();
+        for environment in [".venv", "venv", "env"] {
+            for directory in ["bin", "Scripts"] {
+                let relative = format!("{environment}/{directory}");
+                if let Ok(path) = project_path(root, &relative) {
+                    project_paths.push(path);
+                }
+            }
+        }
+        project_paths.extend(paths);
+        paths = project_paths;
+    }
     #[cfg(unix)]
     paths.extend(["/usr/local/bin", "/usr/bin", "/bin"].map(PathBuf::from));
     #[cfg(target_os = "macos")]
@@ -244,7 +260,7 @@ fn is_executable_file(path: &Path) -> bool {
 fn inspect_one(root: &Path, item: &Inspection, flag: &AtomicBool) -> Result<String, String> {
     cancelled(flag)?;
     if item.operation == Operation::Locate {
-        return locate_executable(&item.path);
+        return locate_executable(&item.path, Some(root));
     }
     let path = project_path(root, &item.path)?;
     match item.operation {
@@ -410,29 +426,21 @@ pub(super) async fn investigate<F, Fut>(
     mut model: F,
 ) -> Result<RunDiscoveryResult, String>
 where
-    F: FnMut(String) -> Fut,
+    F: FnMut(Vec<Value>) -> Fut,
     Fut: Future<Output = Result<RunDiscoveryResult, String>>,
 {
     let root = root.canonicalize().map_err(|error| error.to_string())?;
     let seed_root = root.clone();
     let seed_request = request.clone();
-    let mut context =
+    let context =
         tokio::task::spawn_blocking(move || initial_context(&seed_root, &seed_request.cancelled))
             .await
             .map_err(|error| error.to_string())??;
+    let mut messages = vec![json!({"role":"user", "content":discovery_prompt(&context)})];
     for round in 0..=MAX_INSPECTION_ROUNDS {
         cancelled(&request.cancelled)?;
         let remaining = MAX_INSPECTION_ROUNDS - round;
-        let prompt = format!(
-            "{}\n\nInspection rounds remaining: {remaining}. {}",
-            discovery_prompt(&context),
-            if remaining == 0 {
-                "Return your final command with inspect: []; if evidence is still insufficient, explain the specific missing information."
-            } else {
-                "Use inspect requests whenever you need additional project evidence before choosing the command."
-            }
-        );
-        let result = model(prompt).await?;
+        let result = model(messages.clone()).await?;
         cancelled(&request.cancelled)?;
         if result.inspect.is_empty() {
             return Ok(result);
@@ -440,6 +448,10 @@ where
         if remaining == 0 {
             return Err("Discovery reached its project inspection limit. Try again with a more specific project folder or another model.".into());
         }
+        messages.push(json!({"role":"assistant", "content":json!({
+            "command":result.command, "label":result.label,
+            "explanation":result.explanation, "inspect":result.inspect
+        }).to_string()}));
         let inspection_root = root.clone();
         let inspection_request = request.clone();
         let evidence = tokio::task::spawn_blocking(move || {
@@ -451,8 +463,21 @@ where
         })
         .await
         .map_err(|error| error.to_string())??;
-        context.push_str(&evidence);
-        truncate(&mut context, MAX_CONTEXT_BYTES);
+        messages.push(json!({"role":"user", "content":format!(
+            "UNTRUSTED INSPECTION RESULTS\n{evidence}\nInspection rounds remaining: {}. {}", remaining - 1,
+            if remaining == 1 { "Return the final command now with inspect: []." } else { "Continue investigating as needed, or return the final command." }
+        )}));
+        // Preserve the ongoing conversation and recent evidence within a bounded
+        // context. Drop complete old request/result pairs, never half a pair.
+        while messages.len() > 3
+            && messages
+                .iter()
+                .map(|message| message["content"].as_str().unwrap_or_default().len())
+                .sum::<usize>()
+                > MAX_CONTEXT_BYTES
+        {
+            messages.drain(1..3);
+        }
     }
     unreachable!()
 }
@@ -470,10 +495,10 @@ mod tests {
             "node --version",
             ".hidden",
         ] {
-            assert!(locate_executable(name).is_err(), "{name}");
+            assert!(locate_executable(name, None).is_err(), "{name}");
         }
         assert!(
-            locate_executable(&format!("missing-{}", uuid::Uuid::new_v4()))
+            locate_executable(&format!("missing-{}", uuid::Uuid::new_v4()), None)
                 .unwrap()
                 .contains("No installed")
         );
@@ -502,6 +527,83 @@ mod tests {
         parse_provider_output(json!({"command":command,"label":"Run app","explanation":"Source entry point and engine configuration.","inspect":inspect}).to_string().as_bytes()).unwrap()
     }
 
+    #[test]
+    fn python_environment_is_visible_and_its_interpreter_is_located_first() {
+        let project = DiscoveryWorkspace::create().unwrap();
+        let bin = project
+            .path
+            .join(".venv")
+            .join(if cfg!(windows) { "Scripts" } else { "bin" });
+        fs::create_dir_all(&bin).unwrap();
+        fs::write(project.path.join(".venv/pyvenv.cfg"), "version = 3.14\n").unwrap();
+        let python = bin.join(if cfg!(windows) {
+            "python.exe"
+        } else {
+            "python"
+        });
+        fs::write(&python, "this fixture must never execute").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&python, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let evidence = inspect(
+            &project.path,
+            &[
+                request(Operation::List, "."),
+                request(Operation::Read, ".venv/pyvenv.cfg"),
+                request(Operation::Locate, "python"),
+            ],
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert!(evidence.contains(".venv/"));
+        assert!(evidence.contains("version = 3.14"));
+        let located = locate_executable("python", Some(&project.path)).unwrap();
+        assert_eq!(
+            Path::new(located.lines().nth(1).unwrap())
+                .canonicalize()
+                .unwrap(),
+            python.canonicalize().unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn api_investigation_keeps_the_conversation_beyond_four_rounds() {
+        let project = DiscoveryWorkspace::create().unwrap();
+        fs::write(project.path.join("source.py"), "import pygame").unwrap();
+        let mut calls = 0;
+        let result = investigate(
+            project.path.clone(),
+            Arc::new(DiscoveryRequest::default()),
+            |messages| {
+                calls += 1;
+                assert_eq!(messages.len(), 1 + (calls - 1) * 2);
+                if calls > 1 {
+                    assert_eq!(messages[1]["role"], "assistant");
+                    assert!(messages[1]["content"]
+                        .as_str()
+                        .unwrap()
+                        .contains("source.py"));
+                    assert!(messages[2]["content"]
+                        .as_str()
+                        .unwrap()
+                        .contains("import pygame"));
+                }
+                let response = if calls == 6 {
+                    step(json!([]), ".venv/bin/python source.py")
+                } else {
+                    step(json!([request(Operation::Read, "source.py")]), "")
+                };
+                async move { Ok(response) }
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(calls, 6);
+        assert_eq!(result.command, ".venv/bin/python source.py");
+    }
+
     #[tokio::test]
     async fn model_investigates_undocumented_source_and_returns_inferred_command() {
         let project = DiscoveryWorkspace::create().unwrap();
@@ -520,7 +622,8 @@ mod tests {
         let result = investigate(
             project.path.clone(),
             Arc::new(DiscoveryRequest::default()),
-            |prompt| {
+            |messages| {
+                let prompt = serde_json::to_string(&messages).unwrap();
                 calls += 1;
                 let response = match calls {
                     1 => {
