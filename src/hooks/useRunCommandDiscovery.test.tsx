@@ -1,11 +1,11 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
-import { useRunCommandDiscovery } from "./useRunCommandDiscovery";
+import { resetRunCommandDiscoveries, useRunCommandDiscovery } from "./useRunCommandDiscovery";
 import { DEFAULT_RUN_DISCOVERY } from "../lib/runDiscovery";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 const native = vi.mocked(invoke);
-beforeEach(() => { native.mockReset(); });
+beforeEach(() => { native.mockReset(); resetRunCommandDiscoveries(); });
 it("starts one temporary request with the selected model and does not run/save the suggestion", async () => {
   let finish!: (value: unknown) => void;
   native.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
@@ -20,17 +20,34 @@ it("starts one temporary request with the selected model and does not run/save t
   expect(result.current.pending).toBe(false);
   await waitFor(() => expect(native).toHaveBeenCalledOnce());
 });
-it("cancels on project navigation and ignores late results for the old project", async () => {
+it("keeps working across project navigation and saves to the project that started it", async () => {
   let finish!: (value: unknown) => void;
   native.mockImplementation((command) => command === "run_discovery_start" ? new Promise((resolve) => { finish = resolve; }) : Promise.resolve());
+  const onFound = vi.fn();
   const { result, rerender } = renderHook(({ cwd }) => useRunCommandDiscovery(cwd), { initialProps: { cwd: "/alpha" } });
-  act(() => { void result.current.discover(DEFAULT_RUN_DISCOVERY); });
+  act(() => { void result.current.discover(DEFAULT_RUN_DISCOVERY, onFound); });
   await waitFor(() => expect(native).toHaveBeenCalledOnce());
   rerender({ cwd: "/beta" });
-  await waitFor(() => expect(native).toHaveBeenCalledWith("run_discovery_cancel", { requestId: expect.any(String) }));
-  await act(async () => finish({ command: "wrong-project", label: "", explanation: "" }));
-  expect(result.current.suggestion).toBeNull();
   expect(result.current.pending).toBe(false);
+  expect(native).not.toHaveBeenCalledWith("run_discovery_cancel", expect.anything());
+  const suggestion = { command: "love .", label: "Game", explanation: "Alpha is a LÖVE project." };
+  await act(async () => finish(suggestion));
+  expect(onFound).toHaveBeenCalledExactlyOnceWith(suggestion);
+  expect(result.current.suggestion).toBeNull();
+  rerender({ cwd: "/alpha" });
+  expect(result.current.suggestion).toEqual(suggestion);
+  expect(result.current.pending).toBe(false);
+});
+it("shows the same worker to every control for that project", async () => {
+  native.mockImplementation(() => new Promise(() => {}));
+  const first = renderHook(() => useRunCommandDiscovery("/project"));
+  act(() => { void first.result.current.discover(DEFAULT_RUN_DISCOVERY); });
+  await waitFor(() => expect(native).toHaveBeenCalledOnce());
+  first.unmount();
+  const second = renderHook(() => useRunCommandDiscovery("/project"));
+  expect(second.result.current.pending).toBe(true);
+  act(() => { void second.result.current.discover(DEFAULT_RUN_DISCOVERY); });
+  expect(native).toHaveBeenCalledOnce();
 });
 it("keeps failed requests retryable and reports cancellation failures", async () => {
   native.mockRejectedValueOnce(new Error("Sign in first"));

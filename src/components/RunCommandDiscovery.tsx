@@ -33,7 +33,7 @@ export default function RunCommandDiscovery({ discovery, catalogs = {}, onAccoun
       <button type="button" className="icon-button" aria-label="Discovery model settings" aria-expanded={settingsOpen} onClick={() => setSettingsOpen(!settingsOpen)}><Settings2 size={15} /></button>
     </div>
     <small>{DISCOVERY_PROVIDERS.find((entry) => entry.value === preferences.provider)?.label} · {model?.label ?? (preferences.model || "Choose a model")}{efforts.length ? ` · ${EFFORT_LABELS[effort] ?? effort}` : ""}{preferences.provider === "openai" && preferences.fast ? " · Fast" : ""}</small>
-    <p>Investigates the project and saves its dev command to Run. Nothing launches until you press Run. No chat is saved.</p>
+    <p>Investigates the project and saves its dev command to Run. Keeps working if you switch projects. Nothing launches until you press Run. No chat is saved.</p>
     {settingsOpen && <fieldset className="run-discovery-settings" disabled={discovery.pending}>
       <legend>Discovery model · saved for all projects</legend>
       <div className="run-discovery-field"><span>Provider</span><AppSelectMenu portal menuPlacement="top" value={preferences.provider} ariaLabel="Discovery provider" options={DISCOVERY_PROVIDERS} onChange={(provider) => {

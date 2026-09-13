@@ -4,8 +4,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { ProjectRunControl } from "./ProjectRunControl";
 import { loadStored } from "../lib/storage";
 import { DISCOVERY_PROVIDERS, RUN_DISCOVERY_PREFERENCES_KEY } from "../lib/runDiscovery";
+import { resetRunCommandDiscoveries } from "../hooks/useRunCommandDiscovery";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
-beforeEach(() => { vi.mocked(invoke).mockReset(); localStorage.clear(); });
+beforeEach(() => { vi.mocked(invoke).mockReset(); localStorage.clear(); resetRunCommandDiscoveries(); });
 it("finds and saves the command while closed without launching it", async () => {
   let finish!: (value: unknown) => void;
   vi.mocked(invoke).mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
@@ -23,20 +24,34 @@ it("finds and saves the command while closed without launching it", async () => 
   fireEvent.click(screen.getByRole("button", { name: "Edit run command" }));
   expect(await screen.findByText("Saved to Run")).toBeInTheDocument();
 });
-it("stopping or navigating never saves a late result to either project", async () => {
+it("stopping never saves a late result", async () => {
   let finish!: (value: unknown) => void;
   vi.mocked(invoke).mockImplementation((name) => name === "run_discovery_start" ? new Promise((resolve) => { finish = resolve; }) : Promise.resolve());
   const onSave = vi.fn();
-  const { rerender } = render(<ProjectRunControl projectName="Alpha" projectPath="/alpha" running={false} onRun={vi.fn()} onStop={vi.fn()} onSave={onSave} />);
+  render(<ProjectRunControl projectName="Alpha" projectPath="/alpha" running={false} onRun={vi.fn()} onStop={vi.fn()} onSave={onSave} />);
   fireEvent.click(screen.getByRole("button", { name: "Edit run command" }));
   fireEvent.click(await screen.findByRole("button", { name: "Find run command" }));
   fireEvent.click(screen.getByRole("button", { name: "Stop discovery" }));
   await act(async () => finish({ command: "old command", label: "Old", explanation: "Stopped" }));
   expect(onSave).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole("button", { name: "Find run command" }));
-  rerender(<ProjectRunControl projectName="Beta" projectPath="/beta" running={false} onRun={vi.fn()} onStop={vi.fn()} onSave={onSave} />);
-  await act(async () => finish({ command: "wrong project", label: "Old", explanation: "Late" }));
-  expect(onSave).not.toHaveBeenCalled();
+  expect(screen.getByRole("button", { name: "Find run command" })).toBeEnabled();
+});
+it("keeps discovering after navigating away and saves to the project that started it", async () => {
+  let finish!: (value: unknown) => void;
+  vi.mocked(invoke).mockImplementation((name) => name === "run_discovery_start" ? new Promise((resolve) => { finish = resolve; }) : Promise.resolve());
+  const saveAlpha = vi.fn(), saveBeta = vi.fn();
+  const { rerender } = render(<ProjectRunControl projectName="Alpha" projectPath="/alpha" running={false} onRun={vi.fn()} onStop={vi.fn()} onSave={saveAlpha} />);
+  fireEvent.click(screen.getByRole("button", { name: "Edit run command" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Find run command" }));
+  rerender(<ProjectRunControl key="beta" projectName="Beta" projectPath="/beta" running={false} onRun={vi.fn()} onStop={vi.fn()} onSave={saveBeta} />);
+  expect(vi.mocked(invoke)).not.toHaveBeenCalledWith("run_discovery_cancel", expect.anything());
+  expect(screen.getByRole("button", { name: "Edit run command" })).toHaveAttribute("title", "Edit run command");
+  await act(async () => finish({ command: "./.venv/bin/python main.py", label: "Game", explanation: "Alpha uses its venv." }));
+  expect(saveAlpha).toHaveBeenCalledExactlyOnceWith({ command: "./.venv/bin/python main.py", label: "Game" });
+  expect(saveBeta).not.toHaveBeenCalled();
+  rerender(<ProjectRunControl key="alpha" projectName="Alpha" projectPath="/alpha" running={false} onRun={vi.fn()} onStop={vi.fn()} onSave={saveAlpha} />);
+  fireEvent.click(screen.getByRole("button", { name: "Edit run command" }));
+  expect(await screen.findByText("Saved to Run")).toBeInTheDocument();
 });
 it("persists model settings and passes Fast with the selected live model effort", async () => {
   vi.mocked(invoke).mockRejectedValue(new Error("Fixture offline"));
