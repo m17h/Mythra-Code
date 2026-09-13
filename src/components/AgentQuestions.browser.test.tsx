@@ -34,7 +34,7 @@ describe("agent question interaction", () => {
     expect(form.scrollWidth).toBeLessThanOrEqual(form.clientWidth + 1);
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "Submit answers" })));
-    expect(screen.getByText("Answers sent")).toBeInTheDocument();
+    expect(screen.getByText("Answers submitted")).toBeInTheDocument();
     expect(send).toHaveBeenCalledTimes(1);
   });
   it("retains an unanswered draft when timeline virtualization remounts the row", async () => {

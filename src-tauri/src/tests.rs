@@ -1394,14 +1394,36 @@ async fn claude_user_message_fails_for_an_unreadable_image_attachment() {
 }
 
 #[tokio::test]
-async fn claude_user_message_rejects_a_non_regular_image_attachment() {
+async fn claude_user_message_rejects_stale_heic_image_metadata_before_encoding() {
+    let path = std::env::temp_dir().join("openkiwi-test-stale-image.heic");
+    std::fs::write(&path, [0, 0, 0, 0]).expect("write HEIC-shaped fixture");
     let attachment = ClaudeAttachment {
-        path: std::env::temp_dir().to_string_lossy().into_owned(),
+        path: path.to_string_lossy().into_owned(),
+        kind: "image".into(),
+    };
+    let error = claude_user_message("thread-1", "look at this", &[attachment])
+        .await
+        .expect_err("HEIC bytes must never be mislabeled as PNG");
+    let _ = std::fs::remove_file(path);
+    assert!(error.contains("HEIC/HEIF images are not supported"));
+    assert!(error.contains("Convert this image"));
+}
+
+#[tokio::test]
+async fn claude_user_message_rejects_a_non_regular_image_attachment() {
+    let directory = std::env::temp_dir().join(format!(
+        "mythra-image-directory-{}.png",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    let attachment = ClaudeAttachment {
+        path: directory.to_string_lossy().into_owned(),
         kind: "image".into(),
     };
     let error = claude_user_message("thread-1", "look at this", &[attachment])
         .await
         .expect_err("directories must not be read as image attachments");
+    std::fs::remove_dir(&directory).unwrap();
     assert!(
         error.contains("not a regular file"),
         "unexpected error: {error}"
@@ -1946,53 +1968,6 @@ fn text_of(entry: &Value) -> &str {
 }
 
 #[test]
-fn pasted_image_cleanup_expires_old_files_and_preserves_the_current_paste() {
-    let current = PathBuf::from("current.png");
-    let candidates = vec![
-        PastedImageCandidate {
-            path: PathBuf::from("expired.png"),
-            modified_at_ms: 10,
-            size: 2,
-        },
-        PastedImageCandidate {
-            path: current.clone(),
-            modified_at_ms: 10,
-            size: 2,
-        },
-        PastedImageCandidate {
-            path: PathBuf::from("recent.png"),
-            modified_at_ms: 95,
-            size: 2,
-        },
-    ];
-    let removed = pasted_image_removal_plan(candidates, 100, 20, 100, Some(&current));
-    assert_eq!(removed, vec![PathBuf::from("expired.png")]);
-}
-
-#[test]
-fn pasted_image_cleanup_removes_oldest_files_until_under_the_size_cap() {
-    let candidates = vec![
-        PastedImageCandidate {
-            path: PathBuf::from("oldest.png"),
-            modified_at_ms: 80,
-            size: 4,
-        },
-        PastedImageCandidate {
-            path: PathBuf::from("middle.png"),
-            modified_at_ms: 90,
-            size: 4,
-        },
-        PastedImageCandidate {
-            path: PathBuf::from("newest.png"),
-            modified_at_ms: 100,
-            size: 4,
-        },
-    ];
-    let removed = pasted_image_removal_plan(candidates, 100, 1_000, 8, None);
-    assert_eq!(removed, vec![PathBuf::from("oldest.png")]);
-}
-
-#[test]
 fn image_preview_extensions_are_restricted_to_supported_formats() {
     assert_eq!(
         supported_preview_image_extension(Path::new("Screenshot.PNG")),
@@ -2000,8 +1975,27 @@ fn image_preview_extensions_are_restricted_to_supported_formats() {
     );
     assert_eq!(
         supported_preview_image_extension(Path::new("photo.HEIC")),
-        Some("heic".to_string())
+        None
     );
+    assert_eq!(
+        image_attachment_media_type(Path::new("photo.PNG")),
+        Ok("image/png")
+    );
+    assert_eq!(
+        image_attachment_media_type(Path::new("photo.jpeg")),
+        Ok("image/jpeg")
+    );
+    assert!(image_attachment_media_type(Path::new("photo.heif"))
+        .unwrap_err()
+        .contains("Convert this image"));
+    assert_eq!(
+        normalized_pasted_image_extension(" JPEG "),
+        Ok("jpeg".to_string())
+    );
+    assert!(normalized_pasted_image_extension("heic")
+        .unwrap_err()
+        .contains("HEIC/HEIF images are not supported"));
+    assert!(normalized_pasted_image_extension("svg+xml").is_err());
     assert_eq!(
         supported_preview_image_extension(Path::new("notes.html")),
         None
@@ -2032,6 +2026,16 @@ fn image_preview_extensions_are_restricted_to_supported_formats() {
         "filename exceeded its UTF-8 byte budget"
     );
     assert!(multibyte.ends_with(".png"));
+    assert_eq!(
+        durable_image_destination(
+            Path::new("app-data/message-images"),
+            Some("Clipboard photo.HEIC"),
+            "png",
+            1234,
+            "abcdef0123456789",
+        ),
+        PathBuf::from("app-data/message-images/1234-abcdef01/Clipboard photo.png")
+    );
 }
 
 #[test]

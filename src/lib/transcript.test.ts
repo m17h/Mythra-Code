@@ -6,8 +6,8 @@ describe("transcript export", () => {
     const merged = mergeTranscriptHistory(
       [{ id: "old", role: "user", text: "Old", timelineOrder: 1 }, { id: "live", role: "assistant", text: "stale", timelineOrder: 2 }],
       [{ id: "tool", kind: "command", title: "Old tool", timelineOrder: 3 }],
-      [{ id: "live", role: "assistant", text: "fresh", timelineOrder: 2 }, { id: "new", role: "user", text: "New", timelineOrder: 4 }],
-      [{ id: "tool", kind: "command", title: "Updated tool", timelineOrder: 3 }],
+      [{ id: "live", role: "assistant", text: "fresh", timelineOrder: 200 }, { id: "new", role: "user", text: "New", timelineOrder: 4 }],
+      [{ id: "tool", kind: "command", title: "Updated tool", timelineOrder: 300 }],
     );
 
     expect(merged.messages.map((message) => [message.id, message.text])).toEqual([
@@ -15,7 +15,7 @@ describe("transcript export", () => {
       ["live", "fresh"],
       ["new", "New"],
     ]);
-    expect(merged.activities).toEqual([expect.objectContaining({ id: "tool", title: "Updated tool" })]);
+    expect(merged.activities).toEqual([expect.objectContaining({ id: "tool", title: "Updated tool", timelineOrder: 3 })]);
   });
 
   it("orders entries by timeline order and renders roles", () => {

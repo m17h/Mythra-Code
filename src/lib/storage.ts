@@ -7,6 +7,7 @@ export const DURABLE_STORAGE_KEYS = [
   "kiwi.workspaceMode",
   "kiwi.pinnedWorkspacesCollapsed",
   "kiwi.settings",
+  "kiwi.runDiscovery",
   "kiwi.headerUsageWindows",
   "kiwi.threadProjects",
   "kiwi.threadWorktrees",

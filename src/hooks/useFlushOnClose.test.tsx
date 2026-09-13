@@ -1,11 +1,12 @@
 import { act, renderHook } from "@testing-library/react";
-import { beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 const native = vi.hoisted(() => ({
   destroy: vi.fn(),
   onCloseRequested: vi.fn(),
 }));
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => native }));
 import { useFlushOnClose } from "./useFlushOnClose";
+afterEach(() => vi.useRealTimers());
 beforeEach(() => {
   native.destroy.mockReset().mockResolvedValue(undefined);
   native.onCloseRequested.mockReset().mockResolvedValue(vi.fn());
@@ -35,4 +36,32 @@ it("keeps the window open after a failed save and allows retry", async () => {
   await act(async () => closeRequested({ preventDefault: vi.fn() }));
   expect(native.destroy).toHaveBeenCalledTimes(1);
   view.unmount();
+});
+
+it("offers a deliberate discard after a failed save instead of trapping the user", async () => {
+  const confirmDiscard = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+  const view = renderHook(() => useFlushOnClose(vi.fn().mockRejectedValue(new Error("disk full")), vi.fn(), confirmDiscard));
+  const closeRequested = native.onCloseRequested.mock.calls[0][0];
+  await act(async () => closeRequested({ preventDefault: vi.fn() }));
+  expect(native.destroy).not.toHaveBeenCalled();
+  await act(async () => closeRequested({ preventDefault: vi.fn() }));
+  expect(confirmDiscard).toHaveBeenCalledTimes(2);
+  expect(native.destroy).toHaveBeenCalledTimes(1);
+  view.unmount();
+});
+it("keeps a stalled native write from trapping the close controls", async () => {
+  vi.useFakeTimers();
+  const confirmDiscard = vi.fn().mockResolvedValue(false);
+  const view = renderHook(() => useFlushOnClose(() => new Promise<void>(() => {}), vi.fn(), confirmDiscard));
+  act(() => native.onCloseRequested.mock.calls[0][0]({ preventDefault: vi.fn() }));
+  await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+  expect(confirmDiscard).toHaveBeenCalledTimes(1);
+  expect(native.destroy).not.toHaveBeenCalled();
+  view.unmount();
+});
+it("flushes independent settings/draft stores even when transcript saving fails", async () => {
+  const { flushBeforeClose } = await import("./useFlushOnClose");
+  const metadata = vi.fn(async () => {});
+  await expect(flushBeforeClose([async () => { throw new Error("transcript unavailable"); }, metadata])).rejects.toThrow("transcript unavailable");
+  expect(metadata).toHaveBeenCalledOnce();
 });

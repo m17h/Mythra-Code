@@ -41,6 +41,7 @@ mod openrouter_usage;
 mod persistence;
 mod process_launch;
 mod project_git;
+mod run_discovery;
 mod skills;
 #[cfg(test)]
 use agents::{
@@ -68,9 +69,10 @@ use github::{
 };
 use persistence::{
     local_transcript_full_read, local_transcript_list, local_transcript_metadata_write,
-    local_transcript_page_read, local_transcript_snapshot_write, local_transcript_tail_write,
-    local_transcript_write_state_read, lock_state_db, open_state_db_or_quarantine, shared_state_db,
-    state_db_path, state_delete, state_read, state_write, StateDb,
+    local_transcript_page_read, local_transcript_rename, local_transcript_snapshot_write,
+    local_transcript_tail_write, local_transcript_write_state_read, lock_state_db,
+    open_state_db_or_quarantine, shared_state_db, state_db_path, state_delete, state_read,
+    state_write, StateDb,
 };
 #[cfg(windows)]
 use process_launch::interactive_command;
@@ -83,6 +85,9 @@ use project_git::{
     workspace_git_info, workspace_git_initialize, worktree_apply_to_source, worktree_create,
     worktree_merge_branch, worktree_recreate, worktree_remove, worktree_set_applied_baseline,
     worktree_status,
+};
+use run_discovery::{
+    run_discovery_cancel, run_discovery_start, shutdown_run_discoveries_on_exit, RunDiscoveryState,
 };
 #[cfg(test)]
 use skills::*;
@@ -2914,116 +2919,20 @@ async fn claude_login(app: AppHandle) -> Result<(), String> {
     }
 }
 
-const PASTED_IMAGE_RETENTION_MS: i64 = 30 * 24 * 60 * 60 * 1_000;
-const PASTED_IMAGE_CACHE_MAX_BYTES: u64 = 512 * 1024 * 1024;
-
-#[derive(Clone, Debug)]
-struct PastedImageCandidate {
-    path: PathBuf,
-    modified_at_ms: i64,
-    size: u64,
-}
-
-fn pasted_image_removal_plan(
-    mut candidates: Vec<PastedImageCandidate>,
-    now_ms: i64,
-    retention_ms: i64,
-    max_total_bytes: u64,
-    preserve: Option<&Path>,
-) -> Vec<PathBuf> {
-    candidates.sort_by_key(|candidate| candidate.modified_at_ms);
-    let mut removed = HashSet::new();
-
-    for candidate in &candidates {
-        if preserve.is_some_and(|path| path == candidate.path) {
-            continue;
-        }
-        if now_ms.saturating_sub(candidate.modified_at_ms) > retention_ms {
-            removed.insert(candidate.path.clone());
-        }
-    }
-
-    let mut total = candidates
-        .iter()
-        .filter(|candidate| !removed.contains(&candidate.path))
-        .map(|candidate| candidate.size)
-        .sum::<u64>();
-    for candidate in &candidates {
-        if total <= max_total_bytes {
-            break;
-        }
-        if removed.contains(&candidate.path) || preserve.is_some_and(|path| path == candidate.path)
-        {
-            continue;
-        }
-        removed.insert(candidate.path.clone());
-        total = total.saturating_sub(candidate.size);
-    }
-
-    candidates
-        .into_iter()
-        .filter_map(|candidate| removed.contains(&candidate.path).then_some(candidate.path))
-        .collect()
-}
-
-fn cleanup_pasted_image_cache(directory: &Path, preserve: Option<&Path>) -> Result<(), String> {
-    if !directory.exists() {
-        return Ok(());
-    }
-    let mut candidates = Vec::new();
-    for entry in fs::read_dir(directory)
-        .map_err(|error| format!("Could not inspect the pasted-image cache: {error}"))?
-    {
-        let entry = entry.map_err(|error| format!("Could not inspect a pasted image: {error}"))?;
-        let file_type = entry
-            .file_type()
-            .map_err(|error| format!("Could not inspect a pasted image: {error}"))?;
-        let file_name = entry.file_name();
-        if !file_type.is_file() || !file_name.to_string_lossy().starts_with("pasted-") {
-            continue;
-        }
-        let metadata = entry
-            .metadata()
-            .map_err(|error| format!("Could not inspect a pasted image: {error}"))?;
-        let modified_at_ms = metadata
-            .modified()
-            .ok()
-            .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
-            .and_then(|duration| duration.as_millis().try_into().ok())
-            .unwrap_or_else(unix_timestamp_ms);
-        candidates.push(PastedImageCandidate {
-            path: entry.path(),
-            modified_at_ms,
-            size: metadata.len(),
-        });
-    }
-
-    for path in pasted_image_removal_plan(
-        candidates,
-        unix_timestamp_ms(),
-        PASTED_IMAGE_RETENTION_MS,
-        PASTED_IMAGE_CACHE_MAX_BYTES,
-        preserve,
-    ) {
-        fs::remove_file(path)
-            .map_err(|error| format!("Could not clean up an expired pasted image: {error}"))?;
-    }
-    Ok(())
-}
-
 /// Persists an image pasted into the composer (which arrives as raw bytes,
 /// not a file path) so it can be attached to a turn like any local image.
+/// These paths may be retained by another thread's draft, queue, or transcript,
+/// so cleanup requires a future reference-aware collector rather than age or
+/// directory-size eviction.
 #[tauri::command]
 async fn save_pasted_image(
     app: AppHandle,
     data_base64: String,
     extension: String,
+    display_name: Option<String>,
 ) -> Result<String, String> {
     use base64::Engine as _;
-    let safe_extension = match extension.as_str() {
-        "png" | "jpg" | "jpeg" | "gif" | "webp" => extension.as_str(),
-        _ => "png",
-    };
+    let safe_extension = normalized_pasted_image_extension(&extension)?;
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(data_base64.as_bytes())
         .map_err(|error| format!("Could not decode the pasted image: {error}"))?;
@@ -3033,38 +2942,58 @@ async fn save_pasted_image(
     if bytes.len() > 50 * 1024 * 1024 {
         return Err("The pasted image exceeds 50 MB".to_string());
     }
-    let dir = app
+    let directory = app
         .path()
         .app_data_dir()
         .map_err(|error| format!("Could not resolve Mythra Code app data: {error}"))?
-        .join("pasted-images");
-    tokio::fs::create_dir_all(&dir)
+        .join("message-images");
+    tokio::fs::create_dir_all(&directory)
         .await
-        .map_err(|error| format!("Could not create the pasted-images folder: {error}"))?;
+        .map_err(|error| format!("Could not create the message-images folder: {error}"))?;
     let token = random_hex_token()?;
-    let file = dir.join(format!(
-        "pasted-{}-{}.{safe_extension}",
+    let file = durable_image_destination(
+        &directory,
+        display_name.as_deref().or(Some("Pasted image")),
+        &safe_extension,
         unix_timestamp_ms(),
-        &token[..8]
-    ));
+        &token,
+    );
+    if let Some(parent) = file.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|error| format!("Could not create the message-image folder: {error}"))?;
+    }
     tokio::fs::write(&file, &bytes)
         .await
         .map_err(|error| format!("Could not save the pasted image: {error}"))?;
     app.asset_protocol_scope()
         .allow_file(&file)
         .map_err(|error| format!("Could not prepare the pasted image preview: {error}"))?;
-    let cleanup_directory = dir.clone();
-    let preserved_file = file.clone();
-    // Cleanup is best effort: a successfully saved paste must remain usable
-    // even if an older cache entry cannot be removed.
-    let _ = tauri::async_runtime::spawn_blocking(move || {
-        cleanup_pasted_image_cache(&cleanup_directory, Some(&preserved_file))
-    })
-    .await;
     Ok(file.to_string_lossy().into_owned())
 }
 
-fn claude_image_media_type(path: &Path) -> &'static str {
+fn normalized_pasted_image_extension(extension: &str) -> Result<String, String> {
+    let normalized = extension.trim().to_ascii_lowercase();
+    let synthetic_path = PathBuf::from(format!("pasted.{normalized}"));
+    image_attachment_media_type(&synthetic_path)?;
+    Ok(normalized)
+}
+
+fn unsupported_image_format_error(path: &Path) -> String {
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if matches!(extension.as_str(), "heic" | "heif") {
+        "HEIC/HEIF images are not supported. Convert this image to PNG, JPEG, GIF, or WebP before attaching it."
+            .into()
+    } else {
+        "The attachment is not a supported image. Use PNG, JPEG, GIF, or WebP.".into()
+    }
+}
+
+fn image_attachment_media_type(path: &Path) -> Result<&'static str, String> {
     match path
         .extension()
         .and_then(|extension| extension.to_str())
@@ -3072,10 +3001,11 @@ fn claude_image_media_type(path: &Path) -> &'static str {
         .to_ascii_lowercase()
         .as_str()
     {
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        _ => "image/png",
+        "png" => Ok("image/png"),
+        "jpg" | "jpeg" => Ok("image/jpeg"),
+        "gif" => Ok("image/gif"),
+        "webp" => Ok("image/webp"),
+        _ => Err(unsupported_image_format_error(path)),
     }
 }
 
@@ -3113,11 +3043,7 @@ async fn read_image_attachment(path: &Path) -> Result<Vec<u8>, String> {
 
 fn supported_preview_image_extension(path: &Path) -> Option<String> {
     let extension = path.extension()?.to_str()?.to_ascii_lowercase();
-    matches!(
-        extension.as_str(),
-        "png" | "jpg" | "jpeg" | "gif" | "webp" | "heic"
-    )
-    .then_some(extension)
+    matches!(extension.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp").then_some(extension)
 }
 
 fn durable_image_filename(display_name: Option<&str>, extension: &str) -> String {
@@ -3169,6 +3095,18 @@ fn durable_image_filename(display_name: Option<&str>, extension: &str) -> String
     )
 }
 
+fn durable_image_destination(
+    directory: &Path,
+    display_name: Option<&str>,
+    extension: &str,
+    created_at_ms: i64,
+    token: &str,
+) -> PathBuf {
+    directory
+        .join(format!("{}-{}", created_at_ms, &token[..8]))
+        .join(durable_image_filename(display_name, extension))
+}
+
 /// Re-authorizes a transcript image for the asset protocol after restart.
 /// Dialog scopes are session-local, so an otherwise valid image selected by
 /// the user would render once and then become a broken tile in old threads.
@@ -3176,8 +3114,12 @@ fn durable_image_filename(display_name: Option<&str>, extension: &str) -> String
 async fn prepare_image_preview(app: AppHandle, path: String) -> Result<(), String> {
     let path = PathBuf::from(path);
     if supported_preview_image_extension(&path).is_none() {
-        return Err("The attachment is not a supported preview image".into());
+        return Err(unsupported_image_format_error(&path));
     }
+    // Legacy Claude/Cursor transcripts can legitimately retain the original
+    // user-selected path when durable copying was unavailable. Restricting
+    // this command to app data would break those histories; a tighter scope
+    // needs thread identity plus an authoritative reference lookup.
     let metadata = tokio::fs::metadata(&path)
         .await
         .map_err(|error| format!("Could not open the attached image: {error}"))?;
@@ -3200,7 +3142,7 @@ async fn persist_image_attachment(
 ) -> Result<String, String> {
     let source = PathBuf::from(path);
     let extension = supported_preview_image_extension(&source)
-        .ok_or_else(|| "The attachment is not a supported image".to_string())?;
+        .ok_or_else(|| unsupported_image_format_error(&source))?;
     validate_image_attachment(&source).await?;
     let directory = app
         .path()
@@ -3211,20 +3153,33 @@ async fn persist_image_attachment(
         .await
         .map_err(|error| format!("Could not create the message-images folder: {error}"))?;
 
-    if source.starts_with(&directory) {
+    let canonical_source = tokio::fs::canonicalize(&source)
+        .await
+        .map_err(|error| format!("Could not read {}: {error}", source.display()))?;
+    let canonical_directory = tokio::fs::canonicalize(&directory)
+        .await
+        .map_err(|error| format!("Could not resolve the message-images folder: {error}"))?;
+    if canonical_source.starts_with(&canonical_directory) {
         app.asset_protocol_scope()
-            .allow_file(&source)
+            .allow_file(&canonical_source)
             .map_err(|error| format!("Could not prepare the attached image preview: {error}"))?;
-        return Ok(source.to_string_lossy().into_owned());
+        return Ok(canonical_source.to_string_lossy().into_owned());
     }
 
     let token = random_hex_token()?;
-    let destination_directory = directory.join(format!("{}-{}", unix_timestamp_ms(), &token[..8]));
+    let destination = durable_image_destination(
+        &directory,
+        display_name.as_deref(),
+        &extension,
+        unix_timestamp_ms(),
+        &token,
+    );
+    let destination_directory = destination
+        .parent()
+        .expect("durable image destinations always have a parent");
     tokio::fs::create_dir_all(&destination_directory)
         .await
         .map_err(|error| format!("Could not create the message-image folder: {error}"))?;
-    let destination =
-        destination_directory.join(durable_image_filename(display_name.as_deref(), &extension));
     let copied = tokio::fs::copy(&source, &destination)
         .await
         .map_err(|error| format!("Could not preserve the attached image: {error}"))?;
@@ -3278,12 +3233,13 @@ async fn claude_user_message(
     for attachment in attachments {
         let path = PathBuf::from(&attachment.path);
         if attachment.kind == "image" {
+            let media_type = image_attachment_media_type(&path)?;
             let bytes = read_image_attachment(&path).await?;
             content.push(json!({
                 "type": "image",
                 "source": {
                     "type": "base64",
-                    "media_type": claude_image_media_type(&path),
+                    "media_type": media_type,
                     "data": base64::engine::general_purpose::STANDARD.encode(bytes),
                 }
             }));
@@ -5630,6 +5586,7 @@ pub fn run() {
         .manage(ClaudeState::default())
         .manage(CursorState::default())
         .manage(ChildAgentState::default())
+        .manage(RunDiscoveryState::default())
         .invoke_handler(tauri::generate_handler![
             codex_runtime_status,
             developer_runtime_updates,
@@ -5670,6 +5627,7 @@ pub fn run() {
             local_transcript_write_state_read,
             local_transcript_tail_write,
             local_transcript_metadata_write,
+            local_transcript_rename,
             checkpoint_create,
             checkpoint_complete,
             checkpoint_diff,
@@ -5719,7 +5677,9 @@ pub fn run() {
             child_agent_finished,
             runtime_instance,
             runtime_thread_state,
-            restart_runtime
+            restart_runtime,
+            run_discovery_start,
+            run_discovery_cancel
         ])
         .build(tauri::generate_context!())
         .expect("error while running Mythra Code")
@@ -5749,6 +5709,7 @@ pub fn run() {
                 shutdown_claude_on_exit(app_handle);
                 shutdown_cursor_on_exit(app_handle);
                 shutdown_agent_bridges_on_exit(app_handle);
+                shutdown_run_discoveries_on_exit(app_handle);
             }
         });
 }

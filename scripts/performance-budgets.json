@@ -299,20 +299,154 @@
           }
         }
       }
+    },
+    {
+      "change": "Prevent transcript loss and attachment delivery races",
+      "decision": "Accept the measured correctness cost of metadata-only renames, durable attachment waits for Send and Steer, bounded save retries and explicit close recovery, stable transcript ordering, and navigation-safe turn delivery. Compared with the starting worktree, startup JavaScript grows by 2,049 Safari and 2,081 Chrome bytes (under 0.30%); total JavaScript grows by 2,315 and 2,320 bytes. These fixes add no CSS, dependencies, background provider calls, or permanent polling. Browser-native FileReader replaces the synchronous base64 string loop, and new pasted images require one durable copy. The pre-existing timeline/style edits separately add 807 CSS bytes and 326 Safari / 349 Chrome total JavaScript bytes relative to the previous limits. Exact caps include both sets of changes without extra headroom. See docs/performance/transcript-and-attachment-reliability.md for baseline measurements and deferred image cleanup boundaries.",
+      "measurements": {
+        "startingWorktree": {
+          "safari13": {
+            "appEntryRawBytes": 375756,
+            "startupJsRawBytes": 747226,
+            "startupCssRawBytes": 363306,
+            "totalJsRawBytes": 1514104
+          },
+          "chrome105": {
+            "appEntryRawBytes": 355880,
+            "startupJsRawBytes": 719545,
+            "startupCssRawBytes": 356763,
+            "totalJsRawBytes": 1475582
+          }
+        },
+        "final": {
+          "safari13-minified": {
+            "appEntryRawBytes": 377598,
+            "startupJsRawBytes": 749275,
+            "startupCssRawBytes": 363306,
+            "totalJsRawBytes": 1516419
+          },
+          "chrome105-minified": {
+            "appEntryRawBytes": 357761,
+            "startupJsRawBytes": 721626,
+            "startupCssRawBytes": 356763,
+            "totalJsRawBytes": 1477902
+          }
+        }
+      }
+    },
+    {
+      "change": "Add temporary run-command discovery and harden close-time persistence",
+      "decision": "Accept the measured cost of configurable OpenAI/Claude run-command discovery, ephemeral worker lifecycle, preserved suggestions and per-provider model choices, synchronous durable attachment commits, and independent bounded close-time flushes. Startup JavaScript grows by 3,660 Safari and 3,511 Chrome bytes (under 0.5%); total JavaScript grows by 7,179 and 6,942 bytes. The discovery settings and CSS are lazy, startup CSS is unchanged, and provider calls happen only after an explicit click. Native metadata scanning has hard entry, directory, file and byte limits. No dependency or recurring provider poll is added. Exact caps include the reviewed feature/correctness cost with no extra headroom. See docs/performance/run-command-discovery.md.",
+      "measurements": {
+        "safari13-minified": {
+          "appEntryRawBytes": {
+            "before": 377598,
+            "after": 378919,
+            "delta": 1321
+          },
+          "startupJsRawBytes": {
+            "before": 749275,
+            "after": 752935,
+            "delta": 3660
+          },
+          "startupCssRawBytes": {
+            "before": 363306,
+            "after": 363306,
+            "delta": 0
+          },
+          "totalJsRawBytes": {
+            "before": 1516419,
+            "after": 1523598,
+            "delta": 7179
+          }
+        },
+        "chrome105-minified": {
+          "appEntryRawBytes": {
+            "before": 357761,
+            "after": 358990,
+            "delta": 1229
+          },
+          "startupJsRawBytes": {
+            "before": 721626,
+            "after": 725137,
+            "delta": 3511
+          },
+          "startupCssRawBytes": {
+            "before": 356763,
+            "after": 356763,
+            "delta": 0
+          },
+          "totalJsRawBytes": {
+            "before": 1477902,
+            "after": 1484844,
+            "delta": 6942
+          }
+        }
+      }
+    },
+    {
+      "change": "Support all five providers for run-command discovery",
+      "decision": "Accept the measured cost of all-provider catalogs, remembered settings and reliable cancellation feedback: startup JavaScript growth remains under 0.2% on both targets. Startup CSS is unchanged; discovery UI/CSS remain lazy. Direct OpenRouter/LM Studio requests use no tools or persistent sessions, model-ID edits persist on blur, and scan/output/concurrency remain bounded. No dependency or polling is added. Exact caps have no headroom; see docs/performance/run-command-discovery.md.",
+      "measurements": {
+        "safari13-minified": {
+          "appEntryRawBytes": {
+            "before": 378919,
+            "after": 379834,
+            "delta": 915
+          },
+          "startupJsRawBytes": {
+            "before": 752935,
+            "after": 754367,
+            "delta": 1432
+          },
+          "startupCssRawBytes": {
+            "before": 363306,
+            "after": 363306,
+            "delta": 0
+          },
+          "totalJsRawBytes": {
+            "before": 1523598,
+            "after": 1526066,
+            "delta": 2468
+          }
+        },
+        "chrome105-minified": {
+          "appEntryRawBytes": {
+            "before": 358990,
+            "after": 359819,
+            "delta": 829
+          },
+          "startupJsRawBytes": {
+            "before": 725137,
+            "after": 726427,
+            "delta": 1290
+          },
+          "startupCssRawBytes": {
+            "before": 356763,
+            "after": 356763,
+            "delta": 0
+          },
+          "totalJsRawBytes": {
+            "before": 1484844,
+            "after": 1487115,
+            "delta": 2271
+          }
+        }
+      }
     }
   ],
   "profiles": {
     "safari13-minified": {
-      "appEntryRawBytes": 375756,
-      "startupJsRawBytes": 747226,
-      "startupCssRawBytes": 362499,
-      "totalJsRawBytes": 1513778
+      "appEntryRawBytes": 379834,
+      "startupJsRawBytes": 754367,
+      "startupCssRawBytes": 363306,
+      "totalJsRawBytes": 1526066
     },
     "chrome105-minified": {
-      "appEntryRawBytes": 355880,
-      "startupJsRawBytes": 719545,
-      "startupCssRawBytes": 355956,
-      "totalJsRawBytes": 1475233
+      "appEntryRawBytes": 359819,
+      "startupJsRawBytes": 726427,
+      "startupCssRawBytes": 356763,
+      "totalJsRawBytes": 1487115
     }
   }
 }

@@ -459,46 +459,71 @@ function MessageImagePreview({ path, name }: { path: string; name: string }) {
 
 const MessageRow = memo(function MessageRow({ message, provider, onEdit }: { message: ChatMessage; provider: Provider; onEdit?: (text: string) => void }) {
   const [copied, copy] = useCopyFeedback();
+  const attachments = message.role === "user" ? message.attachments ?? [] : [];
+  const actions = !message.streaming && (
+    <div className="message-actions">
+      <button
+        onClick={() => copy(message.text)}
+        title="Copy message"
+      >
+        {copied ? <Check size={11} /> : <Clipboard size={11} />}
+        {copied ? "Copied" : "Copy"}
+      </button>
+      {message.role === "user" && onEdit && (
+        <button onClick={() => onEdit(message.text)} title="Put this message back in the composer to edit and resend">
+          <Pencil size={11} />
+          Edit
+        </button>
+      )}
+    </div>
+  );
+  const steerStatus = message.role === "user" && message.steerStatus && (
+    <div className={`message-steer-status ${message.steerStatus}`} role="status">
+      {message.steerStatus === "accepted" ? <Check size={11} /> : <CornerUpRight size={11} />}
+      {message.steerStatus === "accepted" ? "Steer accepted by active turn" : "Sending steer…"}
+    </div>
+  );
+  const avatar = (
+    <div className={`message-avatar ${message.role === "assistant" ? `provider-${provider}` : ""}`}>
+      {message.role === "assistant" ? <ProviderLogo provider={provider} size={14} /> : <span>You</span>}
+    </div>
+  );
+  if (attachments.length > 0) {
+    // A prompt sent with images: the photos share one bubble and the typed
+    // text follows in its own bubble underneath, so the images read as a
+    // distinct item rather than a footnote to the prose.
+    return (
+      <article className={`message ${message.role} with-attachments`}>
+        {avatar}
+        <div className="message-stack">
+          {actions}
+          <div className="message-body message-attachments" data-count={attachments.length}>
+            <div className="message-image-previews" aria-label="Attached images">
+              {attachments.map((attachment) => (
+                <MessageImagePreview key={attachment.path} path={attachment.path} name={attachment.name} />
+              ))}
+            </div>
+          </div>
+          {message.text.trim() !== "" && (
+            <div className="message-body">
+              <MessageMarkdown text={message.text} />
+            </div>
+          )}
+          {steerStatus}
+        </div>
+      </article>
+    );
+  }
   return (
     <article className={`message ${message.role}`}>
-      <div className={`message-avatar ${message.role === "assistant" ? `provider-${provider}` : ""}`}>
-        {message.role === "assistant" ? <ProviderLogo provider={provider} size={14} /> : <span>You</span>}
-      </div>
+      {avatar}
       <div className="message-body">
-        {!message.streaming && (
-          <div className="message-actions">
-            <button
-              onClick={() => copy(message.text)}
-              title="Copy message"
-            >
-              {copied ? <Check size={11} /> : <Clipboard size={11} />}
-              {copied ? "Copied" : "Copy"}
-            </button>
-            {message.role === "user" && onEdit && (
-              <button onClick={() => onEdit(message.text)} title="Put this message back in the composer to edit and resend">
-                <Pencil size={11} />
-                Edit
-              </button>
-            )}
-          </div>
-        )}
+        {actions}
         {message.role === "assistant"
           ? <AssistantMessageMarkdown text={message.text} streaming={Boolean(message.streaming)} />
           : <MessageMarkdown text={message.text} />}
         {message.role === "assistant" && message.questions?.length ? <AsyncAgentQuestions message={message} /> : null}
-        {message.role === "user" && Boolean(message.attachments?.length) && (
-          <div className="message-image-previews" aria-label="Attached images">
-            {message.attachments?.map((attachment) => (
-              <MessageImagePreview key={attachment.path} path={attachment.path} name={attachment.name} />
-            ))}
-          </div>
-        )}
-        {message.role === "user" && message.steerStatus && (
-          <div className={`message-steer-status ${message.steerStatus}`} role="status">
-            {message.steerStatus === "accepted" ? <Check size={11} /> : <CornerUpRight size={11} />}
-            {message.steerStatus === "accepted" ? "Steer accepted by active turn" : "Sending steer…"}
-          </div>
-        )}
+        {steerStatus}
         {message.streaming && <span className="stream-caret" />}
       </div>
     </article>

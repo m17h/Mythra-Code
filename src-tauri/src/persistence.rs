@@ -1167,6 +1167,72 @@ pub(super) async fn local_transcript_write_state_read(
     .map_err(|error| format!("Local transcript write state task failed: {error}"))?
 }
 
+fn rename_local_transcript(
+    connection: &mut Connection,
+    provider: &str,
+    thread_id: &str,
+    name: &str,
+    now: i64,
+) -> Result<(), String> {
+    local_transcript_key(provider, thread_id)?;
+    if name.trim().is_empty() {
+        return Err("A thread name cannot be empty".into());
+    }
+    // Import a legacy transcript if necessary, without ever passing an empty
+    // renderer window through the destructive snapshot writer.
+    if read_local_transcript_page(connection, provider, thread_id, None, Some(1))?.is_none() {
+        return Err("Local transcript no longer exists".into());
+    }
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("Could not begin thread rename: {error}"))?;
+    let raw: String = transaction
+        .query_row(
+            "SELECT thread_json FROM local_transcript_meta WHERE provider = ?1 AND thread_id = ?2",
+            params![provider, thread_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| format!("Could not read thread metadata: {error}"))?
+        .ok_or_else(|| "Local transcript no longer exists".to_string())?;
+    let mut thread: Value = serde_json::from_str(&raw)
+        .map_err(|error| format!("Could not decode thread metadata: {error}"))?;
+    let metadata = thread
+        .as_object_mut()
+        .ok_or("Local thread metadata is not an object")?;
+    metadata.insert("name".into(), Value::String(name.to_string()));
+    transaction.execute(
+        "UPDATE local_transcript_meta SET thread_json = ?3, updated_at = MAX(?4, updated_at + 1)
+         WHERE provider = ?1 AND thread_id = ?2",
+        params![provider, thread_id, thread.to_string(), now],
+    ).map_err(|error| format!("Could not rename thread: {error}"))?;
+    transaction
+        .commit()
+        .map_err(|error| format!("Could not commit thread rename: {error}"))
+}
+
+#[tauri::command]
+pub(super) async fn local_transcript_rename(
+    app: AppHandle,
+    provider: String,
+    thread_id: String,
+    name: String,
+) -> Result<(), String> {
+    let connection = shared_state_db(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut connection = lock_state_db(&connection)?;
+        rename_local_transcript(
+            &mut connection,
+            &provider,
+            &thread_id,
+            &name,
+            unix_timestamp_ms(),
+        )
+    })
+    .await
+    .map_err(|error| format!("Local thread rename task failed: {error}"))?
+}
+
 fn write_local_transcript_metadata(
     connection: &mut Connection,
     provider: &str,
@@ -1884,6 +1950,77 @@ mod tests {
         );
         drop(connection);
         std::fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn rename_without_renderer_history_preserves_transcript_and_cursor_session() {
+        for provider in ["claude", "cursor"] {
+            let (directory, mut connection) = temporary_state_db(&format!("rename-{provider}"));
+            let mut original = transcript_fixture(8, 4_000);
+            original["cursorSessionId"] = json!("keep-session");
+            write_local_transcript_snapshot(&mut connection, provider, &original, 100).unwrap();
+            let before = read_local_transcript_write_state(&mut connection, provider, "thread-a")
+                .unwrap()
+                .unwrap();
+            let page = read_local_transcript_page(
+                &mut connection,
+                provider,
+                "thread-a",
+                None,
+                Some(20_000),
+            )
+            .unwrap()
+            .unwrap();
+            rename_local_transcript(
+                &mut connection,
+                provider,
+                "thread-a",
+                "Renamed unopened",
+                101,
+            )
+            .unwrap();
+            original["thread"]["name"] = json!("Renamed unopened");
+            assert_eq!(
+                read_local_transcript_full(&mut connection, provider, "thread-a").unwrap(),
+                Some(original)
+            );
+            let after = read_local_transcript_write_state(&mut connection, provider, "thread-a")
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                (before.generation, before.head_seq, before.tail_seq),
+                (after.generation, after.head_seq, after.tail_seq)
+            );
+            assert!(read_local_transcript_page(
+                &mut connection,
+                provider,
+                "thread-a",
+                page.next_cursor.as_deref(),
+                Some(20_000)
+            )
+            .is_ok());
+            assert!(
+                rename_local_transcript(&mut connection, provider, "missing", "Name", 102).is_err()
+            );
+            drop(connection);
+            std::fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    #[test]
+    fn rename_legacy_transcript_preserves_unopened_messages() {
+        let (directory, mut connection) = temporary_state_db("rename-legacy");
+        let mut original = transcript_fixture(3, 100);
+        insert_legacy_transcript(&connection, "claude", "thread-a", &original, 100);
+        rename_local_transcript(&mut connection, "claude", "thread-a", "Legacy renamed", 101)
+            .unwrap();
+        original["thread"]["name"] = json!("Legacy renamed");
+        assert_eq!(
+            read_local_transcript_full(&mut connection, "claude", "thread-a").unwrap(),
+            Some(original)
+        );
+        drop(connection);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

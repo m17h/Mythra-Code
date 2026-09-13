@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { attachmentKind, attachmentRecord, withAttachedPaths } from "./attachments";
+import { attachmentKind, attachmentRecord, unsupportedImageReason, withAttachedPaths } from "./attachments";
 import { attachmentsFor, forgetAttachmentDraft, MAX_ATTACHMENT_DRAFTS, withAttachmentDraft } from "./attachmentDrafts";
 
 describe("attachment classification", () => {
@@ -11,7 +11,6 @@ describe("attachment classification", () => {
       "/p/photo.jpeg",
       "/p/loop.gif",
       "/p/art.webp",
-      "/p/live.heic",
       "C:\\p\\shot.png",
     ]) {
       expect(attachmentKind(path)).toBe("image");
@@ -22,6 +21,11 @@ describe("attachment classification", () => {
     expect(attachmentKind("/p/notes.md")).toBe("file");
     expect(attachmentKind("/p/png")).toBe("file");
     expect(attachmentKind("/p/image.png.txt")).toBe("file");
+    expect(attachmentKind("/p/photo.heic")).toBe("file");
+    expect(attachmentKind("/p/photo.heif")).toBe("file");
+    expect(unsupportedImageReason("/p/photo.HEIC")).toContain("Convert this image");
+    expect(unsupportedImageReason("/p/photo.heif")).toContain("PNG, JPEG, GIF, or WebP");
+    expect(unsupportedImageReason("/p/photo.png")).toBeUndefined();
   });
 
   it("names records from the last path segment on both platforms", () => {

@@ -637,9 +637,24 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .message-body code, .message-body pre, .message-body kbd, .message-body samp { font-family: var(--font-mono); }
 .message-body button { font-family: var(--font-sans); }
 .message-text { white-space: pre-wrap; overflow-wrap: anywhere; }
-.message-image-previews { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; margin-top: 9px; }
-.message-image-preview { width: 112px; height: 76px; display: block; object-fit: cover; border: 1px solid var(--line-strong); border-radius: var(--r-sm); background: var(--field); box-shadow: 0 2px 8px rgba(0,0,0,.18); }
-.message-image-preview.unavailable { box-sizing: border-box; display: flex; align-items: center; justify-content: center; gap: 6px; overflow: hidden; padding: 7px; color: var(--muted); font-size: var(--fs-micro); }
+/* A prompt sent with images stacks two bubbles on the right: the photos share
+   the first, the typed text follows in the second. Both are .message-body so
+   every theme's user-bubble colours apply to each without extra rules. */
+.message.user .message-stack { position: relative; justify-self: end; max-width: 84%; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.message.user .message-stack .message-body { justify-self: auto; max-width: 100%; }
+.message.user .message-stack .message-attachments + .message-body { border-radius: var(--r-lg) var(--r-xs) var(--r-xs) var(--r-lg); }
+.message.user .message-stack .message-steer-status { margin-top: 2px; }
+.message-body.message-attachments { padding: 5px; line-height: 0; }
+.message-image-previews { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; max-width: 100%; }
+.message-image-preview { width: 148px; height: 100px; display: block; object-fit: cover; border: 1px solid color-mix(in srgb, var(--line-strong) 70%, transparent); border-radius: calc(var(--r-lg) - 4px); background: var(--field); }
+/* A single photo keeps its own aspect ratio inside a bounded frame; several
+   photos become uniform tiles so the row stays tidy. The caps are pixels only:
+   a percentage is ignored while the bubble measures its shrink-to-fit width
+   but honoured when the image draws, which leaves a blank strip beside the
+   photo. The narrow-window override below keeps the frame inside the smallest
+   transcript instead. */
+.message-attachments[data-count="1"] img.message-image-preview { width: auto; height: auto; max-width: 320px; max-height: 220px; }
+.message-image-preview.unavailable { box-sizing: border-box; display: flex; align-items: center; justify-content: center; gap: 6px; overflow: hidden; padding: 7px; color: var(--muted); font-size: var(--fs-micro); line-height: 1.3; }
 .message-image-preview.unavailable span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .message-steer-status { display: flex; align-items: center; justify-content: flex-end; gap: 4px; margin-top: 6px; color: var(--muted-2); font-size: var(--fs-micro); line-height: 1.3; }
 .message-steer-status.accepted { color: color-mix(in srgb, var(--info) 78%, var(--text)); }
@@ -1859,7 +1874,9 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
   .runtime-status { display: none; }
   .workspace-tools-trigger span, .workspace-tools-trigger kbd { display: none; }
   .message.user { margin-left: 0; }
-  .message.user .message-body { max-width: 92%; }
+  .message.user .message-body, .message.user .message-stack { max-width: 92%; }
+  .message.user .message-stack .message-body { max-width: 100%; }
+  .message-attachments[data-count="1"] img.message-image-preview { max-width: 240px; max-height: 180px; }
   .composer-caption { font-size: var(--fs-meta); }
 }
 

@@ -6,7 +6,7 @@ function mergeById<T extends { id: string; timelineOrder?: number }>(
   live: T[],
 ): T[] {
   const merged = new Map(durable.map((entry) => [entry.id, entry]));
-  for (const entry of live) merged.set(entry.id, entry);
+  for (const entry of live) merged.set(entry.id, { ...entry, timelineOrder: merged.get(entry.id)?.timelineOrder ?? entry.timelineOrder });
   return [...merged.values()].sort(
     (left, right) => (left.timelineOrder ?? Number.MAX_SAFE_INTEGER) - (right.timelineOrder ?? Number.MAX_SAFE_INTEGER),
   );

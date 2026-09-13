@@ -100,7 +100,7 @@ function overlaps(rows: PositionedRow[]): string[] {
 const settle = () => new Promise((resolve) => { setTimeout(resolve, 600); });
 
 describe("ChatTimeline browser layout", () => {
-  it("keeps a sent image preview compact inside the user message bubble", async () => {
+  it("stacks a sent image bubble above the text bubble with their right edges aligned", async () => {
     const previewSource = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='640' height='480'%3E%3Crect width='640' height='480' fill='%238fd6ff'/%3E%3C/svg%3E";
     render(<Shell messages={[{
       id: "image-prompt",
@@ -110,13 +110,51 @@ describe("ChatTimeline browser layout", () => {
     }]} running={false} activities={[]} />);
     await settle();
 
-    const preview = document.querySelector<HTMLImageElement>(".message-image-preview");
-    const bubble = document.querySelector<HTMLElement>(".message.user .message-body");
+    const preview = document.querySelector<HTMLImageElement>("img.message-image-preview");
+    const bubbles = Array.from(document.querySelectorAll<HTMLElement>(".message.user .message-stack > .message-body"));
     expect(preview).not.toBeNull();
-    expect(bubble).not.toBeNull();
-    expect(Math.round(preview!.getBoundingClientRect().width)).toBe(112);
-    expect(Math.round(preview!.getBoundingClientRect().height)).toBe(76);
-    expect(preview!.getBoundingClientRect().right).toBeLessThanOrEqual(bubble!.getBoundingClientRect().right + 1);
+    expect(bubbles).toHaveLength(2);
+    const [imageBubble, textBubble] = bubbles;
+    const imageRect = imageBubble.getBoundingClientRect();
+    const textRect = textBubble.getBoundingClientRect();
+    const previewRect = preview!.getBoundingClientRect();
+    // The photo bubble sits above the prose bubble; neither overlaps the other.
+    expect(imageRect.bottom).toBeLessThanOrEqual(textRect.top + 0.5);
+    expect(textRect.top - imageRect.bottom).toBeLessThanOrEqual(8);
+    // Both bubbles hang from the same right edge of the transcript.
+    expect(Math.abs(imageRect.right - textRect.right)).toBeLessThanOrEqual(1);
+    // A lone photo keeps its aspect ratio inside the bounded frame.
+    expect(previewRect.right).toBeLessThanOrEqual(imageRect.right + 1);
+    expect(previewRect.bottom).toBeLessThanOrEqual(imageRect.bottom + 1);
+    expect(Math.round(previewRect.height)).toBe(220);
+    expect(Math.abs(previewRect.width / previewRect.height - 640 / 480)).toBeLessThan(0.02);
+  });
+
+  it("tiles several sent images uniformly inside one bubble", async () => {
+    const source = (fill: string, width: number, height: number) => `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='${width}' height='${height}'%3E%3Crect width='${width}' height='${height}' fill='%23${fill}'/%3E%3C/svg%3E`;
+    render(<Shell messages={[{
+      id: "gallery-prompt",
+      role: "user",
+      text: "Compare these",
+      attachments: [
+        { path: source("8fd6ff", 640, 480), name: "wide.png", kind: "image" },
+        { path: source("ffb38f", 300, 900), name: "tall.png", kind: "image" },
+        { path: source("b8ff8f", 512, 512), name: "square.png", kind: "image" },
+      ],
+    }]} running={false} activities={[]} />);
+    await settle();
+
+    const previews = Array.from(document.querySelectorAll<HTMLImageElement>("img.message-image-preview"));
+    const imageBubble = document.querySelector<HTMLElement>(".message.user .message-attachments");
+    expect(previews).toHaveLength(3);
+    expect(imageBubble).not.toBeNull();
+    for (const preview of previews) {
+      const rect = preview.getBoundingClientRect();
+      expect(Math.round(rect.width)).toBe(148);
+      expect(Math.round(rect.height)).toBe(100);
+      expect(rect.right).toBeLessThanOrEqual(imageBubble!.getBoundingClientRect().right + 1);
+      expect(rect.left).toBeGreaterThanOrEqual(imageBubble!.getBoundingClientRect().left - 1);
+    }
   });
 
   it("contains a long filename when an old image source is unavailable", async () => {

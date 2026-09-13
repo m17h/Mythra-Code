@@ -18,11 +18,11 @@ describe("agent questions", () => {
     expect(send).not.toHaveBeenCalled();
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "Use a custom layout" } });
     fireEvent.click(screen.getByRole("button", { name: "Submit answers" }));
-    await screen.findByText("Answers sent");
+    await screen.findByText("Answers submitted");
     expect(send).toHaveBeenCalledExactlyOnceWith("thread", "Answers to your questions:\n\nWhich layout?\nUse a custom layout", expect.anything());
     mounted.unmount();
     render(view(send));
-    expect(screen.getByText("Answers sent")).toBeInTheDocument();
+    expect(screen.getByText("Answers submitted")).toBeInTheDocument();
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });
   it("prevents duplicate sends even if the question unmounts while submitting", async () => {
@@ -37,7 +37,7 @@ describe("agent questions", () => {
     fireEvent.click(screen.getByRole("button", { name: "Submit answers" }));
     expect(send).toHaveBeenCalledTimes(1);
     await act(async () => resolve(true));
-    expect(screen.getByText("Answers sent")).toBeInTheDocument();
+    expect(screen.getByText("Answers submitted")).toBeInTheDocument();
   });
   it("keeps answers editable after a failed send", async () => {
     const send = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
@@ -47,7 +47,7 @@ describe("agent questions", () => {
     await screen.findByRole("alert");
     fireEvent.click(screen.getByRole("radio", { name: "Spacious" }));
     fireEvent.click(screen.getByRole("button", { name: "Submit answers" }));
-    await screen.findByText("Answers sent");
+    await screen.findByText("Answers submitted");
     expect(send.mock.calls[1][1]).toContain("Spacious");
   });
   it("supports multiple choices and freeform answers with no automatic submission", async () => {

@@ -8,7 +8,14 @@ import type { AttachmentRecord } from "../components/StudioDock";
  * screenshot is never sent as an image from one surface and as a bare file
  * path from another.
  */
-const IMAGE_EXTENSION_PATTERN = /\.(png|jpe?g|gif|webp|heic)$/i;
+const IMAGE_EXTENSION_PATTERN = /\.(png|jpe?g|gif|webp)$/i;
+const UNSUPPORTED_NATIVE_IMAGE_PATTERN = /\.(heic|heif)$/i;
+
+export function unsupportedImageReason(path: string): string | undefined {
+  return UNSUPPORTED_NATIVE_IMAGE_PATTERN.test(path)
+    ? "HEIC/HEIF images are not supported. Convert this image to PNG, JPEG, GIF, or WebP before attaching it."
+    : undefined;
+}
 
 export function attachmentKind(path: string): AttachmentRecord["kind"] {
   return IMAGE_EXTENSION_PATTERN.test(path) ? "image" : "file";

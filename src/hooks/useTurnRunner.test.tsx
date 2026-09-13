@@ -273,6 +273,118 @@ describe("useTurnRunner", () => {
     expect(useTaskStore.getState().tasks[CLAUDE_THREAD.id]?.messages.at(-1)?.text).toBe("@review this");
   });
 
+  it.each(["cursor", "openai"] as const)("does not reactivate an existing %s thread after the user selects another thread", async (provider) => {
+    let releaseSkill!: (message: string) => void;
+    const resolveSkillPrompt = vi.fn(() => new Promise<string>((resolve) => { releaseSkill = resolve; }));
+    const thread = provider === "cursor" ? CURSOR_THREAD : OPENAI_THREAD;
+    const deps = provider === "cursor"
+      ? context({ resolveSkillPrompt })
+      : context({
+          activeThread: OPENAI_THREAD,
+          resolveSkillPrompt,
+          effectiveSettings: { ...DEFAULT_SETTINGS, provider: "openai", model: "gpt-5.6-sol" },
+          runtimeStatus: { available: true, source: "Codex CLI", path: "codex", version: "test", compatible: true, warning: null },
+          account: { type: "chatgpt", email: "test@example.com", planType: "pro" },
+          threadProjectBindingsRef: { current: { [OPENAI_THREAD.id]: "/tmp/project" } },
+        });
+    codex.rpc.mockResolvedValue({ turn: { id: "turn-new" } });
+    useTaskStore.getState().setActiveThread(thread.id);
+    const { result } = renderHook(() => useTurnRunner(deps));
+
+    let sending!: Promise<boolean>;
+    act(() => { sending = result.current.sendMessage("keep working"); });
+    expect(resolveSkillPrompt).toHaveBeenCalled();
+    act(() => { useTaskStore.getState().setActiveThread("thread-selected-later"); });
+    await act(async () => {
+      releaseSkill("keep working");
+      expect(await sending).toBe(true);
+    });
+
+    expect(useTaskStore.getState().activeThreadId).toBe("thread-selected-later");
+    expect(deps.setActiveThread).not.toHaveBeenCalled();
+    expect(deps.setThreads).toHaveBeenCalled();
+    if (provider === "cursor") {
+      expect(cursor.startCursorTurn).toHaveBeenCalledWith(expect.objectContaining({ threadId: CURSOR_THREAD.id }));
+    } else {
+      expect(codex.rpc).toHaveBeenCalledWith("turn/start", expect.objectContaining({ threadId: OPENAI_THREAD.id }));
+    }
+  });
+
+  it("still activates a newly created local thread", async () => {
+    const deps = context({ activeThread: null });
+    const { result } = renderHook(() => useTurnRunner(deps));
+
+    await act(async () => { expect(await result.current.sendMessage("start something new")).toBe(true); });
+
+    const createdThreadId = vi.mocked(deps.onThreadCreated).mock.calls[0]?.[0];
+    expect(createdThreadId).toEqual(expect.any(String));
+    expect(deps.setActiveThread).toHaveBeenCalledWith(expect.objectContaining({ id: createdThreadId }));
+    expect(useTaskStore.getState().activeThreadId).toBe(createdThreadId);
+    expect(cursor.startCursorTurn).toHaveBeenCalledWith(expect.objectContaining({ threadId: createdThreadId }));
+  });
+
+  it("does not activate a new local thread after the user navigates away during preparation", async () => {
+    let releaseSkill!: (message: string) => void;
+    const resolveSkillPrompt = vi.fn(() => new Promise<string>((resolve) => { releaseSkill = resolve; }));
+    const deps = context({ activeThread: null, resolveSkillPrompt });
+    const { result } = renderHook(() => useTurnRunner(deps));
+
+    let sending!: Promise<boolean>;
+    act(() => { sending = result.current.sendMessage("start in the background"); });
+    expect(resolveSkillPrompt).toHaveBeenCalled();
+    act(() => { useTaskStore.getState().setActiveThread("thread-selected-later"); });
+    await act(async () => {
+      releaseSkill("start in the background");
+      expect(await sending).toBe(true);
+    });
+
+    const createdThreadId = vi.mocked(deps.onThreadCreated).mock.calls[0]?.[0];
+    expect(useTaskStore.getState().activeThreadId).toBe("thread-selected-later");
+    expect(deps.setActiveThread).not.toHaveBeenCalled();
+    expect(cursor.startCursorTurn).toHaveBeenCalledWith(expect.objectContaining({ threadId: createdThreadId }));
+  });
+
+  it("does not activate a new Codex thread whose thread/start returns after navigation", async () => {
+    const startedThread: Thread = {
+      id: "thread-created-late",
+      name: null,
+      preview: "",
+      cwd: "/tmp/project",
+      updatedAt: 2,
+      modelProvider: "openai",
+    };
+    let threadStartReached!: () => void;
+    const reachedThreadStart = new Promise<void>((resolve) => { threadStartReached = resolve; });
+    let releaseThreadStart!: (value: { thread: Thread }) => void;
+    codex.rpc.mockImplementation((method) => {
+      if (method === "thread/start") {
+        threadStartReached();
+        return new Promise((resolve) => { releaseThreadStart = resolve; });
+      }
+      return Promise.resolve({ turn: { id: "turn-new" } });
+    });
+    const deps = context({
+      activeThread: null,
+      effectiveSettings: { ...DEFAULT_SETTINGS, provider: "openai", model: "gpt-5.6-sol" },
+      runtimeStatus: { available: true, source: "Codex CLI", path: "codex", version: "test", compatible: true, warning: null },
+      account: { type: "chatgpt", email: "test@example.com", planType: "pro" },
+    });
+    const { result } = renderHook(() => useTurnRunner(deps));
+
+    let sending!: Promise<boolean>;
+    act(() => { sending = result.current.sendMessage("start in the background"); });
+    await act(async () => { await reachedThreadStart; });
+    act(() => { useTaskStore.getState().setActiveThread("thread-selected-later"); });
+    await act(async () => {
+      releaseThreadStart({ thread: startedThread });
+      expect(await sending).toBe(true);
+    });
+
+    expect(useTaskStore.getState().activeThreadId).toBe("thread-selected-later");
+    expect(deps.setActiveThread).not.toHaveBeenCalled();
+    expect(codex.rpc).toHaveBeenCalledWith("turn/start", expect.objectContaining({ threadId: startedThread.id }));
+  });
+
   it("uses resolved skill instructions for an active Claude steer", async () => {
     const resolveSkillPrompt = vi.fn(async () => "resolved skill context\n\n@review this");
     const store = useTaskStore.getState();
@@ -337,6 +449,31 @@ describe("useTurnRunner", () => {
       text: "Match this reference",
       attachments: [{ path: "/tmp/pasted-reference.png", name: "pasted-reference.png", kind: "image" }],
     });
+  });
+
+  it.each(["cursor", "openai"] as const)("rejects a stale unsupported image before an optimistic %s send", async (provider) => {
+    const attachments = [{ path: "/tmp/old-draft.HEIC", name: "old-draft.HEIC", kind: "image" as const }];
+    const deps = provider === "cursor"
+      ? context({ attachments })
+      : context({
+          activeThread: OPENAI_THREAD,
+          attachments,
+          effectiveSettings: { ...DEFAULT_SETTINGS, provider: "openai", model: "gpt-5.6-sol" },
+          runtimeStatus: { available: true, source: "Codex CLI", path: "codex", version: "test", compatible: true, warning: null },
+          account: { type: "chatgpt", email: "test@example.com", planType: "pro" },
+          threadProjectBindingsRef: { current: { [OPENAI_THREAD.id]: "/tmp/project" } },
+        });
+    const thread = provider === "cursor" ? CURSOR_THREAD : OPENAI_THREAD;
+    const { result } = renderHook(() => useTurnRunner(deps));
+
+    await act(async () => { expect(await result.current.sendMessage("keep this draft")).toBe(false); });
+
+    expect(deps.setError).toHaveBeenCalledWith(expect.stringContaining("HEIC/HEIF images are not supported"));
+    expect(deps.resolveSkillPrompt).not.toHaveBeenCalled();
+    expect(deps.setAttachments).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().tasks[thread.id]?.messages ?? []).toEqual([]);
+    expect(cursor.startCursorTurn).not.toHaveBeenCalled();
+    expect(codex.rpc).not.toHaveBeenCalled();
   });
 
   it("hard-stops the active provider turn and records the stopped state", async () => {
@@ -519,6 +656,30 @@ describe("useTurnRunner", () => {
 
     expect(cursor.startCursorTurn).toHaveBeenCalledWith(expect.objectContaining({ prompt: "finish the migration" }));
     expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]?.queuedTurns).toEqual([]);
+  });
+
+  it("rejects an unsupported image restored in a queued turn before provider delivery", async () => {
+    const store = useTaskStore.getState();
+    store.ensureTask(CURSOR_THREAD.id, CURSOR_THREAD.cwd);
+    store.enqueueTurn(CURSOR_THREAD.id, "keep this queued prompt", [
+      { path: "/tmp/restored-image.heif", name: "restored-image.heif", kind: "image" },
+    ]);
+    store.setActiveThread(CURSOR_THREAD.id);
+    const deps = context({ running: false });
+
+    renderHook(() => useTurnRunner(deps));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(cursor.startCursorTurn).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]?.messages).toEqual([]);
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]?.queuedTurns[0]).toMatchObject({
+      text: "keep this queued prompt",
+      status: "failed",
+    });
+    expect(deps.setError).toHaveBeenCalledWith(expect.stringContaining("HEIC/HEIF images are not supported"));
   });
 
   it("holds the queue at a failed head instead of starting later follow-ups", async () => {
