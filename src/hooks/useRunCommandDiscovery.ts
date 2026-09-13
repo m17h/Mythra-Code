@@ -1,51 +1,79 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useSyncExternalStore } from "react";
 import { cancelRunDiscovery, discoverRunCommand, type RunDiscoveryPreferences, type RunDiscoverySuggestion } from "../lib/runDiscovery";
 
-/** The worker outlives the popover, but never the selected project control. */
+interface DiscoveryEntry {
+  /** Request identity of the in-flight worker, if any. */
+  i: string | null;
+  /** Request the user asked to stop; its late result must never save. */
+  x: boolean;
+  /** Request whose stop call is still awaiting confirmation. */
+  y: boolean;
+  s: RunDiscoverySuggestion | null;
+  e: string;
+}
+
+const EMPTY: DiscoveryEntry = { i: null, x: false, y: false, s: null, e: "" };
+
+/**
+ * Workers live outside React, keyed by project folder. A discovery outlives
+ * the popover and the project control itself, so switching projects, opening
+ * Chats or collapsing the top bar no longer stops it. The result still saves
+ * to the project that started it: the save callback is captured at start.
+ */
+const entries = new Map<string, DiscoveryEntry>();
+const listeners = new Set<() => void>();
+const read = (cwd?: string): DiscoveryEntry => (cwd && entries.get(cwd)) || EMPTY;
+function update(cwd: string, patch: Partial<DiscoveryEntry>) {
+  entries.set(cwd, { ...read(cwd), ...patch });
+  listeners.forEach((listener) => listener());
+}
+const updateCurrent = (cwd: string, id: string, patch: Partial<DiscoveryEntry>) => {
+  if (read(cwd).i === id) update(cwd, patch);
+};
+function subscribe(listener: () => void) {
+  listeners.add(listener);
+  return () => { listeners.delete(listener); };
+}
+
+/** Test hook: forget every worker between cases. Live requests are not cancelled. */
+export function resetRunCommandDiscoveries() {
+  entries.clear();
+  listeners.forEach((listener) => listener());
+}
+
 export function useRunCommandDiscovery(cwd?: string, lmStudioBaseUrl?: string) {
-  const active = useRef<string | null>(null);
-  const stopped = useRef<string | null>(null);
-  const stopping = useRef<string | null>(null);
-  const [pending, setPending] = useState(false);
-  const [suggestion, setSuggestion] = useState<RunDiscoverySuggestion | null>(null);
-  const [error, setError] = useState("");
-  useEffect(() => {
-    setPending(false); setSuggestion(null); setError("");
-    return () => {
-      const id = active.current;
-      active.current = null;
-      if (id) void cancelRunDiscovery(id).catch(() => {});
-    };
-  }, [cwd]);
-  const cancel = async () => {
-    const id = active.current;
-    if (!id || stopping.current === id) return;
-    stopping.current = id;
-    stopped.current = id;
+  const entry = useSyncExternalStore(subscribe, () => read(cwd));
+  const cancel = useCallback(async () => {
+    if (!cwd) return;
+    const entry = read(cwd);
+    const id = entry.i;
+    if (!id || entry.y) return;
+    update(cwd, { y: true, x: true });
     try {
       await cancelRunDiscovery(id);
-      if (stopped.current === id && (!active.current || active.current === id)) setError("");
-      if (active.current === id) { active.current = null; setPending(false); }
-    } catch (reason) { if (active.current === id) setError(`Could not confirm discovery cleanup: ${String(reason)}`); }
-    finally { if (stopping.current === id) stopping.current = null; }
-  };
-  const discover = async (preferences: RunDiscoveryPreferences, onFound?: (result: RunDiscoverySuggestion) => void) => {
-    if (!cwd || active.current) return;
+      updateCurrent(cwd, id, { i: null, e: "" });
+    } catch (reason) { updateCurrent(cwd, id, { e: `Could not confirm discovery cleanup: ${reason}` }); }
+    finally { if (read(cwd).y) update(cwd, { y: false }); }
+  }, [cwd]);
+  const discover = useCallback(async (preferences: RunDiscoveryPreferences, onFound?: (result: RunDiscoverySuggestion) => void) => {
+    if (!cwd || read(cwd).i) return;
     const id = crypto.randomUUID();
-    active.current = id;
-    stopped.current = null;
-    setPending(true); setError(""); setSuggestion(null);
+    update(cwd, { i: id, x: false, e: "", s: null });
     try {
       const result = await discoverRunCommand(id, cwd, preferences, lmStudioBaseUrl);
-      if (active.current === id && stopped.current !== id) {
-        onFound?.(result);
-        setSuggestion(result);
+      const current = read(cwd);
+      if (current.i === id && !current.x) {
+        onFound && onFound(result);
+        update(cwd, { s: result });
       }
     } catch (reason) {
-      if (active.current === id && stopped.current !== id) setError(String(reason));
+      const current = read(cwd);
+      if (current.i === id && !current.x) update(cwd, { e: `${reason}` });
     } finally {
-      if (active.current === id) { active.current = null; setPending(false); }
+      updateCurrent(cwd, id, { i: null });
     }
-  };
-  return { pending, suggestion, error, discover, cancel, clearSuggestion: () => setSuggestion(null) };
+
+  }, [cwd, lmStudioBaseUrl]);
+  const clearSuggestion = () => { if (cwd) update(cwd, { s: null }); };
+  return { pending: Boolean(entry.i), suggestion: entry.s, error: entry.e, discover, cancel, clearSuggestion };
 }
