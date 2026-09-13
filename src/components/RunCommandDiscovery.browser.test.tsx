@@ -1,3 +1,5 @@
+import { useState } from "react";
+import type { ProjectRunCommand } from "../types";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
 import { page } from "vitest/browser";
@@ -9,7 +11,11 @@ beforeEach(() => { localStorage.clear(); vi.mocked(invoke).mockReset(); });
 it("keeps discovery settings and the proposed command usable in the run popover", async () => {
   vi.mocked(invoke).mockResolvedValue({ command: "npm run desktop", label: "Desktop app", explanation: "The desktop script starts the development app." });
   const onSave = vi.fn(), onRun = vi.fn();
-  render(<div className="app-shell" style={{ display: "block", padding: 20, height: 850 }}><ProjectRunControl projectName="Mythra Code" projectPath="/project" discoveryCatalogs={{ openai: [{ id: "gpt-5.6-luna", label: "Luna", efforts: ["low", "high"] }] }} running={false} onRun={onRun} onStop={vi.fn()} onSave={onSave} /></div>);
+  function RunHarness() {
+    const [run, setRun] = useState<ProjectRunCommand>();
+    return <div className="app-shell" style={{ display: "block", padding: 20, height: 850 }}><ProjectRunControl projectName="Mythra Code" projectPath="/project" discoveryCatalogs={{ openai: [{ id: "gpt-5.6-luna", label: "Luna", efforts: ["low", "high"] }] }} run={run} running={false} onRun={onRun} onStop={vi.fn()} onSave={(next) => { onSave(next); setRun(next ? { ...next, updatedAt: 1 } : undefined); }} /></div>;
+  }
+  render(<RunHarness />);
   fireEvent.click(screen.getByRole("button", { name: "Edit run command" }));
   fireEvent.click(await screen.findByRole("button", { name: "Discovery model settings" }));
   fireEvent.click(screen.getByRole("button", { name: "Discovery model" }));
@@ -17,7 +23,8 @@ it("keeps discovery settings and the proposed command usable in the run popover"
   expect(option.getBoundingClientRect().height).toBeGreaterThan(0);
   fireEvent.click(option);
   await act(async () => fireEvent.click(screen.getByRole("button", { name: "Find run command" })));
-  expect(await screen.findByText("Suggested command")).toBeInTheDocument();
+  expect(await screen.findByText("Saved to Run")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Run: ready" })).toHaveTextContent("Desktop app");
   const dialog = screen.getByRole("dialog");
   await waitFor(() => expect(dialog.getBoundingClientRect().top).toBeGreaterThanOrEqual(0));
   expect(dialog.getBoundingClientRect().bottom).toBeLessThanOrEqual(window.innerHeight);
@@ -25,10 +32,9 @@ it("keeps discovery settings and the proposed command usable in the run popover"
   const saveRect = screen.getByRole("button", { name: "Save run command" }).getBoundingClientRect();
   expect(saveRect.bottom).toBeLessThanOrEqual(dialog.getBoundingClientRect().bottom);
   expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth + 1);
-  await page.getByRole("button", { name: "Use suggestion" }).click();
   expect(screen.getByRole("textbox", { name: "Run command for Mythra Code" })).toHaveValue("npm run desktop");
-  expect(onSave).not.toHaveBeenCalled(); expect(onRun).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole("button", { name: "Save run command" }));
+  expect(onRun).not.toHaveBeenCalled();
+  expect(onSave).toHaveBeenCalledOnce();
   expect(onSave).toHaveBeenCalledWith({ command: "npm run desktop", label: "Desktop app" });
 });
 

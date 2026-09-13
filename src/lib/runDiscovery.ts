@@ -13,9 +13,9 @@ export interface RunDiscoverySuggestion { command: string; label: string; explan
 export interface RunDiscoveryModel { id: string; label: string; efforts?: string[] }
 export type RunDiscoveryCatalogs = Partial<Record<RunDiscoveryProvider, RunDiscoveryModel[]>>;
 export const RUN_DISCOVERY_PREFERENCES_KEY = "kiwi.runDiscovery";
-export const DEFAULT_RUN_DISCOVERY: RunDiscoveryPreferences = { provider: "openai", model: "gpt-5.6-luna", effort: "low", fast: true };
+export const DEFAULT_RUN_DISCOVERY: RunDiscoveryPreferences = { provider: "openai", model: "gpt-5.6-luna", effort: "high", fast: true };
 export const DISCOVERY_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
-function defaultEffort(provider: Provider): string { return provider === "openai" || provider === "claude" ? "low" : "default"; }
+function defaultEffort(provider: Provider): string { return provider === "openai" ? "high" : provider === "claude" ? "low" : "default"; }
 function isProvider(value: unknown): value is Provider { return DISCOVERY_PROVIDERS.some((entry) => entry.value === value); }
 function cleanToken(value: unknown, limit: number): string | undefined {
   return typeof value === "string" && value.trim() && value.length <= limit && !/[\u0000-\u001f]/.test(value) ? value.trim() : undefined;
@@ -35,7 +35,7 @@ export function sanitizeRunDiscoveryPreferences(value: unknown): RunDiscoveryPre
   return {
     ...(models ? { models } : {}), ...(efforts ? { efforts } : {}), provider,
     model: cleanToken(raw.model, 200) ?? FALLBACK_MODELS[provider],
-    effort: isProvider(raw.provider) ? raw.effort === "ultra" ? "max" : cleanToken(raw.effort, 64) ?? defaultEffort(provider) : "low",
+    effort: isProvider(raw.provider) ? raw.effort === "ultra" ? "max" : cleanToken(raw.effort, 64) ?? defaultEffort(provider) : "high",
     fast: typeof raw.fast === "boolean" ? raw.fast : true,
   };
 }

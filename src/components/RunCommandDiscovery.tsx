@@ -7,11 +7,11 @@ import { DEFAULT_RUN_DISCOVERY, DISCOVERY_PROVIDERS, DISCOVERY_EFFORTS, RUN_DISC
 import "./RunCommandDiscovery.css";
 
 const EFFORT_LABELS: Record<string, string> = { default: "Model default", none: "None", minimal: "Minimal", low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Maximum", ultra: "Ultra" };
-export default function RunCommandDiscovery({ discovery, catalogs = {}, onAccounts, onUse }: {
+export default function RunCommandDiscovery({ discovery, catalogs = {}, onAccounts, onFound }: {
   discovery: ReturnType<typeof useRunCommandDiscovery>;
   catalogs?: RunDiscoveryCatalogs;
   onAccounts?: () => void;
-  onUse: (suggestion: RunDiscoverySuggestion) => void;
+  onFound: (command: Pick<RunDiscoverySuggestion, "command" | "label">) => void;
 }) {
   const [preferences, setPreferences] = usePersistedState(RUN_DISCOVERY_PREFERENCES_KEY, DEFAULT_RUN_DISCOVERY, { init: (load) => sanitizeRunDiscoveryPreferences(load()) });
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -25,7 +25,7 @@ export default function RunCommandDiscovery({ discovery, catalogs = {}, onAccoun
   const missingModel = !modelDraft.trim();
   return <section className="run-discovery" aria-label="Find a run command">
     <div className="run-discovery-actions">
-      <button type="button" className="secondary-button" disabled={discovery.pending || unavailable || missingModel} onClick={() => { setSettingsOpen(false); const selected = { ...preferences, model: modelDraft.trim(), effort }; if (selected.model !== preferences.model || selected.effort !== preferences.effort) setPreferences(selected); void discovery.discover(selected); }}>
+      <button type="button" className="secondary-button" disabled={discovery.pending || unavailable || missingModel} onClick={() => { setSettingsOpen(false); const selected = { ...preferences, model: modelDraft.trim(), effort }; if (selected.model !== preferences.model || selected.effort !== preferences.effort) setPreferences(selected); void discovery.discover(selected, ({ command, label }) => onFound({ command, label })); }}>
         {discovery.pending ? <LoaderCircle size={14} className="spin" /> : <Sparkles size={14} />}
         {discovery.pending ? "Finding command…" : "Find run command"}
       </button>
@@ -33,7 +33,7 @@ export default function RunCommandDiscovery({ discovery, catalogs = {}, onAccoun
       <button type="button" className="icon-button" aria-label="Discovery model settings" aria-expanded={settingsOpen} onClick={() => setSettingsOpen(!settingsOpen)}><Settings2 size={15} /></button>
     </div>
     <small>{DISCOVERY_PROVIDERS.find((entry) => entry.value === preferences.provider)?.label} · {model?.label ?? (preferences.model || "Choose a model")}{efforts.length ? ` · ${EFFORT_LABELS[effort] ?? effort}` : ""}{preferences.provider === "openai" && preferences.fast ? " · Fast" : ""}</small>
-    <p>Finds a suggestion in the background using your selected model. No chat is saved. Review the command before saving it.</p>
+    <p>Investigates the project and saves its dev command to Run. Nothing launches until you press Run. No chat is saved.</p>
     {settingsOpen && <fieldset className="run-discovery-settings" disabled={discovery.pending}>
       <legend>Discovery model · saved for all projects</legend>
       <div className="run-discovery-field"><span>Provider</span><AppSelectMenu portal menuPlacement="top" value={preferences.provider} ariaLabel="Discovery provider" options={DISCOVERY_PROVIDERS} onChange={(provider) => {
@@ -51,10 +51,9 @@ export default function RunCommandDiscovery({ discovery, catalogs = {}, onAccoun
     {unavailable && <p role="status">Your saved model is unavailable. Choose another in Discovery model settings.</p>}
     {discovery.error && <p role="alert">{discovery.error}</p>}
     {discovery.suggestion && <div className="run-discovery-result" role="status">
-      <strong>Suggested command</strong><pre>{discovery.suggestion.command}</pre>
+      <strong>Saved to Run</strong><pre>{discovery.suggestion.command}</pre>
       <p>{discovery.suggestion.explanation}</p>
       {discovery.suggestion.warning && <p role="alert">{discovery.suggestion.warning}</p>}
-      <button type="button" className="secondary-button" onClick={() => onUse(discovery.suggestion!)}>Use suggestion</button>
     </div>}
   </section>;
 }
