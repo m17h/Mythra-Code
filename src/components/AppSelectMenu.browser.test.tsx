@@ -1,4 +1,4 @@
-import { fireEvent, render } from "@testing-library/react";
+import { act, fireEvent, render } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { AppSelectMenu } from "./AppSelectMenu";
 import "../styles.css";
@@ -33,5 +33,29 @@ describe("app-owned select browser layout", () => {
 
     expect(menuRect.bottom).toBeLessThanOrEqual(triggerRect.top);
     expect(Math.round(menuRect.width)).toBe(Math.round(triggerRect.width));
+  });
+
+  it("coalesces nested scroll bursts into one top-layer position read per frame", async () => {
+    const view = render(
+      <AppSelectMenu
+        value="one"
+        options={[{ value: "one", label: "One" }, { value: "two", label: "Two" }]}
+        ariaLabel="Portal model"
+        portal
+        onChange={vi.fn()}
+      />,
+    );
+    const trigger = view.getByRole("button", { name: "Portal model" });
+    const rect = vi.spyOn(trigger, "getBoundingClientRect");
+    fireEvent.click(trigger);
+    const initialReads = rect.mock.calls.length;
+
+    window.dispatchEvent(new Event("scroll"));
+    window.dispatchEvent(new Event("scroll"));
+    window.dispatchEvent(new Event("resize"));
+    expect(rect).toHaveBeenCalledTimes(initialReads);
+
+    await act(async () => { await new Promise(requestAnimationFrame); });
+    expect(rect).toHaveBeenCalledTimes(initialReads + 1);
   });
 });

@@ -21,6 +21,7 @@ function recordRecoveredStatus(threadId: string, task: ThreadTaskState, status: 
   const store = useTaskStore.getState();
   const current = store.tasks[threadId];
   if (!current || current.activeTurnId !== task.activeTurnId
+    || current.updatedAt !== task.updatedAt
     || (current.status !== "starting" && current.status !== "running")) return;
   store.completeTurn(threadId, task.activeTurnId, status);
   const localExit = status === "error";

@@ -433,20 +433,70 @@
           }
         }
       }
+    },
+    {
+      "change": "Preserve fast-turn transcript saves and terminal state; coalesce polling and menu layout",
+      "decision": "Accept 2837 Safari / 2645 Chrome total and startup JavaScript bytes for reproduced transcript-loss, terminal-routing/retention, usage-refresh, stale-health and slow-skills-scan fixes. Focused real-browser evidence also reduces three same-frame menu reposition events to one geometry read. CSS, animation cadence, dependencies and background completion recovery are unchanged. Independent Sol review found no meaningful safe offset without removing safeguards or expanding scope. Baseline is f8a43b1 with identical dependencies and build settings; this is a bundle-size tradeoff, not a claim of app-wide frame-time or memory improvement. See docs/performance/general-reliability-review-2026-09-16.md and the accompanying PR performance-regression review.",
+      "measurements": {
+        "safari13-minified": {
+          "appEntryRawBytes": {
+            "before": 379783,
+            "after": 380346,
+            "delta": 563
+          },
+          "startupJsRawBytes": {
+            "before": 753879,
+            "after": 756716,
+            "delta": 2837
+          },
+          "startupCssRawBytes": {
+            "before": 363306,
+            "after": 363306,
+            "delta": 0
+          },
+          "totalJsRawBytes": {
+            "before": 1525963,
+            "after": 1528800,
+            "delta": 2837
+          }
+        },
+        "chrome105-minified": {
+          "appEntryRawBytes": {
+            "before": 359726,
+            "after": 360236,
+            "delta": 510
+          },
+          "startupJsRawBytes": {
+            "before": 725915,
+            "after": 728560,
+            "delta": 2645
+          },
+          "startupCssRawBytes": {
+            "before": 356763,
+            "after": 356763,
+            "delta": 0
+          },
+          "totalJsRawBytes": {
+            "before": 1487000,
+            "after": 1489645,
+            "delta": 2645
+          }
+        }
+      }
     }
   ],
   "profiles": {
     "safari13-minified": {
-      "appEntryRawBytes": 379834,
-      "startupJsRawBytes": 754367,
+      "appEntryRawBytes": 380346,
+      "startupJsRawBytes": 756716,
       "startupCssRawBytes": 363306,
-      "totalJsRawBytes": 1526066
+      "totalJsRawBytes": 1528800
     },
     "chrome105-minified": {
-      "appEntryRawBytes": 359819,
-      "startupJsRawBytes": 726427,
+      "appEntryRawBytes": 360236,
+      "startupJsRawBytes": 728560,
       "startupCssRawBytes": 356763,
-      "totalJsRawBytes": 1487115
+      "totalJsRawBytes": 1489645
     }
   }
 }

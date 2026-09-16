@@ -72,6 +72,7 @@ export function AppSelectMenu({
   const searchRef = useRef<HTMLInputElement>(null);
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const menuRef = useRef<HTMLDivElement>(null);
+  const positionFrameRef = useRef<number | null>(null);
   const [popoverStyle, setPopoverStyle] = useState<CSSProperties>({});
   const selected = options.find((option) => option.value === value)
     ?? (value && selectedDisplay ? { value, ...selectedDisplay } : undefined);
@@ -129,8 +130,28 @@ export function AppSelectMenu({
       POPOVER_VIEWPORT_MARGIN,
       Math.min(triggerRect.left, viewportWidth - width - POPOVER_VIEWPORT_MARGIN),
     );
-    setPopoverStyle({ top, left, width, visibility: "visible" });
+    setPopoverStyle((current) => (
+      current.top === top
+      && current.left === left
+      && current.width === width
+      && current.visibility === "visible"
+        ? current
+        : { top, left, width, visibility: "visible" }
+    ));
   }, [open, topLayer, menuPlacement]);
+
+  // Captured scroll events can arrive once for every nested scrolling
+  // ancestor. Geometry reads and a React update for each event force repeated
+  // layout work even though the browser can only paint one position per
+  // frame. Keep the initial placement synchronous, then coalesce viewport and
+  // ResizeObserver notifications into the next paint.
+  const schedulePopoverPosition = useCallback(() => {
+    if (positionFrameRef.current !== null) return;
+    positionFrameRef.current = window.requestAnimationFrame(() => {
+      positionFrameRef.current = null;
+      positionPopover();
+    });
+  }, [positionPopover]);
 
   const setMenuRef = useCallback((node: HTMLDivElement | null) => {
     menuRef.current = node;
@@ -140,18 +161,22 @@ export function AppSelectMenu({
   useEffect(() => {
     if (!open || !topLayer) return;
     positionPopover();
-    const onViewportChange = () => positionPopover();
+    const onViewportChange = () => schedulePopoverPosition();
     window.addEventListener("resize", onViewportChange);
     window.addEventListener("scroll", onViewportChange, true);
-    const resizeObserver = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(positionPopover);
+    const resizeObserver = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(schedulePopoverPosition);
     const menu = menuRef.current;
     if (menu) resizeObserver?.observe(menu);
     return () => {
       window.removeEventListener("resize", onViewportChange);
       window.removeEventListener("scroll", onViewportChange, true);
       resizeObserver?.disconnect();
+      if (positionFrameRef.current !== null) {
+        window.cancelAnimationFrame(positionFrameRef.current);
+        positionFrameRef.current = null;
+      }
     };
-  }, [open, topLayer, menuPlacement, normalizedQuery, searchable, value, visible.length, positionPopover]);
+  }, [open, topLayer, menuPlacement, normalizedQuery, searchable, value, visible.length, positionPopover, schedulePopoverPosition]);
 
   useEffect(() => {
     if (!open) return;

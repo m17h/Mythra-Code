@@ -32,6 +32,52 @@ describe("useUsageRefresh", () => {
     }
   });
 
+  it("runs a forced refresh after an in-flight poll finishes", async () => {
+    let finishPoll!: () => void;
+    const refresh = vi.fn()
+      .mockImplementationOnce(() => new Promise<void>((resolve) => { finishPoll = resolve; }))
+      .mockResolvedValue(undefined);
+    const { result } = renderHook(() => useUsageRefresh({ key: "claude:me", enabled: true, refresh }));
+
+    await act(async () => { vi.advanceTimersByTime(USAGE_POLL_MS); await Promise.resolve(); });
+    expect(refresh).toHaveBeenCalledTimes(1);
+
+    act(() => result.current({ force: true }));
+    expect(refresh).toHaveBeenCalledTimes(1);
+
+    await act(async () => { finishPoll(); await Promise.resolve(); await Promise.resolve(); });
+    expect(refresh).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not launch a queued forced refresh after unmount", async () => {
+    let finishPoll!: () => void;
+    const refresh = vi.fn(() => new Promise<void>((resolve) => { finishPoll = resolve; }));
+    const { result, unmount } = renderHook(() => useUsageRefresh({ key: "claude:me", enabled: true, refresh }));
+
+    await act(async () => { vi.advanceTimersByTime(USAGE_POLL_MS); await Promise.resolve(); });
+    act(() => result.current({ force: true }));
+    unmount();
+    await act(async () => { finishPoll(); await Promise.resolve(); await Promise.resolve(); });
+
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("discards a queued forced refresh when usage refresh is disabled", async () => {
+    let finishPoll!: () => void;
+    const refresh = vi.fn(() => new Promise<void>((resolve) => { finishPoll = resolve; }));
+    const { result, rerender } = renderHook(
+      ({ enabled }) => useUsageRefresh({ key: "claude:me", enabled, refresh }),
+      { initialProps: { enabled: true } },
+    );
+
+    await act(async () => { result.current({ force: true }); await Promise.resolve(); });
+    act(() => result.current({ force: true }));
+    rerender({ enabled: false });
+    await act(async () => { finishPoll(); await Promise.resolve(); await Promise.resolve(); });
+
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
   it("does not read while the provider is not connected", async () => {
     const refresh = vi.fn().mockResolvedValue(null);
     const { rerender } = renderHook((props: { enabled: boolean }) => useUsageRefresh({ key: "claude:me", enabled: props.enabled, refresh }), {
@@ -184,11 +230,13 @@ it("reads a newly selected provider while the previous provider is still pending
     initialProps: { key: "claude:one", refresh: slow },
   });
   await act(async () => { result.current({ force: true }); });
+  act(() => result.current({ force: true }));
   rerender({ key: "openai:two", refresh: fast });
   await act(async () => { await Promise.resolve(); });
   expect(fast).toHaveBeenCalledTimes(1);
   const calls = onStatus.mock.calls.length;
   await act(async () => { finish(); });
+  expect(fast).toHaveBeenCalledTimes(1);
   expect(onStatus).toHaveBeenCalledTimes(calls);
 });
 

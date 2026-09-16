@@ -188,9 +188,12 @@ export function useTerminal(options: {
     const created = createSession(scope, clockRef.current);
     sessions.set(scope, created);
     // Drop the least recently shown idle sessions. A running one still owns a
-    // live PTY and its output, so it is never discarded.
+    // live PTY and its output, so it is never discarded. Neither is the one
+    // the panel is showing: background output for other projects must not
+    // blank the scrollback the user is looking at.
+    const shown = optionsRef.current.scope;
     const idle = [...sessions.values()]
-      .filter((session) => !session.running && session.scope !== scope)
+      .filter((session) => !session.running && session.scope !== scope && session.scope !== shown)
       .sort((left, right) => left.touchedAt - right.touchedAt);
     for (let index = 0; idle.length - index > MAX_IDLE_SESSIONS; index += 1) {
       sessions.delete(idle[index].scope);
@@ -252,16 +255,20 @@ export function useTerminal(options: {
     const trimmed = session.running ? "" : command.trim();
     if (!trimmed) return;
     const id = crypto.randomUUID();
-    const processScopes = processScopesRef.current;
-    processScopes.set(id, cwd);
-    while (processScopes.size > MAX_PROCESS_ROUTES) {
-      const oldest = processScopes.keys().next().value;
-      if (oldest === undefined) break;
-      processScopes.delete(oldest);
-    }
     session.processId = id;
     session.running = true;
     session.runningCommand = trimmed;
+    const processScopes = processScopesRef.current;
+    processScopes.set(id, cwd);
+    // Retire the oldest completed routes first. A process that is still
+    // running keeps its route however many commands start after it, otherwise
+    // a long-lived dev server's output would drift into the selected project.
+    for (const [routedId, routedScope] of processScopes) {
+      if (processScopes.size <= MAX_PROCESS_ROUTES) break;
+      const owner = sessionsRef.current.get(routedScope);
+      if (owner?.running && owner.processId === routedId) continue;
+      processScopes.delete(routedId);
+    }
     bumpRender();
     appendTo(session, `${session.appended ? "\n" : ""}$ ${trimmed}\n`);
     try {

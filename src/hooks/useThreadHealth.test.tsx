@@ -79,6 +79,20 @@ describe("useThreadHealth", () => {
     expect(useTaskStore.getState().statuses[CURSOR_THREAD.id]).toBe("completed");
   });
 
+  it("does not close a turn that reported fresh progress while the health probe was pending", async () => {
+    let resolveActive: ((active: boolean) => void) | undefined;
+    cursor.isCursorTurnActive.mockImplementation(() => new Promise<boolean>((resolve) => { resolveActive = resolve; }));
+    makeStaleWorkingTask(CURSOR_THREAD.id, "turn-live");
+    renderHook(() => useThreadHealth({ runtimeAvailable: false, threadFor: () => CURSOR_THREAD }));
+    await waitFor(() => expect(cursor.isCursorTurnActive).toHaveBeenCalled());
+
+    useTaskStore.getState().setTaskStatus(CURSOR_THREAD.id, "running");
+    resolveActive?.(false);
+    await act(async () => { await Promise.resolve(); });
+
+    expect(useTaskStore.getState().statuses[CURSOR_THREAD.id]).toBe("running");
+  });
+
   it("leaves a live Codex turn alone and applies its eventual terminal state", async () => {
     const thread: Thread = { ...CURSOR_THREAD, id: "thread-codex", modelProvider: "openai" };
     codex.rpc

@@ -7,7 +7,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: tauri.invoke }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: tauri.listen }));
 
 import { deleteClaudeTranscript, loadClaudeTranscript, loadClaudeTranscriptPage, saveClaudeTranscript } from "./claude";
-import { loadCursorTranscript, saveCursorTranscript } from "./cursor";
+import { loadCursorTranscript, loadCursorTranscriptPage, saveCursorTranscript } from "./cursor";
 import { listLocalTranscriptThreads, renameLocalTranscript, resetLocalTranscriptPersistenceForTests } from "./localTranscriptPersistence";
 
 const thread = { id: "thread-a", name: "Local task", preview: "Hello", cwd: "/project", updatedAt: 1, modelProvider: "claude" };
@@ -190,6 +190,295 @@ describe("local transcript persistence adapters", () => {
       cursorSessionId: null,
       expectedGeneration: 4,
     });
+    expect(tauri.invoke.mock.calls.some(([command]) => command === "local_transcript_snapshot_write")).toBe(false);
+  });
+
+  it("appends a newly completed turn from a partial page instead of dropping it as metadata", async () => {
+    const page = {
+      thread,
+      messages: [completed],
+      activities: [],
+      nextCursor: "4:2",
+      headSeq: 3,
+      tailSeq: 4,
+      generation: 4,
+      byteLen: 12_345,
+    };
+    const completedNext = {
+      id: "next-answer",
+      role: "assistant" as const,
+      text: "Finished before the debounce elapsed",
+      turnId: "turn-next",
+      turnStatus: "completed" as const,
+      timelineOrder: 2,
+    };
+    tauri.invoke.mockResolvedValueOnce(page).mockResolvedValueOnce(writeState(5));
+    await loadClaudeTranscriptPage("thread-a");
+
+    await saveClaudeTranscript({
+      ...page,
+      messages: [...page.messages, completedNext],
+    });
+
+    expect(tauri.invoke).toHaveBeenLastCalledWith("local_transcript_tail_write", {
+      provider: "claude",
+      expectedGeneration: 4,
+      seal: true,
+      value: { thread, messages: [completedNext], activities: [] },
+    });
+  });
+
+  it("uses the same completed-turn tail path for Cursor transcripts", async () => {
+    const cursorThread = { ...thread, modelProvider: "cursor" as const };
+    const page = {
+      thread: cursorThread,
+      cursorSessionId: "cursor-session",
+      messages: [completed],
+      activities: [],
+      nextCursor: "4:2",
+      headSeq: 3,
+      tailSeq: 4,
+      generation: 4,
+      byteLen: 12_345,
+    };
+    const completedNext = {
+      id: "cursor-answer",
+      role: "assistant" as const,
+      text: "Done",
+      turnId: "cursor-turn-next",
+      turnStatus: "completed" as const,
+      timelineOrder: 2,
+    };
+    tauri.invoke.mockResolvedValueOnce(page).mockResolvedValueOnce(writeState(5));
+    await loadCursorTranscriptPage("thread-a");
+
+    await saveCursorTranscript({ ...page, messages: [...page.messages, completedNext] });
+
+    expect(tauri.invoke).toHaveBeenLastCalledWith("local_transcript_tail_write", {
+      provider: "cursor",
+      expectedGeneration: 4,
+      seal: true,
+      value: {
+        thread: cursorThread,
+        cursorSessionId: "cursor-session",
+        messages: [completedNext],
+        activities: [],
+      },
+    });
+  });
+
+  it("writes every completed turn that arrived within one debounce window", async () => {
+    const page = {
+      thread,
+      messages: [completed],
+      activities: [],
+      nextCursor: "4:2",
+      headSeq: 3,
+      tailSeq: 4,
+      generation: 4,
+      byteLen: 12_345,
+    };
+    const first = { ...completed, id: "first-fast", turnId: "turn-fast-1", text: "First", timelineOrder: 2 };
+    const second = { ...completed, id: "second-fast", turnId: "turn-fast-2", text: "Second", timelineOrder: 3 };
+    tauri.invoke
+      .mockResolvedValueOnce(page)
+      .mockResolvedValueOnce(writeState(5))
+      .mockResolvedValueOnce(writeState(6));
+    await loadClaudeTranscriptPage("thread-a");
+
+    await saveClaudeTranscript({ ...page, messages: [...page.messages, first, second] });
+
+    const writes = tauri.invoke.mock.calls.filter(([command]) => command === "local_transcript_tail_write");
+    expect(writes).toHaveLength(2);
+    expect(writes[0][1]).toMatchObject({ expectedGeneration: 4, seal: true, value: { messages: [first] } });
+    expect(writes[1][1]).toMatchObject({ expectedGeneration: 5, seal: true, value: { messages: [second] } });
+  });
+
+  it("persists an intervening completed turn before the newest active turn", async () => {
+    const page = {
+      thread,
+      messages: [completed],
+      activities: [],
+      nextCursor: "4:2",
+      headSeq: 3,
+      tailSeq: 4,
+      generation: 4,
+      byteLen: 12_345,
+    };
+    const completedNext = { ...completed, id: "fast-complete", turnId: "turn-fast", timelineOrder: 2 };
+    const active = {
+      id: "active-answer",
+      role: "assistant" as const,
+      text: "Still running",
+      turnId: "turn-active",
+      timelineOrder: 3,
+    };
+    tauri.invoke
+      .mockResolvedValueOnce(page)
+      .mockResolvedValueOnce(writeState(5))
+      .mockResolvedValueOnce({ generation: 6, headSeq: 5, tailSeq: 5 });
+    await loadClaudeTranscriptPage("thread-a");
+
+    await saveClaudeTranscript({ ...page, messages: [...page.messages, completedNext, active] });
+
+    const writes = tauri.invoke.mock.calls.filter(([command]) => command === "local_transcript_tail_write");
+    expect(writes).toHaveLength(2);
+    expect(writes[0][1]).toMatchObject({
+      expectedGeneration: 4,
+      seal: true,
+      value: { messages: [completedNext] },
+    });
+    expect(writes[1][1]).toMatchObject({
+      expectedGeneration: 5,
+      seal: false,
+      value: { messages: [active] },
+    });
+  });
+
+  it("persists an intervening completed turn before a pending turn id is assigned", async () => {
+    const page = {
+      thread,
+      messages: [completed],
+      activities: [],
+      nextCursor: "4:2",
+      headSeq: 3,
+      tailSeq: 4,
+      generation: 4,
+      byteLen: 12_345,
+    };
+    const completedNext = { ...completed, id: "fast-complete", turnId: "turn-fast", timelineOrder: 2 };
+    const pending = { id: "pending-user", role: "user" as const, text: "Next", timelineOrder: 3 };
+    tauri.invoke
+      .mockResolvedValueOnce(page)
+      .mockResolvedValueOnce(writeState(5))
+      .mockResolvedValueOnce({ generation: 6, headSeq: 5, tailSeq: 5 });
+    await loadClaudeTranscriptPage("thread-a");
+
+    await saveClaudeTranscript({ ...page, messages: [...page.messages, completedNext, pending] });
+
+    const writes = tauri.invoke.mock.calls.filter(([command]) => command === "local_transcript_tail_write");
+    expect(writes).toHaveLength(2);
+    expect(writes[0][1]).toMatchObject({ expectedGeneration: 4, seal: true, value: { messages: [completedNext] } });
+    expect(writes[1][1]).toMatchObject({ expectedGeneration: 5, seal: false, value: { messages: [pending] } });
+  });
+
+  it("seals the previously saved mutable turn before appending a newer active turn", async () => {
+    const page = {
+      thread,
+      messages: [completed],
+      activities: [],
+      nextCursor: "4:2",
+      headSeq: 3,
+      tailSeq: 4,
+      generation: 4,
+      byteLen: 12_345,
+    };
+    const activeB = { id: "answer-b", role: "assistant" as const, text: "B", turnId: "turn-b", timelineOrder: 2 };
+    const completedB = { ...activeB, turnStatus: "completed" as const };
+    const activeC = { id: "answer-c", role: "assistant" as const, text: "C", turnId: "turn-c", timelineOrder: 3 };
+    tauri.invoke
+      .mockResolvedValueOnce(page)
+      .mockResolvedValueOnce({ generation: 5, headSeq: 4, tailSeq: 4 })
+      .mockResolvedValueOnce(writeState(6))
+      .mockResolvedValueOnce({ generation: 7, headSeq: 5, tailSeq: 5 });
+    await loadClaudeTranscriptPage("thread-a");
+    await saveClaudeTranscript({ ...page, messages: [...page.messages, activeB] });
+
+    await saveClaudeTranscript({ ...page, messages: [...page.messages, completedB, activeC] });
+
+    const writes = tauri.invoke.mock.calls.filter(([command]) => command === "local_transcript_tail_write");
+    expect(writes).toHaveLength(3);
+    expect(writes[1][1]).toMatchObject({ expectedGeneration: 5, seal: true, value: { messages: [completedB] } });
+    expect(writes[2][1]).toMatchObject({ expectedGeneration: 6, seal: false, value: { messages: [activeC] } });
+  });
+
+  it("rejects a newer active turn while the previously saved mutable turn is still active", async () => {
+    const page = {
+      thread,
+      messages: [completed],
+      activities: [],
+      nextCursor: "4:2",
+      headSeq: 3,
+      tailSeq: 4,
+      generation: 4,
+      byteLen: 12_345,
+    };
+    const activeB = { id: "answer-b", role: "assistant" as const, text: "B", turnId: "turn-b", timelineOrder: 2 };
+    const activeC = { id: "answer-c", role: "assistant" as const, text: "C", turnId: "turn-c", timelineOrder: 3 };
+    tauri.invoke
+      .mockResolvedValueOnce(page)
+      .mockResolvedValueOnce({ generation: 5, headSeq: 4, tailSeq: 4 });
+    await loadClaudeTranscriptPage("thread-a");
+    await saveClaudeTranscript({ ...page, messages: [...page.messages, activeB] });
+
+    await expect(saveClaudeTranscript({ ...page, messages: [...page.messages, activeB, activeC] }))
+      .rejects.toThrow("full reload");
+    expect(tauri.invoke.mock.calls.filter(([command]) => command === "local_transcript_tail_write")).toHaveLength(1);
+  });
+
+  it("deduplicates completed turns with missing timeline order across messages and activities", async () => {
+    const page = {
+      thread,
+      messages: [completed],
+      activities: [],
+      nextCursor: "4:2",
+      headSeq: 3,
+      tailSeq: 4,
+      generation: 4,
+      byteLen: 12_345,
+    };
+    const firstMessage = { ...completed, id: "first-message", turnId: "turn-fast-1", timelineOrder: undefined };
+    const secondMessage = { ...completed, id: "second-message", turnId: "turn-fast-2", timelineOrder: undefined };
+    const firstActivity = {
+      id: "first-activity",
+      kind: "command" as const,
+      title: "first",
+      status: "completed",
+      turnId: "turn-fast-1",
+      turnStatus: "completed" as const,
+    };
+    const secondActivity = { ...firstActivity, id: "second-activity", title: "second", turnId: "turn-fast-2" };
+    tauri.invoke
+      .mockResolvedValueOnce(page)
+      .mockResolvedValueOnce(writeState(5))
+      .mockResolvedValueOnce(writeState(6));
+    await loadClaudeTranscriptPage("thread-a");
+
+    await saveClaudeTranscript({
+      ...page,
+      messages: [...page.messages, firstMessage, secondMessage],
+      activities: [firstActivity, secondActivity],
+    });
+
+    const writes = tauri.invoke.mock.calls.filter(([command]) => command === "local_transcript_tail_write");
+    expect(writes).toHaveLength(2);
+    expect(writes[0][1]).toMatchObject({
+      expectedGeneration: 4,
+      value: { messages: [firstMessage], activities: [firstActivity] },
+    });
+    expect(writes[1][1]).toMatchObject({
+      expectedGeneration: 5,
+      value: { messages: [secondMessage], activities: [secondActivity] },
+    });
+  });
+
+  it("does not snapshot unseen history when a completed-turn tail hits a generation conflict", async () => {
+    const page = {
+      thread,
+      messages: [completed],
+      activities: [],
+      nextCursor: "4:2",
+      headSeq: 3,
+      tailSeq: 4,
+      generation: 4,
+      byteLen: 12_345,
+    };
+    const completedNext = { ...completed, id: "next", turnId: "turn-next", timelineOrder: 2 };
+    tauri.invoke.mockResolvedValueOnce(page).mockRejectedValueOnce("Local transcript generation is stale");
+    await loadClaudeTranscriptPage("thread-a");
+
+    await expect(saveClaudeTranscript({ ...page, messages: [...page.messages, completedNext] }))
+      .rejects.toThrow("reload it before saving");
     expect(tauri.invoke.mock.calls.some(([command]) => command === "local_transcript_snapshot_write")).toBe(false);
   });
 
@@ -417,6 +706,25 @@ describe("local transcript persistence adapters", () => {
     await saveClaudeTranscript(renamed);
     expect(tauri.invoke).toHaveBeenNthCalledWith(3, "local_transcript_snapshot_write", { provider: "claude", value: renamed });
     expect(tauri.invoke).toHaveBeenCalledTimes(3);
+  });
+
+  it("keeps full-history completed-turn saves on the snapshot path", async () => {
+    const baseline: ClaudeTranscript = { thread, messages: [completed], activities: [] };
+    const completedNext = { ...completed, id: "next", turnId: "turn-next", timelineOrder: 2 };
+    const updated: ClaudeTranscript = { thread, messages: [completed, completedNext], activities: [] };
+    tauri.invoke
+      .mockResolvedValueOnce(baseline)
+      .mockResolvedValueOnce(writeState(1))
+      .mockResolvedValueOnce(writeState(2));
+    await loadClaudeTranscript("thread-a");
+
+    await saveClaudeTranscript(updated);
+
+    expect(tauri.invoke).toHaveBeenLastCalledWith("local_transcript_snapshot_write", {
+      provider: "claude",
+      value: updated,
+    });
+    expect(tauri.invoke.mock.calls.some(([command]) => command === "local_transcript_tail_write")).toBe(false);
   });
 
   it("recovers a stale generation and stays snapshot-only until that turn seals", async () => {
