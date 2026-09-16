@@ -27,6 +27,10 @@ interface LocalTranscriptSnapshotWrite extends LocalTranscriptWriteState {
 interface PersistenceState extends LocalTranscriptWriteState {
   partial: boolean;
   mutableTurnId: string | null;
+  /** Latest turn represented by the committed tail. This distinguishes a
+   * metadata-only save from a short turn that completed between debounce
+   * ticks and therefore never had a mutable write. */
+  persistedTurnId: string | null;
   /** A generation conflict makes incremental replacement ambiguous for the
    * rest of this turn. Full snapshots remain safe only when the complete
    * transcript is resident and are still uncommon. */
@@ -130,6 +134,71 @@ function selectMutableTail(transcript: LocalTranscriptValue): TailSelection | nu
   };
 }
 
+/** Select every complete turn appended after the last durable turn. More than
+ * one short turn can finish inside the scheduler's debounce window, so writing
+ * only the newest tail would skip the turns before it. */
+function selectTailsAfter(
+  transcript: LocalTranscriptValue,
+  persistedTurnId: string,
+  latestTail: TailSelection,
+  includePersisted: boolean,
+): TailSelection[] | null {
+  interface TurnGroup {
+    turnId: string;
+    order: number;
+    firstIndex: number;
+    messages: ChatMessage[];
+    activities: Activity[];
+  }
+  const groups = new Map<string, TurnGroup>();
+  const add = (entry: ChatMessage | Activity, kind: "message" | "activity", index: number) => {
+    const turnId = entry.turnId?.trim();
+    if (!turnId) return;
+    let group = groups.get(turnId);
+    if (!group) {
+      group = {
+        turnId,
+        order: entry.timelineOrder ?? Number.MAX_SAFE_INTEGER,
+        firstIndex: index,
+        messages: [],
+        activities: [],
+      };
+      groups.set(turnId, group);
+    } else if (entry.timelineOrder !== undefined) {
+      group.order = Math.min(group.order, entry.timelineOrder);
+    }
+    if (kind === "message") group.messages.push(entry as ChatMessage);
+    else group.activities.push(entry as Activity);
+  };
+  transcript.messages.forEach((entry, index) => add(entry, "message", index));
+  transcript.activities.forEach((entry, index) => add(entry, "activity", transcript.messages.length + index));
+  const orderedGroups = [...groups.values()]
+    .sort((left, right) => left.order - right.order || left.firstIndex - right.firstIndex);
+  const persistedIndex = orderedGroups.findIndex((group) => group.turnId === persistedTurnId);
+  if (persistedIndex < 0) return null;
+  const selections = orderedGroups.slice(persistedIndex + (includePersisted ? 0 : 1)).map((group): TailSelection => {
+    const { turnId, messages, activities } = group;
+    const selected = [...messages, ...activities];
+    return {
+      value: {
+        thread: transcript.thread,
+        ...(transcript.cursorSessionId !== undefined ? { cursorSessionId: transcript.cursorSessionId } : {}),
+        messages,
+        activities,
+      },
+      turnId,
+      seal: selected.length > 0 && selected.every((entry) => terminalTurnStatus(entry.turnStatus)),
+    };
+  });
+  if (latestTail.turnId === "__pending__") selections.push(latestTail);
+  const latestIndex = selections.findIndex((selection) => selection.turnId === latestTail.turnId);
+  if (latestIndex !== selections.length - 1) return null;
+  return selections.length > 0
+    && selections.slice(0, -1).every((selection) => selection.seal)
+    ? selections
+    : null;
+}
+
 function storedMutableTurnId(
   transcript: LocalTranscriptValue,
   state: LocalTranscriptWriteState,
@@ -152,11 +221,22 @@ async function saveSnapshot(
   provider: LocalTranscriptProvider,
   transcript: LocalTranscriptValue,
 ): Promise<PersistenceState> {
-  return measuredPersistenceWrite(provider, transcript, "snapshot", transcript, selectMutableTail(transcript)?.turnId, async () => {
+  const tail = selectMutableTail(transcript);
+  return measuredPersistenceWrite(provider, transcript, "snapshot", transcript, tail?.turnId, async () => {
     // The native snapshot response already contains the committed generation.
     // Reusing it avoids a second bridge hop and database read.
     const { generation, headSeq, tailSeq } = await invoke<LocalTranscriptSnapshotWrite>("local_transcript_snapshot_write", { provider, value: transcript });
-    return { generation, headSeq, tailSeq, partial: false, mutableTurnId: null, snapshotOnlyTurnId: null };
+    return {
+      generation,
+      headSeq,
+      tailSeq,
+      partial: false,
+      // Snapshot writes replace the complete chunk set and always leave the
+      // native tail boundary sealed, even when the logical turn is active.
+      mutableTurnId: null,
+      persistedTurnId: tail?.turnId ?? null,
+      snapshotOnlyTurnId: null,
+    };
   });
 }
 
@@ -216,6 +296,7 @@ async function saveTail(
       ...next,
       partial: state.partial,
       mutableTurnId: tail.seal ? null : tail.turnId,
+      persistedTurnId: tail.turnId,
       snapshotOnlyTurnId: null,
     };
   });
@@ -253,7 +334,39 @@ async function persistTranscript(
     rememberPersistenceState(key, state);
     return;
   }
+  if (state.partial
+    && state.persistedTurnId
+    && state.persistedTurnId !== "__pending__"
+    && state.persistedTurnId !== tail.turnId) {
+    const includePersisted = state.mutableTurnId === state.persistedTurnId;
+    if (state.mutableTurnId !== null && !includePersisted) {
+      throw new Error("Paged local transcript tail changed before its prior turn was sealed");
+    }
+    const tails = selectTailsAfter(transcript, state.persistedTurnId, tail, includePersisted);
+    if (!tails) throw new Error("Paged local transcript requires a full reload before saving new turns");
+    try {
+      for (const nextTail of tails) {
+        state = await saveTail(provider, transcript, state, nextTail);
+        rememberPersistenceState(key, state);
+      }
+    } catch (reason) {
+      if (!/generation is stale/i.test(String(reason))) throw reason;
+      throw new Error("Paged local transcript changed outside this window; reload it before saving");
+    }
+    return;
+  }
   if (state.mutableTurnId === null && tail.seal) {
+    if (state.persistedTurnId !== tail.turnId) {
+      // A complete resident transcript may contain edits to prior turns, so
+      // preserve the established full-snapshot behavior. Incremental appends
+      // are needed only when a bounded page cannot safely be snapshotted.
+      if (!state.partial) {
+        state = await saveSnapshot(provider, transcript);
+        rememberPersistenceState(key, state);
+        return;
+      }
+      throw new Error("Paged local transcript requires a full reload before saving completed turns");
+    }
     if (state.partial) {
       state = await saveMetadata(provider, transcript, state);
       rememberPersistenceState(key, state);
@@ -304,6 +417,7 @@ export async function loadLocalTranscript<T extends LocalTranscriptValue>(
       ...state,
       partial: false,
       mutableTurnId: storedMutableTurnId(transcript, state),
+      persistedTurnId: selectMutableTail(transcript)?.turnId ?? null,
       snapshotOnlyTurnId: null,
     });
     else persistenceStates.delete(key);
@@ -366,6 +480,7 @@ export async function loadLocalTranscriptPage<T extends LocalTranscriptPage>(
     tailSeq: page.tailSeq,
     partial: Boolean(page.nextCursor),
     mutableTurnId: storedMutableTurnId(page, page),
+    persistedTurnId: selectMutableTail(page)?.turnId ?? null,
     snapshotOnlyTurnId: null,
   });
   return page;

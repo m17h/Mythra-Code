@@ -1101,6 +1101,34 @@ describe("overlapping refresh ordering", () => {
     expect(within(dialog).queryByRole("button", { name: "Sign in" })).not.toBeInTheDocument();
   });
 
+  it("lets a slow skills refresh finish instead of superseding it on each poll", async () => {
+    localStorage.setItem("kiwi.skillsFolder", JSON.stringify("/skills"));
+    const scan = deferred<unknown>();
+    localSkillsScanImpl = () => scan.promise;
+    const sync = deferred<string>();
+    localSkillsSyncImpl = () => sync.promise;
+    await renderApp();
+    await screen.findByText("Alpha thread");
+    const scans = () => invokeMock.mock.calls.filter(([command]) => command === "local_skills_scan").length;
+    const initialScans = scans();
+    expect(initialScans).toBeGreaterThan(0);
+    const intervals = vi.spyOn(window, "setInterval");
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    await waitFor(() => expect(intervals.mock.calls.some(([, delay]) => delay === 5_000)).toBe(true));
+    const poll = intervals.mock.calls.find(([, delay]) => delay === 5_000)![0] as () => void;
+    // Reproduce a scan/sync taking longer than several watcher ticks.
+    await act(async () => { poll(); poll(); poll(); });
+    expect(scans()).toBe(initialScans);
+    await act(async () => { scan.resolve([{ path: "/skills/review/SKILL.md", relativePath: "review/SKILL.md", fileName: "SKILL.md", defaultName: "review", description: "", supportingMarkdownCount: 0 }]); });
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("local_skills_sync", expect.anything()));
+    await act(async () => { poll(); });
+    expect(scans()).toBe(initialScans);
+    await act(async () => { sync.resolve("/runtime/skills"); });
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("codex_rpc", expect.objectContaining({ method: "skills/extraRoots/set", params: { extraRoots: ["/runtime/skills"] } })));
+    await act(async () => { poll(); });
+    expect(scans()).toBe(initialScans + 1);
+  });
+
   it("serializes skills sync so an older scan cannot overwrite a newer runtime", async () => {
     localStorage.setItem("kiwi.skillsFolder", JSON.stringify("/skills"));
     let scans = 0;

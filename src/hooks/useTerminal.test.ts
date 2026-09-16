@@ -215,6 +215,55 @@ describe("terminal scoping", () => {
     }
   });
 
+  it("keeps routing a long-running process after many later commands", async () => {
+    // Regression: routes were trimmed strictly oldest-first, so a dev server
+    // started under another project lost its route once enough later commands
+    // had run, and its output began landing in whichever project was selected.
+    let settleDev: (value: { exitCode: number; stdout: string; stderr: string }) => void = () => {};
+    const devId = "00000000-0000-4000-8000-00000000dev0";
+    rpcMock.mockImplementation((_method: string, params: { processId?: string }) => {
+      if (params.processId === devId) return new Promise((resolve) => { settleDev = resolve; });
+      return Promise.resolve({ exitCode: 0, stdout: "", stderr: "" });
+    });
+    let nextId = 0;
+    const randomUUID = vi.spyOn(crypto, "randomUUID").mockImplementation(() => {
+      nextId += 1;
+      return nextId === 1 ? devId : `00000000-0000-4000-8000-${String(nextId).padStart(12, "0")}`;
+    });
+    try {
+      const { result } = terminal(10_000, "/project");
+      let dev: Promise<void> = Promise.resolve();
+      act(() => { dev = result.current.run("npm run dev", [], "/elsewhere"); });
+      for (let index = 0; index < 40; index += 1) {
+        await act(async () => { await result.current.run(`echo ${index}`); });
+      }
+
+      act(() => result.current.appendProcess("dev output\n", devId));
+      expect(result.current.outputStore.read(0).text).not.toContain("dev output\n");
+      expect(result.current.tail("/elsewhere", 200)).toContain("dev output\n");
+
+      await act(async () => {
+        settleDev({ exitCode: 0, stdout: "", stderr: "" });
+        await dev;
+      });
+    } finally {
+      randomUUID.mockRestore();
+    }
+  });
+
+  it("never evicts the project on screen to make room for background output", () => {
+    // Regression: idle eviction spared only the scope being created, so a burst
+    // of output for other projects could discard the scrollback the panel was
+    // showing, which then came back empty on the next render.
+    const { result, rerender } = terminal(1_000, "/shown");
+    act(() => result.current.append("shown output\n"));
+    act(() => {
+      for (let index = 0; index < 8; index += 1) result.current.append(`other ${index}\n`, `/other-${index}`);
+    });
+    rerender({ path: "/shown" });
+    expect(result.current.outputStore.read(0).text).toBe("shown output\n");
+  });
+
   it("clears only the selected project's buffer and asks consumers to repaint", () => {
     const { result, rerender } = terminal(1_000, "/project-a");
     act(() => result.current.append("a output\n"));

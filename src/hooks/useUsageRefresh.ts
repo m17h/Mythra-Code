@@ -76,13 +76,19 @@ export function useUsageRefresh({
   const latestRef = useRef({ key, enabled, refresh, minGapMs, pollMs, hasLastReading, providerVersion, onStatus });
   latestRef.current = { key, enabled, refresh, minGapMs, pollMs, hasLastReading, providerVersion, onStatus };
   const inFlightRef = useRef<Record<string, true>>({});
+  const pendingForceRef = useRef(new Set<string>());
+  const mountedRef = useRef(false);
   const failureCountRef = useRef<Record<string, number>>({});
   const retryAtRef = useRef<Record<string, number>>({});
   const lastReadRef = useRef(0);
 
   const request = useCallback((options: { force?: boolean } = {}) => {
     const current = latestRef.current;
-    if (!current.enabled || inFlightRef.current[current.key]) return;
+    if (!current.enabled) return;
+    if (inFlightRef.current[current.key]) {
+      if (options.force) pendingForceRef.current.add(current.key);
+      return;
+    }
     const now = Date.now();
     if (!options.force && (now - lastReadRef.current < current.minGapMs || now < (retryAtRef.current[current.key] ?? 0))) return;
     const identity = current.key;
@@ -113,10 +119,23 @@ export function useUsageRefresh({
         ...(providerVersion ? { providerVersion } : {}),
       }).catch(() => {});
       delete inFlightRef.current[identity];
+      if (pendingForceRef.current.delete(identity)) {
+        const latest = latestRef.current;
+        if (mountedRef.current && latest.enabled && latest.key === identity) request({ force: true });
+      }
     };
     void Promise.resolve()
       .then(current.refresh)
       .then(() => complete(false), (reason) => complete(true, reason));
+  }, []);
+
+  useEffect(() => {
+    const pendingForces = pendingForceRef.current;
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      pendingForces.clear();
+    };
   }, []);
 
   // Switching provider or account puts a quota on screen that nothing has read

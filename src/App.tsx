@@ -626,6 +626,7 @@ export default function App() {
   const skillRuntimeRootRef = useRef("");
   const skillFilesRef = useRef<LocalSkillFile[]>([]);
   const skillScanSequenceRef = useRef(0);
+  const skillsRefreshCountsRef = useRef(new Map<string, number>());
   const skillPrepareQueueRef = useRef<Promise<void>>(Promise.resolve());
   const skillsBusyCountRef = useRef(0);
   const preparedSkillsFolderRef = useRef("");
@@ -2188,6 +2189,7 @@ export default function App() {
         setSkillsBusy(true);
         setSkillsError("");
       }
+      skillsRefreshCountsRef.current.set(folder, (skillsRefreshCountsRef.current.get(folder) ?? 0) + 1);
       try {
         const files = await scanLocalSkills(folder);
         // Folder polling, focus refreshes, and explicit deletion can overlap.
@@ -2222,6 +2224,9 @@ export default function App() {
         }
         return [];
       } finally {
+        const remainingRefreshes = (skillsRefreshCountsRef.current.get(folder) ?? 1) - 1;
+        if (remainingRefreshes) skillsRefreshCountsRef.current.set(folder, remainingRefreshes);
+        else skillsRefreshCountsRef.current.delete(folder);
         if (!silent) {
           skillsBusyCountRef.current = Math.max(0, skillsBusyCountRef.current - 1);
           if (skillsBusyCountRef.current === 0) setSkillsBusy(false);
@@ -2283,7 +2288,10 @@ export default function App() {
   useEffect(() => {
     if (!skillsFolder || !skillsSurfaceVisible) return;
     const interval = window.setInterval(() => {
-      if (document.visibilityState === "visible") void refreshLocalSkills(skillsFolder, skillAliases, disabledSkillPaths, removedSkillPaths, true);
+      // A slow scan/sync must finish before the watcher starts another one;
+      // otherwise each tick invalidates the result it is still waiting for.
+      // Explicit edits and focus refreshes retain their superseding behavior.
+      if (document.visibilityState === "visible" && !skillsRefreshCountsRef.current.has(skillsFolder)) void refreshLocalSkills(skillsFolder, skillAliases, disabledSkillPaths, removedSkillPaths, true);
     }, 5_000);
     return () => window.clearInterval(interval);
   }, [disabledSkillPaths, refreshLocalSkills, removedSkillPaths, skillAliases, skillsFolder, skillsSurfaceVisible]);
