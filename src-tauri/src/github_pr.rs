@@ -771,6 +771,8 @@ pub(super) async fn github_pr_branch(
         Ok((selected, repository))
     })
     .await?;
+    let local_lock = crate::git_workspace::repository_lock(&selected).await?;
+    let _local_guard = local_lock.lock().await;
     // Resolve authentication up front so this command has the same GitHub
     // availability boundary as the rest of the PR workflow, without making a
     // network request or changing any remote state.
@@ -859,6 +861,8 @@ pub(super) async fn github_pr_create(
         return Err("Pull request title must be 1–256 characters.".into());
     }
     let selected = blocking_local(move || selected_repository(&cwd)).await?;
+    let local_lock = crate::git_workspace::repository_lock(&selected).await?;
+    let _local_guard = local_lock.lock().await;
     let gh = resolve_github_binary(&app).await?;
     let lock = mutation_lock(&repository);
     let _guard = lock.lock().await;
@@ -1007,7 +1011,9 @@ pub(super) async fn github_pr_merge(
     expected_head_oid: String,
     auto: bool,
 ) -> Result<GitHubPullRequest, String> {
-    blocking_local(move || selected_repository(&cwd).map(|_| ())).await?;
+    let selected = blocking_local(move || selected_repository(&cwd)).await?;
+    let local_lock = crate::git_workspace::repository_lock(&selected).await?;
+    let _local_guard = local_lock.lock().await;
     let gh = resolve_github_binary(&app).await?;
     let lock = mutation_lock(&repository);
     let _guard = lock.lock().await;

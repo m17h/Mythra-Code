@@ -22,7 +22,15 @@
 .thread-pr-chip.candidate { border-style: dashed; }
 .thread-pr-chip.empty { color: var(--muted-2); }
 
+/* Narrow chat column. The number is the chip's whole identity — "#103" is what
+   someone scans for, and dropping it left an icon that said only "there is a
+   pull request somewhere". The "found" tag goes instead: it is the least
+   important of the three, and the dashed border already carries that state,
+   as does the unchanged aria-label. An empty chip has no number to keep, so
+   that one does become icon-only. */
 @container chat-main (max-width: 720px) {
-  .thread-pr-chip > span, .thread-pr-chip > em { display: none; }
-  .thread-pr-chip { width: var(--ctl-md); justify-content: center; padding: 0; }
+  .thread-pr-chip { max-width: 92px; padding: 0 7px; }
+  .thread-pr-chip > em { display: none; }
+  .thread-pr-chip.empty { width: var(--ctl-md); justify-content: center; padding: 0; }
+  .thread-pr-chip.empty > span { display: none; }
 }

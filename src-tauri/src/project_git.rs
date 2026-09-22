@@ -65,6 +65,8 @@ pub(super) struct CreatedWorktree {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct WorktreeStatus {
+    pub(super) head_oid: Option<String>,
+    pub(super) source_branch: Option<String>,
     pub(super) exists: bool,
     pub(super) registered: bool,
     pub(super) branch: Option<String>,
@@ -92,6 +94,7 @@ pub(super) struct WorktreeApplyResult {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct WorktreeMergeResult {
+    pub(super) isolated_head_oid: String,
     pub(super) source_commit: String,
     pub(super) isolated_tree: String,
 }
@@ -913,6 +916,8 @@ pub(super) fn worktree_status_sync(
     let path = PathBuf::from(worktree_path);
     if !path.exists() {
         return Ok(WorktreeStatus {
+            head_oid: None,
+            source_branch: optional_git_stdout(&source, &["symbolic-ref", "--short", "-q", "HEAD"]),
             exists: false,
             registered: false,
             branch: None,
@@ -966,6 +971,8 @@ pub(super) fn worktree_status_sync(
         .and_then(|value| value.parse().ok())
         .unwrap_or(0);
     Ok(WorktreeStatus {
+        head_oid: optional_git_stdout(&worktree, &["rev-parse", "HEAD"]),
+        source_branch: optional_git_stdout(&source, &["symbolic-ref", "--short", "-q", "HEAD"]),
         exists: true,
         registered,
         branch: optional_git_stdout(&worktree, &["symbolic-ref", "--short", "-q", "HEAD"]),
@@ -1399,13 +1406,14 @@ pub(super) fn worktree_merge_branch_sync(
     {
         return Err("Commit the isolated worktree's changes before merging its branch".into());
     }
-    let isolated_tree = git_stdout(&worktree, &["rev-parse", "--verify", "HEAD^{tree}"], None)?;
+    let isolated_head_oid = git_stdout(&worktree, &["rev-parse", "--verify", "HEAD"], None)?;
+    let isolated_tree = git_stdout(&worktree, &["rev-parse", "--verify", &format!("{isolated_head_oid}^{{tree}}")], None)?;
     let previous_pin = pin_reference
         .and_then(|reference| optional_git_stdout(&source, &["rev-parse", "--verify", reference]));
     if let Some(reference) = pin_reference {
         git_stdout(&source, &["update-ref", reference, &isolated_tree], None)?;
     }
-    let merge = run_git(&source, &["merge", "--no-ff", "--no-edit", branch], None)?;
+    let merge = run_git(&source, &["merge", "--no-ff", "--no-edit", &isolated_head_oid], None)?;
     if !merge.status.success() {
         let detail = String::from_utf8_lossy(&merge.stderr).trim().to_string();
         let _ = run_git(&source, &["merge", "--abort"], None);
@@ -1424,6 +1432,7 @@ pub(super) fn worktree_merge_branch_sync(
     }
     let source_commit = git_stdout(&source, &["rev-parse", "--verify", "HEAD"], None)?;
     Ok(WorktreeMergeResult {
+        isolated_head_oid,
         source_commit,
         isolated_tree,
     })
@@ -1436,8 +1445,17 @@ pub(super) async fn worktree_merge_branch(
     worktree_path: String,
     branch: String,
     safety_id: String,
+    expected_source_branch: String,
+    expected_source_head_oid: String,
 ) -> Result<WorktreeMergeResult, String> {
+    let lock = crate::git_workspace::repository_lock(Path::new(&project_path)).await?;
+    let _guard = lock.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
+        let source = checkpoint_repo(&project_path)?;
+        if optional_git_stdout(&source, &["symbolic-ref", "--short", "-q", "HEAD"]).as_deref() != Some(expected_source_branch.as_str())
+            || optional_git_stdout(&source, &["rev-parse", "--verify", "HEAD"]).as_deref() != Some(expected_source_head_oid.as_str()) {
+            return Err("The shared project changed since the merge confirmation. Review its branch and try again.".into());
+        }
         let reference = worktree_applied_ref(&thread_id)?;
         worktree_merge_branch_sync(
             &project_path,

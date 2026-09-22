@@ -73,6 +73,9 @@ export interface PullRequestPanelProps {
   onCreate: (input: CreatePullRequestInput) => Promise<void>;
   onMerge: (method: PullRequestMergeMethod, auto: boolean) => Promise<void>;
   onReady?: () => Promise<void>;
+  onUpdateLocal?: () => Promise<void>;
+  updateLocalBusy?: boolean;
+  updateLocalNotice?: string;
   onCreateBranch: (name: string) => Promise<void>;
   onOpenWorktrees: () => void;
   onOpenGitHubSettings: () => void;

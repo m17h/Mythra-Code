@@ -1,0 +1,107 @@
+/* ---- The Git dock's local half ----------------------------------------
+ *
+ * The panel reads top to bottom as the work actually goes: which branch this
+ * folder is on, what has changed, commit it, then — optionally — a pull
+ * request and GitHub. Everything below is sized against the dock's own width,
+ * which the user can drag between roughly 360px and 500px.
+ */
+
+.git-local-card { container-type: inline-size; display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s-2); margin-bottom: var(--s-3); padding: var(--s-3); border: 1px solid var(--line); border-radius: var(--r-md); background: color-mix(in srgb, var(--text) 2%, transparent); }
+.git-local-head { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; align-items: center; gap: var(--s-2); }
+.git-local-head > div { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.git-local-head strong { overflow: hidden; color: var(--text); font-family: var(--font-mono); font-size: var(--fs-ui); font-weight: 650; white-space: nowrap; text-overflow: ellipsis; }
+.git-local-head small { overflow: hidden; color: var(--muted-2); font-size: var(--fs-meta); white-space: nowrap; text-overflow: ellipsis; }
+
+.git-branch-create { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s-1); padding: var(--s-2); border: 1px solid var(--line-strong); border-radius: var(--r-sm); background: color-mix(in srgb, var(--text) 3%, transparent); animation: git-panel-expand var(--t-mid) var(--ease) both; }
+.git-branch-create .dock-field { margin: 0; }
+.git-branch-create .studio-actions { margin: 0; }
+.git-fineprint { margin: 0; color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.5; }
+
+.git-local-note { display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--s-2); padding: 7px 9px; border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--muted); background: color-mix(in srgb, var(--text) 2%, transparent); font-size: var(--fs-meta); line-height: 1.5; animation: git-panel-pop var(--t-mid) var(--ease) both; }
+.git-local-note > svg { flex: 0 0 auto; margin-top: 2px; color: var(--muted-2); }
+.git-local-note > span { flex: 1 1 140px; min-width: 0; }
+.git-local-note.bad { color: color-mix(in srgb, var(--red) 70%, var(--text)); border-color: color-mix(in srgb, var(--red) 30%, var(--line)); background: color-mix(in srgb, var(--red) 8%, transparent); }
+.git-local-note.bad > svg { color: var(--red); }
+
+.git-inspect-row { align-items: center; }
+.git-commit-secondary { width: 100%; }
+
+/* ---- Optional automatic publishing ---- */
+
+.git-auto-publish { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s-2); margin-bottom: var(--s-3); padding: var(--s-3); border: 1px solid var(--line); border-radius: var(--r-sm); background: color-mix(in srgb, var(--text) 1.6%, transparent); }
+.git-auto-publish.paused { border-color: color-mix(in srgb, var(--orange) 30%, var(--line)); }
+.git-auto-publish-toggle { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: var(--s-2); align-items: start; cursor: pointer; }
+.git-auto-publish-toggle input { width: 30px; height: 17px; margin: 1px 0 0; appearance: none; position: relative; border: 1px solid var(--line-strong); border-radius: var(--r-pill); background: color-mix(in srgb, var(--text) 6%, transparent); cursor: pointer; transition: background var(--t-fast) ease, border-color var(--t-fast) ease; }
+.git-auto-publish-toggle input::after { content: ""; position: absolute; top: 2px; left: 2px; width: 11px; height: 11px; border-radius: 50%; background: var(--muted); transition: transform var(--t-mid) var(--ease), background var(--t-fast) ease; }
+.git-auto-publish-toggle input:checked { border-color: var(--green-line); background: var(--green-soft); }
+.git-auto-publish-toggle input:checked::after { background: var(--green); transform: translateX(13px); }
+.git-auto-publish-toggle input:disabled { opacity: .4; cursor: default; }
+.git-auto-publish-toggle strong { display: block; color: var(--ink-2); font-size: var(--fs-meta); font-weight: 620; }
+.git-auto-publish-toggle small { display: block; margin-top: 3px; color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.5; }
+.git-auto-publish-status { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); padding: 7px 9px; border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--ink-2); background: color-mix(in srgb, var(--text) 3%, transparent); font-size: var(--fs-meta); line-height: 1.45; }
+.git-auto-publish-status > span:nth-child(2) { flex: 1 1 140px; min-width: 0; }
+.git-auto-publish-orb { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--muted-2); }
+.git-auto-publish-orb.idle { background: var(--green); }
+.git-auto-publish-orb.publishing { background: var(--green); animation: git-panel-breathe 1.8s ease-in-out infinite; }
+.git-auto-publish-orb.waiting { background: var(--orange); animation: git-panel-breathe 2.4s ease-in-out infinite; }
+.git-auto-publish-orb.paused { background: var(--red); }
+
+/* ---- The console, which now only exists when it has something to say ---- */
+
+.git-console { margin-bottom: var(--s-3); border: 1px solid var(--line); border-radius: var(--r-sm); overflow: hidden; }
+.git-console > summary { display: flex; align-items: center; gap: 5px; min-height: 30px; padding: 0 9px; color: var(--muted-2); background: color-mix(in srgb, var(--text) 2.5%, transparent); font-size: var(--fs-micro); font-weight: 650; text-transform: uppercase; letter-spacing: var(--track-caps); cursor: pointer; list-style: none; }
+.git-console > summary::-webkit-details-marker { display: none; }
+.git-console > summary > svg { transition: transform var(--t-fast) var(--ease); }
+.git-console[open] > summary > svg { transform: rotate(90deg); }
+.git-console .git-screen { min-height: 0; max-height: 300px; margin: 0; border: 0; border-top: 1px solid var(--line); border-radius: 0; }
+
+/* ---- Worktree completion ---- */
+
+.worktree-complete { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: var(--s-2); align-items: start; padding: 9px 10px; border: 1px solid var(--green-line); border-radius: var(--r-sm); background: var(--green-soft); animation: git-panel-pop var(--t-mid) var(--ease) both; }
+.worktree-complete > svg { margin-top: 1px; color: var(--green); }
+.worktree-complete > div { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.worktree-complete strong { color: var(--ink-2); font-size: var(--fs-meta); font-weight: 650; }
+.worktree-complete span { color: var(--muted); font-size: var(--fs-meta); line-height: 1.45; }
+.worktree-note { display: grid; grid-template-columns: 16px minmax(0, 1fr); gap: var(--s-2); align-items: start; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--orange) 28%, var(--line)); border-radius: var(--r-sm); color: var(--ink-2); background: color-mix(in srgb, var(--orange) 7%, transparent); font-size: var(--fs-meta); line-height: 1.45; }
+.worktree-note > svg { margin-top: 2px; color: var(--orange); }
+
+/* ---- App-native action menu ---- */
+
+.app-action-menu { position: relative; display: inline-flex; }
+.app-action-trigger { min-height: var(--ctl-sm); display: inline-flex; align-items: center; gap: 4px; padding: 0 var(--s-2); border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--muted); background: transparent; font-size: var(--fs-meta); letter-spacing: var(--track-tight); white-space: nowrap; cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
+.app-action-trigger:hover:not(:disabled) { color: var(--text); border-color: var(--line-strong); background: color-mix(in srgb, var(--text) 5%, transparent); }
+.app-action-trigger:disabled { opacity: .35; cursor: default; }
+.app-action-trigger.compact { width: var(--ctl-sm); justify-content: center; padding: 0; }
+.app-action-trigger > svg { transition: transform var(--t-fast) var(--ease); }
+.app-action-menu.open .app-action-trigger { color: var(--text); border-color: var(--line-strong); }
+.app-action-menu.open .app-action-trigger > svg:last-child { transform: rotate(180deg); }
+.app-action-list { position: absolute; z-index: 140; top: calc(100% + 5px); right: 0; width: max(216px, 100%); max-height: 320px; overflow-y: auto; padding: var(--s-1); border: 1px solid var(--line-strong); border-radius: var(--r-md); background: var(--panel-2); box-shadow: var(--shadow); animation: git-panel-expand var(--t-fast) var(--ease) both; }
+.app-action-menu.align-start .app-action-list { right: auto; left: 0; }
+.app-action-list > button { width: 100%; min-height: 32px; display: grid; grid-template-columns: 18px minmax(0, 1fr); align-items: center; gap: var(--s-2); padding: 6px var(--s-2); border: 0; border-radius: var(--r-sm); color: var(--muted); background: transparent; text-align: left; cursor: pointer; transition: color var(--t-fast) ease, background var(--t-fast) ease; }
+.app-action-list > button:hover:not(:disabled), .app-action-list > button:focus-visible { color: var(--text); background: color-mix(in srgb, var(--text) 6%, transparent); }
+.app-action-list > button:disabled { opacity: .38; cursor: default; }
+.app-action-list > button > svg { justify-self: center; color: var(--muted-2); }
+.app-action-list > button > span { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.app-action-list > button strong { overflow: hidden; font-family: inherit; font-size: var(--fs-meta); font-weight: 600; white-space: nowrap; text-overflow: ellipsis; }
+.app-action-list > button small { color: var(--muted-2); font-size: var(--fs-micro); line-height: 1.4; }
+.app-action-list > button.danger-action { color: color-mix(in srgb, var(--red) 78%, var(--muted)); }
+.app-action-list > button.danger-action:hover:not(:disabled), .app-action-list > button.danger-action:focus-visible { color: var(--red); background: color-mix(in srgb, var(--red) 9%, transparent); }
+.app-action-list > button.danger-action > svg { color: inherit; }
+
+@keyframes git-panel-pop { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+@keyframes git-panel-expand { from { opacity: 0; transform: translateY(-4px) scale(.985); } to { opacity: 1; transform: none; } }
+@keyframes git-panel-breathe { 0%, 100% { opacity: 1; } 50% { opacity: .4; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .git-branch-create, .git-local-note, .worktree-complete, .app-action-list { animation: none; }
+  .git-auto-publish-orb { animation: none; }
+  .git-auto-publish-toggle input::after, .git-console > summary > svg, .app-action-trigger > svg { transition: none; }
+}
+
+/* A dock dragged narrow puts the commit and publish buttons on their own
+   rows rather than letting a label truncate to nothing. */
+@container (max-width: 380px) {
+  .git-local-head { grid-template-columns: 34px minmax(0, 1fr); }
+  .git-local-head .app-action-menu { grid-column: 1 / -1; justify-self: stretch; }
+  .git-local-head .app-action-trigger { width: 100%; justify-content: center; }
+}

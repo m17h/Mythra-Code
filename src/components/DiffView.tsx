@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Plus, RotateCcw } from "lucide-react";
+import { Minus, Plus, RotateCcw } from "lucide-react";
 import type { DiffSection } from "../lib/gitDiff";
 
 /**
@@ -61,12 +61,15 @@ export function DiffText({ text, initialLines = DIFF_INITIAL_LINES }: { text: st
  * recovered unambiguously — running `git add --`/`git restore --` on a guessed
  * path would stage or discard the wrong file.
  */
-function DiffFile({ section, readOnly, readOnlyReason, defaultOpen, onPathAction }: {
+function DiffFile({ section, readOnly, readOnlyReason, defaultOpen, staged, onPathAction, onUnstage }: {
   section: DiffSection;
   readOnly: boolean;
   readOnlyReason?: string;
   defaultOpen: boolean;
+  /** This exact path is currently staged, so Stage becomes Unstage. */
+  staged: boolean;
   onPathAction: (action: "stage" | "revert", path: string) => void;
+  onUnstage?: (path: string) => void;
 }) {
   const [open, setOpen] = useState(defaultOpen);
   const path = section.path;
@@ -81,17 +84,35 @@ function DiffFile({ section, readOnly, readOnlyReason, defaultOpen, onPathAction
           <span className="diff-file-actions"><em title="Mythra Code could not decode this file's name from the diff header, so per-file Git actions are unavailable for it.">Name unavailable</em></span>
         ) : (
           <span className="diff-file-actions">
-            <button
-              onClick={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                onPathAction("stage", path);
-              }}
-              disabled={readOnly}
-              title={readOnly ? readOnlyReason : `Stage ${path}`}
-            >
-              <Plus size={10} /> Stage
-            </button>
+            {/* Staging used to be a one-way door in the UI: files could be
+                staged per file and then only un-staged from a terminal, which
+                left the staged-commit route a dead end. */}
+            {staged && onUnstage ? (
+              <button
+                className="staged"
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  onUnstage(path);
+                }}
+                disabled={readOnly}
+                title={readOnly ? readOnlyReason : `Unstage ${path} — the edits stay, they just leave the next commit`}
+              >
+                <Minus size={10} /> Unstage
+              </button>
+            ) : (
+              <button
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  onPathAction("stage", path);
+                }}
+                disabled={readOnly}
+                title={readOnly ? readOnlyReason : `Stage ${path}`}
+              >
+                <Plus size={10} /> Stage
+              </button>
+            )}
             <button
               className="danger-action"
               onClick={(event) => {
@@ -113,12 +134,17 @@ function DiffFile({ section, readOnly, readOnlyReason, defaultOpen, onPathAction
   );
 }
 
-export function DiffFileSections({ sections, readOnly, readOnlyReason, onPathAction }: {
+export function DiffFileSections({ sections, readOnly, readOnlyReason, stagedPaths, onPathAction, onUnstage }: {
   sections: DiffSection[];
   readOnly: boolean;
   readOnlyReason?: string;
+  /** Repository-relative paths currently in the index. Optional: without it
+   *  every file simply offers Stage, exactly as before. */
+  stagedPaths?: string[];
   onPathAction: (action: "stage" | "revert", path: string) => void;
+  onUnstage?: (path: string) => void;
 }) {
+  const staged = useMemo(() => new Set(stagedPaths ?? []), [stagedPaths]);
   return (
     <div className="diff-file-sections">
       {sections.map((section, index) => (
@@ -128,7 +154,9 @@ export function DiffFileSections({ sections, readOnly, readOnlyReason, onPathAct
           readOnly={readOnly}
           readOnlyReason={readOnlyReason}
           defaultOpen={sections.length === 1}
+          staged={!!section.path && staged.has(section.path)}
           onPathAction={onPathAction}
+          onUnstage={onUnstage}
         />
       ))}
     </div>

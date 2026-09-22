@@ -3834,3 +3834,27 @@ fn codex_non_question_responses_remain_backwards_compatible() {
     consume_codex_server_request(&mut requests, &json!("approval-1"), None).unwrap();
     assert!(requests.is_empty());
 }
+
+
+#[tokio::test]
+async fn worktree_merge_refuses_a_changed_confirmation_destination() {
+    let source = env::temp_dir().join(format!("mythra-merge-destination-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&source).unwrap();
+    test_git(&source, &["init", "-b", "main"]);
+    fs::write(source.join("source.txt"), "base\n").unwrap();
+    test_git(&source, &["add", "."]);
+    test_git(&source, &["commit", "-m", "base"]);
+    let head = test_git(&source, &["rev-parse", "HEAD"]);
+    test_git(&source, &["checkout", "-b", "different-target"]);
+    for (branch, oid) in [("main", head.clone()), ("different-target", "0".repeat(40))] {
+        let error = worktree_merge_branch(
+            "confirmation-thread".into(), source.to_string_lossy().into_owned(),
+            source.join("unused-worktree").to_string_lossy().into_owned(),
+            "mythra/isolated".into(), "unused-safety".into(), branch.into(), oid,
+        ).await.unwrap_err();
+        assert!(error.contains("changed since the merge confirmation"), "{error}");
+        assert_eq!(test_git(&source, &["rev-parse", "HEAD"]), head);
+        assert_eq!(test_git(&source, &["symbolic-ref", "--short", "HEAD"]), "different-target");
+    }
+    fs::remove_dir_all(source).unwrap();
+}

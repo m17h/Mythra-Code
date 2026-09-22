@@ -38,6 +38,8 @@ mod agents;
 mod cursor;
 mod github;
 mod github_pr;
+mod git_workspace;
+mod git_publish;
 mod openrouter_usage;
 mod persistence;
 mod process_launch;
@@ -68,6 +70,8 @@ use github::{
     github_attach_remote_sync, github_repo_status_sync, parse_github_repository,
     validate_github_repository_name,
 };
+use git_workspace::{git_workspace_snapshot, git_workspace_branch, git_workspace_fetch, git_workspace_update};
+use git_publish::{git_publish_snapshot, git_publish_commit};
 use github_pr::{
     github_pr_branch, github_pr_context, github_pr_create, github_pr_find, github_pr_merge,
     github_pr_ready, github_pr_view,
@@ -5609,6 +5613,12 @@ pub fn run() {
             github_attach_remote,
             github_create_repository,
             github_clone_repository,
+            git_workspace_snapshot,
+            git_workspace_branch,
+            git_workspace_fetch,
+            git_workspace_update,
+            git_publish_snapshot,
+            git_publish_commit,
             github_pr_context,
             github_pr_view,
             github_pr_find,

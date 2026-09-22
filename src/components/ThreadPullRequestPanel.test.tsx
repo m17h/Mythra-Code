@@ -211,7 +211,7 @@ describe("ThreadPullRequestPanel — merging", () => {
   function openMerge(props: Partial<PullRequestPanelProps> = {}) {
     const merged = panelProps({ linked: true, pullRequest: pullRequest(), ...props });
     render(<ThreadPullRequestPanel {...merged} />);
-    fireEvent.click(screen.getByRole("button", { name: /merge…/i }));
+    fireEvent.click(screen.getByRole("button", { name: /merge on github…/i }));
     return merged;
   }
 
@@ -221,8 +221,8 @@ describe("ThreadPullRequestPanel — merging", () => {
 
     expect(within(confirm).getByText("m17h/Mythra-Code #123")).toBeInTheDocument();
     expect(within(confirm).getByText(/Thread pull request workflow/)).toBeInTheDocument();
-    expect(within(confirm).getByText("codex/pr-workflow")).toBeInTheDocument();
-    expect(within(confirm).getByText("main")).toBeInTheDocument();
+    expect(within(confirm).getAllByText("codex/pr-workflow")[0]).toBeInTheDocument();
+    expect(within(confirm).getAllByText("main")[0]).toBeInTheDocument();
 
     fireEvent.click(within(confirm).getByRole("button", { name: /merge #123/i }));
     await vi.waitFor(() => expect(props.onMerge).toHaveBeenCalledWith("squash", false));
@@ -255,7 +255,7 @@ describe("ThreadPullRequestPanel — merging", () => {
     ];
     for (const [overrides, reason] of stoppers) {
       const { unmount } = render(<ThreadPullRequestPanel {...panelProps({ linked: true, pullRequest: pullRequest(overrides) })} />);
-      fireEvent.click(screen.getByRole("button", { name: /merge…/i }));
+      fireEvent.click(screen.getByRole("button", { name: /merge on github…/i }));
       const confirm = screen.getByRole("group", { name: /confirm merge/i });
       expect(within(confirm).getByText(reason)).toBeInTheDocument();
       expect(within(confirm).getByRole("button", { name: /merge #123/i })).toBeDisabled();
@@ -268,7 +268,7 @@ describe("ThreadPullRequestPanel — merging", () => {
   it("offers no merge at all once the pull request is closed or merged", () => {
     for (const state of ["CLOSED", "MERGED"] as const) {
       const { unmount } = render(<ThreadPullRequestPanel {...panelProps({ linked: true, pullRequest: pullRequest({ state }) })} />);
-      expect(screen.queryByRole("button", { name: /merge…/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /merge on github…/i })).not.toBeInTheDocument();
       // The status is still reported, and the link can still be removed.
       expect(screen.getByText(state === "CLOSED" ? "Closed" : "Merged")).toBeInTheDocument();
       expect(screen.getByRole("button", { name: /remove from thread/i })).toBeInTheDocument();
@@ -347,7 +347,7 @@ describe("ThreadPullRequestPanel — when nothing may change", () => {
   it("disables the merge outright when the thread may not change anything", () => {
     const blocked = "This thread is read only.";
     render(<ThreadPullRequestPanel {...panelProps({ linked: true, pullRequest: pullRequest(), mutationBlockedReason: blocked })} />);
-    fireEvent.click(screen.getByRole("button", { name: /merge…/i }));
+    fireEvent.click(screen.getByRole("button", { name: /merge on github…/i }));
 
     const confirm = screen.getByRole("group", { name: /confirm merge/i });
     expect(within(confirm).getByText(blocked)).toBeInTheDocument();
@@ -365,7 +365,7 @@ describe("ThreadPullRequestPanel — when nothing may change", () => {
     expect(screen.getByText(/lives on GitHub, not in this folder/i)).toBeInTheDocument();
     expect(screen.getByRole("alert")).toHaveTextContent("Could not read the local repository.");
 
-    fireEvent.click(screen.getByRole("button", { name: /merge…/i }));
+    fireEvent.click(screen.getByRole("button", { name: /merge on github…/i }));
     fireEvent.click(screen.getByRole("button", { name: /merge #123/i }));
     expect(props.onMerge).toHaveBeenCalledWith("squash", false);
   });
@@ -424,7 +424,7 @@ describe("ThreadPullRequestPanel — check states", () => {
       linked: true,
       pullRequest: pullRequest({ canMerge: false, reviewDecision: "", checks: [{ name: "odd", state: "MYSTERY", url: "" }] }),
     })} />);
-    fireEvent.click(screen.getByRole("button", { name: /merge…/i }));
+    fireEvent.click(screen.getByRole("button", { name: /merge on github…/i }));
     expect(screen.getByText(/1 check has not reported a result/i)).toBeInTheDocument();
   });
 });
@@ -432,7 +432,7 @@ describe("ThreadPullRequestPanel — check states", () => {
 describe("ThreadPullRequestPanel — merge permission", () => {
   it("refuses outright when the account cannot merge in that repository", () => {
     render(<ThreadPullRequestPanel {...panelProps({ linked: true, pullRequest: pullRequest({ viewerCanMerge: false }) })} />);
-    fireEvent.click(screen.getByRole("button", { name: /merge…/i }));
+    fireEvent.click(screen.getByRole("button", { name: /merge on github…/i }));
     const confirm = screen.getByRole("group", { name: /confirm merge/i });
 
     expect(within(confirm).getByText(/cannot merge pull requests in m17h\/Mythra-Code/i)).toBeInTheDocument();
@@ -445,7 +445,7 @@ describe("ThreadPullRequestPanel — merge permission", () => {
   it("offers a refresh rather than a guess when permission was never reported", () => {
     const props = panelProps({ linked: true, pullRequest: pullRequest({ viewerCanMerge: undefined }) });
     render(<ThreadPullRequestPanel {...props} />);
-    fireEvent.click(screen.getByRole("button", { name: /merge…/i }));
+    fireEvent.click(screen.getByRole("button", { name: /merge on github…/i }));
     const confirm = screen.getByRole("group", { name: /confirm merge/i });
 
     expect(within(confirm).getByText(/permission to merge in m17h\/Mythra-Code has not been confirmed/i)).toBeInTheDocument();
@@ -458,7 +458,7 @@ describe("ThreadPullRequestPanel — merge permission", () => {
 
   it("offers auto merge only where the repository allows it", () => {
     render(<ThreadPullRequestPanel {...panelProps({ linked: true, pullRequest: pullRequest({ autoMergeAllowed: false }) })} />);
-    fireEvent.click(screen.getByRole("button", { name: /merge…/i }));
+    fireEvent.click(screen.getByRole("button", { name: /merge on github…/i }));
     const confirm = screen.getByRole("group", { name: /confirm merge/i });
 
     expect(within(confirm).queryByRole("checkbox", { name: /merge it when it is ready/i })).not.toBeInTheDocument();
@@ -467,7 +467,7 @@ describe("ThreadPullRequestPanel — merge permission", () => {
 
   it("says so plainly when auto merge support was never reported", () => {
     render(<ThreadPullRequestPanel {...panelProps({ linked: true, pullRequest: pullRequest({ autoMergeAllowed: undefined }) })} />);
-    fireEvent.click(screen.getByRole("button", { name: /merge…/i }));
+    fireEvent.click(screen.getByRole("button", { name: /merge on github…/i }));
     const confirm = screen.getByRole("group", { name: /confirm merge/i });
 
     expect(within(confirm).queryByRole("checkbox", { name: /merge it when it is ready/i })).not.toBeInTheDocument();
@@ -479,7 +479,7 @@ describe("ThreadPullRequestPanel — merge permission", () => {
       linked: true,
       pullRequest: pullRequest({ canMerge: false, autoMergeAllowed: false, checks: [{ name: "build", state: "IN_PROGRESS", url: "" }] }),
     })} />);
-    fireEvent.click(screen.getByRole("button", { name: /merge…/i }));
+    fireEvent.click(screen.getByRole("button", { name: /merge on github…/i }));
     expect(screen.getByRole("button", { name: /merge #123/i })).toBeDisabled();
   });
 
@@ -490,7 +490,7 @@ describe("ThreadPullRequestPanel — merge permission", () => {
       context: context({ mergeMethods: ["squash", "merge", "rebase"] }),
       pullRequest: pullRequest({ mergeMethods: [] }),
     })} />);
-    fireEvent.click(screen.getByRole("button", { name: /merge…/i }));
+    fireEvent.click(screen.getByRole("button", { name: /merge on github…/i }));
     const confirm = screen.getByRole("group", { name: /confirm merge/i });
 
     expect(within(confirm).getByText(/allows no merge method/i)).toBeInTheDocument();
@@ -552,7 +552,7 @@ describe("ThreadPullRequestPanel — the world moving under an open form", () =>
     const props = panelProps({ linked: true, pullRequest: pullRequest({ headOid: "aaa1111" }) });
     const view = render(<ThreadPullRequestPanel {...props} />);
 
-    fireEvent.click(screen.getByRole("button", { name: /merge…/i }));
+    fireEvent.click(screen.getByRole("button", { name: /merge on github…/i }));
     view.rerender(<ThreadPullRequestPanel {...props} pullRequest={pullRequest({ headOid: "bbb2222" })} />);
 
     expect(screen.getByRole("alert")).toHaveTextContent(/New commits were pushed to this pull request/i);
@@ -567,7 +567,7 @@ describe("ThreadPullRequestPanel — the world moving under an open form", () =>
     const props = panelProps({ linked: true, pullRequest: pullRequest({ number: 123 }) });
     const view = render(<ThreadPullRequestPanel {...props} />);
 
-    fireEvent.click(screen.getByRole("button", { name: /merge…/i }));
+    fireEvent.click(screen.getByRole("button", { name: /merge on github…/i }));
     view.rerender(<ThreadPullRequestPanel {...props} pullRequest={pullRequest({ number: 456 })} />);
 
     expect(screen.getByRole("alert")).toHaveTextContent(/changed to m17h\/Mythra-Code #456/i);
@@ -624,7 +624,7 @@ describe("ThreadPullRequestPanel — marking a draft ready", () => {
 
   it("points a blocked merge at the in-app action instead of the website", () => {
     render(<ThreadPullRequestPanel {...panelProps({ linked: true, pullRequest: draft(), onReady: vi.fn() })} />);
-    fireEvent.click(screen.getByRole("button", { name: /merge…/i }));
+    fireEvent.click(screen.getByRole("button", { name: /merge on github…/i }));
 
     expect(screen.getByText("This pull request is still a draft. Mark it ready for review first.")).toBeInTheDocument();
     expect(screen.queryByText(/draft.*on GitHub first/i)).not.toBeInTheDocument();
@@ -712,7 +712,7 @@ describe("ThreadPullRequestPanel — the merge button cannot outrun what is know
     // answer, every route to a merge stays shut.
     const props = panelProps({ linked: true, pullRequest: pullRequest({ viewerCanMerge: undefined, autoMergeAllowed: true }) });
     render(<ThreadPullRequestPanel {...props} />);
-    fireEvent.click(screen.getByRole("button", { name: /merge…/i }));
+    fireEvent.click(screen.getByRole("button", { name: /merge on github…/i }));
     const confirm = screen.getByRole("group", { name: /confirm merge/i });
 
     expect(within(confirm).getByRole("button", { name: /merge #123/i })).toBeDisabled();
@@ -728,7 +728,7 @@ describe("ThreadPullRequestPanel — the merge button cannot outrun what is know
   it("merges normally once permission is actually confirmed", async () => {
     const props = panelProps({ linked: true, pullRequest: pullRequest({ viewerCanMerge: true }) });
     render(<ThreadPullRequestPanel {...props} />);
-    fireEvent.click(screen.getByRole("button", { name: /merge…/i }));
+    fireEvent.click(screen.getByRole("button", { name: /merge on github…/i }));
 
     fireEvent.click(screen.getByRole("button", { name: /merge #123/i }));
     await vi.waitFor(() => expect(props.onMerge).toHaveBeenCalledWith("squash", false));
@@ -739,7 +739,7 @@ describe("ThreadPullRequestPanel — the merge button cannot outrun what is know
     // not, so the stale tick must not survive as a live instruction.
     const props = panelProps({ linked: true, pullRequest: pullRequest({ autoMergeAllowed: true, canMerge: false }) });
     const view = render(<ThreadPullRequestPanel {...props} />);
-    fireEvent.click(screen.getByRole("button", { name: /merge…/i }));
+    fireEvent.click(screen.getByRole("button", { name: /merge on github…/i }));
     fireEvent.click(screen.getByRole("checkbox", { name: /merge it when it is ready/i }));
     expect(screen.getByRole("button", { name: /enable auto merge/i })).toBeEnabled();
 
@@ -748,5 +748,109 @@ describe("ThreadPullRequestPanel — the merge button cannot outrun what is know
     expect(screen.getByRole("button", { name: /enable auto merge/i })).toBeDisabled();
     expect(screen.getByText(/Auto merge is not turned on for this repository/i)).toBeInTheDocument();
     expect(props.onMerge).not.toHaveBeenCalled();
+  });
+});
+
+describe("ThreadPullRequestPanel — where a merge actually happens", () => {
+  it("says GitHub in the button, and says the folder is untouched before the confirmation", () => {
+    // The whole reason this panel was reviewed: "Merge" read as "merge
+    // everything, here and there", and nothing on screen said otherwise.
+    render(<ThreadPullRequestPanel {...panelProps({ linked: true, pullRequest: pullRequest() })} />);
+
+    const open = screen.getByRole("button", { name: /merge on github…/i });
+    expect(open).toHaveAttribute("title", expect.stringContaining("Your files here do not change"));
+    fireEvent.click(open);
+
+    const confirm = screen.getByRole("group", { name: /confirm merge/i });
+    const effect = within(confirm).getByText(/Nothing on this Mac changes/);
+    expect(effect).toHaveTextContent("codex/pr-workflow");
+    expect(effect).toHaveTextContent(/main.*is not updated until you ask for it/);
+    expect(within(confirm).getByRole("button", { name: "Merge #123 on GitHub" })).toBeInTheDocument();
+  });
+
+  it("says the same thing about a queued auto merge, in the future tense", () => {
+    render(<ThreadPullRequestPanel {...panelProps({ linked: true, pullRequest: pullRequest({ canMerge: false }) })} />);
+    fireEvent.click(screen.getByRole("button", { name: /merge on github…/i }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /merge it when it is ready/i }));
+
+    expect(screen.getByText(/When GitHub merges it, nothing on this Mac changes/)).toBeInTheDocument();
+  });
+
+  it("drops the local-effect line when the merge is refused outright", () => {
+    // A refusal is not the moment to explain what a successful merge would
+    // not have done.
+    render(<ThreadPullRequestPanel {...panelProps({ linked: true, pullRequest: pullRequest({ isDraft: true }) })} />);
+    fireEvent.click(screen.getByRole("button", { name: /merge on github…/i }));
+
+    expect(screen.queryByText(/Nothing on this Mac changes/)).not.toBeInTheDocument();
+  });
+});
+
+describe("ThreadPullRequestPanel — after the merge", () => {
+  const merged = () => pullRequest({ state: "MERGED", baseRefName: "main" });
+
+  it("reports the merge as GitHub's, names the branch this folder is still on, and offers the update", async () => {
+    const onUpdateLocal = vi.fn().mockResolvedValue(undefined);
+    render(
+      <ThreadPullRequestPanel
+        {...panelProps({ linked: true, pullRequest: merged(), context: context({ branch: "codex/pr-workflow" }) })}
+        onUpdateLocal={onUpdateLocal}
+      />,
+    );
+
+    const note = screen.getByText(/Merged into/);
+    expect(note).toHaveTextContent("on GitHub");
+    expect(note).toHaveTextContent("Your files here have not changed");
+    expect(note).toHaveTextContent("codex/pr-workflow");
+
+    // No claim about how far behind the local branch is: that would need a
+    // fetch and a comparison against the real base ref, and neither happened.
+    expect(note).not.toHaveTextContent(/behind/i);
+
+    const update = screen.getByRole("button", { name: "Update local main" });
+    expect(update).toHaveAttribute("title", expect.stringContaining("Refused if this folder has uncommitted changes"));
+    fireEvent.click(update);
+    await vi.waitFor(() => expect(onUpdateLocal).toHaveBeenCalledOnce());
+  });
+
+  it("still explains the outcome when the app cannot offer to update anything", () => {
+    render(<ThreadPullRequestPanel {...panelProps({ linked: true, pullRequest: merged() })} />);
+
+    expect(screen.getByText(/Merged into/)).toHaveTextContent("on GitHub");
+    expect(screen.queryByRole("button", { name: /Update local/ })).not.toBeInTheDocument();
+  });
+
+  it("shows the update as busy and surfaces why one was refused", () => {
+    render(
+      <ThreadPullRequestPanel
+        {...panelProps({ linked: true, pullRequest: merged() })}
+        onUpdateLocal={vi.fn().mockResolvedValue(undefined)}
+        updateLocalBusy
+        updateLocalNotice="Commit or stash your changes in this folder first."
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: /Updating…/ })).toBeDisabled();
+    expect(screen.getByText("Commit or stash your changes in this folder first.")).toBeInTheDocument();
+  });
+});
+
+describe("ThreadPullRequestPanel — the create editor owns its heading", () => {
+  it("replaces the button with the form rather than stacking both", () => {
+    render(<ThreadPullRequestPanel {...panelProps()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /create a pull request/i }));
+
+    expect(screen.queryByRole("button", { name: /^Create a pull request$/i })).not.toBeInTheDocument();
+    expect(screen.getByText("New pull request")).toBeInTheDocument();
+  });
+
+  it("collapses routine ahead and behind counts into one fact that names its baseline", () => {
+    render(<ThreadPullRequestPanel {...panelProps({ context: context({ ahead: 3, behind: 1, dirty: true }) })} />);
+
+    const fact = screen.getByText(/3 ahead · 1 behind of main/);
+    expect(fact).toHaveAttribute("title", "Last known, compared with main");
+    // The warning keeps its own pill: it is the one that is not routine.
+    expect(screen.getByText("Uncommitted changes")).toBeInTheDocument();
   });
 });

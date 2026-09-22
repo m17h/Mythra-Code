@@ -413,8 +413,8 @@ export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
       const result = await mergePullRequest(nativeCwd, stored.repository, stored.number, method, stored.snapshot.headOid, auto);
       if (!persistLink(id, result, revision)) return;
       const message = result.state === "MERGED"
-        ? `Pull request #${result.number} merged.`
-        : auto ? `Auto-merge queued for pull request #${result.number}.` : `Merge requested for pull request #${result.number}; it remains open.`;
+        ? `Pull request #${result.number} merged on GitHub. Your local folder is unchanged.`
+        : auto ? `GitHub will merge pull request #${result.number} when its requirements pass. Not merged yet.` : `Merge requested for pull request #${result.number}; it remains open.`;
       setNoticeState({ scope: uiScope, value: message });
       snapshot.onChanged?.();
     });

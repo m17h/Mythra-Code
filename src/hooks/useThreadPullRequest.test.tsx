@@ -173,7 +173,7 @@ describe("useThreadPullRequest", () => {
     native.merge.mockResolvedValueOnce(pullRequest(9, { state: "OPEN", mergeStateStatus: "QUEUED" }));
     await act(async () => view.result.current.onMerge("squash", true));
     expect(view.result.current.pullRequest?.mergeStateStatus).toBe("QUEUED");
-    expect(view.result.current.notice).toContain("Auto-merge queued");
+    expect(view.result.current.notice).toContain("Not merged yet");
   });
 
   it("shows a discovered shared-workspace candidate without attaching it", async () => {

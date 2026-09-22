@@ -145,7 +145,7 @@ async function shoot(name: string) {
 describe("thread pull request — screenshots", () => {
   it("captures the merge confirmation in a narrow dark dock", async () => {
     const view = render(dock(360, "dark", "mythra", <ThreadPullRequestPanel {...panelProps({ linked: true, pullRequest: pullRequest() })} />));
-    fireEvent.click(screen.getByRole("button", { name: /merge…/i }));
+    fireEvent.click(screen.getByRole("button", { name: /merge on github…/i }));
     await shoot("01-merge-narrow-dark");
     expect(view.container.querySelector(".thread-pr-editor.confirm")).toBeTruthy();
   });
@@ -175,7 +175,7 @@ describe("thread pull request — screenshots", () => {
       linked: true,
       pullRequest: pullRequest({ viewerCanMerge: false, autoMergeAllowed: false }),
     })} />));
-    fireEvent.click(screen.getByRole("button", { name: /merge…/i }));
+    fireEvent.click(screen.getByRole("button", { name: /merge on github…/i }));
     await shoot("04-merge-no-permission");
     expect(view.container.querySelector(".thread-pr-blockers.hard")).toBeTruthy();
   });
@@ -197,7 +197,8 @@ describe("thread pull request — screenshots", () => {
     const narrow = render(header(680, "dark", <ThreadPullRequestChip repository={REPOSITORY} pullRequest={pullRequest()} linked onClick={vi.fn()} />));
     await shoot("07-header-narrow");
     const chip = narrow.container.querySelector<HTMLElement>(".thread-pr-chip")!;
-    expect(getComputedStyle(chip.querySelector("span")!).display).toBe("none");
+    expect(getComputedStyle(chip.querySelector("span")!).display).not.toBe("none");
+    expect(chip.textContent).toContain("#103");
     narrow.unmount();
 
     const light = render(header(1200, "light", <ThreadPullRequestChip repository={REPOSITORY} pullRequest={pullRequest({ isDraft: true })} linked={false} onClick={vi.fn()} />));

@@ -172,6 +172,15 @@
 
 .thread-pr-fineprint { margin: 0; color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.5; }
 .thread-pr-fineprint.bad { color: color-mix(in srgb, var(--red) 64%, var(--text)); }
+/* "Nothing on this Mac changes." Quiet, but never decorative: it is the line
+   that distinguishes a GitHub merge from a local one. */
+.thread-pr-fineprint.local-effect { display: grid; grid-template-columns: 14px minmax(0, 1fr); gap: 6px; align-items: start; color: var(--ink-2); }
+.thread-pr-fineprint.local-effect > svg { margin-top: 3px; color: var(--muted-2); }
+.thread-pr-fineprint.local-effect b { color: var(--text); font-family: var(--font-mono); font-weight: 600; }
+
+.thread-pr-editor-head { display: flex; align-items: center; gap: 6px; color: var(--ink-2); }
+.thread-pr-editor-head > svg { color: var(--green); }
+.thread-pr-editor-head strong { font-size: var(--fs-ui); font-weight: 650; letter-spacing: var(--track-tight); }
 
 .thread-pr-empty { display: grid; grid-template-columns: minmax(0, 1fr); justify-items: center; gap: 6px; padding: var(--s-5) var(--s-4); border: 1px dashed var(--line-strong); border-radius: var(--r-md); text-align: center; }
 .thread-pr-empty > svg { color: var(--muted-2); }

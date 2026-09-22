@@ -12,6 +12,7 @@ export const DURABLE_STORAGE_KEYS = [
   "kiwi.threadProjects",
   "kiwi.threadWorktrees",
   "kiwi.threadPullRequests",
+  "kiwi.gitAutoPublish",
   "kiwi.knownThreads",
   "kiwi.threadModels",
   "kiwi.threadReasoning",
@@ -54,7 +55,7 @@ export const DURABLE_STORAGE_KEYS = [
  * migrateStorage. Old installs then upgrade their data instead of loading
  * garbage into the new code.
  */
-export const STORAGE_SCHEMA_VERSION = 23;
+export const STORAGE_SCHEMA_VERSION = 24;
 const nativeWriteQueues = new Map<string, Promise<void>>();
 const NATIVE_PENDING_PREFIX = "kiwi.nativePending.";
 let nativeOperationSequence = 0;

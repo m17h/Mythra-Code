@@ -20,6 +20,10 @@ describe("durable storage", () => {
     expect(loadStored("kiwi.settings", {})).toEqual({ theme: "kiwi" });
   });
 
+  it("keeps publication settings and pending commits in durable storage", () => {
+    expect(DURABLE_STORAGE_KEYS).toContain("kiwi.gitAutoPublish");
+  });
+
   it("keeps per-thread model choices in durable storage", () => {
     expect(DURABLE_STORAGE_KEYS).toContain("kiwi.threadModels");
     expect(DURABLE_STORAGE_KEYS).toContain("kiwi.threadReasoning");

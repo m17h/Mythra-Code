@@ -179,8 +179,24 @@ describe("thread pull request chip — crowded header", () => {
     expect(chip.offsetWidth).toBeLessThanOrEqual(132);
   });
 
-  it("drops to an icon on the same breakpoint the other header chips use", () => {
-    const view = render(header(700, <ThreadPullRequestChip repository={LONG_REPOSITORY} pullRequest={pullRequest()} linked onClick={vi.fn()} />));
+  it("keeps the number in a narrow header, and sheds the least useful part instead", () => {
+    // Changed deliberately. The chip used to become an icon here, which left
+    // it saying only "there is a pull request somewhere" — and the number is
+    // the one thing anyone scans a header for.
+    const view = render(header(700, <ThreadPullRequestChip repository={LONG_REPOSITORY} pullRequest={pullRequest()} onClick={vi.fn()} linked={false} />));
+    const chip = view.container.querySelector<HTMLElement>(".thread-pr-chip")!;
+
+    expect(getComputedStyle(chip.querySelector<HTMLElement>("span")!).display).not.toBe("none");
+    expect(chip.textContent).toContain("#12345");
+    // The "found" tag is what goes: the dashed border and the description
+    // already carry that state.
+    expect(getComputedStyle(chip.querySelector<HTMLElement>("em")!).display).toBe("none");
+    expect(chip.getAttribute("aria-label")).toContain("#12345");
+    expect(chip.scrollWidth).toBeLessThanOrEqual(chip.clientWidth);
+  });
+
+  it("still collapses to an icon when there is no number to keep", () => {
+    const view = render(header(700, <ThreadPullRequestChip repository={LONG_REPOSITORY} pullRequest={null} linked={false} onClick={vi.fn()} />));
     const chip = view.container.querySelector<HTMLElement>(".thread-pr-chip")!;
 
     expect(getComputedStyle(chip.querySelector<HTMLElement>("span")!).display).toBe("none");
@@ -188,7 +204,7 @@ describe("thread pull request chip — crowded header", () => {
     expect(chip.offsetWidth).toBe(chip.offsetHeight);
     expect(chip.offsetWidth).toBeGreaterThanOrEqual(28);
     // The description stays, so the icon is never an unlabelled mystery.
-    expect(chip.getAttribute("aria-label")).toContain("#12345");
+    expect(chip.getAttribute("aria-label")).toContain("No pull request is linked");
   });
 
   it("does not push the other header controls out of the bar", () => {

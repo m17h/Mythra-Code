@@ -187,9 +187,31 @@ function pullRequestDrift(snapshot: PullRequestSnapshot, pullRequest: PullReques
   return null;
 }
 
+/* ------------------------------------------------------------------ *
+ * Bringing a merged pull request back down to the folder
+ *
+ * Merging happens entirely on GitHub. Nothing about it changes a single file
+ * on this machine, and the panel used to end there — which is exactly where
+ * people concluded that "Merge" had also merged their local branch. These
+ * props add the missing half as an explicit, guarded action rather than an
+ * automatic pull: updating a checkout while an agent is writing in it is not
+ * something to do behind anyone's back.
+ *
+ * Declared here rather than in `src/lib/pullRequests.ts` so the shared props
+ * type stays owned by one place; the app passes the same object either way.
+ */
+export interface ThreadPullRequestPanelProps extends PullRequestPanelProps {
+  /** Fast-forward the local base branch from GitHub. Refused by the caller
+   *  when the folder is dirty, diverged, busy, or checked out elsewhere. */
+  onUpdateLocal?: () => Promise<void>;
+  updateLocalBusy?: boolean;
+  /** Why the update cannot run, or what the last one did. */
+  updateLocalNotice?: string;
+}
+
 /* ------------------------------------------------------------------ */
 
-function ThreadPullRequestPanelInner(props: PullRequestPanelProps) {
+function ThreadPullRequestPanelInner(props: ThreadPullRequestPanelProps) {
   const { context, pullRequest, linked, isolated, busy, loading } = props;
   const [card, setCard] = useState<OpenCard>("none");
   const [reference, setReference] = useState("");
@@ -329,8 +351,17 @@ function ThreadPullRequestPanelInner(props: PullRequestPanelProps) {
           <span className="thread-pr-fact" title={`Current branch: ${context.branch}`}><GitBranch size={11} aria-hidden="true" />{context.branch}</span>
           <span className={`thread-pr-fact ${isolated ? "isolated" : "quiet"}`}>{isolated ? "Isolated worktree" : "Shared folder"}</span>
           {context.dirty && <span className="thread-pr-fact warn">Uncommitted changes</span>}
-          {context.ahead > 0 && <span className="thread-pr-fact quiet" title={`Compared with ${context.defaultBranch}`}>{context.ahead} ahead</span>}
-          {context.behind > 0 && <span className="thread-pr-fact quiet" title={`Compared with ${context.defaultBranch}`}>{context.behind} behind</span>}
+          {/* One fact, not two, and it names its baseline. Six equal pills in a
+              265px dock wrapped to three rows of things that mostly were not
+              warnings; the warnings above are what deserve that weight. */}
+          {(context.ahead > 0 || context.behind > 0) && (
+            <span className="thread-pr-fact quiet" title={`Last known, compared with ${context.defaultBranch}`}>
+              {[
+                context.ahead > 0 ? `${context.ahead} ahead` : null,
+                context.behind > 0 ? `${context.behind} behind` : null,
+              ].filter(Boolean).join(" · ")} of {context.defaultBranch}
+            </span>
+          )}
         </div>
       ) : (
         <div className="thread-pr-note" role="status">
@@ -395,6 +426,39 @@ function ThreadPullRequestPanelInner(props: PullRequestPanelProps) {
             </div>
           )}
 
+          {/* The merge happened on GitHub. Saying so, and saying what did not
+              happen here, is the whole difference between a finished task and
+              an hour spent wondering why the local branch looks unchanged. */}
+          {pullRequest.state === "MERGED" && (
+            <div className="thread-pr-note" role="status">
+              <GitMerge size={13} aria-hidden="true" />
+              <span>
+                Merged into <strong>{pullRequest.baseRefName}</strong> on GitHub.
+                {context
+                  ? <> Your files here have not changed — this folder is still on <strong>{context.branch}</strong>.</>
+                  : " Nothing in this folder was changed."}
+                {props.onUpdateLocal ? " Bring the merged work down when you are ready." : ""}
+              </span>
+              {props.onUpdateLocal && (
+                <button
+                  type="button"
+                  className="thread-pr-inline-button"
+                  onClick={() => { void props.onUpdateLocal?.().catch(() => undefined); }}
+                  disabled={busy || props.updateLocalBusy}
+                  aria-busy={props.updateLocalBusy}
+                  title={`Check out ${pullRequest.baseRefName} and fast-forward it from GitHub. Refused if this folder has uncommitted changes or has moved on.`}
+                >
+                  {props.updateLocalBusy
+                    ? <><LoaderCircle className="spin" size={12} /> Updating…</>
+                    : `Update local ${pullRequest.baseRefName}`}
+                </button>
+              )}
+            </div>
+          )}
+          {pullRequest.state === "MERGED" && props.updateLocalNotice && (
+            <p className="thread-pr-fineprint">{props.updateLocalNotice}</p>
+          )}
+
           <div className="thread-pr-actions">
             <button type="button" onClick={() => openOnGitHub(pullRequest.url)} title={`Open ${pullRequest.repository} #${pullRequest.number} in your browser, including its review comments`}>
               <ExternalLink size={13} aria-hidden="true" /> Open on GitHub
@@ -417,8 +481,12 @@ function ThreadPullRequestPanelInner(props: PullRequestPanelProps) {
                 onClick={() => openPullRequestCard("merge")}
                 aria-expanded={card === "merge"}
                 disabled={busy}
+                title={`Merge #${pullRequest.number} on GitHub. Your files here do not change.`}
               >
-                <GitMerge size={13} aria-hidden="true" /> Merge…
+                {/* Named for where it happens. The worktree panel has a merge
+                    of its own that changes local files, and one bare "Merge"
+                    in each place is how the two got confused. */}
+                <GitMerge size={13} aria-hidden="true" /> Merge on GitHub…
               </button>
             )}
             <button type="button" onClick={props.onDetach} disabled={!canAttach} title="Removes the link from this thread only. Nothing is closed or changed on GitHub.">
@@ -441,6 +509,7 @@ function ThreadPullRequestPanelInner(props: PullRequestPanelProps) {
           {card === "merge" && actionSnapshot && (
             <MergeConfirmation
               pullRequest={pullRequest}
+              localBranch={context?.branch}
               methods={methods}
               method={chosenMethod}
               onMethod={setMethod}
@@ -550,15 +619,20 @@ function ThreadPullRequestPanelInner(props: PullRequestPanelProps) {
             </div>
           ) : context ? (
             <div className="thread-pr-slot">
-              <button
-                type="button"
-                className="thread-pr-wide-button primary"
-                onClick={openCreate}
-                aria-expanded={card === "create"}
-                disabled={busy}
-              >
-                <GitPullRequest size={13} aria-hidden="true" /> Create a pull request
-              </button>
+              {/* Once the editor is open it is the heading. Leaving the button
+                  above it gave the form two titles and two apparent primary
+                  actions, one of which only closed it again. */}
+              {card !== "create" && (
+                <button
+                  type="button"
+                  className="thread-pr-wide-button primary"
+                  onClick={openCreate}
+                  aria-expanded={false}
+                  disabled={busy}
+                >
+                  <GitPullRequest size={13} aria-hidden="true" /> Create a pull request
+                </button>
+              )}
 
               {card === "create" && createSnapshot && (
                 <CreateEditor
@@ -789,6 +863,12 @@ function CreateEditor(props: {
       className="thread-pr-editor"
       onSubmit={(event) => { event.preventDefault(); if (ready && !disabled && !busy) props.onSubmit(); }}
     >
+      {/* The form owns its heading now that the button above it is gone. */}
+      <div className="thread-pr-editor-head">
+        <GitPullRequest size={14} aria-hidden="true" />
+        <strong>New pull request</strong>
+      </div>
+
       {/* Source is shown, not chosen: the branch the form was opened against
           is the branch the pull request comes from. */}
       <p className="thread-pr-refs strong" title={`${snapshot.branch} into ${base || "?"}`}>
@@ -927,6 +1007,8 @@ function ReadyConfirmation(props: {
 
 function MergeConfirmation(props: {
   pullRequest: PullRequest;
+  /** The branch this folder is on, when the app can read it. */
+  localBranch?: string | null;
   methods: PullRequestMergeMethod[];
   method: PullRequestMergeMethod | null;
   onMethod: (method: PullRequestMergeMethod) => void;
@@ -1016,6 +1098,21 @@ function MergeConfirmation(props: {
         </>
       )}
 
+      {/* The single most misread thing in this panel. A merge here is a change
+          on GitHub and nothing else: no checkout moves, no file is rewritten,
+          nothing is downloaded. Said before the button, not after it. */}
+      {!stopped && (
+        <p className="thread-pr-fineprint local-effect">
+          <ShieldCheck size={11} aria-hidden="true" />
+          <span>
+            {auto ? "When GitHub merges it, nothing" : "Nothing"} on this Mac changes.
+            {props.localBranch
+              ? <> This folder stays on <b>{props.localBranch}</b>, and <b>{pullRequest.baseRefName}</b> here is not updated until you ask for it.</>
+              : <> Your local <b>{pullRequest.baseRefName}</b> is not updated until you ask for it.</>}
+          </span>
+        </p>
+      )}
+
       <div className="thread-pr-actions end">
         <button type="button" onClick={props.onCancel} disabled={busy}>Cancel</button>
         <button
@@ -1027,7 +1124,7 @@ function MergeConfirmation(props: {
           title={stopped ? hard[0] : drift ? "Review the updated pull request first" : soft.length && !auto ? soft[0] : undefined}
         >
           {busy ? <LoaderCircle className="spin" size={13} /> : auto ? <Clock size={13} aria-hidden="true" /> : <GitMerge size={13} aria-hidden="true" />}
-          {auto ? "Enable auto merge" : `Merge #${pullRequest.number}`}
+          {auto ? "Enable auto merge" : `Merge #${pullRequest.number} on GitHub`}
         </button>
       </div>
     </div>

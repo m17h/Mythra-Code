@@ -533,20 +533,38 @@
           }
         }
       }
+    },
+    {
+      "change": "Expand local Git, publication, and pull-request workflow",
+      "decision": "Accept the measured feature and safety cost of local branch snapshots and guarded switching, staged and unstaged commit paths, guarded local-base updates, durable all-ref publication with restart/backoff recovery, immutable commit-SHA publication, exact remote compare-and-swap after descendant proof, native binding/upstream/history validation, attached-PR identity routing, and worktree completion checks. Automatic publication is off by default; its five-second controller runs only while a project is opted in, coalesces new tips, and does not auto-commit, pull, rebase, reset, or overwrite history. The workflow CSS remains lazy, limiting startup CSS growth to 243 raw bytes on both targets. No dependency or model request is added. This is a measured functionality and safety cost, not a runtime improvement claim. See docs/performance/thread-pull-requests.md. Limits match the final production builds without additional headroom.",
+      "measurements": {
+        "safari13-minified": {
+          "appEntryRawBytes": { "before": 396661, "after": 413732, "delta": 17071 },
+          "startupJsRawBytes": { "before": 775653, "after": 793304, "delta": 17651 },
+          "startupCssRawBytes": { "before": 364225, "after": 364468, "delta": 243 },
+          "totalJsRawBytes": { "before": 1577029, "after": 1609562, "delta": 32533 }
+        },
+        "chrome105-minified": {
+          "appEntryRawBytes": { "before": 375532, "after": 392120, "delta": 16588 },
+          "startupJsRawBytes": { "before": 746409, "after": 763563, "delta": 17154 },
+          "startupCssRawBytes": { "before": 357706, "after": 357949, "delta": 243 },
+          "totalJsRawBytes": { "before": 1536545, "after": 1567952, "delta": 31407 }
+        }
+      }
     }
   ],
   "profiles": {
     "safari13-minified": {
-      "appEntryRawBytes": 396661,
-      "startupJsRawBytes": 775653,
-      "startupCssRawBytes": 364225,
-      "totalJsRawBytes": 1577029
+      "appEntryRawBytes": 413732,
+      "startupJsRawBytes": 793304,
+      "startupCssRawBytes": 364468,
+      "totalJsRawBytes": 1609562
     },
     "chrome105-minified": {
-      "appEntryRawBytes": 375532,
-      "startupJsRawBytes": 746409,
-      "startupCssRawBytes": 357706,
-      "totalJsRawBytes": 1536545
+      "appEntryRawBytes": 392120,
+      "startupJsRawBytes": 763563,
+      "startupCssRawBytes": 357949,
+      "totalJsRawBytes": 1567952
     }
   }
 }

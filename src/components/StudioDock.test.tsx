@@ -498,11 +498,119 @@ describe("StudioDock", () => {
     );
 
     expect(screen.getByRole("button", { name: "Review" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Apply to project" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Merge branch" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Reveal" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Remove worktree…" })).toBeInTheDocument();
+    // Both routes back into the project are named by their outcome, and the
+    // local merge says where it merges to — "Merge branch" was one word away
+    // from the pull request panel's merge, which acts on GitHub instead.
+    expect(screen.getByRole("button", { name: "Copy changes to project" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Merge into local project…" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Merge into local project…" }))
+      .toHaveAttribute("title", expect.stringContaining("does not touch GitHub"));
+
+    // Reveal, Refresh and Remove are one app-native menu, not three more
+    // equal-weight buttons. No OS drop-down is involved.
+    expect(screen.queryByRole("button", { name: "Reveal" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "More worktree actions" }));
+    expect(screen.getByRole("menuitem", { name: /Show folder/ })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: /Remove worktree…/ })).toBeInTheDocument();
     expect(screen.getByText(/Worktrees and their branches stay local/)).toBeInTheDocument();
+  });
+
+  it("shows a merge completion state only while the merge is still the whole story", () => {
+    const base = {
+      threadId: "thread-1",
+      projectId: "project-1",
+      projectPath: "/project",
+      path: "/worktrees/thread-1",
+      branch: "openkiwi/thread-1",
+      baseCommit: "base",
+      gitDir: "/project/.git",
+      createdAt: 1,
+      status: "merged" as const,
+      mergedAt: 2,
+      mergedHeadOid: "abc123",
+    };
+    const status = {
+      exists: true,
+      registered: true,
+      branch: "openkiwi/thread-1",
+      baseCommit: "base",
+      changedFiles: 0,
+      untrackedFiles: 0,
+      ignoredFileCount: 0,
+      ahead: 1,
+      behind: 0,
+      clean: true,
+      headOid: "abc123",
+      sourceBranch: "main",
+    };
+    const onWorktreeReturnShared = vi.fn();
+
+    const view = render(
+      <StudioDock
+        {...dockProps(true)}
+        tab="worktrees"
+        activeThread
+        worktree={base}
+        worktreeStatus={status}
+        onWorktreeReturnShared={onWorktreeReturnShared}
+      />,
+    );
+
+    expect(screen.getByText("Merged into local project")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Review merged changes" })).toBeInTheDocument();
+    // Merging again is not offered while there is nothing new to merge…
+    expect(screen.queryByRole("button", { name: "Merge into local project…" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Continue in shared project" }));
+    expect(onWorktreeReturnShared).toHaveBeenCalledOnce();
+
+    // …and the moment the branch moves past the merged commit, the claim is
+    // withdrawn rather than left standing as a stale fact.
+    view.rerender(
+      <StudioDock
+        {...dockProps(true)}
+        tab="worktrees"
+        activeThread
+        worktree={base}
+        worktreeStatus={{ ...status, headOid: "def456", ahead: 2 }}
+        onWorktreeReturnShared={onWorktreeReturnShared}
+      />,
+    );
+
+    expect(screen.queryByText("Merged into local project")).not.toBeInTheDocument();
+    expect(screen.getByText(/merged into your local project earlier, and has changed since/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Merge into local project…" })).toBeInTheDocument();
+  });
+
+  it("keeps the completion state to itself when there is no evidence for it", () => {
+    // A record that says "merged" without the commit it merged proves nothing
+    // about the folder as it stands now.
+    render(
+      <StudioDock
+        {...dockProps(true)}
+        tab="worktrees"
+        activeThread
+        worktree={{
+          threadId: "thread-1",
+          projectId: "project-1",
+          projectPath: "/project",
+          path: "/worktrees/thread-1",
+          branch: "openkiwi/thread-1",
+          baseCommit: "base",
+          gitDir: "/project/.git",
+          createdAt: 1,
+          status: "merged",
+          mergedAt: 2,
+        }}
+        worktreeStatus={null}
+      />,
+    );
+
+    expect(screen.queryByText(/^Merged into/)).not.toBeInTheDocument();
+    // And it does not turn a missing reading into a claim that the branch
+    // moved on, which is a different fact entirely.
+    expect(screen.getByText(/cannot confirm what has happened to it since/)).toBeInTheDocument();
+    expect(screen.queryByText(/has changed since/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Merge into local project…" })).toBeInTheDocument();
   });
 
   it("keeps worktree management out of the Checkpoints tab", () => {
@@ -543,9 +651,15 @@ describe("StudioDock", () => {
 
     expect(screen.getByRole("button", { name: "Status" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Diff" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Stage all" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Commit all changes locally" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Push commits" })).toBeDisabled();
+    // Staging and reverting moved into the local More menu; they are still
+    // refused there, with the reason attached rather than a silent no-op.
+    fireEvent.click(screen.getByRole("button", { name: "More local Git actions" }));
+    expect(screen.getByRole("menuitem", { name: /Stage all/ })).toBeDisabled();
+    expect(screen.getByRole("menuitem", { name: /Revert all changes/ })).toBeDisabled();
+    expect(screen.getByRole("menuitem", { name: /Revert all changes/ }))
+      .toHaveAttribute("title", expect.stringContaining("Read only"));
     expect(screen.getByText(/Read only allows Status and Diff/)).toBeInTheDocument();
   });
 
@@ -603,8 +717,14 @@ describe("StudioDock", () => {
     fireEvent.click(screen.getByRole("button", { name: "Initialize Git" }));
     expect(onInitializeGit).toHaveBeenCalledOnce();
     expect(screen.getByRole("button", { name: "Commit all changes locally" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Stage all" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Revert all Git changes" })).toBeDisabled();
+    // Inspection survives a folder that is not a repository: "what does Git
+    // think is here?" is precisely the question being asked at that point.
+    expect(screen.getByRole("button", { name: "Status" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "More local Git actions" }));
+    expect(screen.getByRole("menuitem", { name: /Stage all/ })).toBeDisabled();
+    expect(screen.getByRole("menuitem", { name: /Revert all changes/ })).toBeDisabled();
+    fireEvent.keyDown(document, { key: "Escape" });
+    fireEvent.click(screen.getByRole("button", { name: /Publish this project to GitHub/ }));
     expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
   });
 
@@ -623,23 +743,52 @@ describe("StudioDock", () => {
 
     expect(screen.queryByText("This project is not a Git repository yet")).not.toBeInTheDocument();
     expect(screen.getByText(/Local Git actions stay available/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Stage all" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Commit all changes locally" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "More local Git actions" }));
+    expect(screen.getByRole("menuitem", { name: /Stage all/ })).toBeEnabled();
   });
+
+  it("hides every GitHub control in a project that has no remote configured", () => {
+    render(<StudioDock {...dockProps(true)} tab="git" githubAuthenticated />);
+
+    // The old panel led with a row of six greyed-out remote buttons, which
+    // taught nobody anything. What is left is one honest line and one offer.
+    expect(screen.getByText("No GitHub remote configured")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Push commits" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "More GitHub actions" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Commit & push/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Publish this project to GitHub/ })).toBeInTheDocument();
+
+    // And it does not claim the project was never published anywhere: all the
+    // app knows is that *it* has no remote set up.
+    expect(screen.queryByText(/not pushed yet/i)).not.toBeInTheDocument();
+  });
+
   it("keeps the legacy pull request controls when no workflow panel is supplied", () => {
-    // The default has to stay exactly as it was for every existing caller.
-    render(<StudioDock {...dockProps(true)} tab="git" />);
-
-    expect(screen.getByRole("button", { name: "Draft PR" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Review comments" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "CI checks" })).toBeInTheDocument();
-  });
-
-  it("renders the pull request workflow above Git and retires the controls it replaces", () => {
+    // Still reachable for every existing caller — one menu deeper, because a
+    // repository's less-used GitHub commands are not top-level work.
     render(
       <StudioDock
         {...dockProps(true)}
         tab="git"
+        githubAuthenticated
+        githubRepoStatus={{ isRepo: true, repository: "owner/repo", branch: "main", upstream: "origin/main", ahead: 0, behind: 0 }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "More GitHub actions" }));
+    expect(screen.getByRole("menuitem", { name: /Draft PR/ })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: /Review comments/ })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: /CI checks/ })).toBeInTheDocument();
+  });
+
+  it("puts the pull request workflow after the local work and retires the controls it replaces", () => {
+    render(
+      <StudioDock
+        {...dockProps(true)}
+        tab="git"
+        githubAuthenticated
+        githubRepoStatus={{ isRepo: true, repository: "owner/repo", branch: "main", upstream: "origin/main", ahead: 0, behind: 0 }}
         pullRequestPanel={<div data-testid="pull-request-workflow">Pull request</div>}
       />,
     );
@@ -647,21 +796,23 @@ describe("StudioDock", () => {
     const workflow = screen.getByTestId("pull-request-workflow");
     expect(workflow).toBeInTheDocument();
 
-    // It sits above the Git panel, not below it.
+    // Reversed deliberately. A pull request is a step you reach after
+    // committing; leading with it pushed the commit form below the fold and
+    // opened the dock on its most remote, least frequent action.
     const commit = screen.getByText("Commit changes locally");
-    expect(workflow.compareDocumentPosition(commit) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(commit.compareDocumentPosition(workflow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
     // Two answers to the same question would be one too many.
-    expect(screen.queryByRole("button", { name: "Draft PR" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "CI checks" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "More GitHub actions" }));
+    expect(screen.queryByRole("menuitem", { name: /Draft PR/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: /CI checks/ })).not.toBeInTheDocument();
 
     // But the workflow has no comment viewer, so the only way to read review
     // comments in the app must not disappear with them.
-    expect(screen.getByRole("button", { name: "Review comments" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: /Review comments/ })).toBeInTheDocument();
 
     // Everything purely local is untouched.
     expect(screen.getByRole("button", { name: "Commit all changes locally" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Stage all" })).toBeInTheDocument();
   });
 });
 
@@ -670,6 +821,7 @@ it("uses the app menu for repository visibility while keeping local commits avai
   const props = dockProps(true);
   const view = render(<StudioDock {...props} tab="git" githubAuthenticated defaultRepositoryName="local-project" />);
   expect(view.container.querySelector("select")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: /Publish this project to GitHub/ }));
   fireEvent.click(screen.getByRole("button", { name: "Repository visibility" }));
   fireEvent.click(screen.getByRole("menuitemradio", { name: "Public" }));
   fireEvent.click(screen.getByRole("button", { name: "Create" }));

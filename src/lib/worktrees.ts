@@ -15,6 +15,7 @@ export interface ThreadWorktreeRecord {
   lastAppliedAt?: number;
   appliedTree?: string;
   mergedAt?: number;
+  mergedHeadOid?: string;
   removedAt?: number;
   recreatedFromMissing?: boolean;
 }
@@ -43,6 +44,8 @@ export interface CreatedWorktree {
 }
 
 export interface WorktreeStatus {
+  headOid?: string | null;
+  sourceBranch?: string | null;
   exists: boolean;
   registered: boolean;
   branch?: string | null;
@@ -68,6 +71,7 @@ export interface WorktreeApplyResult {
 }
 
 export interface WorktreeMergeResult {
+  isolatedHeadOid: string;
   sourceCommit: string;
   isolatedTree: string;
 }
@@ -141,6 +145,8 @@ export async function mergeWorktreeBranch(
   worktreePath: string,
   branch: string,
   safetyId: string,
+  expectedSourceBranch: string,
+  expectedSourceHeadOid: string,
 ): Promise<WorktreeMergeResult> {
   return invoke<WorktreeMergeResult>("worktree_merge_branch", {
     threadId,
@@ -148,6 +154,8 @@ export async function mergeWorktreeBranch(
     worktreePath,
     branch,
     safetyId,
+    expectedSourceBranch,
+    expectedSourceHeadOid,
   });
 }
 
