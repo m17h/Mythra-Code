@@ -11,6 +11,7 @@ export const DURABLE_STORAGE_KEYS = [
   "kiwi.headerUsageWindows",
   "kiwi.threadProjects",
   "kiwi.threadWorktrees",
+  "kiwi.threadPullRequests",
   "kiwi.knownThreads",
   "kiwi.threadModels",
   "kiwi.threadReasoning",
@@ -53,7 +54,7 @@ export const DURABLE_STORAGE_KEYS = [
  * migrateStorage. Old installs then upgrade their data instead of loading
  * garbage into the new code.
  */
-export const STORAGE_SCHEMA_VERSION = 22;
+export const STORAGE_SCHEMA_VERSION = 23;
 const nativeWriteQueues = new Map<string, Promise<void>>();
 const NATIVE_PENDING_PREFIX = "kiwi.nativePending.";
 let nativeOperationSequence = 0;
@@ -237,6 +238,7 @@ export function migrateStorage(): void {
     if (changed) storeValue("kiwi.knownThreads", compacted);
   }
   // All other additions are optional and require no eager rewrite of existing records.
+  // Version 23 adds optional per-thread GitHub PR links, independent of provider transcripts.
   storeValue("kiwi.schemaVersion", STORAGE_SCHEMA_VERSION);
 }
 

@@ -1,0 +1,222 @@
+/* Per-thread GitHub pull requests — the dock panel.
+ *
+ * The header chip lives in thread-pull-request-chip.css instead. The chip is
+ * imported eagerly by the top bar while this panel is lazy-loaded with the Git
+ * dock, so keeping them in one file would have pulled every panel rule into
+ * the initial stylesheet for a control that is one pill wide.
+ *
+ * Everything here is expressed in the shell's own tokens, so the five
+ * palettes (Mythra, Kiwi, Midnight, Synthwave, Astra) and both colour
+ * schemes are covered without a single per-theme override. The panel sizes
+ * itself against its own inline width rather than the viewport, because the
+ * Git dock is resizable between roughly 360px and 500px while the window
+ * stays wide. */
+
+.thread-pr {
+  container-type: inline-size;
+  container-name: thread-pr;
+  display: grid;
+  /* An implicit `auto` track floors at min-content, and a nowrap branch name
+     has a very wide min-content. Without a shrinkable track the whole panel
+     grows past the dock instead of truncating inside it. */
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--s-2);
+  margin-bottom: var(--s-3);
+  padding-bottom: var(--s-3);
+  border-bottom: 1px solid var(--line);
+}
+
+/* ---- Header ---- */
+
+.thread-pr-head { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; align-items: center; gap: var(--s-2); }
+.thread-pr-head-icon { display: grid; place-items: center; width: 30px; height: 30px; border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--green); background: var(--green-soft); }
+.thread-pr-head > div { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.thread-pr-head strong { font-size: var(--fs-ui); letter-spacing: var(--track-tight); }
+.thread-pr-head small { overflow: hidden; color: var(--muted-2); font-size: var(--fs-meta); white-space: nowrap; text-overflow: ellipsis; }
+
+/* ---- Context facts ---- */
+
+.thread-pr-context { display: flex; flex-wrap: wrap; gap: var(--s-1); }
+.thread-pr-fact { max-width: 100%; display: inline-flex; align-items: center; gap: 4px; padding: 3px 7px; border: 1px solid var(--line); border-radius: var(--r-pill); color: var(--ink-2); background: color-mix(in srgb, var(--text) 3%, transparent); font-size: var(--fs-micro); letter-spacing: var(--track-tight); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.thread-pr-fact svg { flex: 0 0 auto; color: var(--muted-2); }
+.thread-pr-fact.quiet { color: var(--muted-2); }
+.thread-pr-fact.isolated { color: var(--info); border-color: color-mix(in srgb, var(--info) 28%, var(--line)); background: color-mix(in srgb, var(--info) 8%, transparent); }
+.thread-pr-fact.warn { color: var(--orange); border-color: color-mix(in srgb, var(--orange) 30%, var(--line)); background: color-mix(in srgb, var(--orange) 8%, transparent); }
+
+/* ---- Notes: error, notice, blocked ---- */
+
+.thread-pr-note { display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--s-2); padding: var(--s-2) 10px; border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--muted); background: color-mix(in srgb, var(--text) 2%, transparent); font-size: var(--fs-meta); line-height: 1.5; animation: thread-pr-pop var(--t-mid) var(--ease) both; }
+.thread-pr-note svg { flex: 0 0 auto; margin-top: 1px; color: var(--muted-2); }
+.thread-pr-note > span { flex: 1 1 140px; min-width: 0; }
+.thread-pr-note strong { color: var(--text); font-weight: 620; }
+.thread-pr-note.bad { color: color-mix(in srgb, var(--red) 70%, var(--text)); border-color: color-mix(in srgb, var(--red) 30%, var(--line)); background: color-mix(in srgb, var(--red) 8%, transparent); }
+.thread-pr-note.bad svg { color: var(--red); }
+.thread-pr-note.good { color: color-mix(in srgb, var(--green) 52%, var(--text)); border-color: var(--green-line); background: var(--green-soft); }
+.thread-pr-note.good svg { color: var(--green); }
+
+.thread-pr-inline-button { min-height: 22px; padding: 0 7px; border: 1px solid var(--line-strong); border-radius: var(--r-xs); color: inherit; background: transparent; font-size: var(--fs-micro); cursor: pointer; transition: background var(--t-fast) ease, border-color var(--t-fast) ease; }
+.thread-pr-inline-button:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 8%, transparent); }
+.thread-pr-inline-button:disabled { opacity: .4; cursor: default; }
+
+/* ---- The pull request card ---- */
+
+.thread-pr-card { display: grid; grid-template-columns: minmax(0, 1fr); gap: 7px; padding: var(--s-3); border: 1px solid var(--line); border-radius: var(--r-md); background: color-mix(in srgb, var(--text) 2.5%, transparent); animation: thread-pr-pop var(--t-mid) var(--ease) both; }
+.thread-pr-card.open { border-color: var(--green-line); background: color-mix(in srgb, var(--green) 5%, transparent); }
+.thread-pr-card.merged { border-color: color-mix(in srgb, var(--info) 30%, var(--line)); background: color-mix(in srgb, var(--info) 6%, transparent); }
+.thread-pr-card.candidate { border-style: dashed; border-color: var(--line-strong); }
+.thread-pr-card-head { display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); }
+.thread-pr-number { color: var(--muted-2); font: 600 var(--fs-meta) var(--font-mono); }
+
+.thread-pr-state { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border: 1px solid var(--line); border-radius: var(--r-pill); color: var(--muted); background: color-mix(in srgb, var(--text) 4%, transparent); font-size: var(--fs-micro); font-weight: 650; letter-spacing: var(--track-tight); white-space: nowrap; }
+.thread-pr-state.open { color: var(--green); border-color: var(--green-line); background: var(--green-soft); }
+.thread-pr-state.draft { color: var(--muted-2); }
+.thread-pr-state.merged { color: var(--info); border-color: color-mix(in srgb, var(--info) 30%, var(--line)); background: color-mix(in srgb, var(--info) 9%, transparent); }
+.thread-pr-state.closed { color: var(--red); border-color: color-mix(in srgb, var(--red) 28%, var(--line)); background: color-mix(in srgb, var(--red) 8%, transparent); }
+.thread-pr-state.found { color: var(--info); border-style: dashed; border-color: color-mix(in srgb, var(--info) 34%, var(--line)); }
+
+.thread-pr-title { margin: 0; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; color: var(--text); font-size: var(--fs-body); font-weight: 600; line-height: 1.35; letter-spacing: var(--track-tight); }
+
+.thread-pr-refs { display: flex; align-items: center; gap: 5px; margin: 0; min-width: 0; color: var(--muted-2); font-size: var(--fs-micro); }
+.thread-pr-refs svg { flex: 0 0 auto; }
+.thread-pr-refs span { min-width: 0; overflow: hidden; font-family: var(--font-mono); white-space: nowrap; text-overflow: ellipsis; }
+/* "branch → base": shrinking both in proportion clips the base to "ma…" long
+   before the head branch has given up anything useful. The head absorbs almost
+   all of it instead, and the base keeps a bounded share of the row. */
+.thread-pr-refs span:nth-of-type(1) { flex: 1 1 auto; flex-shrink: 999; }
+.thread-pr-refs span:nth-of-type(2) { flex: 0 0 auto; }
+.thread-pr-refs span:nth-of-type(3) { flex: 0 1 auto; max-width: 45%; }
+.thread-pr-refs.strong { color: var(--ink-2); font-size: var(--fs-meta); }
+
+/* ---- Checks and review ---- */
+
+.thread-pr-signals { display: grid; grid-template-columns: minmax(0, 1fr); gap: 5px; margin: 2px 0 0; }
+.thread-pr-signal { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: var(--fs-meta); }
+.thread-pr-signal svg { flex: 0 0 auto; color: var(--muted-2); }
+.thread-pr-signal dt { flex: 0 0 auto; color: var(--muted-2); }
+.thread-pr-signal dd { min-width: 0; margin: 0; overflow: hidden; color: var(--ink-2); white-space: nowrap; text-overflow: ellipsis; }
+.thread-pr-signal.good svg { color: var(--green); }
+.thread-pr-signal.bad svg { color: var(--red); }
+.thread-pr-signal.bad dd { color: color-mix(in srgb, var(--red) 66%, var(--text)); }
+.thread-pr-signal.wait svg { color: var(--orange); animation: thread-pr-breathe 2.1s ease-in-out infinite; }
+
+/* ---- Actions ---- */
+
+.thread-pr-actions { display: flex; flex-wrap: wrap; gap: var(--s-1); margin-top: 2px; }
+.thread-pr-actions.end { justify-content: flex-end; }
+.thread-pr-actions button { min-height: var(--ctl-sm); display: inline-flex; align-items: center; gap: 5px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--muted); background: transparent; font-size: var(--fs-meta); letter-spacing: var(--track-tight); white-space: nowrap; cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease, transform var(--t-fast) var(--ease); }
+.thread-pr-actions button:hover:not(:disabled) { color: var(--text); border-color: var(--line-strong); background: color-mix(in srgb, var(--text) 5%, transparent); }
+.thread-pr-actions button:active:not(:disabled) { transform: translateY(1px); }
+.thread-pr-actions button:disabled { opacity: .38; cursor: default; }
+.thread-pr-actions button.primary { color: var(--green); border-color: var(--green-line); background: var(--green-soft); }
+.thread-pr-actions button.primary:hover:not(:disabled) { color: var(--green); background: color-mix(in srgb, var(--green) 17%, transparent); }
+
+.thread-pr-wide-button { width: 100%; min-height: var(--ctl-md); display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--ink-2); background: color-mix(in srgb, var(--text) 3.5%, transparent); font-size: var(--fs-meta); cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease, transform var(--t-fast) var(--ease); }
+.thread-pr-wide-button:hover:not(:disabled) { color: var(--text); border-color: var(--line-strong); background: color-mix(in srgb, var(--text) 7%, transparent); }
+.thread-pr-wide-button:active:not(:disabled) { transform: translateY(1px); }
+.thread-pr-wide-button:disabled { opacity: .4; cursor: default; }
+.thread-pr-wide-button.primary { color: var(--green); border-color: var(--green-line); background: var(--green-soft); font-weight: 600; }
+.thread-pr-wide-button.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--green) 17%, transparent); }
+
+/* ---- Slots, fields, inline editors ---- */
+
+.thread-pr-slot { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s-2); }
+.thread-pr-slot-head { display: grid; grid-template-columns: 16px minmax(0, 1fr); gap: var(--s-2); align-items: start; }
+.thread-pr-slot-head > svg { margin-top: 2px; color: var(--muted-2); }
+.thread-pr-slot-head strong { display: block; font-size: var(--fs-meta); font-weight: 620; }
+.thread-pr-slot-head small { display: block; margin-top: 2px; color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.5; }
+
+.thread-pr-row { display: flex; gap: var(--s-1); }
+.thread-pr-row input { flex: 1 1 auto; min-width: 0; }
+.thread-pr-row .thread-pr-wide-button { width: auto; flex: 0 0 auto; }
+
+.thread-pr-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; color: var(--muted); font-size: var(--fs-meta); }
+.thread-pr-field > span { display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); }
+.thread-pr-field em { padding: 2px 5px; border-radius: var(--r-xs); color: var(--muted-2); background: color-mix(in srgb, var(--text) 5%, transparent); font-size: 9px; font-style: normal; font-weight: 650; text-transform: uppercase; letter-spacing: var(--track-caps); }
+.thread-pr-field input, .thread-pr-field textarea { width: 100%; min-width: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-sm); outline: 0; color: var(--text); background: var(--field); font: var(--fs-meta)/1.5 var(--font-mono); transition: border-color var(--t-fast) ease; }
+.thread-pr-field input { height: 32px; padding-block: 0; }
+.thread-pr-field textarea { resize: vertical; font-family: var(--font-sans); font-size: var(--fs-ui); }
+.thread-pr-field input:focus, .thread-pr-field textarea:focus { border-color: var(--green-line); }
+.thread-pr-field input::placeholder, .thread-pr-field textarea::placeholder { color: var(--muted-2); }
+.thread-pr-field input[aria-invalid="true"] { border-color: color-mix(in srgb, var(--red) 46%, var(--line)); }
+
+.thread-pr-check { display: grid; grid-template-columns: 15px minmax(0, 1fr); gap: var(--s-2); align-items: start; cursor: pointer; }
+.thread-pr-check input { width: 15px; height: 15px; margin: 1px 0 0; accent-color: var(--green); cursor: pointer; }
+.thread-pr-check strong { display: block; color: var(--ink-2); font-size: var(--fs-meta); font-weight: 620; }
+.thread-pr-check small { display: block; margin-top: 2px; color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.5; }
+
+.thread-pr-editor { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s-3); padding: var(--s-3); border: 1px solid var(--line-strong); border-radius: var(--r-md); background: color-mix(in srgb, var(--text) 3%, transparent); animation: thread-pr-expand var(--t-mid) var(--ease) both; }
+.thread-pr-editor.confirm { border-color: var(--green-line); background: var(--green-soft); }
+/* A confirmation that cannot go ahead must not be dressed as a go signal.
+   Green framing around a red refusal reads as two instructions at once. */
+.thread-pr-editor.confirm.stopped { border-color: color-mix(in srgb, var(--red) 26%, var(--line)); background: color-mix(in srgb, var(--red) 6%, transparent); }
+
+.thread-pr-confirm-line { margin: 0; color: var(--text); font-size: var(--fs-ui); line-height: 1.45; }
+.thread-pr-confirm-line b { font-weight: 650; }
+
+.thread-pr-methods { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s-2); margin: 0; padding: 0; border: 0; }
+.thread-pr-methods legend { padding: 0 0 var(--s-1); color: var(--muted-2); font-size: var(--fs-micro); font-weight: 650; text-transform: uppercase; letter-spacing: var(--track-caps); }
+.thread-pr-methods input { accent-color: var(--green); }
+
+.thread-pr-blockers { display: grid; grid-template-columns: minmax(0, 1fr); gap: 5px; margin: 0; padding: 0; list-style: none; font-size: var(--fs-meta); line-height: 1.5; }
+.thread-pr-blockers li { display: grid; grid-template-columns: 14px minmax(0, 1fr); gap: 6px; align-items: start; }
+.thread-pr-blockers li svg { margin-top: 2px; }
+.thread-pr-blockers.hard { color: color-mix(in srgb, var(--red) 68%, var(--text)); }
+.thread-pr-blockers.hard svg { color: var(--red); }
+.thread-pr-blockers.soft { color: var(--ink-2); }
+.thread-pr-blockers.soft svg { color: var(--orange); }
+
+.thread-pr-plan { display: grid; grid-template-columns: minmax(0, 1fr); gap: 5px; padding: 10px; border: 1px solid var(--line); border-radius: var(--r-sm); background: color-mix(in srgb, var(--text) 2.5%, transparent); }
+.thread-pr-plan strong { color: var(--muted-2); font-size: var(--fs-micro); font-weight: 650; text-transform: uppercase; letter-spacing: var(--track-caps); }
+.thread-pr-plan ol { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; margin: 0; padding-left: 17px; color: var(--ink-2); font-size: var(--fs-meta); line-height: 1.5; }
+.thread-pr-plan b { color: var(--text); font-family: var(--font-mono); font-weight: 600; }
+
+.thread-pr-fineprint { margin: 0; color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.5; }
+.thread-pr-fineprint.bad { color: color-mix(in srgb, var(--red) 64%, var(--text)); }
+
+.thread-pr-empty { display: grid; grid-template-columns: minmax(0, 1fr); justify-items: center; gap: 6px; padding: var(--s-5) var(--s-4); border: 1px dashed var(--line-strong); border-radius: var(--r-md); text-align: center; }
+.thread-pr-empty > svg { color: var(--muted-2); }
+.thread-pr-empty strong { font-size: var(--fs-ui); }
+.thread-pr-empty span { max-width: 34ch; color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.55; }
+
+/* ---- Reviewing what a commit-and-push would sweep up ---- */
+
+.thread-pr-review { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s-2); padding: 10px; border: 1px solid var(--line); border-radius: var(--r-sm); background: color-mix(in srgb, var(--text) 2.5%, transparent); }
+.thread-pr-review-toggle { width: 100%; min-width: 0; display: flex; align-items: center; gap: 6px; padding: 0; border: 0; border-radius: var(--r-xs); color: var(--ink-2); background: transparent; font-size: var(--fs-meta); text-align: left; cursor: pointer; transition: color var(--t-fast) ease; }
+.thread-pr-review-toggle:hover { color: var(--text); }
+.thread-pr-review-toggle > span { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.thread-pr-review-toggle > svg { flex: 0 0 auto; color: var(--muted-2); transition: transform var(--t-fast) var(--ease); }
+.thread-pr-review-toggle[aria-expanded="true"] > svg { transform: rotate(90deg); }
+.thread-pr-review-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s-2); animation: thread-pr-expand var(--t-mid) var(--ease) both; }
+.thread-pr-review-group { display: grid; grid-template-columns: minmax(0, 1fr); gap: 5px; justify-items: start; }
+.thread-pr-review-label { display: flex; align-items: center; gap: 5px; margin: 0; color: var(--muted-2); font-size: var(--fs-micro); font-weight: 650; text-transform: uppercase; letter-spacing: var(--track-caps); }
+.thread-pr-review-label b { color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.thread-pr-review-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; width: 100%; margin: 0; padding: 0; list-style: none; }
+.thread-pr-review-list li { min-width: 0; overflow: hidden; color: var(--ink-2); font: var(--fs-micro)/1.6 var(--font-mono); white-space: nowrap; text-overflow: ellipsis; }
+
+/* ---- Motion ---- */
+
+@keyframes thread-pr-pop { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+@keyframes thread-pr-expand { from { opacity: 0; transform: translateY(-4px) scale(.985); } to { opacity: 1; transform: none; } }
+@keyframes thread-pr-breathe { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .thread-pr-note, .thread-pr-card, .thread-pr-editor, .thread-pr-review-body { animation: none; }
+  .thread-pr-review-toggle > svg { transition: none; }
+  .thread-pr-signal.wait svg { animation: none; }
+  .thread-pr-actions button:active:not(:disabled), .thread-pr-wide-button:active:not(:disabled) { transform: none; }
+}
+
+/* ---- Narrow dock ----
+   Measured against the panel's own width, not the window's: the dock is
+   dragged between roughly 360px and 500px while the window stays wide, and
+   the tab rail, border and gutters take about 95px of that before this panel
+   sees any of it. 320px is where a text field and its button stop fitting on
+   one line. */
+
+@container thread-pr (max-width: 320px) {
+  .thread-pr-actions button { flex: 1 1 auto; justify-content: center; }
+  .thread-pr-actions.end button { flex: 1 1 auto; }
+  .thread-pr-row { flex-direction: column; }
+  .thread-pr-row .thread-pr-wide-button { width: 100%; }
+  .thread-pr-fact { max-width: 46%; }
+}

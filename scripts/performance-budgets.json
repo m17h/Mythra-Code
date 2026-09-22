@@ -483,20 +483,70 @@
           }
         }
       }
+    },
+    {
+      "change": "Add durable per-thread GitHub pull request workflow",
+      "decision": "Accept the measured feature cost of durable PR links, scoped request and mutation coordination, narrow header control, and guided attach/create/ready/merge UI. The panel and its CSS are lazy; only the compact header style and controller are eager. No dependency or AI request is added. GitHub refreshes run at most once per minute for the visible linked thread, pause while the document or Git panel is hidden, and coalesce overlapping reads. Cached results and review lists are bounded. This is a functionality tradeoff, not a performance improvement claim. See docs/performance/thread-pull-requests.md and the explicit PR performance-regression review. Limits match the measured build without additional headroom.",
+      "measurements": {
+        "safari13-minified": {
+          "appEntryRawBytes": {
+            "before": 380346,
+            "after": 396595,
+            "delta": 16249
+          },
+          "startupJsRawBytes": {
+            "before": 756716,
+            "after": 775587,
+            "delta": 18871
+          },
+          "startupCssRawBytes": {
+            "before": 363306,
+            "after": 365119,
+            "delta": 1813
+          },
+          "totalJsRawBytes": {
+            "before": 1528800,
+            "after": 1577108,
+            "delta": 48308
+          }
+        },
+        "chrome105-minified": {
+          "appEntryRawBytes": {
+            "before": 360236,
+            "after": 375484,
+            "delta": 15248
+          },
+          "startupJsRawBytes": {
+            "before": 728560,
+            "after": 746361,
+            "delta": 17801
+          },
+          "startupCssRawBytes": {
+            "before": 356763,
+            "after": 358576,
+            "delta": 1813
+          },
+          "totalJsRawBytes": {
+            "before": 1489645,
+            "after": 1536638,
+            "delta": 46993
+          }
+        }
+      }
     }
   ],
   "profiles": {
     "safari13-minified": {
-      "appEntryRawBytes": 380346,
-      "startupJsRawBytes": 756716,
-      "startupCssRawBytes": 363306,
-      "totalJsRawBytes": 1528800
+      "appEntryRawBytes": 396595,
+      "startupJsRawBytes": 775587,
+      "startupCssRawBytes": 365119,
+      "totalJsRawBytes": 1577108
     },
     "chrome105-minified": {
-      "appEntryRawBytes": 360236,
-      "startupJsRawBytes": 728560,
-      "startupCssRawBytes": 356763,
-      "totalJsRawBytes": 1489645
+      "appEntryRawBytes": 375484,
+      "startupJsRawBytes": 746361,
+      "startupCssRawBytes": 358576,
+      "totalJsRawBytes": 1536638
     }
   }
 }

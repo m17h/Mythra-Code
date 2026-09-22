@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useEffect } from "react";
 import type { Thread } from "./types";
+import type { PullRequest } from "./lib/pullRequests";
 
 /**
  * Integration harness for App-level lifecycle regressions. Mocks the Tauri
@@ -65,6 +66,14 @@ const THREAD_B: Thread = {
   cwd: PROJECT_A.path,
   updatedAt: 1_700_000_100,
   modelProvider: "openai",
+};
+
+const LINKED_PR: PullRequest = {
+  repository: "test-user/alpha", number: 31, url: "https://github.com/test-user/alpha/pull/31",
+  title: "Improve Alpha", body: "Review these changes", state: "OPEN", isDraft: false,
+  headRefName: "feature/alpha", baseRefName: "main", headOid: "a".repeat(40),
+  mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: "APPROVED",
+  checks: [], updatedAt: "2026-09-22T12:00:00Z", canMerge: true, mergeMethods: ["squash"],
 };
 
 type Deferred<T> = { promise: Promise<T>; resolve: (value: T) => void };
@@ -154,6 +163,13 @@ function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
       behind: 0,
     };
   }
+  if (command === "github_pr_context") return {
+    repository: "test-user/alpha", branch: "feature/alpha", defaultBranch: "main",
+    headOid: "a".repeat(40), dirty: false, ahead: 1, behind: 0,
+    pushRemote: "origin", permission: "write", mergeMethods: ["squash"],
+  };
+  if (command === "github_pr_find") return null;
+  if (command === "github_pr_view") return LINKED_PR;
   if (command === "state_read") return null;
   if (command === "local_transcript_list") return [];
   if (command === "audit_recent") return [];
@@ -3477,5 +3493,26 @@ describe("project Run button", () => {
       expect(stored.find((project) => project.id === "project-a")?.overrides?.run?.command).toBe("make dev");
       expect(stored.find((project) => project.id === "project-b")?.overrides?.run).toBeUndefined();
     });
+  });
+});
+
+
+describe("Thread pull request integration", () => {
+  it("attaches a PR durably to one thread without attaching it to its shared-folder neighbour", async () => {
+    const user = userEvent.setup();
+    await renderApp();
+    await user.click(await screen.findByText("Alpha thread", { selector: ".thread-card-title" }));
+    await user.click(await screen.findByRole("button", { name: /^Pull requests for/ }));
+    const reference = await screen.findByRole("textbox", { name: "Pull request number or link" });
+    await user.type(reference, "#31");
+    expect(within(screen.getByRole("region", { name: "Pull request" })).getByRole("button", { name: "Attach" })).toBeEnabled();
+    await user.click(within(screen.getByRole("region", { name: "Pull request" })).getByRole("button", { name: "Attach" }));
+    expect(await screen.findByText("Improve Alpha")).toBeInTheDocument();
+    await waitFor(() => expect(JSON.parse(localStorage.getItem("kiwi.threadPullRequests") || "{}")[THREAD_A.id]?.number).toBe(31));
+    await user.click(screen.getByText("Beta thread", { selector: ".thread-card-title" }));
+    await waitFor(() => expect(screen.queryByText("Improve Alpha")).not.toBeInTheDocument());
+    expect(JSON.parse(localStorage.getItem("kiwi.threadPullRequests") || "{}")[THREAD_B.id]).toBeUndefined();
+    await user.click(screen.getByText("Alpha thread", { selector: ".thread-card-title" }));
+    expect(await screen.findByText("Improve Alpha")).toBeInTheDocument();
   });
 });

@@ -48,6 +48,9 @@ import { AuthRequiredModal, RuntimeSetupModal } from "./components/RuntimeModals
 import type { AgentRecord, AttachmentRecord, McpView } from "./components/StudioDock";
 import { isStudioTab, type StudioTab } from "./lib/studioTabs";
 import type { GitPanelAction, GitRepositoryState } from "./components/GitPanel";
+import { ThreadPullRequestChip } from "./components/ThreadPullRequestChip";
+import { useThreadPullRequest } from "./hooks/useThreadPullRequest";
+import { isPullRequestMutationRunning } from "./lib/pullRequestOperations";
 import type { Account, Activity, AppSettings, ArchivedThread, ChatFont, ChatMessage, CustomAgentProfile, PendingApproval, PermissionMode, Project, ProjectAction, ProjectPromptMode, ProjectSubagentSettings, EffortSliderStyle, PromptProfile, Provider, ScheduledTask, ScheduleRunRecord, SettingsSection, Thread, ThreadHandoff, ThreadReasoning, ThemeName, WorkspaceMode } from "./types";
 import type { ProjectRunCommand } from "./types";
 import { PendingTurnStarts } from "./lib/pendingTurnStarts";
@@ -172,6 +175,7 @@ import {
 
 const CommandPalette = lazy(() => import("./components/CommandPalette").then((module) => ({ default: module.CommandPalette })));
 const ChatTimeline = lazy(() => import("./components/ChatTimeline").then((module) => ({ default: module.ChatTimeline })));
+const ThreadPullRequestPanel = lazy(() => import("./components/ThreadPullRequestPanel").then((module) => ({ default: module.ThreadPullRequestPanel })));
 const StudioDock = lazy(() => import("./components/StudioDock").then((module) => ({ default: module.StudioDock })));
 const OnboardingModal = lazy(() => import("./components/OnboardingModal").then((module) => ({ default: module.OnboardingModal })));
 let settingsModalPromise: ReturnType<typeof importSettingsModal> | null = null;
@@ -4373,6 +4377,7 @@ export default function App() {
       setAttachmentDrafts((current) => forgetAttachmentDraft(current, threadId));
       setPinnedThreadIds((current) => (current.includes(threadId) ? current.filter((id) => id !== threadId) : current));
       forgetThreadCheckpoints(threadId);
+      threadPullRequest.forgetThread(threadId);
       const bindings = threadProjectBindingsRef.current ?? {};
       if (threadId in bindings) {
         const next = { ...bindings };
@@ -4423,6 +4428,7 @@ export default function App() {
   const openStudio = (tab: StudioTab) => {
     setStudioTab(tab);
     setStudioOpen(true);
+    if (tab === "git") void refreshGitHubAccount();
   };
 
   /**
@@ -4647,6 +4653,10 @@ export default function App() {
 
   const applyActiveWorktree = async () => {
     if (!activeThread || !activeThreadWorktree) return;
+    if ([activeThreadWorktree.path, activeThreadWorktree.projectPath].some(isPullRequestMutationRunning)) {
+      setError("Wait for the pull request operation to finish before changing this workspace.");
+      return;
+    }
     if (projectHasActiveTask(activeThreadWorktree.path) || projectHasActiveTask(activeThreadWorktree.projectPath)) {
       setError("Wait for every active task in the isolated worktree and source project to finish before applying changes.");
       return;
@@ -4658,6 +4668,10 @@ export default function App() {
       `Apply all changes from “${activeThreadWorktree.branch}” to the shared project?\n\n`
       + `Mythra Code will save the shared project as a safety checkpoint first. The isolated branch and worktree remain unchanged, and Git staging and commits are not modified.${recreationWarning}`,
     )) return;
+    if ([activeThreadWorktree.path, activeThreadWorktree.projectPath].some(isPullRequestMutationRunning)) {
+      setError("Wait for the pull request operation to finish before changing this workspace.");
+      return;
+    }
     setWorktreeBusy(true);
     try {
       await runCheckpointProjectOperation(activeThreadWorktree.projectPath, async () => {
@@ -4699,6 +4713,10 @@ export default function App() {
 
   const mergeActiveWorktree = async () => {
     if (!activeThread || !activeThreadWorktree) return;
+    if ([activeThreadWorktree.path, activeThreadWorktree.projectPath].some(isPullRequestMutationRunning)) {
+      setError("Wait for the pull request operation to finish before changing this workspace.");
+      return;
+    }
     if (projectHasActiveTask(activeThreadWorktree.path) || projectHasActiveTask(activeThreadWorktree.projectPath)) {
       setError("Wait for every active task in the isolated worktree and source project to finish before merging.");
       return;
@@ -4707,6 +4725,10 @@ export default function App() {
       `Merge “${activeThreadWorktree.branch}” into the source project's current branch?\n\n`
       + "Both working folders must be clean and all isolated changes must be committed. Mythra Code saves a safety checkpoint first and aborts automatically if Git reports a conflict.",
     )) return;
+    if ([activeThreadWorktree.path, activeThreadWorktree.projectPath].some(isPullRequestMutationRunning)) {
+      setError("Wait for the pull request operation to finish before changing this workspace.");
+      return;
+    }
     setWorktreeBusy(true);
     try {
       await runCheckpointProjectOperation(activeThreadWorktree.projectPath, async () => {
@@ -4745,6 +4767,10 @@ export default function App() {
 
   const removeActiveWorktree = async () => {
     if (!activeThread || !activeThreadWorktree) return;
+    if ([activeThreadWorktree.path, activeThreadWorktree.projectPath].some(isPullRequestMutationRunning)) {
+      setError("Wait for the pull request operation to finish before changing this workspace.");
+      return;
+    }
     if (projectHasActiveTask(activeThreadWorktree.path) || projectHasActiveTask(activeThreadWorktree.projectPath)) {
       setError("Wait for active tasks in the isolated worktree and source project before removing it.");
       return;
@@ -4838,6 +4864,10 @@ export default function App() {
     if (!await confirmDialog(
       "Recreate this worktree from its committed branch?\n\nUncommitted files from the missing folder cannot be recovered. Changes already applied to the shared project remain there, but a later Apply may reconcile them with the recreated branch and will save a safety checkpoint first.",
     )) return;
+    if ([activeThreadWorktree.path, activeThreadWorktree.projectPath].some(isPullRequestMutationRunning)) {
+      setError("Wait for the pull request operation to finish before changing this workspace.");
+      return;
+    }
     setWorktreeBusy(true);
     try {
       const recreated = await recreateThreadWorktree(
@@ -4972,6 +5002,37 @@ export default function App() {
     setGitCommitSuccess("");
   }, [activeExecutionPath, activeProject?.id, activeProject?.name, refreshGitHubRepo]);
 
+  const prMutationBlockedReason = effectiveSettings.permission === "read-only"
+    ? "Switch this thread to Ask or Full access before changing Git or a pull request."
+    : worktreeBusy || gitCommitBusy || githubBusy || checkpointBusyId
+      ? "Wait for the current workspace operation to finish."
+      : activeExecutionPath && projectHasActiveTask(activeExecutionPath)
+        ? "Wait for agents working in this folder to finish before changing Git."
+        : null;
+  const prWorkspaceScope = `${activeThreadId ?? ""}\0${activeExecutionPath ?? ""}`;
+  const prWorkspaceScopeRef = useRef(prWorkspaceScope);
+  prWorkspaceScopeRef.current = prWorkspaceScope;
+  const threadPullRequest = useThreadPullRequest({
+    threadId: activeThreadId,
+    cwd: activeExecutionPath || activeProject?.path || null,
+    projectPath: activeProject?.path ?? null,
+    isolated: Boolean(activeThreadWorktree && activeThreadWorktree.status !== "removed"),
+    enabled: Boolean(activeThreadId && activeProject && !activeWorkspace?.isChat && githubStatus?.authenticated),
+    visible: studioOpen && studioTab === "git",
+    mutationBlockedReason: prMutationBlockedReason,
+    checkMutationAllowed: (cwd) => {
+      if (effectiveSettings.permission === "read-only") return "Switch this thread to Ask or Full access first.";
+      if (worktreeBusy || gitCommitBusy || githubBusy || checkpointBusyId) return "Wait for the current workspace operation to finish.";
+      if (projectHasActiveTask(cwd)) return "Wait for agents working in this folder to finish before changing Git.";
+      return null;
+    },
+    onChanged: () => {
+      if (prWorkspaceScopeRef.current !== prWorkspaceScope) return;
+      void refreshGitHubRepo();
+      void refreshDiff();
+    },
+  });
+
   const runGitAction = async (action: GitPanelAction, commitMessageInput?: string) => {
     if (!activeProject) return;
     const unavailable = gitActionUnavailableReason(action, effectiveSettings.permission);
@@ -4980,6 +5041,10 @@ export default function App() {
       return;
     }
     const commandPath = activeExecutionPath || activeProject.path;
+    if (action !== "status" && action !== "diff" && isPullRequestMutationRunning(commandPath)) {
+      setGitOutput("Wait for the pull request operation to finish before changing Git.");
+      return;
+    }
     const projectSequence = gitProjectSequenceRef.current;
     const isCurrentProject = () => gitProjectSequenceRef.current === projectSequence;
     const gitRoots = activeThreadWorktree?.gitDir ? [activeThreadWorktree.gitDir] : [];
@@ -5092,6 +5157,10 @@ export default function App() {
 
   const attachActiveGitHubRemote = async (url: string) => {
     if (!activeProject || !url.trim()) return;
+    if (isPullRequestMutationRunning(activeExecutionPath || activeProject.path)) {
+      setGitOutput("Wait for the pull request operation to finish before changing GitHub settings.");
+      return;
+    }
     const unavailable = gitActionUnavailableReason("attach", effectiveSettings.permission);
     if (unavailable) {
       setGitOutput(unavailable);
@@ -5111,6 +5180,10 @@ export default function App() {
 
   const createActiveGitHubRepository = async (name: string, visibility: "private" | "public") => {
     if (!activeProject || !name.trim()) return;
+    if (isPullRequestMutationRunning(activeExecutionPath || activeProject.path)) {
+      setGitOutput("Wait for the pull request operation to finish before changing GitHub settings.");
+      return;
+    }
     const unavailable = gitActionUnavailableReason("create", effectiveSettings.permission);
     if (unavailable) {
       setGitOutput(unavailable);
@@ -5220,7 +5293,12 @@ export default function App() {
       return;
     }
     const commandPath = activeExecutionPath || activeProject.path;
+    if (isPullRequestMutationRunning(commandPath)) {
+      setGitOutput("Wait for the pull request operation to finish before changing Git.");
+      return;
+    }
     if (action === "revert" && !await confirmDialog(`Revert changes to ${path}?`)) return;
+    if (isPullRequestMutationRunning(commandPath)) return;
     const command = action === "stage" ? ["git", "add", "--", path] : ["git", "restore", "--staged", "--worktree", "--", path];
     try {
       const result = await executeCommand(command, commandPath, activeThreadWorktree?.gitDir ? [activeThreadWorktree.gitDir] : []);
@@ -5735,6 +5813,14 @@ export default function App() {
                 <GitBranch size={12} /> <span>Isolated</span>
               </button>
             )}
+            {activeProject && !activeWorkspace?.isChat && (
+              <ThreadPullRequestChip
+                repository={threadPullRequest.pullRequest?.repository ?? githubRepoStatus?.repository}
+                pullRequest={threadPullRequest.pullRequest}
+                linked={threadPullRequest.linked}
+                onClick={() => openStudio("git")}
+              />
+            )}
             {activeThreadHandoff && (
               <button className="handoff-chip" onClick={() => {
                 // The source can be deleted or pruned out of the sidebar index
@@ -6239,6 +6325,19 @@ export default function App() {
             gitRepositoryStateDetail={githubRepoError || workspaceGitInfo?.error || undefined}
             gitInitializing={gitInitializing}
             githubAuthenticated={Boolean(githubStatus?.authenticated)}
+            pullRequestPanel={activeProject && !activeWorkspace?.isChat ? (
+              <Suspense fallback={<div className="tool-empty-line">Loading pull requests…</div>}>
+                <ThreadPullRequestPanel
+                  key={activeThreadId ?? activeProject.id}
+                  {...threadPullRequest}
+                  threadId={activeThreadId}
+                  isolated={Boolean(activeThreadWorktree && activeThreadWorktree.status !== "removed")}
+                  mutationBlockedReason={prMutationBlockedReason}
+                  onOpenWorktrees={() => openStudio("worktrees")}
+                  onOpenGitHubSettings={() => openSettings("github")}
+                />
+              </Suspense>
+            ) : undefined}
             githubRepoStatus={githubRepoStatus}
             githubRepoError={githubRepoError}
             gitActionsReadOnly={effectiveSettings.permission === "read-only"}

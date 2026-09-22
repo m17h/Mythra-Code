@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Bot,
   Boxes,
@@ -201,6 +201,12 @@ export function StudioDock(props: {
   onGitHubCreate: (name: string, visibility: "private" | "public") => void;
   onOpenGitHubSettings: () => void;
   onGitPathAction: (action: "stage" | "revert", path: string) => void;
+  /**
+   * The per-thread pull request workflow, rendered above the Git panel when
+   * the app supplies it. Optional so the dock keeps working — and its tests
+   * keep passing — wherever the workflow is not wired up.
+   */
+  pullRequestPanel?: ReactNode;
   onAttachPath: (path: string) => void;
   onProjectAction: (action: ProjectAction) => void;
   onRunWorkflow: (workflow: WorkflowDefinition) => void;
@@ -570,6 +576,7 @@ export function StudioDock(props: {
 
         {props.tab === "git" && <>
           <PanelHeader icon={GitBranch} title="Git workspace" subtitle="Shape changes without leaving MYTHRA CODE" onClose={props.onClose} />
+          {props.pullRequestPanel}
           <GitPanel
             key={props.projectPath ?? ""}
             repositoryState={props.gitRepositoryState}
@@ -588,6 +595,7 @@ export function StudioDock(props: {
             onGitHubAttach={props.onGitHubAttach}
             onGitHubCreate={props.onGitHubCreate}
             onOpenGitHubSettings={props.onOpenGitHubSettings}
+            hasPullRequestWorkflow={!!props.pullRequestPanel}
           />
         </>}
       </div>

@@ -626,4 +626,41 @@ describe("StudioDock", () => {
     expect(screen.getByRole("button", { name: "Stage all" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Commit all changes locally" })).toBeEnabled();
   });
+  it("keeps the legacy pull request controls when no workflow panel is supplied", () => {
+    // The default has to stay exactly as it was for every existing caller.
+    render(<StudioDock {...dockProps(true)} tab="git" />);
+
+    expect(screen.getByRole("button", { name: "Draft PR" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Review comments" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "CI checks" })).toBeInTheDocument();
+  });
+
+  it("renders the pull request workflow above Git and retires the controls it replaces", () => {
+    render(
+      <StudioDock
+        {...dockProps(true)}
+        tab="git"
+        pullRequestPanel={<div data-testid="pull-request-workflow">Pull request</div>}
+      />,
+    );
+
+    const workflow = screen.getByTestId("pull-request-workflow");
+    expect(workflow).toBeInTheDocument();
+
+    // It sits above the Git panel, not below it.
+    const commit = screen.getByText("Commit changes locally");
+    expect(workflow.compareDocumentPosition(commit) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    // Two answers to the same question would be one too many.
+    expect(screen.queryByRole("button", { name: "Draft PR" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "CI checks" })).not.toBeInTheDocument();
+
+    // But the workflow has no comment viewer, so the only way to read review
+    // comments in the app must not disappear with them.
+    expect(screen.getByRole("button", { name: "Review comments" })).toBeInTheDocument();
+
+    // Everything purely local is untouched.
+    expect(screen.getByRole("button", { name: "Commit all changes locally" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Stage all" })).toBeInTheDocument();
+  });
 });

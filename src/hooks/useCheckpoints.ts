@@ -1,3 +1,4 @@
+import { isPullRequestMutationRunning } from "../lib/pullRequestOperations";
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
 import {
   checkpointIsRestorable,
@@ -415,6 +416,10 @@ export function useCheckpoints(context: CheckpointsContext) {
       setError("This older conversation marker does not contain a restorable file snapshot.");
       return;
     }
+    if (isPullRequestMutationRunning(checkpoint.workspacePath)) {
+      setError("Wait for the pull request operation to finish before restoring a checkpoint.");
+      return;
+    }
     if (projectHasActiveTask(checkpoint.workspacePath)) {
       setError("Stop every active task in this project before restoring a checkpoint.");
       return;
@@ -430,6 +435,10 @@ export function useCheckpoints(context: CheckpointsContext) {
     // scheduler tick, workflow step, or queued turn can start editing in the
     // meantime. Re-check so the restore cannot rewrite the tree under a turn
     // that began while the dialog was up.
+    if (isPullRequestMutationRunning(checkpoint.workspacePath)) {
+      setError("Wait for the pull request operation to finish before restoring a checkpoint.");
+      return;
+    }
     if (projectHasActiveTask(checkpoint.workspacePath)) {
       setError("A task started in this project while the confirmation was open. Stop every active task before restoring a checkpoint.");
       return;

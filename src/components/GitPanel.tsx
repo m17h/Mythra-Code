@@ -41,6 +41,18 @@ export interface GitPanelProps {
   githubRepoError?: string;
   readOnly: boolean;
   defaultRepositoryName: string;
+  /**
+   * True when the dock is showing the per-thread pull request workflow above
+   * this panel.
+   *
+   * Only "Draft PR" and "CI checks" retire: the workflow opens pull requests
+   * itself and reports check state as real UI, so keeping those would offer
+   * two answers to one question. "Review comments" stays — the workflow has no
+   * comment viewer, and silently removing the only way to read review
+   * comments in the app would be taking a capability away rather than
+   * replacing it. Defaults to false so existing callers keep the whole row.
+   */
+  hasPullRequestWorkflow?: boolean;
   onAction: (action: GitPanelAction, commitMessage?: string) => void;
   onInitializeGit: () => void;
   onGitHubAttach: (url: string) => void;
@@ -163,8 +175,10 @@ function GitPanelInner(props: GitPanelProps) {
         <button onClick={() => props.onAction("pull")} disabled={props.readOnly || !props.githubRepoStatus?.upstream} title={props.readOnly ? READ_ONLY_REASON : "Fast-forward this branch from its upstream"}><RotateCw size={13} /> Pull</button>
         <button onClick={() => props.onAction("push")} disabled={props.readOnly || !props.githubRepoStatus?.repository || !props.githubRepoStatus.branch} title={props.readOnly ? READ_ONLY_REASON : !props.githubRepoStatus?.branch ? "Check out a named branch before pushing" : "Push committed changes to GitHub"}><Upload size={13} /> Push commits</button>
         <button onClick={() => props.onAction("comments")} disabled={props.readOnly || !props.githubRepoStatus?.repository} title={props.readOnly ? READ_ONLY_REASON : "Read this pull request's review comments"}><CodeXml size={13} /> Review comments</button>
-        <button onClick={() => props.onAction("ci")} disabled={props.readOnly || !props.githubRepoStatus?.repository} title={props.readOnly ? READ_ONLY_REASON : "Read this pull request's checks"}><ShieldCheck size={13} /> CI checks</button>
-        <button onClick={() => props.onAction("pr")} disabled={props.readOnly || !props.githubRepoStatus?.repository} title={props.readOnly ? READ_ONLY_REASON : "Open a draft pull request"}><GitFork size={13} /> Draft PR</button>
+        {!props.hasPullRequestWorkflow && <>
+          <button onClick={() => props.onAction("ci")} disabled={props.readOnly || !props.githubRepoStatus?.repository} title={props.readOnly ? READ_ONLY_REASON : "Read this pull request's checks"}><ShieldCheck size={13} /> CI checks</button>
+          <button onClick={() => props.onAction("pr")} disabled={props.readOnly || !props.githubRepoStatus?.repository} title={props.readOnly ? READ_ONLY_REASON : "Open a draft pull request"}><GitFork size={13} /> Draft PR</button>
+        </>}
       </div>
     </>
   );

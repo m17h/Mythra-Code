@@ -25,6 +25,13 @@ describe("durable storage", () => {
     expect(DURABLE_STORAGE_KEYS).toContain("kiwi.threadReasoning");
   });
 
+  it("restores thread PR links from native storage after the webview cache is cleared", async () => {
+    const links = { thread: { repository: "owner/project", number: 42, url: "https://github.com/owner/project/pull/42" } };
+    invoke.mockImplementation(async (command: string, args?: { key: string }) => command === "state_read" && args?.key === "kiwi.threadPullRequests" ? links : null);
+    await hydrateNativeStorage();
+    expect(loadStored("kiwi.threadPullRequests", {})).toEqual(links);
+  });
+
   it("removes legacy bundled prompt profiles without deleting user profiles or active prompt text", async () => {
     localStorage.setItem("kiwi.schemaVersion", "13");
     localStorage.setItem("kiwi.promptProfiles", JSON.stringify([

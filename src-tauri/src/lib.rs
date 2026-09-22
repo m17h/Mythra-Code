@@ -37,6 +37,7 @@ use unicode_segmentation::UnicodeSegmentation;
 mod agents;
 mod cursor;
 mod github;
+mod github_pr;
 mod openrouter_usage;
 mod persistence;
 mod process_launch;
@@ -66,6 +67,10 @@ use github::{
 use github::{
     github_attach_remote_sync, github_repo_status_sync, parse_github_repository,
     validate_github_repository_name,
+};
+use github_pr::{
+    github_pr_branch, github_pr_context, github_pr_create, github_pr_find, github_pr_merge,
+    github_pr_ready, github_pr_view,
 };
 use persistence::{
     local_transcript_full_read, local_transcript_list, local_transcript_metadata_write,
@@ -5604,6 +5609,13 @@ pub fn run() {
             github_attach_remote,
             github_create_repository,
             github_clone_repository,
+            github_pr_context,
+            github_pr_view,
+            github_pr_find,
+            github_pr_create,
+            github_pr_merge,
+            github_pr_branch,
+            github_pr_ready,
             claude_turn_start,
             claude_turn_steer,
             claude_turn_interrupt,
