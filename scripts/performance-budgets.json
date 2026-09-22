@@ -491,45 +491,45 @@
         "safari13-minified": {
           "appEntryRawBytes": {
             "before": 380346,
-            "after": 396595,
-            "delta": 16249
+            "after": 396661,
+            "delta": 16315
           },
           "startupJsRawBytes": {
             "before": 756716,
-            "after": 775587,
-            "delta": 18871
+            "after": 775653,
+            "delta": 18937
           },
           "startupCssRawBytes": {
             "before": 363306,
-            "after": 365119,
-            "delta": 1813
+            "after": 364225,
+            "delta": 919
           },
           "totalJsRawBytes": {
             "before": 1528800,
-            "after": 1577108,
-            "delta": 48308
+            "after": 1577029,
+            "delta": 48229
           }
         },
         "chrome105-minified": {
           "appEntryRawBytes": {
             "before": 360236,
-            "after": 375484,
-            "delta": 15248
+            "after": 375532,
+            "delta": 15296
           },
           "startupJsRawBytes": {
             "before": 728560,
-            "after": 746361,
-            "delta": 17801
+            "after": 746409,
+            "delta": 17849
           },
           "startupCssRawBytes": {
             "before": 356763,
-            "after": 358576,
-            "delta": 1813
+            "after": 357706,
+            "delta": 943
           },
           "totalJsRawBytes": {
             "before": 1489645,
-            "after": 1536638,
-            "delta": 46993
+            "after": 1536545,
+            "delta": 46900
           }
         }
       }
@@ -537,16 +537,16 @@
   ],
   "profiles": {
     "safari13-minified": {
-      "appEntryRawBytes": 396595,
-      "startupJsRawBytes": 775587,
-      "startupCssRawBytes": 365119,
-      "totalJsRawBytes": 1577108
+      "appEntryRawBytes": 396661,
+      "startupJsRawBytes": 775653,
+      "startupCssRawBytes": 364225,
+      "totalJsRawBytes": 1577029
     },
     "chrome105-minified": {
-      "appEntryRawBytes": 375484,
-      "startupJsRawBytes": 746361,
-      "startupCssRawBytes": 358576,
-      "totalJsRawBytes": 1536638
+      "appEntryRawBytes": 375532,
+      "startupJsRawBytes": 746409,
+      "startupCssRawBytes": 357706,
+      "totalJsRawBytes": 1536545
     }
   }
 }

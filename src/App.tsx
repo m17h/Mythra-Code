@@ -6325,7 +6325,7 @@ export default function App() {
             gitRepositoryStateDetail={githubRepoError || workspaceGitInfo?.error || undefined}
             gitInitializing={gitInitializing}
             githubAuthenticated={Boolean(githubStatus?.authenticated)}
-            pullRequestPanel={activeProject && !activeWorkspace?.isChat ? (
+            pullRequestPanel={activeProject && !activeWorkspace?.isChat && (threadPullRequest.linked || (githubStatus?.authenticated && githubRepoStatus?.repository)) ? (
               <Suspense fallback={<div className="tool-empty-line">Loading pull requests…</div>}>
                 <ThreadPullRequestPanel
                   key={activeThreadId ?? activeProject.id}

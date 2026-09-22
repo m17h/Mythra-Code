@@ -4,14 +4,14 @@ Baseline: `0ff56d0` (v1.17.5), identical installed dependencies, Node 26.0.0, pr
 
 | Target / raw bytes | Before | After | Change |
 | --- | ---: | ---: | ---: |
-| safari13-minified / appEntryRawBytes | 380,346 | 396,595 | +16,249 |
-| safari13-minified / startupJsRawBytes | 756,716 | 775,587 | +18,871 |
-| safari13-minified / startupCssRawBytes | 363,306 | 365,119 | +1,813 |
-| safari13-minified / totalJsRawBytes | 1,528,800 | 1,577,108 | +48,308 |
-| chrome105-minified / appEntryRawBytes | 360,236 | 375,484 | +15,248 |
-| chrome105-minified / startupJsRawBytes | 728,560 | 746,361 | +17,801 |
-| chrome105-minified / startupCssRawBytes | 356,763 | 358,576 | +1,813 |
-| chrome105-minified / totalJsRawBytes | 1,489,645 | 1,536,638 | +46,993 |
+| safari13-minified / appEntryRawBytes | 380,346 | 396,661 | +16,315 |
+| safari13-minified / startupJsRawBytes | 756,716 | 775,653 | +18,937 |
+| safari13-minified / startupCssRawBytes | 363,306 | 364,225 | +919 |
+| safari13-minified / totalJsRawBytes | 1,528,800 | 1,577,029 | +48,229 |
+| chrome105-minified / appEntryRawBytes | 360,236 | 375,532 | +15,296 |
+| chrome105-minified / startupJsRawBytes | 728,560 | 746,409 | +17,849 |
+| chrome105-minified / startupCssRawBytes | 356,763 | 357,706 | +943 |
+| chrome105-minified / totalJsRawBytes | 1,489,645 | 1,536,545 | +46,900 |
 
 The extra bytes implement the requested feature. This is not evidence of faster rendering or lower total memory use. The lazy PR panel includes its forms, confirmation states and stylesheet. The eager portion is the header chip, durable thread-link controller, and guards against competing operations. Existing animation behavior is retained.
 

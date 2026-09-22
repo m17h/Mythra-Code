@@ -664,3 +664,15 @@ describe("StudioDock", () => {
     expect(screen.getByRole("button", { name: "Stage all" })).toBeInTheDocument();
   });
 });
+
+
+it("uses the app menu for repository visibility while keeping local commits available", () => {
+  const props = dockProps(true);
+  const view = render(<StudioDock {...props} tab="git" githubAuthenticated defaultRepositoryName="local-project" />);
+  expect(view.container.querySelector("select")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Repository visibility" }));
+  fireEvent.click(screen.getByRole("menuitemradio", { name: "Public" }));
+  fireEvent.click(screen.getByRole("button", { name: "Create" }));
+  expect(props.onGitHubCreate).toHaveBeenCalledWith("local-project", "public");
+  expect(screen.getByRole("button", { name: "Commit all changes locally" })).toBeEnabled();
+});

@@ -3498,6 +3498,22 @@ describe("project Run button", () => {
 
 
 describe("Thread pull request integration", () => {
+  it("keeps local-only projects usable without showing a failed PR connection", async () => {
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "github_status") return { ...(stubInvoke(command, args) as object), authenticated: false };
+      if (command === "github_repo_status") return { isRepo: true, repository: null, remoteUrl: null, branch: "main", upstream: null, ahead: 0, behind: 0 };
+      return stubInvoke(command, args);
+    });
+    const user = userEvent.setup();
+    await renderApp();
+    await user.click(await screen.findByText("Alpha thread", { selector: ".thread-card-title" }));
+    await user.click(await screen.findByRole("button", { name: /^Pull requests/ }));
+    expect(await screen.findByRole("button", { name: "Commit all changes locally" })).toBeEnabled();
+    expect(screen.queryByRole("region", { name: "Pull request" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/cannot read this folder's Git repository/)).not.toBeInTheDocument();
+    expect(invokeMock.mock.calls.some(([command]) => command === "github_pr_context")).toBe(false);
+  });
+
   it("attaches a PR durably to one thread without attaching it to its shared-folder neighbour", async () => {
     const user = userEvent.setup();
     await renderApp();

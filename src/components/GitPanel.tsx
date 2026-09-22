@@ -1,7 +1,6 @@
 import { memo, useEffect, useState } from "react";
 import {
   CheckCircle2,
-  ChevronDown,
   CodeXml,
   GitBranch,
   GitCommitHorizontal,
@@ -14,6 +13,7 @@ import {
   ShieldCheck,
   Upload,
 } from "lucide-react";
+import { AppSelectMenu } from "./AppSelectMenu";
 import type { GitHubRepoStatus } from "../lib/github";
 
 /**
@@ -132,10 +132,13 @@ function GitPanelInner(props: GitPanelProps) {
           <div className="github-create-divider"><span>or create one</span></div>
           <div className="github-create-row">
             <input className="github-repo-name-input" value={repositoryName} onChange={(event) => setRepositoryName(event.target.value)} placeholder="repository-name" aria-label="New GitHub repository name" />
-            <span className="github-visibility-select">
-              <select value={visibility} onChange={(event) => setVisibility(event.target.value as "private" | "public")} aria-label="Repository visibility"><option value="private">Private</option><option value="public">Public</option></select>
-              <ChevronDown size={13} aria-hidden="true" />
-            </span>
+            <AppSelectMenu
+              value={visibility}
+              options={[{ value: "private", label: "Private" }, { value: "public", label: "Public" }]}
+              ariaLabel="Repository visibility"
+              portal
+              onChange={(value) => setVisibility(value === "public" ? "public" : "private")}
+            />
             <button
               className="github-create-button"
               onClick={() => props.onGitHubCreate(repositoryName.trim(), visibility)}
