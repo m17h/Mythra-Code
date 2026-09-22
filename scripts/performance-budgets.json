@@ -483,20 +483,106 @@
           }
         }
       }
+    },
+    {
+      "change": "Add durable per-thread GitHub pull request workflow",
+      "decision": "Accept the measured feature cost of durable PR links, scoped request and mutation coordination, narrow header control, and guided attach/create/ready/merge UI. The panel and its CSS are lazy; only the compact header style and controller are eager. No dependency or AI request is added. GitHub refreshes run at most once per minute for the visible linked thread, pause while the document or Git panel is hidden, and coalesce overlapping reads. Cached results and review lists are bounded. This is a functionality tradeoff, not a performance improvement claim. See docs/performance/thread-pull-requests.md and the explicit PR performance-regression review. Limits match the measured build without additional headroom.",
+      "measurements": {
+        "safari13-minified": {
+          "appEntryRawBytes": {
+            "before": 380346,
+            "after": 396661,
+            "delta": 16315
+          },
+          "startupJsRawBytes": {
+            "before": 756716,
+            "after": 775653,
+            "delta": 18937
+          },
+          "startupCssRawBytes": {
+            "before": 363306,
+            "after": 364225,
+            "delta": 919
+          },
+          "totalJsRawBytes": {
+            "before": 1528800,
+            "after": 1577029,
+            "delta": 48229
+          }
+        },
+        "chrome105-minified": {
+          "appEntryRawBytes": {
+            "before": 360236,
+            "after": 375532,
+            "delta": 15296
+          },
+          "startupJsRawBytes": {
+            "before": 728560,
+            "after": 746409,
+            "delta": 17849
+          },
+          "startupCssRawBytes": {
+            "before": 356763,
+            "after": 357706,
+            "delta": 943
+          },
+          "totalJsRawBytes": {
+            "before": 1489645,
+            "after": 1536545,
+            "delta": 46900
+          }
+        }
+      }
+    },
+    {
+      "change": "Expand local Git, publication, and pull-request workflow",
+      "decision": "Accept the measured feature and safety cost of local branch snapshots and guarded switching, staged and unstaged commit paths, guarded local-base updates, durable all-ref publication with restart/backoff recovery, immutable commit-SHA publication, exact remote compare-and-swap after descendant proof, native binding/upstream/history validation, attached-PR identity routing, and worktree completion checks. Automatic publication is off by default; its fifteen-second controller runs only while a project is opted in, coalesces new tips, and does not auto-commit, pull, rebase, reset, or overwrite history. The workflow CSS remains lazy, limiting startup CSS growth to 243 raw bytes on both targets. No dependency or model request is added. This is a measured functionality and safety cost, not a runtime improvement claim. See docs/performance/thread-pull-requests.md.",
+      "measurements": {
+        "safari13-minified": {
+          "appEntryRawBytes": { "before": 396661, "after": 413732, "delta": 17071 },
+          "startupJsRawBytes": { "before": 775653, "after": 793304, "delta": 17651 },
+          "startupCssRawBytes": { "before": 364225, "after": 364468, "delta": 243 },
+          "totalJsRawBytes": { "before": 1577029, "after": 1609562, "delta": 32533 }
+        },
+        "chrome105-minified": {
+          "appEntryRawBytes": { "before": 375532, "after": 392120, "delta": 16588 },
+          "startupJsRawBytes": { "before": 746409, "after": 763563, "delta": 17154 },
+          "startupCssRawBytes": { "before": 357706, "after": 357949, "delta": 243 },
+          "totalJsRawBytes": { "before": 1536545, "after": 1567952, "delta": 31407 }
+        }
+      }
+    },
+    {
+      "change": "Apply final independent Git and pull-request review repairs",
+      "decision": "Accept the measured final review cost of post-confirmation workspace guards, same-thread pull-request mutation exclusion, exact attached-PR command routing, disabled-publisher timer removal, and bounded fifteen-second polling. Compared with the pre-review 8e3ff2b snapshot, startup JavaScript grows by 1,612 raw bytes on Safari and 1,568 on Chrome, total JavaScript grows by 1,736 and 1,702 raw bytes respectively, and CSS does not grow. These are correctness, safety, and bounded-runtime repairs with no dependency or model request added. Limits match the final production builds exactly without additional headroom.",
+      "measurements": {
+        "safari13-minified": {
+          "appEntryRawBytes": { "before": 413732, "after": 415285, "delta": 1553 },
+          "startupJsRawBytes": { "before": 793304, "after": 794916, "delta": 1612 },
+          "startupCssRawBytes": { "before": 364468, "after": 364468, "delta": 0 },
+          "totalJsRawBytes": { "before": 1609562, "after": 1611298, "delta": 1736 }
+        },
+        "chrome105-minified": {
+          "appEntryRawBytes": { "before": 392120, "after": 393629, "delta": 1509 },
+          "startupJsRawBytes": { "before": 763563, "after": 765131, "delta": 1568 },
+          "startupCssRawBytes": { "before": 357949, "after": 357949, "delta": 0 },
+          "totalJsRawBytes": { "before": 1567952, "after": 1569654, "delta": 1702 }
+        }
+      }
     }
   ],
   "profiles": {
     "safari13-minified": {
-      "appEntryRawBytes": 380346,
-      "startupJsRawBytes": 756716,
-      "startupCssRawBytes": 363306,
-      "totalJsRawBytes": 1528800
+      "appEntryRawBytes": 415285,
+      "startupJsRawBytes": 794916,
+      "startupCssRawBytes": 364468,
+      "totalJsRawBytes": 1611298
     },
     "chrome105-minified": {
-      "appEntryRawBytes": 360236,
-      "startupJsRawBytes": 728560,
-      "startupCssRawBytes": 356763,
-      "totalJsRawBytes": 1489645
+      "appEntryRawBytes": 393629,
+      "startupJsRawBytes": 765131,
+      "startupCssRawBytes": 357949,
+      "totalJsRawBytes": 1569654
     }
   }
 }

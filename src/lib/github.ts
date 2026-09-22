@@ -30,6 +30,9 @@ export type GitWorkspaceAction =
   | "revert"
   | "commit"
   | "commitPush"
+  | "commitStaged"
+  | "commitStagedPush"
+  | "unstage"
   | "fetch"
   | "pull"
   | "push"
@@ -114,8 +117,13 @@ export function gitPushCompletionNote(statusPorcelain: string): string {
 export function githubCliCommand(
   binary: string,
   action: Extract<GitWorkspaceAction, "comments" | "ci" | "pr">,
+  attached?: { repository: string; number: number },
 ): string[] {
-  if (action === "comments") return [binary, "pr", "view", "--comments"];
-  if (action === "ci") return [binary, "pr", "checks"];
+  if (action === "comments") return attached
+    ? [binary, "pr", "view", String(attached.number), "--repo", attached.repository, "--comments"]
+    : [binary, "pr", "view", "--comments"];
+  if (action === "ci") return attached
+    ? [binary, "pr", "checks", String(attached.number), "--repo", attached.repository]
+    : [binary, "pr", "checks"];
   return [binary, "pr", "create", "--draft", "--fill"];
 }

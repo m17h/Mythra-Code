@@ -5,6 +5,9 @@ import { forgetQuestionRecords } from "./lib/agentQuestionRecords";
 import { AgentQuestionDelivery } from "./lib/agentQuestionContext";
 import { useTranscriptSaves } from "./hooks/useTranscriptSaves";
 import { flushBeforeClose, useFlushOnClose } from "./hooks/useFlushOnClose";
+import { useGitWorkspace } from "./hooks/useGitWorkspace";
+import { useGitAutoPublish } from "./hooks/useGitAutoPublish";
+import { getGitWorkspace, type GitWorkflowControls, type GitWorkspaceSnapshot } from "./lib/gitWorkspace";
 import { useGitHubLogin } from "./hooks/useGitHubLogin";
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type CSSProperties, type Dispatch, type PointerEvent as ReactPointerEvent, type SetStateAction } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
@@ -48,6 +51,9 @@ import { AuthRequiredModal, RuntimeSetupModal } from "./components/RuntimeModals
 import type { AgentRecord, AttachmentRecord, McpView } from "./components/StudioDock";
 import { isStudioTab, type StudioTab } from "./lib/studioTabs";
 import type { GitPanelAction, GitRepositoryState } from "./components/GitPanel";
+import { ThreadPullRequestChip } from "./components/ThreadPullRequestChip";
+import { useThreadPullRequest } from "./hooks/useThreadPullRequest";
+import { acquirePullRequestMutation, releasePullRequestMutation, isPullRequestMutationRunning } from "./lib/pullRequestOperations";
 import type { Account, Activity, AppSettings, ArchivedThread, ChatFont, ChatMessage, CustomAgentProfile, PendingApproval, PermissionMode, Project, ProjectAction, ProjectPromptMode, ProjectSubagentSettings, EffortSliderStyle, PromptProfile, Provider, ScheduledTask, ScheduleRunRecord, SettingsSection, Thread, ThreadHandoff, ThreadReasoning, ThemeName, WorkspaceMode } from "./types";
 import type { ProjectRunCommand } from "./types";
 import { PendingTurnStarts } from "./lib/pendingTurnStarts";
@@ -172,6 +178,7 @@ import {
 
 const CommandPalette = lazy(() => import("./components/CommandPalette").then((module) => ({ default: module.CommandPalette })));
 const ChatTimeline = lazy(() => import("./components/ChatTimeline").then((module) => ({ default: module.ChatTimeline })));
+const ThreadPullRequestPanel = lazy(() => import("./components/ThreadPullRequestPanel").then((module) => ({ default: module.ThreadPullRequestPanel })));
 const StudioDock = lazy(() => import("./components/StudioDock").then((module) => ({ default: module.StudioDock })));
 const OnboardingModal = lazy(() => import("./components/OnboardingModal").then((module) => ({ default: module.OnboardingModal })));
 let settingsModalPromise: ReturnType<typeof importSettingsModal> | null = null;
@@ -3172,6 +3179,7 @@ export default function App() {
     const confirmed = await confirmDialog(`Remove “${project.name}” from Mythra Code?\n\nIts folder and every file inside it will remain untouched on your computer.`);
     if (!confirmed) return;
     const next = projects.filter((entry) => entry.id !== project.id);
+    autoPublish.disable(project.id);
     setProjects(next);
     if (activeProjectId === project.id) {
       setActiveProjectId(next[0]?.id ?? null);
@@ -4373,6 +4381,7 @@ export default function App() {
       setAttachmentDrafts((current) => forgetAttachmentDraft(current, threadId));
       setPinnedThreadIds((current) => (current.includes(threadId) ? current.filter((id) => id !== threadId) : current));
       forgetThreadCheckpoints(threadId);
+      threadPullRequest.forgetThread(threadId);
       const bindings = threadProjectBindingsRef.current ?? {};
       if (threadId in bindings) {
         const next = { ...bindings };
@@ -4423,6 +4432,7 @@ export default function App() {
   const openStudio = (tab: StudioTab) => {
     setStudioTab(tab);
     setStudioOpen(true);
+    if (tab === "git") void refreshGitHubAccount();
   };
 
   /**
@@ -4647,6 +4657,11 @@ export default function App() {
 
   const applyActiveWorktree = async () => {
     if (!activeThread || !activeThreadWorktree) return;
+    if (effectiveSettings.permission === "read-only") { setError("Switch this thread to Ask or Full access before changing worktrees."); return; }
+    if ([activeThreadWorktree.path, activeThreadWorktree.projectPath].some(isPullRequestMutationRunning)) {
+      setError("Wait for the pull request operation to finish before changing this workspace.");
+      return;
+    }
     if (projectHasActiveTask(activeThreadWorktree.path) || projectHasActiveTask(activeThreadWorktree.projectPath)) {
       setError("Wait for every active task in the isolated worktree and source project to finish before applying changes.");
       return;
@@ -4658,6 +4673,14 @@ export default function App() {
       `Apply all changes from “${activeThreadWorktree.branch}” to the shared project?\n\n`
       + `Mythra Code will save the shared project as a safety checkpoint first. The isolated branch and worktree remain unchanged, and Git staging and commits are not modified.${recreationWarning}`,
     )) return;
+    if ([activeThreadWorktree.path, activeThreadWorktree.projectPath].some(isPullRequestMutationRunning)) {
+      setError("Wait for the pull request operation to finish before changing this workspace.");
+      return;
+    }
+    if (projectHasActiveTask(activeThreadWorktree.path) || projectHasActiveTask(activeThreadWorktree.projectPath)) {
+      setError("The workspace became busy. Try again after its current operation finishes.");
+      return;
+    }
     setWorktreeBusy(true);
     try {
       await runCheckpointProjectOperation(activeThreadWorktree.projectPath, async () => {
@@ -4699,14 +4722,29 @@ export default function App() {
 
   const mergeActiveWorktree = async () => {
     if (!activeThread || !activeThreadWorktree) return;
+    if (effectiveSettings.permission === "read-only") { setError("Switch this thread to Ask or Full access before changing worktrees."); return; }
+    if ([activeThreadWorktree.path, activeThreadWorktree.projectPath].some(isPullRequestMutationRunning)) {
+      setError("Wait for the pull request operation to finish before changing this workspace.");
+      return;
+    }
     if (projectHasActiveTask(activeThreadWorktree.path) || projectHasActiveTask(activeThreadWorktree.projectPath)) {
       setError("Wait for every active task in the isolated worktree and source project to finish before merging.");
       return;
     }
+    let destination: GitWorkspaceSnapshot;
+    try {
+      destination = await getGitWorkspace(activeThreadWorktree.projectPath);
+      if (!destination.branch || !destination.headOid) throw new Error("The shared project needs a named branch and an initial commit before merging.");
+    } catch (reason) { setError(friendlyError(reason)); return; }
     if (!await confirmDialog(
-      `Merge “${activeThreadWorktree.branch}” into the source project's current branch?\n\n`
+      `Merge “${activeThreadWorktree.branch}” into local branch “${destination.branch}” in the shared project?\n\n`
       + "Both working folders must be clean and all isolated changes must be committed. Mythra Code saves a safety checkpoint first and aborts automatically if Git reports a conflict.",
     )) return;
+    if ([activeThreadWorktree.path, activeThreadWorktree.projectPath].some(isPullRequestMutationRunning)) {
+      setError("Wait for the pull request operation to finish before changing this workspace.");
+      return;
+    }
+    if (projectHasActiveTask(activeThreadWorktree.path) || projectHasActiveTask(activeThreadWorktree.projectPath)) { setError("The workspace became busy. Try again after its current operation finishes."); return; }
     setWorktreeBusy(true);
     try {
       await runCheckpointProjectOperation(activeThreadWorktree.projectPath, async () => {
@@ -4723,6 +4761,8 @@ export default function App() {
           activeThreadWorktree.path,
           activeThreadWorktree.branch,
           safety.id,
+          destination.branch!,
+          destination.headOid!,
         );
         persistThreadWorktrees((current) => ({
           ...current,
@@ -4730,6 +4770,7 @@ export default function App() {
             ...activeThreadWorktree,
             status: "merged",
             mergedAt: Date.now(),
+            mergedHeadOid: merged.isolatedHeadOid,
             appliedTree: merged.isolatedTree,
           },
         }));
@@ -4743,8 +4784,13 @@ export default function App() {
     }
   };
 
-  const removeActiveWorktree = async () => {
+  const removeActiveWorktree = async (returnToShared = false) => {
     if (!activeThread || !activeThreadWorktree) return;
+    if (effectiveSettings.permission === "read-only") { setError("Switch this thread to Ask or Full access before changing worktrees."); return; }
+    if ([activeThreadWorktree.path, activeThreadWorktree.projectPath].some(isPullRequestMutationRunning)) {
+      setError("Wait for the pull request operation to finish before changing this workspace.");
+      return;
+    }
     if (projectHasActiveTask(activeThreadWorktree.path) || projectHasActiveTask(activeThreadWorktree.projectPath)) {
       setError("Wait for active tasks in the isolated worktree and source project before removing it.");
       return;
@@ -4766,9 +4812,14 @@ export default function App() {
       ].filter(Boolean).join(", ");
       if (!await confirmDialog(
         destructive
-          ? `Remove this isolated worktree and delete its branch?\n\nIt contains ${details}. Those worktree-only files and commits will be permanently deleted. The shared project and GitHub are not changed.`
-          : `Remove this isolated worktree and delete its branch?\n\nThe shared project, GitHub repository, and conversation remain available. This thread must be explicitly switched to shared mode before it can run again.`,
+          ? `${returnToShared ? "Return to the shared project by removing this isolated worktree and its branch?" : "Remove this isolated worktree and delete its branch?"}\n\nIt contains ${details}. Those worktree-only files and commits will be permanently deleted. The shared project and GitHub are not changed.`
+          : `${returnToShared ? "Remove the finished worktree and return to the shared project?" : "Remove this isolated worktree and delete its branch?"}\n\nThe shared project, GitHub repository, and conversation remain available.${returnToShared ? " Future work in this thread will use the shared project folder." : " This thread must be explicitly switched to shared mode before it can run again."}`,
       )) return;
+      if ([activeThreadWorktree.path, activeThreadWorktree.projectPath].some(isPullRequestMutationRunning)
+        || projectHasActiveTask(activeThreadWorktree.path) || projectHasActiveTask(activeThreadWorktree.projectPath)) {
+        setError("The workspace became busy. Try again after its current operation finishes.");
+        return;
+      }
       const worktreeCheckpoints = checkpointsRef.current.filter(
         (checkpoint) => checkpoint.workspacePath
           && normalizedProjectPath(checkpoint.workspacePath) === normalizedProjectPath(activeThreadWorktree.path),
@@ -4807,7 +4858,15 @@ export default function App() {
         },
       }));
       setWorktreeStatus(null);
-      setTransientStatus("Isolated worktree removed");
+      if (returnToShared) {
+        persistThreadWorktrees((current) => {
+          const next = { ...current };
+          delete next[activeThread.id];
+          return next;
+        });
+        useTaskStore.getState().ensureTask(activeThread.id, activeThreadWorktree.projectPath);
+        setTransientStatus("Worktree removed. This thread now uses the shared project.");
+      } else setTransientStatus("Isolated worktree removed");
     } catch (reason) {
       setError(friendlyError(reason));
     } finally {
@@ -4838,6 +4897,10 @@ export default function App() {
     if (!await confirmDialog(
       "Recreate this worktree from its committed branch?\n\nUncommitted files from the missing folder cannot be recovered. Changes already applied to the shared project remain there, but a later Apply may reconcile them with the recreated branch and will save a safety checkpoint first.",
     )) return;
+    if ([activeThreadWorktree.path, activeThreadWorktree.projectPath].some(isPullRequestMutationRunning)) {
+      setError("Wait for the pull request operation to finish before changing this workspace.");
+      return;
+    }
     setWorktreeBusy(true);
     try {
       const recreated = await recreateThreadWorktree(
@@ -4972,7 +5035,87 @@ export default function App() {
     setGitCommitSuccess("");
   }, [activeExecutionPath, activeProject?.id, activeProject?.name, refreshGitHubRepo]);
 
-  const runGitAction = async (action: GitPanelAction, commitMessageInput?: string) => {
+  const gitWorkspace = useGitWorkspace({
+    cwd: activeProject && !activeWorkspace?.isChat ? activeExecutionPath || activeProject.path : null,
+    projectPath: activeProject?.path ?? null,
+    enabled: Boolean(activeProject && !activeWorkspace?.isChat && studioOpen && ["git", "review", "worktrees"].includes(studioTab)),
+    isolated: Boolean(activeThreadWorktree && activeThreadWorktree.status !== "removed"),
+    blocked: (paths) => {
+      if (effectiveSettings.permission === "read-only") return "Switch this thread to Ask or Full access before changing Git.";
+      if (worktreeBusy || gitCommitBusy || githubBusy || checkpointBusyId) return "Wait for the current workspace operation to finish.";
+      if (paths.some(projectHasActiveTask)) return "Wait for agents in this folder to finish before changing Git.";
+      return null;
+    },
+    onChanged: () => { void refreshGitHubRepo(); void refreshDiff(); threadPullRequest.onRefresh(); },
+    confirmUpdate: (snapshot, base) => confirmDialog(
+      `Update the local project to ${base} from GitHub?\n\nThe shared project is currently on ${snapshot.branch}. This downloads committed changes and switches the shared folder to ${base} using a fast-forward update. All shared threads will use it. Dirty folders, divergent history, and branches used by another worktree will be left unchanged.`,
+    ),
+  });
+  const autoPublish = useGitAutoPublish({
+    projects,
+    blocked: (path) => worktreeBusy || gitCommitBusy || githubBusy || Boolean(checkpointBusyId)
+      || projectHasActiveTask(path)
+      || Object.values(threadWorktreesRef.current).some((record) => normalizedProjectPath(record.projectPath) === normalizedProjectPath(path) && projectHasActiveTask(record.path)),
+  });
+  const publishConfig = activeProject ? autoPublish.configs[activeProject.id] : undefined;
+  const { onBranch: changeWorkspaceBranch, fetch: fetchWorkspace, refresh: refreshWorkspace } = gitWorkspace;
+  const { enable: enablePublishing, disable: disablePublishing, retry: retryPublishing } = autoPublish;
+  const gitWorkflow = useMemo<GitWorkflowControls>(() => ({
+    snapshot: gitWorkspace.snapshot,
+    busy: gitWorkspace.busy,
+    error: gitWorkspace.error,
+    notice: gitWorkspace.notice,
+    branchNotice: gitWorkspace.branchNotice,
+    lastFetchedAt: gitWorkspace.lastFetchedAt,
+    isolated: Boolean(activeThreadWorktree && activeThreadWorktree.status !== "removed"),
+    onBranch: changeWorkspaceBranch,
+    onRefresh: () => { void (githubRepoStatus?.repository ? fetchWorkspace() : refreshWorkspace()); },
+    autoPublish: activeProject && (githubRepoStatus?.repository || publishConfig) ? {
+      enabled: Boolean(publishConfig?.enabled),
+      status: publishConfig?.status ?? "idle",
+      message: publishConfig?.message ?? "Automatic publishing is off.",
+      repository: publishConfig?.binding.repository ?? githubRepoStatus?.repository ?? undefined,
+      onToggle: (enabled) => {
+        if (effectiveSettings.permission === "read-only") { setGitOutput("Switch this thread to Ask or Full access before changing automatic publishing."); return; }
+        if (enabled) void enablePublishing(activeProject.id, activeProject.path).catch((reason) => setGitOutput(friendlyError(reason)));
+        else disablePublishing(activeProject.id);
+      },
+      onRetry: () => retryPublishing(activeProject.id),
+    } : undefined,
+  }), [gitWorkspace.snapshot, gitWorkspace.busy, gitWorkspace.error, gitWorkspace.notice, gitWorkspace.branchNotice, gitWorkspace.lastFetchedAt, changeWorkspaceBranch, fetchWorkspace, refreshWorkspace, activeThreadWorktree, activeProject, githubRepoStatus?.repository, publishConfig, enablePublishing, disablePublishing, retryPublishing, effectiveSettings.permission]);
+
+  const prMutationBlockedReason = effectiveSettings.permission === "read-only"
+    ? "Switch this thread to Ask or Full access before changing Git or a pull request."
+    : worktreeBusy || gitCommitBusy || githubBusy || checkpointBusyId
+      ? "Wait for the current workspace operation to finish."
+      : activeExecutionPath && projectHasActiveTask(activeExecutionPath)
+        ? "Wait for agents working in this folder to finish before changing Git."
+        : null;
+  const prWorkspaceScope = `${activeThreadId ?? ""}\0${activeExecutionPath ?? ""}`;
+  const prWorkspaceScopeRef = useRef(prWorkspaceScope);
+  prWorkspaceScopeRef.current = prWorkspaceScope;
+  const threadPullRequest = useThreadPullRequest({
+    threadId: activeThreadId,
+    cwd: activeExecutionPath || activeProject?.path || null,
+    projectPath: activeProject?.path ?? null,
+    isolated: Boolean(activeThreadWorktree && activeThreadWorktree.status !== "removed"),
+    enabled: Boolean(activeThreadId && activeProject && !activeWorkspace?.isChat && githubStatus?.authenticated),
+    visible: studioOpen && studioTab === "git",
+    mutationBlockedReason: prMutationBlockedReason,
+    checkMutationAllowed: (cwd) => {
+      if (effectiveSettings.permission === "read-only") return "Switch this thread to Ask or Full access first.";
+      if (worktreeBusy || gitCommitBusy || githubBusy || checkpointBusyId) return "Wait for the current workspace operation to finish.";
+      if (projectHasActiveTask(cwd)) return "Wait for agents working in this folder to finish before changing Git.";
+      return null;
+    },
+    onChanged: () => {
+      if (prWorkspaceScopeRef.current !== prWorkspaceScope) return;
+      void refreshGitHubRepo();
+      void refreshDiff();
+    },
+  });
+
+  const runGitActionUnlocked = async (action: GitPanelAction, commitMessageInput?: string) => {
     if (!activeProject) return;
     const unavailable = gitActionUnavailableReason(action, effectiveSettings.permission);
     if (unavailable) {
@@ -5000,8 +5143,10 @@ export default function App() {
         setGitOutput((current) => current === output ? `${output}\n\n${note}` : current);
       });
     };
-    if (action === "commit" || action === "commitPush") {
-      if (action === "commitPush" && !pushCommand) {
+    if (["commit", "commitPush", "commitStaged", "commitStagedPush"].includes(action)) {
+      const pushAfter = action === "commitPush" || action === "commitStagedPush";
+      const stagedOnly = action === "commitStaged" || action === "commitStagedPush";
+      if (pushAfter && !pushCommand) {
         setGitOutput("Check out a named branch before committing and pushing to GitHub.");
         return;
       }
@@ -5011,37 +5156,39 @@ export default function App() {
       setGitCommitBusy(true);
       setGitCommitSuccess("");
       try {
-        const stage = await executeCommand(stageCommand, commandPath, gitRoots);
+        const stage = stagedOnly ? { exitCode: 0, stdout: "Using the existing staged changes.\n", stderr: "" } : await executeCommand(stageCommand, commandPath, gitRoots);
         if (stage.exitCode !== 0) {
           if (isCurrentProject()) setGitOutput(`$ ${stageCommand.join(" ")}\n${stage.stdout}${stage.stderr}\n[exit ${stage.exitCode}]`);
           return;
         }
+        const stageOutput = stagedOnly ? stage.stdout.trim() : `$ ${stageCommand.join(" ")}\n${stage.stdout}${stage.stderr}\n[exit ${stage.exitCode}]`;
         const commit = await executeCommand(commitCommand, commandPath, gitRoots);
         if (commit.exitCode !== 0) {
-          if (isCurrentProject()) setGitOutput(`$ ${stageCommand.join(" ")}\n${stage.stdout}${stage.stderr}\n[exit ${stage.exitCode}]\n\n$ ${commitCommand.join(" ")}\n${commit.stdout}${commit.stderr}\n[exit ${commit.exitCode}]`);
+          if (isCurrentProject()) setGitOutput(`${stageOutput}\n\n$ ${commitCommand.join(" ")}\n${commit.stdout}${commit.stderr}\n[exit ${commit.exitCode}]`);
           return;
         }
         const commitResultIsVisible = isCurrentProject();
         if (commitResultIsVisible) {
           setGitCommitSuccess(`“${commitMessage}” was saved to this repository.`);
         }
-        if (action === "commit") {
+        if (!pushAfter) {
           if (!commitResultIsVisible) return;
-          setGitOutput(`$ ${stageCommand.join(" ")}\n${stage.stdout}${stage.stderr}\n[exit ${stage.exitCode}]\n\n$ ${commitCommand.join(" ")}\n${commit.stdout}${commit.stderr}\n[exit ${commit.exitCode}]`);
+          setGitOutput(`${stageOutput}\n\n$ ${commitCommand.join(" ")}\n${commit.stdout}${commit.stderr}\n[exit ${commit.exitCode}]`);
           showSuccessToast("Changes committed locally");
           void refreshGitHubRepo(commandPath);
           return;
         }
         const push = await executeCommand(pushCommand!, commandPath, gitRoots);
         if (!isCurrentProject()) return;
-        const output = `$ ${stageCommand.join(" ")}\n${stage.stdout}${stage.stderr}\n[exit ${stage.exitCode}]\n\n$ ${commitCommand.join(" ")}\n${commit.stdout}${commit.stderr}\n[exit ${commit.exitCode}]\n\n$ ${pushCommand!.join(" ")}\n${push.stdout}${push.stderr}\n[exit ${push.exitCode}]`;
+        const output = `${stageOutput}\n\n$ ${commitCommand.join(" ")}\n${commit.stdout}${commit.stderr}\n[exit ${commit.exitCode}]\n\n$ ${pushCommand!.join(" ")}\n${push.stdout}${push.stderr}\n[exit ${push.exitCode}]`;
         if (push.exitCode === 0) {
           showPushOutput(output);
           showSuccessToast("Changes committed locally and pushed to GitHub");
           void refreshGitHubRepo(commandPath);
         } else {
           setGitOutput(output);
-          showSuccessToast("Changes committed locally; GitHub push needs attention");
+          showToast("Changes committed locally; GitHub push needs attention", "info");
+          void refreshGitHubRepo(commandPath);
         }
       } catch (reason) {
         if (isCurrentProject()) setGitOutput(friendlyError(reason));
@@ -5052,8 +5199,12 @@ export default function App() {
     }
     let command: string[];
     if (action === "status") command = ["git", "status", "--short", "--branch"];
-    else if (action === "diff") command = ["git", "diff", "--stat", "--patch"];
+    else if (action === "diff") command = ["git", "diff", "HEAD", "--stat", "--patch"];
     else if (action === "stage") command = ["git", "add", "--all"];
+    else if (action === "unstage") {
+      const head = await executeCommand(["git", "rev-parse", "--verify", "HEAD"], commandPath, gitRoots);
+      command = head.exitCode === 0 ? ["git", "reset", "--", "."] : ["git", "rm", "-r", "--cached", "--ignore-unmatch", "--", "."];
+    }
     else if (action === "revert") {
       if (!await confirmDialog("Revert all tracked staged and working-tree changes? Untracked files will be kept.")) return;
       command = ["git", "restore", "--staged", "--worktree", "."];
@@ -5065,23 +5216,30 @@ export default function App() {
         return;
       }
       command = pushCommand;
-    } else if (action === "comments") command = githubCliCommand(githubStatus?.path || "gh", "comments");
-    else if (action === "ci") command = githubCliCommand(githubStatus?.path || "gh", "ci");
+    } else if (action === "comments") command = githubCliCommand(githubStatus?.path || "gh", "comments", threadPullRequest.linked && threadPullRequest.pullRequest ? threadPullRequest.pullRequest : undefined);
+    else if (action === "ci") command = githubCliCommand(githubStatus?.path || "gh", "ci", threadPullRequest.linked && threadPullRequest.pullRequest ? threadPullRequest.pullRequest : undefined);
     else {
       if (!await confirmDialog("Create a draft pull request on the configured GitHub remote?")) return;
       command = githubCliCommand(githubStatus?.path || "gh", "pr");
     }
     try {
-      const result = await executeCommand(command, commandPath, gitRoots);
+      let result = await executeCommand(command, commandPath, gitRoots);
+      if (action === "diff" && result.exitCode !== 0) {
+        const head = await executeCommand(["git", "rev-parse", "--verify", "HEAD"], commandPath, gitRoots);
+        if (head.exitCode !== 0) {
+          command = ["git", "diff", "--cached", "--stat", "--patch"];
+          result = await executeCommand(command, commandPath, gitRoots);
+        }
+      }
       if (!isCurrentProject()) return;
       const combined = `${result.stdout}${result.stderr || ""}`;
       const output = combined.includes("not a git repository")
-        ? "This project folder is not a Git repository yet. Initialize Git from the terminal to enable these workflows."
+        ? "This project folder is not a Git repository yet. Choose Initialize Git in this panel to enable these workflows."
         : `$ ${command.join(" ")}\n${combined}\n[exit ${result.exitCode}]`;
       if (action === "push" && result.exitCode === 0) showPushOutput(output);
       else setGitOutput(output);
       // The Git console shows its own command output. It deliberately does not
-      // write the Review panel's diff: `git diff --stat --patch` is a different
+      // write the Review panel's diff: `git diff HEAD --stat --patch` is a different
       // baseline than the review diff, and overwriting it made Review claim to
       // be showing something it was not.
       if (result.exitCode === 0) void refreshGitHubRepo(commandPath);
@@ -5090,8 +5248,34 @@ export default function App() {
     }
   };
 
+  const runGitAction = async (action: GitPanelAction, commitMessageInput?: string) => {
+    if (!activeProject) return;
+    if (action === "fetch") { await gitWorkspace.fetch(); return; }
+    if (["status", "diff", "comments", "ci"].includes(action)) { await runGitActionUnlocked(action, commitMessageInput); return; }
+    const paths = [...new Set([activeProject.path, activeExecutionPath || activeProject.path].map(normalizedProjectPath))];
+    if (paths.some(projectHasActiveTask)) { setGitOutput("Wait for agents in this folder to finish before changing Git."); return; }
+    const leases: string[] = [];
+    for (const path of paths) {
+      const lease = acquirePullRequestMutation(path);
+      if (!lease) { leases.forEach(releasePullRequestMutation); setGitOutput("Wait for the current Git operation to finish."); return; }
+      leases.push(lease);
+    }
+    const sequence = gitProjectSequenceRef.current;
+    try { await runGitActionUnlocked(action, commitMessageInput); }
+    finally {
+      leases.forEach(releasePullRequestMutation);
+      void gitWorkspace.refresh();
+      autoPublish.refresh();
+      if (gitProjectSequenceRef.current === sequence) threadPullRequest.onRefresh();
+    }
+  };
+
   const attachActiveGitHubRemote = async (url: string) => {
     if (!activeProject || !url.trim()) return;
+    if (isPullRequestMutationRunning(activeExecutionPath || activeProject.path)) {
+      setGitOutput("Wait for the pull request operation to finish before changing GitHub settings.");
+      return;
+    }
     const unavailable = gitActionUnavailableReason("attach", effectiveSettings.permission);
     if (unavailable) {
       setGitOutput(unavailable);
@@ -5111,6 +5295,10 @@ export default function App() {
 
   const createActiveGitHubRepository = async (name: string, visibility: "private" | "public") => {
     if (!activeProject || !name.trim()) return;
+    if (isPullRequestMutationRunning(activeExecutionPath || activeProject.path)) {
+      setGitOutput("Wait for the pull request operation to finish before changing GitHub settings.");
+      return;
+    }
     const unavailable = gitActionUnavailableReason("create", effectiveSettings.permission);
     if (unavailable) {
       setGitOutput(unavailable);
@@ -5212,7 +5400,7 @@ export default function App() {
     }
   };
 
-  const runGitPathAction = async (action: "stage" | "revert", path: string) => {
+  const runGitPathAction = async (action: "stage" | "unstage" | "revert", path: string) => {
     if (!activeProject) return;
     const unavailable = gitActionUnavailableReason(action, effectiveSettings.permission);
     if (unavailable) {
@@ -5220,14 +5408,34 @@ export default function App() {
       return;
     }
     const commandPath = activeExecutionPath || activeProject.path;
-    if (action === "revert" && !await confirmDialog(`Revert changes to ${path}?`)) return;
-    const command = action === "stage" ? ["git", "add", "--", path] : ["git", "restore", "--staged", "--worktree", "--", path];
+    const projectSequence = gitProjectSequenceRef.current;
+    const paths = [...new Set([activeProject.path, commandPath].map(normalizedProjectPath))];
+    if (paths.some(projectHasActiveTask)) { setGitOutput("Wait for agents in this folder to finish before changing Git."); return; }
+    const leases: string[] = [];
+    for (const root of paths) {
+      const lease = acquirePullRequestMutation(root);
+      if (!lease) { leases.forEach(releasePullRequestMutation); setGitOutput("Wait for the current Git operation to finish."); return; }
+      leases.push(lease);
+    }
+    const isCurrentProject = () => gitProjectSequenceRef.current === projectSequence;
+    const gitRoots = activeThreadWorktree?.gitDir ? [activeThreadWorktree.gitDir] : [];
     try {
-      const result = await executeCommand(command, commandPath, activeThreadWorktree?.gitDir ? [activeThreadWorktree.gitDir] : []);
+      if (action === "revert" && !await confirmDialog(`Revert changes to ${path}?`)) return;
+      if (paths.some(projectHasActiveTask)) { if (isCurrentProject()) setGitOutput("Wait for agents in this folder to finish before changing Git."); return; }
+      let command = action === "stage" ? ["git", "add", "--", path] : action === "unstage" ? ["git", "reset", "--", path] : ["git", "restore", "--staged", "--worktree", "--", path];
+      if (action === "unstage") {
+        const head = await executeCommand(["git", "rev-parse", "--verify", "HEAD"], commandPath, gitRoots);
+        if (head.exitCode !== 0) command = ["git", "rm", "-r", "--cached", "--ignore-unmatch", "--", path];
+      }
+      const result = await executeCommand(command, commandPath, gitRoots);
+      if (!isCurrentProject()) return;
       setGitOutput(`$ ${command.join(" ")}\n${result.stdout}${result.stderr}\n[exit ${result.exitCode}]`);
       if (activeThreadId) await refreshDiffFor(activeThreadId, commandPath);
     } catch (reason) {
-      setError(friendlyError(reason));
+      if (isCurrentProject()) setError(friendlyError(reason));
+    } finally {
+      leases.forEach(releasePullRequestMutation);
+      void gitWorkspace.refresh();
     }
   };
 
@@ -5735,6 +5943,14 @@ export default function App() {
                 <GitBranch size={12} /> <span>Isolated</span>
               </button>
             )}
+            {activeProject && !activeWorkspace?.isChat && (
+              <ThreadPullRequestChip
+                repository={threadPullRequest.pullRequest?.repository ?? githubRepoStatus?.repository}
+                pullRequest={threadPullRequest.pullRequest}
+                linked={threadPullRequest.linked}
+                onClick={() => openStudio("git")}
+              />
+            )}
             {activeThreadHandoff && (
               <button className="handoff-chip" onClick={() => {
                 // The source can be deleted or pruned out of the sidebar index
@@ -6235,10 +6451,27 @@ export default function App() {
             gitOutput={gitOutput}
             gitCommitSuccess={gitCommitSuccess}
             gitCommitBusy={gitCommitBusy}
+            gitWorkflow={gitWorkflow}
             gitRepositoryState={gitRepositoryState}
             gitRepositoryStateDetail={githubRepoError || workspaceGitInfo?.error || undefined}
             gitInitializing={gitInitializing}
             githubAuthenticated={Boolean(githubStatus?.authenticated)}
+            pullRequestPanel={activeProject && !activeWorkspace?.isChat && (threadPullRequest.linked || (githubStatus?.authenticated && githubRepoStatus?.repository)) ? (
+              <Suspense fallback={<div className="tool-empty-line">Loading pull requests…</div>}>
+                <ThreadPullRequestPanel
+                  key={activeThreadId ?? activeProject.id}
+                  {...threadPullRequest}
+                  threadId={activeThreadId}
+                  isolated={Boolean(activeThreadWorktree && activeThreadWorktree.status !== "removed")}
+                  mutationBlockedReason={prMutationBlockedReason}
+                  onUpdateLocal={threadPullRequest.pullRequest?.state === "MERGED" ? () => gitWorkspace.updateBase(threadPullRequest.pullRequest!.repository, threadPullRequest.pullRequest!.baseRefName) : undefined}
+                  updateLocalBusy={gitWorkspace.busy}
+                  updateLocalNotice={gitWorkspace.error || gitWorkspace.notice}
+                  onOpenWorktrees={() => openStudio("worktrees")}
+                  onOpenGitHubSettings={() => openSettings("github")}
+                />
+              </Suspense>
+            ) : undefined}
             githubRepoStatus={githubRepoStatus}
             githubRepoError={githubRepoError}
             gitActionsReadOnly={effectiveSettings.permission === "read-only"}
@@ -6282,6 +6515,7 @@ export default function App() {
             onWorktreeRefresh={() => void refreshActiveWorktreeStatus()}
             onWorktreeRemove={() => void removeActiveWorktree()}
             onWorktreeRecreate={() => void recreateActiveWorktree()}
+            onWorktreeReturnShared={() => void removeActiveWorktree(true)}
             onWorktreeContinueShared={continueThreadInSharedProject}
             onAddAttachment={() => void addAttachment()}
             onRemoveAttachment={(path) => setAttachments((current) => current.filter((item) => item.path !== path))}
@@ -6306,6 +6540,8 @@ export default function App() {
               openSettings("github");
             }}
             onGitPathAction={(action, path) => void runGitPathAction(action, path)}
+            onGitPathUnstage={(path) => void runGitPathAction("unstage", path)}
+            reviewStagedPaths={gitWorkspace.snapshot?.stagedPaths}
             onAttachPath={(path) => addAttachmentPaths([path])}
             onProjectAction={(action) => void runProjectAction(action)}
             onRunWorkflow={(workflow) => void runWorkflowFromShortcut(workflow)}

@@ -1,3 +1,4 @@
+import { acquirePullRequestMutation, releasePullRequestMutation } from "../lib/pullRequestOperations";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { resetTaskStore, useTaskStore } from "../lib/taskStore";
@@ -65,6 +66,17 @@ function checkpoint(overrides: Partial<CheckpointRecord> = {}): CheckpointRecord
 }
 
 describe("useCheckpoints", () => {
+  it("keeps checkpoint restoration from rewriting a pull request operation's files", async () => {
+    const ctx = context();
+    const { result } = renderHook(() => useCheckpoints(ctx));
+    const lease = acquirePullRequestMutation("/tmp/project")!;
+    try {
+      await act(() => result.current.restoreCheckpoint(checkpoint(), "before"));
+      expect(checkpointApi.restoreCheckpointSnapshot).not.toHaveBeenCalled();
+      expect(ctx.setError).toHaveBeenCalledWith(expect.stringContaining("pull request operation"));
+    } finally { releasePullRequestMutation(lease); }
+  });
+
   beforeEach(() => {
     localStorage.clear();
     resetTaskStore();

@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useEffect } from "react";
 import type { Thread } from "./types";
+import type { PullRequest } from "./lib/pullRequests";
 
 /**
  * Integration harness for App-level lifecycle regressions. Mocks the Tauri
@@ -65,6 +66,14 @@ const THREAD_B: Thread = {
   cwd: PROJECT_A.path,
   updatedAt: 1_700_000_100,
   modelProvider: "openai",
+};
+
+const LINKED_PR: PullRequest = {
+  repository: "test-user/alpha", number: 31, url: "https://github.com/test-user/alpha/pull/31",
+  title: "Improve Alpha", body: "Review these changes", state: "OPEN", isDraft: false,
+  headRefName: "feature/alpha", baseRefName: "main", headOid: "a".repeat(40),
+  mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: "APPROVED",
+  checks: [], updatedAt: "2026-09-22T12:00:00Z", canMerge: true, mergeMethods: ["squash"],
 };
 
 type Deferred<T> = { promise: Promise<T>; resolve: (value: T) => void };
@@ -154,6 +163,13 @@ function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
       behind: 0,
     };
   }
+  if (command === "github_pr_context") return {
+    repository: "test-user/alpha", branch: "feature/alpha", defaultBranch: "main",
+    headOid: "a".repeat(40), dirty: false, ahead: 1, behind: 0,
+    pushRemote: "origin", permission: "write", mergeMethods: ["squash"],
+  };
+  if (command === "github_pr_find") return null;
+  if (command === "github_pr_view") return LINKED_PR;
   if (command === "state_read") return null;
   if (command === "local_transcript_list") return [];
   if (command === "audit_recent") return [];
@@ -1807,6 +1823,113 @@ describe("workspace switching during thread selection", () => {
     expect(await screen.findByText(/“Polish the Git panel” was saved/)).toBeInTheDocument();
   });
 
+  it("uses the visible commit message for Commit & push", async () => {
+    const user = userEvent.setup();
+    const commands: string[][] = [];
+    commandExecImpl = (params) => {
+      commands.push(params.command as string[]);
+      return { exitCode: 0, stdout: "done", stderr: "" };
+    };
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
+    await user.click(await screen.findByRole("tab", { name: "Git workspace tool" }));
+    await user.type(screen.getByLabelText(/Commit message/i), "Keep this exact message");
+    await user.click(screen.getByRole("button", { name: /Commit & push/i }));
+    await waitFor(() => expect(commands).toContainEqual(["git", "commit", "-m", "Keep this exact message"]));
+    expect(commands).not.toContainEqual(["git", "commit", "-m", "Update project files"]);
+  });
+
+  it("can retry a failed push without committing the saved changes again", async () => {
+    const user = userEvent.setup();
+    const commands: string[][] = [];
+    let pushes = 0;
+    commandExecImpl = (params) => {
+      const command = params.command as string[];
+      commands.push(command);
+      if (command[1] === "push" && ++pushes === 1) return { exitCode: 1, stdout: "", stderr: "Network unavailable" };
+      return { exitCode: 0, stdout: "", stderr: "" };
+    };
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
+    await user.click(await screen.findByRole("tab", { name: "Git workspace tool" }));
+    await user.type(screen.getByLabelText(/Commit message/), "Keep my local commit");
+    await user.click(screen.getByRole("button", { name: /Commit & push/ }));
+    expect(await screen.findByText(/Changes committed locally; GitHub push needs attention/)).toBeInTheDocument();
+    expect(screen.getByText(/“Keep my local commit” was saved/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Push commits" }));
+    await waitFor(() => expect(pushes).toBe(2));
+    expect(commands.filter((command) => command[1] === "commit")).toHaveLength(1);
+    expect(commands.filter((command) => command[1] === "add")).toHaveLength(1);
+  });
+
+  it("commits only the existing index when staged files are selected", async () => {
+    const user = userEvent.setup();
+    const commands: string[][] = [];
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "git_workspace_snapshot") return {
+        branch: "main", headOid: "a".repeat(40), branches: [], stagedFiles: 1,
+        unstagedFiles: 2, changedFiles: 3, stagedPaths: ["chosen.ts"], rootPath: PROJECT_A.path,
+      };
+      return stubInvoke(command, args);
+    });
+    commandExecImpl = (params) => {
+      commands.push(params.command as string[]);
+      return { exitCode: 0, stdout: "committed", stderr: "" };
+    };
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
+    await user.click(await screen.findByRole("tab", { name: "Git workspace tool" }));
+    await user.type(screen.getByLabelText(/Commit message/i), "Only chosen.ts");
+    await user.click(await screen.findByRole("button", { name: "Commit staged (1)" }));
+    await waitFor(() => expect(commands).toContainEqual(["git", "commit", "-m", "Only chosen.ts"]));
+    expect(commands.some((command) => command[1] === "add")).toBe(false);
+    expect(await screen.findByText(/Using the existing staged changes/)).toBeInTheDocument();
+    expect(screen.queryByText(/\$ git add --all/)).not.toBeInTheDocument();
+  });
+
+  it("wires per-file Unstage in Review to the index without reverting the file", async () => {
+    const user = userEvent.setup();
+    const commands: string[][] = [];
+    resumeImpl = (params) => ({ thread: { ...THREAD_A, id: String(params.threadId), turns: [] } });
+    gitDiffToRemoteImpl = () => ({ diff: "diff --git a/chosen.ts b/chosen.ts\n--- a/chosen.ts\n+++ b/chosen.ts\n@@ -1 +1 @@\n-old\n+new\n" });
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "git_workspace_snapshot") return {
+        branch: "main", headOid: "a".repeat(40), branches: [], stagedFiles: 1,
+        unstagedFiles: 0, changedFiles: 1, stagedPaths: ["chosen.ts"], rootPath: PROJECT_A.path,
+      };
+      return stubInvoke(command, args);
+    });
+    commandExecImpl = (params) => {
+      commands.push(params.command as string[]);
+      return { exitCode: 0, stdout: "", stderr: "" };
+    };
+    await renderApp();
+    await user.click(await screen.findByText("Alpha thread", { selector: ".thread-card-title" }));
+    await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
+    await user.click(await screen.findByRole("tab", { name: "Review workspace tool" }));
+    await user.click(await screen.findByRole("button", { name: "Refresh" }));
+    await user.click(await screen.findByRole("button", { name: "Unstage" }));
+    await waitFor(() => expect(commands).toContainEqual(["git", "reset", "--", "chosen.ts"]));
+    expect(commands.some((command) => command[1] === "restore")).toBe(false);
+  });
+
+  it("unstages an initial snapshot without deleting its working files", async () => {
+    const user = userEvent.setup();
+    const commands: string[][] = [];
+    commandExecImpl = (params) => {
+      const command = params.command as string[];
+      commands.push(command);
+      return { exitCode: command[1] === "rev-parse" ? 1 : 0, stdout: "", stderr: "" };
+    };
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
+    await user.click(await screen.findByRole("tab", { name: "Git workspace tool" }));
+    await user.click(screen.getByRole("button", { name: "More local Git actions" }));
+    await user.click(screen.getByRole("menuitem", { name: /Unstage all/ }));
+    await waitFor(() => expect(commands).toContainEqual(["git", "rm", "-r", "--cached", "--ignore-unmatch", "--", "."]));
+    expect(commands.some((command) => command[1] === "reset")).toBe(false);
+  });
+
   it("does not show a finished commit under a project selected while it was running", async () => {
     const user = userEvent.setup();
     const pendingCommit = deferred<{ exitCode: number; stdout: string; stderr: string }>();
@@ -2747,6 +2870,34 @@ describe("workspace switching during thread selection", () => {
     expect(useTaskStore.getState().activeThreadId).toBe(THREAD_A.id);
   });
 
+  it("does not copy worktree changes if an agent starts during confirmation", async () => {
+    const user = userEvent.setup();
+    resumeImpl = (params) => ({ thread: { ...THREAD_A, id: String(params.threadId), turns: [] } });
+    localStorage.setItem("kiwi.studioTab", JSON.stringify("worktrees"));
+    localStorage.setItem("kiwi.threadWorktrees", JSON.stringify({
+      [THREAD_A.id]: {
+        threadId: THREAD_A.id, projectId: PROJECT_A.id, projectPath: PROJECT_A.path,
+        path: "/managed/worktrees/alpha", branch: "kiwi/alpha", baseCommit: "head",
+        gitDir: "/projects/alpha/.git", createdAt: 1, status: "active",
+      },
+    }));
+    await renderApp();
+    const { useTaskStore } = await import("./lib/taskStore");
+    await user.click(await screen.findByText("Alpha thread"));
+    await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
+    const copy = await screen.findByRole("button", { name: "Copy changes to project" });
+    vi.mocked(window.confirm).mockImplementation(() => {
+      useTaskStore.getState().setTaskStatus(THREAD_A.id, "running");
+      return true;
+    });
+    const callsBefore = invokeMock.mock.calls.length;
+    await user.click(copy);
+    expect(await screen.findByText(/workspace became busy/i)).toBeInTheDocument();
+    expect(invokeMock.mock.calls.slice(callsBefore).some(([command]) =>
+      command === "worktree_apply_to_source" || command === "checkpoint_create",
+    )).toBe(false);
+  });
+
   it("starts an isolated thread in its worktree while keeping it grouped under the project", async () => {
     const user = userEvent.setup();
     resumeImpl = (params) => ({ thread: { ...THREAD_A, id: String(params.threadId), turns: [] } });
@@ -3408,7 +3559,7 @@ describe("workspace review diff", () => {
     resumeImpl = (params) => ({ thread: { ...THREAD_A, id: String(params.threadId), turns: [] } });
     commandExecImpl = (params) => {
       const command = params.command as string[];
-      if (command.join(" ") === "git diff --stat --patch") {
+      if (command.join(" ") === "git diff HEAD --stat --patch") {
         return { exitCode: 0, stdout: "diff --git a/console.ts b/console.ts\n+++ b/console.ts\n+console only", stderr: "" };
       }
       return { exitCode: 0, stdout: "", stderr: "" };
@@ -3477,5 +3628,69 @@ describe("project Run button", () => {
       expect(stored.find((project) => project.id === "project-a")?.overrides?.run?.command).toBe("make dev");
       expect(stored.find((project) => project.id === "project-b")?.overrides?.run).toBeUndefined();
     });
+  });
+});
+
+
+describe("Thread pull request integration", () => {
+  it("keeps local-only projects usable without showing a failed PR connection", async () => {
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "github_status") return { ...(stubInvoke(command, args) as object), authenticated: false };
+      if (command === "github_repo_status") return { isRepo: true, repository: null, remoteUrl: null, branch: "main", upstream: null, ahead: 0, behind: 0 };
+      return stubInvoke(command, args);
+    });
+    const user = userEvent.setup();
+    await renderApp();
+    await user.click(await screen.findByText("Alpha thread", { selector: ".thread-card-title" }));
+    await user.click(await screen.findByRole("button", { name: /^Pull requests/ }));
+    expect(await screen.findByRole("button", { name: "Commit all changes locally" })).toBeEnabled();
+    expect(screen.queryByRole("region", { name: "Pull request" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/cannot read this folder's Git repository/)).not.toBeInTheDocument();
+    expect(invokeMock.mock.calls.some(([command]) => command === "github_pr_context")).toBe(false);
+  });
+
+  it("creates and switches a local branch while signed out of GitHub", async () => {
+    const user = userEvent.setup();
+    let branch = "main";
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "github_status") return { ...(stubInvoke(command, args) as object), authenticated: false };
+      if (command === "github_repo_status") return { isRepo: true, repository: null, branch, upstream: null, ahead: 0, behind: 0 };
+      if (command === "git_workspace_branch") branch = String(args?.name);
+      if (command === "git_workspace_snapshot" || command === "git_workspace_branch") return {
+        branch, headOid: "a".repeat(40), branches: [{ name: branch, current: true, worktreePath: PROJECT_A.path }],
+        stagedFiles: 0, unstagedFiles: 0, changedFiles: 0, stagedPaths: [], rootPath: PROJECT_A.path,
+      };
+      return stubInvoke(command, args);
+    });
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
+    await user.click(await screen.findByRole("tab", { name: "Git workspace tool" }));
+    await user.click(await screen.findByRole("button", { name: "Switch or create a branch" }));
+    await user.click(screen.getByRole("menuitem", { name: /New branch/ }));
+    await user.type(screen.getByRole("textbox", { name: "New branch name" }), "feature/offline");
+    await user.click(screen.getByRole("button", { name: "Create branch" }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("git_workspace_branch", {
+      cwd: PROJECT_A.path, name: "feature/offline", create: true, expectedHeadOid: "a".repeat(40), expectedBranch: "main",
+    }));
+    expect(await screen.findByText(/Created local branch feature\/offline/)).toBeInTheDocument();
+    expect(invokeMock.mock.calls.some(([command]) => command === "github_pr_create_branch" || command === "git_publish_commit")).toBe(false);
+  });
+
+  it("attaches a PR durably to one thread without attaching it to its shared-folder neighbour", async () => {
+    const user = userEvent.setup();
+    await renderApp();
+    await user.click(await screen.findByText("Alpha thread", { selector: ".thread-card-title" }));
+    await user.click(await screen.findByRole("button", { name: /^Pull requests for/ }));
+    const reference = await screen.findByRole("textbox", { name: "Pull request number or link" });
+    await user.type(reference, "#31");
+    expect(within(screen.getByRole("region", { name: "Pull request" })).getByRole("button", { name: "Attach" })).toBeEnabled();
+    await user.click(within(screen.getByRole("region", { name: "Pull request" })).getByRole("button", { name: "Attach" }));
+    expect(await screen.findByText("Improve Alpha")).toBeInTheDocument();
+    await waitFor(() => expect(JSON.parse(localStorage.getItem("kiwi.threadPullRequests") || "{}")[THREAD_A.id]?.number).toBe(31));
+    await user.click(screen.getByText("Beta thread", { selector: ".thread-card-title" }));
+    await waitFor(() => expect(screen.queryByText("Improve Alpha")).not.toBeInTheDocument());
+    expect(JSON.parse(localStorage.getItem("kiwi.threadPullRequests") || "{}")[THREAD_B.id]).toBeUndefined();
+    await user.click(screen.getByText("Alpha thread", { selector: ".thread-card-title" }));
+    expect(await screen.findByText("Improve Alpha")).toBeInTheDocument();
   });
 });

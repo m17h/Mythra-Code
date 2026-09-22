@@ -2303,15 +2303,10 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .github-repo-name-input::placeholder { color: var(--muted-2); }
 .github-repo-name-input:hover { border-color: var(--line-strong); }
 .github-repo-name-input:focus { border-color: color-mix(in srgb, var(--green) 48%, var(--line-strong)); box-shadow: 0 0 0 3px var(--green-soft); }
-.github-visibility-select { position: relative; min-width: 0; height: 34px; display: flex; align-items: center; border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--ink-2); background: var(--field); transition: border-color var(--t-fast) ease, background var(--t-fast) ease, box-shadow var(--t-fast) ease; }
-.github-visibility-select:hover { border-color: var(--line-strong); }
-.github-visibility-select:focus-within { border-color: color-mix(in srgb, var(--green) 48%, var(--line-strong)); box-shadow: 0 0 0 3px var(--green-soft); }
-.github-visibility-select select { width: 100%; height: 100%; appearance: none; padding: 0 26px 0 9px; border: 0; outline: 0; color: inherit; background: transparent; font-size: var(--fs-meta); cursor: pointer; }
-.github-visibility-select option { color: var(--text); background: var(--panel); }
-.github-visibility-select svg { position: absolute; right: 8px; color: var(--muted-2); pointer-events: none; }
 .github-create-button { min-height: 34px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; padding: 0 10px; border: 1px solid color-mix(in srgb, var(--green) 76%, #fff); border-radius: var(--r-sm); color: #10140c; background: var(--green); font-size: var(--fs-meta); font-weight: 650; cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
 .github-create-button:hover:not(:disabled) { background: color-mix(in srgb, var(--green) 88%, #fff); }
 .github-create-button:disabled { opacity: .4; cursor: default; }
+
 .manager-status { margin-top: 6px; padding: 7px 8px; border-radius: 6px; color: var(--muted); background: rgba(255,255,255,.02); font-size: var(--fs-meta); }
 .terminal-origin { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; margin-bottom: var(--s-2); padding: 5px 9px; border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--muted); background: rgba(255,255,255,.02); font-size: var(--fs-meta); }
 .terminal-origin.other { color: var(--muted-2); border-style: dashed; }
@@ -2918,6 +2913,9 @@ body[data-pane-resizing] .sidebar, body[data-pane-resizing] .studio-dock { trans
 .diff-file-actions { flex: 0 0 auto; display: flex; gap: 4px; margin-left: 4px; }
 .diff-file-actions button { height: 21px; display: flex; align-items: center; gap: 3px; padding: 0 6px; border: 1px solid var(--line); border-radius: 5px; color: var(--green); background: var(--green-soft); font-size: var(--fs-micro); cursor: pointer; }
 .diff-file-actions button.danger-action { color: var(--red); background: rgba(239,138,135,.07); }
+/* A staged file offers the way back out, and looks different from one that is
+   only offering the way in. */
+.diff-file-actions button.staged { color: var(--info); border-color: color-mix(in srgb, var(--info) 30%, var(--line)); background: color-mix(in srgb, var(--info) 10%, transparent); }
 .diff-file .diff-view { content-visibility: auto; contain-intrinsic-size: auto 300px; }
 
 /* Inline approval card (active thread) */

@@ -4,6 +4,7 @@ import { DEFAULT_SETTINGS } from "../lib/appConfig";
 import { PendingTurnStarts } from "../lib/pendingTurnStarts";
 import { resetTaskStore, useTaskStore } from "../lib/taskStore";
 import type { Thread } from "../types";
+import { acquirePullRequestMutation, releasePullRequestMutation } from "../lib/pullRequestOperations";
 
 const codex = vi.hoisted(() => ({
   rpc: vi.fn(),
@@ -243,6 +244,20 @@ describe("useTurnRunner", () => {
     claude.steerClaudeTurn.mockResolvedValue(undefined);
     claude.isClaudeThreadBusyError.mockImplementation(() => false);
     childSessions.ensureChildAgentBridge.mockResolvedValue(null);
+  });
+
+  it("preserves the prompt while a pull request operation owns the checkout", async () => {
+    const deps = context();
+    const lease = acquirePullRequestMutation("/tmp/project")!;
+    try {
+      const { result } = renderHook(() => useTurnRunner(deps));
+      await act(async () => { expect(await result.current.sendMessage("Keep working")).toBe(false); });
+      expect(deps.setError).toHaveBeenCalledWith(expect.stringContaining("pull request operation"));
+      expect(cursor.startCursorTurn).not.toHaveBeenCalled();
+      expect(deps.beginRunCheckpoint).not.toHaveBeenCalled();
+    } finally {
+      releasePullRequestMutation(lease);
+    }
   });
 
   it("sends resolved skill instructions to Cursor while keeping the visible message unchanged", async () => {

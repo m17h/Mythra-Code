@@ -42,6 +42,7 @@ import {
   type WorkspaceGitInfo,
 } from "../lib/worktrees";
 import { normalizedProjectPath } from "../lib/paths";
+import { isPullRequestMutationRunning } from "../lib/pullRequestOperations";
 import { unsupportedImageReason } from "../lib/attachments";
 import { PendingTurnStarts, type PendingTurnStart } from "../lib/pendingTurnStarts";
 import type { SetPersisted } from "./usePersistedState";
@@ -249,6 +250,10 @@ export function useTurnRunner(context: TurnRunnerContext): {
       setRuntimeSetupOpen, setAuthRequiredOpen, openSettings,
     } = ctx;
     if (!text || !activeWorkspace) return false;
+    if (isPullRequestMutationRunning(executionPathFor(activeThread?.id, activeWorkspace.path))) {
+      setError("Wait for the pull request operation to finish before starting another model turn.");
+      return false;
+    }
     for (const attachment of attachments) {
       const reason = attachment.kind === "image" ? unsupportedImageReason(attachment.path) : undefined;
       if (reason) {
@@ -571,6 +576,9 @@ export function useTurnRunner(context: TurnRunnerContext): {
         executionPath = provisionalWorktree.path;
       } else if (activeThread) {
         executionPath = executionPathFor(activeThread.id, activeWorkspace.path);
+      }
+      if (isPullRequestMutationRunning(executionPath)) {
+        throw new Error("Wait for the pull request operation to finish before starting another model turn.");
       }
       const isolationGitDir = provisionalWorktree?.gitDir ?? currentIsolation?.gitDir;
       const additionalWorkspaceRoots = isolationGitDir ? [isolationGitDir] : [];

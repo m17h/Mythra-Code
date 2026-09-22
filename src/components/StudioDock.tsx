@@ -1,8 +1,9 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Bot,
   Boxes,
   Check,
+  CheckCircle2,
   ChevronRight,
   CircleStop,
   Clock3,
@@ -26,6 +27,7 @@ import {
   ShieldCheck,
   TerminalSquare,
   Trash2,
+  TriangleAlert,
   UsersRound,
   Workflow as WorkflowIcon,
   Wrench,
@@ -33,7 +35,9 @@ import {
 } from "lucide-react";
 import { FileBrowser } from "./FileBrowser";
 import { DiffFileSections, DiffText } from "./DiffView";
+import { AppActionMenu, type AppActionMenuItem } from "./AppActionMenu";
 import { GitPanel, type GitPanelAction, type GitRepositoryState } from "./GitPanel";
+import type { GitWorkflowControls } from "../lib/gitWorkspace";
 import { TerminalPanel } from "./TerminalPanel";
 import type { ProjectAction } from "../types";
 import { PANE_BOUNDS } from "../hooks/usePaneResize";
@@ -190,6 +194,8 @@ export function StudioDock(props: {
   onWorktreeRemove: () => void;
   onWorktreeRecreate: () => void;
   onWorktreeContinueShared: () => void;
+  /** Open the explicit cleanup confirmation before returning to the shared folder. */
+  onWorktreeReturnShared?: () => void;
   onAddAttachment: () => void;
   onRemoveAttachment: (path: string) => void;
   onRefreshUsage: () => void;
@@ -201,6 +207,19 @@ export function StudioDock(props: {
   onGitHubCreate: (name: string, visibility: "private" | "public") => void;
   onOpenGitHubSettings: () => void;
   onGitPathAction: (action: "stage" | "revert", path: string) => void;
+  /** Per-file unstage in Review. Optional; without it files only offer Stage. */
+  onGitPathUnstage?: (path: string) => void;
+  /** Repository-relative paths currently in the index, for the Review list. */
+  reviewStagedPaths?: string[];
+  /**
+   * The per-thread pull request workflow. It is handed to the Git panel, which
+   * places it after the local commit controls — a pull request is a step you
+   * reach after committing, not the first thing the dock should show.
+   * Optional so the dock keeps working wherever the workflow is not wired up.
+   */
+  pullRequestPanel?: ReactNode;
+  /** Local branch state, branch switching and optional automatic publishing. */
+  gitWorkflow?: GitWorkflowControls;
   onAttachPath: (path: string) => void;
   onProjectAction: (action: ProjectAction) => void;
   onRunWorkflow: (workflow: WorkflowDefinition) => void;
@@ -338,7 +357,9 @@ export function StudioDock(props: {
               sections={diffSections}
               readOnly={props.gitActionsReadOnly}
               readOnlyReason="Switch this thread from Read only to Ask or Full access before staging or reverting files."
+              stagedPaths={props.reviewStagedPaths}
               onPathAction={props.onGitPathAction}
+              onUnstage={props.onGitPathUnstage}
             />
           ) : (
             <pre className="diff-view">{props.reviewDiff.text || "Run a task or refresh to inspect the current Git diff."}</pre>
@@ -449,7 +470,7 @@ export function StudioDock(props: {
 
         {props.tab === "worktrees" && <>
           <PanelHeader icon={GitFork} title="Worktrees" subtitle="Isolated branches and project handoff" onClose={props.onClose} />
-          <div className="checkpoint-note"><ShieldCheck size={14} /><div><strong>Experiment without touching the shared project.</strong><span>Apply copies the resulting files into your project. Merge preserves committed branch history. Removing an unapplied worktree leaves the shared project unchanged.</span></div></div>
+          <div className="checkpoint-note"><ShieldCheck size={14} /><div><strong>Experiment without touching the shared project.</strong><span>Copying brings the resulting files across. Merging brings the committed branch history across. Both act on your local project only — neither one touches GitHub. Removing an unmerged worktree leaves the shared project unchanged.</span></div></div>
           {props.worktree ? (
             <div className="worktree-card">
               <div className="worktree-card-head">
@@ -469,21 +490,54 @@ export function StudioDock(props: {
                   {props.worktree.status === "missing" && <button onClick={props.onWorktreeRecreate} disabled={props.worktreeBusy}><RotateCw size={13} /> Recreate from branch</button>}
                   {props.worktree.status === "removed" && <button onClick={props.onWorktreeContinueShared} disabled={props.worktreeBusy}><FolderOpen size={13} /> Continue shared</button>}
                 </div>
+              ) : worktreeMergeComplete(props.worktree, props.worktreeStatus) ? (
+                /* A finished merge, and still finished: the branch head is
+                   exactly what was merged and the folder is clean. */
+                <>
+                  <div className="worktree-complete" role="status">
+                    <CheckCircle2 size={14} aria-hidden="true" />
+                    <div>
+                      <strong>Merged into local project</strong>
+                      <span>This branch was merged into your local project. GitHub updates are separate.</span>
+                    </div>
+                  </div>
+                  <div className="studio-actions wrap">
+                    <button onClick={props.onWorktreeReview} disabled={props.worktreeBusy}><SearchCode size={13} /> Review merged changes</button>
+                    {props.onWorktreeReturnShared && (
+                      <button onClick={props.onWorktreeReturnShared} disabled={props.worktreeBusy}><FolderOpen size={13} /> Continue in shared project</button>
+                    )}
+                    <AppActionMenu label="More" ariaLabel="More worktree actions" items={worktreeMenuItems(props)} />
+                  </div>
+                </>
               ) : (
-                <div className="studio-actions wrap">
-                  <button onClick={props.onWorktreeReview} disabled={props.worktreeBusy}><SearchCode size={13} /> Review</button>
-                  <button onClick={props.onWorktreeApply} disabled={props.worktreeBusy}><RotateCw size={13} /> Apply to project</button>
-                  <button onClick={props.onWorktreeMerge} disabled={props.worktreeBusy}><GitCommitHorizontal size={13} /> Merge branch</button>
-                  <button onClick={props.onWorktreeReveal} disabled={props.worktreeBusy}><Eye size={13} /> Reveal</button>
-                  <button onClick={props.onWorktreeRefresh} disabled={props.worktreeBusy}><RefreshCw size={13} /> Refresh</button>
-                  <button className="danger-action" onClick={props.onWorktreeRemove} disabled={props.worktreeBusy}><Trash2 size={13} /> Remove worktree…</button>
-                </div>
+                <>
+                  {/* Merged once, then worked in again — or merged once and no
+                      longer verifiable. Both are reported for what they are:
+                      the old completion state simply claimed the branch was
+                      still fully merged, indefinitely. */}
+                  {worktreeMergeFollowUp(props.worktree, props.worktreeStatus) && (
+                    <div className="worktree-note">
+                      <TriangleAlert size={13} aria-hidden="true" />
+                      <span>{worktreeMergeFollowUp(props.worktree, props.worktreeStatus)}</span>
+                    </div>
+                  )}
+                  <div className="studio-actions wrap">
+                    <button onClick={props.onWorktreeReview} disabled={props.worktreeBusy}><SearchCode size={13} /> Review</button>
+                    <button onClick={props.onWorktreeApply} disabled={props.worktreeBusy} title="Copy the resulting files into the shared project folder, without their commit history"><RotateCw size={13} /> Copy changes to project</button>
+                    <button
+                      onClick={props.onWorktreeMerge}
+                      disabled={props.worktreeBusy}
+                      title={`Merge this branch's committed history into your local project${props.worktreeStatus?.sourceBranch ? ` (${props.worktreeStatus.sourceBranch})` : ""}. This is a local merge — it does not touch GitHub.`}
+                    ><GitCommitHorizontal size={13} /> Merge into local project…</button>
+                    <AppActionMenu label="More" ariaLabel="More worktree actions" items={worktreeMenuItems(props)} />
+                  </div>
+                </>
               )}
             </div>
           ) : (
             <div className="history-warning"><ShieldCheck size={13} /> This thread uses the shared project folder. Choose Isolated worktree before sending the first message in a new thread.</div>
           )}
-          <div className="history-warning"><ShieldCheck size={13} /> Worktrees and their branches stay local unless you explicitly push them to a Git remote.</div>
+          <div className="history-warning"><ShieldCheck size={13} /> Worktrees and their branches stay local unless you push them or enable automatic publishing.</div>
         </>}
 
         {props.tab === "context" && <>
@@ -588,6 +642,9 @@ export function StudioDock(props: {
             onGitHubAttach={props.onGitHubAttach}
             onGitHubCreate={props.onGitHubCreate}
             onOpenGitHubSettings={props.onOpenGitHubSettings}
+            hasPullRequestWorkflow={!!props.pullRequestPanel}
+            pullRequestPanel={props.pullRequestPanel}
+            workflow={props.gitWorkflow}
           />
         </>}
       </div>
@@ -597,4 +654,76 @@ export function StudioDock(props: {
 
 function Empty({ icon: Icon, title, text }: { icon: typeof CodeXml; title: string; text: string }) {
   return <div className="studio-empty"><Icon size={21} /><strong>{title}</strong><span>{text}</span></div>;
+}
+
+/**
+ * Is this worktree *still* in the state its merge left it in?
+ *
+ * A record saying `merged` only describes something that happened once. Work
+ * carried on afterwards in plenty of threads, and a completion panel that
+ * outlived the fact told people their new commits were already in the project.
+ * So the claim is re-derived from evidence every render: the branch head has to
+ * be the exact commit that was merged, and the folder has to be clean. Without
+ * a recorded head commit the app cannot show that, and says nothing instead.
+ */
+function worktreeMergeComplete(
+  worktree: ThreadWorktreeRecord,
+  status: WorktreeStatus | null | undefined,
+): boolean {
+  if (worktree.status !== "merged" || !worktree.mergedHeadOid) return false;
+  if (!status || !status.headOid) return false;
+  return status.headOid === worktree.mergedHeadOid && status.clean;
+}
+
+/**
+ * What to say about a worktree that was merged once and is not in that state
+ * any more — distinguishing "it moved on" from "the app cannot tell". The
+ * second is not evidence of the first, and saying so would be inventing a
+ * fact out of a missing reading.
+ */
+function worktreeMergeFollowUp(
+  worktree: ThreadWorktreeRecord,
+  status: WorktreeStatus | null | undefined,
+): string | null {
+  if (worktree.status !== "merged") return null;
+  if (!worktree.mergedHeadOid || !status?.headOid) {
+    return "This branch was merged into your local project earlier. Mythra Code cannot confirm what has happened to it since.";
+  }
+  if (status.headOid !== worktree.mergedHeadOid) {
+    return "This branch was merged into your local project earlier, and has changed since. Merge again to bring the new commits across.";
+  }
+  return "This branch was merged into your local project earlier. The files here have uncommitted changes that are not part of that merge.";
+}
+
+function worktreeMenuItems(props: {
+  worktreeBusy?: boolean;
+  onWorktreeReveal: () => void;
+  onWorktreeRefresh: () => void;
+  onWorktreeRemove: () => void;
+}): AppActionMenuItem[] {
+  return [
+    {
+      id: "reveal",
+      label: "Show folder",
+      icon: <Eye size={13} aria-hidden="true" />,
+      disabled: props.worktreeBusy,
+      onSelect: props.onWorktreeReveal,
+    },
+    {
+      id: "refresh",
+      label: "Refresh status",
+      icon: <RefreshCw size={13} aria-hidden="true" />,
+      disabled: props.worktreeBusy,
+      onSelect: props.onWorktreeRefresh,
+    },
+    {
+      id: "remove",
+      label: "Remove worktree…",
+      description: "Deletes this checkout and its branch. Asks first.",
+      icon: <Trash2 size={13} aria-hidden="true" />,
+      danger: true,
+      disabled: props.worktreeBusy,
+      onSelect: props.onWorktreeRemove,
+    },
+  ];
 }
