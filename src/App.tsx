@@ -126,7 +126,7 @@ import { mythraCodeDeveloperInstructions } from "./lib/completionPrompt";
 import { sanitizeProjectRunCommand, sanitizeProjectRunOverrides } from "./lib/projectRun";
 import { runtimeModelProviderId } from "./lib/providerIds";
 import { primaryModifierLabel } from "./lib/platform";
-import { archivedThreadsForInbox, finishThreadBlockedReason, providerForArchivedThread } from "./lib/threadArchive";
+import { archiveAfterTitleCancellation, activeThreadArchiveBlockedReason, archivedThreadsForInbox, finishThreadBlockedReason, providerForArchivedThread } from "./lib/threadArchive";
 import { sanitizeProjectDefaultOverrides } from "./lib/projectDefaults";
 import { sanitizePendingHandoff } from "./lib/providerHandoff";
 import { deleteThreadTurnDurations } from "./lib/turnDurations";
@@ -3821,6 +3821,7 @@ export default function App() {
     bindThreadToProject,
     rememberThread,
     onThreadTitleRequested: automaticTitles.requestTitle,
+    isThreadArchiving: (id) => archivingThreadIdsRef.current.has(id),
     onThreadCreated: handleThreadCreated,
     persistThreadModel,
     persistThreadReasoning,
@@ -4235,34 +4236,38 @@ export default function App() {
 
   const archiveThreadRecord = async (thread: Thread, confirmArchive: boolean): Promise<boolean> => {
     const label = thread.name || thread.preview || "Untitled thread";
-    const taskStatus = useTaskStore.getState().statuses[thread.id];
-    if (taskStatus === "starting" || taskStatus === "running") {
-      if (confirmArchive) setError(`Stop “${label}” before archiving it so its final output and transcript are preserved.`);
-      return false;
-    }
-    // A child whose provider is still starting has no link or agent record
-    // yet; the in-flight check keeps that window from slipping past the guard.
-    if (Object.values(childAgentLinksRef.current).some((link) => link.rootThreadId === thread.id && !link.terminalStatus)
-      || useTaskStore.getState().tasks[thread.id]?.agents.some((agent) => isActiveAgentRecord(agent.status))
-      || hasChildStartInFlight(thread.id)) {
-      if (confirmArchive) setError("Finish or stop this task’s sub-agents before archiving it.");
+    const archiveActivityBlock = () => activeThreadArchiveBlockedReason(
+      useTaskStore.getState().tasks[thread.id],
+      Object.values(childAgentLinksRef.current).some((link) => link.rootThreadId === thread.id && !link.terminalStatus)
+        || hasChildStartInFlight(thread.id),
+    );
+    const initialBlock = archiveActivityBlock();
+    if (initialBlock) {
+      if (confirmArchive) setError(initialBlock);
       return false;
     }
     if (archivingThreadIdsRef.current.has(thread.id)) return false;
     if (confirmArchive && !await confirmDialog(`Archive “${label}”?\n\nIt moves to the Archived list in the sidebar, where you can restore or permanently delete it.`)) return false;
+    // Another archive may have completed confirmation while this dialog was open.
+    if (archivingThreadIdsRef.current.has(thread.id)) return false;
     archivingThreadIdsRef.current.add(thread.id);
     try {
-      await automaticTitles.cancel(thread.id);
-      if (!isLocalSubscriptionThread(thread)) await rpc("thread/archive", { threadId: thread.id });
-      await cancelChildAgentsFor(thread.id);
-      await forgetChildAgentState(thread.id, false);
-      if (useTaskStore.getState().activeThreadId === thread.id) newThread();
-      forgetThread(thread.id, true);
-      forgetQueuedDeliveries(thread.id);
-      setThreads((current) => current.filter((entry) => entry.id !== thread.id));
-      const path = normalizedProjectPath(threadProjectBindingsRef.current?.[thread.id] || thread.cwd);
-      const provider = providerFromThread(thread, "openai");
-      persistArchivedThreads((current) => [{ id: thread.id, label, path, archivedAt: Date.now(), provider }, ...current.filter((entry) => entry.id !== thread.id)]);
+      await archiveAfterTitleCancellation(
+        () => automaticTitles.cancel(thread.id),
+        archiveActivityBlock,
+        async () => {
+          if (!isLocalSubscriptionThread(thread)) await rpc("thread/archive", { threadId: thread.id });
+          await cancelChildAgentsFor(thread.id);
+          await forgetChildAgentState(thread.id, false);
+          if (useTaskStore.getState().activeThreadId === thread.id) newThread();
+          forgetThread(thread.id, true);
+          forgetQueuedDeliveries(thread.id);
+          setThreads((current) => current.filter((entry) => entry.id !== thread.id));
+          const path = normalizedProjectPath(threadProjectBindingsRef.current?.[thread.id] || thread.cwd);
+          const provider = providerFromThread(thread, "openai");
+          persistArchivedThreads((current) => [{ id: thread.id, label, path, archivedAt: Date.now(), provider }, ...current.filter((entry) => entry.id !== thread.id)]);
+        },
+      );
       return true;
     } catch (reason) {
       setError(friendlyError(reason));

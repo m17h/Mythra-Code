@@ -34,10 +34,10 @@ Compared with main at 4176402, the production bundles add:
 
 | Target | Startup JavaScript | Startup CSS | Total JavaScript |
 | --- | ---: | ---: | ---: |
-| Safari 13 | 7,098 bytes | 970 bytes | 15,008 bytes |
-| Chrome 105 | 6,559 bytes | 970 bytes | 14,310 bytes |
+| Safari 13 | 7,307 bytes | 970 bytes | 15,217 bytes |
+| Chrome 105 | 6,761 bytes | 970 bytes | 14,512 bytes |
 
-These include the later on-demand merge-method explanations. They are raw
+These include the later on-demand merge-method explanations and archive-race fix. They are raw
 minified byte counts, not runtime speed measurements. The settings
 and PR panel remain lazy. No new dependency or animation reduction is involved.
 The corresponding budget exception records exact measured limits without slack.
@@ -59,3 +59,15 @@ The corresponding budget exception records exact measured limits without slack.
   not live-account tested for this feature.
 - No real open GitHub PR was merged as part of verification. Merge-to-archive
   failure paths are covered by focused tests; native archive/restore was real.
+
+## Final merge review
+
+Three Sol reviewers checked merge/archive, title generation, and UI/performance.
+The review found that ordinary Archive could wait for a title write while a new
+turn started. Archive ownership now blocks sends, steering, question responses,
+and queued delivery for the entire operation; rejected sends preserve the draft.
+After title cancellation, a fresh activity check catches any turn or child that
+started earlier. Deferred-title regressions failed before that recheck and pass
+with it. Ordinary archive and restore were replayed in the native macOS app; the
+preview transcript and real PR attachment survived. No live provider request was
+needed for these checks.
