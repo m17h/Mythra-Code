@@ -122,6 +122,8 @@ export function githubCliCommand(
   if (action === "comments") return attached
     ? [binary, "pr", "view", String(attached.number), "--repo", attached.repository, "--comments"]
     : [binary, "pr", "view", "--comments"];
-  if (action === "ci") return [binary, "pr", "checks"];
+  if (action === "ci") return attached
+    ? [binary, "pr", "checks", String(attached.number), "--repo", attached.repository]
+    : [binary, "pr", "checks"];
   return [binary, "pr", "create", "--draft", "--fill"];
 }

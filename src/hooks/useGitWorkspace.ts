@@ -147,7 +147,11 @@ export function useGitWorkspace(options: Options) {
       const before = await getGitWorkspace(path);
       if (!before.headOid || !before.branch) throw new Error("The local project needs a named branch and an initial commit before updating.");
       if (!await captured.confirmUpdate(before, base)) return false;
-      const reason = optionsRef.current.blocked([path]);
+      const reason = optionsRef.current.blocked([...new Set(
+        [captured.cwd, captured.projectPath]
+          .filter((value): value is string => Boolean(value))
+          .map(normalizedProjectPath),
+      )]);
       if (reason) throw new Error(reason);
       const next = await updateLocalGitBase(path, repository, base, before.headOid, before.branch);
       if (path === captured.cwd) accept(path, next);

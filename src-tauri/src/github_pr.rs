@@ -49,6 +49,8 @@ pub(super) struct GitHubPullRequest {
     state: String,
     is_draft: bool,
     head_ref_name: String,
+    #[serde(skip_serializing)]
+    head_repository_owner: String,
     base_ref_name: String,
     head_oid: String,
     mergeable: String,
@@ -437,6 +439,11 @@ fn pull_request_from_json(
             .and_then(Value::as_bool)
             .unwrap_or(false),
         head_ref_name: get("headRefName"),
+        head_repository_owner: value
+            .pointer("/headRepositoryOwner/login")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
         base_ref_name: get("baseRefName"),
         head_oid: get("headRefOid"),
         mergeable,
@@ -451,7 +458,29 @@ fn pull_request_from_json(
     })
 }
 
-const PR_FIELDS: &str = "number,url,title,body,state,isDraft,headRefName,baseRefName,headRefOid,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup,updatedAt,mergedAt,author";
+const PR_FIELDS: &str = "number,url,title,body,state,isDraft,headRefName,headRepositoryOwner,baseRefName,headRefOid,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup,updatedAt,mergedAt,author";
+
+fn ensure_pull_request_identity(
+    pull_request: &GitHubPullRequest,
+    repository: &str,
+    head: &str,
+    base: &str,
+    expected_oid: Option<&str>,
+) -> Result<(), String> {
+    let expected_owner = repository.split('/').next().unwrap_or_default();
+    if !pull_request
+        .head_repository_owner
+        .eq_ignore_ascii_case(expected_owner)
+        || pull_request.head_ref_name != head
+        || pull_request.base_ref_name != base
+    {
+        return Err("GitHub returned a pull request for a different source or target. Refresh before retrying.".into());
+    }
+    if expected_oid.is_some_and(|oid| pull_request.head_oid != oid) {
+        return Err("The remote pull request head changed while the branch was being published. Refresh and review the remote commit before retrying.".into());
+    }
+    Ok(())
+}
 
 async fn view_with(gh: &Path, repository: &str, number: u64) -> Result<GitHubPullRequest, String> {
     validate_repository(repository)?;
@@ -488,15 +517,20 @@ async fn find_with(
         gh,
         &[
             "pr", "list", "--repo", repository, "--state", "open", "--head", branch, "--base",
-            base, "--limit", "1", "--json", PR_FIELDS,
+            base, "--limit", "20", "--json", PR_FIELDS,
         ],
     )
     .await?;
-    value
+    let items = value
         .as_array()
-        .and_then(|items| items.first())
-        .map(|item| pull_request_from_json(repository, item, &info))
-        .transpose()
+        .ok_or_else(|| "GitHub returned an invalid pull request list.".to_string())?;
+    for item in items {
+        let pull_request = pull_request_from_json(repository, item, &info)?;
+        if ensure_pull_request_identity(&pull_request, repository, branch, base, None).is_ok() {
+            return Ok(Some(pull_request));
+        }
+    }
+    Ok(None)
 }
 
 fn remote_for_repository(cwd: &Path, repository: &str) -> Result<String, String> {
@@ -946,10 +980,10 @@ pub(super) async fn github_pr_create(
     let verify_base = base.clone();
     let verify_remote = remote.clone();
     let verify_expected = expected_head_oid.clone();
-    let refspec = blocking_local(move || {
+    let (refspec, pushed_oid) = blocking_local(move || {
         if committed_delta(&verify_selected, &verify_remote, &verify_base)? == 0 { return Err("There are no committed changes to include in this pull request. Commit changes explicitly or select Commit all changes.".into()); }
         let push_oid = push_oid_for(&verify_selected, &verify_head, &verify_expected, commit_all)?;
-        Ok(format!("{push_oid}:refs/heads/{verify_head}"))
+        Ok((format!("{push_oid}:refs/heads/{verify_head}"), push_oid))
     }).await?;
     bounded_git(
         &selected,
@@ -966,6 +1000,7 @@ pub(super) async fn github_pr_create(
         }
     })?;
     if let Some(existing) = find_with(&gh, &repository, &head, Some(&base)).await? {
+        ensure_pull_request_identity(&existing, &repository, &head, &base, Some(&pushed_oid))?;
         return Ok(GitHubPrCreateResult::updated(existing));
     }
     let mut command = background_command(&gh);
@@ -996,9 +1031,12 @@ pub(super) async fn github_pr_create(
         .ok_or_else(|| {
             format!("GitHub reported that the pull request was created at {url}, but its number could not be read. Refresh before retrying.")
         })?;
-    view_with(&gh, &repository, number).await.map(GitHubPrCreateResult::created).map_err(|error| {
+    let created = view_with(&gh, &repository, number).await.map_err(|error| {
         format!("GitHub reported that the pull request was created at {url}, but its details could not be refreshed: {error}. Refresh before retrying.")
-    })
+    })?;
+    ensure_pull_request_identity(&created, &repository, &head, &base, Some(&pushed_oid))
+        .map_err(|error| format!("GitHub reported that the pull request was created at {url}, but its identity could not be confirmed: {error}"))?;
+    Ok(GitHubPrCreateResult::created(created))
 }
 
 #[tauri::command]
@@ -1130,19 +1168,24 @@ printf '%s\n' "$*" >> '{}'
 if [ "$1" = api ]; then
   printf '%s\n' '{{"default_branch":"main","permissions":{{"push":true}},"allow_squash_merge":true,"allow_merge_commit":false,"allow_rebase_merge":false}}'
 elif [ "$1" = pr ] && [ "$2" = view ]; then
-  printf '%s\n' '{{"number":7,"url":"https://github.com/owner/repo/pull/7","title":"Topic","body":"Body","state":"OPEN","isDraft":false,"headRefName":"topic","baseRefName":"main","headRefOid":"0123456789abcdef0123456789abcdef01234567","mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","reviewDecision":"APPROVED","statusCheckRollup":[{{"name":"build","conclusion":"SUCCESS","detailsUrl":"https://example.test/check"}}],"updatedAt":"2026-09-22T00:00:00Z","mergedAt":null,"author":{{"login":"tester"}}}}'
+  printf '%s\n' '{{"number":7,"url":"https://github.com/owner/repo/pull/7","title":"Topic","body":"Body","state":"OPEN","isDraft":false,"headRefName":"topic","headRepositoryOwner":{{"login":"owner"}},"baseRefName":"main","headRefOid":"0123456789abcdef0123456789abcdef01234567","mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","reviewDecision":"APPROVED","statusCheckRollup":[{{"name":"build","conclusion":"SUCCESS","detailsUrl":"https://example.test/check"}}],"updatedAt":"2026-09-22T00:00:00Z","mergedAt":null,"author":{{"login":"tester"}}}}'
 elif [ "$1" = pr ] && [ "$2" = list ]; then
   base=release
   while [ "$#" -gt 0 ]; do
     if [ "$1" = --base ]; then shift; base="$1"; fi
     shift
   done
+  if [ "$base" = forkcollision ]; then
+    printf '%s\n' '[{{"number":10,"url":"https://github.com/owner/repo/pull/10","title":"Fork","state":"OPEN","headRefName":"topic","headRepositoryOwner":{{"login":"fork"}},"baseRefName":"forkcollision","headRefOid":"1111111111111111111111111111111111111111"}},{{"number":11,"url":"https://github.com/owner/repo/pull/11","title":"Local","state":"OPEN","headRefName":"topic","headRepositoryOwner":{{"login":"owner"}},"baseRefName":"forkcollision","headRefOid":"0123456789abcdef0123456789abcdef01234567"}}]'
+    exit 0
+  fi
   case "$base" in
     main) number=7 ;;
     release) number=8 ;;
+    mismatch) number=9; base=other ;;
     *) printf '%s\n' '[]'; exit 0 ;;
   esac
-  printf '[{{"number":%s,"url":"https://github.com/owner/repo/pull/%s","title":"Topic","state":"OPEN","headRefName":"topic","baseRefName":"%s","headRefOid":"0123456789abcdef0123456789abcdef01234567"}}]\n' "$number" "$number" "$base"
+  printf '[{{"number":%s,"url":"https://github.com/owner/repo/pull/%s","title":"Topic","state":"OPEN","headRefName":"topic","headRepositoryOwner":{{"login":"owner"}},"baseRefName":"%s","headRefOid":"0123456789abcdef0123456789abcdef01234567"}}]\n' "$number" "$number" "$base"
 elif [ "$1" = pr ] && [ "$2" = merge ]; then
   exit 0
 else
@@ -1224,6 +1267,52 @@ fi
         assert_eq!(updated["creationOutcome"], "updated");
         assert_eq!(created["number"], 3);
         assert!(created.get("pullRequest").is_none());
+    }
+
+    #[test]
+    fn creation_result_identity_rejects_wrong_owner_target_and_commit() {
+        let info = repository_info_from_json(&serde_json::json!({
+            "default_branch": "main",
+            "permissions": {"push": true},
+            "allow_squash_merge": true
+        }))
+        .unwrap();
+        let payload = |owner: &str, base: &str, oid: &str| {
+            serde_json::json!({
+                "number": 3, "url": "https://github.com/owner/repo/pull/3",
+                "title": "T", "body": "", "state": "OPEN", "isDraft": false,
+                "headRefName": "topic", "headRepositoryOwner": {"login": owner},
+                "baseRefName": base, "headRefOid": oid, "mergeable": "MERGEABLE",
+                "mergeStateStatus": "CLEAN", "reviewDecision": "APPROVED",
+                "updatedAt": "2026-01-01T00:00:00Z", "mergedAt": null,
+                "statusCheckRollup": []
+            })
+        };
+        let oid = "0123456789abcdef0123456789abcdef01234567";
+        let valid =
+            pull_request_from_json("owner/repo", &payload("owner", "main", oid), &info).unwrap();
+        assert!(
+            ensure_pull_request_identity(&valid, "owner/repo", "topic", "main", Some(oid)).is_ok()
+        );
+        for invalid in [
+            pull_request_from_json("owner/repo", &payload("fork", "main", oid), &info).unwrap(),
+            pull_request_from_json("owner/repo", &payload("owner", "release", oid), &info).unwrap(),
+            pull_request_from_json(
+                "owner/repo",
+                &payload("owner", "main", "1111111111111111111111111111111111111111"),
+                &info,
+            )
+            .unwrap(),
+        ] {
+            assert!(ensure_pull_request_identity(
+                &invalid,
+                "owner/repo",
+                "topic",
+                "main",
+                Some(oid)
+            )
+            .is_err());
+        }
     }
 
     #[test]
@@ -1437,6 +1526,13 @@ fi
             .await
             .unwrap()
             .is_none());
+        let mismatch = find_with(&gh, "owner/repo", "topic", Some("mismatch")).await;
+        assert!(mismatch.unwrap().is_none());
+        let collision = find_with(&gh, "owner/repo", "topic", Some("forkcollision"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(collision.number, 11);
         let before = fs::read_to_string(root.join("gh.log")).unwrap();
         assert!(find_with(&gh, "owner/repo", "topic", Some("--invalid"))
             .await

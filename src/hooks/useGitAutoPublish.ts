@@ -11,7 +11,8 @@ import { acquirePullRequestMutation, releasePullRequestMutation } from "../lib/p
 import { usePersistedStateRef } from "./usePersistedState";
 
 export const GIT_AUTO_PUBLISH_STORAGE_KEY = "kiwi.gitAutoPublish";
-const POLL_MS = 5_000;
+const POLL_MS = 15_000;
+const RETRY_BASE_MS = 5_000;
 const MAX_RETRY_MS = 60_000;
 const SAFE_KEY = /^(?!__proto__$|prototype$|constructor$).+/;
 const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
@@ -120,6 +121,10 @@ export function useGitAutoPublish(options: GitAutoPublishOptions): GitAutoPublis
   const runningRef = useRef<Promise<void> | null>(null);
   const rerunRef = useRef(false);
   const mountedRef = useRef(true);
+  const hasEnabledProject = Object.values(configs).some((config) => config.enabled);
+  const nextRetryAt = Object.values(configs)
+    .filter((config) => config.enabled && config.retryAt !== undefined)
+    .reduce<number | undefined>((soonest, config) => Math.min(soonest ?? config.retryAt!, config.retryAt!), undefined);
 
   const generation = useCallback((id: string) => generationsRef.current.get(id) ?? 0, []);
   const advanceGeneration = useCallback((id: string) => {
@@ -166,7 +171,7 @@ export function useGitAutoPublish(options: GitAutoPublishOptions): GitAutoPublis
   const waitToRetry = useCallback((id: string, message: string, expectedGeneration: number) => {
     const attempts = (retryCountsRef.current.get(id) ?? 0) + 1;
     retryCountsRef.current.set(id, attempts);
-    const delay = Math.min(MAX_RETRY_MS, POLL_MS * (2 ** Math.min(attempts - 1, 4)));
+    const delay = Math.min(MAX_RETRY_MS, RETRY_BASE_MS * (2 ** Math.min(attempts - 1, 4)));
     updateConfig(id, (current) => ({
       ...current,
       status: "waiting",
@@ -333,6 +338,7 @@ export function useGitAutoPublish(options: GitAutoPublishOptions): GitAutoPublis
 
   const enable = useCallback(async (projectId: string, path: string) => {
     const expectedGeneration = advanceGeneration(projectId);
+    const alreadyEnabled = Object.values(configsRef.current).some((config) => config.enabled);
     const snapshot = await getGitPublishSnapshot(path);
     if (!mountedRef.current || generation(projectId) !== expectedGeneration) return;
     const branches = Object.fromEntries(snapshot.branches.map((branch) => [branch.name, branchRecord(branch)]));
@@ -346,8 +352,8 @@ export function useGitAutoPublish(options: GitAutoPublishOptions): GitAutoPublis
         : "Committed changes publish automatically.",
       updatedAt: Date.now(),
     }, expectedGeneration);
-    void runCycle();
-  }, [advanceGeneration, generation, replaceConfig, runCycle]);
+    if (alreadyEnabled) void runCycle();
+  }, [advanceGeneration, configsRef, generation, replaceConfig, runCycle]);
 
   const disable = useCallback((projectId: string) => {
     advanceGeneration(projectId);
@@ -379,15 +385,20 @@ export function useGitAutoPublish(options: GitAutoPublishOptions): GitAutoPublis
 
   useEffect(() => {
     mountedRef.current = true;
-    if (Object.values(configsRef.current).some((config) => config.enabled)) void runCycle();
-    const timer = window.setInterval(() => {
-      if (Object.values(configsRef.current).some((config) => config.enabled)) void runCycle();
-    }, POLL_MS);
+    if (!hasEnabledProject) return () => { mountedRef.current = false; };
+    void runCycle();
+    const timer = window.setInterval(() => { void runCycle(); }, POLL_MS);
     return () => {
       mountedRef.current = false;
       window.clearInterval(timer);
     };
-  }, [advanceGeneration, configsRef, runCycle]);
+  }, [hasEnabledProject, runCycle]);
+
+  useEffect(() => {
+    if (nextRetryAt === undefined) return;
+    const timer = window.setTimeout(() => { void runCycle(); }, Math.max(0, nextRetryAt - Date.now()));
+    return () => { window.clearTimeout(timer); };
+  }, [nextRetryAt, runCycle]);
 
   return { configs, enable, disable, retry, refresh };
 }

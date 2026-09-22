@@ -151,6 +151,21 @@ describe("useThreadPullRequest", () => {
     await act(async () => { finish(pullRequest(12)); await first; });
   });
 
+  it("does not let an attachment race an in-flight mutation for the same thread", async () => {
+    seed("alpha", pullRequest(13));
+    let finishMerge!: (value: PullRequest) => void;
+    native.merge.mockImplementation(() => new Promise((resolve) => { finishMerge = resolve; }));
+    const view = renderHook(() => useThreadPullRequest(options({ visible: false })));
+    let mergePromise!: Promise<void>;
+    act(() => { mergePromise = view.result.current.onMerge("squash", false); });
+    await expect(view.result.current.onAttach("https://github.com/m17h/Mythra-Code/pull/14"))
+      .rejects.toThrow("already running for this thread");
+    expect(native.view).not.toHaveBeenCalled();
+    await act(async () => { finishMerge(pullRequest(13, { state: "MERGED" })); await mergePromise; });
+    expect(view.result.current.pullRequest?.number).toBe(13);
+    expect(view.result.current.pullRequest?.state).toBe("MERGED");
+  });
+
   it("does no context, discovery, or polling work while hidden", async () => {
     vi.useFakeTimers();
     seed("alpha", pullRequest(8));
@@ -291,6 +306,20 @@ describe("useThreadPullRequest", () => {
     await act(async () => Promise.resolve());
     expect(native.context).toHaveBeenCalledTimes(1);
     expect(native.view).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not rewrite durable links when polling returns unchanged PR state", async () => {
+    vi.useFakeTimers();
+    seed("alpha", pullRequest(34));
+    const setItem = vi.spyOn(Storage.prototype, "setItem");
+    renderHook(() => useThreadPullRequest(options({ cwd: "/project/poll" })));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(native.view).toHaveBeenCalledTimes(1);
+    expect(setItem.mock.calls.filter(([key]) => key === "kiwi.threadPullRequests")).toHaveLength(0);
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(native.view).toHaveBeenCalledTimes(2);
+    expect(setItem.mock.calls.filter(([key]) => key === "kiwi.threadPullRequests")).toHaveLength(0);
+    setItem.mockRestore();
   });
 
   it("uses the logical project path for attached PR remote actions", async () => {

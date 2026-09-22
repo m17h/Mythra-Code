@@ -58,6 +58,11 @@ describe("GitHub workspace commands", () => {
       .toEqual(["gh", "pr", "view", "42", "--repo", "upstream/project", "--comments"]);
   });
 
+  it("targets attached PR checks even when the checkout is on another branch", () => {
+    expect(githubCliCommand("gh", "ci", { repository: "upstream/project", number: 42 }))
+      .toEqual(["gh", "pr", "checks", "42", "--repo", "upstream/project"]);
+  });
+
   it("explains that push only sends committed changes", () => {
     expect(gitPushCompletionNote("")).toBe("Push succeeded. This branch's committed changes are on GitHub.");
     expect(gitPushCompletionNote(" M src/App.tsx\n?? src/new.ts\n"))

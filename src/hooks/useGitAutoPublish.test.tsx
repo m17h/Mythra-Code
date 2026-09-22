@@ -30,6 +30,44 @@ beforeEach(() => {
 });
 
 describe("useGitAutoPublish", () => {
+  it("does not install a polling timer before any project opts in", () => {
+    const timer = vi.spyOn(window, "setInterval");
+    renderHook(() => useGitAutoPublish(options()));
+    expect(timer).not.toHaveBeenCalled();
+  });
+
+  it("uses a bounded idle scan cadence after a project opts in", async () => {
+    const timer = vi.spyOn(window, "setInterval");
+    const view = renderHook(() => useGitAutoPublish(options()));
+    await act(() => view.result.current.enable("project", "/repo"));
+    await waitFor(() => expect(timer).toHaveBeenCalledWith(expect.any(Function), 15_000));
+  });
+
+  it("immediately scans a second project enabled while polling is already active", async () => {
+    const view = renderHook(() => useGitAutoPublish(options({ projects: [
+      { id: "first", path: "/first" },
+      { id: "second", path: "/second" },
+    ] })));
+    await act(() => view.result.current.enable("first", "/first"));
+    await waitFor(() => expect(native.publish).toHaveBeenCalledWith(
+      "/first", expect.anything(), "main", "a", "main", undefined, undefined,
+    ));
+
+    await act(() => view.result.current.enable("second", "/second"));
+    await waitFor(() => expect(native.publish).toHaveBeenCalledWith(
+      "/second", expect.anything(), "main", "a", "main", undefined, undefined,
+    ));
+  });
+
+  it("schedules retry work at the five-second retry deadline", async () => {
+    const timeout = vi.spyOn(window, "setTimeout");
+    native.publish.mockRejectedValueOnce(new Error("RETRY: Network is offline"));
+    const view = renderHook(() => useGitAutoPublish(options()));
+    await act(() => view.result.current.enable("project", "/repo"));
+    await waitFor(() => expect(view.result.current.configs.project.retryAt).toBeDefined());
+    expect(timeout.mock.calls.some(([, delay]) => typeof delay === "number" && delay > 0 && delay <= 5_000)).toBe(true);
+  });
+
   it("baselines historical branches and initially publishes only checked-out branches", async () => {
     native.snapshot.mockResolvedValue({
       binding,

@@ -139,10 +139,35 @@ describe("useGitWorkspace", () => {
     let update!: Promise<void>;
     act(() => { update = view.result.current.updateBase("owner/repo", "release"); });
     await waitFor(() => expect(confirmUpdate).toHaveBeenCalled());
-    view.rerender(options({ confirmUpdate, blocked: () => "An agent started working." }));
+    const blocked = vi.fn(() => "An agent started working.");
+    view.rerender(options({ confirmUpdate, blocked }));
     await act(async () => { finishConfirm(true); await update; });
     expect(native.update).not.toHaveBeenCalled();
+    expect(blocked).toHaveBeenLastCalledWith(["/project/a"]);
     expect(view.result.current.error).toContain("An agent started working");
+  });
+
+  it("rechecks both isolated and shared folders after update confirmation", async () => {
+    let finishConfirm!: (value: boolean) => void;
+    const confirmUpdate = vi.fn(() => new Promise<boolean>((resolve) => { finishConfirm = resolve; }));
+    const blocked = vi.fn(() => null as string | null);
+    const view = renderHook((props: Options) => useGitWorkspace(props), {
+      initialProps: options({
+        cwd: "/worktree/a",
+        projectPath: "/project/a",
+        isolated: true,
+        confirmUpdate,
+        blocked,
+      }),
+    });
+    await waitFor(() => expect(view.result.current.snapshot).not.toBeNull());
+    let update!: Promise<void>;
+    act(() => { update = view.result.current.updateBase("owner/repo", "release"); });
+    await waitFor(() => expect(confirmUpdate).toHaveBeenCalled());
+    blocked.mockReturnValue("The isolated worktree became busy.");
+    await act(async () => { finishConfirm(true); await update; });
+    expect(blocked).toHaveBeenLastCalledWith(["/worktree/a", "/project/a"]);
+    expect(native.update).not.toHaveBeenCalled();
   });
 
   it("trims a local branch name and passes the displayed identity guard", async () => {

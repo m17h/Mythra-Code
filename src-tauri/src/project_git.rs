@@ -932,10 +932,8 @@ pub(super) fn worktree_status_sync(
     }
     let worktree = checkpoint_repo(worktree_path)?;
     verify_linked_worktree(&source, &worktree)?;
-    let list = git_stdout(&source, &["worktree", "list", "--porcelain"], None)?;
-    let registered = list
-        .lines()
-        .filter_map(|line| line.strip_prefix("worktree "))
+    let registered = crate::git_workspace::worktree_paths(&source)?
+        .into_iter()
         .any(|listed_path| {
             PathBuf::from(listed_path)
                 .canonicalize()
@@ -1142,6 +1140,8 @@ pub(super) async fn worktree_create(
         .path()
         .app_data_dir()
         .map_err(|error| format!("Could not locate Mythra Code's application data: {error}"))?;
+    let lock = crate::git_workspace::repository_lock(Path::new(&project_path)).await?;
+    let _guard = lock.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
         let source = checkpoint_repo(&project_path)?;
         let base_commit =
@@ -1191,6 +1191,8 @@ pub(super) async fn worktree_recreate(
         .path()
         .app_data_dir()
         .map_err(|error| format!("Could not locate Mythra Code's application data: {error}"))?;
+    let lock = crate::git_workspace::repository_lock(Path::new(&project_path)).await?;
+    let _guard = lock.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
         let source = checkpoint_repo(&project_path)?;
         if !is_managed_worktree_branch(&branch) {
@@ -1342,6 +1344,8 @@ pub(super) async fn worktree_apply_to_source(
     base_commit: String,
     safety_id: String,
 ) -> Result<WorktreeApplyResult, String> {
+    let lock = crate::git_workspace::repository_lock(Path::new(&project_path)).await?;
+    let _guard = lock.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
         let source = checkpoint_repo(&project_path)?;
         let reference = worktree_applied_ref(&thread_id)?;
@@ -1369,6 +1373,8 @@ pub(super) async fn worktree_set_applied_baseline(
     project_path: String,
     baseline: String,
 ) -> Result<String, String> {
+    let lock = crate::git_workspace::repository_lock(Path::new(&project_path)).await?;
+    let _guard = lock.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
         set_worktree_applied_baseline_sync(&project_path, &thread_id, &baseline)
     })
@@ -1407,13 +1413,40 @@ pub(super) fn worktree_merge_branch_sync(
         return Err("Commit the isolated worktree's changes before merging its branch".into());
     }
     let isolated_head_oid = git_stdout(&worktree, &["rev-parse", "--verify", "HEAD"], None)?;
-    let isolated_tree = git_stdout(&worktree, &["rev-parse", "--verify", &format!("{isolated_head_oid}^{{tree}}")], None)?;
+    let isolated_tree = git_stdout(
+        &worktree,
+        &[
+            "rev-parse",
+            "--verify",
+            &format!("{isolated_head_oid}^{{tree}}"),
+        ],
+        None,
+    )?;
     let previous_pin = pin_reference
         .and_then(|reference| optional_git_stdout(&source, &["rev-parse", "--verify", reference]));
     if let Some(reference) = pin_reference {
         git_stdout(&source, &["update-ref", reference, &isolated_tree], None)?;
     }
-    let merge = run_git(&source, &["merge", "--no-ff", "--no-edit", &isolated_head_oid], None)?;
+    // Mythra Code's initializer does not write a persistent user identity.
+    // Preserve the user's configured identity when complete, otherwise use
+    // the initializer's command-local identity for this merge commit.
+    let configured_identity = optional_git_stdout(&source, &["config", "user.name"])
+        .zip(optional_git_stdout(&source, &["config", "user.email"]));
+    let merge_args = if configured_identity.is_some() {
+        vec!["merge", "--no-ff", "--no-edit", isolated_head_oid.as_str()]
+    } else {
+        vec![
+            "-c",
+            "user.name=Mythra Code",
+            "-c",
+            "user.email=openkiwi@local",
+            "merge",
+            "--no-ff",
+            "--no-edit",
+            isolated_head_oid.as_str(),
+        ]
+    };
+    let merge = run_git(&source, &merge_args, None)?;
     if !merge.status.success() {
         let detail = String::from_utf8_lossy(&merge.stderr).trim().to_string();
         let _ = run_git(&source, &["merge", "--abort"], None);
@@ -1484,6 +1517,8 @@ pub(super) async fn worktree_remove(
         .app_data_dir()
         .map_err(|error| format!("Could not locate Mythra Code's application data: {error}"))?
         .join("worktrees");
+    let lock = crate::git_workspace::repository_lock(Path::new(&project_path)).await?;
+    let _guard = lock.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
         let source = checkpoint_repo(&project_path)?;
         let canonical_root = managed_root

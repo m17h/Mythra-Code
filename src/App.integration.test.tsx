@@ -2870,6 +2870,34 @@ describe("workspace switching during thread selection", () => {
     expect(useTaskStore.getState().activeThreadId).toBe(THREAD_A.id);
   });
 
+  it("does not copy worktree changes if an agent starts during confirmation", async () => {
+    const user = userEvent.setup();
+    resumeImpl = (params) => ({ thread: { ...THREAD_A, id: String(params.threadId), turns: [] } });
+    localStorage.setItem("kiwi.studioTab", JSON.stringify("worktrees"));
+    localStorage.setItem("kiwi.threadWorktrees", JSON.stringify({
+      [THREAD_A.id]: {
+        threadId: THREAD_A.id, projectId: PROJECT_A.id, projectPath: PROJECT_A.path,
+        path: "/managed/worktrees/alpha", branch: "kiwi/alpha", baseCommit: "head",
+        gitDir: "/projects/alpha/.git", createdAt: 1, status: "active",
+      },
+    }));
+    await renderApp();
+    const { useTaskStore } = await import("./lib/taskStore");
+    await user.click(await screen.findByText("Alpha thread"));
+    await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
+    const copy = await screen.findByRole("button", { name: "Copy changes to project" });
+    vi.mocked(window.confirm).mockImplementation(() => {
+      useTaskStore.getState().setTaskStatus(THREAD_A.id, "running");
+      return true;
+    });
+    const callsBefore = invokeMock.mock.calls.length;
+    await user.click(copy);
+    expect(await screen.findByText(/workspace became busy/i)).toBeInTheDocument();
+    expect(invokeMock.mock.calls.slice(callsBefore).some(([command]) =>
+      command === "worktree_apply_to_source" || command === "checkpoint_create",
+    )).toBe(false);
+  });
+
   it("starts an isolated thread in its worktree while keeping it grouped under the project", async () => {
     const user = userEvent.setup();
     resumeImpl = (params) => ({ thread: { ...THREAD_A, id: String(params.threadId), turns: [] } });

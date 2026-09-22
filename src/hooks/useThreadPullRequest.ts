@@ -24,6 +24,32 @@ const CACHE_LIMIT = 64;
 const viewCache = new Map<string, { value: PullRequest; at: number }>();
 const viewRequests = new Map<string, Promise<PullRequest>>();
 const viewGenerations = new Map<string, { generation: number; active: number }>();
+function samePullRequest(left: PullRequest, right: PullRequest): boolean {
+  return left.repository === right.repository
+    && left.number === right.number
+    && left.url === right.url
+    && left.title === right.title
+    && left.body === right.body
+    && left.state === right.state
+    && left.isDraft === right.isDraft
+    && left.headRefName === right.headRefName
+    && left.baseRefName === right.baseRefName
+    && left.headOid === right.headOid
+    && left.mergeable === right.mergeable
+    && left.mergeStateStatus === right.mergeStateStatus
+    && left.reviewDecision === right.reviewDecision
+    && left.updatedAt === right.updatedAt
+    && left.canMerge === right.canMerge
+    && left.viewerCanMerge === right.viewerCanMerge
+    && left.autoMergeAllowed === right.autoMergeAllowed
+    && left.mergeMethods.length === right.mergeMethods.length
+    && left.mergeMethods.every((method, index) => method === right.mergeMethods[index])
+    && left.checks.length === right.checks.length
+    && left.checks.every((check, index) => {
+      const other = right.checks[index];
+      return check.name === other.name && check.state === other.state && check.url === other.url;
+    });
+}
 function cacheKey(cwd: string, repository: string, number: number) {
   return `${normalizedProjectPath(cwd)}\0${repository.toLowerCase()}#${number}`;
 }
@@ -139,16 +165,24 @@ export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
 
   const persistLink = useCallback((id: string, pullRequest: PullRequest, expectedMutationRevision?: number) => {
     if (expectedMutationRevision !== undefined && (mutationRevisionsRef.current.get(id) ?? 0) !== expectedMutationRevision) return false;
-    setLinks((current) => ({
-      ...current,
-      [id]: {
+    setLinks((current) => {
+      const existing = current[id];
+      if (existing
+        && existing.repository === pullRequest.repository
+        && existing.number === pullRequest.number
+        && existing.url === pullRequest.url
+        && samePullRequest(existing.snapshot, pullRequest)) return current;
+      return {
+        ...current,
+        [id]: {
         repository: pullRequest.repository,
         number: pullRequest.number,
         url: pullRequest.url,
-        attachedAt: current[id]?.attachedAt ?? Date.now(),
+        attachedAt: existing?.attachedAt ?? Date.now(),
         snapshot: pullRequest,
-      },
-    }));
+        },
+      };
+    });
     return true;
   }, [setLinks]);
 
@@ -262,6 +296,7 @@ export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
   const beginMutation = useCallback((cwd: string, id: string) => {
     const initial = optionsRef.current.mutationBlockedReason ?? optionsRef.current.checkMutationAllowed(cwd);
     if (initial) throw new Error(initial);
+    if (operationCountsRef.current.has(id)) throw new Error("A pull request action is already running for this thread.");
     const lockKey = acquirePullRequestMutation(cwd);
     if (!lockKey) throw new Error("A pull request action is already running for this project.");
     const revision = mutationRevisionsRef.current.get(id) ?? 0;
@@ -319,6 +354,7 @@ export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
     if (!executionCwd || !nativeCwd) throw new Error("This thread has no project path.");
     const lockKey = `${cacheKey(nativeCwd, parsed.repository, parsed.number)}\0attach`;
     if (attachLocksRef.current.has(lockKey)) throw new Error("This pull request is already being attached.");
+    if (operationCountsRef.current.has(snapshot.threadId)) throw new Error("A pull request action is already running for this thread.");
     attachLocksRef.current.add(lockKey);
     operationCountsRef.current.set(snapshot.threadId, (operationCountsRef.current.get(snapshot.threadId) ?? 0) + 1);
     const revision = mutationRevisionsRef.current.get(snapshot.threadId) ?? 0;

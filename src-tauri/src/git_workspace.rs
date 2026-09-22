@@ -1,9 +1,10 @@
 use std::{
     collections::{HashMap, HashSet},
     env,
+    io::Read,
     path::{Path, PathBuf},
     process::{Output, Stdio},
-    sync::{Arc, Mutex as StdMutex, OnceLock, Weak},
+    sync::{mpsc, Arc, Mutex as StdMutex, OnceLock, Weak},
     thread,
     time::{Duration, Instant},
 };
@@ -83,7 +84,7 @@ fn repo(cwd: &str) -> Result<PathBuf, String> {
         .map_err(|error| format!("Could not open the Git repository root: {error}"))
 }
 
-pub(super) fn worktree_branch_paths(repo: &Path) -> Result<HashMap<String, String>, String> {
+fn worktree_records(repo: &Path) -> Result<Vec<(String, Option<String>)>, String> {
     let output = run_git(repo, &["worktree", "list", "--porcelain", "-z"], None)?;
     if !output.status.success() {
         let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -93,19 +94,33 @@ pub(super) fn worktree_branch_paths(repo: &Path) -> Result<HashMap<String, Strin
             detail
         });
     }
-    let mut occupied = HashMap::new();
-    let mut path: Option<String> = None;
+    let mut records = Vec::new();
     for field in output.stdout.split(|byte| *byte == 0) {
-        if field.is_empty() {
-            path = None;
-        } else if let Some(value) = field.strip_prefix(b"worktree ") {
-            path = Some(String::from_utf8_lossy(value).into_owned());
+        if let Some(value) = field.strip_prefix(b"worktree ") {
+            let value = String::from_utf8_lossy(value).into_owned();
+            records.push((value, None));
         } else if let Some(value) = field.strip_prefix(b"branch refs/heads/") {
-            let branch = String::from_utf8_lossy(value).into_owned();
-            occupied.insert(branch, path.clone().unwrap_or_default());
+            let (_, recorded_branch) = records
+                .last_mut()
+                .ok_or_else(|| "Git returned an unreadable worktree list".to_string())?;
+            *recorded_branch = Some(String::from_utf8_lossy(value).into_owned());
         }
     }
-    Ok(occupied)
+    Ok(records)
+}
+
+pub(super) fn worktree_paths(repo: &Path) -> Result<Vec<String>, String> {
+    Ok(worktree_records(repo)?
+        .into_iter()
+        .map(|(path, _)| path)
+        .collect())
+}
+
+pub(super) fn worktree_branch_paths(repo: &Path) -> Result<HashMap<String, String>, String> {
+    Ok(worktree_records(repo)?
+        .into_iter()
+        .filter_map(|(path, branch)| branch.map(|branch| (branch, path)))
+        .collect())
 }
 
 fn snapshot(repo: &Path) -> Result<GitWorkspaceSnapshot, String> {
@@ -367,25 +382,75 @@ fn bounded_git(repo: &Path, args: &[&str]) -> Result<Output, String> {
     let mut child = command
         .spawn()
         .map_err(|error| format!("Could not start Git: {error}"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Could not read Git output".to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "Could not read Git errors".to_string())?;
+    let drain = |mut pipe: Box<dyn Read + Send>| {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        thread::spawn(move || {
+            let mut kept = Vec::new();
+            let mut total = 0usize;
+            let mut chunk = [0u8; 8192];
+            let result = loop {
+                let count = pipe
+                    .read(&mut chunk)
+                    .map_err(|error| format!("Could not read Git output: {error}"));
+                let count = match count {
+                    Ok(count) => count,
+                    Err(error) => break Err(error),
+                };
+                if count == 0 {
+                    break Ok((kept, total));
+                }
+                total = total.saturating_add(count);
+                if kept.len() < MAX_NETWORK_OUTPUT {
+                    let retain = count.min(MAX_NETWORK_OUTPUT - kept.len());
+                    kept.extend_from_slice(&chunk[..retain]);
+                }
+            };
+            let _ = sender.send(result);
+        });
+        receiver
+    };
+    let stdout_reader = drain(Box::new(stdout));
+    let stderr_reader = drain(Box::new(stderr));
     let deadline = Instant::now() + NETWORK_TIMEOUT;
-    loop {
+    let status = loop {
         match child.try_wait() {
-            Ok(Some(_)) => break,
+            Ok(Some(status)) => break status,
             Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(25)),
             Ok(None) => {
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err("Git network operation timed out".into());
             }
-            Err(error) => return Err(format!("Could not wait for Git: {error}")),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("Could not wait for Git: {error}"));
+            }
         }
-    }
-    let output = child
-        .wait_with_output()
-        .map_err(|error| format!("Could not read Git output: {error}"))?;
-    if output.stdout.len() > MAX_NETWORK_OUTPUT || output.stderr.len() > MAX_NETWORK_OUTPUT {
+    };
+    let remaining = || deadline.saturating_duration_since(Instant::now());
+    let (stdout, stdout_len) = stdout_reader
+        .recv_timeout(remaining())
+        .map_err(|_| "Git network operation timed out".to_string())??;
+    let (stderr, stderr_len) = stderr_reader
+        .recv_timeout(remaining())
+        .map_err(|_| "Git network operation timed out".to_string())??;
+    if stdout_len > MAX_NETWORK_OUTPUT || stderr_len > MAX_NETWORK_OUTPUT {
         return Err("Git produced too much network output".into());
     }
+    let output = Output {
+        status,
+        stdout,
+        stderr,
+    };
     if !output.status.success() {
         let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(if detail.is_empty() {
@@ -1085,6 +1150,43 @@ mod tests {
             snapshot(&fixture.client).unwrap().branch.as_deref(),
             Some("main")
         );
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bounded_git_drains_large_output_without_waiting_for_pipe_capacity() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let fixture = remote_fixture();
+        let upload_pack = fixture.root.join("noisy-upload-pack.sh");
+        fs::write(
+            &upload_pack,
+            "#!/bin/sh\ndd if=/dev/zero bs=1024 count=80 2>/dev/null | tr '\\0' x >&2\nexec git-upload-pack \"$@\"\n",
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&upload_pack).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&upload_pack, permissions).unwrap();
+        git_stdout(
+            &fixture.client,
+            &[
+                "config",
+                "remote.origin.uploadpack",
+                upload_pack.to_str().unwrap(),
+            ],
+            None,
+        )
+        .unwrap();
+
+        let started = Instant::now();
+        let error = bounded_git(
+            &fixture.client,
+            &["fetch", "--no-tags", "origin", "refs/heads/main"],
+        )
+        .unwrap_err();
+        assert!(error.contains("too much network output"));
+        assert!(started.elapsed() < Duration::from_secs(10));
         fs::remove_dir_all(fixture.root).unwrap();
     }
 

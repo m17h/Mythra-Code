@@ -4677,6 +4677,10 @@ export default function App() {
       setError("Wait for the pull request operation to finish before changing this workspace.");
       return;
     }
+    if (projectHasActiveTask(activeThreadWorktree.path) || projectHasActiveTask(activeThreadWorktree.projectPath)) {
+      setError("The workspace became busy. Try again after its current operation finishes.");
+      return;
+    }
     setWorktreeBusy(true);
     try {
       await runCheckpointProjectOperation(activeThreadWorktree.projectPath, async () => {
@@ -5213,7 +5217,7 @@ export default function App() {
       }
       command = pushCommand;
     } else if (action === "comments") command = githubCliCommand(githubStatus?.path || "gh", "comments", threadPullRequest.linked && threadPullRequest.pullRequest ? threadPullRequest.pullRequest : undefined);
-    else if (action === "ci") command = githubCliCommand(githubStatus?.path || "gh", "ci");
+    else if (action === "ci") command = githubCliCommand(githubStatus?.path || "gh", "ci", threadPullRequest.linked && threadPullRequest.pullRequest ? threadPullRequest.pullRequest : undefined);
     else {
       if (!await confirmDialog("Create a draft pull request on the configured GitHub remote?")) return;
       command = githubCliCommand(githubStatus?.path || "gh", "pr");

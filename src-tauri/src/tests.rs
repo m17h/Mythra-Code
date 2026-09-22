@@ -947,6 +947,52 @@ fn checkpoint_restore_refuses_a_stale_safety_snapshot() {
     fs::remove_dir_all(&repo).expect("remove test repo");
 }
 
+#[cfg(unix)]
+#[test]
+fn worktree_status_recognizes_registered_path_containing_newline() {
+    let source = env::temp_dir().join(format!(
+        "openkiwi-worktree-status-source-{}",
+        uuid::Uuid::new_v4()
+    ));
+    let isolated = env::temp_dir().join(format!(
+        "openkiwi-worktree-status-isolated-{}\nsecond-line",
+        uuid::Uuid::new_v4()
+    ));
+    fs::create_dir_all(&source).expect("source repo");
+    test_git(&source, &["init"]);
+    fs::write(source.join("file.txt"), "base\n").expect("base file");
+    test_git(&source, &["add", "."]);
+    test_git(&source, &["commit", "-m", "base"]);
+    let base = test_git(&source, &["rev-parse", "HEAD"]);
+    test_git(
+        &source,
+        &[
+            "worktree",
+            "add",
+            isolated.to_str().unwrap(),
+            "-b",
+            "openkiwi/test-special-path",
+            &base,
+        ],
+    );
+
+    let status = worktree_status_sync(
+        source.to_str().unwrap(),
+        isolated.to_str().unwrap(),
+        "openkiwi/test-special-path",
+        &base,
+    )
+    .expect("worktree status");
+    assert!(status.exists);
+    assert!(status.registered);
+
+    test_git(
+        &source,
+        &["worktree", "remove", "--force", isolated.to_str().unwrap()],
+    );
+    fs::remove_dir_all(&source).expect("remove source repo");
+}
+
 #[test]
 fn worktree_apply_transfers_complete_delta_without_touching_source_index_or_ignored_files() {
     let source = env::temp_dir().join(format!(
@@ -1259,6 +1305,71 @@ fn restoring_pre_apply_safety_can_rebaseline_and_reapply_the_worktree() {
     assert_eq!(
         fs::read_to_string(source.join("source.txt")).unwrap(),
         "isolated\n"
+    );
+
+    test_git(
+        &source,
+        &["worktree", "remove", "--force", isolated.to_str().unwrap()],
+    );
+    fs::remove_dir_all(&source).expect("remove source");
+}
+
+#[test]
+fn worktree_merge_uses_local_identity_when_repository_has_none() {
+    let source = env::temp_dir().join(format!(
+        "openkiwi-worktree-merge-identity-source-{}",
+        uuid::Uuid::new_v4()
+    ));
+    let isolated = env::temp_dir().join(format!(
+        "openkiwi-worktree-merge-identity-isolated-{}",
+        uuid::Uuid::new_v4()
+    ));
+    fs::create_dir_all(&source).expect("source repo");
+    test_git(&source, &["init"]);
+    fs::write(source.join("source.txt"), "base\n").expect("base");
+    test_git(&source, &["add", "."]);
+    test_git(&source, &["commit", "-m", "base"]);
+    let base = test_git(&source, &["rev-parse", "HEAD"]);
+    test_git(
+        &source,
+        &[
+            "worktree",
+            "add",
+            isolated.to_str().unwrap(),
+            "-b",
+            "openkiwi/test-merge-identity",
+            &base,
+        ],
+    );
+    fs::write(isolated.join("isolated.txt"), "completed\n").expect("isolated edit");
+    test_git(&isolated, &["add", "."]);
+    test_git(&isolated, &["commit", "-m", "isolated"]);
+    test_git(&source, &["config", "user.name", ""]);
+    test_git(&source, &["config", "user.email", ""]);
+    for phase in ["before", "after"] {
+        capture_checkpoint_snapshot(
+            "worktree-merge-identity-safety",
+            source.to_str().unwrap(),
+            phase,
+            "merge identity safety",
+        )
+        .expect("safety checkpoint");
+    }
+
+    let result = worktree_merge_branch_sync(
+        source.to_str().unwrap(),
+        isolated.to_str().unwrap(),
+        "openkiwi/test-merge-identity",
+        "worktree-merge-identity-safety",
+        None,
+    )
+    .expect("merge without configured identity");
+    assert_eq!(
+        test_git(
+            &source,
+            &["show", "-s", "--format=%an <%ae>", &result.source_commit]
+        ),
+        "Mythra Code <openkiwi@local>"
     );
 
     test_git(
@@ -3835,7 +3946,6 @@ fn codex_non_question_responses_remain_backwards_compatible() {
     assert!(requests.is_empty());
 }
 
-
 #[tokio::test]
 async fn worktree_merge_refuses_a_changed_confirmation_destination() {
     let source = env::temp_dir().join(format!("mythra-merge-destination-{}", uuid::Uuid::new_v4()));
@@ -3848,13 +3958,28 @@ async fn worktree_merge_refuses_a_changed_confirmation_destination() {
     test_git(&source, &["checkout", "-b", "different-target"]);
     for (branch, oid) in [("main", head.clone()), ("different-target", "0".repeat(40))] {
         let error = worktree_merge_branch(
-            "confirmation-thread".into(), source.to_string_lossy().into_owned(),
-            source.join("unused-worktree").to_string_lossy().into_owned(),
-            "mythra/isolated".into(), "unused-safety".into(), branch.into(), oid,
-        ).await.unwrap_err();
-        assert!(error.contains("changed since the merge confirmation"), "{error}");
+            "confirmation-thread".into(),
+            source.to_string_lossy().into_owned(),
+            source
+                .join("unused-worktree")
+                .to_string_lossy()
+                .into_owned(),
+            "mythra/isolated".into(),
+            "unused-safety".into(),
+            branch.into(),
+            oid,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error.contains("changed since the merge confirmation"),
+            "{error}"
+        );
         assert_eq!(test_git(&source, &["rev-parse", "HEAD"]), head);
-        assert_eq!(test_git(&source, &["symbolic-ref", "--short", "HEAD"]), "different-target");
+        assert_eq!(
+            test_git(&source, &["symbolic-ref", "--short", "HEAD"]),
+            "different-target"
+        );
     }
     fs::remove_dir_all(source).unwrap();
 }

@@ -67,6 +67,25 @@ describe("AppActionMenu", () => {
     expect(first).toHaveFocus();
   });
 
+  it("opens toward the arrow direction and skips disabled edge items", async () => {
+    const list = items([
+      { disabled: true },
+      {},
+      { disabled: true },
+    ]);
+    render(<AppActionMenu items={list} />);
+    const trigger = screen.getByRole("button", { name: "More" });
+
+    fireEvent.keyDown(trigger, { key: "ArrowUp" });
+    await new Promise(requestAnimationFrame);
+    expect(screen.getByRole("menuitem", { name: "Refresh status" })).toHaveFocus();
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    fireEvent.keyDown(trigger, { key: "ArrowDown" });
+    await new Promise(requestAnimationFrame);
+    expect(screen.getByRole("menuitem", { name: "Refresh status" })).toHaveFocus();
+  });
+
   it("supports Home and End and closes when focus leaves the menu", () => {
     render(<><AppActionMenu items={items()} /><button type="button">Outside</button></>);
     fireEvent.click(screen.getByRole("button", { name: "More" }));

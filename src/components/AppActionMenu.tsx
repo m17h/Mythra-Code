@@ -48,6 +48,7 @@ export function AppActionMenu({
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const initialFocusRef = useRef<"first" | "last">("first");
 
   const close = (returnFocus: boolean) => {
     setOpen(false);
@@ -75,10 +76,13 @@ export function AppActionMenu({
 
   useEffect(() => {
     if (!open) return;
-    // The first item that can actually be run takes focus, so a keyboard user
-    // never lands on a disabled row and has to guess why nothing happens.
+    // Focus follows the opening arrow and skips anything that cannot run, so
+    // keyboard users land at the expected edge without hitting a dead row.
     const frame = requestAnimationFrame(() => {
-      itemRefs.current.find((item) => item?.isConnected && !item.disabled)?.focus();
+      const enabledItems = itemRefs.current.filter(
+        (item): item is HTMLButtonElement => Boolean(item?.isConnected && !item.disabled),
+      );
+      (initialFocusRef.current === "last" ? enabledItems.at(-1) : enabledItems[0])?.focus();
     });
     return () => cancelAnimationFrame(frame);
   }, [open]);
@@ -104,10 +108,14 @@ export function AppActionMenu({
         aria-expanded={open}
         aria-label={ariaLabel ?? label}
         disabled={disabled}
-        onClick={() => setOpen((current) => !current)}
+        onClick={() => {
+          initialFocusRef.current = "first";
+          setOpen((current) => !current);
+        }}
         onKeyDown={(event) => {
           if (event.key === "ArrowDown" || event.key === "ArrowUp") {
             event.preventDefault();
+            initialFocusRef.current = event.key === "ArrowUp" ? "last" : "first";
             setOpen(true);
           }
         }}
