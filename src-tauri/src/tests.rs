@@ -2197,6 +2197,249 @@ fn runtime_compatibility_accepts_tested_contract() {
 }
 
 #[test]
+fn model_refresh_detects_changed_runtime_path_or_version() {
+    let path = Path::new("/usr/local/bin/codex");
+    assert!(!codex_runtime_changed(
+        path,
+        "codex-cli 0.155.1",
+        path,
+        "codex-cli 0.155.1"
+    ));
+    assert!(codex_runtime_changed(
+        path,
+        "codex-cli 0.155.1",
+        path,
+        "codex-cli 0.154.0"
+    ));
+    assert!(codex_runtime_changed(
+        Path::new("/opt/homebrew/bin/codex"),
+        "codex-cli 0.155.1",
+        path,
+        "codex-cli 0.155.1"
+    ));
+}
+
+#[test]
+fn model_refresh_restart_reservation_serializes_turns_and_commands() {
+    let lifecycle = Arc::new(RuntimeLifecycle::default());
+    lifecycle.begin_instance("runtime-one");
+
+    // This models work beginning after the renderer's initial busy snapshot.
+    // Native reservation must still see and refuse it.
+    let turn_start = lifecycle
+        .begin_activity("runtime-one", "turn/start", Some("thread-race"))
+        .unwrap()
+        .unwrap();
+    assert!(lifecycle
+        .reserve_restart()
+        .unwrap_err()
+        .contains("turn or command"));
+    turn_start.finish(true);
+    assert!(lifecycle.reserve_restart().is_err());
+
+    lifecycle.observe_server_message(
+        "runtime-one",
+        &json!({
+            "method": "turn/completed",
+            "params": { "threadId": "thread-race", "turn": { "status": "completed" } }
+        }),
+    );
+    let token = lifecycle.reserve_restart().unwrap();
+
+    // While the renderer performs its last checks and replaces the process,
+    // newly initiated work is rejected by the same native gate.
+    assert!(lifecycle
+        .begin_activity("runtime-one", "turn/start", Some("thread-after-reserve"))
+        .err()
+        .unwrap()
+        .contains("refreshing its model catalog"));
+    assert!(lifecycle
+        .begin_activity("runtime-one", "command/exec", Some("thread-after-reserve"))
+        .err()
+        .unwrap()
+        .contains("refreshing its model catalog"));
+    assert!(lifecycle.begin_rpc_call("turn/start").is_err());
+    let preflight_read = lifecycle.begin_rpc_call("model/list").unwrap();
+    assert!(lifecycle.validate_restart(&token).is_err());
+    drop(preflight_read);
+    lifecycle.validate_restart(&token).unwrap();
+    assert!(lifecycle.begin_rpc_call("model/list").is_err());
+    assert!(lifecycle.begin_rpc_call("config/value/write").is_err());
+
+    lifecycle.release_restart(&token);
+    let active_read = lifecycle.begin_rpc_call("model/list").unwrap();
+    assert!(lifecycle.begin_generic_restart().is_err());
+    drop(active_read);
+    let command = lifecycle
+        .begin_activity("runtime-one", "command/exec", Some("thread-after-release"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(lifecycle.active_command_count(), 1);
+    assert!(lifecycle.reserve_restart().is_err());
+    assert!(lifecycle.begin_generic_restart().is_err());
+    command.finish(true);
+    assert_eq!(lifecycle.active_command_count(), 0);
+    assert!(lifecycle.reserve_restart().is_ok());
+}
+
+#[test]
+fn model_refresh_reservation_tracks_review_and_compaction_until_terminal_events() {
+    let lifecycle = Arc::new(RuntimeLifecycle::default());
+    lifecycle.begin_instance("runtime-review");
+    let review = lifecycle
+        .begin_activity("runtime-review", "review/start", Some("review-thread"))
+        .unwrap()
+        .unwrap();
+    review.finish(true);
+    assert!(lifecycle.reserve_restart().is_err());
+    lifecycle.observe_server_message(
+        "runtime-review",
+        &json!({
+            "method": "turn/completed",
+            "params": { "threadId": "review-thread", "turn": { "status": "completed" } }
+        }),
+    );
+
+    let compaction = lifecycle
+        .begin_activity(
+            "runtime-review",
+            "thread/compact/start",
+            Some("compact-thread"),
+        )
+        .unwrap()
+        .unwrap();
+    compaction.finish(true);
+    assert!(lifecycle.reserve_restart().is_err());
+    lifecycle.observe_server_message(
+        "runtime-review",
+        &json!({
+            "method": "item/completed",
+            "params": {
+                "threadId": "compact-thread",
+                "item": { "type": "contextCompaction" }
+            }
+        }),
+    );
+    assert!(lifecycle.reserve_restart().is_ok());
+}
+
+#[test]
+fn abandoned_model_refresh_reservation_expires_and_restart_guard_releases() {
+    let lifecycle = Arc::new(RuntimeLifecycle::default());
+    lifecycle.begin_instance("runtime-abandoned");
+    let token = lifecycle.reserve_restart().unwrap();
+    lifecycle
+        .lock()
+        .restart_reservation
+        .as_mut()
+        .unwrap()
+        .expires_at = Instant::now() - Duration::from_secs(1);
+    let start = lifecycle
+        .begin_activity("runtime-abandoned", "turn/start", Some("after-abandon"))
+        .unwrap()
+        .unwrap();
+    start.finish(false);
+    assert!(lifecycle.validate_restart(&token).is_err());
+
+    let token = lifecycle.reserve_restart().unwrap();
+    lifecycle.validate_restart(&token).unwrap();
+    let guard = RuntimeRestartGuard {
+        lifecycle: lifecycle.clone(),
+        token,
+    };
+    drop(guard);
+    assert!(lifecycle
+        .begin_activity("runtime-abandoned", "command/exec", Some("after-restart"))
+        .unwrap()
+        .is_some());
+}
+
+#[test]
+fn model_refresh_handles_completion_before_turn_start_response() {
+    let lifecycle = Arc::new(RuntimeLifecycle::default());
+    lifecycle.begin_instance("runtime-fast-turn");
+    let start = lifecycle
+        .begin_activity("runtime-fast-turn", "turn/start", Some("fast-thread"))
+        .unwrap()
+        .unwrap();
+    lifecycle.observe_server_message(
+        "runtime-fast-turn",
+        &json!({
+            "method": "turn/started",
+            "params": { "threadId": "fast-thread", "turn": { "id": "turn-fast" } }
+        }),
+    );
+    lifecycle.observe_server_message("runtime-fast-turn", &json!({
+        "method": "turn/completed",
+        "params": { "threadId": "fast-thread", "turn": { "id": "turn-fast", "status": "completed" } }
+    }));
+    // The successful RPC reply arrives after terminal notifications. Finishing
+    // the request must not resurrect a turn that already completed.
+    start.finish(true);
+    assert!(lifecycle.reserve_restart().is_ok());
+}
+
+#[test]
+fn dead_runtime_cleanup_is_instance_scoped_and_restart_paths_share_the_gate() {
+    let lifecycle = Arc::new(RuntimeLifecycle::default());
+    lifecycle.begin_instance("old-runtime");
+    let old_turn = lifecycle
+        .begin_activity("old-runtime", "turn/start", Some("old-thread"))
+        .unwrap()
+        .unwrap();
+    old_turn.finish(true);
+
+    lifecycle.clear_instance("old-runtime");
+    lifecycle.begin_instance("new-runtime");
+    let recovered = lifecycle.reserve_restart().unwrap();
+    lifecycle.release_restart(&recovered);
+    let new_turn = lifecycle
+        .begin_activity("new-runtime", "turn/start", Some("new-thread"))
+        .unwrap()
+        .unwrap();
+    new_turn.finish(true);
+    // A late EOF from the old reader cannot clear the replacement's state.
+    lifecycle.clear_instance("old-runtime");
+    lifecycle.observe_server_message(
+        "old-runtime",
+        &json!({
+            "method": "turn/completed",
+            "params": { "threadId": "new-thread", "turn": { "status": "completed" } }
+        }),
+    );
+    assert!(lifecycle.reserve_restart().is_err());
+    assert!(lifecycle.begin_generic_restart().is_err());
+
+    // Ordinary restarts and all non-retryable mutations share the reservation
+    // gate. Read-only catalog checks remain available during picker preflight.
+    lifecycle.observe_server_message(
+        "new-runtime",
+        &json!({
+            "method": "turn/completed",
+            "params": { "threadId": "new-thread", "turn": { "status": "completed" } }
+        }),
+    );
+    let token = lifecycle.reserve_restart().unwrap();
+    assert!(lifecycle.begin_generic_restart().is_err());
+    assert!(lifecycle
+        .begin_activity("new-runtime", "config/value/write", None)
+        .is_err());
+    assert!(lifecycle
+        .begin_activity("new-runtime", "model/list", None)
+        .unwrap()
+        .is_none());
+    lifecycle.release_restart(&token);
+
+    let ordinary_restart = lifecycle.begin_generic_restart().unwrap();
+    assert!(lifecycle.reserve_restart().is_err());
+    assert!(lifecycle
+        .begin_activity("new-runtime", "thread/delete", Some("new-thread"))
+        .is_err());
+    drop(ordinary_restart);
+    assert!(lifecycle.reserve_restart().is_ok());
+}
+
+#[test]
 fn runtime_update_comparison_handles_labels_and_prereleases() {
     assert_eq!(
         normalized_runtime_version("codex-cli 0.151.0-alpha.7.2"),

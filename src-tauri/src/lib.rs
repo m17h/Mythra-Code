@@ -8,7 +8,7 @@ use std::{
     process::Stdio,
     sync::{
         atomic::{AtomicBool, AtomicI64, Ordering},
-        Arc, RwLock,
+        Arc, Mutex as StdMutex, RwLock,
     },
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -145,6 +145,11 @@ struct AppServer {
     /// thread's runtime was last configured with" on this value, because
     /// startup-only config is only honoured for a thread that is not loaded.
     instance: String,
+    /// The executable and version loaded into this process. The executable
+    /// may be replaced by an installer while Mythra Code remains open.
+    runtime_path: PathBuf,
+    runtime_version: String,
+    lifecycle: Arc<RuntimeLifecycle>,
     pending: PendingMap,
     next_id: AtomicI64,
     alive: Arc<AtomicBool>,
@@ -158,6 +163,374 @@ struct AppServer {
     loaded_threads: RwLock<HashSet<String>>,
     openrouter_proxy_url: Option<String>,
     openrouter_proxy_task: Option<tokio::task::JoinHandle<()>>,
+}
+
+#[derive(Default)]
+struct RuntimeLifecycle {
+    state: StdMutex<RuntimeLifecycleState>,
+}
+
+#[derive(Default)]
+struct RuntimeLifecycleState {
+    instance: Option<String>,
+    restart_reservation: Option<RuntimeRestartReservationState>,
+    active_turns: HashSet<String>,
+    starting_turns: HashSet<String>,
+    active_compactions: HashSet<String>,
+    starting_compactions: HashSet<String>,
+    active_commands: usize,
+    in_flight_activity_requests: usize,
+    in_flight_rpcs: usize,
+}
+
+struct RuntimeRestartReservationState {
+    token: String,
+    expires_at: Instant,
+    restarting: bool,
+}
+
+struct RuntimeActivityGuard {
+    lifecycle: Arc<RuntimeLifecycle>,
+    instance: String,
+    method: String,
+    thread_id: Option<String>,
+    finished: bool,
+}
+
+struct RuntimeRpcGuard {
+    lifecycle: Arc<RuntimeLifecycle>,
+}
+
+impl RuntimeLifecycle {
+    fn lock(&self) -> std::sync::MutexGuard<'_, RuntimeLifecycleState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn clear_expired_reservation(state: &mut RuntimeLifecycleState) {
+        if state
+            .restart_reservation
+            .as_ref()
+            .is_some_and(|reservation| {
+                !reservation.restarting && Instant::now() >= reservation.expires_at
+            })
+        {
+            state.restart_reservation = None;
+        }
+    }
+
+    fn begin_activity(
+        self: &Arc<Self>,
+        instance: &str,
+        method: &str,
+        thread_id: Option<&str>,
+    ) -> Result<Option<RuntimeActivityGuard>, String> {
+        const RETRYABLE_READS: &[&str] = &[
+            "initialize",
+            "account/read",
+            "account/rateLimits/read",
+            "model/list",
+            "thread/list",
+            "thread/read",
+            "thread/turns/list",
+            "thread/search",
+            "skills/list",
+            "mcpServerStatus/list",
+            "gitDiffToRemote",
+            "fs/readFile",
+            "fs/readDirectory",
+            "fuzzyFileSearch",
+        ];
+        if RETRYABLE_READS.contains(&method) {
+            return Ok(None);
+        }
+
+        let mut state = self.lock();
+        Self::clear_expired_reservation(&mut state);
+        if state.restart_reservation.is_some() {
+            return Err("The Codex runtime is refreshing its model catalog. Try this action again in a moment.".into());
+        }
+        if state.instance.as_deref() != Some(instance) {
+            return Err("The Codex runtime is changing. Try this action again in a moment.".into());
+        }
+        state.in_flight_activity_requests += 1;
+        if matches!(method, "turn/start" | "review/start") {
+            if let Some(thread_id) = thread_id {
+                state.starting_turns.insert(thread_id.to_owned());
+                state.active_turns.insert(thread_id.to_owned());
+            }
+        }
+        if method == "thread/compact/start" {
+            if let Some(thread_id) = thread_id {
+                state.starting_compactions.insert(thread_id.to_owned());
+                state.active_compactions.insert(thread_id.to_owned());
+            }
+        }
+        if method == "command/exec" {
+            state.active_commands += 1;
+        }
+        drop(state);
+        Ok(Some(RuntimeActivityGuard {
+            lifecycle: self.clone(),
+            instance: instance.to_owned(),
+            method: method.to_owned(),
+            thread_id: thread_id.map(str::to_owned),
+            finished: false,
+        }))
+    }
+
+    fn begin_rpc_call(self: &Arc<Self>, method: &str) -> Result<RuntimeRpcGuard, String> {
+        const RETRYABLE_READS: &[&str] = &[
+            "account/read",
+            "account/rateLimits/read",
+            "model/list",
+            "thread/list",
+            "thread/read",
+            "thread/turns/list",
+            "thread/search",
+            "skills/list",
+            "mcpServerStatus/list",
+            "gitDiffToRemote",
+            "fs/readFile",
+            "fs/readDirectory",
+            "fuzzyFileSearch",
+        ];
+        let is_read = RETRYABLE_READS.contains(&method);
+        let mut state = self.lock();
+        Self::clear_expired_reservation(&mut state);
+        if let Some(reservation) = state.restart_reservation.as_ref() {
+            if reservation.restarting || !is_read {
+                return Err("The Codex runtime is refreshing its model catalog. Try this action again in a moment.".into());
+            }
+        }
+        state.in_flight_rpcs += 1;
+        Ok(RuntimeRpcGuard {
+            lifecycle: self.clone(),
+        })
+    }
+
+    fn begin_instance(&self, instance: &str) {
+        let mut state = self.lock();
+        state.instance = Some(instance.to_owned());
+        state.active_turns.clear();
+        state.starting_turns.clear();
+        state.active_compactions.clear();
+        state.starting_compactions.clear();
+        state.active_commands = 0;
+        state.in_flight_activity_requests = 0;
+    }
+
+    fn clear_instance(&self, instance: &str) {
+        let mut state = self.lock();
+        if state.instance.as_deref() == Some(instance) {
+            state.instance = None;
+            state.active_turns.clear();
+            state.starting_turns.clear();
+            state.active_compactions.clear();
+            state.starting_compactions.clear();
+            state.active_commands = 0;
+            state.in_flight_activity_requests = 0;
+        }
+    }
+
+    fn observe_server_message(&self, instance: &str, message: &Value) {
+        let Some(method) = message.get("method").and_then(Value::as_str) else {
+            return;
+        };
+        let params = &message["params"];
+        if method == "item/completed"
+            && params["item"]["type"].as_str() == Some("contextCompaction")
+        {
+            let mut state = self.lock();
+            if state.instance.as_deref() != Some(instance) {
+                return;
+            }
+            if let Some(thread_id) = params.get("threadId").and_then(Value::as_str) {
+                state.active_compactions.remove(thread_id);
+            }
+            return;
+        }
+        let Some(thread_id) = params.get("threadId").and_then(Value::as_str) else {
+            return;
+        };
+        let mut state = self.lock();
+        if state.instance.as_deref() != Some(instance) {
+            return;
+        }
+        match method {
+            "turn/started" => {
+                state.active_turns.insert(thread_id.to_owned());
+            }
+            "turn/completed" => {
+                state.active_turns.remove(thread_id);
+            }
+            "thread/status/changed" if params["status"]["type"].as_str() == Some("active") => {
+                state.active_turns.insert(thread_id.to_owned());
+            }
+            "thread/status/changed"
+                if matches!(
+                    params["status"]["type"].as_str(),
+                    Some("idle" | "systemError")
+                ) =>
+            {
+                state.active_turns.remove(thread_id);
+                state.active_compactions.remove(thread_id);
+            }
+            _ => {}
+        }
+    }
+
+    fn reserve_restart(&self) -> Result<String, String> {
+        let mut state = self.lock();
+        Self::clear_expired_reservation(&mut state);
+        if state.restart_reservation.is_some() {
+            return Err("A Codex runtime refresh is already in progress.".into());
+        }
+        if !state.active_turns.is_empty()
+            || !state.starting_turns.is_empty()
+            || !state.active_compactions.is_empty()
+            || !state.starting_compactions.is_empty()
+            || state.active_commands > 0
+            || state.in_flight_activity_requests > 0
+            || state.in_flight_rpcs > 0
+        {
+            return Err("A Codex turn or command is still active. Finish active work before refreshing the model catalog.".into());
+        }
+        let token = uuid::Uuid::new_v4().to_string();
+        state.restart_reservation = Some(RuntimeRestartReservationState {
+            token: token.clone(),
+            // A lost renderer cannot leave the runtime permanently gated.
+            expires_at: Instant::now() + Duration::from_secs(60),
+            restarting: false,
+        });
+        Ok(token)
+    }
+
+    fn release_restart(&self, token: &str) {
+        let mut state = self.lock();
+        if state
+            .restart_reservation
+            .as_ref()
+            .is_some_and(|reservation| reservation.token == token)
+        {
+            state.restart_reservation = None;
+        }
+    }
+
+    fn validate_restart(&self, token: &str) -> Result<(), String> {
+        let mut state = self.lock();
+        Self::clear_expired_reservation(&mut state);
+        if state.in_flight_rpcs > 0 {
+            return Err(
+                "A Codex request is still finishing. Try the model catalog refresh again.".into(),
+            );
+        }
+        let reservation = state
+            .restart_reservation
+            .as_mut()
+            .filter(|reservation| reservation.token == token)
+            .ok_or_else(|| {
+                "The Codex runtime refresh reservation expired. Refresh the model catalog again."
+                    .to_string()
+            })?;
+        // Once native replacement starts, the RAII guard owns the reservation
+        // until startup succeeds or fails; a TTL must not admit work mid-swap.
+        reservation.restarting = true;
+        Ok(())
+    }
+
+    fn active_command_count(&self) -> usize {
+        self.lock().active_commands
+    }
+
+    fn begin_generic_restart(self: &Arc<Self>) -> Result<RuntimeRestartGuard, String> {
+        let mut state = self.lock();
+        Self::clear_expired_reservation(&mut state);
+        if state.restart_reservation.is_some() {
+            return Err("A Codex runtime refresh is already in progress.".into());
+        }
+        if !state.active_turns.is_empty()
+            || !state.starting_turns.is_empty()
+            || !state.active_compactions.is_empty()
+            || !state.starting_compactions.is_empty()
+            || state.active_commands > 0
+            || state.in_flight_activity_requests > 0
+            || state.in_flight_rpcs > 0
+        {
+            return Err("A Codex turn, command, or request is still active. Finish active work before restarting the runtime.".into());
+        }
+        let token = uuid::Uuid::new_v4().to_string();
+        state.restart_reservation = Some(RuntimeRestartReservationState {
+            token: token.clone(),
+            expires_at: Instant::now() + Duration::from_secs(300),
+            restarting: true,
+        });
+        Ok(RuntimeRestartGuard {
+            lifecycle: self.clone(),
+            token,
+        })
+    }
+}
+
+impl RuntimeActivityGuard {
+    fn finish(mut self, succeeded: bool) {
+        self.finished = true;
+        self.update(succeeded);
+    }
+
+    fn update(&self, succeeded: bool) {
+        let mut state = self.lifecycle.lock();
+        if state.instance.as_deref() != Some(&self.instance) {
+            return;
+        }
+        state.in_flight_activity_requests = state.in_flight_activity_requests.saturating_sub(1);
+        if self.method == "command/exec" {
+            state.active_commands = state.active_commands.saturating_sub(1);
+        }
+        if matches!(self.method.as_str(), "turn/start" | "review/start") {
+            if let Some(thread_id) = &self.thread_id {
+                state.starting_turns.remove(thread_id);
+                if !succeeded {
+                    state.active_turns.remove(thread_id);
+                }
+            }
+        }
+        if self.method == "thread/compact/start" {
+            if let Some(thread_id) = &self.thread_id {
+                state.starting_compactions.remove(thread_id);
+                if !succeeded {
+                    state.active_compactions.remove(thread_id);
+                }
+            }
+        }
+    }
+}
+
+impl Drop for RuntimeRpcGuard {
+    fn drop(&mut self) {
+        let mut state = self.lifecycle.lock();
+        state.in_flight_rpcs = state.in_flight_rpcs.saturating_sub(1);
+    }
+}
+
+impl Drop for RuntimeActivityGuard {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.update(false);
+        }
+    }
+}
+
+struct RuntimeRestartGuard {
+    lifecycle: Arc<RuntimeLifecycle>,
+    token: String,
+}
+
+impl Drop for RuntimeRestartGuard {
+    fn drop(&mut self) {
+        self.lifecycle.release_restart(&self.token);
+    }
 }
 
 fn successfully_loaded_thread_ids(
@@ -198,6 +571,7 @@ fn successfully_loaded_thread_ids(
 #[derive(Default)]
 struct RuntimeState {
     server: Mutex<Option<Arc<AppServer>>>,
+    lifecycle: Arc<RuntimeLifecycle>,
     /// Only one package installer may mutate the shared runtime locations at
     /// a time, even if multiple windows or IPC callers bypass the disabled UI.
     runtime_update: Mutex<()>,
@@ -771,8 +1145,12 @@ struct CodexRuntimeStatus {
     available: bool,
     source: Option<&'static str>,
     path: Option<String>,
+    running_path: Option<String>,
     data_home: Option<String>,
     version: Option<String>,
+    running_version: Option<String>,
+    running_commands: usize,
+    runtime_changed: bool,
     compatible: bool,
     warning: Option<String>,
 }
@@ -891,51 +1269,63 @@ impl AppServer {
     }
 
     async fn request(&self, method: &str, params: Value) -> Result<Value, String> {
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let (sender, receiver) = oneshot::channel();
-        self.pending.lock().await.insert(id, sender);
+        let activity_guard = self.lifecycle.begin_activity(
+            &self.instance,
+            method,
+            params.get("threadId").and_then(Value::as_str),
+        )?;
+        let result = async {
+            let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+            let (sender, receiver) = oneshot::channel();
+            self.pending.lock().await.insert(id, sender);
 
-        let request_timeout = if method == "command/exec" {
-            params
-                .get("timeoutMs")
-                .and_then(Value::as_u64)
-                .map(|milliseconds| Duration::from_millis(milliseconds.saturating_add(30_000)))
-                .unwrap_or_else(|| Duration::from_secs(330))
-        } else {
-            Duration::from_secs(120)
-        };
+            let request_timeout = if method == "command/exec" {
+                params
+                    .get("timeoutMs")
+                    .and_then(Value::as_u64)
+                    .map(|milliseconds| Duration::from_millis(milliseconds.saturating_add(30_000)))
+                    .unwrap_or_else(|| Duration::from_secs(330))
+            } else {
+                Duration::from_secs(120)
+            };
 
-        let tracking_thread_id = params
-            .get("threadId")
-            .and_then(Value::as_str)
-            .map(str::to_owned);
-        let message = json!({ "method": method, "id": id, "params": params });
-        let deadline = Instant::now() + request_timeout;
-        if let Err(error) =
-            write_server_message(&self.stdin, format!("{message}\n").as_bytes(), deadline).await
-        {
-            // A timed-out write may have sent a partial JSON line. Do not
-            // reuse this stream for another request.
-            self.alive.store(false, Ordering::Release);
-            self.pending.lock().await.remove(&id);
-            return Err(error);
-        }
-
-        match timeout_at(deadline, receiver).await {
-            Ok(Ok(result)) => {
-                if let Ok(value) = &result {
-                    self.track_successful_request(method, tracking_thread_id.as_deref(), value);
-                }
-                result
-            }
-            Ok(Err(_)) => Err("Codex App Server stopped before replying".into()),
-            Err(_) => {
+            let tracking_thread_id = params
+                .get("threadId")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            let message = json!({ "method": method, "id": id, "params": params });
+            let deadline = Instant::now() + request_timeout;
+            if let Err(error) =
+                write_server_message(&self.stdin, format!("{message}\n").as_bytes(), deadline).await
+            {
+                // A timed-out write may have sent a partial JSON line. Do not
+                // reuse this stream for another request.
+                self.alive.store(false, Ordering::Release);
                 self.pending.lock().await.remove(&id);
-                Err(format!(
-                    "Codex App Server timed out while handling {method}"
-                ))
+                return Err(error);
+            }
+
+            match timeout_at(deadline, receiver).await {
+                Ok(Ok(result)) => {
+                    if let Ok(value) = &result {
+                        self.track_successful_request(method, tracking_thread_id.as_deref(), value);
+                    }
+                    result
+                }
+                Ok(Err(_)) => Err("Codex App Server stopped before replying".into()),
+                Err(_) => {
+                    self.pending.lock().await.remove(&id);
+                    Err(format!(
+                        "Codex App Server timed out while handling {method}"
+                    ))
+                }
             }
         }
+        .await;
+        if let Some(activity_guard) = activity_guard {
+            activity_guard.finish(result.is_ok());
+        }
+        result
     }
 
     async fn notify(&self, method: &str, params: Value) -> Result<(), String> {
@@ -978,6 +1368,7 @@ impl AppServer {
         if let Some(task) = &self.openrouter_proxy_task {
             task.abort();
         }
+        self.lifecycle.clear_instance(&self.instance);
     }
 
     fn is_alive(&self) -> bool {
@@ -1872,22 +2263,47 @@ fn runtime_is_compatible(version: &str) -> bool {
     major > 0 || minor >= 145
 }
 
+fn codex_runtime_changed(
+    installed_path: &Path,
+    installed_version: &str,
+    running_path: &Path,
+    running_version: &str,
+) -> bool {
+    installed_path != running_path || installed_version != running_version
+}
+
 async fn read_codex_runtime_status(app: &AppHandle, state: &RuntimeState) -> CodexRuntimeStatus {
     let data_home = app
         .path()
         .app_data_dir()
         .ok()
         .map(|path| path.join("codex-home").to_string_lossy().into_owned());
+    let running_runtime = state.server.lock().await.as_ref().map(|server| {
+        (
+            server.runtime_path.clone(),
+            server.runtime_version.clone(),
+            server.lifecycle.active_command_count(),
+        )
+    });
     match resolve_codex_runtime(app, state).await {
         Ok(runtime) => {
             let compatible = runtime_is_compatible(&runtime.version);
+            let runtime_changed = running_runtime.as_ref().is_some_and(|(path, version, _)| {
+                codex_runtime_changed(&runtime.path, &runtime.version, path, version)
+            });
             CodexRuntimeStatus {
                 available: true,
                 source: Some(runtime_source(&runtime.path)),
                 path: Some(runtime.path.to_string_lossy().into_owned()),
+                running_path: running_runtime
+                    .as_ref()
+                    .map(|(path, _, _)| path.to_string_lossy().into_owned()),
                 data_home,
                 warning: (!compatible).then(|| "This Codex runtime predates Mythra Code's tested App Server contract (0.145+). Update Codex before relying on advanced features.".to_string()),
                 version: Some(runtime.version),
+                running_version: running_runtime.as_ref().map(|(_, version, _)| version.clone()),
+                running_commands: running_runtime.as_ref().map_or(0, |(_, _, count)| *count),
+                runtime_changed,
                 compatible,
             }
         }
@@ -1895,8 +2311,16 @@ async fn read_codex_runtime_status(app: &AppHandle, state: &RuntimeState) -> Cod
             available: false,
             source: None,
             path: None,
+            running_path: running_runtime
+                .as_ref()
+                .map(|(path, _, _)| path.to_string_lossy().into_owned()),
             data_home,
             version: None,
+            running_version: running_runtime
+                .as_ref()
+                .map(|(_, version, _)| version.clone()),
+            running_commands: running_runtime.as_ref().map_or(0, |(_, _, count)| *count),
+            runtime_changed: false,
             compatible: false,
             warning: Some(error),
         },
@@ -1908,6 +2332,18 @@ async fn codex_runtime_status(
     app: AppHandle,
     state: State<'_, RuntimeState>,
 ) -> Result<CodexRuntimeStatus, String> {
+    Ok(read_codex_runtime_status(&app, &state).await)
+}
+
+#[tauri::command]
+async fn codex_runtime_status_refresh(
+    app: AppHandle,
+    state: State<'_, RuntimeState>,
+) -> Result<CodexRuntimeStatus, String> {
+    // Package managers can replace codex while Mythra Code remains open.
+    // Compare the executable on disk with the version already loaded by the
+    // running app-server before deciding whether its catalog can be refreshed.
+    *state.codex_runtime.lock().await = None;
     Ok(read_codex_runtime_status(&app, &state).await)
 }
 
@@ -4511,7 +4947,8 @@ async fn spawn_server(app: &AppHandle, state: &RuntimeState) -> Result<Arc<AppSe
         .map_err(|error| format!("Could not resolve app data directory: {error}"))?;
     let codex_home = app_data.join("codex-home");
 
-    let codex_binary = resolve_codex_runtime(app, state).await?.path;
+    let codex_runtime = resolve_codex_runtime(app, state).await?;
+    let codex_binary = codex_runtime.path.clone();
     let home = app.path().home_dir().ok();
 
     let mut command = background_command(&codex_binary);
@@ -4610,6 +5047,10 @@ async fn spawn_server(app: &AppHandle, state: &RuntimeState) -> Result<Arc<AppSe
     let server_requests: Arc<Mutex<HashMap<String, CodexServerRequestIdentity>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let server_requests_for_reader = server_requests.clone();
+    let lifecycle_for_reader = state.lifecycle.clone();
+    let instance = uuid::Uuid::new_v4().to_string();
+    let instance_for_reader = instance.clone();
+    state.lifecycle.begin_instance(&instance);
 
     tauri::async_runtime::spawn(async move {
         const DELTA_FLUSH_INTERVAL: Duration = Duration::from_millis(25);
@@ -4653,6 +5094,7 @@ async fn spawn_server(app: &AppHandle, state: &RuntimeState) -> Result<Arc<AppSe
                 );
                 continue;
             };
+            lifecycle_for_reader.observe_server_message(&instance_for_reader, &message);
 
             let is_response = message.get("id").is_some()
                 && (message.get("result").is_some() || message.get("error").is_some());
@@ -4732,6 +5174,7 @@ async fn spawn_server(app: &AppHandle, state: &RuntimeState) -> Result<Arc<AppSe
         // The pid is free for reuse from here on, so it must no longer be
         // published as ours.
         clear_server_identity(&identity_slot_for_reader, identity);
+        lifecycle_for_reader.clear_instance(&instance_for_reader);
     });
 
     if let Some(stderr) = stderr {
@@ -4750,7 +5193,10 @@ async fn spawn_server(app: &AppHandle, state: &RuntimeState) -> Result<Arc<AppSe
         child,
         identity,
         identity_slot: state.server_identity.clone(),
-        instance: uuid::Uuid::new_v4().to_string(),
+        instance,
+        runtime_path: codex_runtime.path,
+        runtime_version: codex_runtime.version,
+        lifecycle: state.lifecycle.clone(),
         pending,
         next_id: AtomicI64::new(1),
         alive,
@@ -5043,6 +5489,9 @@ async fn codex_rpc(
         ));
     }
     validate_rpc_params(&method, &params)?;
+    // Register before `ensure_server` so a read cannot spawn a process in the
+    // gap after a reserved restart has taken the old server out of the slot.
+    let _rpc_guard = state.lifecycle.begin_rpc_call(&method)?;
     let server = ensure_server(&app, &state).await?;
     if matches!(
         method.as_str(),
@@ -5110,11 +5559,19 @@ async fn codex_respond(
             "The Codex runtime is no longer running, so this request can no longer be answered."
                 .to_string()
         })?;
+    let response_guard =
+        state
+            .lifecycle
+            .begin_activity(&server.instance, "serverRequest/respond", None)?;
     {
         let mut requests = server.server_requests.lock().await;
         consume_codex_server_request(&mut requests, &id, expected.as_ref())?;
     }
-    server.respond(id, result).await
+    let response = server.respond(id, result).await;
+    if let Some(response_guard) = response_guard {
+        response_guard.finish(response.is_ok());
+    }
+    response
 }
 
 #[tauri::command]
@@ -5123,6 +5580,7 @@ async fn save_openrouter_key(
     state: State<'_, RuntimeState>,
     api_key: String,
 ) -> Result<(), String> {
+    let _restart_guard = state.lifecycle.begin_generic_restart()?;
     let trimmed = api_key.trim().to_string();
     tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
         let entry = keyring::Entry::new(KEYRING_SERVICE, OPENROUTER_ACCOUNT)
@@ -5159,6 +5617,7 @@ async fn save_lmstudio_key(
     state: State<'_, RuntimeState>,
     api_key: String,
 ) -> Result<(), String> {
+    let _restart_guard = state.lifecycle.begin_generic_restart()?;
     let trimmed = api_key.trim().to_string();
     tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
         let entry = keyring::Entry::new(KEYRING_SERVICE, LMSTUDIO_ACCOUNT)
@@ -5454,6 +5913,7 @@ async fn runtime_instance(
     app: AppHandle,
     state: State<'_, RuntimeState>,
 ) -> Result<String, String> {
+    let _rpc_guard = state.lifecycle.begin_rpc_call("thread/read")?;
     Ok(ensure_server(&app, &state).await?.instance.clone())
 }
 
@@ -5476,6 +5936,7 @@ async fn runtime_thread_state(
     if thread_id.trim().is_empty() || thread_id.len() > 256 {
         return Err("A runtime thread identity is required.".into());
     }
+    let _rpc_guard = state.lifecycle.begin_rpc_call("thread/read")?;
     let server = ensure_server(&app, &state).await?;
     Ok(RuntimeThreadState {
         instance: server.instance.clone(),
@@ -5485,6 +5946,37 @@ async fn runtime_thread_state(
 
 #[tauri::command]
 async fn restart_runtime(app: AppHandle, state: State<'_, RuntimeState>) -> Result<(), String> {
+    // Serialize ordinary capability/provider restarts with the tokenized
+    // model-refresh restart, and gate new mutation RPCs during replacement.
+    let _restart_guard = state.lifecycle.begin_generic_restart()?;
+    if let Some(server) = state.server.lock().await.take() {
+        server.shutdown().await;
+    }
+    let _ = ensure_server(&app, &state).await?;
+    Ok(())
+}
+
+#[tauri::command]
+fn reserve_runtime_restart(state: State<'_, RuntimeState>) -> Result<String, String> {
+    state.lifecycle.reserve_restart()
+}
+
+#[tauri::command]
+fn release_runtime_restart(state: State<'_, RuntimeState>, token: String) {
+    state.lifecycle.release_restart(&token);
+}
+
+#[tauri::command]
+async fn restart_runtime_reserved(
+    app: AppHandle,
+    state: State<'_, RuntimeState>,
+    token: String,
+) -> Result<(), String> {
+    state.lifecycle.validate_restart(&token)?;
+    let _reservation_guard = RuntimeRestartGuard {
+        lifecycle: state.lifecycle.clone(),
+        token,
+    };
     if let Some(server) = state.server.lock().await.take() {
         server.shutdown().await;
     }
@@ -5600,6 +6092,10 @@ pub fn run() {
         .manage(RunDiscoveryState::default())
         .invoke_handler(tauri::generate_handler![
             codex_runtime_status,
+            codex_runtime_status_refresh,
+            reserve_runtime_restart,
+            release_runtime_restart,
+            restart_runtime_reserved,
             developer_runtime_updates,
             developer_runtime_update,
             claude_runtime_status,

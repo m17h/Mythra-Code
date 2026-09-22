@@ -33,6 +33,11 @@ export const OPENAI_MODELS: Array<{ kind: ModelKind; name: string; id: string; t
   { kind: "astra", name: "Astra", id: "gpt-6-astra", tagline: "Frontier intelligence", iconSrc: "/model-icons/astra.png" },
 ];
 
+function namedModelArtwork(id: string) {
+  const artworkId = id === "gpt-6-sol" ? "gpt-5.6-sol" : id === "gpt-6-luna" ? "gpt-5.6-luna" : id;
+  return OPENAI_MODELS.find((entry) => entry.id === artworkId);
+}
+
 interface ModelOption {
   id: string;
   name: string;
@@ -68,7 +73,7 @@ export function openAiModelOptions(runtimeModels: RuntimeModel[]): ModelOption[]
     const id = (entry.model || entry.id || "").trim();
     if (!id || seen.has(id)) continue;
     seen.add(id);
-    const known = OPENAI_MODELS.find((candidate) => candidate.id === id);
+    const known = namedModelArtwork(id);
     options.push({
       id,
       name: entry.displayName?.trim() || known?.name || id,
@@ -122,7 +127,7 @@ export function ModelPowerControl({
   // A saved model the runtime no longer lists stays selected and visible; the
   // menu never silently rewrites the user's choice.
   const selectedModel = options.find((entry) => entry.id === model)
-    ?? (model ? { id: model, name: model, tagline: "Saved model", kind: modelKind(model), isDefault: false } : options[0]);
+    ?? (model ? { id: model, name: model, tagline: "Saved model", kind: modelKind(model), iconSrc: namedModelArtwork(model)?.iconSrc, isDefault: false } : options[0]);
   const kind = selectedModel?.kind ?? "sol";
   const effortIndex = Math.max(0, EFFORTS.findIndex((entry) => entry.value === (effort === "ultra" ? "max" : effort)));
   const reasoningFill = (effortIndex / (EFFORTS.length - 1)) * 100;

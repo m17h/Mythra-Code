@@ -106,6 +106,7 @@ let localSkillsResolvePromptImpl: (params: Record<string, unknown>) => unknown;
 let localSkillsMentionNamesImpl: (message: string) => unknown;
 let claudeModelsImpl: () => unknown;
 let modelListImpl: (params: Record<string, unknown>) => unknown;
+let refreshedCodexRuntimeStatusImpl: () => unknown;
 let cursorModelsImpl: () => unknown;
 /** Bumped by every managed app-server restart, real or simulated. */
 let runtimeGeneration: number;
@@ -117,13 +118,18 @@ let lmStudioModelsImpl: (baseUrl: string) => unknown;
 let gitDiffToRemoteImpl: () => unknown;
 
 function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
+  if (command === "codex_runtime_status_refresh") return refreshedCodexRuntimeStatusImpl();
   if (command === "codex_runtime_status") {
     return {
       available: true,
       source: "Codex CLI",
       path: "/usr/local/bin/codex",
+      runningPath: "/usr/local/bin/codex",
       dataHome: "/profiles/localdev/codex-home",
       version: "99.0.0",
+      runningVersion: "99.0.0",
+      runningCommands: 0,
+      runtimeChanged: false,
       compatible: true,
       warning: null,
     };
@@ -181,6 +187,13 @@ function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
     return { instance: `runtime-${runtimeGeneration}`, loaded: runtimeLoadedThreads.has(threadId) };
   }
   if (command === "restart_runtime") {
+    runtimeGeneration += 1;
+    runtimeLoadedThreads.clear();
+    return null;
+  }
+  if (command === "reserve_runtime_restart") return "test-runtime-refresh-reservation";
+  if (command === "release_runtime_restart") return null;
+  if (command === "restart_runtime_reserved") {
     runtimeGeneration += 1;
     runtimeLoadedThreads.clear();
     return null;
@@ -353,6 +366,19 @@ beforeEach(() => {
   openRouterCreditsImpl = () => ({ remaining: 0, used: null, source: "account" });
   commandExecImpl = () => ({ exitCode: 0, stdout: "", stderr: "" });
   cursorRuntimeStatusImpl = () => null;
+  refreshedCodexRuntimeStatusImpl = () => ({
+    available: true,
+    source: "Codex CLI",
+    path: "/usr/local/bin/codex",
+    runningPath: "/usr/local/bin/codex",
+    dataHome: "/profiles/localdev/codex-home",
+    version: "99.0.0",
+    runningVersion: "99.0.0",
+    runningCommands: 0,
+    runtimeChanged: false,
+    compatible: true,
+    warning: null,
+  });
   localSkillsScanImpl = () => [];
   localSkillsSyncImpl = () => "/runtime/skills";
   localSkillsResolvePromptImpl = (params) => params.message;
@@ -1330,6 +1356,114 @@ describe("model catalog request ordering", () => {
     const calls = invokeMock.mock.calls.slice(requestsBefore);
     expect(calls.filter(([, args]) => args?.method === "model/list").map(([, args]) => args?.params.cursor)).toEqual([null, "page-2"]);
     expect(calls.some(([command, args]) => command === "restart_runtime" || ["turn/start", "thread/start", "account/read"].includes(args?.method))).toBe(false);
+  });
+
+  it("restarts an idle stale runtime before refreshing the OpenAI catalog", async () => {
+    localStorage.setItem("kiwi.settings", JSON.stringify({ provider: "openai", model: "gpt-5.6-sol" }));
+    refreshedCodexRuntimeStatusImpl = () => ({
+      available: true,
+      source: "Codex CLI",
+      path: "/usr/local/bin/codex",
+      runningPath: "/usr/local/bin/codex",
+      dataHome: "/profiles/localdev/codex-home",
+      version: "100.0.0",
+      runningVersion: "99.0.0",
+      runningCommands: 0,
+      runtimeChanged: true,
+      compatible: true,
+      warning: null,
+    });
+    const initialRuntimeGeneration = runtimeGeneration;
+    modelListImpl = () => ({ data: runtimeGeneration === initialRuntimeGeneration
+      ? [catalogModel("gpt-5.6-sol")]
+      : [catalogModel("gpt-6-sol"), catalogModel("gpt-6-luna")] });
+    const user = userEvent.setup();
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: /^OpenAI model:/ }));
+    expect(await screen.findByRole("menuitemradio", { name: /^gpt-5.6-sol:/ })).toBeInTheDocument();
+    const refresh = screen.getByRole("button", { name: "Refresh OpenAI model catalog" });
+
+    await user.click(refresh);
+
+    expect(await screen.findByRole("menuitemradio", { name: /^gpt-6-sol:/ })).toBeInTheDocument();
+    expect(screen.getByRole("menuitemradio", { name: /^gpt-6-luna:/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^OpenAI model: gpt-5.6-sol/ })).toHaveAttribute("aria-expanded", "true");
+    expect(invokeMock.mock.calls.filter(([command]) => command === "restart_runtime_reserved")).toHaveLength(1);
+    expect(invokeMock.mock.calls.filter(([command]) => command === "release_runtime_restart")).toHaveLength(1);
+    expect(invokeMock.mock.calls.some(([command, args]) => command === "codex_rpc" && ["turn/start", "thread/start"].includes(args?.method))).toBe(false);
+  });
+
+  it("preserves the current catalog and avoids restart when the installed runtime cannot be resolved", async () => {
+    refreshedCodexRuntimeStatusImpl = () => ({
+      available: false,
+      source: "Codex CLI",
+      path: null,
+      runningPath: "/usr/local/bin/codex",
+      dataHome: "/profiles/localdev/codex-home",
+      version: null,
+      runningVersion: "99.0.0",
+      runningCommands: 0,
+      runtimeChanged: false,
+      compatible: false,
+      warning: "The installed Codex runtime could not be resolved.",
+    });
+    modelListImpl = () => ({ data: [catalogModel("gpt-5.6-sol")] });
+    const user = userEvent.setup();
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: /^OpenAI model:/ }));
+    const refresh = screen.getByRole("button", { name: "Refresh OpenAI model catalog" });
+    const requestsBeforeRefresh = invokeMock.mock.calls.length;
+
+    await user.click(refresh);
+
+    expect(await screen.findByRole("status")).toHaveTextContent(/installed Codex runtime could not be resolved/i);
+    expect(screen.getByRole("menuitemradio", { name: /^gpt-5.6-sol:/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^OpenAI model: gpt-5.6-sol/ })).toHaveAttribute("aria-expanded", "true");
+    expect(invokeMock.mock.calls.filter(([command]) => ["restart_runtime", "restart_runtime_reserved"].includes(command))).toHaveLength(0);
+    expect(invokeMock.mock.calls.slice(requestsBeforeRefresh).some(([command, args]) => command === "codex_rpc" && args?.method === "model/list")).toBe(false);
+  });
+
+  it.each(["active runtime task", "pending runtime approval", "active terminal command"])("preserves the current catalog and avoids restart when a %s exists", async (blocker) => {
+    refreshedCodexRuntimeStatusImpl = () => ({
+      available: true,
+      source: "Codex CLI",
+      path: "/usr/local/bin/codex",
+      runningPath: "/usr/local/bin/codex",
+      dataHome: "/profiles/localdev/codex-home",
+      version: "100.0.0",
+      runningVersion: "99.0.0",
+      runningCommands: blocker === "active terminal command" ? 1 : 0,
+      runtimeChanged: true,
+      compatible: true,
+      warning: null,
+    });
+    modelListImpl = () => ({ data: [catalogModel("gpt-5.6-sol")] });
+    const user = userEvent.setup();
+    await renderApp();
+    const { useTaskStore } = await import("./lib/taskStore");
+    act(() => {
+      const store = useTaskStore.getState();
+      store.ensureTask("busy-runtime-thread");
+      if (blocker === "active runtime task") store.setTaskStatus("busy-runtime-thread", "running");
+      else if (blocker === "pending runtime approval") store.enqueueApproval({
+        id: "approval-1",
+        method: "item/commandExecution/requestApproval",
+        params: {},
+        threadId: "busy-runtime-thread",
+        receivedAt: Date.now(),
+      });
+    });
+    await user.click(screen.getByRole("button", { name: /^OpenAI model:/ }));
+    const refresh = screen.getByRole("button", { name: "Refresh OpenAI model catalog" });
+    await user.click(refresh);
+
+    expect(await screen.findByRole("status")).toHaveTextContent(/Finish active work and respond to pending approvals/);
+    expect(screen.getByRole("menuitemradio", { name: /^gpt-5.6-sol:/ })).toBeInTheDocument();
+    expect(invokeMock.mock.calls.filter(([command]) => ["restart_runtime", "restart_runtime_reserved"].includes(command))).toHaveLength(0);
+    expect(invokeMock.mock.calls.filter(([command]) => command === "release_runtime_restart")).toHaveLength(1);
+    if (blocker === "pending runtime approval") {
+      expect(useTaskStore.getState().tasks["busy-runtime-thread"]?.approvals).toHaveLength(1);
+    }
   });
 
   it.each(["failed page", "empty catalog", "endless pages"])("keeps the last complete OpenAI catalog on %s and offers a working retry", async (failure) => {

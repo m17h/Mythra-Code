@@ -719,20 +719,38 @@
           }
         }
       }
+    },
+    {
+      "change": "Repair OpenAI model refresh and show Sol/Luna model artwork",
+      "decision": "Accept the measured cost of detecting a replaced Codex runtime during an explicit model refresh, refreshing its model catalog, and reserving the runtime lifecycle so refresh cannot interrupt a turn, command, or other in-flight activity. GPT-6 Sol and Luna reuse their matching family artwork. This fixes the reported model-refresh failure and the missing model icons; no dependency or startup CSS is added. Limits match the measured production bundles exactly with no extra headroom.",
+      "measurements": {
+        "safari13-minified": {
+          "appEntryRawBytes": { "before": 421321, "after": 422527, "delta": 1206 },
+          "startupJsRawBytes": { "before": 802223, "after": 803854, "delta": 1631 },
+          "startupCssRawBytes": { "before": 365438, "after": 365438, "delta": 0 },
+          "totalJsRawBytes": { "before": 1626515, "after": 1628114, "delta": 1599 }
+        },
+        "chrome105-minified": {
+          "appEntryRawBytes": { "before": 399250, "after": 400420, "delta": 1170 },
+          "startupJsRawBytes": { "before": 771892, "after": 773479, "delta": 1587 },
+          "startupCssRawBytes": { "before": 358919, "after": 358919, "delta": 0 },
+          "totalJsRawBytes": { "before": 1584166, "after": 1585751, "delta": 1585 }
+        }
+      }
     }
   ],
   "profiles": {
     "safari13-minified": {
-      "appEntryRawBytes": 421321,
-      "startupJsRawBytes": 802223,
+      "appEntryRawBytes": 422527,
+      "startupJsRawBytes": 803854,
       "startupCssRawBytes": 365438,
-      "totalJsRawBytes": 1626515
+      "totalJsRawBytes": 1628114
     },
     "chrome105-minified": {
-      "appEntryRawBytes": 399250,
-      "startupJsRawBytes": 771892,
+      "appEntryRawBytes": 400420,
+      "startupJsRawBytes": 773479,
       "startupCssRawBytes": 358919,
-      "totalJsRawBytes": 1584166
+      "totalJsRawBytes": 1585751
     }
   }
 }
