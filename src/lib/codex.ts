@@ -17,15 +17,28 @@ export interface CodexRuntimeStatus {
   available: boolean;
   source: "Codex CLI" | "ChatGPT app" | "Custom path" | null;
   path: string | null;
+  /** Executable currently serving app-server RPCs, if one is running. */
+  runningPath?: string | null;
   /** Isolated rollout/config store used by the active app-server process. */
   dataHome?: string | null;
   version: string | null;
+  /** Version loaded by the running app-server process, if any. */
+  runningVersion?: string | null;
+  /** Active command/exec RPCs would be terminated by an app-server restart. */
+  runningCommands?: number;
+  /** The resolved executable differs from the binary loaded by app-server. */
+  runtimeChanged?: boolean;
   compatible: boolean;
   warning: string | null;
 }
 
 export async function getCodexRuntimeStatus(): Promise<CodexRuntimeStatus> {
   return invoke<CodexRuntimeStatus>("codex_runtime_status");
+}
+
+/** Re-probes the installed executable and reports the version serving app-server. */
+export async function refreshCodexRuntimeStatus(): Promise<CodexRuntimeStatus> {
+  return invoke<CodexRuntimeStatus>("codex_runtime_status_refresh");
 }
 
 export async function getNormalChatWorkspace(): Promise<string> {
@@ -119,6 +132,21 @@ export async function listLmStudioModels<T>(baseUrl: string): Promise<T> {
 
 export async function restartRuntime(): Promise<void> {
   await invoke("restart_runtime");
+}
+
+/** Reserve an idle app-server for the explicit model-catalog refresh. */
+export async function reserveRuntimeRestart(): Promise<string> {
+  return invoke<string>("reserve_runtime_restart");
+}
+
+/** Release a reservation if the renderer's final safety checks abort. */
+export async function releaseRuntimeRestart(token: string): Promise<void> {
+  await invoke("release_runtime_restart", { token });
+}
+
+/** Replace the server only while holding the matching idle-refresh reservation. */
+export async function restartRuntimeReserved(token: string): Promise<void> {
+  await invoke("restart_runtime_reserved", { token });
 }
 
 /**

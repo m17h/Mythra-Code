@@ -150,6 +150,21 @@ describe("ModelPowerControl runtime catalog", () => {
     expect(researchModel.querySelector(".openai-logo-choice")).toBeInTheDocument();
   });
 
+  it("uses Sol and Luna artwork for the new GPT-6 models in the menu and trigger", () => {
+    const models = [runtimeModel("gpt-6-sol", "GPT-6-Sol"), runtimeModel("gpt-6-luna", "GPT-6-Luna")];
+    const { container, rerender } = render(
+      <ModelPowerControl model="gpt-6-sol" effort="high" fast={false} runtimeModels={models} onModel={vi.fn()} onEffort={vi.fn()} onFast={vi.fn()} />,
+    );
+
+    expect(container.querySelector<HTMLImageElement>(".model-picker-trigger .named-model-art img")?.src).toContain("/model-icons/sol.png");
+    fireEvent.click(screen.getByRole("button", { name: /OpenAI model: GPT-6-Sol/i }));
+    expect(screen.getByRole("menuitemradio", { name: /GPT-6-Sol/ }).querySelector<HTMLImageElement>("img")?.src).toContain("/model-icons/sol.png");
+    expect(screen.getByRole("menuitemradio", { name: /GPT-6-Luna/ }).querySelector<HTMLImageElement>("img")?.src).toContain("/model-icons/luna.png");
+
+    rerender(<ModelPowerControl model="gpt-6-luna" effort="high" fast={false} runtimeModels={models} onModel={vi.fn()} onEffort={vi.fn()} onFast={vi.fn()} />);
+    expect(container.querySelector<HTMLImageElement>(".model-picker-trigger .named-model-art img")?.src).toContain("/model-icons/luna.png");
+  });
+
   it("selects a runtime model that has no built-in tier", () => {
     const onModel = vi.fn();
     render(

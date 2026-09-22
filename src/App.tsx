@@ -17,7 +17,7 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { Archive, ArchiveRestore, Bot, Check, ChevronDown, Circle, Code2, Download, FileCode2, Folder, FolderOpen, Gauge, GitBranch, GitFork, LoaderCircle, MessageSquare, Paperclip, PanelRight, PanelLeftClose, PanelLeftOpen, Plus, Pin, PinOff, Pencil, Search, Settings, Shield, ShieldAlert, ShieldCheck, TerminalSquare, Trash2, X } from "lucide-react";
-import { getCodexRuntimeStatus, auditEvent, exportTextFile, getNormalChatWorkspace, getOpenRouterCredits, hasLmStudioKey, hasOpenRouterKey, respond, restartRuntime, rpc, runtimeInstanceId, runtimeThreadState, type CodexRuntimeStatus, type JsonObject, type OpenRouterCreditBalance } from "./lib/codex";
+import { getCodexRuntimeStatus, refreshCodexRuntimeStatus, reserveRuntimeRestart, releaseRuntimeRestart, restartRuntimeReserved, auditEvent, exportTextFile, getNormalChatWorkspace, getOpenRouterCredits, hasLmStudioKey, hasOpenRouterKey, respond, restartRuntime, rpc, runtimeInstanceId, runtimeThreadState, type CodexRuntimeStatus, type JsonObject, type OpenRouterCreditBalance } from "./lib/codex";
 import { deleteClaudeTranscript, getClaudeRateLimits, getClaudeRuntimeStatus, listClaudeModels, loadClaudeTranscript, loadClaudeTranscriptPage, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, visibleClaudeModels, type ClaudeModel, type ClaudeRuntimeStatus } from "./lib/claude";
 import { deleteCursorTranscript, getCursorRuntimeStatus, listCursorModels, loadCursorTranscript, loadCursorTranscriptPage, respondToCursorPermission, saveCursorTranscript, startCursorLogin, type CursorModel, type CursorRuntimeStatus } from "./lib/cursor";
 import { waitForSignIn } from "./lib/signInPolling";
@@ -2827,10 +2827,10 @@ export default function App() {
   // Deliberate restarts (provider repair, manual retry) kill the process on
   // purpose; suppress the disconnect-recovery flow while one is under way.
   const suppressRuntimeRecoveryUntilRef = useRef(0);
-  const deliberateRestartRuntime = useCallback(async () => {
+  const deliberateRestartRuntime = useCallback(async (restart: () => Promise<void> = restartRuntime) => {
     suppressRuntimeRecoveryUntilRef.current = Date.now() + 20_000;
     try {
-      await restartRuntime();
+      await restart();
     } finally {
       // A restart may replace the app-server with a newer protocol version.
       // Let the next thread open probe pagination again.
@@ -2838,6 +2838,57 @@ export default function App() {
       suppressRuntimeRecoveryUntilRef.current = Date.now() + 3_000;
     }
   }, []);
+  // A package-manager update can replace codex while its older app-server is
+  // still handling turns. Only the explicit picker refresh may replace it,
+  // and only after checking that no Codex-backed task or approval would be
+  // orphaned by the restart. Startup/account refreshes keep using refreshModels.
+  const refreshOpenAiModelsFromPicker = useCallback(() => refreshProviderModels(
+    runtimeModelsRequestRef,
+    async () => {
+      const runtime = await refreshCodexRuntimeStatus();
+      if (!runtime.available || !runtime.path || !runtime.version) {
+        throw new Error(runtime.warning || "The installed Codex runtime could not be checked. The current model catalog is still available; try again later.");
+      }
+      const runtimeChanged = Boolean(runtime.runningVersion && runtime.runningPath && runtime.runtimeChanged);
+      if (runtimeChanged) {
+        // Native reservation closes the gap between the initial idle check and
+        // server shutdown: it refuses if a turn/command is active and rejects
+        // any new work until the replacement finishes or the lease is released.
+        const reservation = await reserveRuntimeRestart();
+        try {
+          const taskState = useTaskStore.getState();
+          const hasActiveRuntimeTask = Object.entries(taskState.statuses).some(([threadId, status]) =>
+            (status === "starting" || status === "running")
+            && !isLocalSubscriptionThread(knownThreadsRef.current?.[threadId]),
+          );
+          const hasPendingRuntimeApproval = Object.values(taskState.tasks).some((task) =>
+            !isLocalSubscriptionThread(knownThreadsRef.current?.[task.threadId])
+            && task.approvals.some((approval) => !approval.method.startsWith("claude/")
+              && !approval.method.startsWith("cursor/")
+              && !approval.method.startsWith("openkiwi/")),
+          );
+          const hasActiveTerminalCommand = Boolean(runtime.runningCommands)
+            || terminal.running
+            || terminal.runningElsewhere.length > 0
+            || workflowRuns.some((run) => run.status === "running");
+          if (hasActiveRuntimeTask || hasPendingRuntimeApproval || hasActiveTerminalCommand) {
+            throw new Error("A newer Codex runtime is installed, but an AI task, terminal command, workflow, or approval is still using the current runtime. Finish active work and respond to pending approvals, then refresh the model catalog again.");
+          }
+          await deliberateRestartRuntime(() => restartRuntimeReserved(reservation));
+        } finally {
+          // The native restart command also releases via RAII. This idempotent
+          // fallback handles renderer-side preflight errors and cancellation.
+          await releaseRuntimeRestart(reservation).catch(() => undefined);
+        }
+      }
+      return listRuntimeModels();
+    },
+    setRuntimeModelsLoading,
+    (models) => { if (models.length) setRuntimeModels(models); },
+    setRuntimeModelsError,
+    "OpenAI returned an empty model catalog.",
+    false,
+  ), [deliberateRestartRuntime, terminal.running, terminal.runningElsewhere, workflowRuns]);
   /**
    * Replace the app-server so an already loaded thread can be given different
    * startup-only sub-agent config, and report the identity of the runtime that
@@ -6342,7 +6393,7 @@ export default function App() {
                 onStop={() => void stopTurnAndChildren()}
                 modelControls={
                   <>
-                    {effectiveSettings.provider === "openai" && <ModelPowerControl providerControl={composerProviderControl} model={effectiveSettings.model || DEFAULT_OPENAI_MODEL} effort={effectiveSettings.reasoningEffort} fast={settings.serviceTier === "priority"} runtimeModels={runtimeModels} loading={runtimeModelsLoading} error={runtimeModelsError} onRefresh={() => void refreshModels()} favorites={favoriteModels(modelFavorites, "openai")} onToggleFavorite={(model) => toggleModelFavorite("openai", model)} onModel={persistComposerModel} onEffort={persistComposerReasoning} onFast={(fast) => persistSettings({ ...settings, serviceTier: fast ? "priority" : null })} />}
+                    {effectiveSettings.provider === "openai" && <ModelPowerControl providerControl={composerProviderControl} model={effectiveSettings.model || DEFAULT_OPENAI_MODEL} effort={effectiveSettings.reasoningEffort} fast={settings.serviceTier === "priority"} runtimeModels={runtimeModels} loading={runtimeModelsLoading} error={runtimeModelsError} onRefresh={() => void refreshOpenAiModelsFromPicker()} favorites={favoriteModels(modelFavorites, "openai")} onToggleFavorite={(model) => toggleModelFavorite("openai", model)} onModel={persistComposerModel} onEffort={persistComposerReasoning} onFast={(fast) => persistSettings({ ...settings, serviceTier: fast ? "priority" : null })} />}
                     {effectiveSettings.provider === "openrouter" && (
                       <OpenRouterModelControl
                         model={effectiveSettings.model}

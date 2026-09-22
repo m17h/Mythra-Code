@@ -1,4 +1,4 @@
-import { fireEvent, render } from "@testing-library/react";
+import { fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { commands } from "vitest/browser";
 import { ClaudeModelControl } from "./ClaudeModelControl";
@@ -12,6 +12,27 @@ import "./SettingsModal.css";
 afterEach(async () => { await commands.setStreamTestReducedMotion(false); });
 
 describe("model control browser layout", () => {
+  it("loads the GPT-6 Sol and Luna artwork in the actual picker", async () => {
+    const runtimeModels = ["sol", "luna"].map((tier) => ({
+      id: `gpt-6-${tier}`, model: `gpt-6-${tier}`, displayName: `GPT-6-${tier}`,
+      description: `${tier} model`, supportedReasoningEfforts: [], defaultReasoningEffort: "high", isDefault: false,
+    }));
+    const view = render(<div className="app-shell" data-theme="kiwi">
+      <ModelPowerControl model="gpt-6-sol" effort="high" fast={false} runtimeModels={runtimeModels} onModel={vi.fn()} onEffort={vi.fn()} onFast={vi.fn()} />
+    </div>);
+
+    fireEvent.click(view.getByRole("button", { name: /OpenAI model: GPT-6-sol/i }));
+    const images = [
+      view.container.querySelector<HTMLImageElement>(".model-picker-trigger .named-model-art img"),
+      view.getByRole("menuitemradio", { name: /GPT-6-sol/i }).querySelector<HTMLImageElement>("img"),
+      view.getByRole("menuitemradio", { name: /GPT-6-luna/i }).querySelector<HTMLImageElement>("img"),
+    ];
+    await waitFor(() => images.forEach((image) => {
+      expect(image?.complete).toBe(true);
+      expect(image?.naturalWidth).toBeGreaterThan(0);
+    }));
+  });
+
   it.each(["dark", "light"])("reserves header refresh spacing at small widths and UI scales in %s mode", (scheme) => {
     const view = render(<div className="app-shell" data-color-scheme={scheme} style={{ display: "block" }}>
       <ModelCatalogHeader provider="OpenAI" heading="Choose your model" description="A deliberately long provider catalog description that needs truncation" onRefresh={vi.fn()} />
