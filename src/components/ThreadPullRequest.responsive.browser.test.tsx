@@ -1,6 +1,6 @@
-import { fireEvent, render } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { commands } from "vitest/browser";
+import { commands, page, userEvent } from "vitest/browser";
 import { ThreadPullRequestPanel } from "./ThreadPullRequestPanel";
 import { ThreadPullRequestChip } from "./ThreadPullRequestChip";
 import type { PullRequest, PullRequestContext, PullRequestPanelProps } from "../lib/pullRequests";
@@ -217,5 +217,35 @@ describe("thread pull request chip — crowded header", () => {
 
     expect(bar.scrollWidth).toBeLessThanOrEqual(bar.clientWidth);
     expect(chip.getBoundingClientRect().right).toBeLessThanOrEqual(bar.getBoundingClientRect().right + 0.5);
+  });
+});
+
+
+describe("merge help in the real dock", () => {
+  it.each(["dark", "light"])("stays readable and independent from the radios in %s mode", async (scheme) => {
+    const props = panelProps({ linked: true, pullRequest: pullRequest({ viewerCanMerge: true }) });
+    const view = render(dock(360, scheme, <ThreadPullRequestPanel {...props} />));
+    await page.getByRole("button", { name: "Merge on GitHub…" }).click();
+    const label = "What “Rebase and merge” does";
+    const help = page.getByRole("button", { name: label });
+    await help.hover();
+    expect(screen.getByRole("button", { name: label })).toHaveAttribute("aria-expanded", "true");
+    const bubble = screen.getByText(/They get new commit IDs/);
+    await page.getByText(/They get new commit IDs/).hover();
+    expect(bubble).toBeVisible();
+    const rect = bubble.getBoundingClientRect();
+    const panel = view.container.querySelector<HTMLElement>(".studio-panel")!;
+    const bounds = panel.getBoundingClientRect();
+    expect(rect.left).toBeGreaterThanOrEqual(bounds.left);
+    expect(rect.right).toBeLessThanOrEqual(bounds.right + 1);
+    expect(bubble.scrollWidth).toBeLessThanOrEqual(bubble.clientWidth + 1);
+    expect(screen.getByRole("radio", { name: "Squash and merge" })).toBeChecked();
+    await help.click();
+    await userEvent.keyboard("{Escape}");
+    expect(screen.getByRole("button", { name: label })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("group", { name: "Confirm merge" })).toBeVisible();
+    expect(props.onMerge).not.toHaveBeenCalled();
+    await help.click();
+    await page.screenshot({ path: `../../test-results/pr-screenshots/merge-help-${scheme}.png` });
   });
 });

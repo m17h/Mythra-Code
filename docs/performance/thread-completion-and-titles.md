@@ -34,10 +34,11 @@ Compared with main at 4176402, the production bundles add:
 
 | Target | Startup JavaScript | Startup CSS | Total JavaScript |
 | --- | ---: | ---: | ---: |
-| Safari 13 | 6,957 bytes | 970 bytes | 13,320 bytes |
-| Chrome 105 | 6,418 bytes | 970 bytes | 12,625 bytes |
+| Safari 13 | 7,098 bytes | 970 bytes | 15,008 bytes |
+| Chrome 105 | 6,559 bytes | 970 bytes | 14,310 bytes |
 
-These are raw minified byte counts, not runtime speed measurements. The settings
+These include the later on-demand merge-method explanations. They are raw
+minified byte counts, not runtime speed measurements. The settings
 and PR panel remain lazy. No new dependency or animation reduction is involved.
 The corresponding budget exception records exact measured limits without slack.
 

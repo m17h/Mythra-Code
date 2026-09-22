@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { ThreadPullRequestPanel, type ThreadPullRequestPanelProps } from "./ThreadPullRequestPanel";
 import type { PullRequest, PullRequestContext, PullRequestPanelProps } from "../lib/pullRequests";
@@ -762,7 +762,7 @@ describe("ThreadPullRequestPanel — where a merge actually happens", () => {
     fireEvent.click(open);
 
     const confirm = screen.getByRole("group", { name: /confirm merge/i });
-    const effect = within(confirm).getByText(/Nothing on this Mac changes/);
+    const effect = within(confirm).getByText(/Nothing in this local folder changes/);
     expect(effect).toHaveTextContent("codex/pr-workflow");
     expect(effect).toHaveTextContent(/main.*is not updated until you ask for it/);
     expect(within(confirm).getByRole("button", { name: "Merge #123 on GitHub" })).toBeInTheDocument();
@@ -773,7 +773,7 @@ describe("ThreadPullRequestPanel — where a merge actually happens", () => {
     fireEvent.click(screen.getByRole("button", { name: /merge on github…/i }));
     fireEvent.click(screen.getByRole("checkbox", { name: /merge it when it is ready/i }));
 
-    expect(screen.getByText(/When GitHub merges it, nothing on this Mac changes/)).toBeInTheDocument();
+    expect(screen.getByText(/When GitHub merges it, nothing in this local folder changes/)).toBeInTheDocument();
   });
 
   it("drops the local-effect line when the merge is refused outright", () => {
@@ -782,7 +782,7 @@ describe("ThreadPullRequestPanel — where a merge actually happens", () => {
     render(<ThreadPullRequestPanel {...panelProps({ linked: true, pullRequest: pullRequest({ isDraft: true }) })} />);
     fireEvent.click(screen.getByRole("button", { name: /merge on github…/i }));
 
-    expect(screen.queryByText(/Nothing on this Mac changes/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Nothing in this local folder changes/)).not.toBeInTheDocument();
   });
 });
 
@@ -879,7 +879,7 @@ describe("ThreadPullRequestPanel — merging and archiving the thread", () => {
     expect(within(plan).getByText(/Merge/)).toHaveTextContent("on GitHub");
     expect(within(plan).getByText(/Move this thread to/)).toHaveTextContent(/Archived, where you can restore it/);
     // The merge is still GitHub's, and archiving is still not a file operation.
-    expect(screen.getByText(/Nothing on this Mac changes/))
+    expect(screen.getByText(/Nothing in this local folder changes/))
       .toHaveTextContent(/does not move, change or delete its folder/);
 
     const confirm = screen.getByRole("button", { name: "Merge #123 and archive thread" });
@@ -1049,5 +1049,62 @@ describe("ThreadPullRequestPanel — the create editor owns its heading", () => 
     expect(fact).toHaveAttribute("title", "Last known, compared with main");
     // The warning keeps its own pill: it is the one that is not routine.
     expect(screen.getByText("Uncommitted changes")).toBeInTheDocument();
+  });
+});
+
+
+describe("merge method explanations", () => {
+  function openMethods() {
+    const props = panelProps({ linked: true, pullRequest: pullRequest({ mergeMethods: ["squash", "merge", "rebase"] }) });
+    render(<ThreadPullRequestPanel {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: "Merge on GitHub…" }));
+    return props;
+  }
+  const help = (label: string) => screen.getByRole("button", { name: `What “${label}” does` });
+  it("explains every available method without selecting or merging it", () => {
+    const props = openMethods();
+    expect(screen.queryByText(/A commit is one saved change/)).not.toBeInTheDocument();
+    for (const [label, description] of [
+      ["Squash and merge", /single commit on main/],
+      ["Create a merge commit", /showing where the two branches joined/],
+      ["Rebase and merge", /new commit IDs/],
+    ] as const) {
+      const button = help(label);
+      fireEvent.mouseEnter(button);
+      expect(button).toHaveAttribute("aria-expanded", "true");
+      expect(screen.getByText(description)).toBeVisible();
+      expect(screen.getByRole("radio", { name: "Squash and merge" })).toBeChecked();
+      expect(button.closest("label")).toBeNull();
+      fireEvent.mouseLeave(button.closest(".thread-pr-method")!);
+      expect(button).toHaveAttribute("aria-expanded", "false");
+    }
+    expect(props.onMerge).not.toHaveBeenCalled();
+  });
+  it("keeps keyboard help open when the mouse leaves, until focus leaves", () => {
+    openMethods();
+    const button = help("Squash and merge");
+    act(() => button.focus());
+    fireEvent.mouseLeave(button.closest(".thread-pr-method")!);
+    expect(button).toHaveAttribute("aria-expanded", "true");
+    act(() => screen.getByRole("radio", { name: "Rebase and merge" }).focus());
+    expect(button).toHaveAttribute("aria-expanded", "false");
+  });
+  it("supports focus, click pinning, Escape, and moving to another explanation", () => {
+    openMethods();
+    const squash = help("Squash and merge");
+    fireEvent.focus(squash);
+    expect(squash).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(squash);
+    fireEvent.mouseLeave(squash.closest(".thread-pr-method")!);
+    expect(squash).toHaveAttribute("aria-expanded", "true");
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(squash).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("group", { name: "Confirm merge" })).toBeInTheDocument();
+    fireEvent.click(squash);
+    const rebase = help("Rebase and merge");
+    fireEvent.mouseEnter(rebase);
+    expect(squash).toHaveAttribute("aria-expanded", "false");
+    fireEvent.mouseLeave(rebase.closest(".thread-pr-method")!);
+    expect(rebase).toHaveAttribute("aria-expanded", "false");
   });
 });

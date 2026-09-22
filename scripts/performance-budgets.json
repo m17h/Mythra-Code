@@ -619,20 +619,70 @@
           }
         }
       }
+    },
+    {
+      "change": "Explain merge methods on demand",
+      "decision": "Accept the measured lazy-panel cost of beginner merge-method help with hover, focus, click, and Escape support. Only one explanation is mounted at a time; no provider calls, polling, dependency, or startup CSS is added. The existing scoped panel animation and reduced-motion behavior are preserved. Limits match measured production builds. See docs/reviews/workspace-ui-2026-09-22.md.",
+      "measurements": {
+        "safari13-minified": {
+          "appEntryRawBytes": {
+            "before": 421114,
+            "after": 421112,
+            "delta": -2
+          },
+          "startupJsRawBytes": {
+            "before": 801873,
+            "after": 802014,
+            "delta": 141
+          },
+          "startupCssRawBytes": {
+            "before": 365438,
+            "after": 365438,
+            "delta": 0
+          },
+          "totalJsRawBytes": {
+            "before": 1624618,
+            "after": 1626306,
+            "delta": 1688
+          }
+        },
+        "chrome105-minified": {
+          "appEntryRawBytes": {
+            "before": 399056,
+            "after": 399048,
+            "delta": -8
+          },
+          "startupJsRawBytes": {
+            "before": 771549,
+            "after": 771690,
+            "delta": 141
+          },
+          "startupCssRawBytes": {
+            "before": 358919,
+            "after": 358919,
+            "delta": 0
+          },
+          "totalJsRawBytes": {
+            "before": 1582279,
+            "after": 1583964,
+            "delta": 1685
+          }
+        }
+      }
     }
   ],
   "profiles": {
     "safari13-minified": {
-      "appEntryRawBytes": 421114,
-      "startupJsRawBytes": 801873,
+      "appEntryRawBytes": 421112,
+      "startupJsRawBytes": 802014,
       "startupCssRawBytes": 365438,
-      "totalJsRawBytes": 1624618
+      "totalJsRawBytes": 1626306
     },
     "chrome105-minified": {
-      "appEntryRawBytes": 399056,
-      "startupJsRawBytes": 771549,
+      "appEntryRawBytes": 399048,
+      "startupJsRawBytes": 771690,
       "startupCssRawBytes": 358919,
-      "totalJsRawBytes": 1582279
+      "totalJsRawBytes": 1583964
     }
   }
 }

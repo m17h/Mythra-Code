@@ -160,6 +160,26 @@
 .thread-pr-methods legend { padding: 0 0 var(--s-1); color: var(--muted-2); font-size: var(--fs-micro); font-weight: 650; text-transform: uppercase; letter-spacing: var(--track-caps); }
 .thread-pr-methods input { accent-color: var(--green); }
 
+/* ---- A merge method and the question people have about it ----
+   The row is the option; the bubble under it is the answer, and it is not
+   rendered at all until asked for. It expands the row rather than floating
+   over the panel: this dock is a narrow scrolling column, and an absolutely
+   positioned tooltip in one of those gets its last line clipped by the
+   scroller. */
+
+.thread-pr-method { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }
+.thread-pr-method-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s-2); align-items: start; }
+
+/* Quiet until wanted. A help button that competes with the option it explains
+   is a help button people press by mistake. */
+.thread-pr-help-button { width: 20px; height: 20px; display: grid; place-items: center; padding: 0; border: 1px solid var(--line); border-radius: var(--r-pill); color: var(--muted-2); background: transparent; cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
+.thread-pr-help-button:hover, .thread-pr-help-button.open { color: var(--text); border-color: var(--line-strong); background: color-mix(in srgb, var(--text) 8%, transparent); }
+
+/* Indented to the label's own text column, so it reads as part of that option
+   rather than as a fourth one. */
+.thread-pr-method-help { margin: 0 0 0 calc(15px + var(--s-2)); padding: 8px 10px; border: 1px solid var(--line-strong); border-radius: var(--r-sm); color: var(--ink-2); background: color-mix(in srgb, var(--text) 5%, transparent); font-size: var(--fs-meta); line-height: 1.5; overflow-wrap: anywhere; animation: thread-pr-expand var(--t-fast) var(--ease) both; }
+.thread-pr-method-help small { display: block; margin-top: 3px; color: var(--muted-2); font-size: var(--fs-micro); }
+
 .thread-pr-blockers { display: grid; grid-template-columns: minmax(0, 1fr); gap: 5px; margin: 0; padding: 0; list-style: none; font-size: var(--fs-meta); line-height: 1.5; }
 .thread-pr-blockers li { display: grid; grid-template-columns: 14px minmax(0, 1fr); gap: 6px; align-items: start; }
 .thread-pr-blockers li svg { margin-top: 2px; }
@@ -175,7 +195,7 @@
 
 .thread-pr-fineprint { margin: 0; color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.5; }
 .thread-pr-fineprint.bad { color: color-mix(in srgb, var(--red) 64%, var(--text)); }
-/* "Nothing on this Mac changes." Quiet, but never decorative: it is the line
+/* "Nothing in this local folder changes." Quiet, but never decorative: it is the line
    that distinguishes a GitHub merge from a local one. */
 .thread-pr-fineprint.local-effect { display: grid; grid-template-columns: 14px minmax(0, 1fr); gap: 6px; align-items: start; color: var(--ink-2); }
 .thread-pr-fineprint.local-effect > svg { margin-top: 3px; color: var(--muted-2); }
@@ -212,7 +232,7 @@
 @keyframes thread-pr-breathe { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
 
 @media (prefers-reduced-motion: reduce) {
-  .thread-pr-note, .thread-pr-card, .thread-pr-editor, .thread-pr-review-body { animation: none; }
+  .thread-pr-note, .thread-pr-card, .thread-pr-editor, .thread-pr-review-body, .thread-pr-method-help { animation: none; }
   .thread-pr-review-toggle > svg { transition: none; }
   .thread-pr-signal.wait svg { animation: none; }
   .thread-pr-actions button:active:not(:disabled), .thread-pr-wide-button:active:not(:disabled) { transform: none; }
@@ -231,4 +251,7 @@
   .thread-pr-row { flex-direction: column; }
   .thread-pr-row .thread-pr-wide-button { width: 100%; }
   .thread-pr-fact { max-width: 46%; }
+  /* Every character of the column counts here; the row above it is enough to
+     tie the bubble to its option. */
+  .thread-pr-method-help { margin-left: 0; }
 }
