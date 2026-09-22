@@ -5703,7 +5703,8 @@ pub fn run() {
             runtime_thread_state,
             restart_runtime,
             run_discovery_start,
-            run_discovery_cancel
+            run_discovery_cancel,
+            run_discovery::generate_thread_title
         ])
         .build(tauri::generate_context!())
         .expect("error while running Mythra Code")

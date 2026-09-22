@@ -35,6 +35,7 @@ import { exportDiagnostics, recentAuditRows, rpc, saveLmStudioKey, saveOpenRoute
 import { isClaudeModelSuperseded, visibleClaudeModels, type ClaudeRuntimeStatus } from "../lib/claude";
 import type { CursorModel, CursorRuntimeStatus } from "../lib/cursor";
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_SETTINGS, EFFORT_SLIDER_STYLES, RELEASE_NOTES_URL, THEMES } from "../lib/appConfig";
+import { resolveThreadTitleModel } from "../lib/threadTitles";
 import { friendlyError } from "../lib/errors";
 import { useModalFocus } from "../hooks/useModalFocus";
 import { AnthropicLogo, ClaudeLogo, CodexLogo, CursorDarkAppIcon, CursorLogo, LmStudioLogo, OpenAILogo, OpenRouterLogo, ProviderLogo } from "./BrandLogos";
@@ -135,7 +136,7 @@ const SETTINGS_NAV: ReadonlyArray<{
   {
     group: "System",
     items: [
-      { id: "system", label: "Runtime", icon: Wrench, detail: "Onboarding, notifications, service tier, terminal memory, and diagnostics.", keywords: "runtime notification alert service tier terminal scrollback memory diagnostics logs errors performance onboarding getting started" },
+      { id: "system", label: "Runtime", icon: Wrench, detail: "Onboarding, notifications, automatic thread titles, service tier, terminal memory, and diagnostics.", keywords: "runtime notification alert automatic thread title titles naming rename luna service tier terminal scrollback memory diagnostics logs errors performance onboarding getting started" },
       { id: "updates", label: "Updates", icon: Download, detail: "Mythra Code, Claude Code, and Codex updates in one place, always from their official channels.", keywords: "update upgrade version release install download changelog notes" },
     ],
   },
@@ -1373,6 +1374,30 @@ export function SettingsModal({
                   <button type="button" role="switch" aria-label="Desktop notifications" aria-checked={local.notificationsEnabled} className={`toggle-switch ${local.notificationsEnabled ? "on" : ""}`} onClick={() => setLocal({ ...local, notificationsEnabled: !local.notificationsEnabled })}><span /></button>
                 </div>
               </div>
+              {/* Opt-in, and it says the two things people would otherwise
+                  find out afterwards: the first message leaves for whichever
+                  provider is chosen here even from a thread running on another
+                  one, and a name you typed is yours. The fields appear only
+                  once it is on — an off switch needs no configuration. */}
+              <div className="set-row">
+                <div className="set-copy">
+                  <strong>Automatic thread titles</strong>
+                  <small>Names each new thread from your first message, using the provider and model you choose.</small>
+                  <small>That first message goes to the chosen provider even when the thread itself runs on another one, and uses that provider&rsquo;s own subscription or credits. Nothing is kept as a chat, and a title you write yourself is never replaced.</small>
+                </div>
+                <div className="set-control">
+                  <button type="button" role="switch" aria-label="Automatic thread titles" aria-checked={local.automaticThreadTitles} className={`toggle-switch ${local.automaticThreadTitles ? "on" : ""}`} onClick={() => setLocal({ ...local, automaticThreadTitles: !local.automaticThreadTitles })}><span /></button>
+                </div>
+              </div>
+              {local.automaticThreadTitles && (
+                <ThreadTitleFields
+                  settings={local}
+                  catalogs={modelCatalogs}
+                  readiness={childAgentReadiness}
+                  onChange={setLocal}
+                  onAccounts={() => setSettingsSection("models")}
+                />
+              )}
               <div className="set-row">
                 <div className="set-copy">
                   <strong>OpenAI service tier</strong>
@@ -2032,6 +2057,134 @@ function ProjectDefaultsSettings({ projects, activeProjectId, settings, runtimeM
       </div>}
       <p className="settings-footnote" role="note"><Info size={13} /><span><strong>Looking for project instructions?</strong> Open that project’s chat, then choose Project instructions beside the project name at the top of the window.</span></p>
     </section>
+  );
+}
+
+/* ------------------------------------------------------------------ *
+ * Automatic thread titles
+ *
+ * One tiny turn on whichever provider the person picks, so the naming does
+ * not drag a second subscription into a workspace that already has one it
+ * likes. Everything here edits the settings draft and nothing else: no
+ * catalog is fetched, no provider is contacted, and no account is required
+ * before the choice can be made.
+ * ------------------------------------------------------------------ */
+
+/** The Luna to fall back on before an account catalog has been read. The same
+ *  known id run-command discovery starts from — never a guess at one that
+ *  might exist. */
+const FALLBACK_LUNA_MODEL = "gpt-5.6-luna";
+
+const TITLE_PROVIDER_LABELS: Record<Provider, string> = {
+  openai: "OpenAI",
+  claude: "Claude",
+  cursor: "Cursor",
+  openrouter: "OpenRouter",
+  lmstudio: "LM Studio",
+};
+
+/** Whether the *chosen* provider is connected. Picking Claude here must never
+ *  turn into a demand to sign into OpenAI. */
+function titleProviderReady(provider: Provider, readiness: ChildAgentReadiness): boolean {
+  if (provider === "openai") return readiness.openAiSignedIn;
+  if (provider === "claude") return readiness.claudeReady;
+  if (provider === "cursor") return readiness.cursorReady;
+  if (provider === "openrouter") return readiness.openRouterReady;
+  // LM Studio does not always report readiness, and an unreported answer is no
+  // reason to tell someone their local server is missing.
+  return readiness.lmStudioReady !== false;
+}
+
+function ThreadTitleFields({ settings, catalogs, readiness, onChange, onAccounts }: {
+  settings: AppSettings;
+  catalogs: ModelCatalogs;
+  readiness: ChildAgentReadiness;
+  onChange: (settings: AppSettings) => void;
+  onAccounts: () => void;
+}) {
+  const provider = settings.threadTitleProvider;
+  const model = settings.threadTitleModel;
+  const catalog = modelOptionsForProvider(provider, model, catalogs);
+  const lunaId = resolveThreadTitleModel("openai", "", { openai: catalogs.runtimeModels.map((entry) => ({ id: entry.id, label: entry.id })) });
+  const luna = provider === "openai" && lunaId ? { id: lunaId, fromCatalog: catalogs.runtimeModels.length > 0 } : null;
+  const hasCatalog = modelOptionsForProvider(provider, "", catalogs).length > 0;
+  // Only OpenAI has a sensible default that needs no choosing. Everywhere else
+  // an empty model means nothing to run, so the blank option does not exist.
+  const options: AppSelectOption[] = provider === "openai"
+    ? [{
+        value: "",
+        label: "Luna (automatic)",
+        detail: luna
+          ? luna.fromCatalog
+            ? `Newest Luna in your account · ${luna.id}`
+            : `${FALLBACK_LUNA_MODEL} until your account catalog loads`
+          : "Your account catalog has no Luna — pick a model instead",
+        icon: <ProviderLogo provider="openai" size={15} />,
+      }, ...catalog]
+    : catalog;
+
+  const ready = titleProviderReady(provider, readiness);
+  const missingModel = provider !== "openai" && !model.trim();
+  const noLuna = provider === "openai" && !model && !luna;
+
+  const switchProvider = (next: Provider) => {
+    if (next === provider) return;
+    // The same rule project defaults use: land on something this provider can
+    // actually run, rather than carrying another provider's model across.
+    const fresh = modelOptionsForProvider(next, "", catalogs);
+    const nextModel = next === "openai" ? "" : (fresh.find((option) => !option.disabled)?.value ?? "");
+    onChange({ ...settings, threadTitleProvider: next, threadTitleModel: nextModel });
+  };
+
+  return (
+    <div className="set-body thread-title-fields">
+      <div className="field-label">
+        <span>Provider</span>
+        <AppSelectMenu
+          value={provider}
+          options={PROJECT_PROVIDER_OPTIONS}
+          ariaLabel="Thread title provider"
+          menuPlacement="top"
+          onChange={(value) => switchProvider(value as Provider)}
+        />
+      </div>
+      <div className="field-label">
+        <span>Model</span>
+        <AppSelectMenu
+          value={model}
+          options={options}
+          ariaLabel="Thread title model"
+          menuPlacement="top"
+          placeholder="Choose a model…"
+          searchable={options.length > 8 || provider === "openrouter" || provider === "lmstudio"}
+          emptyMessage={provider === "lmstudio"
+            ? "Connect LM Studio and refresh its catalog first."
+            : "No models are currently available for this provider."}
+          onChange={(value) => onChange({ ...settings, threadTitleModel: value })}
+        />
+      </div>
+      {/* No catalog to choose from is not a dead end: the id can be typed, the
+          way run-command discovery accepts one. */}
+      {!hasCatalog && (
+        <label className="field-label thread-title-id">
+          <span>Model ID</span>
+          <input
+            aria-label="Thread title model ID"
+            maxLength={160}
+            value={model}
+            placeholder="vendor/model-name"
+            spellCheck={false}
+            onChange={(event) => onChange({ ...settings, threadTitleModel: event.target.value })}
+          />
+        </label>
+      )}
+      {missingModel && <p className="thread-title-note">Choose a model, or new threads keep their usual names.</p>}
+      {noLuna && <p className="thread-title-note">Your account catalog reports no Luna model. Choose one above, or new threads keep their usual names.</p>}
+      {!ready && <p className="thread-title-note">{TITLE_PROVIDER_LABELS[provider]} is not connected yet, so new threads keep their usual names until it is.</p>}
+      {(!ready || !hasCatalog) && (
+        <button type="button" className="secondary-button thread-title-accounts" onClick={onAccounts}>Open Models &amp; accounts</button>
+      )}
+    </div>
   );
 }
 

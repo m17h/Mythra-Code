@@ -178,6 +178,10 @@ export interface TurnRunnerContext {
   bindThreadToProject: (threadId: string, projectPath: string) => void;
   rememberThread: (thread: Thread) => void;
   onThreadCreated: (threadId: string) => void;
+  onThreadTitleRequested?: (threadId: string, prompt: string) => void;
+  /** Live archive ownership. Existing threads must not start provider work
+   * while their archive operation is awaiting cleanup or persistence. */
+  isThreadArchiving?: (threadId: string) => boolean;
   persistThreadModel: (threadId: string, model: string) => void;
   persistThreadReasoning: (threadId: string, reasoning: ThreadReasoning) => void;
   persistThreadWorktrees: SetPersisted<Record<string, ThreadWorktreeRecord>>;
@@ -226,6 +230,13 @@ export function useTurnRunner(context: TurnRunnerContext): {
   contextRef.current = context;
   const draftGenerationRef = useRef(0);
 
+  const archiveOwnsThread = useCallback((threadId: string): boolean => {
+    const current = contextRef.current;
+    if (!current.isThreadArchiving?.(threadId)) return false;
+    current.setError("This thread is being archived. Wait for archiving to finish before sending another message.");
+    return true;
+  }, []);
+
   // Returns true when the message was delivered; the Composer restores its
   // draft when it was not.
   const deliverMessage = useCallback(async (
@@ -250,6 +261,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       setRuntimeSetupOpen, setAuthRequiredOpen, openSettings,
     } = ctx;
     if (!text || !activeWorkspace) return false;
+    if (activeThread && archiveOwnsThread(activeThread.id)) return false;
     if (isPullRequestMutationRunning(executionPathFor(activeThread?.id, activeWorkspace.path))) {
       setError("Wait for the pull request operation to finish before starting another model turn.");
       return false;
@@ -552,6 +564,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         clearProviderStopIntent(thread.id, result.turnId);
         setTransientStatus("Stopped");
       }
+      if (!activeThread) contextRef.current.onThreadTitleRequested?.(thread.id, text);
       return true;
     };
 
@@ -774,6 +787,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         useTaskStore.getState().setTaskStatus(threadId, "interrupted");
         setTransientStatus("Stopped");
       }
+      if (!activeThread) contextRef.current.onThreadTitleRequested?.(threadId, text);
       return true;
     } catch (reason) {
       setStartingDraftTurn(false);
@@ -818,7 +832,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       setError(friendlyError(reason));
       return false;
     }
-  }, []);
+  }, [archiveOwnsThread]);
 
   const pumpQueuedThread = useCallback(async (threadId: string, force = false): Promise<void> => {
     if (activeQueuedDeliveries.has(threadId)) return;
@@ -838,6 +852,9 @@ export function useTurnRunner(context: TurnRunnerContext): {
     // the render path below reattaches a fresh delivery context and pumping
     // resumes; guessing provider/workspace settings before then is unsafe.
     if (!queuedContext) return;
+    // Archive ownership can begin after a completion scheduled this pump. Keep
+    // the durable entry queued so releasing the archive lock can retry it.
+    if (archiveOwnsThread(threadId)) return;
 
     activeQueuedDeliveries.add(threadId);
     useTaskStore.getState().setQueuedTurnStatus(threadId, queuedTurn.id, "sending");
@@ -882,7 +899,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
     if (delivered && useTaskStore.getState().tasks[threadId]?.status === "completed") {
       queueMicrotask(() => { void pumpQueuedThread(threadId); });
     }
-  }, [deliverMessage]);
+  }, [archiveOwnsThread, deliverMessage]);
 
   // Reattach durable queue entries to the live provider/workspace context
   // whenever their task is open. Entries created during this app session keep
@@ -931,6 +948,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
   const queueFollowUp = useCallback((ctx: TurnRunnerContext, text: string): boolean => {
     const thread = ctx.activeThread;
     if (!thread) return false;
+    if (archiveOwnsThread(thread.id)) return false;
     const sentAttachments = [...ctx.attachments];
     const queuedTurn = useTaskStore.getState().enqueueTurn(thread.id, text, sentAttachments);
     queuedDeliveries.set(queuedTurn.id, {
@@ -949,10 +967,11 @@ export function useTurnRunner(context: TurnRunnerContext): {
       queueMicrotask(() => { void pumpQueuedThread(thread.id); });
     }
     return true;
-  }, [pumpQueuedThread]);
+  }, [archiveOwnsThread, pumpQueuedThread]);
 
   const answerQuestions = useCallback(async (threadId: string, text: string, submission?: AgentQuestionSubmission): Promise<boolean> => {
     const current = contextRef.current;
+    if (archiveOwnsThread(threadId)) return false;
     const requestId = submission?.message.questionRequestId;
     const pending = submission && requestId !== undefined ? useTaskStore.getState().tasks[threadId]?.approvals.find((entry) => entry.id === requestId
       && entry.method === "item/tool/requestUserInput"
@@ -984,7 +1003,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
     let unavailable = false;
     const delivered = await deliverMessage(ctx, text, ctx.running ? "steer" : "turn", () => { unavailable = true; });
     return !delivered && unavailable ? queueFollowUp(ctx, text) : delivered;
-  }, [deliverMessage, queueFollowUp]);
+  }, [archiveOwnsThread, deliverMessage, queueFollowUp]);
 
   const sendMessage = useCallback(async (text: string): Promise<boolean> => {
     const ctx = contextRef.current;

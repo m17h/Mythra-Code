@@ -19,6 +19,12 @@ export function savedQuestionAnswers(threadId: string, messageId: string): Answe
   return records()[recordKey(threadId, messageId)]?.answers ?? null;
 }
 
+/** Check durable forms too: older unanswered questions may not be on the loaded page. */
+export function hasUnansweredQuestionRequests(threadId: string): boolean {
+  return Object.values(records()).some((record) => record.threadId === threadId
+    && Boolean(record.message?.questions?.length) && !record.answers);
+}
+
 export function saveQuestionAnswers(threadId: string, messageId: string, answers: Answers): void {
   const current = records();
   const key = recordKey(threadId, messageId);

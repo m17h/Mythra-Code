@@ -1,7 +1,7 @@
 import { flushSync } from "react-dom";
 import { renameLocalTranscript } from "./lib/localTranscriptPersistence";
 import { clipboardImages, createAttachmentPreparationTracker, imageBase64 } from "./lib/clipboardImages";
-import { forgetQuestionRecords } from "./lib/agentQuestionRecords";
+import { forgetQuestionRecords, hasUnansweredQuestionRequests } from "./lib/agentQuestionRecords";
 import { AgentQuestionDelivery } from "./lib/agentQuestionContext";
 import { useTranscriptSaves } from "./hooks/useTranscriptSaves";
 import { flushBeforeClose, useFlushOnClose } from "./hooks/useFlushOnClose";
@@ -52,6 +52,7 @@ import type { AgentRecord, AttachmentRecord, McpView } from "./components/Studio
 import { isStudioTab, type StudioTab } from "./lib/studioTabs";
 import type { GitPanelAction, GitRepositoryState } from "./components/GitPanel";
 import { ThreadPullRequestChip } from "./components/ThreadPullRequestChip";
+import { useAutomaticThreadTitles } from "./hooks/useAutomaticThreadTitles";
 import { useThreadPullRequest } from "./hooks/useThreadPullRequest";
 import { acquirePullRequestMutation, releasePullRequestMutation, isPullRequestMutationRunning } from "./lib/pullRequestOperations";
 import type { Account, Activity, AppSettings, ArchivedThread, ChatFont, ChatMessage, CustomAgentProfile, PendingApproval, PermissionMode, Project, ProjectAction, ProjectPromptMode, ProjectSubagentSettings, EffortSliderStyle, PromptProfile, Provider, ScheduledTask, ScheduleRunRecord, SettingsSection, Thread, ThreadHandoff, ThreadReasoning, ThemeName, WorkspaceMode } from "./types";
@@ -125,7 +126,7 @@ import { mythraCodeDeveloperInstructions } from "./lib/completionPrompt";
 import { sanitizeProjectRunCommand, sanitizeProjectRunOverrides } from "./lib/projectRun";
 import { runtimeModelProviderId } from "./lib/providerIds";
 import { primaryModifierLabel } from "./lib/platform";
-import { archivedThreadsForInbox, providerForArchivedThread } from "./lib/threadArchive";
+import { archiveAfterTitleCancellation, activeThreadArchiveBlockedReason, archivedThreadsForInbox, finishThreadBlockedReason, providerForArchivedThread } from "./lib/threadArchive";
 import { sanitizeProjectDefaultOverrides } from "./lib/projectDefaults";
 import { sanitizePendingHandoff } from "./lib/providerHandoff";
 import { deleteThreadTurnDurations } from "./lib/turnDurations";
@@ -390,7 +391,7 @@ const establishedInstall = isEstablishedMythraCodeInstall({ projects: initialPro
 const initialOnboardingOpen = initialOnboardingVersion < ONBOARDING_VERSION && !establishedInstall;
 const storedSettings = loadStored<Partial<AppSettings>>("kiwi.settings", {});
 const initialChildAgents = sanitizeChildAgentSettings(storedSettings.childAgents);
-const initialSettings: AppSettings = { ...DEFAULT_SETTINGS, ...storedSettings, openAiLogo: storedSettings.openAiLogo === "codex" ? "codex" : "openai", claudeLogo: storedSettings.claudeLogo === "anthropic" ? "anthropic" : "claude", cursorLogo: storedSettings.cursorLogo === "app-dark" ? "app-dark" : "cube", subagentMax: crewSafeConcurrency(Number(storedSettings.subagentMax) || DEFAULT_SETTINGS.subagentMax, initialChildAgents), autoArchiveSubagentThreads: sanitizeAutoArchiveSubagentThreads(storedSettings.autoArchiveSubagentThreads), childAgents: initialChildAgents, childAgentPresets: sanitizeChildAgentPresets(storedSettings.childAgentPresets), model: modelForProvider(storedSettings.provider ?? DEFAULT_SETTINGS.provider, storedSettings.model ?? DEFAULT_SETTINGS.model), reasoningEffort: sanitizeComposerReasoningEffort(storedSettings.reasoningEffort), ultra: false, lmStudioBaseUrl: storedSettings.lmStudioBaseUrl?.trim() || DEFAULT_LM_STUDIO_BASE_URL, theme: sanitizeTheme(storedSettings.theme), effortSlider: sanitizeEffortSlider(storedSettings.effortSlider), chatFont: sanitizeChatFont(storedSettings.chatFont), uiScale: Math.min(150, Math.max(80, Number(storedSettings.uiScale) || DEFAULT_SETTINGS.uiScale)), usageDisplay: sanitizeUsageDisplay(storedSettings.usageDisplay) };
+const initialSettings: AppSettings = { ...DEFAULT_SETTINGS, ...storedSettings, automaticThreadTitles: storedSettings.automaticThreadTitles === true, threadTitleProvider: ["openai", "claude", "cursor", "openrouter", "lmstudio"].includes(storedSettings.threadTitleProvider ?? "") ? storedSettings.threadTitleProvider! : "openai", threadTitleModel: typeof storedSettings.threadTitleModel === "string" ? storedSettings.threadTitleModel.slice(0, 160) : "", openAiLogo: storedSettings.openAiLogo === "codex" ? "codex" : "openai", claudeLogo: storedSettings.claudeLogo === "anthropic" ? "anthropic" : "claude", cursorLogo: storedSettings.cursorLogo === "app-dark" ? "app-dark" : "cube", subagentMax: crewSafeConcurrency(Number(storedSettings.subagentMax) || DEFAULT_SETTINGS.subagentMax, initialChildAgents), autoArchiveSubagentThreads: sanitizeAutoArchiveSubagentThreads(storedSettings.autoArchiveSubagentThreads), childAgents: initialChildAgents, childAgentPresets: sanitizeChildAgentPresets(storedSettings.childAgentPresets), model: modelForProvider(storedSettings.provider ?? DEFAULT_SETTINGS.provider, storedSettings.model ?? DEFAULT_SETTINGS.model), reasoningEffort: sanitizeComposerReasoningEffort(storedSettings.reasoningEffort), ultra: false, lmStudioBaseUrl: storedSettings.lmStudioBaseUrl?.trim() || DEFAULT_LM_STUDIO_BASE_URL, theme: sanitizeTheme(storedSettings.theme), effortSlider: sanitizeEffortSlider(storedSettings.effortSlider), chatFont: sanitizeChatFont(storedSettings.chatFont), uiScale: Math.min(150, Math.max(80, Number(storedSettings.uiScale) || DEFAULT_SETTINGS.uiScale)), usageDisplay: sanitizeUsageDisplay(storedSettings.usageDisplay) };
 
 /**
  * Claude/Cursor transcripts flow memory → disk on a debounced save, so the
@@ -1576,9 +1577,9 @@ export default function App() {
     if (activeThread) registerRuntimePerformanceProvider(activeThread.id, providerFromThread(activeThread, projectDefaultProvider));
   }, [activeThread, projectDefaultProvider]);
 
-  const forgetThread = useCallback((threadId: string) => {
+  const forgetThread = useCallback((threadId: string, keepQuestions = false) => {
     forgetRuntimePerformanceProvider(threadId);
-    forgetQuestionRecords(threadId);
+    if (!keepQuestions) forgetQuestionRecords(threadId);
     const next = forgetSidebarThread(knownThreadsRef.current ?? {}, threadId);
     knownThreadsRef.current = next;
     storeValue("kiwi.knownThreads", next);
@@ -3763,6 +3764,26 @@ export default function App() {
     setPendingHandoff(null);
   }, [pendingHandoffForWorkspace, persistThreadHandoffs, setPendingHandoff]);
 
+  const automaticTitles = useAutomaticThreadTitles({
+    enabled: settings.automaticThreadTitles,
+    provider: settings.threadTitleProvider,
+    model: settings.threadTitleModel,
+    catalogs: runDiscoveryCatalogs,
+    lmStudioBaseUrl: settings.lmStudioBaseUrl,
+    getThread: (id) => knownThreadsRef.current?.[id],
+    applyTitle: async (id, name) => {
+      const thread = knownThreadsRef.current?.[id];
+      if (!thread || thread.name?.trim()) return;
+      if (isLocalSubscriptionThread(thread)) await renameLocalTranscript(isClaudeThread(thread) ? "claude" : "cursor", id, name);
+      else await rpc("thread/name/set", { threadId: id, name });
+      // Archiving or deletion may have removed it while the name was saved.
+      const current = knownThreadsRef.current?.[id];
+      if (!current) return;
+      rememberThread({ ...current, name });
+      setThreads((entries) => entries.map((entry) => entry.id === id ? { ...entry, name } : entry));
+      setActiveThread((entry) => entry?.id === id ? { ...entry, name } : entry);
+    },
+  });
   const { sendMessage, answerQuestions, steerMessage, steerQueuedMessage, retryQueuedMessage, removeQueuedMessage, stopTurn } = useTurnRunner({
     activeThread,
     activeWorkspace,
@@ -3799,6 +3820,8 @@ export default function App() {
     executionPathFor,
     bindThreadToProject,
     rememberThread,
+    onThreadTitleRequested: automaticTitles.requestTitle,
+    isThreadArchiving: (id) => archivingThreadIdsRef.current.has(id),
     onThreadCreated: handleThreadCreated,
     persistThreadModel,
     persistThreadReasoning,
@@ -4171,6 +4194,7 @@ export default function App() {
     const name = threadNameDraft.trim();
     setRenamingThreadId(null);
     if (!name || name === thread.name) return;
+    await automaticTitles.cancel(thread.id);
     try {
       const updated = { ...thread, name };
       if (!isLocalSubscriptionThread(thread)) await rpc("thread/name/set", { threadId: thread.id, name });
@@ -4212,33 +4236,38 @@ export default function App() {
 
   const archiveThreadRecord = async (thread: Thread, confirmArchive: boolean): Promise<boolean> => {
     const label = thread.name || thread.preview || "Untitled thread";
-    const taskStatus = useTaskStore.getState().statuses[thread.id];
-    if (taskStatus === "starting" || taskStatus === "running") {
-      if (confirmArchive) setError(`Stop “${label}” before archiving it so its final output and transcript are preserved.`);
-      return false;
-    }
-    // A child whose provider is still starting has no link or agent record
-    // yet; the in-flight check keeps that window from slipping past the guard.
-    if (Object.values(childAgentLinksRef.current).some((link) => link.rootThreadId === thread.id && !link.terminalStatus)
-      || useTaskStore.getState().tasks[thread.id]?.agents.some((agent) => isActiveAgentRecord(agent.status))
-      || hasChildStartInFlight(thread.id)) {
-      if (confirmArchive) setError("Finish or stop this task’s sub-agents before archiving it.");
+    const archiveActivityBlock = () => activeThreadArchiveBlockedReason(
+      useTaskStore.getState().tasks[thread.id],
+      Object.values(childAgentLinksRef.current).some((link) => link.rootThreadId === thread.id && !link.terminalStatus)
+        || hasChildStartInFlight(thread.id),
+    );
+    const initialBlock = archiveActivityBlock();
+    if (initialBlock) {
+      if (confirmArchive) setError(initialBlock);
       return false;
     }
     if (archivingThreadIdsRef.current.has(thread.id)) return false;
     if (confirmArchive && !await confirmDialog(`Archive “${label}”?\n\nIt moves to the Archived list in the sidebar, where you can restore or permanently delete it.`)) return false;
+    // Another archive may have completed confirmation while this dialog was open.
+    if (archivingThreadIdsRef.current.has(thread.id)) return false;
     archivingThreadIdsRef.current.add(thread.id);
     try {
-      if (!isLocalSubscriptionThread(thread)) await rpc("thread/archive", { threadId: thread.id });
-      await cancelChildAgentsFor(thread.id);
-      await forgetChildAgentState(thread.id, false);
-      if (activeThread?.id === thread.id) newThread();
-      forgetThread(thread.id);
-      forgetQueuedDeliveries(thread.id);
-      setThreads((current) => current.filter((entry) => entry.id !== thread.id));
-      const path = normalizedProjectPath(threadProjectBindingsRef.current?.[thread.id] || thread.cwd);
-      const provider = providerFromThread(thread, "openai");
-      persistArchivedThreads((current) => [{ id: thread.id, label, path, archivedAt: Date.now(), provider }, ...current.filter((entry) => entry.id !== thread.id)]);
+      await archiveAfterTitleCancellation(
+        () => automaticTitles.cancel(thread.id),
+        archiveActivityBlock,
+        async () => {
+          if (!isLocalSubscriptionThread(thread)) await rpc("thread/archive", { threadId: thread.id });
+          await cancelChildAgentsFor(thread.id);
+          await forgetChildAgentState(thread.id, false);
+          if (useTaskStore.getState().activeThreadId === thread.id) newThread();
+          forgetThread(thread.id, true);
+          forgetQueuedDeliveries(thread.id);
+          setThreads((current) => current.filter((entry) => entry.id !== thread.id));
+          const path = normalizedProjectPath(threadProjectBindingsRef.current?.[thread.id] || thread.cwd);
+          const provider = providerFromThread(thread, "openai");
+          persistArchivedThreads((current) => [{ id: thread.id, label, path, archivedAt: Date.now(), provider }, ...current.filter((entry) => entry.id !== thread.id)]);
+        },
+      );
       return true;
     } catch (reason) {
       setError(friendlyError(reason));
@@ -4355,6 +4384,7 @@ export default function App() {
     const localSubscription = provider === "claude" || provider === "cursor";
     if (confirmDelete && !await confirmDialog(`Permanently delete “${label}”?\n\nThis removes the conversation from ${localSubscription ? "Mythra Code" : "the Codex runtime"} and cannot be undone.`)) return false;
     try {
+      await automaticTitles.cancel(threadId);
       localTranscriptSaves.cancel(threadId);
       if (provider === "claude") await deleteClaudeTranscript(threadId);
       else if (provider === "cursor") await deleteCursorTranscript(threadId);
@@ -5094,6 +5124,16 @@ export default function App() {
   const prWorkspaceScope = `${activeThreadId ?? ""}\0${activeExecutionPath ?? ""}`;
   const prWorkspaceScopeRef = useRef(prWorkspaceScope);
   prWorkspaceScopeRef.current = prWorkspaceScope;
+  const checkThreadFinishAllowed = (id: string): string | null => {
+    if (!threads.some((thread) => thread.id === id)) return "This thread is no longer in the inbox.";
+    if (archivingThreadIdsRef.current.has(id)) return "This thread is already being archived.";
+    const blocked = finishThreadBlockedReason(useTaskStore.getState().tasks[id],
+      Object.values(childAgentLinksRef.current).some((link) => link.rootThreadId === id && !link.terminalStatus)
+      || hasChildStartInFlight(id));
+    if (blocked) return blocked;
+    if (hasUnansweredQuestionRequests(id)) return "Answer this thread’s pending questions before archiving it.";
+    return null;
+  };
   const threadPullRequest = useThreadPullRequest({
     threadId: activeThreadId,
     cwd: activeExecutionPath || activeProject?.path || null,
@@ -5102,6 +5142,15 @@ export default function App() {
     enabled: Boolean(activeThreadId && activeProject && !activeWorkspace?.isChat && githubStatus?.authenticated),
     visible: studioOpen && studioTab === "git",
     mutationBlockedReason: prMutationBlockedReason,
+    checkArchiveAllowed: checkThreadFinishAllowed,
+    archiveThread: async (id) => {
+      const block = checkThreadFinishAllowed(id);
+      if (block) throw new Error(block);
+      const thread = threads.find((entry) => entry.id === id);
+      if (!thread || !await archiveThreadRecord(thread, false)) {
+        throw new Error("The PR is merged, but the thread could not be archived. It is still in your inbox; try Archive thread again.");
+      }
+    },
     checkMutationAllowed: (cwd) => {
       if (effectiveSettings.permission === "read-only") return "Switch this thread to Ask or Full access first.";
       if (worktreeBusy || gitCommitBusy || githubBusy || checkpointBusyId) return "Wait for the current workspace operation to finish.";
@@ -5858,6 +5907,7 @@ export default function App() {
                     pinned={pinnedThreadIds.includes(thread.id)}
                     isolated={Boolean(threadWorktrees[thread.id] && threadWorktrees[thread.id].status !== "removed")}
                     branch={threadWorktrees[thread.id]?.branch}
+                    pullRequest={threadPullRequest.links[thread.id]?.snapshot}
                     onOpen={() => void selectThread(thread)}
                   />
                 )}
@@ -6464,6 +6514,7 @@ export default function App() {
                   threadId={activeThreadId}
                   isolated={Boolean(activeThreadWorktree && activeThreadWorktree.status !== "removed")}
                   mutationBlockedReason={prMutationBlockedReason}
+                  archiveBlockedReason={finishThreadBlockedReason(activeThreadId ? useTaskStore.getState().tasks[activeThreadId] : undefined)}
                   onUpdateLocal={threadPullRequest.pullRequest?.state === "MERGED" ? () => gitWorkspace.updateBase(threadPullRequest.pullRequest!.repository, threadPullRequest.pullRequest!.baseRefName) : undefined}
                   updateLocalBusy={gitWorkspace.busy}
                   updateLocalNotice={gitWorkspace.error || gitWorkspace.notice}

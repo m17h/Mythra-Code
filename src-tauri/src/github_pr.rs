@@ -361,11 +361,13 @@ fn check_from_json(value: &Value) -> GitHubPrCheck {
             .and_then(Value::as_str)
             .unwrap_or("Unknown check")
             .to_string(),
-        state: value
-            .get("conclusion")
-            .or_else(|| value.get("state"))
-            .or_else(|| value.get("status"))
-            .and_then(Value::as_str)
+        // CheckRun includes a null/empty conclusion until it finishes. Keep
+        // its pending status visible instead of reporting an unknown result.
+        state: ["conclusion", "state", "status"]
+            .iter()
+            .filter_map(|key| value.get(key).and_then(Value::as_str))
+            .map(str::trim)
+            .find(|state| !state.is_empty())
             .unwrap_or("UNKNOWN")
             .to_ascii_uppercase(),
         url: value
@@ -1239,6 +1241,33 @@ fi
         assert!(!args
             .iter()
             .any(|v| v == "--admin" || v == "--delete-branch"));
+    }
+
+    #[test]
+    fn pending_checks_fall_back_from_empty_conclusions() {
+        for conclusion in [
+            serde_json::Value::Null,
+            serde_json::json!(""),
+            serde_json::json!(" "),
+        ] {
+            let check = check_from_json(
+                &serde_json::json!({"name":"Windows", "conclusion":conclusion, "status":"IN_PROGRESS"}),
+            );
+            assert_eq!(check.state, "IN_PROGRESS");
+        }
+        assert_eq!(
+            check_from_json(&serde_json::json!({"conclusion":"FAILURE", "status":"COMPLETED"}))
+                .state,
+            "FAILURE"
+        );
+        assert_eq!(
+            check_from_json(&serde_json::json!({"conclusion":null, "state":"PENDING"})).state,
+            "PENDING"
+        );
+        assert_eq!(
+            check_from_json(&serde_json::json!({"conclusion":null})).state,
+            "UNKNOWN"
+        );
     }
 
     #[test]

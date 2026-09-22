@@ -260,6 +260,59 @@ describe("useTurnRunner", () => {
     }
   });
 
+  it("blocks an archive-owned thread before provider work and permits it after release", async () => {
+    let archiving = true;
+    const deps = context({ isThreadArchiving: (threadId) => archiving && threadId === CURSOR_THREAD.id });
+    const { result } = renderHook(() => useTurnRunner(deps));
+
+    await act(async () => { expect(await result.current.sendMessage("Keep this draft")).toBe(false); });
+    expect(deps.setError).toHaveBeenCalledWith(expect.stringContaining("being archived"));
+    expect(deps.resolveSkillPrompt).not.toHaveBeenCalled();
+    expect(deps.beginRunCheckpoint).not.toHaveBeenCalled();
+    expect(cursor.startCursorTurn).not.toHaveBeenCalled();
+
+    archiving = false;
+    await act(async () => { expect(await result.current.sendMessage("Keep this draft")).toBe(true); });
+    expect(cursor.startCursorTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not queue a follow-up while archive ownership is active", async () => {
+    useTaskStore.getState().ensureTask(CURSOR_THREAD.id, "/tmp/project");
+    useTaskStore.getState().setTaskStatus(CURSOR_THREAD.id, "running");
+    let archiving = true;
+    const deps = context({
+      running: true,
+      isThreadArchiving: (threadId) => archiving && threadId === CURSOR_THREAD.id,
+    });
+    const { result } = renderHook(() => useTurnRunner(deps));
+
+    await act(async () => { expect(await result.current.sendMessage("Do this next")).toBe(false); });
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]?.queuedTurns).toEqual([]);
+
+    archiving = false;
+    await act(async () => { expect(await result.current.sendMessage("Do this next")).toBe(true); });
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]?.queuedTurns).toEqual([
+      expect.objectContaining({ text: "Do this next", status: "queued" }),
+    ]);
+  });
+
+  it("keeps an automatic queued delivery pending while archive ownership is active", async () => {
+    useTaskStore.getState().ensureTask(CURSOR_THREAD.id, "/tmp/project");
+    useTaskStore.getState().setTaskStatus(CURSOR_THREAD.id, "completed");
+    const queued = useTaskStore.getState().enqueueTurn(CURSOR_THREAD.id, "Run after archive", []);
+    const deps = context({ isThreadArchiving: (threadId) => threadId === CURSOR_THREAD.id });
+    const { result } = renderHook(() => useTurnRunner(deps));
+
+    await act(async () => { result.current.retryQueuedMessage(queued.id); });
+
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]?.queuedTurns[0]).toMatchObject({
+      id: queued.id,
+      text: "Run after archive",
+      status: "queued",
+    });
+    expect(cursor.startCursorTurn).not.toHaveBeenCalled();
+  });
+
   it("sends resolved skill instructions to Cursor while keeping the visible message unchanged", async () => {
     const resolveSkillPrompt = vi.fn(async () => "resolved skill context\n\n@review this");
     const deps = context({ resolveSkillPrompt });
@@ -1407,5 +1460,28 @@ describe("useTurnRunner activating sub-agents mid-conversation", () => {
     await act(async () => { await result.current.sendMessage("split this up"); });
 
     expect(childSessions.releaseChildAgentSession).toHaveBeenCalledWith("session-1");
+  });
+});
+
+
+describe("new-thread title scheduling", () => {
+  it("requests a title only after a new local prompt is accepted", async () => {
+    const onThreadTitleRequested = vi.fn();
+    const deps = context({ activeThread: null, onThreadTitleRequested });
+    const view = renderHook(() => useTurnRunner(deps));
+    await act(async () => { expect(await view.result.current.sendMessage("Fix the sidebar scrolling")).toBe(true); });
+    const id = vi.mocked(deps.onThreadCreated).mock.calls[0][0];
+    expect(onThreadTitleRequested).toHaveBeenCalledExactlyOnceWith(id, "Fix the sidebar scrolling");
+  });
+  it("does not spend a title call on failed sends or an existing thread", async () => {
+    const onThreadTitleRequested = vi.fn();
+    cursor.startCursorTurn.mockRejectedValueOnce(new Error("not signed in"));
+    const view = renderHook((props) => useTurnRunner(props), { initialProps: context({ activeThread: null, onThreadTitleRequested }) });
+    await act(async () => { expect(await view.result.current.sendMessage("Fix scrolling")).toBe(false); });
+    expect(onThreadTitleRequested).not.toHaveBeenCalled();
+    cursor.startCursorTurn.mockResolvedValue({ turnId: "next", cursorSessionId: "session" });
+    view.rerender(context({ onThreadTitleRequested }));
+    await act(async () => { await view.result.current.sendMessage("Now fix another thing"); });
+    expect(onThreadTitleRequested).not.toHaveBeenCalled();
   });
 });

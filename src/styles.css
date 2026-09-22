@@ -379,6 +379,19 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .thread-card-meta { gap: 6px; min-height: 17px; color: var(--muted-2); font-size: var(--fs-meta); }
 .thread-card-directory { min-width: 0; flex: 1; font-family: var(--font-mono); font-size: 10.5px; letter-spacing: -.02em; opacity: .82; }
 .thread-card-pin { flex: 0 0 auto; color: var(--green); opacity: .7; }
+/* Attached pull request. A metadata fact, sized and weighted well below the
+   title and the status: those two own the card's attention, and a third bold
+   thing competing with them is how a list of work turns into a list of chips.
+   The directory has flex-basis 0, so it gives up its width first; the pill is
+   then capped so it can never take the row on its own, and the number inside
+   it truncates rather than pushing the provider mark out. */
+.thread-card-pr { display: inline-flex; flex: 0 1 auto; align-items: center; gap: 3px; min-width: 0; max-width: 46%; padding: 1px 5px; border: 1px solid var(--line); border-radius: var(--r-pill); color: var(--muted-2); background: color-mix(in srgb, var(--text) 4%, transparent); font-size: 10px; font-weight: 620; letter-spacing: var(--track-tight); font-variant-numeric: tabular-nums; }
+.thread-card-pr svg { flex: 0 0 auto; }
+.thread-card-pr-number { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.thread-card-pr.open { color: var(--green); border-color: var(--green-line); background: var(--green-soft); }
+.thread-card-pr.merged { color: var(--info); border-color: color-mix(in srgb, var(--info) 28%, var(--line)); background: color-mix(in srgb, var(--info) 9%, transparent); }
+.thread-card-pr.closed { color: var(--red); border-color: color-mix(in srgb, var(--red) 26%, var(--line)); background: color-mix(in srgb, var(--red) 7%, transparent); }
+.thread-card-pr.draft { color: var(--muted-2); border-style: dashed; }
 .thread-card-provider { display: grid; flex: 0 0 auto; width: 19px; height: 19px; place-items: center; border: 1px solid var(--line); border-radius: 6px; color: var(--ink-2); background: color-mix(in srgb, var(--text) 5%, transparent); }
 .thread-card-provider.claude { border-color: rgba(217,119,87,.38); color: #fff; background: #d97757; }
 .thread-card-provider.openai { color: #fff; background: #1a1d18; }
@@ -386,7 +399,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .thread-card-provider.lmstudio { border-color: transparent; background: transparent; }
 .thread-card-provider.cursor { border-color: rgba(237,236,236,.35); color: #26251e; background: #edecec; }
 .app-shell[data-color-scheme="light"] .thread-card-provider.openrouter { color: #7624f4; background: rgba(118,36,244,.07); }
-.thread-card-status { display: inline-flex; align-items: center; gap: 4px; min-width: 0; margin-left: auto; color: var(--muted-2); font-size: var(--fs-meta); font-weight: 610; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.thread-card-status { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 4px; min-width: 0; margin-left: auto; color: var(--muted-2); font-size: var(--fs-meta); font-weight: 610; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .thread-card-status.working { color: var(--info); }
 .thread-card-status.approval { color: var(--orange); }
 .thread-card-status.error { color: var(--red); }

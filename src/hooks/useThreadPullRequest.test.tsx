@@ -365,3 +365,85 @@ describe("useThreadPullRequest", () => {
     expect(view.result.current.pullRequest).toBeNull();
   });
 });
+
+describe("finishing a PR thread", () => {
+  it("archives the captured thread only after persisting a confirmed merge, even after navigation", async () => {
+    seed("alpha", pullRequest(41));
+    let finish!: (value: PullRequest) => void;
+    native.merge.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    const archive = vi.fn(async (id: string) => {
+      expect(JSON.parse(localStorage.getItem("kiwi.threadPullRequests")!)[id].snapshot.state).toBe("MERGED");
+    });
+    const view = renderHook((props) => useThreadPullRequest(props), { initialProps: options({ visible: false, archiveThread: archive }) });
+    let action!: Promise<void>;
+    act(() => { action = view.result.current.onMergeAndArchive!("squash"); });
+    expect(archive).not.toHaveBeenCalled();
+    view.rerender(options({ threadId: "beta", cwd: "/elsewhere", visible: false, archiveThread: archive }));
+    await act(async () => { finish(pullRequest(41, { state: "MERGED" })); await action; });
+    expect(native.merge).toHaveBeenCalledWith("/project", "m17h/Mythra-Code", 41, "squash", "feature-oid", false);
+    expect(archive).toHaveBeenCalledExactlyOnceWith("alpha");
+    expect(view.result.current.links.alpha.snapshot.state).toBe("MERGED");
+  });
+
+  it.each(["OPEN", "CLOSED"] as const)("does not archive an unconfirmed merge (%s)", async (state) => {
+    seed("alpha", pullRequest(42));
+    native.merge.mockResolvedValueOnce(pullRequest(42, { state }));
+    const archive = vi.fn();
+    const view = renderHook(() => useThreadPullRequest(options({ visible: false, archiveThread: archive })));
+    await act(async () => { await expect(view.result.current.onMergeAndArchive!("squash")).rejects.toThrow("not confirmed"); });
+    expect(archive).not.toHaveBeenCalled();
+  });
+
+  it("does not merge when finishing is blocked, or archive after a merge failure", async () => {
+    seed("alpha", pullRequest(43));
+    const archive = vi.fn();
+    const check = vi.fn().mockReturnValue("Answer the pending questions first.");
+    const view = renderHook(() => useThreadPullRequest(options({ visible: false, archiveThread: archive, checkArchiveAllowed: check })));
+    await act(async () => { await expect(view.result.current.onMergeAndArchive!("squash")).rejects.toThrow("pending questions"); });
+    expect(native.merge).not.toHaveBeenCalled();
+    check.mockReturnValue(null);
+    native.merge.mockRejectedValueOnce(new Error("Checks failed"));
+    await act(async () => { await expect(view.result.current.onMergeAndArchive!("squash")).rejects.toThrow("Checks failed"); });
+    expect(archive).not.toHaveBeenCalled();
+  });
+
+  it("keeps the merged PR attached when archive fails and retries archive without merging again", async () => {
+    seed("alpha", pullRequest(44));
+    native.merge.mockResolvedValueOnce(pullRequest(44, { state: "MERGED" }));
+    const archive = vi.fn().mockRejectedValueOnce(new Error("Runtime disconnected")).mockResolvedValueOnce(undefined);
+    const view = renderHook(() => useThreadPullRequest(options({ visible: false, archiveThread: archive })));
+    await act(async () => { await expect(view.result.current.onMergeAndArchive!("squash")).rejects.toThrow("Runtime disconnected"); });
+    expect(view.result.current.pullRequest?.state).toBe("MERGED");
+    expect(view.result.current.error).toContain("Runtime disconnected");
+    await act(async () => { await view.result.current.onArchiveMergedThread!(); });
+    expect(archive).toHaveBeenCalledTimes(2);
+    expect(native.merge).toHaveBeenCalledTimes(1);
+  });
+
+  it("rechecks activity after merging and does not archive a detached thread", async () => {
+    seed("alpha", pullRequest(45));
+    let finish!: (value: PullRequest) => void;
+    native.merge.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    const archive = vi.fn();
+    const check = vi.fn().mockReturnValue(null);
+    const view = renderHook(() => useThreadPullRequest(options({ visible: false, archiveThread: archive, checkArchiveAllowed: check })));
+    let action!: Promise<void>;
+    act(() => { action = view.result.current.onMergeAndArchive!("squash"); });
+    check.mockReturnValue("A sub-agent is still working.");
+    await act(async () => { finish(pullRequest(45, { state: "MERGED" })); await expect(action).rejects.toThrow("sub-agent"); });
+    expect(archive).not.toHaveBeenCalled();
+    check.mockReturnValue(null);
+    act(() => { action = view.result.current.onMergeAndArchive!("squash"); });
+    act(() => { view.result.current.onDetach(); });
+    await act(async () => { finish(pullRequest(45, { state: "MERGED" })); await expect(action).rejects.toThrow("attachment changed"); });
+    expect(archive).not.toHaveBeenCalled();
+    expect(view.result.current.linked).toBe(false);
+  });
+
+  it("shows stored inbox links without starting background status reads", () => {
+    seed("alpha", pullRequest(46));
+    const view = renderHook(() => useThreadPullRequest(options({ threadId: null, visible: false })));
+    expect(view.result.current.links.alpha.number).toBe(46);
+    expect(native.view).not.toHaveBeenCalled();
+  });
+});

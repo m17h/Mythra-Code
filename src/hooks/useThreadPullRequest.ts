@@ -97,6 +97,8 @@ export interface UseThreadPullRequestOptions {
   visible: boolean;
   mutationBlockedReason: string | null;
   checkMutationAllowed: (cwd: string) => string | null;
+  checkArchiveAllowed?: (threadId: string) => string | null;
+  archiveThread?: (threadId: string) => Promise<void>;
   onChanged?: () => void;
 }
 
@@ -433,7 +435,15 @@ export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
     requestRefresh({ threadId: id, cwd, projectPath: snapshot.projectPath, enabled: snapshot.enabled, visible: snapshot.visible }, true);
   }, [contextState, persistLink, requestRefresh, runMutation]);
 
-  const onMerge = useCallback(async (method: PullRequestMergeMethod, auto: boolean) => {
+  const archiveMerged = useCallback(async (id: string) => {
+    const current = optionsRef.current;
+    if (!current.archiveThread) throw new Error("Thread archiving is unavailable.");
+    const block = current.checkArchiveAllowed?.(id);
+    if (block) throw new Error(block);
+    await current.archiveThread(id);
+  }, []);
+
+  const merge = useCallback(async (method: PullRequestMergeMethod, auto: boolean, archive: boolean) => {
     const snapshot = optionsRef.current;
     if (!snapshot.threadId) throw new Error("No thread is selected.");
     const stored = linksRef.current[snapshot.threadId];
@@ -444,17 +454,45 @@ export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
     const id = snapshot.threadId;
     const uiScope = stateScope(id, snapshot.cwd);
     await runMutation(id, cwd, async (revision) => {
+      if (archive) {
+        if (!snapshot.archiveThread) throw new Error("Thread archiving is unavailable.");
+        const block = snapshot.checkArchiveAllowed?.(id);
+        if (block) throw new Error(block);
+      }
       invalidatePullRequest(nativeCwd, stored.repository, stored.number);
       if (nativeCwd !== cwd) invalidatePullRequest(cwd, stored.repository, stored.number);
       const result = await mergePullRequest(nativeCwd, stored.repository, stored.number, method, stored.snapshot.headOid, auto);
-      if (!persistLink(id, result, revision)) return;
+      if (archive && (result.repository !== stored.repository || result.number !== stored.number)) {
+        throw new Error("GitHub returned a different pull request. Refresh its status before trying again.");
+      }
+      if (!persistLink(id, result, revision)) {
+        if (archive) throw new Error("The PR attachment changed. The thread was not archived.");
+        return;
+      }
       const message = result.state === "MERGED"
         ? `Pull request #${result.number} merged on GitHub. Your local folder is unchanged.`
         : auto ? `GitHub will merge pull request #${result.number} when its requirements pass. Not merged yet.` : `Merge requested for pull request #${result.number}; it remains open.`;
       setNoticeState({ scope: uiScope, value: message });
       snapshot.onChanged?.();
+      if (archive) {
+        if (result.state !== "MERGED") throw new Error("The merge is not confirmed on GitHub. The thread was not archived.");
+        await archiveMerged(id);
+      }
     });
-  }, [linksRef, persistLink, runMutation]);
+  }, [archiveMerged, linksRef, persistLink, runMutation]);
+
+  const onMerge = useCallback((method: PullRequestMergeMethod, auto: boolean) => merge(method, auto, false), [merge]);
+  const onMergeAndArchive = useCallback((method: PullRequestMergeMethod) => merge(method, false, true), [merge]);
+  const onArchiveMergedThread = useCallback(async () => {
+    const snapshot = optionsRef.current;
+    const id = snapshot.threadId;
+    if (!id) throw new Error("No thread is selected.");
+    const stored = linksRef.current[id];
+    if (stored?.snapshot.state !== "MERGED") throw new Error("The attached pull request has not been merged.");
+    const cwd = snapshot.cwd ?? snapshot.projectPath;
+    if (!cwd) throw new Error("This thread has no project path.");
+    await runMutation(id, cwd, () => archiveMerged(id));
+  }, [archiveMerged, linksRef, runMutation]);
 
   const onReady = useCallback(async () => {
     const snapshot = optionsRef.current;
@@ -507,6 +545,7 @@ export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
   }, [bumpReadRevision, setLinks]);
 
   return {
+    links,
     context: scopedContext,
     pullRequest,
     linked,
@@ -519,6 +558,8 @@ export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
     onDetach,
     onCreate,
     onMerge,
+    onMergeAndArchive: options.archiveThread ? onMergeAndArchive : undefined,
+    onArchiveMergedThread: options.archiveThread ? onArchiveMergedThread : undefined,
     onReady,
     onCreateBranch,
     forgetThread,

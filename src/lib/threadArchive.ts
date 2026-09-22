@@ -2,6 +2,44 @@ import type { ArchivedThread, Provider } from "../types";
 import type { OwnershipLinks } from "./nativeAgentLinks";
 import { normalizedProjectPath } from "./paths";
 import type { ThreadKindView } from "./threadList";
+import type { ThreadTaskState } from "./taskStore";
+import { isActiveAgentRecord } from "./subAgentActivity";
+
+/** Activity that makes any archive unsafe, including activity that began while
+ * an earlier asynchronous archive preparation step was still finishing. */
+export function activeThreadArchiveBlockedReason(
+  task: Pick<ThreadTaskState, "status" | "agents"> | undefined,
+  activeChildren = false,
+): string | null {
+  if (task?.status === "starting" || task?.status === "running") return "Finish or stop this thread before archiving it.";
+  if (activeChildren || task?.agents.some((agent) => isActiveAgentRecord(agent.status))) return "Finish or stop this thread’s sub-agents before archiving it.";
+  return null;
+}
+
+/** Keep the final activity check adjacent to the archive side effect: title
+ * cancellation may wait for a name write while the user starts another turn. */
+export async function archiveAfterTitleCancellation(
+  cancelTitle: () => Promise<void>,
+  blockedReason: () => string | null,
+  archive: () => Promise<void>,
+): Promise<void> {
+  await cancelTitle();
+  const blocked = blockedReason();
+  if (blocked) throw new Error(blocked);
+  await archive();
+}
+
+/** Finishing a PR must never discard queued work or hide work awaiting a reply. */
+export function finishThreadBlockedReason(
+  task: Pick<ThreadTaskState, "status" | "approvals" | "queuedTurns" | "agents"> | undefined,
+  activeChildren = false,
+): string | null {
+  const active = activeThreadArchiveBlockedReason(task, activeChildren);
+  if (active) return active;
+  if (task?.approvals.length) return "Respond to this thread’s pending questions or approvals before archiving it.";
+  if (task?.queuedTurns.length) return "Send or remove this thread’s queued messages before archiving it.";
+  return null;
+}
 
 /**
  * Archives created before provider metadata was added can still be identified

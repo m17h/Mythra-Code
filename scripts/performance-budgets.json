@@ -569,20 +569,170 @@
           "totalJsRawBytes": { "before": 1567952, "after": 1569654, "delta": 1702 }
         }
       }
+    },
+    {
+      "change": "Add inbox PR badges, merge-and-archive, and optional thread titles",
+      "decision": "Accept the measured feature cost of compact PR status badges, guarded merge-and-archive with recoverable threads, and opt-in provider-selectable title generation. Badge rendering uses existing stored PR snapshots without additional requests. Title generation defaults off and queues at most one short request at a time only for newly submitted threads; it adds no polling or backfill. Settings and PR panel UI remain lazy, animations are unchanged, and no dependency is added. Limits match measured builds without extra headroom. See docs/performance/thread-completion-and-titles.md for validation limits.",
+      "measurements": {
+        "safari13-minified": {
+          "appEntryRawBytes": {
+            "before": 415285,
+            "after": 421114,
+            "delta": 5829
+          },
+          "startupJsRawBytes": {
+            "before": 794916,
+            "after": 801873,
+            "delta": 6957
+          },
+          "startupCssRawBytes": {
+            "before": 364468,
+            "after": 365438,
+            "delta": 970
+          },
+          "totalJsRawBytes": {
+            "before": 1611298,
+            "after": 1624618,
+            "delta": 13320
+          }
+        },
+        "chrome105-minified": {
+          "appEntryRawBytes": {
+            "before": 393629,
+            "after": 399056,
+            "delta": 5427
+          },
+          "startupJsRawBytes": {
+            "before": 765131,
+            "after": 771549,
+            "delta": 6418
+          },
+          "startupCssRawBytes": {
+            "before": 357949,
+            "after": 358919,
+            "delta": 970
+          },
+          "totalJsRawBytes": {
+            "before": 1569654,
+            "after": 1582279,
+            "delta": 12625
+          }
+        }
+      }
+    },
+    {
+      "change": "Explain merge methods on demand",
+      "decision": "Accept the measured lazy-panel cost of beginner merge-method help with hover, focus, click, and Escape support. Only one explanation is mounted at a time; no provider calls, polling, dependency, or startup CSS is added. The existing scoped panel animation and reduced-motion behavior are preserved. Limits match measured production builds. See docs/reviews/workspace-ui-2026-09-22.md.",
+      "measurements": {
+        "safari13-minified": {
+          "appEntryRawBytes": {
+            "before": 421114,
+            "after": 421112,
+            "delta": -2
+          },
+          "startupJsRawBytes": {
+            "before": 801873,
+            "after": 802014,
+            "delta": 141
+          },
+          "startupCssRawBytes": {
+            "before": 365438,
+            "after": 365438,
+            "delta": 0
+          },
+          "totalJsRawBytes": {
+            "before": 1624618,
+            "after": 1626306,
+            "delta": 1688
+          }
+        },
+        "chrome105-minified": {
+          "appEntryRawBytes": {
+            "before": 399056,
+            "after": 399048,
+            "delta": -8
+          },
+          "startupJsRawBytes": {
+            "before": 771549,
+            "after": 771690,
+            "delta": 141
+          },
+          "startupCssRawBytes": {
+            "before": 358919,
+            "after": 358919,
+            "delta": 0
+          },
+          "totalJsRawBytes": {
+            "before": 1582279,
+            "after": 1583964,
+            "delta": 1685
+          }
+        }
+      }
+    },
+    {
+      "change": "Keep archive ownership through title persistence and cleanup",
+      "decision": "Accept the measured 209-byte Safari / 202-byte Chrome JavaScript cost of live archive ownership checks and a post-title activity recheck. Prevents a newly submitted turn from being hidden by an archive; no polling, dependencies, startup CSS, or animation changes. Limits match measured builds.",
+      "measurements": {
+        "safari13-minified": {
+          "appEntryRawBytes": {
+            "before": 421112,
+            "after": 421321,
+            "delta": 209
+          },
+          "startupJsRawBytes": {
+            "before": 802014,
+            "after": 802223,
+            "delta": 209
+          },
+          "startupCssRawBytes": {
+            "before": 365438,
+            "after": 365438,
+            "delta": 0
+          },
+          "totalJsRawBytes": {
+            "before": 1626306,
+            "after": 1626515,
+            "delta": 209
+          }
+        },
+        "chrome105-minified": {
+          "appEntryRawBytes": {
+            "before": 399048,
+            "after": 399250,
+            "delta": 202
+          },
+          "startupJsRawBytes": {
+            "before": 771690,
+            "after": 771892,
+            "delta": 202
+          },
+          "startupCssRawBytes": {
+            "before": 358919,
+            "after": 358919,
+            "delta": 0
+          },
+          "totalJsRawBytes": {
+            "before": 1583964,
+            "after": 1584166,
+            "delta": 202
+          }
+        }
+      }
     }
   ],
   "profiles": {
     "safari13-minified": {
-      "appEntryRawBytes": 415285,
-      "startupJsRawBytes": 794916,
-      "startupCssRawBytes": 364468,
-      "totalJsRawBytes": 1611298
+      "appEntryRawBytes": 421321,
+      "startupJsRawBytes": 802223,
+      "startupCssRawBytes": 365438,
+      "totalJsRawBytes": 1626515
     },
     "chrome105-minified": {
-      "appEntryRawBytes": 393629,
-      "startupJsRawBytes": 765131,
-      "startupCssRawBytes": 357949,
-      "totalJsRawBytes": 1569654
+      "appEntryRawBytes": 399250,
+      "startupJsRawBytes": 771892,
+      "startupCssRawBytes": 358919,
+      "totalJsRawBytes": 1584166
     }
   }
 }

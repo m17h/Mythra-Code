@@ -1,6 +1,6 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { ThreadPullRequestPanel } from "./ThreadPullRequestPanel";
+import { ThreadPullRequestPanel, type ThreadPullRequestPanelProps } from "./ThreadPullRequestPanel";
 import type { PullRequest, PullRequestContext, PullRequestPanelProps } from "../lib/pullRequests";
 
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn().mockResolvedValue(undefined) }));
@@ -762,7 +762,7 @@ describe("ThreadPullRequestPanel — where a merge actually happens", () => {
     fireEvent.click(open);
 
     const confirm = screen.getByRole("group", { name: /confirm merge/i });
-    const effect = within(confirm).getByText(/Nothing on this Mac changes/);
+    const effect = within(confirm).getByText(/Nothing in this local folder changes/);
     expect(effect).toHaveTextContent("codex/pr-workflow");
     expect(effect).toHaveTextContent(/main.*is not updated until you ask for it/);
     expect(within(confirm).getByRole("button", { name: "Merge #123 on GitHub" })).toBeInTheDocument();
@@ -773,7 +773,7 @@ describe("ThreadPullRequestPanel — where a merge actually happens", () => {
     fireEvent.click(screen.getByRole("button", { name: /merge on github…/i }));
     fireEvent.click(screen.getByRole("checkbox", { name: /merge it when it is ready/i }));
 
-    expect(screen.getByText(/When GitHub merges it, nothing on this Mac changes/)).toBeInTheDocument();
+    expect(screen.getByText(/When GitHub merges it, nothing in this local folder changes/)).toBeInTheDocument();
   });
 
   it("drops the local-effect line when the merge is refused outright", () => {
@@ -782,7 +782,7 @@ describe("ThreadPullRequestPanel — where a merge actually happens", () => {
     render(<ThreadPullRequestPanel {...panelProps({ linked: true, pullRequest: pullRequest({ isDraft: true }) })} />);
     fireEvent.click(screen.getByRole("button", { name: /merge on github…/i }));
 
-    expect(screen.queryByText(/Nothing on this Mac changes/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Nothing in this local folder changes/)).not.toBeInTheDocument();
   });
 });
 
@@ -835,6 +835,203 @@ describe("ThreadPullRequestPanel — after the merge", () => {
   });
 });
 
+describe("ThreadPullRequestPanel — merging and archiving the thread", () => {
+  const archiveBox = () => screen.getByRole("checkbox", { name: /archive this thread once it is merged/i });
+
+  function openMerge(overrides: Partial<PullRequestPanelProps> = {}, extra: Partial<ThreadPullRequestPanelProps> = {}) {
+    const onMergeAndArchive = vi.fn().mockResolvedValue(undefined);
+    const props: ThreadPullRequestPanelProps = {
+      ...panelProps({ linked: true, pullRequest: pullRequest(), ...overrides }),
+      onMergeAndArchive,
+      ...extra,
+    };
+    render(<ThreadPullRequestPanel {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: /merge on github…/i }));
+    return { props, onMergeAndArchive };
+  }
+
+  it("offers nothing to archive when the app cannot archive", () => {
+    render(<ThreadPullRequestPanel {...panelProps({ linked: true, pullRequest: pullRequest() })} />);
+    fireEvent.click(screen.getByRole("button", { name: /merge on github…/i }));
+
+    expect(screen.queryByRole("checkbox", { name: /archive this thread/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Merge #123 on GitHub" })).toBeInTheDocument();
+  });
+
+  it("archives nothing unless it is asked to, and says where the choice leads", () => {
+    const { props, onMergeAndArchive } = openMerge();
+
+    // Offered, plainly, and off. The ordinary merge is what an untouched
+    // confirmation does.
+    expect(archiveBox()).not.toBeChecked();
+    expect(screen.getByText(/It moves to Archived, where you can restore it/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Merge #123 on GitHub" }));
+    expect(props.onMerge).toHaveBeenCalledWith("squash", false);
+    expect(onMergeAndArchive).not.toHaveBeenCalled();
+  });
+
+  it("names both steps, and what stays untouched, before archiving anything", async () => {
+    const { props, onMergeAndArchive } = openMerge();
+    fireEvent.click(archiveBox());
+
+    const plan = screen.getByLabelText("What merging and archiving will do");
+    expect(within(plan).getByText(/Merge/)).toHaveTextContent("on GitHub");
+    expect(within(plan).getByText(/Move this thread to/)).toHaveTextContent(/Archived, where you can restore it/);
+    // The merge is still GitHub's, and archiving is still not a file operation.
+    expect(screen.getByText(/Nothing in this local folder changes/))
+      .toHaveTextContent(/does not move, change or delete its folder/);
+
+    const confirm = screen.getByRole("button", { name: "Merge #123 and archive thread" });
+    fireEvent.click(confirm);
+    await vi.waitFor(() => expect(onMergeAndArchive).toHaveBeenCalledWith("squash"));
+    // One merge, by one route: the archiving call is the merge.
+    expect(props.onMerge).not.toHaveBeenCalled();
+  });
+
+  it("never lets an archive ride along with an auto merge", () => {
+    const { onMergeAndArchive } = openMerge();
+    const auto = screen.getByRole("checkbox", { name: /merge it when it is ready/i });
+
+    fireEvent.click(archiveBox());
+    // Auto merge steps aside rather than quietly cancelling the archive.
+    expect(auto).toBeDisabled();
+    expect(screen.getByText(/archiving needs a merge that happens now/i)).toBeInTheDocument();
+
+    fireEvent.click(archiveBox());
+    expect(auto).toBeEnabled();
+    fireEvent.click(auto);
+    expect(archiveBox()).toBeDisabled();
+    expect(screen.getByText(/Not available with auto merge/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /enable auto merge/i })).toBeInTheDocument();
+    expect(onMergeAndArchive).not.toHaveBeenCalled();
+  });
+
+  it("refuses to archive behind a merge GitHub is not ready to run", () => {
+    openMerge({ pullRequest: pullRequest({ canMerge: false, checks: [{ name: "build", state: "IN_PROGRESS", url: "" }] }) });
+
+    expect(archiveBox()).toBeDisabled();
+    expect(screen.getByText(/Available once GitHub is ready to merge this now/i)).toBeInTheDocument();
+  });
+
+  it("stops at a blocked archive while leaving the plain merge alone", () => {
+    const { props, onMergeAndArchive } = openMerge({}, { archiveBlockedReason: "This thread is running. Stop it before archiving." });
+
+    expect(archiveBox()).toBeDisabled();
+    expect(screen.getByText("This thread is running. Stop it before archiving.")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Merge #123 on GitHub" }));
+    expect(props.onMerge).toHaveBeenCalledWith("squash", false);
+    expect(onMergeAndArchive).not.toHaveBeenCalled();
+  });
+
+  it("drops the choice when the pull request moves under the confirmation", () => {
+    const props = panelProps({ linked: true, pullRequest: pullRequest({ headOid: "aaa1111" }) });
+    const onMergeAndArchive = vi.fn().mockResolvedValue(undefined);
+    const view = render(<ThreadPullRequestPanel {...props} onMergeAndArchive={onMergeAndArchive} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /merge on github…/i }));
+    fireEvent.click(archiveBox());
+    expect(screen.getByRole("button", { name: "Merge #123 and archive thread" })).toBeEnabled();
+
+    view.rerender(<ThreadPullRequestPanel {...props} pullRequest={pullRequest({ headOid: "bbb2222" })} onMergeAndArchive={onMergeAndArchive} />);
+    expect(screen.getByRole("button", { name: "Merge #123 and archive thread" })).toBeDisabled();
+
+    // Looking at the new revision re-arms the merge, and asks for the archive
+    // decision again rather than carrying an old one forward.
+    fireEvent.click(screen.getByRole("button", { name: /review the updated pull request/i }));
+    expect(archiveBox()).not.toBeChecked();
+    expect(screen.getByRole("button", { name: "Merge #123 on GitHub" })).toBeEnabled();
+    expect(onMergeAndArchive).not.toHaveBeenCalled();
+  });
+
+  it("forgets the choice when the thread changes", () => {
+    const props = panelProps({ linked: true, pullRequest: pullRequest() });
+    const onMergeAndArchive = vi.fn().mockResolvedValue(undefined);
+    const view = render(<ThreadPullRequestPanel {...props} onMergeAndArchive={onMergeAndArchive} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /merge on github…/i }));
+    fireEvent.click(archiveBox());
+
+    view.rerender(<ThreadPullRequestPanel {...props} threadId="thread-2" onMergeAndArchive={onMergeAndArchive} />);
+    fireEvent.click(screen.getByRole("button", { name: /merge on github…/i }));
+
+    expect(archiveBox()).not.toBeChecked();
+    expect(screen.getByRole("button", { name: "Merge #123 on GitHub" })).toBeInTheDocument();
+  });
+
+  it("keeps the confirmation open when the merge-and-archive fails", async () => {
+    const onMergeAndArchive = vi.fn().mockRejectedValue(new Error("GitHub refused the merge"));
+    openMerge({}, { onMergeAndArchive });
+
+    fireEvent.click(archiveBox());
+    fireEvent.click(screen.getByRole("button", { name: "Merge #123 and archive thread" }));
+
+    await vi.waitFor(() => expect(onMergeAndArchive).toHaveBeenCalled());
+    expect(screen.getByRole("group", { name: /confirm merge/i })).toBeInTheDocument();
+    expect(archiveBox()).toBeChecked();
+  });
+});
+
+describe("ThreadPullRequestPanel — archiving a thread whose merge already happened", () => {
+  const merged = () => pullRequest({ state: "MERGED", baseRefName: "main" });
+
+  it("offers the archive again, which is the retry after one that failed", async () => {
+    const onArchiveMergedThread = vi.fn().mockResolvedValue(undefined);
+    render(
+      <ThreadPullRequestPanel
+        {...panelProps({ linked: true, pullRequest: merged() })}
+        onArchiveMergedThread={onArchiveMergedThread}
+      />,
+    );
+
+    // The merge is GitHub's and stands; only the archive is outstanding.
+    expect(screen.getByText(/Merged into/)).toBeInTheDocument();
+    const archive = screen.getByRole("button", { name: /archive thread/i });
+    expect(archive).toHaveAttribute("title", expect.stringContaining("its folder is left exactly as it is"));
+
+    fireEvent.click(archive);
+    await vi.waitFor(() => expect(onArchiveMergedThread).toHaveBeenCalledOnce());
+  });
+
+  it("holds the retry back while the thread may not be archived", () => {
+    render(
+      <ThreadPullRequestPanel
+        {...panelProps({ linked: true, pullRequest: merged() })}
+        onArchiveMergedThread={vi.fn().mockResolvedValue(undefined)}
+        archiveBlockedReason="This thread is still running."
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: /archive thread/i })).toBeDisabled();
+    expect(screen.getByText("This thread is still running.")).toBeInTheDocument();
+  });
+
+  it("holds it back while another operation is in flight, or nothing may change", () => {
+    const busy = render(
+      <ThreadPullRequestPanel
+        {...panelProps({ linked: true, pullRequest: merged(), busy: true })}
+        onArchiveMergedThread={vi.fn().mockResolvedValue(undefined)}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /archive thread/i })).toBeDisabled();
+    busy.unmount();
+
+    render(
+      <ThreadPullRequestPanel
+        {...panelProps({ linked: true, pullRequest: merged(), mutationBlockedReason: "This thread is read only." })}
+        onArchiveMergedThread={vi.fn().mockResolvedValue(undefined)}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /archive thread/i })).toBeDisabled();
+  });
+
+  it("says nothing about archiving when the app cannot archive", () => {
+    render(<ThreadPullRequestPanel {...panelProps({ linked: true, pullRequest: merged() })} />);
+    expect(screen.queryByRole("button", { name: /archive thread/i })).not.toBeInTheDocument();
+  });
+});
+
 describe("ThreadPullRequestPanel — the create editor owns its heading", () => {
   it("replaces the button with the form rather than stacking both", () => {
     render(<ThreadPullRequestPanel {...panelProps()} />);
@@ -852,5 +1049,62 @@ describe("ThreadPullRequestPanel — the create editor owns its heading", () => 
     expect(fact).toHaveAttribute("title", "Last known, compared with main");
     // The warning keeps its own pill: it is the one that is not routine.
     expect(screen.getByText("Uncommitted changes")).toBeInTheDocument();
+  });
+});
+
+
+describe("merge method explanations", () => {
+  function openMethods() {
+    const props = panelProps({ linked: true, pullRequest: pullRequest({ mergeMethods: ["squash", "merge", "rebase"] }) });
+    render(<ThreadPullRequestPanel {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: "Merge on GitHub…" }));
+    return props;
+  }
+  const help = (label: string) => screen.getByRole("button", { name: `What “${label}” does` });
+  it("explains every available method without selecting or merging it", () => {
+    const props = openMethods();
+    expect(screen.queryByText(/A commit is one saved change/)).not.toBeInTheDocument();
+    for (const [label, description] of [
+      ["Squash and merge", /single commit on main/],
+      ["Create a merge commit", /showing where the two branches joined/],
+      ["Rebase and merge", /new commit IDs/],
+    ] as const) {
+      const button = help(label);
+      fireEvent.mouseEnter(button);
+      expect(button).toHaveAttribute("aria-expanded", "true");
+      expect(screen.getByText(description)).toBeVisible();
+      expect(screen.getByRole("radio", { name: "Squash and merge" })).toBeChecked();
+      expect(button.closest("label")).toBeNull();
+      fireEvent.mouseLeave(button.closest(".thread-pr-method")!);
+      expect(button).toHaveAttribute("aria-expanded", "false");
+    }
+    expect(props.onMerge).not.toHaveBeenCalled();
+  });
+  it("keeps keyboard help open when the mouse leaves, until focus leaves", () => {
+    openMethods();
+    const button = help("Squash and merge");
+    act(() => button.focus());
+    fireEvent.mouseLeave(button.closest(".thread-pr-method")!);
+    expect(button).toHaveAttribute("aria-expanded", "true");
+    act(() => screen.getByRole("radio", { name: "Rebase and merge" }).focus());
+    expect(button).toHaveAttribute("aria-expanded", "false");
+  });
+  it("supports focus, click pinning, Escape, and moving to another explanation", () => {
+    openMethods();
+    const squash = help("Squash and merge");
+    fireEvent.focus(squash);
+    expect(squash).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(squash);
+    fireEvent.mouseLeave(squash.closest(".thread-pr-method")!);
+    expect(squash).toHaveAttribute("aria-expanded", "true");
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(squash).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("group", { name: "Confirm merge" })).toBeInTheDocument();
+    fireEvent.click(squash);
+    const rebase = help("Rebase and merge");
+    fireEvent.mouseEnter(rebase);
+    expect(squash).toHaveAttribute("aria-expanded", "false");
+    fireEvent.mouseLeave(rebase.closest(".thread-pr-method")!);
+    expect(rebase).toHaveAttribute("aria-expanded", "false");
   });
 });
