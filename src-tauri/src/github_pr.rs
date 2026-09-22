@@ -474,15 +474,21 @@ async fn find_with(
     gh: &Path,
     repository: &str,
     branch: &str,
+    base: Option<&str>,
 ) -> Result<Option<GitHubPullRequest>, String> {
     validate_repository(repository)?;
     validate_ref(branch, "Branch")?;
+    if let Some(base) = base {
+        validate_ref(base, "Base branch")?;
+    }
     let info = repository_info(gh, repository).await?;
+    let base = base.unwrap_or(&info.default_branch);
+    validate_ref(base, "Base branch")?;
     let value = gh_json(
         gh,
         &[
-            "pr", "list", "--repo", repository, "--state", "open", "--head", branch, "--limit",
-            "1", "--json", PR_FIELDS,
+            "pr", "list", "--repo", repository, "--state", "open", "--head", branch, "--base",
+            base, "--limit", "1", "--json", PR_FIELDS,
         ],
     )
     .await?;
@@ -708,7 +714,13 @@ pub(super) async fn github_pr_find(
     branch: String,
 ) -> Result<Option<GitHubPullRequest>, String> {
     blocking_local(move || selected_repository(&cwd).map(|_| ())).await?;
-    find_with(&resolve_github_binary(&app).await?, &repository, &branch).await
+    find_with(
+        &resolve_github_binary(&app).await?,
+        &repository,
+        &branch,
+        None,
+    )
+    .await
 }
 
 fn create_preflight(
@@ -725,11 +737,6 @@ fn create_preflight(
     validate_oid(expected)?;
     if head == base {
         return Err("Head and base branches must be different.".into());
-    }
-    if base != default_branch {
-        return Err(format!(
-            "The base branch must be the repository default branch ({default_branch})."
-        ));
     }
     let (branch, oid) = branch_and_head(cwd)?;
     if branch != head {
@@ -874,7 +881,7 @@ pub(super) async fn github_pr_create(
         .map(|_| ())
     })
     .await?;
-    if let Some(existing) = find_with(&gh, &repository, &head).await? {
+    if let Some(existing) = find_with(&gh, &repository, &head, Some(&base)).await? {
         return Ok(GitHubPrCreateResult::existing(existing));
     }
     // Network reads above may take long enough for an external Git client to
@@ -954,7 +961,7 @@ pub(super) async fn github_pr_create(
             format!("The branch was not pushed: {error}")
         }
     })?;
-    if let Some(existing) = find_with(&gh, &repository, &head).await? {
+    if let Some(existing) = find_with(&gh, &repository, &head, Some(&base)).await? {
         return Ok(GitHubPrCreateResult::updated(existing));
     }
     let mut command = background_command(&gh);
@@ -1118,6 +1125,18 @@ if [ "$1" = api ]; then
   printf '%s\n' '{{"default_branch":"main","permissions":{{"push":true}},"allow_squash_merge":true,"allow_merge_commit":false,"allow_rebase_merge":false}}'
 elif [ "$1" = pr ] && [ "$2" = view ]; then
   printf '%s\n' '{{"number":7,"url":"https://github.com/owner/repo/pull/7","title":"Topic","body":"Body","state":"OPEN","isDraft":false,"headRefName":"topic","baseRefName":"main","headRefOid":"0123456789abcdef0123456789abcdef01234567","mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","reviewDecision":"APPROVED","statusCheckRollup":[{{"name":"build","conclusion":"SUCCESS","detailsUrl":"https://example.test/check"}}],"updatedAt":"2026-09-22T00:00:00Z","mergedAt":null,"author":{{"login":"tester"}}}}'
+elif [ "$1" = pr ] && [ "$2" = list ]; then
+  base=release
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = --base ]; then shift; base="$1"; fi
+    shift
+  done
+  case "$base" in
+    main) number=7 ;;
+    release) number=8 ;;
+    *) printf '%s\n' '[]'; exit 0 ;;
+  esac
+  printf '[{{"number":%s,"url":"https://github.com/owner/repo/pull/%s","title":"Topic","state":"OPEN","headRefName":"topic","baseRefName":"%s","headRefOid":"0123456789abcdef0123456789abcdef01234567"}}]\n' "$number" "$number" "$base"
 elif [ "$1" = pr ] && [ "$2" = merge ]; then
   exit 0
 else
@@ -1256,6 +1275,17 @@ fi
         )
         .unwrap_err()
         .contains("HEAD changed"));
+        git(&root, &["switch", "-c", "topic"]).unwrap();
+        assert_eq!(
+            create_preflight(&root, "owner/repo", "topic", "release", &oid, "main").unwrap(),
+            oid
+        );
+        assert!(
+            create_preflight(&root, "owner/repo", "topic", "topic", &oid, "main")
+                .unwrap_err()
+                .contains("different")
+        );
+        assert!(create_preflight(&root, "owner/repo", "topic", "--invalid", &oid, "main").is_err());
         background_std_command("git")
             .args(["checkout", "--detach"])
             .current_dir(&root)
@@ -1364,7 +1394,49 @@ fi
             assert_eq!(pr.repository, repository);
             assert!(!pr.url.is_empty());
             assert!(!pr.head_oid.is_empty());
+            if pr.state == "OPEN" {
+                let found = find_with(&gh, &repository, &pr.head_ref_name, Some(&pr.base_ref_name))
+                    .await
+                    .expect("targeted discovery payload")
+                    .expect("open PR found");
+                assert_eq!(found.number, pr.number);
+            }
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn discovery_selects_default_target_instead_of_first_pr_on_branch() {
+        let root = std::env::temp_dir().join(format!("mythra-fake-gh-find-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let gh = fake_gh(&root);
+        // The same head has PR #8 into release and #7 into main. Without
+        // a base filter GitHub returns #8 first; discovery must suggest #7.
+        let pr = find_with(&gh, "owner/repo", "topic", None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(pr.number, 7);
+        assert_eq!(pr.base_ref_name, "main");
+        // Creation deduplication uses the form's selected target, including
+        // non-default targets; a PR into another base is not a duplicate.
+        let release = find_with(&gh, "owner/repo", "topic", Some("release"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(release.number, 8);
+        assert_eq!(release.base_ref_name, "release");
+        assert!(find_with(&gh, "owner/repo", "topic", Some("develop"))
+            .await
+            .unwrap()
+            .is_none());
+        let before = fs::read_to_string(root.join("gh.log")).unwrap();
+        assert!(find_with(&gh, "owner/repo", "topic", Some("--invalid"))
+            .await
+            .is_err());
+        assert_eq!(fs::read_to_string(root.join("gh.log")).unwrap(), before);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[cfg(unix)]
