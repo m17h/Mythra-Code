@@ -54,9 +54,12 @@
 .thread-pr-note.good { color: color-mix(in srgb, var(--green) 52%, var(--text)); border-color: var(--green-line); background: var(--green-soft); }
 .thread-pr-note.good svg { color: var(--green); }
 
-.thread-pr-inline-button { min-height: 22px; padding: 0 7px; border: 1px solid var(--line-strong); border-radius: var(--r-xs); color: inherit; background: transparent; font-size: var(--fs-micro); cursor: pointer; transition: background var(--t-fast) ease, border-color var(--t-fast) ease; }
+.thread-pr-inline-button { min-height: 22px; display: inline-flex; align-items: center; gap: 5px; padding: 0 7px; border: 1px solid var(--line-strong); border-radius: var(--r-xs); color: inherit; background: transparent; font-size: var(--fs-micro); white-space: nowrap; cursor: pointer; transition: background var(--t-fast) ease, border-color var(--t-fast) ease; }
 .thread-pr-inline-button:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 8%, transparent); }
 .thread-pr-inline-button:disabled { opacity: .4; cursor: default; }
+/* An icon inside one of these is part of the label, not a note's own leading
+   glyph, so it drops the nudge `.thread-pr-note svg` gives those. */
+.thread-pr-inline-button svg { flex: 0 0 auto; margin-top: 0; }
 
 /* ---- The pull request card ---- */
 

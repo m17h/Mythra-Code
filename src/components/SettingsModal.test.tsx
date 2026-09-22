@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS } from "../lib/appConfig";
 import type { AppUpdater } from "../lib/appUpdater";
 import { SettingsModal } from "./SettingsModal";
+import type { RuntimeModel } from "./ModelPowerControl";
 import { open as openFolderDialog } from "@tauri-apps/plugin-dialog";
 import { resetUsageLedgerCache, USAGE_LEDGER_KEY } from "../lib/usageLedger";
 
@@ -30,6 +31,11 @@ const developerRuntimeUpdater = {
   checkForUpdates: vi.fn(async () => undefined),
   updateRuntime: vi.fn(async () => undefined),
 };
+
+/** One entry of the account's live OpenAI catalog. */
+function runtimeModel(id: string, displayName: string): RuntimeModel {
+  return { id, model: id, displayName, description: "", supportedReasoningEfforts: [], defaultReasoningEffort: "medium", isDefault: false };
+}
 
 /** A saved crew, as it comes back out of persisted settings. */
 function preset() {
@@ -311,6 +317,182 @@ describe("SettingsModal", () => {
     // Runtime fields use the shared menu, not native selects.
     expect(screen.getByRole("button", { name: "OpenAI service tier" })).toHaveAttribute("aria-haspopup", "menu");
     expect(screen.getByRole("button", { name: "Terminal scrollback" })).toHaveAttribute("aria-haspopup", "menu");
+  });
+
+  it("offers automatic thread titles as a draft, off until it is asked for", () => {
+    const onSave = vi.fn();
+    render(<SettingsModal {...modalProps({ initialSection: "system", onSave })} />);
+
+    const toggle = screen.getByRole("switch", { name: "Automatic thread titles" });
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+    // An off switch needs no configuration under it.
+    expect(screen.queryByRole("button", { name: "Thread title provider" })).not.toBeInTheDocument();
+
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("button", { name: "Thread title provider" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Thread title model" })).toBeInTheDocument();
+    // Every other setting works this way, and this one renames threads: the
+    // click edits the draft, and nothing is applied until it is saved.
+    expect(onSave).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
+      automaticThreadTitles: true,
+      threadTitleProvider: "openai",
+      threadTitleModel: "",
+    }));
+  });
+
+  it("says where the first message goes, and what naming will not touch", () => {
+    render(<SettingsModal {...modalProps({ initialSection: "system" })} />);
+
+    expect(screen.getByText(/using the provider and model you choose/)).toBeInTheDocument();
+    // The things nobody would guess: it leaves for the chosen provider from a
+    // thread running on another one, it spends that provider's own allowance,
+    // and a name you typed is not overwritten.
+    const caveat = screen.getByText(/goes to the chosen provider even when the thread itself runs on another one/);
+    expect(caveat).toHaveTextContent("own subscription or credits");
+    expect(caveat).toHaveTextContent("Nothing is kept as a chat");
+    expect(caveat).toHaveTextContent("a title you write yourself is never replaced");
+  });
+
+  it("names the Luna the account would actually use, and keeps it automatic", () => {
+    const onSave = vi.fn();
+    render(<SettingsModal {...modalProps({
+      initialSection: "system",
+      onSave,
+      runtimeModels: [runtimeModel("gpt-5.6-luna", "Luna"), runtimeModel("gpt-6-luna", "Luna six"), runtimeModel("gpt-5.6-terra", "Terra")],
+    })} />);
+
+    fireEvent.click(screen.getByRole("switch", { name: "Automatic thread titles" }));
+    // OpenAI needs no choice made: the default is the automatic option itself.
+    expect(screen.getByRole("button", { name: "Thread title model" })).toHaveTextContent("Luna (automatic)");
+
+    fireEvent.click(screen.getByRole("button", { name: "Thread title model" }));
+    // The newest Luna actually in the catalog, not the one this file was
+    // written against.
+    expect(screen.getByRole("menuitemradio", { name: /Luna \(automatic\)/ })).toHaveTextContent("gpt-6-luna");
+
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ threadTitleProvider: "openai", threadTitleModel: "" }));
+  });
+
+  it("falls back to the known Luna only while no catalog has been read", () => {
+    render(<SettingsModal {...modalProps({ initialSection: "system", runtimeModels: [] })} />);
+
+    fireEvent.click(screen.getByRole("switch", { name: "Automatic thread titles" }));
+    fireEvent.click(screen.getByRole("button", { name: "Thread title model" }));
+
+    const automatic = screen.getByRole("menuitemradio", { name: /Luna \(automatic\)/ });
+    expect(automatic).toHaveTextContent("gpt-5.6-luna");
+    expect(automatic).toHaveTextContent(/until your account catalog loads/);
+  });
+
+  it("says so rather than guessing when the catalog holds no Luna", () => {
+    render(<SettingsModal {...modalProps({
+      initialSection: "system",
+      runtimeModels: [runtimeModel("gpt-5.6-terra", "Terra"), runtimeModel("gpt-5.6-sol", "Sol")],
+    })} />);
+
+    fireEvent.click(screen.getByRole("switch", { name: "Automatic thread titles" }));
+
+    // No invented model id, and no silence either.
+    expect(screen.getByText(/catalog reports no Luna model/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Thread title model" }));
+    expect(screen.getByRole("menuitemradio", { name: /Luna \(automatic\)/ })).toHaveTextContent(/no Luna/);
+  });
+
+  it("switches provider onto a model that provider can actually run", () => {
+    const onSave = vi.fn();
+    render(<SettingsModal {...modalProps({
+      initialSection: "system",
+      onSave,
+      // Signed out of OpenAI, and it must not matter once Claude is chosen.
+      childAgentReadiness: { codexRuntimeAvailable: true, openAiSignedIn: false, openRouterReady: false, claudeReady: true, cursorReady: false },
+    })} />);
+
+    fireEvent.click(screen.getByRole("switch", { name: "Automatic thread titles" }));
+    fireEvent.click(screen.getByRole("button", { name: "Thread title provider" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Claude/ }));
+
+    // A provider with no automatic default lands on a real model rather than
+    // on nothing, so the setting is usable the moment it is switched.
+    expect(screen.getByRole("button", { name: "Thread title model" })).not.toHaveTextContent("Choose a model…");
+    expect(screen.queryByText(/Choose a model, or new threads keep their usual names/)).not.toBeInTheDocument();
+    // Choosing Claude is not a reason to demand an OpenAI sign-in.
+    expect(screen.queryByText(/OpenAI is not connected/)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
+      threadTitleProvider: "claude",
+      threadTitleModel: expect.stringMatching(/\S/),
+    }));
+  });
+
+  it("takes a typed model id when a provider has no catalog to offer", () => {
+    const onSave = vi.fn();
+    render(<SettingsModal {...modalProps({ initialSection: "system", onSave, lmStudioModels: [] })} />);
+
+    fireEvent.click(screen.getByRole("switch", { name: "Automatic thread titles" }));
+    fireEvent.click(screen.getByRole("button", { name: "Thread title provider" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /LM Studio/ }));
+
+    // The same way run-command discovery handles an unreadable catalog: type
+    // the id, or go and connect the provider.
+    expect(screen.getByText(/Choose a model, or new threads keep their usual names/)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Thread title model ID"), { target: { value: "q" } });
+    fireEvent.change(screen.getByLabelText("Thread title model ID"), { target: { value: "qwen/qwen3-4b" } });
+    expect(screen.getByLabelText("Thread title model ID")).toHaveValue("qwen/qwen3-4b");
+
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
+      threadTitleProvider: "lmstudio",
+      threadTitleModel: "qwen/qwen3-4b",
+    }));
+  });
+
+  it("asks only for the provider that was chosen, and refuses nothing itself", () => {
+    const onSave = vi.fn();
+    render(<SettingsModal {...modalProps({
+      initialSection: "system",
+      onSave,
+      settings: { ...DEFAULT_SETTINGS, automaticThreadTitles: true, threadTitleProvider: "claude", threadTitleModel: "claude-sonnet-5" },
+      childAgentReadiness: { codexRuntimeAvailable: true, openAiSignedIn: true, openRouterReady: false, claudeReady: false, cursorReady: false },
+    })} />);
+
+    expect(screen.getByText(/Claude is not connected yet/)).toBeInTheDocument();
+    expect(screen.queryByText(/OpenAI is not connected/)).not.toBeInTheDocument();
+    // Not connected is something to fix, not grounds to overrule the choice.
+    expect(screen.getByRole("switch", { name: "Automatic thread titles" })).toHaveAttribute("aria-checked", "true");
+
+    fireEvent.click(screen.getByRole("button", { name: "Open Models & accounts" }));
+    expect(screen.getByRole("heading", { name: "Models & accounts" })).toBeInTheDocument();
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it("says nothing about connecting anything once the chosen provider is ready", () => {
+    render(<SettingsModal {...modalProps({
+      initialSection: "system",
+      runtimeModels: [runtimeModel("gpt-5.6-luna", "Luna")],
+      childAgentReadiness: { codexRuntimeAvailable: true, openAiSignedIn: true, openRouterReady: false, claudeReady: true, cursorReady: false },
+    })} />);
+
+    fireEvent.click(screen.getByRole("switch", { name: "Automatic thread titles" }));
+
+    expect(screen.queryByText(/is not connected yet/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Open Models & accounts" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Thread title model ID")).not.toBeInTheDocument();
+  });
+
+  it("finds the switch by what it is called, not by the pane it lives in", () => {
+    render(<SettingsModal {...modalProps()} />);
+    const nav = screen.getByRole("navigation", { name: "Settings categories" });
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Search settings" }), { target: { value: "thread titles" } });
+
+    expect(within(nav).getByRole("button", { name: "Runtime" })).toBeInTheDocument();
+    expect(within(nav).queryByRole("button", { name: /Sub-agents/ })).not.toBeInTheDocument();
   });
 
   it("offers the curated chat typefaces and previews one without saving it", () => {

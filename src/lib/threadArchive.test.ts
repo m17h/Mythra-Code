@@ -28,3 +28,18 @@ describe("archived thread provider resolution", () => {
     expect(archivedThreadsForInbox(records, "/projects/kiwi/", links, "subagents")).toEqual([child]);
   });
 });
+
+describe("finish thread guards", () => {
+  it("allows an idle thread but retains work awaiting attention", async () => {
+    const { finishThreadBlockedReason } = await import("./threadArchive");
+    const task = { status: "completed" as const, approvals: [], queuedTurns: [], agents: [] };
+    expect(finishThreadBlockedReason(task)).toBeNull();
+    expect(finishThreadBlockedReason(undefined)).toBeNull();
+    expect(finishThreadBlockedReason({ ...task, status: "running" })).toContain("Finish or stop");
+    expect(finishThreadBlockedReason({ ...task, status: "starting" })).toContain("Finish or stop");
+    expect(finishThreadBlockedReason(task, true)).toContain("sub-agents");
+    expect(finishThreadBlockedReason({ ...task, approvals: [{}] as never[] })).toContain("questions or approvals");
+    expect(finishThreadBlockedReason({ ...task, queuedTurns: [{ status: "failed" }] as never[] })).toContain("queued messages");
+    expect(finishThreadBlockedReason({ ...task, agents: [{ status: "running" }] as never[] })).toContain("sub-agents");
+  });
+});

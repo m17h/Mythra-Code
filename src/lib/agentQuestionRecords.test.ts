@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatMessage } from "../types";
-import { forgetQuestionRecords, restoreQuestionRequests, savedQuestionAnswers, saveQuestionAnswers, saveQuestionRequest } from "./agentQuestionRecords";
+import { forgetQuestionRecords, hasUnansweredQuestionRequests, restoreQuestionRequests, savedQuestionAnswers, saveQuestionAnswers, saveQuestionRequest } from "./agentQuestionRecords";
 import { DURABLE_STORAGE_KEYS, flushPendingStateWrites, hydrateNativeStorage } from "./storage";
 
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn().mockResolvedValue(null) }));
@@ -10,6 +10,13 @@ const question: ChatMessage = { id: "question", role: "assistant", text: "", tur
 
 describe("durable agent questions", () => {
   beforeEach(async () => { await flushPendingStateWrites(); localStorage.clear(); invoke.mockReset().mockResolvedValue(null); });
+  it("blocks finishing a thread until its durable question is answered", () => {
+    saveQuestionRequest("thread", question);
+    expect(hasUnansweredQuestionRequests("thread")).toBe(true);
+    expect(hasUnansweredQuestionRequests("other")).toBe(false);
+    saveQuestionAnswers("thread", question.id, { layout: ["Compact"] });
+    expect(hasUnansweredQuestionRequests("thread")).toBe(false);
+  });
   it("restores RPC questions and answers from native storage after the webview cache is lost", async () => {
     expect(DURABLE_STORAGE_KEYS).toContain("kiwi.agentQuestions");
     saveQuestionRequest("thread", question);

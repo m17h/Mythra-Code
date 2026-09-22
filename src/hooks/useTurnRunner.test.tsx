@@ -1409,3 +1409,26 @@ describe("useTurnRunner activating sub-agents mid-conversation", () => {
     expect(childSessions.releaseChildAgentSession).toHaveBeenCalledWith("session-1");
   });
 });
+
+
+describe("new-thread title scheduling", () => {
+  it("requests a title only after a new local prompt is accepted", async () => {
+    const onThreadTitleRequested = vi.fn();
+    const deps = context({ activeThread: null, onThreadTitleRequested });
+    const view = renderHook(() => useTurnRunner(deps));
+    await act(async () => { expect(await view.result.current.sendMessage("Fix the sidebar scrolling")).toBe(true); });
+    const id = vi.mocked(deps.onThreadCreated).mock.calls[0][0];
+    expect(onThreadTitleRequested).toHaveBeenCalledExactlyOnceWith(id, "Fix the sidebar scrolling");
+  });
+  it("does not spend a title call on failed sends or an existing thread", async () => {
+    const onThreadTitleRequested = vi.fn();
+    cursor.startCursorTurn.mockRejectedValueOnce(new Error("not signed in"));
+    const view = renderHook((props) => useTurnRunner(props), { initialProps: context({ activeThread: null, onThreadTitleRequested }) });
+    await act(async () => { expect(await view.result.current.sendMessage("Fix scrolling")).toBe(false); });
+    expect(onThreadTitleRequested).not.toHaveBeenCalled();
+    cursor.startCursorTurn.mockResolvedValue({ turnId: "next", cursorSessionId: "session" });
+    view.rerender(context({ onThreadTitleRequested }));
+    await act(async () => { await view.result.current.sendMessage("Now fix another thing"); });
+    expect(onThreadTitleRequested).not.toHaveBeenCalled();
+  });
+});

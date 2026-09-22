@@ -178,6 +178,7 @@ export interface TurnRunnerContext {
   bindThreadToProject: (threadId: string, projectPath: string) => void;
   rememberThread: (thread: Thread) => void;
   onThreadCreated: (threadId: string) => void;
+  onThreadTitleRequested?: (threadId: string, prompt: string) => void;
   persistThreadModel: (threadId: string, model: string) => void;
   persistThreadReasoning: (threadId: string, reasoning: ThreadReasoning) => void;
   persistThreadWorktrees: SetPersisted<Record<string, ThreadWorktreeRecord>>;
@@ -552,6 +553,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         clearProviderStopIntent(thread.id, result.turnId);
         setTransientStatus("Stopped");
       }
+      if (!activeThread) contextRef.current.onThreadTitleRequested?.(thread.id, text);
       return true;
     };
 
@@ -774,6 +776,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         useTaskStore.getState().setTaskStatus(threadId, "interrupted");
         setTransientStatus("Stopped");
       }
+      if (!activeThread) contextRef.current.onThreadTitleRequested?.(threadId, text);
       return true;
     } catch (reason) {
       setStartingDraftTurn(false);

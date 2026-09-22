@@ -1,6 +1,7 @@
 import { memo, useEffect, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
+  Archive,
   CircleAlert,
   CircleCheck,
   ChevronRight,
@@ -207,6 +208,15 @@ export interface ThreadPullRequestPanelProps extends PullRequestPanelProps {
   updateLocalBusy?: boolean;
   /** Why the update cannot run, or what the last one did. */
   updateLocalNotice?: string;
+  /** Merge on GitHub now, then archive the thread. Immediate merges only:
+   *  there is no "archive it whenever GitHub gets around to merging". */
+  onMergeAndArchive?: (method: PullRequestMergeMethod) => Promise<void>;
+  /** Archive the thread on its own — the retry after a merge that landed on
+   *  GitHub while the archive did not, and the way to finish a thread whose
+   *  pull request was merged somewhere else. */
+  onArchiveMergedThread?: () => Promise<void>;
+  /** Why this thread cannot be archived right now. */
+  archiveBlockedReason?: string | null;
 }
 
 /* ------------------------------------------------------------------ */
@@ -227,6 +237,9 @@ function ThreadPullRequestPanelInner(props: ThreadPullRequestPanelProps) {
   const [actionSnapshot, setActionSnapshot] = useState<PullRequestSnapshot | null>(null);
   const [method, setMethod] = useState<PullRequestMergeMethod | null>(null);
   const [auto, setAuto] = useState(false);
+  // Never remembered between openings. Archiving a thread is a decision about
+  // this merge, made now, on purpose — not a preference that quietly persists.
+  const [archive, setArchive] = useState(false);
   const [pending, setPending] = useState<OpenCard | "attach" | "none">("none");
 
   // Switching threads must not carry one thread's half-written pull request
@@ -245,7 +258,15 @@ function ThreadPullRequestPanelInner(props: ThreadPullRequestPanelProps) {
     setCreateSnapshot(null);
     setActionSnapshot(null);
     setAuto(false);
+    setArchive(false);
   }, [threadId]);
+
+  // And not between pull requests either. A tick made against #123 must not
+  // survive into #456 being attached in its place — the drift notice refuses
+  // the merge, but the choice itself has to go with the pull request it was
+  // made about.
+  const attachedKey = pullRequest ? `${pullRequest.repository}#${pullRequest.number}` : "";
+  useEffect(() => { setArchive(false); }, [attachedKey]);
 
   // Merge methods come from the pull request's own repository. There is no
   // fallback to the local context's methods: a different repository's rules
@@ -293,6 +314,9 @@ function ThreadPullRequestPanelInner(props: ThreadPullRequestPanelProps) {
   function openPullRequestCard(next: "merge" | "ready") {
     if (card === next || !pullRequest) { setCard("none"); return; }
     setActionSnapshot(pullRequestSnapshotOf(pullRequest));
+    // Archiving is re-chosen every time this opens; auto merge keeps whatever
+    // it had, exactly as it did before archiving existed.
+    if (next === "merge") setArchive(false);
     setCard(next);
   }
 
@@ -453,7 +477,26 @@ function ThreadPullRequestPanelInner(props: ThreadPullRequestPanelProps) {
                     : `Update local ${pullRequest.baseRefName}`}
                 </button>
               )}
+              {/* The retry, and the ordinary finish. A merge that GitHub
+                  accepted is not undone by an archive that failed afterwards,
+                  so the thread is left merged and the archive is offered again
+                  here — which is also the only route for a pull request that
+                  was merged on the website. */}
+              {props.onArchiveMergedThread && (
+                <button
+                  type="button"
+                  className="thread-pr-inline-button"
+                  onClick={() => { void props.onArchiveMergedThread?.().catch(() => undefined); }}
+                  disabled={busy || !!blocked || !!props.archiveBlockedReason}
+                  title={props.archiveBlockedReason ?? blocked ?? "Move this thread to Archived. You can restore it from there, and its folder is left exactly as it is."}
+                >
+                  <Archive size={12} aria-hidden="true" /> Archive thread
+                </button>
+              )}
             </div>
+          )}
+          {pullRequest.state === "MERGED" && props.onArchiveMergedThread && props.archiveBlockedReason && (
+            <p className="thread-pr-fineprint">{props.archiveBlockedReason}</p>
           )}
           {pullRequest.state === "MERGED" && props.updateLocalNotice && (
             <p className="thread-pr-fineprint">{props.updateLocalNotice}</p>
@@ -481,7 +524,7 @@ function ThreadPullRequestPanelInner(props: ThreadPullRequestPanelProps) {
                 onClick={() => openPullRequestCard("merge")}
                 aria-expanded={card === "merge"}
                 disabled={busy}
-                title={`Merge #${pullRequest.number} on GitHub. Your files here do not change.`}
+                title={`Merge #${pullRequest.number} on GitHub. Your files here do not change.${props.onMergeAndArchive ? " You can archive this thread in the same step." : ""}`}
               >
                 {/* Named for where it happens. The worktree panel has a merge
                     of its own that changes local files, and one bare "Merge"
@@ -514,15 +557,26 @@ function ThreadPullRequestPanelInner(props: ThreadPullRequestPanelProps) {
               method={chosenMethod}
               onMethod={setMethod}
               auto={auto}
-              onAuto={setAuto}
+              onAuto={(next) => { setAuto(next); if (next) setArchive(false); }}
+              archiveOffered={!!props.onMergeAndArchive}
+              archive={archive}
+              onArchive={(next) => { setArchive(next); if (next) setAuto(false); }}
+              archiveBlockedReason={props.archiveBlockedReason ?? null}
               drift={pullRequestDrift(actionSnapshot, pullRequest)}
               busy={busy || pending === "merge"}
               loading={loading}
               mutationBlockedReason={blocked}
               onRefresh={props.onRefresh}
-              onReview={() => { setActionSnapshot(pullRequestSnapshotOf(pullRequest)); setAuto(false); }}
+              // The pull request moved. Both add-ons go back to off: they were
+              // chosen about a revision that is no longer the one on screen.
+              onReview={() => { setActionSnapshot(pullRequestSnapshotOf(pullRequest)); setAuto(false); setArchive(false); }}
               onCancel={() => setCard("none")}
-              onConfirm={() => { if (chosenMethod) void run("merge", () => props.onMerge(chosenMethod, auto)); }}
+              onConfirm={() => {
+                if (!chosenMethod) return;
+                const mergeAndArchive = props.onMergeAndArchive;
+                if (archive && mergeAndArchive) void run("merge", () => mergeAndArchive(chosenMethod));
+                else void run("merge", () => props.onMerge(chosenMethod, auto));
+              }}
             />
           )}
         </article>
@@ -1014,6 +1068,11 @@ function MergeConfirmation(props: {
   onMethod: (method: PullRequestMergeMethod) => void;
   auto: boolean;
   onAuto: (auto: boolean) => void;
+  /** Whether the app can archive threads at all. */
+  archiveOffered: boolean;
+  archive: boolean;
+  onArchive: (archive: boolean) => void;
+  archiveBlockedReason: string | null;
   drift: string | null;
   busy: boolean;
   loading: boolean;
@@ -1023,22 +1082,36 @@ function MergeConfirmation(props: {
   onCancel: () => void;
   onConfirm: () => void;
 }) {
-  const { pullRequest, methods, method, auto, busy, drift } = props;
+  const { pullRequest, methods, method, auto, archive, busy, drift } = props;
   const { hard, soft } = mergeBlockers(pullRequest, props.mutationBlockedReason);
   const stopped = hard.length > 0;
   // Auto merge is offered only where the repository is known to allow it.
   // Anything else — refused, or simply not reported — is explained instead.
   const autoAllowed = pullRequest.autoMergeAllowed === true;
   const permissionUnknown = pullRequest.viewerCanMerge === undefined;
+  /**
+   * Archiving rides on a merge that happens *now*. An auto merge is a request
+   * GitHub may satisfy hours later, and there is no promise to keep it company
+   * until then — so the two are offered as alternatives, never together, and a
+   * pull request GitHub is not ready to merge cannot be archived through here
+   * at all.
+   */
+  const archiveUnavailable = props.archiveBlockedReason
+    ?? (auto ? "Not available with auto merge: archiving happens straight after a merge that runs now." : null)
+    ?? (soft.length ? "Available once GitHub is ready to merge this now. An auto merge cannot carry it." : null);
+  const archiving = props.archiveOffered && archive;
+
   // Unconfirmed merge permission is not a licence to try: an unknown answer
   // is refused until a refresh turns it into a real one. And `auto` can still
   // be ticked from a moment when the repository allowed it, so it is checked
   // against what the repository allows *now*, not against what it allowed when
-  // the box was clicked.
+  // the box was clicked. The same goes for a ticked archive that has since
+  // become impossible.
   const canConfirm = !stopped && !drift && !busy && !!method
     && !permissionUnknown
     && (!auto || autoAllowed)
-    && (auto || soft.length === 0);
+    && (auto || soft.length === 0)
+    && (!archiving || !archiveUnavailable);
 
   return (
     <div className={`thread-pr-editor confirm${stopped || drift ? " stopped" : ""}`} role="group" aria-label="Confirm merge">
@@ -1082,10 +1155,19 @@ function MergeConfirmation(props: {
 
           {autoAllowed ? (
             <label className="thread-pr-check">
-              <input type="checkbox" checked={auto} onChange={(event) => props.onAuto(event.target.checked)} />
+              <input
+                type="checkbox"
+                checked={auto}
+                // The mirror of the archive box below: each one holds the other
+                // back while it is on, and neither is ever cleared silently.
+                disabled={busy || (!auto && archiving)}
+                onChange={(event) => props.onAuto(event.target.checked)}
+              />
               <span>
                 <strong>Ask GitHub to merge it when it is ready</strong>
-                <small>Nothing merges now. GitHub merges it once its own requirements pass.</small>
+                <small>{!auto && archiving
+                  ? "Not available while this thread is set to archive: archiving needs a merge that happens now."
+                  : "Nothing merges now. GitHub merges it once its own requirements pass."}</small>
               </span>
             </label>
           ) : (
@@ -1094,6 +1176,39 @@ function MergeConfirmation(props: {
                 ? "Auto merge is not turned on for this repository."
                 : "Auto merge support has not been confirmed yet. Refresh to check."}
             </p>
+          )}
+
+          {/* Finishing the thread, offered where the decision is already being
+              made, and never taken on anyone's behalf: the box starts empty
+              every time this confirmation opens. A box rather than a second
+              button in the row above, because "Merge" and "Merge & archive"
+              sitting side by side reads as two merges. */}
+          {props.archiveOffered && (
+            <label className="thread-pr-check">
+              <input
+                type="checkbox"
+                checked={archive}
+                // Always untickable, even once it has become unavailable —
+                // otherwise a refresh could strand a ticked box behind a
+                // disabled confirm button with no way back.
+                disabled={busy || (!archive && !!archiveUnavailable)}
+                onChange={(event) => props.onArchive(event.target.checked)}
+              />
+              <span>
+                <strong>Archive this thread once it is merged</strong>
+                <small>{archiveUnavailable ?? "It moves to Archived, where you can restore it. Its folder is left exactly as it is."}</small>
+              </span>
+            </label>
+          )}
+
+          {archiving && (
+            <div className="thread-pr-plan" aria-label="What merging and archiving will do">
+              <strong>When you continue</strong>
+              <ol>
+                <li>Merge <b>#{pullRequest.number}</b> into <b>{pullRequest.baseRefName}</b> on GitHub.</li>
+                <li>Move this thread to <b>Archived</b>, where you can restore it.</li>
+              </ol>
+            </div>
           )}
         </>
       )}
@@ -1109,6 +1224,7 @@ function MergeConfirmation(props: {
             {props.localBranch
               ? <> This folder stays on <b>{props.localBranch}</b>, and <b>{pullRequest.baseRefName}</b> here is not updated until you ask for it.</>
               : <> Your local <b>{pullRequest.baseRefName}</b> is not updated until you ask for it.</>}
+            {archiving ? " Archiving puts the thread away; it does not move, change or delete its folder." : ""}
           </span>
         </p>
       )}
@@ -1121,10 +1237,15 @@ function MergeConfirmation(props: {
           onClick={props.onConfirm}
           disabled={!canConfirm}
           aria-busy={busy}
-          title={stopped ? hard[0] : drift ? "Review the updated pull request first" : soft.length && !auto ? soft[0] : undefined}
+          title={stopped ? hard[0]
+            : drift ? "Review the updated pull request first"
+            : archiving && archiveUnavailable ? archiveUnavailable
+            : soft.length && !auto ? soft[0]
+            : archiving ? `Merge #${pullRequest.number} on GitHub, then move this thread to Archived. Nothing in its folder changes.`
+            : undefined}
         >
-          {busy ? <LoaderCircle className="spin" size={13} /> : auto ? <Clock size={13} aria-hidden="true" /> : <GitMerge size={13} aria-hidden="true" />}
-          {auto ? "Enable auto merge" : `Merge #${pullRequest.number} on GitHub`}
+          {busy ? <LoaderCircle className="spin" size={13} /> : auto ? <Clock size={13} aria-hidden="true" /> : archiving ? <Archive size={13} aria-hidden="true" /> : <GitMerge size={13} aria-hidden="true" />}
+          {auto ? "Enable auto merge" : archiving ? `Merge #${pullRequest.number} and archive thread` : `Merge #${pullRequest.number} on GitHub`}
         </button>
       </div>
     </div>

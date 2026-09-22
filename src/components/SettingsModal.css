@@ -54,6 +54,19 @@
   .slider-style-preview.astra .slider-style-rail::before { animation: none; }
 }
 
+/* -- Settings: automatic thread titles --
+   Two short fields sharing the card their switch lives in, so the pair reads
+   as one setting rather than a second section. Side by side wherever the pane
+   is wide enough for both, stacked when it is not; notes and the accounts
+   button always take the full width so neither ever sits in a 210px column. */
+.thread-title-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: var(--s-3); align-items: start; }
+.thread-title-fields > .field-label { min-width: 0; margin-top: 0; }
+.thread-title-fields > .thread-title-id,
+.thread-title-fields > .thread-title-note,
+.thread-title-fields > .thread-title-accounts { grid-column: 1 / -1; }
+.thread-title-note { margin: 0; color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.5; text-wrap: pretty; }
+.thread-title-accounts { justify-self: start; }
+
 /* -- Settings: effort-slider style picker -- */
 /* Provider marks: one compact radiogroup per subscription, side by side. */
 .provider-mark-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s-3); }

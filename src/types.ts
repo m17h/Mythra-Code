@@ -361,6 +361,11 @@ export interface AppSettings {
   /** Typeface for chat prose and the composer. Absent before the font selector shipped. */
   chatFont: ChatFont;
   notificationsEnabled: boolean;
+  /** Opt-in OpenAI Luna naming for new threads, regardless of their provider. */
+  automaticThreadTitles: boolean;
+  threadTitleProvider: Provider;
+  /** Empty means automatically choose an available Luna model for OpenAI. */
+  threadTitleModel: string;
   terminalScrollback: number;
   uiScale: number;
   /** Direction provider quota percentages are shown in. Absent before 1.7.6. */

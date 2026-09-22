@@ -569,20 +569,70 @@
           "totalJsRawBytes": { "before": 1567952, "after": 1569654, "delta": 1702 }
         }
       }
+    },
+    {
+      "change": "Add inbox PR badges, merge-and-archive, and optional thread titles",
+      "decision": "Accept the measured feature cost of compact PR status badges, guarded merge-and-archive with recoverable threads, and opt-in provider-selectable title generation. Badge rendering uses existing stored PR snapshots without additional requests. Title generation defaults off and queues at most one short request at a time only for newly submitted threads; it adds no polling or backfill. Settings and PR panel UI remain lazy, animations are unchanged, and no dependency is added. Limits match measured builds without extra headroom. See docs/performance/thread-completion-and-titles.md for validation limits.",
+      "measurements": {
+        "safari13-minified": {
+          "appEntryRawBytes": {
+            "before": 415285,
+            "after": 421114,
+            "delta": 5829
+          },
+          "startupJsRawBytes": {
+            "before": 794916,
+            "after": 801873,
+            "delta": 6957
+          },
+          "startupCssRawBytes": {
+            "before": 364468,
+            "after": 365438,
+            "delta": 970
+          },
+          "totalJsRawBytes": {
+            "before": 1611298,
+            "after": 1624618,
+            "delta": 13320
+          }
+        },
+        "chrome105-minified": {
+          "appEntryRawBytes": {
+            "before": 393629,
+            "after": 399056,
+            "delta": 5427
+          },
+          "startupJsRawBytes": {
+            "before": 765131,
+            "after": 771549,
+            "delta": 6418
+          },
+          "startupCssRawBytes": {
+            "before": 357949,
+            "after": 358919,
+            "delta": 970
+          },
+          "totalJsRawBytes": {
+            "before": 1569654,
+            "after": 1582279,
+            "delta": 12625
+          }
+        }
+      }
     }
   ],
   "profiles": {
     "safari13-minified": {
-      "appEntryRawBytes": 415285,
-      "startupJsRawBytes": 794916,
-      "startupCssRawBytes": 364468,
-      "totalJsRawBytes": 1611298
+      "appEntryRawBytes": 421114,
+      "startupJsRawBytes": 801873,
+      "startupCssRawBytes": 365438,
+      "totalJsRawBytes": 1624618
     },
     "chrome105-minified": {
-      "appEntryRawBytes": 393629,
-      "startupJsRawBytes": 765131,
-      "startupCssRawBytes": 357949,
-      "totalJsRawBytes": 1569654
+      "appEntryRawBytes": 399056,
+      "startupJsRawBytes": 771549,
+      "startupCssRawBytes": 358919,
+      "totalJsRawBytes": 1582279
     }
   }
 }

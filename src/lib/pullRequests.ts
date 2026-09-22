@@ -72,6 +72,9 @@ export interface PullRequestPanelProps {
   onDetach: () => void;
   onCreate: (input: CreatePullRequestInput) => Promise<void>;
   onMerge: (method: PullRequestMergeMethod, auto: boolean) => Promise<void>;
+  onMergeAndArchive?: (method: PullRequestMergeMethod) => Promise<void>;
+  onArchiveMergedThread?: () => Promise<void>;
+  archiveBlockedReason?: string | null;
   onReady?: () => Promise<void>;
   onUpdateLocal?: () => Promise<void>;
   updateLocalBusy?: boolean;
