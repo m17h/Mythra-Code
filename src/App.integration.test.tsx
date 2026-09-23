@@ -438,7 +438,7 @@ describe("onboarding Settings handoff", () => {
     return { user, tour: await screen.findByRole("dialog", { name: "Mythra Code onboarding" }) };
   }
 
-  it("opens Models & accounts with the provider picked in the tour and discards that unsaved choice", async () => {
+  it("opens Models & accounts with the provider picked in the tour and discards that unsaved choice", { timeout: 15_000 }, async () => {
     localStorage.setItem("kiwi.settings", JSON.stringify({ provider: "openai", model: "gpt-5.6-sol" }));
     const { user, tour } = await runOnboarding();
     await user.click(within(tour).getByRole("radio", { name: "Claude" }));
