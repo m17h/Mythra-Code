@@ -14,8 +14,8 @@
 .thread-pr-chip > svg { flex: 0 0 auto; }
 .thread-pr-chip > span { min-width: 0; overflow: hidden; font-variant-numeric: tabular-nums; text-overflow: ellipsis; }
 .thread-pr-chip > em { flex: 0 0 auto; padding: 1px 5px; border-radius: var(--r-pill); color: var(--muted-2); background: color-mix(in srgb, var(--text) 8%, transparent); font-size: 9px; font-style: normal; font-weight: 650; text-transform: uppercase; letter-spacing: var(--track-caps); }
-.thread-pr-chip.open { color: var(--green); border-color: var(--green-line); background: color-mix(in srgb, var(--green) 7%, transparent); }
-.thread-pr-chip.open:hover { background: color-mix(in srgb, var(--green) 13%, transparent); }
+.thread-pr-chip.open { color: var(--green); border-color: var(--green-line); background: color-mix(in srgb, var(--text) 2%, transparent); }
+.thread-pr-chip.open:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
 .thread-pr-chip.merged { color: var(--info); border-color: color-mix(in srgb, var(--info) 30%, var(--line)); background: color-mix(in srgb, var(--info) 8%, transparent); }
 .thread-pr-chip.closed { color: var(--red); border-color: color-mix(in srgb, var(--red) 28%, var(--line)); background: color-mix(in srgb, var(--red) 7%, transparent); }
 .thread-pr-chip.draft { color: var(--muted); }

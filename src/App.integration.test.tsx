@@ -427,7 +427,108 @@ afterEach(async () => {
   vi.doUnmock("./components/SettingsModal");
 });
 
+describe("onboarding Settings handoff", () => {
+  async function runOnboarding() {
+    const user = userEvent.setup();
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    const settings = await screen.findByRole("dialog", { name: "Settings" });
+    await user.click(within(settings).getByRole("button", { name: "Runtime" }));
+    await user.click(within(settings).getByRole("button", { name: "Run onboarding" }));
+    return { user, tour: await screen.findByRole("dialog", { name: "Mythra Code onboarding" }) };
+  }
+
+  it("opens Models & accounts with the provider picked in the tour and discards that unsaved choice", { timeout: 15_000 }, async () => {
+    localStorage.setItem("kiwi.settings", JSON.stringify({ provider: "openai", model: "gpt-5.6-sol" }));
+    const { user, tour } = await runOnboarding();
+    await user.click(within(tour).getByRole("radio", { name: "Claude" }));
+    expect(within(tour).getByRole("radio", { name: "Claude" })).toHaveAttribute("aria-checked", "true");
+    await user.click(within(tour).getByRole("button", { name: "Models & accounts" }));
+
+    const settings = await screen.findByRole("dialog", { name: "Settings" });
+    expect(within(settings).getByRole("heading", { name: "Models & accounts" })).toBeInTheDocument();
+    expect(within(settings).getByRole("button", { name: /Anthropic.*Claude Code subscription/ })).toHaveClass("selected");
+    expect(within(settings).getByRole("button", { name: "Default Claude model" })).toBeInTheDocument();
+    expect(within(settings).getByText("Unsaved changes")).toBeInTheDocument();
+    expect(JSON.parse(localStorage.getItem("kiwi.settings")!).provider).toBe("openai");
+
+    await user.click(within(settings).getByRole("button", { name: "Cancel" }));
+    expect(await screen.findByRole("dialog", { name: "Mythra Code onboarding" })).toBeInTheDocument();
+    expect(within(tour).getByRole("radio", { name: "Claude" })).toHaveAttribute("aria-checked", "true");
+
+    await user.click(within(tour).getByRole("button", { name: "Skip tour" }));
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    const reopened = await screen.findByRole("dialog", { name: "Settings" });
+    await user.click(within(reopened).getByRole("button", { name: "Models & accounts" }));
+    expect(within(reopened).getByRole("button", { name: /OpenAI.*ChatGPT subscription/ })).toHaveClass("selected");
+    expect(within(reopened).queryByText("Unsaved changes")).not.toBeInTheDocument();
+  });
+
+  it("passes unsaved theme, font, and slider previews into Interface and restores saved settings on cancel", async () => {
+    localStorage.setItem("kiwi.settings", JSON.stringify({ theme: "mythra", chatFont: "system", effortSlider: "aurora" }));
+    const { user, tour } = await runOnboarding();
+    await user.click(within(tour).getByRole("button", { name: "Make it yours" }));
+    expect(within(tour).getByRole("heading", { name: "Make it feel like yours." })).toBeInTheDocument();
+    await user.click(within(tour).getByRole("radio", { name: "Synthwave" }));
+    await user.click(within(tour).getByRole("radio", { name: "Mono" }));
+    await user.click(within(tour).getByRole("button", { name: "Next slider style" }));
+    expect(within(tour).getByText("Astra")).toBeInTheDocument();
+    await user.click(within(tour).getByRole("button", { name: "Review this look in Settings" }));
+
+    const settings = await screen.findByRole("dialog", { name: "Settings" });
+    expect(within(settings).getByRole("heading", { name: "Interface" })).toBeInTheDocument();
+    expect(within(settings).getByRole("button", { name: /Synthwave.*Neon violet/ })).toHaveAttribute("aria-pressed", "true");
+    expect(within(settings).getByRole("button", { name: /Mono/ })).toHaveAttribute("aria-pressed", "true");
+    expect(within(settings).getByRole("button", { name: /Astra.*living nebula/i })).toHaveAttribute("aria-pressed", "true");
+    expect(within(settings).getByText("Unsaved changes")).toBeInTheDocument();
+    expect(document.querySelector(".app-shell")).toHaveAttribute("data-theme", "synthwave");
+    expect(document.querySelector(".app-shell")).toHaveAttribute("data-chat-font", "mono");
+    expect(document.querySelector(".app-shell")).toHaveAttribute("data-effort-slider", "astra");
+    expect(JSON.parse(localStorage.getItem("kiwi.settings")!).theme).toBe("mythra");
+
+    await user.click(within(settings).getByRole("button", { name: "Cancel" }));
+    expect(await screen.findByRole("dialog", { name: "Mythra Code onboarding" })).toBeInTheDocument();
+    expect(within(tour).getByRole("heading", { name: "Make it feel like yours." })).toBeInTheDocument();
+    expect(document.querySelector(".app-shell")).toHaveAttribute("data-theme", "mythra");
+    expect(document.querySelector(".app-shell")).toHaveAttribute("data-chat-font", "system");
+
+    await user.click(within(tour).getByRole("button", { name: "Skip tour" }));
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    const reopened = await screen.findByRole("dialog", { name: "Settings" });
+    expect(within(reopened).getByRole("button", { name: /Mythra.*Deep graphite/ })).toHaveAttribute("aria-pressed", "true");
+    expect(within(reopened).getByRole("button", { name: /Interface default.*same typeface/i })).toHaveAttribute("aria-pressed", "true");
+    expect(within(reopened).getByRole("button", { name: /Aurora.*northern-light/i })).toHaveAttribute("aria-pressed", "true");
+    expect(within(reopened).queryByText("Unsaved changes")).not.toBeInTheDocument();
+  });
+});
+
 describe("Codex cold startup", () => {
+  it("shows a timed sign-in toast without selecting an unavailable provider or opening settings", async () => {
+    accountReadImpl = () => ({ account: null, requiresOpenaiAuth: true });
+    await renderApp();
+    const provider = await screen.findByRole("button", { name: "New thread provider: OpenAI" });
+    await waitFor(() => expect(provider).toHaveClass("unavailable"));
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(provider);
+      const option = screen.getByRole("menuitemradio", { name: /OpenAI/ });
+      fireEvent.click(option);
+      const message = "Sign in to ChatGPT in Settings → Models & accounts to use OpenAI.";
+      expect(screen.getByText(message).closest(".app-toast")).toHaveClass("info");
+      expect(screen.queryByRole("dialog", { name: "Settings" })).not.toBeInTheDocument();
+      expect(provider).toHaveAttribute("aria-expanded", "true");
+      await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+      fireEvent.click(option);
+      await act(async () => { await vi.advanceTimersByTimeAsync(4_499); });
+      expect(screen.getByText(message)).toBeInTheDocument();
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+      expect(screen.queryByText(message)).not.toBeInTheDocument();
+      expect(provider).toHaveAccessibleName("New thread provider: OpenAI");
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 15_000);
+
   describe("failed Settings load dismissal", () => {
     let PreparedApp: (typeof import("./App"))["default"];
 
@@ -1531,6 +1632,11 @@ describe("model catalog request ordering", () => {
 });
 
 describe("workspace switching during thread selection", () => {
+  beforeEach(() => {
+    // These flows select Claude; signed-out selection is covered separately.
+    claudeRuntimeStatusImpl = () => ({ available: true, path: "/usr/bin/claude", version: "99.0.0", loggedIn: true, authMethod: "subscription", email: null, subscriptionType: "pro", warning: null });
+  });
+
   it("does not offer a runtime thread remembered from another isolated Codex home", async () => {
     const foreign: Thread = {
       ...THREAD_A,
@@ -2038,7 +2144,7 @@ describe("workspace switching during thread selection", () => {
       return { exitCode: 0, stdout: "", stderr: "" };
     };
     await renderApp();
-    await user.click(await screen.findByText("Alpha thread", { selector: ".thread-card-title" }));
+    await user.click(await screen.findByRole("button", { name: /^Open Alpha thread\b/ }));
     await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
     await user.click(await screen.findByRole("tab", { name: "Review workspace tool" }));
     await user.click(await screen.findByRole("button", { name: "Refresh" }));
@@ -3143,6 +3249,11 @@ describe("workspace switching during thread selection", () => {
 });
 
 describe("composer sub-agent command center", () => {
+  beforeEach(() => {
+    // These flows select Claude; signed-out selection is covered separately.
+    claudeRuntimeStatusImpl = () => ({ available: true, path: "/usr/bin/claude", version: "99.0.0", loggedIn: true, authMethod: "subscription", email: null, subscriptionType: "pro", warning: null });
+  });
+
   async function openCrew(user: ReturnType<typeof userEvent.setup>) {
     await user.click(await screen.findByRole("button", { name: /^Sub-agents(?: off|:| \d+\/)/ }));
     return screen.getByRole("dialog", { name: "Sub-agent command center" });
@@ -3775,7 +3886,7 @@ describe("Thread pull request integration", () => {
     });
     const user = userEvent.setup();
     await renderApp();
-    await user.click(await screen.findByText("Alpha thread", { selector: ".thread-card-title" }));
+    await user.click(await screen.findByRole("button", { name: /^Open Alpha thread\b/ }));
     await user.click(await screen.findByRole("button", { name: /^Pull requests/ }));
     expect(await screen.findByRole("button", { name: "Commit all changes locally" })).toBeEnabled();
     expect(screen.queryByRole("region", { name: "Pull request" })).not.toBeInTheDocument();
@@ -3813,7 +3924,7 @@ describe("Thread pull request integration", () => {
   it("attaches a PR durably to one thread without attaching it to its shared-folder neighbour", async () => {
     const user = userEvent.setup();
     await renderApp();
-    await user.click(await screen.findByText("Alpha thread", { selector: ".thread-card-title" }));
+    await user.click(await screen.findByRole("button", { name: /^Open Alpha thread\b/ }));
     await user.click(await screen.findByRole("button", { name: /^Pull requests for/ }));
     const reference = await screen.findByRole("textbox", { name: "Pull request number or link" });
     await user.type(reference, "#31");
@@ -3821,10 +3932,10 @@ describe("Thread pull request integration", () => {
     await user.click(within(screen.getByRole("region", { name: "Pull request" })).getByRole("button", { name: "Attach" }));
     expect(await screen.findByText("Improve Alpha")).toBeInTheDocument();
     await waitFor(() => expect(JSON.parse(localStorage.getItem("kiwi.threadPullRequests") || "{}")[THREAD_A.id]?.number).toBe(31));
-    await user.click(screen.getByText("Beta thread", { selector: ".thread-card-title" }));
+    await user.click(screen.getByRole("button", { name: /^Open Beta thread\b/ }));
     await waitFor(() => expect(screen.queryByText("Improve Alpha")).not.toBeInTheDocument());
     expect(JSON.parse(localStorage.getItem("kiwi.threadPullRequests") || "{}")[THREAD_B.id]).toBeUndefined();
-    await user.click(screen.getByText("Alpha thread", { selector: ".thread-card-title" }));
+    await user.click(screen.getByRole("button", { name: /^Open Alpha thread\b/ }));
     expect(await screen.findByText("Improve Alpha")).toBeInTheDocument();
   });
 });

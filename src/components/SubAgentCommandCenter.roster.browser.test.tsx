@@ -101,14 +101,17 @@ async function settle(...elements: HTMLElement[]) {
 }
 
 describe("sub-agent roster transition", () => {
-  it("themes the signed-out account action for dark palettes", async () => {
-    const { view } = await open({ ...READY, openAiSignedIn: false });
-    const action = view.getByRole("button", { name: "Models & accounts" });
-    const style = getComputedStyle(action);
-
-    expect(style.backgroundColor).not.toBe("rgb(255, 255, 255)");
-    expect(style.color).not.toBe("rgb(255, 255, 255)");
-    expect(style.borderTopStyle).toBe("solid");
+  it("keeps collapsed tiles compact, including an unavailable neighbor", async () => {
+    const { view, grid } = await open({ ...READY, openAiSignedIn: false });
+    expect(view.queryByRole("button", { name: "Models & accounts" })).toBeNull();
+    for (const tile of grid.querySelectorAll<HTMLElement>(".sa-tile")) {
+      expect(tile.getBoundingClientRect().height).toBeLessThan(65);
+    }
+    const unavailable = grid.querySelector<HTMLElement>(".sa-tile.unavailable")!;
+    expect(unavailable).not.toBeNull();
+    expect(view.getByRole("button", { name: "Configure two" }).getAttribute("aria-disabled")).toBe("true");
+    const shell = grid.querySelector<HTMLElement>(".sa-tile-config-shell:not(.open)")!;
+    expect(shell.getBoundingClientRect().height).toBeLessThan(1);
   });
 
   it("animates every displaced tile rather than re-placing it", async () => {

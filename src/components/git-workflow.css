@@ -57,7 +57,7 @@
 
 /* ---- Worktree completion ---- */
 
-.worktree-complete { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: var(--s-2); align-items: start; padding: 9px 10px; border: 1px solid var(--green-line); border-radius: var(--r-sm); background: var(--green-soft); animation: git-panel-pop var(--t-mid) var(--ease) both; }
+.worktree-complete { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: var(--s-2); align-items: start; padding: 9px 10px; border: 1px solid var(--green-line); border-radius: var(--r-sm); background: var(--surface-quiet); animation: git-panel-pop var(--t-mid) var(--ease) both; }
 .worktree-complete > svg { margin-top: 1px; color: var(--green); }
 .worktree-complete > div { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .worktree-complete strong { color: var(--ink-2); font-size: var(--fs-meta); font-weight: 650; }

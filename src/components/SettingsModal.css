@@ -88,7 +88,7 @@
 .slider-style-card, .chat-font-card { min-width: 0; min-height: 62px; display: grid; grid-template-columns: 60px minmax(0, 1fr) 16px; align-items: center; gap: var(--s-2); padding: var(--s-2); border: 1px solid var(--line); border-radius: var(--r-md); color: var(--muted); background: rgba(255,255,255,.014); text-align: left; cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
 .chat-font-card { grid-template-columns: 44px minmax(0, 1fr) 16px; }
 .slider-style-card:hover, .chat-font-card:hover { color: var(--ink-2); border-color: var(--line-strong); background: rgba(255,255,255,.035); }
-.slider-style-card.selected, .chat-font-card.selected { color: var(--text); border-color: color-mix(in srgb, var(--green) 32%, var(--line)); background: var(--green-soft); }
+.slider-style-card.selected, .chat-font-card.selected { color: var(--text); border-color: color-mix(in srgb, var(--green) 32%, var(--line)); background: var(--surface-selected); }
 .slider-style-card > span:nth-child(2), .chat-font-card > span:nth-child(2) { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .slider-style-card strong, .chat-font-card strong { font-size: var(--fs-meta); font-weight: 620; }
 .slider-style-card small, .chat-font-card small { overflow: hidden; display: -webkit-box; color: var(--muted-2); font-size: var(--fs-micro); line-height: 1.35; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }

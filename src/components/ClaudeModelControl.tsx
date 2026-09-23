@@ -141,14 +141,18 @@ export function ClaudeModelControl({
       style={{ "--router-fill": `${fill}%` } as CSSProperties}
     >
       {providerControl}
-      <div className={`openrouter-picker ${open ? "open" : ""}`}>
+      <div className={`openrouter-picker ${open ? "open" : ""} ${signedIn === false ? "unavailable" : ""}`}>
         <button
           type="button"
           className="openrouter-trigger"
           aria-haspopup="menu"
           aria-expanded={open}
           aria-label={`Claude model: ${buttonLabel}`}
-          onClick={() => setOpen((value) => !value)}
+          aria-disabled={signedIn === false || undefined}
+          onClick={() => {
+            if (signedIn === false) { onSignInRequired?.(); return; }
+            setOpen((value) => !value);
+          }}
         >
           <span className="openrouter-logo claude-logo">
             <ClaudeProviderLogo size={15} />
@@ -178,11 +182,12 @@ export function ClaudeModelControl({
                   aria-checked={updateRequired ? undefined : entry.id === selected?.id}
                   aria-current={updateRequired && entry.id === selected?.id ? "true" : undefined}
                   aria-label={`${entry.displayName}${updateRequired ? " (Claude Code update required)" : entry.disabled ? " (unavailable on your plan)" : ""}`}
-                  aria-disabled={(entry.disabled && !updateRequired) || undefined}
+                  aria-disabled={signedIn === false || (entry.disabled && !updateRequired) || undefined}
                   className={`${entry.id === selected?.id ? "selected " : ""}${updateRequired ? "update-required " : ""}${starredVisible > 0 && index === starredVisible - 1 ? "favorite-group-end" : ""}`.trim()}
-                  disabled={entry.disabled && !updateRequired}
+                  disabled={signedIn !== false && entry.disabled && !updateRequired}
                   title={updateRequired ? `Update Claude Code${entry.requiredVersion ? ` to ${entry.requiredVersion} or newer` : ""}` : entry.disabled ? "Your Claude plan cannot run this model" : entry.resolvedModel}
                   onClick={() => {
+                    if (signedIn === false) { onSignInRequired?.(); return; }
                     if (entry.disabled) {
                       onUnavailableModel?.(entry);
                       setOpen(false);
@@ -207,13 +212,7 @@ export function ClaudeModelControl({
               );
             })}
           </div>
-          {live && signedIn === false && (
-            <div className="openrouter-catalog-warning">
-              <span>Sign in to Claude Code on this computer, then refresh to load account-specific models such as Fable 5.1.</span>
-              {onSignInRequired && <button type="button" className="secondary-button" onClick={() => { setOpen(false); onSignInRequired(); }}>Open account settings</button>}
-            </div>
-          )}
-          {(error || !live) && (
+          {signedIn !== false && (error || !live) && (
             <div className="openrouter-catalog-warning" role={open ? "status" : undefined}>
               {error || "Could not read the Claude Code model catalog."} {live ? "Showing the last loaded catalog." : "Showing Mythra Code’s built-in list, which may not match your plan."}
             </div>

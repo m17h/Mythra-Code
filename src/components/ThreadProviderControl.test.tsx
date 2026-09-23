@@ -24,6 +24,25 @@ describe("ThreadProviderControl", () => {
     expect(screen.getByText("OpenAI · change in Settings")).toBeInTheDocument();
   });
 
+  it("preserves selection and keeps recovery available for signed-out providers", () => {
+    const onProvider = vi.fn();
+    const onUnavailable = vi.fn();
+    const props = { provider: "openai" as const, defaultProvider: "openai" as const, threadStarted: false, onProvider, onUnavailable, onDefaultSettings: vi.fn() };
+    const view = render(<ThreadProviderControl {...props} unavailable={{ openai: "Sign in to ChatGPT", claude: "Sign in to Claude Code" }} />);
+    const trigger = screen.getByRole("button", { name: "New thread provider: OpenAI" });
+    expect(trigger).toHaveClass("unavailable");
+    fireEvent.click(trigger);
+    const claude = screen.getByRole("menuitemradio", { name: /Claude/ });
+    expect(claude).toHaveAttribute("aria-disabled", "true");
+    fireEvent.click(claude);
+    expect(onUnavailable).toHaveBeenCalledWith("Sign in to Claude Code");
+    expect(onProvider).not.toHaveBeenCalled();
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    view.rerender(<ThreadProviderControl {...props} />);
+    fireEvent.click(claude);
+    expect(onProvider).toHaveBeenCalledWith("claude");
+  });
+
   it("offers LM Studio as a local provider", () => {
     const onProvider = vi.fn();
     render(<ThreadProviderControl provider="openai" defaultProvider="openai" threadStarted={false} onProvider={onProvider} onDefaultSettings={vi.fn()} />);

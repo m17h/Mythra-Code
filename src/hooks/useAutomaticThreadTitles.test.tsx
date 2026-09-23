@@ -83,3 +83,46 @@ describe("automatic thread titles", () => {
     expect(cancelled).toBe(true);
   });
 });
+
+describe("title pending lifecycle", () => {
+  it("reserves before delivery without spending a request, and stays hidden through the name write", async () => {
+    let finish!: (title: string) => void;
+    let finishWrite!: () => void;
+    invoke.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const opts = options({ applyTitle: vi.fn(() => new Promise<void>((resolve) => { finishWrite = resolve; })) });
+    const view = renderHook(() => useAutomaticThreadTitles(opts));
+    act(() => view.result.current.prepareTitle("one", "first"));
+    expect(view.result.current.pendingIds.has("one")).toBe(true);
+    expect(invoke).not.toHaveBeenCalled();
+    act(() => view.result.current.requestTitle("one", "first"));
+    await act(async () => finish("A generated title"));
+    expect(view.result.current.pendingIds.has("one")).toBe(true);
+    await act(async () => finishWrite());
+    expect(view.result.current.pendingIds.size).toBe(0);
+  });
+  it("clears failed starts and cancelled queued titles independently", async () => {
+    let finish!: (title: string) => void;
+    invoke.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const view = renderHook(() => useAutomaticThreadTitles(options()));
+    act(() => {
+      view.result.current.prepareTitle("failed", "failed send");
+      view.result.current.requestTitle("one", "first");
+      view.result.current.requestTitle("two", "second");
+    });
+    await act(async () => { await view.result.current.cancel("failed"); await view.result.current.cancel("two"); });
+    expect([...view.result.current.pendingIds]).toEqual(["one"]);
+    await act(async () => finish("A generated title"));
+    expect(view.result.current.pendingIds.size).toBe(0);
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+  it("reveals fallback on provider failure and clears all pending titles when disabled", async () => {
+    invoke.mockRejectedValueOnce(new Error("offline"));
+    const opts = options();
+    const view = renderHook((props) => useAutomaticThreadTitles(props), { initialProps: opts });
+    await act(async () => view.result.current.requestTitle("one", "first"));
+    expect(view.result.current.pendingIds.size).toBe(0);
+    act(() => view.result.current.prepareTitle("two", "second"));
+    view.rerender({ ...opts, enabled: false });
+    expect(view.result.current.pendingIds.size).toBe(0);
+  });
+});

@@ -41,6 +41,7 @@ export function AppSelectMenu({
   onToggleFavorite,
   onSearch,
   onChange,
+  onDisabledSelect,
 }: {
   value: string;
   options: AppSelectOption[];
@@ -63,6 +64,8 @@ export function AppSelectMenu({
    */
   onSearch?: (query: string) => void;
   onChange: (value: string) => void;
+  /** Keep unavailable rows focusable so activation can explain how to enable them. */
+  onDisabledSelect?: (value: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -271,13 +274,14 @@ export function AppSelectMenu({
                 role="menuitemradio"
                 aria-checked={option.value === value}
                 className={option.value === value ? "selected" : ""}
-                disabled={option.disabled}
+                disabled={option.disabled && !onDisabledSelect}
+                aria-disabled={option.disabled || undefined}
                 onKeyDown={(event) => {
                   if (event.key === "ArrowDown") { event.preventDefault(); moveFocus(event.currentTarget, 1); }
                   if (event.key === "ArrowUp") { event.preventDefault(); moveFocus(event.currentTarget, -1); }
                 }}
                 onClick={() => {
-                  if (option.disabled) return;
+                  if (option.disabled) { onDisabledSelect?.(option.value); return; }
                   onChange(option.value);
                   close();
                   triggerRef.current?.focus();

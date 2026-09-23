@@ -737,20 +737,170 @@
           "totalJsRawBytes": { "before": 1584166, "after": 1585751, "delta": 1585 }
         }
       }
+    },
+    {
+      "change": "Animate pending thread titles and simplify onboarding",
+      "decision": "Accept the measured 3.06 KB Safari / 2.86 KB Chrome startup JavaScript cost of title pending state, reveal lifecycle, and safe onboarding handoff. Moving onboarding CSS to its lazy chunk removes 15.90 KB Safari / 15.89 KB Chrome startup CSS, reducing combined startup payload by over 12 KB on both targets. Total JavaScript grows about 0.52% for the five-page interactive tour and correctness guards. No dependencies, polling, or additional title requests are added; settled titles remove their animated layers. Exact measured limits with no headroom. See docs/reviews/1.18.1-validation.md.",
+      "measurements": {
+        "safari13-minified": {
+          "appEntryRawBytes": {
+            "before": 422527,
+            "after": 424675,
+            "delta": 2148
+          },
+          "startupJsRawBytes": {
+            "before": 803854,
+            "after": 806914,
+            "delta": 3060
+          },
+          "startupCssRawBytes": {
+            "before": 365438,
+            "after": 349539,
+            "delta": -15899
+          },
+          "totalJsRawBytes": {
+            "before": 1628114,
+            "after": 1636647,
+            "delta": 8533
+          }
+        },
+        "chrome105-minified": {
+          "appEntryRawBytes": {
+            "before": 400420,
+            "after": 402386,
+            "delta": 1966
+          },
+          "startupJsRawBytes": {
+            "before": 773479,
+            "after": 776339,
+            "delta": 2860
+          },
+          "startupCssRawBytes": {
+            "before": 358919,
+            "after": 343027,
+            "delta": -15892
+          },
+          "totalJsRawBytes": {
+            "before": 1585751,
+            "after": 1593917,
+            "delta": 8166
+          }
+        }
+      }
+    },
+    {
+      "change": "Outline actions and simplify sub-agent availability",
+      "decision": "Accept the measured small startup JavaScript cost of signed-out selection guards, accessible unavailable states, removable sub-agents, and a timed top-layer toast. Removing the redundant cross-provider toggle offsets most of that cost. The roster now determines provider availability while the main switch remains the revocation control; legacy tool revocation is mapped to that visible switch. A selector simplification removed 2,187 Safari CSS bytes before this review; explicit specificity keeps muted labels correct in dark and light themes. This is requested behavior and presentation overhead, not an efficiency improvement claim. No dependencies, polling, model requests, idle animation loops, transcript work, or new per-frame React updates. Existing FLIP motion and timers are reused. Limits match measured production bytes without headroom. See docs/reviews/1.18.1-validation.md.",
+      "measurements": {
+        "safari13-minified": {
+          "appEntryRawBytes": {
+            "before": 424675,
+            "after": 425015,
+            "delta": 340
+          },
+          "startupJsRawBytes": {
+            "before": 806914,
+            "after": 807599,
+            "delta": 685
+          },
+          "startupCssRawBytes": {
+            "before": 349539,
+            "after": 351604,
+            "delta": 2065
+          },
+          "totalJsRawBytes": {
+            "before": 1636647,
+            "after": 1637353,
+            "delta": 706
+          }
+        },
+        "chrome105-minified": {
+          "appEntryRawBytes": {
+            "before": 402386,
+            "after": 402554,
+            "delta": 168
+          },
+          "startupJsRawBytes": {
+            "before": 776339,
+            "after": 776832,
+            "delta": 493
+          },
+          "startupCssRawBytes": {
+            "before": 343027,
+            "after": 344628,
+            "delta": 1601
+          },
+          "totalJsRawBytes": {
+            "before": 1593917,
+            "after": 1594447,
+            "delta": 530
+          }
+        }
+      }
+    },
+    {
+      "change": "Carry onboarding choices into explicit Settings drafts",
+      "decision": "Accept 104 Safari / 92 Chrome startup JavaScript bytes for the one-shot Settings draft and saved-provider handoff. Total JavaScript increases by 1,649 / 1,570 bytes (about 0.10%); the remainder stays behind the lazy Settings/onboarding boundaries for draft seeding, provider semantics, accessible readiness descriptions, and clearer guidance. Startup CSS is unchanged. No dependencies, network calls, polling, or per-frame React work are added; existing motion remains. Exact measured limits have no headroom. Native draft/Cancel handoffs and focused Save regressions validate behavior; these bytes are feature overhead, not a speedup claim. See docs/reviews/1.18.1-validation.md.",
+      "measurements": {
+        "safari13-minified": {
+          "appEntryRawBytes": {
+            "before": 425015,
+            "after": 425119,
+            "delta": 104
+          },
+          "startupJsRawBytes": {
+            "before": 807599,
+            "after": 807703,
+            "delta": 104
+          },
+          "startupCssRawBytes": {
+            "before": 351604,
+            "after": 351604,
+            "delta": 0
+          },
+          "totalJsRawBytes": {
+            "before": 1637353,
+            "after": 1639002,
+            "delta": 1649
+          }
+        },
+        "chrome105-minified": {
+          "appEntryRawBytes": {
+            "before": 402554,
+            "after": 402646,
+            "delta": 92
+          },
+          "startupJsRawBytes": {
+            "before": 776832,
+            "after": 776924,
+            "delta": 92
+          },
+          "startupCssRawBytes": {
+            "before": 344628,
+            "after": 344628,
+            "delta": 0
+          },
+          "totalJsRawBytes": {
+            "before": 1594447,
+            "after": 1596017,
+            "delta": 1570
+          }
+        }
+      }
     }
   ],
   "profiles": {
     "safari13-minified": {
-      "appEntryRawBytes": 422527,
-      "startupJsRawBytes": 803854,
-      "startupCssRawBytes": 365438,
-      "totalJsRawBytes": 1628114
+      "appEntryRawBytes": 425119,
+      "startupJsRawBytes": 807703,
+      "startupCssRawBytes": 351604,
+      "totalJsRawBytes": 1639002
     },
     "chrome105-minified": {
-      "appEntryRawBytes": 400420,
-      "startupJsRawBytes": 773479,
-      "startupCssRawBytes": 358919,
-      "totalJsRawBytes": 1585751
+      "appEntryRawBytes": 402646,
+      "startupJsRawBytes": 776924,
+      "startupCssRawBytes": 344628,
+      "totalJsRawBytes": 1596017
     }
   }
 }

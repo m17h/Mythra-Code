@@ -178,6 +178,8 @@ export interface TurnRunnerContext {
   bindThreadToProject: (threadId: string, projectPath: string) => void;
   rememberThread: (thread: Thread) => void;
   onThreadCreated: (threadId: string) => void;
+  onThreadTitlePending?: (threadId: string, prompt: string) => void;
+  onThreadTitleCancelled?: (threadId: string) => void;
   onThreadTitleRequested?: (threadId: string, prompt: string) => void;
   /** Live archive ownership. Existing threads must not start provider work
    * while their archive operation is awaiting cleanup or persistence. */
@@ -497,6 +499,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
           setDraftThreadIsolated(false);
         }
         rememberThread(thread);
+        contextRef.current.onThreadTitlePending?.(thread.id, text);
         onThreadCreated(thread.id);
         persistThreadModel(thread.id, effectiveSettings.model);
         persistThreadReasoning(thread.id, { reasoningEffort: effectiveSettings.reasoningEffort, ultra: effectiveSettings.ultra });
@@ -516,6 +519,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       // prompt was never delivered, so report it as undelivered and let the
       // composer hand the user their text back instead of silently eating it.
       if (!activeThread && draftGeneration !== draftGenerationRef.current) {
+        contextRef.current.onThreadTitleCancelled?.(thread.id);
         useTaskStore.getState().setTaskStatus(thread.id, "interrupted");
         setStartingDraftTurn(false);
         setTransientStatus("Stopped");
@@ -710,6 +714,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
           setDraftThreadIsolated(false);
         }
         rememberThread(startedThread);
+        contextRef.current.onThreadTitlePending?.(startedThread.id, text);
         onThreadCreated(startedThread.id);
         persistThreadModel(startedThread.id, effectiveSettings.model);
         persistThreadReasoning(startedThread.id, { reasoningEffort: effectiveSettings.reasoningEffort, ultra: effectiveSettings.ultra });
@@ -751,6 +756,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       rememberChildAgentPolicy(threadId);
       // See runLocalTurn: a draft stopped before its turn started keeps its text.
       if (!activeThread && draftGeneration !== draftGenerationRef.current) {
+        contextRef.current.onThreadTitleCancelled?.(threadId);
         useTaskStore.getState().setTaskStatus(threadId, "interrupted");
         setStartingDraftTurn(false);
         setTransientStatus("Stopped");
@@ -797,6 +803,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       // resolved its thread must still clear the "starting" mark applied at
       // the top of this function.
       const failedThreadId = startedThreadId ?? startingThreadId;
+      if (!activeThread && failedThreadId) contextRef.current.onThreadTitleCancelled?.(failedThreadId);
       // `captured` is cleared the moment the policy is bound to a thread and
       // persisted. Anything still flagged as captured was registered with the
       // backend for a turn that never started, so nothing will ever reuse it —

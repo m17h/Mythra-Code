@@ -18,6 +18,26 @@ describe("ModelPowerControl", () => {
     expect(screen.queryByRole("switch", { name: /Ultra/i })).not.toBeInTheDocument();
   });
 
+  it("blocks signed-out model activation including keyboard and mid-menu expiration", () => {
+    const onModel = vi.fn();
+    const onSignInRequired = vi.fn();
+    const props = { model: "gpt-5.6-sol", effort: "medium" as const, fast: false, runtimeModels: [], onModel, onEffort: vi.fn(), onFast: vi.fn(), onSignInRequired };
+    const view = render(<ModelPowerControl {...props} signedIn={false} />);
+    const trigger = screen.getByRole("button", { name: /OpenAI model: Sol/i });
+    expect(trigger).toHaveAttribute("aria-disabled", "true");
+    fireEvent.click(trigger);
+    fireEvent.keyDown(trigger, { key: "ArrowDown" });
+    expect(onSignInRequired).toHaveBeenCalledTimes(2);
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    view.rerender(<ModelPowerControl {...props} signedIn />);
+    fireEvent.click(trigger);
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    view.rerender(<ModelPowerControl {...props} signedIn={false} />);
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Luna/i }));
+    expect(onModel).not.toHaveBeenCalled();
+    expect(onSignInRequired).toHaveBeenCalledTimes(3);
+  });
+
   it("displays a legacy Ultra effort as editable Maximum reasoning", () => {
     const onEffort = vi.fn();
     render(<ModelPowerControl model="gpt-5.6-sol" effort="ultra" fast={false} runtimeModels={[]} onModel={vi.fn()} onEffort={onEffort} onFast={vi.fn()} />);

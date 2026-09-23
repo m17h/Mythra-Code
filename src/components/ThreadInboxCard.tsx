@@ -12,6 +12,7 @@ import {
 import { useTaskStore } from "../lib/taskStore";
 import type { PullRequest } from "../lib/pullRequests";
 import type { Provider } from "../types";
+import { ThreadTitle } from "./ThreadTitle";
 import { ProviderLogo } from "./BrandLogos";
 
 /** Only what a card can show. Deliberately not the whole pull request: the
@@ -117,6 +118,7 @@ function ThreadCardPullRequestBadge({ pullRequest }: { pullRequest: ThreadCardPu
 interface ThreadInboxCardProps {
   threadId: string;
   title: string;
+  titlePending?: boolean;
   workspaceName: string;
   directory: string;
   provider: Provider;
@@ -143,6 +145,7 @@ function threadCardLifecycle(status: string, unread: boolean, approvals: number)
 export function ThreadInboxCard({
   threadId,
   title,
+  titlePending = false,
   workspaceName,
   directory,
   provider,
@@ -160,9 +163,10 @@ export function ThreadInboxCard({
   ));
   // A labelled button hides its own contents from a screen reader, so the pill
   // below would otherwise be seen by sighted people only. It is named here too.
+  const accessibleTitle = titlePending ? "Generating title" : title;
   const label = pullRequest
-    ? `Open ${title} · Pull request #${pullRequest.number} in ${pullRequest.repository}, ${threadCardPullRequestState(pullRequest).label}`
-    : `Open ${title}`;
+    ? `Open ${accessibleTitle} · Pull request #${pullRequest.number} in ${pullRequest.repository}, ${threadCardPullRequestState(pullRequest).label}`
+    : `Open ${accessibleTitle}`;
   return (
     <button className={`thread-card ${lifecycle} provider-${provider}`} onClick={onOpen} aria-label={label}>
       <span className="thread-card-context">
@@ -172,7 +176,7 @@ export function ThreadInboxCard({
         </span>
         <ThreadInboxStatus threadId={threadId} />
       </span>
-      <span className="thread-card-title">{title}</span>
+      <ThreadTitle className="thread-card-title" title={title} pending={titlePending} />
       <span className="thread-card-meta">
         <span className="thread-card-directory" title={directory}>{compactDirectory(directory)}</span>
         {/* After the directory, not before the title: the pull request is

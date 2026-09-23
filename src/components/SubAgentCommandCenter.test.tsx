@@ -260,17 +260,11 @@ describe("SubAgentCommandCenter editing a draft policy", () => {
     expect(screen.getByText(/chosen from 3 configured sub-agents/)).toBeInTheDocument();
   });
 
-  it("toggles cross-provider delegation", async () => {
-    const { onChange } = await open();
-    await userEvent.click(screen.getByRole("switch", { name: "Allow cross-provider sub-agents" }));
-    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
-      childAgents: expect.objectContaining({ enabled: false }),
-    }));
-  });
-
-  it("cannot enable cross-provider delegation while delegation itself is off", async () => {
-    await open({ policy: { ...POLICY, enabled: false } });
-    expect(screen.getByRole("switch", { name: "Allow cross-provider sub-agents" })).toBeDisabled();
+  it("uses one main switch and makes the configured roster available when enabled", async () => {
+    const { onChange } = await open({ policy: { ...POLICY, enabled: false, childAgents: { ...POLICY.childAgents, enabled: false } } });
+    expect(screen.queryByRole("switch", { name: "Allow cross-provider sub-agents" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("switch", { name: "Allow sub-agent spawning" }));
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ enabled: true, childAgents: expect.objectContaining({ enabled: true, targets: [REVIEWER] }) }));
   });
 
   it("enables a destination independently", async () => {
@@ -306,7 +300,7 @@ describe("SubAgentCommandCenter editing a draft policy", () => {
     expect(onChange).toHaveBeenCalledWith({
       enabled: true,
       maxConcurrent: 1,
-      childAgents: { enabled: true, targets: [] },
+      childAgents: { enabled: false, targets: [] },
     });
   });
 
@@ -370,7 +364,7 @@ describe("SubAgentCommandCenter editing a draft policy", () => {
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ maxConcurrent: 1 }));
   });
 
-  it("still allows a lower limit when cross-provider is switched off", async () => {
+  it("still allows a lower limit with a legacy secondary flag", async () => {
     const { onChange } = await open({
       policy: { ...POLICY, maxConcurrent: 2, childAgents: { enabled: false, targets: [REVIEWER, BUILDER] } },
     });
@@ -470,10 +464,42 @@ describe("SubAgentCommandCenter editing a draft policy", () => {
     }));
   });
 
-  it("explains why an unusable destination will not be offered to the model", async () => {
-    await open({ readiness: { ...READY, claudeReady: false } });
-    expect(screen.getByText(/Install and sign in to Claude Code first/)).toBeInTheDocument();
-    expect(screen.getByText("0 of 1 sub-agent ready")).toBeInTheDocument();
+  it.each(["claude", "openai"] as const)("grays signed-out %s without changing the roster on mouse or keyboard activation", async (provider) => {
+    const onUnavailable = vi.fn();
+    const unavailableTarget = { ...REVIEWER, provider };
+    const { onChange } = await open({
+      readiness: { ...READY, claudeReady: false, openAiSignedIn: false },
+      policy: { ...POLICY, childAgents: { enabled: true, targets: [unavailableTarget] } },
+      onUnavailable,
+    });
+    const face = screen.getByRole("button", { name: "Configure Reviewer" });
+    expect(face).toHaveAttribute("aria-disabled", "true");
+    expect(face.closest(".sa-tile")).toHaveClass("unavailable");
+    expect(screen.queryByRole("button", { name: "Models & accounts" })).not.toBeInTheDocument();
+    await userEvent.click(face);
+    await userEvent.keyboard("{Enter}");
+    await userEvent.click(screen.getByRole("switch", { name: "Enable Reviewer" }));
+    await userEvent.click(screen.getByRole("button", { name: `Add ${provider === "openai" ? "OpenAI" : "Claude"} sub-agent` }));
+    expect(onUnavailable).toHaveBeenCalledTimes(4);
+    expect(onUnavailable).toHaveBeenLastCalledWith(expect.stringContaining("Settings → Models & accounts"));
+    expect(onChange).not.toHaveBeenCalled();
+    expect(face).toHaveAttribute("aria-expanded", "false");
+    await userEvent.click(screen.getByRole("button", { name: "Remove reviewer" }));
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ childAgents: expect.objectContaining({ targets: [] }) }));
+  });
+
+  it("explains a signed-out provider choice without replacing a configured target", async () => {
+    const onUnavailable = vi.fn();
+    const { onChange } = await open({ readiness: { ...READY, openAiSignedIn: false }, onUnavailable });
+    await userEvent.click(screen.getByRole("button", { name: "Configure Reviewer" }));
+    await userEvent.click(screen.getByRole("button", { name: "Provider for reviewer" }));
+    await waitFor(() => expect(screen.getByRole("menuitemradio", { name: /Claude/ })).toHaveFocus());
+    const option = screen.getByRole("menuitemradio", { name: /OpenAI/ });
+    expect(option).toHaveAttribute("aria-disabled", "true");
+    await userEvent.click(option);
+    await userEvent.keyboard("{Enter}");
+    expect(onUnavailable).toHaveBeenCalledTimes(2);
+    expect(onChange).not.toHaveBeenCalled();
   });
 
   it("stays quiet about a destination the user switched off", async () => {
@@ -486,7 +512,7 @@ describe("SubAgentCommandCenter editing a draft policy", () => {
 
   it("says so when every destination is switched off", async () => {
     await open({ policy: { ...POLICY, childAgents: { enabled: true, targets: [{ ...REVIEWER, enabled: false }] } } });
-    expect(screen.getByText("No sub-agents switched on.")).toBeInTheDocument();
+    expect(screen.getByText(/None switched on/)).toBeInTheDocument();
   });
 
   it("invites a first destination when the roster is empty", async () => {
@@ -519,7 +545,7 @@ describe("SubAgentCommandCenter on a thread that froze a roster", () => {
     expect(screen.queryByRole("switch", { name: /^Enable / })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "More concurrent sub-agents" })).not.toBeInTheDocument();
     expect(screen.getByRole("switch", { name: "Allow sub-agent spawning" })).toBeDisabled();
-    expect(screen.getByRole("switch", { name: "Allow cross-provider sub-agents" })).toBeDisabled();
+    expect(screen.queryByRole("switch", { name: "Allow cross-provider sub-agents" })).not.toBeInTheDocument();
   });
 
   it("locks every crew control while any child is active", async () => {
@@ -533,16 +559,12 @@ describe("SubAgentCommandCenter on a thread that froze a roster", () => {
     expect(trigger()).toHaveTextContent("Sub-agents: 2");
   });
 
-  it("keeps the switches editable once the thread is idle", async () => {
+  it("keeps the main switch editable once the thread is idle", async () => {
     const { onChange } = await open({ mode: "captured", capturedPolicy: CAPTURED, policy: capturedDraft });
     await userEvent.click(screen.getByRole("switch", { name: "Allow sub-agent spawning" }));
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ enabled: false }));
 
-    onChange.mockClear();
-    await userEvent.click(screen.getByRole("switch", { name: "Allow cross-provider sub-agents" }));
-    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
-      childAgents: expect.objectContaining({ enabled: false }),
-    }));
+
   });
 
   it("never claims a frozen thread still has agents once they are switched off", async () => {
@@ -553,19 +575,17 @@ describe("SubAgentCommandCenter on a thread that froze a roster", () => {
     });
     expect(trigger()).toHaveTextContent("Sub-agents off");
     expect(screen.getByText("Sub-agents are off for this task.")).toBeInTheDocument();
-    expect(screen.getByText("Sub-agents stay inside this thread's own provider.")).toBeInTheDocument();
   });
 
-  it("stops promising cross-provider reach when only cross-provider is switched off", async () => {
+  it("uses the configured roster despite the removed legacy switch", async () => {
     await open({
       mode: "captured",
       capturedPolicy: CAPTURED,
       policy: { ...capturedDraft, enabled: true, childAgents: { enabled: false, targets: CAPTURED.targets } },
     });
     expect(trigger()).toHaveTextContent("Sub-agents: 2");
-    expect(trigger()).not.toHaveTextContent("↗");
-    expect(screen.getByText("Sub-agents stay inside this thread's own provider.")).toBeInTheDocument();
-    // The frozen roster is still what would come back, so it stays on show.
+    expect(trigger()).toHaveTextContent("↗");
+    // A hidden legacy flag cannot contradict the main switch.
     expect(screen.getByText("Frozen reviewer")).toBeInTheDocument();
   });
 });
@@ -607,7 +627,7 @@ describe("SubAgentCommandCenter inside a sub-agent conversation", () => {
     await open(child);
     expect(trigger()).toHaveTextContent("Sub-agents off");
     expect(screen.getByText(/never starts sub-agents of its own/)).toBeInTheDocument();
-    expect(screen.getAllByText("Off")).toHaveLength(2);
+    expect(screen.getAllByText("Off")).toHaveLength(1);
     expect(screen.queryByRole("switch", { name: "Allow sub-agent spawning" })).not.toBeInTheDocument();
     expect(screen.queryByRole("switch", { name: "Allow cross-provider sub-agents" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Add / })).not.toBeInTheDocument();

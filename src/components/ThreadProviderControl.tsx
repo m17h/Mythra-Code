@@ -20,6 +20,8 @@ export function ThreadProviderControl({
   defaultProvider,
   threadStarted,
   disabled,
+  unavailable,
+  onUnavailable,
   onProvider,
   onDefaultSettings,
 }: {
@@ -27,6 +29,8 @@ export function ThreadProviderControl({
   defaultProvider: Provider;
   threadStarted: boolean;
   disabled?: boolean;
+  unavailable?: Partial<Record<Provider, string>>;
+  onUnavailable?: (message: string) => void;
   onProvider: (provider: Provider) => void;
   onDefaultSettings: () => void;
 }) {
@@ -66,7 +70,7 @@ export function ThreadProviderControl({
   return (
     <div className={`thread-provider-control composer-provider-control ${open ? "open" : ""}`} ref={rootRef}>
       <button
-        className="provider-pill openrouter-trigger"
+        className={`provider-pill openrouter-trigger ${unavailable?.[provider] ? "unavailable" : ""}`}
         onClick={() => setOpen((value) => !value)}
         aria-label={`${threadStarted ? "Thread" : "New thread"} provider: ${label}`}
         aria-haspopup="menu"
@@ -87,8 +91,11 @@ export function ThreadProviderControl({
               key={entry.id}
               role="menuitemradio"
               aria-checked={entry.id === provider}
-              className={entry.id === provider ? "selected" : ""}
+              className={`${entry.id === provider ? "selected" : ""} ${unavailable?.[entry.id] ? "unavailable" : ""}`}
+              aria-disabled={Boolean(unavailable?.[entry.id]) || undefined}
               onClick={() => {
+                const issue = unavailable?.[entry.id];
+                if (issue) { onUnavailable?.(issue); return; }
                 setOpen(false);
                 if (entry.id !== provider) onProvider(entry.id);
               }}

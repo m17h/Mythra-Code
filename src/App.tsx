@@ -39,6 +39,7 @@ import { ClaudeModelControl } from "./components/ClaudeModelControl";
 import { CursorModelControl } from "./components/CursorModelControl";
 import { LMStudioModelControl } from "./components/LMStudioModelControl";
 import { ThreadProviderControl } from "./components/ThreadProviderControl";
+import { ThreadTitle } from "./components/ThreadTitle";
 import { ThreadInboxCard } from "./components/ThreadInboxCard";
 import { ProjectPromptControl } from "./components/ProjectPromptControl";
 import { ProjectRunControl } from "./components/ProjectRunControl";
@@ -56,6 +57,7 @@ import { useAutomaticThreadTitles } from "./hooks/useAutomaticThreadTitles";
 import { useThreadPullRequest } from "./hooks/useThreadPullRequest";
 import { acquirePullRequestMutation, releasePullRequestMutation, isPullRequestMutationRunning } from "./lib/pullRequestOperations";
 import type { Account, Activity, AppSettings, ArchivedThread, ChatFont, ChatMessage, CustomAgentProfile, PendingApproval, PermissionMode, Project, ProjectAction, ProjectPromptMode, ProjectSubagentSettings, EffortSliderStyle, PromptProfile, Provider, ScheduledTask, ScheduleRunRecord, SettingsSection, Thread, ThreadHandoff, ThreadReasoning, ThemeName, WorkspaceMode } from "./types";
+import type { OnboardingSettingsDraft } from "./lib/onboardingSettings";
 import type { ProjectRunCommand } from "./types";
 import { PendingTurnStarts } from "./lib/pendingTurnStarts";
 import { useTaskStore, type QueuedTurn } from "./lib/taskStore";
@@ -139,6 +141,7 @@ import {
   childAgentPolicyForThread,
   crewSafeConcurrency,
   providerDisplayName,
+  providerSignInIssue,
   projectSubagentSettingsFromApp,
   readyChildAgentTargets,
   sanitizeChildAgentPresets,
@@ -513,6 +516,11 @@ export default function App() {
   const [successToast, setSuccessToast] = useState<string | null>(null);
   const [toastKind, setToastKind] = useState<"success" | "info">("success");
   const successToastTimerRef = useRef<number | null>(null);
+  const toastRef = useRef<HTMLDivElement | null>(null);
+  const mountToast = useCallback((node: HTMLDivElement | null) => {
+    toastRef.current = node;
+    node?.showPopover?.();
+  }, []);
   const [worktreeStatus, setWorktreeStatus] = useState<WorktreeStatus | null>(null);
   const [worktreeBusy, setWorktreeBusy] = useState(false);
   const [previewTheme, setPreviewTheme] = useState<ThemeName | null>(null);
@@ -533,8 +541,10 @@ export default function App() {
   const [settingsMounted, setSettingsMounted] = useState(false);
   const [settingsLoadAttempt, setSettingsLoadAttempt] = useState(0);
   const [settingsInitialSection, setSettingsInitialSection] = useState<SettingsSection>("general");
+  const [settingsInitialDraft, setSettingsInitialDraft] = useState<OnboardingSettingsDraft | undefined>();
   const [onboardingOpen, setOnboardingOpen] = useState(initialOnboardingOpen);
   const [onboardingMounted, setOnboardingMounted] = useState(initialOnboardingOpen);
+  const [onboardingSession, setOnboardingSession] = useState(0);
   const onboardingExitTimerRef = useRef<number | null>(null);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [threadSearch, setThreadSearch] = useState("");
@@ -848,7 +858,7 @@ export default function App() {
     const roster = activeDelegationPolicy
       ? { enabled: effectiveSettings.childAgents.enabled, targets: activeDelegationPolicy.targets }
       : effectiveSettings.childAgents;
-    if (!effectiveSettings.subagentsEnabled) return "Cross-provider off";
+    if (!effectiveSettings.subagentsEnabled) return "Sub-agents off";
     return describeChildAgentRoster(roster, childAgentReadiness);
   }, [activeDelegationPolicy, childAgentReadiness, effectiveSettings.childAgents, effectiveSettings.subagentsEnabled]);
   // The composer's command center edits this shape directly until a thread has
@@ -1219,6 +1229,9 @@ export default function App() {
     if (successToastTimerRef.current !== null) {
       window.clearTimeout(successToastTimerRef.current);
     }
+    // Bring an existing notification above any newer top-layer select menu.
+    toastRef.current?.hidePopover?.();
+    toastRef.current?.showPopover?.();
     setSuccessToast(message);
     setToastKind(kind);
     successToastTimerRef.current = window.setTimeout(() => {
@@ -1457,15 +1470,12 @@ export default function App() {
       return;
     }
 
-    // These switches have always been revocation controls read fresh by every
-    // turn. Preserve that contract without copying this thread's roster back
-    // into project/global defaults.
-    if (next.enabled !== composerSubagentPolicy.enabled
-      || next.childAgents.enabled !== composerSubagentPolicy.childAgents.enabled) {
+    // Only the main revocation switch belongs to the shared policy. Clearing
+    // this thread's roster must never rewrite project/global defaults.
+    if (next.enabled !== composerSubagentPolicy.enabled) {
       persistComposerSubagentPolicy({
         ...composerSubagentPolicy,
         enabled: next.enabled,
-        childAgents: { ...composerSubagentPolicy.childAgents, enabled: next.childAgents.enabled },
       });
     }
 
@@ -1477,7 +1487,7 @@ export default function App() {
     }
     const targets = next.childAgents.targets;
     if (targets.length && !readyChildAgentTargets({ enabled: true, targets }, childAgentReadiness).length) {
-      setTransientStatus("Keep one ready destination, or switch cross-provider sub-agents off");
+      setTransientStatus("Keep one ready sub-agent, or switch Sub-agents off");
       return;
     }
     const pendingRecapture = {
@@ -1508,19 +1518,26 @@ export default function App() {
     setTransientStatus,
   ]);
 
-  const openSettings = useCallback((section: SettingsSection = "general") => {
+  const openSettings = useCallback((section: SettingsSection = "general", draft?: OnboardingSettingsDraft) => {
     void preloadSettingsModal();
     setSettingsMounted(true);
     setSettingsInitialSection(section);
+    setSettingsInitialDraft(draft);
     setSettingsOpen(true);
   }, []);
 
+  const resumeOnboardingAfterSettings = useRef(false);
   const closeSettings = useCallback(() => {
     setPreviewTheme(null);
     setPreviewEffortSlider(null);
     setPreviewChatFont(null);
     setPreviewUiScale(null);
+    setSettingsInitialDraft(undefined);
     setSettingsOpen(false);
+    if (resumeOnboardingAfterSettings.current) {
+      resumeOnboardingAfterSettings.current = false;
+      setOnboardingOpen(true);
+    }
   }, []);
 
   useEffect(() => {
@@ -1529,6 +1546,7 @@ export default function App() {
   }, [settingsMounted]);
 
   const completeOnboarding = useCallback(() => {
+    resumeOnboardingAfterSettings.current = false;
     storeValue("kiwi.onboardingVersion", ONBOARDING_VERSION);
     setOnboardingOpen(false);
     if (onboardingExitTimerRef.current !== null) window.clearTimeout(onboardingExitTimerRef.current);
@@ -1539,6 +1557,8 @@ export default function App() {
   }, []);
 
   const openOnboarding = useCallback(() => {
+    setOnboardingSession((session) => session + 1);
+    resumeOnboardingAfterSettings.current = false;
     if (onboardingExitTimerRef.current !== null) {
       window.clearTimeout(onboardingExitTimerRef.current);
       onboardingExitTimerRef.current = null;
@@ -3140,17 +3160,18 @@ export default function App() {
 
   const addProject = async () => {
     const selected = await open({ directory: true, multiple: false, title: "Choose a project folder" });
-    if (!selected || Array.isArray(selected)) return;
+    if (!selected || Array.isArray(selected)) return false;
     const existing = projectsRef.current.find((project) => normalizedProjectPath(project.path) === normalizedProjectPath(selected));
     if (existing) {
       setActiveProjectId(existing.id);
       setWorkspaceMode("project");
-      return;
+      return true;
     }
     const project: Project = { id: crypto.randomUUID(), name: basename(selected), path: selected };
     setProjects((current) => [...current, project]);
     setActiveProjectId(project.id);
     setWorkspaceMode("project");
+    return true;
   };
 
   // `projects` is kept pinned-first by projectOrdering, so the split is just
@@ -3871,6 +3892,8 @@ export default function App() {
     executionPathFor,
     bindThreadToProject,
     rememberThread,
+    onThreadTitlePending: automaticTitles.prepareTitle,
+    onThreadTitleCancelled: (id) => { void automaticTitles.cancel(id); },
     onThreadTitleRequested: automaticTitles.requestTitle,
     isThreadArchiving: (id) => archivingThreadIdsRef.current.has(id),
     onThreadCreated: handleThreadCreated,
@@ -4565,7 +4588,7 @@ export default function App() {
     { label: "Model", value: effectiveSettings.model || "provider default" },
     { label: "Reasoning", value: effectiveSettings.reasoningEffort },
     { label: "Sub-agents", value: effectiveSettings.subagentsEnabled ? `on · max ${effectiveSettings.subagentMax}` : "off" },
-    { label: "Cross-provider", value: effectiveSettings.subagentsEnabled ? childAgentSummary : "off" },
+    { label: "Configured sub-agents", value: effectiveSettings.subagentsEnabled ? childAgentSummary : "off" },
     { label: "Skills", value: skillsFolder ? `${skills.filter((skill) => skill.enabled).length} enabled · local folder` : "no folder selected" },
     { label: "Permissions", value: permissionLabel(effectiveSettings.permission) },
     { label: "Service tier", value: settings.serviceTier || "standard" },
@@ -5790,21 +5813,27 @@ export default function App() {
   });
 
   const activeChatFont = previewChatFont ?? projectDefaults?.chatFont ?? settings.chatFont;
+  const activeEffortSlider = previewEffortSlider ?? projectDefaults?.effortSlider ?? settings.effortSlider;
+  // Let the tour's local preview be the only styled slider ancestor. The
+  // obscured app restores its style when the tour closes or hands off to Settings.
+  const tourOwnsSliderPreview = onboardingMounted && onboardingOpen && !settingsOpen;
   const composerProviderControl = (
     <ThreadProviderControl
       provider={effectiveSettings.provider}
       defaultProvider={projectDefaultProvider}
       threadStarted={Boolean(activeThread)}
       disabled={!activeWorkspace || running}
+      unavailable={{ openai: providerSignInIssue("openai", childAgentReadiness) ?? undefined, claude: providerSignInIssue("claude", childAgentReadiness) ?? undefined }}
+      onUnavailable={(message) => showToast(message, "info")}
       onProvider={startNewThreadWithProvider}
       onDefaultSettings={() => openSettings(activeProject ? "projects" : "models")}
     />
   );
 
   return (
-    <div ref={shellRef} className="app-shell" data-theme={previewTheme ?? projectDefaults?.theme ?? settings.theme} data-color-scheme={themeColorScheme(previewTheme ?? projectDefaults?.theme ?? settings.theme)} data-effort-slider={previewEffortSlider ?? projectDefaults?.effortSlider ?? settings.effortSlider} data-chat-font={activeChatFont} data-openai-logo={settings.openAiLogo} data-claude-logo={settings.claudeLogo} data-cursor-logo={settings.cursorLogo} style={{ zoom: ((previewUiScale ?? settings.uiScale) || 100) / 100, "--ui-scale": ((previewUiScale ?? settings.uiScale) || 100) / 100 } as CSSProperties}>
+    <div ref={shellRef} className="app-shell" data-theme={previewTheme ?? projectDefaults?.theme ?? settings.theme} data-color-scheme={themeColorScheme(previewTheme ?? projectDefaults?.theme ?? settings.theme)} data-effort-slider={tourOwnsSliderPreview ? undefined : activeEffortSlider} data-onboarding-effort-slider={tourOwnsSliderPreview ? activeEffortSlider : undefined} data-chat-font={activeChatFont} data-openai-logo={settings.openAiLogo} data-claude-logo={settings.claudeLogo} data-cursor-logo={settings.cursorLogo} style={{ zoom: ((previewUiScale ?? settings.uiScale) || 100) / 100, "--ui-scale": ((previewUiScale ?? settings.uiScale) || 100) / 100 } as CSSProperties}>
       {successToast && (
-        <div className={`app-toast ${toastKind}`} role="status" aria-live="polite">
+        <div ref={mountToast} popover={typeof HTMLElement.prototype.showPopover === "function" ? "manual" : undefined} className={`app-toast ${toastKind}`} role="status" aria-live="polite">
           <span className="app-toast-icon">{toastKind === "success" ? <Check size={14} strokeWidth={2.5} /> : <MessageSquare size={14} />}</span>
           <span>{successToast}</span>
           <button onClick={dismissSuccessToast} aria-label="Dismiss notification">
@@ -5951,6 +5980,7 @@ export default function App() {
                   <ThreadInboxCard
                     threadId={thread.id}
                     title={thread.name || thread.preview || "Untitled thread"}
+                    titlePending={automaticTitles.pendingIds.has(thread.id)}
                     workspaceName={activeWorkspace?.name ?? basename(thread.cwd)}
                     directory={threadWorktrees[thread.id]?.path || thread.cwd || activeWorkspace?.path || ""}
                     provider={providerFromThread(thread, projectDefaultProvider)}
@@ -5963,7 +5993,7 @@ export default function App() {
                   />
                 )}
                 <RowMenu
-                  label={`Options for ${thread.name || thread.preview || "thread"}`}
+                  label={`Options for ${automaticTitles.pendingIds.has(thread.id) ? "Generating title" : thread.name || thread.preview || "thread"}`}
                   scale={(settings.uiScale || 100) / 100}
                   items={[
                     { label: pinnedThreadIds.includes(thread.id) ? "Unpin" : "Pin", icon: pinnedThreadIds.includes(thread.id) ? <PinOff size={13} /> : <Pin size={13} />, onSelect: () => toggleThreadPin(thread.id) },
@@ -6037,7 +6067,7 @@ export default function App() {
               <span>{activeWorkspace?.isChat ? "Normal chat" : (activeProject?.name ?? "No project selected")}</span>
               <small>{activeThreadWorktree && activeThreadWorktree.status !== "removed"
                 ? `${activeThreadWorktree.branch} · ${activeThreadWorktree.path}`
-                : activeThread ? activeThread.name || activeThread.preview || "New thread" : activeWorkspace?.isChat ? "No project folder" : (activeProject?.path ?? "Choose a project or use Chats")}</small>
+                : activeThread ? <ThreadTitle key={activeThread.id} title={activeThread.name || activeThread.preview || "New thread"} pending={automaticTitles.pendingIds.has(activeThread.id)} /> : activeWorkspace?.isChat ? "No project folder" : (activeProject?.path ?? "Choose a project or use Chats")}</small>
             </div>
             {activeThreadWorktree && activeThreadWorktree.status !== "removed" && (
               <button className="isolation-chip" onClick={() => void revealItemInDir(activeThreadWorktree.path)} title={activeThreadWorktree.path}>
@@ -6393,7 +6423,7 @@ export default function App() {
                 onStop={() => void stopTurnAndChildren()}
                 modelControls={
                   <>
-                    {effectiveSettings.provider === "openai" && <ModelPowerControl providerControl={composerProviderControl} model={effectiveSettings.model || DEFAULT_OPENAI_MODEL} effort={effectiveSettings.reasoningEffort} fast={settings.serviceTier === "priority"} runtimeModels={runtimeModels} loading={runtimeModelsLoading} error={runtimeModelsError} onRefresh={() => void refreshOpenAiModelsFromPicker()} favorites={favoriteModels(modelFavorites, "openai")} onToggleFavorite={(model) => toggleModelFavorite("openai", model)} onModel={persistComposerModel} onEffort={persistComposerReasoning} onFast={(fast) => persistSettings({ ...settings, serviceTier: fast ? "priority" : null })} />}
+                    {effectiveSettings.provider === "openai" && <ModelPowerControl signedIn={childAgentReadiness.openAiSignedIn} onSignInRequired={() => showToast(providerSignInIssue("openai", childAgentReadiness)!, "info")} providerControl={composerProviderControl} model={effectiveSettings.model || DEFAULT_OPENAI_MODEL} effort={effectiveSettings.reasoningEffort} fast={settings.serviceTier === "priority"} runtimeModels={runtimeModels} loading={runtimeModelsLoading} error={runtimeModelsError} onRefresh={() => void refreshOpenAiModelsFromPicker()} favorites={favoriteModels(modelFavorites, "openai")} onToggleFavorite={(model) => toggleModelFavorite("openai", model)} onModel={persistComposerModel} onEffort={persistComposerReasoning} onFast={(fast) => persistSettings({ ...settings, serviceTier: fast ? "priority" : null })} />}
                     {effectiveSettings.provider === "openrouter" && (
                       <OpenRouterModelControl
                         model={effectiveSettings.model}
@@ -6428,7 +6458,7 @@ export default function App() {
                         onEffort={persistComposerReasoning}
                       />
                     )}
-                    {effectiveSettings.provider === "claude" && <ClaudeModelControl providerControl={composerProviderControl} model={effectiveSettings.model || DEFAULT_CLAUDE_MODEL} effort={effectiveSettings.reasoningEffort} models={claudeModels} loading={claudeModelsLoading} error={claudeModelsError} signedIn={claudeStatus?.loggedIn ?? false} favorites={favoriteModels(modelFavorites, "claude")} onToggleFavorite={(model) => toggleModelFavorite("claude", model)} onRefresh={() => void refreshClaudeCatalog()} onSignInRequired={() => openSettings("models")} onUnavailableModel={(model) => { void confirmDialog(`${model.displayName} needs a Claude Code update\n\n${model.requiredVersion ? `Claude Code ${model.requiredVersion} or newer is required. ` : ""}Open Updates to install the latest version without leaving Mythra Code.`, { confirmLabel: "Go to Updates", cancelLabel: "Not now" }).then((confirmed) => { if (confirmed) openSettings("updates"); }); }} onModel={(model) => persistComposerModel(model)} onEffort={persistComposerReasoning} />}
+                    {effectiveSettings.provider === "claude" && <ClaudeModelControl providerControl={composerProviderControl} model={effectiveSettings.model || DEFAULT_CLAUDE_MODEL} effort={effectiveSettings.reasoningEffort} models={claudeModels} loading={claudeModelsLoading} error={claudeModelsError} signedIn={childAgentReadiness.claudeReady} favorites={favoriteModels(modelFavorites, "claude")} onToggleFavorite={(model) => toggleModelFavorite("claude", model)} onRefresh={() => void refreshClaudeCatalog()} onSignInRequired={() => showToast(providerSignInIssue("claude", childAgentReadiness)!, "info")} onUnavailableModel={(model) => { void confirmDialog(`${model.displayName} needs a Claude Code update\n\n${model.requiredVersion ? `Claude Code ${model.requiredVersion} or newer is required. ` : ""}Open Updates to install the latest version without leaving Mythra Code.`, { confirmLabel: "Go to Updates", cancelLabel: "Not now" }).then((confirmed) => { if (confirmed) openSettings("updates"); }); }} onModel={(model) => persistComposerModel(model)} onEffort={persistComposerReasoning} />}
                     {effectiveSettings.provider === "cursor" && <CursorModelControl providerControl={composerProviderControl} model={effectiveSettings.model || DEFAULT_CURSOR_MODEL} models={cursorModels} effort={effectiveSettings.reasoningEffort} loading={cursorModelsLoading} error={cursorModelsError} favorites={favoriteModels(modelFavorites, "cursor")} onToggleFavorite={(model) => toggleModelFavorite("cursor", model)} onRefresh={() => void refreshCursorModels()} onModel={(model) => persistComposerModel(model)} onEffort={persistComposerReasoning} />}
                     {running && activeThreadId && deferredReasoningNoticeThreads.has(activeThreadId) && (
                       <p className="composer-reasoning-notice" role="status" aria-live="polite">
@@ -6472,6 +6502,7 @@ export default function App() {
                       capturedPolicy={activeDelegationPolicy ?? null}
                       mode={subagentPolicyMode}
                       readiness={childAgentReadiness}
+                      onUnavailable={(message) => showToast(message, "info")}
                       workers={subAgentWorkers}
                       parentActive={running || queuedTurns.length > 0}
                       scopeLabel={activeProject ? activeProject.name : "app defaults · projects without an override"}
@@ -6670,6 +6701,7 @@ export default function App() {
           <SettingsModalView
         open={settingsOpen}
         initialSection={settingsInitialSection}
+        initialDraft={settingsInitialDraft}
         appUpdater={appUpdater}
         settings={settings}
         account={account}
@@ -6791,7 +6823,11 @@ export default function App() {
 
       {onboardingMounted && (
         <Suspense fallback={null}>
-          <OnboardingModal open={onboardingOpen} runtimeStatus={runtimeStatus} claudeStatus={claudeStatus} cursorStatus={cursorStatus} account={account} openRouterReady={openRouterReady} lmStudioReady={lmStudioReady} skillsFolder={skillsFolder} onComplete={completeOnboarding} onOpenSettings={(section) => openSettings(section)} onChooseSkillsFolder={() => void chooseSkillsFolder()} onAddProject={() => void addProject()} onStartChat={startNormalChat} />
+          <OnboardingModal key={onboardingSession} open={onboardingOpen} preferredProvider={settings.provider} runtimeStatus={runtimeStatus} claudeStatus={claudeStatus} cursorStatus={cursorStatus} account={account} openRouterReady={openRouterReady} lmStudioReady={lmStudioReady} skillsFolder={skillsFolder} onComplete={completeOnboarding} onOpenSettings={(section: SettingsSection, draft?: OnboardingSettingsDraft) => {
+            resumeOnboardingAfterSettings.current = true;
+            setOnboardingOpen(false);
+            openSettings(section, draft);
+          }} onChooseSkillsFolder={() => void chooseSkillsFolder()} onAddProject={addProject} onStartChat={startNormalChat} />
         </Suspense>
       )}
 

@@ -580,7 +580,7 @@ pub(super) fn tool_catalog(targets: &[ChildAgentTarget], max_concurrent: usize) 
                 "properties": {
                     "reason": { "type": "string", "description": "Short explanation of why this project needs the change." },
                     "enabled": { "type": "boolean" },
-                    "crossProviderEnabled": { "type": "boolean" },
+                    "crossProviderEnabled": { "type": "boolean", "description": "Legacy revocation alias. Use enabled instead. False switches all sub-agents off; configured targets determine which providers may be used." },
                     "maxConcurrent": { "type": "integer", "minimum": 1, "maximum": MAX_CONCURRENT_CEILING },
                     "targets": {
                         "type": "array",

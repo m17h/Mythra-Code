@@ -324,6 +324,16 @@ describe("persistence and migration", () => {
     expect(sanitizeChildAgentSettings({})).toEqual({ enabled: false, targets: [] });
   });
 
+  it("derives roster availability from configured targets while preserving the main switch and parked targets", () => {
+    const configured = { ...target(), enabled: false };
+    const legacy = { enabled: false, maxConcurrent: 2, childAgents: { enabled: false, targets: [configured] } };
+    const restored = sanitizeProjectSubagentSettings(legacy)!;
+    expect(restored.enabled).toBe(false);
+    expect(restored.childAgents).toEqual({ enabled: true, targets: [configured] });
+    expect(sanitizeChildAgentSettings({ enabled: false, targets: [target()] }).enabled).toBe(true);
+    expect(sanitizeChildAgentSettings({ enabled: true, targets: [] }).enabled).toBe(false);
+  });
+
   it("drops entries that could not be honoured and de-duplicates names", () => {
     const restored = sanitizeChildAgentSettings({
       enabled: true,
@@ -572,7 +582,7 @@ describe("child thread delegation clamp", () => {
 describe("roster summary", () => {
   it("describes the state the composer shows without exposing the roster", () => {
     const settings = { enabled: true, targets: [target({ id: "a" }), target({ id: "b", provider: "cursor", model: "auto" })] };
-    expect(describeChildAgentRoster({ ...settings, enabled: false }, EVERYTHING_READY)).toBe("Cross-provider off");
+    expect(describeChildAgentRoster({ ...settings, enabled: false }, EVERYTHING_READY)).toBe("No sub-agents configured");
     expect(describeChildAgentRoster({ enabled: true, targets: [] }, EVERYTHING_READY)).toBe("No destinations");
     expect(describeChildAgentRoster(settings, EVERYTHING_READY)).toBe("2 destinations");
     expect(describeChildAgentRoster(settings, { ...EVERYTHING_READY, cursorReady: false })).toBe("1 of 2 ready");
