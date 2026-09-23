@@ -798,7 +798,7 @@ fn claude_arguments(options: &RunDiscoveryOptions) -> Vec<OsString> {
         "".into(),
         "--strict-mcp-config".into(),
         "--mcp-config".into(),
-        "{}".into(),
+        r#"{"mcpServers":{}}"#.into(),
         "--tools".into(),
         "Read,Glob,Grep".into(),
         "--allowedTools".into(),
@@ -3297,6 +3297,23 @@ mod title_tests {
     }
     #[test]
     fn title_tasks_disable_tools_without_changing_discovery() {
+        let options = RunDiscoveryOptions {
+            request_id: "test".into(),
+            cwd: "/tmp".into(),
+            provider: "claude".into(),
+            model: "default".into(),
+            effort: "low".into(),
+            fast: false,
+            lm_studio_base_url: None,
+        };
+        let native_args = claude_arguments(&options);
+        let config_index = native_args
+            .iter()
+            .position(|arg| arg == "--mcp-config")
+            .unwrap();
+        let config: Value =
+            serde_json::from_str(&native_args[config_index + 1].to_string_lossy()).unwrap();
+        assert_eq!(config.get("mcpServers"), Some(&json!({})));
         let args = vec![
             "--tools".into(),
             "Read,Glob,Grep".into(),

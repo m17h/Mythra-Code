@@ -169,14 +169,26 @@ describe("ClaudeModelControl", () => {
       .toHaveAttribute("aria-current", "true");
   });
 
-  it("explains that a signed-out catalog is generic", () => {
+  it("keeps a signed-out model muted and explains activation without opening settings or changing models", () => {
     const onSignInRequired = vi.fn();
-    render(<ClaudeModelControl model="sonnet" effort="medium" models={LIVE} signedIn={false} onSignInRequired={onSignInRequired} onModel={vi.fn()} onEffort={vi.fn()} />);
-    open();
-    expect(screen.getByText("Generic CLI catalog — sign in for account models")).toBeInTheDocument();
-    expect(screen.getByText(/Sign in to Claude Code on this computer/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Open account settings" }));
+    const onModel = vi.fn();
+    const props = { model: "sonnet", effort: "medium" as const, models: LIVE, onSignInRequired, onModel, onEffort: vi.fn() };
+    const view = render(<ClaudeModelControl {...props} signedIn={false} />);
+    const trigger = screen.getByRole("button", { name: /Claude model:/ });
+    expect(trigger).toHaveAttribute("aria-disabled", "true");
+    fireEvent.click(trigger);
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
     expect(onSignInRequired).toHaveBeenCalledOnce();
+    expect(onModel).not.toHaveBeenCalled();
+    expect(view.container.querySelector(".openrouter-catalog-warning")).toBeNull();
+    view.rerender(<ClaudeModelControl {...props} signedIn />);
+    fireEvent.click(trigger);
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    // Expiration with the menu already open still cannot select a model.
+    view.rerender(<ClaudeModelControl {...props} signedIn={false} />);
+    fireEvent.click(screen.getAllByRole("menuitemradio")[0]);
+    expect(onModel).not.toHaveBeenCalled();
+    expect(onSignInRequired).toHaveBeenCalledTimes(2);
   });
 
   it("refreshes the catalog on request", () => {

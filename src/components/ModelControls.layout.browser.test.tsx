@@ -12,6 +12,22 @@ import "./SettingsModal.css";
 afterEach(async () => { await commands.setStreamTestReducedMotion(false); });
 
 describe("model control browser layout", () => {
+  it.each(["dark", "light"])("visibly mutes signed-out provider and model labels in %s mode", (scheme) => {
+    const view = render(<div className="app-shell" data-color-scheme={scheme}>
+      <span data-testid="muted-reference" style={{ color: "var(--muted)" }}>Muted reference</span>
+      <ThreadProviderControl provider="claude" defaultProvider="claude" threadStarted={false} unavailable={{ claude: "Sign in" }} onProvider={vi.fn()} onDefaultSettings={vi.fn()} />
+      <ModelPowerControl model="gpt-5.6-sol" effort="high" fast={false} runtimeModels={[]} signedIn={false} onModel={vi.fn()} onEffort={vi.fn()} onFast={vi.fn()} />
+      <ClaudeModelControl model="opus" effort="high" signedIn={false} onModel={vi.fn()} onEffort={vi.fn()} />
+    </div>);
+    const muted = getComputedStyle(view.getByTestId("muted-reference")).color;
+    for (const label of view.container.querySelectorAll(".provider-pill strong, .model-picker-copy strong, .claude-control .openrouter-trigger-copy strong")) {
+      expect(getComputedStyle(label).color).toBe(muted);
+    }
+    for (const icon of view.container.querySelectorAll(".unavailable .provider-mark, .unavailable .model-orb, .unavailable .openrouter-logo")) {
+      expect(getComputedStyle(icon).filter).toBe("grayscale(1)");
+    }
+  });
+
   it("loads the GPT-6 Sol and Luna artwork in the actual picker", async () => {
     const runtimeModels = ["sol", "luna"].map((tier) => ({
       id: `gpt-6-${tier}`, model: `gpt-6-${tier}`, displayName: `GPT-6-${tier}`,

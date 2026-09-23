@@ -1465,20 +1465,54 @@ describe("useTurnRunner activating sub-agents mid-conversation", () => {
 
 
 describe("new-thread title scheduling", () => {
+  beforeEach(() => {
+    resetTaskStore();
+    vi.clearAllMocks();
+    cursor.startCursorTurn.mockResolvedValue({ turnId: "title-turn", cursorSessionId: "session" });
+  });
+  it("marks a new Codex thread pending before a slow checkpoint exposes its prompt", async () => {
+    let release!: () => void;
+    const checkpoint = new Promise<void>((resolve) => { release = resolve; });
+    const pending = vi.fn(), requested = vi.fn();
+    const deps = context({ activeThread: null,
+      effectiveSettings: { ...DEFAULT_SETTINGS, provider: "openai", model: "gpt-6-luna" },
+      runtimeStatus: { available: true, source: "Codex CLI", path: "codex", version: "1", compatible: true, warning: null },
+      account: { type: "chatgpt", email: "test@example.com", planType: "pro" },
+      beginRunCheckpoint: vi.fn(async () => { await checkpoint; return "checkpoint"; }),
+      onThreadTitlePending: pending, onThreadTitleRequested: requested,
+    });
+    codex.rpc.mockImplementation(async (method: string) => method === "thread/start"
+      ? { thread: { ...OPENAI_THREAD, id: "title-new-codex" } } : { turn: { id: "title-turn" } });
+    const view = renderHook(() => useTurnRunner(deps));
+    let sending!: Promise<boolean>;
+    await act(async () => { sending = view.result.current.sendMessage("Fix scrolling"); });
+    expect(pending).toHaveBeenCalledExactlyOnceWith("title-new-codex", "Fix scrolling");
+    expect(pending.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(deps.setThreads).mock.invocationCallOrder[0]);
+    expect(requested).not.toHaveBeenCalled();
+    await act(async () => { release(); expect(await sending).toBe(true); });
+    expect(requested).toHaveBeenCalledExactlyOnceWith("title-new-codex", "Fix scrolling");
+  });
   it("requests a title only after a new local prompt is accepted", async () => {
     const onThreadTitleRequested = vi.fn();
-    const deps = context({ activeThread: null, onThreadTitleRequested });
+    const onThreadTitlePending = vi.fn();
+    const onThreadTitleCancelled = vi.fn();
+    const deps = context({ activeThread: null, onThreadTitleRequested, onThreadTitlePending, onThreadTitleCancelled });
     const view = renderHook(() => useTurnRunner(deps));
     await act(async () => { expect(await view.result.current.sendMessage("Fix the sidebar scrolling")).toBe(true); });
     const id = vi.mocked(deps.onThreadCreated).mock.calls[0][0];
+    expect(onThreadTitlePending).toHaveBeenCalledExactlyOnceWith(id, "Fix the sidebar scrolling");
+    expect(onThreadTitlePending.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(deps.setThreads).mock.invocationCallOrder[0]);
     expect(onThreadTitleRequested).toHaveBeenCalledExactlyOnceWith(id, "Fix the sidebar scrolling");
   });
   it("does not spend a title call on failed sends or an existing thread", async () => {
     const onThreadTitleRequested = vi.fn();
+    const onThreadTitlePending = vi.fn();
+    const onThreadTitleCancelled = vi.fn();
     cursor.startCursorTurn.mockRejectedValueOnce(new Error("not signed in"));
-    const view = renderHook((props) => useTurnRunner(props), { initialProps: context({ activeThread: null, onThreadTitleRequested }) });
+    const view = renderHook((props) => useTurnRunner(props), { initialProps: context({ activeThread: null, onThreadTitleRequested, onThreadTitlePending, onThreadTitleCancelled }) });
     await act(async () => { expect(await view.result.current.sendMessage("Fix scrolling")).toBe(false); });
     expect(onThreadTitleRequested).not.toHaveBeenCalled();
+    expect(onThreadTitleCancelled).toHaveBeenCalledWith(expect.any(String));
     cursor.startCursorTurn.mockResolvedValue({ turnId: "next", cursorSessionId: "session" });
     view.rerender(context({ onThreadTitleRequested }));
     await act(async () => { await view.result.current.sendMessage("Now fix another thing"); });

@@ -321,7 +321,7 @@ describe("SettingsModal", () => {
 
   it("offers automatic thread titles as a draft, off until it is asked for", () => {
     const onSave = vi.fn();
-    render(<SettingsModal {...modalProps({ initialSection: "system", onSave })} />);
+    render(<SettingsModal {...modalProps({ initialSection: "projects", onSave })} />);
 
     const toggle = screen.getByRole("switch", { name: "Automatic thread titles" });
     expect(toggle).toHaveAttribute("aria-checked", "false");
@@ -345,7 +345,7 @@ describe("SettingsModal", () => {
   });
 
   it("says where the first message goes, and what naming will not touch", () => {
-    render(<SettingsModal {...modalProps({ initialSection: "system" })} />);
+    render(<SettingsModal {...modalProps({ initialSection: "projects" })} />);
 
     expect(screen.getByText(/using the provider and model you choose/)).toBeInTheDocument();
     // The things nobody would guess: it leaves for the chosen provider from a
@@ -360,7 +360,7 @@ describe("SettingsModal", () => {
   it("names the Luna the account would actually use, and keeps it automatic", () => {
     const onSave = vi.fn();
     render(<SettingsModal {...modalProps({
-      initialSection: "system",
+      initialSection: "projects",
       onSave,
       runtimeModels: [runtimeModel("gpt-5.6-luna", "Luna"), runtimeModel("gpt-6-luna", "Luna six"), runtimeModel("gpt-5.6-terra", "Terra")],
     })} />);
@@ -379,7 +379,7 @@ describe("SettingsModal", () => {
   });
 
   it("falls back to the known Luna only while no catalog has been read", () => {
-    render(<SettingsModal {...modalProps({ initialSection: "system", runtimeModels: [] })} />);
+    render(<SettingsModal {...modalProps({ initialSection: "projects", runtimeModels: [] })} />);
 
     fireEvent.click(screen.getByRole("switch", { name: "Automatic thread titles" }));
     fireEvent.click(screen.getByRole("button", { name: "Thread title model" }));
@@ -391,7 +391,7 @@ describe("SettingsModal", () => {
 
   it("says so rather than guessing when the catalog holds no Luna", () => {
     render(<SettingsModal {...modalProps({
-      initialSection: "system",
+      initialSection: "projects",
       runtimeModels: [runtimeModel("gpt-5.6-terra", "Terra"), runtimeModel("gpt-5.6-sol", "Sol")],
     })} />);
 
@@ -406,7 +406,7 @@ describe("SettingsModal", () => {
   it("switches provider onto a model that provider can actually run", () => {
     const onSave = vi.fn();
     render(<SettingsModal {...modalProps({
-      initialSection: "system",
+      initialSection: "projects",
       onSave,
       // Signed out of OpenAI, and it must not matter once Claude is chosen.
       childAgentReadiness: { codexRuntimeAvailable: true, openAiSignedIn: false, openRouterReady: false, claudeReady: true, cursorReady: false },
@@ -432,7 +432,7 @@ describe("SettingsModal", () => {
 
   it("takes a typed model id when a provider has no catalog to offer", () => {
     const onSave = vi.fn();
-    render(<SettingsModal {...modalProps({ initialSection: "system", onSave, lmStudioModels: [] })} />);
+    render(<SettingsModal {...modalProps({ initialSection: "projects", onSave, lmStudioModels: [] })} />);
 
     fireEvent.click(screen.getByRole("switch", { name: "Automatic thread titles" }));
     fireEvent.click(screen.getByRole("button", { name: "Thread title provider" }));
@@ -455,7 +455,7 @@ describe("SettingsModal", () => {
   it("asks only for the provider that was chosen, and refuses nothing itself", () => {
     const onSave = vi.fn();
     render(<SettingsModal {...modalProps({
-      initialSection: "system",
+      initialSection: "projects",
       onSave,
       settings: { ...DEFAULT_SETTINGS, automaticThreadTitles: true, threadTitleProvider: "claude", threadTitleModel: "claude-sonnet-5" },
       childAgentReadiness: { codexRuntimeAvailable: true, openAiSignedIn: true, openRouterReady: false, claudeReady: false, cursorReady: false },
@@ -473,7 +473,7 @@ describe("SettingsModal", () => {
 
   it("says nothing about connecting anything once the chosen provider is ready", () => {
     render(<SettingsModal {...modalProps({
-      initialSection: "system",
+      initialSection: "projects",
       runtimeModels: [runtimeModel("gpt-5.6-luna", "Luna")],
       childAgentReadiness: { codexRuntimeAvailable: true, openAiSignedIn: true, openRouterReady: false, claudeReady: true, cursorReady: false },
     })} />);
@@ -491,7 +491,7 @@ describe("SettingsModal", () => {
 
     fireEvent.change(screen.getByRole("textbox", { name: "Search settings" }), { target: { value: "thread titles" } });
 
-    expect(within(nav).getByRole("button", { name: "Runtime" })).toBeInTheDocument();
+    expect(within(nav).getByRole("button", { name: "Projects" })).toBeInTheDocument();
     expect(within(nav).queryByRole("button", { name: /Sub-agents/ })).not.toBeInTheDocument();
   });
 
@@ -1102,6 +1102,85 @@ describe("SettingsModal", () => {
     expect(window.confirm).toHaveBeenCalledOnce();
     expect(onSave).not.toHaveBeenCalled();
     vi.unstubAllGlobals();
+  });
+
+  it("seeds an onboarding provider as an unsaved default with the provider's model", async () => {
+    const onSave = vi.fn();
+    const onClose = vi.fn();
+    const props = modalProps({ initialSection: "models", initialDraft: { provider: "claude" }, settings: { ...DEFAULT_SETTINGS, ultra: true }, onSave, onClose });
+    const view = render(<SettingsModal {...props} />);
+
+    expect(screen.getByRole("button", { name: /AnthropicClaude Code subscription/ })).toHaveClass("selected");
+    expect(onSave).not.toHaveBeenCalled();
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
+    expect(onSave).not.toHaveBeenCalled();
+
+    view.rerender(<SettingsModal {...props} open={false} />);
+    view.rerender(<SettingsModal {...props} open initialDraft={undefined} />);
+    expect(screen.getByRole("button", { name: /OpenAIChatGPT subscription/ })).toHaveClass("selected");
+    vi.unstubAllGlobals();
+
+    view.rerender(<SettingsModal {...props} open={false} />);
+    view.rerender(<SettingsModal {...props} open />);
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ provider: "claude", model: "claude-fable-5", ultra: false }));
+  });
+
+  it("keeps the saved model and Ultra when onboarding picks the existing provider", () => {
+    const onSave = vi.fn();
+    render(<SettingsModal {...modalProps({
+      initialSection: "models",
+      initialDraft: { provider: "openai" },
+      settings: { ...DEFAULT_SETTINGS, provider: "openai", model: "gpt-6-astra", ultra: true },
+      onSave,
+    })} />);
+
+    expect(screen.getByRole("button", { name: /OpenAIChatGPT subscription/ })).toHaveClass("selected");
+    expect(screen.queryByText("Unsaved changes")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ provider: "openai", model: "gpt-6-astra", ultra: true }));
+  });
+
+  it("previews an onboarding Interface draft over a project look, but saves only global defaults", () => {
+    const onThemePreview = vi.fn();
+    const onChatFontPreview = vi.fn();
+    const onEffortSliderPreview = vi.fn();
+    const onSave = vi.fn();
+    const onProjects = vi.fn();
+    const project = { id: "alpha", name: "Alpha", path: "/projects/alpha", overrides: { defaults: { provider: "openai" as const, model: "gpt-5.6-sol", theme: "midnight" as const, chatFont: "mono" as const, effortSlider: "coil" as const } } };
+    render(<SettingsModal {...modalProps({
+      initialSection: "general",
+      initialDraft: { appearance: { theme: "daylight", chatFont: "serif", effortSlider: "classic" } },
+      appUpdater: { ...updater, phase: "available" },
+      activeProjectId: "alpha",
+      projects: [project],
+      onThemePreview,
+      onChatFontPreview,
+      onEffortSliderPreview,
+      onSave,
+      onProjects,
+    })} />);
+
+    expect(screen.getByRole("heading", { name: "Interface" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Light Kiwi/ })).toHaveAttribute("aria-pressed", "true");
+    expect(onThemePreview).toHaveBeenLastCalledWith("daylight");
+    expect(onChatFontPreview).toHaveBeenLastCalledWith("serif");
+    expect(onEffortSliderPreview).toHaveBeenLastCalledWith("classic");
+    expect(screen.getByRole("note")).toHaveTextContent(/app-wide defaults.*appearance overrides/);
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ theme: "daylight", chatFont: "serif", effortSlider: "classic" }));
+    expect(onProjects).toHaveBeenCalledWith([project]);
+  });
+
+  it("shows no project appearance note when the active project has no appearance override", () => {
+    render(<SettingsModal {...modalProps({
+      activeProjectId: "alpha",
+      projects: [{ id: "alpha", name: "Alpha", path: "/projects/alpha", overrides: { defaults: { provider: "claude", model: "claude-fable-5" } } }],
+    })} />);
+
+    expect(screen.queryByRole("note")).not.toBeInTheDocument();
   });
 
   it("keeps the modal open when the user declines to discard changes", () => {

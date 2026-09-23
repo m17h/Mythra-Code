@@ -1,15 +1,275 @@
-.onboarding-style-demo { display: grid; grid-template-columns: 1fr 140px; gap: 20px; align-items: center; margin: 20px 0 0; padding: 18px; border: 1px solid var(--line-strong); border-radius: 14px; background: linear-gradient(125deg, color-mix(in srgb, var(--green) 10%, var(--panel)), var(--panel)); }
-.onboarding-style-demo > div { display: grid; gap: 6px; }
-.onboarding-style-demo strong { font-family: Georgia, serif; font-size: 21px; color: var(--text); }
-.onboarding-style-demo small { color: var(--muted); font-size: var(--fs-meta); }
-.onboarding-swatches { display: flex; gap: 5px; }
-.onboarding-swatches i { width: 12px; height: 12px; border-radius: 50%; background: #a78bfa; }
-.onboarding-swatches i:nth-child(2) { background: #ff8555; }
-.onboarding-swatches i:nth-child(3) { background: #73d7b5; }
-.onboarding-style-demo input { appearance: none; width: 100%; height: 9px; border-radius: 3px; background: repeating-linear-gradient(90deg, transparent 0 7px, var(--panel) 7px 10px), linear-gradient(90deg, #a78bfa, #ff8555, #a78bfa) 0 0 / 200% 100%; animation: onboarding-charge var(--demo-speed) linear infinite; cursor: ew-resize; }
-.onboarding-style-demo input::-webkit-slider-thumb { appearance: none; width: 21px; height: 21px; border: 2px solid #ff8555; border-radius: 50%; background: radial-gradient(circle, #fff 15%, #ff8555 20% 38%, #241c32 42% 60%, #ff8555 65%); box-shadow: 0 0 12px #f65db580; }
-.onboarding-style-demo input:focus-visible { outline: 2px solid var(--green); outline-offset: 7px; }
-@keyframes onboarding-charge { to { background-position: 0 0, 200% 0; } }
-.onboarding-rail nav { min-height: 0; overflow-y: auto; }
-@media (max-width: 520px) { .onboarding-style-demo { grid-template-columns: 1fr; } }
-@media (prefers-reduced-motion: reduce) { .onboarding-style-demo input { animation: none; } }
+/* ===== Onboarding: one lit stage =====
+   Self-contained. Only theme tokens are used, so every theme works without
+   per-theme rules. The modal is a size container: at the minimum window and
+   150% UI scale it measures roughly 620 × 420 CSS px, and the footer always
+   stays in its own row while the stage scrolls if it must.
+   Accent is reserved for state: primary actions, focus, progress, selected
+   edges and status dots. Surfaces, borders and decorative icons stay neutral. */
+
+.modal-backdrop.onboarding-backdrop { position: fixed; inset: 0; z-index: 50; display: grid; grid-template: minmax(0, 1fr) / minmax(0, 1fr); place-items: center; padding: 16px; background: rgba(2, 3, 4, .62); backdrop-filter: blur(8px); opacity: 1; visibility: visible; transition: opacity 220ms var(--ease), visibility 0s; }
+.modal-backdrop.onboarding-backdrop.closed { opacity: 0; visibility: hidden; pointer-events: none; transition: opacity 300ms var(--ease), visibility 0s linear 330ms; }
+
+/* --ob-detail: supporting text sits a step above meta so it stays legible at 100% UI scale. */
+.onboarding-modal { --ob-detail: calc(var(--fs-meta) + 1px); container: ob / size; position: relative; width: min(880px, 100%); height: min(610px, 100%); display: grid; grid-template-rows: 48px minmax(0, 1fr) 52px; overflow: hidden; border: 1px solid var(--line-strong); border-radius: var(--r-xl); color: var(--text); background: var(--panel); box-shadow: var(--shadow); font-size: var(--fs-ui); letter-spacing: var(--track-tight); transform-origin: 50% 60%; transition: transform 300ms var(--ease), opacity 300ms var(--ease); }
+.onboarding-backdrop.closed .onboarding-modal { opacity: 0; transform: translateY(8px) scale(.985); }
+.onboarding-modal :where(h2, h3, p) { margin: 0; }
+.onboarding-modal .primary-button, .onboarding-modal .secondary-button { min-height: 32px; padding: 0 14px; white-space: nowrap; }
+
+/* Explicit fixed chrome rows avoid WebKit redistributing a size-contained
+   grid's footer over the stage at large UI scales. */
+.onboarding-backdrop.open .onboarding-modal { animation: ob-modal-in 280ms var(--ease) both; }
+.onboarding-backdrop.closed *, .onboarding-backdrop.closed *::before, .onboarding-backdrop.closed *::after { animation-play-state: paused !important; }
+@keyframes ob-modal-in { from { opacity: 0; transform: translateY(12px) scale(.985); } }
+
+/* ---- Header: glyph, compact stepper, close ---- */
+.ob-header { position: relative; display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 6px 8px 6px 16px; border-bottom: 1px solid var(--line); }
+.ob-header-glyph { flex: 0 0 auto; width: 20px; height: 20px; }
+.ob-stepper { flex: 1 1 auto; min-width: 0; }
+.ob-stepper ol { display: flex; gap: 2px; min-width: 0; margin: 0; padding: 0; list-style: none; }
+.ob-stepper li { flex: 0 1 auto; min-width: 0; }
+.ob-stepper li.current { flex-shrink: 0; }
+.ob-stepper button { display: flex; align-items: center; gap: 7px; max-width: 100%; height: 32px; padding: 0 10px 0 5px; border: 0; border-radius: var(--r-pill); color: var(--muted); background: transparent; font-size: var(--fs-meta); font-weight: 580; white-space: nowrap; cursor: pointer; transition: color var(--t-fast) ease, background var(--t-fast) ease; }
+.ob-stepper button:hover { color: var(--text); background: color-mix(in srgb, var(--text) 5%, transparent); }
+.ob-step-num { flex: 0 0 auto; width: 20px; height: 20px; display: grid; place-items: center; border: 1px solid var(--line-strong); border-radius: 50%; font-size: var(--fs-micro); font-variant-numeric: tabular-nums; transition: color 200ms var(--ease), background 200ms var(--ease), border-color 200ms var(--ease); }
+.ob-step-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ob-stepper li.current button { color: var(--text); background: color-mix(in srgb, var(--text) 7%, transparent); }
+.ob-stepper li.current .ob-step-num { border-color: var(--green); color: var(--bg); background: var(--green); }
+.ob-stepper li.done .ob-step-num { color: var(--green); }
+.ob-close { flex: 0 0 auto; width: 30px; height: 30px; display: grid; place-items: center; border: 0; border-radius: var(--r-md); color: var(--muted); background: transparent; cursor: pointer; }
+.ob-close:hover { color: var(--text); background: var(--panel-3); }
+.ob-progress { position: absolute; inset: auto 0 -1px; height: 2px; overflow: hidden; pointer-events: none; }
+.ob-progress i { display: block; height: 100%; background: linear-gradient(90deg, color-mix(in srgb, var(--green) 55%, transparent), var(--green)); transform-origin: left center; transition: transform 320ms var(--ease); }
+
+/* ---- Stage ---- */
+.ob-stage { min-height: 0; overflow: hidden auto; padding: clamp(14px, 4.2cqh, 26px) clamp(16px, 4.4cqi, 36px); overscroll-behavior: contain; }
+.ob-page { display: grid; gap: clamp(10px, 2.8cqh, 18px); align-content: start; min-width: 0; animation: ob-page-forward 220ms var(--ease) both; }
+.ob-stage.back .ob-page { animation-name: ob-page-back; }
+
+.ob-head { display: grid; gap: 5px; max-width: 62ch; }
+.ob-head.centered { justify-items: center; margin-inline: auto; text-align: center; }
+.ob-eyebrow { color: var(--muted); font-size: var(--fs-micro); font-weight: 700; letter-spacing: var(--track-caps); text-transform: uppercase; }
+.ob-head h2 { font-size: clamp(20px, 5cqh, var(--fs-display)); font-weight: 650; letter-spacing: var(--track-display); line-height: 1.15; text-wrap: balance; outline: none; }
+.ob-head h2:focus-visible { outline: 2px solid color-mix(in srgb, var(--green) 45%, transparent); outline-offset: 4px; border-radius: var(--r-xs); }
+.ob-head p { color: var(--muted); font-size: var(--fs-body); line-height: 1.5; text-wrap: pretty; }
+
+.ob-plinth { position: relative; border: 1px solid var(--line); border-radius: var(--r-lg); background: radial-gradient(120% 140% at 50% 0%, color-mix(in srgb, var(--text) 3%, var(--panel)) 0%, var(--panel) 72%); box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text) 5%, transparent); }
+.ob-plinth::before { content: ""; position: absolute; top: -1px; left: 18%; right: 18%; height: 1px; background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--text) 18%, transparent), transparent); pointer-events: none; }
+
+.ob-caption { color: var(--muted); font-size: var(--ob-detail); line-height: 1.45; }
+.ob-caption.centered { text-align: center; }
+.ob-field-label { color: var(--muted); font-size: var(--fs-micro); font-weight: 700; letter-spacing: var(--track-caps); text-transform: uppercase; }
+.ob-chip { display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: var(--r-pill); color: var(--ink-2); background: color-mix(in srgb, var(--text) 7%, transparent); font-size: var(--fs-micro); font-style: normal; font-weight: 650; letter-spacing: .02em; vertical-align: 1px; }
+.ob-scope { justify-self: end; align-self: start; display: inline-flex; align-items: center; gap: 5px; padding: 1px 7px; border: 1px solid var(--line-strong); border-radius: var(--r-pill); color: var(--muted); font-size: var(--fs-micro); font-style: normal; font-weight: 650; white-space: nowrap; }
+.ob-scope.github { color: var(--ink-2); }
+.ob-scope.github::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--green); }
+.ob-link { display: inline-flex; align-items: center; gap: 4px; padding: 0 2px; border: 0; border-radius: var(--r-xs); color: var(--green); background: none; font-size: inherit; font-weight: 600; text-decoration: underline; text-decoration-color: transparent; text-underline-offset: 3px; cursor: pointer; transition: text-decoration-color var(--t-fast) ease; }
+.ob-link:hover { text-decoration-color: currentColor; }
+.ob-dot { flex: 0 0 auto; display: inline-block; width: 6px; height: 6px; border: 1px solid var(--muted); border-radius: 50%; }
+.ob-dot.on { border-color: var(--green); background: var(--green); }
+.ob-perm-icon { flex: 0 0 auto; width: 28px; height: 28px; display: grid; place-items: center; border-radius: var(--r-md); color: var(--ink-2); background: var(--panel-3); }
+.ob-icon-button { width: 30px; height: 28px; display: grid; place-items: center; border: 0; border-radius: var(--r-md); color: var(--ink-2); background: transparent; cursor: pointer; }
+.ob-icon-button:hover { color: var(--text); background: var(--panel-3); }
+.onboarding-modal [role="radio"]:focus-visible, .ob-icon-button:focus-visible, .ob-link:focus-visible, .ob-stepper button:focus-visible, .ob-destination:focus-visible, .ob-disclosure-toggle:focus-visible { outline: 2px solid color-mix(in srgb, var(--green) 70%, transparent); outline-offset: 2px; }
+
+/* ---- Disclosure ---- */
+.ob-disclosure { padding-top: 8px; border-top: 1px solid var(--line); }
+.ob-disclosure-toggle { display: inline-flex; align-items: center; gap: 7px; padding: 4px 4px 4px 0; border: 0; border-radius: var(--r-xs); color: var(--ink-2); background: none; font-size: var(--fs-ui); font-weight: 620; cursor: pointer; }
+.ob-disclosure-toggle:hover { color: var(--text); }
+.ob-disclosure-toggle small { color: var(--muted); font-size: var(--fs-meta); font-weight: 500; }
+.ob-chevron { transition: transform 160ms var(--ease); }
+.ob-disclosure-toggle[aria-expanded="true"] .ob-chevron { transform: rotate(90deg); }
+.ob-disclosure-body { margin-top: 10px; animation: ob-fade-in 180ms var(--ease) both; }
+.ob-disclosure-body[hidden] { display: none; }
+
+/* ---- 1 · Connect AI ---- */
+.ob-hero { position: relative; isolation: isolate; display: grid; justify-items: center; gap: 8px; padding-top: clamp(6px, 2.4cqh, 14px); }
+/* Move the soft glow as a layer instead of repainting a background position.
+   A closest-side ellipse reaches transparent before the layer's edges, so the
+   drift never exposes a hard strip against the stage. */
+.ob-hero::before { content: ""; position: absolute; inset: 0 10%; z-index: -1; pointer-events: none; background: radial-gradient(ellipse closest-side at 50% 50%, color-mix(in srgb, var(--green) 7%, transparent), color-mix(in srgb, var(--green) 2%, transparent) 60%, transparent); animation: ob-aurora 12s ease-in-out infinite alternate; }
+.ob-glyph { width: 40px; height: 40px; display: grid; place-items: center; border: 1px solid var(--line-strong); border-radius: var(--r-lg); background: var(--panel-2); box-shadow: var(--elev-1); }
+.ob-glyph img { width: 24px; height: 24px; }
+.ob-providers { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
+.ob-tile { position: relative; min-width: 0; display: grid; justify-items: center; align-content: center; gap: 4px; min-height: clamp(62px, 17cqh, 80px); padding: 8px 6px; border: 1px solid var(--line); border-radius: var(--r-lg); color: var(--ink-2); background: color-mix(in srgb, var(--panel-2) 55%, var(--panel)); text-align: center; cursor: pointer; transition: border-color var(--t-mid) var(--ease), background var(--t-mid) var(--ease), color var(--t-mid) var(--ease); }
+.ob-tile:hover { border-color: var(--line-strong); color: var(--text); }
+.ob-tile.checked { border-color: var(--green); color: var(--text); background: color-mix(in srgb, var(--panel-3) 55%, var(--panel)); }
+.ob-tile-logo { width: 30px; height: 30px; display: grid; place-items: center; border-radius: var(--r-md); background: var(--panel-3); transition: transform 180ms var(--ease); }
+.ob-tile.checked .ob-tile-logo { transform: scale(1.06); }
+.ob-tile-name { max-width: 100%; overflow: hidden; font-size: var(--fs-ui); font-weight: 620; text-overflow: ellipsis; white-space: nowrap; }
+.ob-tile-kind { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; color: var(--muted); font-size: var(--fs-meta); white-space: nowrap; }
+.ob-tile-kind > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ob-tile-ring { position: absolute; inset: -1px; border: 2px solid var(--green); border-radius: inherit; opacity: 0; pointer-events: none; animation: ob-ring 900ms var(--ease) 1 both; }
+.ob-provider-panel { min-height: 96px; display: grid; align-content: center; padding: 12px 16px; }
+.ob-panel-body { display: grid; gap: 8px; animation: ob-fade-in 180ms var(--ease) both; }
+.ob-panel-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.ob-panel-head strong { font-size: var(--fs-lede); font-weight: 650; }
+.ob-panel-body > p { color: var(--ink-2); font-size: var(--fs-ui); line-height: 1.5; }
+.ob-panel-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.ob-panel-empty { color: var(--muted); text-align: center; }
+.ob-panel-note { color: var(--muted); font-size: var(--ob-detail); line-height: 1.45; }
+.ob-status { display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px; border-radius: var(--r-pill); color: var(--muted); background: color-mix(in srgb, var(--text) 6%, transparent); font-size: var(--fs-meta); font-weight: 560; }
+.ob-status i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.ob-status.ready, .ob-status.install, .ob-status.update, .ob-status.connect { color: var(--ink-2); }
+.ob-status.ready i { background: var(--green); }
+.ob-status.install i, .ob-status.update i { background: var(--orange); }
+
+/* ---- Shared segmented radiogroup (projects, chat font) ---- */
+.ob-segmented { justify-self: start; display: inline-grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 3px; max-width: 100%; padding: 3px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--field); }
+.ob-segmented [role="radio"] { min-width: 0; display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 32px; padding: 0 14px; border: 0; border-radius: var(--r-md); color: var(--muted); background: transparent; font-size: var(--fs-ui); font-weight: 600; white-space: nowrap; cursor: pointer; transition: color var(--t-fast) ease, background var(--t-mid) var(--ease), box-shadow var(--t-mid) var(--ease); }
+.ob-segmented [role="radio"]:hover { color: var(--text); }
+.ob-segmented [role="radio"].checked { color: var(--text); background: var(--panel-3); box-shadow: var(--elev-1); }
+.ob-segmented [role="radio"].checked svg { color: var(--text); }
+
+/* ---- 2 · Projects & chats ---- */
+.ob-place { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 14px; padding: 14px 16px; }
+.ob-place-icon { width: 44px; height: 44px; display: grid; place-items: center; border: 1px solid var(--line-strong); border-radius: var(--r-lg); color: var(--ink-2); background: var(--panel-2); }
+.ob-place p { color: var(--ink-2); font-size: var(--fs-body); line-height: 1.5; animation: ob-fade-in 180ms var(--ease) both; }
+.ob-route { display: grid; margin: 0; padding: 0; list-style: none; }
+.ob-route li { position: relative; display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; column-gap: 10px; padding-bottom: 10px; }
+.ob-route li::before { content: ""; position: absolute; top: 24px; bottom: 2px; left: 10.5px; width: 1px; background: var(--line-strong); }
+.ob-route li:last-child { padding-bottom: 0; }
+.ob-route li:last-child::before { display: none; }
+.ob-route-icon { width: 22px; height: 22px; display: grid; place-items: center; border: 1px solid var(--line-strong); border-radius: 50%; color: var(--muted); background: var(--panel-2); }
+.ob-route li.github .ob-route-icon { color: var(--ink-2); background: var(--panel-3); }
+.ob-route strong, .ob-tools strong, .ob-perm strong, .ob-aside strong, .ob-inline-note strong { display: block; font-size: var(--fs-ui); font-weight: 620; }
+.ob-route small, .ob-tools small, .ob-perm small, .ob-aside small, .ob-inline-note small { display: block; color: var(--muted); font-size: var(--ob-detail); line-height: 1.45; }
+.ob-route-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 12px; margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--line); color: var(--muted); font-size: var(--ob-detail); }
+
+/* ---- 3 · Direct the work ---- */
+.ob-direct { display: grid; grid-template-columns: minmax(0, .92fr) minmax(0, 1.08fr); gap: 14px; align-items: start; }
+.ob-perms-block { display: grid; gap: 7px; }
+/* A static reference list, not a picker: no per-row borders, fills or hover. */
+.ob-perms { display: grid; margin: 0; padding: 0; list-style: none; }
+.ob-perm { display: grid; grid-template-columns: 28px minmax(0, 1fr); align-items: center; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--line); }
+.ob-perm:first-child { padding-top: 2px; }
+.ob-perm:last-child { border-bottom: 0; }
+.ob-perm.full .ob-perm-icon { color: var(--orange); }
+.ob-crew { display: grid; gap: 10px; padding: 14px 16px; }
+.ob-crew-head { display: flex; align-items: center; gap: 9px; }
+.ob-crew-head h3 { font-size: var(--fs-lede); font-weight: 650; letter-spacing: var(--track-tight); }
+.ob-crew-head .ob-chip { margin-left: auto; }
+.ob-crew-icon { flex: 0 0 auto; width: 30px; height: 30px; display: grid; place-items: center; border: 1px solid var(--line-strong); border-radius: var(--r-md); color: var(--ink-2); background: var(--panel-2); }
+.ob-crew ul { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; }
+.ob-crew li { display: grid; grid-template-columns: 14px minmax(0, 1fr); gap: 8px; color: var(--ink-2); font-size: var(--fs-ui); line-height: 1.45; }
+.ob-crew li svg { margin-top: 2px; color: var(--muted); }
+.ob-crew li b { color: var(--text); font-weight: 620; }
+.ob-crew > p { color: var(--muted); font-size: var(--ob-detail); line-height: 1.5; }
+.ob-aside-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.ob-aside { display: grid; grid-template-columns: 28px minmax(0, 1fr); align-items: start; gap: 10px; }
+.ob-note { color: var(--muted); font-size: var(--ob-detail); line-height: 1.5; }
+.ob-note svg { margin-right: 7px; vertical-align: -2px; }
+.ob-note b { color: var(--ink-2); font-weight: 620; }
+
+/* ---- 4 · Make it yours (preview only) ---- */
+.ob-personalize { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); gap: 16px; align-items: start; }
+.ob-fields { display: grid; gap: 12px; }
+.ob-field { display: grid; gap: 6px; min-width: 0; }
+.ob-field > small { color: var(--muted); font-size: var(--ob-detail); line-height: 1.4; }
+.ob-field > small b { color: var(--ink-2); font-weight: 620; }
+.ob-swatches { display: flex; flex-wrap: wrap; gap: 8px; }
+.ob-swatch-option { width: 30px; height: 30px; display: grid; place-items: center; padding: 0; border: 2px solid transparent; border-radius: 50%; background: none; box-shadow: 0 0 0 1px var(--line-strong); cursor: pointer; transition: border-color var(--t-mid) var(--ease), box-shadow var(--t-mid) var(--ease), transform var(--t-mid) var(--ease); }
+.ob-swatch-option:hover { transform: scale(1.06); }
+.ob-swatch-option.checked { border-color: var(--green); box-shadow: 0 0 0 1px transparent; }
+.ob-swatch { width: 22px; height: 22px; border-radius: 50%; background: conic-gradient(from 210deg, var(--sw-a) 0 33%, var(--sw-b) 0 66%, var(--sw-c) 0); }
+.ob-segmented.ob-fonts { justify-self: stretch; display: flex; flex-wrap: wrap; }
+.ob-fonts [role="radio"] { flex: 1 0 auto; padding: 0 9px; }
+.ob-style-stepper { justify-self: start; display: inline-grid; grid-template-columns: 30px minmax(104px, auto) 30px; align-items: center; gap: 2px; padding: 2px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--field); }
+.ob-style-name { display: grid; justify-items: center; line-height: 1.2; }
+.ob-style-name strong { font-size: var(--fs-ui); font-weight: 650; }
+.ob-style-name small { color: var(--muted); font-size: var(--fs-micro); font-variant-numeric: tabular-nums; }
+
+/* Preview tokens come from the picked theme's swatches, scoped to this card. */
+.ob-preview {
+  --panel: var(--ob-pv-panel);
+  --panel-2: color-mix(in srgb, var(--ob-pv-panel) 92%, var(--ob-pv-text));
+  --panel-3: color-mix(in srgb, var(--ob-pv-panel) 84%, var(--ob-pv-text));
+  --field: color-mix(in srgb, var(--ob-pv-bg) 70%, var(--ob-pv-panel));
+  --line: var(--ob-pv-line);
+  --line-strong: color-mix(in srgb, var(--ob-pv-text) 16%, transparent);
+  --text: var(--ob-pv-text);
+  --ink-2: color-mix(in srgb, var(--ob-pv-text) 84%, var(--ob-pv-bg));
+  --muted: var(--ob-pv-muted);
+  --muted-2: var(--ob-pv-muted);
+  --green: var(--ob-pv-accent);
+  --green-soft: color-mix(in srgb, var(--ob-pv-accent) 13%, transparent);
+  --green-line: color-mix(in srgb, var(--ob-pv-accent) 30%, transparent);
+  min-width: 0; display: grid; gap: 11px; padding: 10px 14px 14px; border: 1px solid var(--ob-pv-line); border-radius: var(--r-lg); color: var(--ob-pv-text); background: var(--ob-pv-bg);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ob-pv-accent) 16%, transparent), var(--elev-2);
+  transition: background 180ms var(--ease), color 180ms var(--ease), border-color 180ms var(--ease), box-shadow 180ms var(--ease);
+}
+.ob-preview-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.ob-preview-dots { display: flex; gap: 5px; }
+.ob-preview-dots i { width: 7px; height: 7px; border-radius: 50%; background: var(--ob-pv-line); }
+.ob-preview-badge { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: var(--r-pill); color: var(--ob-pv-accent); background: color-mix(in srgb, var(--ob-pv-accent) 14%, transparent); font-size: var(--fs-micro); font-weight: 650; letter-spacing: .02em; white-space: nowrap; }
+.ob-preview-chat { display: grid; gap: 8px; font-size: 13px; line-height: 1.45; }
+.ob-preview-user { justify-self: end; max-width: 88%; padding: 6px 10px; border-radius: 10px 10px 3px 10px; background: var(--ob-pv-panel); }
+.ob-preview-reply { color: var(--ink-2); }
+/* The nested shell only scopes the slider-style attribute; neutralise its app layout. */
+.onboarding-modal .ob-effort-shell.app-shell { --bg: var(--ob-pv-bg); --panel: inherit; --panel-2: inherit; --panel-3: inherit; --field: inherit; --line: inherit; --line-strong: inherit; --text: inherit; --ink-2: inherit; --muted: inherit; --muted-2: inherit; --green: inherit; --green-soft: inherit; --green-line: inherit; display: block; height: auto; overflow: visible; color: inherit; background: transparent; font-size: var(--fs-ui); transition: none; }
+.onboarding-modal .ob-effort-wrap.model-power-control { position: relative; z-index: auto; display: block; margin: 0; padding: 9px 10px 8px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--ob-pv-panel); box-shadow: none; }
+.ob-foot-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; padding-top: 12px; border-top: 1px solid var(--line); }
+.ob-inline-note { flex: 1 1 260px; min-width: 0; display: grid; grid-template-columns: 28px minmax(0, 1fr); align-items: center; gap: 10px; }
+
+/* ---- 5 · Ready ---- */
+.ob-ready { justify-items: stretch; }
+.ob-ready-mark { justify-self: center; width: 50px; height: 50px; display: grid; place-items: center; border: 1px solid var(--line-strong); border-radius: 50%; color: var(--green); background: var(--panel-2); box-shadow: 0 0 0 6px color-mix(in srgb, var(--text) 3%, transparent); animation: ob-pop 420ms var(--ease) both; }
+.ob-ready-mark.pending { color: var(--orange); }
+.ob-status-line { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px 12px; color: var(--muted); font-size: var(--fs-ui); text-align: center; }
+.ob-status-line > span { display: inline-flex; align-items: center; gap: 7px; }
+.ob-destinations { width: 100%; max-width: 580px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-inline: auto; }
+.ob-destination { min-width: 0; display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; align-items: center; gap: 12px; min-height: 62px; padding: 11px 14px; border: 1px solid var(--line-strong); border-radius: var(--r-lg); color: var(--text); background: color-mix(in srgb, var(--panel-2) 60%, var(--panel)); text-align: left; cursor: pointer; transition: border-color var(--t-mid) var(--ease), background var(--t-mid) var(--ease); }
+.ob-destination:hover:not(:disabled) { border-color: color-mix(in srgb, var(--text) 26%, transparent); background: color-mix(in srgb, var(--panel-3) 60%, var(--panel)); }
+.ob-destination:disabled { opacity: .7; cursor: progress; }
+.ob-dest-icon { width: 38px; height: 38px; display: grid; place-items: center; border-radius: var(--r-md); color: var(--ink-2); background: var(--panel-3); }
+.ob-destination strong { display: block; overflow: hidden; font-size: var(--fs-body); font-weight: 640; text-overflow: ellipsis; white-space: nowrap; }
+.ob-destination small { display: block; color: var(--muted); font-size: var(--ob-detail); }
+.ob-dest-arrow { color: var(--muted); transition: transform var(--t-mid) var(--ease), color var(--t-mid) var(--ease); }
+.ob-destination:hover:not(:disabled) .ob-dest-arrow { color: var(--green); transform: translateX(3px); }
+.ob-error { width: 100%; max-width: 580px; margin-inline: auto; padding: 8px 12px; border: 1px solid color-mix(in srgb, var(--red) 28%, transparent); border-radius: var(--r-md); color: var(--red); background: color-mix(in srgb, var(--red) 10%, transparent); font-size: var(--fs-ui); overflow-wrap: anywhere; }
+.ob-tools-disclosure { width: 100%; max-width: 620px; margin-inline: auto; }
+.ob-tools { display: grid; margin: 0; padding: 0; list-style: none; }
+.ob-tools li { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 7px 2px; border-bottom: 1px solid var(--line); }
+.ob-tools li:last-child { border-bottom: 0; }
+.ob-tools small { overflow-wrap: anywhere; }
+.ob-spin { animation: ob-spin 900ms linear infinite; }
+
+/* ---- Footer: its own grid row, never scrolled away ---- */
+.ob-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 52px; padding: 8px clamp(12px, 3cqi, 22px); border-top: 1px solid var(--line); background: color-mix(in srgb, var(--panel) 90%, var(--bg)); }
+.ob-footer-nav { display: flex; align-items: center; gap: 8px; }
+.ob-skip { padding: 6px 4px; border: 0; border-radius: var(--r-xs); color: var(--muted); background: none; font-size: var(--fs-ui); font-weight: 560; cursor: pointer; }
+.ob-skip:hover { color: var(--text); }
+.ob-count { margin-right: 4px; color: var(--muted); font-size: var(--fs-meta); font-variant-numeric: tabular-nums; }
+
+/* ---- Compact budgets (the modal is the container, so UI zoom is accounted for) ---- */
+@container ob (max-width: 740px) {
+  .ob-stepper li:not(.current) .ob-step-label { display: none; }
+  .ob-stepper li:not(.current) button { padding-right: 5px; }
+}
+@container ob (max-width: 600px) {
+  .ob-providers { grid-template-columns: repeat(auto-fit, minmax(92px, 1fr)); }
+  .ob-direct, .ob-personalize { grid-template-columns: minmax(0, 1fr); }
+  .ob-count { display: none; }
+}
+@container ob (max-width: 480px) {
+  .ob-aside-row, .ob-destinations { grid-template-columns: minmax(0, 1fr); }
+  .ob-header-glyph { display: none; }
+}
+@container ob (max-height: 480px) {
+  .ob-glyph { display: none; }
+  .ob-head p { font-size: var(--fs-ui); }
+  .ob-provider-panel { min-height: 0; padding-block: 10px; }
+  .ob-ready-mark { width: 40px; height: 40px; }
+  .ob-destination { min-height: 54px; padding-block: 8px; }
+}
+
+@keyframes ob-page-forward { from { opacity: 0; transform: translateX(12px); } }
+@keyframes ob-page-back { from { opacity: 0; transform: translateX(-12px); } }
+@keyframes ob-fade-in { from { opacity: 0; } }
+@keyframes ob-ring { 0% { opacity: .9; box-shadow: 0 0 0 0 var(--green-line); } 100% { opacity: 0; box-shadow: 0 0 0 8px transparent; } }
+@keyframes ob-aurora { from { transform: translateX(-8%); opacity: .65; } to { transform: translateX(8%); opacity: 1; } }
+@keyframes ob-pop { from { opacity: 0; transform: scale(.82); } }
+@keyframes ob-spin { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .onboarding-backdrop, .onboarding-backdrop *, .onboarding-backdrop *::before, .onboarding-backdrop *::after { animation: none !important; transition: none !important; }
+}

@@ -10,6 +10,6 @@
 .run-discovery-settings label, .run-discovery-field { display: grid; gap: 4px; min-width: 0; }
 .run-discovery-settings input:not([type="checkbox"]) { min-width: 0; width: 100%; color: var(--text); background: var(--field); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 7px; }
 .run-discovery-settings .run-discovery-fast { display: flex; align-items: center; gap: 7px; }
-.run-discovery-result { padding: 10px; margin-top: 10px; border: 1px solid var(--green-line); border-radius: var(--r-sm); background: var(--green-soft); }
+.run-discovery-result { padding: 10px; margin-top: 10px; border: 1px solid var(--green-line); border-radius: var(--r-sm); background: var(--surface-quiet); }
 .run-discovery-result pre { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-mono); }
 .run-discovery [role="alert"] { color: var(--amber); }

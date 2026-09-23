@@ -1,0 +1,149 @@
+/* ===== Thread title fog =====
+   While a title is generated, a small bank of fog sits where it will appear;
+   when it lands, a breeze carries the fog off left to right and the words
+   come into focus underneath. The fog is made from the text's own ink
+   (currentColor) plus a breath of accent, so it follows the theme, the card's
+   hover colour and the quieter header ink without per-context overrides.
+
+   Cost: puffs are soft radial gradients moved with translate/scale/opacity —
+   compositor-only, no backdrop-filter, no animated filter on the fog. The one
+   filter is a brief blur on the title text itself during the reveal. The fog
+   is unmounted when the reveal ends, so a settled title animates nothing.
+
+   Layout: the title is always exactly one line box tall. While pending, a
+   no-break space at --thread-title-fog-width holds the space; the fog is
+   absolutely positioned and never affects layout. */
+
+.thread-title {
+  --thread-title-fog-width: 9em;
+  --thread-title-fog-strength: 30%;
+  --thread-title-fog: color-mix(in srgb, currentColor var(--thread-title-fog-strength), transparent);
+  --thread-title-fog-thin: color-mix(in srgb, currentColor calc(var(--thread-title-fog-strength) * .45), transparent);
+  --thread-title-fog-tint: color-mix(in srgb, var(--green, #64ddf2) 22%, transparent);
+  position: relative;
+  display: inline-block;
+  min-width: 0;
+  max-width: 100%;
+  /* Top, not baseline: an inline-block whose child clips has no dependable
+     baseline across engines, and top keeps it level with a same-sized line. */
+  vertical-align: top;
+}
+
+.app-shell[data-color-scheme="light"] .thread-title {
+  --thread-title-fog-strength: 22%;
+  --thread-title-fog-tint: color-mix(in srgb, var(--green) 16%, transparent);
+}
+
+.thread-title-text {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.thread-title[data-state="pending"] .thread-title-text {
+  width: var(--thread-title-fog-width);
+  max-width: 100%;
+}
+
+.thread-title-fog {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  /* A fixed footprint, whatever the host's display or the final title's
+     length, so the fog drifts off rather than snapping to a new width. In a
+     container narrower than this the host's own overflow clipping trims it. */
+  width: var(--thread-title-fog-width);
+  pointer-events: none;
+}
+
+.thread-title[data-state="pending"] .thread-title-fog {
+  animation: thread-title-fog-in 420ms ease-out both;
+}
+
+/* Words glimpsed through the fog: soft-ended, low-contrast, static. */
+.thread-title-ghost {
+  position: absolute;
+  top: 50%;
+  height: .62em;
+  translate: 0 -50%;
+  background: radial-gradient(closest-side, var(--thread-title-fog-thin) 55%, transparent);
+}
+.thread-title-ghost.a { left: 1%; width: 31%; }
+.thread-title-ghost.b { left: 35%; width: 22%; }
+.thread-title-ghost.c { left: 60%; width: 34%; }
+
+/* A puff is two layers so its motions never fight: the span carries the
+   one-shot dispersal (transform, opacity) and ::before carries the endless
+   drift (translate, scale) and breathing (opacity). Switching to the reveal
+   therefore starts the breeze from wherever each puff has drifted to. */
+.thread-title-puff {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+}
+.thread-title-puff::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(closest-side, var(--thread-title-fog) 0%, var(--thread-title-fog-thin) 52%, transparent 100%);
+  animation:
+    thread-title-drift var(--drift, 6s) ease-in-out var(--delay, 0s) infinite alternate,
+    thread-title-breathe var(--breathe, 3.6s) ease-in-out var(--delay, 0s) infinite alternate;
+}
+.thread-title-puff.a { left: -4%; width: 46%; --drift: 5.4s; --breathe: 3.1s; --delay: -1.2s; --scatter: 38%; --stagger: 0ms; }
+.thread-title-puff.b { left: 24%; width: 44%; --drift: 7.1s; --breathe: 4.2s; --delay: -3.4s; --scatter: 30%; --stagger: 70ms; }
+.thread-title-puff.c { left: 54%; width: 50%; --drift: 6.3s; --breathe: 3.7s; --delay: -2.1s; --scatter: 24%; --stagger: 120ms; }
+/* The accent puff: light catching the fog, not a status colour. */
+.thread-title-puff.d { left: 16%; width: 62%; top: 12%; bottom: 12%; --drift: 8.6s; --breathe: 5.2s; --delay: -4.6s; --scatter: 34%; --stagger: 40ms; }
+.thread-title-puff.d::before {
+  background: radial-gradient(closest-side, var(--thread-title-fog-tint), transparent);
+}
+
+/* ---- Reveal ---- */
+.thread-title[data-state="revealing"] .thread-title-text {
+  animation: thread-title-emerge 540ms var(--ease, cubic-bezier(.2,.7,.25,1)) 80ms both;
+}
+.thread-title[data-state="revealing"] .thread-title-puff {
+  animation: thread-title-disperse 600ms cubic-bezier(.3,.55,.2,1) var(--stagger) both;
+}
+.thread-title[data-state="revealing"] .thread-title-ghost {
+  animation: thread-title-fade-out 220ms ease-out both;
+}
+
+@keyframes thread-title-fog-in { from { opacity: 0; } }
+@keyframes thread-title-drift {
+  from { translate: -12% 3%; scale: .9 1; }
+  to { translate: 12% -3%; scale: 1.1 .94; }
+}
+@keyframes thread-title-breathe {
+  from { opacity: .62; }
+  to { opacity: 1; }
+}
+@keyframes thread-title-disperse {
+  from { transform: none; opacity: 1; }
+  to { transform: translateX(var(--scatter)) scale(1.35, 1.1); opacity: 0; }
+}
+@keyframes thread-title-emerge {
+  from { opacity: 0; filter: blur(4px); }
+  55% { opacity: 1; }
+  to { opacity: 1; filter: blur(0); }
+}
+@keyframes thread-title-fade-out { to { opacity: 0; } }
+@keyframes thread-title-fade-in { from { opacity: 0; } }
+
+/* Still fog, and a plain cross-fade in place of the breeze and the focus pull. */
+@media (prefers-reduced-motion: reduce) {
+  .thread-title-puff::before { animation: none; }
+  .thread-title[data-state="revealing"] .thread-title-puff,
+  .thread-title[data-state="revealing"] .thread-title-ghost { animation: thread-title-fade-out 200ms linear both; }
+  .thread-title[data-state="revealing"] .thread-title-text { animation: thread-title-fade-in 200ms linear both; }
+}
+
+/* Forced colours flatten gradients into nothing useful; show the placeholder
+   words in the system's disabled-text colour instead of invisible fog. */
+@media (forced-colors: active) {
+  .thread-title-puff { display: none; }
+  .thread-title-ghost { background: GrayText; border-radius: 999px; opacity: .6; }
+}

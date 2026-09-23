@@ -29,7 +29,7 @@
 /* ---- Header ---- */
 
 .thread-pr-head { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; align-items: center; gap: var(--s-2); }
-.thread-pr-head-icon { display: grid; place-items: center; width: 30px; height: 30px; border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--green); background: var(--green-soft); }
+.thread-pr-head-icon { display: grid; place-items: center; width: 30px; height: 30px; border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--ink-2); background: var(--panel-3); }
 .thread-pr-head > div { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .thread-pr-head strong { font-size: var(--fs-ui); letter-spacing: var(--track-tight); }
 .thread-pr-head small { overflow: hidden; color: var(--muted-2); font-size: var(--fs-meta); white-space: nowrap; text-overflow: ellipsis; }
@@ -51,7 +51,7 @@
 .thread-pr-note strong { color: var(--text); font-weight: 620; }
 .thread-pr-note.bad { color: color-mix(in srgb, var(--red) 70%, var(--text)); border-color: color-mix(in srgb, var(--red) 30%, var(--line)); background: color-mix(in srgb, var(--red) 8%, transparent); }
 .thread-pr-note.bad svg { color: var(--red); }
-.thread-pr-note.good { color: color-mix(in srgb, var(--green) 52%, var(--text)); border-color: var(--green-line); background: var(--green-soft); }
+.thread-pr-note.good { color: var(--ink-2); border-color: var(--green-line); background: color-mix(in srgb, var(--text) 2%, transparent); }
 .thread-pr-note.good svg { color: var(--green); }
 
 .thread-pr-inline-button { min-height: 22px; display: inline-flex; align-items: center; gap: 5px; padding: 0 7px; border: 1px solid var(--line-strong); border-radius: var(--r-xs); color: inherit; background: transparent; font-size: var(--fs-micro); white-space: nowrap; cursor: pointer; transition: background var(--t-fast) ease, border-color var(--t-fast) ease; }
@@ -64,14 +64,14 @@
 /* ---- The pull request card ---- */
 
 .thread-pr-card { display: grid; grid-template-columns: minmax(0, 1fr); gap: 7px; padding: var(--s-3); border: 1px solid var(--line); border-radius: var(--r-md); background: color-mix(in srgb, var(--text) 2.5%, transparent); animation: thread-pr-pop var(--t-mid) var(--ease) both; }
-.thread-pr-card.open { border-color: var(--green-line); background: color-mix(in srgb, var(--green) 5%, transparent); }
+.thread-pr-card.open { border-color: var(--green-line); background: color-mix(in srgb, var(--text) 2.5%, transparent); }
 .thread-pr-card.merged { border-color: color-mix(in srgb, var(--info) 30%, var(--line)); background: color-mix(in srgb, var(--info) 6%, transparent); }
 .thread-pr-card.candidate { border-style: dashed; border-color: var(--line-strong); }
 .thread-pr-card-head { display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); }
 .thread-pr-number { color: var(--muted-2); font: 600 var(--fs-meta) var(--font-mono); }
 
 .thread-pr-state { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border: 1px solid var(--line); border-radius: var(--r-pill); color: var(--muted); background: color-mix(in srgb, var(--text) 4%, transparent); font-size: var(--fs-micro); font-weight: 650; letter-spacing: var(--track-tight); white-space: nowrap; }
-.thread-pr-state.open { color: var(--green); border-color: var(--green-line); background: var(--green-soft); }
+.thread-pr-state.open { color: var(--green); border-color: var(--green-line); background: color-mix(in srgb, var(--text) 4%, transparent); }
 .thread-pr-state.draft { color: var(--muted-2); }
 .thread-pr-state.merged { color: var(--info); border-color: color-mix(in srgb, var(--info) 30%, var(--line)); background: color-mix(in srgb, var(--info) 9%, transparent); }
 .thread-pr-state.closed { color: var(--red); border-color: color-mix(in srgb, var(--red) 28%, var(--line)); background: color-mix(in srgb, var(--red) 8%, transparent); }
@@ -110,15 +110,15 @@
 .thread-pr-actions button:hover:not(:disabled) { color: var(--text); border-color: var(--line-strong); background: color-mix(in srgb, var(--text) 5%, transparent); }
 .thread-pr-actions button:active:not(:disabled) { transform: translateY(1px); }
 .thread-pr-actions button:disabled { opacity: .38; cursor: default; }
-.thread-pr-actions button.primary { color: var(--green); border-color: var(--green-line); background: var(--green-soft); }
-.thread-pr-actions button.primary:hover:not(:disabled) { color: var(--green); background: color-mix(in srgb, var(--green) 17%, transparent); }
+.thread-pr-actions button.primary { color: var(--green); border-color: var(--green-line); background: color-mix(in srgb, var(--text) 5%, transparent); }
+.thread-pr-actions button.primary:hover:not(:disabled) { color: var(--green); border-color: color-mix(in srgb, var(--green) 44%, var(--line-strong)); background: color-mix(in srgb, var(--text) 9%, transparent); }
 
 .thread-pr-wide-button { width: 100%; min-height: var(--ctl-md); display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--ink-2); background: color-mix(in srgb, var(--text) 3.5%, transparent); font-size: var(--fs-meta); cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease, transform var(--t-fast) var(--ease); }
 .thread-pr-wide-button:hover:not(:disabled) { color: var(--text); border-color: var(--line-strong); background: color-mix(in srgb, var(--text) 7%, transparent); }
 .thread-pr-wide-button:active:not(:disabled) { transform: translateY(1px); }
 .thread-pr-wide-button:disabled { opacity: .4; cursor: default; }
-.thread-pr-wide-button.primary { color: var(--green); border-color: var(--green-line); background: var(--green-soft); font-weight: 600; }
-.thread-pr-wide-button.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--green) 17%, transparent); }
+.thread-pr-wide-button.primary { color: var(--green); border-color: var(--green-line); background: color-mix(in srgb, var(--text) 5%, transparent); font-weight: 600; }
+.thread-pr-wide-button.primary:hover:not(:disabled) { color: var(--green); border-color: color-mix(in srgb, var(--green) 44%, var(--line-strong)); background: color-mix(in srgb, var(--text) 9%, transparent); }
 
 /* ---- Slots, fields, inline editors ---- */
 
@@ -148,7 +148,7 @@
 .thread-pr-check small { display: block; margin-top: 2px; color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.5; }
 
 .thread-pr-editor { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s-3); padding: var(--s-3); border: 1px solid var(--line-strong); border-radius: var(--r-md); background: color-mix(in srgb, var(--text) 3%, transparent); animation: thread-pr-expand var(--t-mid) var(--ease) both; }
-.thread-pr-editor.confirm { border-color: var(--green-line); background: var(--green-soft); }
+.thread-pr-editor.confirm { border-color: var(--green-line); background: color-mix(in srgb, var(--text) 3%, transparent); }
 /* A confirmation that cannot go ahead must not be dressed as a go signal.
    Green framing around a red refusal reads as two instructions at once. */
 .thread-pr-editor.confirm.stopped { border-color: color-mix(in srgb, var(--red) 26%, var(--line)); background: color-mix(in srgb, var(--red) 6%, transparent); }

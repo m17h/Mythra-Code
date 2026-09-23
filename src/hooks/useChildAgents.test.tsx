@@ -377,6 +377,16 @@ describe("useChildAgents", () => {
       );
     });
 
+    it("maps a legacy secondary-switch revocation to the visible main switch", async () => {
+      const applyProjectSubagentSettings = vi.fn();
+      const view = await mount({ applyProjectSubagentSettings });
+      await view.send(request({ tool: "propose_agent_settings", arguments: { crossProviderEnabled: false } }));
+      const approval = useTaskStore.getState().tasks["root-1"].approvals[0];
+      expect(String(approval.params.command)).toContain("Sub-agents: off");
+      await act(async () => { await view.result.current.respondToSettingsProposal(approval, { decision: "accept" }); });
+      expect(applyProjectSubagentSettings).toHaveBeenCalledWith("root-1", expect.objectContaining({ enabled: false }));
+    });
+
     it("keeps the current settings when the user declines a proposal", async () => {
       const applyProjectSubagentSettings = vi.fn();
       const view = await mount({ applyProjectSubagentSettings });

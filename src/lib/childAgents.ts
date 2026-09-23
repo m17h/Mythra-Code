@@ -225,6 +225,13 @@ export function childAgentModel(target: Pick<ChildAgentTarget, "provider" | "mod
   return DEFAULT_OPENAI_MODEL;
 }
 
+/** A selection stays visible while its subscription needs a sign-in. */
+export function providerSignInIssue(provider: Provider, readiness: ChildAgentReadiness): string | null {
+  if (provider === "openai" && !readiness.openAiSignedIn) return "Sign in to ChatGPT in Settings → Models & accounts to use OpenAI.";
+  if (provider === "claude" && !readiness.claudeReady) return "Sign in to Claude Code in Settings → Models & accounts to use Claude.";
+  return null;
+}
+
 /**
  * Why a destination cannot be used right now, or null when it is usable.
  * Configuration problems (a model that provider cannot address) are reported
@@ -314,7 +321,9 @@ export function sanitizeChildAgentSettings(stored: unknown): ChildAgentSettings 
       reasoningMaxEffort: isReasoningEffort(entry.reasoningMaxEffort) ? entry.reasoningMaxEffort : "high",
     });
   }
-  return { enabled: value.enabled === true, targets };
+  // The roster is the provider allow-list. A legacy cross-provider switch
+  // must not leave configured targets silently disabled behind the main switch.
+  return { enabled: targets.length > 0, targets };
 }
 
 /** How many workers are configured in the crew window, enabled or parked. */
@@ -656,7 +665,7 @@ export function describeChildAgentRoster(
   settings: ChildAgentSettings,
   readiness: ChildAgentReadiness,
 ): string {
-  if (!settings.enabled) return "Cross-provider off";
+  if (!settings.enabled) return "No sub-agents configured";
   const ready = readyChildAgentTargets(settings, readiness).length;
   const enabled = settings.targets.filter((target) => target.enabled).length;
   if (!enabled) return "No destinations";

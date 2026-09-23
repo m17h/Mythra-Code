@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { Provider, Thread } from "../types";
 import type { RunDiscoveryCatalogs } from "../lib/runDiscovery";
@@ -24,8 +24,26 @@ export function useAutomaticThreadTitles(options: Options) {
   const active = useRef<Job | null>(null);
   const seen = useRef(new Set<string>());
   const alive = useRef(true);
+  const [pendingIds, setPendingIds] = useState<ReadonlySet<string>>(new Set());
+  const clearPending = useCallback((id: string) => {
+    if (!alive.current) return;
+    setPendingIds((current) => {
+      if (!current.has(id)) return current;
+      const next = new Set(current); next.delete(id); return next;
+    });
+  }, []);
+  // Reserve before the thread is exposed, but spend nothing until its first
+  // message is accepted. This also covers slow checkpoints/provider startup.
+  const prepareTitle = useCallback((id: string, prompt: string) => {
+    const current = optionsRef.current;
+    const thread = current.getThread(id);
+    if (!current.enabled || !prompt.trim() || thread?.name?.trim() || seen.current.has(id)
+      || !resolveThreadTitleModel(current.provider, current.model, current.catalogs)) return;
+    setPendingIds((pending) => new Set(pending).add(id));
+  }, []);
 
   const cancel = useCallback(async (id: string) => {
+    clearPending(id);
     queue.current = queue.current.filter((job) => job.id !== id);
     const job = active.current;
     if (job?.id !== id) return;
@@ -33,17 +51,17 @@ export function useAutomaticThreadTitles(options: Options) {
     if (!job.applying) void invoke("run_discovery_cancel", { requestId: job.requestId }).catch(() => undefined);
     // A manual rename must be ordered after an already submitted name write.
     await job.applying?.catch(() => undefined);
-  }, []);
+  }, [clearPending]);
 
   const pump = useCallback(async () => {
     if (active.current) return;
     while (alive.current && queue.current.length) {
       const job = queue.current.shift()!;
       const current = optionsRef.current;
-      if (!current.enabled) { queue.current = []; return; }
+      if (!current.enabled) { queue.current = []; setPendingIds(new Set()); return; }
       const thread = current.getThread(job.id);
       const model = resolveThreadTitleModel(current.provider, current.model, current.catalogs);
-      if (!thread || thread.name?.trim() || !model) continue;
+      if (!thread || thread.name?.trim() || !model) { clearPending(job.id); continue; }
       active.current = job;
       try {
         const value = await invoke<unknown>("generate_thread_title", {
@@ -61,21 +79,24 @@ export function useAutomaticThreadTitles(options: Options) {
         }
       } catch {
         // A convenience feature cannot block the user's turn or replace its error.
-      } finally { if (active.current === job) active.current = null; }
+      } finally { clearPending(job.id); if (active.current === job) active.current = null; }
     }
-  }, []);
+  }, [clearPending]);
 
   const requestTitle = useCallback((id: string, prompt: string) => {
-    if (!optionsRef.current.enabled || !prompt.trim() || seen.current.has(id) || queue.current.length >= 16) return;
+    if (seen.current.has(id)) return;
+    if (!optionsRef.current.enabled || !prompt.trim() || queue.current.length >= 16) { clearPending(id); return; }
+    prepareTitle(id, prompt);
     seen.current.add(id);
     while (seen.current.size > 256) seen.current.delete(seen.current.values().next().value!);
     queue.current.push({ id, requestId: crypto.randomUUID(), prompt: [...prompt].slice(0, 2000).join(""), cancelled: false });
     void pump();
-  }, [pump]);
+  }, [pump, prepareTitle, clearPending]);
 
   useEffect(() => {
     if (options.enabled) return;
     queue.current = [];
+    setPendingIds(new Set());
     if (active.current) void cancel(active.current.id);
   }, [options.enabled, cancel]);
   useEffect(() => {
@@ -86,5 +107,5 @@ export function useAutomaticThreadTitles(options: Options) {
       if (active.current) void cancel(active.current.id);
     };
   }, [cancel]);
-  return { requestTitle, cancel };
+  return { requestTitle, prepareTitle, cancel, pendingIds };
 }

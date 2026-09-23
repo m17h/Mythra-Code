@@ -688,16 +688,15 @@ export function useChildAgents(context: ChildAgentContext): {
     if (!policy?.rootThreadId) throw new Error("This thread is not attached to a project sub-agent policy.");
     const current = ctx.projectSubagentSettingsForThread(policy.rootThreadId);
     const proposedEnabled = typeof request.arguments.enabled === "boolean" ? request.arguments.enabled : current.enabled;
-    const proposedCrossProvider = typeof request.arguments.crossProviderEnabled === "boolean"
-      ? request.arguments.crossProviderEnabled
-      : current.childAgents.enabled;
     const rawTargets = Array.isArray(request.arguments.targets)
       ? request.arguments.targets.map((target) => ({ ...(target as Record<string, unknown>), enabled: true }))
       : current.childAgents.targets;
     const next = sanitizeProjectSubagentSettings({
-      enabled: proposedEnabled,
+      // Older tool clients can still send the removed secondary switch.
+      // Treat an explicit revocation as the single main switch being off.
+      enabled: proposedEnabled && request.arguments.crossProviderEnabled !== false,
       maxConcurrent: request.arguments.maxConcurrent ?? current.maxConcurrent,
-      childAgents: { enabled: proposedEnabled && proposedCrossProvider, targets: rawTargets },
+      childAgents: { targets: rawTargets },
     });
     if (!next) throw new Error("The proposed project sub-agent settings were invalid.");
     // Only the destinations this proposal would actually switch on have to be
@@ -710,8 +709,8 @@ export function useChildAgents(context: ChildAgentContext): {
         if (issue) throw new Error(`The proposed \`${target.id}\` destination is not ready: ${issue}`);
       }
     }
-    if (next.childAgents.enabled && !proposedCrew.length) {
-      throw new Error("A cross-provider crew needs at least one enabled destination. Propose `crossProviderEnabled: false` instead if you want to switch it off.");
+    if (next.enabled && next.childAgents.enabled && !proposedCrew.length) {
+      throw new Error("Enable at least one configured sub-agent, or propose `enabled: false` to switch sub-agents off.");
     }
     // One project change can be in front of the user at a time. Without this a
     // model that re-proposes on every tool result would bury the approval it
@@ -736,7 +735,7 @@ export function useChildAgents(context: ChildAgentContext): {
             : "inherits parent";
         return `${target.label || target.id}: ${target.provider} / ${childAgentModel(target) || "provider default"} / ${reasoning}`;
       })
-      .join("\n") || "No cross-provider destinations";
+      .join("\n") || "No configured sub-agents";
     useTaskStore.getState().enqueueApproval({
       id: approvalId,
       method: "openkiwi/subagents/change",
@@ -751,7 +750,6 @@ export function useChildAgents(context: ChildAgentContext): {
         command: [
           "Scope: this project's saved settings, from your next message onward",
           `Sub-agents: ${next.enabled ? "on" : "off"}`,
-          `Cross-provider: ${next.childAgents.enabled ? "on" : "off"}`,
           `Parallel limit: ${next.maxConcurrent}`,
           crew,
         ].join("\n"),

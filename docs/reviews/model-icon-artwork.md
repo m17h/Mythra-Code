@@ -1,0 +1,37 @@
+# Toon model artwork
+
+Current selection: Morgan preferred the original Astra after reviewing the variants below. `public/model-icons/astra.png` was restored byte-for-byte from the branch's HEAD version (the original blue/violet galaxy, 128 × 124). Its existing active-model particle effects remain intact. Sol and Luna retain their new artwork; Terra is unchanged. The Astra prompts and validation notes below document superseded experiments, not the installed design.
+
+Sol and Luna were generated with the built-in image-generation tool, then resized with macOS `sips` to transparent 128 × 128 PNGs for the existing 20–22px controls. Model behavior and animations remain unchanged.
+
+Assets: `public/model-icons/sol.png`, `public/model-icons/luna.png`, `public/model-icons/astra.png`.
+
+Validation: 49 existing model-control browser tests passed in Chromium and another 49 in WebKit. The production build and performance budgets passed. Inspected screenshots of the real React model controls in an isolated browser preview in dark and light themes, including menu and selected-icon sizes. All three PNGs retain alpha transparency. Combined files are 63,348 bytes versus 67,317 before (3,969 bytes smaller). No production TS/CSS or runtime behavior changed for this artwork replacement. Native Windows was not exercised.
+
+## Generation prompts
+
+Final Astra refinement: Morgan found the first replacement too diagonal, then found the level disk too wide and too short vertically. The installed asset is now a compact, nearly round spiral filling both dimensions of its square slot, rendered at 128 × 128 with genuine transparency. No model-control or particle CSS was changed. Final prompt:
+
+Create a compact GALAXY app icon optimized specifically for a tiny 22-by-22 pixel square slot. Square image, genuine transparent background with alpha. The galaxy should fill an approximately SQUARE bounding box, width only 1.15 times height, centered with 7% margins. Look down into a softly foreshortened spiral galaxy, almost face-on, with its slightly oval long axis HORIZONTAL, no diagonal slant. Broad continuous luminous lavender and violet spiral bands sweep around a SMALL warm white circular core, dark plum channels separating the bands. All the arms remain inside one compact nearly round galactic disk, with irregular wispy outer edge. Clear astronomical spiral structure, NOT separate radial blades or petals; no flower, no pinwheel, no star-shaped center. Stylized hand-painted anime icon, simple bold cel-shaded masses, limited detail, only a few little starlight flecks. Premium and readable at tiny size. Not realistic space photography. NOT a wide flat saucer, NOT a thin edge-on disk, NOT a ringed planet. No external stars, text, tile, frame, solid background, or checkerboard. The primary objective is a full compact silhouette that remains recognizable inside a small square app icon.
+
+Particle verification: sampled the actual active-model component at two times in WebKit, in both dark and light themes. All nine particles moved and remained visible; the existing separate twinkle animations and reduced-motion behavior also passed the 49-test model-control suite in both Chromium and WebKit. Final compact-artwork screenshots were visually inspected at the control's normal 22px icon size. The production build and performance checks passed after the final replacement.
+
+### sol
+
+Use case: stylized-concept. Asset type: single small premium desktop-app model icon, square canvas. Style: charming hand-drawn anime game inventory icon, bold clean ink contours, simple cel shading, rounded expressive silhouette, two or three broad color regions and a crisp painted highlight. Stylish and toonish, not photorealistic, not metallic 3D. Must read at 20px. Subject fills 85% of canvas, centered with safe margin. Genuinely transparent background with alpha, no backdrop, no text, no letters, no border tile, no watermark, no faces or eyes, no tiny textures, no diffuse glow. Subject: A warm golden sun: round honey-yellow central disc with a creamy curved highlight, eight chunky softly curling orange-gold flame rays, ochre ink outline. A playful radiant anime sun emblem.
+
+### luna
+
+Use case: stylized-concept. Asset type: single small premium desktop-app model icon, square canvas. Style: charming hand-drawn anime game inventory icon, bold clean ink contours, simple cel shading, rounded expressive silhouette, two or three broad color regions and a crisp painted highlight. Stylish and toonish, not photorealistic, not metallic 3D. Must read at 20px. Subject fills 85% of canvas, centered with safe margin. Genuinely transparent background with alpha, no backdrop, no text, no letters, no border tile, no watermark, no faces or eyes, no tiny textures, no diffuse glow. Subject: A graceful pearly crescent moon opening toward the upper right, ivory and pale lavender cel shading with a muted plum ink outline, one small four-point golden sparkle nestled in its open curve. A dreamy anime moon emblem.
+
+### astra (superseded first design)
+
+Use case: stylized-concept. Asset type: single small premium desktop-app model icon, square canvas. Style: charming hand-drawn anime game inventory icon, bold clean ink contours, simple cel shading, rounded expressive silhouette, two or three broad color regions and a crisp painted highlight. Stylish and toonish, not photorealistic, not metallic 3D. Must read at 20px. Subject fills 85% of canvas, centered with safe margin. Genuinely transparent background with alpha, no backdrop, no text, no letters, no border tile, no watermark, no faces or eyes, no tiny textures, no diffuse glow. Subject: A compact spiral galaxy with three broad curling violet and lilac spiral arms around a bright ivory star-shaped core, muted plum ink outline and two small four-point pale-gold sparkles. Bold swirling anime celestial emblem, warm violet rather than electric blue, no starfield or dust texture.
+
+### Astra revision: tilted galaxy
+
+Morgan found the first design too flower-like. Replaced only Astra with a tilted galactic disk and luminous oval core. The existing nine-star active-trigger overlay and its drift/twinkle animations are separate from the PNG and remain unchanged.
+
+Built-in image-generation prompt:
+
+Use case: stylized-concept. Create a replacement Astra galaxy icon for a premium desktop app. Single isolated icon on genuinely transparent alpha background, square canvas. Anime/cel-shaded illustration with crisp ink edges matching a cartoon sun and pearly crescent moon. Show a clearly astronomical SPIRAL GALAXY viewed obliquely: a flattened elliptical disk tilted diagonally from lower left to upper right, luminous small creamy-white oval galactic bulge in the center, two tapering wispy spiral dust bands wrapping around it in perspective. Violet, lavender and restrained pale cyan highlights. Irregular wispy outer edge, two tiny distant stars. Strong readable silhouette at 22 pixels. The disk is about twice as wide as thick, fills 88% of canvas width with safe margin. NOT a flower: no petals, no radial lobes, no pinwheel, no round symmetric rosette, no star-shaped core. Not a ringed planet: show spiral structure inside the elliptical disk and no spherical planet. No text, no background tile, no border frame, no faces, no dense speckled texture, no large outer glow. Bold simple anime galaxy symbol, polished but visibly drawn, not photorealistic.

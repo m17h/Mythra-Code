@@ -93,6 +93,8 @@ export function ModelPowerControl({
   providerControl,
   runtimeModels,
   disabled,
+  signedIn,
+  onSignInRequired,
   loading,
   error,
   onRefresh,
@@ -108,6 +110,8 @@ export function ModelPowerControl({
   providerControl?: ReactNode;
   runtimeModels: RuntimeModel[];
   disabled?: boolean;
+  signedIn?: boolean;
+  onSignInRequired?: () => void;
   loading?: boolean;
   error?: string;
   onRefresh?: () => void;
@@ -183,7 +187,7 @@ export function ModelPowerControl({
       style={{ "--reasoning-fill": `${reasoningFill}%`, ...effortFlairStyle(effortIndex, EFFORTS.length) } as CSSProperties}
     >
       {providerControl}
-      <div className="model-picker">
+      <div className={`model-picker ${signedIn === false ? "unavailable" : ""}`}>
         <button
           type="button"
           className="model-picker-trigger"
@@ -191,10 +195,15 @@ export function ModelPowerControl({
           aria-expanded={menuOpen}
           aria-label={`OpenAI model: ${selectedModel?.name ?? "not selected"}`}
           disabled={disabled}
-          onClick={() => setMenuOpen((open) => !open)}
+          aria-disabled={signedIn === false || undefined}
+          onClick={() => {
+            if (signedIn === false) { onSignInRequired?.(); return; }
+            setMenuOpen((open) => !open);
+          }}
           onKeyDown={(event) => {
             if (event.key === "ArrowDown" || event.key === "ArrowUp") {
               event.preventDefault();
+              if (signedIn === false) { onSignInRequired?.(); return; }
               setMenuOpen(true);
             }
           }}
@@ -241,7 +250,9 @@ export function ModelPowerControl({
                   ref={(node) => { optionRefs.current[index] = node; }}
                   className={`model-menu-option ${entry.kind} ${selected ? "selected" : ""}${starredVisible > 0 && index === starredVisible - 1 ? " favorite-group-end" : ""}`}
                   disabled={disabled}
+                  aria-disabled={signedIn === false || undefined}
                   onClick={() => {
+                    if (signedIn === false) { onSignInRequired?.(); return; }
                     onModel(entry.id);
                     setMenuOpen(false);
                   }}
@@ -259,7 +270,7 @@ export function ModelPowerControl({
               </div>
             );
           })}
-          {error && <div className="openrouter-catalog-warning" role={menuOpen ? "status" : undefined}>{error} · {runtimeModels.length ? "Showing the last loaded catalog." : "Showing the built-in list."}</div>}
+          {error && signedIn !== false && <div className="openrouter-catalog-warning" role={menuOpen ? "status" : undefined}>{error} · {runtimeModels.length ? "Showing the last loaded catalog." : "Showing the built-in list."}</div>}
         </div>
       </div>
 

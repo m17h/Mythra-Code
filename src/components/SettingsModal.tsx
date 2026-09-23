@@ -34,7 +34,7 @@ import {
 import { exportDiagnostics, recentAuditRows, rpc, saveLmStudioKey, saveOpenRouterKey, type AuditRow, type CodexRuntimeStatus } from "../lib/codex";
 import { isClaudeModelSuperseded, visibleClaudeModels, type ClaudeRuntimeStatus } from "../lib/claude";
 import type { CursorModel, CursorRuntimeStatus } from "../lib/cursor";
-import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_SETTINGS, EFFORT_SLIDER_STYLES, RELEASE_NOTES_URL, THEMES } from "../lib/appConfig";
+import { DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_SETTINGS, EFFORT_SLIDER_STYLES, RELEASE_NOTES_URL, THEMES } from "../lib/appConfig";
 import { resolveThreadTitleModel } from "../lib/threadTitles";
 import { friendlyError } from "../lib/errors";
 import { useModalFocus } from "../hooks/useModalFocus";
@@ -88,6 +88,7 @@ import type { ChildAgentModelOption } from "./ChildAgentRoster";
 import type { ClaudeModel } from "../lib/claude";
 import type { OpenRouterModel } from "./OpenRouterModelControl";
 import { sanitizeProjectDefaultOverrides } from "../lib/projectDefaults";
+import { settingsWithDefaultProvider, settingsWithOnboardingDraft, type OnboardingSettingsDraft } from "../lib/onboardingSettings";
 import { cachedDeveloperRuntimeUpdates, checkDeveloperRuntimeUpdates, ensureDeveloperRuntimeUpdates, updateDeveloperRuntime, type DeveloperRuntimeTarget, type DeveloperRuntimeTargetStatus, type DeveloperRuntimeUpdater } from "../lib/runtimeUpdates";
 
 /**
@@ -111,7 +112,7 @@ const SETTINGS_NAV: ReadonlyArray<{
     group: "Workspace",
     items: [
       { id: "general", label: "Interface", icon: Palette, detail: "Theme, size, effort-slider style, chat typeface, and provider marks. Everything previews instantly; save to keep it.", keywords: "theme dark light appearance colour color scheme font typeface text size scale zoom density effort slider logo icon mark look" },
-      { id: "projects", label: "Projects", icon: FolderCog, detail: "Give a project its own provider, model, and look. Those choices apply whenever you enter it.", keywords: "project folder workspace default override per-project repository" },
+      { id: "projects", label: "Projects", icon: FolderCog, detail: "Name new threads automatically and give each project its own provider, model, and look.", keywords: "project folder workspace default override per-project repository automatic thread title titles naming rename luna" },
     ],
   },
   {
@@ -136,7 +137,7 @@ const SETTINGS_NAV: ReadonlyArray<{
   {
     group: "System",
     items: [
-      { id: "system", label: "Runtime", icon: Wrench, detail: "Onboarding, notifications, automatic thread titles, service tier, terminal memory, and diagnostics.", keywords: "runtime notification alert automatic thread title titles naming rename luna service tier terminal scrollback memory diagnostics logs errors performance onboarding getting started" },
+      { id: "system", label: "Runtime", icon: Wrench, detail: "Onboarding, notifications, service tier, terminal memory, and diagnostics.", keywords: "runtime notification alert service tier terminal scrollback memory diagnostics logs errors performance onboarding getting started" },
       { id: "updates", label: "Updates", icon: Download, detail: "Mythra Code, Claude Code, and Codex updates in one place, always from their official channels.", keywords: "update upgrade version release install download changelog notes" },
     ],
   },
@@ -327,6 +328,7 @@ export function useDeveloperRuntimeUpdater(
 export function SettingsModal({
   open,
   initialSection,
+  initialDraft,
   appUpdater,
   developerRuntimeUpdater: injectedDeveloperRuntimeUpdater,
   settings,
@@ -417,6 +419,7 @@ export function SettingsModal({
 }: {
   open: boolean;
   initialSection: SettingsSection;
+  initialDraft?: OnboardingSettingsDraft;
   appUpdater: AppUpdater;
   developerRuntimeUpdater?: DeveloperRuntimeUpdater;
   settings: AppSettings;
@@ -591,6 +594,8 @@ export function SettingsModal({
   // Buffered edits (theme, prompt, toggles) are discarded on close — warn
   // before silently throwing away work like a hand-written system prompt.
   const dirty = open && (JSON.stringify(local) !== JSON.stringify(settings) || JSON.stringify(localProjects) !== JSON.stringify(projects));
+  const activeProjectAppearance = localProjects.find((project) => project.id === activeProjectId)?.overrides?.defaults;
+  const activeProjectHasAppearanceOverride = Boolean(activeProjectAppearance?.theme || activeProjectAppearance?.chatFont || activeProjectAppearance?.effortSlider);
   const projectDefaultsComplete = localProjects.every((project) => !project.overrides?.defaults || Boolean(project.overrides.defaults.model.trim()));
   const requestClose = async () => {
     if (dirty && !await confirmDialog("Discard unsaved settings changes?")) return;
@@ -617,7 +622,8 @@ export function SettingsModal({
       // GitHub pane updates `projects` and used to discard a drafted prompt).
       wasOpenRef.current = true;
       draftBaselineRef.current = { settings, projects };
-      setLocal(settings);
+      const seeded = settingsWithOnboardingDraft(settings, initialDraft, lmStudioModels[0]?.id);
+      setLocal(seeded);
       setLocalProjects(projects);
       setExpandedPresetId(null);
       setRenamingPresetId(null);
@@ -625,9 +631,9 @@ export function SettingsModal({
       setPresetDraftName("");
       setPolicyNotice("");
       const activeDefaults = projects.find((project) => project.id === activeProjectId)?.overrides?.defaults;
-      onThemePreview(activeDefaults?.theme ?? settings.theme);
-      onEffortSliderPreview(activeDefaults?.effortSlider ?? settings.effortSlider);
-      onChatFontPreview(activeDefaults?.chatFont ?? settings.chatFont);
+      onThemePreview(initialDraft?.appearance ? seeded.theme : activeDefaults?.theme ?? seeded.theme);
+      onEffortSliderPreview(initialDraft?.appearance ? seeded.effortSlider : activeDefaults?.effortSlider ?? seeded.effortSlider);
+      onChatFontPreview(initialDraft?.appearance ? seeded.chatFont : activeDefaults?.chatFont ?? seeded.chatFont);
       onUiScalePreview(settings.uiScale ?? 100);
       setSettingsSection(initialSection);
       return;
@@ -653,13 +659,13 @@ export function SettingsModal({
       });
     }
     draftBaselineRef.current = { settings, projects };
-  }, [activeProjectId, initialSection, onChatFontPreview, onEffortSliderPreview, onThemePreview, onUiScalePreview, open, projects, settings]);
+  }, [activeProjectId, initialDraft, initialSection, lmStudioModels, onChatFontPreview, onEffortSliderPreview, onThemePreview, onUiScalePreview, open, projects, settings]);
 
   useEffect(() => {
-    if (open && initialSection === "general" && appUpdater.phase === "available") {
+    if (open && initialSection === "general" && !initialDraft?.appearance && appUpdater.phase === "available") {
       setSettingsSection("updates");
     }
-  }, [appUpdater.phase, initialSection, open]);
+  }, [appUpdater.phase, initialDraft, initialSection, open]);
 
   useEffect(() => {
     if (!open) {
@@ -1028,7 +1034,7 @@ export function SettingsModal({
             <div className="set-card"><div className="set-row">
               <div className="set-copy">
                 <strong>Guided setup</strong>
-                <small>Review model setup, projects and chats, permissions, and local skills.</small>
+                <small>Explore providers, projects, sub-agents, and ways to make the app your own.</small>
               </div>
               <div className="set-control">
                 <button type="button" className="secondary-button" onClick={requestOnboarding}><BookOpenCheck size={13} /> Run onboarding</button>
@@ -1038,6 +1044,7 @@ export function SettingsModal({
 
           {settingsSection === "general" &&
           <section className="settings-section theme-settings-section">
+            {activeProjectHasAppearanceOverride && <p className="settings-footnote" role="note"><Info size={13} aria-hidden="true" /><span>Save updates app-wide defaults. This project has appearance overrides; edit them in Projects.</span></p>}
             <div className="set-group">
               <h4>Theme</h4>
               <div className="set-card bare"><div className="set-body">
@@ -1301,7 +1308,37 @@ export function SettingsModal({
             </div></div>
           </div>}
 
-          {settingsSection === "projects" && <ProjectDefaultsSettings
+          {settingsSection === "projects" && <>
+          <div className="set-group">
+            <h4>Thread titles</h4>
+            <div className="set-card">
+              {/* Opt-in, and it says the two things people would otherwise
+                  find out afterwards: the first message leaves for whichever
+                  provider is chosen here even from a thread running on another
+                  one, and a name you typed is yours. The fields appear only
+                  once it is on — an off switch needs no configuration. */}
+              <div className="set-row">
+                <div className="set-copy">
+                  <strong>Automatic thread titles</strong>
+                  <small>Names each new thread from your first message, using the provider and model you choose.</small>
+                  <small>That first message goes to the chosen provider even when the thread itself runs on another one, and uses that provider&rsquo;s own subscription or credits. Nothing is kept as a chat, and a title you write yourself is never replaced.</small>
+                </div>
+                <div className="set-control">
+                  <button type="button" role="switch" aria-label="Automatic thread titles" aria-checked={local.automaticThreadTitles} className={`toggle-switch ${local.automaticThreadTitles ? "on" : ""}`} onClick={() => setLocal({ ...local, automaticThreadTitles: !local.automaticThreadTitles })}><span /></button>
+                </div>
+              </div>
+              {local.automaticThreadTitles && (
+                <ThreadTitleFields
+                  settings={local}
+                  catalogs={modelCatalogs}
+                  readiness={childAgentReadiness}
+                  onChange={setLocal}
+                  onAccounts={() => setSettingsSection("models")}
+                />
+              )}
+            </div>
+          </div>
+          <ProjectDefaultsSettings
             projects={localProjects}
             activeProjectId={activeProjectId}
             settings={local}
@@ -1317,7 +1354,7 @@ export function SettingsModal({
             onThemePreview={onThemePreview}
             onEffortSliderPreview={onEffortSliderPreview}
             onChatFontPreview={onChatFontPreview}
-          />}
+          /></>}
 
           {settingsSection === "github" &&
           <GitHubSettings
@@ -1374,30 +1411,6 @@ export function SettingsModal({
                   <button type="button" role="switch" aria-label="Desktop notifications" aria-checked={local.notificationsEnabled} className={`toggle-switch ${local.notificationsEnabled ? "on" : ""}`} onClick={() => setLocal({ ...local, notificationsEnabled: !local.notificationsEnabled })}><span /></button>
                 </div>
               </div>
-              {/* Opt-in, and it says the two things people would otherwise
-                  find out afterwards: the first message leaves for whichever
-                  provider is chosen here even from a thread running on another
-                  one, and a name you typed is yours. The fields appear only
-                  once it is on — an off switch needs no configuration. */}
-              <div className="set-row">
-                <div className="set-copy">
-                  <strong>Automatic thread titles</strong>
-                  <small>Names each new thread from your first message, using the provider and model you choose.</small>
-                  <small>That first message goes to the chosen provider even when the thread itself runs on another one, and uses that provider&rsquo;s own subscription or credits. Nothing is kept as a chat, and a title you write yourself is never replaced.</small>
-                </div>
-                <div className="set-control">
-                  <button type="button" role="switch" aria-label="Automatic thread titles" aria-checked={local.automaticThreadTitles} className={`toggle-switch ${local.automaticThreadTitles ? "on" : ""}`} onClick={() => setLocal({ ...local, automaticThreadTitles: !local.automaticThreadTitles })}><span /></button>
-                </div>
-              </div>
-              {local.automaticThreadTitles && (
-                <ThreadTitleFields
-                  settings={local}
-                  catalogs={modelCatalogs}
-                  readiness={childAgentReadiness}
-                  onChange={setLocal}
-                  onAccounts={() => setSettingsSection("models")}
-                />
-              )}
               <div className="set-row">
                 <div className="set-copy">
                   <strong>OpenAI service tier</strong>
@@ -1638,31 +1651,31 @@ export function SettingsModal({
               <h4>Default provider</h4>
               <p>New threads start with this provider. Each thread keeps its own provider after it starts.</p>
             <div className="provider-cards">
-              <button className={`provider-card ${local.provider === "openai" ? "selected" : ""}`} onClick={() => setLocal({ ...local, provider: "openai", model: local.provider === "openai" ? (local.model || DEFAULT_OPENAI_MODEL) : DEFAULT_OPENAI_MODEL, ultra: false })}>
+              <button className={`provider-card ${local.provider === "openai" ? "selected" : ""}`} onClick={() => setLocal(settingsWithDefaultProvider(local, "openai"))}>
                 <span className="provider-logo openai">{local.openAiLogo === "codex" ? <CodexLogo size={18} /> : <OpenAILogo size={17} />}</span>
                 <span><strong>OpenAI</strong><small>ChatGPT subscription</small></span>
                 <span className={`provider-status ${account?.type === "chatgpt" ? "on" : ""}`}>{account?.type === "chatgpt" ? "Connected" : runtimeStatus?.available ? "Not signed in" : "Codex CLI needed"}</span>
                 {local.provider === "openai" && <Check size={16} />}
               </button>
-              <button className={`provider-card ${local.provider === "claude" ? "selected" : ""}`} onClick={() => setLocal({ ...local, provider: "claude", model: local.provider === "claude" ? (local.model || DEFAULT_CLAUDE_MODEL) : DEFAULT_CLAUDE_MODEL, ultra: false })}>
+              <button className={`provider-card ${local.provider === "claude" ? "selected" : ""}`} onClick={() => setLocal(settingsWithDefaultProvider(local, "claude"))}>
                 <span className={`provider-logo claude${local.claudeLogo === "anthropic" ? " anthropic-mark" : ""}`}>{local.claudeLogo === "anthropic" ? <AnthropicLogo size={17} /> : <ClaudeLogo size={17} />}</span>
                 <span><strong>Anthropic</strong><small>Claude Code subscription</small></span>
                 <span className={`provider-status ${claudeStatus?.loggedIn ? "on" : ""}`}>{claudeStatus?.loggedIn ? "Connected" : claudeStatus?.available ? "Not signed in" : "Claude Code needed"}</span>
                 {local.provider === "claude" && <Check size={16} />}
               </button>
-              <button className={`provider-card ${local.provider === "cursor" ? "selected" : ""}`} onClick={() => setLocal({ ...local, provider: "cursor", model: local.provider === "cursor" ? local.model : DEFAULT_CURSOR_MODEL, ultra: false })}>
+              <button className={`provider-card ${local.provider === "cursor" ? "selected" : ""}`} onClick={() => setLocal(settingsWithDefaultProvider(local, "cursor"))}>
                 <span className={`provider-logo cursor${local.cursorLogo === "app-dark" ? " app-dark" : ""}`}>{local.cursorLogo === "app-dark" ? <CursorDarkAppIcon size={23} /> : <CursorLogo size={17} />}</span>
                 <span><strong>Cursor</strong><small>Cursor subscription</small></span>
                 <span className={`provider-status ${cursorStatus?.loggedIn ? "on" : ""}`}>{cursorStatus?.loggedIn ? "Connected" : cursorStatus?.available ? "Not signed in" : "Cursor Agent needed"}</span>
                 {local.provider === "cursor" && <Check size={16} />}
               </button>
-              <button className={`provider-card ${local.provider === "openrouter" ? "selected" : ""}`} onClick={() => setLocal({ ...local, provider: "openrouter", model: local.provider === "openrouter" ? local.model : "", ultra: false })}>
+              <button className={`provider-card ${local.provider === "openrouter" ? "selected" : ""}`} onClick={() => setLocal(settingsWithDefaultProvider(local, "openrouter"))}>
                 <span className="provider-logo openrouter"><OpenRouterLogo size={18} /></span>
                 <span><strong>OpenRouter</strong><small>Pay-as-you-go API key</small></span>
                 <span className={`provider-status ${openRouterReady ? "on" : ""}`}>{openRouterReady ? "Key saved" : "No key yet"}</span>
                 {local.provider === "openrouter" && <Check size={16} />}
               </button>
-              <button className={`provider-card ${local.provider === "lmstudio" ? "selected" : ""}`} onClick={() => setLocal({ ...local, provider: "lmstudio", model: local.provider === "lmstudio" ? local.model : (lmStudioModels[0]?.id ?? ""), ultra: false })}>
+              <button className={`provider-card ${local.provider === "lmstudio" ? "selected" : ""}`} onClick={() => setLocal(settingsWithDefaultProvider(local, "lmstudio", lmStudioModels[0]?.id))}>
                 <span className="provider-logo lmstudio"><LmStudioLogo size={18} /></span>
                 <span><strong>LM Studio</strong><small>Local models on this computer</small></span>
                 <span className={`provider-status ${lmStudioReady ? "on" : ""}`}>{lmStudioReady ? "Connected" : "Not connected"}</span>

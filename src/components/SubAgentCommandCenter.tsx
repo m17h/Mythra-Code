@@ -15,6 +15,7 @@ import {
   MAX_CHILD_AGENT_PRESETS,
   describeChildAgentReasoning,
   providerDisplayName,
+  providerSignInIssue,
   readyChildAgentTargets,
   sanitizeProjectSubagentSettings,
   uniqueChildAgentId,
@@ -88,6 +89,7 @@ export interface SubAgentCommandCenterProps {
   onChange: (next: ProjectSubagentSettings) => void;
   onOpenSettings: () => void;
   onOpenAccounts?: () => void;
+  onUnavailable?: (message: string) => void;
   /** Live provider catalogs used by the app's own model pickers. */
   modelCatalogs?: Partial<Record<Provider, SubAgentModelOption[]>>;
   /** Starred models, shared with the composer and Settings pickers. */
@@ -136,6 +138,7 @@ function newTargetFor(provider: Provider, existing: ChildAgentTarget[]): ChildAg
 }
 
 export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
+  const { onUnavailable } = props;
   const [open, setOpen] = useState(false);
   const [panelPresent, setPanelPresent] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -170,11 +173,11 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
   const maxConcurrent = captured && crewActive
     ? (capturedPolicy?.maxConcurrent ?? policy.maxConcurrent)
     : policy.maxConcurrent;
-  // The switches are read fresh by every turn, so the panel reports the live
-  // ones even for a thread whose roster is captured. They re-lock with the
+  // The main switch is read fresh every turn, including captured threads.
+  // It re-locks with the
   // rest of the controls while work is active.
   const delegationOn = !isChild && policy.enabled;
-  const crossProviderOn = !isChild && policy.childAgents.enabled;
+  const hasRoster = !isChild && targets.length > 0;
   const readyCount = useMemo(
     () => readyChildAgentTargets({ enabled: true, targets }, readiness).length,
     [readiness, targets],
@@ -183,10 +186,10 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
   // The roster is a menu and the limit is a budget. A crew of five destinations
   // with a limit of two is a legitimate configuration: the model picks two of
   // the five to run at a time.
-  const crewSize = childAgentCrewSize({ enabled: crossProviderOn, targets });
+  const crewSize = childAgentCrewSize({ enabled: hasRoster, targets });
   const crewCeiling = Math.max(1, enabledCount);
   const dimmed = !delegationOn;
-  const crossProviderReady = delegationOn && crossProviderOn && readyCount > 0;
+  const rosterReady = delegationOn && hasRoster && readyCount > 0;
 
   // Everything that can move a tile: which one is open, who is in the roster,
   // and the fields a destination's own settings add or remove from its editor.
@@ -351,7 +354,7 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
   }, [open]);
 
   const setTargets = useCallback((next: ChildAgentTarget[]) => {
-    const childAgents = { ...policy.childAgents, targets: next };
+    const childAgents = { ...policy.childAgents, enabled: next.length > 0, targets: next };
     onChange({
       ...policy,
       maxConcurrent: crewSafeConcurrency(policy.maxConcurrent, childAgents),
@@ -364,6 +367,8 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
   }, [policy.childAgents.targets, setTargets]);
 
   const addTarget = useCallback((provider: Provider) => {
+    const signInIssue = providerSignInIssue(provider, readiness);
+    if (signInIssue) { onUnavailable?.(signInIssue); return; }
     const existing = policy.childAgents.targets;
     if (existing.length >= MAX_CHILD_AGENT_TARGETS) return;
     const target = newTargetFor(provider, existing);
@@ -387,7 +392,7 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
       childAgents: nextChildAgents,
     });
     setExpandedId(target.id);
-  }, [onChange, policy]);
+  }, [onChange, policy, readiness, onUnavailable]);
 
   const applyPreset = useCallback(() => {
     const preset = props.presets?.find((entry) => entry.id === selectedPresetId);
@@ -400,7 +405,7 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
   const triggerLabel = counts.active > 0
     ? `Sub-agents ${counts.active}/${maxConcurrent}`
     : delegationOn
-      ? `Sub-agents: ${maxConcurrent}${crossProviderReady ? " ↗" : ""}`
+      ? `Sub-agents: ${maxConcurrent}${rosterReady ? " ↗" : ""}`
       : "Sub-agents off";
 
   return (
@@ -518,7 +523,7 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
                   aria-label="Allow sub-agent spawning"
                   disabled={captured && crewActive}
                   className={`toggle-switch ${policy.enabled ? "on" : ""}`}
-                  onClick={() => onChange({ ...policy, enabled: !policy.enabled })}
+                  onClick={() => onChange({ ...policy, enabled: !policy.enabled, childAgents: { ...policy.childAgents, enabled: targets.length > 0 } })}
                 >
                   <span />
                 </button>
@@ -560,34 +565,6 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
               )}
             </div>
 
-            <div className={`sa-row ${dimmed ? "muted" : ""}`}>
-              <span className="sa-row-copy">
-                <strong>Cross-provider</strong>
-                <small>
-                  {!crossProviderOn
-                    ? "Sub-agents stay inside this thread's own provider."
-                    : enabledCount === 0
-                      ? "No sub-agents switched on."
-                      : `${readyCount} of ${enabledCount} sub-agent${enabledCount === 1 ? "" : "s"} ready`}
-                </small>
-              </span>
-              {isChild ? (
-                <span className="sa-readout">Off</span>
-              ) : (
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={policy.childAgents.enabled}
-                  aria-label="Allow cross-provider sub-agents"
-                  disabled={!policy.enabled || (captured && crewActive)}
-                  className={`toggle-switch ${policy.childAgents.enabled && policy.enabled ? "on" : ""}`}
-                  onClick={() => onChange({ ...policy, childAgents: { ...policy.childAgents, enabled: !policy.childAgents.enabled } })}
-                >
-                  <span />
-                </button>
-              )}
-            </div>
-
             {editable && (
               <div className="sa-preset-row">
                 <span>
@@ -626,10 +603,10 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
               </div>
             )}
 
-            <div className={`sa-crew ${crossProviderOn && !dimmed ? "" : "muted"}`}>
+            <div className={`sa-crew ${dimmed ? "muted" : ""}`}>
               {editable && targets.length > 0 && (
                 <div className="sa-crew-toolbar">
-                  <span>{targets.length} configured sub-agent{targets.length === 1 ? "" : "s"}</span>
+                  <span>{targets.length} configured · {enabledCount === 0 ? "None switched on" : `${readyCount} ready`}</span>
                   <button
                     type="button"
                     className="sa-clear-all"
@@ -643,7 +620,8 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
               <div className="sa-crew-grid" ref={crewFlip.gridRef} role="list" aria-label="Configured sub-agents">
                 {targets.map((target) => {
                   const issue = childAgentTargetIssue(target, readiness);
-                  const expanded = expandedId === target.id;
+                  const signInIssue = providerSignInIssue(target.provider, readiness);
+                  const expanded = expandedId === target.id && !signInIssue;
                   const busy = workers.some((worker) => worker.targetId === target.id && isSubAgentWorkerActive(worker.status));
                   const selectedModel = childAgentModel(target);
                   const modelOptions = modelOptionsFor(target.provider, props.modelCatalogs, selectedModel);
@@ -652,7 +630,7 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
                       role="listitem"
                       key={targetKey(target)}
                       data-flip-key={targetKey(target)}
-                      className={`sa-tile ${target.provider} ${target.enabled ? "" : "off"} ${issue && target.enabled ? "issue" : ""} ${busy ? "busy" : ""} ${expanded ? "expanded" : ""}`}
+                      className={`sa-tile ${target.provider} ${target.enabled ? "" : "off"} ${signInIssue ? "unavailable" : issue && target.enabled ? "issue" : ""} ${busy ? "busy" : ""} ${expanded ? "expanded" : ""}`}
                     >
                       <div className="sa-tile-head">
                         <button
@@ -661,7 +639,11 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
                           aria-expanded={editable ? expanded : undefined}
                           aria-label={editable ? `Configure ${target.label || target.id}` : undefined}
                           disabled={!editable}
-                          onClick={() => toggleExpandedTarget(target.id)}
+                          aria-disabled={Boolean(signInIssue) || undefined}
+                          onClick={() => {
+                            if (signInIssue) { onUnavailable?.(signInIssue); return; }
+                            toggleExpandedTarget(target.id);
+                          }}
                         >
                           <span className="sa-avatar" aria-hidden="true">
                             <ProviderLogo provider={target.provider} size={15} />
@@ -682,15 +664,22 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
                             aria-checked={target.enabled}
                             aria-label={`Enable ${target.label || target.id}`}
                             className={`sa-tile-switch ${target.enabled ? "on" : ""}`}
-                            onClick={() => updateTarget(target.id, { enabled: !target.enabled })}
+                            aria-disabled={Boolean(signInIssue) || undefined}
+                            onClick={() => {
+                              if (signInIssue) { onUnavailable?.(signInIssue); return; }
+                              updateTarget(target.id, { enabled: !target.enabled });
+                            }}
                           ><span /></button>
+                        )}
+                        {editable && signInIssue && (
+                          <button type="button" className="icon-button tiny subtle sa-unavailable-remove" aria-label={`Remove ${target.id}`} onClick={() => { setExpandedId(null); setTargets(targets.filter((entry) => entry.id !== target.id)); }}><X size={11} /></button>
                         )}
                       </div>
                       {!editable && <span className="sa-tile-note">{describeChildAgentReasoning(target)}</span>}
-                      {issue && target.enabled && (
+                      {issue && !signInIssue && target.enabled && (
                         <p className="sa-tile-issue"><AlertTriangle size={11} aria-hidden="true" /> {issue.replaceAll("`", "")} <button type="button" onClick={() => { close(); (props.onOpenAccounts ?? props.onOpenSettings)(); }}>Models &amp; accounts</button></p>
                       )}
-                      {editable && (
+                      {editable && !signInIssue && (
                         <div className={`sa-tile-config-shell ${expanded ? "open" : ""}`} aria-hidden={!expanded || undefined} inert={!expanded ? true : undefined}>
                           <div className="sa-tile-config">
                           <div className="sa-config-field">
@@ -701,6 +690,7 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
                               value={target.provider}
                               options={CHILD_AGENT_PROVIDERS.map((provider) => ({
                                 value: provider,
+                                disabled: Boolean(providerSignInIssue(provider, readiness)),
                                 label: providerDisplayName(provider),
                                 detail: provider === "openai"
                                   ? "ChatGPT subscription"
@@ -713,6 +703,10 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
                                         : "API model routing",
                                 icon: <ProviderLogo provider={provider} size={11} />,
                               }))}
+                              onDisabledSelect={(value) => {
+                                const issue = providerSignInIssue(value as Provider, readiness);
+                                if (issue) onUnavailable?.(issue);
+                              }}
                               onChange={(value) => {
                                 const provider = value as Provider;
                                 updateTarget(target.id, {
@@ -802,6 +796,8 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
                           key={provider}
                           aria-label={`Add ${providerDisplayName(provider)} sub-agent`}
                           title={`Add ${providerDisplayName(provider)}`}
+                          className={providerSignInIssue(provider, readiness) ? "unavailable" : undefined}
+                          aria-disabled={Boolean(providerSignInIssue(provider, readiness)) || undefined}
                           onClick={() => addTarget(provider)}
                         >
                           <ProviderLogo provider={provider} size={13} />
@@ -818,7 +814,7 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
                   {isChild
                     ? "A sub-agent cannot start sub-agents of its own."
                     : captured
-                      ? "No cross-provider sub-agents are configured for this task."
+                      ? "No sub-agents are configured for this task."
                       : "No sub-agents yet. Add one to let the model delegate across providers."}
                 </p>
               )}
