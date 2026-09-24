@@ -1,0 +1,24 @@
+/* ---- Run popover: optional setup before each launch ---- */
+.run-setup-toggle { align-self: flex-start; max-width: 100%; display: flex; align-items: center; gap: 5px; margin-top: 2px; padding: 3px 6px 3px 3px; border: 0; border-radius: var(--r-xs); color: var(--muted); background: transparent; font-size: var(--fs-meta); cursor: pointer; transition: color var(--t-fast) ease, background var(--t-fast) ease; }
+.run-setup-toggle:hover:not(:disabled) { color: var(--text); background: color-mix(in srgb, var(--text) 5%, transparent); }
+.run-setup-toggle:disabled { opacity: .5; cursor: default; }
+.run-setup-toggle > svg { flex: 0 0 auto; transition: transform 200ms var(--ease); }
+.run-setup-toggle.open > svg { transform: rotate(90deg); }
+.run-setup-toggle em { color: var(--muted-2); font-style: normal; }
+.run-setup-toggle code { min-width: 0; overflow: hidden; margin-left: 4px; color: var(--muted-2); font: var(--fs-micro)/1.4 var(--font-mono); white-space: nowrap; text-overflow: ellipsis; }
+/* A closed step also gives back the editor's flex gap via the negative margin. */
+.run-setup-reveal { display: grid; grid-template-rows: 0fr; margin-top: -6px; opacity: 0; transition: grid-template-rows 240ms var(--ease), margin-top 240ms var(--ease), opacity 170ms ease; }
+.run-setup-reveal[data-open] { grid-template-rows: 1fr; margin-top: 0; opacity: 1; transition: grid-template-rows 260ms cubic-bezier(.22, 1, .36, 1), margin-top 260ms cubic-bezier(.22, 1, .36, 1), opacity 220ms ease 30ms; }
+/* Margins (not padding) inside the clip, so a closed step takes no room and
+   the focus ring still has space when it is open. */
+.run-setup-clip { min-height: 0; overflow: hidden; display: flex; flex-direction: column; gap: 5px; }
+.run-setup-clip > * { margin-inline: 3px; }
+.run-setup-clip > textarea { margin-top: 3px; }
+.run-setup-clip > small { margin-bottom: 3px; }
+.project-run-popover .project-prompt-editor .run-setup-clip textarea { width: calc(100% - 6px); min-height: 52px; }
+.run-discovery-result pre { margin: 6px 0; }
+.run-discovery-result pre + small { display: block; color: var(--muted-2); font-size: var(--fs-micro); }
+
+@media (prefers-reduced-motion: reduce) {
+  .run-setup-reveal, .run-setup-reveal[data-open], .run-setup-toggle > svg { transition: none; }
+}

@@ -19,236 +19,1116 @@
     {
       "change": "Lazy-load Settings and consolidate shared modules",
       "decision": "Accept about 0.14% more total JavaScript bookkeeping in exchange for over 15% less startup JavaScript on both targets; the added bytes are not in the startup closure.",
-      "safari13": { "startupJsFromBytes": 808958, "startupJsToBytes": 684708, "startupJsDeltaBytes": -124250, "totalJsFromBytes": 1403070, "totalJsToBytes": 1405102, "totalJsDeltaBytes": 2032 },
-      "chrome105": { "startupJsFromBytes": 782798, "startupJsToBytes": 660768, "startupJsDeltaBytes": -122030, "totalJsFromBytes": 1370331, "totalJsToBytes": 1372285, "totalJsDeltaBytes": 1954 }
+      "safari13": {
+        "startupJsFromBytes": 808958,
+        "startupJsToBytes": 684708,
+        "startupJsDeltaBytes": -124250,
+        "totalJsFromBytes": 1403070,
+        "totalJsToBytes": 1405102,
+        "totalJsDeltaBytes": 2032
+      },
+      "chrome105": {
+        "startupJsFromBytes": 782798,
+        "startupJsToBytes": 660768,
+        "startupJsDeltaBytes": -122030,
+        "totalJsFromBytes": 1370331,
+        "totalJsToBytes": 1372285,
+        "totalJsDeltaBytes": 1954
+      }
     },
     {
       "change": "Add lazy runtime performance instrumentation",
-      "decision": "Accept about 0.41% more startup JavaScript and 0.55% more total JavaScript to collect privacy-safe streaming, composer, persistence, and memory-growth evidence. The 4.8–5.0 KB collector is lazy; startup carries only the ordering/provider bridge, whose direct loaded-path calls avoid per-delta closure and collection allocation.",
-      "safari13": { "appEntryFromBytes": 367075, "appEntryToBytes": 369835, "appEntryDeltaBytes": 2760, "startupJsFromBytes": 684708, "startupJsToBytes": 687478, "startupJsDeltaBytes": 2770, "totalJsFromBytes": 1405102, "totalJsToBytes": 1412819, "totalJsDeltaBytes": 7717 },
-      "chrome105": { "appEntryFromBytes": 347856, "appEntryToBytes": 350574, "appEntryDeltaBytes": 2718, "startupJsFromBytes": 660768, "startupJsToBytes": 663493, "startupJsDeltaBytes": 2725, "totalJsFromBytes": 1372285, "totalJsToBytes": 1379801, "totalJsDeltaBytes": 7516 }
+      "decision": "Accept about 0.41% more startup JavaScript and 0.55% more total JavaScript to collect privacy-safe streaming, composer, persistence, and memory-growth evidence. The 4.8\u20135.0 KB collector is lazy; startup carries only the ordering/provider bridge, whose direct loaded-path calls avoid per-delta closure and collection allocation.",
+      "safari13": {
+        "appEntryFromBytes": 367075,
+        "appEntryToBytes": 369835,
+        "appEntryDeltaBytes": 2760,
+        "startupJsFromBytes": 684708,
+        "startupJsToBytes": 687478,
+        "startupJsDeltaBytes": 2770,
+        "totalJsFromBytes": 1405102,
+        "totalJsToBytes": 1412819,
+        "totalJsDeltaBytes": 7717
+      },
+      "chrome105": {
+        "appEntryFromBytes": 347856,
+        "appEntryToBytes": 350574,
+        "appEntryDeltaBytes": 2718,
+        "startupJsFromBytes": 660768,
+        "startupJsToBytes": 663493,
+        "startupJsDeltaBytes": 2725,
+        "totalJsFromBytes": 1372285,
+        "totalJsToBytes": 1379801,
+        "totalJsDeltaBytes": 7516
+      }
     },
     {
       "change": "Remove the blocking Settings loading backdrop and animate first mount in CSS",
       "decision": "Accept 474 Safari / 409 Chrome startup CSS bytes for first-mount entry keyframes while removing the JavaScript loading dialog. Combined startup JS plus CSS decreases by 220 bytes on Safari and 299 bytes on Chrome, and the full-screen first-open blackout is eliminated.",
-      "safari13": { "startupJsFromBytes": 687307, "startupJsToBytes": 686613, "startupJsDeltaBytes": -694, "startupCssFromBytes": 336184, "startupCssToBytes": 336658, "startupCssDeltaBytes": 474, "combinedStartupDeltaBytes": -220 },
-      "chrome105": { "startupJsFromBytes": 663322, "startupJsToBytes": 662614, "startupJsDeltaBytes": -708, "startupCssFromBytes": 334097, "startupCssToBytes": 334506, "startupCssDeltaBytes": 409, "combinedStartupDeltaBytes": -299 }
+      "safari13": {
+        "startupJsFromBytes": 687307,
+        "startupJsToBytes": 686613,
+        "startupJsDeltaBytes": -694,
+        "startupCssFromBytes": 336184,
+        "startupCssToBytes": 336658,
+        "startupCssDeltaBytes": 474,
+        "combinedStartupDeltaBytes": -220
+      },
+      "chrome105": {
+        "startupJsFromBytes": 663322,
+        "startupJsToBytes": 662614,
+        "startupJsDeltaBytes": -708,
+        "startupCssFromBytes": 334097,
+        "startupCssToBytes": 334506,
+        "startupCssDeltaBytes": 409,
+        "combinedStartupDeltaBytes": -299
+      }
     },
     {
       "change": "Add the chat typeface selector and split Settings into interface vs system panes",
       "decision": "Accept about 0.45% more startup CSS and 0.05% more startup JavaScript for a typography choice that ships zero font files and makes no network calls. The startup stylesheet carries the family stacks, scoped chat declarations, and picker presentation; picker labels and descriptions stay in the lazy Settings JavaScript chunk, while the cards reuse existing effort-slider styles. All four stacks are system fonts, so there is no download, no FOUT and no layout-shifting swap at runtime.",
-      "safari13": { "appEntryFromBytes": 368970, "appEntryToBytes": 369193, "appEntryDeltaBytes": 223, "startupJsFromBytes": 686613, "startupJsToBytes": 686940, "startupJsDeltaBytes": 327, "startupCssFromBytes": 336658, "startupCssToBytes": 338150, "startupCssDeltaBytes": 1492, "totalJsFromBytes": 1411954, "totalJsToBytes": 1414022, "totalJsDeltaBytes": 2068 },
-      "chrome105": { "appEntryFromBytes": 349695, "appEntryToBytes": 349891, "appEntryDeltaBytes": 196, "startupJsFromBytes": 662614, "startupJsToBytes": 662911, "startupJsDeltaBytes": 297, "startupCssFromBytes": 334506, "startupCssToBytes": 335998, "startupCssDeltaBytes": 1492, "totalJsFromBytes": 1378922, "totalJsToBytes": 1380960, "totalJsDeltaBytes": 2038 }
+      "safari13": {
+        "appEntryFromBytes": 368970,
+        "appEntryToBytes": 369193,
+        "appEntryDeltaBytes": 223,
+        "startupJsFromBytes": 686613,
+        "startupJsToBytes": 686940,
+        "startupJsDeltaBytes": 327,
+        "startupCssFromBytes": 336658,
+        "startupCssToBytes": 338150,
+        "startupCssDeltaBytes": 1492,
+        "totalJsFromBytes": 1411954,
+        "totalJsToBytes": 1414022,
+        "totalJsDeltaBytes": 2068
+      },
+      "chrome105": {
+        "appEntryFromBytes": 349695,
+        "appEntryToBytes": 349891,
+        "appEntryDeltaBytes": 196,
+        "startupJsFromBytes": 662614,
+        "startupJsToBytes": 662911,
+        "startupJsDeltaBytes": 297,
+        "startupCssFromBytes": 334506,
+        "startupCssToBytes": 335998,
+        "startupCssDeltaBytes": 1492,
+        "totalJsFromBytes": 1378922,
+        "totalJsToBytes": 1380960,
+        "totalJsDeltaBytes": 2038
+      }
     },
     {
       "change": "Harden bounded thread loading and durable local transcript recovery",
-      "decision": "Accept about 0.27% more startup JavaScript and 0.22% more total JavaScript for archive-safe SQLite discovery, interrupted-tail recovery, deep stale-cursor recovery, complete paginated exports, and stale OpenAI rollout repair. The persistence changes remove full legacy transcript blobs—up to many megabytes—from ordinary page reads and saves under the shared database lock. Transcript export formatting is now lazy, keeping action-only work out of startup.",
-      "safari13": { "appEntryFromBytes": 369193, "appEntryToBytes": 371036, "appEntryDeltaBytes": 1843, "startupJsFromBytes": 686940, "startupJsToBytes": 688783, "startupJsDeltaBytes": 1843, "totalJsFromBytes": 1414022, "totalJsToBytes": 1417082, "totalJsDeltaBytes": 3060 },
-      "chrome105": { "appEntryFromBytes": 349891, "appEntryToBytes": 351760, "appEntryDeltaBytes": 1869, "startupJsFromBytes": 662911, "startupJsToBytes": 664780, "startupJsDeltaBytes": 1869, "totalJsFromBytes": 1380960, "totalJsToBytes": 1383925, "totalJsDeltaBytes": 2965 }
+      "decision": "Accept about 0.27% more startup JavaScript and 0.22% more total JavaScript for archive-safe SQLite discovery, interrupted-tail recovery, deep stale-cursor recovery, complete paginated exports, and stale OpenAI rollout repair. The persistence changes remove full legacy transcript blobs\u2014up to many megabytes\u2014from ordinary page reads and saves under the shared database lock. Transcript export formatting is now lazy, keeping action-only work out of startup.",
+      "safari13": {
+        "appEntryFromBytes": 369193,
+        "appEntryToBytes": 371036,
+        "appEntryDeltaBytes": 1843,
+        "startupJsFromBytes": 686940,
+        "startupJsToBytes": 688783,
+        "startupJsDeltaBytes": 1843,
+        "totalJsFromBytes": 1414022,
+        "totalJsToBytes": 1417082,
+        "totalJsDeltaBytes": 3060
+      },
+      "chrome105": {
+        "appEntryFromBytes": 349891,
+        "appEntryToBytes": 351760,
+        "appEntryDeltaBytes": 1869,
+        "startupJsFromBytes": 662911,
+        "startupJsToBytes": 664780,
+        "startupJsDeltaBytes": 1869,
+        "totalJsFromBytes": 1380960,
+        "totalJsToBytes": 1383925,
+        "totalJsDeltaBytes": 2965
+      }
     },
     {
       "change": "Add project-specific chat-font defaults",
       "decision": "Accept less than 0.02% more startup JavaScript and 0.06% more total JavaScript for a validated, inheritable project chat-font override with live Settings preview. The picker metadata remains in the lazy Settings chunk, no font files or network requests are added, and startup carries only the persisted-value sanitizer plus the active-project shell selection.",
-      "safari13": { "appEntryFromBytes": 371036, "appEntryToBytes": 371061, "appEntryDeltaBytes": 25, "startupJsFromBytes": 688783, "startupJsToBytes": 688860, "startupJsDeltaBytes": 77, "totalJsFromBytes": 1417082, "totalJsToBytes": 1417840, "totalJsDeltaBytes": 758 },
-      "chrome105": { "appEntryFromBytes": 351760, "appEntryToBytes": 351774, "appEntryDeltaBytes": 14, "startupJsFromBytes": 664780, "startupJsToBytes": 664846, "startupJsDeltaBytes": 66, "totalJsFromBytes": 1383925, "totalJsToBytes": 1384594, "totalJsDeltaBytes": 669 }
+      "safari13": {
+        "appEntryFromBytes": 371036,
+        "appEntryToBytes": 371061,
+        "appEntryDeltaBytes": 25,
+        "startupJsFromBytes": 688783,
+        "startupJsToBytes": 688860,
+        "startupJsDeltaBytes": 77,
+        "totalJsFromBytes": 1417082,
+        "totalJsToBytes": 1417840,
+        "totalJsDeltaBytes": 758
+      },
+      "chrome105": {
+        "appEntryFromBytes": 351760,
+        "appEntryToBytes": 351774,
+        "appEntryDeltaBytes": 14,
+        "startupJsFromBytes": 664780,
+        "startupJsToBytes": 664846,
+        "startupJsDeltaBytes": 66,
+        "totalJsFromBytes": 1383925,
+        "totalJsToBytes": 1384594,
+        "totalJsDeltaBytes": 669
+      }
     },
     {
       "change": "Keep Settings dropdowns above the fixed footer",
       "decision": "Accept 140 lazy Settings JavaScript bytes on both targets to explicitly open every Settings-owned menu upward. App-entry, startup JavaScript, startup CSS, and runtime listener counts are unchanged; the fixed placement prevents overflow clipping without adding shared positioning logic.",
-      "safari13": { "appEntryFromBytes": 371061, "appEntryToBytes": 371061, "appEntryDeltaBytes": 0, "startupJsFromBytes": 688860, "startupJsToBytes": 688860, "startupJsDeltaBytes": 0, "startupCssFromBytes": 338150, "startupCssToBytes": 338150, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1417840, "totalJsToBytes": 1417980, "totalJsDeltaBytes": 140 },
-      "chrome105": { "appEntryFromBytes": 351774, "appEntryToBytes": 351774, "appEntryDeltaBytes": 0, "startupJsFromBytes": 664846, "startupJsToBytes": 664846, "startupJsDeltaBytes": 0, "startupCssFromBytes": 335998, "startupCssToBytes": 335998, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1384594, "totalJsToBytes": 1385334, "totalJsDeltaBytes": 140 }
+      "safari13": {
+        "appEntryFromBytes": 371061,
+        "appEntryToBytes": 371061,
+        "appEntryDeltaBytes": 0,
+        "startupJsFromBytes": 688860,
+        "startupJsToBytes": 688860,
+        "startupJsDeltaBytes": 0,
+        "startupCssFromBytes": 338150,
+        "startupCssToBytes": 338150,
+        "startupCssDeltaBytes": 0,
+        "totalJsFromBytes": 1417840,
+        "totalJsToBytes": 1417980,
+        "totalJsDeltaBytes": 140
+      },
+      "chrome105": {
+        "appEntryFromBytes": 351774,
+        "appEntryToBytes": 351774,
+        "appEntryDeltaBytes": 0,
+        "startupJsFromBytes": 664846,
+        "startupJsToBytes": 664846,
+        "startupJsDeltaBytes": 0,
+        "startupCssFromBytes": 335998,
+        "startupCssToBytes": 335998,
+        "startupCssDeltaBytes": 0,
+        "totalJsFromBytes": 1384594,
+        "totalJsToBytes": 1385334,
+        "totalJsDeltaBytes": 140
+      }
     },
     {
       "change": "Add account-aware Claude model replacement and managed developer-runtime updates",
       "decision": "Accept about 0.53% more startup JavaScript, 0.34% more startup CSS, and 0.58% more total JavaScript for conservative live-model supersession, actionable update-required rows, one delayed and deduplicated non-blocking startup check, and official Claude Code/Codex update controls. The network/update implementation and full Updates UI remain outside the startup closure; a follow-up size review removed 801 Safari startup-JavaScript bytes and 1,239 shared CSS bytes before recording this exception.",
-      "safari13": { "appEntryFromBytes": 371061, "appEntryToBytes": 342901, "appEntryDeltaBytes": -28160, "startupJsFromBytes": 688860, "startupJsToBytes": 692514, "startupJsDeltaBytes": 3654, "startupCssFromBytes": 338150, "startupCssToBytes": 339282, "startupCssDeltaBytes": 1132, "totalJsFromBytes": 1417980, "totalJsToBytes": 1426256, "totalJsDeltaBytes": 8276 },
-      "chrome105": { "appEntryFromBytes": 351774, "appEntryToBytes": 325401, "appEntryDeltaBytes": -26373, "startupJsFromBytes": 664846, "startupJsToBytes": 668320, "startupJsDeltaBytes": 3474, "startupCssFromBytes": 335998, "startupCssToBytes": 337130, "startupCssDeltaBytes": 1132, "totalJsFromBytes": 1385334, "totalJsToBytes": 1392525, "totalJsDeltaBytes": 7791 }
+      "safari13": {
+        "appEntryFromBytes": 371061,
+        "appEntryToBytes": 342901,
+        "appEntryDeltaBytes": -28160,
+        "startupJsFromBytes": 688860,
+        "startupJsToBytes": 692514,
+        "startupJsDeltaBytes": 3654,
+        "startupCssFromBytes": 338150,
+        "startupCssToBytes": 339282,
+        "startupCssDeltaBytes": 1132,
+        "totalJsFromBytes": 1417980,
+        "totalJsToBytes": 1426256,
+        "totalJsDeltaBytes": 8276
+      },
+      "chrome105": {
+        "appEntryFromBytes": 351774,
+        "appEntryToBytes": 325401,
+        "appEntryDeltaBytes": -26373,
+        "startupJsFromBytes": 664846,
+        "startupJsToBytes": 668320,
+        "startupJsDeltaBytes": 3474,
+        "startupCssFromBytes": 335998,
+        "startupCssToBytes": 337130,
+        "startupCssDeltaBytes": 1132,
+        "totalJsFromBytes": 1385334,
+        "totalJsToBytes": 1392525,
+        "totalJsDeltaBytes": 7791
+      }
     },
     {
       "change": "Harden managed developer-runtime updates after review",
       "decision": "Accept 102 startup JavaScript bytes, 106 startup CSS bytes, and at most 575 total JavaScript bytes for truthful unavailable-runtime actions, accessible updater status output, resilient post-update refresh handling, and friendly labels for superseded saved models. App-entry size is unchanged and its limits are ratcheted down to the measured production sizes.",
-      "safari13": { "appEntryFromBytes": 342901, "appEntryToBytes": 342901, "appEntryDeltaBytes": 0, "startupJsFromBytes": 692514, "startupJsToBytes": 692617, "startupJsDeltaBytes": 103, "startupCssFromBytes": 339282, "startupCssToBytes": 339388, "startupCssDeltaBytes": 106, "totalJsFromBytes": 1426256, "totalJsToBytes": 1426831, "totalJsDeltaBytes": 575 },
-      "chrome105": { "appEntryFromBytes": 325401, "appEntryToBytes": 325401, "appEntryDeltaBytes": 0, "startupJsFromBytes": 668320, "startupJsToBytes": 668422, "startupJsDeltaBytes": 102, "startupCssFromBytes": 337130, "startupCssToBytes": 337236, "startupCssDeltaBytes": 106, "totalJsFromBytes": 1392525, "totalJsToBytes": 1393066, "totalJsDeltaBytes": 541 }
+      "safari13": {
+        "appEntryFromBytes": 342901,
+        "appEntryToBytes": 342901,
+        "appEntryDeltaBytes": 0,
+        "startupJsFromBytes": 692514,
+        "startupJsToBytes": 692617,
+        "startupJsDeltaBytes": 103,
+        "startupCssFromBytes": 339282,
+        "startupCssToBytes": 339388,
+        "startupCssDeltaBytes": 106,
+        "totalJsFromBytes": 1426256,
+        "totalJsToBytes": 1426831,
+        "totalJsDeltaBytes": 575
+      },
+      "chrome105": {
+        "appEntryFromBytes": 325401,
+        "appEntryToBytes": 325401,
+        "appEntryDeltaBytes": 0,
+        "startupJsFromBytes": 668320,
+        "startupJsToBytes": 668422,
+        "startupJsDeltaBytes": 102,
+        "startupCssFromBytes": 337130,
+        "startupCssToBytes": 337236,
+        "startupCssDeltaBytes": 106,
+        "totalJsFromBytes": 1392525,
+        "totalJsToBytes": 1393066,
+        "totalJsDeltaBytes": 541
+      }
     },
     {
       "change": "Address second-pass runtime updater review findings",
       "decision": "Accept 77 Safari / 49 Chrome startup and total JavaScript bytes to expose a persisted update-required model's current state to assistive technology and consistently preserve friendly fallback-model metadata. App-entry and CSS sizes remain unchanged.",
-      "safari13": { "appEntryFromBytes": 342901, "appEntryToBytes": 342901, "appEntryDeltaBytes": 0, "startupJsFromBytes": 692617, "startupJsToBytes": 692754, "startupJsDeltaBytes": 77, "startupCssFromBytes": 339388, "startupCssToBytes": 339388, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1426831, "totalJsToBytes": 1426908, "totalJsDeltaBytes": 77 },
-      "chrome105": { "appEntryFromBytes": 325401, "appEntryToBytes": 325401, "appEntryDeltaBytes": 0, "startupJsFromBytes": 668422, "startupJsToBytes": 668471, "startupJsDeltaBytes": 49, "startupCssFromBytes": 337236, "startupCssToBytes": 337236, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1393066, "totalJsToBytes": 1393115, "totalJsDeltaBytes": 49 }
+      "safari13": {
+        "appEntryFromBytes": 342901,
+        "appEntryToBytes": 342901,
+        "appEntryDeltaBytes": 0,
+        "startupJsFromBytes": 692617,
+        "startupJsToBytes": 692754,
+        "startupJsDeltaBytes": 77,
+        "startupCssFromBytes": 339388,
+        "startupCssToBytes": 339388,
+        "startupCssDeltaBytes": 0,
+        "totalJsFromBytes": 1426831,
+        "totalJsToBytes": 1426908,
+        "totalJsDeltaBytes": 77
+      },
+      "chrome105": {
+        "appEntryFromBytes": 325401,
+        "appEntryToBytes": 325401,
+        "appEntryDeltaBytes": 0,
+        "startupJsFromBytes": 668422,
+        "startupJsToBytes": 668471,
+        "startupJsDeltaBytes": 49,
+        "startupCssFromBytes": 337236,
+        "startupCssToBytes": 337236,
+        "startupCssDeltaBytes": 0,
+        "totalJsFromBytes": 1393066,
+        "totalJsToBytes": 1393115,
+        "totalJsDeltaBytes": 49
+      }
     },
     {
       "change": "Keep the Claude catalog label clear of its refresh control",
       "decision": "Accept 205 startup CSS bytes on both targets for a fixed refresh-button column, a 10-pixel safety gap, and deterministic single-line truncation at narrow widths. App-entry and JavaScript sizes are unchanged.",
-      "safari13": { "appEntryFromBytes": 342901, "appEntryToBytes": 342901, "appEntryDeltaBytes": 0, "startupJsFromBytes": 692754, "startupJsToBytes": 692754, "startupJsDeltaBytes": 0, "startupCssFromBytes": 339388, "startupCssToBytes": 339593, "startupCssDeltaBytes": 205, "totalJsFromBytes": 1426908, "totalJsToBytes": 1426908, "totalJsDeltaBytes": 0 },
-      "chrome105": { "appEntryFromBytes": 325401, "appEntryToBytes": 325401, "appEntryDeltaBytes": 0, "startupJsFromBytes": 668471, "startupJsToBytes": 668471, "startupJsDeltaBytes": 0, "startupCssFromBytes": 337236, "startupCssToBytes": 337441, "startupCssDeltaBytes": 205, "totalJsFromBytes": 1393115, "totalJsToBytes": 1393115, "totalJsDeltaBytes": 0 }
+      "safari13": {
+        "appEntryFromBytes": 342901,
+        "appEntryToBytes": 342901,
+        "appEntryDeltaBytes": 0,
+        "startupJsFromBytes": 692754,
+        "startupJsToBytes": 692754,
+        "startupJsDeltaBytes": 0,
+        "startupCssFromBytes": 339388,
+        "startupCssToBytes": 339593,
+        "startupCssDeltaBytes": 205,
+        "totalJsFromBytes": 1426908,
+        "totalJsToBytes": 1426908,
+        "totalJsDeltaBytes": 0
+      },
+      "chrome105": {
+        "appEntryFromBytes": 325401,
+        "appEntryToBytes": 325401,
+        "appEntryDeltaBytes": 0,
+        "startupJsFromBytes": 668471,
+        "startupJsToBytes": 668471,
+        "startupJsDeltaBytes": 0,
+        "startupCssFromBytes": 337236,
+        "startupCssToBytes": 337441,
+        "startupCssDeltaBytes": 205,
+        "totalJsFromBytes": 1393115,
+        "totalJsToBytes": 1393115,
+        "totalJsDeltaBytes": 0
+      }
     },
     {
       "change": "Make thread images durable and move provider selection into the composer",
       "decision": "Accept about 0.08% more startup JavaScript and 0.09% more total JavaScript for restart-safe image preview authorization, durable on-disk copies of new image inputs, the provider/model split in every composer rail, and consistent Claude supersession in Settings. Interface-size presentation is isolated in the existing lazy Settings boundary; a follow-up size pass kept Safari startup CSS below its previous limit and limited the Chrome CSS increase to 27 bytes. Thread memory still stores image paths rather than bytes.",
-      "safari13": { "appEntryFromBytes": 342901, "appEntryToBytes": 343362, "appEntryDeltaBytes": 461, "startupJsFromBytes": 692754, "startupJsToBytes": 693235, "startupJsDeltaBytes": 541, "startupCssFromBytes": 339593, "startupCssToBytes": 339591, "startupCssDeltaBytes": -2, "totalJsFromBytes": 1426908, "totalJsToBytes": 1428179, "totalJsDeltaBytes": 1271 },
-      "chrome105": { "appEntryFromBytes": 325401, "appEntryToBytes": 325870, "appEntryDeltaBytes": 469, "startupJsFromBytes": 668471, "startupJsToBytes": 669029, "startupJsDeltaBytes": 558, "startupCssFromBytes": 337441, "startupCssToBytes": 337468, "startupCssDeltaBytes": 27, "totalJsFromBytes": 1393115, "totalJsToBytes": 1394403, "totalJsDeltaBytes": 1288 }
+      "safari13": {
+        "appEntryFromBytes": 342901,
+        "appEntryToBytes": 343362,
+        "appEntryDeltaBytes": 461,
+        "startupJsFromBytes": 692754,
+        "startupJsToBytes": 693235,
+        "startupJsDeltaBytes": 541,
+        "startupCssFromBytes": 339593,
+        "startupCssToBytes": 339591,
+        "startupCssDeltaBytes": -2,
+        "totalJsFromBytes": 1426908,
+        "totalJsToBytes": 1428179,
+        "totalJsDeltaBytes": 1271
+      },
+      "chrome105": {
+        "appEntryFromBytes": 325401,
+        "appEntryToBytes": 325870,
+        "appEntryDeltaBytes": 469,
+        "startupJsFromBytes": 668471,
+        "startupJsToBytes": 669029,
+        "startupJsDeltaBytes": 558,
+        "startupCssFromBytes": 337441,
+        "startupCssToBytes": 337468,
+        "startupCssDeltaBytes": 27,
+        "totalJsFromBytes": 1393115,
+        "totalJsToBytes": 1394403,
+        "totalJsDeltaBytes": 1288
+      }
     },
     {
       "change": "Close second-pass attachment and model-picker review findings",
       "decision": "Accept about 0.13% more startup JavaScript and 0.09% more total JavaScript for truthful superseded-model state, runnable project-default selection, disabled-row keyboard recovery, explicit image-persistence failures, and native preview accessibility. The native copy path simultaneously removes a second full in-memory image buffer of up to 50 MB by streaming directly through the filesystem; CSS and thread-memory payloads are unchanged.",
-      "safari13": { "appEntryFromBytes": 343362, "appEntryToBytes": 343748, "appEntryDeltaBytes": 386, "startupJsFromBytes": 693235, "startupJsToBytes": 694135, "startupJsDeltaBytes": 900, "startupCssFromBytes": 339591, "startupCssToBytes": 339591, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1428179, "totalJsToBytes": 1429473, "totalJsDeltaBytes": 1294 },
-      "chrome105": { "appEntryFromBytes": 325870, "appEntryToBytes": 326185, "appEntryDeltaBytes": 315, "startupJsFromBytes": 669029, "startupJsToBytes": 669793, "startupJsDeltaBytes": 764, "startupCssFromBytes": 337468, "startupCssToBytes": 337468, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1394403, "totalJsToBytes": 1395508, "totalJsDeltaBytes": 1105 }
+      "safari13": {
+        "appEntryFromBytes": 343362,
+        "appEntryToBytes": 343748,
+        "appEntryDeltaBytes": 386,
+        "startupJsFromBytes": 693235,
+        "startupJsToBytes": 694135,
+        "startupJsDeltaBytes": 900,
+        "startupCssFromBytes": 339591,
+        "startupCssToBytes": 339591,
+        "startupCssDeltaBytes": 0,
+        "totalJsFromBytes": 1428179,
+        "totalJsToBytes": 1429473,
+        "totalJsDeltaBytes": 1294
+      },
+      "chrome105": {
+        "appEntryFromBytes": 325870,
+        "appEntryToBytes": 326185,
+        "appEntryDeltaBytes": 315,
+        "startupJsFromBytes": 669029,
+        "startupJsToBytes": 669793,
+        "startupJsDeltaBytes": 764,
+        "startupCssFromBytes": 337468,
+        "startupCssToBytes": 337468,
+        "startupCssDeltaBytes": 0,
+        "totalJsFromBytes": 1394403,
+        "totalJsToBytes": 1395508,
+        "totalJsDeltaBytes": 1105
+      }
     },
     {
       "change": "Make sends wait for durable attachment preparation",
       "decision": "Accept 648 Safari / 647 Chrome startup and total JavaScript bytes to display selected files immediately while preventing a quick Send from omitting a still-copying image or persisting its temporary source path. The wait exists only when attachment preparation is outstanding; ordinary composer sends add no asynchronous work, and CSS and thread-memory payloads are unchanged.",
-      "safari13": { "appEntryFromBytes": 343748, "appEntryToBytes": 344396, "appEntryDeltaBytes": 648, "startupJsFromBytes": 694135, "startupJsToBytes": 694783, "startupJsDeltaBytes": 648, "startupCssFromBytes": 339591, "startupCssToBytes": 339591, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1429473, "totalJsToBytes": 1430121, "totalJsDeltaBytes": 648 },
-      "chrome105": { "appEntryFromBytes": 326185, "appEntryToBytes": 326832, "appEntryDeltaBytes": 647, "startupJsFromBytes": 669793, "startupJsToBytes": 670440, "startupJsDeltaBytes": 647, "startupCssFromBytes": 337468, "startupCssToBytes": 337468, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1395508, "totalJsToBytes": 1396155, "totalJsDeltaBytes": 647 }
+      "safari13": {
+        "appEntryFromBytes": 343748,
+        "appEntryToBytes": 344396,
+        "appEntryDeltaBytes": 648,
+        "startupJsFromBytes": 694135,
+        "startupJsToBytes": 694783,
+        "startupJsDeltaBytes": 648,
+        "startupCssFromBytes": 339591,
+        "startupCssToBytes": 339591,
+        "startupCssDeltaBytes": 0,
+        "totalJsFromBytes": 1429473,
+        "totalJsToBytes": 1430121,
+        "totalJsDeltaBytes": 648
+      },
+      "chrome105": {
+        "appEntryFromBytes": 326185,
+        "appEntryToBytes": 326832,
+        "appEntryDeltaBytes": 647,
+        "startupJsFromBytes": 669793,
+        "startupJsToBytes": 670440,
+        "startupJsDeltaBytes": 647,
+        "startupCssFromBytes": 337468,
+        "startupCssToBytes": 337468,
+        "startupCssDeltaBytes": 0,
+        "totalJsFromBytes": 1395508,
+        "totalJsToBytes": 1396155,
+        "totalJsDeltaBytes": 647
+      }
     },
     {
       "change": "Make the composer model and provider pickers legible and mutually exclusive",
       "decision": "Accept at most 476 startup JavaScript bytes and 306 startup CSS bytes for a consistently short Model label, a readable responsive model menu, and symmetric provider/model dismissal for pointer and keyboard activation. The dismissal listeners exist only while a picker is open, and the change adds no network, persistence, thread-loading, or transcript-memory work.",
-      "safari13": { "appEntryFromBytes": 344396, "appEntryToBytes": 344525, "appEntryDeltaBytes": 129, "startupJsFromBytes": 694783, "startupJsToBytes": 695148, "startupJsDeltaBytes": 365, "startupCssFromBytes": 339591, "startupCssToBytes": 339897, "startupCssDeltaBytes": 306, "totalJsFromBytes": 1430121, "totalJsToBytes": 1430484, "totalJsDeltaBytes": 363 },
-      "chrome105": { "appEntryFromBytes": 326832, "appEntryToBytes": 327057, "appEntryDeltaBytes": 225, "startupJsFromBytes": 670440, "startupJsToBytes": 670916, "startupJsDeltaBytes": 476, "startupCssFromBytes": 337468, "startupCssToBytes": 337774, "startupCssDeltaBytes": 306, "totalJsFromBytes": 1396155, "totalJsToBytes": 1396641, "totalJsDeltaBytes": 486 }
+      "safari13": {
+        "appEntryFromBytes": 344396,
+        "appEntryToBytes": 344525,
+        "appEntryDeltaBytes": 129,
+        "startupJsFromBytes": 694783,
+        "startupJsToBytes": 695148,
+        "startupJsDeltaBytes": 365,
+        "startupCssFromBytes": 339591,
+        "startupCssToBytes": 339897,
+        "startupCssDeltaBytes": 306,
+        "totalJsFromBytes": 1430121,
+        "totalJsToBytes": 1430484,
+        "totalJsDeltaBytes": 363
+      },
+      "chrome105": {
+        "appEntryFromBytes": 326832,
+        "appEntryToBytes": 327057,
+        "appEntryDeltaBytes": 225,
+        "startupJsFromBytes": 670440,
+        "startupJsToBytes": 670916,
+        "startupJsDeltaBytes": 476,
+        "startupCssFromBytes": 337468,
+        "startupCssToBytes": 337774,
+        "startupCssDeltaBytes": 306,
+        "totalJsFromBytes": 1396155,
+        "totalJsToBytes": 1396641,
+        "totalJsDeltaBytes": 486
+      }
     },
     {
       "change": "Close post-merge composer picker review findings",
       "decision": "Accept 62 Safari / 69 Chrome startup and total JavaScript bytes for immutable-path click dismissal and arrow-key mutual exclusion. This keeps self-replacing menu actions open without weakening outside keyboard dismissal, and fixes intermediate-width overflow with no CSS-size increase. No idle listeners, network, persistence, thread-loading, or transcript-memory work is added.",
-      "safari13": { "appEntryFromBytes": 344525, "appEntryToBytes": 344633, "appEntryDeltaBytes": 108, "startupJsFromBytes": 695148, "startupJsToBytes": 695210, "startupJsDeltaBytes": 62, "startupCssFromBytes": 339897, "startupCssToBytes": 339897, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1430484, "totalJsToBytes": 1430546, "totalJsDeltaBytes": 62 },
-      "chrome105": { "appEntryFromBytes": 327057, "appEntryToBytes": 327145, "appEntryDeltaBytes": 88, "startupJsFromBytes": 670916, "startupJsToBytes": 670985, "startupJsDeltaBytes": 69, "startupCssFromBytes": 337774, "startupCssToBytes": 337774, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1396641, "totalJsToBytes": 1396710, "totalJsDeltaBytes": 69 }
+      "safari13": {
+        "appEntryFromBytes": 344525,
+        "appEntryToBytes": 344633,
+        "appEntryDeltaBytes": 108,
+        "startupJsFromBytes": 695148,
+        "startupJsToBytes": 695210,
+        "startupJsDeltaBytes": 62,
+        "startupCssFromBytes": 339897,
+        "startupCssToBytes": 339897,
+        "startupCssDeltaBytes": 0,
+        "totalJsFromBytes": 1430484,
+        "totalJsToBytes": 1430546,
+        "totalJsDeltaBytes": 62
+      },
+      "chrome105": {
+        "appEntryFromBytes": 327057,
+        "appEntryToBytes": 327145,
+        "appEntryDeltaBytes": 88,
+        "startupJsFromBytes": 670916,
+        "startupJsToBytes": 670985,
+        "startupJsDeltaBytes": 69,
+        "startupCssFromBytes": 337774,
+        "startupCssToBytes": 337774,
+        "startupCssDeltaBytes": 0,
+        "totalJsFromBytes": 1396641,
+        "totalJsToBytes": 1396710,
+        "totalJsDeltaBytes": 69
+      }
     },
     {
       "change": "Add native clone-parent selection and interactive subscription quota details",
       "decision": "Accept about 0.87% more startup JavaScript, 0.70% more startup CSS, and 0.54% more total JavaScript for an accessible, selectable Codex/Claude usage popover and safe native clone-parent selection with exact destination previews. This is measured feature overhead, not a speed improvement. Clone presentation stays in the lazy Settings boundary; the popover reuses existing usage snapshots, attaches global listeners only while open, and adds no network requests, provider processes, polling, streaming work, or thread-payload growth. Limits match measured production output without extra headroom.",
-      "safari13": { "appEntryFromBytes": 344633, "appEntryToBytes": 348377, "appEntryDeltaBytes": 3744, "startupJsFromBytes": 695210, "startupJsToBytes": 701154, "startupJsDeltaBytes": 5944, "startupCssFromBytes": 339897, "startupCssToBytes": 342251, "startupCssDeltaBytes": 2354, "totalJsFromBytes": 1430546, "totalJsToBytes": 1438096, "totalJsDeltaBytes": 7550 },
-      "chrome105": { "appEntryFromBytes": 327145, "appEntryToBytes": 330744, "appEntryDeltaBytes": 3599, "startupJsFromBytes": 670985, "startupJsToBytes": 676746, "startupJsDeltaBytes": 5761, "startupCssFromBytes": 337774, "startupCssToBytes": 340128, "startupCssDeltaBytes": 2354, "totalJsFromBytes": 1396710, "totalJsToBytes": 1404070, "totalJsDeltaBytes": 7360 }
+      "safari13": {
+        "appEntryFromBytes": 344633,
+        "appEntryToBytes": 348377,
+        "appEntryDeltaBytes": 3744,
+        "startupJsFromBytes": 695210,
+        "startupJsToBytes": 701154,
+        "startupJsDeltaBytes": 5944,
+        "startupCssFromBytes": 339897,
+        "startupCssToBytes": 342251,
+        "startupCssDeltaBytes": 2354,
+        "totalJsFromBytes": 1430546,
+        "totalJsToBytes": 1438096,
+        "totalJsDeltaBytes": 7550
+      },
+      "chrome105": {
+        "appEntryFromBytes": 327145,
+        "appEntryToBytes": 330744,
+        "appEntryDeltaBytes": 3599,
+        "startupJsFromBytes": 670985,
+        "startupJsToBytes": 676746,
+        "startupJsDeltaBytes": 5761,
+        "startupCssFromBytes": 337774,
+        "startupCssToBytes": 340128,
+        "startupCssDeltaBytes": 2354,
+        "totalJsFromBytes": 1396710,
+        "totalJsToBytes": 1404070,
+        "totalJsDeltaBytes": 7360
+      }
     },
     {
       "change": "Add bounded paint-only smoothing to live assistant text",
       "decision": "Accept 4,274 Safari / 4,204 Chrome lazy JavaScript bytes (about 0.30% total) for a 180 ms fade of newly appended text. App entry, startup JavaScript and startup CSS are unchanged. The controller stays in the lazy timeline chunk, keeps existing deferred Markdown and DOM geometry, adds no provider/persistence work, and bounds live work to eight groups, 64 ranges/color reads, and a small capped message snapshot. This is measured feature overhead, not a speed improvement. Large or complex messages, rewrites, selection, reduced motion and unsupported browsers use ordinary fully visible text. Limits match measured output with no extra headroom.",
-      "safari13": { "appEntryDeltaBytes": 0, "startupJsDeltaBytes": 0, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1438096, "totalJsToBytes": 1442370, "totalJsDeltaBytes": 4274 },
-      "chrome105": { "appEntryDeltaBytes": 0, "startupJsDeltaBytes": 0, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1404070, "totalJsToBytes": 1408274, "totalJsDeltaBytes": 4204 }
+      "safari13": {
+        "appEntryDeltaBytes": 0,
+        "startupJsDeltaBytes": 0,
+        "startupCssDeltaBytes": 0,
+        "totalJsFromBytes": 1438096,
+        "totalJsToBytes": 1442370,
+        "totalJsDeltaBytes": 4274
+      },
+      "chrome105": {
+        "appEntryDeltaBytes": 0,
+        "startupJsDeltaBytes": 0,
+        "startupCssDeltaBytes": 0,
+        "totalJsFromBytes": 1404070,
+        "totalJsToBytes": 1408274,
+        "totalJsDeltaBytes": 4204
+      }
     },
     {
       "change": "Make live text fades gentler and uninterrupted",
       "decision": "Accept 817 Safari / 747 Chrome lazy JavaScript bytes (under 0.06% total) for a softer 420 ms curve, fixed time buckets, preserved Markdown DOM at completion, and atomic range-budget fallback. App entry, startup JavaScript and startup CSS are unchanged. Live decoration remains bounded: 24 color/time groups, 64 ranges/color reads, and the original message/snapshot limits. Overflow skips new decoration without evicting representable in-flight fades; completed history creates no controller. This is measured visual-feature overhead, not a speed improvement. No token queue, provider, persistence, thread-loading or transcript-memory changes are introduced. Limits match measured output with no extra headroom.",
-      "safari13": { "appEntryDeltaBytes": 0, "startupJsDeltaBytes": 0, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1442370, "totalJsToBytes": 1443187, "totalJsDeltaBytes": 817 },
-      "chrome105": { "appEntryDeltaBytes": 0, "startupJsDeltaBytes": 0, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1408274, "totalJsToBytes": 1409021, "totalJsDeltaBytes": 747 }
+      "safari13": {
+        "appEntryDeltaBytes": 0,
+        "startupJsDeltaBytes": 0,
+        "startupCssDeltaBytes": 0,
+        "totalJsFromBytes": 1442370,
+        "totalJsToBytes": 1443187,
+        "totalJsDeltaBytes": 817
+      },
+      "chrome105": {
+        "appEntryDeltaBytes": 0,
+        "startupJsDeltaBytes": 0,
+        "startupCssDeltaBytes": 0,
+        "totalJsFromBytes": 1408274,
+        "totalJsToBytes": 1409021,
+        "totalJsDeltaBytes": 747
+      }
     },
     {
       "change": "Pace bursty streaming presentation before Markdown layout",
       "decision": "Accept 3,084 Safari / 2,882 Chrome total JavaScript bytes for bounded display-only pacing and safe immediate code-copy flush. Most code remains lazy; shared React export bookkeeping adds 66 startup bytes and 59 app-entry bytes on each target. CSS is unchanged. This is measured visual-feature overhead, not an efficiency claim: paced live messages have more small renders, limited near 30 Hz with 240 ms arrival windows, 64 batches, 2,048 pending units and 48,000 source units. Provider/store/persistence text is not delayed. The captured Haiku replay shows smaller text/scroll/brightness steps; these are fixture results, not universal bounds or proof of subjective smoothness. Limits match measured output without headroom.",
-      "safari13": { "appEntryFromBytes": 348377, "appEntryToBytes": 348436, "appEntryDeltaBytes": 59, "startupJsFromBytes": 701154, "startupJsToBytes": 701220, "startupJsDeltaBytes": 66, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1443187, "totalJsToBytes": 1446271, "totalJsDeltaBytes": 3084 },
-      "chrome105": { "appEntryFromBytes": 330744, "appEntryToBytes": 330803, "appEntryDeltaBytes": 59, "startupJsFromBytes": 676746, "startupJsToBytes": 676812, "startupJsDeltaBytes": 66, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1409021, "totalJsToBytes": 1411903, "totalJsDeltaBytes": 2882 }
+      "safari13": {
+        "appEntryFromBytes": 348377,
+        "appEntryToBytes": 348436,
+        "appEntryDeltaBytes": 59,
+        "startupJsFromBytes": 701154,
+        "startupJsToBytes": 701220,
+        "startupJsDeltaBytes": 66,
+        "startupCssDeltaBytes": 0,
+        "totalJsFromBytes": 1443187,
+        "totalJsToBytes": 1446271,
+        "totalJsDeltaBytes": 3084
+      },
+      "chrome105": {
+        "appEntryFromBytes": 330744,
+        "appEntryToBytes": 330803,
+        "appEntryDeltaBytes": 59,
+        "startupJsFromBytes": 676746,
+        "startupJsToBytes": 676812,
+        "startupJsDeltaBytes": 66,
+        "startupCssDeltaBytes": 0,
+        "totalJsFromBytes": 1409021,
+        "totalJsToBytes": 1411903,
+        "totalJsDeltaBytes": 2882
+      }
     },
     {
       "change": "Usage countdown and restrained toolbar presentation",
       "decision": "Accept the measured UI-feature cost of safe timezone-aware Claude reset-label parsing, a minute clock mounted only in open five-hour usage details, friendly Claude trigger names, and action feedback moved out of the fixed-width status text into existing toasts. No dependencies, extra provider reads, transcript changes or closed-panel timers. DST gaps/folds retain absolute labels rather than guessing. Most added JavaScript is shared parsing logic; total raw JS grows by 2,355 Safari / 2,300 Chrome bytes, with 223 startup CSS bytes for subdued selection and neutral notifications. This is feature overhead, not an efficiency claim. Exact measured limits, no extra headroom.",
-      "safari13": { "appEntryFromBytes": 348436, "appEntryToBytes": 348960, "appEntryDeltaBytes": 524, "startupJsFromBytes": 701220, "startupJsToBytes": 703567, "startupJsDeltaBytes": 2347, "startupCssDeltaBytes": 223, "totalJsFromBytes": 1446271, "totalJsToBytes": 1448626, "totalJsDeltaBytes": 2355 },
-      "chrome105": { "appEntryFromBytes": 330803, "appEntryToBytes": 331291, "appEntryDeltaBytes": 488, "startupJsFromBytes": 676812, "startupJsToBytes": 679102, "startupJsDeltaBytes": 2290, "startupCssDeltaBytes": 223, "totalJsFromBytes": 1411903, "totalJsToBytes": 1414203, "totalJsDeltaBytes": 2300 }
+      "safari13": {
+        "appEntryFromBytes": 348436,
+        "appEntryToBytes": 348960,
+        "appEntryDeltaBytes": 524,
+        "startupJsFromBytes": 701220,
+        "startupJsToBytes": 703567,
+        "startupJsDeltaBytes": 2347,
+        "startupCssDeltaBytes": 223,
+        "totalJsFromBytes": 1446271,
+        "totalJsToBytes": 1448626,
+        "totalJsDeltaBytes": 2355
+      },
+      "chrome105": {
+        "appEntryFromBytes": 330803,
+        "appEntryToBytes": 331291,
+        "appEntryDeltaBytes": 488,
+        "startupJsFromBytes": 676812,
+        "startupJsToBytes": 679102,
+        "startupJsDeltaBytes": 2290,
+        "startupCssDeltaBytes": 223,
+        "totalJsFromBytes": 1411903,
+        "totalJsToBytes": 1414203,
+        "totalJsDeltaBytes": 2300
+      }
     },
     {
       "change": "Fade usage details and remove the first Settings Suspense retry delay",
       "decision": "Accept 2,350 Safari / 2,130 Chrome startup and total JavaScript bytes, plus 53 CSS bytes, for interruptible opacity-only usage-panel presence, a stable asynchronous Settings host, and keyboard-accessible close/retry recovery for failed Settings loads. Countdown stops immediately on logical close, exiting DOM is inert and temporary, animations/listeners clean up, and reduced motion settles instantly. Module-only Settings prewarm is delayed, visibility-aware and cancellable, with no forced idle deadline; it trades loading the separate Settings chunk after idle for less first-click work but does not mount hidden UI or start provider effects. The actual measured latency fix bypasses React.lazy's initial fulfilled-promise suspension: five fresh-context local-browser samples improved settled first-visible medians from 343/367 ms to 29/47 ms in Chromium/WebKit. These are fixture timings, not native Windows guarantees. No dependencies, provider polling, thread-loading or streaming changes. Exact measured limits with no extra headroom.",
-      "safari13": { "appEntryFromBytes": 348960, "appEntryToBytes": 351009, "appEntryDeltaBytes": 2049, "startupJsFromBytes": 703567, "startupJsToBytes": 705917, "startupJsDeltaBytes": 2350, "startupCssFromBytes": 342474, "startupCssToBytes": 342527, "startupCssDeltaBytes": 53, "totalJsFromBytes": 1448626, "totalJsToBytes": 1450976, "totalJsDeltaBytes": 2350 },
-      "chrome105": { "appEntryFromBytes": 331291, "appEntryToBytes": 333120, "appEntryDeltaBytes": 1829, "startupJsFromBytes": 679102, "startupJsToBytes": 681232, "startupJsDeltaBytes": 2130, "startupCssFromBytes": 340351, "startupCssToBytes": 340404, "startupCssDeltaBytes": 53, "totalJsFromBytes": 1414203, "totalJsToBytes": 1416333, "totalJsDeltaBytes": 2130 }
+      "safari13": {
+        "appEntryFromBytes": 348960,
+        "appEntryToBytes": 351009,
+        "appEntryDeltaBytes": 2049,
+        "startupJsFromBytes": 703567,
+        "startupJsToBytes": 705917,
+        "startupJsDeltaBytes": 2350,
+        "startupCssFromBytes": 342474,
+        "startupCssToBytes": 342527,
+        "startupCssDeltaBytes": 53,
+        "totalJsFromBytes": 1448626,
+        "totalJsToBytes": 1450976,
+        "totalJsDeltaBytes": 2350
+      },
+      "chrome105": {
+        "appEntryFromBytes": 331291,
+        "appEntryToBytes": 333120,
+        "appEntryDeltaBytes": 1829,
+        "startupJsFromBytes": 679102,
+        "startupJsToBytes": 681232,
+        "startupJsDeltaBytes": 2130,
+        "startupCssFromBytes": 340351,
+        "startupCssToBytes": 340404,
+        "startupCssDeltaBytes": 53,
+        "totalJsFromBytes": 1414203,
+        "totalJsToBytes": 1416333,
+        "totalJsDeltaBytes": 2130
+      }
     },
     {
       "change": "Unify model catalog refresh controls across all providers",
       "decision": "Accept 492 Safari / 534 Chrome startup JavaScript bytes for a shared accessible refresh header, OpenAI loading/error state and atomic paginated refresh, and picker-local Cursor errors. Removing duplicated refresh markup and obsolete Cursor header CSS reduces startup CSS by 951 bytes on both targets, so combined raw startup JS plus CSS decreases by 459 Safari / 417 Chrome bytes. No dependencies, timers, background polling, provider restarts or thread/streaming changes. This is UI-feature overhead, not a runtime speed claim. Exact measured limits with no extra headroom; app-entry and CSS limits ratchet down.",
-      "safari13": { "appEntryFromBytes": 351009, "appEntryToBytes": 350813, "appEntryDeltaBytes": -196, "startupJsFromBytes": 705917, "startupJsToBytes": 706409, "startupJsDeltaBytes": 492, "startupCssFromBytes": 342527, "startupCssToBytes": 341576, "startupCssDeltaBytes": -951, "totalJsFromBytes": 1450976, "totalJsToBytes": 1451463, "totalJsDeltaBytes": 487 },
-      "chrome105": { "appEntryFromBytes": 333120, "appEntryToBytes": 333010, "appEntryDeltaBytes": -110, "startupJsFromBytes": 681232, "startupJsToBytes": 681766, "startupJsDeltaBytes": 534, "startupCssFromBytes": 340404, "startupCssToBytes": 339453, "startupCssDeltaBytes": -951, "totalJsFromBytes": 1416333, "totalJsToBytes": 1416860, "totalJsDeltaBytes": 527 }
+      "safari13": {
+        "appEntryFromBytes": 351009,
+        "appEntryToBytes": 350813,
+        "appEntryDeltaBytes": -196,
+        "startupJsFromBytes": 705917,
+        "startupJsToBytes": 706409,
+        "startupJsDeltaBytes": 492,
+        "startupCssFromBytes": 342527,
+        "startupCssToBytes": 341576,
+        "startupCssDeltaBytes": -951,
+        "totalJsFromBytes": 1450976,
+        "totalJsToBytes": 1451463,
+        "totalJsDeltaBytes": 487
+      },
+      "chrome105": {
+        "appEntryFromBytes": 333120,
+        "appEntryToBytes": 333010,
+        "appEntryDeltaBytes": -110,
+        "startupJsFromBytes": 681232,
+        "startupJsToBytes": 681766,
+        "startupJsDeltaBytes": 534,
+        "startupCssFromBytes": 340404,
+        "startupCssToBytes": 339453,
+        "startupCssDeltaBytes": -951,
+        "totalJsFromBytes": 1416333,
+        "totalJsToBytes": 1416860,
+        "totalJsDeltaBytes": 527
+      }
     },
     {
       "change": "Provider usage dashboard and bounded OpenRouter cost receipts",
       "decision": "Accept 3,991 Safari / 3,853 Chrome startup JavaScript bytes for frozen provider subtotals, launch pricing status, background metadata attribution and deduplicated cost receipts. Removing obsolete usage styles saves 1,105 startup CSS bytes on both targets; combined raw startup JS plus CSS grows 2,886 / 2,748 bytes. The dashboard and its CSS stay in the deferred Settings chunk, unmount when Settings closes, use no chart dependency, read no transcripts and update only on batched ledger writes. Receipts use one aggregate and at most 1,000 recent ids, not one ledger record per request. Native observation forwards original chunks, caps a candidate frame at 256 KiB and skips JSON parsing on text-only frames. No new polling or generation lookup requests. futures-util was already a transitive Rust dependency; no additional resolved package or frontend dependency is introduced. This is reviewed feature overhead, not a speed improvement claim. Exact measured limits, no extra headroom; app-entry/CSS limits ratchet down.",
-      "safari13": { "appEntryFromBytes": 350813, "appEntryToBytes": 350471, "appEntryDeltaBytes": -342, "startupJsFromBytes": 706409, "startupJsToBytes": 710400, "startupJsDeltaBytes": 3991, "startupCssFromBytes": 341576, "startupCssToBytes": 340471, "startupCssDeltaBytes": -1105, "totalJsFromBytes": 1451463, "totalJsToBytes": 1460889, "totalJsDeltaBytes": 9426 },
-      "chrome105": { "appEntryFromBytes": 333010, "appEntryToBytes": 332822, "appEntryDeltaBytes": -188, "startupJsFromBytes": 681766, "startupJsToBytes": 685619, "startupJsDeltaBytes": 3853, "startupCssFromBytes": 339453, "startupCssToBytes": 338348, "startupCssDeltaBytes": -1105, "totalJsFromBytes": 1416860, "totalJsToBytes": 1426135, "totalJsDeltaBytes": 9275 }
+      "safari13": {
+        "appEntryFromBytes": 350813,
+        "appEntryToBytes": 350471,
+        "appEntryDeltaBytes": -342,
+        "startupJsFromBytes": 706409,
+        "startupJsToBytes": 710400,
+        "startupJsDeltaBytes": 3991,
+        "startupCssFromBytes": 341576,
+        "startupCssToBytes": 340471,
+        "startupCssDeltaBytes": -1105,
+        "totalJsFromBytes": 1451463,
+        "totalJsToBytes": 1460889,
+        "totalJsDeltaBytes": 9426
+      },
+      "chrome105": {
+        "appEntryFromBytes": 333010,
+        "appEntryToBytes": 332822,
+        "appEntryDeltaBytes": -188,
+        "startupJsFromBytes": 681766,
+        "startupJsToBytes": 685619,
+        "startupJsDeltaBytes": 3853,
+        "startupCssFromBytes": 339453,
+        "startupCssToBytes": 338348,
+        "startupCssDeltaBytes": -1105,
+        "totalJsFromBytes": 1416860,
+        "totalJsToBytes": 1426135,
+        "totalJsDeltaBytes": 9275
+      }
     },
     {
       "change": "Show provider-native context compaction in thread history",
       "decision": "Accept 2,477 Safari / 2,331 Chrome startup JavaScript bytes for provider-gated Codex lifecycle routing, durable Claude boundary markers, exact timeline ordering and completed-turn visibility. The animated marker adds no startup CSS because its 2.0 KB stylesheet follows the already-lazy ChatTimeline chunk. It adds no polling, provider requests, timers, dependencies or transcript rewriting; OpenRouter and LM Studio are explicitly excluded in live and restored paths. Total JavaScript grows 3,596 / 3,439 bytes, mostly in the lazy renderer and shared persistence presentation logic. This is reviewed UI-feature overhead, not an efficiency claim. Exact measured limits with no extra headroom.",
-      "safari13": { "appEntryFromBytes": 350471, "appEntryToBytes": 352011, "appEntryDeltaBytes": 1540, "startupJsFromBytes": 710400, "startupJsToBytes": 712877, "startupJsDeltaBytes": 2477, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1460889, "totalJsToBytes": 1464485, "totalJsDeltaBytes": 3596 },
-      "chrome105": { "appEntryFromBytes": 332822, "appEntryToBytes": 334222, "appEntryDeltaBytes": 1400, "startupJsFromBytes": 685619, "startupJsToBytes": 687950, "startupJsDeltaBytes": 2331, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1426135, "totalJsToBytes": 1429574, "totalJsDeltaBytes": 3439 }
+      "safari13": {
+        "appEntryFromBytes": 350471,
+        "appEntryToBytes": 352011,
+        "appEntryDeltaBytes": 1540,
+        "startupJsFromBytes": 710400,
+        "startupJsToBytes": 712877,
+        "startupJsDeltaBytes": 2477,
+        "startupCssDeltaBytes": 0,
+        "totalJsFromBytes": 1460889,
+        "totalJsToBytes": 1464485,
+        "totalJsDeltaBytes": 3596
+      },
+      "chrome105": {
+        "appEntryFromBytes": 332822,
+        "appEntryToBytes": 334222,
+        "appEntryDeltaBytes": 1400,
+        "startupJsFromBytes": 685619,
+        "startupJsToBytes": 687950,
+        "startupJsDeltaBytes": 2331,
+        "startupCssDeltaBytes": 0,
+        "totalJsFromBytes": 1426135,
+        "totalJsToBytes": 1429574,
+        "totalJsDeltaBytes": 3439
+      }
     },
     {
       "change": "Harden compaction ordering, recovery and accessible presentation",
       "decision": "Accept 703 Safari / 621 Chrome startup JavaScript bytes for event-boundary delta flushing, replay deduplication, terminal-state cleanup and truthful restored lifecycle states. Total JavaScript grows 655 / 573 bytes; startup CSS is unchanged and the narrow-layout styling remains lazy. This is a reviewed correctness tradeoff, not a performance improvement: it adds no dependencies, polling, provider requests or timers, and flushes only at compaction boundaries. Exact measured limits without extra headroom.",
-      "safari13": { "appEntryFromBytes": 352011, "appEntryToBytes": 352450, "appEntryDeltaBytes": 439, "startupJsFromBytes": 712877, "startupJsToBytes": 713580, "startupJsDeltaBytes": 703, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1464485, "totalJsToBytes": 1465140, "totalJsDeltaBytes": 655 },
-      "chrome105": { "appEntryFromBytes": 334222, "appEntryToBytes": 334580, "appEntryDeltaBytes": 358, "startupJsFromBytes": 687950, "startupJsToBytes": 688571, "startupJsDeltaBytes": 621, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1429574, "totalJsToBytes": 1430147, "totalJsDeltaBytes": 573 }
+      "safari13": {
+        "appEntryFromBytes": 352011,
+        "appEntryToBytes": 352450,
+        "appEntryDeltaBytes": 439,
+        "startupJsFromBytes": 712877,
+        "startupJsToBytes": 713580,
+        "startupJsDeltaBytes": 703,
+        "startupCssDeltaBytes": 0,
+        "totalJsFromBytes": 1464485,
+        "totalJsToBytes": 1465140,
+        "totalJsDeltaBytes": 655
+      },
+      "chrome105": {
+        "appEntryFromBytes": 334222,
+        "appEntryToBytes": 334580,
+        "appEntryDeltaBytes": 358,
+        "startupJsFromBytes": 687950,
+        "startupJsToBytes": 688571,
+        "startupJsDeltaBytes": 621,
+        "startupCssDeltaBytes": 0,
+        "totalJsFromBytes": 1429574,
+        "totalJsToBytes": 1430147,
+        "totalJsDeltaBytes": 573
+      }
     },
     {
       "change": "Show native Claude compaction progress with durable lifecycle correlation",
       "decision": "Accept 2,401 Safari / 2,150 Chrome startup and total JavaScript bytes for Claude start/reset/boundary handling, replay-safe identities retained on each compaction row, neutral unconfirmed outcomes, and crash-safe history restoration. Startup CSS is unchanged; the existing lazy marker stylesheet grows 65 bytes. No dependencies, provider requests, polling, hooks or timers are added. Correlation scans only the retained thread activities at lifecycle events, not streaming deltas, and its small persisted metadata is included in transcript memory estimates. This is reviewed feature/correctness overhead rather than an efficiency claim. Limits equal measured production output with no extra headroom.",
-      "safari13": { "appEntryFromBytes": 352450, "appEntryToBytes": 354331, "appEntryDeltaBytes": 1881, "startupJsFromBytes": 713580, "startupJsToBytes": 715981, "startupJsDeltaBytes": 2401, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1465140, "totalJsToBytes": 1467541, "totalJsDeltaBytes": 2401 },
-      "chrome105": { "appEntryFromBytes": 334580, "appEntryToBytes": 336256, "appEntryDeltaBytes": 1676, "startupJsFromBytes": 688571, "startupJsToBytes": 690721, "startupJsDeltaBytes": 2150, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1430147, "totalJsToBytes": 1432297, "totalJsDeltaBytes": 2150 }
+      "safari13": {
+        "appEntryFromBytes": 352450,
+        "appEntryToBytes": 354331,
+        "appEntryDeltaBytes": 1881,
+        "startupJsFromBytes": 713580,
+        "startupJsToBytes": 715981,
+        "startupJsDeltaBytes": 2401,
+        "startupCssDeltaBytes": 0,
+        "totalJsFromBytes": 1465140,
+        "totalJsToBytes": 1467541,
+        "totalJsDeltaBytes": 2401
+      },
+      "chrome105": {
+        "appEntryFromBytes": 334580,
+        "appEntryToBytes": 336256,
+        "appEntryDeltaBytes": 1676,
+        "startupJsFromBytes": 688571,
+        "startupJsToBytes": 690721,
+        "startupJsDeltaBytes": 2150,
+        "startupCssDeltaBytes": 0,
+        "totalJsFromBytes": 1430147,
+        "totalJsToBytes": 1432297,
+        "totalJsDeltaBytes": 2150
+      }
     },
     {
       "change": "Surface Claude turns that finish without a response",
       "decision": "Accept 797 Safari / 760 Chrome startup and total JavaScript bytes to recover a result-only final answer when possible and otherwise preserve a visible failed-turn diagnostic instead of silently reporting completion. The check is constant-time at the existing result boundary using current-turn task metadata and the final timeline entries; it adds no transcript scans, streaming-path work, retries, dependencies, provider requests, polling, timers or CSS. Avoiding automatic retry prevents duplicate tool side effects. This is reviewed correctness overhead, not an efficiency claim. Exact measured limits without extra headroom.",
-      "safari13": { "appEntryFromBytes": 354331, "appEntryToBytes": 355128, "appEntryDeltaBytes": 797, "startupJsFromBytes": 715981, "startupJsToBytes": 716778, "startupJsDeltaBytes": 797, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1467541, "totalJsToBytes": 1468338, "totalJsDeltaBytes": 797 },
-      "chrome105": { "appEntryFromBytes": 336256, "appEntryToBytes": 337016, "appEntryDeltaBytes": 760, "startupJsFromBytes": 690721, "startupJsToBytes": 691481, "startupJsDeltaBytes": 760, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1432297, "totalJsToBytes": 1433057, "totalJsDeltaBytes": 760 }
+      "safari13": {
+        "appEntryFromBytes": 354331,
+        "appEntryToBytes": 355128,
+        "appEntryDeltaBytes": 797,
+        "startupJsFromBytes": 715981,
+        "startupJsToBytes": 716778,
+        "startupJsDeltaBytes": 797,
+        "startupCssDeltaBytes": 0,
+        "totalJsFromBytes": 1467541,
+        "totalJsToBytes": 1468338,
+        "totalJsDeltaBytes": 797
+      },
+      "chrome105": {
+        "appEntryFromBytes": 336256,
+        "appEntryToBytes": 337016,
+        "appEntryDeltaBytes": 760,
+        "startupJsFromBytes": 690721,
+        "startupJsToBytes": 691481,
+        "startupJsDeltaBytes": 760,
+        "startupCssDeltaBytes": 0,
+        "totalJsFromBytes": 1432297,
+        "totalJsToBytes": 1433057,
+        "totalJsDeltaBytes": 760
+      }
     },
     {
       "change": "Add GPT-6 Astra identity and an animated astral effort slider",
       "decision": "Accept 382 Safari / Chrome startup JavaScript bytes and 8,072 Safari / 7,869 Chrome startup CSS bytes for Astra's live-catalog identity, generated transparent model artwork, sub-agent fallbacks, five-level palette, drifting nebula, sparse star field, masked two-ribbon astral swell, star thumb, light-theme contrast and complete reduced-motion treatment. The 32 KB icon is a static asset rather than bundled startup code. Settings-only preview CSS remains in the existing lazy Settings stylesheet. Animation is selected-style-only CSS with no JavaScript timers, per-frame React state, canvas, dependencies, provider work, thread data or persistence cost; all decorative layers ignore pointer input. This is reviewed visual-feature overhead, not an efficiency claim. Exact measured limits without extra headroom.",
-      "safari13": { "appEntryFromBytes": 355128, "appEntryToBytes": 355207, "appEntryDeltaBytes": 79, "startupJsFromBytes": 716778, "startupJsToBytes": 717160, "startupJsDeltaBytes": 382, "startupCssFromBytes": 340471, "startupCssToBytes": 348543, "startupCssDeltaBytes": 8072, "totalJsFromBytes": 1468338, "totalJsToBytes": 1468799, "totalJsDeltaBytes": 461 },
-      "chrome105": { "appEntryFromBytes": 337016, "appEntryToBytes": 337095, "appEntryDeltaBytes": 79, "startupJsFromBytes": 691481, "startupJsToBytes": 691863, "startupJsDeltaBytes": 382, "startupCssFromBytes": 338348, "startupCssToBytes": 346217, "startupCssDeltaBytes": 7869, "totalJsFromBytes": 1433057, "totalJsToBytes": 1433518, "totalJsDeltaBytes": 461 }
+      "safari13": {
+        "appEntryFromBytes": 355128,
+        "appEntryToBytes": 355207,
+        "appEntryDeltaBytes": 79,
+        "startupJsFromBytes": 716778,
+        "startupJsToBytes": 717160,
+        "startupJsDeltaBytes": 382,
+        "startupCssFromBytes": 340471,
+        "startupCssToBytes": 348543,
+        "startupCssDeltaBytes": 8072,
+        "totalJsFromBytes": 1468338,
+        "totalJsToBytes": 1468799,
+        "totalJsDeltaBytes": 461
+      },
+      "chrome105": {
+        "appEntryFromBytes": 337016,
+        "appEntryToBytes": 337095,
+        "appEntryDeltaBytes": 79,
+        "startupJsFromBytes": 691481,
+        "startupJsToBytes": 691863,
+        "startupJsDeltaBytes": 382,
+        "startupCssFromBytes": 338348,
+        "startupCssToBytes": 346217,
+        "startupCssDeltaBytes": 7869,
+        "totalJsFromBytes": 1433057,
+        "totalJsToBytes": 1433518,
+        "totalJsDeltaBytes": 461
+      }
     },
     {
       "change": "Fix the Astra rail loop, make its astral ribbons visible, and drift stars off the selected Astra logo",
       "decision": "Accept 205 Safari / Chrome startup and total JavaScript bytes and 1,645 Safari / 1,623 Chrome startup CSS bytes to repair three defects in the shipped Astra treatment and finish its identity. The nebula now tiles at a fixed width whose first and last stops are the same color and drifts exactly one tile per cycle, replacing a 260%-wide gradient that travelled 140px short of its own tile and snapped once per revolution. The ribbons are explicitly sized ellipses instead of `closest-side` ellipses anchored on an edge, which resolved to a zero radius and painted two layers of nothing. The trigger's star field is six absolutely positioned, aria-hidden, pointer-transparent elements with per-child directions, lifetimes and negative delays. No JavaScript timers, per-frame React state, canvas, dependencies, provider work, thread data or persistence cost; the JavaScript delta is the six static elements on one branch, the emitter is scoped to the selected Astra trigger so menu rows render none, and every added layer is out of flow and ignores pointer input, leaving layout, hit targets and the accessibility tree unchanged. All new motion stops under prefers-reduced-motion, with the stars resting at their invisible base state rather than frozen mid-flight. This is reviewed correctness-and-visual overhead, not an efficiency claim. Exact measured limits without extra headroom.",
-      "safari13": { "appEntryFromBytes": 355207, "appEntryToBytes": 355207, "appEntryDeltaBytes": 0, "startupJsFromBytes": 717160, "startupJsToBytes": 717365, "startupJsDeltaBytes": 205, "startupCssFromBytes": 348543, "startupCssToBytes": 350188, "startupCssDeltaBytes": 1645, "totalJsFromBytes": 1468799, "totalJsToBytes": 1469004, "totalJsDeltaBytes": 205 },
-      "chrome105": { "appEntryFromBytes": 337095, "appEntryToBytes": 337095, "appEntryDeltaBytes": 0, "startupJsFromBytes": 691863, "startupJsToBytes": 692068, "startupJsDeltaBytes": 205, "startupCssFromBytes": 346217, "startupCssToBytes": 347840, "startupCssDeltaBytes": 1623, "totalJsFromBytes": 1433518, "totalJsToBytes": 1433723, "totalJsDeltaBytes": 205 }
+      "safari13": {
+        "appEntryFromBytes": 355207,
+        "appEntryToBytes": 355207,
+        "appEntryDeltaBytes": 0,
+        "startupJsFromBytes": 717160,
+        "startupJsToBytes": 717365,
+        "startupJsDeltaBytes": 205,
+        "startupCssFromBytes": 348543,
+        "startupCssToBytes": 350188,
+        "startupCssDeltaBytes": 1645,
+        "totalJsFromBytes": 1468799,
+        "totalJsToBytes": 1469004,
+        "totalJsDeltaBytes": 205
+      },
+      "chrome105": {
+        "appEntryFromBytes": 337095,
+        "appEntryToBytes": 337095,
+        "appEntryDeltaBytes": 0,
+        "startupJsFromBytes": 691863,
+        "startupJsToBytes": 692068,
+        "startupJsDeltaBytes": 205,
+        "startupCssFromBytes": 346217,
+        "startupCssToBytes": 347840,
+        "startupCssDeltaBytes": 1623,
+        "totalJsFromBytes": 1433518,
+        "totalJsToBytes": 1433723,
+        "totalJsDeltaBytes": 205
+      }
     },
     {
       "change": "Rework the Astra slider: original palette on a seamless loop, ribbons as stroked sine waves bounded by the effort, a drift that is never re-timed, and visible sparks off the selected logo",
-      "decision": "Accept 3,985 Safari / 3,963 Chrome startup CSS bytes and 73 Safari / Chrome startup and total JavaScript bytes to fix how the Astra slider reads. The rail returns to the shipped palette's deep-navy anchor on a band 520px wide, so roughly a third of the ramp is on screen at once and the colour reads as a slow journey rather than a short pattern recycling; closing the ramp back to its first colour and travelling exactly one tile per cycle keeps that from snapping, which the browser spec asserts and a paused-animation pixel comparison puts at a mean channel difference of 0.06 across the wrap against 29 for ordinary quarter-cycle motion. Each ribbon becomes one stroked sine path in an inline SVG data URI drawn behind the bar, replacing two tiled blurred ellipses: the weave is now the bar occluding a continuous curve rather than a blur, and the pair counter-drift so their crossings migrate instead of the pattern sliding as one sheet. The ribbons are also masked to the selected effort, reading the same fill custom property the colored bar reads so they end where the color does instead of weaving on across the unfilled remainder; both inner mask stops are clamped with min and max, and an explicit zero-fill rail state hides the decoration where WebKit retains a mixed-unit fallback stop. The added bytes are the two data URIs, their light-theme-neutral rules, and that cross-engine zero-fill safeguard. Still selected-style-only CSS with no JavaScript timers, per-frame React state, canvas, dependencies, provider work, thread data or persistence cost; the data URIs are inline images that need no network request, both layers stay out of flow and ignore pointer input, so layout, hit targets and the accessibility tree are unchanged, and all motion still stops under prefers-reduced-motion with the ribbons resting in place. The matching Settings preview card is fixed the same way and stays in the lazy Settings stylesheet, off the startup path. The drift is also never re-timed any more. Changing animation-duration does not ease an animation's speed: elapsed time is kept and progress is recomputed against the new duration, so the drift lands on a different phase, by an amount that grows with floor(elapsed / duration) and is therefore invisible on a freshly loaded rail and severe on one left on screen. The cycle was derived from --effort-heat, which the rail republishes on every pointer frame of a drag and again on every effort change, so it was re-timed constantly; measured on a two-minute-old rail it threw the nebula 371px and the ribbons 60px in the single frame the thumb was grabbed, and the same on release and on any effort click, against about 0.5px of genuine drift. Both cycles are now plain constants that nothing can rewrite, which takes all three of those to 0.5px or less, and effort still drives the rail's color, glow, tick colors and how far the ribbons reach. To calm the rail while the user aims, dragging pauses the two drifting layers through animation-play-state, which keeps the animation's current time so pause and resume are both seamless, where a duration change can never alter speed without also moving the animation to a new phase; the star field keeps breathing so the rail stays alive. This is one dragging-only rule and two constants, with no new element, script or listener — the dragging class already existed. The same heat-driven-duration pattern remains in the tide, dart and coil styles and is deliberately left alone here. The selected model's trigger logo also sheds visible sparks: the emitter shipped as six 3px dots painted flat in the accent color, effectively invisible against the trigger, and is now nine particles carrying a bright core clipped to a four-point star with a drop-shadow glow, chosen over box-shadow because a box-shadow is drawn on the border box and clipped away with it. Drift and twinkle are split across the element and its ::before so neither keyframe list restates the other's transform and their opacities multiply into a flicker; the light scheme swaps the core to a deep violet with one tight halo and a shallower twinkle, since a dimmed dark core on a white trigger reads as a smudge rather than a dim light. The particle centers and early-flight offsets are precomputed rather than using newer CSS typed arithmetic, preserving the treatment on the Safari 13 and Chromium 105 compatibility targets. The JavaScript delta is the three added decorative elements and the zero-fill rail class, with no timers, per-frame state or persistence, out of flow, pointer-transparent and aria-hidden, and stopped under prefers-reduced-motion at their invisible rest state. This is reviewed visual-correctness overhead, not an efficiency claim. Exact measured limits without extra headroom.",
-      "safari13": { "appEntryFromBytes": 355207, "appEntryToBytes": 355207, "appEntryDeltaBytes": 0, "startupJsFromBytes": 717365, "startupJsToBytes": 717438, "startupJsDeltaBytes": 73, "startupCssFromBytes": 350188, "startupCssToBytes": 354173, "startupCssDeltaBytes": 3985, "totalJsFromBytes": 1469004, "totalJsToBytes": 1469077, "totalJsDeltaBytes": 73 },
-      "chrome105": { "appEntryFromBytes": 337095, "appEntryToBytes": 337095, "appEntryDeltaBytes": 0, "startupJsFromBytes": 692068, "startupJsToBytes": 692141, "startupJsDeltaBytes": 73, "startupCssFromBytes": 347840, "startupCssToBytes": 351803, "startupCssDeltaBytes": 3963, "totalJsFromBytes": 1433723, "totalJsToBytes": 1433796, "totalJsDeltaBytes": 73 }
+      "decision": "Accept 3,985 Safari / 3,963 Chrome startup CSS bytes and 73 Safari / Chrome startup and total JavaScript bytes to fix how the Astra slider reads. The rail returns to the shipped palette's deep-navy anchor on a band 520px wide, so roughly a third of the ramp is on screen at once and the colour reads as a slow journey rather than a short pattern recycling; closing the ramp back to its first colour and travelling exactly one tile per cycle keeps that from snapping, which the browser spec asserts and a paused-animation pixel comparison puts at a mean channel difference of 0.06 across the wrap against 29 for ordinary quarter-cycle motion. Each ribbon becomes one stroked sine path in an inline SVG data URI drawn behind the bar, replacing two tiled blurred ellipses: the weave is now the bar occluding a continuous curve rather than a blur, and the pair counter-drift so their crossings migrate instead of the pattern sliding as one sheet. The ribbons are also masked to the selected effort, reading the same fill custom property the colored bar reads so they end where the color does instead of weaving on across the unfilled remainder; both inner mask stops are clamped with min and max, and an explicit zero-fill rail state hides the decoration where WebKit retains a mixed-unit fallback stop. The added bytes are the two data URIs, their light-theme-neutral rules, and that cross-engine zero-fill safeguard. Still selected-style-only CSS with no JavaScript timers, per-frame React state, canvas, dependencies, provider work, thread data or persistence cost; the data URIs are inline images that need no network request, both layers stay out of flow and ignore pointer input, so layout, hit targets and the accessibility tree are unchanged, and all motion still stops under prefers-reduced-motion with the ribbons resting in place. The matching Settings preview card is fixed the same way and stays in the lazy Settings stylesheet, off the startup path. The drift is also never re-timed any more. Changing animation-duration does not ease an animation's speed: elapsed time is kept and progress is recomputed against the new duration, so the drift lands on a different phase, by an amount that grows with floor(elapsed / duration) and is therefore invisible on a freshly loaded rail and severe on one left on screen. The cycle was derived from --effort-heat, which the rail republishes on every pointer frame of a drag and again on every effort change, so it was re-timed constantly; measured on a two-minute-old rail it threw the nebula 371px and the ribbons 60px in the single frame the thumb was grabbed, and the same on release and on any effort click, against about 0.5px of genuine drift. Both cycles are now plain constants that nothing can rewrite, which takes all three of those to 0.5px or less, and effort still drives the rail's color, glow, tick colors and how far the ribbons reach. To calm the rail while the user aims, dragging pauses the two drifting layers through animation-play-state, which keeps the animation's current time so pause and resume are both seamless, where a duration change can never alter speed without also moving the animation to a new phase; the star field keeps breathing so the rail stays alive. This is one dragging-only rule and two constants, with no new element, script or listener \u2014 the dragging class already existed. The same heat-driven-duration pattern remains in the tide, dart and coil styles and is deliberately left alone here. The selected model's trigger logo also sheds visible sparks: the emitter shipped as six 3px dots painted flat in the accent color, effectively invisible against the trigger, and is now nine particles carrying a bright core clipped to a four-point star with a drop-shadow glow, chosen over box-shadow because a box-shadow is drawn on the border box and clipped away with it. Drift and twinkle are split across the element and its ::before so neither keyframe list restates the other's transform and their opacities multiply into a flicker; the light scheme swaps the core to a deep violet with one tight halo and a shallower twinkle, since a dimmed dark core on a white trigger reads as a smudge rather than a dim light. The particle centers and early-flight offsets are precomputed rather than using newer CSS typed arithmetic, preserving the treatment on the Safari 13 and Chromium 105 compatibility targets. The JavaScript delta is the three added decorative elements and the zero-fill rail class, with no timers, per-frame state or persistence, out of flow, pointer-transparent and aria-hidden, and stopped under prefers-reduced-motion at their invisible rest state. This is reviewed visual-correctness overhead, not an efficiency claim. Exact measured limits without extra headroom.",
+      "safari13": {
+        "appEntryFromBytes": 355207,
+        "appEntryToBytes": 355207,
+        "appEntryDeltaBytes": 0,
+        "startupJsFromBytes": 717365,
+        "startupJsToBytes": 717438,
+        "startupJsDeltaBytes": 73,
+        "startupCssFromBytes": 350188,
+        "startupCssToBytes": 354173,
+        "startupCssDeltaBytes": 3985,
+        "totalJsFromBytes": 1469004,
+        "totalJsToBytes": 1469077,
+        "totalJsDeltaBytes": 73
+      },
+      "chrome105": {
+        "appEntryFromBytes": 337095,
+        "appEntryToBytes": 337095,
+        "appEntryDeltaBytes": 0,
+        "startupJsFromBytes": 692068,
+        "startupJsToBytes": 692141,
+        "startupJsDeltaBytes": 73,
+        "startupCssFromBytes": 347840,
+        "startupCssToBytes": 351803,
+        "startupCssDeltaBytes": 3963,
+        "totalJsFromBytes": 1433723,
+        "totalJsToBytes": 1433796,
+        "totalJsDeltaBytes": 73
+      }
     },
     {
       "change": "Add a project Run control and harden provider sign-in and sub-agent recovery",
       "decision": "Accept the exact measured feature and correctness cost of the project-scoped Run control, terminal-panel execution bridge, externally completed provider sign-in detection, restart-safe sub-agent lifecycle recovery, retryable slot release, and clearer sub-agent and Settings status controls. Safari grows by 15,009 app-entry bytes, 13,368 startup JavaScript bytes, 5,796 startup CSS bytes and 20,162 total JavaScript bytes; Chrome grows by 13,913, 12,231, 1,815 and 18,629 bytes respectively. The Run control is an always-visible shell feature; its document listeners exist only while its editor is open. Sign-in probes run only after the user launches an external login, are spaced four seconds apart by default, ignore transient probe failures, stop on success or a ten-minute deadline, and are aborted on cleanup. The shared sub-agent clock runs only while a child is active and replaces per-card clocks. Settings JavaScript remains in the existing lazy chunk. No frontend or Rust dependency is added, and the change adds no idle provider polling, transcript scan, streaming-path timer, or per-frame React work. This is reviewed UI-feature and reliability overhead, not an efficiency claim. Limits match measured production output on both configured targets with no extra headroom.",
-      "safari13": { "appEntryFromBytes": 355207, "appEntryToBytes": 370216, "appEntryDeltaBytes": 15009, "startupJsFromBytes": 717438, "startupJsToBytes": 730806, "startupJsDeltaBytes": 13368, "startupCssFromBytes": 354173, "startupCssToBytes": 359969, "startupCssDeltaBytes": 5796, "totalJsFromBytes": 1469077, "totalJsToBytes": 1489239, "totalJsDeltaBytes": 20162 },
-      "chrome105": { "appEntryFromBytes": 337095, "appEntryToBytes": 351008, "appEntryDeltaBytes": 13913, "startupJsFromBytes": 692141, "startupJsToBytes": 704372, "startupJsDeltaBytes": 12231, "startupCssFromBytes": 351803, "startupCssToBytes": 353618, "startupCssDeltaBytes": 1815, "totalJsFromBytes": 1433796, "totalJsToBytes": 1452425, "totalJsDeltaBytes": 18629 }
+      "safari13": {
+        "appEntryFromBytes": 355207,
+        "appEntryToBytes": 370216,
+        "appEntryDeltaBytes": 15009,
+        "startupJsFromBytes": 717438,
+        "startupJsToBytes": 730806,
+        "startupJsDeltaBytes": 13368,
+        "startupCssFromBytes": 354173,
+        "startupCssToBytes": 359969,
+        "startupCssDeltaBytes": 5796,
+        "totalJsFromBytes": 1469077,
+        "totalJsToBytes": 1489239,
+        "totalJsDeltaBytes": 20162
+      },
+      "chrome105": {
+        "appEntryFromBytes": 337095,
+        "appEntryToBytes": 351008,
+        "appEntryDeltaBytes": 13913,
+        "startupJsFromBytes": 692141,
+        "startupJsToBytes": 704372,
+        "startupJsDeltaBytes": 12231,
+        "startupCssFromBytes": 351803,
+        "startupCssToBytes": 353618,
+        "startupCssDeltaBytes": 1815,
+        "totalJsFromBytes": 1433796,
+        "totalJsToBytes": 1452425,
+        "totalJsDeltaBytes": 18629
+      }
     },
     {
       "change": "Harden provider trust boundaries, child-agent lifecycle, and asynchronous state cleanup",
       "decision": "Accept 631 Safari / 635 Chrome startup and total JavaScript bytes for last-write-wins provider refreshes, serialized local-skill runtime preparation, fail-closed one-level child ownership, archive/delete guards during provider startup, and terminal reasoning-buffer cleanup. The native sandbox, approval-request, and process-identity hardening adds no renderer bytes. The browser-test change adds no production code, dependencies, provider requests, polling, timers, per-frame work, CSS, or retained transcript data. This is reviewed correctness and security overhead rather than an efficiency claim. Limits match measured production output on both configured targets with no extra headroom.",
-      "safari13": { "appEntryFromBytes": 370216, "appEntryToBytes": 370936, "appEntryDeltaBytes": 720, "startupJsFromBytes": 730806, "startupJsToBytes": 731437, "startupJsDeltaBytes": 631, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1489239, "totalJsToBytes": 1489870, "totalJsDeltaBytes": 631 },
-      "chrome105": { "appEntryFromBytes": 351008, "appEntryToBytes": 351699, "appEntryDeltaBytes": 691, "startupJsFromBytes": 704372, "startupJsToBytes": 705007, "startupJsDeltaBytes": 635, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1452425, "totalJsToBytes": 1453060, "totalJsDeltaBytes": 635 }
+      "safari13": {
+        "appEntryFromBytes": 370216,
+        "appEntryToBytes": 370936,
+        "appEntryDeltaBytes": 720,
+        "startupJsFromBytes": 730806,
+        "startupJsToBytes": 731437,
+        "startupJsDeltaBytes": 631,
+        "startupCssDeltaBytes": 0,
+        "totalJsFromBytes": 1489239,
+        "totalJsToBytes": 1489870,
+        "totalJsDeltaBytes": 631
+      },
+      "chrome105": {
+        "appEntryFromBytes": 351008,
+        "appEntryToBytes": 351699,
+        "appEntryDeltaBytes": 691,
+        "startupJsFromBytes": 704372,
+        "startupJsToBytes": 705007,
+        "startupJsDeltaBytes": 635,
+        "startupCssDeltaBytes": 0,
+        "totalJsFromBytes": 1452425,
+        "totalJsToBytes": 1453060,
+        "totalJsDeltaBytes": 635
+      }
     },
     {
       "change": "Resolve Mythra Code @skill mentions before provider delivery",
       "decision": "Accept the exact measured correctness cost of deterministic selected-folder skill resolution across OpenAI, Claude, Cursor, OpenRouter, LM Studio, child agents, workflows, scheduled turns, queues, and steering. Exact enabled names are matched natively, source files are revalidated as detected skills inside the selected folder, unrelated @words and file paths remain ordinary prompt text, and the original user message remains unchanged in Mythra Code's transcript. A first send waits on the startup scan; provider-runtime signatures keep aliases and enablement synchronized; one native scan validates every skill in a resolved prompt; reserved envelope delimiters are escaped; and eight-skill and 120,000-character limits bound expansion. Mention classification is native, so ordinary @ text never fails for an unreadable folder, and send-triggered refreshes cannot tear down the last known-good library. Opening or closing Settings no longer causes an extra scan. No dependency, permanent timer, per-frame work, transcript retention, CSS, or performance-budget headroom is added. Moving matching, classification, and content assembly into Rust keeps app entry below its prior limit by 928 Safari and 1,087 Chrome bytes; Safari startup and total JavaScript grow by 964 and 1,401 bytes, and Chrome by 742 and 1,193 bytes. This is reviewed cross-provider correctness and trust-boundary overhead, not an efficiency claim. Limits match measured production output on both configured targets with no extra headroom.",
-      "safari13": { "appEntryFromBytes": 370936, "appEntryToBytes": 370008, "appEntryDeltaBytes": -928, "startupJsFromBytes": 731437, "startupJsToBytes": 732401, "startupJsDeltaBytes": 964, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1489870, "totalJsToBytes": 1491271, "totalJsDeltaBytes": 1401 },
-      "chrome105": { "appEntryFromBytes": 351699, "appEntryToBytes": 350612, "appEntryDeltaBytes": -1087, "startupJsFromBytes": 705007, "startupJsToBytes": 705749, "startupJsDeltaBytes": 742, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1453060, "totalJsToBytes": 1454253, "totalJsDeltaBytes": 1193 }
+      "safari13": {
+        "appEntryFromBytes": 370936,
+        "appEntryToBytes": 370008,
+        "appEntryDeltaBytes": -928,
+        "startupJsFromBytes": 731437,
+        "startupJsToBytes": 732401,
+        "startupJsDeltaBytes": 964,
+        "startupCssDeltaBytes": 0,
+        "totalJsFromBytes": 1489870,
+        "totalJsToBytes": 1491271,
+        "totalJsDeltaBytes": 1401
+      },
+      "chrome105": {
+        "appEntryFromBytes": 351699,
+        "appEntryToBytes": 350612,
+        "appEntryDeltaBytes": -1087,
+        "startupJsFromBytes": 705007,
+        "startupJsToBytes": 705749,
+        "startupJsDeltaBytes": 742,
+        "startupCssDeltaBytes": 0,
+        "totalJsFromBytes": 1453060,
+        "totalJsToBytes": 1454253,
+        "totalJsDeltaBytes": 1193
+      }
     },
     {
       "change": "Make provider usage readings account-safe, structured, fresh, and failure-aware",
       "decision": "Accept the exact measured correctness and resilience cost of account-owned Claude and Codex quota snapshots, a one-hour last-known cap with visible reading age, current Codex multi-bucket parsing, structured Claude rate-limit event updates, and privacy-safe diagnostic categories with provider semantic versions only when the version belongs to the runtime that performed the read. Claude's visible-window fallback poll changes from every 60 seconds to every 180 seconds, cutting healthy idle CLI process starts by two thirds; repeated failures back off exponentially to 15 minutes, which turn-completion, reset-time, and account-change reads force past while focus and panel-open reads respect it, and in-flight reads still coalesce. Structured events reuse normal Claude turns and add no provider request; `/usage` remains the initial and idle fallback because allowed events may omit utilization. An event refreshes only the window it names, so a card still carrying an untouched window keeps that older reading's age and its expiry rather than being restamped as current. A Codex payload whose `rateLimitsByLimitId` map reports no window falls through to the legacy bucket instead of blanking the card. A changed account invalidates its predecessor before a new read, while transient failures retain data only for the same account and never beyond one hour. No dependency, CSS, transcript scan, per-frame work, credential access, private endpoint, or user status-line modification is added. Safari grows by 2,350 app-entry bytes, 5,450 startup JavaScript bytes and 5,435 total JavaScript bytes; Chrome grows by 2,136, 5,081 and 5,068 bytes. This is reviewed provider-correctness overhead paired with a material reduction in recurring native-process work, not a renderer-speed claim. Limits match measured production output on both configured targets with no extra headroom.",
-      "safari13": { "appEntryFromBytes": 370008, "appEntryToBytes": 372358, "appEntryDeltaBytes": 2350, "startupJsFromBytes": 732401, "startupJsToBytes": 737851, "startupJsDeltaBytes": 5450, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1491271, "totalJsToBytes": 1496706, "totalJsDeltaBytes": 5435 },
-      "chrome105": { "appEntryFromBytes": 350612, "appEntryToBytes": 352748, "appEntryDeltaBytes": 2136, "startupJsFromBytes": 705749, "startupJsToBytes": 710830, "startupJsDeltaBytes": 5081, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1454253, "totalJsToBytes": 1459321, "totalJsDeltaBytes": 5068 }
+      "safari13": {
+        "appEntryFromBytes": 370008,
+        "appEntryToBytes": 372358,
+        "appEntryDeltaBytes": 2350,
+        "startupJsFromBytes": 732401,
+        "startupJsToBytes": 737851,
+        "startupJsDeltaBytes": 5450,
+        "startupCssDeltaBytes": 0,
+        "totalJsFromBytes": 1491271,
+        "totalJsToBytes": 1496706,
+        "totalJsDeltaBytes": 5435
+      },
+      "chrome105": {
+        "appEntryFromBytes": 350612,
+        "appEntryToBytes": 352748,
+        "appEntryDeltaBytes": 2136,
+        "startupJsFromBytes": 705749,
+        "startupJsToBytes": 710830,
+        "startupJsDeltaBytes": 5081,
+        "startupCssDeltaBytes": 0,
+        "totalJsFromBytes": 1454253,
+        "totalJsToBytes": 1459321,
+        "totalJsDeltaBytes": 5068
+      }
     },
     {
       "change": "Unify the sub-agent relay animation around one delivery beat",
       "decision": "Accept the exact measured stylesheet cost of replacing the independent relay rail, avatar trace, status pulse, and manifest loops with one synchronized comet, charge, arrival, and reduced-motion treatment. The animation remains CSS-only, adds no JavaScript, timers, DOM measurement, dependency, or permanent listener, and keeps the existing provider and lifecycle colour semantics. Safari startup CSS grows by 1,986 bytes and Chrome startup CSS by 1,917 bytes. Limits match measured production output on both configured targets with no extra headroom.",
-      "safari13": { "startupCssFromBytes": 359969, "startupCssToBytes": 361955, "startupCssDeltaBytes": 1986 },
-      "chrome105": { "startupCssFromBytes": 353618, "startupCssToBytes": 355535, "startupCssDeltaBytes": 1917 }
+      "safari13": {
+        "startupCssFromBytes": 359969,
+        "startupCssToBytes": 361955,
+        "startupCssDeltaBytes": 1986
+      },
+      "chrome105": {
+        "startupCssFromBytes": 353618,
+        "startupCssToBytes": 355535,
+        "startupCssDeltaBytes": 1917
+      }
     },
     {
       "change": "Review post-1.15.7 turn cancellation and relay painting",
       "decision": "Accept 203 Safari / 188 Chrome app-entry bytes and 133 Safari / 118 Chrome startup JavaScript bytes above the existing limits for honoring Stop during skill resolution in ordinary turns and workflows, and classifying payload-less quota failures correctly. Native Claude recovery now requires a clean process exit and rejects interrupted follow-up streams without adding renderer bytes. The transform-based relay path adds 6 stylesheet bytes; an alternating 12-card Chromium fixture eliminates recurring Paint events compared with the prior background-position animation. Geometry and reduced-motion checks pass in Chromium and WebKit. This is a local animation measurement, not an app-wide speed claim. App-entry, startup JavaScript, and CSS caps match measured output exactly; the total JavaScript caps remain unchanged. See docs/performance/post-1.15.7-review.md.",
-      "safari13": { "appEntryFromBytes": 372358, "appEntryToBytes": 372561, "startupJsFromBytes": 737851, "startupJsToBytes": 737984, "startupCssFromBytes": 361955, "startupCssToBytes": 361961 },
-      "chrome105": { "appEntryFromBytes": 352748, "appEntryToBytes": 352936, "startupJsFromBytes": 710830, "startupJsToBytes": 710948, "startupCssFromBytes": 355535, "startupCssToBytes": 355541 }
+      "safari13": {
+        "appEntryFromBytes": 372358,
+        "appEntryToBytes": 372561,
+        "startupJsFromBytes": 737851,
+        "startupJsToBytes": 737984,
+        "startupCssFromBytes": 361955,
+        "startupCssToBytes": 361961
+      },
+      "chrome105": {
+        "appEntryFromBytes": 352748,
+        "appEntryToBytes": 352936,
+        "startupJsFromBytes": 710830,
+        "startupJsToBytes": 710948,
+        "startupCssFromBytes": 355535,
+        "startupCssToBytes": 355541
+      }
     },
     {
       "change": "Rebuild Settings on one labelled-group/row system with a searchable sidebar",
       "decision": "Accept 3.0 KB more total JavaScript and 538 Safari / 415 Chrome bytes of startup CSS; startup JavaScript and the app entry are unchanged on both targets. The JavaScript is entirely inside the lazy Settings chunk: per-pane search keywords, plus panes rewritten from five ad-hoc heading and container patterns onto two primitives. The stylesheet nets out flat because the new system deleted more CSS than it added \u2014 the retired icon tiles, section and sub headings, workspace link, prompt layer fields, behavior and runtime grids, diagnostic card, and interface-size card are all gone. None of it runs before Settings is opened.",
-      "safari13": { "appEntryFromBytes": 372561, "appEntryToBytes": 372561, "appEntryDeltaBytes": 0, "startupJsFromBytes": 737984, "startupJsToBytes": 737984, "startupJsDeltaBytes": 0, "startupCssFromBytes": 361961, "startupCssToBytes": 362499, "startupCssDeltaBytes": 538, "totalJsFromBytes": 1496706, "totalJsToBytes": 1499714, "totalJsDeltaBytes": 3008 },
-      "chrome105": { "appEntryFromBytes": 352936, "appEntryToBytes": 352936, "appEntryDeltaBytes": 0, "startupJsFromBytes": 710948, "startupJsToBytes": 710948, "startupJsDeltaBytes": 0, "startupCssFromBytes": 355541, "startupCssToBytes": 355956, "startupCssDeltaBytes": 415, "totalJsFromBytes": 1459321, "totalJsToBytes": 1462346, "totalJsDeltaBytes": 3025 }
+      "safari13": {
+        "appEntryFromBytes": 372561,
+        "appEntryToBytes": 372561,
+        "appEntryDeltaBytes": 0,
+        "startupJsFromBytes": 737984,
+        "startupJsToBytes": 737984,
+        "startupJsDeltaBytes": 0,
+        "startupCssFromBytes": 361961,
+        "startupCssToBytes": 362499,
+        "startupCssDeltaBytes": 538,
+        "totalJsFromBytes": 1496706,
+        "totalJsToBytes": 1499714,
+        "totalJsDeltaBytes": 3008
+      },
+      "chrome105": {
+        "appEntryFromBytes": 352936,
+        "appEntryToBytes": 352936,
+        "appEntryDeltaBytes": 0,
+        "startupJsFromBytes": 710948,
+        "startupJsToBytes": 710948,
+        "startupJsDeltaBytes": 0,
+        "startupCssFromBytes": 355541,
+        "startupCssToBytes": 355956,
+        "startupCssDeltaBytes": 415,
+        "totalJsFromBytes": 1459321,
+        "totalJsToBytes": 1462346,
+        "totalJsDeltaBytes": 3025
+      }
     },
     {
       "change": "Anchor top-layer selector menus to their triggers",
       "decision": "Accept the exact measured cost of positioning portal-backed selector menus beside their triggers instead of at the viewport center. The menu respects requested top or bottom placement, flips when space requires it, stays within viewport margins, and follows trigger, viewport, and menu-size changes while preserving the non-popover fallback and existing focus behavior. A browser geometry assertion now rejects centered-but-in-bounds regressions. Safari startup and total JavaScript grow by 1,030 and 1,024 bytes; Chrome grows by 990 and 984 bytes. App-entry JavaScript remains below its prior cap and CSS is unchanged. The implementation adds no dependency, polling, provider request, transcript retention, or per-frame work; listeners and observation exist only while a top-layer menu is open. This is reviewed correctness overhead, not a performance improvement. Limits match measured production output on both configured targets with no extra headroom.",
-      "safari13": { "appEntryFromBytes": 372561, "appEntryToBytes": 372337, "appEntryDeltaBytes": -224, "startupJsFromBytes": 737984, "startupJsToBytes": 739014, "startupJsDeltaBytes": 1030, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1499714, "totalJsToBytes": 1500738, "totalJsDeltaBytes": 1024 },
-      "chrome105": { "appEntryFromBytes": 352936, "appEntryToBytes": 352712, "appEntryDeltaBytes": -224, "startupJsFromBytes": 710948, "startupJsToBytes": 711938, "startupJsDeltaBytes": 990, "startupCssDeltaBytes": 0, "totalJsFromBytes": 1462346, "totalJsToBytes": 1463330, "totalJsDeltaBytes": 984 }
+      "safari13": {
+        "appEntryFromBytes": 372561,
+        "appEntryToBytes": 372337,
+        "appEntryDeltaBytes": -224,
+        "startupJsFromBytes": 737984,
+        "startupJsToBytes": 739014,
+        "startupJsDeltaBytes": 1030,
+        "startupCssDeltaBytes": 0,
+        "totalJsFromBytes": 1499714,
+        "totalJsToBytes": 1500738,
+        "totalJsDeltaBytes": 1024
+      },
+      "chrome105": {
+        "appEntryFromBytes": 352936,
+        "appEntryToBytes": 352712,
+        "appEntryDeltaBytes": -224,
+        "startupJsFromBytes": 710948,
+        "startupJsToBytes": 711938,
+        "startupJsDeltaBytes": 990,
+        "startupCssDeltaBytes": 0,
+        "totalJsFromBytes": 1462346,
+        "totalJsToBytes": 1463330,
+        "totalJsDeltaBytes": 984
+      }
     },
     {
       "change": "Reconcile submitted prompts and support native agent questions",
@@ -539,16 +1419,48 @@
       "decision": "Accept the measured feature and safety cost of local branch snapshots and guarded switching, staged and unstaged commit paths, guarded local-base updates, durable all-ref publication with restart/backoff recovery, immutable commit-SHA publication, exact remote compare-and-swap after descendant proof, native binding/upstream/history validation, attached-PR identity routing, and worktree completion checks. Automatic publication is off by default; its fifteen-second controller runs only while a project is opted in, coalesces new tips, and does not auto-commit, pull, rebase, reset, or overwrite history. The workflow CSS remains lazy, limiting startup CSS growth to 243 raw bytes on both targets. No dependency or model request is added. This is a measured functionality and safety cost, not a runtime improvement claim. See docs/performance/thread-pull-requests.md.",
       "measurements": {
         "safari13-minified": {
-          "appEntryRawBytes": { "before": 396661, "after": 413732, "delta": 17071 },
-          "startupJsRawBytes": { "before": 775653, "after": 793304, "delta": 17651 },
-          "startupCssRawBytes": { "before": 364225, "after": 364468, "delta": 243 },
-          "totalJsRawBytes": { "before": 1577029, "after": 1609562, "delta": 32533 }
+          "appEntryRawBytes": {
+            "before": 396661,
+            "after": 413732,
+            "delta": 17071
+          },
+          "startupJsRawBytes": {
+            "before": 775653,
+            "after": 793304,
+            "delta": 17651
+          },
+          "startupCssRawBytes": {
+            "before": 364225,
+            "after": 364468,
+            "delta": 243
+          },
+          "totalJsRawBytes": {
+            "before": 1577029,
+            "after": 1609562,
+            "delta": 32533
+          }
         },
         "chrome105-minified": {
-          "appEntryRawBytes": { "before": 375532, "after": 392120, "delta": 16588 },
-          "startupJsRawBytes": { "before": 746409, "after": 763563, "delta": 17154 },
-          "startupCssRawBytes": { "before": 357706, "after": 357949, "delta": 243 },
-          "totalJsRawBytes": { "before": 1536545, "after": 1567952, "delta": 31407 }
+          "appEntryRawBytes": {
+            "before": 375532,
+            "after": 392120,
+            "delta": 16588
+          },
+          "startupJsRawBytes": {
+            "before": 746409,
+            "after": 763563,
+            "delta": 17154
+          },
+          "startupCssRawBytes": {
+            "before": 357706,
+            "after": 357949,
+            "delta": 243
+          },
+          "totalJsRawBytes": {
+            "before": 1536545,
+            "after": 1567952,
+            "delta": 31407
+          }
         }
       }
     },
@@ -557,16 +1469,48 @@
       "decision": "Accept the measured final review cost of post-confirmation workspace guards, same-thread pull-request mutation exclusion, exact attached-PR command routing, disabled-publisher timer removal, and bounded fifteen-second polling. Compared with the pre-review 8e3ff2b snapshot, startup JavaScript grows by 1,612 raw bytes on Safari and 1,568 on Chrome, total JavaScript grows by 1,736 and 1,702 raw bytes respectively, and CSS does not grow. These are correctness, safety, and bounded-runtime repairs with no dependency or model request added. Limits match the final production builds exactly without additional headroom.",
       "measurements": {
         "safari13-minified": {
-          "appEntryRawBytes": { "before": 413732, "after": 415285, "delta": 1553 },
-          "startupJsRawBytes": { "before": 793304, "after": 794916, "delta": 1612 },
-          "startupCssRawBytes": { "before": 364468, "after": 364468, "delta": 0 },
-          "totalJsRawBytes": { "before": 1609562, "after": 1611298, "delta": 1736 }
+          "appEntryRawBytes": {
+            "before": 413732,
+            "after": 415285,
+            "delta": 1553
+          },
+          "startupJsRawBytes": {
+            "before": 793304,
+            "after": 794916,
+            "delta": 1612
+          },
+          "startupCssRawBytes": {
+            "before": 364468,
+            "after": 364468,
+            "delta": 0
+          },
+          "totalJsRawBytes": {
+            "before": 1609562,
+            "after": 1611298,
+            "delta": 1736
+          }
         },
         "chrome105-minified": {
-          "appEntryRawBytes": { "before": 392120, "after": 393629, "delta": 1509 },
-          "startupJsRawBytes": { "before": 763563, "after": 765131, "delta": 1568 },
-          "startupCssRawBytes": { "before": 357949, "after": 357949, "delta": 0 },
-          "totalJsRawBytes": { "before": 1567952, "after": 1569654, "delta": 1702 }
+          "appEntryRawBytes": {
+            "before": 392120,
+            "after": 393629,
+            "delta": 1509
+          },
+          "startupJsRawBytes": {
+            "before": 763563,
+            "after": 765131,
+            "delta": 1568
+          },
+          "startupCssRawBytes": {
+            "before": 357949,
+            "after": 357949,
+            "delta": 0
+          },
+          "totalJsRawBytes": {
+            "before": 1567952,
+            "after": 1569654,
+            "delta": 1702
+          }
         }
       }
     },
@@ -725,16 +1669,48 @@
       "decision": "Accept the measured cost of detecting a replaced Codex runtime during an explicit model refresh, refreshing its model catalog, and reserving the runtime lifecycle so refresh cannot interrupt a turn, command, or other in-flight activity. GPT-6 Sol and Luna reuse their matching family artwork. This fixes the reported model-refresh failure and the missing model icons; no dependency or startup CSS is added. Limits match the measured production bundles exactly with no extra headroom.",
       "measurements": {
         "safari13-minified": {
-          "appEntryRawBytes": { "before": 421321, "after": 422527, "delta": 1206 },
-          "startupJsRawBytes": { "before": 802223, "after": 803854, "delta": 1631 },
-          "startupCssRawBytes": { "before": 365438, "after": 365438, "delta": 0 },
-          "totalJsRawBytes": { "before": 1626515, "after": 1628114, "delta": 1599 }
+          "appEntryRawBytes": {
+            "before": 421321,
+            "after": 422527,
+            "delta": 1206
+          },
+          "startupJsRawBytes": {
+            "before": 802223,
+            "after": 803854,
+            "delta": 1631
+          },
+          "startupCssRawBytes": {
+            "before": 365438,
+            "after": 365438,
+            "delta": 0
+          },
+          "totalJsRawBytes": {
+            "before": 1626515,
+            "after": 1628114,
+            "delta": 1599
+          }
         },
         "chrome105-minified": {
-          "appEntryRawBytes": { "before": 399250, "after": 400420, "delta": 1170 },
-          "startupJsRawBytes": { "before": 771892, "after": 773479, "delta": 1587 },
-          "startupCssRawBytes": { "before": 358919, "after": 358919, "delta": 0 },
-          "totalJsRawBytes": { "before": 1584166, "after": 1585751, "delta": 1585 }
+          "appEntryRawBytes": {
+            "before": 399250,
+            "after": 400420,
+            "delta": 1170
+          },
+          "startupJsRawBytes": {
+            "before": 771892,
+            "after": 773479,
+            "delta": 1587
+          },
+          "startupCssRawBytes": {
+            "before": 358919,
+            "after": 358919,
+            "delta": 0
+          },
+          "totalJsRawBytes": {
+            "before": 1584166,
+            "after": 1585751,
+            "delta": 1585
+          }
         }
       }
     },
@@ -887,20 +1863,375 @@
           }
         }
       }
+    },
+    {
+      "change": "Edit queued prompts without losing queue order or drafts",
+      "decision": "Accept 3,793 Safari / 3,426 Chrome startup and total JavaScript bytes and 1,155 CSS bytes for the requested inline editor, durable delivery hold, FIFO guards, draft recovery, and keyboard focus restoration. Controlled HEAD and candidate renderer builds use the same installed toolchain. Editing reuses the existing 400 ms draft debounce, adds no provider calls, polling, dependencies, or streaming work, and preserves existing animations. Limits match measured output without extra headroom. This is feature overhead, not a speed improvement. See docs/performance/queued-prompt-editing.md.",
+      "measurements": {
+        "safari13-minified": {
+          "appEntryRawBytes": {
+            "before": 425119,
+            "after": 428143,
+            "delta": 3024
+          },
+          "startupJsRawBytes": {
+            "before": 807703,
+            "after": 811496,
+            "delta": 3793
+          },
+          "startupCssRawBytes": {
+            "before": 351604,
+            "after": 352759,
+            "delta": 1155
+          },
+          "totalJsRawBytes": {
+            "before": 1639002,
+            "after": 1642795,
+            "delta": 3793
+          }
+        },
+        "chrome105-minified": {
+          "appEntryRawBytes": {
+            "before": 402646,
+            "after": 405359,
+            "delta": 2713
+          },
+          "startupJsRawBytes": {
+            "before": 776924,
+            "after": 780350,
+            "delta": 3426
+          },
+          "startupCssRawBytes": {
+            "before": 344628,
+            "after": 345783,
+            "delta": 1155
+          },
+          "totalJsRawBytes": {
+            "before": 1596017,
+            "after": 1599443,
+            "delta": 3426
+          }
+        }
+      }
+    },
+    {
+      "change": "Anchored feedback, saved project checks, and setup before Run",
+      "decision": "Accept measured feature overhead for requested feedback selection/editor/tray, provider-neutral review, bounded check execution and recovery, and same-shell setup recipes. No new dependencies or automatic model requests. Checks UI and its styles load only with Review; note source checks coalesce live updates instead of parsing each notification. Existing animations remain. Limits match measured output without spare headroom; this is feature overhead, not a speed improvement. See docs/performance/review-feedback-and-project-commands.md.",
+      "measurements": {
+        "safari13-minified": {
+          "appEntryRawBytes": {
+            "before": 428143,
+            "after": 441802,
+            "delta": 13659
+          },
+          "startupJsRawBytes": {
+            "before": 811496,
+            "after": 845220,
+            "delta": 33724
+          },
+          "startupCssRawBytes": {
+            "before": 352759,
+            "after": 363318,
+            "delta": 10559
+          },
+          "totalJsRawBytes": {
+            "before": 1642795,
+            "after": 1683306,
+            "delta": 40511
+          }
+        },
+        "chrome105-minified": {
+          "appEntryRawBytes": {
+            "before": 405359,
+            "after": 417916,
+            "delta": 12557
+          },
+          "startupJsRawBytes": {
+            "before": 780350,
+            "after": 812421,
+            "delta": 32071
+          },
+          "startupCssRawBytes": {
+            "before": 345783,
+            "after": 356160,
+            "delta": 10377
+          },
+          "totalJsRawBytes": {
+            "before": 1599443,
+            "after": 1638136,
+            "delta": 38693
+          }
+        }
+      }
+    },
+    {
+      "date": "2026-09-24",
+      "change": "Automatic project check command setup",
+      "decision": "Accept measured requested feature cost for agent check-command saving and explicit background discovery with shared provider preferences. No automatic model call on mount, no new dependencies, no automatic test execution. The command editor and discovery status retain existing animations. Limits equal measured output without added headroom; see docs/performance/review-feedback-and-project-commands.md.",
+      "measurements": {
+        "safari13-minified": {
+          "appEntryRawBytes": {
+            "before": 441802,
+            "after": 445240,
+            "delta": 3438
+          },
+          "startupJsRawBytes": {
+            "before": 845220,
+            "after": 855629,
+            "delta": 10409
+          },
+          "startupCssRawBytes": {
+            "before": 363318,
+            "after": 364695,
+            "delta": 1377
+          },
+          "totalJsRawBytes": {
+            "before": 1683306,
+            "after": 1693865,
+            "delta": 10559
+          }
+        },
+        "chrome105-minified": {
+          "appEntryRawBytes": {
+            "before": 417916,
+            "after": 420961,
+            "delta": 3045
+          },
+          "startupJsRawBytes": {
+            "before": 812421,
+            "after": 822231,
+            "delta": 9810
+          },
+          "startupCssRawBytes": {
+            "before": 356160,
+            "after": 357537,
+            "delta": 1377
+          },
+          "totalJsRawBytes": {
+            "before": 1638136,
+            "after": 1648044,
+            "delta": 9908
+          }
+        }
+      }
+    },
+    {
+      "date": "2026-09-24",
+      "change": "Sol review repairs for feedback and transcript persistence",
+      "decision": "Accept measured correctness cost for authored-only skill invocation across queue/restart, selection dismissal, draft recovery, and exact-ID duplicate prompt recovery. No dependencies, CSS growth, animation reduction, idle loops, or automatic model requests. Normal transcript pages stay bounded; unresolved pending-tail recovery may require full hydration. Limits equal measured bytes; see docs/performance/review-feedback-and-project-commands.md.",
+      "measurements": {
+        "chrome105-minified": {
+          "appEntryRawBytes": {
+            "before": 420961,
+            "after": 421547,
+            "delta": 586
+          },
+          "startupJsRawBytes": {
+            "before": 822231,
+            "after": 823953,
+            "delta": 1722
+          },
+          "startupCssRawBytes": {
+            "before": 357537,
+            "after": 357537,
+            "delta": 0
+          },
+          "totalJsRawBytes": {
+            "before": 1648044,
+            "after": 1649780,
+            "delta": 1736
+          }
+        },
+        "safari13-minified": {
+          "appEntryRawBytes": {
+            "before": 445240,
+            "after": 445972,
+            "delta": 732
+          },
+          "startupJsRawBytes": {
+            "before": 855629,
+            "after": 857627,
+            "delta": 1998
+          },
+          "startupCssRawBytes": {
+            "before": 364695,
+            "after": 364695,
+            "delta": 0
+          },
+          "totalJsRawBytes": {
+            "before": 1693865,
+            "after": 1695865,
+            "delta": 2000
+          }
+        }
+      }
+    },
+    {
+      "date": "2026-09-24",
+      "change": "Claude and Cursor saved workflow compatibility",
+      "decision": "Accept measured provider adapter and local transcript lifecycle cost. Reuses existing event listeners and scheduler; no new dependencies, idle polling, automatic model calls, or animation reductions. Workflow selects reuse app-native menus. Exact limits, no spare headroom. See docs/performance/workflow-provider-compatibility.md.",
+      "measurements": {
+        "chrome105-minified": {
+          "appEntryRawBytes": {
+            "before": 421547,
+            "after": 424889,
+            "delta": 3342
+          },
+          "startupJsRawBytes": {
+            "before": 823953,
+            "after": 827295,
+            "delta": 3342
+          },
+          "startupCssRawBytes": {
+            "before": 357537,
+            "after": 357832,
+            "delta": 295
+          },
+          "totalJsRawBytes": {
+            "before": 1649780,
+            "after": 1653186,
+            "delta": 3406
+          }
+        },
+        "safari13-minified": {
+          "appEntryRawBytes": {
+            "before": 445972,
+            "after": 449897,
+            "delta": 3925
+          },
+          "startupJsRawBytes": {
+            "before": 857627,
+            "after": 861552,
+            "delta": 3925
+          },
+          "startupCssRawBytes": {
+            "before": 364695,
+            "after": 364990,
+            "delta": 295
+          },
+          "totalJsRawBytes": {
+            "before": 1695865,
+            "after": 1699855,
+            "delta": 3990
+          }
+        }
+      }
+    },
+    {
+      "date": "2026-09-24",
+      "change": "Portable workflow recipes and project selection per manual run",
+      "decision": "Accept measured portable recipe import/export and shared run dialog cost. Import/export code stays in lazy Settings; shortcut dialog is lazy. No new dependencies, idle polling, or automatic model calls. Exact measured limits, no headroom. See docs/performance/shareable-workflow-recipes.md.",
+      "measurements": {
+        "chrome105-minified": {
+          "appEntryRawBytes": {
+            "before": 424889,
+            "after": 424886,
+            "delta": -3
+          },
+          "startupJsRawBytes": {
+            "before": 827295,
+            "after": 830595,
+            "delta": 3300
+          },
+          "startupCssRawBytes": {
+            "before": 357832,
+            "after": 357878,
+            "delta": 46
+          },
+          "totalJsRawBytes": {
+            "before": 1653186,
+            "after": 1659120,
+            "delta": 5934
+          }
+        },
+        "safari13-minified": {
+          "appEntryRawBytes": {
+            "before": 449897,
+            "after": 449868,
+            "delta": -29
+          },
+          "startupJsRawBytes": {
+            "before": 861552,
+            "after": 864991,
+            "delta": 3439
+          },
+          "startupCssRawBytes": {
+            "before": 364990,
+            "after": 365036,
+            "delta": 46
+          },
+          "totalJsRawBytes": {
+            "before": 1699855,
+            "after": 1705928,
+            "delta": 6073
+          }
+        }
+      }
+    },
+    {
+      "date": "2026-09-24",
+      "change": "Explicit composer workflow selection and safe launch acceptance",
+      "decision": "Accept measured composer picker, per-thread selection and draft guards, and review note cost. No dependencies, polling, automatic model calls, or removed animation. Exact measured limits without headroom. See docs/performance/shareable-workflow-recipes.md.",
+      "measurements": {
+        "chrome105-minified": {
+          "appEntryRawBytes": {
+            "before": 424886,
+            "after": 430369,
+            "delta": 5483
+          },
+          "startupJsRawBytes": {
+            "before": 830595,
+            "after": 836371,
+            "delta": 5776
+          },
+          "startupCssRawBytes": {
+            "before": 357878,
+            "after": 358782,
+            "delta": 904
+          },
+          "totalJsRawBytes": {
+            "before": 1659120,
+            "after": 1664908,
+            "delta": 5788
+          }
+        },
+        "safari13-minified": {
+          "appEntryRawBytes": {
+            "before": 449868,
+            "after": 455888,
+            "delta": 6020
+          },
+          "startupJsRawBytes": {
+            "before": 864991,
+            "after": 871320,
+            "delta": 6329
+          },
+          "startupCssRawBytes": {
+            "before": 365036,
+            "after": 365940,
+            "delta": 904
+          },
+          "totalJsRawBytes": {
+            "before": 1705928,
+            "after": 1712269,
+            "delta": 6341
+          }
+        }
+      }
     }
   ],
   "profiles": {
     "safari13-minified": {
-      "appEntryRawBytes": 425119,
-      "startupJsRawBytes": 807703,
-      "startupCssRawBytes": 351604,
-      "totalJsRawBytes": 1639002
+      "appEntryRawBytes": 455888,
+      "startupJsRawBytes": 871320,
+      "startupCssRawBytes": 365940,
+      "totalJsRawBytes": 1712269
     },
     "chrome105-minified": {
-      "appEntryRawBytes": 402646,
-      "startupJsRawBytes": 776924,
-      "startupCssRawBytes": 344628,
-      "totalJsRawBytes": 1596017
+      "appEntryRawBytes": 430369,
+      "startupJsRawBytes": 836371,
+      "startupCssRawBytes": 358782,
+      "totalJsRawBytes": 1664908
     }
   }
 }

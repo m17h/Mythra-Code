@@ -420,9 +420,23 @@ pub(super) fn initial_context(root: &Path, flag: &AtomicBool) -> Result<String, 
     Ok(context)
 }
 
+#[cfg(test)]
 pub(super) async fn investigate<F, Fut>(
     root: PathBuf,
     request: Arc<DiscoveryRequest>,
+    model: F,
+) -> Result<RunDiscoveryResult, String>
+where
+    F: FnMut(Vec<Value>) -> Fut,
+    Fut: Future<Output = Result<RunDiscoveryResult, String>>,
+{
+    investigate_with_purpose(root, request, DiscoveryPurpose::Run, model).await
+}
+
+pub(super) async fn investigate_with_purpose<F, Fut>(
+    root: PathBuf,
+    request: Arc<DiscoveryRequest>,
+    purpose: DiscoveryPurpose,
     mut model: F,
 ) -> Result<RunDiscoveryResult, String>
 where
@@ -436,7 +450,11 @@ where
         tokio::task::spawn_blocking(move || initial_context(&seed_root, &seed_request.cancelled))
             .await
             .map_err(|error| error.to_string())??;
-    let mut messages = vec![json!({"role":"user", "content":discovery_prompt(&context)})];
+    let prompt = match purpose {
+        DiscoveryPurpose::Run => discovery_prompt(&context),
+        DiscoveryPurpose::Checks => checks_discovery_prompt(&context),
+    };
+    let mut messages = vec![json!({"role":"user", "content":prompt})];
     for round in 0..=MAX_INSPECTION_ROUNDS {
         cancelled(&request.cancelled)?;
         let remaining = MAX_INSPECTION_ROUNDS - round;

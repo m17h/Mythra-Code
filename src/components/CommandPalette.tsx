@@ -44,7 +44,7 @@ export function CommandPalette({ open, projects, threads, workflows, projectActi
     ...workflows.filter((workflow) => workflow.enabled).map((workflow) => ({
       id: `workflow-${workflow.id}`,
       label: `Run workflow: ${workflow.name}`,
-      detail: `${projects.find((project) => project.id === workflow.projectId)?.name ?? "Missing project"} · ${workflow.steps.length} step${workflow.steps.length === 1 ? "" : "s"}`,
+      detail: `${projects.find((project) => project.id === workflow.projectId)?.name ?? (workflow.projectId ? "Choose a project" : "Any project")} · ${workflow.steps.length} step${workflow.steps.length === 1 ? "" : "s"}`,
       group: "Workflows",
       icon: WorkflowIcon,
       run: () => onWorkflow(workflow),

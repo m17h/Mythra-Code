@@ -30,6 +30,7 @@ export const DURABLE_STORAGE_KEYS = [
   "kiwi.disabledSkills",
   "kiwi.removedSkills",
   "kiwi.drafts",
+  "kiwi.reviewFeedback",
   "kiwi.agentQuestions",
   "kiwi.scheduleRuns",
   "kiwi.workflows",
@@ -55,7 +56,7 @@ export const DURABLE_STORAGE_KEYS = [
  * migrateStorage. Old installs then upgrade their data instead of loading
  * garbage into the new code.
  */
-export const STORAGE_SCHEMA_VERSION = 24;
+export const STORAGE_SCHEMA_VERSION = 26;
 const nativeWriteQueues = new Map<string, Promise<void>>();
 const NATIVE_PENDING_PREFIX = "kiwi.nativePending.";
 let nativeOperationSequence = 0;
@@ -240,6 +241,10 @@ export function migrateStorage(): void {
   }
   // All other additions are optional and require no eager rewrite of existing records.
   // Version 23 adds optional per-thread GitHub PR links, independent of provider transcripts.
+  // Version 25 adds an optional queued-turn editing hold. Missing means false;
+  // sanitizeStoredQueuedTurns preserves true so reopening cannot send an unfinished edit.
+  // Version 26 adds optional project setup/check commands and scoped feedback
+  // drafts. Existing projects keep their single launch command unchanged.
   storeValue("kiwi.schemaVersion", STORAGE_SCHEMA_VERSION);
 }
 

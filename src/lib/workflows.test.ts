@@ -51,10 +51,29 @@ function workflow(): WorkflowDefinition {
 }
 
 describe("workflow definitions", () => {
-  it("validates required project and step content", () => {
+  it("requires a fixed project only for automatic runs", () => {
     expect(validateWorkflow(workflow())).toBeNull();
-    expect(validateWorkflow({ ...workflow(), projectId: "" })).toBe("Choose a project.");
+    expect(validateWorkflow({ ...workflow(), projectId: "" })).toBeNull();
+    expect(validateWorkflow({ ...workflow(), projectId: "", trigger: { type: "app-start" } })).toBe("Choose a project for automatic runs.");
     expect(validateWorkflow({ ...workflow(), steps: [] })).toBe("Add at least one workflow step.");
+  });
+
+  it("rejects whitespace prefixes without restricting internal spaces or punctuation", () => {
+    for (const prefix of [" ", "\t", "\n", "\u00a0", "\u2003", "\ufeff"]) {
+      expect(validateWorkflow({ ...workflow(), name: `${prefix}Release check` })).toBe("Workflow names cannot start with whitespace.");
+    }
+    expect(validateWorkflow({ ...workflow(), name: "   " })).toBe("Give the workflow a name.");
+    expect(validateWorkflow({ ...workflow(), name: "Release readiness review" })).toBeNull();
+    expect(validateWorkflow({ ...workflow(), name: "! Review: release" })).toBeNull();
+  });
+
+  it("normalizes saved legacy names without replacing workflow or step identities", () => {
+    const saved = { ...workflow(), name: "\u2003\tRelease readiness review  " };
+    const normalized = normalizeWorkflow(saved);
+    expect(normalized.name).toBe("Release readiness review  ");
+    expect(normalized.id).toBe(saved.id);
+    expect(normalized.steps[0].id).toBe(saved.steps[0].id);
+    expect(saved.name).toBe("\u2003\tRelease readiness review  ");
   });
 
   it("builds a visible, user-authored step prompt with selected skills", () => {
@@ -115,7 +134,7 @@ describe("workflow definitions", () => {
       .mockReturnValueOnce("00000000-0000-4000-8000-000000000002");
     const imported = workflowFromSchedule({
       id: "schedule-1",
-      name: "Nightly review",
+      name: "\tNightly review",
       prompt: "Review recent changes.",
       projectId: "project-1",
       intervalMinutes: 60,
@@ -124,6 +143,7 @@ describe("workflow definitions", () => {
       run,
     }, run, 10_000);
     expect(imported.id).toBe("00000000-0000-4000-8000-000000000001");
+    expect(imported.name).toBe("Nightly review");
     expect(imported.steps[0]).toMatchObject({ id: "00000000-0000-4000-8000-000000000002", type: "agent", prompt: "Review recent changes." });
     expect(imported.enabled).toBe(false);
     expect(imported.run).toEqual(run);

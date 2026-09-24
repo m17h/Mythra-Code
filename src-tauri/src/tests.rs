@@ -3346,8 +3346,53 @@ fn child_agent_empty_roster_exposes_only_project_level_tools() {
         .collect::<Vec<_>>();
     assert_eq!(
         names,
-        vec!["propose_agent_settings", "set_project_run_command"]
+        vec![
+            "propose_agent_settings",
+            "set_project_run_command",
+            "set_project_check_command"
+        ]
     );
+}
+
+#[test]
+fn project_check_command_tool_accepts_save_and_clear_without_execution_option() {
+    let none = HashSet::new();
+    assert!(validate_tool_call(
+        &[],
+        &none,
+        "set_project_check_command",
+        &json!({ "command": "npm run verify" })
+    )
+    .is_ok());
+    assert!(validate_tool_call(
+        &[],
+        &none,
+        "set_project_check_command",
+        &json!({ "command": "" })
+    )
+    .is_ok());
+    assert!(validate_tool_call(&[], &none, "set_project_check_command", &json!({})).is_err());
+    assert!(validate_tool_call(
+        &[],
+        &none,
+        "set_project_check_command",
+        &json!({ "command": 1 })
+    )
+    .is_err());
+    assert!(validate_tool_call(
+        &[],
+        &none,
+        "set_project_check_command",
+        &json!({ "command": "x".repeat(16_385) })
+    )
+    .is_err());
+    assert!(validate_tool_call(
+        &[],
+        &none,
+        "set_project_check_command",
+        &json!({ "command": "npm test", "run": true })
+    )
+    .is_err());
 }
 
 #[test]
@@ -3357,9 +3402,23 @@ fn project_run_command_tool_accepts_a_command_and_bounds_it() {
         &[],
         &none,
         "set_project_run_command",
-        &json!({ "command": "npm install && npm run dev", "label": "Dev server" })
+        &json!({ "command": "npm run dev", "setupCommand": "npm install", "label": "Dev server" })
     )
     .is_ok());
+    assert!(validate_tool_call(
+        &[],
+        &none,
+        "set_project_run_command",
+        &json!({ "command": "npm run dev", "setupCommand": 1 })
+    )
+    .is_err());
+    assert!(validate_tool_call(
+        &[],
+        &none,
+        "set_project_run_command",
+        &json!({ "command": "npm run dev", "setupCommand": "x".repeat(16_385) })
+    )
+    .is_err());
     // An empty command clears the button.
     assert!(validate_tool_call(
         &[],

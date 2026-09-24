@@ -126,19 +126,22 @@ Mythra Code does not add a hidden instruction telling the model to delegate. The
 
 ## Agent workflows
 
-**Settings → Workflows** can build reusable, project-bound recipes from ordered agent prompts and deterministic shell commands.
+**Settings → Workflows** can build reusable recipes from ordered agent prompts and deterministic shell commands. Manual runs can use any project; a saved project is only the default and the destination for automatic runs.
 
-- Workflows run manually, on a recurring interval, or once when Mythra Code starts.
+- Workflows run manually, on a recurring interval, or once when Mythra Code starts. Automatic runs require a default project.
+- Export a `.mythra-workflow.json` recipe and import it on another machine. Imports open for review before saving and use the recipient’s current model and permissions. The file includes prompts, commands, referenced skill names, and input defaults; it excludes project bindings, provider settings, schedules, and run history. Review literal paths or sensitive text you placed in recipe steps before sharing. Referenced skills must be installed separately.
+- Settings, Workspace tools, and command-palette launches show the destination project and inputs before starting a new workflow thread. Choosing a project for one manual run does not change its automatic schedule.
+- Agent steps support OpenAI, Claude Code, Cursor, OpenRouter, and LM Studio. Claude and Cursor use their own signed-in runtimes and resume the same conversation across steps; agent-only recipes do not require Codex. Explicit shell-command steps still use the Codex runtime.
 - Every run creates a named project thread, so prompts, model output, commands, and results remain inspectable.
 - Agent steps run sequentially in that thread and may expose selected local skills by their visible `$name`.
-- The workflow captures its provider, model, reasoning, permission, prompt, and sub-agent settings when saved. The editor can refresh that snapshot from the current composer settings.
+- The workflow captures its provider, model, reasoning, permission, prompt, and sub-agent settings when saved. The editor can refresh that snapshot from the current Settings provider and model.
 - Prompts and commands support saved or run-time variables such as `${branch}`, plus built-ins including `${projectPath}`, `${date}`, `${previousStepOutput}`, and `${previousExitCode}`.
 - Each step can be conditional, retry up to five times with a configurable delay, stop the recipe on failure, or explicitly continue.
 - Active agent turns and shell processes can be stopped at the workflow level, including while a turn is still starting or waiting to retry. Runs abandoned by an app exit are recovered as interrupted rather than remaining permanently active.
 - Interval failures use bounded exponential backoff and never retry sooner than the configured interval. A manual run does not move the recurring schedule.
 - Run history records step-level attempts, output, duration, completion, failure, and the resulting thread in a dedicated inspector.
-- Manual workflows containing shell commands show the interpolated command preview before execution. Background runs never request interactive approval and still obey the saved sandbox.
-- Enabled workflows are available from Settings, the command palette, and the active project’s Tools panel.
+- Manual workflows containing shell commands show the interpolated command preview before execution. Background runs do not wait for interactive approvals or questions: Claude and Cursor reject those requests without widening saved access. Each provider retains its existing permission boundaries.
+- Enabled workflows are available from Settings, the command palette, the Tools panel, and the composer. Type `!` to search recipes, then click one or use an arrow key and Enter to add its removable chip. Bare Enter never picks the first recipe; a space after `!` leaves ordinary punctuation. Add an optional note for agent steps, then review the project and inputs before running. Cancel keeps the chip and draft. Recipe names cannot start with whitespace.
 
 Existing one-click project actions and single-prompt schedules remain available for lightweight use. A saved schedule can be converted without removing the original; the converted workflow starts disabled so both versions cannot run at the same time unexpectedly.
 

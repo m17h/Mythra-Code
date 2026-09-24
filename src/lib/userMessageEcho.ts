@@ -43,6 +43,36 @@ export function userEchoIndex(messages: ChatMessage[], incoming: ChatMessage): n
       === JSON.stringify((incoming.attachments ?? []).map((item) => item.path)));
 }
 
+/** A prior writer could persist one local prompt before and after its turn ID
+ * arrived. Keep its first timeline position and freshest identified contents.
+ * Distinct IDs remain distinct even when the user sent identical text. */
+function collapseRepeatedUserIds(messages: ChatMessage[]): ChatMessage[] {
+  const canonical = new Map<string, ChatMessage>();
+  let duplicated = false;
+  for (const message of messages) {
+    if (message.role !== "user") continue;
+    const previous = canonical.get(message.id);
+    if (!previous) canonical.set(message.id, message);
+    else {
+      duplicated = true;
+      if (message.turnId || !previous.turnId) canonical.set(message.id, {
+        ...previous,
+        ...message,
+        timelineOrder: previous.timelineOrder ?? message.timelineOrder,
+        attachments: message.attachments ?? previous.attachments,
+      });
+    }
+  }
+  if (!duplicated) return messages;
+  const emitted = new Set<string>();
+  return messages.flatMap((message) => {
+    if (message.role !== "user") return [message];
+    if (emitted.has(message.id)) return [];
+    emitted.add(message.id);
+    return [canonical.get(message.id) ?? message];
+  });
+}
+
 /** One-to-one reconciliation: two intentional identical sends remain two rows. */
 export function reconcileUserMessages(incoming: ChatMessage[], live: ChatMessage[]): { messages: ChatMessage[]; matchedIds: Set<string> } {
   const matchedIds = new Set<string>();
@@ -54,7 +84,7 @@ export function reconcileUserMessages(incoming: ChatMessage[], live: ChatMessage
     entries.push(message);
     byTurn.set(message.turnId, entries);
   }
-  const messages = incoming.map((message) => {
+  const messages = collapseRepeatedUserIds(incoming).map((message) => {
     if (message.role !== "user") return message;
     const candidates = byId.has(message.id) ? [] : (byTurn.get(message.turnId ?? "") ?? []).filter((entry) => !matchedIds.has(entry.id));
     const existing = byId.get(message.id) ?? candidates[userEchoIndex(candidates, message)];

@@ -1,5 +1,6 @@
 import { runButtonInstructions } from "./projectRun";
-import type { ProjectRunCommand } from "../types";
+import { checkButtonInstructions } from "./projectChecks";
+import type { ProjectCheckCommand, ProjectRunCommand } from "../types";
 
 /**
  * How to read the `@` mentions Mythra Code's composer inserts. Kept apart from the
@@ -58,17 +59,23 @@ export interface RunButtonPromptContext {
   run: ProjectRunCommand | null | undefined;
 }
 
-export function mythraCodeDeveloperInstructions(delegationEnabled = false, settingsProposalsEnabled = delegationEnabled, runButton?: RunButtonPromptContext | null): string {
+export interface CheckButtonPromptContext {
+  toolAvailable: boolean;
+  check: ProjectCheckCommand | null | undefined;
+}
+
+export function mythraCodeDeveloperInstructions(delegationEnabled = false, settingsProposalsEnabled = delegationEnabled, runButton?: RunButtonPromptContext | null, checkButton?: CheckButtonPromptContext | null): string {
   const sections = [MYTHRA_CODE_SKILL_MENTION_INSTRUCTIONS, MYTHRA_CODE_COMPLETION_INSTRUCTIONS];
   if (delegationEnabled) sections.push(MYTHRA_CODE_DELEGATION_INSTRUCTIONS);
   else if (settingsProposalsEnabled) sections.push(MYTHRA_CODE_SUBAGENT_SETTINGS_INSTRUCTIONS);
   if (runButton?.toolAvailable) sections.push(runButtonInstructions(runButton.run));
+  if (checkButton?.toolAvailable) sections.push(checkButtonInstructions(checkButton.check));
   return sections.join("\n\n");
 }
 
-export function withMythraCodeCompletionInstructions(systemPrompt: string, delegationEnabled = false, settingsProposalsEnabled = delegationEnabled, runButton?: RunButtonPromptContext | null): string {
+export function withMythraCodeCompletionInstructions(systemPrompt: string, delegationEnabled = false, settingsProposalsEnabled = delegationEnabled, runButton?: RunButtonPromptContext | null, checkButton?: CheckButtonPromptContext | null): string {
   const prompt = systemPrompt.trim();
-  const internalInstructions = mythraCodeDeveloperInstructions(delegationEnabled, settingsProposalsEnabled, runButton);
+  const internalInstructions = mythraCodeDeveloperInstructions(delegationEnabled, settingsProposalsEnabled, runButton, checkButton);
   return prompt
     ? `${prompt}\n\n${internalInstructions}`
     : internalInstructions;

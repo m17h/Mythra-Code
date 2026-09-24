@@ -58,3 +58,20 @@ it("keeps all five provider choices clickable in a short window", async () => {
   await page.getByRole("button", { name: "Cancel", exact: true }).click();
   await page.viewport(1280, 900);
 });
+
+it("keeps optional setup visible, editable and saveable in a short Run window", async () => {
+  await page.viewport(760, 650);
+  const onSave = vi.fn();
+  render(<div className="app-shell" data-theme="mythra" style={{ display: "block", padding: 20, height: 650 }}>
+    <ProjectRunControl projectName="Example" projectPath="/project" run={{ command: "npm run dev", setupCommand: "npm install", updatedAt: 1 }} running={false} onRun={vi.fn()} onStop={vi.fn()} onSave={onSave} />
+  </div>);
+  await page.getByRole("button", { name: "Edit run command" }).click();
+  const input = await screen.findByRole("textbox", { name: "Setup command for Example" });
+  expect(input).toHaveValue("npm install");
+  await page.getByRole("textbox", { name: "Setup command for Example" }).fill("npm ci");
+  const dialog = screen.getByRole("dialog");
+  expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth + 1);
+  await page.getByRole("button", { name: "Save run command" }).click();
+  expect(onSave).toHaveBeenCalledWith({ command: "npm run dev", label: "", setupCommand: "npm ci" });
+  await page.viewport(1400, 900);
+});

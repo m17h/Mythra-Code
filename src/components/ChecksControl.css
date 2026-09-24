@@ -1,0 +1,85 @@
+/* ---- Review "Run checks": find/run control, discovery status, result card ---- */
+
+/* The control's pieces join the Review action row; the reveals wrap below it. */
+.checks-control { display: contents; }
+.review-actions { row-gap: 0; }
+
+.checks-split { display: flex; }
+.studio-actions .checks-split > button { transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease, opacity var(--t-fast) ease; }
+.studio-actions .checks-split > .checks-run:not(:only-child) { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.studio-actions .checks-split > .checks-edit { width: 24px; justify-content: center; padding: 0; margin-left: -1px; border-top-left-radius: 0; border-bottom-left-radius: 0; }
+.studio-actions .checks-split > .checks-edit[aria-expanded="true"] > svg { transform: rotate(180deg); }
+.studio-actions .checks-split > .checks-edit > svg { transition: transform 200ms var(--ease); }
+.studio-actions .checks-split.ready > button { color: var(--ink-2); border-color: color-mix(in srgb, var(--green) 30%, var(--line)); }
+.studio-actions .checks-split.ready > .checks-run > svg { color: var(--green); }
+.studio-actions .checks-split.running > button { color: var(--text); border-color: color-mix(in srgb, var(--amber) 46%, var(--line)); background: color-mix(in srgb, var(--amber) 9%, transparent); }
+.studio-actions .checks-split.running > .checks-run > svg { color: var(--amber); }
+/* No command yet: the finder is the invitation, not a greyed-out button. */
+.studio-actions .checks-split.discover > .checks-run > svg,
+.studio-actions .checks-split.finding > .checks-run > svg { color: var(--green); }
+.studio-actions .checks-split.finding > .checks-run { cursor: progress; }
+
+/* Height-and-fade reveal shared by the editor, result card and output. */
+.checks-control > .checks-reveal { flex: 1 0 100%; min-width: 0; }
+.checks-reveal {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows 240ms var(--ease), opacity 170ms ease;
+}
+.checks-reveal[data-open] { grid-template-rows: 1fr; opacity: 1; transition: grid-template-rows 260ms cubic-bezier(.22, 1, .36, 1), opacity 220ms ease 30ms; }
+@starting-style { .checks-reveal[data-open] { grid-template-rows: 0fr; opacity: 0; } }
+.checks-reveal-clip { min-height: 0; overflow: hidden; }
+/* Spacing lives inside the clip so a closed reveal takes no room. */
+.checks-card { margin-top: 6px; }
+.checks-output-reveal .checks-output { margin-top: 2px; }
+
+/* ---- Caret popover: manual command + shared discovery model (outside the action row) ---- */
+.checks-popover {
+  width: min(380px, calc(100vw - 16px));
+  max-height: min(600px, calc(100dvh - 24px));
+  overflow-y: auto;
+  padding: var(--s-3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-lg);
+  background: var(--panel-2);
+  box-shadow: var(--shadow);
+}
+.checks-popover .project-prompt-actions { position: sticky; bottom: 0; z-index: 1; background: var(--panel-2); }
+.checks-editor label { display: flex; flex-direction: column; gap: 6px; color: var(--muted); font-size: var(--fs-meta); }
+.checks-editor input { width: 100%; height: 34px; min-width: 0; padding: 0 11px; border: 1px solid var(--line); border-radius: var(--r-sm); outline: none; color: var(--text); background: var(--field); font: var(--fs-meta)/1 var(--font-mono); }
+.checks-editor input:focus { border-color: color-mix(in srgb, var(--green) 42%, var(--line-strong)); box-shadow: 0 0 0 3px var(--green-soft); }
+.checks-popover .run-discovery-result.empty { border-color: var(--line); }
+
+/* ---- Compact discovery status in the Review row ---- */
+.checks-card.discovering .checks-card-head > svg, .checks-card.found .checks-card-head > svg { color: var(--green); }
+.checks-card.found { border-color: color-mix(in srgb, var(--green) 24%, var(--line)); }
+.checks-card.discovering .checks-card-head small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 1; }
+.checks-note { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; margin: 0; color: var(--muted); font-size: var(--fs-micro); line-height: 1.45; }
+.checks-hint { color: var(--muted-2); font-size: var(--fs-micro); }
+.studio-actions .checks-card-head .checks-dismiss { flex: 0 0 auto; width: 20px; min-height: 20px; height: 20px; justify-content: center; margin-left: auto; padding: 0; border-color: transparent; }
+.studio-actions .checks-card-head .checks-dismiss:hover:not(:disabled) { border-color: transparent; }
+.checks-card { display: flex; flex-direction: column; gap: 6px; padding: 8px 9px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface-quiet); transition: border-color 200ms ease; }
+.checks-card.failed { border-color: color-mix(in srgb, var(--red) 26%, var(--line)); }
+.checks-card.passed { border-color: color-mix(in srgb, var(--green) 24%, var(--line)); }
+.checks-card-head { min-width: 0; display: flex; align-items: center; gap: 7px; font-size: var(--fs-meta); }
+.checks-card-head > svg { flex: 0 0 auto; color: var(--muted); }
+.checks-card.running .checks-card-head > svg { color: var(--amber); }
+.checks-card.passed .checks-card-head > svg { color: var(--green); }
+.checks-card.failed .checks-card-head > svg { color: var(--red); }
+.checks-card.error .checks-card-head > svg { color: var(--amber); }
+.checks-card-head strong { min-width: 0; overflow: hidden; color: var(--ink-2); font-weight: 600; white-space: nowrap; text-overflow: ellipsis; }
+.checks-card-head small { margin-left: auto; flex: 0 0 auto; color: var(--muted-2); font-size: var(--fs-micro); font-variant-numeric: tabular-nums; }
+.checks-command { overflow: hidden; color: var(--muted); font: var(--fs-micro)/1.4 var(--font-mono); white-space: nowrap; text-overflow: ellipsis; }
+.checks-error { margin: 0; color: var(--amber); font-size: var(--fs-micro); line-height: 1.45; overflow-wrap: anywhere; }
+.checks-card-actions { display: flex; flex-wrap: wrap; gap: var(--s-1); }
+.studio-actions .checks-card-actions .checks-output-toggle > svg { transform: rotate(-90deg); transition: transform 200ms var(--ease); }
+.studio-actions .checks-card-actions .checks-output-toggle[aria-expanded="true"] > svg { transform: none; }
+.studio-actions .checks-card-actions .checks-fix { color: var(--ink-2); border-color: color-mix(in srgb, var(--green) 34%, var(--line)); }
+.studio-actions .checks-card-actions .checks-fix.staged:disabled { opacity: 1; color: var(--green); border-color: var(--green-line); background: var(--surface-selected); }
+.checks-output { max-height: 220px; overflow: auto; margin-bottom: 0; padding: 8px 9px; border: 1px solid var(--line); border-radius: var(--r-sm); color: #aeb5b0; background: #202327; font: 10.5px/1.5 ui-monospace, "SFMono-Regular", Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.checks-output-note { color: var(--muted-2); font-style: italic; }
+
+@media (prefers-reduced-motion: reduce) {
+  .checks-reveal, .checks-reveal[data-open], .studio-actions .checks-split > .checks-edit > svg { transition: none; }
+}

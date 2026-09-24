@@ -70,18 +70,22 @@ const TOOL_PROPOSE_SETTINGS: &str = "propose_agent_settings";
 /// thread gets it, delegation or not, because the button itself is a project
 /// feature rather than a sub-agent one.
 const TOOL_SET_RUN: &str = "set_project_run_command";
-pub(super) const AGENT_BRIDGE_TOOLS: [&str; 6] = [
+const TOOL_SET_CHECK: &str = "set_project_check_command";
+pub(super) const AGENT_BRIDGE_TOOLS: [&str; 7] = [
     TOOL_SPAWN,
     TOOL_STATUS,
     TOOL_COLLECT,
     TOOL_CANCEL,
     TOOL_PROPOSE_SETTINGS,
     TOOL_SET_RUN,
+    TOOL_SET_CHECK,
 ];
 
 /// Bytes, not characters, so a multi-line script with a few Unicode paths
 /// still fits comfortably under the webview's own character limit.
 const MAX_RUN_COMMAND_BYTES: usize = 16_384;
+const MAX_CHECK_COMMAND_BYTES: usize = 16_384;
+const MAX_RUN_SETUP_BYTES: usize = 16_384;
 const MAX_RUN_LABEL_BYTES: usize = 320;
 
 /// How long the backend waits for the webview to answer a delegation request.
@@ -610,13 +614,17 @@ pub(super) fn tool_catalog(targets: &[ChildAgentTarget], max_concurrent: usize) 
         {
             "name": TOOL_SET_RUN,
             "title": "Set the project Run button",
-            "description": "Save the shell command behind the Run button in Mythra Code's top bar for this project — typically the command that builds the app, starts the dev server, or runs it. The button is greyed out until a command is saved. Saving alone never executes anything; the user clicks the button. Set run: true to also start it now in the app's Terminal panel, where the user can watch and stop it — use that whenever the user asks you to run, start, or serve the project, instead of your own shell. With run: true and an empty command the saved command is started; without run, an empty command clears the button. Use one command that works from a fresh checkout, chaining steps with && when needed.",
+            "description": "Save the project Run recipe in Mythra Code's top bar. command launches the app; optional setupCommand prepares dependencies or its environment before every launch and must be idempotent and fail nonzero on error. Both run in one shell from the project folder or isolated worktree, joined by &&. If setup changes directory, restore the project root before command. Saving alone never executes anything. Set run: true to start it now in the app's Terminal panel. With run: true and an empty command the entire saved recipe is reused; without run, an empty command clears it. An explicit nonempty command replaces the saved recipe, and omitting setupCommand clears its old setup.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "command": {
                         "type": "string",
                         "description": "The exact shell command, run from the project folder. Empty means: clear the button, or with run: true, start the saved command.",
+                    },
+                    "setupCommand": {
+                        "type": "string",
+                        "description": "Optional idempotent setup command run before every launch in the same shell. Empty or omitted removes setup when replacing a recipe. Use project-relative paths that work in fresh worktrees.",
                     },
                     "label": {
                         "type": "string",
@@ -626,6 +634,19 @@ pub(super) fn tool_catalog(targets: &[ChildAgentTarget], max_concurrent: usize) 
                         "type": "boolean",
                         "description": "Also start the command now in the Terminal panel. The result carries the first seconds of output.",
                     },
+                },
+                "required": ["command"],
+                "additionalProperties": false,
+            },
+        },
+        {
+            "name": TOOL_SET_CHECK,
+            "title": "Set the project Checks button",
+            "description": "Save the shell command behind this project's Checks button after inspecting its scripts and instructions. Use the full relevant test or verification command, relative to the project folder; do not invent a command or install dependencies just to set it. Saving does not execute the command. An empty command clears it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "command": { "type": "string", "description": "Exact project-relative shell command. Empty clears the Checks button." },
                 },
                 "required": ["command"],
                 "additionalProperties": false,
@@ -641,7 +662,7 @@ pub(super) fn tool_catalog(targets: &[ChildAgentTarget], max_concurrent: usize) 
                 .filter(|tool| {
                     matches!(
                         tool.get("name").and_then(Value::as_str),
-                        Some(TOOL_PROPOSE_SETTINGS) | Some(TOOL_SET_RUN)
+                        Some(TOOL_PROPOSE_SETTINGS) | Some(TOOL_SET_RUN) | Some(TOOL_SET_CHECK)
                     )
                 })
                 .cloned()
@@ -784,6 +805,26 @@ pub(super) fn validate_tool_call(
             }
             Ok(())
         }
+        TOOL_SET_CHECK => {
+            let command = object
+                .get("command")
+                .ok_or_else(|| {
+                    "`command` is required; pass an empty string to clear the Checks button."
+                        .to_string()
+                })?
+                .as_str()
+                .ok_or_else(|| "`command` must be a string.".to_string())?;
+            if command.len() > MAX_CHECK_COMMAND_BYTES {
+                return Err(format!(
+                    "`command` is too long ({} bytes); the limit is {MAX_CHECK_COMMAND_BYTES}.",
+                    command.len()
+                ));
+            }
+            if object.len() != 1 {
+                return Err("The Checks command tool accepts only `command`.".into());
+            }
+            Ok(())
+        }
         TOOL_SET_RUN => {
             let command = object
                 .get("command")
@@ -798,6 +839,17 @@ pub(super) fn validate_tool_call(
                     "`command` is too long ({} bytes); the limit is {MAX_RUN_COMMAND_BYTES}.",
                     command.len()
                 ));
+            }
+            if let Some(setup) = object.get("setupCommand") {
+                let setup = setup
+                    .as_str()
+                    .ok_or_else(|| "`setupCommand` must be a string.".to_string())?;
+                if setup.len() > MAX_RUN_SETUP_BYTES {
+                    return Err(format!(
+                        "`setupCommand` is too long ({} bytes); the limit is {MAX_RUN_SETUP_BYTES}.",
+                        setup.len()
+                    ));
+                }
             }
             if let Some(label) = object.get("label") {
                 let label = label
@@ -1167,7 +1219,11 @@ pub(super) async fn child_agent_session_start(
         args: vec![AGENT_BRIDGE_ARG.to_string(), session_argument.clone()],
         config_path: directory.join("mcp.json").to_string_lossy().to_string(),
         tool_names: if options.targets.is_empty() {
-            vec![TOOL_PROPOSE_SETTINGS.to_string(), TOOL_SET_RUN.to_string()]
+            vec![
+                TOOL_PROPOSE_SETTINGS.to_string(),
+                TOOL_SET_RUN.to_string(),
+                TOOL_SET_CHECK.to_string(),
+            ]
         } else {
             AGENT_BRIDGE_TOOLS
                 .iter()
@@ -1380,7 +1436,7 @@ pub(super) fn bridge_local_response(method: &str, id: Option<&Value>) -> Option<
                 "protocolVersion": "2025-06-18",
                 "capabilities": { "tools": { "listChanged": false } },
                 "serverInfo": { "name": AGENT_BRIDGE_SERVER, "version": env!("CARGO_PKG_VERSION") },
-                "instructions": "Mythra Code project sub-agent controls. Use propose_agent_settings when the user asks to change this project's crew, even when delegation is currently off; never claim a proposed change was applied until the user approves it. When spawn_mythra_agent is available, it is the authoritative delegation route: collect every child result, recover a failed child at most twice, and never use collaboration.spawn_agent or another provider-native task, team, or agent-spawning tool. Use set_project_run_command when the user asks what the project's top-bar Run button should do, and with run: true whenever the user asks you to run, start, or serve the project so it runs in the app's Terminal panel rather than your shell.",
+                "instructions": "Mythra Code project controls. Use propose_agent_settings when the user asks to change this project's crew, even when delegation is currently off; never claim a proposed change was applied until the user approves it. When spawn_mythra_agent is available, it is the authoritative delegation route: collect every child result, recover a failed child at most twice, and never use collaboration.spawn_agent or another provider-native task, team, or agent-spawning tool. Use set_project_run_command when the user asks what the project's top-bar Run button should do, and with run: true whenever the user asks you to run, start, or serve the project so it runs in the app's Terminal panel rather than your shell. Use set_project_check_command when you identify, create, or change the project's appropriate test or verification command. Save the full relevant project-relative command; saving never executes it.",
             }
         }))),
         "ping" => Some(Some(json!({ "jsonrpc": "2.0", "id": id, "result": {} }))),

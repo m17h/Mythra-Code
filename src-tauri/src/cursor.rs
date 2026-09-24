@@ -63,6 +63,9 @@ struct CursorProcess {
     /// on the same session; only the last one to settle may take the process
     /// down, or a completing primary prompt would kill its own steer.
     active_prompts: AtomicUsize,
+    /// `session/load` replays previous conversation updates. They belong to
+    /// prior turns and must not be emitted under this process's new turn ID.
+    prompt_started: AtomicBool,
     session_id: Mutex<Option<String>>,
     turn_id: Option<String>,
     wsl: bool,
@@ -71,6 +74,10 @@ struct CursorProcess {
     /// these, so the webview cannot answer a request this process never
     /// asked (mirrors the Codex bridge's server-request set).
     server_requests: Arc<Mutex<HashSet<String>>>,
+}
+
+fn visible_cursor_notification(method: &str, prompt_started: bool) -> bool {
+    prompt_started || (method != "session/update" && method != "cursor/create_plan")
 }
 
 #[derive(Debug, Serialize)]
@@ -110,6 +117,8 @@ pub struct CursorTurnOptions {
     model: String,
     effort: String,
     permission: String,
+    #[serde(default = "default_interactive")]
+    interactive: bool,
     system_prompt: String,
     resume_session_id: Option<String>,
     attachments: Vec<CursorAttachment>,
@@ -117,6 +126,10 @@ pub struct CursorTurnOptions {
     /// policy allows spawning children on other providers.
     #[serde(default)]
     child_agent_bridge: Option<ChildAgentBridge>,
+}
+
+fn default_interactive() -> bool {
+    true
 }
 
 #[derive(Deserialize, Clone)]
@@ -731,10 +744,33 @@ fn permission_result(params: &Value, allow: bool) -> Value {
         .unwrap_or_else(|| json!({ "outcome": { "outcome": "cancelled" } }))
 }
 
+fn automatic_permission_result(
+    permission: &str,
+    interactive: bool,
+    params: &Value,
+) -> Option<Value> {
+    if permission == "ask" && interactive {
+        None
+    } else {
+        Some(permission_result(params, permission == "full"))
+    }
+}
+
+fn unattended_question_error(id: Value) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": {
+            "code": -32000,
+            "message": "This unattended workflow cannot answer user questions. Run it manually."
+        }
+    })
+}
+
 async fn spawn_cursor_process(
     app: &AppHandle,
     cwd: &Path,
-    event_context: Option<(String, String, String)>,
+    event_context: Option<(String, String, String, bool)>,
 ) -> Result<Arc<CursorProcess>, String> {
     let runtime = resolve_cursor_runtime(app).await?;
     let mut command = runtime.background(Some(cwd));
@@ -780,10 +816,11 @@ async fn spawn_cursor_process(
         next_id: AtomicI64::new(1),
         alive: alive.clone(),
         active_prompts: AtomicUsize::new(0),
+        prompt_started: AtomicBool::new(false),
         session_id: Mutex::new(None),
         turn_id: event_context
             .as_ref()
-            .map(|(_, turn_id, _)| turn_id.clone()),
+            .map(|(_, turn_id, _, _)| turn_id.clone()),
         wsl: runtime.is_wsl(),
         server_requests,
     });
@@ -791,6 +828,7 @@ async fn spawn_cursor_process(
     let app_for_reader = app.clone();
     let event_for_reader = event_context.clone();
     let alive_for_reader = alive.clone();
+    let process_for_reader = process.clone();
     tauri::async_runtime::spawn(async move {
         const DELTA_FLUSH_INTERVAL: Duration = Duration::from_millis(25);
         let mut lines = BufReader::new(stdout).lines();
@@ -829,7 +867,7 @@ async fn spawn_cursor_process(
                 // Surface unparseable output instead of dropping it, so a
                 // wedged or misbehaving agent is visible in the thread.
                 flush_deltas(&mut delta_buffer, &app_for_reader);
-                if let Some((thread_id, turn_id, _)) = event_for_reader.as_ref() {
+                if let Some((thread_id, turn_id, _, _)) = event_for_reader.as_ref() {
                     let _ = app_for_reader.emit(
                         "cursor-event",
                         json!({
@@ -867,10 +905,18 @@ async fn spawn_cursor_process(
             if method == "session/request_permission" {
                 flush_deltas(&mut delta_buffer, &app_for_reader);
                 let params = message.get("params").cloned().unwrap_or_else(|| json!({}));
-                if let (Some(id), Some((thread_id, turn_id, permission))) =
+                if let (Some(id), Some((thread_id, turn_id, permission, interactive))) =
                     (message.get("id").cloned(), event_for_reader.as_ref())
                 {
-                    if permission == "ask" {
+                    if let Some(result) =
+                        automatic_permission_result(permission, *interactive, &params)
+                    {
+                        let _ = write_json(
+                            &stdin,
+                            &json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+                        )
+                        .await;
+                    } else {
                         // Record the id (before emitting) so the response
                         // command can verify it targets a live request.
                         server_requests_for_reader
@@ -881,36 +927,38 @@ async fn spawn_cursor_process(
                             "threadId": thread_id, "turnId": turn_id,
                             "message": { "type": "permission_request", "requestId": id, "params": params }
                         }));
-                    } else {
-                        let result = permission_result(&params, permission == "full");
-                        let _ = write_json(
-                            &stdin,
-                            &json!({ "jsonrpc": "2.0", "id": id, "result": result }),
-                        )
-                        .await;
                     }
                 }
                 continue;
             }
             if method == "cursor/ask_question" {
                 flush_deltas(&mut delta_buffer, &app_for_reader);
-                if let (Some(id), Some((thread_id, turn_id, _))) =
+                if let (Some(id), Some((thread_id, turn_id, _, interactive))) =
                     (message.get("id").cloned(), event_for_reader.as_ref())
                 {
-                    server_requests_for_reader
-                        .lock()
-                        .await
-                        .insert(id.to_string());
-                    let _ = app_for_reader.emit("cursor-event", json!({
-                        "threadId": thread_id, "turnId": turn_id,
-                        "message": { "type": "cursor_request", "method": method, "requestId": id, "params": message.get("params").cloned().unwrap_or(Value::Null) }
-                    }));
+                    if *interactive {
+                        server_requests_for_reader
+                            .lock()
+                            .await
+                            .insert(id.to_string());
+                        let _ = app_for_reader.emit("cursor-event", json!({
+                            "threadId": thread_id, "turnId": turn_id,
+                            "message": { "type": "cursor_request", "method": method, "requestId": id, "params": message.get("params").cloned().unwrap_or(Value::Null) }
+                        }));
+                    } else {
+                        let _ = write_json(&stdin, &unattended_question_error(id)).await;
+                    }
                 }
                 continue;
             }
             if method == "cursor/create_plan" {
                 flush_deltas(&mut delta_buffer, &app_for_reader);
-                if let Some((thread_id, turn_id, _)) = event_for_reader.as_ref() {
+                if let Some((thread_id, turn_id, _, _)) = event_for_reader.as_ref().filter(|_| {
+                    visible_cursor_notification(
+                        method,
+                        process_for_reader.prompt_started.load(Ordering::Acquire),
+                    )
+                }) {
                     let _ = app_for_reader.emit("cursor-event", json!({
                         "threadId": thread_id, "turnId": turn_id,
                         "message": { "type": "notification", "method": method, "params": message.get("params").cloned().unwrap_or(Value::Null) }
@@ -935,7 +983,12 @@ async fn spawn_cursor_process(
                 }
                 continue;
             }
-            if let Some((thread_id, turn_id, _)) = event_for_reader.as_ref() {
+            if let Some((thread_id, turn_id, _, _)) = event_for_reader.as_ref().filter(|_| {
+                visible_cursor_notification(
+                    method,
+                    process_for_reader.prompt_started.load(Ordering::Acquire),
+                )
+            }) {
                 if delta_buffer.is_empty() {
                     flush_deadline = Instant::now() + DELTA_FLUSH_INTERVAL;
                 }
@@ -953,7 +1006,7 @@ async fn spawn_cursor_process(
         }
         drop(waiting);
         if was_alive {
-            if let Some((thread_id, turn_id, _)) = event_for_reader.as_ref() {
+            if let Some((thread_id, turn_id, _, _)) = event_for_reader.as_ref() {
                 let _ = app_for_reader.emit("cursor-event", json!({
                     "threadId": thread_id, "turnId": turn_id,
                     "message": { "type": "openkiwi_exit", "message": "Cursor Agent exited before completing the turn." }
@@ -972,7 +1025,7 @@ async fn spawn_cursor_process(
         tauri::async_runtime::spawn(async move {
             let mut lines = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                if let Some((thread_id, turn_id, _)) = event_for_stderr.as_ref() {
+                if let Some((thread_id, turn_id, _, _)) = event_for_stderr.as_ref() {
                     let _ = app_for_stderr.emit(
                         "cursor-event",
                         json!({
@@ -1197,6 +1250,7 @@ pub async fn cursor_turn_start(
             options.thread_id.clone(),
             turn_id.clone(),
             options.permission.clone(),
+            options.interactive,
         )),
     )
     .await?;
@@ -1290,6 +1344,7 @@ pub async fn cursor_turn_start(
     let turns = state.turns.clone();
     let process_for_prompt = process.clone();
     let prompt_session_id = session_id.clone();
+    process.prompt_started.store(true, Ordering::Release);
     process.active_prompts.fetch_add(1, Ordering::AcqRel);
     tauri::async_runtime::spawn(async move {
         let result = process_for_prompt
@@ -1558,6 +1613,39 @@ mod tests {
                 .and_then(Value::as_str),
             Some("no")
         );
+    }
+
+    #[test]
+    fn unattended_requests_are_rejected_without_expanding_saved_access() {
+        let params = json!({ "options": [
+            { "kind": "allow_once", "optionId": "yes" },
+            { "kind": "reject_once", "optionId": "no" }
+        ] });
+        assert!(automatic_permission_result("ask", true, &params).is_none());
+        let denied = automatic_permission_result("ask", false, &params).expect("unattended denial");
+        assert_eq!(denied["outcome"]["optionId"], "no");
+        let read_only =
+            automatic_permission_result("read-only", false, &params).expect("read-only denial");
+        assert_eq!(read_only["outcome"]["optionId"], "no");
+        let full = automatic_permission_result("full", false, &params).expect("saved full access");
+        assert_eq!(full["outcome"]["optionId"], "yes");
+        let question = unattended_question_error(json!(42));
+        assert_eq!(question["id"], 42);
+        assert!(question["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("unattended workflow"));
+    }
+
+    #[test]
+    fn session_load_replay_is_not_attributed_to_the_new_turn() {
+        // `session/load` can replay previous assistant chunks before the new
+        // `session/prompt` starts. Those chunks already exist in the saved
+        // transcript and must not become new-turn assistant output.
+        assert!(!visible_cursor_notification("session/update", false));
+        assert!(!visible_cursor_notification("cursor/create_plan", false));
+        assert!(visible_cursor_notification("session/update", true));
+        assert!(visible_cursor_notification("cursor/create_plan", true));
     }
 
     #[test]

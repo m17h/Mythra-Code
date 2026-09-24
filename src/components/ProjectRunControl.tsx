@@ -1,10 +1,11 @@
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
-import { CircleAlert, ChevronDown, LoaderCircle, Play, Square } from "lucide-react";
+import { lazy, Suspense, useEffect, useId, useRef, useState } from "react";
+import { CircleAlert, ChevronDown, ChevronRight, LoaderCircle, Play, Square } from "lucide-react";
 import { usePopoverFade } from "../hooks/usePopoverFade";
 import { MAX_RUN_COMMAND_LENGTH, MAX_RUN_LABEL_LENGTH, runCommandTitle } from "../lib/projectRun";
 import { useRunCommandDiscovery } from "../hooks/useRunCommandDiscovery";
 import type { RunDiscoveryCatalogs } from "../lib/runDiscovery";
 import type { ProjectRunCommand } from "../types";
+import "./RunSetup.css";
 
 const RunCommandDiscovery = lazy(() => import("./RunCommandDiscovery"));
 
@@ -38,13 +39,18 @@ export function ProjectRunControl({
   terminalBusy?: boolean;
   onRun: () => void;
   onStop: () => void;
-  onSave: (run: { command: string; label: string } | null) => void;
+  /** A missing `setupCommand` means the project has no setup step. */
+  onSave: (run: { command: string; label: string; setupCommand?: string } | null) => void;
 }) {
   const discovery = useRunCommandDiscovery(projectPath, lmStudioBaseUrl);
   const [open, setOpen] = useState(false);
   const { ref: panelRef, present } = usePopoverFade(open);
   const [command, setCommand] = useState(run?.command ?? "");
   const [label, setLabel] = useState(run?.label ?? "");
+  const [setup, setSetup] = useState(run?.setupCommand ?? "");
+  const [setupOpen, setSetupOpen] = useState(Boolean(run?.setupCommand));
+  const setupRef = useRef<HTMLTextAreaElement>(null);
+  const setupId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
   const ready = Boolean(run);
 
@@ -52,6 +58,8 @@ export function ProjectRunControl({
     if (!open) return;
     setCommand(run?.command ?? "");
     setLabel(run?.label ?? "");
+    setSetup(run?.setupCommand ?? "");
+    setSetupOpen(Boolean(run?.setupCommand));
   }, [open, run]);
 
   useEffect(() => {
@@ -79,9 +87,10 @@ export function ProjectRunControl({
   const title = running
     ? `Stop ${runCommandTitle(run)}`
     : ready
-      ? `Run ${run!.command}${terminalBusy ? " (the terminal is busy)" : ""}`
+      ? `Run ${run!.setupCommand ? `${run!.setupCommand}, then ` : ""}${run!.command}${terminalBusy ? " (the terminal is busy)" : ""}`
       : "No run command yet. Click to set one, or ask the assistant.";
   const draft = command.trim();
+  const setupDraft = setup.trim();
 
   return (
     <div className={`project-run-control ${ready ? "ready" : ""} ${running ? "running" : ""}`} ref={rootRef}>
@@ -129,7 +138,7 @@ export function ProjectRunControl({
               disabled={discovery.pending}
               onChange={(event) => setCommand(event.target.value.slice(0, MAX_RUN_COMMAND_LENGTH))}
               aria-label={`Run command for ${projectName}`}
-              placeholder="npm install && npm run dev"
+              placeholder="npm run dev"
               rows={3}
               spellCheck={false}
               autoFocus
@@ -142,6 +151,37 @@ export function ProjectRunControl({
               aria-label="Run button label"
               placeholder="Dev server"
             />
+            <button
+              type="button"
+              className={`run-setup-toggle ${setupOpen ? "open" : ""}`}
+              aria-expanded={setupOpen}
+              aria-controls={setupId}
+              disabled={discovery.pending}
+              onClick={() => {
+                const next = !setupOpen;
+                setSetupOpen(next);
+                if (next) requestAnimationFrame(() => setupRef.current?.focus({ preventScroll: true }));
+              }}
+            >
+              <ChevronRight size={12} aria-hidden="true" />
+              Before each run <em>(optional)</em>
+              {!setupOpen && setupDraft && <code>{setupDraft}</code>}
+            </button>
+            <div className="run-setup-reveal" id={setupId} data-open={setupOpen || undefined} inert={!setupOpen || undefined}>
+              <div className="run-setup-clip">
+                <textarea
+                  ref={setupRef}
+                  value={setup}
+                  disabled={discovery.pending}
+                  onChange={(event) => setSetup(event.target.value.slice(0, MAX_RUN_COMMAND_LENGTH))}
+                  aria-label={`Setup command for ${projectName}`}
+                  placeholder="npm install"
+                  rows={2}
+                  spellCheck={false}
+                />
+                <small>Runs first, in the same shell, every time. Keep it quick and safe to repeat.</small>
+              </div>
+            </div>
             <small>Runs from the project folder in the Terminal panel. A thread working in an isolated worktree runs it there instead.</small>
           </div>
 
@@ -170,7 +210,7 @@ export function ProjectRunControl({
               className="primary-button"
               disabled={!draft || discovery.pending}
               onClick={() => {
-                onSave({ command: draft, label: label.trim() });
+                onSave({ command: draft, label: label.trim(), ...(setupDraft ? { setupCommand: setupDraft } : {}) });
                 discovery.clearSuggestion();
                 setOpen(false);
               }}

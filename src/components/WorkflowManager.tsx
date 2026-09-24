@@ -7,6 +7,8 @@ import {
   CircleStop,
   Clock3,
   Eye,
+  Download,
+  Upload,
   MessageSquare,
   Pencil,
   Play,
@@ -17,12 +19,16 @@ import {
   Workflow,
   X,
 } from "lucide-react";
+import { save } from "@tauri-apps/plugin-dialog";
+import { downloadDir, join } from "@tauri-apps/api/path";
+import { friendlyError } from "../lib/errors";
+import { exportTextFile } from "../lib/codex";
+import { exportWorkflowRecipe, importWorkflowRecipe, MAX_RECIPE_BYTES } from "../lib/workflowRecipes";
 import { useModalFocus } from "../hooks/useModalFocus";
 import { confirmDialog } from "../lib/confirmDialog";
 import { scheduleRunSnapshot } from "../lib/turnConfig";
 import {
   nextWorkflowRunAt,
-  interpolateWorkflowText,
   validateWorkflow,
   workflowStepCondition,
   workflowStepRetries,
@@ -34,6 +40,21 @@ import {
 } from "../lib/workflows";
 import type { LocalSkill } from "../lib/skills";
 import type { AppSettings, Project } from "../types";
+import { WorkflowRunDialog } from "./WorkflowRunDialog";
+import { AppSelectMenu, type AppSelectOption } from "./AppSelectMenu";
+
+const TRIGGER_OPTIONS: AppSelectOption[] = [
+  { value: "manual", label: "Manual" },
+  { value: "interval", label: "Interval" },
+  { value: "app-start", label: "When Mythra Code starts" },
+];
+
+const CONDITION_OPTIONS: AppSelectOption[] = [
+  { value: "always", label: "Always" },
+  { value: "previous-succeeded", label: "Previous step succeeded" },
+  { value: "previous-failed", label: "Previous step failed" },
+  { value: "variable-equals", label: "Variable equals value" },
+];
 
 function newWorkflow(settings: AppSettings, projectId: string): WorkflowDefinition {
   const now = Date.now();
@@ -98,7 +119,7 @@ export function WorkflowManager({
   skills: LocalSkill[];
   settings: AppSettings;
   onWorkflows: (workflows: WorkflowDefinition[]) => void;
-  onRun: (workflowId: string, variables?: Record<string, string>) => Promise<void> | void;
+  onRun: (workflowId: string, variables?: Record<string, string>, projectId?: string) => Promise<void> | void;
   onStop: (workflowId: string) => Promise<boolean> | boolean;
   onOpenRun?: (threadId: string) => void;
 }) {
@@ -108,9 +129,9 @@ export function WorkflowManager({
   // makes normal values like 45 untypeable (the leading "4" snaps to 5).
   const [intervalText, setIntervalText] = useState<string | null>(null);
   const [pendingRun, setPendingRun] = useState<WorkflowDefinition | null>(null);
-  const [runVariables, setRunVariables] = useState<Record<string, string>>({});
+  const [transferStatus, setTransferStatus] = useState("");
+  const importInputRef = useRef<HTMLInputElement>(null);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
-  const runDialogRef = useRef<HTMLDivElement>(null);
   const runInspectorRef = useRef<HTMLDivElement>(null);
   const latestRuns = useMemo(() => {
     const latest = new Map<string, WorkflowRunRecord>();
@@ -121,27 +142,22 @@ export function WorkflowManager({
   }, [runs]);
   const selectedRun = selectedRunId ? runs.find((run) => run.id === selectedRunId) ?? null : null;
 
-  useModalFocus(runDialogRef, Boolean(pendingRun));
   useModalFocus(runInspectorRef, Boolean(selectedRun));
 
   // Escape closes the topmost workflow surface without reaching the Settings
   // modal's own document-level Escape handler underneath.
   useEffect(() => {
-    if (!pendingRun && !selectedRun) return;
+    if (!selectedRun) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       event.stopPropagation();
-      if (pendingRun) setPendingRun(null);
-      else setSelectedRunId(null);
+      setSelectedRunId(null);
     };
     document.addEventListener("keydown", onKeyDown, true);
     return () => document.removeEventListener("keydown", onKeyDown, true);
-  }, [pendingRun, selectedRun]);
+  }, [selectedRun]);
 
-  const prepareRun = (workflow: WorkflowDefinition) => {
-    setRunVariables(Object.fromEntries((workflow.variables ?? []).map((variable) => [variable.name, variable.value])));
-    setPendingRun(workflow);
-  };
+  const prepareRun = (workflow: WorkflowDefinition) => setPendingRun(workflow);
 
   const saveDraft = () => {
     if (!draft) return;
@@ -200,23 +216,36 @@ export function WorkflowManager({
         <button
           className="secondary-button compact"
           onClick={() => {
-            setDraft(newWorkflow(settings, projects[0]?.id ?? ""));
+            setDraft(newWorkflow(settings, ""));
             setDraftError("");
           }}
-          disabled={!projects.length || Boolean(draft)}
+          disabled={Boolean(draft)}
         >
           <Plus size={12} /> New workflow
         </button>
+        <button className="secondary-button compact" disabled={Boolean(draft)} onClick={() => importInputRef.current?.click()}><Upload size={12} /> Import recipe</button>
+        <input ref={importInputRef} type="file" accept=".json" hidden aria-label="Import workflow recipe" onChange={async (event) => {
+          const file = event.target.files?.[0];
+          event.target.value = "";
+          if (!file) return;
+          try {
+            if (file.size > MAX_RECIPE_BYTES) throw new Error("Recipe files must be smaller than 256 KB.");
+            setDraft(importWorkflowRecipe(await file.text(), scheduleRunSnapshot(settings)));
+            setDraftError("");
+            setTransferStatus("Recipe imported for review. Check its steps and inputs, then save. Your current model and permissions are used.");
+          } catch (error) { setTransferStatus(friendlyError(error)); }
+        }} />
       </div>
-      <p>Build ordered recipes from agent prompts and deterministic commands. Run them manually, on an interval, or whenever Mythra Code starts.</p>
+      {transferStatus && <p role="status">{transferStatus}</p>}
+      <p>Build ordered recipes from agent prompts and deterministic commands. Reuse them in any project. Automatic runs use the saved default project. Workflows keep the saved provider and model, including Claude Code and Cursor.</p>
 
       <div className="workflow-safety-note">
         <Check size={13} />
-        <span><strong>Transparent by design</strong><small>Every agent step appears as a user message in its project thread. Commands, selected skills, model settings, and permissions remain visible and editable.</small></span>
+        <span><strong>Transparent by design</strong><small>Every agent step appears as a user message in its project thread. Commands, selected skills, model settings, and permissions remain visible. Use current settings to refresh the saved run settings.</small></span>
       </div>
 
       {!projects.length && (
-        <div className="workflow-empty"><Workflow size={19} /><span>Add a project before creating a workflow.</span></div>
+        <div className="workflow-empty"><Workflow size={19} /><span>You can create or import recipes now. Add a project when you are ready to run them.</span></div>
       )}
 
       {workflows.length > 0 && (
@@ -247,7 +276,7 @@ export function WorkflowManager({
                   <span className="workflow-card-icon"><Workflow size={14} /></span>
                   <span className="workflow-card-copy">
                     <strong>{workflow.name}</strong>
-                    <small>{project?.name ?? "Missing project"} · {workflowTriggerLabel(workflow.trigger)} · {workflow.steps.length} step{workflow.steps.length === 1 ? "" : "s"}</small>
+                    <small>{project?.name ?? (workflow.projectId ? "Choose a project when running" : "Any project")} · {workflowTriggerLabel(workflow.trigger)} · {workflow.steps.length} step{workflow.steps.length === 1 ? "" : "s"}</small>
                     {workflow.description && <em>{workflow.description}</em>}
                   </span>
                   {latest && <span className={`workflow-run-chip ${latest.status}`}>{runStatusLabel(latest)}</span>}
@@ -255,8 +284,18 @@ export function WorkflowManager({
                 <div className="workflow-card-actions">
                   {running
                     ? <button className="danger-action" onClick={() => void onStop(workflow.id)}><CircleStop size={11} /> Stop</button>
-                    : <button onClick={() => prepareRun(workflow)} disabled={!project}><Play size={11} /> Run</button>}
+                    : <button onClick={() => prepareRun(workflow)} disabled={!projects.length}><Play size={11} /> Run</button>}
                   <button onClick={() => { setDraft(structuredClone(workflow)); setDraftError(""); }} disabled={Boolean(draft)}><Pencil size={11} /> Edit</button>
+                  <button aria-label={`Export ${workflow.name}`} onClick={async () => {
+                    try {
+                      const contents = exportWorkflowRecipe(workflow);
+                      const defaultPath = await join(await downloadDir(), `${workflow.name.replace(/[^a-z0-9-]/gi, "-").slice(0, 60) || "workflow"}.mythra-workflow.json`);
+                      const path = await save({ title: "Export workflow recipe", defaultPath, filters: [{ name: "Workflow recipe", extensions: ["json"] }] });
+                      if (!path) return;
+                      await exportTextFile(path, contents);
+                      setTransferStatus("Recipe exported. Steps and input values are included; project bindings, model settings, schedules, and run history are not.");
+                    } catch (error) { setTransferStatus(friendlyError(error).replace(/Diagnostics/g, "Recipes")); }
+                  }}><Download size={11} /> Export</button>
                   {latest && <button onClick={() => setSelectedRunId(latest.id)}><Eye size={11} /> Details</button>}
                   {workflow.lastThreadId && onOpenRun && <button onClick={() => onOpenRun(workflow.lastThreadId!)}><MessageSquare size={11} /> Last thread</button>}
                   <button
@@ -285,14 +324,14 @@ export function WorkflowManager({
           </div>
 
           <div className="workflow-editor-grid">
-            <label><span>Name</span><input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="Release readiness" /></label>
-            <label><span>Project</span><select value={draft.projectId} onChange={(event) => setDraft({ ...draft, projectId: event.target.value })}><option value="">Choose project…</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
+            <label><span>Name</span><input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value.trimStart() })} placeholder="Release readiness" /></label>
+            <div className="workflow-select-field"><span>Default project</span><AppSelectMenu ariaLabel="Project" value={draft.projectId} options={[{ value: "", label: "Choose when running" }, ...projects.map((project) => ({ value: project.id, label: project.name, detail: project.path }))]} placeholder="Choose project…" portal onChange={(projectId) => setDraft({ ...draft, projectId })} /></div>
             <label className="wide"><span>Description</span><input value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} placeholder="What this workflow accomplishes" /></label>
-            <label><span>Trigger</span><select value={draft.trigger.type} onChange={(event) => {
-              const trigger = triggerFor(event.target.value as WorkflowTrigger["type"]);
+            <div className="workflow-select-field"><span>Trigger</span><AppSelectMenu ariaLabel="Trigger" value={draft.trigger.type} options={TRIGGER_OPTIONS} portal onChange={(type) => {
+              const trigger = triggerFor(type as WorkflowTrigger["type"]);
               setIntervalText(null);
               setDraft({ ...draft, trigger, nextRunAt: nextWorkflowRunAt(trigger) });
-            }}><option value="manual">Manual</option><option value="interval">Interval</option><option value="app-start">When Mythra Code starts</option></select></label>
+            }} /></div>
             {draft.trigger.type === "interval" && <label><span>Every (minutes)</span><input type="number" min={5} value={intervalText ?? String(draft.trigger.intervalMinutes)} onChange={(event) => setIntervalText(event.target.value)} onBlur={(event) => {
               const trigger: WorkflowTrigger = { type: "interval", intervalMinutes: Math.max(5, Number(event.target.value) || 5) };
               setIntervalText(null);
@@ -383,19 +422,13 @@ export function WorkflowManager({
                     ? <textarea value={step.prompt} onChange={(event) => updateStep(step.id, { prompt: event.target.value })} rows={4} placeholder="Tell the agent exactly what to accomplish and how to verify it." />
                     : <textarea value={step.command} onChange={(event) => updateStep(step.id, { command: event.target.value })} rows={2} className="monospace" placeholder="npm test" />}
                   <div className="workflow-step-behavior">
-                    <label><span>Run when</span><select value={workflowStepCondition(step).type} onChange={(event) => {
-                      const type = event.target.value;
+                    <div className="workflow-select-field"><span>Run when</span><AppSelectMenu ariaLabel={`Run when for ${step.name}`} value={workflowStepCondition(step).type} options={CONDITION_OPTIONS} portal onChange={(type) => {
                       updateStep(step.id, {
                         condition: type === "variable-equals"
                           ? { type, variable: draft.variables?.[0]?.name ?? "", value: "" }
                           : { type } as WorkflowStep["condition"],
                       });
-                    }}>
-                      <option value="always">Always</option>
-                      <option value="previous-succeeded">Previous step succeeded</option>
-                      <option value="previous-failed">Previous step failed</option>
-                      <option value="variable-equals">Variable equals value</option>
-                    </select></label>
+                    }} /></div>
                     {workflowStepCondition(step).type === "variable-equals" && <>
                       <label><span>Variable</span><input value={(workflowStepCondition(step) as { type: "variable-equals"; variable: string }).variable} onChange={(event) => updateStep(step.id, { condition: { ...(workflowStepCondition(step) as { type: "variable-equals"; variable: string; value: string }), variable: event.target.value } })} placeholder="branch" /></label>
                       <label><span>Equals</span><input value={(workflowStepCondition(step) as { type: "variable-equals"; value: string }).value} onChange={(event) => updateStep(step.id, { condition: { ...(workflowStepCondition(step) as { type: "variable-equals"; variable: string; value: string }), value: event.target.value } })} placeholder="main" /></label>
@@ -414,36 +447,10 @@ export function WorkflowManager({
         </div>
       )}
 
-      {pendingRun && (
-        <div className="workflow-dialog-backdrop" onMouseDown={() => setPendingRun(null)}>
-          <div className="workflow-run-dialog" ref={runDialogRef} role="dialog" aria-modal="true" aria-label={`Run ${pendingRun.name}`} onMouseDown={(event) => event.stopPropagation()}>
-            <div className="workflow-editor-header">
-              <span><Play size={15} /><strong>Run {pendingRun.name}</strong></span>
-              <button className="icon-button" onClick={() => setPendingRun(null)} aria-label="Close run workflow dialog"><X size={14} /></button>
-            </div>
-            <p>{pendingRun.description || `Run ${pendingRun.steps.length} ordered step${pendingRun.steps.length === 1 ? "" : "s"} in ${projects.find((project) => project.id === pendingRun.projectId)?.name ?? "the selected project"}.`}</p>
-            {(pendingRun.variables ?? []).filter((variable) => variable.promptOnRun).map((variable) => (
-              <label className="workflow-run-input" key={variable.id}><span>{variable.name}</span><input value={runVariables[variable.name] ?? ""} onChange={(event) => setRunVariables({ ...runVariables, [variable.name]: event.target.value })} placeholder={variable.value || "Value for this run"} /></label>
-            ))}
-            {pendingRun.steps.some((step) => step.type === "command") && (
-              <div className="workflow-command-warning"><TerminalSquare size={14} /><span><strong>Shell commands included</strong><small>Commands run in the saved project using the workflow’s {pendingRun.run.permission} permission setting. Variable values are substituted literally.</small>{pendingRun.steps.filter((step) => step.type === "command").map((step) => <code key={step.id}>{interpolateWorkflowText(step.command, runVariables)}</code>)}</span></div>
-            )}
-            <div className="workflow-run-summary">
-              <span>{pendingRun.steps.length} steps</span>
-              <span>{pendingRun.run.provider === "openai" ? "OpenAI" : pendingRun.run.provider === "claude" ? "Claude" : pendingRun.run.provider === "cursor" ? "Cursor" : pendingRun.run.provider === "lmstudio" ? "LM Studio" : "OpenRouter"} · {pendingRun.run.model}</span>
-              <span>{pendingRun.run.reasoningEffort}{pendingRun.run.ultra ? " + Ultra" : ""}</span>
-            </div>
-            <div className="workflow-editor-actions">
-              <button className="secondary-button" onClick={() => setPendingRun(null)}>Cancel</button>
-              <button className="primary-button" onClick={() => {
-                const workflowId = pendingRun.id;
-                setPendingRun(null);
-                void onRun(workflowId, runVariables);
-              }}><Play size={12} /> Run now</button>
-            </div>
-          </div>
-        </div>
-      )}
+      {pendingRun && <WorkflowRunDialog workflow={pendingRun} projects={projects} onClose={() => setPendingRun(null)} onRun={(id, variables, projectId) => {
+        setPendingRun(null);
+        void onRun(id, variables, projectId);
+      }} />}
 
       {selectedRun && (
         <div className="workflow-run-inspector" ref={runInspectorRef} role="dialog" aria-label={`Run details for ${selectedRun.workflowName}`}>

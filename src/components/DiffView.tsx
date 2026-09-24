@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { Minus, Plus, RotateCcw } from "lucide-react";
-import type { DiffSection } from "../lib/gitDiff";
+import type { DiffSection, ReviewDiff } from "../lib/gitDiff";
+import { useFeedbackDiffSource, type FeedbackDiffSource } from "./FeedbackProvider";
 
 /**
  * Lines rendered before a diff asks to be expanded further. A refactor that
@@ -24,7 +25,13 @@ function diffLineClass(line: string): string | undefined {
  * full text stays reachable — nothing is truncated away, it is just not in the
  * document until asked for.
  */
-export function DiffText({ text, initialLines = DIFF_INITIAL_LINES }: { text: string; initialLines?: number }) {
+export function DiffText({ text, initialLines = DIFF_INITIAL_LINES, feedback }: {
+  text: string;
+  initialLines?: number;
+  /** Review working-diff files only; lines stay plain spans either way. */
+  feedback?: FeedbackDiffSource;
+}) {
+  const feedbackRef = useFeedbackDiffSource(feedback);
   const lines = useMemo(() => text.split("\n"), [text]);
   const [visible, setVisible] = useState(() => Math.min(lines.length, initialLines));
   // A new diff replaces the old one during render, so a long expansion of the
@@ -37,7 +44,7 @@ export function DiffText({ text, initialLines = DIFF_INITIAL_LINES }: { text: st
   const hidden = lines.length - visible;
   return (
     <div className="diff-body">
-      <pre className="diff-view">
+      <pre className="diff-view" ref={feedbackRef} data-feedback-diff={feedbackRef ? "" : undefined}>
         {lines.slice(0, visible).map((line, index) => (
           <span key={index} className={diffLineClass(line)}>{`${line}\n`}</span>
         ))}
@@ -61,8 +68,9 @@ export function DiffText({ text, initialLines = DIFF_INITIAL_LINES }: { text: st
  * recovered unambiguously — running `git add --`/`git restore --` on a guessed
  * path would stage or discard the wrong file.
  */
-function DiffFile({ section, readOnly, readOnlyReason, defaultOpen, staged, onPathAction, onUnstage }: {
+function DiffFile({ section, readOnly, readOnlyReason, defaultOpen, staged, feedbackDiff, onPathAction, onUnstage }: {
   section: DiffSection;
+  feedbackDiff?: Pick<ReviewDiff, "baseline" | "source">;
   readOnly: boolean;
   readOnlyReason?: string;
   defaultOpen: boolean;
@@ -129,15 +137,17 @@ function DiffFile({ section, readOnly, readOnlyReason, defaultOpen, staged, onPa
           </span>
         )}
       </summary>
-      {open && <DiffText text={section.text} />}
+      {open && <DiffText text={section.text} feedback={feedbackDiff && section.path ? { section, diff: feedbackDiff } : undefined} />}
     </details>
   );
 }
 
-export function DiffFileSections({ sections, readOnly, readOnlyReason, stagedPaths, onPathAction, onUnstage }: {
+export function DiffFileSections({ sections, readOnly, readOnlyReason, stagedPaths, feedbackDiff, onPathAction, onUnstage }: {
   sections: DiffSection[];
   readOnly: boolean;
   readOnlyReason?: string;
+  /** The working diff these sections came from. Enables line feedback; omit for history. */
+  feedbackDiff?: Pick<ReviewDiff, "baseline" | "source">;
   /** Repository-relative paths currently in the index. Optional: without it
    *  every file simply offers Stage, exactly as before. */
   stagedPaths?: string[];
@@ -155,6 +165,7 @@ export function DiffFileSections({ sections, readOnly, readOnlyReason, stagedPat
           readOnlyReason={readOnlyReason}
           defaultOpen={sections.length === 1}
           staged={!!section.path && staged.has(section.path)}
+          feedbackDiff={feedbackDiff}
           onPathAction={onPathAction}
           onUnstage={onUnstage}
         />

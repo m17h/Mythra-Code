@@ -1,5 +1,9 @@
+// Frontend tsconfig omits Node types; Vitest executes this focused shell check in Node.
+// @ts-expect-error Node built-in types are unavailable to the frontend compiler.
+import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
-import { runButtonInstructions, runCommandTitle, sanitizeProjectRunCommand, sanitizeProjectRunOverrides } from "./projectRun";
+import { projectRunShellCommand, runButtonInstructions, runCommandTitle, sanitizeProjectRunCommand, sanitizeProjectRunOverrides } from "./projectRun";
+import { shellCommand } from "./shellCommand";
 import type { Project } from "../types";
 
 describe("sanitizeProjectRunCommand", () => {
@@ -7,6 +11,8 @@ describe("sanitizeProjectRunCommand", () => {
     expect(sanitizeProjectRunCommand({ command: "  npm run dev  ", label: "  Dev   server ", updatedAt: 5 }))
       .toEqual({ command: "npm run dev", label: "Dev server", updatedAt: 5 });
     expect(sanitizeProjectRunCommand({ command: "make", label: "" }, 42)).toEqual({ command: "make", updatedAt: 42 });
+    expect(sanitizeProjectRunCommand({ command: "npm run dev", setupCommand: "  npm install  " }, 42))
+      .toEqual({ command: "npm run dev", setupCommand: "npm install", updatedAt: 42 });
   });
 
   it("rejects anything that is not a usable command", () => {
@@ -14,7 +20,47 @@ describe("sanitizeProjectRunCommand", () => {
     expect(sanitizeProjectRunCommand({ command: "   " })).toBeUndefined();
     expect(sanitizeProjectRunCommand({ command: 12 })).toBeUndefined();
     expect(sanitizeProjectRunCommand({ command: "x".repeat(4_001) })).toBeUndefined();
+    expect(sanitizeProjectRunCommand({ command: "make", setupCommand: "x".repeat(4_001) })).toBeUndefined();
     expect(sanitizeProjectRunCommand({ command: "make", label: "l".repeat(200) })?.label).toHaveLength(80);
+  });
+});
+
+describe("projectRunShellCommand", () => {
+  it("runs saved setup before launch in the same shell and leaves legacy recipes unchanged", () => {
+    expect(projectRunShellCommand({ setupCommand: "npm install", command: "npm run dev", updatedAt: 1 }))
+      .toBe("npm install && (npm run dev)");
+    expect(projectRunShellCommand({ setupCommand: "npm install", command: "node -p process.cwd() || echo fallback", updatedAt: 1 }, "Win32"))
+      .toBe("npm install & if not errorlevel 0 (exit /b) else if errorlevel 1 (exit /b) else node -p process.cwd() || echo fallback");
+    expect(projectRunShellCommand({ command: "npm run dev", updatedAt: 1 })).toBe("npm run dev");
+  });
+
+  it("stops before launch when setup exits unsuccessfully", () => {
+    const platform = (globalThis as unknown as { process: { platform: string } }).process.platform;
+    const shellPlatform = platform === "win32" ? "Win32" : "MacIntel";
+    const command = projectRunShellCommand({ setupCommand: "node -e \"process.exit(7)\"", command: "echo launched || echo fallback", updatedAt: 1 }, shellPlatform);
+    const [program, ...args] = shellCommand(command, shellPlatform);
+    const result = spawnSync(program, args, { encoding: "utf8" });
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(7);
+    expect(result.stdout).not.toContain("launched");
+    expect(result.stdout).not.toContain("fallback");
+  });
+
+  it("passes setup environment to launch and accepts parenthesized commands", () => {
+    const platform = (globalThis as unknown as { process: { platform: string } }).process.platform;
+    const shellPlatform = platform === "win32" ? "Win32" : "MacIntel";
+    const expression = platform === "win32" ? "process.cwd()" : "'process.cwd()'";
+    const setup = platform === "win32" ? "set MYTHRA_RUN_TEST=ready" : "export MYTHRA_RUN_TEST=ready";
+    const command = projectRunShellCommand({
+      setupCommand: `node -p ${expression} && ${setup}`,
+      command: `node -p ${expression} && node -p process.env.MYTHRA_RUN_TEST`,
+      updatedAt: 1,
+    }, shellPlatform);
+    const [program, ...args] = shellCommand(command, shellPlatform);
+    const result = spawnSync(program, args, { encoding: "utf8" });
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("ready");
   });
 });
 
@@ -50,6 +96,8 @@ describe("runButtonInstructions", () => {
     // "Run the project" requests go through the button, not the model's shell.
     expect(text).toContain("run: true");
     expect(text).toContain("Terminal panel");
+    expect(runButtonInstructions({ command: "npm run dev", setupCommand: "npm install", updatedAt: 1 })).toContain("after setup `npm install`");
+    expect(runButtonInstructions(null)).toContain("pushd app && npm install && popd");
   });
 
   it("explains the greyed-out state when nothing is saved", () => {
