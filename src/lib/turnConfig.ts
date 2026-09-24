@@ -1,8 +1,9 @@
-import type { AppSettings, CustomAgentProfile, PermissionMode, ProjectRunCommand, ScheduleRunSettings } from "../types";
+import type { AppSettings, CustomAgentProfile, PermissionMode, ProjectCheckCommand, ProjectRunCommand, ScheduleRunSettings } from "../types";
 import type { ChildAgentBridgeLaunch } from "./agentBridge";
 import type { JsonObject } from "./codex";
-import { MYTHRA_CODE_NATIVE_DELEGATION_POLICY, mythraCodeDeveloperInstructions, type RunButtonPromptContext } from "./completionPrompt";
+import { MYTHRA_CODE_NATIVE_DELEGATION_POLICY, mythraCodeDeveloperInstructions, type CheckButtonPromptContext, type RunButtonPromptContext } from "./completionPrompt";
 import { RUN_COMMAND_TOOL } from "./projectRun";
+import { CHECK_COMMAND_TOOL } from "./projectChecks";
 import { resolveProviderSystemPrompt } from "./systemPrompt";
 import { DEFAULT_LM_STUDIO_BASE_URL } from "./appConfig";
 import { LM_STUDIO_RUNTIME_PROVIDER_ID, runtimeModelProviderId } from "./providerIds";
@@ -68,12 +69,20 @@ export interface ThreadStartOptions {
   childAgentBridge?: ChildAgentBridgeLaunch;
   /** The project's Run button command, so the model can describe and update it. */
   projectRunCommand?: ProjectRunCommand | null;
+  projectCheckCommand?: ProjectCheckCommand | null;
 }
 
 function runButtonContext(options: Pick<ThreadStartOptions, "childAgentBridge" | "projectRunCommand">): RunButtonPromptContext {
   return {
     toolAvailable: Boolean(options.childAgentBridge?.toolNames.includes(RUN_COMMAND_TOOL)),
     run: options.projectRunCommand ?? null,
+  };
+}
+
+function checkButtonContext(options: Pick<ThreadStartOptions, "childAgentBridge" | "projectCheckCommand">): CheckButtonPromptContext {
+  return {
+    toolAvailable: Boolean(options.childAgentBridge?.toolNames.includes(CHECK_COMMAND_TOOL)),
+    check: options.projectCheckCommand ?? null,
   };
 }
 
@@ -101,7 +110,7 @@ export function childAgentMcpConfig(bridge: ChildAgentBridgeLaunch | undefined):
  * ChatGPT connected-app tools are fetched independently by the runtime and
  * can contain provider-specific schemas that OpenRouter destinations reject.
  */
-export function threadRuntimeConfig(run: ScheduleRunSettings, options: Partial<Pick<ThreadStartOptions, "interactive" | "customAgents" | "modelContextWindow" | "childAgentBridge" | "projectRunCommand">> = {}): JsonObject {
+export function threadRuntimeConfig(run: ScheduleRunSettings, options: Partial<Pick<ThreadStartOptions, "interactive" | "customAgents" | "modelContextWindow" | "childAgentBridge" | "projectRunCommand" | "projectCheckCommand">> = {}): JsonObject {
   const contextWindow = Number(options.modelContextWindow);
   const mythraDelegation = Boolean(options.childAgentBridge?.toolNames.includes("spawn_mythra_agent"));
   const mythraSettings = Boolean(options.childAgentBridge?.toolNames.includes("propose_agent_settings"));
@@ -115,7 +124,7 @@ export function threadRuntimeConfig(run: ScheduleRunSettings, options: Partial<P
     // This suppresses that injected team role and leaves the exact Mythra Code
     // MCP destination enum as the sole provider/model authority.
     multi_agent_mode: { custom: MYTHRA_CODE_NATIVE_DELEGATION_POLICY },
-    developer_instructions: mythraCodeDeveloperInstructions(mythraDelegation, mythraSettings, runButtonContext(options)),
+    developer_instructions: mythraCodeDeveloperInstructions(mythraDelegation, mythraSettings, runButtonContext(options), checkButtonContext(options)),
     model_reasoning_effort: run.ultra ? "ultra" : run.reasoningEffort,
     ...((run.provider === "openrouter" || run.provider === "lmstudio") && Number.isFinite(contextWindow) && contextWindow > 0
       ? { model_context_window: Math.floor(contextWindow) }
@@ -153,6 +162,7 @@ export function threadStartParams(run: ScheduleRunSettings, cwd: string, options
     Boolean(options.childAgentBridge?.toolNames.includes("spawn_mythra_agent")),
     Boolean(options.childAgentBridge?.toolNames.includes("propose_agent_settings")),
     runButtonContext(options),
+    checkButtonContext(options),
   );
   const params: JsonObject = {
     cwd,
@@ -175,7 +185,7 @@ export function threadResumeParams(
   run: ScheduleRunSettings,
   threadId: string,
   cwd: string,
-  options: Partial<Pick<ThreadStartOptions, "interactive" | "customAgents" | "modelContextWindow" | "additionalWorkspaceRoots" | "childAgentBridge" | "projectRunCommand">> & {
+  options: Partial<Pick<ThreadStartOptions, "interactive" | "customAgents" | "modelContextWindow" | "additionalWorkspaceRoots" | "childAgentBridge" | "projectRunCommand" | "projectCheckCommand">> & {
     excludeTurns?: boolean;
     /**
      * Re-send the whole runtime config even with no bridge attached. This is
@@ -190,6 +200,7 @@ export function threadResumeParams(
     Boolean(options.childAgentBridge?.toolNames.includes("spawn_mythra_agent")),
     Boolean(options.childAgentBridge?.toolNames.includes("propose_agent_settings")),
     runButtonContext(options),
+    checkButtonContext(options),
   );
   const modelProvider = runtimeModelProviderId(run.provider);
   return {

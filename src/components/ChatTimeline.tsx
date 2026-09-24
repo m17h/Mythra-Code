@@ -1,7 +1,7 @@
 import { AsyncAgentQuestions } from "./AsyncAgentQuestions";
 import { Children, createContext, isValidElement, memo, useCallback, useContext, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type Ref } from "react";
 import { flushSync } from "react-dom";
-import { Check, ChevronDown, ChevronRight, CircleDot, Clipboard, CornerUpRight, FileCode2, FoldVertical, ImageIcon, ListChecks, MessageSquare, Pencil, TerminalSquare, UsersRound } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, CircleDot, Clipboard, CornerUpRight, FileCode2, FoldVertical, ImageIcon, ListChecks, MessageSquare, MessageSquarePlus, Pencil, TerminalSquare, UsersRound } from "lucide-react";
 import { convertFileSrc, invoke, isTauri } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import Markdown from "react-markdown";
@@ -10,6 +10,7 @@ import type { Activity, ChatMessage, PendingApproval, Provider } from "../types"
 import type { JsonObject } from "../lib/codex";
 import { InlineApprovalCard } from "./ApprovalCenter";
 import { SubAgentControls } from "./SubAgentControls";
+import { useFeedbackMessageSource } from "./FeedbackProvider";
 import { useTaskStore } from "../lib/taskStore";
 import { ProviderLogo } from "./BrandLogos";
 import { decodeHtmlEntities } from "../lib/text";
@@ -459,6 +460,7 @@ function MessageImagePreview({ path, name }: { path: string; name: string }) {
 
 const MessageRow = memo(function MessageRow({ message, provider, onEdit }: { message: ChatMessage; provider: Provider; onEdit?: (text: string) => void }) {
   const [copied, copy] = useCopyFeedback();
+  const openFeedback = useFeedbackMessageSource(message);
   const attachments = message.role === "user" ? message.attachments ?? [] : [];
   const actions = !message.streaming && (
     <div className="message-actions">
@@ -473,6 +475,17 @@ const MessageRow = memo(function MessageRow({ message, provider, onEdit }: { mes
         <button onClick={() => onEdit(message.text)} title="Put this message back in the composer to edit and resend">
           <Pencil size={11} />
           Edit
+        </button>
+      )}
+      {openFeedback && (
+        <button
+          // Keep a selection inside this reply so the note cites just that part.
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={(event) => openFeedback(event.currentTarget)}
+          title="Add feedback on the selected text, or on this whole reply"
+        >
+          <MessageSquarePlus size={11} />
+          Feedback
         </button>
       )}
     </div>
@@ -520,7 +533,11 @@ const MessageRow = memo(function MessageRow({ message, provider, onEdit }: { mes
       <div className="message-body">
         {actions}
         {message.role === "assistant"
-          ? <AssistantMessageMarkdown text={message.text} streaming={Boolean(message.streaming)} />
+          // One stable wrapper keeps the Markdown DOM (and its completion tail)
+          // intact when a finished reply becomes a feedback source.
+          ? <div className="message-feedback-source" data-feedback-message={openFeedback ? message.id : undefined}>
+            <AssistantMessageMarkdown text={message.text} streaming={Boolean(message.streaming)} />
+          </div>
           : <MessageMarkdown text={message.text} />}
         {message.role === "assistant" && message.questions?.length ? <AsyncAgentQuestions message={message} /> : null}
         {steerStatus}

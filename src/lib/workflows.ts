@@ -43,6 +43,7 @@ export interface WorkflowDefinition {
   id: string;
   name: string;
   description: string;
+  /** Optional default; manual runs may choose any project. Schedules require it. */
   projectId: string;
   enabled: boolean;
   trigger: WorkflowTrigger;
@@ -137,6 +138,8 @@ export function workflowStepRetries(step: WorkflowStep): { count: number; delayS
 export function normalizeWorkflow(workflow: WorkflowDefinition): WorkflowDefinition {
   return {
     ...workflow,
+    // Older saved names may contain a prefix the ! launcher cannot match.
+    name: workflow.name.trimStart(),
     consecutiveFailures: Math.max(0, Math.floor(workflow.consecutiveFailures ?? 0)),
     variables: workflow.variables ?? [],
     steps: workflow.steps.map((step) => ({
@@ -208,7 +211,8 @@ export function recoverWorkflowRuns(runs: WorkflowRunRecord[], now = Date.now())
 
 export function validateWorkflow(workflow: WorkflowDefinition): string | null {
   if (!workflow.name.trim()) return "Give the workflow a name.";
-  if (!workflow.projectId) return "Choose a project.";
+  if (workflow.name !== workflow.name.trimStart()) return "Workflow names cannot start with whitespace.";
+  if (!workflow.projectId && workflow.trigger.type !== "manual") return "Choose a project for automatic runs.";
   if (!workflow.steps.length) return "Add at least one workflow step.";
   if (workflow.trigger.type === "interval" && workflow.trigger.intervalMinutes < 5) {
     return "Intervals must be at least five minutes.";
@@ -253,7 +257,7 @@ export function workflowFromSchedule(
 ): WorkflowDefinition {
   return {
     id: crypto.randomUUID(),
-    name: scheduled.name,
+    name: scheduled.name.trimStart(),
     description: "Imported from a simple scheduled task.",
     projectId: scheduled.projectId ?? "",
     // Keep the source schedule intact for rollback, but never let the converted

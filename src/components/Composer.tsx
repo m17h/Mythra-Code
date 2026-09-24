@@ -10,7 +10,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { ArrowUp, Boxes, CircleStop, CornerUpRight, FileCode2, ListPlus, LoaderCircle, Paperclip, RotateCw, Trash2, X } from "lucide-react";
+import { ArrowUp, Boxes, CircleStop, CornerUpRight, FileCode2, ListPlus, LoaderCircle, Paperclip, Pencil, RotateCw, Trash2, X } from "lucide-react";
 import { loadStored, storeValue } from "../lib/storage";
 import { recordComposerInputToFrame } from "../lib/runtimePerformanceBridge";
 import type { ChatFont, Provider } from "../types";
@@ -29,6 +29,7 @@ export interface ComposerHandle {
  */
 const DRAFTS_KEY = "kiwi.drafts";
 const MAX_DRAFTS = 100;
+const QUEUED_EDIT_PREFIX = "queued-edit:";
 let draftsCache: Record<string, string> | null = null;
 let draftSaveTimer: number | null = null;
 
@@ -41,11 +42,14 @@ export function draftFor(key: string): string {
   return drafts()[key] ?? "";
 }
 
-function persistDraft(key: string, text: string): void {
+function persistDraft(key: string, text: string, keepEmpty = false): void {
   const all = drafts();
-  if (text) all[key] = text;
+  if (text || keepEmpty) all[key] = text;
   else delete all[key];
-  const keys = Object.keys(all);
+  // Keep independent bounds: editing a queued prompt must not evict a main
+  // composer draft, and ordinary drafting must not evict an unfinished edit.
+  const isQueuedEdit = key.startsWith(QUEUED_EDIT_PREFIX);
+  const keys = Object.keys(all).filter((candidate) => candidate.startsWith(QUEUED_EDIT_PREFIX) === isQueuedEdit);
   for (let index = 0; keys.length - index > MAX_DRAFTS; index += 1) delete all[keys[index]];
   if (draftSaveTimer !== null) window.clearTimeout(draftSaveTimer);
   draftSaveTimer = window.setTimeout(() => {
@@ -58,15 +62,17 @@ export function discardDraft(key: string): void {
   persistDraft(key, "");
 }
 
+function flushDrafts(): void {
+  if (draftSaveTimer === null) return;
+  window.clearTimeout(draftSaveTimer);
+  draftSaveTimer = null;
+  storeValue(DRAFTS_KEY, drafts());
+}
+
 // The debounce above loses whatever was typed in the final 400ms if the
 // window closes; flush pending drafts on pagehide like the other stores do.
 if (typeof window !== "undefined") {
-  window.addEventListener("pagehide", () => {
-    if (draftSaveTimer === null) return;
-    window.clearTimeout(draftSaveTimer);
-    draftSaveTimer = null;
-    storeValue(DRAFTS_KEY, drafts());
-  });
+  window.addEventListener("pagehide", flushDrafts);
 }
 
 export function resetDraftStoreForTests(): void {
@@ -79,9 +85,16 @@ export function resetDraftStoreForTests(): void {
 // email address opens the skill launcher, and the next Enter would insert a
 // skill instead of sending the message.
 const MENTION_PATTERN = /(^|\s)@([\w./-]*)$/;
+const WORKFLOW_PATTERN = /(^|\s)!([\w-]*)$/;
 const SKILL_TOKEN_PATTERN = /(^|\s)@([a-z0-9][a-z0-9-]*)/gi;
 
 export interface ComposerSkill {
+  name: string;
+  description?: string;
+}
+
+export interface ComposerWorkflow {
+  id: string;
   name: string;
   description?: string;
 }
@@ -122,6 +135,67 @@ export function resizeComposerTextarea(
   syncComposerHighlight(textarea, highlight);
 }
 
+function QueuedTurnEditor({ entry, index, onFinish }: {
+  entry: QueuedTurn;
+  index: number;
+  onFinish: (id: string, text?: string) => boolean;
+}) {
+  const draftKey = `${QUEUED_EDIT_PREFIX}${entry.id}`;
+  const [text, setText] = useState(() => drafts()[draftKey] ?? entry.text);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => { inputRef.current?.focus(); }, []);
+  const finish = (save: boolean) => {
+    if (save && !text.trim()) return;
+    const row = inputRef.current?.closest(".queued-turn");
+    const composer = inputRef.current?.closest(".composer");
+    if (onFinish(entry.id, save ? text : undefined)) {
+      discardDraft(draftKey);
+      flushDrafts();
+      requestAnimationFrame(() => {
+        // A saved head may start immediately and disappear. Keep keyboard
+        // users in this composer without stealing focus after navigation.
+        if (!composer?.isConnected || (document.activeElement !== document.body && document.activeElement?.isConnected)) return;
+        const next = row?.isConnected ? row.querySelector<HTMLButtonElement>("button") : null;
+        (next ?? composer.querySelector<HTMLTextAreaElement>(".composer-input-wrap textarea"))?.focus();
+      });
+    }
+  };
+  return (
+    <div className="queued-turn-editor">
+      <textarea
+        ref={inputRef}
+        aria-label={`Edit queued message ${index + 1}`}
+        value={text}
+        rows={3}
+        onChange={(event) => {
+          setText(event.target.value);
+          // A separate draft leaves the main composer untouched and survives
+          // navigation. The queue hold itself is persisted immediately.
+          persistDraft(draftKey, event.target.value, true);
+        }}
+        onKeyDown={(event) => {
+          if (event.nativeEvent.isComposing) return;
+          if (event.key === "Escape") {
+            event.preventDefault();
+            event.stopPropagation();
+            finish(false);
+          } else if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+            event.preventDefault();
+            finish(true);
+          }
+        }}
+      />
+      <div className="queued-turn-edit-footer">
+        <small>Paused while editing{entry.attachments.length ? ` · ${entry.attachments.length} attachment${entry.attachments.length === 1 ? "" : "s"} kept` : ""}</small>
+        <div>
+          <button type="button" onClick={() => finish(false)}>Cancel</button>
+          <button type="button" disabled={!text.trim()} onClick={() => finish(true)}>Save</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export const Composer = forwardRef<ComposerHandle, {
   threadKey: string;
   /** Effective live-previewed font; changes must remeasure wrapped drafts. */
@@ -146,10 +220,15 @@ export const Composer = forwardRef<ComposerHandle, {
   placeholder: string;
   attachments: AttachmentRecord[];
   queuedTurns?: QueuedTurn[];
+  /** Feedback uses the normal send/queue path, with an optional typed prompt. */
+  feedbackTray?: ReactNode;
+  hasFeedback?: boolean;
   modelControls?: ReactNode;
   controls: ReactNode;
   searchFiles?: (query: string) => Promise<string[]>;
   skills?: ComposerSkill[];
+  workflows?: ComposerWorkflow[];
+  onWorkflow?: (id: string, prompt: string) => Promise<boolean>;
   onRemoveAttachment: (path: string) => void;
   onPasteImages: (items: DataTransferItemList) => void;
   onSend: (text: string) => Promise<boolean>;
@@ -157,10 +236,22 @@ export const Composer = forwardRef<ComposerHandle, {
   onSteerQueued?: (queuedTurnId: string) => void;
   onRetryQueued?: (queuedTurnId: string) => void;
   onRemoveQueued?: (queuedTurnId: string) => void;
+  onBeginEditQueued?: (queuedTurnId: string) => boolean;
+  onFinishEditQueued?: (queuedTurnId: string, text?: string) => boolean;
   onStop: () => void;
 }>(function Composer(props, ref) {
+  const willQueue = props.queueing || Boolean(props.queuedTurns?.length);
   const [draft, setDraftState] = useState(() => draftFor(props.threadKey));
+  const submittingRef = useRef(new Set<string>());
+  const [submittingKeys, setSubmittingKeys] = useState<ReadonlySet<string>>(new Set());
+  const submitting = submittingKeys.has(props.threadKey);
   const [mentions, setMentions] = useState<{ open: boolean; results: MentionResult[]; index: number }>({ open: false, results: [], index: 0 });
+  const [workflowMenu, setWorkflowMenu] = useState<{ open: boolean; results: ComposerWorkflow[]; index: number }>({ open: false, results: [], index: -1 });
+  const selectedWorkflowsRef = useRef(new Map<string, { workflow: ComposerWorkflow }>());
+  const [selectedWorkflow, setSelectedWorkflow] = useState<ComposerWorkflow | null>(null);
+  const workflowSubmittingRef = useRef(new Set<string>());
+  const [workflowSubmittingKeys, setWorkflowSubmittingKeys] = useState<ReadonlySet<string>>(new Set());
+  const workflowSubmitting = workflowSubmittingKeys.has(props.threadKey);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const highlightRef = useRef<HTMLDivElement>(null);
   const threadKeyRef = useRef(props.threadKey);
@@ -189,6 +280,8 @@ export const Composer = forwardRef<ComposerHandle, {
     threadKeyRef.current = props.threadKey;
     setDraftState(draftFor(props.threadKey));
     setMentions({ open: false, results: [], index: 0 });
+    setWorkflowMenu({ open: false, results: [], index: -1 });
+    setSelectedWorkflow(selectedWorkflowsRef.current.get(props.threadKey)?.workflow ?? null);
   }
 
   useImperativeHandle(ref, () => ({
@@ -209,6 +302,58 @@ export const Composer = forwardRef<ComposerHandle, {
       mentionTimerRef.current = null;
     }
     setMentions({ open: false, results: [], index: 0 });
+  }, []);
+
+  const closeWorkflows = useCallback(() => {
+    setWorkflowMenu({ open: false, results: [], index: -1 });
+  }, []);
+
+  const workflowAvailable = Boolean(props.onWorkflow && props.workflows?.length
+    && !props.running && !props.queueing && !props.queuedTurns?.length
+    && !props.attachments.length && !props.hasFeedback);
+
+  useEffect(() => {
+    if (!workflowAvailable) closeWorkflows();
+  }, [closeWorkflows, workflowAvailable]);
+
+  const updateWorkflows = useCallback((text: string, caret: number) => {
+    const match = workflowAvailable ? WORKFLOW_PATTERN.exec(text.slice(0, caret)) : null;
+    if (!match) {
+      closeWorkflows();
+      return;
+    }
+    const query = match[2].toLowerCase();
+    const results = (props.workflows ?? [])
+      .filter((workflow) => !query || workflow.name.toLowerCase().includes(query)
+        || workflow.description?.toLowerCase().includes(query))
+      .sort((left, right) => {
+        const leftStarts = left.name.toLowerCase().startsWith(query);
+        const rightStarts = right.name.toLowerCase().startsWith(query);
+        return Number(rightStarts) - Number(leftStarts) || left.name.localeCompare(right.name);
+      })
+      .slice(0, 8);
+    setWorkflowMenu({ open: results.length > 0, results, index: -1 });
+  }, [closeWorkflows, props.workflows, workflowAvailable]);
+
+  const selectWorkflow = useCallback((workflow: ComposerWorkflow) => {
+    if (!workflowAvailable || workflowSubmittingRef.current.has(threadKeyRef.current)) return;
+    const textarea = textareaRef.current;
+    const caret = textarea?.selectionStart ?? draft.length;
+    const before = draft.slice(0, caret).replace(WORKFLOW_PATTERN, (_match, lead: string) => lead);
+    selectedWorkflowsRef.current.set(threadKeyRef.current, { workflow });
+    setSelectedWorkflow(workflow);
+    setDraft(`${before}${draft.slice(caret)}`);
+    closeWorkflows();
+    requestAnimationFrame(() => {
+      textarea?.focus();
+      textarea?.setSelectionRange(before.length, before.length);
+    });
+  }, [closeWorkflows, draft, setDraft, workflowAvailable]);
+
+  const removeWorkflow = useCallback(() => {
+    selectedWorkflowsRef.current.delete(threadKeyRef.current);
+    setSelectedWorkflow(null);
+    textareaRef.current?.focus();
   }, []);
 
   const updateMentions = useCallback((text: string, caret: number) => {
@@ -299,37 +444,92 @@ export const Composer = forwardRef<ComposerHandle, {
     if (textarea) resizeComposerTextarea(textarea, highlightRef.current);
   }, [draft, hasSkillMentions, props.chatFont, props.threadKey]);
 
+  const canLaunchWorkflow = Boolean(selectedWorkflow && workflowAvailable
+    && props.workflows?.some((workflow) => workflow.id === selectedWorkflow.id)
+    && !submitting && !workflowSubmitting);
+  const workflowBlockers = [
+    props.hasFeedback && "feedback",
+    props.attachments.length > 0 && "attachments",
+    Boolean(props.queuedTurns?.length) && "queued messages",
+  ].filter(Boolean).join(", ");
+
   const send = useCallback(async (mode: "default" | "steer" = "default") => {
+    if (selectedWorkflow) {
+      if (mode !== "default" || !canLaunchWorkflow || !props.onWorkflow) return;
+      const sentFromKey = threadKeyRef.current;
+      const submittedDraft = draft;
+      const submittedSelection = selectedWorkflowsRef.current.get(sentFromKey);
+      if (workflowSubmittingRef.current.has(sentFromKey)) return;
+      workflowSubmittingRef.current.add(sentFromKey);
+      setWorkflowSubmittingKeys(new Set(workflowSubmittingRef.current));
+      closeWorkflows();
+      let launched = false;
+      try {
+        // The parent may keep this pending while a review dialog is open.
+        // A canceled review leaves both the explicit selection and note here.
+        launched = await props.onWorkflow(selectedWorkflow.id, draft.trim());
+      } catch {
+        launched = false;
+      } finally {
+        workflowSubmittingRef.current.delete(sentFromKey);
+        setWorkflowSubmittingKeys(new Set(workflowSubmittingRef.current));
+        if (launched) {
+          // A dialog may remain open while the user navigates or another
+          // control replaces the draft. Only clear the exact submitted state.
+          if (submittedSelection && selectedWorkflowsRef.current.get(sentFromKey) === submittedSelection) {
+            selectedWorkflowsRef.current.delete(sentFromKey);
+            if (threadKeyRef.current === sentFromKey) setSelectedWorkflow(null);
+          }
+          if (draftFor(sentFromKey) === submittedDraft) {
+            if (threadKeyRef.current === sentFromKey) setDraft("");
+            else persistDraft(sentFromKey, "");
+          }
+        }
+      }
+      return;
+    }
     const text = draft.trim();
     // The very first thread/start has not returned an id yet, so there is no
     // durable queue to attach a second message to. Keep the draft in place
     // until that short startup window closes instead of starting a second
     // independent thread.
-    if (!text || (props.running && !props.queueing)) return;
+    if ((!text && !props.hasFeedback) || submittingRef.current.has(threadKeyRef.current) || (props.running && !props.queueing)) return;
     // Capture the sending thread's key: the user may switch threads while the
     // RPC is in flight, and a failed send must restore into the ORIGINAL
     // thread's draft, not whichever thread is now visible.
     const sentFromKey = threadKeyRef.current;
+    submittingRef.current.add(sentFromKey);
+    setSubmittingKeys(new Set(submittingRef.current));
     closeMentions();
+    closeWorkflows();
     setDraft("");
-    const delivered = await (mode === "steer" ? props.onSteer(text) : props.onSend(text));
-    if (!delivered) {
-      if (threadKeyRef.current === sentFromKey) {
-        // Still on the same thread — restore the failed text ahead of anything
-        // the user typed while the send was in flight, so neither is lost.
-        setDraftState((current) => {
-          const restored = current && current !== text ? `${text}\n\n${current}` : text;
-          persistDraft(sentFromKey, restored);
-          return restored;
-        });
-      } else {
-        // Restore silently into the original thread's persisted draft,
-        // keeping any draft written there since.
-        const existing = draftFor(sentFromKey);
-        persistDraft(sentFromKey, existing && existing !== text ? `${text}\n\n${existing}` : text);
+    let delivered = false;
+    try {
+      delivered = await (mode === "steer" ? props.onSteer(text) : props.onSend(text));
+    } catch {
+      // The delivery owner reports the error. Keep this draft recoverable.
+      delivered = false;
+    } finally {
+      submittingRef.current.delete(sentFromKey);
+      setSubmittingKeys(new Set(submittingRef.current));
+      if (!delivered && text) {
+        if (threadKeyRef.current === sentFromKey) {
+          // Still on the same thread — restore the failed text ahead of anything
+          // the user typed while the send was in flight, so neither is lost.
+          setDraftState((current) => {
+            const restored = current && current !== text ? `${text}\n\n${current}` : text;
+            persistDraft(sentFromKey, restored);
+            return restored;
+          });
+        } else {
+          // Restore silently into the original thread's persisted draft,
+          // keeping any draft written there since.
+          const existing = draftFor(sentFromKey);
+          persistDraft(sentFromKey, existing && existing !== text ? `${text}\n\n${existing}` : text);
+        }
       }
     }
-  }, [closeMentions, draft, props, setDraft]);
+  }, [canLaunchWorkflow, closeMentions, closeWorkflows, draft, props, selectedWorkflow, setDraft]);
 
   return (
     <div className={`composer ${props.queueing ? "queueing" : ""} ${props.dropActive ? "drop-target" : ""}`}>
@@ -341,6 +541,12 @@ export const Composer = forwardRef<ComposerHandle, {
           </div>
           <div className="queued-turns-list" role="list" aria-label="Queued follow-up messages">
             {props.queuedTurns!.map((queuedTurn, index) => {
+              if (queuedTurn.editing && props.onFinishEditQueued) return (
+                <div className="queued-turn editing" key={queuedTurn.id} role="listitem">
+                  <span className="queued-turn-index">{index + 1}</span>
+                  <QueuedTurnEditor entry={queuedTurn} index={index} onFinish={props.onFinishEditQueued} />
+                </div>
+              );
               // Nothing is running once a turn is stopped or fails, so a still
               // queued follow-up is waiting on the user rather than on a run.
               const stalled = queuedTurn.status === "queued" && !props.queueing && index === 0;
@@ -362,6 +568,9 @@ export const Composer = forwardRef<ComposerHandle, {
                     <LoaderCircle className="spin" size={13} aria-label="Starting queued turn" />
                   ) : (
                     <span className="queued-turn-actions">
+                      {props.onBeginEditQueued && props.onFinishEditQueued && (
+                        <button onClick={() => props.onBeginEditQueued?.(queuedTurn.id)} title="Edit queued message" aria-label={`Edit queued message ${index + 1}`}><Pencil size={12} /></button>
+                      )}
                       {index === 0 && (queuedTurn.status === "failed" || stalled) && props.onRetryQueued && (
                         <button
                           onClick={() => props.onRetryQueued?.(queuedTurn.id)}
@@ -383,6 +592,7 @@ export const Composer = forwardRef<ComposerHandle, {
           </div>
         </div>
       )}
+      {props.feedbackTray}
       {props.attachments.length > 0 && (
         <div className="composer-attachments" aria-label="Attached context">
           {props.attachments.map((item) => (
@@ -394,7 +604,35 @@ export const Composer = forwardRef<ComposerHandle, {
           ))}
         </div>
       )}
+      {selectedWorkflow && (
+        <div className="composer-workflow-selection">
+          <span className="composer-workflow-chip"><Boxes size={12} /> {selectedWorkflow.name}
+            <button type="button" onClick={removeWorkflow} disabled={workflowSubmitting} aria-label={`Remove workflow ${selectedWorkflow.name}`} title={`Remove workflow ${selectedWorkflow.name}`}><X size={11} /></button>
+          </span>
+          {workflowBlockers && <small className="composer-workflow-hint">Recipe paused by {workflowBlockers}. Remove the recipe chip to use Send, or clear those items to run it.</small>}
+        </div>
+      )}
       <div className="composer-input-wrap">
+        {workflowMenu.open && (
+          <div className="mention-menu" id={`${mentionMenuId}-workflow`} role="listbox" aria-label="Workflow suggestions">
+            {workflowMenu.results.map((workflow, index) => (
+              <button
+                type="button"
+                key={workflow.id}
+                id={`${mentionMenuId}-workflow-${index}`}
+                role="option"
+                aria-selected={index === workflowMenu.index}
+                className={`${index === workflowMenu.index ? "active" : ""} workflow`}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => selectWorkflow(workflow)}
+              >
+                <Boxes size={12} />
+                <span className="mention-result-copy"><strong>{workflow.name}</strong>{workflow.description && <small>{workflow.description}</small>}</span>
+                <em>Workflow</em>
+              </button>
+            ))}
+          </div>
+        )}
         {mentions.open && (
           <div className="mention-menu" id={mentionMenuId} role="listbox" aria-label="Mention suggestions">
             {mentions.results.map((result, index) => (
@@ -428,14 +666,18 @@ export const Composer = forwardRef<ComposerHandle, {
           // The @ menu is an inline listbox the textarea drives, so the active
           // option has to be announced from here — it never takes focus itself.
           aria-autocomplete="list"
-          aria-expanded={mentions.open}
-          aria-controls={mentions.open ? mentionMenuId : undefined}
-          aria-activedescendant={mentions.open ? `${mentionMenuId}-${mentions.index}` : undefined}
+          aria-expanded={mentions.open || workflowMenu.open}
+          aria-controls={workflowMenu.open ? `${mentionMenuId}-workflow` : mentions.open ? mentionMenuId : undefined}
+          aria-activedescendant={workflowMenu.open
+            ? workflowMenu.index >= 0 ? `${mentionMenuId}-workflow-${workflowMenu.index}` : undefined
+            : mentions.open ? `${mentionMenuId}-${mentions.index}` : undefined}
           value={draft}
+          disabled={workflowSubmitting}
           onChange={(event) => {
             if (props.performanceProvider) recordComposerInputToFrame(props.performanceProvider);
             setDraft(event.target.value);
             updateMentions(event.target.value, event.target.selectionStart ?? event.target.value.length);
+            updateWorkflows(event.target.value, event.target.selectionStart ?? event.target.value.length);
           }}
           onPaste={(event) => {
             if (Array.from(event.clipboardData.items).some((item) => item.type.startsWith("image/"))) {
@@ -447,6 +689,29 @@ export const Composer = forwardRef<ComposerHandle, {
             syncComposerHighlight(event.currentTarget, highlightRef.current);
           }}
           onKeyDown={(event) => {
+            if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
+            if (workflowMenu.open) {
+              if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                event.preventDefault();
+                setWorkflowMenu((current) => ({
+                  ...current,
+                  index: event.key === "ArrowDown"
+                    ? (current.index + 1) % current.results.length
+                    : current.index < 0 ? current.results.length - 1 : (current.index + current.results.length - 1) % current.results.length,
+                }));
+                return;
+              }
+              if (event.key === "Enter" && !event.shiftKey && workflowMenu.index >= 0) {
+                event.preventDefault();
+                selectWorkflow(workflowMenu.results[workflowMenu.index]);
+                return;
+              }
+              if (event.key === "Escape") {
+                event.preventDefault();
+                closeWorkflows();
+                return;
+              }
+            }
             if (mentions.open) {
               if (event.key === "ArrowDown" || event.key === "ArrowUp") {
                 event.preventDefault();
@@ -472,7 +737,7 @@ export const Composer = forwardRef<ComposerHandle, {
               void send("default");
             }
           }}
-          onBlur={closeMentions}
+          onBlur={() => { closeMentions(); closeWorkflows(); }}
           placeholder={props.placeholder}
           rows={1}
         />
@@ -481,8 +746,8 @@ export const Composer = forwardRef<ComposerHandle, {
       <div className="composer-toolbar">
         <div className="composer-controls">{props.controls}</div>
         <div className="composer-actions">
-          {props.queueing && (
-            <span className="queue-hint" title="Enter queues this message as the next turn. Use Steer to change the work already in progress."><ListPlus size={12} /> Enter queues</span>
+          {willQueue && (
+            <span className="queue-hint" title={props.queueing ? "Enter queues this message as the next turn. Use Steer to change the work already in progress." : "Enter adds this message after the messages already in the queue."}><ListPlus size={12} /> Enter queues</span>
           )}
           {(props.running || props.childrenRunning) && (
             <button
@@ -498,7 +763,7 @@ export const Composer = forwardRef<ComposerHandle, {
             <button
               className="steer-button"
               onClick={() => void send("steer")}
-              disabled={!props.canSteer || !draft.trim()}
+              disabled={Boolean(selectedWorkflow) || submitting || !props.canSteer || (!draft.trim() && !props.hasFeedback)}
               title={props.canSteer
                 ? "Send this message into the active turn now"
                 : "The model is finishing its response. Queue this message as the next turn instead."}
@@ -507,12 +772,15 @@ export const Composer = forwardRef<ComposerHandle, {
             </button>
           )}
           <button
-            className={`send-button ${props.queueing ? "queue-button" : ""}`}
+            className={`send-button ${willQueue ? "queue-button" : ""}`}
             onClick={() => void send("default")}
-            disabled={!draft.trim() || (props.running && !props.queueing)}
-            title={props.queueing ? "Queue as the next turn" : props.running ? "Wait for the first turn to start" : "Send"}
+            disabled={selectedWorkflow
+              ? !canLaunchWorkflow
+              : submitting || (!draft.trim() && !props.hasFeedback) || (props.running && !props.queueing)}
+            aria-label={selectedWorkflow ? `Run workflow ${selectedWorkflow.name}` : willQueue ? "Queue" : props.hasFeedback ? "Send feedback and optional prompt" : "Send"}
+            title={selectedWorkflow ? `Run workflow ${selectedWorkflow.name}` : willQueue ? "Queue as the next turn" : props.running ? "Wait for the first turn to start" : props.hasFeedback ? "Send feedback and optional prompt" : "Send"}
           >
-            {props.queueing ? <><ListPlus size={14} /><span>Queue</span></> : <ArrowUp size={18} />}
+            {willQueue ? <><ListPlus size={14} /><span>Queue</span></> : <ArrowUp size={18} />}
           </button>
         </div>
       </div>

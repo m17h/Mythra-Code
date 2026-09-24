@@ -35,6 +35,8 @@ export interface CursorTurnOptions {
   model: string;
   effort: ReasoningEffort;
   permission: PermissionMode;
+  /** False for unattended workflows; native requests for approval or input are denied. */
+  interactive?: boolean;
   systemPrompt: string;
   resumeSessionId?: string;
   attachments: Array<{ path: string; kind: "file" | "image" }>;

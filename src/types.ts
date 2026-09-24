@@ -29,10 +29,17 @@ export interface ProjectDefaults {
  * start the app.
  */
 export interface ProjectRunCommand {
+  /** Optional idempotent preparation, run before every launch in the same shell. */
+  setupCommand?: string;
   /** Shell command, run from the project folder (or the thread's worktree). */
   command: string;
   /** Optional short label shown on the button, e.g. "Dev server". */
   label?: string;
+  updatedAt: number;
+}
+
+export interface ProjectCheckCommand {
+  command: string;
   updatedAt: number;
 }
 
@@ -41,6 +48,8 @@ export interface ProjectOverrides {
   defaults?: ProjectDefaults;
   /** What the top-bar Run button executes for this project. */
   run?: ProjectRunCommand;
+  /** User-triggered tests or validation, independent of the launch command. */
+  check?: ProjectCheckCommand;
   systemPrompt?: string;
   /** Existing projects default to replace; append layers app instructions first. */
   systemPromptMode?: ProjectPromptMode;

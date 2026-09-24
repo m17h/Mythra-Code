@@ -4,6 +4,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useEffect } from "react";
 import type { Thread } from "./types";
 import type { PullRequest } from "./lib/pullRequests";
+import { DEFAULT_SETTINGS } from "./lib/appConfig";
+import { scheduleRunSnapshot } from "./lib/turnConfig";
+import { projectRunExecCommand } from "./lib/projectRun";
+import type { WorkflowDefinition } from "./lib/workflows";
 
 /**
  * Integration harness for App-level lifecycle regressions. Mocks the Tauri
@@ -2606,7 +2610,7 @@ describe("workspace switching during thread selection", () => {
     await act(async () => {
       pendingPage.resolve({
         thread: claudeThread,
-        messages: [{ id: "disk", role: "assistant", text: "durable page", timelineOrder: 1 }],
+        messages: [{ id: "disk", role: "assistant", text: "durable page", turnId: "disk-turn", turnStatus: "completed", timelineOrder: 1 }],
         activities: [],
         nextCursor: "5:1",
         headSeq: 2,
@@ -2622,6 +2626,42 @@ describe("workspace switching during thread selection", () => {
       messages: [expect.objectContaining({ id: "live" })],
     });
     expect(await screen.findByRole("button", { name: "Load earlier messages" })).toBeInTheDocument();
+  });
+
+  it("recovers a sealed pending local prompt before exposing older pages", async () => {
+    const user = userEvent.setup();
+    const claudeThread: Thread = {
+      ...THREAD_A,
+      id: "pending-recovery-claude",
+      name: "Pending recovery Claude thread",
+      modelProvider: "claude",
+    };
+    const pending = { id: "local-pending", role: "user", text: "starting prompt", timelineOrder: 2 };
+    localStorage.setItem("kiwi.knownThreads", JSON.stringify({ [claudeThread.id]: claudeThread }));
+    localStorage.setItem("kiwi.threadProjects", JSON.stringify({ [claudeThread.id]: PROJECT_A.path }));
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "local_transcript_page_read" && args?.threadId === claudeThread.id) return {
+        thread: claudeThread, messages: [pending], activities: [], nextCursor: "5:1",
+        headSeq: 2, tailSeq: 3, generation: 5, byteLen: 1_024,
+      };
+      if (command === "local_transcript_full_read" && args?.threadId === claudeThread.id) return {
+        thread: claudeThread,
+        messages: [{ id: "disk", role: "assistant", text: "older durable page", turnId: "old-turn", turnStatus: "completed", timelineOrder: 1 }, pending],
+        activities: [],
+      };
+      return stubInvoke(command, args);
+    });
+    await renderApp();
+    const { useTaskStore } = await import("./lib/taskStore");
+
+    await user.click(await screen.findByText("Pending recovery Claude thread"));
+    expect(await screen.findByText("older durable page")).toBeInTheDocument();
+    expect(useTaskStore.getState().tasks[claudeThread.id]).toMatchObject({
+      history: { paginated: true, hasMore: false, nextCursor: null },
+      messages: [expect.objectContaining({ id: "disk" }), expect.objectContaining({ id: "local-pending" })],
+    });
+    expect(invokeMock).toHaveBeenCalledWith("local_transcript_full_read", { provider: "claude", threadId: claudeThread.id });
+    expect(screen.queryByRole("button", { name: "Load earlier messages" })).not.toBeInTheDocument();
   });
 
   it("rejects an older page whose cursor was replaced by a same-thread rehydrate", async () => {
@@ -3548,6 +3588,238 @@ describe("local thread renaming", () => {
   });
 });
 
+describe("local workflow threads", () => {
+  function composerRecipe(provider: "openai" | "claude" = "openai"): WorkflowDefinition {
+    return {
+      id: "composer-recipe",
+      name: "Release review",
+      description: "Review a release before shipping",
+      projectId: PROJECT_A.id,
+      enabled: true,
+      trigger: { type: "manual" },
+      steps: [{ id: "review", type: "agent", name: "Review", prompt: "Check release readiness.", continueOnError: false }],
+      skillNames: [],
+      run: scheduleRunSnapshot({ ...DEFAULT_SETTINGS, provider, model: provider === "claude" ? "sonnet" : DEFAULT_SETTINGS.model }),
+      createdAt: 1,
+      updatedAt: 1,
+    };
+  }
+
+  it("keeps an explicit Composer recipe and note through canceled review, then sends the note after thread start", async () => {
+    const user = userEvent.setup();
+    const threadStart = deferred<{ thread: Thread }>();
+    localStorage.setItem("kiwi.workflows", JSON.stringify([composerRecipe()]));
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "codex_rpc" && args?.method === "thread/start") return threadStart.promise;
+      return stubInvoke(command, args);
+    });
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: PROJECT_A.name }));
+    const composer = await screen.findByPlaceholderText(/Ask Mythra Code to work in/);
+    await user.type(composer, "!Release");
+    await user.click(await screen.findByRole("option", { name: /Release review/ }));
+    expect(screen.getByRole("button", { name: "Remove workflow Release review" })).toBeInTheDocument();
+    fireEvent.change(composer, { target: { value: "Please inspect the release notes." } });
+    await user.click(screen.getByRole("button", { name: "Run workflow Release review" }));
+    const firstReview = await screen.findByRole("dialog", { name: "Run Release review" });
+    expect(within(firstReview).getByText("Please inspect the release notes.")).toBeInTheDocument();
+    await user.click(within(firstReview).getByRole("button", { name: "Cancel" }));
+    expect(composer).toHaveValue("Please inspect the release notes.");
+    expect(screen.getByRole("button", { name: "Remove workflow Release review" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Run workflow Release review" }));
+    const secondReview = await screen.findByRole("dialog", { name: "Run Release review" });
+    await user.click(within(secondReview).getByRole("button", { name: "Run now" }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("codex_rpc", expect.objectContaining({ method: "thread/start" })));
+    expect(composer).toHaveValue("Please inspect the release notes.");
+    expect(screen.getByRole("button", { name: "Remove workflow Release review" })).toBeInTheDocument();
+
+    await act(async () => threadStart.resolve({ thread: { ...THREAD_A, id: "isolated-thread", cwd: PROJECT_A.path, turns: [] } }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("codex_rpc", expect.objectContaining({
+      method: "turn/start",
+      params: expect.objectContaining({ input: [expect.objectContaining({ text: expect.stringContaining("Additional instructions for this run:\nPlease inspect the release notes.") })] }),
+    })));
+    const { draftFor } = await import("./components/Composer");
+    await waitFor(() => expect(draftFor(`new:${PROJECT_A.path}`)).toBe(""));
+    const { useTaskStore } = await import("./lib/taskStore");
+    act(() => useTaskStore.getState().completeTurn("isolated-thread", "turn-isolated-thread", "completed"));
+    await waitFor(() => expect(JSON.parse(localStorage.getItem("kiwi.workflowRuns") ?? "[]")[0]).toMatchObject({ status: "completed" }));
+  });
+
+  it("retains the Composer recipe and note when workflow preflight fails", async () => {
+    const user = userEvent.setup();
+    localStorage.setItem("kiwi.workflows", JSON.stringify([composerRecipe("claude")]));
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: PROJECT_A.name }));
+    const composer = await screen.findByPlaceholderText(/Ask Mythra Code to work in/);
+    await user.type(composer, "!Release");
+    await user.click(await screen.findByRole("option", { name: /Release review/ }));
+    fireEvent.change(composer, { target: { value: "Please inspect the release notes." } });
+    await user.click(screen.getByRole("button", { name: "Run workflow Release review" }));
+    const review = await screen.findByRole("dialog", { name: "Run Release review" });
+    await user.click(within(review).getByRole("button", { name: "Run now" }));
+
+    expect(await screen.findByText("Set up Claude Code and sign in before running this Claude workflow.")).toBeInTheDocument();
+    expect(composer).toHaveValue("Please inspect the release notes.");
+    expect(screen.getByRole("button", { name: "Remove workflow Release review" })).toBeInTheDocument();
+    expect(invokeMock.mock.calls.some(([command, args]) => command === "codex_rpc" && args?.method === "thread/start")).toBe(false);
+  });
+
+  it("opens a manual workflow thread in its project when another project was selected", async () => {
+    const user = userEvent.setup();
+    const workflow: WorkflowDefinition = {
+      id: "workflow-other-project",
+      name: "Beta review",
+      description: "",
+      projectId: PROJECT_B.id,
+      enabled: true,
+      trigger: { type: "manual" },
+      steps: [{ id: "check", type: "command", name: "Check", command: "git status", continueOnError: false }],
+      skillNames: [],
+      run: scheduleRunSnapshot({ ...DEFAULT_SETTINGS, provider: "claude", model: "sonnet" }),
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    localStorage.setItem("kiwi.workflows", JSON.stringify([workflow]));
+    claudeRuntimeStatusImpl = () => ({ available: true, path: "/usr/local/bin/claude", version: "99.0.0", loggedIn: true,
+      authMethod: "subscription", email: "test@example.com", subscriptionType: "pro", warning: null });
+    let stored: { thread: Thread; messages: unknown[]; activities: unknown[] } | null = null;
+    const savedThread = () => stored?.thread;
+    let generation = 0;
+    invokeMock.mockImplementation(async (name: string, args?: Record<string, unknown>) => {
+      if (name === "local_transcript_snapshot_write") {
+        stored = args?.value as typeof stored;
+        return { generation: ++generation, headSeq: 0, tailSeq: 0, rewrittenChunks: 1, totalChunks: 1, compatibilitySnapshotCreated: false };
+      }
+      if (name === "local_transcript_page_read" && stored) return { ...stored, nextCursor: null, headSeq: 0, tailSeq: 0, generation, byteLen: 0 };
+      return stubInvoke(name, args);
+    });
+
+    await renderApp();
+    expect(screen.getByRole("button", { name: PROJECT_A.name }).parentElement).toHaveClass("active");
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    const settings = await screen.findByRole("dialog", { name: "Settings" });
+    await user.click(within(settings).getByRole("button", { name: "Workflows" }));
+    await user.click(within(settings).getByRole("button", { name: "Run" }));
+    await user.click(screen.getByRole("button", { name: "Run now" }));
+
+    const { useTaskStore } = await import("./lib/taskStore");
+    await waitFor(() => expect(useTaskStore.getState().activeThreadId).toBe(savedThread()?.id));
+    expect(savedThread()?.cwd).toBe(PROJECT_B.path);
+    expect(screen.queryByText("That thread belongs to a different chat or project and cannot be opened here.")).not.toBeInTheDocument();
+
+    await waitFor(() => expect(JSON.parse(localStorage.getItem("kiwi.workflowRuns") ?? "[]")[0]).toMatchObject({ status: "completed" }));
+    await user.click(screen.getByRole("button", { name: PROJECT_A.name }));
+    await waitFor(() => expect(useTaskStore.getState().activeThreadId).toBeNull());
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    const reopened = await screen.findByRole("dialog", { name: "Settings" });
+    await user.click(within(reopened).getByRole("button", { name: "Workflows" }));
+    await user.click(within(reopened).getByRole("button", { name: "Last thread" }));
+    await waitFor(() => expect(useTaskStore.getState().activeThreadId).toBe(savedThread()?.id));
+    expect(screen.queryByText("That thread belongs to a different chat or project and cannot be opened here.")).not.toBeInTheDocument();
+  });
+
+  it("keeps Composer Stop available during a command step and stops the owning workflow", async () => {
+    const user = userEvent.setup();
+    const command = deferred<{ exitCode: number; stdout: string; stderr: string }>();
+    commandExecImpl = () => command.promise;
+    const workflow: WorkflowDefinition = {
+      ...composerRecipe(),
+      id: "command-recipe",
+      name: "Command review",
+      steps: [{ id: "command", type: "command", name: "Check", command: "sleep 30", continueOnError: false }],
+    };
+    localStorage.setItem("kiwi.workflows", JSON.stringify([workflow]));
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
+    await user.click(await screen.findByRole("tab", { name: "Tools workspace tool" }));
+    await user.click(await screen.findByRole("button", { name: "Run workflow" }));
+    await user.click(within(await screen.findByRole("dialog", { name: "Run Command review" })).getByRole("button", { name: "Run now" }));
+
+    const { useTaskStore } = await import("./lib/taskStore");
+    await waitFor(() => expect(useTaskStore.getState().workflowOwners["isolated-thread"]).toMatchObject({ workflowId: "command-recipe" }));
+    const composer = await screen.findByPlaceholderText(/Queue a follow-up|Ask Mythra Code to work in/);
+    fireEvent.change(composer, { target: { value: "follow up after workflow" } });
+    await user.click(await screen.findByRole("button", { name: "Queue" }));
+    expect(useTaskStore.getState().tasks["isolated-thread"].queuedTurns[0]).toMatchObject({ status: "queued" });
+
+    await user.click(screen.getByRole("button", { name: "Stop the active task and its sub-agents" }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("codex_rpc", expect.objectContaining({ method: "command/exec/terminate" })));
+    await act(async () => command.resolve({ exitCode: 130, stdout: "", stderr: "stopped" }));
+    await waitFor(() => expect(JSON.parse(localStorage.getItem("kiwi.workflowRuns") ?? "[]")[0]).toMatchObject({ status: "interrupted" }));
+    expect(useTaskStore.getState().tasks["isolated-thread"].status).toBe("interrupted");
+    expect(useTaskStore.getState().tasks["isolated-thread"].queuedTurns[0]).toMatchObject({ status: "queued" });
+  });
+
+  it("keeps a renamed Claude workflow thread in the sidebar and durable transcript", async () => {
+    const user = userEvent.setup();
+    const command = deferred<{ exitCode: number; stdout: string; stderr: string }>();
+    const workflow: WorkflowDefinition = {
+      id: "workflow-claude",
+      name: "Claude review",
+      description: "",
+      projectId: PROJECT_A.id,
+      enabled: true,
+      trigger: { type: "manual" },
+      steps: [{ id: "check", type: "command", name: "Check", command: "git status", continueOnError: false }],
+      skillNames: [],
+      run: scheduleRunSnapshot({ ...DEFAULT_SETTINGS, provider: "claude", model: "sonnet" }),
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    localStorage.setItem("kiwi.workflows", JSON.stringify([workflow]));
+    claudeRuntimeStatusImpl = () => ({ available: true, path: "/usr/local/bin/claude", version: "99.0.0", loggedIn: true,
+      authMethod: "subscription", email: "test@example.com", subscriptionType: "pro", warning: null });
+    commandExecImpl = () => command.promise;
+    let stored: { thread: Thread; messages: unknown[]; activities: unknown[] } | null = null;
+    const savedThread = () => stored?.thread;
+    let generation = 0;
+    invokeMock.mockImplementation(async (name: string, args?: Record<string, unknown>) => {
+      if (name === "local_transcript_snapshot_write") {
+        stored = args?.value as typeof stored;
+        return { generation: ++generation, headSeq: 0, tailSeq: 0, rewrittenChunks: 1, totalChunks: 1, compatibilitySnapshotCreated: false };
+      }
+      if (name === "local_transcript_page_read" && stored) return { ...stored, nextCursor: null, headSeq: 0, tailSeq: 0, generation, byteLen: 0 };
+      if (name === "local_transcript_tail_write" && stored) {
+        const tail = args?.value as { messages: unknown[]; activities: unknown[] };
+        stored = { ...stored, messages: [...stored.messages, ...tail.messages], activities: [...stored.activities, ...tail.activities] };
+        return { generation, headSeq: 0, tailSeq: stored.messages.length + stored.activities.length };
+      }
+      if (name === "local_transcript_rename" && stored) {
+        stored = { ...stored, thread: { ...stored.thread, name: String(args?.name) } };
+        return null;
+      }
+      return stubInvoke(name, args);
+    });
+
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
+    await user.click(await screen.findByRole("tab", { name: "Tools workspace tool" }));
+    await user.click(await screen.findByRole("button", { name: "Run workflow" }));
+    const launch = await screen.findByRole("dialog", { name: "Run Claude review" });
+    expect(within(launch).getByRole("button", { name: "Run in project" })).toHaveTextContent(PROJECT_A.name);
+    expect(savedThread()).toBeUndefined();
+    await user.click(within(launch).getByRole("button", { name: "Run now" }));
+
+    const initialTitle = "Workflow: Claude review";
+    await user.click(await screen.findByRole("button", { name: `Options for ${initialTitle}` }));
+    await user.click(await screen.findByText("Rename"));
+    const input = screen.getByRole("textbox", { name: "Thread name" });
+    await user.clear(input);
+    await user.type(input, "My Claude review{Enter}");
+    await waitFor(() => expect(savedThread()?.name).toBe("My Claude review"));
+
+    await act(async () => command.resolve({ exitCode: 0, stdout: "clean", stderr: "" }));
+    await waitFor(() => expect(JSON.parse(localStorage.getItem("kiwi.workflowRuns") ?? "[]")[0]).toMatchObject({ status: "completed" }));
+    await waitFor(() => expect(stored?.activities).toContainEqual(expect.objectContaining({ status: "completed" })));
+    await waitFor(() => expect(JSON.parse(localStorage.getItem("kiwi.knownThreads") ?? "{}")).toEqual(
+      expect.objectContaining({ [savedThread()!.id]: expect.objectContaining({ name: "My Claude review", modelProvider: "claude" }) }),
+    ));
+    expect(savedThread()?.name).toBe("My Claude review");
+    expect(screen.getAllByText("My Claude review").length).toBeGreaterThan(0);
+  });
+});
+
 describe("workspace attachments", () => {
   function codexCalls(method: string): Record<string, unknown>[] {
     return invokeMock.mock.calls
@@ -3847,6 +4119,35 @@ describe("project Run button", () => {
     expect(call.tty).toBe(true);
   });
 
+  it("runs saved setup and launch in one shell from the thread's worktree", async () => {
+    const user = userEvent.setup();
+    localStorage.setItem("kiwi.projects", JSON.stringify([
+      { ...PROJECT_A, overrides: { run: { setupCommand: "npm ci", command: "npm run dev", updatedAt: 1 } } },
+      PROJECT_B,
+    ]));
+    localStorage.setItem("kiwi.threadWorktrees", JSON.stringify({
+      [THREAD_A.id]: {
+        threadId: THREAD_A.id, projectId: PROJECT_A.id, projectPath: PROJECT_A.path,
+        path: "/managed/worktrees/thread-a", branch: "openkiwi/thread-a",
+        baseCommit: "head", gitDir: "/projects/alpha/.git", createdAt: 1, status: "active",
+      },
+    }));
+    resumeImpl = (params) => ({ thread: { ...THREAD_A, id: String(params.threadId), turns: [] } });
+    const executed: Array<Record<string, unknown>> = [];
+    commandExecImpl = (params) => { executed.push(params); return { exitCode: 0, stdout: "ready", stderr: "" }; };
+    await renderApp();
+    await user.click(await screen.findByText("Alpha thread"));
+    await user.click(await screen.findByRole("button", { name: "Run: ready" }));
+    const expected = projectRunExecCommand({ setupCommand: "npm ci", command: "npm run dev", updatedAt: 1 });
+    await waitFor(() => expect(executed.some((params) => JSON.stringify(params.command) === JSON.stringify(expected))).toBe(true));
+    const call = executed.find((params) => JSON.stringify(params.command) === JSON.stringify(expected))!;
+    expect(call.cwd).toBe("/managed/worktrees/thread-a");
+    expect(call.sandboxPolicy).toEqual(expect.objectContaining({
+      type: "workspaceWrite", writableRoots: ["/managed/worktrees/thread-a", "/projects/alpha/.git"],
+    }));
+    expect(call.tty).toBe(true);
+  });
+
   it("keeps the real terminal panel rendered instead of tripping the workspace tools boundary", async () => {
     const user = userEvent.setup();
     await renderApp();
@@ -3873,6 +4174,232 @@ describe("project Run button", () => {
       expect(stored.find((project) => project.id === "project-a")?.overrides?.run?.command).toBe("make dev");
       expect(stored.find((project) => project.id === "project-b")?.overrides?.run).toBeUndefined();
     });
+  });
+
+  it("saves a discovered run recipe to the project that started discovery after navigation", async () => {
+    const user = userEvent.setup();
+    const discovery = deferred<{ command: string; setupCommand: string; label: string; explanation: string }>();
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) =>
+      command === "run_discovery_start" ? discovery.promise : stubInvoke(command, args));
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: "Edit run command" }));
+    await user.click(await screen.findByRole("button", { name: "Find run command" }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("run_discovery_start", {
+      options: expect.objectContaining({ cwd: PROJECT_A.path }),
+    }));
+
+    await user.click(screen.getByRole("button", { name: PROJECT_B.name }));
+    await act(async () => discovery.resolve({ command: "npm run dev", setupCommand: "npm ci", label: "Dev server", explanation: "package.json defines dev" }));
+
+    await waitFor(() => {
+      const projects = JSON.parse(localStorage.getItem("kiwi.projects") ?? "[]") as Array<{ id: string; overrides?: { run?: { command: string; setupCommand?: string } } }>;
+      expect(projects.find((project) => project.id === PROJECT_A.id)?.overrides?.run).toMatchObject({ command: "npm run dev", setupCommand: "npm ci" });
+      expect(projects.find((project) => project.id === PROJECT_B.id)?.overrides?.run).toBeUndefined();
+    });
+    expect(invokeMock.mock.calls.some(([command, args]) => command === "codex_rpc" && args?.method === "command/exec")).toBe(false);
+  });
+
+  it("keeps an agent's newer run recipe when discovery finishes late", async () => {
+    const user = userEvent.setup();
+    const discovery = deferred<{ command: string; setupCommand: string; label: string; explanation: string }>();
+    localStorage.setItem("kiwi.threadProjects", JSON.stringify({ [THREAD_A.id]: PROJECT_A.path }));
+    localStorage.setItem("kiwi.childAgentPolicies", JSON.stringify({
+      "session-run": {
+        sessionId: "session-run", rootThreadId: THREAD_A.id, maxConcurrent: 1,
+        permission: "read-only", systemPrompt: "", projectInstructionsEnabled: false,
+        reasoningEffort: "medium", serviceTier: null, targets: [], capturedAt: 1,
+      },
+    }));
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) =>
+      command === "run_discovery_start" ? discovery.promise : stubInvoke(command, args));
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: "Edit run command" }));
+    await user.click(await screen.findByRole("button", { name: "Find run command" }));
+    await waitFor(() => expect(invokeMock.mock.calls.some(([command]) => command === "run_discovery_start")).toBe(true));
+
+    await waitFor(() => expect(tauriEvents.handlers.has("child-agent-request")).toBe(true));
+    await act(async () => tauriEvents.handlers.get("child-agent-request")?.({ payload: {
+      requestId: "agent-run-1", sessionId: "session-run", tool: "set_project_run_command",
+      arguments: { command: "npm run preview", setupCommand: "npm ci", label: "Preview" },
+    } }));
+    await waitFor(() => {
+      const projects = JSON.parse(localStorage.getItem("kiwi.projects") ?? "[]") as Array<{ id: string; overrides?: { run?: { command: string } } }>;
+      expect(projects.find((project) => project.id === PROJECT_A.id)?.overrides?.run?.command).toBe("npm run preview");
+    });
+
+    await act(async () => discovery.resolve({ command: "npm run dev", setupCommand: "npm install", label: "Dev server", explanation: "package.json defines dev" }));
+    await waitFor(() => expect(screen.getByText(/newer command was kept/i)).toBeInTheDocument());
+    const projects = JSON.parse(localStorage.getItem("kiwi.projects") ?? "[]") as Array<{ id: string; overrides?: { run?: { command: string; setupCommand?: string } } }>;
+    expect(projects.find((project) => project.id === PROJECT_A.id)?.overrides?.run).toMatchObject({ command: "npm run preview", setupCommand: "npm ci" });
+  });
+});
+
+describe("project checks", () => {
+  it("saves a found check to the project that started discovery after navigation without running it", async () => {
+    const user = userEvent.setup();
+    const discovery = deferred<{ command: string; label: string; explanation: string }>();
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) =>
+      command === "run_discovery_start" ? discovery.promise : stubInvoke(command, args));
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
+    await user.click(await screen.findByRole("tab", { name: "Review workspace tool" }));
+    await user.click(await screen.findByRole("button", { name: "Find checks" }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("run_discovery_start", {
+      options: expect.objectContaining({ cwd: PROJECT_A.path, purpose: "checks" }),
+    }));
+
+    await user.click(screen.getByRole("button", { name: PROJECT_B.name }));
+    await act(async () => discovery.resolve({ command: "npm run verify", label: "Verify", explanation: "package.json defines verify" }));
+
+    await waitFor(() => {
+      const projects = JSON.parse(localStorage.getItem("kiwi.projects") ?? "[]") as Array<{ id: string; overrides?: { check?: { command: string } } }>;
+      expect(projects.find((project) => project.id === PROJECT_A.id)?.overrides?.check?.command).toBe("npm run verify");
+      expect(projects.find((project) => project.id === PROJECT_B.id)?.overrides?.check).toBeUndefined();
+    });
+    expect(invokeMock.mock.calls.some(([command, args]) => command === "codex_rpc" && args?.method === "command/exec")).toBe(false);
+  });
+
+  it("keeps a newer manual check command when an earlier discovery finishes late", async () => {
+    const user = userEvent.setup();
+    const discovery = deferred<{ command: string; label: string; explanation: string }>();
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) =>
+      command === "run_discovery_start" ? discovery.promise : stubInvoke(command, args));
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
+    await user.click(await screen.findByRole("tab", { name: "Review workspace tool" }));
+    await user.click(await screen.findByRole("button", { name: "Find checks" }));
+    await waitFor(() => expect(invokeMock.mock.calls.some(([command]) => command === "run_discovery_start")).toBe(true));
+
+    await user.click(screen.getByRole("button", { name: "Edit check command" }));
+    await user.type(await screen.findByRole("textbox", { name: "Check command" }), "npm test");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => {
+      const projects = JSON.parse(localStorage.getItem("kiwi.projects") ?? "[]") as Array<{ id: string; overrides?: { check?: { command: string } } }>;
+      expect(projects.find((project) => project.id === PROJECT_A.id)?.overrides?.check?.command).toBe("npm test");
+    });
+
+    await act(async () => discovery.resolve({ command: "npm run verify", label: "Verify", explanation: "package.json defines verify" }));
+    await waitFor(() => expect(screen.getByText(/newer command was kept/i)).toBeInTheDocument());
+    const projects = JSON.parse(localStorage.getItem("kiwi.projects") ?? "[]") as Array<{ id: string; overrides?: { check?: { command: string } } }>;
+    expect(projects.find((project) => project.id === PROJECT_A.id)?.overrides?.check?.command).toBe("npm test");
+    expect(invokeMock.mock.calls.some(([command, args]) => command === "codex_rpc" && args?.method === "command/exec")).toBe(false);
+  });
+
+  it("keeps a newer agent-saved check command when discovery finishes late", async () => {
+    const user = userEvent.setup();
+    const discovery = deferred<{ command: string; label: string; explanation: string }>();
+    localStorage.setItem("kiwi.threadProjects", JSON.stringify({ [THREAD_A.id]: PROJECT_A.path }));
+    localStorage.setItem("kiwi.childAgentPolicies", JSON.stringify({
+      "session-check": {
+        sessionId: "session-check", rootThreadId: THREAD_A.id, maxConcurrent: 1,
+        permission: "read-only", systemPrompt: "", projectInstructionsEnabled: false,
+        reasoningEffort: "medium", serviceTier: null, targets: [], capturedAt: 1,
+      },
+    }));
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) =>
+      command === "run_discovery_start" ? discovery.promise : stubInvoke(command, args));
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
+    await user.click(await screen.findByRole("tab", { name: "Review workspace tool" }));
+    await user.click(await screen.findByRole("button", { name: "Find checks" }));
+    await waitFor(() => expect(invokeMock.mock.calls.some(([command]) => command === "run_discovery_start")).toBe(true));
+
+    await waitFor(() => expect(tauriEvents.handlers.has("child-agent-request")).toBe(true));
+    await act(async () => tauriEvents.handlers.get("child-agent-request")?.({ payload: {
+      requestId: "agent-check-1", sessionId: "session-check", tool: "set_project_check_command",
+      arguments: { command: "npm test" },
+    } }));
+    await waitFor(() => {
+      const projects = JSON.parse(localStorage.getItem("kiwi.projects") ?? "[]") as Array<{ id: string; overrides?: { check?: { command: string } } }>;
+      expect(projects.find((project) => project.id === PROJECT_A.id)?.overrides?.check?.command).toBe("npm test");
+      expect(invokeMock).toHaveBeenCalledWith("child_agent_respond", expect.objectContaining({
+        requestId: "agent-check-1", result: expect.objectContaining({ saved: true, command: "npm test" }),
+      }));
+    });
+
+    await act(async () => discovery.resolve({ command: "npm run verify", label: "Verify", explanation: "package.json defines verify" }));
+    await waitFor(() => expect(screen.getByText(/newer command was kept/i)).toBeInTheDocument());
+    const projects = JSON.parse(localStorage.getItem("kiwi.projects") ?? "[]") as Array<{ id: string; overrides?: { check?: { command: string } } }>;
+    expect(projects.find((project) => project.id === PROJECT_A.id)?.overrides?.check?.command).toBe("npm test");
+    expect(invokeMock.mock.calls.some(([command, args]) => command === "codex_rpc" && args?.method === "command/exec")).toBe(false);
+  });
+
+  it.each([
+    { label: "with an optional prompt", prompt: "Please also explain the cause.", invokesSkill: false },
+    { label: "with feedback alone", prompt: "", invokesSkill: false },
+    { label: "with a user-authored skill mention", prompt: "@review Please also explain the cause.", invokesSkill: true },
+  ])("runs a failed worktree check and sends one agent request $label", async ({ prompt, invokesSkill }) => {
+    const user = userEvent.setup();
+    localStorage.setItem("kiwi.projects", JSON.stringify([
+      { ...PROJECT_A, overrides: { check: { command: "npm test", updatedAt: 1 } } },
+      PROJECT_B,
+    ]));
+    localStorage.setItem("kiwi.threadWorktrees", JSON.stringify({
+      [THREAD_A.id]: {
+        threadId: THREAD_A.id, projectId: PROJECT_A.id, projectPath: PROJECT_A.path,
+        path: "/managed/worktrees/thread-a", branch: "openkiwi/thread-a",
+        baseCommit: "head", gitDir: "/projects/alpha/.git", createdAt: 1, status: "active",
+      },
+    }));
+    resumeImpl = (params) => ({ thread: { ...THREAD_A, id: String(params.threadId), turns: [] } });
+    const executed: Array<Record<string, unknown>> = [];
+    commandExecImpl = (params) => {
+      executed.push(params);
+      return (params.command as string[])[2] === "npm test"
+        ? { exitCode: 2, stdout: "", stderr: "1 test failed: important case @review" }
+        : { exitCode: 0, stdout: "", stderr: "" };
+    };
+    if (invokesSkill) localSkillsResolvePromptImpl = (params) => `resolved selected skill\n\n${String(params.message)}`;
+    await renderApp();
+    await user.click(await screen.findByText("Alpha thread"));
+    await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
+    await user.click(await screen.findByRole("tab", { name: "Review workspace tool" }));
+    await user.click(await screen.findByRole("button", { name: "Run checks" }));
+
+    await waitFor(() => expect(executed.some((params) => (params.command as string[])[2] === "npm test")).toBe(true));
+    const checkCall = executed.find((params) => (params.command as string[])[2] === "npm test")!;
+    expect(checkCall.cwd).toBe("/managed/worktrees/thread-a");
+    expect(checkCall).toMatchObject({ outputBytesCap: 65_536, tty: false, streamStdoutStderr: false });
+    expect(checkCall.sandboxPolicy).toEqual(expect.objectContaining({
+      type: "workspaceWrite", writableRoots: ["/managed/worktrees/thread-a", "/projects/alpha/.git"],
+    }));
+    expect(await screen.findByText("Checks failed · exit 2")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Output" }));
+    expect(screen.getByLabelText("Check output")).toHaveTextContent("1 test failed: important case");
+    expect(invokeMock.mock.calls.filter(([command, args]) => command === "codex_rpc" && args?.method === "turn/start")).toHaveLength(0);
+
+    await user.click(await screen.findByRole("button", { name: "Ask agent to fix" }));
+    const send = await screen.findByRole("button", { name: "Send feedback and optional prompt" });
+    expect(send).toBeEnabled();
+    expect(invokeMock.mock.calls.filter(([command, args]) => command === "codex_rpc" && args?.method === "turn/start")).toHaveLength(0);
+    if (prompt) await user.type(await screen.findByPlaceholderText(/Add a message \(optional\)/), prompt);
+    const skillCallsBeforeSend = invokeMock.mock.calls.filter(([command]) => command === "local_skills_resolve_prompt").length;
+    await user.click(send);
+
+    await waitFor(() => expect(invokeMock.mock.calls.filter(([command, args]) => command === "codex_rpc" && args?.method === "turn/start")).toHaveLength(1));
+    const turn = invokeMock.mock.calls.find(([command, args]) => command === "codex_rpc" && args?.method === "turn/start")![1]?.params as Record<string, unknown>;
+    expect(turn.threadId).toBe(THREAD_A.id);
+    const input = (turn.input as Array<{ text?: string }>).map((item) => item.text ?? "").join("\n");
+    if (prompt) expect(input).toContain(prompt);
+    expect(input).toContain("npm test");
+    expect(input).toContain("1 test failed: important case");
+    expect(input).toContain("/managed/worktrees/thread-a");
+    expect(input).toContain("exit 2");
+    expect(input).toContain("important case @review");
+    const { useTaskStore } = await import("./lib/taskStore");
+    const displayed = useTaskStore.getState().tasks[THREAD_A.id]?.messages.filter((message) => message.role === "user").at(-1)?.text;
+    expect(displayed).toContain("important case @review");
+    expect(displayed).not.toContain("resolved selected skill");
+    const skillCalls = invokeMock.mock.calls.filter(([command]) => command === "local_skills_resolve_prompt").slice(skillCallsBeforeSend);
+    if (invokesSkill) {
+      expect(skillCalls).toHaveLength(1);
+      expect(String(skillCalls[0][1]?.message)).toContain("important case @review");
+      expect(String(skillCalls[0][1]?.mentionSource)).toContain(prompt);
+      expect(String(skillCalls[0][1]?.mentionSource)).not.toContain("important case @review");
+      expect(input).toContain("resolved selected skill");
+    } else {
+      expect(skillCalls).toHaveLength(0);
+    }
   });
 });
 

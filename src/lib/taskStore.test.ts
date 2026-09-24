@@ -603,10 +603,73 @@ describe("task store", () => {
     expect(JSON.parse(localStorage.getItem("kiwi.queuedTurns") ?? "{}")["thread-a"]).toBeUndefined();
   });
 
+  it("persists literal skill mode only when explicitly requested", () => {
+    const store = useTaskStore.getState();
+    const literal = store.enqueueTurn("thread-a", "Review @example", [], { resolveSkillMentions: false });
+    const ordinary = store.enqueueTurn("thread-a", "Use @example", []);
+    const stored = JSON.parse(localStorage.getItem("kiwi.queuedTurns") ?? "{}");
+    expect(stored["thread-a"][0]).toMatchObject({ id: literal.id, resolveSkillMentions: false });
+    expect(stored["thread-a"][1]).not.toHaveProperty("resolveSkillMentions");
+    const restored = sanitizeStoredQueuedTurns(stored)["thread-a"];
+    expect(restored[0]).toMatchObject({ id: literal.id, resolveSkillMentions: false });
+    expect(restored[1]).toMatchObject({ id: ordinary.id });
+    expect(restored[1]).not.toHaveProperty("resolveSkillMentions");
+  });
+
+  it("persists authored skill source and clears it when an edited prompt changes", () => {
+    const store = useTaskStore.getState();
+    const entry = store.enqueueTurn("thread-a", "Review @review evidence", [], { skillInvocationText: "Use @review" });
+    const restored = sanitizeStoredQueuedTurns(JSON.parse(localStorage.getItem("kiwi.queuedTurns")!));
+    expect(restored["thread-a"][0]).toMatchObject({ id: entry.id, skillInvocationText: "Use @review" });
+
+    expect(store.beginQueuedTurnEdit("thread-a", entry.id)).toBe(true);
+    expect(store.finishQueuedTurnEdit("thread-a", entry.id, "Review revised @review evidence")).toBe(true);
+    expect(useTaskStore.getState().tasks["thread-a"].queuedTurns[0].skillInvocationText).toBe("");
+    expect(sanitizeStoredQueuedTurns(JSON.parse(localStorage.getItem("kiwi.queuedTurns")!))["thread-a"][0].skillInvocationText).toBe("");
+  });
+
+  it("retains authored skill source when queue editing is cancelled", () => {
+    const store = useTaskStore.getState();
+    const entry = store.enqueueTurn("thread-a", "Review @review evidence", [], { skillInvocationText: "Use @review" });
+    expect(store.beginQueuedTurnEdit("thread-a", entry.id)).toBe(true);
+    expect(store.finishQueuedTurnEdit("thread-a", entry.id)).toBe(true);
+    expect(useTaskStore.getState().tasks["thread-a"].queuedTurns[0].skillInvocationText).toBe("Use @review");
+  });
+
+  it("edits a queue entry in place and restores an unfinished edit as held", () => {
+    const store = useTaskStore.getState();
+    const first = store.enqueueTurn("thread-a", "first", []);
+    const second = store.enqueueTurn("thread-a", "original", [{ name: "notes.md", path: "/notes.md", kind: "file" }]);
+    expect(store.beginQueuedTurnEdit("thread-a", second.id)).toBe(true);
+    const restored = sanitizeStoredQueuedTurns(JSON.parse(localStorage.getItem("kiwi.queuedTurns")!));
+    expect(restored["thread-a"][1]).toMatchObject({ ...second, editing: true });
+    expect(store.finishQueuedTurnEdit("thread-a", second.id, "   ")).toBe(false);
+    store.setQueuedTurnStatus("thread-a", second.id, "sending");
+    expect(useTaskStore.getState().tasks["thread-a"].queuedTurns[1].status).toBe("queued");
+    expect(store.finishQueuedTurnEdit("thread-a", second.id, "  revised\nmessage  ")).toBe(true);
+    expect(useTaskStore.getState().tasks["thread-a"].queuedTurns).toEqual([
+      first, { ...second, text: "revised\nmessage", editing: undefined },
+    ]);
+    expect(JSON.parse(localStorage.getItem("kiwi.queuedTurns")!)["thread-a"][1].text).toBe("revised\nmessage");
+  });
+
+  it("cancels edits without retrying failures and rejects edits once delivery starts", () => {
+    const store = useTaskStore.getState();
+    const entry = store.enqueueTurn("thread-a", "original", []);
+    store.setQueuedTurnStatus("thread-a", entry.id, "failed", "Sign in first");
+    store.beginQueuedTurnEdit("thread-a", entry.id);
+    expect(store.finishQueuedTurnEdit("thread-a", entry.id)).toBe(true);
+    expect(useTaskStore.getState().tasks["thread-a"].queuedTurns[0]).toMatchObject({ text: "original", status: "failed", error: "Sign in first" });
+    store.setQueuedTurnStatus("thread-a", entry.id, "sending");
+    expect(store.beginQueuedTurnEdit("thread-a", entry.id)).toBe(false);
+    expect(store.finishQueuedTurnEdit("thread-a", entry.id, "too late")).toBe(false);
+    expect(store.beginQueuedTurnEdit("thread-b", entry.id)).toBe(false);
+  });
+
   it("restores a durable queue without half-written entries or undeliverable statuses", () => {
     const restored = sanitizeStoredQueuedTurns({
       "thread-a": [
-        { id: "q1", text: "still queued", attachments: [{ name: "a.ts", path: "/a.ts", kind: "file" }, { name: "bad.ts", path: "/bad.ts", kind: "other" }, { name: "broken" }], createdAt: 5, status: "sending" },
+        { id: "q1", text: "still queued", attachments: [{ name: "a.ts", path: "/a.ts", kind: "file" }, { name: "bad.ts", path: "/bad.ts", kind: "other" }, { name: "broken" }], createdAt: 5, status: "sending", resolveSkillMentions: false },
         { id: "q2", text: "kept as failed", attachments: "nope", createdAt: "later", status: "failed" },
         { id: "q3", text: "unknown status", attachments: [], createdAt: 7, status: "in-orbit" },
         { id: "q1", text: "duplicate id", attachments: [], createdAt: 8, status: "queued" },
@@ -626,6 +689,7 @@ describe("task store", () => {
       ["q3", "queued"],
     ]);
     expect(restored["thread-a"][0].attachments).toEqual([{ name: "a.ts", path: "/a.ts", kind: "file" }]);
+    expect(restored["thread-a"][0].resolveSkillMentions).toBe(false);
     expect(restored["thread-a"][0].threadId).toBe("thread-a");
     expect(restored["thread-a"][1].attachments).toEqual([]);
     expect(restored["thread-a"][1].createdAt).toEqual(expect.any(Number));

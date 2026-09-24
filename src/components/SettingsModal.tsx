@@ -495,7 +495,7 @@ export function SettingsModal({
   onActions: (value: ProjectAction[]) => void;
   onSchedules: (value: ScheduledTask[]) => void;
   onWorkflows: (value: WorkflowDefinition[]) => void;
-  onRunWorkflow: (workflowId: string, variables?: Record<string, string>) => Promise<void> | void;
+  onRunWorkflow: (workflowId: string, variables?: Record<string, string>, projectId?: string) => Promise<void> | void;
   onStopWorkflow: (workflowId: string) => Promise<boolean> | boolean;
   onProjects: (value: Project[]) => void;
   scheduleRuns?: ScheduleRunRecord[];

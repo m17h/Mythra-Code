@@ -133,6 +133,8 @@ export function StudioDock(props: {
   reviewDiff: ReviewDiff;
   /** Set when AI review cannot run for this thread's provider. */
   reviewDisabledReason?: string;
+  /** The project's Run checks control (ChecksControl), shown beside AI review. */
+  checksControl?: ReactNode;
   agents: AgentRecord[];
   terminalOutput: TerminalOutputStore;
   terminalRunning: boolean;
@@ -335,13 +337,14 @@ export function StudioDock(props: {
 
         {props.tab === "review" && <>
           <PanelHeader icon={SearchCode} title="Review center" subtitle="Inspect the live turn diff" onClose={props.onClose} />
-          <div className="studio-actions">
+          <div className="studio-actions wrap review-actions">
             <button onClick={props.onRefreshDiff}><RefreshCw size={13} /> Refresh</button>
             <button
               onClick={props.onReview}
               disabled={!props.activeThread || Boolean(props.reviewDisabledReason)}
               title={props.reviewDisabledReason || (props.activeThread ? "Ask the model to review the working changes" : "Open a thread to request a review")}
             ><Bot size={13} /> AI review</button>
+            {props.checksControl}
           </div>
           <div className="diff-summary">
             <span><CodeXml size={13} /> {props.reviewDiff.source === "repository" ? "Repository changes" : "Working changes"}</span>
@@ -358,6 +361,7 @@ export function StudioDock(props: {
               readOnly={props.gitActionsReadOnly}
               readOnlyReason="Switch this thread from Read only to Ask or Full access before staging or reverting files."
               stagedPaths={props.reviewStagedPaths}
+              feedbackDiff={props.reviewDiff}
               onPathAction={props.onGitPathAction}
               onUnstage={props.onGitPathUnstage}
             />

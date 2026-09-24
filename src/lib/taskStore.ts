@@ -14,6 +14,11 @@ import { beginRuntimePerformanceTurn, bindRuntimePerformanceTurn, completeRuntim
 
 export type TaskStatus = "idle" | "starting" | "running" | "completed" | "interrupted" | "error";
 
+export interface WorkflowThreadOwner {
+  workflowId: string;
+  runId: string;
+}
+
 export type QueuedTurnStatus = "queued" | "sending" | "failed";
 
 export interface QueuedTurn {
@@ -24,6 +29,12 @@ export interface QueuedTurn {
   createdAt: number;
   status: QueuedTurnStatus;
   error?: string;
+  /** Hold delivery until the user saves or cancels the inline editor. */
+  editing?: boolean;
+  /** Literal prompts (such as generated reviews) must not expand @skill mentions after restore. */
+  resolveSkillMentions?: false;
+  /** Only this user-authored text may invoke skills inside a formatted prompt. */
+  skillInvocationText?: string;
 }
 
 const QUEUED_TURNS_KEY = "kiwi.queuedTurns";
@@ -66,6 +77,9 @@ export function sanitizeStoredQueuedTurns(stored: unknown): Record<string, Queue
         // A process cannot still be delivering after an app restart, and an
         // unknown status would be a queue entry the pump never picks up.
         status: entry.status === "failed" ? "failed" : "queued",
+        ...(entry.editing === true ? { editing: true } : {}),
+        ...(entry.resolveSkillMentions === false ? { resolveSkillMentions: false as const } : {}),
+        ...(typeof entry.skillInvocationText === "string" ? { skillInvocationText: entry.skillInvocationText } : {}),
         ...(typeof entry.error === "string" && entry.error ? { error: entry.error } : {}),
       });
     }
@@ -151,6 +165,9 @@ interface TaskStoreState {
   activeThreadId: string | null;
   tasks: Record<string, ThreadTaskState>;
   statuses: Record<string, TaskStatus>;
+  /** A workflow owns its thread across turns and command steps, including idle gaps. */
+  workflowOwners: Record<string, WorkflowThreadOwner>;
+  setWorkflowOwner: (threadId: string, owner: WorkflowThreadOwner | null) => void;
   setActiveThread: (threadId: string | null) => void;
   ensureTask: (threadId: string, workspacePath?: string) => void;
   hydrateTask: (threadId: string, messages: ChatMessage[], activities: Activity[], workspacePath?: string, history?: ThreadHistoryState) => void;
@@ -176,7 +193,9 @@ interface TaskStoreState {
   enqueueApproval: (approval: PendingApproval) => void;
   resolveApproval: (threadId: string, approvalId: string | number) => void;
   clearApprovals: (threadId: string) => void;
-  enqueueTurn: (threadId: string, text: string, attachments: AttachmentRecord[]) => QueuedTurn;
+  enqueueTurn: (threadId: string, text: string, attachments: AttachmentRecord[], options?: { resolveSkillMentions?: false; skillInvocationText?: string }) => QueuedTurn;
+  beginQueuedTurnEdit: (threadId: string, queuedTurnId: string) => boolean;
+  finishQueuedTurnEdit: (threadId: string, queuedTurnId: string, text?: string) => boolean;
   setQueuedTurnStatus: (threadId: string, queuedTurnId: string, status: QueuedTurnStatus, error?: string) => void;
   removeQueuedTurn: (threadId: string, queuedTurnId: string) => void;
   clearUnread: (threadId: string) => void;
@@ -368,6 +387,7 @@ function evictColdTranscripts(
       task.threadId !== activeThreadId
       && state.statuses[task.threadId] !== "starting"
       && state.statuses[task.threadId] !== "running"
+      && !state.workflowOwners[task.threadId]
       && task.approvals.length === 0
       && task.queuedTurns.length === 0
       && !task.transcriptDirty
@@ -437,6 +457,16 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
   activeThreadId: null,
   tasks: {},
   statuses: {},
+  workflowOwners: {},
+  setWorkflowOwner: (threadId, owner) => set((state) => {
+    const existing = state.workflowOwners[threadId];
+    if (owner && existing?.runId === owner.runId && existing.workflowId === owner.workflowId) return state;
+    if (!owner && !existing) return state;
+    const workflowOwners = { ...state.workflowOwners };
+    if (owner) workflowOwners[threadId] = owner;
+    else delete workflowOwners[threadId];
+    return { workflowOwners };
+  }),
   setActiveThread: (threadId) => set((state) => {
     const tasks = evictColdTranscripts(state, threadId);
     if (!threadId || !state.tasks[threadId]) {
@@ -1137,7 +1167,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     if (!task || task.approvals.length === 0) return state;
     return { tasks: { ...state.tasks, [threadId]: { ...task, approvals: [], updatedAt: Date.now() } } };
   }),
-  enqueueTurn: (threadId, text, attachments) => {
+  enqueueTurn: (threadId, text, attachments, options) => {
     const queuedTurn: QueuedTurn = {
       id: `queued-${crypto.randomUUID()}`,
       threadId,
@@ -1145,6 +1175,8 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       attachments: attachments.map((attachment) => ({ ...attachment })),
       createdAt: Date.now(),
       status: "queued",
+      ...(options?.resolveSkillMentions === false ? { resolveSkillMentions: false as const } : {}),
+      ...(options?.skillInvocationText !== undefined ? { skillInvocationText: options.skillInvocationText } : {}),
     };
     set((state) => {
       const task = state.tasks[threadId] ?? emptyTask(threadId);
@@ -1154,9 +1186,40 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     });
     return queuedTurn;
   },
+  beginQueuedTurnEdit: (threadId, queuedTurnId) => {
+    const task = get().tasks[threadId];
+    const entry = task?.queuedTurns.find((item) => item.id === queuedTurnId);
+    if (!entry || entry.status === "sending" || entry.editing) return false;
+    const queuedTurns = task.queuedTurns.map((item) => item.id === queuedTurnId ? { ...item, editing: true } : item);
+    persistQueuedTurns(threadId, queuedTurns);
+    set((state) => ({ tasks: { ...state.tasks, [threadId]: { ...task, queuedTurns, updatedAt: Date.now() } } }));
+    return true;
+  },
+  finishQueuedTurnEdit: (threadId, queuedTurnId, text) => {
+    const task = get().tasks[threadId];
+    const entry = task?.queuedTurns.find((item) => item.id === queuedTurnId);
+    if (!entry?.editing || entry.status === "sending" || (text !== undefined && !text.trim())) return false;
+    const queuedTurns = task.queuedTurns.map((item) => {
+      if (item.id !== queuedTurnId) return item;
+      const nextText = text === undefined ? item.text : text.trim();
+      return {
+        ...item,
+        text: nextText,
+        editing: undefined,
+        // Once the displayed prompt changes, the original authored spans no
+        // longer identify intent. Retain an explicit empty source so quoted
+        // evidence cannot become an accidental skill invocation.
+        ...(nextText !== item.text && item.skillInvocationText !== undefined ? { skillInvocationText: "" } : {}),
+      };
+    });
+    persistQueuedTurns(threadId, queuedTurns);
+    set((state) => ({ tasks: { ...state.tasks, [threadId]: { ...task, queuedTurns, updatedAt: Date.now() } } }));
+    return true;
+  },
   setQueuedTurnStatus: (threadId, queuedTurnId, status, error) => set((state) => {
     const task = state.tasks[threadId];
     if (!task || !task.queuedTurns.some((entry) => entry.id === queuedTurnId)) return state;
+    if (status === "sending" && task.queuedTurns.find((entry) => entry.id === queuedTurnId)?.editing) return state;
     const queuedTurns = task.queuedTurns.map((entry) => entry.id === queuedTurnId
       ? { ...entry, status, ...(error ? { error } : { error: undefined }) }
       : entry);
@@ -1179,10 +1242,12 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     return set((state) => {
       const tasks = { ...state.tasks };
       const statuses = { ...state.statuses };
+      const workflowOwners = { ...state.workflowOwners };
       delete tasks[threadId];
       delete statuses[threadId];
+      delete workflowOwners[threadId];
       persistQueuedTurns(threadId, []);
-      return { tasks, statuses, activeThreadId: state.activeThreadId === threadId ? null : state.activeThreadId };
+      return { tasks, statuses, workflowOwners, activeThreadId: state.activeThreadId === threadId ? null : state.activeThreadId };
     });
   },
 }));
@@ -1199,5 +1264,5 @@ export function resetTaskStore(): void {
   transcriptCacheHighWaterBytes = DEFAULT_TRANSCRIPT_CACHE_HIGH_WATER_BYTES;
   transcriptCacheLowWaterBytes = DEFAULT_TRANSCRIPT_CACHE_LOW_WATER_BYTES;
   removeStoredValue(QUEUED_TURNS_KEY);
-  useTaskStore.setState({ activeThreadId: null, tasks: {}, statuses: {} });
+  useTaskStore.setState({ activeThreadId: null, tasks: {}, statuses: {}, workflowOwners: {} });
 }

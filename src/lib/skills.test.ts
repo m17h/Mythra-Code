@@ -1,5 +1,8 @@
-import { describe, expect, it } from "vitest";
-import { normalizeSkillName, resolveLocalSkills, skillRuntimeSignature, type LocalSkillFile } from "./skills";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { invoke } from "@tauri-apps/api/core";
+import { normalizeSkillName, resolveLocalSkills, resolveSkillPrompt, skillRuntimeSignature, type LocalSkillFile } from "./skills";
+
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
 const file = (path: string, defaultName: string): LocalSkillFile => ({
   path,
@@ -11,6 +14,8 @@ const file = (path: string, defaultName: string): LocalSkillFile => ({
 });
 
 describe("local skills", () => {
+  beforeEach(() => { vi.mocked(invoke).mockReset(); });
+
   it("turns existing Markdown filenames into valid invocation names", () => {
     expect(normalizeSkillName(" Careful Code Review.md ")).toBe("careful-code-review-md");
     expect(normalizeSkillName("Release & Ship")).toBe("release-ship");
@@ -54,5 +59,21 @@ describe("local skills", () => {
     expect(skillRuntimeSignature("/skills", [{ ...base, enabled: false }])).not.toBe(signature);
     expect(skillRuntimeSignature("/skills", [{ ...base, contentFingerprint: "changed" }])).not.toBe(signature);
     expect(skillRuntimeSignature("/other-skills", [base])).not.toBe(signature);
+  });
+
+  it("scans only the authored source while passing the exact full message to native resolution", async () => {
+    const fullMessage = "Review this diff. Evidence quotes @review.";
+    const skill = { ...file("/skills/review.md", "review"), name: "review", enabled: true };
+    expect(await resolveSkillPrompt(fullMessage, "/skills", [skill], "Review this diff.")).toBe(fullMessage);
+    expect(invoke).not.toHaveBeenCalled();
+
+    vi.mocked(invoke).mockResolvedValueOnce("resolved envelope");
+    expect(await resolveSkillPrompt(fullMessage, "/skills", [skill], "Review this diff with @review.")).toBe("resolved envelope");
+    expect(invoke).toHaveBeenCalledWith("local_skills_resolve_prompt", {
+      folder: "/skills",
+      message: fullMessage,
+      mentionSource: "Review this diff with @review.",
+      skills: [{ sourcePath: "/skills/review.md", name: "review", enabled: true }],
+    });
   });
 });

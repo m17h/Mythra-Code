@@ -31,6 +31,15 @@ describe("Mythra Code completion instructions", () => {
     expect(withMythraCodeCompletionInstructions("Style.", false, true, { toolAvailable: true, run: null })).toContain("greyed out");
   });
 
+  it("asks a project agent to save a discovered Checks command when the tool is available", () => {
+    const check = { command: "npm run verify", updatedAt: 1 };
+    expect(mythraCodeDeveloperInstructions(false, true, null, { toolAvailable: false, check })).not.toContain("set_project_check_command");
+    const instructions = mythraCodeDeveloperInstructions(false, true, null, { toolAvailable: true, check });
+    expect(instructions).toContain("set_project_check_command");
+    expect(instructions).toContain("`npm run verify`");
+    expect(instructions).toContain("does not execute it");
+  });
+
   it("makes Mythra Code the authoritative sub-agent route when its bridge is active", () => {
     expect(mythraCodeDeveloperInstructions(true)).toBe(
       `${ALWAYS_ON}\n\n${MYTHRA_CODE_DELEGATION_INSTRUCTIONS}`,

@@ -2588,6 +2588,17 @@ button[aria-disabled="true"] { cursor: not-allowed; }
 .queued-turn-actions button:hover { color: var(--text); background: rgba(255,255,255,.065); }
 .queued-turn-actions .steer-queued:hover { color: var(--info); }
 .queued-turn-actions .remove-queued:hover { color: var(--red); }
+.queued-turn.editing { align-items: start; }
+.queued-turn.editing .queued-turn-index { margin-top: 7px; }
+.queued-turn-editor { grid-column: 2 / -1; min-width: 0; }
+.queued-turn-editor textarea { display: block; box-sizing: border-box; width: 100%; min-height: 72px; max-height: 220px; resize: vertical; padding: 8px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--field); color: var(--text); font: inherit; font-size: var(--fs-meta); line-height: 1.5; }
+.queued-turn-editor textarea:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+.queued-turn-edit-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; padding-top: 6px; }
+.queued-turn-edit-footer small { color: var(--muted); font-size: var(--fs-micro); }
+.queued-turn-edit-footer > div { display: flex; gap: 5px; margin-left: auto; }
+.queued-turn-edit-footer button { padding: 4px 10px; border: 1px solid var(--line); border-radius: var(--r-xs); background: transparent; color: var(--text); font: inherit; font-size: var(--fs-meta); cursor: pointer; }
+.queued-turn-edit-footer button:hover:not(:disabled) { border-color: var(--muted); background: var(--hover); }
+.queued-turn-edit-footer button:disabled { opacity: .45; cursor: default; }
 
 /* Composer attachment chips — attachments are manageable in every chat mode */
 /* Attachment chips: the remove control only asserts itself on hover/focus. */
@@ -2689,6 +2700,8 @@ button[aria-disabled="true"] { cursor: not-allowed; }
 .workflow-editor-header strong { color: var(--text); font-size: var(--fs-body); font-weight: 620; letter-spacing: var(--track-tight); }
 .workflow-editor-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
 .workflow-editor-grid label { min-width: 0; display: flex; flex-direction: column; gap: 5px; color: var(--muted); font-size: var(--fs-meta); font-weight: 550; }
+.workflow-select-field { min-width: 0; display: flex; flex-direction: column; gap: 5px; color: var(--muted); font-size: var(--fs-meta); font-weight: 550; }
+.workflow-select-field .app-select-trigger { min-height: 32px; border-radius: var(--r-sm); font-size: var(--fs-meta); }
 .workflow-editor-grid label.wide { grid-column: 1 / -1; }
 .workflow-editor-grid input, .workflow-editor-grid select, .workflow-step input, .workflow-step textarea { min-width: 0; width: 100%; min-height: 32px; padding: var(--s-2); border: 1px solid var(--line); border-radius: var(--r-sm); outline: 0; color: var(--text); background: var(--field); font-size: var(--fs-meta); font-weight: 400; resize: vertical; transition: border-color var(--t-fast) ease; }
 .workflow-editor-grid input:focus, .workflow-editor-grid select:focus, .workflow-step input:focus, .workflow-step textarea:focus { border-color: color-mix(in srgb, var(--green) 50%, var(--line)); }
@@ -2731,16 +2744,18 @@ button[aria-disabled="true"] { cursor: not-allowed; }
 .workflow-builtins code { color: var(--muted); font-size: var(--fs-micro); }
 .workflow-step-behavior { display: grid; grid-template-columns: minmax(120px,1.4fr) repeat(2,minmax(70px,.8fr)); gap: 6px; }
 .workflow-step-behavior label { min-width: 0; display: flex; flex-direction: column; gap: 3px; color: var(--muted-2); font-size: var(--fs-micro); }
+.workflow-step-behavior .workflow-select-field { gap: 3px; color: var(--muted-2); font-size: var(--fs-micro); }
+.workflow-step-behavior .app-select-trigger { min-height: 31px; }
 .workflow-step-behavior label:nth-child(2):not(:last-child), .workflow-step-behavior label:nth-child(3):not(:last-child) { grid-column: auto; }
 .workflow-dialog-backdrop { position: fixed; z-index: 260; inset: 0; display: grid; place-items: center; padding: 24px; background: rgba(3,5,6,.68); backdrop-filter: blur(8px); animation: modalFadeIn 160ms ease both; }
-.workflow-run-dialog { width: min(500px, calc(100vw - 48px)); display: flex; flex-direction: column; gap: 10px; padding: 14px; border: 1px solid var(--line-strong); border-radius: 13px; background: var(--panel); box-shadow: 0 25px 80px rgba(0,0,0,.45); }
+.workflow-run-dialog { max-height: calc(100vh - 48px); overflow-y: auto; width: min(500px, calc(100vw - 48px)); display: flex; flex-direction: column; gap: 10px; padding: 14px; border: 1px solid var(--line-strong); border-radius: 13px; background: var(--panel); box-shadow: 0 25px 80px rgba(0,0,0,.45); }
 .workflow-run-dialog > p { margin: 0; color: var(--muted); font-size: var(--fs-meta); line-height: 1.5; }
 .workflow-run-input { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: var(--fs-micro); }
 .workflow-command-warning { display: grid; grid-template-columns: 20px minmax(0,1fr); gap: 7px; align-items: center; padding: 8px; border: 1px solid color-mix(in srgb, var(--orange) 28%, var(--line)); border-radius: 8px; color: var(--orange); background: color-mix(in srgb, var(--orange) 6%, transparent); }
 .workflow-command-warning span { display: flex; flex-direction: column; gap: 2px; }
 .workflow-command-warning strong { color: var(--text); font-size: var(--fs-micro); }
 .workflow-command-warning small { color: var(--muted); font-size: var(--fs-micro); }
-.workflow-command-warning code { overflow: hidden; padding: 5px 6px; border-radius: 5px; color: var(--text); background: rgba(0,0,0,.18); font-size: var(--fs-micro); white-space: nowrap; text-overflow: ellipsis; }
+.workflow-command-warning code { overflow-wrap: anywhere; overflow: auto; padding: 5px 6px; border-radius: 5px; color: var(--text); background: rgba(0,0,0,.18); font-size: var(--fs-micro); white-space: pre-wrap; }
 .workflow-run-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
 .workflow-run-summary > span:not(.workflow-run-chip) { padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); background: rgba(255,255,255,.018); font-size: var(--fs-micro); }
 .workflow-run-inspector { display: flex; flex-direction: column; gap: 9px; padding: 11px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--panel-2); }
@@ -3819,3 +3834,14 @@ body[data-pane-resizing] .sidebar, body[data-pane-resizing] .studio-dock { trans
 .subagent-relay-actions button { border: 1px solid var(--line); border-radius: var(--r-sm); padding: 3px 7px; color: var(--text); background: transparent; font: inherit; font-size: var(--fs-micro); cursor: pointer; }
 .subagent-relay-actions button:disabled { opacity: .5; cursor: wait; }
 .sa-preset-row > input { width: 100%; min-width: 0; padding: 7px; border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--text); background: var(--bg); font: inherit; }
+
+/* Explicitly selected workflows stay separate from ordinary punctuation. */
+.composer-workflow-selection { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 0 0 8px; min-width: 0; }
+.composer-workflow-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 5px 8px; border: 1px solid var(--line-strong); border-radius: 8px; color: var(--text); background: var(--panel-2); font-size: var(--fs-meta); overflow-wrap: anywhere; }
+.composer-workflow-chip > svg { flex-shrink: 0; }
+.composer-workflow-chip > button { display: grid; place-items: center; flex-shrink: 0; width: 22px; height: 22px; padding: 0; border-radius: 5px; color: var(--muted); }
+.composer-workflow-chip > button:hover { color: var(--text); background: var(--panel-3); }
+.composer-workflow-hint { min-width: 0; color: var(--muted); font-size: var(--fs-meta); line-height: 1.4; }
+.workflow-user-prompt { min-width: 0; padding: 9px; border: 1px solid var(--line); border-radius: 8px; font-size: var(--fs-meta); }
+.workflow-user-prompt strong { color: var(--muted); font-size: var(--fs-micro); }
+.workflow-user-prompt p { margin: 5px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }

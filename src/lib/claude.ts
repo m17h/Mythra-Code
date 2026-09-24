@@ -248,6 +248,8 @@ export interface ClaudeTurnOptions {
   model: string;
   effort: ReasoningEffort;
   permission: PermissionMode;
+  /** False for unattended workflows; native requests for approval or input are denied. */
+  interactive?: boolean;
   systemPrompt: string;
   resume: boolean;
   attachments: ClaudeAttachment[];

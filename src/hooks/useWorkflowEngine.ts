@@ -1,8 +1,13 @@
 import { useCallback, useEffect, useRef } from "react";
 import { auditEvent, rpc } from "../lib/codex";
+import { startClaudeTurn, killClaudeTurn, saveClaudeTranscript } from "../lib/claude";
+import { startCursorTurn, killCursorTurn, saveCursorTranscript } from "../lib/cursor";
+import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL } from "../lib/appConfig";
+import { withMythraCodeCompletionInstructions } from "../lib/completionPrompt";
+import { markProviderStopIntent, clearProviderStopIntent } from "../lib/providerStopIntent";
 import { friendlyError } from "../lib/errors";
 import { useTaskStore, type TaskStatus } from "../lib/taskStore";
-import { shellCommand } from "../lib/shellCommand";
+import { shellCommandWithWindowsQuotes } from "../lib/shellCommand";
 import { commandSandbox, threadStartParams, turnStartParams } from "../lib/turnConfig";
 import type { LMStudioModel } from "../lib/lmStudio";
 import {
@@ -19,7 +24,7 @@ import {
   type WorkflowRunSource,
   type WorkflowRunStepRecord,
 } from "../lib/workflows";
-import type { CustomAgentProfile, Project, Provider, Thread, Turn } from "../types";
+import type { CustomAgentProfile, Project, Provider, ScheduleRunSettings, Thread, Turn } from "../types";
 
 const TERMINAL_STATUSES = new Set<TaskStatus>(["completed", "interrupted", "error"]);
 
@@ -62,11 +67,14 @@ function isWorkflowTurnTimeoutError(reason: unknown): boolean {
 
 interface ActiveWorkflowRun {
   runId: string;
+  provider: Provider;
   stopRequested: boolean;
   threadId?: string;
   turnId?: string;
   processId?: string;
   waitController?: AbortController;
+  interrupt?: { turnId: string; promise: Promise<void> };
+  stopError?: string;
   publish: (patch: Partial<WorkflowRunRecord>) => void;
 }
 
@@ -191,6 +199,10 @@ interface WorkflowEngineDeps {
   projects: Project[];
   runtimeAvailable: boolean;
   chatGptConnected: boolean;
+  claudeReady?: boolean;
+  cursorReady?: boolean;
+  getSkillsPluginPath?: () => string | undefined;
+  onLocalThreadUpdated?: (thread: Thread, cursorSessionId?: string, run?: ScheduleRunSettings) => Thread | void;
   openRouterReady: boolean;
   lmStudioReady?: boolean;
   lmStudioModels?: LMStudioModel[];
@@ -222,8 +234,11 @@ function workflowPreflight(
   if (validationError) return { ready: false, retryWhenReady: false, message: validationError };
   const project = current.projects.find((item) => item.id === workflow.projectId);
   if (!project) return { ready: false, retryWhenReady: false, message: "The workflow project is no longer available." };
-  if (!current.runtimeAvailable) {
-    return { ready: false, retryWhenReady: true, message: "Install or reconnect the Codex runtime before running workflows." };
+  const localProvider = workflow.run.provider === "claude" || workflow.run.provider === "cursor";
+  if (!current.runtimeAvailable && (!localProvider || workflow.steps.some((step) => step.type === "command"))) {
+    return { ready: false, retryWhenReady: true, message: localProvider
+      ? "Install or reconnect the Codex runtime to run this workflow's shell-command steps. Its agent steps use the selected provider."
+      : "Install or reconnect the Codex runtime before running workflows." };
   }
   if (workflow.run.provider === "openai" && !current.chatGptConnected) {
     return { ready: false, retryWhenReady: true, message: "Sign in to ChatGPT before running this OpenAI workflow." };
@@ -234,19 +249,38 @@ function workflowPreflight(
   if (workflow.run.provider === "lmstudio" && !current.lmStudioReady) {
     return { ready: false, retryWhenReady: true, message: "Start LM Studio, load a model, and refresh its connection before running this workflow." };
   }
-  if (workflow.run.provider === "claude" || workflow.run.provider === "cursor") {
-    const provider = workflow.run.provider === "cursor" ? "Cursor" : "Claude";
-    return { ready: false, retryWhenReady: false, message: `${provider} workflows are not enabled yet. Run these steps from a ${provider} project thread, or save the workflow with OpenAI, OpenRouter, or LM Studio.` };
+  if (workflow.run.provider === "claude" && !current.claudeReady) {
+    return { ready: false, retryWhenReady: true, message: "Set up Claude Code and sign in before running this Claude workflow." };
+  }
+  if (workflow.run.provider === "cursor" && !current.cursorReady) {
+    return { ready: false, retryWhenReady: true, message: "Set up Cursor and sign in before running this Cursor workflow." };
   }
   return { ready: true, workflow, project };
 }
 
 async function interruptActiveTurn(active: ActiveWorkflowRun): Promise<void> {
   if (!active.threadId || !active.turnId) return;
-  await rpc("turn/interrupt", {
-    threadId: active.threadId,
-    turnId: active.turnId,
-  }).catch(() => undefined);
+  if (active.interrupt?.turnId === active.turnId) return active.interrupt.promise;
+  const { threadId, turnId } = active;
+  const promise = (async () => {
+    if (active.provider === "claude" || active.provider === "cursor") {
+      markProviderStopIntent(threadId, turnId);
+      try {
+        await (active.provider === "claude" ? killClaudeTurn(threadId) : killCursorTurn(threadId));
+        const task = useTaskStore.getState().tasks[threadId];
+        if (task?.lastCompletedTurnId !== turnId) useTaskStore.getState().completeTurn(threadId, turnId, "interrupted");
+      } finally {
+        clearProviderStopIntent(threadId, turnId);
+      }
+    } else {
+      await rpc("turn/interrupt", { threadId, turnId });
+    }
+  })().catch((error) => {
+    active.stopError = `Could not stop the workflow agent: ${friendlyError(error)}`;
+    throw error;
+  });
+  active.interrupt = { turnId, promise };
+  return promise;
 }
 
 export function useWorkflowEngine(deps: WorkflowEngineDeps) {
@@ -265,27 +299,47 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
     active.waitController?.abort();
     const requests: Array<Promise<unknown>> = [];
     if (active.processId) {
-      requests.push(rpc("command/exec/terminate", { processId: active.processId }).catch(() => undefined));
+      const processId = active.processId;
+      requests.push(rpc("command/exec/terminate", { processId }).catch((error) => {
+        // A command that already settled needs no termination. A live one
+        // must not be reported as stopped when its cutoff was rejected.
+        if (active.processId !== processId) return;
+        active.stopError = `Could not stop the workflow command: ${friendlyError(error)}`;
+        throw error;
+      }));
     }
     requests.push(interruptActiveTurn(active));
-    await Promise.all(requests);
-    return true;
+    try {
+      await Promise.all(requests);
+      return true;
+    } catch (error) {
+      depsRef.current.onError(active.stopError ?? friendlyError(error));
+      return false;
+    }
   }, []);
 
   const runWorkflow = useCallback(async (
     workflowId: string,
     source: WorkflowRunSource = "manual",
     variableOverrides: Record<string, string> = {},
+    targetProjectId?: string,
+    invocation?: { userPrompt?: string; onStarted?: (threadId: string) => void },
   ): Promise<string | undefined> => {
     const current = depsRef.current;
     const storedWorkflow = current.workflows.find((item) => item.id === workflowId);
     if (!storedWorkflow || runningRef.current.has(workflowId)) return undefined;
-    const preflight = workflowPreflight(current, storedWorkflow);
+    const preflight = workflowPreflight(current, source === "manual" && targetProjectId
+      ? { ...storedWorkflow, projectId: targetProjectId } : storedWorkflow);
     if (!preflight.ready) {
       if (source === "manual") current.onError(preflight.message);
       return undefined;
     }
     const { workflow, project } = preflight;
+    const userPrompt = invocation?.userPrompt?.trim() ?? "";
+    if (userPrompt && !workflow.steps.some((step) => step.type === "agent")) {
+      current.onError("This recipe only runs commands. Use its inputs instead of an additional prompt.");
+      return undefined;
+    }
 
     const runId = crypto.randomUUID();
     const startedAt = Date.now();
@@ -315,26 +369,52 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
       runState = { ...runState, ...patch };
       current.recordRun(runState);
     };
-    const active: ActiveWorkflowRun = { runId, stopRequested: false, publish };
+    const active: ActiveWorkflowRun = { runId, provider: workflow.run.provider, stopRequested: false, publish };
+    const localProvider = workflow.run.provider === "claude" || workflow.run.provider === "cursor";
+    let localThread: Thread | undefined;
+    let cursorSessionId: string | undefined;
+    let claudeSessionStarted = false;
+    const persistLocalThread = async () => {
+      if (!localThread) return;
+      const task = useTaskStore.getState().tasks[localThread.id];
+      localThread = { ...localThread, updatedAt: Math.floor(Date.now() / 1000) };
+      localThread = depsRef.current.onLocalThreadUpdated?.(localThread, cursorSessionId, workflow.run) ?? localThread;
+      const value = { thread: localThread, messages: task?.messages ?? [], activities: task?.activities ?? [] };
+      if (workflow.run.provider === "claude") await saveClaudeTranscript(value);
+      else await saveCursorTranscript({ ...value, cursorSessionId: cursorSessionId ?? "" });
+    };
 
     runningRef.current.set(workflowId, active);
     publish({});
     try {
-      await current.ensureSkillRoots();
-      const started = await rpc<{ thread: Thread }>("thread/start", threadStartParams(workflow.run, project.path, {
-        serviceName: `Mythra Code Workflow: ${workflow.name}`,
-        customAgents: current.customAgents,
-        modelContextWindow: workflow.run.provider === "lmstudio"
-          ? current.lmStudioModels?.find((entry) => entry.id === workflow.run.model)?.maxContextLength
-          : undefined,
-        interactive: source === "manual",
-      }));
-      threadId = started.thread.id;
+      if (!localProvider) await current.ensureSkillRoots();
+      if (active.stopRequested) throw new WorkflowStoppedError();
+      if (localProvider) {
+        localThread = { id: crypto.randomUUID(), name: `Workflow: ${workflow.name}`, preview: "", cwd: project.path,
+          updatedAt: Math.floor(Date.now() / 1000), modelProvider: workflow.run.provider };
+        threadId = localThread.id;
+      } else {
+        const started = await rpc<{ thread: Thread }>("thread/start", threadStartParams(workflow.run, project.path, {
+          serviceName: `Mythra Code Workflow: ${workflow.name}`,
+          customAgents: current.customAgents,
+          modelContextWindow: workflow.run.provider === "lmstudio"
+            ? current.lmStudioModels?.find((entry) => entry.id === workflow.run.model)?.maxContextLength
+            : undefined,
+          interactive: source === "manual",
+        }));
+        threadId = started.thread.id;
+      }
       active.threadId = threadId;
       if (active.stopRequested) throw new WorkflowStoppedError();
       current.bindThreadToProject(threadId, project.path);
       useTaskStore.getState().ensureTask(threadId, project.path);
-      await rpc("thread/name/set", { threadId, name: `Workflow: ${workflow.name}` }).catch(() => {});
+      // Keep the entire recipe's thread reserved, including gaps after a turn
+      // completes and command steps that do not change the task status.
+      useTaskStore.getState().setWorkflowOwner(threadId, { workflowId: workflow.id, runId });
+      if (localProvider) await persistLocalThread();
+      else await rpc("thread/name/set", { threadId, name: `Workflow: ${workflow.name}` }).catch(() => {});
+      if (active.stopRequested) throw new WorkflowStoppedError();
+      invocation?.onStarted?.(threadId);
       current.onThreadStarted(project, threadId, source);
       publish({ threadId });
 
@@ -380,7 +460,6 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
               variables.previousExitCode = "";
               const activityId = `workflow-${runId}-${step.id}`;
               const processId = `workflow-${runId}-${step.id}-${attempt}`;
-              active.processId = processId;
               useTaskStore.getState().upsertActivity(threadId, {
                 id: activityId,
                 kind: "command",
@@ -393,19 +472,21 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
               await current.beginRunCheckpoint(threadId, project.path, command, workflow.run.provider, workflow.run.model);
               let result: { exitCode: number; stdout: string; stderr: string };
               try {
+                if (active.stopRequested) throw new WorkflowStoppedError();
+                active.processId = processId;
                 result = await rpc<{ exitCode: number; stdout: string; stderr: string }>("command/exec", {
-                  command: shellCommand(command),
+                  command: shellCommandWithWindowsQuotes(command),
                   processId,
                   cwd: project.path,
                   timeoutMs: 30 * 60_000,
                   sandboxPolicy: commandSandbox(workflow.run.permission, project.path),
                 });
               } finally {
+                active.processId = undefined;
                 // Even a failed command may have modified files before it
                 // stopped; finish the snapshot so those edits are captured.
-                void current.finalizeRunCheckpoint(threadId);
+                await current.finalizeRunCheckpoint(threadId);
               }
-              active.processId = undefined;
               stepOutput = [result.stdout, result.stderr].filter(Boolean).join("\n").trim().slice(-12_000);
               useTaskStore.getState().upsertActivity(threadId, {
                 id: activityId,
@@ -417,31 +498,59 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
               variables.previousExitCode = String(result.exitCode);
               if (result.exitCode !== 0) throw new Error(`Command exited with code ${result.exitCode}.`);
             } else {
-              const prompt = workflowPrompt(workflow, step, index, stepInputVariables);
+              const prompt = workflowPrompt(workflow, step, index, stepInputVariables)
+                + (userPrompt ? `\n\nAdditional instructions for this run:\n${userPrompt}` : "");
               const providerPrompt = await current.resolveSkillPrompt(prompt);
               if (active.stopRequested) throw new WorkflowStoppedError();
               variables.previousExitCode = "";
               const beforeMessages = useTaskStore.getState().tasks[threadId]?.messages.length ?? 0;
               useTaskStore.getState().appendUserMessage(threadId, {
-                id: `workflow-${runId}-${step.id}`,
+                id: `workflow-${runId}-${step.id}-${attempt}`,
                 role: "user",
                 text: prompt,
               });
               useTaskStore.getState().setTaskStatus(threadId, "starting");
-              // Snapshot before the model edits anything. The Codex event
-              // router finalizes it when the turn completes, exactly as it
-              // does for user-initiated turns.
+              // Snapshot before the model edits anything. Provider event
+              // routers finalize completed turns; explicitly await local
+              // finalization before the next step can start a new snapshot.
               await current.beginRunCheckpoint(threadId, project.path, prompt, workflow.run.provider, workflow.run.model);
-              let result: { turn: Turn };
+              let result: { turn: Pick<Turn, "id"> };
               try {
-                result = await rpc<{ turn: Turn }>("turn/start", turnStartParams(
-                  workflow.run,
-                  threadId,
-                  project.path,
-                  [{ type: "text", text: providerPrompt, text_elements: [] }],
-                  [],
-                  source === "manual",
-                ));
+                if (active.stopRequested) throw new WorkflowStoppedError();
+                if (localProvider) {
+                  await persistLocalThread();
+                  if (active.stopRequested) throw new WorkflowStoppedError();
+                  const options = {
+                    threadId, cwd: project.path, prompt: providerPrompt,
+                    model: workflow.run.model || (workflow.run.provider === "claude" ? DEFAULT_CLAUDE_MODEL : DEFAULT_CURSOR_MODEL),
+                    effort: workflow.run.ultra ? "ultra" as const : workflow.run.reasoningEffort,
+                    permission: workflow.run.permission,
+                    systemPrompt: withMythraCodeCompletionInstructions(workflow.run.systemPrompt, false),
+                    attachments: [], interactive: source === "manual",
+                  };
+                  if (workflow.run.provider === "claude") {
+                    const started = await startClaudeTurn({ ...options, resume: claudeSessionStarted,
+                      subagentMax: workflow.run.subagentsEnabled ? workflow.run.subagentMax : 0,
+                      customAgents: workflow.run.subagentsEnabled ? current.customAgents : [],
+                      skillsPluginPath: current.getSkillsPluginPath?.() });
+                    claudeSessionStarted = true;
+                    result = { turn: { id: started.turnId } };
+                  } else {
+                    const started = await startCursorTurn({ ...options, resumeSessionId: cursorSessionId });
+                    cursorSessionId = started.cursorSessionId;
+                    localThread = depsRef.current.onLocalThreadUpdated?.(localThread!, cursorSessionId, workflow.run) ?? localThread;
+                    result = { turn: { id: started.turnId } };
+                  }
+                } else {
+                  result = await rpc<{ turn: Turn }>("turn/start", turnStartParams(
+                    workflow.run,
+                    threadId,
+                    project.path,
+                    [{ type: "text", text: providerPrompt, text_elements: [] }],
+                    [],
+                    source === "manual",
+                  ));
+                }
               } catch (reason) {
                 // No turn ever started, so no completion event will finalize
                 // the snapshot; drop it instead of leaving it running forever.
@@ -455,6 +564,7 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
               }
               if (useTaskStore.getState().tasks[threadId]?.lastCompletedTurnId !== active.turnId) {
                 useTaskStore.getState().setActiveTurn(threadId, active.turnId);
+                if (localProvider) useTaskStore.getState().setTaskStatus(threadId, "running");
               }
               if (active.stopRequested) {
                 await interruptActiveTurn(active);
@@ -472,6 +582,7 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
               } finally {
                 clearActiveWaitSignal(active, signal);
               }
+              if (localProvider) await current.finalizeRunCheckpoint(threadId, active.turnId);
               active.turnId = undefined;
               const messages = useTaskStore.getState().tasks[threadId]?.messages.slice(beforeMessages) ?? [];
               stepOutput = [...messages].reverse().find((message) => message.role === "assistant")?.text.trim().slice(-12_000) ?? "";
@@ -491,7 +602,8 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
               || isWorkflowTurnTimeoutError(reason)
               || (step.type === "agent"
                 && Date.now() - attemptStartedAt >= (current.turnTimeoutMs ?? 2 * 60 * 60_000));
-            if (turnTimedOut) await interruptActiveTurn(active);
+            if (turnTimedOut || active.stopRequested || isWorkflowStoppedError(reason)) await interruptActiveTurn(active);
+            if (localProvider && active.turnId) await current.finalizeRunCheckpoint(threadId, active.turnId);
             active.processId = undefined;
             active.turnId = undefined;
             stepError = reason;
@@ -531,6 +643,7 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
           }
         }
 
+        if (localProvider) await persistLocalThread();
         if (stepError) {
           previousStatus = "failed";
           variables.previousStepStatus = "failed";
@@ -553,6 +666,9 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
       }
 
       const finishedAt = Date.now();
+      if (threadId && !useTaskStore.getState().tasks[threadId]?.activeTurnId) {
+        useTaskStore.getState().setTaskStatus(threadId, "completed");
+      }
       publish({
         threadId,
         currentStep: workflow.steps.length,
@@ -578,17 +694,21 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
       }, threadId).catch(() => {});
       return threadId;
     } catch (reason) {
-      const stopped = active.stopRequested || isWorkflowStoppedError(reason);
-      const message = stopped ? "Workflow was stopped." : friendlyError(reason);
+      const stopped = !active.stopError && (active.stopRequested || isWorkflowStoppedError(reason));
+      const message = active.stopError ?? (stopped ? "Workflow was stopped." : friendlyError(reason));
       const finishedAt = Date.now();
-      if (stopped) {
-        steps = steps.map((step) => step.status !== "running" ? step : {
-          ...step,
-          status: "interrupted",
-          finishedAt,
-          error: message,
-        });
+      // A command-only recipe has no provider completion event to set a
+      // terminal task status. Keep held follow-ups queued after Stop/failure.
+      if (threadId && !useTaskStore.getState().tasks[threadId]?.activeTurnId) {
+        useTaskStore.getState().setTaskStatus(threadId, stopped ? "interrupted" : "error", stopped ? undefined : message);
       }
+      if (localProvider) await persistLocalThread().catch((error) => current.onError(`Workflow transcript save failed: ${friendlyError(error)}`));
+      steps = steps.map((step) => step.status !== "running" ? step : {
+        ...step,
+        status: stopped ? "interrupted" : "failed",
+        finishedAt,
+        error: message,
+      });
       publish({
         threadId,
         finishedAt,
@@ -624,6 +744,9 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
     } finally {
       active.waitController?.abort();
       runningRef.current.delete(workflowId);
+      if (threadId && useTaskStore.getState().workflowOwners[threadId]?.runId === runId) {
+        useTaskStore.getState().setWorkflowOwner(threadId, null);
+      }
     }
   }, []);
 
@@ -684,7 +807,7 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
     check();
     const timer = window.setInterval(check, 30_000);
     return () => window.clearInterval(timer);
-  }, [runWorkflow, deps.runtimeAvailable, deps.chatGptConnected, deps.lmStudioReady, deps.openRouterReady]);
+  }, [runWorkflow, deps.runtimeAvailable, deps.chatGptConnected, deps.lmStudioReady, deps.openRouterReady, deps.claudeReady, deps.cursorReady]);
 
   return { runWorkflow, stopWorkflow };
 }

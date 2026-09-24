@@ -34,13 +34,13 @@ describe("CommandPalette", () => {
     expect(screen.getByRole("option", { name: /New thread/i })).toBeInTheDocument();
   });
 
-  it("runs enabled workflows directly from search", () => {
+  it.each(["project-1", ""])("finds enabled workflows with default project %j", (projectId) => {
     const onWorkflow = vi.fn();
     const workflow = {
       id: "workflow-1",
       name: "Release checks",
       description: "",
-      projectId: "project-1",
+      projectId,
       enabled: true,
       trigger: { type: "manual" as const },
       steps: [{ id: "step-1", type: "command" as const, name: "Tests", command: "npm test", continueOnError: false }],
@@ -52,6 +52,7 @@ describe("CommandPalette", () => {
     render(<CommandPalette {...baseProps} projectActive workflows={[workflow]} projects={[{ id: "project-1", name: "Mythra Code", path: "/tmp/openkiwi" }]} onWorkflow={onWorkflow} />);
     fireEvent.click(screen.getByRole("option", { name: /Run workflow: Release checks/i }));
     expect(onWorkflow).toHaveBeenCalledWith(workflow);
+    if (!projectId) expect(screen.queryByText(/Missing project/)).not.toBeInTheDocument();
   });
 
   it("groups mixed results while preserving one keyboard navigation order", () => {

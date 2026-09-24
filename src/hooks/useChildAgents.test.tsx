@@ -93,6 +93,8 @@ function context(overrides: Partial<ChildAgentContext> = {}): ChildAgentContext 
     applyProjectSubagentSettings: vi.fn(),
     applyProjectRunCommand: vi.fn(),
     projectRunCommandForThread: () => undefined,
+    applyProjectCheckCommand: vi.fn(),
+    projectCheckCommandForThread: () => undefined,
     runProjectCommand: vi.fn(async () => ({ started: true, exited: false, output: "$ npm run dev\nready on :5173\n" })),
     ...overrides,
   };
@@ -293,11 +295,11 @@ describe("useChildAgents", () => {
       const view = await mount({ applyProjectRunCommand });
       await view.send(request({
         tool: "set_project_run_command",
-        arguments: { command: "  npm run dev ", label: "Dev server" },
+        arguments: { command: "  npm run dev ", setupCommand: " npm install ", label: "Dev server" },
       }));
 
-      expect(applyProjectRunCommand).toHaveBeenCalledWith("root-1", expect.objectContaining({ command: "npm run dev", label: "Dev server" }));
-      expect(lastResponse()?.[1]).toMatchObject({ saved: true, command: "npm run dev", label: "Dev server" });
+      expect(applyProjectRunCommand).toHaveBeenCalledWith("root-1", expect.objectContaining({ command: "npm run dev", setupCommand: "npm install", label: "Dev server" }));
+      expect(lastResponse()?.[1]).toMatchObject({ saved: true, command: "npm run dev", setupCommand: "npm install", label: "Dev server" });
       expect(useTaskStore.getState().tasks["root-1"].activities.at(-1)).toMatchObject({ title: "Run button updated" });
       expect(useTaskStore.getState().tasks["root-1"].approvals).toHaveLength(0);
 
@@ -318,19 +320,30 @@ describe("useChildAgents", () => {
       expect(useTaskStore.getState().tasks["root-1"].activities.at(-1)).toMatchObject({ title: "Run button set and started" });
     });
 
+    it("replaces an old setup when an explicit new recipe omits setupCommand", async () => {
+      const applyProjectRunCommand = vi.fn();
+      const view = await mount({
+        applyProjectRunCommand,
+        projectRunCommandForThread: () => ({ command: "npm run dev", setupCommand: "npm install", updatedAt: 1 }),
+      });
+      await view.send(request({ tool: "set_project_run_command", arguments: { command: "npm run dev" } }));
+      expect(applyProjectRunCommand).toHaveBeenCalledWith("root-1", expect.objectContaining({ command: "npm run dev" }));
+      expect(applyProjectRunCommand.mock.calls[0][1].setupCommand).toBeUndefined();
+    });
+
     it("reuses the saved command on run: true with an empty command and reports a quick failure", async () => {
       const applyProjectRunCommand = vi.fn();
       const runProjectCommand = vi.fn(async () => ({ started: true, exited: true, output: "$ make dev\nmake: *** No rule to make target 'dev'.\n[exit 2]\n" }));
       const view = await mount({
         applyProjectRunCommand,
         runProjectCommand,
-        projectRunCommandForThread: () => ({ command: "make dev", updatedAt: 1 }),
+        projectRunCommandForThread: () => ({ command: "make dev", setupCommand: "make setup", updatedAt: 1 }),
       });
       await view.send(request({ tool: "set_project_run_command", arguments: { command: "", run: true } }));
 
       expect(applyProjectRunCommand).not.toHaveBeenCalled();
-      expect(runProjectCommand).toHaveBeenCalledWith("root-1", expect.objectContaining({ command: "make dev" }));
-      expect(lastResponse()?.[1]).toMatchObject({ saved: false, started: true, exited: true, output: expect.stringContaining("[exit 2]") });
+      expect(runProjectCommand).toHaveBeenCalledWith("root-1", expect.objectContaining({ command: "make dev", setupCommand: "make setup" }));
+      expect(lastResponse()?.[1]).toMatchObject({ saved: false, setupCommand: "make setup", started: true, exited: true, output: expect.stringContaining("[exit 2]") });
     });
 
     it("explains when nothing is saved to run, or the terminal is busy", async () => {
@@ -350,6 +363,30 @@ describe("useChildAgents", () => {
 
       expect(applyProjectRunCommand).not.toHaveBeenCalled();
       expect(lastResponse()?.[2]).toMatch(/not inside a saved project/);
+    });
+
+    it("saves and clears the project's Checks command without running it", async () => {
+      const applyProjectCheckCommand = vi.fn();
+      const runProjectCommand = vi.fn();
+      const view = await mount({ applyProjectCheckCommand, runProjectCommand });
+      await view.send(request({ tool: "set_project_check_command", arguments: { command: "  npm run verify  " } }));
+      expect(applyProjectCheckCommand).toHaveBeenCalledWith("root-1", expect.objectContaining({ command: "npm run verify", updatedAt: expect.any(Number) }));
+      expect(lastResponse()?.[1]).toMatchObject({ saved: true, command: "npm run verify" });
+      expect(runProjectCommand).not.toHaveBeenCalled();
+
+      await view.send(request({ requestId: "request-2", tool: "set_project_check_command", arguments: { command: "" } }));
+      expect(applyProjectCheckCommand).toHaveBeenLastCalledWith("root-1", null);
+      expect(lastResponse()?.[1]).toMatchObject({ saved: true, command: null });
+    });
+
+    it("rejects an oversized Checks command and a projectless change", async () => {
+      const applyProjectCheckCommand = vi.fn();
+      const view = await mount({ applyProjectCheckCommand });
+      await view.send(request({ tool: "set_project_check_command", arguments: { command: "x".repeat(4_001) } }));
+      expect(lastResponse()?.[2]).toMatch(/too long/);
+      await view.send(request({ requestId: "request-2", tool: "set_project_check_command", arguments: { command: "npm test" }, sessionId: "missing" }));
+      expect(lastResponse()?.[2]).toMatch(/not inside a saved project/);
+      expect(applyProjectCheckCommand).not.toHaveBeenCalled();
     });
 
     it("queues a project-scoped settings proposal and applies it only after approval", async () => {

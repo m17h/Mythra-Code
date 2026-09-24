@@ -327,7 +327,7 @@ async function persistTranscript(
     return;
   }
 
-  if (state.snapshotOnlyTurnId === tail.turnId) {
+  if (state.snapshotOnlyTurnId === tail.turnId || state.snapshotOnlyTurnId === "__pending__") {
     if (state.partial) throw new Error("Paged local transcript requires a full reload before snapshot recovery");
     state = await saveSnapshot(provider, transcript);
     if (!tail.seal) state.snapshotOnlyTurnId = tail.turnId;
@@ -413,12 +413,15 @@ export async function loadLocalTranscript<T extends LocalTranscriptValue>(
   try {
     const state = await readWriteState(provider, threadId);
     if (existing?.partial) return transcript;
+    const persistedTail = selectMutableTail(transcript);
     if (state) rememberPersistenceState(key, {
       ...state,
       partial: false,
       mutableTurnId: storedMutableTurnId(transcript, state),
-      persistedTurnId: selectMutableTail(transcript)?.turnId ?? null,
-      snapshotOnlyTurnId: null,
+      persistedTurnId: persistedTail?.turnId ?? null,
+      // A sealed snapshot can still contain a local prompt awaiting its real
+      // turn ID. Its first identified save must replace that snapshot.
+      snapshotOnlyTurnId: persistedTail?.turnId === "__pending__" ? "__pending__" : null,
     });
     else persistenceStates.delete(key);
   } catch {
@@ -455,11 +458,11 @@ export async function loadLocalTranscriptPage<T extends LocalTranscriptPage>(
     persistenceStates.delete(key);
     return null;
   }
-  // An interrupted process can leave its newest durable turn mutable. A
-  // bounded renderer window cannot safely snapshot around unseen history when
-  // the next turn begins, so recover the complete transcript once on this
-  // exceptional restart path. Ordinary sealed transcripts stay paged.
-  if (page.tailSeq <= page.headSeq && page.nextCursor) {
+  // A mutable tail or a sealed prompt still awaiting its real turn ID may
+  // need a replacement snapshot. Recover unseen history once before that
+  // replacement; ordinary sealed transcripts stay paged.
+  let persistedTail = selectMutableTail(page);
+  if (page.nextCursor && (page.tailSeq <= page.headSeq || persistedTail?.turnId === "__pending__")) {
     const transcript = await invoke<LocalTranscriptValue | null>("local_transcript_full_read", { provider, threadId });
     if (!transcript) {
       persistenceStates.delete(key);
@@ -471,6 +474,7 @@ export async function loadLocalTranscriptPage<T extends LocalTranscriptPage>(
       nextCursor: null,
       byteLen: estimateTranscriptBytes(transcript.messages, transcript.activities),
     } as T;
+    persistedTail = selectMutableTail(page);
   }
   // The backend returns the page and mutable-tail boundary under one database
   // lock, avoiding both a second native round trip and a page/token race.
@@ -480,8 +484,8 @@ export async function loadLocalTranscriptPage<T extends LocalTranscriptPage>(
     tailSeq: page.tailSeq,
     partial: Boolean(page.nextCursor),
     mutableTurnId: storedMutableTurnId(page, page),
-    persistedTurnId: selectMutableTail(page)?.turnId ?? null,
-    snapshotOnlyTurnId: null,
+    persistedTurnId: persistedTail?.turnId ?? null,
+    snapshotOnlyTurnId: persistedTail?.turnId === "__pending__" ? "__pending__" : null,
   });
   return page;
 }

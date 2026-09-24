@@ -1,5 +1,5 @@
 import type { Thread } from "../types";
-import type { TaskStatus } from "./taskStore";
+import type { TaskStatus, WorkflowThreadOwner } from "./taskStore";
 import { ownsChildren, type OwnershipLinks } from "./nativeAgentLinks";
 import { isLocalSubscriptionThread } from "./threadProvider";
 import { boundThreadPreview } from "./threadPreview";
@@ -92,12 +92,13 @@ export function filterThreadsByKind(
 export function partitionBulkArchiveThreads(
   threads: Thread[],
   statuses: Record<string, TaskStatus | undefined>,
+  workflowOwners: Record<string, WorkflowThreadOwner> = {},
 ): { ready: Thread[]; active: Thread[] } {
   const ready: Thread[] = [];
   const active: Thread[] = [];
   for (const thread of threads) {
     const status = statuses[thread.id];
-    (status === "starting" || status === "running" ? active : ready).push(thread);
+    (status === "starting" || status === "running" || workflowOwners[thread.id] ? active : ready).push(thread);
   }
   return { ready, active };
 }
@@ -106,10 +107,12 @@ export function countActiveThreadsByWorkspace(
   index: ThreadSidebarIndex,
   bindings: Record<string, string>,
   statuses: Record<string, TaskStatus | undefined>,
+  workflowOwners: Record<string, WorkflowThreadOwner> = {},
 ): Record<string, number> {
   const counts: Record<string, number> = {};
-  for (const [threadId, status] of Object.entries(statuses)) {
-    if (status !== "starting" && status !== "running") continue;
+  for (const threadId of new Set([...Object.keys(statuses), ...Object.keys(workflowOwners)])) {
+    const status = statuses[threadId];
+    if (status !== "starting" && status !== "running" && !workflowOwners[threadId]) continue;
     const pathValue = bindings[threadId] || index[threadId]?.cwd;
     if (!pathValue) continue;
     const path = normalizedPath(pathValue);

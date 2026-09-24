@@ -313,6 +313,39 @@ describe("useTurnRunner", () => {
     expect(cursor.startCursorTurn).not.toHaveBeenCalled();
   });
 
+  it.each(["cursor", "claude"] as const)("keeps composer attachments and skill mentions out of a separate %s review action", async (provider) => {
+    const overrides = {
+      attachments: [{ path: "/tmp/unsent.png", name: "unsent.png", kind: "image" as const }],
+      resolveSkillPrompt: vi.fn(async () => "should not resolve"),
+      running: false,
+    };
+    const deps = provider === "claude" ? claudeContext(overrides) : context(overrides);
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => {
+      expect(await result.current.sendMessage("Review @example in the diff", { useComposerAttachments: false, resolveSkillMentions: false })).toBe(true);
+    });
+    const start = provider === "claude" ? claude.startClaudeTurn : cursor.startCursorTurn;
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({ prompt: "Review @example in the diff", attachments: [] }));
+    expect(deps.resolveSkillPrompt).not.toHaveBeenCalled();
+    expect(deps.setAttachments).not.toHaveBeenCalled();
+  });
+
+  it("resolves a user-authored skill in a formatted review without changing its visible text", async () => {
+    const fullText = "Review this change with @review. Evidence quotes @example.";
+    const source = "Review this change with @review.";
+    const resolveSkillPrompt = vi.fn(async () => "review skill context");
+    const deps = context({ resolveSkillPrompt });
+    const { result } = renderHook(() => useTurnRunner(deps));
+
+    await act(async () => {
+      expect(await result.current.sendMessage(fullText, { useComposerAttachments: false, skillInvocationText: source })).toBe(true);
+    });
+
+    expect(resolveSkillPrompt).toHaveBeenCalledExactlyOnceWith(fullText, source);
+    expect(cursor.startCursorTurn).toHaveBeenCalledWith(expect.objectContaining({ prompt: "review skill context" }));
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]?.messages.at(-1)?.text).toBe(fullText);
+  });
+
   it("sends resolved skill instructions to Cursor while keeping the visible message unchanged", async () => {
     const resolveSkillPrompt = vi.fn(async () => "resolved skill context\n\n@review this");
     const deps = context({ resolveSkillPrompt });
@@ -320,7 +353,7 @@ describe("useTurnRunner", () => {
 
     await act(async () => { await result.current.sendMessage("@review this"); });
 
-    expect(resolveSkillPrompt).toHaveBeenCalledExactlyOnceWith("@review this");
+    expect(resolveSkillPrompt).toHaveBeenCalledExactlyOnceWith("@review this", undefined);
     expect(cursor.startCursorTurn).toHaveBeenCalledWith(expect.objectContaining({
       prompt: "resolved skill context\n\n@review this",
     }));
@@ -334,7 +367,7 @@ describe("useTurnRunner", () => {
 
     await act(async () => { await result.current.sendMessage("@review this"); });
 
-    expect(resolveSkillPrompt).toHaveBeenCalledExactlyOnceWith("@review this");
+    expect(resolveSkillPrompt).toHaveBeenCalledExactlyOnceWith("@review this", undefined);
     expect(claude.startClaudeTurn).toHaveBeenCalledWith(expect.objectContaining({
       prompt: "resolved skill context\n\n@review this",
     }));
@@ -684,6 +717,193 @@ describe("useTurnRunner", () => {
     expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]?.queuedTurns).toEqual([]);
   });
 
+  it("holds a queued follow-up across workflow step completion until the workflow releases its thread", async () => {
+    const store = useTaskStore.getState();
+    store.ensureTask(CURSOR_THREAD.id, CURSOR_THREAD.cwd);
+    store.setWorkflowOwner(CURSOR_THREAD.id, { workflowId: "recipe", runId: "run-1" });
+    store.setActiveTurn(CURSOR_THREAD.id, "workflow-step-1");
+    store.setTaskStatus(CURSOR_THREAD.id, "running");
+    const { result } = renderHook(() => useTurnRunner(context({ running: true })));
+    await act(async () => { expect(await result.current.sendMessage("after the entire recipe")).toBe(true); });
+
+    await act(async () => { store.completeTurn(CURSOR_THREAD.id, "workflow-step-1", "completed"); });
+    expect(cursor.startCursorTurn).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id].queuedTurns[0]).toMatchObject({ status: "queued" });
+
+    await act(async () => { store.setWorkflowOwner(CURSOR_THREAD.id, null); });
+    expect(cursor.startCursorTurn).toHaveBeenCalledWith(expect.objectContaining({ prompt: "after the entire recipe" }));
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id].queuedTurns).toEqual([]);
+  });
+
+  it("keeps workflow follow-ups queued after Stop and routes steering into the queue", async () => {
+    const store = useTaskStore.getState();
+    store.ensureTask(CURSOR_THREAD.id, CURSOR_THREAD.cwd);
+    store.setWorkflowOwner(CURSOR_THREAD.id, { workflowId: "recipe", runId: "run-1" });
+    store.setActiveTurn(CURSOR_THREAD.id, "workflow-step-1");
+    store.setTaskStatus(CURSOR_THREAD.id, "running");
+    const { result } = renderHook(() => useTurnRunner(context({ running: true })));
+
+    await act(async () => { expect(await result.current.steerMessage("later guidance")).toBe(true); });
+    expect(cursor.steerCursorTurn).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id].queuedTurns[0]).toMatchObject({ text: "later guidance", status: "queued" });
+
+    await act(async () => {
+      store.completeTurn(CURSOR_THREAD.id, "workflow-step-1", "interrupted");
+      store.setWorkflowOwner(CURSOR_THREAD.id, null);
+    });
+    expect(cursor.startCursorTurn).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id].queuedTurns[0]).toMatchObject({ status: "queued" });
+  });
+
+  it("keeps a queued review literal after rerender and turn completion", async () => {
+    const store = useTaskStore.getState();
+    store.ensureTask(CURSOR_THREAD.id, CURSOR_THREAD.cwd);
+    store.setActiveTurn(CURSOR_THREAD.id, "turn-live");
+    store.setTaskStatus(CURSOR_THREAD.id, "running");
+    const resolveSkillPrompt = vi.fn(async () => "unexpected skill expansion");
+    const deps = context({ running: true, resolveSkillPrompt });
+    const { result, rerender } = renderHook(({ value }) => useTurnRunner(value), { initialProps: { value: deps } });
+    await act(async () => {
+      expect(await result.current.sendMessage("Review @example in diff", { useComposerAttachments: false, resolveSkillMentions: false })).toBe(true);
+    });
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id].queuedTurns[0]).toMatchObject({ resolveSkillMentions: false });
+    rerender({ value: { ...deps, running: false } });
+    await act(async () => { store.completeTurn(CURSOR_THREAD.id, "turn-live", "completed"); });
+    expect(cursor.startCursorTurn).toHaveBeenCalledWith(expect.objectContaining({ prompt: "Review @example in diff", attachments: [] }));
+    expect(resolveSkillPrompt).not.toHaveBeenCalled();
+  });
+
+  it("preserves authored skill source when a formatted review is queued and later delivered", async () => {
+    const store = useTaskStore.getState();
+    store.ensureTask(CURSOR_THREAD.id, CURSOR_THREAD.cwd);
+    store.setActiveTurn(CURSOR_THREAD.id, "turn-live");
+    store.setTaskStatus(CURSOR_THREAD.id, "running");
+    const fullText = "Review with @review. Diff quotes @example.";
+    const source = "Review with @review.";
+    const resolveSkillPrompt = vi.fn(async () => "resolved authored skill");
+    const deps = context({ running: true, resolveSkillPrompt });
+    const { result, rerender } = renderHook(({ value }) => useTurnRunner(value), { initialProps: { value: deps } });
+
+    await act(async () => {
+      expect(await result.current.sendMessage(fullText, { skillInvocationText: source })).toBe(true);
+    });
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id].queuedTurns[0].skillInvocationText).toBe(source);
+    rerender({ value: { ...deps, running: false } });
+    await act(async () => { store.completeTurn(CURSOR_THREAD.id, "turn-live", "completed"); });
+    expect(resolveSkillPrompt).toHaveBeenCalledWith(fullText, source);
+    expect(cursor.startCursorTurn).toHaveBeenCalledWith(expect.objectContaining({ prompt: "resolved authored skill" }));
+  });
+
+  it("still resolves skills in an ordinary queued prompt after rerender", async () => {
+    const store = useTaskStore.getState();
+    store.ensureTask(CURSOR_THREAD.id, CURSOR_THREAD.cwd);
+    store.setActiveTurn(CURSOR_THREAD.id, "turn-live");
+    store.setTaskStatus(CURSOR_THREAD.id, "running");
+    const resolveSkillPrompt = vi.fn(async () => "expanded skill instructions");
+    const deps = context({ running: true, resolveSkillPrompt });
+    const { result, rerender } = renderHook(({ value }) => useTurnRunner(value), { initialProps: { value: deps } });
+    await act(async () => { expect(await result.current.sendMessage("Use @example")).toBe(true); });
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id].queuedTurns[0]).not.toHaveProperty("resolveSkillMentions");
+    rerender({ value: { ...deps, running: false } });
+    await act(async () => { store.completeTurn(CURSOR_THREAD.id, "turn-live", "completed"); });
+    expect(resolveSkillPrompt).toHaveBeenCalledWith("Use @example", undefined);
+    expect(cursor.startCursorTurn).toHaveBeenCalledWith(expect.objectContaining({ prompt: "expanded skill instructions" }));
+  });
+
+  it("keeps a queued review literal when steered into the active turn", async () => {
+    const store = useTaskStore.getState();
+    store.ensureTask(CURSOR_THREAD.id, CURSOR_THREAD.cwd);
+    store.setActiveTurn(CURSOR_THREAD.id, "turn-live");
+    store.setTaskStatus(CURSOR_THREAD.id, "running");
+    const resolveSkillPrompt = vi.fn(async () => "unexpected skill expansion");
+    const deps = context({ running: true, resolveSkillPrompt });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { await result.current.sendMessage("Review @example", { resolveSkillMentions: false }); });
+    const queued = useTaskStore.getState().tasks[CURSOR_THREAD.id].queuedTurns[0];
+    await act(async () => { await result.current.steerQueuedMessage(queued.id); });
+    expect(cursor.steerCursorTurn).toHaveBeenCalledWith(CURSOR_THREAD.id, "Review @example", []);
+    expect(resolveSkillPrompt).not.toHaveBeenCalled();
+  });
+
+  it("holds FIFO delivery during editing, then sends only the saved text and original attachments", async () => {
+    const store = useTaskStore.getState();
+    store.ensureTask(CURSOR_THREAD.id, CURSOR_THREAD.cwd);
+    store.setActiveTurn(CURSOR_THREAD.id, "turn-live");
+    store.setTaskStatus(CURSOR_THREAD.id, "running");
+    const attachment = { name: "notes.md", path: "/tmp/notes.md", kind: "file" as const };
+    const deps = context({ running: true, attachments: [attachment] });
+    const { result, rerender } = renderHook(({ value }) => useTurnRunner(value), { initialProps: { value: deps } });
+    await act(async () => { await result.current.sendMessage("original"); await result.current.sendMessage("second"); });
+    const entry = useTaskStore.getState().tasks[CURSOR_THREAD.id].queuedTurns[0];
+    act(() => { expect(result.current.beginEditQueuedMessage(entry.id)).toBe(true); });
+    await act(async () => { await result.current.steerQueuedMessage(entry.id); });
+    expect(cursor.steerCursorTurn).not.toHaveBeenCalled();
+    await act(async () => { store.completeTurn(CURSOR_THREAD.id, "turn-live", "completed"); });
+    await act(async () => { result.current.retryQueuedMessage(entry.id); });
+    expect(cursor.startCursorTurn).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id].queuedTurns).toHaveLength(2);
+    rerender({ value: { ...deps, running: false } });
+    await act(async () => { await result.current.sendMessage("third, typed after completion"); });
+    expect(cursor.startCursorTurn).not.toHaveBeenCalled();
+    await act(async () => { expect(result.current.finishEditQueuedMessage(entry.id, "revised")).toBe(true); });
+    expect(cursor.startCursorTurn).toHaveBeenCalledTimes(1);
+    expect(cursor.startCursorTurn).toHaveBeenCalledWith(expect.objectContaining({ prompt: expect.stringContaining("revised") }));
+    expect(cursor.startCursorTurn.mock.calls[0][0].attachments).toEqual([{ path: "/tmp/notes.md", kind: "file" }]);
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id].queuedTurns.map((item) => item.text)).toEqual(["second", "third, typed after completion"]);
+  });
+
+  it("does not reuse authored skill mentions after the queued review text is edited", async () => {
+    const store = useTaskStore.getState();
+    store.ensureTask(CURSOR_THREAD.id, CURSOR_THREAD.cwd);
+    store.setActiveTurn(CURSOR_THREAD.id, "turn-live");
+    store.setTaskStatus(CURSOR_THREAD.id, "running");
+    const resolveSkillPrompt = vi.fn(async (message: string) => message);
+    const deps = context({ running: true, resolveSkillPrompt });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => {
+      await result.current.sendMessage("Review with @review. Evidence quotes @example.", { skillInvocationText: "Use @review" });
+    });
+    const entry = useTaskStore.getState().tasks[CURSOR_THREAD.id].queuedTurns[0];
+    act(() => { expect(result.current.beginEditQueuedMessage(entry.id)).toBe(true); });
+    await act(async () => {
+      expect(result.current.finishEditQueuedMessage(entry.id, "Review changed evidence that quotes @example.")).toBe(true);
+    });
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id].queuedTurns[0].skillInvocationText).toBe("");
+    await act(async () => { store.completeTurn(CURSOR_THREAD.id, "turn-live", "completed"); });
+    expect(resolveSkillPrompt).toHaveBeenCalledWith("Review changed evidence that quotes @example.", "");
+  });
+
+  it.each(["steer", "answer"] as const)("queues a late %s behind an unfinished edit after completion", async (action) => {
+    const store = useTaskStore.getState();
+    store.ensureTask(CURSOR_THREAD.id, CURSOR_THREAD.cwd);
+    const entry = store.enqueueTurn(CURSOR_THREAD.id, "first", []);
+    store.beginQueuedTurnEdit(CURSOR_THREAD.id, entry.id);
+    store.setTaskStatus(CURSOR_THREAD.id, "completed");
+    const { result } = renderHook(() => useTurnRunner(context()));
+    await act(async () => {
+      if (action === "steer") await result.current.steerMessage("later");
+      else await result.current.answerQuestions(CURSOR_THREAD.id, "later");
+    });
+    expect(cursor.startCursorTurn).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id].queuedTurns.map((item) => item.text)).toEqual(["first", "later"]);
+    if (action === "answer") expect(useTaskStore.getState().tasks[CURSOR_THREAD.id].queuedTurns[1]).toMatchObject({ resolveSkillMentions: false });
+  });
+
+  it("does not restart a failed queue when its text is edited", async () => {
+    const store = useTaskStore.getState();
+    store.ensureTask(CURSOR_THREAD.id, CURSOR_THREAD.cwd);
+    store.setTaskStatus(CURSOR_THREAD.id, "error");
+    const entry = store.enqueueTurn(CURSOR_THREAD.id, "original", []);
+    store.setQueuedTurnStatus(CURSOR_THREAD.id, entry.id, "failed", "Try again");
+    const { result } = renderHook(() => useTurnRunner(context()));
+    act(() => { result.current.beginEditQueuedMessage(entry.id); });
+    await act(async () => { result.current.finishEditQueuedMessage(entry.id, "revised"); });
+    expect(cursor.startCursorTurn).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id].queuedTurns[0]).toMatchObject({ text: "revised", status: "failed" });
+    await act(async () => { result.current.retryQueuedMessage(entry.id); });
+    expect(cursor.startCursorTurn).toHaveBeenCalledWith(expect.objectContaining({ prompt: "revised" }));
+  });
+
   it("releases and retries a queued Claude turn when Windows cleanup briefly holds the old slot", async () => {
     claude.isClaudeThreadBusyError.mockImplementation((reason?: unknown) =>
       String(reason).includes("Claude is already working in this thread"),
@@ -859,6 +1079,45 @@ describe("useTurnRunner", () => {
       { path: "/tmp/reference.png", name: "reference.png", kind: "image" },
     ]);
     expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]?.messages[0]?.steerStatus).toBe("accepted");
+  });
+
+  it("keeps an app-generated steer literal even when it quotes a skill mention", async () => {
+    useTaskStore.getState().ensureTask(CURSOR_THREAD.id, CURSOR_THREAD.cwd);
+    useTaskStore.getState().setActiveTurn(CURSOR_THREAD.id, "turn-live");
+    useTaskStore.getState().setTaskStatus(CURSOR_THREAD.id, "running");
+    const resolveSkillPrompt = vi.fn(async () => "unexpected skill expansion");
+    const deps = context({ running: true, resolveSkillPrompt });
+    const { result } = renderHook(() => useTurnRunner(deps));
+
+    await act(async () => {
+      expect(await result.current.steerMessage("Reviewer quoted @example", { resolveSkillMentions: false })).toBe(true);
+    });
+
+    expect(cursor.steerCursorTurn).toHaveBeenCalledWith(CURSOR_THREAD.id, "Reviewer quoted @example", []);
+    expect(resolveSkillPrompt).not.toHaveBeenCalled();
+  });
+
+  it("keeps an app-generated steer literal if the provider rejects steering", async () => {
+    cursor.steerCursorTurn.mockRejectedValueOnce(new Error("steer failed"));
+    useTaskStore.getState().ensureTask(CURSOR_THREAD.id, CURSOR_THREAD.cwd);
+    useTaskStore.getState().setActiveTurn(CURSOR_THREAD.id, "turn-live");
+    useTaskStore.getState().setTaskStatus(CURSOR_THREAD.id, "running");
+    const resolveSkillPrompt = vi.fn(async () => "unexpected skill expansion");
+    const deps = context({ running: true, resolveSkillPrompt });
+    const { result, rerender } = renderHook(({ value }) => useTurnRunner(value), { initialProps: { value: deps } });
+
+    await act(async () => {
+      expect(await result.current.steerMessage("Reviewer quoted @example", { resolveSkillMentions: false })).toBe(true);
+    });
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id].queuedTurns[0]).toMatchObject({
+      text: "Reviewer quoted @example",
+      resolveSkillMentions: false,
+    });
+
+    rerender({ value: { ...deps, running: false } });
+    await act(async () => { useTaskStore.getState().completeTurn(CURSOR_THREAD.id, "turn-live", "completed"); });
+    expect(cursor.startCursorTurn).toHaveBeenCalledWith(expect.objectContaining({ prompt: "Reviewer quoted @example" }));
+    expect(resolveSkillPrompt).not.toHaveBeenCalled();
   });
 
   it("sends Codex the active turn identity and marks the steer accepted", async () => {
@@ -1089,6 +1348,30 @@ describe("useTurnRunner activating sub-agents mid-conversation", () => {
     if (attachmentUpdater) expect(attachmentUpdater(deps.attachments)).toEqual(deps.attachments);
   });
 
+  it("keeps a late workflow question answer literal while queued for the recipe to finish", async () => {
+    const deps = openAiContext({ attachments: [{ path: "/draft.png", name: "Draft", kind: "image" }] });
+    const store = useTaskStore.getState();
+    store.ensureTask(OPENAI_THREAD.id, OPENAI_THREAD.cwd);
+    store.setTaskStatus(OPENAI_THREAD.id, "completed");
+    store.setWorkflowOwner(OPENAI_THREAD.id, { workflowId: "recipe", runId: "run-1" });
+    codex.rpc.mockResolvedValue({ turn: { id: "turn-after-recipe" } });
+    const { result } = renderHook(() => useTurnRunner(deps));
+
+    await act(async () => { expect(await result.current.answerQuestions(OPENAI_THREAD.id, "Use @compact literally")).toBe(true); });
+    expect(useTaskStore.getState().tasks[OPENAI_THREAD.id].queuedTurns[0]).toMatchObject({
+      text: "Use @compact literally", status: "queued", resolveSkillMentions: false, attachments: [],
+    });
+    expect(codex.rpc).not.toHaveBeenCalledWith("turn/start", expect.anything());
+
+    await act(async () => { store.setWorkflowOwner(OPENAI_THREAD.id, null); });
+    expect(codex.rpc).toHaveBeenCalledWith("turn/start", expect.objectContaining({
+      input: [expect.objectContaining({ text: "Use @compact literally" })],
+    }));
+    expect(deps.resolveSkillPrompt).not.toHaveBeenCalled();
+    const attachmentUpdater = (deps.setAttachments as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0];
+    if (attachmentUpdater) expect(attachmentUpdater(deps.attachments)).toEqual(deps.attachments);
+  });
+
   it("continues with answers if the active turn finishes during submission", async () => {
     const deps = openAiContext();
     const store = useTaskStore.getState();
@@ -1111,6 +1394,7 @@ describe("useTurnRunner activating sub-agents mid-conversation", () => {
   it("answers a still-open nonblocking RPC through its native response channel", async () => {
     const deps = openAiContext();
     useTaskStore.getState().enqueueApproval({ id: 42, method: "item/tool/requestUserInput", params: { isBlocking: false, turnId: "turn", itemId: "item" }, threadId: OPENAI_THREAD.id, receivedAt: 1 });
+    useTaskStore.getState().setWorkflowOwner(OPENAI_THREAD.id, { workflowId: "recipe", runId: "run-1" });
     const { result } = renderHook(() => useTurnRunner(deps));
     await act(async () => { expect(await result.current.answerQuestions(OPENAI_THREAD.id, "Compact", {
       message: { id: "questions", role: "assistant", text: "", questionRequestId: 42, turnId: "turn", questionRequestItemId: "item" }, answers: { layout: ["Compact"] },
@@ -1201,6 +1485,30 @@ describe("useTurnRunner activating sub-agents mid-conversation", () => {
         features: { multi_agent: false },
       },
     });
+  });
+
+  it.each(["openrouter", "lmstudio"] as const)("passes the saved Checks command and bridge into a %s turn", async (provider) => {
+    const launch = { ...BRIDGE_LAUNCH, toolNames: ["propose_agent_settings", "set_project_run_command", "set_project_check_command"] };
+    childSessions.ensureChildAgentBridge.mockResolvedValue({ ...bridgeResult(), launch });
+    const deps = openAiContext({
+      activeProject: { id: "project-1", name: "Project", path: "/tmp/project", overrides: { check: { command: "npm run verify", updatedAt: 1 } } },
+      effectiveSettings: { ...DEFAULT_SETTINGS, provider, model: provider === "openrouter" ? "x-ai/grok-4.5" : "local-model" },
+      openRouterReady: true,
+      lmStudioReady: true,
+    });
+    const { result } = renderHook(() => useTurnRunner(deps));
+
+    await act(async () => { await result.current.sendMessage("check this project"); });
+
+    const [, params] = resumeCall() ?? [];
+    expect(params).toMatchObject({
+      developerInstructions: expect.stringContaining("set_project_check_command"),
+      config: {
+        developer_instructions: expect.stringContaining("`npm run verify`"),
+        mcp_servers: { mythra_agents: { command: launch.command, args: launch.args } },
+      },
+    });
+    expect(codex.rpc).toHaveBeenCalledWith("turn/start", expect.objectContaining({ threadId: OPENAI_THREAD.id }));
   });
 
   it("never exposes native Codex sub-agents when no managed destination is available", async () => {

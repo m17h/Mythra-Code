@@ -34,6 +34,7 @@ import { clearProviderStopIntent, markProviderStopIntent } from "../lib/provider
 import { isClaudeThread, isCursorThread } from "../lib/threadProvider";
 import { withMythraCodeCompletionInstructions } from "../lib/completionPrompt";
 import { RUN_COMMAND_TOOL } from "../lib/projectRun";
+import { CHECK_COMMAND_TOOL } from "../lib/projectChecks";
 import {
   createThreadWorktree,
   removeThreadWorktree,
@@ -88,13 +89,18 @@ export function forgetQueuedDeliveries(threadId?: string): void {
   activeQueuedDeliveries.delete(threadId);
 }
 
-function queuedDeliveryContext(context: TurnRunnerContext, threadId: string, attachments: AttachmentRecord[]): TurnRunnerContext {
+function queuedDeliveryContext(context: TurnRunnerContext, threadId: string, attachments: AttachmentRecord[], resolveSkillMentions?: false, skillInvocationText?: string): TurnRunnerContext {
   const visible = () => useTaskStore.getState().activeThreadId === threadId;
   return {
     ...context,
     running: false,
     deferredDelivery: true,
     attachments: attachments.map((attachment) => ({ ...attachment })),
+    skillInvocationText,
+    ...(resolveSkillMentions === false ? {
+      resolveSkillMentions: false as const,
+      resolveSkillPrompt: async (message: string) => message,
+    } : {}),
     // Always treat a deferred send as background-capable. The normal delivery
     // path still updates durable thread/task state and the sidebar entry, but
     // it must never activate a task or clear attachments in whichever
@@ -160,7 +166,11 @@ export interface TurnRunnerContext {
   draftThreadIsolated: boolean;
   worktreeBusy: boolean;
   skillsFolder: string;
-  resolveSkillPrompt: (message: string) => Promise<string>;
+  resolveSkillPrompt: (message: string, mentionSource?: string) => Promise<string>;
+  /** Preserve literal generated prompts through deferred and restored delivery. */
+  resolveSkillMentions?: false;
+  /** Skill invocations in formatted prompts come only from authored text. */
+  skillInvocationText?: string;
   /** Bridge sessions for cross-provider sub-agents, keyed by session id. */
   childAgentPolicies: Record<string, ChildAgentPolicy>;
   childAgentLinks: Record<string, ChildAgentLink>;
@@ -220,12 +230,14 @@ export interface TurnRunnerContext {
  * mid-flight awaits keep operating on the workspace the send started in.
  */
 export function useTurnRunner(context: TurnRunnerContext): {
-  sendMessage: (text: string) => Promise<boolean>;
+  sendMessage: (text: string, options?: { useComposerAttachments?: boolean; resolveSkillMentions?: boolean; skillInvocationText?: string }) => Promise<boolean>;
   answerQuestions: (threadId: string, text: string, submission?: AgentQuestionSubmission) => Promise<boolean>;
-  steerMessage: (text: string) => Promise<boolean>;
+  steerMessage: (text: string, options?: { resolveSkillMentions?: boolean; skillInvocationText?: string }) => Promise<boolean>;
   steerQueuedMessage: (queuedTurnId: string) => Promise<void>;
   retryQueuedMessage: (queuedTurnId: string) => void;
   removeQueuedMessage: (queuedTurnId: string) => void;
+  beginEditQueuedMessage: (queuedTurnId: string) => boolean;
+  finishEditQueuedMessage: (queuedTurnId: string, text?: string) => boolean;
   stopTurn: () => Promise<void>;
 } {
   const contextRef = useRef(context);
@@ -332,7 +344,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
     let providerText: string;
     if (mode === "steer" && running && activeThread) {
       try {
-        providerText = await resolveSkillPrompt(text);
+        providerText = await resolveSkillPrompt(text, ctx.skillInvocationText);
       } catch (reason) {
         setError(friendlyError(reason));
         return false;
@@ -396,7 +408,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       const sharedPath = normalizedProjectPath(activeWorkspace.path);
       const taskState = useTaskStore.getState();
       const anotherSharedRun = Object.entries(taskState.statuses).some(([threadId, threadStatus]) => {
-        if (threadId === activeThread?.id || (threadStatus !== "starting" && threadStatus !== "running")) return false;
+        if (threadId === activeThread?.id || (threadStatus !== "starting" && threadStatus !== "running" && !taskState.workflowOwners[threadId])) return false;
         const logicalPath = threadProjectBindingsRef.current?.[threadId];
         const executionPath = taskState.tasks[threadId]?.workspacePath
           ?? (logicalPath ? executionPathFor(threadId, logicalPath) : undefined);
@@ -576,7 +588,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       // Skill scans can wait on disk or startup preparation. They are part of
       // starting a turn, so expose Stop before awaiting them and honor it
       // before creating any workspace, bridge, or provider process.
-      providerText = await resolveSkillPrompt(text);
+      providerText = await resolveSkillPrompt(text, ctx.skillInvocationText);
       if (pendingStart?.cancelRequested || (!activeThread && draftGeneration !== draftGenerationRef.current)) {
         if (startingThreadId && pendingStart) {
           pendingTurnStartsRef.current.finish(startingThreadId, pendingStart);
@@ -638,6 +650,10 @@ export function useTurnRunner(context: TurnRunnerContext): {
         toolAvailable: Boolean(childBridge?.launch.toolNames.includes(RUN_COMMAND_TOOL)),
         run: activeProject?.overrides?.run ?? null,
       };
+      const checkButton = {
+        toolAvailable: Boolean(childBridge?.launch.toolNames.includes(CHECK_COMMAND_TOOL)),
+        check: activeProject?.overrides?.check ?? null,
+      };
       if (effectiveSettings.provider === "claude") {
         if (skillsFolder && !skillRuntimeRootRef.current) await refreshLocalSkills();
         return await runLocalTurn("claude", executionPath, {
@@ -646,7 +662,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
             // presence, so resume detection is unaffected by running after it.
             const canResumeClaude = Boolean(activeThread && useTaskStore.getState().tasks[thread.id]?.messages.some((message) => message.role === "assistant"));
             await saveClaudeTranscript({ thread: updatedThread, messages: useTaskStore.getState().tasks[thread.id]?.messages ?? [], activities: useTaskStore.getState().tasks[thread.id]?.activities ?? [] });
-            const result = await startClaudeTurn({ threadId: thread.id, cwd: executionPath, prompt: providerText, model: effectiveSettings.model || DEFAULT_CLAUDE_MODEL, effort: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort, permission: effectiveSettings.permission, systemPrompt: withMythraCodeCompletionInstructions(effectiveSettings.systemPrompt, Boolean(childBridge?.launch.toolNames.includes("spawn_mythra_agent")), Boolean(childBridge?.launch.toolNames.includes("propose_agent_settings")), runButton), resume: canResumeClaude, attachments: sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })), subagentMax: runtimeSubagentMax, customAgents, skillsPluginPath: skillRuntimeRootRef.current || undefined, childAgentBridgeConfig: childBridge?.launch.configPath });
+            const result = await startClaudeTurn({ threadId: thread.id, cwd: executionPath, prompt: providerText, model: effectiveSettings.model || DEFAULT_CLAUDE_MODEL, effort: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort, permission: effectiveSettings.permission, systemPrompt: withMythraCodeCompletionInstructions(effectiveSettings.systemPrompt, Boolean(childBridge?.launch.toolNames.includes("spawn_mythra_agent")), Boolean(childBridge?.launch.toolNames.includes("propose_agent_settings")), runButton, checkButton), resume: canResumeClaude, attachments: sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })), subagentMax: runtimeSubagentMax, customAgents, skillsPluginPath: skillRuntimeRootRef.current || undefined, childAgentBridgeConfig: childBridge?.launch.configPath });
             return { turnId: result.turnId };
           },
           hardStop: (threadId) => killClaudeTurn(threadId),
@@ -665,7 +681,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
               model: effectiveSettings.model || DEFAULT_CURSOR_MODEL,
               effort: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort,
               permission: effectiveSettings.permission,
-              systemPrompt: withMythraCodeCompletionInstructions(effectiveSettings.systemPrompt, Boolean(childBridge?.launch.toolNames.includes("spawn_mythra_agent")), Boolean(childBridge?.launch.toolNames.includes("propose_agent_settings")), runButton),
+              systemPrompt: withMythraCodeCompletionInstructions(effectiveSettings.systemPrompt, Boolean(childBridge?.launch.toolNames.includes("spawn_mythra_agent")), Boolean(childBridge?.launch.toolNames.includes("propose_agent_settings")), runButton, checkButton),
               resumeSessionId: priorSessionId || undefined,
               attachments: sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })),
               childAgentBridge: childBridge
@@ -702,7 +718,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       let threadId = activeThread?.id;
       startedThreadId = threadId;
       if (!threadId) {
-        const result = await rpc<{ thread: Thread }>("thread/start", threadStartParams(runtimeSettings, executionPath, { serviceName: activeWorkspace.isChat ? "Mythra Code Chat" : "Mythra Code", customAgents, modelContextWindow, interactive: true, additionalWorkspaceRoots, childAgentBridge: childBridge?.launch, projectRunCommand: runButton.run }));
+        const result = await rpc<{ thread: Thread }>("thread/start", threadStartParams(runtimeSettings, executionPath, { serviceName: activeWorkspace.isChat ? "Mythra Code Chat" : "Mythra Code", customAgents, modelContextWindow, interactive: true, additionalWorkspaceRoots, childAgentBridge: childBridge?.launch, projectRunCommand: runButton.run, projectCheckCommand: checkButton.check }));
         const startedThread = optimisticStartedThread(result.thread, text);
         threadId = startedThread.id;
         startedThreadId = threadId;
@@ -739,7 +755,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         const plan = planSubagentCapabilities(threadId, runtimeInstance, capabilities, currentRuntime.loaded);
         if (plan.restartRuntime) runtimeInstance = await restartRuntimeForCapabilities(threadId);
         if (effectiveSettings.provider === "openrouter" || effectiveSettings.provider === "lmstudio" || plan.resume) {
-          const resume = threadResumeParams(runtimeSettings, threadId, executionPath, { customAgents, modelContextWindow, excludeTurns: true, additionalWorkspaceRoots, childAgentBridge: childBridge?.launch, refreshRuntimeConfig: true, projectRunCommand: runButton.run });
+          const resume = threadResumeParams(runtimeSettings, threadId, executionPath, { customAgents, modelContextWindow, excludeTurns: true, additionalWorkspaceRoots, childAgentBridge: childBridge?.launch, refreshRuntimeConfig: true, projectRunCommand: runButton.run, projectCheckCommand: checkButton.check });
           await rpc("thread/resume", effectiveSettings.provider === "openrouter" || effectiveSettings.provider === "lmstudio" ? { ...resume, model: effectiveSettings.model } : resume);
           recordSubagentCapabilities(threadId, runtimeInstance, capabilities);
         }
@@ -843,7 +859,9 @@ export function useTurnRunner(context: TurnRunnerContext): {
 
   const pumpQueuedThread = useCallback(async (threadId: string, force = false): Promise<void> => {
     if (activeQueuedDeliveries.has(threadId)) return;
-    const task = useTaskStore.getState().tasks[threadId];
+    const state = useTaskStore.getState();
+    if (state.workflowOwners[threadId]) return;
+    const task = state.tasks[threadId];
     if (!task || task.status === "starting" || task.status === "running") return;
     // "idle" is the status a task carries when its queue was restored from disk
     // in a later app session: the run those follow-ups were queued behind no
@@ -853,7 +871,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
     // steered) holds the queue until the user retries or removes it, so
     // follow-ups can never silently run out of the order they were written in.
     const queuedTurn = task.queuedTurns[0];
-    if (!queuedTurn || queuedTurn.status !== "queued") return;
+    if (!queuedTurn || queuedTurn.status !== "queued" || queuedTurn.editing) return;
     const queuedContext = queuedDeliveries.get(queuedTurn.id)?.context;
     // A durable queue can outlive the renderer. Once the user opens that task,
     // the render path below reattaches a fresh delivery context and pumping
@@ -868,7 +886,13 @@ export function useTurnRunner(context: TurnRunnerContext): {
     let delivered = false;
     let retryBusySlot = false;
     try {
-      delivered = await deliverMessage(queuedContext, queuedTurn.text, "turn");
+      // The captured provider context is stable, but an inline edit may have
+      // changed the entry's skill source since it was first queued.
+      delivered = await deliverMessage(
+        { ...queuedContext, skillInvocationText: queuedTurn.skillInvocationText },
+        queuedTurn.text,
+        "turn",
+      );
       if (delivered) {
         useTaskStore.getState().removeQueuedTurn(threadId, queuedTurn.id);
         queuedDeliveries.delete(queuedTurn.id);
@@ -922,13 +946,20 @@ export function useTurnRunner(context: TurnRunnerContext): {
       if (activeQueuedDeliveries.has(activeThreadId)) continue;
       queuedDeliveries.set(queuedTurn.id, {
         threadId: activeThreadId,
-        context: queuedDeliveryContext(context, activeThreadId, queuedTurn.attachments),
+        context: queuedDeliveryContext(context, activeThreadId, queuedTurn.attachments, queuedTurn.resolveSkillMentions, queuedTurn.skillInvocationText),
       });
     }
   }
 
   useEffect(() => {
     const unsubscribe = useTaskStore.subscribe((state, previous) => {
+      if (state.workflowOwners !== previous.workflowOwners) {
+        for (const threadId in previous.workflowOwners) {
+          if (!state.workflowOwners[threadId] && state.tasks[threadId]?.queuedTurns.some((entry) => entry.status === "queued")) {
+            void pumpQueuedThread(threadId);
+          }
+        }
+      }
       // This fires for every store write, which during a turn means every
       // streamed delta flush. A task's status only ever changes together with
       // its `statuses` entry, so an unchanged statuses map means no completion
@@ -957,10 +988,13 @@ export function useTurnRunner(context: TurnRunnerContext): {
     if (!thread) return false;
     if (archiveOwnsThread(thread.id)) return false;
     const sentAttachments = [...ctx.attachments];
-    const queuedTurn = useTaskStore.getState().enqueueTurn(thread.id, text, sentAttachments);
+    const queuedTurn = useTaskStore.getState().enqueueTurn(thread.id, text, sentAttachments, {
+      ...(ctx.resolveSkillMentions === false ? { resolveSkillMentions: false } : {}),
+      ...(ctx.skillInvocationText !== undefined ? { skillInvocationText: ctx.skillInvocationText } : {}),
+    });
     queuedDeliveries.set(queuedTurn.id, {
       threadId: thread.id,
-      context: queuedDeliveryContext(ctx, thread.id, sentAttachments),
+      context: queuedDeliveryContext(ctx, thread.id, sentAttachments, queuedTurn.resolveSkillMentions, queuedTurn.skillInvocationText),
     });
     ctx.setAttachments((current) => withoutSentAttachments(current, sentAttachments));
     ctx.setError(null);
@@ -1005,23 +1039,37 @@ export function useTurnRunner(context: TurnRunnerContext): {
     const status = useTaskStore.getState().tasks[threadId]?.status;
     // Answers belong to this request, not the composer's unrelated draft or
     // attachments. Treat any @ words in answers literally.
-    const ctx = { ...current, attachments: [], running: status === "running" || status === "starting", resolveSkillPrompt: async (message: string) => message };
-    if (status === "starting") return queueFollowUp(ctx, text);
+    const ctx = { ...current, attachments: [], running: status === "running" || status === "starting", resolveSkillMentions: false as const, resolveSkillPrompt: async (message: string) => message };
+    if (useTaskStore.getState().workflowOwners[threadId]) return queueFollowUp(ctx, text);
+    if (status === "starting" || (!ctx.running && useTaskStore.getState().tasks[threadId]?.queuedTurns.length)) return queueFollowUp(ctx, text);
     let unavailable = false;
     const delivered = await deliverMessage(ctx, text, ctx.running ? "steer" : "turn", () => { unavailable = true; });
     return !delivered && unavailable ? queueFollowUp(ctx, text) : delivered;
   }, [archiveOwnsThread, deliverMessage, queueFollowUp]);
 
-  const sendMessage = useCallback(async (text: string): Promise<boolean> => {
-    const ctx = contextRef.current;
+  const sendMessage = useCallback(async (text: string, options?: { useComposerAttachments?: boolean; resolveSkillMentions?: boolean; skillInvocationText?: string }): Promise<boolean> => {
+    const current = contextRef.current;
+    const ctx = {
+      ...current,
+      ...(options?.useComposerAttachments === false ? { attachments: [], setAttachments: () => undefined } : {}),
+      ...(options?.resolveSkillMentions === false ? { resolveSkillMentions: false as const, resolveSkillPrompt: async (message: string) => message } : {}),
+      ...(options?.skillInvocationText !== undefined ? { skillInvocationText: options.skillInvocationText } : {}),
+    };
     if (!text || !ctx.activeWorkspace) return false;
+    if (ctx.activeThread && useTaskStore.getState().workflowOwners[ctx.activeThread.id]) return queueFollowUp(ctx, text);
     if (ctx.running && !ctx.activeThread) return false;
-    if (ctx.running && ctx.activeThread) return queueFollowUp(ctx, text);
+    if (ctx.activeThread && (ctx.running || useTaskStore.getState().tasks[ctx.activeThread.id]?.queuedTurns.length)) return queueFollowUp(ctx, text);
     return deliverMessage(ctx, text, "turn");
   }, [deliverMessage, queueFollowUp]);
 
-  const steerMessage = useCallback(async (text: string): Promise<boolean> => {
-    const ctx = contextRef.current;
+  const steerMessage = useCallback(async (text: string, options?: { resolveSkillMentions?: boolean; skillInvocationText?: string }): Promise<boolean> => {
+    const current = contextRef.current;
+    const ctx = {
+      ...current,
+      ...(options?.resolveSkillMentions === false ? { resolveSkillMentions: false as const, resolveSkillPrompt: async (message: string) => message } : {}),
+      ...(options?.skillInvocationText !== undefined ? { skillInvocationText: options.skillInvocationText } : {}),
+    };
+    if (ctx.activeThread && useTaskStore.getState().workflowOwners[ctx.activeThread.id]) return queueFollowUp(ctx, text);
     if (ctx.running && !ctx.activeThread) return false;
     const task = ctx.activeThread ? useTaskStore.getState().tasks[ctx.activeThread.id] : undefined;
     if (ctx.activeThread && task?.status === "starting") return queueFollowUp(ctx, text);
@@ -1042,6 +1090,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       const delivered = await deliverMessage(ctx, text, "steer");
       return delivered || queueFollowUp(ctx, text);
     }
+    if (task?.queuedTurns.length) return queueFollowUp({ ...ctx, running: false }, text);
     return deliverMessage({ ...ctx, running: false }, text, "turn");
   }, [deliverMessage, queueFollowUp]);
 
@@ -1049,14 +1098,17 @@ export function useTurnRunner(context: TurnRunnerContext): {
     const ctx = contextRef.current;
     const threadId = ctx.activeThread?.id;
     if (!threadId) return;
+    if (useTaskStore.getState().workflowOwners[threadId]) return;
     const task = useTaskStore.getState().tasks[threadId];
     if (task?.status !== "running") return;
     const queuedTurn = task.queuedTurns.find((entry) => entry.id === queuedTurnId);
-    if (!queuedTurn || queuedTurn.status === "sending") return;
+    if (!queuedTurn || queuedTurn.status === "sending" || queuedTurn.editing) return;
     useTaskStore.getState().setQueuedTurnStatus(threadId, queuedTurn.id, "sending");
     let steerUnavailable = false;
     const delivered = await deliverMessage(
-      { ...ctx, running: true, attachments: queuedTurn.attachments, setAttachments: () => undefined },
+      { ...ctx, running: true, attachments: queuedTurn.attachments, setAttachments: () => undefined,
+        skillInvocationText: queuedTurn.skillInvocationText,
+        ...(queuedTurn.resolveSkillMentions === false ? { resolveSkillMentions: false as const, resolveSkillPrompt: async (message: string) => message } : {}) },
       queuedTurn.text,
       "steer",
       () => { steerUnavailable = true; },
@@ -1086,16 +1138,33 @@ export function useTurnRunner(context: TurnRunnerContext): {
     const threadId = contextRef.current.activeThread?.id;
     if (!threadId) return;
     const head = useTaskStore.getState().tasks[threadId]?.queuedTurns[0];
-    if (head?.id !== queuedTurnId) return;
+    if (head?.id !== queuedTurnId || head.status === "sending" || head.editing) return;
     queuedBusyRetries.delete(queuedTurnId);
     useTaskStore.getState().setQueuedTurnStatus(threadId, queuedTurnId, "queued");
     void pumpQueuedThread(threadId, true);
   }, [pumpQueuedThread]);
 
+  const beginEditQueuedMessage = useCallback((queuedTurnId: string): boolean => {
+    const threadId = contextRef.current.activeThread?.id;
+    if (!threadId || archiveOwnsThread(threadId)) return false;
+    return useTaskStore.getState().beginQueuedTurnEdit(threadId, queuedTurnId);
+  }, [archiveOwnsThread]);
+
+  const finishEditQueuedMessage = useCallback((queuedTurnId: string, text?: string): boolean => {
+    const threadId = contextRef.current.activeThread?.id;
+    if (!threadId || !useTaskStore.getState().finishQueuedTurnEdit(threadId, queuedTurnId, text)) return false;
+    // A completed turn may have tried to pump while the editor held the head.
+    // Preserve stopped/failed queues: saving an edit is not an explicit retry.
+    void pumpQueuedThread(threadId);
+    return true;
+  }, [pumpQueuedThread]);
+
   const removeQueuedMessage = useCallback((queuedTurnId: string) => {
     const threadId = contextRef.current.activeThread?.id;
     if (!threadId) return;
-    const wasHead = useTaskStore.getState().tasks[threadId]?.queuedTurns[0]?.id === queuedTurnId;
+    const entries = useTaskStore.getState().tasks[threadId]?.queuedTurns;
+    if (entries?.find((entry) => entry.id === queuedTurnId)?.status === "sending") return;
+    const wasHead = entries?.[0]?.id === queuedTurnId;
     useTaskStore.getState().removeQueuedTurn(threadId, queuedTurnId);
     queuedDeliveries.delete(queuedTurnId);
     queuedBusyRetries.delete(queuedTurnId);
@@ -1145,5 +1214,5 @@ export function useTurnRunner(context: TurnRunnerContext): {
     }
   }, []);
 
-  return { sendMessage, answerQuestions, steerMessage, steerQueuedMessage, retryQueuedMessage, removeQueuedMessage, stopTurn };
+  return { sendMessage, answerQuestions, steerMessage, steerQueuedMessage, retryQueuedMessage, removeQueuedMessage, beginEditQueuedMessage, finishEditQueuedMessage, stopTurn };
 }

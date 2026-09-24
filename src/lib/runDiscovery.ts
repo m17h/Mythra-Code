@@ -9,7 +9,8 @@ export const DISCOVERY_PROVIDERS = [
 ] satisfies { value: Provider; label: string }[];
 const FALLBACK_MODELS: Record<Provider, string> = { openai: "gpt-5.6-luna", claude: "claude-sonnet-5", cursor: "auto", openrouter: "", lmstudio: "" };
 export interface RunDiscoveryPreferences { provider: RunDiscoveryProvider; model: string; effort: string; fast: boolean; models?: Partial<Record<RunDiscoveryProvider, string>>; efforts?: Partial<Record<RunDiscoveryProvider, string>> }
-export interface RunDiscoverySuggestion { command: string; label: string; explanation: string; warning?: string }
+export interface RunDiscoverySuggestion { command: string; setupCommand?: string; label: string; explanation: string; warning?: string }
+export type RunDiscoveryPurpose = "run" | "checks";
 export interface RunDiscoveryModel { id: string; label: string; efforts?: string[] }
 export type RunDiscoveryCatalogs = Partial<Record<RunDiscoveryProvider, RunDiscoveryModel[]>>;
 export const RUN_DISCOVERY_PREFERENCES_KEY = "kiwi.runDiscovery";
@@ -39,9 +40,12 @@ export function sanitizeRunDiscoveryPreferences(value: unknown): RunDiscoveryPre
     fast: typeof raw.fast === "boolean" ? raw.fast : true,
   };
 }
-export function discoverRunCommand(requestId: string, cwd: string, preferences: RunDiscoveryPreferences, lmStudioBaseUrl?: string): Promise<RunDiscoverySuggestion> {
+export function discoverRunCommand(requestId: string, cwd: string, preferences: RunDiscoveryPreferences, lmStudioBaseUrl?: string, purpose: RunDiscoveryPurpose = "run"): Promise<RunDiscoverySuggestion> {
   const { provider, model, effort, fast } = preferences;
-  return invoke("run_discovery_start", { options: { requestId, cwd, provider, model: model.trim(), effort, fast: provider === "openai" && fast, ...(provider === "lmstudio" && lmStudioBaseUrl ? { lmStudioBaseUrl } : {}) } });
+  return invoke("run_discovery_start", { options: { requestId, cwd, provider, model: model.trim(), effort, fast: provider === "openai" && fast, ...(purpose === "checks" ? { purpose } : {}), ...(provider === "lmstudio" && lmStudioBaseUrl ? { lmStudioBaseUrl } : {}) } });
+}
+export function discoverCheckCommand(requestId: string, cwd: string, preferences: RunDiscoveryPreferences, lmStudioBaseUrl?: string): Promise<RunDiscoverySuggestion> {
+  return discoverRunCommand(requestId, cwd, preferences, lmStudioBaseUrl, "checks");
 }
 export function cancelRunDiscovery(requestId: string): Promise<void> {
   return invoke("run_discovery_cancel", { requestId });

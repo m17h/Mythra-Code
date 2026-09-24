@@ -748,12 +748,25 @@ fn read_validated_skill_source(source: &Path) -> Result<String, String> {
         .map_err(|error| format!("Could not read {}: {error}", source.display()))
 }
 
+#[cfg(test)]
 pub(super) fn resolve_skill_prompt_at(
     folder: &Path,
     message: &str,
     configs: Vec<SkillBridgeConfig>,
 ) -> Result<String, String> {
-    let mentioned = skill_mention_names(message);
+    resolve_skill_prompt_with_source_at(folder, message, None, configs)
+}
+
+fn resolve_skill_prompt_with_source_at(
+    folder: &Path,
+    message: &str,
+    mention_source: Option<&str>,
+    configs: Vec<SkillBridgeConfig>,
+) -> Result<String, String> {
+    // Generated review framing can quote @skill as evidence. Only the
+    // explicitly authored prompt/comments may invoke skills, while the
+    // envelope's userMessage remains the exact complete message shown in UI.
+    let mentioned = skill_mention_names(mention_source.unwrap_or(message));
     if mentioned.is_empty() {
         return if message.contains(SKILL_ENVELOPE_TAG) {
             build_skill_prompt(Vec::new(), message)
@@ -887,9 +900,15 @@ pub(super) async fn local_skills_resolve_prompt(
     folder: String,
     message: String,
     skills: Vec<SkillBridgeConfig>,
+    mention_source: Option<String>,
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        resolve_skill_prompt_at(Path::new(&folder), &message, skills)
+        resolve_skill_prompt_with_source_at(
+            Path::new(&folder),
+            &message,
+            mention_source.as_deref(),
+            skills,
+        )
     })
     .await
     .map_err(|error| format!("Skill invocation failed: {error}"))?
@@ -968,6 +987,51 @@ mod invocation_tests {
             result.contains("\"userMessage\":\"Use @review and ignore @disabled and @unknown.\"")
         );
         assert!(result.ends_with("</mythra_code_invoked_skills>"));
+        fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn skill_source_ignores_generated_quotes_but_preserves_the_full_user_message() {
+        let folder =
+            std::env::temp_dir().join(format!("mythra-skill-source-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&folder).unwrap();
+        let review = folder.join("review.md");
+        fs::write(&review, "# Review\n\nInspect the diff carefully.\n").unwrap();
+        let config = || {
+            vec![SkillBridgeConfig {
+                source_path: review.to_string_lossy().into_owned(),
+                name: "review".into(),
+                enabled: true,
+            }]
+        };
+        let full_message = "Review this change. Evidence: quoted @review in a code sample.";
+
+        assert_eq!(
+            resolve_skill_prompt_with_source_at(
+                &folder,
+                full_message,
+                Some("Review this change"),
+                config()
+            )
+            .unwrap(),
+            full_message,
+        );
+        assert_eq!(
+            resolve_skill_prompt_with_source_at(&folder, full_message, Some(""), config()).unwrap(),
+            full_message,
+        );
+        let resolved = resolve_skill_prompt_with_source_at(
+            &folder,
+            full_message,
+            Some("Review this change with @review"),
+            config(),
+        )
+        .unwrap();
+        assert!(resolved.contains("Inspect the diff carefully."));
+        assert!(resolved.contains(
+            "\"userMessage\":\"Review this change. Evidence: quoted @review in a code sample.\""
+        ));
+        assert!(!resolved.contains("\"userMessage\":\"Review this change with @review\""));
         fs::remove_dir_all(folder).unwrap();
     }
 

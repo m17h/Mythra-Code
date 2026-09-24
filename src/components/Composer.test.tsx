@@ -1,9 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { createRef } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve()) }));
 
-import { COMPOSER_INPUT_MAX_HEIGHT, Composer, draftFor, resetDraftStoreForTests } from "./Composer";
+import { COMPOSER_INPUT_MAX_HEIGHT, Composer, draftFor, resetDraftStoreForTests, type ComposerHandle } from "./Composer";
 
 function composerProps(overrides: Partial<Parameters<typeof Composer>[0]> = {}): Parameters<typeof Composer>[0] {
   return {
@@ -50,6 +51,102 @@ describe("Composer", () => {
     await waitFor(() => expect(textarea).toHaveValue("keep me"));
   });
 
+  it("sends feedback alone through the existing Send button", async () => {
+    const onSend = vi.fn(async () => true);
+    render(<Composer {...composerProps({ hasFeedback: true, feedbackTray: <div>One review note</div>, onSend })} />);
+    expect(screen.getByText("One review note")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Send feedback and optional prompt" }));
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    expect(onSend).toHaveBeenCalledWith("");
+  });
+
+  it("passes typed text once alongside pending feedback", async () => {
+    const onSend = vi.fn(async () => true);
+    render(<Composer {...composerProps({ hasFeedback: true, feedbackTray: <div>Review note</div>, onSend })} />);
+    const textarea = screen.getByPlaceholderText("Ask anything");
+    fireEvent.change(textarea, { target: { value: "  Please fix the tests  " } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    expect(onSend).toHaveBeenCalledWith("Please fix the tests");
+    expect(textarea).toHaveValue("");
+  });
+
+  it("queues feedback alone while a task is running", async () => {
+    const onSend = vi.fn(async () => true);
+    render(<Composer {...composerProps({ running: true, queueing: true, hasFeedback: true, onSend })} />);
+    fireEvent.click(screen.getByRole("button", { name: "Queue" }));
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    expect(onSend).toHaveBeenCalledWith("");
+  });
+
+  it("keeps feedback and a typed draft on a failed or rejected send", async () => {
+    const onSend = vi.fn(async () => false);
+    const { rerender } = render(<Composer {...composerProps({ hasFeedback: true, feedbackTray: <div>Pending note</div>, onSend })} />);
+    const textarea = screen.getByPlaceholderText("Ask anything");
+    fireEvent.change(textarea, { target: { value: "Keep this draft" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send feedback and optional prompt" }));
+    await waitFor(() => expect(textarea).toHaveValue("Keep this draft"));
+    expect(screen.getByText("Pending note")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send feedback and optional prompt" })).toBeEnabled();
+    const rejected = vi.fn(async () => { throw new Error("network unavailable"); });
+    rerender(<Composer {...composerProps({ hasFeedback: true, feedbackTray: <div>Pending note</div>, onSend: rejected })} />);
+    fireEvent.click(screen.getByRole("button", { name: "Send feedback and optional prompt" }));
+    await waitFor(() => expect(rejected).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(textarea).toHaveValue("Keep this draft"));
+    expect(screen.getByText("Pending note")).toBeInTheDocument();
+  });
+
+  it("ignores rapid duplicate feedback sends while delivery is pending", async () => {
+    let resolveSend!: (value: boolean) => void;
+    const onSend = vi.fn(() => new Promise<boolean>((resolve) => { resolveSend = resolve; }));
+    render(<Composer {...composerProps({ hasFeedback: true, onSend })} />);
+    const send = screen.getByRole("button", { name: "Send feedback and optional prompt" });
+    fireEvent.click(send);
+    fireEvent.click(send);
+    expect(onSend).toHaveBeenCalledTimes(1);
+    expect(send).toBeDisabled();
+    await act(async () => resolveSend(true));
+    expect(onSend).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows another thread to send while preserving each thread's duplicate-send guard", async () => {
+    let finishA!: (value: boolean) => void;
+    let finishB!: (value: boolean) => void;
+    const sendA = vi.fn(() => new Promise<boolean>((resolve) => { finishA = resolve; }));
+    const sendB = vi.fn(() => new Promise<boolean>((resolve) => { finishB = resolve; }));
+    const { rerender } = render(<Composer {...composerProps({ hasFeedback: true, onSend: sendA })} />);
+    fireEvent.click(screen.getByRole("button", { name: "Send feedback and optional prompt" }));
+    rerender(<Composer {...composerProps({ threadKey: "thread-b", hasFeedback: true, onSend: sendB })} />);
+    const button = screen.getByRole("button", { name: "Send feedback and optional prompt" });
+    expect(button).toBeEnabled();
+    fireEvent.click(button);
+    expect(sendB).toHaveBeenCalledTimes(1);
+    await act(async () => finishA(true));
+    expect(button).toBeDisabled();
+    await act(async () => finishB(true));
+    expect(button).toBeEnabled();
+    expect(sendA).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps drafts in both threads when a feedback send fails after navigation", async () => {
+    let resolveSend!: (value: boolean) => void;
+    const onSend = vi.fn(() => new Promise<boolean>((resolve) => { resolveSend = resolve; }));
+    const props = composerProps({ hasFeedback: true, feedbackTray: <div>Pending note</div>, onSend });
+    const { rerender } = render(<Composer {...props} />);
+    const textarea = screen.getByPlaceholderText("Ask anything");
+    fireEvent.change(textarea, { target: { value: "A request" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send feedback and optional prompt" }));
+    fireEvent.change(textarea, { target: { value: "A newer draft" } });
+    rerender(<Composer {...props} threadKey="thread-b" />);
+    fireEvent.change(textarea, { target: { value: "B draft" } });
+    await act(async () => resolveSend(false));
+    expect(textarea).toHaveValue("B draft");
+    expect(draftFor("thread-b")).toBe("B draft");
+    expect(draftFor("thread-a")).toBe("A request\n\nA newer draft");
+    rerender(<Composer {...props} threadKey="thread-a" />);
+    expect(textarea).toHaveValue("A request\n\nA newer draft");
+  });
+
   it("keeps both the failed text and a draft typed while the send was in flight", async () => {
     let resolveSend!: (value: boolean) => void;
     const onSend = vi.fn(() => new Promise<boolean>((resolve) => { resolveSend = resolve; }));
@@ -75,6 +172,19 @@ describe("Composer", () => {
     rerender(<Composer {...props} threadKey="thread-a" />);
     expect(screen.getByPlaceholderText("Ask anything")).toHaveValue("draft for A");
     expect(draftFor("thread-a")).toBe("draft for A");
+  });
+
+  it("does not evict a main composer draft when an inline queue edit is typed", () => {
+    const existing = Object.fromEntries(Array.from({ length: 100 }, (_, index) => [`thread-${index}`, `draft ${index}`]));
+    localStorage.setItem("kiwi.drafts", JSON.stringify(existing));
+    resetDraftStoreForTests();
+    render(<Composer {...composerProps({
+      queuedTurns: [{ ...QUEUED, editing: true }],
+      onFinishEditQueued: vi.fn(() => true),
+    })} />);
+    fireEvent.change(screen.getByRole("textbox", { name: "Edit queued message 1" }), { target: { value: "Changed queue text" } });
+    window.dispatchEvent(new Event("pagehide"));
+    expect(JSON.parse(localStorage.getItem("kiwi.drafts")!)).toMatchObject(existing);
   });
 
   it("queues by default and offers explicit steering while a task runs", async () => {
@@ -329,6 +439,224 @@ describe("Composer", () => {
     await new Promise((resolve) => setTimeout(resolve, 250));
     expect(searchFiles).not.toHaveBeenCalled();
     expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+  });
+
+  it("treats punctuation and whitespace around ! as literal draft text", async () => {
+    const onSend = vi.fn(async () => true);
+    const onWorkflow = vi.fn(async () => true);
+    render(<Composer {...composerProps({ workflows: [{ id: "review", name: "Review" }], onWorkflow, onSend })} />);
+    const textarea = screen.getByPlaceholderText("Ask anything");
+    fireEvent.change(textarea, { target: { value: "Please review!" } });
+    expect(screen.queryByRole("listbox", { name: "Workflow suggestions" })).not.toBeInTheDocument();
+    fireEvent.change(textarea, { target: { value: "Please review !" } });
+    expect(screen.getByRole("listbox", { name: "Workflow suggestions" })).toBeInTheDocument();
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith("Please review !"));
+    expect(onWorkflow).not.toHaveBeenCalled();
+
+    fireEvent.change(textarea, { target: { value: "! " } });
+    expect(screen.queryByRole("listbox", { name: "Workflow suggestions" })).not.toBeInTheDocument();
+    expect(textarea).toHaveValue("! ");
+  });
+
+  it("requires explicit navigation before Enter selects a workflow", async () => {
+    const onSend = vi.fn(async () => true);
+    const onWorkflow = vi.fn(async () => true);
+    render(<Composer {...composerProps({
+      workflows: [{ id: "review", name: "Review" }, { id: "release", name: "Release" }],
+      onWorkflow,
+      onSend,
+    })} />);
+    const textarea = screen.getByPlaceholderText("Ask anything");
+    fireEvent.change(textarea, { target: { value: "!review" } });
+    const first = screen.getByRole("option", { name: /Review/i });
+    expect(first).toHaveAttribute("aria-selected", "false");
+    expect(textarea).not.toHaveAttribute("aria-activedescendant");
+    fireEvent.keyDown(textarea, { key: "Tab" });
+    expect(screen.queryByRole("button", { name: "Remove workflow Review" })).not.toBeInTheDocument();
+    fireEvent.keyDown(textarea, { key: "ArrowDown" });
+    expect(textarea).toHaveAttribute("aria-activedescendant", first.id);
+    fireEvent.keyDown(textarea, { key: "Enter", shiftKey: true });
+    fireEvent.keyDown(textarea, { key: "Enter", isComposing: true });
+    fireEvent.keyDown(textarea, { key: "Enter", keyCode: 229 });
+    expect(screen.queryByRole("button", { name: "Remove workflow Review" })).not.toBeInTheDocument();
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(screen.getByRole("button", { name: "Remove workflow Review" })).toBeInTheDocument();
+    expect(textarea).toHaveValue("");
+    expect(onSend).not.toHaveBeenCalled();
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    await waitFor(() => expect(onWorkflow).toHaveBeenCalledWith("review", ""));
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("keeps the selected chip and note after a canceled launch, then clears both on success", async () => {
+    const onWorkflow = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    render(<Composer {...composerProps({ workflows: [{ id: "review", name: "Review" }], onWorkflow })} />);
+    const textarea = screen.getByPlaceholderText("Ask anything");
+    fireEvent.change(textarea, { target: { value: "Inspect !rev" } });
+    fireEvent.click(screen.getByRole("option", { name: /Review/i }));
+    expect(textarea).toHaveValue("Inspect ");
+    expect(screen.getByRole("button", { name: "Remove workflow Review" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Run workflow Review" }));
+    await waitFor(() => expect(onWorkflow).toHaveBeenCalledWith("review", "Inspect"));
+    expect(textarea).toHaveValue("Inspect ");
+    expect(screen.getByRole("button", { name: "Remove workflow Review" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Run workflow Review" }));
+    await waitFor(() => expect(textarea).toHaveValue(""));
+    expect(screen.queryByRole("button", { name: "Remove workflow Review" })).not.toBeInTheDocument();
+  });
+
+  it("keeps a review-pending selection visible and blocks duplicate launches", async () => {
+    let finishReview!: (value: boolean) => void;
+    const onWorkflow = vi.fn(() => new Promise<boolean>((resolve) => { finishReview = resolve; }));
+    render(<Composer {...composerProps({ workflows: [{ id: "review", name: "Review" }], onWorkflow })} />);
+    const textarea = screen.getByPlaceholderText("Ask anything");
+    fireEvent.change(textarea, { target: { value: "!rev" } });
+    fireEvent.click(screen.getByRole("option", { name: /Review/i }));
+    fireEvent.change(textarea, { target: { value: "Preserve this note" } });
+    fireEvent.click(screen.getByRole("button", { name: "Run workflow Review" }));
+    expect(onWorkflow).toHaveBeenCalledWith("review", "Preserve this note");
+    expect(textarea).toHaveValue("Preserve this note");
+    expect(textarea).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Run workflow Review" })).toBeDisabled();
+    await act(async () => finishReview(false));
+    expect(textarea).toBeEnabled();
+    expect(textarea).toHaveValue("Preserve this note");
+    expect(screen.getByRole("button", { name: "Remove workflow Review" })).toBeInTheDocument();
+    expect(onWorkflow).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves newer source and other-thread drafts when a pending workflow succeeds", async () => {
+    let finishReview!: (value: boolean) => void;
+    const onWorkflow = vi.fn(() => new Promise<boolean>((resolve) => { finishReview = resolve; }));
+    const props = composerProps({ workflows: [{ id: "review", name: "Review" }], onWorkflow });
+    const ref = createRef<ComposerHandle>();
+    const { rerender } = render(<Composer ref={ref} {...props} />);
+    const textarea = screen.getByPlaceholderText("Ask anything");
+    fireEvent.change(textarea, { target: { value: "!rev" } });
+    fireEvent.click(screen.getByRole("option", { name: /Review/i }));
+    fireEvent.change(textarea, { target: { value: "Submitted note" } });
+    fireEvent.click(screen.getByRole("button", { name: "Run workflow Review" }));
+    act(() => ref.current?.setDraft("Newer source draft"));
+    rerender(<Composer ref={ref} {...props} threadKey="thread-b" />);
+    fireEvent.change(textarea, { target: { value: "Other thread draft" } });
+    await act(async () => finishReview(true));
+    expect(textarea).toHaveValue("Other thread draft");
+    expect(draftFor("thread-a")).toBe("Newer source draft");
+    expect(draftFor("thread-b")).toBe("Other thread draft");
+    rerender(<Composer ref={ref} {...props} threadKey="thread-a" />);
+    expect(textarea).toHaveValue("Newer source draft");
+  });
+
+  it("keeps each thread's explicit workflow selection separate", () => {
+    const props = composerProps({ workflows: [{ id: "review", name: "Review" }], onWorkflow: vi.fn(async () => false) });
+    const { rerender } = render(<Composer {...props} />);
+    const textarea = screen.getByPlaceholderText("Ask anything");
+    fireEvent.change(textarea, { target: { value: "!rev" } });
+    fireEvent.click(screen.getByRole("option", { name: /Review/i }));
+    fireEvent.change(textarea, { target: { value: "Thread A note" } });
+    rerender(<Composer {...props} threadKey="thread-b" />);
+    expect(screen.queryByRole("button", { name: "Remove workflow Review" })).not.toBeInTheDocument();
+    expect(textarea).toHaveValue("");
+    fireEvent.change(textarea, { target: { value: "Thread B draft" } });
+    rerender(<Composer {...props} threadKey="thread-a" />);
+    expect(screen.getByRole("button", { name: "Remove workflow Review" })).toBeInTheDocument();
+    expect(textarea).toHaveValue("Thread A note");
+  });
+
+  it("removes a selected workflow without discarding its note", async () => {
+    const onSend = vi.fn(async () => true);
+    const onWorkflow = vi.fn(async () => true);
+    render(<Composer {...composerProps({ workflows: [{ id: "review", name: "Review" }], onWorkflow, onSend })} />);
+    const textarea = screen.getByPlaceholderText("Ask anything");
+    fireEvent.change(textarea, { target: { value: "Write note !rev" } });
+    fireEvent.click(screen.getByRole("option", { name: /Review/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove workflow Review" }));
+    expect(textarea).toHaveValue("Write note ");
+    expect(screen.queryByRole("button", { name: "Run workflow Review" })).not.toBeInTheDocument();
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith("Write note"));
+    expect(onWorkflow).not.toHaveBeenCalled();
+  });
+
+  it("does not turn a pasted exact workflow token into a launch", async () => {
+    const onSend = vi.fn(async () => true);
+    const onWorkflow = vi.fn(async () => true);
+    render(<Composer {...composerProps({ workflows: [{ id: "review", name: "Review" }], onWorkflow, onSend })} />);
+    const textarea = screen.getByPlaceholderText("Ask anything");
+    fireEvent.paste(textarea, { clipboardData: { items: [] } });
+    fireEvent.change(textarea, { target: { value: "!Review" } });
+    expect(screen.getByRole("listbox", { name: "Workflow suggestions" })).toBeInTheDocument();
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith("!Review"));
+    expect(onWorkflow).not.toHaveBeenCalled();
+  });
+
+  it("does not offer or launch workflows with attachments, feedback, or a queued turn", () => {
+    const onWorkflow = vi.fn(async () => true);
+    const base = composerProps({ workflows: [{ id: "review", name: "Review" }], onWorkflow });
+    const { rerender } = render(<Composer {...base} attachments={[{ path: "/tmp/context", name: "context", kind: "file" }]} />);
+    const textarea = screen.getByPlaceholderText("Ask anything");
+    fireEvent.change(textarea, { target: { value: "!" } });
+    expect(screen.queryByRole("listbox", { name: "Workflow suggestions" })).not.toBeInTheDocument();
+    rerender(<Composer {...base} hasFeedback />);
+    fireEvent.change(textarea, { target: { value: "!rev" } });
+    expect(screen.queryByRole("listbox", { name: "Workflow suggestions" })).not.toBeInTheDocument();
+    rerender(<Composer {...base} running queueing />);
+    fireEvent.change(textarea, { target: { value: "!" } });
+    expect(screen.queryByRole("listbox", { name: "Workflow suggestions" })).not.toBeInTheDocument();
+    expect(onWorkflow).not.toHaveBeenCalled();
+  });
+
+  it("keeps a selected workflow and draft when attachments arrive before launch", () => {
+    const onWorkflow = vi.fn(async () => true);
+    const props = composerProps({ workflows: [{ id: "review", name: "Review" }], onWorkflow });
+    const { rerender } = render(<Composer {...props} />);
+    const textarea = screen.getByPlaceholderText("Ask anything");
+    fireEvent.change(textarea, { target: { value: "!rev" } });
+    fireEvent.click(screen.getByRole("option", { name: /Review/i }));
+    fireEvent.change(textarea, { target: { value: "Keep this note" } });
+    rerender(<Composer {...props} attachments={[{ path: "/tmp/context", name: "context", kind: "file" }]} />);
+    const run = screen.getByRole("button", { name: "Run workflow Review" });
+    expect(run).toBeDisabled();
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(onWorkflow).not.toHaveBeenCalled();
+    expect(textarea).toHaveValue("Keep this note");
+    expect(screen.getByRole("button", { name: "Remove workflow Review" })).toBeInTheDocument();
+    expect(screen.getByText(/Recipe paused by attachments/)).toBeInTheDocument();
+  });
+
+  it("explains how to send feedback after selecting a recipe", () => {
+    const onWorkflow = vi.fn(async () => true);
+    const onSend = vi.fn(async () => true);
+    const props = composerProps({ workflows: [{ id: "review", name: "Review" }], onWorkflow, onSend });
+    const { rerender } = render(<Composer {...props} />);
+    const textarea = screen.getByPlaceholderText("Ask anything");
+    fireEvent.change(textarea, { target: { value: "!rev" } });
+    fireEvent.click(screen.getByRole("option", { name: /Review/i }));
+    rerender(<Composer {...props} hasFeedback />);
+    expect(screen.getByText(/Recipe paused by feedback/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Run workflow Review" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Remove workflow Review" }));
+    expect(screen.getByRole("button", { name: "Send feedback and optional prompt" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Send feedback and optional prompt" }));
+    expect(onSend).toHaveBeenCalledWith("");
+    expect(onWorkflow).not.toHaveBeenCalled();
+  });
+
+  it("disables both launch and steering if the selected thread begins running", () => {
+    const onWorkflow = vi.fn(async () => true);
+    const props = composerProps({ workflows: [{ id: "review", name: "Review" }], onWorkflow });
+    const { rerender } = render(<Composer {...props} />);
+    const textarea = screen.getByPlaceholderText("Ask anything");
+    fireEvent.change(textarea, { target: { value: "!rev" } });
+    fireEvent.click(screen.getByRole("option", { name: /Review/i }));
+    fireEvent.change(textarea, { target: { value: "Keep this note" } });
+    rerender(<Composer {...props} running queueing />);
+    expect(screen.getByRole("button", { name: "Run workflow Review" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Steer" })).toBeDisabled();
+    expect(textarea).toHaveValue("Keep this note");
+    expect(onWorkflow).not.toHaveBeenCalled();
   });
 
   it("keeps Stop available while children outlive their parent turn", () => {

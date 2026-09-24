@@ -33,7 +33,8 @@ import type { OpenRouterModel } from "../components/OpenRouterModelControl";
 import type { LMStudioModel } from "../lib/lmStudio";
 import type { SetPersisted } from "./usePersistedState";
 import { MAX_RUN_COMMAND_LENGTH, sanitizeProjectRunCommand } from "../lib/projectRun";
-import type { PendingApproval, ProjectRunCommand, ProjectSubagentSettings, Provider, Thread, ThreadReasoning } from "../types";
+import { MAX_CHECK_COMMAND_LENGTH, sanitizeProjectCheckCommand } from "../lib/projectChecks";
+import type { PendingApproval, ProjectCheckCommand, ProjectRunCommand, ProjectSubagentSettings, Provider, Thread, ThreadReasoning } from "../types";
 
 /**
  * Routes the delegation requests a root agent makes through the Mythra Code
@@ -81,6 +82,9 @@ export interface ChildAgentContext {
   /** Save (or clear, with null) the project's top-bar Run button command. */
   applyProjectRunCommand: (rootThreadId: string, run: ProjectRunCommand | null) => void | Promise<void>;
   projectRunCommandForThread: (rootThreadId: string) => ProjectRunCommand | undefined;
+  /** Save or clear the project's Checks button command without running it. */
+  applyProjectCheckCommand: (rootThreadId: string, check: ProjectCheckCommand | null) => void | Promise<void>;
+  projectCheckCommandForThread: (rootThreadId: string) => ProjectCheckCommand | undefined;
   /**
    * Start a run command in the Terminal panel for the thread's project.
    * Resolves once the process has either exited quickly or run for a moment,
@@ -803,6 +807,7 @@ export function useChildAgents(context: ChildAgentContext): {
     if (!policy?.rootThreadId) throw new Error("This conversation is not inside a saved project, so it has no Run button.");
     const rootThreadId = policy.rootThreadId;
     const command = typeof request.arguments.command === "string" ? request.arguments.command.trim() : "";
+    const setupCommand = typeof request.arguments.setupCommand === "string" ? request.arguments.setupCommand.trim() : "";
     const label = typeof request.arguments.label === "string" ? request.arguments.label : "";
     const wantsRun = request.arguments.run === true;
     const existing = ctx.projectRunCommandForThread(rootThreadId);
@@ -817,12 +822,12 @@ export function useChildAgents(context: ChildAgentContext): {
     let run: ProjectRunCommand | null;
     let saved = false;
     if (command) {
-      const next = sanitizeProjectRunCommand({ command, label });
+      const next = sanitizeProjectRunCommand({ command, setupCommand, label });
       if (!next) throw new Error(`\`command\` must be a shell command of at most ${MAX_RUN_COMMAND_LENGTH} characters.`);
       // Re-saving an identical command is harmless, but a run request must
       // never silently replace a different saved command with a label-less
       // copy of it; the model passed a new command, so that is what it wants.
-      if (!existing || existing.command !== next.command || (existing.label ?? "") !== (next.label ?? "")) {
+      if (!existing || existing.command !== next.command || existing.setupCommand !== next.setupCommand || (existing.label ?? "") !== (next.label ?? "")) {
         await ctx.applyProjectRunCommand(rootThreadId, next);
         saved = true;
       }
@@ -840,19 +845,20 @@ export function useChildAgents(context: ChildAgentContext): {
 
     if (!wantsRun) {
       activity("Run button updated", `Click Run in the top bar to execute: ${run.command}`);
-      return { saved: true, command: run.command, label: run.label ?? null, note: "Saved for this project. Nothing was executed; the user runs it by clicking the Run button in the top bar." };
+      return { saved: true, command: run.command, setupCommand: run.setupCommand ?? null, label: run.label ?? null, note: "Saved for this project. Nothing was executed; the user runs it by clicking the Run button in the top bar." };
     }
 
     const outcome = await ctx.runProjectCommand(rootThreadId, run);
     if (!outcome.started) {
       activity("Run command not started", outcome.reason ?? "The Terminal panel could not start it.", "warning");
-      return { saved, command: run.command, label: run.label ?? null, started: false, reason: outcome.reason ?? "The Terminal panel could not start it." };
+      return { saved, command: run.command, setupCommand: run.setupCommand ?? null, label: run.label ?? null, started: false, reason: outcome.reason ?? "The Terminal panel could not start it." };
     }
     activity(saved ? "Run button set and started" : "Run button started", `Running in the Terminal panel: ${run.command}`);
     void auditEvent("project.run", { command: run.command, source: "model" }, rootThreadId);
     return {
       saved,
       command: run.command,
+      setupCommand: run.setupCommand ?? null,
       label: run.label ?? null,
       started: true,
       exited: Boolean(outcome.exited),
@@ -861,6 +867,30 @@ export function useChildAgents(context: ChildAgentContext): {
         ? "The command already exited; read the output above before telling the user it works."
         : "Running in the app's Terminal panel. The user can stop it with the Stop button next to Run in the top bar; you cannot see further output from here.",
     };
+  }, []);
+
+  const setCheckCommand = useCallback(async (request: ChildAgentRequest): Promise<Record<string, unknown>> => {
+    const ctx = contextRef.current;
+    const policy = childAgentPolicyForSession(ctx.policies, request.sessionId);
+    if (!policy?.rootThreadId) throw new Error("This conversation is not inside a saved project, so it has no Checks button.");
+    const rootThreadId = policy.rootThreadId;
+    if (typeof request.arguments.command !== "string") throw new Error("`command` must be a string.");
+    const command = request.arguments.command.trim();
+    if (command.length > MAX_CHECK_COMMAND_LENGTH) throw new Error("`command` is too long for the Checks button.");
+    const current = ctx.projectCheckCommandForThread(rootThreadId);
+    if (current?.command === command) return { saved: false, command, note: "This command is already saved for the project." };
+    const next = command ? sanitizeProjectCheckCommand({ command }) : null;
+    if (command && !next) throw new Error("`command` is not a valid shell command.");
+    await ctx.applyProjectCheckCommand(rootThreadId, next ?? null);
+    useTaskStore.getState().upsertActivity(rootThreadId, {
+      id: `check-command-${request.requestId}`,
+      kind: "agent",
+      title: next ? "Checks command updated" : "Checks command cleared",
+      detail: next ? `Checks button will run: ${next.command}` : "No check command is saved for this project.",
+      status: "completed",
+    });
+    void auditEvent("project.checkCommand.set", { command: next?.command ?? null }, rootThreadId);
+    return { saved: true, command: next?.command ?? null, note: "Saved for this project. Nothing was executed." };
   }, []);
 
   const handleRequest = useCallback(async (request: ChildAgentRequest): Promise<void> => {
@@ -872,6 +902,7 @@ export function useChildAgents(context: ChildAgentContext): {
       else if (request.tool === "cancel_agent") result = await cancelChild(request);
       else if (request.tool === "propose_agent_settings") result = await proposeSettings(request);
       else if (request.tool === "set_project_run_command") result = await setRunCommand(request);
+      else if (request.tool === "set_project_check_command") result = await setCheckCommand(request);
       else throw new Error(`\`${request.tool}\` is not a sub-agent tool.`);
       await respondToChildAgentRequest(request.requestId, result);
     } catch (reason) {
@@ -881,7 +912,7 @@ export function useChildAgents(context: ChildAgentContext): {
       // the parent model can read why and choose a different destination.
       await respondToChildAgentRequest(request.requestId, null, message).catch(() => undefined);
     }
-  }, [cancelChild, collectChild, proposeSettings, reportStatus, setRunCommand, spawnChild]);
+  }, [cancelChild, collectChild, proposeSettings, reportStatus, setCheckCommand, setRunCommand, spawnChild]);
 
   // Tauri events are fire-and-forget. Re-subscribing this listener whenever a
   // child changes state creates a small window with no receiver at all; a tool

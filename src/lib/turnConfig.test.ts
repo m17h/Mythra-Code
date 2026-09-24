@@ -223,6 +223,39 @@ describe("cross-provider sub-agent bridge", () => {
     });
   });
 
+  it("exposes the saved Checks command when its project tool is available without delegation", () => {
+    const projectBridge = { ...bridge, toolNames: ["propose_agent_settings", "set_project_run_command", "set_project_check_command"] };
+    const params = threadStartParams(baseRun, "/tmp/project", {
+      interactive: true,
+      childAgentBridge: projectBridge,
+      projectCheckCommand: { command: "npm run verify", updatedAt: 1 },
+    });
+    expect(params.developerInstructions).toContain("set_project_check_command");
+    expect(params.developerInstructions).toContain("`npm run verify`");
+    expect(params.config).toMatchObject({ developer_instructions: expect.stringContaining("set_project_check_command") });
+    expect(threadStartParams(baseRun, "/tmp/project", { interactive: true }).developerInstructions).not.toContain("set_project_check_command");
+  });
+
+  it("keeps the Checks tool and guidance on OpenRouter and LM Studio starts and resumes", () => {
+    const projectBridge = { ...bridge, toolNames: ["propose_agent_settings", "set_project_run_command", "set_project_check_command"] };
+    for (const run of [
+      { ...baseRun, provider: "openrouter" as const, model: "x-ai/grok-4.5" },
+      { ...baseRun, provider: "lmstudio" as const, model: "local-model" },
+    ]) {
+      const options = { childAgentBridge: projectBridge, projectCheckCommand: { command: "npm run verify", updatedAt: 1 } };
+      const start = threadStartParams(run, "/tmp/project", { ...options, interactive: true });
+      const resume = threadResumeParams(run, "thread-1", "/tmp/project", options);
+      for (const params of [start, resume]) {
+        expect(params.developerInstructions).toContain("set_project_check_command");
+        expect(params.developerInstructions).toContain("`npm run verify`");
+        expect(params.config).toMatchObject({
+          mcp_servers: { mythra_agents: { command: projectBridge.command } },
+          developer_instructions: expect.stringContaining("set_project_check_command"),
+        });
+      }
+    }
+  });
+
   it("re-applies the bridge when an OpenRouter thread re-sends its configuration", () => {
     const params = threadResumeParams({ ...baseRun, provider: "openrouter", model: "x-ai/grok-4.5" }, "thread-1", "/tmp/project", {
       childAgentBridge: bridge,

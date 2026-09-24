@@ -1,13 +1,30 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS } from "../lib/appConfig";
 import { scheduleRunSnapshot } from "../lib/turnConfig";
 import type { WorkflowDefinition, WorkflowRunRecord } from "../lib/workflows";
+import { exportWorkflowRecipe } from "../lib/workflowRecipes";
 import { WorkflowManager } from "./WorkflowManager";
 
 const project = { id: "project-1", name: "Mythra Code", path: "/tmp/openkiwi" };
 
 describe("WorkflowManager", () => {
+  it("removes leading whitespace as a name is typed or pasted", () => {
+    const onWorkflows = vi.fn();
+    render(<WorkflowManager workflows={[]} runs={[]} projects={[project]} skills={[]} settings={DEFAULT_SETTINGS} onWorkflows={onWorkflows} onRun={vi.fn()} onStop={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "New workflow" }));
+    const name = screen.getByRole("textbox", { name: "Name" });
+    fireEvent.change(name, { target: { value: "   " } });
+    expect(name).toHaveValue("");
+    fireEvent.change(name, { target: { value: "\u00a0\tRelease readiness review" } });
+    expect(name).toHaveValue("Release readiness review");
+    fireEvent.change(name, { target: { value: "Release readiness review 2" } });
+    expect(name).toHaveValue("Release readiness review 2");
+    fireEvent.change(screen.getByPlaceholderText("Tell the agent exactly what to accomplish and how to verify it."), { target: { value: "Review the release." } });
+    fireEvent.click(screen.getByRole("button", { name: "Save workflow" }));
+    expect(onWorkflows.mock.calls[0][0][0].name).toBe("Release readiness review 2");
+  });
+
   it("creates a transparent agent workflow with a runtime snapshot", () => {
     const onWorkflows = vi.fn();
     render(
@@ -34,7 +51,7 @@ describe("WorkflowManager", () => {
     const created = onWorkflows.mock.calls[0][0][0];
     expect(created).toMatchObject({
       name: "Release readiness",
-      projectId: "project-1",
+      projectId: "",
       trigger: { type: "manual" },
       run: { provider: DEFAULT_SETTINGS.provider, model: DEFAULT_SETTINGS.model },
     });
@@ -44,6 +61,49 @@ describe("WorkflowManager", () => {
     });
   });
 
+  it.each([
+    ["claude", "claude-sonnet-4", "Claude"],
+    ["cursor", "composer-1", "Cursor"],
+  ] as const)("saves and displays %s workflow settings", (provider, model, label) => {
+    const onWorkflows = vi.fn();
+    const settings = { ...DEFAULT_SETTINGS, provider, model };
+    render(
+      <WorkflowManager
+        workflows={[]}
+        runs={[]}
+        projects={[project]}
+        skills={[]}
+        settings={settings}
+        onWorkflows={onWorkflows}
+        onRun={vi.fn()}
+        onStop={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "New workflow" }));
+    expect(screen.getByText(`${label} · ${model}`)).toBeInTheDocument();
+    fireEvent.change(screen.getByPlaceholderText("Release readiness"), { target: { value: `${label} review` } });
+    fireEvent.change(screen.getByPlaceholderText("Tell the agent exactly what to accomplish and how to verify it."), {
+      target: { value: "Review the project." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save workflow" }));
+
+    expect(onWorkflows.mock.calls[0][0][0].run).toMatchObject({ provider, model });
+  });
+
+  it("imports a portable draft without saving or running it, even without projects", async () => {
+    const onWorkflows = vi.fn(), onRun = vi.fn();
+    render(<WorkflowManager workflows={[]} runs={[]} projects={[]} skills={[]} settings={DEFAULT_SETTINGS} onWorkflows={onWorkflows} onRun={onRun} onStop={vi.fn()} />);
+    const contents = exportWorkflowRecipe({ id: "old", name: "Shared review", description: "", projectId: "private", enabled: true, trigger: { type: "app-start" }, steps: [{ id: "s", type: "agent", name: "Review", prompt: "Review this project", continueOnError: false }], skillNames: [], run: scheduleRunSnapshot(DEFAULT_SETTINGS), createdAt: 1, updatedAt: 1 });
+    const file = new File([contents], "review.json", { type: "application/json" });
+    Object.defineProperty(file, "text", { value: async () => contents });
+    fireEvent.change(screen.getByLabelText("Import workflow recipe"), { target: { files: [file] } });
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Name" })).toHaveValue("Shared review"));
+    expect(onWorkflows).not.toHaveBeenCalled();
+    expect(onRun).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Save workflow" }));
+    expect(onWorkflows.mock.calls[0][0][0]).toMatchObject({ name: "Shared review", projectId: "", trigger: { type: "manual" } });
+  });
   it("shows validation errors without saving an incomplete recipe", () => {
     const onWorkflows = vi.fn();
     render(
@@ -64,6 +124,29 @@ describe("WorkflowManager", () => {
     expect(onWorkflows).not.toHaveBeenCalled();
   });
 
+  it("uses Mythra Code menus for project, trigger, and step conditions", () => {
+    render(
+      <WorkflowManager
+        workflows={[]}
+        runs={[]}
+        projects={[project, { id: "project-2", name: "Second project", path: "/tmp/second" }]}
+        skills={[]}
+        settings={DEFAULT_SETTINGS}
+        onWorkflows={vi.fn()}
+        onRun={vi.fn()}
+        onStop={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "New workflow" }));
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Project" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Second project/ }));
+    expect(screen.getByRole("button", { name: "Project" })).toHaveTextContent("Second project");
+    expect(screen.getByRole("button", { name: "Trigger" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Run when for Agent task" })).toBeInTheDocument();
+  });
+
   it("lets the interval field hold transient values while typing and clamps on blur", () => {
     render(
       <WorkflowManager
@@ -79,7 +162,8 @@ describe("WorkflowManager", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "New workflow" }));
-    fireEvent.change(screen.getByRole("combobox", { name: "Trigger" }), { target: { value: "interval" } });
+    fireEvent.click(screen.getByRole("button", { name: "Trigger" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "Interval" }));
     const interval = screen.getByRole("spinbutton", { name: "Every (minutes)" });
 
     // Typing "45" passes through "4", which must not snap to the minimum.
@@ -162,7 +246,7 @@ describe("WorkflowManager", () => {
     fireEvent.click(screen.getByRole("button", { name: "Run" }));
     fireEvent.change(screen.getByRole("textbox", { name: "branch" }), { target: { value: "release/next" } });
     fireEvent.click(screen.getByRole("button", { name: "Run now" }));
-    expect(onRun).toHaveBeenCalledWith("workflow-1", { branch: "release/next" });
+    expect(onRun).toHaveBeenCalledWith("workflow-1", { branch: "release/next" }, project.id);
   });
 
   it("edits conditions and preserves reordered steps", () => {
@@ -206,8 +290,8 @@ describe("WorkflowManager", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Edit" }));
-    const conditions = screen.getAllByRole("combobox", { name: "Run when" });
-    fireEvent.change(conditions[1], { target: { value: "previous-failed" } });
+    fireEvent.click(screen.getByRole("button", { name: "Run when for Recover" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "Previous step failed" }));
     fireEvent.click(screen.getByRole("button", { name: "Move Recover up" }));
     fireEvent.click(screen.getByRole("button", { name: "Save workflow" }));
 

@@ -137,7 +137,7 @@ export function useCheckpoints(context: CheckpointsContext) {
     const parent = checkpointHeadsRef.current[pathKey];
     const taskState = useTaskStore.getState();
     const overlappingRun = Object.entries(taskState.statuses).some(([candidateId, taskStatus]) => {
-      if (candidateId === threadId || (taskStatus !== "starting" && taskStatus !== "running")) return false;
+      if (candidateId === threadId || (taskStatus !== "starting" && taskStatus !== "running" && !taskState.workflowOwners[candidateId])) return false;
       const binding = taskState.tasks[candidateId]?.workspacePath
         ?? threadProjectBindingsRef.current?.[candidateId];
       return Boolean(binding && normalizedProjectPath(binding) === pathKey);
@@ -303,7 +303,7 @@ export function useCheckpoints(context: CheckpointsContext) {
     if (checkpointProjectQueuesRef.current.has(target)) return true;
     const state = useTaskStore.getState();
     return Object.entries(state.statuses).some(([threadId, taskStatus]) => {
-      if (taskStatus !== "starting" && taskStatus !== "running") return false;
+      if (taskStatus !== "starting" && taskStatus !== "running" && !state.workflowOwners[threadId]) return false;
       const binding = threadProjectBindingsRef.current?.[threadId];
       const executionPath = state.tasks[threadId]?.workspacePath;
       return Boolean(

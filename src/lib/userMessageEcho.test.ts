@@ -74,6 +74,21 @@ describe("provider prompt echoes", () => {
     store().hydrateTask("thread", [user("runtime-1"), user("runtime-2"), user("runtime-3", "turn-2")], []);
     expect(store().tasks.thread.messages.map((m) => m.id)).toEqual(["runtime-1", "runtime-2", "runtime-3"]);
   });
+  it("collapses a legacy pending and identified copy only when their message IDs match", () => {
+    const pending = { id: "local-first", role: "user" as const, text: "Check the app", timelineOrder: 1 };
+    const identified = { ...pending, turnId: "turn-1", turnStatus: "completed" as const, timelineOrder: 3 };
+    const separate = { ...identified, id: "local-second", timelineOrder: 4 };
+    const incoming = [pending, { id: "reply", role: "assistant" as const, text: "Done", timelineOrder: 2 }, identified, separate];
+
+    const result = reconcileUserMessages(incoming, []);
+    expect(result.messages.map((message) => message.id)).toEqual(["local-first", "reply", "local-second"]);
+    expect(result.messages[0]).toMatchObject({ turnId: "turn-1", turnStatus: "completed", timelineOrder: 1 });
+    expect(result.messages[2]).toMatchObject({ text: "Check the app" });
+    store().hydrateTask("thread", incoming, []);
+    expect(store().tasks.thread.messages.map((message) => message.id)).toEqual(["local-first", "reply", "local-second"]);
+    store().prependHistory("thread", [pending], [], { hasMore: false, nextCursor: null });
+    expect(store().tasks.thread.messages.map((message) => message.id)).toEqual(["local-first", "reply", "local-second"]);
+  });
   it("does not merge similar uncorrelated provider messages or messages without turn IDs", () => {
     const result = reconcileUserMessages([user("runtime")], [user("other-runtime"), { ...user("local-1"), turnId: undefined }]);
     expect(result.matchedIds.size).toBe(0);

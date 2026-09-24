@@ -87,10 +87,10 @@ export async function skillMentionNames(message: string): Promise<string[]> {
   return invoke<string[]>("local_skills_mention_names", { message });
 }
 
-/** Resolve exact enabled @skill mentions inside the native selected-folder boundary. */
-export async function resolveSkillPrompt(message: string, folder: string, skills: LocalSkill[]): Promise<string> {
-  if (!message.includes("@") && !message.includes("mythra_code_invoked_skills")) return message;
-  return invoke<string>("local_skills_resolve_prompt", { folder, message, skills: skillBridges(skills) });
+/** Resolve exact enabled @skill mentions from authored text while preserving the full message. */
+export async function resolveSkillPrompt(message: string, folder: string, skills: LocalSkill[], mentionSource?: string): Promise<string> {
+  if (!(mentionSource ?? message).includes("@") && !message.includes("mythra_code_invoked_skills")) return message;
+  return invoke<string>("local_skills_resolve_prompt", { folder, message, skills: skillBridges(skills), mentionSource });
 }
 
 export async function importLocalSkills(folder: string, paths: string[]): Promise<string[]> {

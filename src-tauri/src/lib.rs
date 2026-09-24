@@ -8,7 +8,7 @@ use std::{
     process::Stdio,
     sync::{
         atomic::{AtomicBool, AtomicI64, Ordering},
-        Arc, Mutex as StdMutex, RwLock,
+        Arc, Mutex as StdMutex, RwLock, Weak,
     },
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -29,7 +29,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader},
     process::{Child, ChildStdin, Command},
-    sync::{oneshot, Mutex},
+    sync::{oneshot, watch, Mutex},
     time::{timeout, timeout_at, Duration, Instant},
 };
 use unicode_segmentation::UnicodeSegmentation;
@@ -111,6 +111,9 @@ use skills::{
 const KEYRING_SERVICE: &str = "com.kiwi.harness";
 const OPENROUTER_ACCOUNT: &str = "openrouter-api-key";
 const LMSTUDIO_ACCOUNT: &str = "lmstudio-api-key";
+const KEYRING_READ_TIMEOUT: Duration = Duration::from_secs(4);
+static OPENROUTER_KEY_READ: KeyringReadSlot = KeyringReadSlot(StdMutex::new(None));
+static LMSTUDIO_KEY_READ: KeyringReadSlot = KeyringReadSlot(StdMutex::new(None));
 
 type PendingMap = Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, String>>>>>;
 
@@ -857,6 +860,8 @@ struct ClaudeTurnOptions {
     model: String,
     effort: String,
     permission: String,
+    #[serde(default = "default_interactive")]
+    interactive: bool,
     system_prompt: String,
     resume: bool,
     attachments: Vec<ClaudeAttachment>,
@@ -867,6 +872,10 @@ struct ClaudeTurnOptions {
     /// for a root thread whose policy allows spawning on other providers.
     #[serde(default)]
     child_agent_bridge_config: Option<String>,
+}
+
+fn default_interactive() -> bool {
+    true
 }
 
 #[derive(Serialize)]
@@ -1376,10 +1385,151 @@ impl AppServer {
     }
 }
 
+/// One in-flight OS read per credential. Concurrent callers receive the same
+/// result. A successful in-app save replaces the read with its known value so
+/// the immediate runtime restart cannot pick up an older in-flight result.
+struct KeyringReadSlot(StdMutex<Option<Arc<KeyringReadSession>>>);
+
+struct KeyringReadSession {
+    result: watch::Receiver<Option<Option<String>>>,
+    invalidated: AtomicBool,
+    blocked_origin: Option<Weak<KeyringReadSession>>,
+    saved_override: bool,
+}
+
+fn publish_saved_key(
+    slot: &'static KeyringReadSlot,
+    value: Option<String>,
+) -> Arc<KeyringReadSession> {
+    let (_sender, result) = watch::channel(Some(value));
+    let mut current = slot
+        .0
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let blocked_origin = current.as_ref().and_then(|old| {
+        if old.saved_override {
+            old.blocked_origin.clone()
+        } else {
+            Some(Arc::downgrade(old))
+        }
+    });
+    let new = Arc::new(KeyringReadSession {
+        result,
+        invalidated: AtomicBool::new(false),
+        blocked_origin,
+        saved_override: true,
+    });
+    if let Some(old) = current.as_ref() {
+        old.invalidated.store(true, Ordering::Release);
+    }
+    *current = Some(new.clone());
+    new
+}
+
+fn clear_saved_key_after_restart(slot: &'static KeyringReadSlot, saved: &Arc<KeyringReadSession>) {
+    // When an old OS read is stuck, retain this known value until that worker
+    // exits; otherwise clear it after the immediate runtime restart.
+    if saved.blocked_origin.is_some() {
+        return;
+    }
+    let mut current = slot
+        .0
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if current
+        .as_ref()
+        .is_some_and(|active| Arc::ptr_eq(active, saved))
+    {
+        *current = None;
+    }
+}
+
+struct KeyringReadGuard {
+    slot: &'static KeyringReadSlot,
+    session: Arc<KeyringReadSession>,
+}
+
+impl Drop for KeyringReadGuard {
+    fn drop(&mut self) {
+        let mut current = self
+            .slot
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if current.as_ref().is_some_and(|active| {
+            Arc::ptr_eq(active, &self.session)
+                || active
+                    .blocked_origin
+                    .as_ref()
+                    .and_then(Weak::upgrade)
+                    .is_some_and(|origin| Arc::ptr_eq(&origin, &self.session))
+        }) {
+            *current = None;
+        }
+    }
+}
+
+async fn bounded_keyring_read<F>(
+    slot: &'static KeyringReadSlot,
+    limit: Duration,
+    read: F,
+) -> Option<String>
+where
+    F: FnOnce() -> Option<String> + Send + 'static,
+{
+    // macOS Keychain can block indefinitely in SecKeychainFindGenericPassword.
+    // A timed-out spawn_blocking task cannot be stopped. Keep its session
+    // available so later callers join it instead of starting another worker.
+    let mut read = Some(read);
+    let session = {
+        let mut current = slot
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(session) = current.as_ref() {
+            session.clone()
+        } else {
+            let (sender, result) = watch::channel(None);
+            let session = Arc::new(KeyringReadSession {
+                result,
+                invalidated: AtomicBool::new(false),
+                blocked_origin: None,
+                saved_override: false,
+            });
+            *current = Some(session.clone());
+            let worker_session = session.clone();
+            let work = read.take().expect("new keyring session owns the read");
+            tauri::async_runtime::spawn_blocking(move || {
+                let _guard = KeyringReadGuard {
+                    slot,
+                    session: worker_session,
+                };
+                let _ = sender.send(Some(work()));
+            });
+            session
+        }
+    };
+    let mut result = session.result.clone();
+    let value = timeout(limit, async {
+        loop {
+            if let Some(value) = result.borrow().clone() {
+                return value;
+            }
+            result.changed().await.ok()?;
+        }
+    })
+    .await
+    .ok()
+    .flatten();
+    if session.invalidated.load(Ordering::Acquire) {
+        None
+    } else {
+        value
+    }
+}
+
 async fn openrouter_key() -> Option<String> {
-    // Keyring calls can block on the OS credential store; keep them off the
-    // async runtime worker threads.
-    tauri::async_runtime::spawn_blocking(|| {
+    bounded_keyring_read(&OPENROUTER_KEY_READ, KEYRING_READ_TIMEOUT, || {
         let entry = keyring::Entry::new(KEYRING_SERVICE, OPENROUTER_ACCOUNT).ok()?;
         entry
             .get_password()
@@ -1387,12 +1537,10 @@ async fn openrouter_key() -> Option<String> {
             .filter(|value| !value.trim().is_empty())
     })
     .await
-    .ok()
-    .flatten()
 }
 
 async fn lmstudio_key() -> Option<String> {
-    tauri::async_runtime::spawn_blocking(|| {
+    bounded_keyring_read(&LMSTUDIO_KEY_READ, KEYRING_READ_TIMEOUT, || {
         let entry = keyring::Entry::new(KEYRING_SERVICE, LMSTUDIO_ACCOUNT).ok()?;
         entry
             .get_password()
@@ -1400,8 +1548,192 @@ async fn lmstudio_key() -> Option<String> {
             .filter(|value| !value.trim().is_empty())
     })
     .await
-    .ok()
-    .flatten()
+}
+
+#[cfg(test)]
+mod keyring_read_tests {
+    use super::*;
+
+    static TEST_SHARED_READ: KeyringReadSlot = KeyringReadSlot(StdMutex::new(None));
+    static TEST_STALLED_READ: KeyringReadSlot = KeyringReadSlot(StdMutex::new(None));
+    static TEST_INVALIDATED_READ: KeyringReadSlot = KeyringReadSlot(StdMutex::new(None));
+    static TEST_SAVED_READ: KeyringReadSlot = KeyringReadSlot(StdMutex::new(None));
+
+    #[tokio::test]
+    async fn concurrent_callers_share_the_same_healthy_keychain_result() {
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let first = tokio::spawn(bounded_keyring_read(
+            &TEST_SHARED_READ,
+            Duration::from_secs(1),
+            move || {
+                let _ = started_tx.send(());
+                let _ = release_rx.recv();
+                Some("test-key".into())
+            },
+        ));
+        timeout(Duration::from_secs(1), started_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        let second_ran = Arc::new(AtomicBool::new(false));
+        let marker = second_ran.clone();
+        let second = tokio::spawn(bounded_keyring_read(
+            &TEST_SHARED_READ,
+            Duration::from_secs(1),
+            move || {
+                marker.store(true, Ordering::Release);
+                Some("wrong-key".into())
+            },
+        ));
+        timeout(Duration::from_secs(1), async {
+            loop {
+                let joined = TEST_SHARED_READ
+                    .0
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .is_some_and(|session| Arc::strong_count(session) >= 4);
+                if joined {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        release_tx.send(()).unwrap();
+        assert_eq!(first.await.unwrap().as_deref(), Some("test-key"));
+        assert_eq!(second.await.unwrap().as_deref(), Some("test-key"));
+        assert!(!second_ran.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn stalled_keychain_read_is_bounded_and_does_not_spawn_more_workers() {
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let first = tokio::spawn(bounded_keyring_read(
+            &TEST_STALLED_READ,
+            Duration::from_millis(80),
+            move || {
+                let _ = started_tx.send(());
+                let _ = release_rx.recv();
+                Some("test-key".into())
+            },
+        ));
+        timeout(Duration::from_secs(1), started_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.await.unwrap(), None);
+        assert!(TEST_STALLED_READ.0.lock().unwrap().is_some());
+
+        let second_ran = Arc::new(AtomicBool::new(false));
+        let marker = second_ran.clone();
+        assert_eq!(
+            bounded_keyring_read(&TEST_STALLED_READ, Duration::from_millis(80), move || {
+                marker.store(true, Ordering::Release);
+                Some("second-key".into())
+            })
+            .await,
+            None
+        );
+        assert!(!second_ran.load(Ordering::Acquire));
+
+        release_tx.send(()).unwrap();
+        timeout(Duration::from_secs(1), async {
+            while TEST_STALLED_READ.0.lock().unwrap().is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            bounded_keyring_read(&TEST_STALLED_READ, Duration::from_secs(1), || Some(
+                "available-key".into()
+            ))
+            .await
+            .as_deref(),
+            Some("available-key")
+        );
+    }
+
+    #[tokio::test]
+    async fn saved_key_replaces_stale_read_until_its_worker_finishes() {
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let old = tokio::spawn(bounded_keyring_read(
+            &TEST_INVALIDATED_READ,
+            Duration::from_secs(1),
+            move || {
+                let _ = started_tx.send(());
+                let _ = release_rx.recv();
+                Some("old-key".into())
+            },
+        ));
+        timeout(Duration::from_secs(1), started_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        let first_save = publish_saved_key(&TEST_INVALIDATED_READ, Some("new-key".into()));
+        clear_saved_key_after_restart(&TEST_INVALIDATED_READ, &first_save);
+        let latest_save = publish_saved_key(&TEST_INVALIDATED_READ, Some("newer-key".into()));
+        clear_saved_key_after_restart(&TEST_INVALIDATED_READ, &latest_save);
+        let extra_read = Arc::new(AtomicBool::new(false));
+        let marker = extra_read.clone();
+        assert_eq!(
+            bounded_keyring_read(
+                &TEST_INVALIDATED_READ,
+                Duration::from_millis(80),
+                move || {
+                    marker.store(true, Ordering::Release);
+                    Some("unexpected-key".into())
+                }
+            )
+            .await
+            .as_deref(),
+            Some("newer-key")
+        );
+        assert!(!extra_read.load(Ordering::Acquire));
+        release_tx.send(()).unwrap();
+        assert_eq!(old.await.unwrap(), None);
+        timeout(Duration::from_secs(1), async {
+            while TEST_INVALIDATED_READ.0.lock().unwrap().is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            bounded_keyring_read(&TEST_INVALIDATED_READ, Duration::from_secs(1), || Some(
+                "new-key".into()
+            ))
+            .await
+            .as_deref(),
+            Some("new-key")
+        );
+    }
+
+    #[tokio::test]
+    async fn saved_key_override_clears_after_an_unblocked_restart() {
+        let saved = publish_saved_key(&TEST_SAVED_READ, Some("saved-key".into()));
+        assert_eq!(
+            bounded_keyring_read(&TEST_SAVED_READ, Duration::from_secs(1), || None)
+                .await
+                .as_deref(),
+            Some("saved-key")
+        );
+        clear_saved_key_after_restart(&TEST_SAVED_READ, &saved);
+        assert!(TEST_SAVED_READ.0.lock().unwrap().is_none());
+        assert_eq!(
+            bounded_keyring_read(&TEST_SAVED_READ, Duration::from_secs(1), || Some(
+                "keychain-key".into()
+            ))
+            .await
+            .as_deref(),
+            Some("keychain-key")
+        );
+    }
 }
 
 fn normalize_lmstudio_base_url(value: &str) -> Result<reqwest::Url, String> {
@@ -3897,6 +4229,49 @@ fn claude_read_only_denial(read_only: bool, message: &Value) -> Option<Value> {
     }))
 }
 
+/// A scheduled workflow has nobody to answer Claude's stdio permission or
+/// question prompts. Deny the pending tool request through the normal control
+/// protocol so the turn can either continue within its saved access or fail.
+fn claude_unattended_denial(interactive: bool, message: &Value) -> Option<Value> {
+    if interactive
+        || message["type"] != "control_request"
+        || message["request"]["subtype"] != "can_use_tool"
+    {
+        return None;
+    }
+    let request_id = message["request_id"].as_str()?;
+    Some(json!({
+        "type": "control_response",
+        "response": {
+            "subtype": "success", "request_id": request_id,
+            "response": {
+                "behavior": "deny",
+                "message": "This unattended workflow cannot answer permission or user-input requests. Run it manually or change its saved access settings."
+            }
+        }
+    }))
+}
+
+#[cfg(test)]
+mod unattended_claude_tests {
+    use super::*;
+
+    #[test]
+    fn unattended_turn_denies_tool_and_question_requests_without_changing_read_only_tools() {
+        let question = json!({
+            "type": "control_request", "request_id": "question-1",
+            "request": { "subtype": "can_use_tool", "tool_name": "AskUserQuestion" }
+        });
+        let denied =
+            claude_unattended_denial(false, &question).expect("unattended question denied");
+        assert_eq!(denied["response"]["response"]["behavior"], "deny");
+        assert_eq!(denied["response"]["request_id"], "question-1");
+        assert!(claude_unattended_denial(true, &question).is_none());
+        assert!(claude_allowed_builtin_tools("read-only").contains(&"Read"));
+        assert!(!claude_allowed_builtin_tools("read-only").contains(&"Write"));
+    }
+}
+
 #[tauri::command]
 async fn claude_turn_start(
     app: AppHandle,
@@ -4086,6 +4461,7 @@ async fn claude_turn_start(
     );
     let stdout_app = app.clone();
     let read_only = options.permission == "read-only";
+    let interactive = options.interactive;
     let stdout_thread = options.thread_id;
     let stdout_turn = turn_id.clone();
     let turns = state.turns.clone();
@@ -4224,7 +4600,9 @@ async fn claude_turn_start(
                 break;
             }
             if message.get("type").and_then(Value::as_str) == Some("control_request") {
-                if let Some(response) = claude_read_only_denial(read_only, &message) {
+                if let Some(response) = claude_unattended_denial(interactive, &message)
+                    .or_else(|| claude_read_only_denial(read_only, &message))
+                {
                     if stdout_runtime.write(&response).await.is_err() {
                         break;
                     }
@@ -4966,7 +5344,11 @@ async fn spawn_server(app: &AppHandle, state: &RuntimeState) -> Result<Arc<AppSe
 
     let mut openrouter_proxy_url = None;
     let mut openrouter_proxy_task = None;
-    if let Some(key) = openrouter_key().await {
+    // Neither optional provider may hold up the shared Codex runtime forever.
+    // Fetch both concurrently so a stalled Keychain read adds at most one
+    // bounded delay to Skills, Run checks, and other providers.
+    let (openrouter_api_key, lmstudio_api_key) = tokio::join!(openrouter_key(), lmstudio_key());
+    if let Some(key) = openrouter_api_key {
         let (proxy_url, task) = start_openrouter_proxy(key.clone(), app.clone()).await?;
         command.env("OPENROUTER_API_KEY", key);
         openrouter_proxy_url = Some(proxy_url);
@@ -4977,7 +5359,7 @@ async fn spawn_server(app: &AppHandle, state: &RuntimeState) -> Result<Arc<AppSe
     // token lives only in Keychain and this child-process environment.
     command.env(
         "LMSTUDIO_API_KEY",
-        lmstudio_key().await.unwrap_or_else(|| "lm-studio".into()),
+        lmstudio_api_key.unwrap_or_else(|| "lm-studio".into()),
     );
     // The proxy base URL embeds a secret path token, so it is written into
     // the 0600 app-managed config.toml rather than passed as a `-c` CLI
@@ -5582,6 +5964,7 @@ async fn save_openrouter_key(
 ) -> Result<(), String> {
     let _restart_guard = state.lifecycle.begin_generic_restart()?;
     let trimmed = api_key.trim().to_string();
+    let saved_key = (!trimmed.is_empty()).then(|| trimmed.clone());
     tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
         let entry = keyring::Entry::new(KEYRING_SERVICE, OPENROUTER_ACCOUNT)
             .map_err(|error| format!("Could not open the OS credential store: {error}"))?;
@@ -5599,11 +5982,14 @@ async fn save_openrouter_key(
     .await
     .map_err(|error| format!("Credential task failed: {error}"))??;
 
+    let published = publish_saved_key(&OPENROUTER_KEY_READ, saved_key);
+
     if let Some(server) = state.server.lock().await.take() {
         server.shutdown().await;
     }
-    let _ = ensure_server(&app, &state).await?;
-    Ok(())
+    let restarted = ensure_server(&app, &state).await.map(|_| ());
+    clear_saved_key_after_restart(&OPENROUTER_KEY_READ, &published);
+    restarted
 }
 
 #[tauri::command]
@@ -5619,6 +6005,7 @@ async fn save_lmstudio_key(
 ) -> Result<(), String> {
     let _restart_guard = state.lifecycle.begin_generic_restart()?;
     let trimmed = api_key.trim().to_string();
+    let saved_key = (!trimmed.is_empty()).then(|| trimmed.clone());
     tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
         let entry = keyring::Entry::new(KEYRING_SERVICE, LMSTUDIO_ACCOUNT)
             .map_err(|error| format!("Could not open the OS credential store: {error}"))?;
@@ -5636,11 +6023,14 @@ async fn save_lmstudio_key(
     .await
     .map_err(|error| format!("Credential task failed: {error}"))??;
 
+    let published = publish_saved_key(&LMSTUDIO_KEY_READ, saved_key);
+
     if let Some(server) = state.server.lock().await.take() {
         server.shutdown().await;
     }
-    let _ = ensure_server(&app, &state).await?;
-    Ok(())
+    let restarted = ensure_server(&app, &state).await.map(|_| ());
+    clear_saved_key_after_restart(&LMSTUDIO_KEY_READ, &published);
+    restarted
 }
 
 #[tauri::command]

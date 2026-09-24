@@ -1,5 +1,5 @@
 import { useCallback, useSyncExternalStore } from "react";
-import { cancelRunDiscovery, discoverRunCommand, type RunDiscoveryPreferences, type RunDiscoverySuggestion } from "../lib/runDiscovery";
+import { cancelRunDiscovery, discoverRunCommand, type RunDiscoveryPreferences, type RunDiscoveryPurpose, type RunDiscoverySuggestion } from "../lib/runDiscovery";
 
 interface DiscoveryEntry {
   /** Request identity of the in-flight worker, if any. */
@@ -22,13 +22,14 @@ const EMPTY: DiscoveryEntry = { i: null, x: false, y: false, s: null, e: "" };
  */
 const entries = new Map<string, DiscoveryEntry>();
 const listeners = new Set<() => void>();
-const read = (cwd?: string): DiscoveryEntry => (cwd && entries.get(cwd)) || EMPTY;
-function update(cwd: string, patch: Partial<DiscoveryEntry>) {
-  entries.set(cwd, { ...read(cwd), ...patch });
+const scopeKey = (cwd: string | undefined, purpose: RunDiscoveryPurpose) => cwd ? JSON.stringify([purpose, cwd]) : undefined;
+const read = (key?: string): DiscoveryEntry => (key && entries.get(key)) || EMPTY;
+function update(key: string, patch: Partial<DiscoveryEntry>) {
+  entries.set(key, { ...read(key), ...patch });
   listeners.forEach((listener) => listener());
 }
-const updateCurrent = (cwd: string, id: string, patch: Partial<DiscoveryEntry>) => {
-  if (read(cwd).i === id) update(cwd, patch);
+const updateCurrent = (key: string, id: string, patch: Partial<DiscoveryEntry>) => {
+  if (read(key).i === id) update(key, patch);
 };
 function subscribe(listener: () => void) {
   listeners.add(listener);
@@ -41,39 +42,40 @@ export function resetRunCommandDiscoveries() {
   listeners.forEach((listener) => listener());
 }
 
-export function useRunCommandDiscovery(cwd?: string, lmStudioBaseUrl?: string) {
-  const entry = useSyncExternalStore(subscribe, () => read(cwd));
+export function useRunCommandDiscovery(cwd?: string, lmStudioBaseUrl?: string, purpose: RunDiscoveryPurpose = "run") {
+  const key = scopeKey(cwd, purpose);
+  const entry = useSyncExternalStore(subscribe, () => read(key));
   const cancel = useCallback(async () => {
-    if (!cwd) return;
-    const entry = read(cwd);
+    if (!key) return;
+    const entry = read(key);
     const id = entry.i;
     if (!id || entry.y) return;
-    update(cwd, { y: true, x: true });
+    update(key, { y: true, x: true });
     try {
       await cancelRunDiscovery(id);
-      updateCurrent(cwd, id, { i: null, e: "" });
-    } catch (reason) { updateCurrent(cwd, id, { e: `Could not confirm discovery cleanup: ${reason}` }); }
-    finally { if (read(cwd).y) update(cwd, { y: false }); }
-  }, [cwd]);
+      updateCurrent(key, id, { i: null, e: "" });
+    } catch (reason) { updateCurrent(key, id, { e: `Could not confirm discovery cleanup: ${reason}` }); }
+    finally { if (read(key).y) update(key, { y: false }); }
+  }, [key]);
   const discover = useCallback(async (preferences: RunDiscoveryPreferences, onFound?: (result: RunDiscoverySuggestion) => void) => {
-    if (!cwd || read(cwd).i) return;
+    if (!cwd || !key || read(key).i) return;
     const id = crypto.randomUUID();
-    update(cwd, { i: id, x: false, e: "", s: null });
+    update(key, { i: id, x: false, e: "", s: null });
     try {
-      const result = await discoverRunCommand(id, cwd, preferences, lmStudioBaseUrl);
-      const current = read(cwd);
+      const result = await discoverRunCommand(id, cwd, preferences, lmStudioBaseUrl, purpose);
+      const current = read(key);
       if (current.i === id && !current.x) {
-        onFound && onFound(result);
-        update(cwd, { s: result });
+        if (result.command.trim()) onFound?.(result);
+        update(key, { s: result });
       }
     } catch (reason) {
-      const current = read(cwd);
-      if (current.i === id && !current.x) update(cwd, { e: `${reason}` });
+      const current = read(key);
+      if (current.i === id && !current.x) update(key, { e: `${reason}` });
     } finally {
-      updateCurrent(cwd, id, { i: null });
+      updateCurrent(key, id, { i: null });
     }
 
-  }, [cwd, lmStudioBaseUrl]);
-  const clearSuggestion = () => { if (cwd) update(cwd, { s: null }); };
-  return { pending: Boolean(entry.i), suggestion: entry.s, error: entry.e, discover, cancel, clearSuggestion };
+  }, [cwd, key, lmStudioBaseUrl, purpose]);
+  const clearSuggestion = () => { if (key) update(key, { s: null }); };
+  return { pending: Boolean(entry.i), suggestion: entry.s, unavailable: entry.s && !entry.s.command.trim() ? entry.s.explanation : "", error: entry.e, discover, cancel, clearSuggestion };
 }

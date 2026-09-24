@@ -698,6 +698,50 @@ describe("local transcript persistence adapters", () => {
     }));
   });
 
+  it("replaces an initial pending snapshot when that same user message receives a turn id", async () => {
+    const pending = { id: "local-first", role: "user" as const, text: "Go", timelineOrder: 1 };
+    const assigned = { ...pending, turnId: "turn-first" };
+    tauri.invoke.mockResolvedValueOnce(writeState(1)).mockResolvedValueOnce(writeState(2));
+
+    await saveClaudeTranscript({ thread, messages: [pending], activities: [] });
+    await saveClaudeTranscript({ thread, messages: [assigned], activities: [] });
+
+    const snapshots = tauri.invoke.mock.calls.filter(([command]) => command === "local_transcript_snapshot_write");
+    expect(snapshots).toHaveLength(2);
+    expect(snapshots[1][1]).toMatchObject({ value: { messages: [assigned] } });
+    expect(tauri.invoke.mock.calls.some(([command]) => command === "local_transcript_tail_write")).toBe(false);
+  });
+
+  it("fully loads a sealed pending page before its user message gets a real turn id", async () => {
+    const pending = { id: "local-first", role: "user" as const, text: "Go", timelineOrder: 2 };
+    const page = { thread, messages: [pending], activities: [], nextCursor: "4:1", headSeq: 4, tailSeq: 5, generation: 4, byteLen: 8_000 };
+    const full: ClaudeTranscript = { thread, messages: [completed, pending], activities: [] };
+    tauri.invoke.mockResolvedValueOnce(page).mockResolvedValueOnce(full).mockResolvedValueOnce(writeState(5));
+
+    await loadClaudeTranscriptPage("thread-a");
+    expect(tauri.invoke).toHaveBeenNthCalledWith(2, "local_transcript_full_read", { provider: "claude", threadId: "thread-a" });
+    await saveClaudeTranscript({ ...full, messages: [completed, { ...pending, turnId: "turn-first" }] });
+
+    expect(tauri.invoke).toHaveBeenLastCalledWith("local_transcript_snapshot_write", expect.objectContaining({
+      value: expect.objectContaining({ messages: [completed, expect.objectContaining({ id: pending.id, turnId: "turn-first" })] }),
+    }));
+    expect(tauri.invoke.mock.calls.some(([command]) => command === "local_transcript_tail_write")).toBe(false);
+  });
+
+  it("replaces a loaded full transcript's sealed pending prompt when its turn id arrives", async () => {
+    const pending = { id: "local-first", role: "user" as const, text: "Go", timelineOrder: 2 };
+    const full: ClaudeTranscript = { thread, messages: [completed, pending], activities: [] };
+    tauri.invoke.mockResolvedValueOnce(full).mockResolvedValueOnce(writeState(4)).mockResolvedValueOnce(writeState(5));
+
+    await loadClaudeTranscript("thread-a");
+    await saveClaudeTranscript({ ...full, messages: [completed, { ...pending, turnId: "turn-first" }] });
+
+    expect(tauri.invoke).toHaveBeenLastCalledWith("local_transcript_snapshot_write", expect.objectContaining({
+      value: expect.objectContaining({ messages: [completed, expect.objectContaining({ id: pending.id, turnId: "turn-first" })] }),
+    }));
+    expect(tauri.invoke.mock.calls.some(([command]) => command === "local_transcript_tail_write")).toBe(false);
+  });
+
   it("uses a snapshot for a completed-turn metadata edit", async () => {
     const baseline: ClaudeTranscript = { thread, messages: [completed], activities: [] };
     tauri.invoke.mockResolvedValueOnce(baseline).mockResolvedValueOnce(writeState(1)).mockResolvedValueOnce(writeState(1));
