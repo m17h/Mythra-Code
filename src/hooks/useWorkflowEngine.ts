@@ -7,7 +7,7 @@ import { withMythraCodeCompletionInstructions } from "../lib/completionPrompt";
 import { markProviderStopIntent, clearProviderStopIntent } from "../lib/providerStopIntent";
 import { friendlyError } from "../lib/errors";
 import { useTaskStore, type TaskStatus } from "../lib/taskStore";
-import { shellCommand } from "../lib/shellCommand";
+import { shellCommandWithWindowsQuotes } from "../lib/shellCommand";
 import { commandSandbox, threadStartParams, turnStartParams } from "../lib/turnConfig";
 import type { LMStudioModel } from "../lib/lmStudio";
 import {
@@ -475,7 +475,7 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
                 if (active.stopRequested) throw new WorkflowStoppedError();
                 active.processId = processId;
                 result = await rpc<{ exitCode: number; stdout: string; stderr: string }>("command/exec", {
-                  command: shellCommand(command),
+                  command: shellCommandWithWindowsQuotes(command),
                   processId,
                   cwd: project.path,
                   timeoutMs: 30 * 60_000,

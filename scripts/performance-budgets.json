@@ -2222,18 +2222,18 @@
     {
       "date": "2026-09-24",
       "change": "PR review repairs for workflow ownership and Windows Run execution",
-      "decision": "Accept measured correctness cost for workflow ownership, queue and archive guards, cancellable check preflight, stale discovery protection, clear recipe blocking hints, and quoted Windows Run transport. No dependencies, idle polling, automatic model requests, or animation reductions. Encoding runs only when launching a Windows recipe. Limits equal measured output without headroom. See docs/performance/pr108-review.md.",
+      "decision": "Accept measured correctness cost for workflow ownership, queue and archive guards, cancellable check preflight, stale discovery protection, clear recipe blocking hints, and quoted Windows Run, Checks, and workflow command transport. No dependencies, idle polling, automatic model requests, or animation reductions. Encoding runs only when launching a Windows command. Limits equal measured output without headroom. See docs/performance/pr108-review.md.",
       "measurements": {
         "safari13-minified": {
           "appEntryRawBytes": {
             "before": 455888,
-            "after": 458654,
-            "delta": 2766
+            "after": 458696,
+            "delta": 2808
           },
           "startupJsRawBytes": {
             "before": 871320,
-            "after": 875518,
-            "delta": 4198
+            "after": 875587,
+            "delta": 4267
           },
           "startupCssRawBytes": {
             "before": 365940,
@@ -2242,20 +2242,20 @@
           },
           "totalJsRawBytes": {
             "before": 1712269,
-            "after": 1716488,
-            "delta": 4219
+            "after": 1716553,
+            "delta": 4284
           }
         },
         "chrome105-minified": {
           "appEntryRawBytes": {
             "before": 430369,
-            "after": 432900,
-            "delta": 2531
+            "after": 432935,
+            "delta": 2566
           },
           "startupJsRawBytes": {
             "before": 836371,
-            "after": 840322,
-            "delta": 3951
+            "after": 840383,
+            "delta": 4012
           },
           "startupCssRawBytes": {
             "before": 358782,
@@ -2264,8 +2264,8 @@
           },
           "totalJsRawBytes": {
             "before": 1664908,
-            "after": 1668858,
-            "delta": 3950
+            "after": 1668928,
+            "delta": 4020
           }
         }
       }
@@ -2273,16 +2273,16 @@
   ],
   "profiles": {
     "safari13-minified": {
-      "appEntryRawBytes": 458654,
-      "startupJsRawBytes": 875518,
+      "appEntryRawBytes": 458696,
+      "startupJsRawBytes": 875587,
       "startupCssRawBytes": 366036,
-      "totalJsRawBytes": 1716488
+      "totalJsRawBytes": 1716553
     },
     "chrome105-minified": {
-      "appEntryRawBytes": 432900,
-      "startupJsRawBytes": 840322,
+      "appEntryRawBytes": 432935,
+      "startupJsRawBytes": 840383,
       "startupCssRawBytes": 358878,
-      "totalJsRawBytes": 1668858
+      "totalJsRawBytes": 1668928
     }
   }
 }

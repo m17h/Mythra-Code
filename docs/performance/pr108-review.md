@@ -48,9 +48,15 @@ Full Windows desktop UI interaction was not exercised.
 
 ## Measured review cost
 
-Compared with the initial PR, startup JavaScript grows by 4,198 bytes on Safari
-and 3,951 bytes on Chrome (under 0.5%). Startup CSS grows by 96 bytes. Total
-JavaScript grows by 4,219 and 3,950 bytes respectively. Exact limits are recorded
+Compared with the initial PR, startup JavaScript grows by 4,267 bytes on Safari
+and 4,012 bytes on Chrome (under 0.5%). Startup CSS grows by 96 bytes. Total
+JavaScript grows by 4,284 and 4,020 bytes respectively. Exact limits are recorded
 in scripts/performance-budgets.json. No dependencies, automatic model requests,
-idle polling, or animation reductions were added. The Windows encoding cost is
-paid only on an explicit Run action.
+idle polling, or animation reductions were added. Windows encoding runs only
+when launching a command.
+
+The final cross-check reproduced quoted working-directory and executable failures
+in new Checks commands through real Windows App Server execution. The proven
+transport now also covers Checks and workflow command steps, retaining their
+process IDs, timeouts and cancellation paths. A native Windows regression using
+both a quoted folder and executable passed (5/5 shell-helper tests).

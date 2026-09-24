@@ -1,7 +1,7 @@
 import { useCallback, useReducer, useRef } from "react";
 import { rpc } from "../lib/codex";
 import { friendlyError } from "../lib/errors";
-import { shellCommand } from "../lib/shellCommand";
+import { shellCommandWithWindowsQuotes } from "../lib/shellCommand";
 import { commandSandbox } from "../lib/turnConfig";
 import { readWorkspaceGitInfo } from "../lib/worktrees";
 import { CHECK_OUTPUT_BYTES_CAP, checkOutputTail, sanitizeProjectCheckCommand, type ProjectCheckResult } from "../lib/projectChecks";
@@ -130,7 +130,7 @@ export function useProjectChecks(scope: ProjectCheckScope) {
       if (!run.cancelled && !error) {
         run.launched = true;
         const result = await rpc<{ exitCode: number; stdout: string; stderr: string }>("command/exec", {
-          command: shellCommand(command),
+          command: shellCommandWithWindowsQuotes(command),
           processId: run.id,
           cwd,
           tty: false,

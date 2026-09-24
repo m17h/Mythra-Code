@@ -1,6 +1,6 @@
 import type { Project, ProjectRunCommand } from "../types";
 import { isWindowsPlatform } from "./platform";
-import { shellCommand } from "./shellCommand";
+import { shellCommandWithWindowsQuotes } from "./shellCommand";
 
 /** Bridge tool name a model uses to set or clear the Run button. */
 export const RUN_COMMAND_TOOL = "set_project_run_command";
@@ -40,39 +40,9 @@ export function projectRunShellCommand(run: ProjectRunCommand, platform?: string
   return `${run.setupCommand} && (${run.command})`;
 }
 
-function base64Utf16(value: string): string {
-  let bytes = "";
-  for (let index = 0; index < value.length; index += 1) {
-    const unit = value.charCodeAt(index);
-    bytes += String.fromCharCode(unit & 0xff, unit >> 8);
-  }
-  return btoa(bytes);
-}
-
-/**
- * Windows process APIs quote an argv element containing embedded quotes before
- * cmd.exe sees it. A saved command such as `node -e "process.exit(7)"` then
- * becomes a string literal inside Node and falsely succeeds. Encode the Run
- * recipe as transport data and let PowerShell start one CMD with its raw
- * command line; setup and launch still share that CMD's cwd and environment.
- */
+/** Run a project recipe while keeping the Terminal's displayed command readable. */
 export function projectRunExecCommand(run: ProjectRunCommand, platform?: string): string[] {
-  const command = projectRunShellCommand(run, platform);
-  if (!isWindowsPlatform(platform)) return shellCommand(command, platform);
-  if (command.includes("\0")) throw new Error("The Run recipe contains a null character.");
-  const start = `;$start=[Diagnostics.ProcessStartInfo]::new();$start.FileName=$env:ComSpec;$start.Arguments='/d /s /c "'+$command+'"';$start.UseShellExecute=$false;$process=[Diagnostics.Process]::Start($start);$process.WaitForExit();exit $process.ExitCode`;
-  const direct = base64Utf16(`$ErrorActionPreference='Stop';$command='${command.replace(/'/g, "''")}'${start}`);
-  // A quote-heavy recipe can make the direct PowerShell string longer than
-  // its base64 representation. Pick the shorter transport before the Windows
-  // process-command-line limit is reached.
-  const utf8 = new TextEncoder().encode(command);
-  let data = "";
-  for (const byte of utf8) data += String.fromCharCode(byte);
-  const encodedCommand = btoa(data);
-  const nested = base64Utf16(`$ErrorActionPreference='Stop';$command=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encodedCommand}'))${start}`);
-  const encoded = direct.length <= nested.length ? direct : nested;
-  if (encoded.length > 30_000) throw new Error("The Run recipe is too long for Windows Command Prompt.");
-  return ["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded];
+  return shellCommandWithWindowsQuotes(projectRunShellCommand(run, platform), platform);
 }
 
 /** Drops malformed run commands from persisted projects; everything else is untouched. */
