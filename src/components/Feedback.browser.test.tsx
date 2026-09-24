@@ -225,8 +225,15 @@ describe("review feedback in a real browser", () => {
     window.getSelection()?.addRange(collapsed);
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", shiftKey: true, bubbles: true }));
     selectText(text, 0, 8, false);
-    document.dispatchEvent(new KeyboardEvent("keyup", { key: "Shift", bubbles: true }));
-    await waitFor(() => expect(document.activeElement).toHaveAttribute("aria-label", "Add feedback on the selection"));
+    // Focus must follow the committed float. A frame can run before React
+    // mounts it under load, so hold frame callbacks during this gesture.
+    const frame = vi.spyOn(window, "requestAnimationFrame").mockImplementation(() => 1);
+    try {
+      document.dispatchEvent(new KeyboardEvent("keyup", { key: "Shift", bubbles: true }));
+      await waitFor(() => expect(document.activeElement).toHaveAttribute("aria-label", "Add feedback on the selection"));
+    } finally {
+      frame.mockRestore();
+    }
   });
 
   it("does not reopen an old selection action after clicking elsewhere", async () => {

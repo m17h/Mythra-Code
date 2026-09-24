@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { MessageSquarePlus } from "lucide-react";
 import {
   MAX_FEEDBACK_NOTES,
@@ -135,6 +135,7 @@ export function FeedbackProvider({ enabled, scopeKey = "", onAdd, children }: {
   useEffect(() => { onAddRef.current = onAdd; });
   const layerRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
+  const focusSelectionButtonRef = useRef(false);
   const returnFocusRef = useRef<HTMLElement | null>(null);
   const editorOpenRef = useRef(false);
 
@@ -151,6 +152,7 @@ export function FeedbackProvider({ enabled, scopeKey = "", onAdd, children }: {
   // also prevents a stale editor from submitting during a navigation commit.
   if (!scopeMatches) {
     returnFocusRef.current = null;
+    focusSelectionButtonRef.current = false;
     setEditorScope(scopeKey);
     setButtonOpen(false);
     setEditorOpen(false);
@@ -161,6 +163,14 @@ export function FeedbackProvider({ enabled, scopeKey = "", onAdd, children }: {
     setAnnouncement("");
   }
   editorOpenRef.current = editorOpen && scopeMatches;
+
+  useLayoutEffect(() => {
+    if (!buttonOpen || !focusSelectionButtonRef.current || !buttonRef.current?.isConnected) return;
+    // Focus after the float commits and enters the top layer. A single frame
+    // scheduled by the selection event can run before React mounts the button.
+    focusSelectionButtonRef.current = false;
+    buttonRef.current.focus({ preventScroll: true });
+  }, [buttonOpen, candidate]);
 
   const restoreFocus = useCallback(() => {
     const target = returnFocusRef.current;
@@ -220,12 +230,12 @@ export function FeedbackProvider({ enabled, scopeKey = "", onAdd, children }: {
     const evaluate = (fromKeyboard: boolean) => {
       if (editorOpenRef.current) return;
       const next = selectionCandidate(registryRef.current);
-      if (!next) { setButtonOpen(false); returnFocusRef.current = null; return; }
+      if (!next) { focusSelectionButtonRef.current = false; setButtonOpen(false); returnFocusRef.current = null; return; }
       setCandidate(next);
       setButtonOpen(true);
       if (fromKeyboard) {
         returnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-        requestAnimationFrame(() => buttonRef.current?.focus({ preventScroll: true }));
+        focusSelectionButtonRef.current = true;
       }
     };
     const schedule = (fromKeyboard: boolean) => {
@@ -283,6 +293,7 @@ export function FeedbackProvider({ enabled, scopeKey = "", onAdd, children }: {
 
   useEffect(() => {
     if (enabled) return;
+    focusSelectionButtonRef.current = false;
     setButtonOpen(false);
     setEditorOpen(false);
   }, [enabled]);
@@ -290,7 +301,7 @@ export function FeedbackProvider({ enabled, scopeKey = "", onAdd, children }: {
   // The button follows its selection: collapse, scroll or resize dismisses it.
   useEffect(() => {
     if (!buttonOpen) return;
-    const hide = () => { setButtonOpen(false); returnFocusRef.current = null; };
+    const hide = () => { focusSelectionButtonRef.current = false; setButtonOpen(false); returnFocusRef.current = null; };
     const onSelectionChange = () => {
       const selection = window.getSelection();
       if (!selection || selection.isCollapsed) hide();
@@ -304,6 +315,7 @@ export function FeedbackProvider({ enabled, scopeKey = "", onAdd, children }: {
   }, [buttonOpen]);
 
   useFloatDismiss(buttonOpen, layerRef, (reason) => {
+    focusSelectionButtonRef.current = false;
     setButtonOpen(false);
     if (reason === "escape") restoreFocus();
     else returnFocusRef.current = null;

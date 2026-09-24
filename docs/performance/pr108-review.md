@@ -48,9 +48,9 @@ Full Windows desktop UI interaction was not exercised.
 
 ## Measured review cost
 
-Compared with the initial PR, startup JavaScript grows by 4,267 bytes on Safari
-and 4,012 bytes on Chrome (under 0.5%). Startup CSS grows by 96 bytes. Total
-JavaScript grows by 4,284 and 4,020 bytes respectively. Exact limits are recorded
+Compared with the initial PR, startup JavaScript grows by 4,413 bytes on Safari
+and 4,176 bytes on Chrome (about 0.5%). Startup CSS grows by 96 bytes. Total
+JavaScript grows by 4,430 and 4,184 bytes respectively. Exact limits are recorded
 in scripts/performance-budgets.json. No dependencies, automatic model requests,
 idle polling, or animation reductions were added. Windows encoding runs only
 when launching a command.
@@ -60,3 +60,9 @@ in new Checks commands through real Windows App Server execution. The proven
 transport now also covers Checks and workflow command steps, retaining their
 process IDs, timeouts and cancellation paths. A native Windows regression using
 both a quoted folder and executable passed (5/5 shell-helper tests).
+
+Hosted WebKit exposed a feedback keyboard-focus race after the main verification
+suite passed. A focused browser regression reproduced missing focus while frame
+callbacks were held. Keyboard focus now follows the committed floating button
+in a layout effect instead of a one-shot frame callback; dismissal clears its
+intent. All six feedback browser cases pass in Chromium and WebKit.
