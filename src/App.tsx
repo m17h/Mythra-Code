@@ -132,7 +132,7 @@ import { currentAccountUsageSnapshot, mergeAccountUsageSnapshot, parseCodexRateL
 import { UsagePopover } from "./components/UsagePopover";
 import { contextUsagePercent } from "./lib/contextUsage";
 import { mythraCodeDeveloperInstructions } from "./lib/completionPrompt";
-import { projectRunShellCommand, sanitizeProjectRunCommand, sanitizeProjectRunOverrides } from "./lib/projectRun";
+import { projectRunExecCommand, projectRunShellCommand, sanitizeProjectRunCommand, sanitizeProjectRunOverrides } from "./lib/projectRun";
 import { runtimeModelProviderId } from "./lib/providerIds";
 import { primaryModifierLabel } from "./lib/platform";
 import { archiveAfterTitleCancellation, activeThreadArchiveBlockedReason, archivedThreadsForInbox, finishThreadBlockedReason, providerForArchivedThread } from "./lib/threadArchive";
@@ -991,6 +991,7 @@ export default function App() {
   const contextPercent = contextUsagePercent(tokenUsage);
   const queuedTurns = useTaskStore((state) => (activeThreadId ? (state.tasks[activeThreadId]?.queuedTurns ?? EMPTY_QUEUED_TURNS) : EMPTY_QUEUED_TURNS));
   const taskStatus = useTaskStore((state) => (activeThreadId ? (state.statuses[activeThreadId] ?? "idle") : "idle"));
+  const activeWorkflowOwner = useTaskStore((state) => (activeThreadId ? state.workflowOwners[activeThreadId] : undefined));
   const [staleFeedbackIds, setStaleFeedbackIds] = useState<string[]>([]);
   useEffect(() => {
     if (!feedback.notes.length) { setStaleFeedbackIds((current) => current.length ? [] : current); return; }
@@ -1014,6 +1015,7 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [activeThreadId, feedback.notes, reviewDiff, taskStatus]);
   const threadTaskStatuses = useTaskStore((state) => state.statuses);
+  const threadWorkflowOwners = useTaskStore((state) => state.workflowOwners);
   // Live crew for the composer panel: Mythra Code-owned cross-provider children
   // merged with whatever native agents the root task reported.
   const subAgentWorkers = useMemo(
@@ -1032,7 +1034,7 @@ export default function App() {
     }),
     [activeProvider, activeThreadId, agentRecords, agentRunStartedAt, childAgentLinks, effectiveSettings.model, nativeAgentLinks, threadTaskStatuses],
   );
-  const running = activeThreadId ? taskStatus === "starting" || taskStatus === "running" : startingDraftTurn;
+  const running = activeThreadId ? Boolean(activeWorkflowOwner) || taskStatus === "starting" || taskStatus === "running" : startingDraftTurn;
   useEffect(() => {
     setDeferredReasoningNoticeThreads((current) => {
       const next = new Set(
@@ -1083,6 +1085,7 @@ export default function App() {
     knownThreadsRef.current ?? {},
     threadProjectBindingsRef.current ?? {},
     threadTaskStatuses,
+    threadWorkflowOwners,
   );
   const workspaceKindThreads = useMemo(() => {
     if (!activeWorkspace) return [];
@@ -1473,6 +1476,23 @@ export default function App() {
     const run = draft ? sanitizeProjectRunCommand(draft) ?? null : null;
     setProjects((current) => current.map((project) => (project.id === activeProject.id ? withProjectRun(project, run) : project)));
   }, [activeProject, setProjects]);
+
+  // The finder retains this callback while navigating away. Preserve a newer
+  // manual or agent edit made while it was inspecting the original project.
+  const persistDiscoveredProjectRun = useCallback((draft: { command: string; label: string; setupCommand?: string }) => {
+    const project = activeProject;
+    if (!project) return;
+    const current = projectsRef.current.find((entry) => entry.id === project.id);
+    if (!current || current.path !== project.path) {
+      throw new Error("The project changed before discovery finished. Find a run command again in the current project.");
+    }
+    if (current.overrides?.run !== project.overrides?.run) {
+      throw new Error("The run command was updated while discovery was running. Your newer command was kept.");
+    }
+    const run = sanitizeProjectRunCommand(draft);
+    if (!run) throw new Error("No usable run command was found.");
+    setProjects((entries) => entries.map((entry) => entry.id === project.id ? withProjectRun(entry, run) : entry));
+  }, [activeProject, projectsRef, setProjects]);
 
   const persistActiveProjectCheck = useCallback((command: string) => {
     if (!activeProject) return;
@@ -4104,9 +4124,15 @@ export default function App() {
     if (busy.running) {
       return { started: false, reason: `The Terminal panel is already running \`${busy.command}\` for this project. Ask the user to stop it with the Stop button first.` };
     }
+    let commandArgv: string[];
+    try {
+      commandArgv = projectRunExecCommand(run);
+    } catch (reason) {
+      return { started: false, reason: friendlyError(reason) };
+    }
     if (rootThreadId === activeThreadId) openStudio("terminal");
     const gitDir = threadWorktreesRef.current[rootThreadId]?.gitDir;
-    const finished = terminal.run(projectRunShellCommand(run), gitDir ? [gitDir] : [], scope).then(() => true);
+    const finished = terminal.run(projectRunShellCommand(run), gitDir ? [gitDir] : [], scope, commandArgv).then(() => true);
     const exited = await Promise.race([finished, new Promise<boolean>((resolve) => window.setTimeout(() => resolve(false), 2_500))]);
     return { started: true, exited, output: terminal.tail(scope, 1_500) };
   // openStudio and terminal are re-created each render; the callback reads
@@ -4204,12 +4230,14 @@ export default function App() {
    * Stop would leave cross-provider children editing the same folder while the
    * thread that owns them reports itself as stopped.
    */
+  const stopWorkflowRef = useRef<((workflowId: string) => Promise<boolean>) | null>(null);
   const stopTurnAndChildren = useCallback(async () => {
     const rootThreadId = useTaskStore.getState().activeThreadId;
+    const workflowOwner = rootThreadId ? useTaskStore.getState().workflowOwners[rootThreadId] : undefined;
     // Dispatch every cutoff before awaiting any provider. One slow runtime must
     // never delay the other agents from receiving Stop.
     const results = await Promise.allSettled([
-      stopTurn(),
+      workflowOwner ? stopWorkflowRef.current?.(workflowOwner.workflowId) ?? Promise.resolve(false) : stopTurn(),
       ...(rootThreadId ? [cancelChildAgentsFor(rootThreadId)] : []),
     ]);
     const failures = results.flatMap((result) => result.status === "rejected" ? [friendlyError(result.reason)] : []);
@@ -4419,6 +4447,7 @@ export default function App() {
       useTaskStore.getState().tasks[thread.id],
       Object.values(childAgentLinksRef.current).some((link) => link.rootThreadId === thread.id && !link.terminalStatus)
         || hasChildStartInFlight(thread.id),
+      Boolean(useTaskStore.getState().workflowOwners[thread.id]),
     );
     const initialBlock = archiveActivityBlock();
     if (initialBlock) {
@@ -4464,6 +4493,7 @@ export default function App() {
     const { ready, active } = partitionBulkArchiveThreads(
       workspaceKindThreads,
       useTaskStore.getState().statuses,
+      useTaskStore.getState().workflowOwners,
     );
     if (ready.length === 0) {
       setError(`Stop the active ${kindLabel} ${active.length === 1 ? "thread" : "threads"} before archiving this inbox.`);
@@ -4535,7 +4565,7 @@ export default function App() {
       return false;
     }
     const taskStatus = useTaskStore.getState().statuses[threadId];
-    if (taskStatus === "starting" || taskStatus === "running") {
+    if (taskStatus === "starting" || taskStatus === "running" || useTaskStore.getState().workflowOwners[threadId]) {
       setError(`Stop “${label}” before deleting it so no model process continues working after the conversation is removed.`);
       return false;
     }
@@ -5318,7 +5348,8 @@ export default function App() {
     if (archivingThreadIdsRef.current.has(id)) return "This thread is already being archived.";
     const blocked = finishThreadBlockedReason(useTaskStore.getState().tasks[id],
       Object.values(childAgentLinksRef.current).some((link) => link.rootThreadId === id && !link.terminalStatus)
-      || hasChildStartInFlight(id));
+      || hasChildStartInFlight(id),
+      Boolean(useTaskStore.getState().workflowOwners[id]));
     if (blocked) return blocked;
     if (hasUnansweredQuestionRequests(id)) return "Answer this thread’s pending questions before archiving it.";
     return null;
@@ -5617,8 +5648,15 @@ export default function App() {
       setError(`The terminal is still running \`${terminal.runningCommand}\`. Stop it before starting the Run command.`);
       return;
     }
+    let commandArgv: string[];
+    try {
+      commandArgv = projectRunExecCommand(projectRun);
+    } catch (reason) {
+      setError(friendlyError(reason));
+      return;
+    }
     openStudio("terminal");
-    void terminal.run(projectRunShellCommand(projectRun), activeThreadWorktree?.gitDir ? [activeThreadWorktree.gitDir] : []);
+    void terminal.run(projectRunShellCommand(projectRun), activeThreadWorktree?.gitDir ? [activeThreadWorktree.gitDir] : [], undefined, commandArgv);
     void auditEvent("project.run", { command: projectRun.command }, activeThreadId ?? undefined).catch(() => {});
   };
 
@@ -5903,6 +5941,7 @@ export default function App() {
     },
     onError: (message) => setError(message),
   });
+  stopWorkflowRef.current = stopWorkflow;
 
   useEffect(() => {
     if (!pendingWorkflowOpen || workspaceMode !== "project" || activeProject?.id !== pendingWorkflowOpen.projectId) return;
@@ -6347,6 +6386,7 @@ export default function App() {
                 onRun={runProjectCommand}
                 onStop={() => void terminal.stop()}
                 onSave={persistActiveProjectRun}
+                onDiscovered={persistDiscoveredProjectRun}
               />
             )}
           </div>
@@ -6633,7 +6673,7 @@ export default function App() {
                 running={running}
                 childrenRunning={childrenRunning}
                 queueing={Boolean(running && activeThread)}
-                canSteer={Boolean(activeThread && taskStatus === "running")}
+                canSteer={Boolean(activeThread && taskStatus === "running" && !activeWorkflowOwner)}
                 dropActive={dropActive}
                 placeholder={feedback.notes.length ? "Add a message (optional), or send your feedback as it is…" : running && activeThread ? "Queue a follow-up for after this run…" : activeWorkspace.isChat ? "Ask anything — no project folder attached…" : `Ask Mythra Code to work in ${activeProject?.name ?? "this project"}…`}
                 attachments={attachments}
@@ -6849,7 +6889,7 @@ export default function App() {
                   threadId={activeThreadId}
                   isolated={Boolean(activeThreadWorktree && activeThreadWorktree.status !== "removed")}
                   mutationBlockedReason={prMutationBlockedReason}
-                  archiveBlockedReason={finishThreadBlockedReason(activeThreadId ? useTaskStore.getState().tasks[activeThreadId] : undefined)}
+                  archiveBlockedReason={finishThreadBlockedReason(activeThreadId ? useTaskStore.getState().tasks[activeThreadId] : undefined, false, Boolean(activeWorkflowOwner))}
                   onUpdateLocal={threadPullRequest.pullRequest?.state === "MERGED" ? () => gitWorkspace.updateBase(threadPullRequest.pullRequest!.repository, threadPullRequest.pullRequest!.baseRefName) : undefined}
                   updateLocalBusy={gitWorkspace.busy}
                   updateLocalNotice={gitWorkspace.error || gitWorkspace.notice}

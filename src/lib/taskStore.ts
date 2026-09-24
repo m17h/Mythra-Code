@@ -14,6 +14,11 @@ import { beginRuntimePerformanceTurn, bindRuntimePerformanceTurn, completeRuntim
 
 export type TaskStatus = "idle" | "starting" | "running" | "completed" | "interrupted" | "error";
 
+export interface WorkflowThreadOwner {
+  workflowId: string;
+  runId: string;
+}
+
 export type QueuedTurnStatus = "queued" | "sending" | "failed";
 
 export interface QueuedTurn {
@@ -160,6 +165,9 @@ interface TaskStoreState {
   activeThreadId: string | null;
   tasks: Record<string, ThreadTaskState>;
   statuses: Record<string, TaskStatus>;
+  /** A workflow owns its thread across turns and command steps, including idle gaps. */
+  workflowOwners: Record<string, WorkflowThreadOwner>;
+  setWorkflowOwner: (threadId: string, owner: WorkflowThreadOwner | null) => void;
   setActiveThread: (threadId: string | null) => void;
   ensureTask: (threadId: string, workspacePath?: string) => void;
   hydrateTask: (threadId: string, messages: ChatMessage[], activities: Activity[], workspacePath?: string, history?: ThreadHistoryState) => void;
@@ -379,6 +387,7 @@ function evictColdTranscripts(
       task.threadId !== activeThreadId
       && state.statuses[task.threadId] !== "starting"
       && state.statuses[task.threadId] !== "running"
+      && !state.workflowOwners[task.threadId]
       && task.approvals.length === 0
       && task.queuedTurns.length === 0
       && !task.transcriptDirty
@@ -448,6 +457,16 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
   activeThreadId: null,
   tasks: {},
   statuses: {},
+  workflowOwners: {},
+  setWorkflowOwner: (threadId, owner) => set((state) => {
+    const existing = state.workflowOwners[threadId];
+    if (owner && existing?.runId === owner.runId && existing.workflowId === owner.workflowId) return state;
+    if (!owner && !existing) return state;
+    const workflowOwners = { ...state.workflowOwners };
+    if (owner) workflowOwners[threadId] = owner;
+    else delete workflowOwners[threadId];
+    return { workflowOwners };
+  }),
   setActiveThread: (threadId) => set((state) => {
     const tasks = evictColdTranscripts(state, threadId);
     if (!threadId || !state.tasks[threadId]) {
@@ -1223,10 +1242,12 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     return set((state) => {
       const tasks = { ...state.tasks };
       const statuses = { ...state.statuses };
+      const workflowOwners = { ...state.workflowOwners };
       delete tasks[threadId];
       delete statuses[threadId];
+      delete workflowOwners[threadId];
       persistQueuedTurns(threadId, []);
-      return { tasks, statuses, activeThreadId: state.activeThreadId === threadId ? null : state.activeThreadId };
+      return { tasks, statuses, workflowOwners, activeThreadId: state.activeThreadId === threadId ? null : state.activeThreadId };
     });
   },
 }));
@@ -1243,5 +1264,5 @@ export function resetTaskStore(): void {
   transcriptCacheHighWaterBytes = DEFAULT_TRANSCRIPT_CACHE_HIGH_WATER_BYTES;
   transcriptCacheLowWaterBytes = DEFAULT_TRANSCRIPT_CACHE_LOW_WATER_BYTES;
   removeStoredValue(QUEUED_TURNS_KEY);
-  useTaskStore.setState({ activeThreadId: null, tasks: {}, statuses: {} });
+  useTaskStore.setState({ activeThreadId: null, tasks: {}, statuses: {}, workflowOwners: {} });
 }

@@ -10,7 +10,9 @@ import { isActiveAgentRecord } from "./subAgentActivity";
 export function activeThreadArchiveBlockedReason(
   task: Pick<ThreadTaskState, "status" | "agents"> | undefined,
   activeChildren = false,
+  activeWorkflow = false,
 ): string | null {
+  if (activeWorkflow) return "Finish or stop this workflow before archiving its thread.";
   if (task?.status === "starting" || task?.status === "running") return "Finish or stop this thread before archiving it.";
   if (activeChildren || task?.agents.some((agent) => isActiveAgentRecord(agent.status))) return "Finish or stop this thread’s sub-agents before archiving it.";
   return null;
@@ -33,8 +35,9 @@ export async function archiveAfterTitleCancellation(
 export function finishThreadBlockedReason(
   task: Pick<ThreadTaskState, "status" | "approvals" | "queuedTurns" | "agents"> | undefined,
   activeChildren = false,
+  activeWorkflow = false,
 ): string | null {
-  const active = activeThreadArchiveBlockedReason(task, activeChildren);
+  const active = activeThreadArchiveBlockedReason(task, activeChildren, activeWorkflow);
   if (active) return active;
   if (task?.approvals.length) return "Respond to this thread’s pending questions or approvals before archiving it.";
   if (task?.queuedTurns.length) return "Send or remove this thread’s queued messages before archiving it.";

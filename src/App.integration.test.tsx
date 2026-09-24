@@ -6,6 +6,7 @@ import type { Thread } from "./types";
 import type { PullRequest } from "./lib/pullRequests";
 import { DEFAULT_SETTINGS } from "./lib/appConfig";
 import { scheduleRunSnapshot } from "./lib/turnConfig";
+import { projectRunExecCommand } from "./lib/projectRun";
 import type { WorkflowDefinition } from "./lib/workflows";
 
 /**
@@ -3718,6 +3719,38 @@ describe("local workflow threads", () => {
     expect(screen.queryByText("That thread belongs to a different chat or project and cannot be opened here.")).not.toBeInTheDocument();
   });
 
+  it("keeps Composer Stop available during a command step and stops the owning workflow", async () => {
+    const user = userEvent.setup();
+    const command = deferred<{ exitCode: number; stdout: string; stderr: string }>();
+    commandExecImpl = () => command.promise;
+    const workflow: WorkflowDefinition = {
+      ...composerRecipe(),
+      id: "command-recipe",
+      name: "Command review",
+      steps: [{ id: "command", type: "command", name: "Check", command: "sleep 30", continueOnError: false }],
+    };
+    localStorage.setItem("kiwi.workflows", JSON.stringify([workflow]));
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
+    await user.click(await screen.findByRole("tab", { name: "Tools workspace tool" }));
+    await user.click(await screen.findByRole("button", { name: "Run workflow" }));
+    await user.click(within(await screen.findByRole("dialog", { name: "Run Command review" })).getByRole("button", { name: "Run now" }));
+
+    const { useTaskStore } = await import("./lib/taskStore");
+    await waitFor(() => expect(useTaskStore.getState().workflowOwners["isolated-thread"]).toMatchObject({ workflowId: "command-recipe" }));
+    const composer = await screen.findByPlaceholderText(/Queue a follow-up|Ask Mythra Code to work in/);
+    fireEvent.change(composer, { target: { value: "follow up after workflow" } });
+    await user.click(await screen.findByRole("button", { name: "Queue" }));
+    expect(useTaskStore.getState().tasks["isolated-thread"].queuedTurns[0]).toMatchObject({ status: "queued" });
+
+    await user.click(screen.getByRole("button", { name: "Stop the active task and its sub-agents" }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("codex_rpc", expect.objectContaining({ method: "command/exec/terminate" })));
+    await act(async () => command.resolve({ exitCode: 130, stdout: "", stderr: "stopped" }));
+    await waitFor(() => expect(JSON.parse(localStorage.getItem("kiwi.workflowRuns") ?? "[]")[0]).toMatchObject({ status: "interrupted" }));
+    expect(useTaskStore.getState().tasks["isolated-thread"].status).toBe("interrupted");
+    expect(useTaskStore.getState().tasks["isolated-thread"].queuedTurns[0]).toMatchObject({ status: "queued" });
+  });
+
   it("keeps a renamed Claude workflow thread in the sidebar and durable transcript", async () => {
     const user = userEvent.setup();
     const command = deferred<{ exitCode: number; stdout: string; stderr: string }>();
@@ -4105,8 +4138,9 @@ describe("project Run button", () => {
     await renderApp();
     await user.click(await screen.findByText("Alpha thread"));
     await user.click(await screen.findByRole("button", { name: "Run: ready" }));
-    await waitFor(() => expect(executed.some((params) => (params.command as string[])[2] === "npm ci && (npm run dev)")).toBe(true));
-    const call = executed.find((params) => (params.command as string[])[2] === "npm ci && (npm run dev)")!;
+    const expected = projectRunExecCommand({ setupCommand: "npm ci", command: "npm run dev", updatedAt: 1 });
+    await waitFor(() => expect(executed.some((params) => JSON.stringify(params.command) === JSON.stringify(expected))).toBe(true));
+    const call = executed.find((params) => JSON.stringify(params.command) === JSON.stringify(expected))!;
     expect(call.cwd).toBe("/managed/worktrees/thread-a");
     expect(call.sandboxPolicy).toEqual(expect.objectContaining({
       type: "workspaceWrite", writableRoots: ["/managed/worktrees/thread-a", "/projects/alpha/.git"],
@@ -4140,6 +4174,63 @@ describe("project Run button", () => {
       expect(stored.find((project) => project.id === "project-a")?.overrides?.run?.command).toBe("make dev");
       expect(stored.find((project) => project.id === "project-b")?.overrides?.run).toBeUndefined();
     });
+  });
+
+  it("saves a discovered run recipe to the project that started discovery after navigation", async () => {
+    const user = userEvent.setup();
+    const discovery = deferred<{ command: string; setupCommand: string; label: string; explanation: string }>();
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) =>
+      command === "run_discovery_start" ? discovery.promise : stubInvoke(command, args));
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: "Edit run command" }));
+    await user.click(await screen.findByRole("button", { name: "Find run command" }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("run_discovery_start", {
+      options: expect.objectContaining({ cwd: PROJECT_A.path }),
+    }));
+
+    await user.click(screen.getByRole("button", { name: PROJECT_B.name }));
+    await act(async () => discovery.resolve({ command: "npm run dev", setupCommand: "npm ci", label: "Dev server", explanation: "package.json defines dev" }));
+
+    await waitFor(() => {
+      const projects = JSON.parse(localStorage.getItem("kiwi.projects") ?? "[]") as Array<{ id: string; overrides?: { run?: { command: string; setupCommand?: string } } }>;
+      expect(projects.find((project) => project.id === PROJECT_A.id)?.overrides?.run).toMatchObject({ command: "npm run dev", setupCommand: "npm ci" });
+      expect(projects.find((project) => project.id === PROJECT_B.id)?.overrides?.run).toBeUndefined();
+    });
+    expect(invokeMock.mock.calls.some(([command, args]) => command === "codex_rpc" && args?.method === "command/exec")).toBe(false);
+  });
+
+  it("keeps an agent's newer run recipe when discovery finishes late", async () => {
+    const user = userEvent.setup();
+    const discovery = deferred<{ command: string; setupCommand: string; label: string; explanation: string }>();
+    localStorage.setItem("kiwi.threadProjects", JSON.stringify({ [THREAD_A.id]: PROJECT_A.path }));
+    localStorage.setItem("kiwi.childAgentPolicies", JSON.stringify({
+      "session-run": {
+        sessionId: "session-run", rootThreadId: THREAD_A.id, maxConcurrent: 1,
+        permission: "read-only", systemPrompt: "", projectInstructionsEnabled: false,
+        reasoningEffort: "medium", serviceTier: null, targets: [], capturedAt: 1,
+      },
+    }));
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) =>
+      command === "run_discovery_start" ? discovery.promise : stubInvoke(command, args));
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: "Edit run command" }));
+    await user.click(await screen.findByRole("button", { name: "Find run command" }));
+    await waitFor(() => expect(invokeMock.mock.calls.some(([command]) => command === "run_discovery_start")).toBe(true));
+
+    await waitFor(() => expect(tauriEvents.handlers.has("child-agent-request")).toBe(true));
+    await act(async () => tauriEvents.handlers.get("child-agent-request")?.({ payload: {
+      requestId: "agent-run-1", sessionId: "session-run", tool: "set_project_run_command",
+      arguments: { command: "npm run preview", setupCommand: "npm ci", label: "Preview" },
+    } }));
+    await waitFor(() => {
+      const projects = JSON.parse(localStorage.getItem("kiwi.projects") ?? "[]") as Array<{ id: string; overrides?: { run?: { command: string } } }>;
+      expect(projects.find((project) => project.id === PROJECT_A.id)?.overrides?.run?.command).toBe("npm run preview");
+    });
+
+    await act(async () => discovery.resolve({ command: "npm run dev", setupCommand: "npm install", label: "Dev server", explanation: "package.json defines dev" }));
+    await waitFor(() => expect(screen.getByText(/newer command was kept/i)).toBeInTheDocument());
+    const projects = JSON.parse(localStorage.getItem("kiwi.projects") ?? "[]") as Array<{ id: string; overrides?: { run?: { command: string; setupCommand?: string } } }>;
+    expect(projects.find((project) => project.id === PROJECT_A.id)?.overrides?.run).toMatchObject({ command: "npm run preview", setupCommand: "npm ci" });
   });
 });
 

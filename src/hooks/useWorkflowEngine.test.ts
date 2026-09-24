@@ -327,6 +327,28 @@ describe("workflow turn waiting", () => {
     expect(updates[0].nextRunAt! - updates[0].lastRunAt!).toBe(60 * 60_000);
   });
 
+  it("reports a live command termination failure instead of claiming Stop succeeded", async () => {
+    const workflow = testWorkflow({ steps: [{ id: "step-1", type: "command", name: "Wait", command: "sleep 30", continueOnError: false }] });
+    const runs: WorkflowRunRecord[] = [];
+    let finishCommand!: (value: { exitCode: number; stdout: string; stderr: string }) => void;
+    codex.rpc.mockImplementation((method: string) => {
+      if (method === "thread/start") return Promise.resolve({ thread: { id: "thread-1" } });
+      if (method === "command/exec") return new Promise((resolve) => { finishCommand = resolve; });
+      if (method === "command/exec/terminate") return Promise.reject(new Error("runtime rejected termination"));
+      return Promise.resolve({});
+    });
+    const onError = vi.fn();
+    const { result } = renderHook(() => useWorkflowEngine(testEngineDeps(workflow, runs, { onError })));
+    let pending!: Promise<string | undefined>;
+    await act(async () => { pending = result.current.runWorkflow("workflow-1"); await flushMicrotasks(); });
+
+    await act(async () => { expect(await result.current.stopWorkflow("workflow-1")).toBe(false); });
+    expect(onError).toHaveBeenCalledWith(expect.stringContaining("Could not stop the workflow command"));
+    finishCommand({ exitCode: 0, stdout: "", stderr: "" });
+    await act(async () => { await pending; });
+    expect(runs.at(-1)).toMatchObject({ status: "failed", error: expect.stringContaining("Could not stop the workflow command") });
+  });
+
   it("interrupts an agent turn when stop is requested before turn/start resolves", async () => {
     const workflow = testWorkflow({
       steps: [{

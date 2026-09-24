@@ -9,6 +9,7 @@ import type { PermissionMode } from "../types";
 
 const MAX_IDLE_CHECK_SCOPES = 6;
 const CHECK_TIMEOUT_MS = 300_000;
+const GIT_PREFLIGHT_TIMEOUT_MS = 3_000;
 
 export interface ProjectCheckScope {
   projectId: string | null;
@@ -29,6 +30,7 @@ interface CheckRun {
   startedAt: number;
   cancelled: boolean;
   launched: boolean;
+  cancelPreflight?: () => void;
   terminatePromise?: Promise<void>;
 }
 
@@ -103,7 +105,25 @@ export function useProjectChecks(scope: ProjectCheckScope) {
     let error: string | undefined;
     try {
       // A missing repository or failed Git lookup does not prevent a check.
-      head = (await readWorkspaceGitInfo(cwd).catch(() => null))?.head ?? null;
+      // Git is optional metadata. A stalled native Git lookup must not pin the
+      // check slot or make Stop wait for it to return.
+      let preflightTimer: ReturnType<typeof setTimeout> | undefined;
+      const preflightCancelled = new Promise<null>((resolve) => {
+        run.cancelPreflight = () => resolve(null);
+      });
+      const preflightTimedOut = new Promise<null>((resolve) => {
+        preflightTimer = setTimeout(() => resolve(null), GIT_PREFLIGHT_TIMEOUT_MS);
+      });
+      try {
+        head = (await Promise.race([
+          readWorkspaceGitInfo(cwd).catch(() => null),
+          preflightCancelled,
+          preflightTimedOut,
+        ]))?.head ?? null;
+      } finally {
+        if (preflightTimer !== undefined) clearTimeout(preflightTimer);
+        run.cancelPreflight = undefined;
+      }
       if (!run.cancelled && snapshot.canStart?.() === false) {
         error = "The project became busy before checks started. Run checks again when it is ready.";
       }
@@ -154,6 +174,7 @@ export function useProjectChecks(scope: ProjectCheckScope) {
     if (!run || run.cancelled) return;
     if (!run.launched) {
       run.cancelled = true;
+      run.cancelPreflight?.();
       return;
     }
     if (!run.terminatePromise) {

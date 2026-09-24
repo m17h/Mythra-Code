@@ -27,6 +27,7 @@ export function ProjectRunControl({
   onRun,
   onStop,
   onSave,
+  onDiscovered,
 }: {
   projectName: string;
   projectPath?: string;
@@ -41,6 +42,8 @@ export function ProjectRunControl({
   onStop: () => void;
   /** A missing `setupCommand` means the project has no setup step. */
   onSave: (run: { command: string; label: string; setupCommand?: string } | null) => void;
+  /** Captured when discovery starts, so its result can be checked against the originating project. */
+  onDiscovered?: (run: { command: string; label: string; setupCommand?: string }) => void;
 }) {
   const discovery = useRunCommandDiscovery(projectPath, lmStudioBaseUrl);
   const [open, setOpen] = useState(false);
@@ -186,7 +189,7 @@ export function ProjectRunControl({
           </div>
 
           {projectPath && <Suspense fallback={<small>Loading discovery…</small>}>
-            <RunCommandDiscovery discovery={discovery} catalogs={discoveryCatalogs} onAccounts={onDiscoveryAccounts} onFound={onSave} />
+            <RunCommandDiscovery discovery={discovery} catalogs={discoveryCatalogs} onAccounts={onDiscoveryAccounts} onFound={onDiscovered ?? onSave} />
           </Suspense>}
 
           <div className="project-prompt-actions">

@@ -1,5 +1,5 @@
 import { act, renderHook } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve()) }));
 
@@ -27,6 +27,7 @@ beforeEach(() => {
   gitInfoMock.mockResolvedValue({ isRepo: true, head: "abc123" });
   rpcMock.mockResolvedValue({ exitCode: 0, stdout: "passed", stderr: "" });
 });
+afterEach(() => vi.useRealTimers());
 
 describe("useProjectChecks", () => {
   it("runs a bounded one-shot check in the captured worktree", async () => {
@@ -64,10 +65,29 @@ describe("useProjectChecks", () => {
     expect(result.current.running).toBe(true);
     expect(result.current.status).toBe("running");
     expect(result.current.startedAt).toEqual(expect.any(Number));
-    await act(async () => { await result.current.stop(); });
-    await act(async () => { resolveGit({ isRepo: true, head: "abc123" }); await pending; });
+    await act(async () => { await result.current.stop(); await pending; });
     expect(rpcMock).not.toHaveBeenCalled();
     expect(result.current.latest?.status).toBe("cancelled");
+    expect(result.current.running).toBe(false);
+    await act(async () => resolveGit({ isRepo: true, head: "abc123" }));
+    expect(result.current.latest?.head).toBeNull();
+    expect(rpcMock).not.toHaveBeenCalled();
+  });
+
+  it("starts without a Git head after the bounded preflight and ignores late metadata", async () => {
+    vi.useFakeTimers();
+    let resolveGit: (value: unknown) => void = () => {};
+    gitInfoMock.mockImplementation(() => new Promise((resolve) => { resolveGit = resolve; }));
+    const { result } = renderHook(() => useProjectChecks(base));
+    let pending: Promise<unknown> = Promise.resolve();
+    act(() => { pending = result.current.start(); });
+    expect(rpcMock).not.toHaveBeenCalled();
+    await act(async () => { await vi.advanceTimersByTimeAsync(3_000); await pending; });
+    expect(rpcMock).toHaveBeenCalledTimes(1);
+    expect(result.current.latest).toMatchObject({ status: "passed", head: null });
+    await act(async () => resolveGit({ isRepo: true, head: "late-head" }));
+    expect(result.current.latest).toMatchObject({ status: "passed", head: null });
+    expect(rpcMock).toHaveBeenCalledTimes(1);
   });
 
   it("terminates its process and never reports a cancelled success as green", async () => {

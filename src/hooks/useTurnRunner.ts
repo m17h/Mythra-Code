@@ -408,7 +408,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       const sharedPath = normalizedProjectPath(activeWorkspace.path);
       const taskState = useTaskStore.getState();
       const anotherSharedRun = Object.entries(taskState.statuses).some(([threadId, threadStatus]) => {
-        if (threadId === activeThread?.id || (threadStatus !== "starting" && threadStatus !== "running")) return false;
+        if (threadId === activeThread?.id || (threadStatus !== "starting" && threadStatus !== "running" && !taskState.workflowOwners[threadId])) return false;
         const logicalPath = threadProjectBindingsRef.current?.[threadId];
         const executionPath = taskState.tasks[threadId]?.workspacePath
           ?? (logicalPath ? executionPathFor(threadId, logicalPath) : undefined);
@@ -859,7 +859,9 @@ export function useTurnRunner(context: TurnRunnerContext): {
 
   const pumpQueuedThread = useCallback(async (threadId: string, force = false): Promise<void> => {
     if (activeQueuedDeliveries.has(threadId)) return;
-    const task = useTaskStore.getState().tasks[threadId];
+    const state = useTaskStore.getState();
+    if (state.workflowOwners[threadId]) return;
+    const task = state.tasks[threadId];
     if (!task || task.status === "starting" || task.status === "running") return;
     // "idle" is the status a task carries when its queue was restored from disk
     // in a later app session: the run those follow-ups were queued behind no
@@ -951,6 +953,13 @@ export function useTurnRunner(context: TurnRunnerContext): {
 
   useEffect(() => {
     const unsubscribe = useTaskStore.subscribe((state, previous) => {
+      if (state.workflowOwners !== previous.workflowOwners) {
+        for (const threadId in previous.workflowOwners) {
+          if (!state.workflowOwners[threadId] && state.tasks[threadId]?.queuedTurns.some((entry) => entry.status === "queued")) {
+            void pumpQueuedThread(threadId);
+          }
+        }
+      }
       // This fires for every store write, which during a turn means every
       // streamed delta flush. A task's status only ever changes together with
       // its `statuses` entry, so an unchanged statuses map means no completion
@@ -1031,6 +1040,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
     // Answers belong to this request, not the composer's unrelated draft or
     // attachments. Treat any @ words in answers literally.
     const ctx = { ...current, attachments: [], running: status === "running" || status === "starting", resolveSkillMentions: false as const, resolveSkillPrompt: async (message: string) => message };
+    if (useTaskStore.getState().workflowOwners[threadId]) return queueFollowUp(ctx, text);
     if (status === "starting" || (!ctx.running && useTaskStore.getState().tasks[threadId]?.queuedTurns.length)) return queueFollowUp(ctx, text);
     let unavailable = false;
     const delivered = await deliverMessage(ctx, text, ctx.running ? "steer" : "turn", () => { unavailable = true; });
@@ -1046,6 +1056,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       ...(options?.skillInvocationText !== undefined ? { skillInvocationText: options.skillInvocationText } : {}),
     };
     if (!text || !ctx.activeWorkspace) return false;
+    if (ctx.activeThread && useTaskStore.getState().workflowOwners[ctx.activeThread.id]) return queueFollowUp(ctx, text);
     if (ctx.running && !ctx.activeThread) return false;
     if (ctx.activeThread && (ctx.running || useTaskStore.getState().tasks[ctx.activeThread.id]?.queuedTurns.length)) return queueFollowUp(ctx, text);
     return deliverMessage(ctx, text, "turn");
@@ -1058,6 +1069,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       ...(options?.resolveSkillMentions === false ? { resolveSkillMentions: false as const, resolveSkillPrompt: async (message: string) => message } : {}),
       ...(options?.skillInvocationText !== undefined ? { skillInvocationText: options.skillInvocationText } : {}),
     };
+    if (ctx.activeThread && useTaskStore.getState().workflowOwners[ctx.activeThread.id]) return queueFollowUp(ctx, text);
     if (ctx.running && !ctx.activeThread) return false;
     const task = ctx.activeThread ? useTaskStore.getState().tasks[ctx.activeThread.id] : undefined;
     if (ctx.activeThread && task?.status === "starting") return queueFollowUp(ctx, text);
@@ -1086,6 +1098,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
     const ctx = contextRef.current;
     const threadId = ctx.activeThread?.id;
     if (!threadId) return;
+    if (useTaskStore.getState().workflowOwners[threadId]) return;
     const task = useTaskStore.getState().tasks[threadId];
     if (task?.status !== "running") return;
     const queuedTurn = task.queuedTurns.find((entry) => entry.id === queuedTurnId);

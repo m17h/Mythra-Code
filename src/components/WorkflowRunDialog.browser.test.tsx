@@ -27,6 +27,16 @@ it("shows the chosen project and previews its command before starting", async ()
   await page.getByRole("button", { name: "Run now" }).click();
   expect(run).toHaveBeenCalledWith("recipe", { branch: "dev" }, "a");
 });
+it("shows saved access before an agent-only recipe can run", async () => {
+  const agentOnly: WorkflowDefinition = {
+    ...workflow,
+    run: { ...workflow.run, permission: "full" },
+    steps: [{ id: "agent", type: "agent", name: "Review", prompt: "Review the project", continueOnError: false }],
+  };
+  render(<WorkflowRunDialog workflow={agentOnly} projects={projects} onClose={vi.fn()} onRun={vi.fn()} />);
+  expect(screen.getByText("Access: Full")).toBeVisible();
+  expect(screen.queryByText("Shell commands included")).not.toBeInTheDocument();
+});
 it("keeps long command previews and many inputs inside a short viewport", async () => {
   await page.viewport(700, 520);
   const large: WorkflowDefinition = { ...workflow, steps: [{ ...workflow.steps[0], type: "command", command: "echo " + "long-unbroken-value".repeat(50) }], variables: Array.from({ length: 15 }, (_, i) => ({ id: String(i), name: `input${i}`, value: "", promptOnRun: true })) };

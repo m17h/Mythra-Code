@@ -2218,20 +2218,71 @@
           }
         }
       }
+    },
+    {
+      "date": "2026-09-24",
+      "change": "PR review repairs for workflow ownership and Windows Run execution",
+      "decision": "Accept measured correctness cost for workflow ownership, queue and archive guards, cancellable check preflight, stale discovery protection, clear recipe blocking hints, and quoted Windows Run transport. No dependencies, idle polling, automatic model requests, or animation reductions. Encoding runs only when launching a Windows recipe. Limits equal measured output without headroom. See docs/performance/pr108-review.md.",
+      "measurements": {
+        "safari13-minified": {
+          "appEntryRawBytes": {
+            "before": 455888,
+            "after": 458654,
+            "delta": 2766
+          },
+          "startupJsRawBytes": {
+            "before": 871320,
+            "after": 875518,
+            "delta": 4198
+          },
+          "startupCssRawBytes": {
+            "before": 365940,
+            "after": 366036,
+            "delta": 96
+          },
+          "totalJsRawBytes": {
+            "before": 1712269,
+            "after": 1716488,
+            "delta": 4219
+          }
+        },
+        "chrome105-minified": {
+          "appEntryRawBytes": {
+            "before": 430369,
+            "after": 432900,
+            "delta": 2531
+          },
+          "startupJsRawBytes": {
+            "before": 836371,
+            "after": 840322,
+            "delta": 3951
+          },
+          "startupCssRawBytes": {
+            "before": 358782,
+            "after": 358878,
+            "delta": 96
+          },
+          "totalJsRawBytes": {
+            "before": 1664908,
+            "after": 1668858,
+            "delta": 3950
+          }
+        }
+      }
     }
   ],
   "profiles": {
     "safari13-minified": {
-      "appEntryRawBytes": 455888,
-      "startupJsRawBytes": 871320,
-      "startupCssRawBytes": 365940,
-      "totalJsRawBytes": 1712269
+      "appEntryRawBytes": 458654,
+      "startupJsRawBytes": 875518,
+      "startupCssRawBytes": 366036,
+      "totalJsRawBytes": 1716488
     },
     "chrome105-minified": {
-      "appEntryRawBytes": 430369,
-      "startupJsRawBytes": 836371,
-      "startupCssRawBytes": 358782,
-      "totalJsRawBytes": 1664908
+      "appEntryRawBytes": 432900,
+      "startupJsRawBytes": 840322,
+      "startupCssRawBytes": 358878,
+      "totalJsRawBytes": 1668858
     }
   }
 }

@@ -299,7 +299,14 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
     active.waitController?.abort();
     const requests: Array<Promise<unknown>> = [];
     if (active.processId) {
-      requests.push(rpc("command/exec/terminate", { processId: active.processId }).catch(() => undefined));
+      const processId = active.processId;
+      requests.push(rpc("command/exec/terminate", { processId }).catch((error) => {
+        // A command that already settled needs no termination. A live one
+        // must not be reported as stopped when its cutoff was rejected.
+        if (active.processId !== processId) return;
+        active.stopError = `Could not stop the workflow command: ${friendlyError(error)}`;
+        throw error;
+      }));
     }
     requests.push(interruptActiveTurn(active));
     try {
@@ -401,6 +408,9 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
       if (active.stopRequested) throw new WorkflowStoppedError();
       current.bindThreadToProject(threadId, project.path);
       useTaskStore.getState().ensureTask(threadId, project.path);
+      // Keep the entire recipe's thread reserved, including gaps after a turn
+      // completes and command steps that do not change the task status.
+      useTaskStore.getState().setWorkflowOwner(threadId, { workflowId: workflow.id, runId });
       if (localProvider) await persistLocalThread();
       else await rpc("thread/name/set", { threadId, name: `Workflow: ${workflow.name}` }).catch(() => {});
       if (active.stopRequested) throw new WorkflowStoppedError();
@@ -450,7 +460,6 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
               variables.previousExitCode = "";
               const activityId = `workflow-${runId}-${step.id}`;
               const processId = `workflow-${runId}-${step.id}-${attempt}`;
-              active.processId = processId;
               useTaskStore.getState().upsertActivity(threadId, {
                 id: activityId,
                 kind: "command",
@@ -464,6 +473,7 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
               let result: { exitCode: number; stdout: string; stderr: string };
               try {
                 if (active.stopRequested) throw new WorkflowStoppedError();
+                active.processId = processId;
                 result = await rpc<{ exitCode: number; stdout: string; stderr: string }>("command/exec", {
                   command: shellCommand(command),
                   processId,
@@ -472,11 +482,11 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
                   sandboxPolicy: commandSandbox(workflow.run.permission, project.path),
                 });
               } finally {
+                active.processId = undefined;
                 // Even a failed command may have modified files before it
                 // stopped; finish the snapshot so those edits are captured.
                 await current.finalizeRunCheckpoint(threadId);
               }
-              active.processId = undefined;
               stepOutput = [result.stdout, result.stderr].filter(Boolean).join("\n").trim().slice(-12_000);
               useTaskStore.getState().upsertActivity(threadId, {
                 id: activityId,
@@ -656,6 +666,9 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
       }
 
       const finishedAt = Date.now();
+      if (threadId && !useTaskStore.getState().tasks[threadId]?.activeTurnId) {
+        useTaskStore.getState().setTaskStatus(threadId, "completed");
+      }
       publish({
         threadId,
         currentStep: workflow.steps.length,
@@ -684,6 +697,11 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
       const stopped = !active.stopError && (active.stopRequested || isWorkflowStoppedError(reason));
       const message = active.stopError ?? (stopped ? "Workflow was stopped." : friendlyError(reason));
       const finishedAt = Date.now();
+      // A command-only recipe has no provider completion event to set a
+      // terminal task status. Keep held follow-ups queued after Stop/failure.
+      if (threadId && !useTaskStore.getState().tasks[threadId]?.activeTurnId) {
+        useTaskStore.getState().setTaskStatus(threadId, stopped ? "interrupted" : "error", stopped ? undefined : message);
+      }
       if (localProvider) await persistLocalThread().catch((error) => current.onError(`Workflow transcript save failed: ${friendlyError(error)}`));
       steps = steps.map((step) => step.status !== "running" ? step : {
         ...step,
@@ -726,6 +744,9 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
     } finally {
       active.waitController?.abort();
       runningRef.current.delete(workflowId);
+      if (threadId && useTaskStore.getState().workflowOwners[threadId]?.runId === runId) {
+        useTaskStore.getState().setWorkflowOwner(threadId, null);
+      }
     }
   }, []);
 

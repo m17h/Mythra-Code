@@ -623,6 +623,25 @@ describe("Composer", () => {
     expect(onWorkflow).not.toHaveBeenCalled();
     expect(textarea).toHaveValue("Keep this note");
     expect(screen.getByRole("button", { name: "Remove workflow Review" })).toBeInTheDocument();
+    expect(screen.getByText(/Recipe paused by attachments/)).toBeInTheDocument();
+  });
+
+  it("explains how to send feedback after selecting a recipe", () => {
+    const onWorkflow = vi.fn(async () => true);
+    const onSend = vi.fn(async () => true);
+    const props = composerProps({ workflows: [{ id: "review", name: "Review" }], onWorkflow, onSend });
+    const { rerender } = render(<Composer {...props} />);
+    const textarea = screen.getByPlaceholderText("Ask anything");
+    fireEvent.change(textarea, { target: { value: "!rev" } });
+    fireEvent.click(screen.getByRole("option", { name: /Review/i }));
+    rerender(<Composer {...props} hasFeedback />);
+    expect(screen.getByText(/Recipe paused by feedback/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Run workflow Review" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Remove workflow Review" }));
+    expect(screen.getByRole("button", { name: "Send feedback and optional prompt" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Send feedback and optional prompt" }));
+    expect(onSend).toHaveBeenCalledWith("");
+    expect(onWorkflow).not.toHaveBeenCalled();
   });
 
   it("disables both launch and steering if the selected thread begins running", () => {

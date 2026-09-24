@@ -73,7 +73,7 @@ export interface TerminalController {
   /** Characters appended so far under `scope`, defaulting to the selected one. */
   appendedLength: (scope?: string) => number;
   /** Runs `command` in the selected execution path, or in `scope` when given. */
-  run: (command: string, additionalWritableRoots?: string[], scope?: string) => Promise<void>;
+  run: (command: string, additionalWritableRoots?: string[], scope?: string, commandArgv?: string[]) => Promise<void>;
   stop: () => Promise<void>;
   /** Whether `scope` has a live process, and which command it is. */
   runningIn: (scope: string) => { running: boolean; command: string };
@@ -248,7 +248,7 @@ export function useTerminal(options: {
     [],
   );
 
-  const run = useCallback(async (command: string, additionalWritableRoots: string[] = [], scope?: string) => {
+  const run = useCallback(async (command: string, additionalWritableRoots: string[] = [], scope?: string, commandArgv?: string[]) => {
     const cwd = scope ?? optionsRef.current.scope;
     if (!cwd) return;
     const session = sessionFor(cwd);
@@ -273,7 +273,7 @@ export function useTerminal(options: {
     appendTo(session, `${session.appended ? "\n" : ""}$ ${trimmed}\n`);
     try {
       const result = await rpc<{ exitCode: number; stdout: string; stderr: string }>("command/exec", {
-        command: shellCommand(trimmed),
+        command: commandArgv ?? shellCommand(trimmed),
         processId: id,
         tty: true,
         streamStdoutStderr: true,

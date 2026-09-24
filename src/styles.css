@@ -3841,6 +3841,7 @@ body[data-pane-resizing] .sidebar, body[data-pane-resizing] .studio-dock { trans
 .composer-workflow-chip > svg { flex-shrink: 0; }
 .composer-workflow-chip > button { display: grid; place-items: center; flex-shrink: 0; width: 22px; height: 22px; padding: 0; border-radius: 5px; color: var(--muted); }
 .composer-workflow-chip > button:hover { color: var(--text); background: var(--panel-3); }
+.composer-workflow-hint { min-width: 0; color: var(--muted); font-size: var(--fs-meta); line-height: 1.4; }
 .workflow-user-prompt { min-width: 0; padding: 9px; border: 1px solid var(--line); border-radius: 8px; font-size: var(--fs-meta); }
 .workflow-user-prompt strong { color: var(--muted); font-size: var(--fs-micro); }
 .workflow-user-prompt p { margin: 5px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }

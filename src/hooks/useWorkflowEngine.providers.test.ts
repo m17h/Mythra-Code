@@ -65,6 +65,31 @@ describe.each(["claude", "cursor"] as const)("%s saved workflows", (provider) =>
     if (provider === "cursor") expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ cursorSessionId: "cursor-session" }));
     expect(useTaskStore.getState().tasks[runs.at(-1)!.threadId!].status).toBe("completed");
   });
+  it("owns the thread while the completed step checkpoint is still finalizing", async () => {
+    const { deps, runs } = setup(provider);
+    const start = provider === "claude" ? runtime.claude : runtime.cursor;
+    let releaseCheckpoint!: () => void;
+    const checkpoint = new Promise<void>((resolve) => { releaseCheckpoint = resolve; });
+    deps.finalizeRunCheckpoint = vi.fn(async () => { await checkpoint; });
+    let sequence = 0;
+    start.mockImplementation(async ({ threadId }: { threadId: string }) => {
+      const turnId = `held-${++sequence}`;
+      finish(threadId, turnId);
+      return { turnId, cursorSessionId: "held-session" };
+    });
+    const { result } = renderHook(() => useWorkflowEngine(deps));
+    let pending!: Promise<string | undefined>;
+    await act(async () => { pending = result.current.runWorkflow("recipe"); await flush(); });
+    const threadId = runs.at(-1)!.threadId!;
+    expect(useTaskStore.getState().tasks[threadId].status).toBe("completed");
+    expect(useTaskStore.getState().workflowOwners[threadId]).toMatchObject({ workflowId: "recipe", runId: runs.at(-1)!.id });
+    expect(start).toHaveBeenCalledTimes(1);
+
+    await act(async () => { releaseCheckpoint(); await pending; });
+    expect(start).toHaveBeenCalledTimes(2);
+    expect(runs.at(-1)?.status).toBe("completed");
+    expect(useTaskStore.getState().workflowOwners[threadId]).toBeUndefined();
+  });
   it("runs a shared recipe in the requested project without changing its saved default", async () => {
     const { deps, workflow, runs } = setup(provider);
     deps.projects.push({ id: "other", name: "Other", path: "/tmp/other" });

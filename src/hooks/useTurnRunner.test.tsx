@@ -717,6 +717,44 @@ describe("useTurnRunner", () => {
     expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]?.queuedTurns).toEqual([]);
   });
 
+  it("holds a queued follow-up across workflow step completion until the workflow releases its thread", async () => {
+    const store = useTaskStore.getState();
+    store.ensureTask(CURSOR_THREAD.id, CURSOR_THREAD.cwd);
+    store.setWorkflowOwner(CURSOR_THREAD.id, { workflowId: "recipe", runId: "run-1" });
+    store.setActiveTurn(CURSOR_THREAD.id, "workflow-step-1");
+    store.setTaskStatus(CURSOR_THREAD.id, "running");
+    const { result } = renderHook(() => useTurnRunner(context({ running: true })));
+    await act(async () => { expect(await result.current.sendMessage("after the entire recipe")).toBe(true); });
+
+    await act(async () => { store.completeTurn(CURSOR_THREAD.id, "workflow-step-1", "completed"); });
+    expect(cursor.startCursorTurn).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id].queuedTurns[0]).toMatchObject({ status: "queued" });
+
+    await act(async () => { store.setWorkflowOwner(CURSOR_THREAD.id, null); });
+    expect(cursor.startCursorTurn).toHaveBeenCalledWith(expect.objectContaining({ prompt: "after the entire recipe" }));
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id].queuedTurns).toEqual([]);
+  });
+
+  it("keeps workflow follow-ups queued after Stop and routes steering into the queue", async () => {
+    const store = useTaskStore.getState();
+    store.ensureTask(CURSOR_THREAD.id, CURSOR_THREAD.cwd);
+    store.setWorkflowOwner(CURSOR_THREAD.id, { workflowId: "recipe", runId: "run-1" });
+    store.setActiveTurn(CURSOR_THREAD.id, "workflow-step-1");
+    store.setTaskStatus(CURSOR_THREAD.id, "running");
+    const { result } = renderHook(() => useTurnRunner(context({ running: true })));
+
+    await act(async () => { expect(await result.current.steerMessage("later guidance")).toBe(true); });
+    expect(cursor.steerCursorTurn).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id].queuedTurns[0]).toMatchObject({ text: "later guidance", status: "queued" });
+
+    await act(async () => {
+      store.completeTurn(CURSOR_THREAD.id, "workflow-step-1", "interrupted");
+      store.setWorkflowOwner(CURSOR_THREAD.id, null);
+    });
+    expect(cursor.startCursorTurn).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id].queuedTurns[0]).toMatchObject({ status: "queued" });
+  });
+
   it("keeps a queued review literal after rerender and turn completion", async () => {
     const store = useTaskStore.getState();
     store.ensureTask(CURSOR_THREAD.id, CURSOR_THREAD.cwd);
@@ -1310,6 +1348,30 @@ describe("useTurnRunner activating sub-agents mid-conversation", () => {
     if (attachmentUpdater) expect(attachmentUpdater(deps.attachments)).toEqual(deps.attachments);
   });
 
+  it("keeps a late workflow question answer literal while queued for the recipe to finish", async () => {
+    const deps = openAiContext({ attachments: [{ path: "/draft.png", name: "Draft", kind: "image" }] });
+    const store = useTaskStore.getState();
+    store.ensureTask(OPENAI_THREAD.id, OPENAI_THREAD.cwd);
+    store.setTaskStatus(OPENAI_THREAD.id, "completed");
+    store.setWorkflowOwner(OPENAI_THREAD.id, { workflowId: "recipe", runId: "run-1" });
+    codex.rpc.mockResolvedValue({ turn: { id: "turn-after-recipe" } });
+    const { result } = renderHook(() => useTurnRunner(deps));
+
+    await act(async () => { expect(await result.current.answerQuestions(OPENAI_THREAD.id, "Use @compact literally")).toBe(true); });
+    expect(useTaskStore.getState().tasks[OPENAI_THREAD.id].queuedTurns[0]).toMatchObject({
+      text: "Use @compact literally", status: "queued", resolveSkillMentions: false, attachments: [],
+    });
+    expect(codex.rpc).not.toHaveBeenCalledWith("turn/start", expect.anything());
+
+    await act(async () => { store.setWorkflowOwner(OPENAI_THREAD.id, null); });
+    expect(codex.rpc).toHaveBeenCalledWith("turn/start", expect.objectContaining({
+      input: [expect.objectContaining({ text: "Use @compact literally" })],
+    }));
+    expect(deps.resolveSkillPrompt).not.toHaveBeenCalled();
+    const attachmentUpdater = (deps.setAttachments as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0];
+    if (attachmentUpdater) expect(attachmentUpdater(deps.attachments)).toEqual(deps.attachments);
+  });
+
   it("continues with answers if the active turn finishes during submission", async () => {
     const deps = openAiContext();
     const store = useTaskStore.getState();
@@ -1332,6 +1394,7 @@ describe("useTurnRunner activating sub-agents mid-conversation", () => {
   it("answers a still-open nonblocking RPC through its native response channel", async () => {
     const deps = openAiContext();
     useTaskStore.getState().enqueueApproval({ id: 42, method: "item/tool/requestUserInput", params: { isBlocking: false, turnId: "turn", itemId: "item" }, threadId: OPENAI_THREAD.id, receivedAt: 1 });
+    useTaskStore.getState().setWorkflowOwner(OPENAI_THREAD.id, { workflowId: "recipe", runId: "run-1" });
     const { result } = renderHook(() => useTurnRunner(deps));
     await act(async () => { expect(await result.current.answerQuestions(OPENAI_THREAD.id, "Compact", {
       message: { id: "questions", role: "assistant", text: "", questionRequestId: 42, turnId: "turn", questionRequestItemId: "item" }, answers: { layout: ["Compact"] },

@@ -447,6 +447,11 @@ export const Composer = forwardRef<ComposerHandle, {
   const canLaunchWorkflow = Boolean(selectedWorkflow && workflowAvailable
     && props.workflows?.some((workflow) => workflow.id === selectedWorkflow.id)
     && !submitting && !workflowSubmitting);
+  const workflowBlockers = [
+    props.hasFeedback && "feedback",
+    props.attachments.length > 0 && "attachments",
+    Boolean(props.queuedTurns?.length) && "queued messages",
+  ].filter(Boolean).join(", ");
 
   const send = useCallback(async (mode: "default" | "steer" = "default") => {
     if (selectedWorkflow) {
@@ -604,6 +609,7 @@ export const Composer = forwardRef<ComposerHandle, {
           <span className="composer-workflow-chip"><Boxes size={12} /> {selectedWorkflow.name}
             <button type="button" onClick={removeWorkflow} disabled={workflowSubmitting} aria-label={`Remove workflow ${selectedWorkflow.name}`} title={`Remove workflow ${selectedWorkflow.name}`}><X size={11} /></button>
           </span>
+          {workflowBlockers && <small className="composer-workflow-hint">Recipe paused by {workflowBlockers}. Remove the recipe chip to use Send, or clear those items to run it.</small>}
         </div>
       )}
       <div className="composer-input-wrap">

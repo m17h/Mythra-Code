@@ -1,9 +1,14 @@
 // Frontend tsconfig omits Node types; Vitest executes this focused shell check in Node.
 // @ts-expect-error Node built-in types are unavailable to the frontend compiler.
 import { spawnSync } from "node:child_process";
+// @ts-expect-error Node built-in types are unavailable to the frontend compiler.
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+// @ts-expect-error Node built-in types are unavailable to the frontend compiler.
+import { tmpdir } from "node:os";
+// @ts-expect-error Node built-in types are unavailable to the frontend compiler.
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { projectRunShellCommand, runButtonInstructions, runCommandTitle, sanitizeProjectRunCommand, sanitizeProjectRunOverrides } from "./projectRun";
-import { shellCommand } from "./shellCommand";
+import { projectRunExecCommand, projectRunShellCommand, runButtonInstructions, runCommandTitle, sanitizeProjectRunCommand, sanitizeProjectRunOverrides } from "./projectRun";
 import type { Project } from "../types";
 
 describe("sanitizeProjectRunCommand", () => {
@@ -37,13 +42,20 @@ describe("projectRunShellCommand", () => {
   it("stops before launch when setup exits unsuccessfully", () => {
     const platform = (globalThis as unknown as { process: { platform: string } }).process.platform;
     const shellPlatform = platform === "win32" ? "Win32" : "MacIntel";
-    const command = projectRunShellCommand({ setupCommand: "node -e \"process.exit(7)\"", command: "echo launched || echo fallback", updatedAt: 1 }, shellPlatform);
-    const [program, ...args] = shellCommand(command, shellPlatform);
+    const run = { setupCommand: "node -e \"process.exit(7)\"", command: "echo launched || echo fallback", updatedAt: 1 };
+    const [program, ...args] = projectRunExecCommand(run, shellPlatform);
     const result = spawnSync(program, args, { encoding: "utf8" });
     expect(result.error).toBeUndefined();
     expect(result.status).toBe(7);
     expect(result.stdout).not.toContain("launched");
     expect(result.stdout).not.toContain("fallback");
+    if (platform === "win32") {
+      const negative = projectRunExecCommand({ ...run, setupCommand: "node -e \"process.exit(-1)\"" }, shellPlatform);
+      const negativeResult = spawnSync(negative[0], negative.slice(1), { encoding: "utf8" });
+      // Node exposes a Windows process exit status as an unsigned DWORD.
+      expect(negativeResult.status).toBe(0xffffffff);
+      expect(negativeResult.stdout).not.toContain("launched");
+    }
   });
 
   it("passes setup environment to launch and accepts parenthesized commands", () => {
@@ -51,16 +63,45 @@ describe("projectRunShellCommand", () => {
     const shellPlatform = platform === "win32" ? "Win32" : "MacIntel";
     const expression = platform === "win32" ? "process.cwd()" : "'process.cwd()'";
     const setup = platform === "win32" ? "set MYTHRA_RUN_TEST=ready" : "export MYTHRA_RUN_TEST=ready";
-    const command = projectRunShellCommand({
+    const run = {
       setupCommand: `node -p ${expression} && ${setup}`,
       command: `node -p ${expression} && node -p process.env.MYTHRA_RUN_TEST`,
       updatedAt: 1,
-    }, shellPlatform);
-    const [program, ...args] = shellCommand(command, shellPlatform);
+    };
+    const [program, ...args] = projectRunExecCommand(run, shellPlatform);
     const result = spawnSync(program, args, { encoding: "utf8" });
     expect(result.error).toBeUndefined();
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("ready");
+  });
+
+  it("runs a quoted command on Windows even without a setup step", () => {
+    const argv = projectRunExecCommand({ command: "node -p \"1+2\"", updatedAt: 1 }, "Win32");
+    expect(argv[0]).toBe("powershell.exe");
+    expect(argv[4].length).toBeLessThan(30_001);
+    const platform = (globalThis as unknown as { process: { platform: string } }).process.platform;
+    if (platform !== "win32") return;
+    const result = spawnSync(argv[0], argv.slice(1), { encoding: "utf8" });
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe("3");
+  });
+
+  it("runs a quoted executable path in setup and blocks launch on its failure", () => {
+    const platform = (globalThis as unknown as { process: { platform: string } }).process.platform;
+    if (platform !== "win32") return;
+    const directory = mkdtempSync(join(tmpdir(), "mythra run "));
+    const script = join(directory, "fail.cmd");
+    try {
+      writeFileSync(script, "@echo off\r\nexit /b 7\r\n");
+      const argv = projectRunExecCommand({ setupCommand: `"${script}"`, command: "echo launched", updatedAt: 1 }, "Win32");
+      const result = spawnSync(argv[0], argv.slice(1), { encoding: "utf8" });
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(7);
+      expect(result.stdout).not.toContain("launched");
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 });
 

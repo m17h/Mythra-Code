@@ -65,6 +65,8 @@ describe("finish thread guards", () => {
     expect(finishThreadBlockedReason(undefined)).toBeNull();
     expect(finishThreadBlockedReason({ ...task, status: "running" })).toContain("Finish or stop");
     expect(finishThreadBlockedReason({ ...task, status: "starting" })).toContain("Finish or stop");
+    expect(activeThreadArchiveBlockedReason(task, false, true)).toContain("workflow");
+    expect(finishThreadBlockedReason(task, false, true)).toContain("workflow");
     expect(finishThreadBlockedReason(task, true)).toContain("sub-agents");
     expect(finishThreadBlockedReason({ ...task, approvals: [{}] as never[] })).toContain("questions or approvals");
     expect(finishThreadBlockedReason({ ...task, queuedTurns: [{ status: "failed" }] as never[] })).toContain("queued messages");
