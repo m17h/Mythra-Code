@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "policy": "Limits may stay fixed or decrease. Raising one requires an explicit performance-regression review in the pull request.",
+  "policy": "Historical raw-byte references are report-only. Review startup and total raw/gzip changes, cumulative growth, runtime evidence, and feature value; CI fails missing or invalid measurements and unsupported profiles, not byte growth alone. Do not raise or erase historical references to clear a check.",
   "reference": {
     "release": {
       "ref": "v1.12.0",
@@ -9,6 +9,7 @@
     },
     "mainBeforeScorecard": {
       "commit": "f050ca44c3b126fad408e1310658346a1750d31f",
+      "profile": "safari13-minified",
       "appEntryRawBytes": 543660,
       "startupJsRawBytes": 808958,
       "startupCssRawBytes": 336184,

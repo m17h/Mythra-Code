@@ -8,10 +8,14 @@ import {
   beginThreadOpen,
   failThreadOpen,
   markThreadHistoryHydrated,
+  markThreadPaintOpportunity,
   markThreadRenderMetrics,
   markThreadRuntimeReady,
   markThreadShellCommitted,
   markThreadTimelineCommitted,
+  markRendererLaunchComposerMounted,
+  markRendererLaunchPaintOpportunity,
+  markRendererLaunchShellCommitted,
   projectedJsonBytes,
   resetPerformanceDiagnostics,
 } from "./performanceDiagnostics";
@@ -38,6 +42,36 @@ describe("performance diagnostics", () => {
     vi.restoreAllMocks();
     invoke.mockReset();
     invoke.mockImplementation(async (command: string) => command === "performance_snapshot" ? PROCESS_MEMORY : undefined);
+  });
+
+  it("records renderer navigation stages once without claiming native start or input response", async () => {
+    markRendererLaunchShellCommitted(52);
+    markRendererLaunchShellCommitted(70); // React StrictMode may repeat an effect.
+    markRendererLaunchComposerMounted(58);
+    markRendererLaunchPaintOpportunity(75);
+    markRendererLaunchPaintOpportunity(100);
+
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("audit_append", expect.anything()));
+    const records = invoke.mock.calls.filter(([command]) => command === "audit_append");
+    expect(records).toHaveLength(1);
+    expect(records[0][1]).toMatchObject({
+      kind: "performance.rendererLaunch",
+      threadId: null,
+      payload: {
+        schemaVersion: 1,
+        startBoundary: "rendererNavigation",
+        durationMs: { shellCommit: 52, composerMounted: 58, paintOpportunity: 75 },
+      },
+    });
+  });
+
+  it("reports an absent composer as unavailable during the paint opportunity", async () => {
+    markRendererLaunchShellCommitted(12);
+    markRendererLaunchPaintOpportunity(20);
+
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("audit_append", expect.anything()));
+    const payload = invoke.mock.calls.find(([command]) => command === "audit_append")?.[1]?.payload;
+    expect(payload.durationMs).toEqual({ shellCommit: 12, composerMounted: null, paintOpportunity: 20 });
   });
 
   it("records one privacy-safe completed thread-open sample", async () => {
@@ -88,6 +122,27 @@ describe("performance diagnostics", () => {
       },
     });
     expect(JSON.stringify(auditCall?.[1])).not.toContain("secret-thread-id");
+  });
+
+  it("counts the visible frame opportunity in completed open latency", async () => {
+    mockTimes(100, 105, 115, 120, 125, 145, 155);
+    beginThreadOpen("thread", "openai", true);
+    markThreadShellCommitted("thread");
+    markThreadHistoryHydrated("thread", {
+      projectedBytes: null,
+      messageCount: 0,
+      activityCount: 0,
+      paginated: false,
+      hasMore: false,
+    });
+    markThreadTimelineCommitted("thread");
+    markThreadRuntimeReady("thread");
+    markThreadPaintOpportunity("thread");
+    markThreadRenderMetrics("thread", { renderedRowCount: 0, timelineDomNodeCount: 0, totalDomNodeCount: 1 });
+
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("audit_append", expect.anything()));
+    const duration = invoke.mock.calls.find(([command]) => command === "audit_append")?.[1]?.payload.durationMs;
+    expect(duration).toMatchObject({ timelineCommit: 20, timelinePaintOpportunity: 45, runtimeReady: 25, total: 45 });
   });
 
   it("records superseded opens without letting stale commits mutate the new sample", async () => {

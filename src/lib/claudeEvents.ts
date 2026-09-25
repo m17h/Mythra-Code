@@ -6,7 +6,7 @@ import type { TokenUsageView } from "../components/StudioDock";
 import { useTaskStore } from "./taskStore";
 import { compactionActivity, compactionState, compactionTitle } from "./contextCompaction";
 import { consumeProviderStopIntent } from "./providerStopIntent";
-import { annotateThreadUsage } from "./usageLedger";
+import { annotateThreadUsage, claudeCanonicalModel } from "./usageLedger";
 
 interface ClaudeBlock {
   id: string;
@@ -16,7 +16,13 @@ interface ClaudeBlock {
 
 const assistantIds = new Map<string, string>();
 const blocks = new Map<string, Map<number, ClaudeBlock>>();
-const partialUsage = new Map<string, { usage: TokenUsageView; messageIds: Set<string> }>();
+interface ClaudePartialUsage {
+  usage: TokenUsageView;
+  byModel: Map<string, TokenUsageView>;
+  messageIds: Set<string>;
+}
+const partialUsage = new Map<string, ClaudePartialUsage>();
+const UNATTRIBUTED_MODEL = "unattributed";
 
 function object(value: unknown): JsonObject {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -81,12 +87,15 @@ function usageView(value: unknown): TokenUsageView | null {
     number(usage.cache_read_input_tokens);
   const cachedInputTokens = number(usage.cache_read_input_tokens);
   const cacheWriteInputTokens = number(usage.cache_creation_input_tokens);
+  // The same writes split by cache duration; 1-hour writes bill at a higher rate.
+  const cacheWrite1hInputTokens = Math.min(cacheWriteInputTokens, Math.max(0, number(object(usage.cache_creation).ephemeral_1h_input_tokens)));
   const outputTokens = number(usage.output_tokens);
   return {
     totalTokens: inputTokens + outputTokens,
     inputTokens,
     cachedInputTokens,
     cacheWriteInputTokens,
+    cacheWrite1hInputTokens,
     outputTokens,
     reasoningOutputTokens: 0,
     contextWindow: null,
@@ -99,6 +108,7 @@ function addUsage(left: TokenUsageView, right: TokenUsageView): TokenUsageView {
     inputTokens: left.inputTokens + right.inputTokens,
     cachedInputTokens: left.cachedInputTokens + right.cachedInputTokens,
     cacheWriteInputTokens: (left.cacheWriteInputTokens ?? 0) + (right.cacheWriteInputTokens ?? 0),
+    cacheWrite1hInputTokens: (left.cacheWrite1hInputTokens ?? 0) + (right.cacheWrite1hInputTokens ?? 0),
     outputTokens: left.outputTokens + right.outputTokens,
     reasoningOutputTokens: left.reasoningOutputTokens + right.reasoningOutputTokens,
     contextWindow: null,
@@ -113,21 +123,27 @@ function remainingUsage(total: TokenUsageView, recorded: TokenUsageView): TokenU
     inputTokens,
     cachedInputTokens: Math.max(0, total.cachedInputTokens - recorded.cachedInputTokens),
     cacheWriteInputTokens: Math.max(0, (total.cacheWriteInputTokens ?? 0) - (recorded.cacheWriteInputTokens ?? 0)),
+    cacheWrite1hInputTokens: Math.max(0, (total.cacheWrite1hInputTokens ?? 0) - (recorded.cacheWrite1hInputTokens ?? 0)),
     outputTokens,
     reasoningOutputTokens: Math.max(0, total.reasoningOutputTokens - recorded.reasoningOutputTokens),
     contextWindow: null,
   };
 }
 
-function recordAssistantUsage(threadId: string, turnId: string, messageId: string, value: unknown): void {
+function recordAssistantUsage(threadId: string, turnId: string, messageId: string, model: string, value: unknown, projectPath?: string): void {
   const usage = usageView(value);
   if (!usage || usage.totalTokens <= 0) return;
   const key = `${threadId}\0${turnId}`;
   const current = partialUsage.get(key);
   if (current?.messageIds.has(messageId)) return;
-  useTaskStore.getState().addUsage(threadId, usage, `claude-assistant:${messageId}`);
+  const resolvedModel = model ? claudeCanonicalModel(model) : UNATTRIBUTED_MODEL;
+  annotateThreadUsage(threadId, { provider: "claude", model: resolvedModel, projectPath });
+  useTaskStore.getState().addUsage(threadId, usage, `claude-assistant:${messageId}`, turnId);
+  const byModel = new Map(current?.byModel);
+  byModel.set(resolvedModel, byModel.has(resolvedModel) ? addUsage(byModel.get(resolvedModel)!, usage) : usage);
   partialUsage.set(key, {
     usage: current ? addUsage(current.usage, usage) : usage,
+    byModel,
     messageIds: new Set([...(current?.messageIds ?? []), messageId]),
   });
   if (partialUsage.size > 100) {
@@ -147,15 +163,90 @@ function recordAssistantUsage(threadId: string, turnId: string, messageId: strin
   }
 }
 
-function recordResultUsage(threadId: string, turnId: string, value: unknown): void {
+/** Claude's modelUsage may be a session snapshot rather than this turn. Accept
+ * its model labels only when every token component reconciles with result.usage.
+ * The cache-write duration is absent from modelUsage, so an unobserved 1-hour
+ * remainder can only be assigned when exactly one model has unrecorded writes. */
+function reconciledModelRemainder(value: unknown, total: TokenUsageView, partial?: ClaudePartialUsage): Map<string, TokenUsageView> | null {
+  const raw = object(value);
+  const entries = Object.entries(raw);
+  if (!entries.length) return null;
+  const byModel = new Map<string, TokenUsageView>();
+  for (const [name, value] of entries) {
+    const row = object(value);
+    const fields = ["inputTokens", "outputTokens", "cacheReadInputTokens", "cacheCreationInputTokens"] as const;
+    if (!name.trim() || fields.some((field) => !Number.isSafeInteger(row[field]) || Number(row[field]) < 0)) return null;
+    const model = claudeCanonicalModel(name);
+    const uncached = Number(row.inputTokens);
+    const cached = Number(row.cacheReadInputTokens);
+    const written = Number(row.cacheCreationInputTokens);
+    const output = Number(row.outputTokens);
+    const usage: TokenUsageView = {
+      totalTokens: uncached + cached + written + output,
+      inputTokens: uncached + cached + written,
+      cachedInputTokens: cached,
+      cacheWriteInputTokens: written,
+      cacheWrite1hInputTokens: 0,
+      outputTokens: output,
+      reasoningOutputTokens: 0,
+      contextWindow: null,
+    };
+    byModel.set(model, byModel.has(model) ? addUsage(byModel.get(model)!, usage) : usage);
+  }
+  const combined = [...byModel.values()].reduce((sum, usage) => addUsage(sum, usage), {
+    totalTokens: 0, inputTokens: 0, cachedInputTokens: 0, cacheWriteInputTokens: 0,
+    cacheWrite1hInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, contextWindow: null,
+  });
+  if (combined.inputTokens !== total.inputTokens || combined.outputTokens !== total.outputTokens
+    || combined.cachedInputTokens !== total.cachedInputTokens
+    || combined.cacheWriteInputTokens !== total.cacheWriteInputTokens) return null;
+
+  const remainder = new Map<string, TokenUsageView>();
+  for (const [model, usage] of byModel) {
+    const recorded = partial?.byModel.get(model);
+    if (recorded && (recorded.inputTokens > usage.inputTokens || recorded.outputTokens > usage.outputTokens
+      || recorded.cachedInputTokens > usage.cachedInputTokens
+      || (recorded.cacheWriteInputTokens ?? 0) > (usage.cacheWriteInputTokens ?? 0))) return null;
+    remainder.set(model, recorded ? remainingUsage(usage, recorded) : usage);
+  }
+  if ([...(partial?.byModel.keys() ?? [])].some((model) => !byModel.has(model))) return null;
+  const already1h = [...(partial?.byModel.values() ?? [])].reduce((sum, usage) => sum + (usage.cacheWrite1hInputTokens ?? 0), 0);
+  const pending1h = (total.cacheWrite1hInputTokens ?? 0) - already1h;
+  if (pending1h < 0) return null;
+  if (pending1h > 0) {
+    const candidates = [...remainder].filter(([, usage]) => (usage.cacheWriteInputTokens ?? 0) > 0);
+    if (candidates.length !== 1 || pending1h > (candidates[0][1].cacheWriteInputTokens ?? 0)) return null;
+    candidates[0][1].cacheWrite1hInputTokens = pending1h;
+  }
+  const sum = [...remainder.values()].reduce((total, usage) => addUsage(total, usage), {
+    totalTokens: 0, inputTokens: 0, cachedInputTokens: 0, cacheWriteInputTokens: 0,
+    cacheWrite1hInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, contextWindow: null,
+  });
+  const expected = partial ? remainingUsage(total, partial.usage) : total;
+  return sum.inputTokens === expected.inputTokens && sum.outputTokens === expected.outputTokens
+    && sum.cachedInputTokens === expected.cachedInputTokens
+    && sum.cacheWriteInputTokens === expected.cacheWriteInputTokens
+    && sum.cacheWrite1hInputTokens === expected.cacheWrite1hInputTokens ? remainder : null;
+}
+
+function recordResultUsage(threadId: string, turnId: string, value: unknown, modelUsage: unknown, projectPath?: string): void {
   const key = `${threadId}\0${turnId}`;
-  const recorded = partialUsage.get(key)?.usage;
+  const partial = partialUsage.get(key);
   partialUsage.delete(key);
   const total = usageView(value);
   if (!total) return;
-  const usage = recorded ? remainingUsage(total, recorded) : total;
-  if (usage.totalTokens > 0) {
-    useTaskStore.getState().addUsage(threadId, usage, `claude-result:${turnId}`);
+  const usage = partial ? remainingUsage(total, partial.usage) : total;
+  if (usage.totalTokens <= 0) return;
+  const byModel = reconciledModelRemainder(modelUsage, total, partial);
+  if (byModel) {
+    for (const [model, delta] of byModel) {
+      if (delta.totalTokens <= 0) continue;
+      annotateThreadUsage(threadId, { provider: "claude", model, projectPath });
+      useTaskStore.getState().addUsage(threadId, delta, `claude-result:${turnId}:${model}`, turnId);
+    }
+  } else {
+    annotateThreadUsage(threadId, { provider: "claude", model: UNATTRIBUTED_MODEL, projectPath });
+    useTaskStore.getState().addUsage(threadId, usage, `claude-result:${turnId}:unattributed`, turnId);
   }
 }
 
@@ -417,13 +508,10 @@ export function routeClaudeEvent(
 
   if (type === "assistant") {
     const assistant = object(message.message);
-    if (typeof assistant.model === "string" && assistant.model.trim()) {
-      annotateThreadUsage(threadId, { provider: "claude", model: assistant.model, projectPath: ctx.bindingFor(threadId) });
-    }
     const id =
       text(assistant.id) || assistantIds.get(threadId) || `claude-${turnId}`;
     const content = Array.isArray(assistant.content) ? assistant.content : [];
-    recordAssistantUsage(threadId, turnId, id, assistant.usage);
+    recordAssistantUsage(threadId, turnId, id, text(assistant.model), assistant.usage, ctx.bindingFor(threadId));
     const answer = content
       .map((entry) => object(entry))
       .filter((entry) => entry.type === "text")
@@ -474,7 +562,7 @@ export function routeClaudeEvent(
 
   if (type === "result") {
     store.flushDeltas();
-    recordResultUsage(threadId, turnId, message.usage);
+    recordResultUsage(threadId, turnId, message.usage, message.modelUsage, ctx.bindingFor(threadId));
     const subtype = text(message.subtype);
     const stopRequested = consumeProviderStopIntent(threadId, turnId);
     const alreadyInterrupted =

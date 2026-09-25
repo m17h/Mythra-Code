@@ -68,6 +68,16 @@ describe("ApprovalCenter", () => {
     expect(onRespond).toHaveBeenCalledWith({ answers: { target: { answers: ["Web"] } } });
   });
 
+  it("returns structured answers for Cursor questions", async () => {
+    const onRespond = vi.fn();
+    render(<ApprovalCenter approval={approval("cursor/ask_question", { questions: [{ id: "style", question: "Which style?", options: [{ label: "Painterly" }] }] })} onRespond={onRespond} />);
+    await act(async () => { await vi.dynamicImportSettled(); });
+    passGrace();
+    fireEvent.click(screen.getByRole("radio", { name: /Painterly/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    expect(onRespond).toHaveBeenCalledWith({ answers: { style: { answers: ["Painterly"] } } });
+  });
+
   it("requires answers before submitting and preserves question IDs", async () => {
     const onRespond = vi.fn();
     render(<ApprovalCenter approval={approval("item/tool/requestUserInput", { questions: [

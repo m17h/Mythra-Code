@@ -7,6 +7,8 @@ import { gzipSync } from "node:zlib";
 export const SCORECARD_SCHEMA_VERSION = 1;
 const root = resolve(import.meta.dirname, "..");
 const defaultBudgetsPath = resolve(root, "scripts/performance-budgets.json");
+const baselineMetrics = ["appEntryRawBytes", "startupJsRawBytes", "startupCssRawBytes", "totalJsRawBytes"];
+const supportedProfiles = new Set(["safari13-minified", "chrome105-minified"]);
 
 function finite(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
@@ -57,6 +59,7 @@ function sanitizedThreadOpenSample(event) {
   const transcriptCache = object(payload.transcriptCache);
   const processMemory = object(payload.processMemory);
   const timelineCommitMs = finite(duration.timelineCommit);
+  const timelinePaintOpportunityMs = finite(duration.timelinePaintOpportunity);
   const runtimeReadyMs = finite(duration.runtimeReady);
   return {
     createdAt: finite(event.createdAt),
@@ -68,9 +71,13 @@ function sanitizedThreadOpenSample(event) {
       shellCommitMs: finite(duration.shellCommit),
       historyHydratedMs: finite(duration.historyHydrated),
       timelineCommitMs,
+      timelinePaintOpportunityMs,
       runtimeReadyMs,
       runtimeAfterVisibleMs: timelineCommitMs !== null && runtimeReadyMs !== null
         ? Math.max(0, runtimeReadyMs - timelineCommitMs)
+        : null,
+      runtimeAfterPaintOpportunityMs: timelinePaintOpportunityMs !== null && runtimeReadyMs !== null
+        ? Math.max(0, runtimeReadyMs - timelinePaintOpportunityMs)
         : null,
       totalMs: finite(duration.total),
       projectedHistoryBytes: finite(history.projectedBytes),
@@ -105,6 +112,7 @@ function sanitizedRuntimeTurnSample(event) {
       deltaCalls: finite(streaming.deltaCalls),
       deltaCharacters: finite(streaming.deltaCharacters),
       flushes: finite(streaming.flushes),
+      queuedFrames: finite(streaming.queuedFrames),
       queueToFrameAverageMs: finite(streaming.queueToFrameAverageMs),
       queueToFrameMaximumMs: finite(streaming.queueToFrameMaximumMs),
       queueToFrameOverBudget: finite(streaming.queueToFrameOverBudget),
@@ -130,6 +138,19 @@ function sanitizedComposerSample(event) {
   return {
     provider: enumValue(payload.provider, ["openai", "openrouter", "lmstudio", "claude", "cursor"], "unknown"),
     values,
+  };
+}
+
+function sanitizedRendererLaunchSample(event) {
+  if (event?.kind !== "performance.rendererLaunch") return null;
+  const payload = object(event.payload);
+  if (payload.schemaVersion !== 1 || payload.startBoundary !== "rendererNavigation") return null;
+  const duration = object(payload.durationMs);
+  const durationMs = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+  return {
+    shellCommitMs: durationMs(duration.shellCommit),
+    composerMountedMs: durationMs(duration.composerMounted),
+    paintOpportunityMs: durationMs(duration.paintOpportunity),
   };
 }
 
@@ -182,6 +203,7 @@ export function summarizeDiagnostics(input) {
   const samples = auditEvents.map(sanitizedThreadOpenSample).filter(Boolean);
   const runtimeSamples = auditEvents.map(sanitizedRuntimeTurnSample).filter(Boolean);
   const composerSamples = auditEvents.map(sanitizedComposerSample).filter(Boolean);
+  const rendererLaunchSamples = auditEvents.map(sanitizedRendererLaunchSample).filter(Boolean);
   const chronologicalCompletedSamples = samples
     .filter((sample) => sample.outcome === "completed")
     .map((sample, index) => ({ sample, order: sample.createdAt ?? index }))
@@ -204,6 +226,14 @@ export function summarizeDiagnostics(input) {
     sampleCount: samples.length,
     runtimeSampleCount: runtimeSamples.length,
     composerSampleCount: composerSamples.reduce((total, sample) => total + sample.values.length, 0),
+    rendererLaunch: {
+      startBoundary: "rendererNavigation",
+      sampleCount: rendererLaunchSamples.length,
+      metrics: Object.fromEntries(["shellCommitMs", "composerMountedMs", "paintOpportunityMs"].map((metric) => [
+        metric,
+        summarizeMetric(rendererLaunchSamples.map((sample) => sample[metric])),
+      ])),
+    },
     memoryGrowth: {
       javascriptHeapUsedBytes: summarizeGrowth(chronologicalCompletedSamples.map((sample) => sample.metrics.javascriptHeapUsedBytes)),
       transcriptCacheBytes: summarizeGrowth(chronologicalCompletedSamples.map((sample) => sample.metrics.transcriptCacheBytes)),
@@ -273,11 +303,14 @@ export async function measureBundles(distDirectory) {
   const manifestPath = join(dist, ".vite", "manifest.json");
   if (!existsSync(manifestPath)) throw new Error(`Vite manifest does not exist: ${manifestPath}`);
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  if (!object(manifest)["index.html"] || !object(manifest)["src/App.tsx"]) {
+    throw new Error("Vite manifest is missing the index.html or src/App.tsx entry");
+  }
   const startupKeys = new Set();
   const visitManifestEntry = (key) => {
     if (startupKeys.has(key)) return;
     const entry = object(manifest[key]);
-    if (!entry.file) throw new Error(`Vite manifest entry is missing: ${key}`);
+    if (typeof entry.file !== "string" || !entry.file) throw new Error(`Vite manifest entry is missing: ${key}`);
     startupKeys.add(key);
     for (const importedKey of Array.isArray(entry.imports) ? entry.imports : []) visitManifestEntry(importedKey);
   };
@@ -305,24 +338,90 @@ export async function measureBundles(distDirectory) {
     rawBytes: measurements.reduce((total, file) => total + file.rawBytes, 0),
     gzipBytes: measurements.reduce((total, file) => total + file.gzipBytes, 0),
   });
-  return {
+  const bundles = {
     appEntry,
     startupJavascript: summarizeFiles(startupJavascriptMeasurements),
     startupStylesheets: summarizeFiles(startupStylesheetMeasurements),
     javascript: summarizeFiles(jsMeasurements),
     css: summarizeFiles(cssMeasurements),
   };
+  if (!bundles.startupJavascript.files || !bundles.startupStylesheets.files || !bundles.javascript.files || !bundles.css.files) {
+    throw new Error("Build output is missing a startup or total JavaScript/CSS measurement");
+  }
+  return bundles;
+}
+
+function validBytes(value) {
+  return Number.isSafeInteger(value) && value > 0;
+}
+
+function bundleMetrics(bundles) {
+  const metrics = {
+    appEntryRawBytes: bundles.appEntry?.rawBytes,
+    appEntryGzipBytes: bundles.appEntry?.gzipBytes,
+    startupJsRawBytes: bundles.startupJavascript?.rawBytes,
+    startupJsGzipBytes: bundles.startupJavascript?.gzipBytes,
+    startupCssRawBytes: bundles.startupStylesheets?.rawBytes,
+    startupCssGzipBytes: bundles.startupStylesheets?.gzipBytes,
+    startupCombinedRawBytes: bundles.startupJavascript?.rawBytes + bundles.startupStylesheets?.rawBytes,
+    startupCombinedGzipBytes: bundles.startupJavascript?.gzipBytes + bundles.startupStylesheets?.gzipBytes,
+    totalJsRawBytes: bundles.javascript?.rawBytes,
+    totalJsGzipBytes: bundles.javascript?.gzipBytes,
+    totalCssRawBytes: bundles.css?.rawBytes,
+    totalCssGzipBytes: bundles.css?.gzipBytes,
+    totalCombinedRawBytes: bundles.javascript?.rawBytes + bundles.css?.rawBytes,
+    totalCombinedGzipBytes: bundles.javascript?.gzipBytes + bundles.css?.gzipBytes,
+  };
+  for (const [metric, value] of Object.entries(metrics)) {
+    if (!validBytes(value)) throw new Error(`Invalid or missing bundle measurement: ${metric}`);
+  }
+  return metrics;
+}
+
+function compareBytes(actual, reference) {
+  const deltaBytes = actual - reference;
+  return { actual, referenceBytes: reference, deltaBytes, deltaPercent: Math.round((deltaBytes / reference) * 10000) / 100 };
 }
 
 export function evaluateBudgets(bundles, limitsInput) {
+  const metrics = bundleMetrics(bundles);
   const limits = object(limitsInput);
-  const checks = [
-    { metric: "appEntryRawBytes", actual: bundles.appEntry.rawBytes, limit: finite(limits.appEntryRawBytes) },
-    { metric: "startupJsRawBytes", actual: bundles.startupJavascript.rawBytes, limit: finite(limits.startupJsRawBytes) },
-    { metric: "startupCssRawBytes", actual: bundles.startupStylesheets.rawBytes, limit: finite(limits.startupCssRawBytes) },
-    { metric: "totalJsRawBytes", actual: bundles.javascript.rawBytes, limit: finite(limits.totalJsRawBytes) },
-  ].map((check) => ({ ...check, passed: check.limit !== null && check.actual <= check.limit }));
-  return { passed: checks.every((check) => check.passed), checks };
+  const checks = baselineMetrics.map((metric) => {
+    const reference = limits[metric];
+    if (!validBytes(reference)) throw new Error(`Invalid or missing performance profile reference: ${metric}`);
+    return {
+      metric,
+      ...compareBytes(metrics[metric], reference),
+      limit: reference, // Kept for existing scorecard readers; this is now a reference, not a ceiling.
+      passed: true,
+      withinReference: metrics[metric] <= reference,
+    };
+  });
+  return { passed: true, policy: "report-only-byte-growth", checks };
+}
+
+function historicalComparisons(metrics, references, profile) {
+  return Object.entries(object(references)).map(([name, referenceInput]) => {
+    const reference = object(referenceInput);
+    // Older snapshots only have the four raw values. New snapshots can add
+    // gzip and combined totals without changing the historical schema again.
+    const referenceMetrics = Object.fromEntries(Object.keys(metrics).flatMap((metric) => (
+      validBytes(reference[metric]) ? [[metric, reference[metric]]] : []
+    )));
+    const comparable = reference.profile === profile;
+    const comparisons = Object.fromEntries(Object.keys(metrics).flatMap((metric) => (
+      comparable && validBytes(reference[metric]) ? [[metric, compareBytes(metrics[metric], reference[metric])]] : []
+    )));
+    return {
+      name,
+      ref: typeof reference.ref === "string" ? reference.ref : null,
+      commit: typeof reference.commit === "string" ? reference.commit : null,
+      profile: typeof reference.profile === "string" ? reference.profile : null,
+      comparable,
+      referenceMetrics,
+      comparisons,
+    };
+  });
 }
 
 export function parseArguments(argv) {
@@ -363,9 +462,11 @@ export async function createScorecard(options) {
     throw new Error("Performance budgets require a supported minified production build");
   }
   const profile = `${buildMetadata.target}-minified`;
+  if (!supportedProfiles.has(profile)) throw new Error(`Unsupported performance build profile: ${profile}`);
   const limits = object(object(budgets).profiles)[profile];
   if (!limits) throw new Error(`No performance budget profile exists for ${profile}`);
   const bundles = await measureBundles(options.dist);
+  const metrics = bundleMetrics(bundles);
   const diagnosticInput = options.diagnostics ? JSON.parse(readFileSync(options.diagnostics, "utf8")) : null;
   return {
     schemaVersion: SCORECARD_SCHEMA_VERSION,
@@ -379,6 +480,8 @@ export async function createScorecard(options) {
     },
     bundles,
     budgetEvaluation: { profile, ...evaluateBudgets(bundles, limits) },
+    staticMetrics: metrics,
+    historicalComparisons: historicalComparisons(metrics, budgets.reference, profile),
     realWorld: diagnosticInput ? summarizeDiagnostics(diagnosticInput) : null,
   };
 }
@@ -391,8 +494,13 @@ async function main() {
   }
   const scorecard = await createScorecard(options);
   const text = `${JSON.stringify(scorecard, null, 2)}\n`;
-  if (options.output) writeFileSync(options.output, text, "utf8");
-  else process.stdout.write(text);
+  if (options.output) {
+    writeFileSync(options.output, text, "utf8");
+    const changes = scorecard.budgetEvaluation.checks
+      .map(({ metric, deltaBytes }) => `${metric}: ${deltaBytes >= 0 ? "+" : ""}${deltaBytes} B`)
+      .join(", ");
+    console.error(`Performance scorecard (${scorecard.environment.buildProfile}, report-only growth): ${changes}. JSON: ${options.output}`);
+  } else process.stdout.write(text);
   if (options.check && !scorecard.budgetEvaluation.passed) process.exitCode = 1;
 }
 

@@ -71,6 +71,24 @@ fn process_memory_snapshot_reports_missing_processes_without_fake_zeroes() {
 }
 
 #[test]
+fn process_memory_snapshot_does_not_attribute_orphans_when_host_is_missing() {
+    let snapshot = summarize_process_memory(
+        &[ProcessMemoryRow {
+            pid: 101,
+            parent: Some(100),
+            resident_bytes: 900,
+            start_time: 11,
+        }],
+        100,
+        Some(101),
+    );
+    assert_eq!(snapshot.host_resident_bytes, None);
+    assert_eq!(snapshot.managed_process_tree_resident_bytes, None);
+    assert_eq!(snapshot.managed_process_count, 0);
+    assert_eq!(snapshot.app_server_resident_bytes, None);
+}
+
+#[test]
 fn process_memory_snapshot_rejects_reused_parent_pids() {
     let snapshot = summarize_process_memory(
         &[

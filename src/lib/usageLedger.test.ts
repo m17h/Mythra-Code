@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import publishedCatalog from "../../model-pricing.json?raw";
 import {
   annotateThreadUsage,
   claudeCanonicalModel,
@@ -16,7 +17,7 @@ import {
   usageTotals,
   USAGE_LEDGER_KEY,
   providerUsageTotals, recordOpenRouterCharge, openRouterReportedCost, updateOpenRouterPricing,
-  subscribeUsage, pricingRefreshStatus,
+  subscribeUsage, pricingRefreshStatus, BUNDLED_PRICING_AS_OF,
 } from "./usageLedger";
 
 const usage = (inputTokens: number, outputTokens: number, cachedInputTokens = 0, cacheWriteInputTokens = 0) => ({
@@ -34,7 +35,7 @@ const usage = (inputTokens: number, outputTokens: number, cachedInputTokens = 0,
 const storeCatalog = (models: Record<string, unknown>) => {
   localStorage.setItem(MODEL_PRICING_CATALOG_KEY, JSON.stringify({
     schemaVersion: 1,
-    updatedAt: "2026-08-08T17:00:00Z",
+    updatedAt: "2026-10-01T17:00:00Z",
     models,
   }));
 };
@@ -161,6 +162,59 @@ describe("usage ledger", () => {
     unsubscribe();
   });
 
+  it("never saves dated detail ahead of the ledger that accounts for it", async () => {
+    vi.resetModules();
+    const fresh = await import("./usageLedger");
+    await import("./usageHistory");
+    const keys = [fresh.USAGE_LEDGER_KEY, "kiwi.usageHistory"];
+    const writes: string[] = [];
+    const originalSetItem = localStorage.setItem.bind(localStorage);
+    const setItem = vi.spyOn(localStorage, "setItem").mockImplementation((key: string, value: string) => {
+      if (keys.includes(key)) {
+        writes.push(key);
+        // Invariant at every write: stored detail never exceeds the stored ledger.
+        const records = JSON.parse(key === fresh.USAGE_LEDGER_KEY ? value : localStorage.getItem(fresh.USAGE_LEDGER_KEY) ?? "[]") as Array<{ usage: { totalTokens: number } }>;
+        const history = JSON.parse(key === "kiwi.usageHistory" ? value : localStorage.getItem("kiwi.usageHistory") ?? "null") as { buckets: unknown[][] } | null;
+        const ledgerTotal = records.reduce((sum, record) => sum + record.usage.totalTokens, 0);
+        // Bucket fields: day, provider, model, then amounts with totalTokens sixth.
+        const detailTotal = (history?.buckets ?? []).reduce((sum, bucket) => sum + Number(bucket[8]), 0);
+        expect(detailTotal).toBeLessThanOrEqual(ledgerTotal);
+      }
+      originalSetItem(key, value);
+    });
+    fresh.recordUsageDelta("t", usage(100, 10), "a", "turn-a");
+    fresh.flushUsageLedger();
+    fresh.recordUsageDelta("t", usage(200, 20), "b", "turn-b");
+    fresh.flushUsageLedger();
+    expect(writes).toEqual([fresh.USAGE_LEDGER_KEY, "kiwi.usageHistory", fresh.USAGE_LEDGER_KEY, "kiwi.usageHistory"]);
+    setItem.mockRestore();
+    fresh.resetUsageLedgerCache();
+    vi.resetModules();
+  });
+
+  it("defers a lazily attached detail sink's flush while the ledger is unsaved", async () => {
+    vi.resetModules();
+    vi.doMock("./usageHistory", () => ({}));
+    const fresh = await import("./usageLedger");
+    const flushedAfterLedger: boolean[] = [];
+    const sink = {
+      record: vi.fn(),
+      flush: vi.fn(() => { flushedAfterLedger.push(localStorage.getItem(fresh.USAGE_LEDGER_KEY) !== null); }),
+      reset: vi.fn(),
+      reprice: vi.fn(),
+    };
+    fresh.recordUsageDelta("t", usage(100, 10), "a", "turn-a");
+    fresh.attachUsageHistory(sink);
+    // The queued delta reaches detail at once, but is not saved before the ledger.
+    expect(sink.record).toHaveBeenCalledOnce();
+    expect(sink.flush).not.toHaveBeenCalled();
+    fresh.flushUsageLedger();
+    expect(flushedAfterLedger).toEqual([true]);
+    fresh.resetUsageLedgerCache();
+    vi.doUnmock("./usageHistory");
+    vi.resetModules();
+  });
+
   it("bounds receipt storage independently of the number of requests", () => {
     for (let index = 0; index < 1200; index++) recordOpenRouterCharge(`gen-${index}`, 0.01);
     flushUsageLedger();
@@ -174,8 +228,81 @@ describe("usage ledger", () => {
 
   it("never prices an explicit newer Claude alias as an older model", () => {
     expect(claudeCanonicalModel("fable-5-1")).toBe("claude-fable-5-1");
-    expect(pricingForModel("claude", "fable-5-1")).toBeUndefined();
+    // Fable 5.1 has its own published cache-read rate, not Fable 5's.
+    expect(pricingForModel("claude", "fable-5-1")).toMatchObject({ inputPerMillion: 10, cachedInputPerMillion: 0.25 });
+    expect(pricingForModel("claude", "fable-5-2")).toBeUndefined();
     expect(claudeCanonicalModel("opus-6[1m]")).toBe("claude-opus-6");
+    expect(pricingForModel("claude", "opus-6[1m]")).toBeUndefined();
+  });
+
+  it("uses OpenAI's published standard GPT-5.6 rates, with gpt-5.6 priced as Sol", () => {
+    const sol = { inputPerMillion: 4, cachedInputPerMillion: 0.4, cacheWriteInputPerMillion: 5, outputPerMillion: 20, asOf: "2026-09-25" };
+    expect(pricingForModel("openai", "gpt-5.6-sol")).toMatchObject(sol);
+    expect(pricingForModel("openai", "gpt-5.6")).toMatchObject(sol);
+    expect(pricingForModel("openai", "gpt-5.6-terra")).toMatchObject({ inputPerMillion: 2, cachedInputPerMillion: 0.2, cacheWriteInputPerMillion: 2.5, outputPerMillion: 12 });
+    expect(pricingForModel("openai", "gpt-5.6-luna")).toMatchObject({ inputPerMillion: 0.2, cachedInputPerMillion: 0.02, cacheWriteInputPerMillion: 0.25, outputPerMillion: 1.2 });
+    // A catalog cached from the old $5/$30 publication can't reinstate it.
+    localStorage.setItem(MODEL_PRICING_CATALOG_KEY, JSON.stringify({
+      schemaVersion: 1, updatedAt: "2026-08-08T16:00:00Z",
+      models: { "openai:gpt-5.6-sol": { inputPerMillion: 5, cachedInputPerMillion: 0.5, cacheWriteInputPerMillion: 6.25, outputPerMillion: 30, asOf: "2026-07-28" } },
+    }));
+    expect(pricingForModel("openai", "gpt-5.6-sol")).toMatchObject(sol);
+  });
+
+  it("never reprices usage already recorded at an earlier GPT-5.6 rate", () => {
+    localStorage.setItem(USAGE_LEDGER_KEY, JSON.stringify([{
+      threadId: "old-sol", provider: "openai", model: "gpt-5.6-sol", usage: usage(1_000_000, 0),
+      pricing: { inputPerMillion: 5, outputPerMillion: 30, source: "OpenAI", asOf: "2026-07-28" },
+      estimatedCost: 5, pricedTokens: 1_000_000, unpricedTokens: 0, updatedAt: 1,
+    }]));
+    resetUsageLedgerCache();
+    annotateThreadUsage("old-sol", { provider: "openai", model: "gpt-5.6-sol" });
+    recordUsageDelta("old-sol", usage(1_000_000, 0), "new");
+    expect(usageTotals().estimatedCost).toBe(9);
+  });
+
+  it("uses verified standard rates for current OpenAI and Claude models", () => {
+    expect(pricingForModel("openai", "gpt-6-astra")).toMatchObject({ inputPerMillion: 10, cachedInputPerMillion: 1, cacheWriteInputPerMillion: 12.5, outputPerMillion: 50 });
+    expect(pricingForModel("openai", "gpt-6-sol")).toMatchObject({ inputPerMillion: 2, cachedInputPerMillion: 0.2, cacheWriteInputPerMillion: 2.5, outputPerMillion: 10 });
+    expect(pricingForModel("openai", "gpt-6-luna")).toMatchObject({ inputPerMillion: 0.1, cachedInputPerMillion: 0.01, cacheWriteInputPerMillion: 0.125, outputPerMillion: 0.5 });
+    expect(pricingForModel("claude", "claude-opus-5-5")).toMatchObject({ inputPerMillion: 4, cachedInputPerMillion: 0.2, cacheWriteInputPerMillion: 5, outputPerMillion: 20 });
+    expect(pricingForModel("claude", "claude-fable-5-1")).toMatchObject({ inputPerMillion: 10, cachedInputPerMillion: 0.25, cacheWriteInputPerMillion: 12.5, outputPerMillion: 50 });
+    // Sonnet 5's launch price became standard; the scheduled increase never happened.
+    expect(pricingForModel("claude", "claude-sonnet-5", new Date("2026-09-25T12:00:00Z"))).toMatchObject({ inputPerMillion: 2, outputPerMillion: 10 });
+    // Cursor-routed models and Auto have no published per-token rate to borrow.
+    expect(pricingForModel("cursor", "auto")).toBeUndefined();
+    expect(pricingForModel("cursor", "claude-opus-5-5")).toBeUndefined();
+  });
+
+  it("never lets a catalog older than the bundled rates reinstate a stale price", () => {
+    localStorage.setItem(MODEL_PRICING_CATALOG_KEY, JSON.stringify({
+      schemaVersion: 1,
+      updatedAt: "2026-08-08T16:00:00Z",
+      models: {
+        "claude:claude-sonnet-5": { inputPerMillion: 3, outputPerMillion: 15, asOf: "2026-07-28" },
+        "openai:gpt-9-preview": { inputPerMillion: 7, outputPerMillion: 70, asOf: "2026-07-28" },
+      },
+    }));
+    expect(pricingForModel("claude", "claude-sonnet-5")?.inputPerMillion).toBe(2);
+    // A model only the catalog knows still uses the catalog.
+    expect(pricingForModel("openai", "gpt-9-preview")?.inputPerMillion).toBe(7);
+  });
+
+  it("keeps the published catalog file in step with the bundled fallback", () => {
+    const published = parseModelPricingCatalog(JSON.parse(publishedCatalog));
+    expect(published).not.toBeNull();
+    expect(Date.parse(published!.updatedAt)).toBeGreaterThanOrEqual(Date.parse(BUNDLED_PRICING_AS_OF));
+    // Storage is empty here, so these lookups resolve to the bundled table.
+    for (const [key, entry] of Object.entries(published!.models)) {
+      const separator = key.indexOf(":");
+      const bundled = pricingForModel(key.slice(0, separator) as "openai" | "claude", key.slice(separator + 1));
+      expect(bundled, key).toMatchObject({
+        inputPerMillion: entry.inputPerMillion,
+        cachedInputPerMillion: entry.cachedInputPerMillion,
+        cacheWriteInputPerMillion: entry.cacheWriteInputPerMillion,
+        outputPerMillion: entry.outputPerMillion,
+      });
+    }
   });
 
   it("keeps total-only usage visible without inventing input/output or pricing", () => {
@@ -188,13 +315,41 @@ describe("usage ledger", () => {
   it("applies a scheduled pricing reversion to a background thread's next delta", () => {
     vi.useFakeTimers();
     try {
-      vi.setSystemTime(new Date("2026-08-31T23:00:00Z"));
+      vi.setSystemTime(new Date("2026-10-31T23:00:00Z"));
+      storeCatalog({ "claude:claude-sonnet-5": { inputPerMillion: 1, outputPerMillion: 5, asOf: "2026-10-01", effectiveUntil: "2026-11-01" } });
       annotateThreadUsage("sonnet", { provider: "claude", model: "claude-sonnet-5" });
       recordUsageDelta("sonnet", usage(1_000_000, 0));
-      vi.setSystemTime(new Date("2026-09-01T00:00:01Z"));
+      vi.setSystemTime(new Date("2026-11-01T00:00:01Z"));
       recordUsageDelta("sonnet", usage(1_000_000, 0));
-      expect(usageTotals().estimatedCost).toBe(5);
+      // $1 at the promotional catalog rate, then the bundled $2 standard rate.
+      expect(usageTotals().estimatedCost).toBe(3);
     } finally { resetUsageLedgerCache(); vi.useRealTimers(); }
+  });
+
+  it("starts a catalog rate at its stated UTC time, not at midnight of that day", () => {
+    storeCatalog({
+      "claude:claude-sonnet-5": {
+        inputPerMillion: 1, outputPerMillion: 5, asOf: "2026-09-25", effectiveFrom: "2026-09-25T12:00:00Z",
+      },
+    });
+    expect(pricingForModel("claude", "claude-sonnet-5", new Date("2026-09-25T11:59:59Z"))?.inputPerMillion).toBe(2);
+    expect(pricingForModel("claude", "claude-sonnet-5", new Date("2026-09-25T12:00:00Z"))?.inputPerMillion).toBe(1);
+  });
+
+  it("rejects impossible or ambiguous effective moments", () => {
+    const catalog = (effectiveFrom: string) => parseModelPricingCatalog({
+      schemaVersion: 1, updatedAt: "2026-09-25T17:00:00Z",
+      models: { "openai:gpt-7-nova": { inputPerMillion: 4, outputPerMillion: 16, asOf: "2026-09-25", effectiveFrom } },
+    });
+    expect(catalog("2026-02-30T12:00:00Z")).toBeNull();
+    expect(catalog("2026-09-25T12:00:00-04:00")).toBeNull();
+    expect(catalog("2026-09-26T00:00:00Z")).toBeNull();
+    expect(catalog("2026-09-25T12:00:00Z")?.models["openai:gpt-7-nova"].effectiveFrom).toBe("2026-09-25T12:00:00Z");
+  });
+
+  it("never prices Claude usage whose model could not be attributed", () => {
+    storeCatalog({ "claude:unattributed": { inputPerMillion: 1, outputPerMillion: 5, asOf: "2026-10-01", effectiveFrom: "2026-09-01" } });
+    expect(pricingForModel("claude", "unattributed", new Date("2026-09-25T12:00:00Z"))).toBeUndefined();
   });
 
   it("adopts refreshed OpenRouter cache rates for future background usage only", () => {
@@ -308,7 +463,8 @@ describe("usage ledger", () => {
 
   it("uses discounted cached-input pricing", () => {
     const pricing = pricingForModel("openai", "gpt-5.6-sol");
-    expect(estimateUsageCost(usage(1_000_000, 1_000_000, 500_000), pricing)).toBe(32.75);
+    // 500k uncached at $4, 500k cached at $0.40, 1M output at $20.
+    expect(estimateUsageCost(usage(1_000_000, 1_000_000, 500_000), pricing)).toBeCloseTo(22.2, 10);
   });
 
   it("uses the cache-write premium when the runtime reports cache creation", () => {
@@ -325,8 +481,9 @@ describe("usage ledger", () => {
       inputTokens: 1_500_000,
       outputTokens: 150_000,
       threads: 2,
-      estimatedCost: 4.75,
     });
+    // Terra $2 + $1.20, Haiku $0.50 + $0.25.
+    expect(usageTotals().estimatedCost).toBeCloseTo(3.95, 10);
   });
 
   it("keeps each usage increment at the model price active when it was recorded", () => {
@@ -335,7 +492,8 @@ describe("usage ledger", () => {
     annotateThreadUsage("thread", { provider: "openai", model: "gpt-5.6-sol" });
     recordCumulativeUsage("thread", usage(2_000_000, 0));
 
-    expect(usageTotals().estimatedCost).toBe(6);
+    // 1M at Luna's $0.20, then the next 1M at Sol's $4.
+    expect(usageTotals().estimatedCost).toBeCloseTo(4.2, 10);
   });
 
   it("never reprices tokens recorded before a price becomes available", () => {
@@ -357,7 +515,7 @@ describe("usage ledger", () => {
   it("validates, caches, and adopts a refreshed startup price", async () => {
     const remote = {
       schemaVersion: 1,
-      updatedAt: "2026-08-08T17:00:00Z",
+      updatedAt: "2026-10-01T17:00:00Z",
       models: {
         "openai:gpt-5.6-sol": {
           inputPerMillion: 4,
@@ -406,29 +564,29 @@ describe("usage ledger", () => {
   it("stops applying a catalog rate once its scheduled end date passes", () => {
     storeCatalog({
       "claude:claude-sonnet-5": {
-        inputPerMillion: 2,
-        cachedInputPerMillion: 0.2,
-        cacheWriteInputPerMillion: 2.5,
-        outputPerMillion: 10,
-        asOf: "2026-07-28",
-        effectiveUntil: "2026-09-01",
-        note: "Introductory pricing through August 31, 2026",
+        inputPerMillion: 1,
+        cachedInputPerMillion: 0.1,
+        cacheWriteInputPerMillion: 1.25,
+        outputPerMillion: 5,
+        asOf: "2026-10-01",
+        effectiveUntil: "2026-11-01",
+        note: "Promotional pricing through October 31, 2026",
       },
     });
 
-    expect(pricingForModel("claude", "claude-sonnet-5", new Date("2026-08-31T23:00:00Z"))?.inputPerMillion).toBe(2);
-    // The bundled table's post-introductory rate takes over on schedule even if
-    // the published catalog is never edited again.
-    expect(pricingForModel("claude", "claude-sonnet-5", new Date("2026-09-01T00:00:00Z"))).toMatchObject({
-      inputPerMillion: 3,
-      outputPerMillion: 15,
-      note: undefined,
+    expect(pricingForModel("claude", "claude-sonnet-5", new Date("2026-10-31T23:00:00Z"))?.inputPerMillion).toBe(1);
+    // The bundled standard rate takes over on schedule even if the published
+    // catalog is never edited again.
+    expect(pricingForModel("claude", "claude-sonnet-5", new Date("2026-11-01T00:00:00Z"))).toMatchObject({
+      inputPerMillion: 2,
+      outputPerMillion: 10,
     });
+    expect(pricingForModel("claude", "claude-sonnet-5", new Date("2026-11-01T00:00:00Z"))?.note).toBeUndefined();
   });
 
   it("applies a refreshed rate to a model's dated snapshot alias", () => {
     storeCatalog({
-      "claude:claude-opus-4-8": { inputPerMillion: 7, outputPerMillion: 35, asOf: "2026-08-08" },
+      "claude:claude-opus-4-8": { inputPerMillion: 7, outputPerMillion: 35, asOf: "2026-10-01" },
     });
 
     expect(pricingForModel("claude", "claude-opus-4-8-20260101")?.inputPerMillion).toBe(7);
@@ -438,8 +596,8 @@ describe("usage ledger", () => {
   });
 
   it("reads a cached catalog that lands in storage after the first lookup", () => {
-    expect(pricingForModel("openai", "gpt-5.6-luna")?.inputPerMillion).toBe(1);
-    storeCatalog({ "openai:gpt-5.6-luna": { inputPerMillion: 9, outputPerMillion: 40, asOf: "2026-08-08" } });
+    expect(pricingForModel("openai", "gpt-5.6-luna")?.inputPerMillion).toBe(0.2);
+    storeCatalog({ "openai:gpt-5.6-luna": { inputPerMillion: 9, outputPerMillion: 40, asOf: "2026-10-01" } });
     expect(pricingForModel("openai", "gpt-5.6-luna")?.inputPerMillion).toBe(9);
   });
 
@@ -452,7 +610,7 @@ describe("usage ledger", () => {
       pricing: { inputPerMillion: 1, outputPerMillion: 5, source: "Anthropic", asOf: "2026-07-28" },
       updatedAt: 1,
     }]));
-    storeCatalog({ "claude:claude-haiku-4-5": { inputPerMillion: 4, outputPerMillion: 20, asOf: "2026-08-08" } });
+    storeCatalog({ "claude:claude-haiku-4-5": { inputPerMillion: 4, outputPerMillion: 20, asOf: "2026-10-01" } });
 
     annotateThreadUsage("legacy", { provider: "claude", model: "claude-haiku-4-5" });
 

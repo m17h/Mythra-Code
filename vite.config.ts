@@ -47,6 +47,27 @@ export default defineConfig({
       output: {
         codeSplitting: {
           groups: [{
+            // Dated usage detail loads on the first recorded usage (a dynamic
+            // import from the startup ledger) and with Settings. Being shared
+            // by both would otherwise pull it into the startup `shared` chunk.
+            name: "usageHistory",
+            test: /\/src\/lib\/usageHistory\.ts$/,
+            priority: 1,
+            includeDependenciesRecursively: false,
+          }, {
+            // Official pricing-page parsers load with Settings and the deferred
+            // launch check, and must stay out of `shared` for the same reason.
+            name: "officialPricing",
+            test: /\/src\/lib\/officialPricing\.ts$/,
+            priority: 1,
+            includeDependenciesRecursively: false,
+          }, {
+            // Historical rate evidence is shared by those two lazy modules.
+            name: "pricingEvidence",
+            test: /\/src\/lib\/pricingEvidence\.ts$/,
+            priority: 1,
+            includeDependenciesRecursively: false,
+          }, {
             name: "shared",
             minShareCount: 2,
             includeDependenciesRecursively: false,

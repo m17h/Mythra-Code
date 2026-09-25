@@ -548,12 +548,52 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .provider-dot.cursor { background: #d6d5d2; box-shadow: 0 0 0 3px rgba(214,213,210,.1); }
 .provider-default-note { margin: var(--s-3) 0 var(--s-4); padding: 0 var(--s-1); color: var(--muted); font-size: var(--fs-meta); line-height: 1.5; }
 
-.app-update-banner { min-height: 47px; display: grid; grid-template-columns: 30px minmax(0,1fr) auto; align-items: center; gap: 10px; padding: 6px 18px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--panel-2) 55%, var(--panel)); }
-.app-update-banner-icon { width: 29px; height: 29px; display: grid; place-items: center; border-radius: 8px; color: var(--green); background: var(--panel-3); box-shadow: none; }
-.app-update-banner > span:nth-child(2) { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.app-update-banner strong { font-size: var(--fs-meta); }
-.app-update-banner small { overflow: hidden; color: var(--muted); font-size: var(--fs-meta); text-overflow: ellipsis; white-space: nowrap; }
-.app-update-banner .secondary-button { min-height: 29px; padding: 0 10px; font-size: var(--fs-meta); }
+/* Update notice: a compact card floating just under the top bar. It is out of
+   flow so its arrival never moves the thread, and the empty region lets clicks
+   through everywhere except the card itself. */
+.app-update-notice-region { position: absolute; z-index: 3; top: calc(var(--topbar-h) + var(--s-2)); left: 0; right: 0; display: flex; justify-content: center; padding: 0 var(--s-4); pointer-events: none; }
+.app-update-notice { position: relative; max-width: min(600px, 100%); min-height: 40px; display: flex; align-items: center; gap: var(--s-2); padding: 5px 5px 5px 7px; border: 1px solid color-mix(in srgb, var(--green) 24%, var(--line-strong)); border-radius: var(--r-lg); color: var(--text); background: color-mix(in srgb, var(--green) 4%, var(--menu-surface)); box-shadow: var(--elev-2); pointer-events: auto; animation: update-notice-arrive 360ms var(--ease); }
+.app-update-notice-icon { width: 26px; height: 26px; flex: none; display: grid; place-items: center; border-radius: var(--r-sm); color: var(--green); background: var(--green-soft); }
+.app-update-notice-copy { min-width: 0; display: flex; align-items: baseline; gap: var(--s-2); }
+.app-update-notice-copy strong { flex: none; font-size: var(--fs-ui); font-weight: 620; letter-spacing: var(--track-tight); white-space: nowrap; }
+.app-update-notice-copy small { min-width: 0; overflow: hidden; color: var(--muted); font-size: var(--fs-meta); text-overflow: ellipsis; white-space: nowrap; }
+.app-update-notice-action { flex: none; height: 28px; margin-left: var(--s-1); padding: 0 10px; border: 1px solid color-mix(in srgb, var(--green) 38%, var(--line-strong)); border-radius: var(--r-sm); color: var(--green); background: color-mix(in srgb, var(--green) 7%, transparent); font-size: var(--fs-meta); font-weight: 600; cursor: pointer; transition: border-color var(--t-fast) ease, background var(--t-fast) ease; }
+.app-update-notice-action:hover { border-color: color-mix(in srgb, var(--green) 60%, var(--line-strong)); background: color-mix(in srgb, var(--green) 12%, transparent); }
+.app-update-notice-dismiss { width: 26px; height: 26px; flex: none; display: grid; place-items: center; padding: 0; border: 0; border-radius: var(--r-sm); color: var(--muted-2); background: transparent; cursor: pointer; transition: color var(--t-fast) ease, background var(--t-fast) ease; }
+.app-update-notice-dismiss:hover { color: var(--text); background: var(--line-quiet); }
+/* Once installing, the same card carries the progress: a counter beside the
+   copy and a hairline track along the bottom edge, so the card keeps its
+   height and position from "available" through restart. */
+.app-update-notice-meter { flex: none; display: flex; align-items: baseline; gap: var(--s-2); margin-left: var(--s-1); color: var(--muted); font-size: var(--fs-meta); font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* Each counter stacks its live value over a hidden copy of its widest value,
+   so the centred card keeps its width as the digits roll over. */
+.app-update-notice-bytes, .app-update-notice-percent { display: inline-grid; justify-items: end; }
+.app-update-notice-bytes > *, .app-update-notice-percent > * { grid-area: 1 / 1; }
+.app-update-notice-sizer { visibility: hidden; }
+.app-update-notice-percent { color: var(--text); font-weight: 600; }
+.app-update-notice-progress { position: absolute; left: var(--s-3); right: var(--s-3); bottom: 2px; height: 2px; overflow: hidden; border-radius: 999px; background: color-mix(in srgb, var(--green) 16%, transparent); }
+.app-update-notice-progress > span { position: absolute; inset: 0 auto 0 0; min-width: 2px; border-radius: inherit; background: var(--green); transition: width 180ms ease; }
+.app-update-notice-progress.indeterminate > span { width: 32%; animation: update-sweep 1.15s ease-in-out infinite; }
+.app-update-notice.failed { border-color: color-mix(in srgb, var(--red) 30%, var(--line-strong)); background: color-mix(in srgb, var(--red) 4%, var(--menu-surface)); }
+.app-update-notice.failed .app-update-notice-icon { color: var(--red); background: color-mix(in srgb, var(--red) 12%, transparent); }
+.app-update-notice.failed .app-update-notice-action { border-color: var(--line-strong); color: var(--text); background: transparent; }
+.app-update-notice.failed .app-update-notice-action:hover { border-color: color-mix(in srgb, var(--text) 30%, var(--line-strong)); background: var(--line-quiet); }
+@container chat-main (max-width: 640px) {
+  .app-update-notice-copy small { display: none; }
+  /* The percentage alone says enough on a narrow panel; an unknown size keeps
+     its byte count because that is the only measure there is. */
+  .app-update-notice-bytes:has(+ .app-update-notice-percent) { display: none; }
+}
+@keyframes update-notice-arrive { from { opacity: 0; transform: translateY(-6px) scale(.98); } }
+@keyframes update-notice-fade { from { opacity: 0; } }
+/* Reduced motion keeps a plain fade: no travel or scale, just the reveal. */
+@media (prefers-reduced-motion: reduce) {
+  .app-update-notice { animation: update-notice-fade 160ms linear; }
+  /* The track holds still: a steady, dimmed full bar means "working, amount
+     unknown" without sweeping, and spinners stop turning. */
+  .app-update-notice-progress > span, .app-update-notice-icon .spin { transition: none; animation: none; }
+  .app-update-notice-progress.indeterminate > span { width: 100%; opacity: .45; animation: none; }
+}
 
 .workspace-tools-trigger { min-width: var(--ctl-md); height: var(--ctl-md); display: flex; align-items: center; gap: 6px; padding: 0 var(--s-2); border: 1px solid transparent; border-radius: var(--r-sm); color: var(--muted); background: transparent; font-size: var(--fs-meta); letter-spacing: var(--track-tight); cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
 .workspace-tools-trigger:hover:not(:disabled) { color: var(--text); border-color: var(--line); background: rgba(255,255,255,.045); }
@@ -1143,6 +1183,8 @@ button[aria-disabled="true"] { cursor: not-allowed; }
 .settings-backdrop { opacity: 0; visibility: hidden; pointer-events: none; transition: opacity 210ms ease, visibility 0s linear 300ms, backdrop-filter 260ms ease; }
 .settings-backdrop.open { opacity: 1; visibility: visible; pointer-events: auto; animation: settings-backdrop-enter 210ms ease both; transition-delay: 0s; }
 .settings-modal { position: relative; width: min(920px, 100%); height: min(720px, calc(100vh - 60px)); max-height: calc(100vh - 40px); display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--line-strong); border-radius: var(--r-xl); background: var(--panel); box-shadow: var(--shadow); opacity: 0; transform: translateY(22px) scale(.965); filter: saturate(.72); transition: opacity 190ms ease, transform 300ms cubic-bezier(.2,.86,.24,1), filter 260ms ease, background 260ms ease; }
+/* The usage dashboard's charts and tables get a wider sheet; other sections keep the reading width. */
+.settings-modal.settings-modal-wide { width: min(1200px, 100%); height: min(880px, calc(100vh - 40px)); }
 .settings-backdrop.open .settings-modal { opacity: 1; transform: translateY(0) scale(1); filter: saturate(1); animation: settings-modal-enter 300ms cubic-bezier(.2,.86,.24,1) both; }
 .settings-backdrop.closed { animation: settings-backdrop-exit 240ms ease both; transition: none; }
 .settings-backdrop.closed .settings-modal { transform: translateY(14px) scale(.975); animation: settings-modal-exit 240ms cubic-bezier(.4,0,.8,.2) both; transition: background 260ms ease; }
@@ -1677,9 +1719,11 @@ button[aria-disabled="true"] { cursor: not-allowed; }
    actions ranged right in the order they should be considered. */
 .approval-backdrop { z-index: 60; }
 .approval-modal { width: min(520px, 100%); padding: var(--s-5); border: 1px solid var(--line-strong); border-radius: var(--r-xl); background: var(--panel); box-shadow: var(--shadow); text-align: left; }
-.approval-shield { width: 34px; height: 34px; display: grid; place-items: center; margin: 0 0 var(--s-3); border-radius: var(--r-md); color: var(--orange); background: color-mix(in srgb, var(--orange) 12%, transparent); }
+.approval-backdrop .approval-modal.approval-question-modal { width: min(624px, 100%); max-height: min(63.25dvh, 644px); }
+.approval-heading { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.approval-shield { flex: none; width: 34px; height: 34px; display: grid; place-items: center; border-radius: var(--r-md); color: var(--orange); background: color-mix(in srgb, var(--orange) 12%, transparent); }
 .approval-shield svg { width: 17px; height: 17px; }
-.approval-modal h2 { margin: 0 0 6px; font-size: var(--fs-title); font-weight: 640; letter-spacing: var(--track-display); }
+.approval-modal h2 { min-width: 0; margin: 0; font-size: var(--fs-title); font-weight: 640; letter-spacing: var(--track-display); }
 .approval-modal > p { margin: 0 0 var(--s-4); max-width: 58ch; color: var(--muted); font-size: var(--fs-ui); line-height: 1.55; text-wrap: pretty; }
 .approval-command { max-height: 190px; overflow: auto; margin: 0 0 var(--s-4); padding: var(--s-3); border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--ink-2); background: var(--field); font: 11px/1.6 var(--font-mono); text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; }
 .approval-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }

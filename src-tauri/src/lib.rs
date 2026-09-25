@@ -42,6 +42,7 @@ mod github;
 mod github_pr;
 mod openrouter_usage;
 mod persistence;
+mod pricing_sources;
 mod process_launch;
 mod project_git;
 mod run_discovery;
@@ -5015,7 +5016,12 @@ fn summarize_process_memory(
         .iter()
         .map(|process| (process.pid, process.start_time))
         .collect::<HashMap<_, _>>();
-    let mut managed = HashSet::from([host_pid]);
+    // A child can retain a stale parent PID after the host exits. Require the
+    // host itself in this enumeration before attributing any descendants.
+    let mut managed = HashSet::new();
+    if start_times.contains_key(&host_pid) {
+        managed.insert(host_pid);
+    }
     loop {
         let before = managed.len();
         for process in processes {
@@ -6495,6 +6501,7 @@ pub fn run() {
             cursor_runtime_status,
             cursor_login,
             cursor_models,
+            pricing_sources::fetch_pricing_document,
             github_status,
             github_login,
             github_repo_status,

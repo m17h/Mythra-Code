@@ -37,7 +37,9 @@ export const DURABLE_STORAGE_KEYS = [
   "kiwi.workflowRuns",
   "kiwi.costLedger",
   "kiwi.usageLedger",
+  "kiwi.usageHistory",
   "kiwi.modelPricingCatalog",
+  "kiwi.officialModelPricing",
   "kiwi.paneSizes",
   "kiwi.sidebarSplitRatio",
   "kiwi.queuedTurns",
@@ -245,6 +247,10 @@ export function migrateStorage(): void {
   // sanitizeStoredQueuedTurns preserves true so reopening cannot send an unfinished edit.
   // Version 26 adds optional project setup/check commands and scoped feedback
   // drafts. Existing projects keep their single launch command unchanged.
+  // kiwi.usageHistory (dated per-model usage detail) starts empty and is never
+  // backfilled: earlier usage stays in the ledger as unallocated all-time usage.
+  // kiwi.officialModelPricing (rates read from the providers' pricing pages)
+  // likewise starts empty; the catalog and bundled rates apply until a check.
   storeValue("kiwi.schemaVersion", STORAGE_SCHEMA_VERSION);
 }
 

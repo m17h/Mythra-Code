@@ -976,7 +976,7 @@ export function SettingsModal({
 
   return (
     <div className={`modal-backdrop settings-backdrop ${open ? "open" : "closed"}`} onMouseDown={requestClose} aria-hidden={!open} inert={!open ? true : undefined}>
-      <div ref={dialogRef} className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" onMouseDown={(event) => event.stopPropagation()}>
+      <div ref={dialogRef} className={`settings-modal${settingsSection === "usage" ? " settings-modal-wide" : ""}`} role="dialog" aria-modal="true" aria-labelledby="settings-title" onMouseDown={(event) => event.stopPropagation()}>
         <div className="settings-layout">
           <nav className="settings-nav" aria-label="Settings categories">
             <div className="settings-nav-head">
@@ -1374,8 +1374,8 @@ export function SettingsModal({
           />}
 
           {settingsSection === "usage" && <>
-            <UsageDisplaySettings value={local.usageDisplay} onChange={(usageDisplay) => setLocal({ ...local, usageDisplay })} />
             {open && <UsageDashboard onRefreshPricing={onRefreshUsagePricing} openRouterPricingError={openRouterPricingError} />}
+            <UsageDisplaySettings value={local.usageDisplay} onChange={(usageDisplay) => setLocal({ ...local, usageDisplay })} />
           </>}
 
           {settingsSection === "skills" && <SkillLibrary

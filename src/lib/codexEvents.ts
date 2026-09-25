@@ -354,7 +354,7 @@ export function routeCodexEvent(event: CodexEvent, ctx: CodexEventContext): void
         outputTokens: Number(usage.total.outputTokens ?? 0),
         reasoningOutputTokens: Number(usage.total.reasoningOutputTokens ?? 0),
         contextWindow: usage.modelContextWindow,
-      });
+      }, typeof params.turnId === "string" && params.turnId ? params.turnId : undefined);
     }
     return;
   }

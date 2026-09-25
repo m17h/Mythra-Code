@@ -1,8 +1,9 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { evaluateBudgets, measureBundles, parseArguments, summarizeDiagnostics, summarizeMetric } from "./performance-scorecard.mjs";
+import { createScorecard, evaluateBudgets, measureBundles, parseArguments, summarizeDiagnostics, summarizeMetric } from "./performance-scorecard.mjs";
 
 const temporaryDirectories = [];
 
@@ -23,7 +24,23 @@ function temporaryDist() {
     "src/App.tsx": { file: "assets/App-fixture.js", imports: ["_shared.js"], dynamicImports: ["src/Lazy.tsx"] },
     "src/Lazy.tsx": { file: "assets/Lazy-fixture.js" },
   }));
+  writeFileSync(join(vite, "performance-build.json"), JSON.stringify({ schemaVersion: 1, target: "safari13", minified: true }));
   return directory;
+}
+
+function temporaryBudgets(directory, profile = {
+  appEntryRawBytes: 1,
+  startupJsRawBytes: 1,
+  startupCssRawBytes: 1,
+  totalJsRawBytes: 1,
+}) {
+  const path = join(directory, "budgets.json");
+  writeFileSync(path, JSON.stringify({
+    schemaVersion: 1,
+    profiles: { "safari13-minified": profile },
+    reference: { release: { ref: "v-test", profile: "safari13-minified", appEntryRawBytes: 1, totalJsRawBytes: 1 } },
+  }));
+  return path;
 }
 
 afterEach(() => {
@@ -52,7 +69,7 @@ describe("performance scorecard", () => {
     expect(bundles.css.files).toBe(1);
   });
 
-  it("fails deterministic bundle budgets without hiding the actual values", async () => {
+  it("reports byte growth without failing a valid production build", async () => {
     const bundles = await measureBundles(temporaryDist());
     const evaluation = evaluateBudgets(bundles, {
       appEntryRawBytes: 1,
@@ -60,13 +77,121 @@ describe("performance scorecard", () => {
       startupCssRawBytes: 1,
       totalJsRawBytes: 1,
     });
-    expect(evaluation.passed).toBe(false);
+    expect(evaluation.passed).toBe(true);
+    expect(evaluation.policy).toBe("report-only-byte-growth");
     expect(evaluation.checks).toEqual([
-      expect.objectContaining({ metric: "appEntryRawBytes", passed: false, actual: bundles.appEntry.rawBytes }),
-      expect.objectContaining({ metric: "startupJsRawBytes", passed: false, actual: bundles.startupJavascript.rawBytes }),
-      expect.objectContaining({ metric: "startupCssRawBytes", passed: false, actual: bundles.startupStylesheets.rawBytes }),
-      expect.objectContaining({ metric: "totalJsRawBytes", passed: false, actual: bundles.javascript.rawBytes }),
+      expect.objectContaining({ metric: "appEntryRawBytes", passed: true, withinReference: false, actual: bundles.appEntry.rawBytes, deltaBytes: bundles.appEntry.rawBytes - 1 }),
+      expect.objectContaining({ metric: "startupJsRawBytes", passed: true, withinReference: false, actual: bundles.startupJavascript.rawBytes }),
+      expect.objectContaining({ metric: "startupCssRawBytes", passed: true, withinReference: false, actual: bundles.startupStylesheets.rawBytes }),
+      expect.objectContaining({ metric: "totalJsRawBytes", passed: true, withinReference: false, actual: bundles.javascript.rawBytes }),
     ]);
+  });
+
+  it("includes static raw and gzip totals with comparable release history", async () => {
+    const dist = temporaryDist();
+    const scorecard = await createScorecard({ dist, budgets: temporaryBudgets(dist), diagnostics: null });
+    expect(scorecard.staticMetrics.startupCombinedRawBytes).toBe(
+      scorecard.bundles.startupJavascript.rawBytes + scorecard.bundles.startupStylesheets.rawBytes,
+    );
+    expect(scorecard.staticMetrics.totalCombinedGzipBytes).toBe(
+      scorecard.bundles.javascript.gzipBytes + scorecard.bundles.css.gzipBytes,
+    );
+    expect(scorecard.historicalComparisons).toEqual([expect.objectContaining({
+      name: "release",
+      ref: "v-test",
+      comparisons: {
+        appEntryRawBytes: expect.objectContaining({ deltaBytes: scorecard.bundles.appEntry.rawBytes - 1 }),
+        totalJsRawBytes: expect.objectContaining({ deltaBytes: scorecard.bundles.javascript.rawBytes - 1 }),
+      },
+    })]);
+  });
+
+  it("writes a machine-readable artifact and exits successfully on growth", () => {
+    const dist = temporaryDist();
+    const budgets = temporaryBudgets(dist);
+    const output = join(dist, "scorecard.json");
+    const result = spawnSync(process.execPath, [
+      join(import.meta.dirname, "performance-scorecard.mjs"), "--dist", dist, "--budgets", budgets, "--check", "--output", output,
+    ], { encoding: "utf8" });
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain("Performance scorecard (safari13-minified, report-only growth)");
+    expect(result.stderr).toContain("startupJsRawBytes: +");
+    const scorecard = JSON.parse(readFileSync(output, "utf8"));
+    expect(scorecard.budgetEvaluation).toMatchObject({ passed: true, policy: "report-only-byte-growth" });
+    expect(scorecard.budgetEvaluation.checks.every((check) => check.withinReference === false)).toBe(true);
+  });
+
+  it("keeps an unprofiled release reference visible without inventing a comparison", async () => {
+    const dist = temporaryDist();
+    const budgets = temporaryBudgets(dist);
+    writeFileSync(budgets, JSON.stringify({
+      schemaVersion: 1,
+      profiles: { "safari13-minified": { appEntryRawBytes: 1, startupJsRawBytes: 1, startupCssRawBytes: 1, totalJsRawBytes: 1 } },
+      reference: { release: { ref: "v-test", appEntryRawBytes: 7, totalJsRawBytes: 9 } },
+    }));
+    const scorecard = await createScorecard({ dist, budgets, diagnostics: null });
+    expect(scorecard.historicalComparisons).toEqual([expect.objectContaining({
+      name: "release",
+      profile: null,
+      comparable: false,
+      referenceMetrics: { appEntryRawBytes: 7, totalJsRawBytes: 9 },
+      comparisons: {},
+    })]);
+  });
+
+  it("rejects missing profile references and unsupported build metadata", async () => {
+    const dist = temporaryDist();
+    const budgets = temporaryBudgets(dist, { appEntryRawBytes: 1 });
+    await expect(createScorecard({ dist, budgets, diagnostics: null })).rejects.toThrow("Invalid or missing performance profile reference: startupJsRawBytes");
+    writeFileSync(join(dist, ".vite", "performance-build.json"), JSON.stringify({ schemaVersion: 1, target: "unknown", minified: true }));
+    await expect(createScorecard({ dist, budgets, diagnostics: null })).rejects.toThrow("Unsupported performance build profile");
+    const result = spawnSync(process.execPath, [
+      join(import.meta.dirname, "performance-scorecard.mjs"), "--dist", dist, "--budgets", budgets, "--check",
+    ], { encoding: "utf8" });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("Unsupported performance build profile");
+  });
+
+  it("rejects a missing measured startup stylesheet", async () => {
+    const dist = temporaryDist();
+    writeFileSync(join(dist, ".vite", "manifest.json"), JSON.stringify({
+      "index.html": { file: "assets/ChatTimeline-fixture.js" },
+      "src/App.tsx": { file: "assets/App-fixture.js" },
+    }));
+    await expect(measureBundles(dist)).rejects.toThrow("missing a startup or total JavaScript/CSS measurement");
+  });
+
+  it("summarizes renderer-navigation stages without carrying private fields", () => {
+    const launch = (shellCommit, composerMounted, paintOpportunity) => ({
+      kind: "performance.rendererLaunch",
+      threadId: "private-thread",
+      payload: {
+        schemaVersion: 1,
+        startBoundary: "rendererNavigation",
+        durationMs: { shellCommit, composerMounted, paintOpportunity },
+        path: "/private/path",
+        prompt: "private prompt",
+      },
+    });
+    const summary = summarizeDiagnostics({ auditEvents: [
+      launch(10, 12, 15),
+      launch(20, null, 30),
+      launch(30, 35, 40),
+      launch(-1, Number.NaN, 50),
+      { ...launch(1, 2, 3), payload: { ...launch(1, 2, 3).payload, startBoundary: "processStart" } },
+      { ...launch(1, 2, 3), payload: { ...launch(1, 2, 3).payload, schemaVersion: 2 } },
+    ] });
+    expect(summary.rendererLaunch).toEqual({
+      startBoundary: "rendererNavigation",
+      sampleCount: 4,
+      metrics: {
+        shellCommitMs: { n: 3, p50: 20, p95: 30, maximum: 30 },
+        composerMountedMs: { n: 2, p50: 12, p95: 35, maximum: 35 },
+        paintOpportunityMs: { n: 4, p50: 30, p95: 50, maximum: 50 },
+      },
+    });
+    expect(summary.sampleCount).toBe(0);
+    expect(JSON.stringify(summary)).not.toMatch(/private-thread|\/private\/path|private prompt|processStart/);
   });
 
   it("groups real samples without carrying thread ids, paths, or free-form payloads", () => {
@@ -86,7 +211,7 @@ describe("performance scorecard", () => {
           warm: false,
           outcome: "completed",
           phase: "secret free-form phase",
-          durationMs: { timelineCommit, runtimeReady: timelineCommit + 5, total: timelineCommit + 5 },
+          durationMs: { timelineCommit, timelinePaintOpportunity: timelineCommit + 2, runtimeReady: timelineCommit + 5, total: timelineCommit + 5 },
           history: { projectedBytes: 1_000 + index, messages: 2, activities: 3 },
           render: { rows: 5, timelineDomNodes: 20, totalDomNodes: 100 },
           longTasks: { count: 0, maximumDurationMs: 0 },
@@ -102,7 +227,7 @@ describe("performance scorecard", () => {
             provider: "openai",
             outcome: "completed",
             observedDurationMs: 200,
-            streaming: { deltaCalls: 20, deltaCharacters: 500, flushes: 4, queueToFrameMaximumMs: 12, flushWorkMaximumMs: 3 },
+            streaming: { deltaCalls: 20, deltaCharacters: 500, flushes: 4, queuedFrames: 3, queueToFrameMaximumMs: 12, flushWorkMaximumMs: 3 },
             persistence: { writes: 0, failures: 0, estimatedBytes: 0, durationTotalMs: 0, durationMaximumMs: 0 },
           },
         },
@@ -121,7 +246,9 @@ describe("performance scorecard", () => {
       outcomes: { completed: 2 },
       metrics: {
         timelineCommitMs: { n: 2, p50: 10, p95: 20, maximum: 20 },
+        timelinePaintOpportunityMs: { n: 2, p50: 12, p95: 22, maximum: 22 },
         runtimeAfterVisibleMs: { n: 2, p50: 5, p95: 5, maximum: 5 },
+        runtimeAfterPaintOpportunityMs: { n: 2, p50: 3, p95: 3, maximum: 3 },
         visibleHistoryEntries: { n: 2, p50: 5, p95: 5, maximum: 5 },
       },
     });
@@ -131,6 +258,7 @@ describe("performance scorecard", () => {
       completedN: 1,
       metrics: {
         deltaCharacters: { n: 1, p50: 500, p95: 500, maximum: 500 },
+        queuedFrames: { n: 1, p50: 3, p95: 3, maximum: 3 },
         flushWorkMaximumMs: { n: 1, p50: 3, p95: 3, maximum: 3 },
       },
     });

@@ -7,7 +7,7 @@ import type { AttachmentRecord } from "../components/StudioDock";
 import { EMPTY_REVIEW_DIFF, type ReviewDiff } from "./gitDiff";
 import { isActiveAgentRecord } from "./subAgentActivity";
 import { durationForTurn, recordTurnDuration } from "./turnDurations";
-import { recordCumulativeUsage, recordUsageDelta, resetUsageLedgerCache, usageForThread, USAGE_LEDGER_KEY } from "./usageLedger";
+import { recordCumulativeUsage, recordUsageDelta, resetUsageLedgerCache, usageForThread, USAGE_HISTORY_KEY, USAGE_LEDGER_KEY } from "./usageLedger";
 import { loadStored, removeStoredValue, storeValue } from "./storage";
 import { EMPTY_THREAD_HISTORY, type ThreadHistoryState } from "./threadHistory";
 import { beginRuntimePerformanceTurn, bindRuntimePerformanceTurn, completeRuntimePerformanceTurn, recordStreamingDelta, recordStreamingFlush, resetRuntimePerformanceDiagnostics } from "./runtimePerformanceBridge";
@@ -186,8 +186,9 @@ interface TaskStoreState {
   completeTurn: (threadId: string, turnId: string | undefined, status: TaskStatus) => void;
   setTaskStatus: (threadId: string, status: TaskStatus, error?: string) => void;
   setDiff: (threadId: string, diff: ReviewDiff) => void;
-  setUsage: (threadId: string, usage: TokenUsageView | null) => void;
-  addUsage: (threadId: string, usage: TokenUsageView, eventId?: string) => void;
+  /** `turnId` attributes the usage to a prompt turn; it defaults to the active turn. */
+  setUsage: (threadId: string, usage: TokenUsageView | null, turnId?: string) => void;
+  addUsage: (threadId: string, usage: TokenUsageView, eventId?: string, turnId?: string) => void;
   upsertAgent: (threadId: string, agent: AgentRecord) => void;
   beginAgentRun: (threadId: string, startedAt?: number) => void;
   enqueueApproval: (approval: PendingApproval) => void;
@@ -1114,14 +1115,14 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     const task = state.tasks[threadId] ?? emptyTask(threadId);
     return { tasks: { ...state.tasks, [threadId]: { ...task, diff, updatedAt: Date.now() } } };
   }),
-  setUsage: (threadId, usage) => set((state) => {
+  setUsage: (threadId, usage, turnId) => set((state) => {
     const task = state.tasks[threadId] ?? emptyTask(threadId);
-    const persisted = usage ? recordCumulativeUsage(threadId, usage) : null;
+    const persisted = usage ? recordCumulativeUsage(threadId, usage, turnId ?? task.activeTurnId) : null;
     return { tasks: { ...state.tasks, [threadId]: { ...task, usage: persisted, updatedAt: Date.now() } } };
   }),
-  addUsage: (threadId, usage, eventId) => set((state) => {
+  addUsage: (threadId, usage, eventId, turnId) => set((state) => {
     const task = state.tasks[threadId] ?? emptyTask(threadId);
-    const persisted = recordUsageDelta(threadId, usage, eventId);
+    const persisted = recordUsageDelta(threadId, usage, eventId, turnId ?? task.activeTurnId);
     return { tasks: { ...state.tasks, [threadId]: { ...task, usage: persisted, updatedAt: Date.now() } } };
   }),
   upsertAgent: (threadId, agent) => set((state) => {
@@ -1259,6 +1260,7 @@ export function resetTaskStore(): void {
   reasoningStreams.clear();
   timelineSequence = 0;
   removeStoredValue(USAGE_LEDGER_KEY);
+  removeStoredValue(USAGE_HISTORY_KEY);
   resetUsageLedgerCache();
   queuedTurnsCache = {};
   transcriptCacheHighWaterBytes = DEFAULT_TRANSCRIPT_CACHE_HIGH_WATER_BYTES;
