@@ -839,6 +839,213 @@ describe("task store", () => {
     });
   });
 
+  it.each(["completed", "interrupted", "error"] as const)("seals the last queued assistant delta when a turn ends as %s before the frame flush", (status) => {
+    const store = useTaskStore.getState();
+    store.setActiveTurn("thread-a", "turn-a");
+    store.setTaskStatus("thread-a", "running");
+    store.queueAssistantDelta("thread-a", "answer", "First ");
+    store.flushDeltas();
+    store.queueAssistantDelta("thread-a", "answer", "last words");
+
+    // No item/completed arrived, and the final chunk is still in the frame queue.
+    store.completeTurn("thread-a", "turn-a", status);
+    store.flushDeltas();
+
+    const task = useTaskStore.getState().tasks["thread-a"];
+    expect(task.messages).toHaveLength(1);
+    expect(task.messages[0]).toMatchObject({
+      id: "answer",
+      text: "First last words",
+      turnId: "turn-a",
+      turnStatus: status === "error" ? "failed" : status,
+      streaming: false,
+    });
+    expect(task.status).toBe(status);
+    expect(task.lastCompletedTurnId).toBe("turn-a");
+  });
+
+  it("keeps a queued final answer when completion has no turn id and no item completion", () => {
+    const store = useTaskStore.getState();
+    store.setActiveTurn("thread-a", "turn-a");
+    store.queueAssistantDelta("thread-a", "answer", "Final answer");
+
+    store.completeTurn("thread-a", undefined, "completed");
+    store.flushDeltas();
+
+    expect(useTaskStore.getState().tasks["thread-a"].messages).toEqual([
+      expect.objectContaining({ id: "answer", text: "Final answer", turnId: "turn-a", turnStatus: "completed", streaming: false }),
+    ]);
+  });
+
+  it("seals queued text when a terminal signal has no active turn id", () => {
+    const store = useTaskStore.getState();
+    store.setTaskStatus("thread-a", "running");
+    store.queueAssistantDelta("thread-a", "answer", "Last words", "turn-lost");
+
+    store.completeTurn("thread-a", undefined, "error");
+    store.flushDeltas();
+
+    expect(useTaskStore.getState().tasks["thread-a"].messages).toEqual([
+      expect.objectContaining({ id: "answer", text: "Last words", turnId: "turn-lost", turnStatus: "failed", streaming: false }),
+    ]);
+  });
+
+  it("seals already displayed text when a terminal signal has no active turn id", () => {
+    const store = useTaskStore.getState();
+    store.setTaskStatus("thread-a", "running");
+    store.queueAssistantDelta("thread-a", "answer", "Visible words", "turn-lost");
+    store.flushDeltas();
+
+    store.completeTurn("thread-a", undefined, "error");
+
+    expect(useTaskStore.getState().tasks["thread-a"].messages[0]).toMatchObject({
+      id: "answer", text: "Visible words", turnId: "turn-lost", turnStatus: "failed", streaming: false,
+    });
+  });
+
+  it("seals only the finished turn's queued answer when a newer turn is active", () => {
+    const store = useTaskStore.getState();
+    store.setActiveTurn("thread-a", "turn-old");
+    store.queueAssistantDelta("thread-a", "old-answer", "Old answer");
+    store.setActiveTurn("thread-a", "turn-new");
+    store.queueAssistantDelta("thread-a", "new-answer", "New answer");
+
+    store.completeTurn("thread-a", "turn-old", "completed");
+    let task = useTaskStore.getState().tasks["thread-a"];
+    expect(task.activeTurnId).toBe("turn-new");
+    expect(task.messages).toEqual([
+      expect.objectContaining({ id: "old-answer", text: "Old answer", turnId: "turn-old", turnStatus: "completed", streaming: false }),
+    ]);
+
+    store.flushDeltas();
+    task = useTaskStore.getState().tasks["thread-a"];
+    expect(task.messages[0]).toMatchObject({ id: "old-answer", streaming: false });
+    expect(task.messages[1]).toMatchObject({ id: "new-answer", text: "New answer", turnId: "turn-new", streaming: true });
+  });
+
+  it("does not create a streaming row for an empty delta", () => {
+    const store = useTaskStore.getState();
+    store.setActiveTurn("thread-a", "turn-old");
+    store.queueAssistantDelta("thread-a", "empty-answer", "");
+    store.setActiveTurn("thread-a", "turn-new");
+    store.completeTurn("thread-a", "turn-old", "completed");
+    store.flushDeltas();
+
+    expect(useTaskStore.getState().tasks["thread-a"].messages).toEqual([]);
+  });
+
+  it("discards a late delta after a turn has sealed its answer", () => {
+    const store = useTaskStore.getState();
+    store.setActiveTurn("thread-a", "turn-a");
+    store.queueAssistantDelta("thread-a", "answer", "Answer");
+    store.completeTurn("thread-a", "turn-a", "completed");
+
+    store.queueAssistantDelta("thread-a", "answer", " tail");
+    store.flushDeltas();
+
+    expect(useTaskStore.getState().tasks["thread-a"].messages).toEqual([
+      expect.objectContaining({ id: "answer", text: "Answer", turnId: "turn-a", turnStatus: "completed", streaming: false }),
+    ]);
+  });
+
+  it("keeps authoritative item completion text when a late delta arrives", () => {
+    const store = useTaskStore.getState();
+    store.setActiveTurn("thread-a", "turn-a");
+    store.queueAssistantDelta("thread-a", "answer", "Draft");
+    store.completeMessage("thread-a", { id: "answer", role: "assistant", text: "Final answer" });
+    store.completeTurn("thread-a", "turn-a", "completed");
+
+    store.queueAssistantDelta("thread-a", "answer", " stale tail");
+    store.flushDeltas();
+
+    expect(useTaskStore.getState().tasks["thread-a"].messages).toEqual([
+      expect.objectContaining({ id: "answer", text: "Final answer", turnId: "turn-a", turnStatus: "completed", streaming: false }),
+    ]);
+  });
+
+  it("keeps authoritative item text when a late delta precedes turn completion", () => {
+    const store = useTaskStore.getState();
+    store.setActiveTurn("thread-a", "turn-a");
+    store.completeMessage("thread-a", { id: "answer", role: "assistant", text: "Final answer" });
+    store.queueAssistantDelta("thread-a", "answer", " stale tail");
+    store.flushDeltas();
+    store.completeTurn("thread-a", "turn-a", "completed");
+
+    expect(useTaskStore.getState().tasks["thread-a"].messages[0]).toMatchObject({
+      text: "Final answer", turnStatus: "completed", streaming: false,
+    });
+  });
+
+  it("does not append a queued stale tail to an authoritative item at turn completion", () => {
+    const store = useTaskStore.getState();
+    store.setActiveTurn("thread-a", "turn-a");
+    store.completeMessage("thread-a", { id: "answer", role: "assistant", text: "Final answer" });
+    store.queueAssistantDelta("thread-a", "answer", " stale tail");
+    store.completeTurn("thread-a", "turn-a", "completed");
+    store.flushDeltas();
+
+    expect(useTaskStore.getState().tasks["thread-a"].messages[0]).toMatchObject({
+      text: "Final answer", turnStatus: "completed", streaming: false,
+    });
+  });
+
+  it("keeps an empty assistant start streaming until its delta and authoritative completion", () => {
+    const store = useTaskStore.getState();
+    store.setActiveTurn("thread-a", "turn-a");
+    store.setTaskStatus("thread-a", "running");
+    store.startAssistantMessage("thread-a", { id: "answer", role: "assistant", text: "", turnId: "turn-a" });
+    expect(isAssistantOutputActive(useTaskStore.getState().tasks["thread-a"])).toBe(false);
+    store.queueAssistantDelta("thread-a", "answer", "Draft");
+    store.flushDeltas();
+    expect(useTaskStore.getState().tasks["thread-a"].messages[0]).toMatchObject({ text: "Draft", streaming: true });
+
+    store.completeMessage("thread-a", { id: "answer", role: "assistant", text: "Final answer", turnId: "turn-a" });
+    expect(useTaskStore.getState().tasks["thread-a"].messages[0]).toMatchObject({ text: "Final answer", streaming: false });
+  });
+
+  it("preserves a nonempty assistant start and reserves its timeline position", () => {
+    const store = useTaskStore.getState();
+    store.setActiveTurn("thread-a", "turn-a");
+    store.setTaskStatus("thread-a", "running");
+    store.startAssistantMessage("thread-a", { id: "answer", role: "assistant", text: "First ", turnId: "turn-a" });
+    const order = useTaskStore.getState().tasks["thread-a"].messages[0].timelineOrder;
+    expect(isAssistantOutputActive(useTaskStore.getState().tasks["thread-a"])).toBe(true);
+    store.queueAssistantDelta("thread-a", "answer", "draft");
+    store.flushDeltas();
+    store.completeMessage("thread-a", { id: "answer", role: "assistant", text: "First final", turnId: "turn-a" });
+
+    expect(useTaskStore.getState().tasks["thread-a"].messages[0]).toMatchObject({ text: "First final", timelineOrder: order, streaming: false });
+  });
+
+  it("does not lock or attribute a new turn when a delta names the older turn", () => {
+    const store = useTaskStore.getState();
+    store.setActiveTurn("thread-a", "turn-new");
+    store.setTaskStatus("thread-a", "running");
+    store.queueAssistantDelta("thread-a", "old-answer", "Old answer", "turn-old");
+
+    expect(isAssistantOutputActive(useTaskStore.getState().tasks["thread-a"])).toBe(false);
+    store.flushDeltas();
+    expect(useTaskStore.getState().tasks["thread-a"].messages[0]).toMatchObject({ text: "Old answer", turnId: "turn-old" });
+
+    store.completeTurn("thread-a", "turn-old", "completed");
+    const task = useTaskStore.getState().tasks["thread-a"];
+    expect(task.messages[0]).toMatchObject({ turnId: "turn-old", turnStatus: "completed", streaming: false });
+    expect(task.activeTurnId).toBe("turn-new");
+  });
+
+  it("does not revisit a thread when message completion removed its only queued delta", () => {
+    const store = useTaskStore.getState();
+    store.setActiveThread("thread-a");
+    store.queueAssistantDelta("thread-a", "answer", "partial");
+    store.completeMessage("thread-a", { id: "answer", role: "assistant", text: "authoritative" });
+    const before = useTaskStore.getState().tasks["thread-a"];
+
+    store.flushDeltas();
+
+    expect(useTaskStore.getState().tasks["thread-a"]).toBe(before);
+    expect(before.messages[0]).toMatchObject({ text: "authoritative", streaming: false });
+  });
+
   it("records a completed turn duration and restores it with hydrated history", () => {
     vi.useFakeTimers();
     try {

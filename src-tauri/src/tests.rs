@@ -4205,6 +4205,75 @@ async fn claude_control_response_keeps_a_failed_write_pending_for_retry() {
 }
 
 #[test]
+fn codex_delta_notifications_include_agent_message_chunks() {
+    assert!(is_codex_delta_notification(&json!({
+        "method": "item/agentMessage/delta",
+        "params": { "delta": "hello" }
+    })));
+    assert!(is_codex_delta_notification(&json!({
+        "method": "item/reasoning/textDelta",
+        "params": { "delta": "thinking" }
+    })));
+    assert!(!is_codex_delta_notification(&json!({
+        "id": 7,
+        "method": "item/agentMessage/delta"
+    })));
+    assert!(!is_codex_delta_notification(&json!({
+        "method": "turn/completed"
+    })));
+    assert!(!is_codex_delta_notification(&json!({
+        "method": "item/deltaMetadata"
+    })));
+}
+
+#[test]
+fn codex_delta_batch_flushes_on_deadline_or_size() {
+    let now = Instant::now();
+    let deadline = now + Duration::from_millis(25);
+
+    assert!(!codex_delta_batch_due(1, deadline, now));
+    assert!(codex_delta_batch_due(1, deadline, deadline));
+    assert!(!codex_delta_batch_due(
+        CODEX_DELTA_MAX_BATCH_SIZE - 1,
+        deadline,
+        now
+    ));
+    assert!(codex_delta_batch_due(
+        CODEX_DELTA_MAX_BATCH_SIZE,
+        deadline,
+        now
+    ));
+}
+
+#[test]
+fn codex_first_assistant_delta_is_immediate_once_per_active_item() {
+    let mut tracker = CodexFirstAssistantDeltas::default();
+    let started = json!({ "method": "turn/started", "params": { "threadId": "thread", "turn": { "id": "turn-1" } } });
+    let first = json!({ "method": "item/agentMessage/delta", "params": { "threadId": "thread", "turnId": "turn-1", "itemId": "answer", "delta": "hello" } });
+    let next = json!({ "method": "item/agentMessage/delta", "params": { "threadId": "thread", "turnId": "turn-1", "itemId": "answer", "delta": " world" } });
+
+    assert!(!tracker.observe(&started));
+    assert!(tracker.observe(&first));
+    assert!(!tracker.observe(&next));
+    assert!(!tracker.observe(&started));
+    assert!(!tracker.observe(&next));
+    assert!(tracker.observe(&json!({ "method": "item/agentMessage/delta", "params": { "threadId": "thread", "turnId": "turn-1", "itemId": "second-answer", "delta": "more" } })));
+    assert!(!tracker.observe(&json!({ "method": "item/completed", "params": { "threadId": "thread", "item": { "id": "answer", "type": "agentMessage" } } })));
+    assert!(!tracker.active_turns["thread"].1.contains("answer"));
+
+    assert!(!tracker.observe(&json!({ "method": "turn/completed", "params": { "threadId": "thread", "turn": { "id": "turn-1" } } })));
+    assert!(tracker.active_turns.is_empty());
+    assert!(!tracker.observe(&json!({ "method": "turn/started", "params": { "threadId": "thread", "turn": { "id": "turn-2" } } })));
+    let new_turn_delta = json!({ "method": "item/agentMessage/delta", "params": { "threadId": "thread", "turnId": "turn-2", "itemId": "answer", "delta": "new turn" } });
+    assert!(tracker.observe(&new_turn_delta));
+    assert!(!tracker.observe(&first));
+    assert!(!tracker.observe(&json!({ "method": "turn/completed", "params": { "threadId": "thread", "turn": { "id": "turn-1" } } })));
+    assert!(!tracker.observe(&new_turn_delta));
+    assert!(!tracker.observe(&json!({ "method": "thread/status/changed", "params": { "threadId": "thread", "status": { "type": "systemError" } } })));
+    assert!(tracker.active_turns.is_empty());
+}
+
+#[test]
 fn resolved_codex_requests_use_the_same_keys_as_pending_requests() {
     for id in [json!(42), json!("question-42")] {
         assert_eq!(

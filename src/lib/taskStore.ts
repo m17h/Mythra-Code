@@ -177,7 +177,8 @@ interface TaskStoreState {
   appendUserMessage: (threadId: string, message: ChatMessage) => void;
   setMessageSteerStatus: (threadId: string, messageId: string, status: ChatMessage["steerStatus"]) => void;
   removeMessage: (threadId: string, messageId: string) => void;
-  queueAssistantDelta: (threadId: string, itemId: string, delta: string) => void;
+  startAssistantMessage: (threadId: string, message: ChatMessage) => void;
+  queueAssistantDelta: (threadId: string, itemId: string, delta: string, turnId?: string) => void;
   queueReasoningDelta: (threadId: string, itemId: string, delta: string, source: "summary" | "content") => void;
   flushDeltas: () => void;
   completeMessage: (threadId: string, message: ChatMessage) => void;
@@ -203,7 +204,12 @@ interface TaskStoreState {
   removeTask: (threadId: string) => void;
 }
 
-const pendingDeltas = new Map<string, Map<string, string>>();
+interface PendingAssistantDelta {
+  text: string;
+  turnId?: string;
+}
+
+const pendingDeltas = new Map<string, Map<string, PendingAssistantDelta>>();
 const pendingReasoningItems = new Map<string, Set<string>>();
 const reasoningStreams = new Map<string, { summary: string; content: string }>();
 /** Activity statuses after which no further deltas belong to the row. */
@@ -454,6 +460,13 @@ function completedTurnStatus(status: TaskStatus): Turn["status"] {
   return "inProgress";
 }
 
+function isFinalizedAssistantMessage(message: ChatMessage): boolean {
+  return message.streaming === false
+    || message.turnStatus === "completed"
+    || message.turnStatus === "interrupted"
+    || message.turnStatus === "failed";
+}
+
 export const useTaskStore = create<TaskStoreState>((set, get) => ({
   activeThreadId: null,
   tasks: {},
@@ -677,29 +690,50 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       },
     };
   }),
-  queueAssistantDelta: (threadId, itemId, delta) => {
+  startAssistantMessage: (threadId, message) => set((state) => {
+    const task = state.tasks[threadId] ?? emptyTask(threadId);
+    // A delta may have reached the renderer before item/started. In that case
+    // keep its text and original timeline position.
+    if (task.messages.some((entry) => entry.id === message.id)) return state;
+    const started = withTimelineOrder<ChatMessage>({ ...message, streaming: true, turnId: message.turnId ?? task.activeTurnId });
+    const assistantOutputTurnId = task.status === "running"
+      && Boolean(started.text)
+      && started.turnId === task.activeTurnId
+      ? task.activeTurnId
+      : task.assistantOutputTurnId;
+    return { tasks: { ...state.tasks, [threadId]: {
+      ...task,
+      messages: [...task.messages, started],
+      estimatedTranscriptBytes: task.estimatedTranscriptBytes + ARRAY_SLOT_BYTES + estimateMessageBytes(started),
+      assistantOutputTurnId,
+      unread: state.activeThreadId !== threadId,
+      updatedAt: Date.now(),
+    } } };
+  }),
+  queueAssistantDelta: (threadId, itemId, delta, turnId) => {
+    if (!delta) return;
     // Delta text is frame-batched below, but the steering lock must become
     // authoritative synchronously. Otherwise a click in that frame can still
     // reach turn/steer even though final output has already started arriving.
-    const currentTask = delta ? get().tasks[threadId] : undefined;
-    if (delta) {
-      if (currentTask?.activeTurnId && currentTask.assistantOutputTurnId !== currentTask.activeTurnId) {
-        set((state) => {
-          const current = state.tasks[threadId];
-          if (!current?.activeTurnId || current.assistantOutputTurnId === current.activeTurnId) return state;
-          return {
-            tasks: {
-              ...state.tasks,
-              [threadId]: { ...current, assistantOutputTurnId: current.activeTurnId, updatedAt: Date.now() },
-            },
-          };
-        });
-      }
+    const currentTask = get().tasks[threadId];
+    const deltaTurnId = turnId ?? currentTask?.activeTurnId;
+    if (currentTask?.activeTurnId && deltaTurnId === currentTask.activeTurnId && currentTask.assistantOutputTurnId !== currentTask.activeTurnId) {
+      set((state) => {
+        const current = state.tasks[threadId];
+        if (!current?.activeTurnId || current.assistantOutputTurnId === current.activeTurnId) return state;
+        return {
+          tasks: {
+            ...state.tasks,
+            [threadId]: { ...current, assistantOutputTurnId: current.activeTurnId, updatedAt: Date.now() },
+          },
+        };
+      });
     }
-    const byItem = pendingDeltas.get(threadId) ?? new Map<string, string>();
-    byItem.set(itemId, `${byItem.get(itemId) ?? ""}${delta}`);
+    const byItem = pendingDeltas.get(threadId) ?? new Map<string, PendingAssistantDelta>();
+    const pending = byItem.get(itemId);
+    byItem.set(itemId, { text: `${pending?.text ?? ""}${delta}`, turnId: pending?.turnId ?? deltaTurnId });
     pendingDeltas.set(threadId, byItem);
-    recordStreamingDelta(threadId, delta.length, performance.now(), currentTask?.activeTurnId);
+    recordStreamingDelta(threadId, delta.length, performance.now(), deltaTurnId);
     scheduleDeltaFlush(get().flushDeltas);
   },
   queueReasoningDelta: (threadId, itemId, delta, source) => {
@@ -746,19 +780,23 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
         let estimatedTranscriptBytes = task.estimatedTranscriptBytes;
         let messages = task.messages;
         let messagesCopied = false;
-        for (const [itemId, delta] of batch.get(threadId) ?? []) {
+        for (const [itemId, pending] of batch.get(threadId) ?? []) {
+          const { text: delta } = pending;
           const index = messages.findIndex((message) => message.id === itemId);
           if (index < 0) {
-            const nextMessage = withTimelineOrder<ChatMessage>({ id: itemId, role: "assistant", text: delta, streaming: true, turnId: task.activeTurnId });
+            const nextMessage = withTimelineOrder<ChatMessage>({ id: itemId, role: "assistant", text: delta, streaming: true, turnId: pending.turnId ?? task.activeTurnId });
             messages = [...messages, nextMessage];
             estimatedTranscriptBytes += ARRAY_SLOT_BYTES + estimateMessageBytes(nextMessage);
             messagesCopied = true;
           } else {
+            const message = messages[index];
+            // item/completed supplies authoritative text before turn completion;
+            // a terminal turn also seals rows that had no item/completed event.
+            if (isFinalizedAssistantMessage(message)) continue;
             if (!messagesCopied) {
               messages = [...messages];
               messagesCopied = true;
             }
-            const message = messages[index];
             messages[index] = { ...message, text: `${message.text}${delta}`, streaming: true };
             estimatedTranscriptBytes = adjustedBytes(
               estimatedTranscriptBytes,
@@ -803,7 +841,9 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
   completeMessage: (threadId, message) => {
     // Drop any queued deltas for this item so a flush scheduled before the
     // completion event cannot re-append the tail of the finalized text.
-    pendingDeltas.get(threadId)?.delete(message.id);
+    const queuedForThread = pendingDeltas.get(threadId);
+    queuedForThread?.delete(message.id);
+    if (queuedForThread?.size === 0) pendingDeltas.delete(threadId);
     return set((state) => {
     const task = state.tasks[threadId] ?? emptyTask(threadId);
     const byId = task.messages.findIndex((entry) => entry.id === message.id);
@@ -930,6 +970,18 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
   completeTurn: (threadId, turnId, status) => {
     const previousTask = get().tasks[threadId];
     const newerTurnActive = Boolean(previousTask?.activeTurnId && turnId && previousTask.activeTurnId !== turnId);
+    const completedTurnId = turnId ?? previousTask?.activeTurnId;
+    const queuedAssistantDeltas = new Map<string, PendingAssistantDelta>();
+    const queuedForThread = pendingDeltas.get(threadId);
+    for (const [itemId, pending] of queuedForThread ?? []) {
+      const belongsToCompletedTurn = completedTurnId
+        ? (pending.turnId ? pending.turnId === completedTurnId : !newerTurnActive)
+        : !newerTurnActive;
+      if (!belongsToCompletedTurn) continue;
+      queuedAssistantDeltas.set(itemId, pending);
+      queuedForThread?.delete(itemId);
+    }
+    if (queuedForThread?.size === 0) pendingDeltas.delete(threadId);
     set((state) => {
     const task = state.tasks[threadId] ?? emptyTask(threadId);
     const completedTurnId = turnId ?? task.activeTurnId;
@@ -945,8 +997,23 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       && elapsedMs !== undefined
       ? recordTurnDuration(threadId, completedTurnId, elapsedMs)
       : undefined;
+    let messagesWithPending = task.messages;
+    if (queuedAssistantDeltas.size) {
+      messagesWithPending = [...task.messages];
+      for (const [itemId, pending] of queuedAssistantDeltas) {
+        const index = messagesWithPending.findIndex((message) => message.id === itemId);
+        if (index < 0) {
+          messagesWithPending.push(withTimelineOrder<ChatMessage>({
+            id: itemId, role: "assistant", text: pending.text, turnId: pending.turnId ?? completedTurnId,
+          }));
+        } else {
+          const message = messagesWithPending[index];
+          if (!isFinalizedAssistantMessage(message)) messagesWithPending[index] = { ...message, text: `${message.text}${pending.text}` };
+        }
+      }
+    }
     const messages = completedTurnId
-      ? task.messages.map((message) => message.turnId === completedTurnId
+      ? messagesWithPending.map((message) => message.turnId === completedTurnId
         ? {
             ...message,
             // A terminal turn cannot still have a streaming message. Sealing
@@ -957,7 +1024,10 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
             turnDurationMs: turnDurationMs ?? message.turnDurationMs,
           }
         : message)
-      : task.messages;
+      : messagesWithPending.map((message) => message.role === "assistant" && (message.streaming || queuedAssistantDeltas.has(message.id))
+        ? { ...message, streaming: false, turnStatus }
+        : message);
+    const sealedWithoutTurnId = !completedTurnId && task.messages.some((message) => message.role === "assistant" && message.streaming);
     const terminalAgentStatus = status === "completed"
       ? "completed"
       : status === "interrupted"
@@ -1009,7 +1079,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
           ...task,
           messages,
           activities,
-          estimatedTranscriptBytes: completedTurnId
+          estimatedTranscriptBytes: completedTurnId || queuedAssistantDeltas.size || sealedWithoutTurnId
             ? estimateTranscriptBytes(messages, activities)
             : task.estimatedTranscriptBytes,
           agents,

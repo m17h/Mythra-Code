@@ -76,6 +76,31 @@ describe("routeCodexEvent", () => {
     expect(useTaskStore.getState().tasks.thread.approvals).toEqual([]);
   });
 
+  it("streams an assistant item after its start event and seals its final text", () => {
+    const ctx = makeContext();
+    routeCodexEvent({ method: "turn/started", params: { threadId: "thread", turn: { id: "turn", items: [] } } }, ctx);
+    routeCodexEvent({ method: "item/started", params: { threadId: "thread", turnId: "turn", item: { id: "answer", type: "agentMessage", text: "" } } }, ctx);
+    routeCodexEvent({ method: "item/agentMessage/delta", params: { threadId: "thread", turnId: "turn", itemId: "answer", delta: "draft" } }, ctx);
+    useTaskStore.getState().flushDeltas();
+    expect(useTaskStore.getState().tasks.thread.messages[0]).toMatchObject({ id: "answer", text: "draft", streaming: true });
+
+    routeCodexEvent({ method: "item/completed", params: { threadId: "thread", turnId: "turn", item: { id: "answer", type: "agentMessage", text: "final answer" } } }, ctx);
+    expect(useTaskStore.getState().tasks.thread.messages[0]).toMatchObject({ id: "answer", text: "final answer", streaming: false });
+    expect(useTaskStore.getState().tasks.thread.messages).toHaveLength(1);
+  });
+
+  it("keeps started assistant text while later deltas extend it", () => {
+    const ctx = makeContext();
+    routeCodexEvent({ method: "turn/started", params: { threadId: "thread", turn: { id: "turn", items: [] } } }, ctx);
+    routeCodexEvent({ method: "item/started", params: { threadId: "thread", turnId: "turn", item: { id: "answer", type: "agentMessage", text: "first" } } }, ctx);
+    routeCodexEvent({ method: "item/agentMessage/delta", params: { threadId: "thread", turnId: "turn", itemId: "answer", delta: " second" } }, ctx);
+    useTaskStore.getState().flushDeltas();
+    expect(useTaskStore.getState().tasks.thread.messages[0]).toMatchObject({ id: "answer", text: "first second", streaming: true });
+
+    routeCodexEvent({ method: "item/completed", params: { threadId: "thread", turnId: "turn", item: { id: "answer", type: "agentMessage", text: "first second!" } } }, ctx);
+    expect(useTaskStore.getState().tasks.thread.messages[0]).toMatchObject({ id: "answer", text: "first second!", streaming: false });
+  });
+
   it("captures OpenRouter receipts without assigning them to the active thread or counting tokens again", () => {
     const before = usageTotals();
     const ctx = makeContext();
@@ -96,6 +121,30 @@ describe("routeCodexEvent", () => {
     useTaskStore.getState().flushDeltas();
     expect(useTaskStore.getState().tasks["thread-b"]?.messages[0]?.text).toBe("hello");
     expect(useTaskStore.getState().tasks["thread-active"]?.messages ?? []).toHaveLength(0);
+  });
+
+  it("keeps a late delta attached to its stated turn after a newer turn starts", () => {
+    const ctx = makeContext();
+    const store = useTaskStore.getState();
+    store.setActiveTurn("thread", "turn-new");
+    store.setTaskStatus("thread", "running");
+
+    routeCodexEvent({ method: "item/agentMessage/delta", params: {
+      threadId: "thread", turnId: "turn-old", itemId: "late-answer", delta: "late text",
+    } }, ctx);
+    expect(useTaskStore.getState().tasks.thread.assistantOutputTurnId).toBeUndefined();
+    store.flushDeltas();
+    expect(useTaskStore.getState().tasks.thread.messages[0]).toMatchObject({
+      id: "late-answer", turnId: "turn-old", streaming: true,
+    });
+
+    store.completeTurn("thread", "turn-old", "completed");
+    const task = useTaskStore.getState().tasks.thread;
+    expect(task.messages[0]).toMatchObject({
+      id: "late-answer", turnId: "turn-old", streaming: false, turnStatus: "completed",
+    });
+    expect(task.activeTurnId).toBe("turn-new");
+    expect(task.status).toBe("running");
   });
 
   it("normalizes a pushed rate limit update through the shared parser", () => {
@@ -174,6 +223,23 @@ describe("routeCodexEvent", () => {
     expect(useTaskStore.getState().statuses["thread-a"]).toBe("running");
     routeCodexEvent({ method: "thread/status/changed", params: { threadId: "thread-a", status: { type: "systemError" } } }, ctx);
     expect(useTaskStore.getState().statuses["thread-a"]).toBe("error");
+  });
+
+  it("seals queued assistant text when the runtime reports a system error", () => {
+    const ctx = makeContext();
+    const store = useTaskStore.getState();
+    store.setActiveTurn("thread-a", "turn-a");
+    store.setTaskStatus("thread-a", "running");
+    routeCodexEvent({ method: "item/agentMessage/delta", params: { threadId: "thread-a", turnId: "turn-a", itemId: "answer", delta: "partial answer" } }, ctx);
+
+    routeCodexEvent({ method: "thread/status/changed", params: { threadId: "thread-a", status: { type: "systemError" } } }, ctx);
+
+    const task = useTaskStore.getState().tasks["thread-a"];
+    expect(task.activeTurnId).toBeUndefined();
+    expect(task.messages).toEqual([expect.objectContaining({
+      id: "answer", text: "partial answer", turnId: "turn-a", streaming: false, turnStatus: "failed",
+    })]);
+    expect(task.status).toBe("error");
   });
 
   it("marks turn lifecycle and only reports status for the active thread", () => {

@@ -3097,13 +3097,6 @@ export default function App() {
         if (Date.now() < suppressRuntimeRecoveryUntilRef.current) return;
         setStatus("Runtime disconnected — reconnecting");
         const store = useTaskStore.getState();
-        for (const [threadId, threadStatus] of Object.entries(store.statuses)) {
-          if ((threadStatus === "running" || threadStatus === "starting") && !isLocalSubscriptionThread(knownThreadsRef.current?.[threadId])) {
-            store.setActiveTurn(threadId, undefined);
-            store.setTaskStatus(threadId, "error", "The Codex runtime disconnected during this task.");
-            void finalizeRunCheckpoint(threadId, undefined, "interrupted");
-          }
-        }
         // Queued Codex approvals reference request ids the dead process owned.
         // Every response to them would fail after the respawn, leaving an
         // undismissable modal — drop them, and say so in the thread.
@@ -3122,6 +3115,15 @@ export default function App() {
             detail: "The Codex runtime disconnected, so its queued approval requests can no longer be answered. The model will ask again if it still needs permission.",
           });
           void auditEvent("approval.droppedOnRuntimeRestart", { count: codexApprovals.length }, task.threadId).catch(() => {});
+        }
+        for (const [threadId, threadStatus] of Object.entries(store.statuses)) {
+          if ((threadStatus === "running" || threadStatus === "starting") && !isLocalSubscriptionThread(knownThreadsRef.current?.[threadId])) {
+            // The process cannot send turn/completed after disconnecting.
+            // Seal its queued text while the active turn id is still known.
+            store.completeTurn(threadId, store.tasks[threadId]?.activeTurnId, "error");
+            store.setTaskStatus(threadId, "error", "The Codex runtime disconnected during this task.");
+            void finalizeRunCheckpoint(threadId, undefined, "interrupted");
+          }
         }
         setStartingDraftTurn(false);
         void rpc("model/list", { limit: 1 })
