@@ -5,6 +5,10 @@
 /* Offscreen measurement node for rendered reply text; never visible. */
 .feedback-text-probe { position: fixed; top: 0; left: -10000px; width: 640px; opacity: 0; pointer-events: none; white-space: normal; }
 
+/* Keep selectable diff geometry live only while its selection action is open.
+   The long-file paint savings remain enabled the rest of the time. */
+.diff-file .diff-view[data-feedback-selection-active] { content-visibility: visible; contain-intrinsic-size: none; }
+
 /* Code-copy labels never become part of a quoted reply. */
 .message-feedback-source { display: contents; }
 [data-feedback-message] .code-copy { -webkit-user-select: none; user-select: none; }
