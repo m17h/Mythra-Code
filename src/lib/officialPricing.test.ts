@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ANTHROPIC_PRICING_PAGE, CURSOR_PRICING_PAGE, OPENAI_PRICING_PAGE } from "../test/pricingPages";
 import {
   claudeModelId, observeRates, officialPricingStatus, parseAnthropicPricing, parseCursorPricing, parseOpenAIPricing, recordOfficialPricingResult,
@@ -8,6 +8,8 @@ import {
   annotateThreadUsage, MODEL_PRICING_CATALOG_KEY, OFFICIAL_PRICING_KEY, pricingForModel, pricingModelKeys,
   recordUsageDelta, resetUsageLedgerCache, updateCursorModelNames, usageTotals,
 } from "./usageLedger";
+import { historicalPricing } from "./pricingEvidence";
+import { resetStorageMemoryForTests } from "./storage";
 
 const DAY = "2026-10-02";
 const NOW = Date.parse("2026-10-02T12:00:00Z");
@@ -28,7 +30,12 @@ const expectOk = <T extends { ok: boolean }>(result: T) => {
 
 beforeEach(() => {
   resetUsageLedgerCache();
+  resetStorageMemoryForTests();
   localStorage.clear();
+});
+afterEach(() => {
+  vi.restoreAllMocks();
+  resetStorageMemoryForTests();
 });
 
 describe("official price observations", () => {
@@ -232,6 +239,33 @@ describe("official rate precedence", () => {
     recordOfficialPricingResult("openai", { ok: true, models: { "gpt-6-sol": { input: 2, output: 10, asOf: DAY } } }, NOW);
     expect(pricingForModel("openai", "gpt-7-nova")).toMatchObject({ inputPerMillion: 3, asOf: "2026-10-01" });
     expect(officialPricingStatus().find((status) => status.source === "openai")?.models).toBe(1);
+  });
+
+  it("counts only models on the latest successful page when checks share a day", () => {
+    const rates = Object.fromEntries(Array.from({ length: 10 }, (_, index) => [
+      `gpt-test-${index}`, { input: 1, output: 2, asOf: DAY },
+    ]));
+    recordOfficialPricingResult("openai", { ok: true, models: rates }, NOW);
+    recordOfficialPricingResult("openai", { ok: true, models: Object.fromEntries(Object.entries(rates).slice(0, 6)) }, NOW + 60_000);
+    expect(officialPricingStatus().find((status) => status.source === "openai")?.models).toBe(6);
+    expect(pricingForModel("openai", "gpt-test-9")?.inputPerMillion).toBe(1);
+  });
+
+  it("uses fresh rates and evidence when localStorage cannot accept a pricing write", () => {
+    // Both read-side caches have already seen an empty official snapshot.
+    expect(pricingForModel("openai", "gpt-7-nova")).toBeUndefined();
+    expect(historicalPricing("openai", "gpt-7-nova", NOW, NOW)).toBeUndefined();
+    const setItem = localStorage.setItem.bind(localStorage);
+    vi.spyOn(localStorage, "setItem").mockImplementation((key, value) => {
+      if (key === OFFICIAL_PRICING_KEY) throw new DOMException("full", "QuotaExceededError");
+      setItem(key, value);
+    });
+    recordOfficialPricingResult("openai", { ok: true, models: { "gpt-7-nova": { input: 3, output: 12, asOf: DAY } } }, NOW);
+    expect(officialPricingStatus().find((status) => status.source === "openai")?.models).toBe(1);
+    expect(pricingForModel("openai", "gpt-7-nova")?.inputPerMillion).toBe(3);
+    expect(historicalPricing("openai", "gpt-7-nova", NOW, NOW)).toMatchObject({
+      basis: "observed", pricing: { inputPerMillion: 3 },
+    });
   });
 
   it("drops damaged stored entries on their own", () => {

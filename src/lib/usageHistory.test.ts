@@ -334,11 +334,45 @@ describe("provider event attribution", () => {
     expect(usageDetail(null).totals).toMatchObject({ totalTokens: 390, unpricedTokens: 0, turns: 1 });
   });
 
-  it("keeps a resumed session snapshot's unmatched remainder unattributed", () => {
+  it("prices a resumed turn whose single-model session snapshot contains it", () => {
+    // Shapes captured from Claude Code 2.1.283: after --resume, result.usage
+    // covers the turn while modelUsage is cumulative for the session.
+    const send = (turnId: string, message: Record<string, unknown>) => routeClaudeEvent({ threadId: "claude", turnId, message }, claudeContext);
+    const usage = (output: number, write: number, read: number) => ({
+      input_tokens: 10, cache_creation_input_tokens: write, cache_read_input_tokens: read, output_tokens: output,
+      cache_creation: { ephemeral_1h_input_tokens: write, ephemeral_5m_input_tokens: 0 },
+    });
+    send("turn-1", { type: "assistant", message: { id: "m1", model: "claude-opus-5-5", content: [], usage: usage(4, 7889, 13689) } });
+    send("turn-1", { type: "result", subtype: "success", usage: usage(42, 7889, 13689), modelUsage: {
+      "claude-opus-5-5": { inputTokens: 10, outputTokens: 42, cacheReadInputTokens: 13689, cacheCreationInputTokens: 7889 },
+    } });
+    send("turn-2", { type: "assistant", message: { id: "m2", model: "claude-opus-5-5", content: [], usage: usage(3, 86, 21578) } });
+    send("turn-2", { type: "result", subtype: "success", usage: usage(33, 86, 21578), modelUsage: {
+      "claude-opus-5-5": { inputTokens: 20, outputTokens: 75, cacheReadInputTokens: 35267, cacheCreationInputTokens: 7975 },
+    } });
+    const models = usageDetail(null).providers[0].models;
+    expect(models.map((model) => model.model)).toEqual(["claude-opus-5-5"]);
+    expect(models[0]).toMatchObject({ outputTokens: 75, cacheWriteTokens: 7975, cacheWrite1hTokens: 7975, unpricedTokens: 0, turns: 2 });
+    expect(usageTotals()).toMatchObject({ outputTokens: 75, unpricedTokens: 0 });
+  });
+
+  it("does not assign a resumed remainder to a model the session snapshot lacks", () => {
+    const send = (message: Record<string, unknown>) => routeClaudeEvent({ threadId: "claude", turnId: "turn-resumed", message }, claudeContext);
+    send({ type: "assistant", message: { id: "opus-msg", model: "claude-opus-5-5", content: [], usage: { input_tokens: 100, output_tokens: 10 } } });
+    send({ type: "result", subtype: "success", usage: { input_tokens: 100, output_tokens: 40 }, modelUsage: {
+      "claude-sonnet-5": { inputTokens: 600, outputTokens: 200, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
+    } });
+    const models = usageDetail(null).providers[0].models;
+    expect(models.find((model) => model.model === "unattributed")).toMatchObject({ totalTokens: 30, outputTokens: 30, unpricedTokens: 30 });
+    expect(models.find((model) => model.model === "claude-sonnet-5")).toBeUndefined();
+  });
+
+  it("keeps a resumed multi-model session snapshot's unmatched remainder unattributed", () => {
     const send = (message: Record<string, unknown>) => routeClaudeEvent({ threadId: "claude", turnId: "turn-resumed", message }, claudeContext);
     send({ type: "assistant", message: { id: "opus-msg", model: "claude-opus-5-5", content: [], usage: { input_tokens: 100, output_tokens: 10 } } });
     send({ type: "result", subtype: "success", usage: { input_tokens: 100, output_tokens: 40 }, modelUsage: {
       "claude-opus-5-5": { inputTokens: 600, outputTokens: 200, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
+      "claude-sonnet-5": { inputTokens: 300, outputTokens: 100, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
     } });
     const models = usageDetail(null).providers[0].models;
     expect(models.find((model) => model.model === "claude-opus-5-5")).toMatchObject({ totalTokens: 110, outputTokens: 10 });

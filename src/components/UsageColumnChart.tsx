@@ -20,23 +20,27 @@ export function UsageColumnChart({ periods, series, format, describe }: {
   /** Readout text for one period: the hovered one, else the highest. */
   describe: (index: number) => string;
 }) {
-  const [hovered, setHovered] = useState<number | null>(null);
+  // A range or grouping change can replace the period list while the pointer
+  // remains over the chart. Keep the label with the index so an old slot cannot
+  // describe a different period (or an index that no longer exists).
+  const [hovered, setHovered] = useState<{ index: number; label: string } | null>(null);
   const max = Math.max(0, ...series.flatMap((item) => item.values.map((value) => value ?? 0)));
   let peak = 0;
   periods.forEach((_, index) => {
     const total = (i: number) => series.reduce((sum, item) => sum + (item.values[i] ?? 0), 0);
     if (total(index) > total(peak)) peak = index;
   });
-  const active = hovered ?? peak;
+  const hoveredIndex = hovered && periods[hovered.index] === hovered.label ? hovered.index : null;
+  const active = hoveredIndex ?? peak;
   const ticks = periods.length <= 2 ? periods.map((_, index) => index) : [0, Math.floor((periods.length - 1) / 2), periods.length - 1];
   return <div className="usage-chart" data-series={series.length}>
-    <p className="usage-chart-readout" aria-hidden="true">{max > 0 ? `${hovered === null ? "Highest · " : ""}${describe(active)}` : "Nothing recorded in this range"}</p>
+    <p className="usage-chart-readout" aria-hidden="true">{max > 0 && periods.length > 0 ? `${hoveredIndex === null ? "Highest · " : ""}${describe(active)}` : "Nothing recorded in this range"}</p>
     <div className="usage-chart-plot" aria-hidden="true" onPointerLeave={() => setHovered(null)}>
       <span className="usage-chart-axis top">{format(max)}</span>
       <span className="usage-chart-axis bottom">0</span>
       <div className="usage-chart-columns">
-        {periods.map((label, index) => <div key={label + index} className={`usage-chart-slot${hovered === index ? " hovered" : ""}`}
-          onPointerEnter={() => setHovered(index)}>
+        {periods.map((label, index) => <div key={label + index} className={`usage-chart-slot${hoveredIndex === index ? " hovered" : ""}`}
+          onPointerEnter={() => setHovered({ index, label })}>
           {series.map((item, seriesIndex) => {
             const value = item.values[index];
             const height = max > 0 && value ? Math.max(2, value / max * 100) : 0;

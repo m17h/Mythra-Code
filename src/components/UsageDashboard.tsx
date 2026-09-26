@@ -28,6 +28,7 @@ const COMPACT = new Intl.NumberFormat(undefined, { notation: "compact", maximumF
 /** Headline figures abbreviate large counts; tables keep exact values. */
 const compact = (value: number) => (Math.abs(value) < 10_000 ? number(value) : COMPACT.format(Math.round(value)));
 const estimate = (value: number) => `≈ ${formatEstimatedCost(value)}`;
+const adjustment = (value: number) => `≈ ${value < 0 ? "−" : "+"}${formatEstimatedCost(Math.abs(value))}`;
 const percent = (part: number, whole: number) => {
   const share = whole > 0 ? part / whole * 100 : 0;
   // A real but tiny share is never shown as none.
@@ -278,9 +279,9 @@ function ComponentTable({ buckets, earlier, per, caption, writesUnreported = fal
     })}</tbody>
     <tfoot>
       {breakdown.earlier && <tr className="usage-earlier-row">
-        <th scope="row">Earlier usage<small>Cost not split by type</small></th>
-        <td><strong>{number(breakdown.earlier.tokens)}</strong><small>included above</small></td>
-        <td>{breakdown.earlier.priced ? <strong>{estimate(breakdown.earlier.cost)}</strong> : <span className="usage-none">Unpriced</span>}</td>
+        <th scope="row">{breakdown.earlier.tokens ? "Earlier usage" : "Pricing adjustment"}<small>Cost not split by type</small></th>
+        <td><strong>{number(breakdown.earlier.tokens)}</strong><small>{breakdown.earlier.tokens ? "included above" : "tokens unchanged"}</small></td>
+        <td>{breakdown.earlier.priced ? <strong>{breakdown.earlier.tokens && breakdown.earlier.cost >= 0 ? estimate(breakdown.earlier.cost) : adjustment(breakdown.earlier.cost)}</strong> : <span className="usage-none">Unpriced</span>}</td>
         <td>—</td>
       </tr>}
       <tr>
@@ -374,7 +375,9 @@ function ProvidersCard({ providers, allTime }: { providers: ProviderUsageSummary
       <tbody>{rows.map(({ provider, tokens, cost, priced, unpriced }) => {
         const notes = [
           provider.provider === "unknown" && "No saved provider label",
-          allTime && provider.earlier && (provider.models.length ? "Includes earlier usage" : "Earlier usage only"),
+          allTime && provider.earlier && (provider.earlier.totalTokens > 0
+            ? (provider.models.length ? "Includes earlier usage" : "Earlier usage only")
+            : "Includes pricing adjustment"),
           priced && unpriced > 0 && `${compact(unpriced)} tokens unpriced`,
         ].filter(Boolean);
         return <tr key={provider.provider}>
@@ -812,7 +815,9 @@ export function UsageDashboard({ onRefreshPricing, openRouterPricingError }: {
     : range && trackedFrom && range.from < trackedFrom
       ? `Dated detail begins ${formatDay(trackedFrom)}. Earlier usage is only in All time and can’t be split by date or model.`
       : !range && unallocated && trackedFrom
-          ? `Dated detail began ${formatDay(trackedFrom)}. ${number(unallocated.totalTokens)} earlier tokens are counted in totals and under their provider where it’s known, but can’t be split by date, model, or prompt.`
+          ? unallocated.totalTokens === 0 && unallocated.estimatedCost !== 0
+            ? "A pricing adjustment is included in all-time and provider cost but has not reached dated detail. Cost by model and date may differ until those records agree."
+            : `Dated detail began ${formatDay(trackedFrom)}. ${number(unallocated.totalTokens)} earlier tokens are counted in totals and under their provider where it’s known, but can’t be split by date, model, or prompt.`
           : null;
 
   const tabKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {

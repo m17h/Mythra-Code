@@ -127,6 +127,23 @@ describe("usage dashboard layout", () => {
     expect(getComputedStyle(row).outlineStyle).not.toBe("none");
   });
 
+  it("keeps the trend readout valid when a hovered 30-day slot disappears after changing range", async () => {
+    const { view } = mount(640);
+    const chart = view.container.querySelector<HTMLElement>(".usage-trend .usage-chart")!;
+    const slots = chart.querySelectorAll<HTMLElement>(".usage-chart-slot");
+    expect(slots).toHaveLength(30);
+    fireEvent.pointerEnter(slots[slots.length - 1]);
+
+    const thirty = view.getByRole("radio", { name: "30 days" });
+    thirty.focus();
+    await userEvent.keyboard("{ArrowRight}");
+
+    expect(view.getByRole("radio", { name: "All time" })).toHaveAttribute("aria-checked", "true");
+    const remaining = chart.querySelectorAll<HTMLElement>(".usage-chart-slot");
+    expect(remaining.length).toBeLessThan(slots.length);
+    expect(chart.querySelector(".usage-chart-readout")).toHaveTextContent("Highest · ");
+  });
+
   it.each([928, 320])("refreshes official pricing from the header and lays out each source's result at %ipx", async (width) => {
     const fetchDocument = async (source: string) => {
       if (source === "anthropic") throw new Error("The pricing page returned HTTP 503");

@@ -163,8 +163,28 @@ function recordAssistantUsage(threadId: string, turnId: string, messageId: strin
   }
 }
 
+/** After --resume, modelUsage is cumulative for the session while result.usage
+ * covers only this turn (observed with Claude Code 2.1.283). A snapshot naming
+ * one model, containing every component of the turn, and agreeing with every
+ * model observed during the turn still proves which model owns the remainder.
+ * Multi-model sessions cannot be split this way and stay unattributed. */
+function sessionSnapshotRemainder(byModel: Map<string, TokenUsageView>, total: TokenUsageView, partial?: ClaudePartialUsage): Map<string, TokenUsageView> | null {
+  if (byModel.size !== 1) return null;
+  const [model, session] = [...byModel][0];
+  const uncached = (usage: TokenUsageView) => usage.inputTokens - usage.cachedInputTokens - (usage.cacheWriteInputTokens ?? 0);
+  if (uncached(session) < uncached(total) || session.outputTokens < total.outputTokens
+    || session.cachedInputTokens < total.cachedInputTokens
+    || (session.cacheWriteInputTokens ?? 0) < (total.cacheWriteInputTokens ?? 0)) return null;
+  if ([...(partial?.byModel.keys() ?? [])].some((observed) => observed !== model)) return null;
+  const rest = partial ? remainingUsage(total, partial.usage) : total;
+  const pending1h = (total.cacheWrite1hInputTokens ?? 0) - (partial?.usage.cacheWrite1hInputTokens ?? 0);
+  if (pending1h < 0 || pending1h > (rest.cacheWriteInputTokens ?? 0)) return null;
+  return new Map([[model, { ...rest, cacheWrite1hInputTokens: pending1h }]]);
+}
+
 /** Claude's modelUsage may be a session snapshot rather than this turn. Accept
- * its model labels only when every token component reconciles with result.usage.
+ * its model labels when each component reconciles with result.usage, or when a
+ * single-model session snapshot safely contains the whole turn.
  * The cache-write duration is absent from modelUsage, so an unobserved 1-hour
  * remainder can only be assigned when exactly one model has unrecorded writes. */
 function reconciledModelRemainder(value: unknown, total: TokenUsageView, partial?: ClaudePartialUsage): Map<string, TokenUsageView> | null {
@@ -199,7 +219,7 @@ function reconciledModelRemainder(value: unknown, total: TokenUsageView, partial
   });
   if (combined.inputTokens !== total.inputTokens || combined.outputTokens !== total.outputTokens
     || combined.cachedInputTokens !== total.cachedInputTokens
-    || combined.cacheWriteInputTokens !== total.cacheWriteInputTokens) return null;
+    || combined.cacheWriteInputTokens !== total.cacheWriteInputTokens) return sessionSnapshotRemainder(byModel, total, partial);
 
   const remainder = new Map<string, TokenUsageView>();
   for (const [model, usage] of byModel) {

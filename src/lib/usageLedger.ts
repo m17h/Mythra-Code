@@ -1,6 +1,6 @@
 import type { TokenUsageView } from "../components/StudioDock";
 import type { Provider } from "../types";
-import { loadStored, storeValue } from "./storage";
+import { loadStored, readStoredRaw, storeValue } from "./storage";
 import type { UsageHistoryDelta } from "./usageHistory";
 
 export const USAGE_LEDGER_KEY = "kiwi.usageLedger";
@@ -299,12 +299,7 @@ export function parseModelPricingCatalog(value: unknown, official = false): Mode
  * after this module first read storage (native hydration, another window, the
  * official refresh) is picked up instead of latching the first answer forever. */
 function storedCatalog(key: typeof MODEL_PRICING_CATALOG_KEY | typeof OFFICIAL_PRICING_KEY): ModelPricingCatalog | null {
-  let raw: string | null = null;
-  try {
-    raw = localStorage.getItem(key);
-  } catch {
-    // Privacy-mode storage failures leave the bundled table as the fallback.
-  }
+  const raw = readStoredRaw(key);
   const cached = catalogCache.get(key);
   if (cached && raw === cached.raw) return cached.catalog;
   const catalog = parseModelPricingCatalog(loadStored<unknown>(key, null), key === OFFICIAL_PRICING_KEY);
@@ -602,8 +597,7 @@ let repricingQueued = false;
 export function requestUsageRepricing(): void {
   if (repricingQueued) return;
   if (!historySink) {
-    let stored: string | null = null;
-    try { stored = localStorage.getItem(USAGE_HISTORY_KEY); } catch { /* Nothing to reprice. */ }
+    const stored = readStoredRaw(USAGE_HISTORY_KEY);
     if (!stored) return;
   }
   repricingQueued = true;

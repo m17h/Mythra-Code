@@ -3862,8 +3862,22 @@ export default function App() {
 
   const exportTranscript = async () => {
     if (!activeThread) return;
-    const task = useTaskStore.getState().tasks[activeThread.id];
-    if (!task) return;
+    const openedTask = useTaskStore.getState().tasks[activeThread.id];
+    if (!openedTask) return;
+    // Output keeps streaming while the Save dialog and the durable history
+    // read are pending, so read the live task only after each wait. The merge
+    // below lets live entries override durable ones, which is correct only
+    // when the live copy is the newer of the two.
+    const liveTask = () => {
+      useTaskStore.getState().flushDeltas();
+      const current = useTaskStore.getState().tasks[activeThread.id];
+      if (!current) throw new Error("This conversation is no longer available to export");
+      // Eviction releases an idle transcript's rows while the dialog is open;
+      // it only evicts saved, non-running threads, so the opened copy is final.
+      const evicted = !current.messages.length && !current.activities.length
+        && (openedTask.messages.length > 0 || openedTask.activities.length > 0);
+      return evicted ? openedTask : current;
+    };
     const label = activeThread.name || activeThread.preview || "Mythra Code thread";
     try {
       const path = await save({
@@ -3878,6 +3892,7 @@ export default function App() {
       });
       if (!path) return;
       const { buildTranscriptMarkdown, mergeTranscriptHistory } = await import("./lib/transcript");
+      let task = liveTask();
       let messages = task.messages;
       let activities = task.activities;
       if (task.history.hasMore) {
@@ -3886,6 +3901,7 @@ export default function App() {
             ? await loadClaudeTranscript(activeThread.id)
             : await loadCursorTranscript(activeThread.id);
           if (!complete) throw new Error("The complete local transcript is no longer available");
+          task = liveTask();
           ({ messages, activities } = mergeTranscriptHistory(
             complete.messages,
             complete.activities,
@@ -3897,6 +3913,7 @@ export default function App() {
           const durable = timelineFromTurns(complete.thread.turns, {
             includeContextCompaction: providerFromThread(activeThread, projectDefaultProvider) === "openai",
           });
+          task = liveTask();
           ({ messages, activities } = mergeTranscriptHistory(
             durable.messages,
             durable.activities,

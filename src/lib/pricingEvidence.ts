@@ -1,4 +1,4 @@
-import { loadStored } from "./storage";
+import { loadStored, readStoredRaw } from "./storage";
 import {
   evidenceSources, finiteRate, OFFICIAL_PRICING_KEY, pricingSource, withClaudeHourCacheRate,
   type ModelPricing, type UsageProvider,
@@ -57,8 +57,7 @@ export function parseRateEpochs(raw: unknown): Record<string, RateEpoch[]> {
 }
 
 function officialEpochs(): Record<string, RateEpoch[]> {
-  let raw: string | null = null;
-  try { raw = localStorage.getItem(OFFICIAL_PRICING_KEY); } catch { /* No stored evidence. */ }
+  const raw = readStoredRaw(OFFICIAL_PRICING_KEY);
   if (epochCache && epochCache.raw === raw) return epochCache.epochs;
   const stored = loadStored<{ epochs?: unknown } | null>(OFFICIAL_PRICING_KEY, null);
   epochCache = { raw, epochs: parseRateEpochs(stored?.epochs) };

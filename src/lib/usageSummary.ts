@@ -146,8 +146,10 @@ function remainderOf(ledger: UsageAmounts, detail: UsageComponentAmounts): Usage
   };
   const cost = ledger.estimatedCost - componentCost(detail);
   // Floating-point residue from summing the same deltas two ways is not usage.
-  rest.estimatedCost = cost > 1e-9 ? cost : 0;
-  return rest.totalTokens > 0 || rest.pricedTokens + rest.unpricedTokens > 0 ? rest : null;
+  rest.estimatedCost = Math.abs(cost) > 1e-9 ? cost : 0;
+  // A ledger-first pricing correction can change only cost in either
+  // direction. Keep its signed difference until dated detail catches up.
+  return rest.totalTokens > 0 || rest.pricedTokens + rest.unpricedTokens > 0 || rest.estimatedCost !== 0 ? rest : null;
 }
 
 /**
@@ -193,8 +195,7 @@ function exceedsLedger(ledger: UsageAmounts, detail: UsageComponentAmounts): boo
     || over(detail.outputTokens, ledger.outputTokens)
     || over(detail.cacheReadTokens, ledger.cachedInputTokens)
     || over(detail.cacheWriteTokens, ledger.cacheWriteInputTokens)
-    || over(detail.uncachedInputTokens + detail.cacheReadTokens + detail.cacheWriteTokens, ledger.inputTokens)
-    || over(componentCost(detail), ledger.estimatedCost);
+    || over(detail.uncachedInputTokens + detail.cacheReadTokens + detail.cacheWriteTokens, ledger.inputTokens);
 }
 
 /** Ledger totals in the page's shape. The ledger knows cost only in total. */
@@ -342,8 +343,8 @@ export function componentBreakdown(buckets: Iterable<UsageComponentAmounts>, ear
       else row.costedTokens += tokens;
     });
   }
-  const earlierPart = earlier && earlier.totalTokens > 0
-    ? { tokens: earlier.totalTokens, cost: earlier.estimatedCost, priced: earlier.pricedTokens > 0 }
+  const earlierPart = earlier && (earlier.totalTokens > 0 || earlier.estimatedCost !== 0)
+    ? { tokens: earlier.totalTokens, cost: earlier.estimatedCost, priced: earlier.pricedTokens > 0 || earlier.estimatedCost !== 0 }
     : null;
   return {
     rows,

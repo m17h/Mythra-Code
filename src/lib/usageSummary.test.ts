@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { emptyComponentAmounts, type UsageBucket, type UsageComponentAmounts } from "./usageHistory";
-import { componentBreakdown, promptAverages, usagePeriods, weekStart, type UsageSelectionTotals } from "./usageSummary";
+import { combineUsageDetail, componentBreakdown, promptAverages, usagePeriods, weekStart, type UsageSelectionTotals } from "./usageSummary";
 
 function bucket(day: string, model: string, amounts: Partial<UsageComponentAmounts>): UsageBucket {
   const value = { day, provider: "claude" as const, model, ...emptyComponentAmounts(), ...amounts };
@@ -77,6 +77,52 @@ describe("cost by billable part", () => {
     const input = rows.find((row) => row.id === "input")!;
     expect(input).toMatchObject({ tokens: 600, costedTokens: 100, partlyCostedTokens: 200 });
     expect(rows.find((row) => row.id === "cacheRead")).toMatchObject({ tokens: 500, costedTokens: 400, partlyCostedTokens: 0 });
+  });
+});
+
+describe("all-time ledger reconciliation", () => {
+  it("keeps a cost-only ledger correction when dated detail is one write behind", () => {
+    const detail = priced("2026-09-20", "opus", 1);
+    const amounts = {
+      inputTokens: 550, cachedInputTokens: 400, cacheWriteInputTokens: 50,
+      outputTokens: 20, reasoningOutputTokens: 0, totalTokens: 570,
+      estimatedCost: 5.9, pricedTokens: 570, unpricedTokens: 0,
+    };
+    const result = combineUsageDetail({
+      totals: { ...detail },
+      providers: [{ ...detail, models: [{ ...detail }] }],
+      buckets: [detail], startedDay: "2026-09-20",
+    }, { totals: { ...amounts, threads: 1 }, providers: [{ provider: "claude", ...amounts }] });
+
+    expect(result.detailAhead).toBeUndefined();
+    expect(result.unallocated?.totalTokens).toBe(0);
+    expect(result.unallocated?.estimatedCost).toBeCloseTo(2);
+    expect(result.totals.estimatedCost).toBeCloseTo(amounts.estimatedCost);
+    expect(result.providers[0].earlier?.totalTokens).toBe(0);
+    expect(result.providers[0].earlier?.estimatedCost).toBeCloseTo(2);
+    const breakdown = componentBreakdown(result.buckets, result.unallocated);
+    expect(breakdown.earlier).toMatchObject({ tokens: 0, priced: true });
+    expect(breakdown.total.cost).toBeCloseTo(amounts.estimatedCost);
+  });
+
+  it("keeps dated detail and the authoritative total for a downward cost-only correction", () => {
+    const detail = priced("2026-09-20", "opus", 1);
+    const amounts = {
+      inputTokens: 550, cachedInputTokens: 400, cacheWriteInputTokens: 50,
+      outputTokens: 20, reasoningOutputTokens: 0, totalTokens: 570,
+      estimatedCost: 1.9, pricedTokens: 570, unpricedTokens: 0,
+    };
+    const result = combineUsageDetail({
+      totals: { ...detail }, providers: [{ ...detail, models: [{ ...detail }] }],
+      buckets: [detail], startedDay: "2026-09-20",
+    }, { totals: { ...amounts, threads: 1 }, providers: [{ provider: "claude", ...amounts }] });
+
+    expect(result.detailAhead).toBeUndefined();
+    expect(result.buckets).toHaveLength(1);
+    expect(result.unallocated?.totalTokens).toBe(0);
+    expect(result.unallocated?.estimatedCost).toBeCloseTo(-2);
+    expect(result.totals.estimatedCost).toBeCloseTo(amounts.estimatedCost);
+    expect(componentBreakdown(result.buckets, result.unallocated).total.cost).toBeCloseTo(amounts.estimatedCost);
   });
 });
 

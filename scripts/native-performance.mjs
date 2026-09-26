@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 // Opt-in, local-only measurements of an existing production desktop binary.
 // This script never builds, signs, updates, or invokes a provider.
 import { spawn, spawnSync } from "node:child_process";

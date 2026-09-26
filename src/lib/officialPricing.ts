@@ -29,6 +29,8 @@ interface SourceState {
   checkedAt?: number;
   /** Last attempt whose page parsed and validated. */
   verifiedAt?: number;
+  /** Count from the last successfully parsed page, including same-day removals. */
+  lastModelCount?: number;
   /** Why the last attempt failed; cleared by a successful one. */
   error?: string;
 }
@@ -59,6 +61,8 @@ function readStore(): { models: Record<string, ModelPricingCatalogEntry>; source
     sources[source] = {
       checkedAt: timestamp(state.checkedAt),
       verifiedAt: timestamp(state.verifiedAt),
+      ...(typeof state.lastModelCount === "number" && Number.isSafeInteger(state.lastModelCount)
+        && state.lastModelCount >= 0 && state.lastModelCount <= MAX_ROWS ? { lastModelCount: state.lastModelCount } : {}),
       ...(typeof state.error === "string" ? { error: state.error.slice(0, 240) } : {}),
     };
   }
@@ -97,6 +101,10 @@ export function observeRates(
 }
 
 function modelsSeenAtLastCheck(source: OfficialPricingSource, store = readStore()): number {
+  // Snapshots written before `lastModelCount` still need a best-effort count
+  // until their next successful check upgrades the stored source state.
+  const storedCount = store.sources[source]?.lastModelCount;
+  if (storedCount !== undefined) return storedCount;
   const verifiedAt = store.sources[source]?.verifiedAt;
   if (!verifiedAt) return 0;
   const prefix = `${PROVIDER_KEY[source]}:`;
@@ -142,7 +150,7 @@ export function recordOfficialPricingResult(source: OfficialPricingSource, resul
     for (const key of Object.keys(epochs)) if (!(key in models)) delete epochs[key];
   }
   const state: SourceState = result.ok
-    ? { checkedAt: now, verifiedAt: now }
+    ? { checkedAt: now, verifiedAt: now, lastModelCount: Object.keys(result.models).length }
     : { ...store.sources[source], checkedAt: now, error: result.error.slice(0, 240) };
   storeValue(OFFICIAL_PRICING_KEY, { schemaVersion: 1, updatedAt: new Date(now).toISOString(), models, sources: { ...store.sources, [source]: state }, epochs });
   notifyPricingChanged();

@@ -85,6 +85,59 @@ describe("local usage dashboard", () => {
     expect(Number(cells(table, "Cache read")[2]!.replace("%", ""))).toBeLessThanOrEqual(coverage);
   });
 
+  it("labels a cost-only ledger gap as a pricing adjustment, with no earlier tokens", () => {
+    annotateThreadUsage("adjusted", { provider: "claude", model: "claude-opus-5-5" });
+    recordUsageDelta("adjusted", {
+      inputTokens: 1_000_000, cachedInputTokens: 0, cacheWriteInputTokens: 0,
+      outputTokens: 0, totalTokens: 1_000_000, reasoningOutputTokens: 0, contextWindow: null,
+    }, "a", "turn-1");
+    flushUsageLedger();
+    // The corrected ledger reached storage, but dated detail still has the
+    // original $4 estimate. No token count changed.
+    const records = JSON.parse(localStorage.getItem(USAGE_LEDGER_KEY)!) as Array<{ estimatedCost?: number }>;
+    records[0].estimatedCost = (records[0].estimatedCost ?? 0) + 2;
+    localStorage.setItem(USAGE_LEDGER_KEY, JSON.stringify(records));
+    resetUsageLedgerCache();
+
+    render(<UsageDashboard />);
+    fireEvent.click(screen.getByRole("radio", { name: "All time" }));
+    expect(stat("Estimated API cost")).toHaveTextContent("≈ $6.00");
+    expect(screen.getByRole("note")).toHaveTextContent("A pricing adjustment is included in all-time and provider cost");
+    expect(screen.getByRole("note")).not.toHaveTextContent("0 earlier tokens");
+    const providers = screen.getByRole("table", { name: "Estimated cost and tokens by provider" });
+    expect(within(providers).getByRole("rowheader", { name: /^Claude Code/ })).toHaveTextContent("Includes pricing adjustment");
+    expect(cells(providers, "Claude Code")[0]).toContain("≈ $6.00");
+
+    openView("Models");
+    expect(cells(typeTable(), "Pricing adjustment")[0]).toBe("0tokens unchanged");
+    expect(cells(typeTable(), "Pricing adjustment")[1]).toContain("≈ +$2.00");
+    expect(cells(typeTable(), "Total")[1]).toContain("≈ $6.00");
+    expect(typeTable()).not.toHaveTextContent("Earlier usage");
+  });
+
+  it("keeps dated detail visible when a downward pricing adjustment reaches the ledger first", () => {
+    annotateThreadUsage("adjusted", { provider: "claude", model: "claude-opus-5-5" });
+    recordUsageDelta("adjusted", {
+      inputTokens: 1_000_000, cachedInputTokens: 0, cacheWriteInputTokens: 0,
+      outputTokens: 0, totalTokens: 1_000_000, reasoningOutputTokens: 0, contextWindow: null,
+    }, "a", "turn-1");
+    flushUsageLedger();
+    const records = JSON.parse(localStorage.getItem(USAGE_LEDGER_KEY)!) as Array<{ estimatedCost?: number }>;
+    records[0].estimatedCost = (records[0].estimatedCost ?? 0) - 2;
+    localStorage.setItem(USAGE_LEDGER_KEY, JSON.stringify(records));
+    resetUsageLedgerCache();
+
+    render(<UsageDashboard />);
+    fireEvent.click(screen.getByRole("radio", { name: "All time" }));
+    expect(stat("Estimated API cost")).toHaveTextContent("≈ $2.00");
+    expect(screen.getByRole("note")).toHaveTextContent("A pricing adjustment is included in all-time and provider cost");
+    expect(screen.getByRole("table", { name: "Estimated cost and tokens by provider" })).toHaveTextContent("≈ $2.00");
+    openView("Models");
+    expect(cells(typeTable(), "Pricing adjustment")[1]).toContain("≈ −$2.00");
+    expect(cells(typeTable(), "Total")[1]).toContain("≈ $2.00");
+    expect(screen.getByRole("table", { name: "Estimated cost, tokens and prompts by model" })).toBeInTheDocument();
+  });
+
   it("switches ranges from the keyboard and never includes undated usage in a range", () => {
     seedUsageDashboard();
     render(<UsageDashboard />);
