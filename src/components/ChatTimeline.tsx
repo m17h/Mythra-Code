@@ -1080,12 +1080,7 @@ function FlowTimeline({
       if (serverPrepended) {
         const nextTop = anchor.element?.isConnected ? anchor.element.getBoundingClientRect().top : null;
         const visualDelta = nextTop !== null && anchor.elementTop !== null ? nextTop - anchor.elementTop : null;
-        // The browser may already have anchored the old row while React
-        // prepended new rows. Adjust from its current scroll position so we
-        // do not undo that native correction (notably in WebKit).
-        scroller.scrollTop = visualDelta === null
-          ? anchor.scrollTop + (scroller.scrollHeight - anchor.scrollHeight)
-          : scroller.scrollTop + visualDelta;
+        scroller.scrollTop = anchor.scrollTop + (visualDelta ?? (scroller.scrollHeight - anchor.scrollHeight));
       }
       if (scroller.scrollHeight <= scroller.clientHeight + 1) {
         followingEndRef.current = true;
