@@ -104,6 +104,16 @@ function expectInsideViewport(element: Element) {
   expect(rect.bottom).toBeLessThanOrEqual(window.innerHeight - 7);
 }
 
+async function waitForSelectionButtonToReceivePointer(button: HTMLElement) {
+  // The button can enter the accessibility tree before its float reaches the
+  // browser top layer. Wait for the actual hit target, not just DOM presence.
+  await waitFor(() => {
+    const rect = button.getBoundingClientRect();
+    const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    expect(hit && button.contains(hit)).toBe(true);
+  });
+}
+
 async function waitForEditorPaint(dialog: Element) {
   await waitFor(() => expect(Number.parseFloat(getComputedStyle(dialog).opacity)).toBeGreaterThan(.99));
 }
@@ -132,6 +142,7 @@ describe("review feedback in a real browser", () => {
 
     const selectionButton = await screen.findByRole("button", { name: "Add feedback on the selection" });
     expectInsideViewport(selectionButton);
+    await waitForSelectionButtonToReceivePointer(selectionButton);
     await userEvent.click(selectionButton);
     const dialog = await screen.findByRole("dialog", { name: "Add feedback" });
     expectInsideViewport(dialog);
@@ -163,7 +174,9 @@ describe("review feedback in a real browser", () => {
     expect(addedLine).toBeDefined();
     const text = addedLine!.firstChild as Text;
     selectText(text, 1, 6);
-    await userEvent.click(await screen.findByRole("button", { name: "Add feedback on the selection" }));
+    const selectionButton = await screen.findByRole("button", { name: "Add feedback on the selection" });
+    await waitForSelectionButtonToReceivePointer(selectionButton);
+    await userEvent.click(selectionButton);
     const dialog = await screen.findByRole("dialog", { name: "Add feedback" });
     expectInsideViewport(dialog);
     expect(dialog).toHaveTextContent("added line");
@@ -191,7 +204,9 @@ describe("review feedback in a real browser", () => {
     window.getSelection()?.removeAllRanges();
     window.getSelection()?.addRange(range);
     addedLine.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
-    await userEvent.click(await screen.findByRole("button", { name: "Add feedback on the selection" }));
+    const selectionButton = await screen.findByRole("button", { name: "Add feedback on the selection" });
+    await waitForSelectionButtonToReceivePointer(selectionButton);
+    await userEvent.click(selectionButton);
     await userEvent.fill(screen.getByRole("textbox", { name: "Feedback note" }), "Review both sides");
     await userEvent.click(screen.getByRole("button", { name: "Add" }));
     await waitFor(() => expect(added).toHaveBeenCalledTimes(1));
