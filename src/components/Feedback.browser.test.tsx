@@ -172,12 +172,16 @@ describe("review feedback in a real browser", () => {
     const addedLine = Array.from(document.querySelectorAll<HTMLElement>("[data-feedback-diff] > span"))
       .find((line) => line.textContent?.startsWith("+added line"));
     expect(addedLine).toBeDefined();
+    const diffView = addedLine!.parentElement!;
+    expect(getComputedStyle(diffView).contentVisibility).toBe("auto");
     const text = addedLine!.firstChild as Text;
     selectText(text, 1, 6);
     const selectionButton = await screen.findByRole("button", { name: "Add feedback on the selection" });
+    expect(getComputedStyle(diffView).contentVisibility).toBe("visible");
     await waitForSelectionButtonToReceivePointer(selectionButton);
     await userEvent.click(selectionButton);
     const dialog = await screen.findByRole("dialog", { name: "Add feedback" });
+    expect(getComputedStyle(diffView).contentVisibility).toBe("auto");
     expectInsideViewport(dialog);
     expect(dialog).toHaveTextContent("added line");
     await waitForEditorPaint(dialog);

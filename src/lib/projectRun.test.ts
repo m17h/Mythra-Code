@@ -44,19 +44,21 @@ describe("projectRunShellCommand", () => {
     const shellPlatform = platform === "win32" ? "Win32" : "MacIntel";
     const run = { setupCommand: "node -e \"process.exit(7)\"", command: "echo launched || echo fallback", updatedAt: 1 };
     const [program, ...args] = projectRunExecCommand(run, shellPlatform);
-    const result = spawnSync(program, args, { encoding: "utf8", timeout: 10_000 });
+    // Hosted Windows runs have taken over 10 seconds to start this PowerShell
+    // child under test load. Keep a bounded deadline while checking the exit.
+    const result = spawnSync(program, args, { encoding: "utf8", timeout: 30_000 });
     expect(result.error).toBeUndefined();
     expect(result.status).toBe(7);
     expect(result.stdout).not.toContain("launched");
     expect(result.stdout).not.toContain("fallback");
     if (platform === "win32") {
       const negative = projectRunExecCommand({ ...run, setupCommand: "node -e \"process.exit(-1)\"" }, shellPlatform);
-      const negativeResult = spawnSync(negative[0], negative.slice(1), { encoding: "utf8", timeout: 10_000 });
+      const negativeResult = spawnSync(negative[0], negative.slice(1), { encoding: "utf8", timeout: 30_000 });
       // Node exposes a Windows process exit status as an unsigned DWORD.
       expect(negativeResult.status).toBe(0xffffffff);
       expect(negativeResult.stdout).not.toContain("launched");
     }
-  }, 25_000);
+  }, 70_000);
 
   it("passes setup environment to launch and accepts parenthesized commands", () => {
     const platform = (globalThis as unknown as { process: { platform: string } }).process.platform;

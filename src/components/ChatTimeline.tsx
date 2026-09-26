@@ -1028,6 +1028,9 @@ function FlowTimeline({
   const pointerNavigationPendingRef = useRef(false);
   const prependAnchorRef = useRef<PrependAnchor | null>(null);
   const restoringPrependScrollRef = useRef(false);
+  const restoredPrependScrollPendingRef = useRef(false);
+  const restoredPrependScrollTopRef = useRef<number | null>(null);
+  const restoredPrependScrollUserIntentRef = useRef(false);
   const [showScrollToLatest, setShowScrollToLatest] = useState(false);
   const [hiddenPrefixOverride, setHiddenPrefixOverride] = useState<number | null>(null);
   const [anchoring, setAnchoring] = useState(false);
@@ -1080,12 +1083,14 @@ function FlowTimeline({
       if (serverPrepended) {
         const nextTop = anchor.element?.isConnected ? anchor.element.getBoundingClientRect().top : null;
         const visualDelta = nextTop !== null && anchor.elementTop !== null ? nextTop - anchor.elementTop : null;
-        // The browser may already have anchored the old row while React
-        // prepended new rows. Adjust from its current scroll position so we
-        // do not undo that native correction (notably in WebKit).
-        scroller.scrollTop = visualDelta === null
-          ? anchor.scrollTop + (scroller.scrollHeight - anchor.scrollHeight)
-          : scroller.scrollTop + visualDelta;
+        // WebKit may dispatch the scroll event caused by this restoration after
+        // the next animation frame. Keep it from looking like manual navigation
+        // until a new user gesture actually moves the scroll position.
+        restoredPrependScrollPendingRef.current = true;
+        restoredPrependScrollTopRef.current = null;
+        restoredPrependScrollUserIntentRef.current = false;
+        scroller.scrollTop = anchor.scrollTop + (visualDelta ?? (scroller.scrollHeight - anchor.scrollHeight));
+        restoredPrependScrollTopRef.current = scroller.scrollTop;
       }
       if (scroller.scrollHeight <= scroller.clientHeight + 1) {
         followingEndRef.current = true;
@@ -1148,6 +1153,9 @@ function FlowTimeline({
   }, [firstEntryKey, history?.loading, onLoadEarlier]);
 
   const jumpToLatest = useCallback(() => {
+    restoredPrependScrollPendingRef.current = false;
+    restoredPrependScrollTopRef.current = null;
+    restoredPrependScrollUserIntentRef.current = false;
     followingEndRef.current = true;
     smoothScrollPendingRef.current = true;
     setHiddenPrefixOverride(null);
@@ -1234,6 +1242,16 @@ function FlowTimeline({
           // and immediately discard the newly revealed window.
           if (anchoring || prependAnchorRef.current || restoringPrependScrollRef.current) return;
           const scroller = event.currentTarget;
+          if (restoredPrependScrollPendingRef.current) {
+            const restoredTop = restoredPrependScrollTopRef.current;
+            const movedAfterIntent = restoredPrependScrollUserIntentRef.current
+              && restoredTop !== null
+              && Math.abs(scroller.scrollTop - restoredTop) > 0.5;
+            if (!movedAfterIntent) return;
+            restoredPrependScrollPendingRef.current = false;
+            restoredPrependScrollTopRef.current = null;
+            restoredPrependScrollUserIntentRef.current = false;
+          }
           const atEnd = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= TIMELINE_FOLLOW_REARM_THRESHOLD_PX;
           const answeringQuestion = scroller.contains(document.activeElement) && document.activeElement?.closest(".agent-question-form");
           if (atEnd && !answeringQuestion) {
@@ -1247,15 +1265,36 @@ function FlowTimeline({
           }
         }}
         onWheel={(event) => {
+          restoredPrependScrollUserIntentRef.current = true;
           if (shouldCancelTimelineFollowForWheel(event.deltaY, event.currentTarget.scrollHeight > event.currentTarget.clientHeight + 1)) stopFollowing();
         }}
-        onTouchMove={stopFollowing}
+        onTouchMove={() => {
+          restoredPrependScrollUserIntentRef.current = true;
+          stopFollowing();
+        }}
         onPointerDown={(event) => {
+          // Child pointer input (copy buttons, links, selection) is not a new
+          // scroll gesture and must not expose a delayed restoration event.
+          if (event.target === event.currentTarget) restoredPrependScrollUserIntentRef.current = true;
           if (event.button === 0 && event.currentTarget.scrollHeight > event.currentTarget.clientHeight + 1) {
             pointerNavigationPendingRef.current = true;
           }
         }}
         onKeyDown={(event) => {
+          const targetIsControl = event.target instanceof Element
+            && Boolean(event.target.closest("button, input, select, textarea, [role=button]"));
+          if (
+            event.key === "PageUp"
+            || event.key === "PageDown"
+            || event.key === "Home"
+            || event.key === "End"
+            || event.key === "ArrowUp"
+            || event.key === "ArrowDown"
+            || event.key === "Tab"
+            || ((event.key === " " || event.key === "Spacebar") && !targetIsControl)
+          ) {
+            restoredPrependScrollUserIntentRef.current = true;
+          }
           if (
             event.key === "PageUp"
             || event.key === "Home"

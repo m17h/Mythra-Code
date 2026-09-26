@@ -17,7 +17,13 @@ it.each(["mythra", "light-mythra"])("keeps check results and editing usable in a
       }} onRun={vi.fn()} onStop={vi.fn()} onSave={vi.fn()} onAddFeedback={onAddFeedback} />
     </div>
   </div>);
+  // The result card enters through a height reveal. Wait until its contents
+  // are no longer clipped before exercising a real pointer click inside it;
+  // WebKit can hit the clipping edge if the click lands during that transition.
+  const resultClip = container.querySelector<HTMLElement>(".checks-result-reveal .checks-reveal-clip")!;
+  await waitFor(() => expect(resultClip.scrollHeight - resultClip.clientHeight).toBeLessThanOrEqual(1));
   await userEvent.click(screen.getByRole("button", { name: "Output" }));
+  expect(screen.getByRole("button", { name: "Output" })).toHaveAttribute("aria-expanded", "true");
   await waitFor(() => expect(screen.getByLabelText("Check output").getBoundingClientRect().height).toBeGreaterThan(40));
   await userEvent.click(screen.getByRole("button", { name: "Edit check command" }));
   await waitFor(() => expect(screen.getByRole("textbox", { name: "Check command" })).toHaveFocus());

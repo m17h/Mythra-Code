@@ -29,7 +29,7 @@ const FeedbackContext = createContext<FeedbackRegistry | null>(null);
 
 const SOURCE_SELECTOR = "[data-feedback-message],[data-feedback-diff]";
 
-interface Candidate { anchor: FeedbackAnchor; rect: FeedbackRect }
+interface Candidate { anchor: FeedbackAnchor; rect: FeedbackRect; source: HTMLElement }
 
 function sourceFor(node: Node | null): HTMLElement | null {
   const element = node && (node.nodeType === Node.ELEMENT_NODE ? node as Element : node.parentElement);
@@ -100,7 +100,7 @@ function candidateFromRange(registry: FeedbackRegistry, range: Range, source: HT
     const diff = registry.diffs.get(source)?.current;
     if (diff) anchor = diffAnchor(source, range, diff);
   }
-  return anchor ? { anchor, rect: rangeEndRect(range, source) } : null;
+  return anchor ? { anchor, rect: rangeEndRect(range, source), source } : null;
 }
 
 function selectionCandidate(registry: FeedbackRegistry): Candidate | null {
@@ -170,6 +170,12 @@ export function FeedbackProvider({ enabled, scopeKey = "", onAdd, children }: {
     // scheduled by the selection event can run before React mounts the button.
     focusSelectionButtonRef.current = false;
     buttonRef.current.focus({ preventScroll: true });
+  }, [buttonOpen, candidate]);
+
+  useLayoutEffect(() => {
+    const source = buttonOpen && candidate?.anchor.kind === "diff" ? candidate.source : null;
+    source?.setAttribute("data-feedback-selection-active", "");
+    return () => source?.removeAttribute("data-feedback-selection-active");
   }, [buttonOpen, candidate]);
 
   const restoreFocus = useCallback(() => {

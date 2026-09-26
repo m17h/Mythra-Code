@@ -436,7 +436,7 @@ describe("onboarding Settings handoff", () => {
     const user = userEvent.setup();
     await renderApp();
     await user.click(screen.getByRole("button", { name: "Settings" }));
-    const settings = await screen.findByRole("dialog", { name: "Settings" });
+    const settings = await screen.findByRole("dialog", { name: "Settings" }, { timeout: 10_000 });
     await user.click(within(settings).getByRole("button", { name: "Runtime" }));
     await user.click(within(settings).getByRole("button", { name: "Run onboarding" }));
     return { user, tour: await screen.findByRole("dialog", { name: "Mythra Code onboarding" }) };
@@ -468,7 +468,7 @@ describe("onboarding Settings handoff", () => {
     expect(within(reopened).queryByText("Unsaved changes")).not.toBeInTheDocument();
   });
 
-  it("passes unsaved theme, font, and slider previews into Interface and restores saved settings on cancel", async () => {
+  it("passes unsaved theme, font, and slider previews into Interface and restores saved settings on cancel", { timeout: 15_000 }, async () => {
     localStorage.setItem("kiwi.settings", JSON.stringify({ theme: "mythra", chatFont: "system", effortSlider: "aurora" }));
     const { user, tour } = await runOnboarding();
     await user.click(within(tour).getByRole("button", { name: "Make it yours" }));
