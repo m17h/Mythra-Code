@@ -42,6 +42,7 @@ mod github;
 mod github_pr;
 mod openrouter_usage;
 mod persistence;
+mod pricing_sources;
 mod process_launch;
 mod project_git;
 mod run_discovery;
@@ -5015,7 +5016,12 @@ fn summarize_process_memory(
         .iter()
         .map(|process| (process.pid, process.start_time))
         .collect::<HashMap<_, _>>();
-    let mut managed = HashSet::from([host_pid]);
+    // A child can retain a stale parent PID after the host exits. Require the
+    // host itself in this enumeration before attributing any descendants.
+    let mut managed = HashSet::new();
+    if start_times.contains_key(&host_pid) {
+        managed.insert(host_pid);
+    }
     loop {
         let before = managed.len();
         for process in processes {
@@ -5318,6 +5324,93 @@ fn initialize_params() -> Value {
     })
 }
 
+fn is_codex_delta_notification(message: &Value) -> bool {
+    message.get("id").is_none()
+        && message
+            .get("method")
+            .and_then(Value::as_str)
+            .is_some_and(|method| method.ends_with("Delta") || method.ends_with("/delta"))
+}
+
+const CODEX_DELTA_MAX_BATCH_SIZE: usize = 128;
+
+fn codex_delta_batch_due(batch_len: usize, deadline: Instant, now: Instant) -> bool {
+    batch_len >= CODEX_DELTA_MAX_BATCH_SIZE || now >= deadline
+}
+
+// Only active assistant items are tracked; completion events discard their IDs.
+#[derive(Default)]
+struct CodexFirstAssistantDeltas {
+    active_turns: HashMap<String, (Option<String>, HashSet<String>)>,
+}
+
+impl CodexFirstAssistantDeltas {
+    fn observe(&mut self, message: &Value) -> bool {
+        let Some(method) = message.get("method").and_then(Value::as_str) else {
+            return false;
+        };
+        let params = &message["params"];
+        let Some(thread_id) = params.get("threadId").and_then(Value::as_str) else {
+            return false;
+        };
+        match method {
+            "turn/started" => {
+                let turn_id = params["turn"]["id"].as_str().map(str::to_owned);
+                let active = self.active_turns.entry(thread_id.to_owned()).or_default();
+                if active.0 != turn_id {
+                    *active = (turn_id, HashSet::new());
+                }
+            }
+            "turn/completed" => {
+                let completed_id = params["turn"]["id"].as_str();
+                if self.active_turns.get(thread_id).is_some_and(|active| {
+                    completed_id.is_none() || active.0.as_deref() == completed_id
+                }) {
+                    self.active_turns.remove(thread_id);
+                }
+            }
+            "item/completed" => {
+                if let Some(item_id) = params["item"]["id"].as_str() {
+                    if let Some(active) = self.active_turns.get_mut(thread_id) {
+                        let completed_turn_id = params.get("turnId").and_then(Value::as_str);
+                        if completed_turn_id.is_none() || active.0.as_deref() == completed_turn_id {
+                            active.1.remove(item_id);
+                        }
+                    }
+                }
+            }
+            "item/agentMessage/delta" if message.get("id").is_none() => {
+                let Some(item_id) = params.get("itemId").and_then(Value::as_str) else {
+                    return false;
+                };
+                if item_id.is_empty() || params["delta"].as_str().is_none_or(str::is_empty) {
+                    return false;
+                }
+                let turn_id = params.get("turnId").and_then(Value::as_str);
+                let active = self.active_turns.entry(thread_id.to_owned()).or_default();
+                if let Some(turn_id) = turn_id {
+                    match active.0.as_deref() {
+                        Some(active_id) if active_id != turn_id => return false,
+                        None => active.0 = Some(turn_id.to_owned()),
+                        _ => {}
+                    }
+                }
+                return active.1.insert(item_id.to_owned());
+            }
+            "thread/status/changed"
+                if matches!(
+                    params["status"]["type"].as_str(),
+                    Some("idle" | "systemError")
+                ) =>
+            {
+                self.active_turns.remove(thread_id);
+            }
+            _ => {}
+        }
+        false
+    }
+}
+
 async fn spawn_server(app: &AppHandle, state: &RuntimeState) -> Result<Arc<AppServer>, String> {
     let app_data = app
         .path()
@@ -5437,10 +5530,11 @@ async fn spawn_server(app: &AppHandle, state: &RuntimeState) -> Result<Arc<AppSe
     tauri::async_runtime::spawn(async move {
         const DELTA_FLUSH_INTERVAL: Duration = Duration::from_millis(25);
         let mut lines = BufReader::new(stdout).lines();
-        // Streaming "…Delta" notifications are coalesced into a single
-        // "codex-events" array emit, flushed on a ~25ms tick or before any
-        // non-delta message so ordering is strictly preserved.
+        // The first assistant chunk is emitted immediately so the UI can lock
+        // steering; subsequent deltas are coalesced into "codex-events" until
+        // the deadline, batch size, or a non-delta message requires a flush.
         let mut delta_buffer: Vec<Value> = Vec::new();
+        let mut first_assistant_deltas = CodexFirstAssistantDeltas::default();
         let mut flush_deadline = Instant::now();
         let flush_deltas = |buffer: &mut Vec<Value>, app: &AppHandle| {
             if !buffer.is_empty() {
@@ -5497,16 +5591,23 @@ async fn spawn_server(app: &AppHandle, state: &RuntimeState) -> Result<Arc<AppSe
                     }
                 }
             } else {
-                let is_delta_notification = message.get("id").is_none()
-                    && message
-                        .get("method")
-                        .and_then(Value::as_str)
-                        .is_some_and(|method| method.ends_with("Delta"));
+                let is_delta_notification = is_codex_delta_notification(&message);
+                let emit_first_assistant_delta = first_assistant_deltas.observe(&message);
                 if is_delta_notification {
+                    if emit_first_assistant_delta {
+                        flush_deltas(&mut delta_buffer, &app_for_reader);
+                        let _ = app_for_reader.emit("codex-event", message);
+                        continue;
+                    }
                     if delta_buffer.is_empty() {
                         flush_deadline = Instant::now() + DELTA_FLUSH_INTERVAL;
                     }
                     delta_buffer.push(message);
+                    // Ready lines can keep winning timeout_at's race during a
+                    // continuous stream, so enforce the deadline here too.
+                    if codex_delta_batch_due(delta_buffer.len(), flush_deadline, Instant::now()) {
+                        flush_deltas(&mut delta_buffer, &app_for_reader);
+                    }
                 } else {
                     flush_deltas(&mut delta_buffer, &app_for_reader);
                     // Expiry and turn completion invalidate nonblocking input
@@ -6495,6 +6596,7 @@ pub fn run() {
             cursor_runtime_status,
             cursor_login,
             cursor_models,
+            pricing_sources::fetch_pricing_document,
             github_status,
             github_login,
             github_repo_status,

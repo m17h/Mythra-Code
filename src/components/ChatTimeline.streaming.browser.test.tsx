@@ -23,6 +23,18 @@ afterEach(() => {
 });
 
 describe("live Markdown paint integration", () => {
+  it.each(["claude", "openai"] as const)("lays out authored assistant lines separately with %s", (provider) => {
+    const view = render(<Shell provider={provider} text={"A short first line\nA short second line"} streaming={false} />);
+    const paragraph = view.container.querySelector(".message.assistant .rich-markdown p")!;
+    const [firstLine, secondLine] = [...paragraph.childNodes].filter((node) => node.nodeType === Node.TEXT_NODE && node.textContent?.trim());
+    expect(paragraph.querySelectorAll("br")).toHaveLength(1);
+    const firstRange = document.createRange();
+    firstRange.selectNodeContents(firstLine);
+    const secondRange = document.createRange();
+    secondRange.selectNodeContents(secondLine);
+    expect(secondRange.getBoundingClientRect().top).toBeGreaterThan(firstRange.getBoundingClientRect().top);
+  });
+
   it("does not rewind live text after copying and receiving another burst", async () => {
     vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue();
     const view = render(<Shell text={"```ts\nconst x = 1;"} />);

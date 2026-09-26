@@ -94,6 +94,54 @@ describe("ChatTimeline", () => {
     expect(view.container.querySelectorAll(".message.user .message-body")).toHaveLength(1);
   });
 
+  it.each(["claude", "openai", "cursor", "openrouter", "lmstudio"] as const)("preserves assistant soft line breaks with %s while retaining Markdown structure", (provider) => {
+    const poem = "First line\nSecond **bright** line\n[Third line](https://example.com)\n\nNext stanza";
+    const view = render(<ChatTimeline
+      provider={provider}
+      messages={[
+        { id: "user", role: "user", text: "User line one\nUser line two", timelineOrder: 1 },
+        { id: "assistant", role: "assistant", text: `${poem}\n\n- list one\n- list two\n\n\`\`\`ts\nconst first = 1;\nconst second = 2;\n\`\`\``, timelineOrder: 2 },
+      ]}
+      activities={[]}
+      running={false}
+      thinkingLabel="Thinking"
+    />);
+
+    const reply = view.container.querySelector(".message.assistant .rich-markdown")!;
+    const paragraphs = reply.querySelectorAll("p");
+    expect(paragraphs).toHaveLength(2);
+    expect(paragraphs[0].querySelectorAll("br")).toHaveLength(2);
+    expect(paragraphs[0].querySelector("strong")?.textContent).toBe("bright");
+    expect(paragraphs[0].querySelector("a")?.getAttribute("href")).toBe("https://example.com");
+    expect(reply.querySelectorAll("li")).toHaveLength(2);
+    expect(reply.querySelector("pre code")?.textContent).toBe("const first = 1;\nconst second = 2;\n");
+    expect(reply.querySelector("pre br")).toBeNull();
+    expect(view.container.querySelector(".message.user .rich-markdown br")).toBeNull();
+  });
+
+  it("preserves assistant line breaks during streaming and after reopening a completed reply", async () => {
+    const messages = [{ id: "answer", role: "assistant" as const, text: "First line\nSecond line", timelineOrder: 1 }];
+    const view = render(<ChatTimeline messages={[{ ...messages[0], streaming: true }]} activities={[]} running thinkingLabel="Thinking" />);
+    await waitFor(() => expect(view.container.querySelector(".message.assistant p br")).not.toBeNull());
+
+    view.rerender(<ChatTimeline messages={messages} activities={[]} running={false} thinkingLabel="Thinking" />);
+    await waitFor(() => expect(view.container.querySelector(".message.assistant p br")).not.toBeNull());
+    view.unmount();
+
+    const reopened = render(<ChatTimeline messages={messages} activities={[]} running={false} thinkingLabel="Thinking" />);
+    expect(reopened.container.querySelectorAll(".message.assistant p br")).toHaveLength(1);
+  });
+
+  it("preserves assistant line breaks when an image accompanies the reply", () => {
+    const view = render(<ChatTimeline
+      messages={[{ id: "image-answer", role: "assistant", text: "First line\nSecond line", attachments: [{ path: "/tmp/chart.png", name: "chart.png", kind: "image" }] }]}
+      activities={[]}
+      running={false}
+      thinkingLabel="Thinking"
+    />);
+    expect(view.container.querySelectorAll(".message.assistant .rich-markdown p br")).toHaveLength(1);
+  });
+
   it("shows when the active turn accepted a steer", () => {
     render(<ChatTimeline
       messages={[{
@@ -758,6 +806,16 @@ describe("ChatTimeline", () => {
     expect(screen.getByText("npm test")).toBeInTheDocument();
     expect(screen.getByText("cause").tagName).toBe("STRONG");
     expect(screen.getByText("Updated")).toBeInTheDocument();
+  });
+
+  it("preserves line breaks in a completed assistant work update", () => {
+    const entries: WorkItemEntry[] = [
+      { kind: "message", value: { id: "update", role: "assistant", text: "First line\nSecond **line**" } },
+    ];
+    const view = render(<CompletedWorkDisclosure entries={entries} />);
+    fireEvent.click(screen.getByRole("button", { name: /Show completed work/ }));
+    expect(view.container.querySelectorAll(".completed-work-update p br")).toHaveLength(1);
+    expect(view.container.querySelector(".completed-work-update strong")?.textContent).toBe("line");
   });
 
   it("summarizes how long a completed run worked alongside its activity counts", () => {

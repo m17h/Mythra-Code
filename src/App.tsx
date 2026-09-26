@@ -65,16 +65,17 @@ import { PendingTurnStarts } from "./lib/pendingTurnStarts";
 import { useTaskStore, type QueuedTurn } from "./lib/taskStore";
 import { friendlyError, isAuthenticationError } from "./lib/errors";
 import { recordError } from "./lib/errorLog";
-import { beginThreadOpen, failThreadOpen, markThreadHistoryHydrated, markThreadRenderMetrics, markThreadRuntimeReady, markThreadShellCommitted, markThreadTimelineCommitted, projectedJsonBytes, threadOpenAwaitingRenderMetrics, threadOpenAwaitingTimeline } from "./lib/performanceDiagnostics";
+import { beginThreadOpen, failThreadOpen, markRendererLaunchComposerMounted, markRendererLaunchPaintOpportunity, markRendererLaunchShellCommitted, markThreadHistoryHydrated, markThreadPaintOpportunity, markThreadRenderMetrics, markThreadRuntimeReady, markThreadShellCommitted, markThreadTimelineCommitted, projectedJsonBytes, threadOpenAwaitingRenderMetrics, threadOpenAwaitingTimeline } from "./lib/performanceDiagnostics";
 import { forgetRuntimePerformanceProvider, registerRuntimePerformanceProvider } from "./lib/runtimePerformanceBridge";
 import {
   annotateThreadUsage,
   estimateUsageCost,
   formatEstimatedCost,
-  modelPricingCatalogRevision,
   pricingForModel,
+  pricingRevision,
   refreshModelPricingCatalog,
   usageForThread,
+  updateCursorModelNames,
   updateOpenRouterPricing,
 } from "./lib/usageLedger";
 import { costTotals, formatCost, recordThreadCost } from "./lib/costLedger";
@@ -94,6 +95,7 @@ import {
   type GitHubRepoStatus,
 } from "./lib/github";
 import { useAppUpdater } from "./lib/appUpdater";
+import { UpdateNotice, useUpdateNoticePreview } from "./components/UpdateNotice";
 import { usePersistedState, usePersistedStateRef } from "./hooks/usePersistedState";
 import { forgetQueuedDeliveries, useTurnRunner } from "./hooks/useTurnRunner";
 import { useCheckpoints } from "./hooks/useCheckpoints";
@@ -466,6 +468,7 @@ function ThreadOpenCommitMarker({ threadId, commitToken }: { threadId: string; c
       // opportunity to paint before synchronous DOM counting begins.
       metricsFrame = requestAnimationFrame(() => {
         if (!threadOpenAwaitingRenderMetrics(threadId)) return;
+        markThreadPaintOpportunity(threadId);
         const scroller = document.querySelector<HTMLElement>('[data-testid="timeline-scroller"]');
         markThreadRenderMetrics(threadId, {
           renderedRowCount: scroller?.querySelectorAll("[data-entry-index]").length ?? 0,
@@ -482,6 +485,26 @@ function ThreadOpenCommitMarker({ threadId, commitToken }: { threadId: string; c
   return null;
 }
 
+/** One-shot renderer timings; these are opportunities to paint, not pixels or input latency. */
+function RendererLaunchCommitMarker() {
+  useLayoutEffect(() => {
+    const shell = document.querySelector<HTMLElement>(".app-shell");
+    if (!shell) return;
+    markRendererLaunchShellCommitted();
+    const composer = shell.querySelector<HTMLTextAreaElement>(".composer-input-wrap textarea");
+    if (composer && !composer.disabled && !composer.closest("[inert]")) markRendererLaunchComposerMounted();
+    let paintFrame: number | null = null;
+    const commitFrame = requestAnimationFrame(() => {
+      paintFrame = requestAnimationFrame(() => markRendererLaunchPaintOpportunity());
+    });
+    return () => {
+      cancelAnimationFrame(commitFrame);
+      if (paintFrame !== null) cancelAnimationFrame(paintFrame);
+    };
+  }, []);
+  return null;
+}
+
 function ConversationTimeline({ threadId, running, thinkingLabel, approval, provider, searchQuery, searchActiveMatch, onSearchMatches, onEditMessage, onApprovalRespond, onLoadEarlier }: { threadId: string; running: boolean; thinkingLabel: string; approval: PendingApproval | null; provider: AppSettings["provider"]; searchQuery?: string; searchActiveMatch?: number; onSearchMatches?: (count: number) => void; onEditMessage: (text: string) => void; onApprovalRespond: (approval: PendingApproval, result: JsonObject) => void | Promise<void>; onLoadEarlier: () => void }) {
   const messages = useTaskStore((state) => state.tasks[threadId]?.messages ?? EMPTY_MESSAGES);
   const activities = useTaskStore((state) => state.tasks[threadId]?.activities ?? EMPTY_ACTIVITIES);
@@ -493,6 +516,7 @@ function ConversationTimeline({ threadId, running, thinkingLabel, approval, prov
 
 export default function App() {
   const appUpdater = useAppUpdater();
+  const updateNoticePreview = useUpdateNoticePreview();
   const [projects, setProjects, projectsRef] = usePersistedStateRef<Project[]>("kiwi.projects", [], { init: () => initialProjects });
   const [activeProjectId, setActiveProjectId] = useState<string | null>(initialProjects[0]?.id ?? null);
   const [workspaceMode, setWorkspaceMode] = usePersistedState<WorkspaceMode>("kiwi.workspaceMode", "chat", { init: () => initialWorkspaceMode });
@@ -697,7 +721,7 @@ export default function App() {
   const [lmStudioModelsLoading, setLMStudioModelsLoading] = useState(false);
   const [lmStudioModelsError, setLMStudioModelsError] = useState("");
   const lmStudioReady = lmStudioModels.length > 0 && !lmStudioModelsError;
-  const [pricingCatalogRevision, setPricingCatalogRevision] = useState(modelPricingCatalogRevision);
+  const [pricingCatalogRevision, setPricingCatalogRevision] = useState(pricingRevision);
   const composerRef = useRef<ComposerHandle>(null);
   const threadSearchRequestRef = useRef(0);
   const pendingTurnStartsRef = useRef(new PendingTurnStarts());
@@ -1844,7 +1868,12 @@ export default function App() {
   const cursorModelsRequestRef = useRef(0);
   const refreshCursorModels = useCallback(() => refreshProviderModels(
     cursorModelsRequestRef, listCursorModels, setCursorModelsLoading,
-    setCursorModels, setCursorModelsError, "Cursor returned no models.",
+    (models) => {
+      // Cursor publishes rates by display name, so pricing needs the live names.
+      updateCursorModelNames(models);
+      setCursorModels(models);
+      setPricingCatalogRevision(pricingRevision());
+    }, setCursorModelsError, "Cursor returned no models.",
   ), []);
 
   const loadThreadsRequestRef = useRef(0);
@@ -2872,9 +2901,7 @@ export default function App() {
     void refreshCursorStatus();
     void refreshOpenRouterModels();
     void refreshModelPricingCatalog()
-      .then((catalog) => {
-        if (catalog) setPricingCatalogRevision(catalog.updatedAt);
-      })
+      .then(() => setPricingCatalogRevision(pricingRevision()))
       .catch(() => {
         // Pricing is advisory and the last validated or bundled snapshot stays
         // active offline, so a startup network failure should not interrupt chat.
@@ -2892,6 +2919,25 @@ export default function App() {
       if (isTauri()) void import("./lib/runtimeUpdates").then(({ ensureDeveloperRuntimeUpdates }) => ensureDeveloperRuntimeUpdates()).catch(() => undefined);
     }, 4_000);
     return () => window.clearTimeout(timer);
+  }, []);
+
+  // Check after startup and while a long-running app remains open. The lazy
+  // refresh itself enforces once per day per source (hourly after failure),
+  // so this timer does not make repeated page requests between due times.
+  useEffect(() => {
+    if (!isTauri()) return;
+    const check = () => {
+      void import("./lib/officialPricing")
+        .then(({ refreshOfficialPricing }) => refreshOfficialPricing())
+        .then(() => setPricingCatalogRevision(pricingRevision()))
+        .catch(() => undefined);
+    };
+    const timer = window.setTimeout(check, 6_000);
+    const interval = window.setInterval(check, 6 * 3_600_000);
+    return () => {
+      window.clearTimeout(timer);
+      window.clearInterval(interval);
+    };
   }, []);
 
   useEffect(() => {
@@ -3051,13 +3097,6 @@ export default function App() {
         if (Date.now() < suppressRuntimeRecoveryUntilRef.current) return;
         setStatus("Runtime disconnected — reconnecting");
         const store = useTaskStore.getState();
-        for (const [threadId, threadStatus] of Object.entries(store.statuses)) {
-          if ((threadStatus === "running" || threadStatus === "starting") && !isLocalSubscriptionThread(knownThreadsRef.current?.[threadId])) {
-            store.setActiveTurn(threadId, undefined);
-            store.setTaskStatus(threadId, "error", "The Codex runtime disconnected during this task.");
-            void finalizeRunCheckpoint(threadId, undefined, "interrupted");
-          }
-        }
         // Queued Codex approvals reference request ids the dead process owned.
         // Every response to them would fail after the respawn, leaving an
         // undismissable modal — drop them, and say so in the thread.
@@ -3076,6 +3115,15 @@ export default function App() {
             detail: "The Codex runtime disconnected, so its queued approval requests can no longer be answered. The model will ask again if it still needs permission.",
           });
           void auditEvent("approval.droppedOnRuntimeRestart", { count: codexApprovals.length }, task.threadId).catch(() => {});
+        }
+        for (const [threadId, threadStatus] of Object.entries(store.statuses)) {
+          if ((threadStatus === "running" || threadStatus === "starting") && !isLocalSubscriptionThread(knownThreadsRef.current?.[threadId])) {
+            // The process cannot send turn/completed after disconnecting.
+            // Seal its queued text while the active turn id is still known.
+            store.completeTurn(threadId, store.tasks[threadId]?.activeTurnId, "error");
+            store.setTaskStatus(threadId, "error", "The Codex runtime disconnected during this task.");
+            void finalizeRunCheckpoint(threadId, undefined, "interrupted");
+          }
         }
         setStartingDraftTurn(false);
         void rpc("model/list", { limit: 1 })
@@ -3814,8 +3862,22 @@ export default function App() {
 
   const exportTranscript = async () => {
     if (!activeThread) return;
-    const task = useTaskStore.getState().tasks[activeThread.id];
-    if (!task) return;
+    const openedTask = useTaskStore.getState().tasks[activeThread.id];
+    if (!openedTask) return;
+    // Output keeps streaming while the Save dialog and the durable history
+    // read are pending, so read the live task only after each wait. The merge
+    // below lets live entries override durable ones, which is correct only
+    // when the live copy is the newer of the two.
+    const liveTask = () => {
+      useTaskStore.getState().flushDeltas();
+      const current = useTaskStore.getState().tasks[activeThread.id];
+      if (!current) throw new Error("This conversation is no longer available to export");
+      // Eviction releases an idle transcript's rows while the dialog is open;
+      // it only evicts saved, non-running threads, so the opened copy is final.
+      const evicted = !current.messages.length && !current.activities.length
+        && (openedTask.messages.length > 0 || openedTask.activities.length > 0);
+      return evicted ? openedTask : current;
+    };
     const label = activeThread.name || activeThread.preview || "Mythra Code thread";
     try {
       const path = await save({
@@ -3830,6 +3892,7 @@ export default function App() {
       });
       if (!path) return;
       const { buildTranscriptMarkdown, mergeTranscriptHistory } = await import("./lib/transcript");
+      let task = liveTask();
       let messages = task.messages;
       let activities = task.activities;
       if (task.history.hasMore) {
@@ -3838,6 +3901,7 @@ export default function App() {
             ? await loadClaudeTranscript(activeThread.id)
             : await loadCursorTranscript(activeThread.id);
           if (!complete) throw new Error("The complete local transcript is no longer available");
+          task = liveTask();
           ({ messages, activities } = mergeTranscriptHistory(
             complete.messages,
             complete.activities,
@@ -3849,6 +3913,7 @@ export default function App() {
           const durable = timelineFromTurns(complete.thread.turns, {
             includeContextCompaction: providerFromThread(activeThread, projectDefaultProvider) === "openai",
           });
+          task = liveTask();
           ({ messages, activities } = mergeTranscriptHistory(
             durable.messages,
             durable.activities,
@@ -6097,6 +6162,7 @@ export default function App() {
 
   return (
     <div ref={shellRef} className="app-shell" data-theme={previewTheme ?? projectDefaults?.theme ?? settings.theme} data-color-scheme={themeColorScheme(previewTheme ?? projectDefaults?.theme ?? settings.theme)} data-effort-slider={tourOwnsSliderPreview ? undefined : activeEffortSlider} data-onboarding-effort-slider={tourOwnsSliderPreview ? activeEffortSlider : undefined} data-chat-font={activeChatFont} data-openai-logo={settings.openAiLogo} data-claude-logo={settings.claudeLogo} data-cursor-logo={settings.cursorLogo} style={{ zoom: ((previewUiScale ?? settings.uiScale) || 100) / 100, "--ui-scale": ((previewUiScale ?? settings.uiScale) || 100) / 100 } as CSSProperties}>
+      <RendererLaunchCommitMarker />
       <FeedbackProvider enabled={Boolean(activeThread) && !settingsOpen && !onboardingOpen} scopeKey={feedbackScope} onAdd={(anchor, comment) => Boolean(feedback.addNote(anchor, comment))}>
       {successToast && (
         <div ref={mountToast} popover={typeof HTMLElement.prototype.showPopover === "function" ? "manual" : undefined} className={`app-toast ${toastKind}`} role="status" aria-live="polite">
@@ -6446,20 +6512,7 @@ export default function App() {
           </div>
         </header>
 
-        {appUpdater.phase === "available" && (
-          <div className="app-update-banner" role="status">
-            <span className="app-update-banner-icon">
-              <Download size={15} />
-            </span>
-            <span>
-              <strong>Mythra Code {appUpdater.availableVersion} is ready</strong>
-              <small>Review the release notes, then update and restart from Settings.</small>
-            </span>
-            <button className="secondary-button" onClick={() => openSettings("updates")}>
-              View update
-            </button>
-          </div>
-        )}
+        <UpdateNotice update={updateNoticePreview ?? appUpdater} onOpen={() => openSettings("updates")} />
 
         {!activeWorkspace ? (
           <section className="welcome-screen">
@@ -7020,10 +7073,17 @@ export default function App() {
         githubStatus={githubStatus}
         githubBusy={githubBusy || githubLoginPending}
         onRefreshUsagePricing={async () => {
-          await Promise.all([
-            refreshModelPricingCatalog().then((catalog) => { if (catalog) setPricingCatalogRevision(catalog.updatedAt); }),
+          // Every source is attempted even when another fails; each reports
+          // its own result on the usage page.
+          const [official, catalog] = await Promise.allSettled([
+            import("./lib/officialPricing").then(({ refreshOfficialPricing }) => refreshOfficialPricing({ force: true })),
+            refreshModelPricingCatalog(),
             refreshOpenRouterModels(),
           ]);
+          setPricingCatalogRevision(pricingRevision());
+          if (official.status === "rejected" || official.value.failed.length || catalog.status === "rejected") {
+            throw new Error("Some pricing sources could not be checked");
+          }
         }}
         openRouterPricingError={openRouterModelsError}
         onClose={closeSettings}

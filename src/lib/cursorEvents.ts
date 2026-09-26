@@ -288,7 +288,7 @@ export function routeCursorEvent(event: CursorEvent, ctx: CursorEventContext): v
     } else if (kind === "usage_update") {
       const usage = usageView(update.usage ?? update);
       if (usage && !turnAlreadyCompleted) {
-        store.setUsage(threadId, usage);
+        store.setUsage(threadId, usage, turnId);
         turnsWithUsageSnapshots.add(turnKey(threadId, turnId));
       }
     }
@@ -308,7 +308,7 @@ export function routeCursorEvent(event: CursorEvent, ctx: CursorEventContext): v
     // In-turn usage_update snapshots already accumulated this turn's tokens
     // through the cumulative-snapshot path; adding the result total on top
     // would double count and corrupt the snapshot baseline.
-    if (usage && !turnsWithUsageSnapshots.has(key)) store.addUsage(threadId, usage, `cursor-result:${turnId}`);
+    if (usage && !turnsWithUsageSnapshots.has(key)) store.addUsage(threadId, usage, `cursor-result:${turnId}`, turnId);
     turnsWithUsageSnapshots.delete(key);
     // Re-read state: the flush inside finalizeAssistantSegments may have just
     // materialized the thinking activity, which the entry snapshot predates.

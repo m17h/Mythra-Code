@@ -81,6 +81,8 @@ export interface TokenUsageView {
   inputTokens: number;
   cachedInputTokens: number;
   cacheWriteInputTokens?: number;
+  /** Part of `cacheWriteInputTokens` written to Claude's 1-hour cache. */
+  cacheWrite1hInputTokens?: number;
   outputTokens: number;
   reasoningOutputTokens: number;
   contextWindow?: number | null;

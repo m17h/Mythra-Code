@@ -54,6 +54,7 @@ describe("runtime performance diagnostics", () => {
         deltaCalls: 2,
         deltaCharacters: 20,
         flushes: 1,
+        queuedFrames: 1,
         queueToFrameAverageMs: 10,
         queueToFrameMaximumMs: 10,
         queueToFrameOverBudget: 0,
@@ -71,6 +72,24 @@ describe("runtime performance diagnostics", () => {
       },
     });
     expect(JSON.stringify(auditEvent.mock.calls[0])).not.toContain("secret-thread");
+  });
+
+  it("averages queue delay over frames that actually had queued deltas", async () => {
+    vi.spyOn(performance, "now").mockReturnValue(40);
+    recordStreamingDelta("thread", 2, 0);
+    recordStreamingFlush(["thread"], 10, 12);
+    recordStreamingFlush(["thread"], 20, 22);
+    completeRuntimePerformanceTurn("thread", "completed");
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(auditEvent).toHaveBeenCalledWith("performance.runtimeTurn", expect.objectContaining({
+      streaming: expect.objectContaining({
+        flushes: 2,
+        queuedFrames: 1,
+        queueToFrameAverageMs: 10,
+        queueToFrameMaximumMs: 10,
+      }),
+    }));
   });
 
   it("waits for a post-turn persistence write instead of emitting an incomplete sample", async () => {

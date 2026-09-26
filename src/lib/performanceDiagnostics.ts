@@ -3,6 +3,7 @@ import { auditEvent } from "./codex";
 import type { Provider } from "../types";
 
 const THREAD_OPEN_AUDIT_KIND = "performance.threadOpen";
+const RENDERER_LAUNCH_AUDIT_KIND = "performance.rendererLaunch";
 const MAX_LONG_TASKS = 200;
 const MAX_SAMPLE_AGE_MS = 60_000;
 const THREAD_OPEN_TIMEOUT_MS = 30_000;
@@ -35,6 +36,7 @@ interface ActiveThreadOpen {
   shellCommittedAt?: number;
   historyHydratedAt?: number;
   timelineCommittedAt?: number;
+  timelinePaintOpportunityAt?: number;
   runtimeReadyAt?: number;
   projectedHistoryBytes?: number;
   messageCount?: number;
@@ -60,6 +62,41 @@ interface ChromiumPerformanceMemory {
 let active: ActiveThreadOpen | null = null;
 let longTaskObserver: PerformanceObserver | null = null;
 const longTasks: LongTaskSample[] = [];
+let rendererLaunchShellCommittedAt: number | null = null;
+let rendererLaunchComposerMountedAt: number | null = null;
+let rendererLaunchPaintOpportunityAt: number | null = null;
+let rendererLaunchAuditTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Navigation timing starts at zero in this renderer, not at native process start. */
+export function markRendererLaunchShellCommitted(at = performance.now()): void {
+  rendererLaunchShellCommittedAt ??= at;
+}
+
+/** Records a mounted, enabled composer control; it does not assert click response. */
+export function markRendererLaunchComposerMounted(at = performance.now()): void {
+  rendererLaunchComposerMountedAt ??= at;
+}
+
+/** A frame after the shell commit gives the browser an opportunity to paint. */
+export function markRendererLaunchPaintOpportunity(at = performance.now()): void {
+  if (rendererLaunchPaintOpportunityAt !== null) return;
+  rendererLaunchPaintOpportunityAt = at;
+  const shellCommittedAt = rendererLaunchShellCommittedAt;
+  const composerMountedAt = rendererLaunchComposerMountedAt;
+  // Keep the audit write outside the frame whose timing is being measured.
+  rendererLaunchAuditTimer = setTimeout(() => {
+    rendererLaunchAuditTimer = null;
+    void auditEvent(RENDERER_LAUNCH_AUDIT_KIND, {
+      schemaVersion: 1,
+      startBoundary: "rendererNavigation",
+      durationMs: {
+        shellCommit: shellCommittedAt === null ? null : rounded(shellCommittedAt),
+        paintOpportunity: rounded(at),
+        composerMounted: composerMountedAt === null ? null : rounded(composerMountedAt),
+      },
+    }).catch(() => undefined);
+  }, 0);
+}
 
 function rounded(value: number): number {
   return Math.round(Math.max(0, value) * 100) / 100;
@@ -197,6 +234,12 @@ export function markThreadTimelineCommitted(threadId: string): void {
   active.timelineCommittedAt = performance.now();
 }
 
+/** Stamp the frame opportunity before any diagnostic DOM counting begins. */
+export function markThreadPaintOpportunity(threadId: string): void {
+  if (!active || active.finished || active.threadId !== threadId || active.timelineCommittedAt === undefined || active.timelinePaintOpportunityAt !== undefined) return;
+  active.timelinePaintOpportunityAt = performance.now();
+}
+
 /** Lets the React boundary collect render metrics after the measured commit. */
 export function threadOpenAwaitingRenderMetrics(threadId: string): boolean {
   return Boolean(
@@ -260,7 +303,7 @@ async function finishThreadOpen(
   if (sample.timeout) clearTimeout(sample.timeout);
   const finishedAt = performance.now();
   const endedAt = outcome === "completed" && sample.timelineCommittedAt !== undefined && sample.runtimeReadyAt !== undefined
-    ? Math.max(sample.timelineCommittedAt, sample.runtimeReadyAt)
+    ? Math.max(sample.timelinePaintOpportunityAt ?? sample.timelineCommittedAt, sample.runtimeReadyAt)
     : finishedAt;
   if (active === sample) active = null;
   // Yield until the measured browser task has ended. This lets long-task
@@ -290,6 +333,7 @@ async function finishThreadOpen(
       shellCommit: durationFrom(sample, sample.shellCommittedAt),
       historyHydrated: durationFrom(sample, sample.historyHydratedAt),
       timelineCommit: durationFrom(sample, sample.timelineCommittedAt),
+      timelinePaintOpportunity: durationFrom(sample, sample.timelinePaintOpportunityAt),
       runtimeReady: durationFrom(sample, sample.runtimeReadyAt),
       total: rounded(endedAt - sample.startedAt),
     },
@@ -322,4 +366,9 @@ export function resetPerformanceDiagnostics(): void {
   longTasks.length = 0;
   longTaskObserver?.disconnect();
   longTaskObserver = null;
+  if (rendererLaunchAuditTimer) clearTimeout(rendererLaunchAuditTimer);
+  rendererLaunchAuditTimer = null;
+  rendererLaunchShellCommittedAt = null;
+  rendererLaunchComposerMountedAt = null;
+  rendererLaunchPaintOpportunityAt = null;
 }

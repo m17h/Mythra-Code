@@ -22,6 +22,7 @@ interface RuntimeTurnSample {
   deltaCalls: number;
   deltaCharacters: number;
   flushes: number;
+  queuedFrames: number;
   queueToFrameTotalMs: number;
   queueToFrameMaximumMs: number;
   queueToFrameOverBudget: number;
@@ -81,6 +82,7 @@ function createTurnSample(threadId: string, at: number, provider?: Provider): Ru
     deltaCalls: 0,
     deltaCharacters: 0,
     flushes: 0,
+    queuedFrames: 0,
     queueToFrameTotalMs: 0,
     queueToFrameMaximumMs: 0,
     queueToFrameOverBudget: 0,
@@ -160,6 +162,7 @@ export function recordStreamingFlush(threadIds: Iterable<string>, startedAt: num
     if (workMs > 16.7) sample.flushWorkOverBudget += 1;
     if (sample.pendingFrameSince !== undefined) {
       const delayMs = rounded(startedAt - sample.pendingFrameSince);
+      sample.queuedFrames += 1;
       sample.queueToFrameTotalMs += delayMs;
       sample.queueToFrameMaximumMs = Math.max(sample.queueToFrameMaximumMs, delayMs);
       if (delayMs > 33.4) sample.queueToFrameOverBudget += 1;
@@ -236,7 +239,8 @@ async function finishRuntimeTurn(sample: RuntimeTurnSample, outcome: RuntimeOutc
       deltaCalls: sample.deltaCalls,
       deltaCharacters: sample.deltaCharacters,
       flushes: sample.flushes,
-      queueToFrameAverageMs: average(sample.queueToFrameTotalMs, sample.flushes),
+      queuedFrames: sample.queuedFrames,
+      queueToFrameAverageMs: average(sample.queueToFrameTotalMs, sample.queuedFrames),
       queueToFrameMaximumMs: rounded(sample.queueToFrameMaximumMs),
       queueToFrameOverBudget: sample.queueToFrameOverBudget,
       flushWorkAverageMs: average(sample.flushWorkTotalMs, sample.flushes),

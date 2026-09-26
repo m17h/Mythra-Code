@@ -64,3 +64,13 @@ jobs:
         run: npm run build && npm run verify:performance
         env:
           TAURI_ENV_PLATFORM: windows
+
+      # Reuse the report written by verify:performance. No second build or
+      # benchmark is added to the release path; the native harness is opt-in.
+      - name: Upload renderer performance report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-scorecard-${{ matrix.os }}
+          path: dist/performance-scorecard.json
+          if-no-files-found: ignore

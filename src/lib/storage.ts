@@ -37,7 +37,9 @@ export const DURABLE_STORAGE_KEYS = [
   "kiwi.workflowRuns",
   "kiwi.costLedger",
   "kiwi.usageLedger",
+  "kiwi.usageHistory",
   "kiwi.modelPricingCatalog",
+  "kiwi.officialModelPricing",
   "kiwi.paneSizes",
   "kiwi.sidebarSplitRatio",
   "kiwi.queuedTurns",
@@ -56,7 +58,7 @@ export const DURABLE_STORAGE_KEYS = [
  * migrateStorage. Old installs then upgrade their data instead of loading
  * garbage into the new code.
  */
-export const STORAGE_SCHEMA_VERSION = 26;
+export const STORAGE_SCHEMA_VERSION = 27;
 const nativeWriteQueues = new Map<string, Promise<void>>();
 const NATIVE_PENDING_PREFIX = "kiwi.nativePending.";
 let nativeOperationSequence = 0;
@@ -245,15 +247,27 @@ export function migrateStorage(): void {
   // sanitizeStoredQueuedTurns preserves true so reopening cannot send an unfinished edit.
   // Version 26 adds optional project setup/check commands and scoped feedback
   // drafts. Existing projects keep their single launch command unchanged.
+  // kiwi.usageHistory (dated per-model usage detail) starts empty and is never
+  // backfilled: earlier usage stays in the ledger as unallocated all-time usage.
+  // kiwi.officialModelPricing (rates read from the providers' pricing pages)
+  // likewise starts empty; the catalog and bundled rates apply until a check.
+  // Version 27 adds the optional last successful model count to each official
+  // pricing source. Older snapshots infer it until their next successful read.
   storeValue("kiwi.schemaVersion", STORAGE_SCHEMA_VERSION);
+}
+
+/** The current serialized value, including a write that could not fit in the
+ * webview cache. Callers that cache parsed values must key on this value too. */
+export function readStoredRaw(key: string): string | null {
+  const cached = readCache(key);
+  const uncached = uncachedValues.get(key);
+  if (uncached && uncached.cached !== cached) uncachedValues.delete(key);
+  return uncached && uncached.cached === cached ? uncached.value : cached;
 }
 
 export function loadStored<T>(key: string, fallback: T): T {
   try {
-    const cached = readCache(key);
-    const uncached = uncachedValues.get(key);
-    const value = uncached && uncached.cached === cached ? uncached.value : cached;
-    if (uncached && uncached.cached !== cached) uncachedValues.delete(key);
+    const value = readStoredRaw(key);
     return value ? (JSON.parse(value) as T) : fallback;
   } catch {
     return fallback;

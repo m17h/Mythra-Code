@@ -5,6 +5,7 @@ import { Check, ChevronDown, ChevronRight, CircleDot, Clipboard, CornerUpRight, 
 import { convertFileSrc, invoke, isTauri } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import Markdown from "react-markdown";
+import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import type { Activity, ChatMessage, PendingApproval, Provider } from "../types";
 import type { JsonObject } from "../lib/codex";
@@ -322,11 +323,14 @@ function CodePre({ children }: { children?: ReactNode }) {
 
 const MARKDOWN_COMPONENTS = { pre: CodePre, a: MarkdownLink };
 const REASONING_MARKDOWN_COMPONENTS = { a: MarkdownLink };
+const DEFAULT_MARKDOWN_PLUGINS = [remarkGfm];
+// Model-authored soft newlines are intentional line breaks (for example, poetry).
+const ASSISTANT_MARKDOWN_PLUGINS = [remarkGfm, remarkBreaks];
 
-const MessageMarkdown = memo(function MessageMarkdown({ text, rootRef }: { text: string; rootRef?: Ref<HTMLDivElement> }) {
+const MessageMarkdown = memo(function MessageMarkdown({ text, rootRef, assistant = false }: { text: string; rootRef?: Ref<HTMLDivElement>; assistant?: boolean }) {
   return (
     <div className="message-text rich-markdown" ref={rootRef}>
-      <Markdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>{text}</Markdown>
+      <Markdown remarkPlugins={assistant ? ASSISTANT_MARKDOWN_PLUGINS : DEFAULT_MARKDOWN_PLUGINS} components={MARKDOWN_COMPONENTS}>{text}</Markdown>
     </div>
   );
 });
@@ -395,7 +399,7 @@ function AssistantMessageMarkdown({ text, streaming }: { text: string; streaming
   // Keep the same Markdown DOM through the bounded completion tail. History
   // mounts create no controllers and show their complete text immediately.
   return <FlushStreamingDisplay.Provider value={presenting ? flushForCopy : undefined}>
-    <MessageMarkdown text={shownText} rootRef={rootRef} />
+    <MessageMarkdown text={shownText} rootRef={rootRef} assistant />
   </FlushStreamingDisplay.Provider>;
 }
 
@@ -519,7 +523,7 @@ const MessageRow = memo(function MessageRow({ message, provider, onEdit }: { mes
           </div>
           {message.text.trim() !== "" && (
             <div className="message-body">
-              <MessageMarkdown text={message.text} />
+              <MessageMarkdown text={message.text} assistant={message.role === "assistant"} />
             </div>
           )}
           {steerStatus}
@@ -898,7 +902,7 @@ export const CompletedWorkDisclosure = memo(function CompletedWorkDisclosure({ e
                     <div className="completed-work-update" key={`update-${entry.value.id}`}>
                       <MessageSquare size={13} />
                       <div className="rich-markdown">
-                        <Markdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>{entry.value.text}</Markdown>
+                        <Markdown remarkPlugins={entry.value.role === "assistant" ? ASSISTANT_MARKDOWN_PLUGINS : DEFAULT_MARKDOWN_PLUGINS} components={MARKDOWN_COMPONENTS}>{entry.value.text}</Markdown>
                       </div>
                     </div>
                   )];
@@ -1023,6 +1027,7 @@ function FlowTimeline({
   const smoothScrollPendingRef = useRef(false);
   const pointerNavigationPendingRef = useRef(false);
   const prependAnchorRef = useRef<PrependAnchor | null>(null);
+  const restoringPrependScrollRef = useRef(false);
   const [showScrollToLatest, setShowScrollToLatest] = useState(false);
   const [hiddenPrefixOverride, setHiddenPrefixOverride] = useState<number | null>(null);
   const [anchoring, setAnchoring] = useState(false);
@@ -1075,7 +1080,12 @@ function FlowTimeline({
       if (serverPrepended) {
         const nextTop = anchor.element?.isConnected ? anchor.element.getBoundingClientRect().top : null;
         const visualDelta = nextTop !== null && anchor.elementTop !== null ? nextTop - anchor.elementTop : null;
-        scroller.scrollTop = anchor.scrollTop + (visualDelta ?? (scroller.scrollHeight - anchor.scrollHeight));
+        // The browser may already have anchored the old row while React
+        // prepended new rows. Adjust from its current scroll position so we
+        // do not undo that native correction (notably in WebKit).
+        scroller.scrollTop = visualDelta === null
+          ? anchor.scrollTop + (scroller.scrollHeight - anchor.scrollHeight)
+          : scroller.scrollTop + visualDelta;
       }
       if (scroller.scrollHeight <= scroller.clientHeight + 1) {
         followingEndRef.current = true;
@@ -1083,6 +1093,9 @@ function FlowTimeline({
       }
       prependAnchorRef.current = null;
       setAnchoring(false);
+      if (restoringPrependScrollRef.current) {
+        requestAnimationFrame(() => { restoringPrependScrollRef.current = false; });
+      }
       return;
     }
     if (anchor) return;
@@ -1092,6 +1105,7 @@ function FlowTimeline({
   const revealEarlier = useCallback(() => {
     const scroller = scrollerRef.current;
     const nextHiddenPrefix = Math.max(0, hiddenPrefixCount - TIMELINE_MOUNT_ROWS);
+    restoringPrependScrollRef.current = true;
     if (scroller) {
       const element = contentRef.current?.querySelector<HTMLElement>(`[data-entry-index="${hiddenPrefixCount}"]`) ?? null;
       prependAnchorRef.current = {
@@ -1200,6 +1214,13 @@ function FlowTimeline({
         data-testid="timeline-scroller"
         tabIndex={0}
         onFocusCapture={(event) => {
+          if (event.target.closest(".timeline-history-control")) {
+            // Focusing the history control scrolls it into view. Stop live
+            // following before ResizeObserver can pull keyboard readers back
+            // to the newest message.
+            stopFollowing();
+            return;
+          }
           if (!event.target.closest(".agent-question-form")) return;
           // Keep the question in place while the user answers, even as new
           // output grows below it or the transcript window advances.
@@ -1208,6 +1229,10 @@ function FlowTimeline({
           setShowScrollToLatest(true);
         }}
         onScroll={(event) => {
+          // Revealing older rows adjusts scrollTop to preserve the reader's
+          // position. That programmatic scroll must not re-arm live following
+          // and immediately discard the newly revealed window.
+          if (anchoring || prependAnchorRef.current || restoringPrependScrollRef.current) return;
           const scroller = event.currentTarget;
           const atEnd = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= TIMELINE_FOLLOW_REARM_THRESHOLD_PX;
           const answeringQuestion = scroller.contains(document.activeElement) && document.activeElement?.closest(".agent-question-form");

@@ -977,10 +977,15 @@ describe("SettingsModal", () => {
       initialSection: "usage",
     })} />);
 
+    // Summary and the undated provider row; with no saved provider label it is
+    // unattributed, never assigned a guessed provider or model.
+    // With no dated detail yet, the page opens on all time.
+    expect(screen.getByRole("radio", { name: "All time" })).toHaveAttribute("aria-checked", "true");
     expect(screen.getAllByText("≈ $1.25")).toHaveLength(2);
-    expect(screen.getByText("12,000 input · 3,000 output")).toBeInTheDocument();
-    expect(screen.getByText("3,000")).toBeInTheDocument();
-    expect(screen.getByText("4 tracked threads")).toBeInTheDocument();
+    expect(screen.getByText("12K input · 3,000 output")).toBeInTheDocument();
+    expect(screen.getByText("Unattributed")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Models" }));
+    expect(screen.getByRole("rowheader", { name: "Output" }).closest("tr")).toHaveTextContent("3,000");
     resetUsageLedgerCache();
   });
 

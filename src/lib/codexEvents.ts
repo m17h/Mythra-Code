@@ -166,7 +166,9 @@ export function handleThreadItem(
     return;
   }
   if (item.type === "agentMessage" || item.type === "plan") {
-    taskStore.completeMessage(threadId, { id, role: "assistant", text: item.text ?? "", questions: item.questions ?? undefined, turnId, streaming: false });
+    const message: ChatMessage = { id, role: "assistant", text: item.text ?? "", questions: item.questions ?? undefined, turnId };
+    if (lifecycle === "started") taskStore.startAssistantMessage(threadId, message);
+    else taskStore.completeMessage(threadId, message);
     return;
   }
   if (item.type === "commandExecution") {
@@ -307,7 +309,7 @@ export function routeCodexEvent(event: CodexEvent, ctx: CodexEventContext): void
     return;
   }
   if (method === "item/agentMessage/delta") {
-    useTaskStore.getState().queueAssistantDelta(eventThreadId, String(params.itemId), String(params.delta ?? ""));
+    useTaskStore.getState().queueAssistantDelta(eventThreadId, String(params.itemId), String(params.delta ?? ""), typeof params.turnId === "string" ? params.turnId : undefined);
     return;
   }
   if (method === "item/reasoning/summaryTextDelta" || method === "item/reasoning/textDelta") {
@@ -354,7 +356,7 @@ export function routeCodexEvent(event: CodexEvent, ctx: CodexEventContext): void
         outputTokens: Number(usage.total.outputTokens ?? 0),
         reasoningOutputTokens: Number(usage.total.reasoningOutputTokens ?? 0),
         contextWindow: usage.modelContextWindow,
-      });
+      }, typeof params.turnId === "string" && params.turnId ? params.turnId : undefined);
     }
     return;
   }
@@ -404,7 +406,17 @@ export function routeCodexEvent(event: CodexEvent, ctx: CodexEventContext): void
           : undefined;
     // A status type this version does not recognize (from a newer runtime)
     // must not flip a running thread back to idle.
-    if (nextStatus) useTaskStore.getState().setTaskStatus(eventThreadId, nextStatus);
+    if (nextStatus) {
+      const store = useTaskStore.getState();
+      const task = store.tasks[eventThreadId];
+      if (nextStatus === "error" && (task?.activeTurnId || task?.status === "running" || task?.status === "starting")) {
+        // A system error can be terminal without a turn/completed event.
+        // Drain queued deltas and seal the active turn before reporting error.
+        store.completeTurn(eventThreadId, task?.activeTurnId, "error");
+      } else {
+        store.setTaskStatus(eventThreadId, nextStatus);
+      }
+    }
     return;
   }
   if (method === "error" || method === "warning" || method === "guardianWarning" || method === "configWarning") {

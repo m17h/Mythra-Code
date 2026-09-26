@@ -507,6 +507,30 @@ describe("onboarding Settings handoff", () => {
 });
 
 describe("Codex cold startup", () => {
+  it("seals queued text and reports dropped approvals after a runtime disconnect", async () => {
+    await renderApp();
+    await waitFor(() => expect(tauriEvents.handlers.has("codex-runtime")).toBe(true));
+    const { useTaskStore } = await import("./lib/taskStore");
+    act(() => {
+      const store = useTaskStore.getState();
+      store.setActiveTurn(THREAD_A.id, "turn-disconnected");
+      store.setTaskStatus(THREAD_A.id, "running");
+      store.queueAssistantDelta(THREAD_A.id, "partial-answer", "partial text", "turn-disconnected");
+      store.enqueueApproval({ id: 44, method: "item/commandExecution/requestApproval", params: { threadId: THREAD_A.id, turnId: "turn-disconnected" }, threadId: THREAD_A.id, receivedAt: Date.now() });
+      tauriEvents.handlers.get("codex-runtime")?.({ payload: { alive: false } });
+    });
+
+    await waitFor(() => expect(useTaskStore.getState().statuses[THREAD_A.id]).toBe("error"), { timeout: 4000 });
+    const task = useTaskStore.getState().tasks[THREAD_A.id];
+    expect(task.activeTurnId).toBeUndefined();
+    expect(task.messages).toContainEqual(expect.objectContaining({
+      id: "partial-answer", text: "partial text", streaming: false, turnStatus: "failed",
+    }));
+    expect(task.approvals).toEqual([]);
+    expect(task.activities).toContainEqual(expect.objectContaining({ title: "A pending approval was dropped" }));
+    expect(task.error).toBe("The Codex runtime disconnected during this task.");
+  }, 10_000);
+
   it("shows a timed sign-in toast without selecting an unavailable provider or opening settings", async () => {
     accountReadImpl = () => ({ account: null, requiresOpenaiAuth: true });
     await renderApp();
@@ -627,6 +651,42 @@ describe("Codex cold startup", () => {
     expect(await screen.findByText(`Archived 2 ${kind} threads`)).toBeInTheDocument();
     expect(status.textContent).toBe("Ready");
     expect(status).not.toHaveTextContent("Archived");
+  });
+  it("exports output that streamed while the Save dialog was open", async () => {
+    const user = userEvent.setup();
+    threadListImpl = (params) => ({ data: params.cwd === PROJECT_A.path ? [THREAD_A] : [], nextCursor: null });
+    resumeImpl = () => ({ thread: { ...THREAD_A, turns: [] } });
+    await renderApp();
+    await user.click(await screen.findByText("Alpha thread"));
+    const { useTaskStore } = await import("./lib/taskStore");
+    await waitFor(() => expect(useTaskStore.getState().activeThreadId).toBe(THREAD_A.id));
+    act(() => {
+      const store = useTaskStore.getState();
+      store.setActiveTurn(THREAD_A.id, "turn-export");
+      store.setTaskStatus(THREAD_A.id, "running");
+      store.queueAssistantDelta(THREAD_A.id, "export-answer", "Before the dialog. ", "turn-export");
+      store.flushDeltas();
+    });
+    const chosenPath = deferred<string | null>();
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    vi.mocked(save).mockReturnValueOnce(chosenPath.promise);
+    await user.click(screen.getByRole("button", { name: "Export conversation as Markdown" }));
+    await waitFor(() => expect(save).toHaveBeenCalled());
+    act(() => {
+      const store = useTaskStore.getState();
+      store.queueAssistantDelta(THREAD_A.id, "export-answer", "Streamed while saving.", "turn-export");
+      store.completeTurn(THREAD_A.id, "turn-export", "completed");
+      // Still queued when the dialog closes: export must flush it too.
+      store.queueAssistantDelta(THREAD_A.id, "export-late", "Queued at save time.");
+    });
+    await act(async () => {
+      chosenPath.resolve("/tmp/streamed-export.md");
+      await chosenPath.promise;
+    });
+    expect(await screen.findByText("Transcript exported")).toBeInTheDocument();
+    const contents = String(invokeMock.mock.calls.find(([command]) => command === "export_text_file")?.[1]?.contents);
+    expect(contents).toContain("Before the dialog. Streamed while saving.");
+    expect(contents).toContain("Queued at save time.");
   });
   it("does not archive a parent while a persisted sub-agent still has an unknown outcome", async () => {
     localStorage.setItem("kiwi.childAgentLinks", JSON.stringify({
