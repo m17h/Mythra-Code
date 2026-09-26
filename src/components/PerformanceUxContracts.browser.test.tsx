@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { commands, userEvent } from "vitest/browser";
 import { ChatTimeline, TIMELINE_MOUNT_ROWS } from "./ChatTimeline";
@@ -60,7 +60,24 @@ describe("performance UX contracts in a real browser", () => {
       const beforeCount = mounted().length;
       await userEvent.keyboard("{Enter}");
       await waitFor(() => expect(mounted().length).toBeGreaterThan(beforeCount));
+      const expandedCount = mounted().length;
+      if (beforeCount === TIMELINE_MOUNT_ROWS) {
+        const scroller = view.container.querySelector<HTMLElement>("[data-testid=timeline-scroller]")!;
+        // WebKit can deliver the scroll event from scrollTop restoration after
+        // the synchronous prepend handler has finished. It must not look like
+        // the reader manually reached the live edge and discard the new rows.
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        fireEvent.pointerDown(firstMounted, { button: 0 });
+        fireEvent.scroll(scroller);
+        await waitFor(() => expect(mounted()).toHaveLength(expandedCount));
+        expect(firstMounted.isConnected).toBe(true);
+        fireEvent.pointerUp(document, { button: 0 });
+      }
       expect(Math.abs(firstMounted.getBoundingClientRect().top - anchoredTop)).toBeLessThanOrEqual(2);
+      if (beforeCount === TIMELINE_MOUNT_ROWS) {
+        await userEvent.keyboard("{PageUp}");
+        await waitFor(() => expect(mounted()).toHaveLength(expandedCount));
+      }
     }
     expect(mounted()).toHaveLength(messages.length);
     const oldest = view.container.querySelector<HTMLElement>('[data-entry-index="0"]')!;
