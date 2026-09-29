@@ -67,6 +67,33 @@ describe("useProjectPullRequests", () => {
     await act(async () => pending.resolve(null));
   });
 
+  it("hides stale branch context on a checkout move and allows retry after its read fails", async () => {
+    const pending = deferred<PullRequestContext>();
+    const initial = { branch: "feature/7", headOid: "c".repeat(40) };
+    const next = { branch: "feature/other", headOid: "d".repeat(40) };
+    const api = access("/prs/checkout-move", {
+      context: vi.fn().mockResolvedValueOnce({ repository: "owner/repo", ...initial, defaultBranch: "main", dirty: false, ahead: 1, behind: 0, pushRemote: "origin", permission: "write", mergeMethods: ["squash"] }).mockReturnValueOnce(pending.promise),
+      find: vi.fn().mockResolvedValueOnce(detail(7)).mockResolvedValue(null),
+    });
+    const view = renderHook(({ checkout }) => useProjectPullRequests(api, true, checkout), { initialProps: { checkout: initial } });
+    await waitFor(() => expect(view.result.current.branchPullRequest?.number).toBe(7));
+
+    view.rerender({ checkout: next });
+    expect(view.result.current.context).toBeNull();
+    expect(view.result.current.branchPullRequest).toBeNull();
+    expect(view.result.current.contextLoading).toBe(true);
+    await act(async () => pending.reject(new Error("Checkout context unavailable")));
+    await waitFor(() => expect(view.result.current.contextError).toBe("Checkout context unavailable"));
+    expect(view.result.current.contextLoading).toBe(false);
+    expect(view.result.current.context).toBeNull();
+
+    vi.mocked(api.context).mockResolvedValueOnce({ repository: "owner/repo", ...next, defaultBranch: "main", dirty: false, ahead: 1, behind: 0, pushRemote: "origin", permission: "write", mergeMethods: ["squash"] });
+    act(() => view.result.current.refreshContext());
+    await waitFor(() => expect(view.result.current.context?.branch).toBe("feature/other"));
+    expect(view.result.current.contextError).toBeNull();
+    expect(view.result.current.branchPullRequest).toBeNull();
+  });
+
   it.each(["merge", "ready"] as const)("a late %s does not overwrite another selected PR", async (action) => {
     const pending = deferred<PullRequest>();
     const api = access(`/prs/late-${action}`, { [action]: vi.fn(() => pending.promise) });

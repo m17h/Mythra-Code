@@ -588,6 +588,22 @@ fn revert_state(cwd: &str, path: &str) -> Result<RevertState, String> {
             })
         })
         .collect::<Result<_, _>>()?;
+    let indexed_paths: HashSet<_> = index
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| {
+            let separator = entry
+                .iter()
+                .position(|byte| *byte == b'\t')
+                .ok_or_else(|| "Git returned an unreadable staged file list".to_string())?;
+            std::str::from_utf8(&entry[separator + 1..])
+                .map(str::to_owned)
+                .map_err(|_| {
+                    "A staged Git path is not valid Unicode. Use Unstage instead.".to_string()
+                })
+        })
+        .collect::<Result<_, _>>()?;
     let (restore_paths, preserved_paths): (Vec<_>, Vec<_>) = paths
         .iter()
         .cloned()
@@ -596,12 +612,16 @@ fn revert_state(cwd: &str, path: &str) -> Result<RevertState, String> {
         .iter()
         .map(|path| revert_working_state(&root, path))
         .collect::<Result<_, _>>()?;
-    if paths.len() == 2 && working[0] != RevertWorkingState::Missing {
-        // The staged rename deleted its source. A newly recreated source is
-        // untracked content, not part of the rename the user chose to discard.
-        return Err(format!("The rename's original path {} has been recreated. Revert would overwrite that file; move or preserve it before trying again.", paths[0]));
-    }
     for (path, working) in paths.iter().zip(&working) {
+        if head_paths.contains(path)
+            && !indexed_paths.contains(path)
+            && *working != RevertWorkingState::Missing
+        {
+            // A staged deletion (including a rename source) can be followed
+            // by a new, untracked file at the same path. Restoring HEAD would
+            // overwrite that file, so keep it for manual inspection.
+            return Err(format!("The deleted path {path} has been recreated. Revert would overwrite that file; move or preserve it before trying again."));
+        }
         if preserved_paths.contains(path) && *working == RevertWorkingState::Missing {
             return Err("This newly staged file has no working copy. Its contents remain in the index; restore the working copy or export the staged contents before unstaging. Unstage cannot recover a missing working file. Nothing was reverted.".into());
         }
@@ -2474,6 +2494,26 @@ mod tests {
         assert_eq!(
             fs::read_to_string(path.join("renamed.txt")).unwrap(),
             "new rename edit\n"
+        );
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn revert_staged_deletion_preserves_recreated_untracked_file() {
+        let path = fixture();
+        git_stdout(&path, &["rm", "file.txt"], None).unwrap();
+        fs::write(path.join("file.txt"), "valuable untracked replacement\n").unwrap();
+        let before = git_stdout(&path, &["diff", "--cached"], None).unwrap();
+
+        let error = revert_preview_sync(path.to_str().unwrap(), "file.txt").unwrap_err();
+        assert!(error.contains("recreated"), "{error}");
+        assert_eq!(
+            fs::read(path.join("file.txt")).unwrap(),
+            b"valuable untracked replacement\n"
+        );
+        assert_eq!(
+            git_stdout(&path, &["diff", "--cached"], None).unwrap(),
+            before
         );
         fs::remove_dir_all(path).unwrap();
     }

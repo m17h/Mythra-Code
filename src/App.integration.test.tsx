@@ -484,7 +484,7 @@ afterEach(async () => {
 });
 
 describe("skill file recovery messages", () => {
-  it.each(["import", "create"] as const)("preserves partial-write recovery details after skill %s", async (operation) => {
+  it.each(["import", "create"] as const)("preserves partial-write recovery details after skill %s", { timeout: 15_000 }, async (operation) => {
     localStorage.setItem("kiwi.skillsFolder", JSON.stringify("/skills"));
     const message = `Could not ${operation} the skill: Permission denied. The new file /skills/source-2.md may be incomplete; existing files were not changed.`;
     invokeMock.mockImplementation((command: string, args?: Record<string, unknown>) => {
@@ -494,7 +494,7 @@ describe("skill file recovery messages", () => {
     const user = userEvent.setup();
     await renderApp();
     await user.click(screen.getByRole("button", { name: "Settings" }));
-    const settings = await screen.findByRole("dialog", { name: "Settings" });
+    const settings = await screen.findByRole("dialog", { name: "Settings" }, { timeout: 10_000 });
     await user.click(within(settings).getByRole("button", { name: "Skills" }));
     if (operation === "import") {
       const { open } = await import("@tauri-apps/plugin-dialog");

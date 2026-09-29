@@ -39,6 +39,7 @@ import {
 import { emptyPullRequestCreationDraft } from "../lib/pullRequestCreationDrafts";
 import { relativeAge } from "../lib/gitChanges";
 import type { ProjectPullRequestAccess } from "../lib/projectGit";
+import type { GitWorkspaceSnapshot } from "../lib/gitWorkspace";
 import type { PullRequest, PullRequestContext, PullRequestCreationDraft, PullRequestListState, PullRequestMergeMethod, PullRequestSummary } from "../lib/pullRequests";
 import { PULL_REQUEST_PAGE, projectPullRequestDrafts, projectPullRequestListKey, useProjectPullRequests, type PullRequestRef } from "../hooks/useProjectPullRequests";
 import "./thread-pull-requests.css";
@@ -82,6 +83,7 @@ const targetKey = (target: PullRequestRef) => `${target.repository.toLowerCase()
 export interface ProjectPullRequestsViewProps {
   access?: ProjectPullRequestAccess;
   visible: boolean;
+  checkout?: Pick<GitWorkspaceSnapshot, "branch" | "headOid"> | null;
   /** The selected conversation's own pull request workflow, when there is one. */
   conversationPanel?: ReactNode;
   onOpenGitHubSettings: () => void;
@@ -90,7 +92,7 @@ export interface ProjectPullRequestsViewProps {
 
 export default function ProjectPullRequestsView(props: ProjectPullRequestsViewProps) {
   const { access } = props;
-  const pr = useProjectPullRequests(access, props.visible);
+  const pr = useProjectPullRequests(access, props.visible, props.checkout);
   const conversationHeading = useId();
   const browseHeading = useId();
   const rootRef = useRef<HTMLDivElement>(null);

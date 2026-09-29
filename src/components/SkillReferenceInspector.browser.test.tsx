@@ -131,8 +131,8 @@ describe("skill reference inspector", () => {
     expect(map).toHaveTextContent("[Checklist](../references/checklist.md)");
     // Each row names its folder in text, not only in a hover title.
     const failed = map.querySelector<HTMLElement>(".sri-item.is-failed > .sri-row")!;
-    expect(failed.querySelector(".sri-where")).toHaveTextContent("references");
-    expect(failed).toHaveTextContent("checklist.md document in references");
+    expect(failed.querySelector(".sri-where")).toHaveTextContent("/skills/references");
+    expect(failed).toHaveTextContent("checklist.md document in /skills/references");
     expect(token).toHaveClass("is-inspected");
     // Leaving the token (still over the textarea) closes the map.
     await userEvent.hover(textarea, { position: { x: 4, y: 4 } });

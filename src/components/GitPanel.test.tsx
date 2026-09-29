@@ -287,6 +287,22 @@ describe("GitPanel local branch", () => {
     expect(create).toBeDisabled();
     expect(create).toHaveAttribute("title", expect.stringContaining("keeps its isolated branch"));
   });
+
+  it("closes a shared-folder branch draft when the checkout becomes isolated", () => {
+    const shared = workflow();
+    const view = render(<GitPanel {...panelProps({ workflow: shared, selectedFolder: "/project" })} />);
+    fireEvent.click(screen.getByRole("button", { name: "Switch or create a branch" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /New branch/ }));
+    fireEvent.change(screen.getByLabelText("New branch name"), { target: { value: "feature/from-shared" } });
+
+    const isolated = workflow({ isolated: true });
+    view.rerender(<GitPanel {...panelProps({ workflow: isolated, selectedFolder: "/project" })} />);
+    expect(screen.queryByLabelText("New branch name")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Switch or create a branch" }));
+    expect(screen.getByRole("menuitem", { name: /New branch/ })).toBeDisabled();
+    expect(shared.onBranch).not.toHaveBeenCalled();
+    expect(isolated.onBranch).not.toHaveBeenCalled();
+  });
 });
 
 describe("GitPanel GitHub section", () => {

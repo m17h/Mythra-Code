@@ -12,6 +12,7 @@ import type {
   PullRequestSummary,
 } from "../lib/pullRequests";
 import type { ProjectPullRequestAccess } from "../lib/projectGit";
+import type { GitWorkspaceSnapshot } from "../lib/gitWorkspace";
 import { createScopedStore, useScopedStore } from "../lib/scopedStore";
 
 export const PULL_REQUEST_PAGE = 30;
@@ -181,7 +182,11 @@ async function readContext(access: ProjectPullRequestAccess, scope: string) {
  * create or merge through the same validated native commands and operation
  * leases the conversation workflow uses. Nothing here attaches or archives.
  */
-export function useProjectPullRequests(access: ProjectPullRequestAccess | undefined, visible: boolean) {
+export function useProjectPullRequests(
+  access: ProjectPullRequestAccess | undefined,
+  visible: boolean,
+  checkout?: Pick<GitWorkspaceSnapshot, "branch" | "headOid"> | null,
+) {
   const scope = access ? projectPullRequestScope(access.cwd, access.repository) : "";
   const state = useScopedStore(projectPullRequestStore, scope);
   const accessRef = useRef(access);
@@ -196,16 +201,24 @@ export function useProjectPullRequests(access: ProjectPullRequestAccess | undefi
     return () => { viewerRef.current.mounted = false; viewerRef.current.generation += 1; };
   }, []);
   const ready = Boolean(access?.authenticated && access.repository);
+  const checkoutAwaiting = checkout === null;
+  const checkoutKnown = Boolean(checkout);
+  const checkoutBranch = checkout?.branch ?? null;
+  const checkoutHeadOid = checkout?.headOid ?? null;
+  const contextMoved = Boolean(state.context && (checkoutAwaiting || checkoutKnown
+    && (state.context.branch !== checkoutBranch || state.context.headOid !== checkoutHeadOid)));
 
   useEffect(() => {
     const latest = accessRef.current;
     if (!visible || !latest || !ready) return;
     const saved = projectPullRequestStore.get(scope);
     const now = Date.now();
-    if (!saved.contextLoading && (!saved.contextAt || now - saved.contextAt > STALE_MS)) void readContext(latest, scope);
+    const checkoutChanged = Boolean(checkoutKnown && saved.context
+      && (saved.context.branch !== checkoutBranch || saved.context.headOid !== checkoutHeadOid));
+    if (checkoutChanged || (!saved.contextLoading && (!saved.contextAt || now - saved.contextAt > STALE_MS))) void readContext(latest, scope);
     if (!saved.listLoading && (!saved.listAt || now - saved.listAt > STALE_MS)) void readList(latest, scope, saved.appliedQuery, saved.filter);
     if (saved.selected && !saved.detailLoading && (!saved.detailAt || now - saved.detailAt > STALE_MS)) void readDetail(latest, scope, saved.selected);
-  }, [visible, ready, scope]);
+  }, [visible, ready, scope, checkoutKnown, checkoutBranch, checkoutHeadOid]);
 
   const search = useCallback((query: string, filter: PullRequestListState) => {
     const latest = accessRef.current;
@@ -361,6 +374,11 @@ export function useProjectPullRequests(access: ProjectPullRequestAccess | undefi
 
   return {
     ...state,
+    // A checkout move hides the previous branch's context and discovered PR
+    // immediately, while the fresh native read is still in flight.
+    context: contextMoved ? null : state.context,
+    contextLoading: state.contextLoading || (contextMoved && !state.contextError),
+    branchPullRequest: contextMoved ? null : state.branchPullRequest,
     scope,
     ready,
     search,

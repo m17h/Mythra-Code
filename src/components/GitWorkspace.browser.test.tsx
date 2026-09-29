@@ -9,7 +9,7 @@ import { EMPTY_REVIEW_DIFF } from "../lib/gitDiff";
 import type { GitChange, ProjectGitChanges } from "../lib/gitInspection";
 import type { GitWorkflowControls } from "../lib/gitWorkspace";
 import type { ProjectGitInspection, ProjectPullRequestAccess } from "../lib/projectGit";
-import type { PullRequest, PullRequestSummary } from "../lib/pullRequests";
+import type { PullRequest, PullRequestContext, PullRequestSummary } from "../lib/pullRequests";
 import "../styles.css";
 
 afterEach(async () => { await commands.setStreamTestReducedMotion(false); });
@@ -397,6 +397,52 @@ function prAccess(): ProjectPullRequestAccess {
 }
 
 describe("project pull requests in the dock", () => {
+  it("updates This branch after the top branch menu switches the checkout with Pulls still open", async () => {
+    let current = { branch: "feature/local-work", headOid: "c".repeat(40) };
+    let failNextContextRead = false;
+    const access = prAccess();
+    access.context = vi.fn(async (): Promise<PullRequestContext> => {
+      if (failNextContextRead) {
+        failNextContextRead = false;
+        throw new Error("Checkout context unavailable");
+      }
+      return { repository: "owner/repo", ...current, defaultBranch: "main", dirty: false,
+        ahead: 1, behind: 0, pushRemote: "origin", permission: "write", mergeMethods: ["squash"] };
+    });
+    access.find = vi.fn(async (_cwd, _repository, branch) => branch === "feature/local-work"
+      ? { ...detail(41), headRefName: branch } : null);
+    const original = workflow();
+    let view!: ReturnType<typeof mount>;
+    const controls: GitWorkflowControls = {
+      ...original,
+      snapshot: { ...original.snapshot!, ...current, branches: [
+        { name: "feature/local-work", current: true, worktreePath: null },
+        { name: "main", current: false, worktreePath: null },
+      ] },
+      onBranch: vi.fn(async (name) => {
+        current = { branch: name, headOid: "d".repeat(40) };
+        failNextContextRead = true;
+        view.rerender(shell({ ...input, workflow: { ...controls, snapshot: { ...controls.snapshot!, ...current } } }, 360));
+        return true;
+      }),
+    };
+    const input = props({ view: "pulls", pullRequests: access, workflow: controls });
+    view = mount(input, 360);
+    const oldPullRequest = page.getByRole("button", { name: /found for feature\/local-work/ });
+    await expect.element(oldPullRequest).toBeVisible();
+
+    await page.getByRole("button", { name: "Switch or create a branch" }).click();
+    await page.getByRole("menuitem", { name: /^main/ }).click();
+    await expect.element(page.getByRole("alert")).toHaveTextContent("Checkout context unavailable");
+    await expect.element(oldPullRequest).not.toBeInTheDocument();
+    const retry = page.getByRole("button", { name: "Try again", exact: true });
+    await expect.element(retry).toBeEnabled();
+    await retry.click();
+    await expect.element(page.getByRole("region", { name: "This branch" }).getByText("main", { exact: true })).toBeVisible();
+    await expect.element(oldPullRequest).not.toBeInTheDocument();
+    expect(controls.onBranch).toHaveBeenCalledWith("main", false);
+  });
+
   it.each(["mythra", "light-mythra", "atari", "monochrome"])("keeps %s project PR labels readable on actual list and detail surfaces", async (theme) => {
     const access = prAccess();
     access.threadLink = { repository: "owner/repo", number: 41 };

@@ -223,11 +223,54 @@ describe("per-reference skill dependency map", () => {
     };
     const items = flat(buildSkillReferenceMap("a", { report }).root);
     expect(items.map((item) => [item.label, item.location])).toEqual([
-      ["@a", undefined], ["notes.md", "a/references"], ["@b", "team/b"], ["notes.md", "team/b"], ["notes.md", "/elsewhere"],
+      ["@a", "/lib/skills/a"], ["notes.md", "/lib/skills/a/references"],
+      ["@b", "/lib/skills/team/b"], ["notes.md", "/lib/skills/team/b"], ["notes.md", "/elsewhere"],
     ]);
     const windows = structuredClone(report);
     for (const node of windows.nodes) node.path = `C:${node.path.replaceAll("/", "\\")}`;
-    expect(flat(buildSkillReferenceMap("a", { report: windows }).root)[1].location).toBe("a\\references");
+    expect(flat(buildSkillReferenceMap("a", { report: windows }).root)[1].location).toBe("C:\\lib\\skills\\a\\references");
+  });
+
+  it("shows a truthful full parent path for a lone deeply nested package", () => {
+    const report: Report = {
+      version: 1, limits,
+      roots: [{ nodeId: "review", channel: "user", name: "review" }],
+      nodes: [
+        { ...skill("review"), path: "/lib/skills/team/deep/review/SKILL.md" },
+        { ...doc("notes.md"), path: "/lib/skills/team/deep/review/references/notes.md" },
+      ],
+      edges: [{ from: "review", to: "notes.md", reference: "references/notes.md" }],
+      issues: [],
+    };
+    expect(flat(buildSkillReferenceMap("review", { report }).root).map((item) => item.location))
+      .toEqual(["/lib/skills/team/deep/review", "/lib/skills/team/deep/review/references"]);
+    const windows = structuredClone(report);
+    for (const node of windows.nodes) node.path = `C:${node.path.replaceAll("/", "\\")}`;
+    expect(flat(buildSkillReferenceMap("review", { report: windows }).root).map((item) => item.location))
+      .toEqual(["C:\\lib\\skills\\team\\deep\\review", "C:\\lib\\skills\\team\\deep\\review\\references"]);
+  });
+
+  it("keeps locations relative to the selected folder with flat and packaged skills", () => {
+    const report: Report = {
+      version: 1, limits,
+      roots: [{ nodeId: "review", channel: "user", name: "review" }],
+      nodes: [
+        { ...skill("review"), path: "/lib/skills/review.md" },
+        { ...skill("tests", "loaded", 1), path: "/lib/skills/team/tests/SKILL.md" },
+        { ...doc("notes.md", "loaded", 2), path: "/lib/skills/team/tests/references/notes.md" },
+      ],
+      edges: [
+        { from: "review", to: "tests", reference: "@tests" },
+        { from: "tests", to: "notes.md", reference: "references/notes.md" },
+      ],
+      issues: [],
+    };
+    expect(flat(buildSkillReferenceMap("review", { report }).root).map((item) => item.location))
+      .toEqual([undefined, "team/tests", "team/tests/references"]);
+    const windows = structuredClone(report);
+    for (const node of windows.nodes) node.path = `C:${node.path.replaceAll("/", "\\")}`;
+    expect(flat(buildSkillReferenceMap("review", { report: windows }).root).map((item) => item.location))
+      .toEqual([undefined, "team\\tests", "team\\tests\\references"]);
   });
 
   it("maps a nested reference authored in a skill's own source as the subtree under its edge", () => {

@@ -17,8 +17,8 @@ export interface SkillMapItem {
   /** Authored text in the parent that introduced this item. */
   reference?: string;
   path?: string;
-  /** Folder relative to the skills folder (absolute when outside it), shown
-   * so same-named files stay distinguishable without hovering. */
+  /** Folder relative to the selected skills folder when a flat skill
+   * establishes it; otherwise an absolute parent path. */
   location?: string;
   status: SkillMapItemStatus;
   /** The repeated node's own status, for `repeat` rows. */
@@ -101,19 +101,20 @@ function nodeLabel(node: GraphNode): string {
 
 const segments = (path: string) => path.split(/[\\/]+/);
 
-/** Skill files sit at <skills folder>/<…skill folder>/SKILL.md, so the
- * skills folder is the common parent of every skill folder in the report. */
+/** A loaded flat Markdown skill establishes the selected folder. Package-only
+ * graphs cannot: their common parent may be deeper than the selected folder. */
 function skillsFolder(nodes: readonly GraphNode[]): string[] | undefined {
-  let common: string[] | undefined;
+  let selected: string[] | undefined;
   for (const node of nodes) {
-    if (node.kind !== "skill" || !node.path) continue;
-    const parent = segments(node.path).slice(0, -2);
-    if (!common) { common = parent; continue; }
-    let length = 0;
-    while (length < common.length && length < parent.length && common[length] === parent[length]) length += 1;
-    common = common.slice(0, length);
+    if (node.kind !== "skill" || node.status !== "loaded" || !node.path) continue;
+    const parts = segments(node.path);
+    const file = parts.at(-1) ?? "";
+    if (file.toLowerCase() === "skill.md" || !/\.(?:md|markdown)$/i.test(file)) continue;
+    const parent = parts.slice(0, -1);
+    if (selected && (selected.length !== parent.length || selected.some((part, index) => part !== parent[index]))) return undefined;
+    selected = parent;
   }
-  return common;
+  return selected;
 }
 
 function nodeLocation(node: GraphNode, folder: string[] | undefined): string | undefined {

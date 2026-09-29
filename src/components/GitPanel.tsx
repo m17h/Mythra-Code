@@ -234,6 +234,10 @@ function GitPanelInner(props: GitPanelProps) {
   routeStateRef.current = { repository, localDisabled, mutationBusy, mutationDisabledReason, repositoryState: props.repositoryState, repoKnown: Boolean(props.githubRepoStatus), repoError: props.githubRepoError };
   useEffect(() => { setRouteNotice(null); }, [checkoutScope]);
   useEffect(() => {
+    setCreatingBranch(false);
+    setBranchDraft("");
+  }, [checkoutScope, workflow?.isolated]);
+  useEffect(() => {
     if (!focusRequest || handledFocusNonce.current === focusRequest.nonce) return;
     setRouteNotice(null);
     if (focusRequest.view !== view) setView(focusRequest.view);
@@ -627,8 +631,10 @@ function GitPanelInner(props: GitPanelProps) {
               <div className="studio-actions">
                 <button
                   onClick={() => void changeBranch(branchDraft.trim(), true)}
-                  disabled={mutationDisabled || !branchDraft.trim()}
-                  title={localDisabled ? localDisabledReason : "Create this branch and switch to it"}
+                  disabled={mutationDisabled || !!workflow?.isolated || !branchDraft.trim()}
+                  title={localDisabled ? localDisabledReason : workflow?.isolated
+                    ? "This thread keeps its isolated branch. Use a shared project thread to change branches."
+                    : "Create this branch and switch to it"}
                 ><GitBranchPlus size={13} /> Create branch</button>
                 <button onClick={() => { setCreatingBranch(false); setBranchDraft(""); }}>Cancel</button>
               </div>
@@ -772,6 +778,7 @@ function GitPanelInner(props: GitPanelProps) {
             <ProjectPullRequestsView
               access={props.pullRequests}
               visible
+              checkout={snapshot ?? (workflow && !workflow.error ? null : undefined)}
               conversationPanel={props.pullRequestPanel}
               onOpenGitHubSettings={props.onOpenGitHubSettings}
               onConnectRepository={() => setShowGitHub(true)}
