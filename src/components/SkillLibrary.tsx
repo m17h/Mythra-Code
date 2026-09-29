@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { createPortal } from "react-dom";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { confirmDialog } from "../lib/confirmDialog";
 import { Boxes, Check, FilePenLine, FilePlus2, FolderOpen, LoaderCircle, Pencil, Plus, RefreshCw, RotateCcw, Save, Search, Trash2, X } from "lucide-react";
@@ -80,6 +81,7 @@ export function SkillLibrary({
   const [restoringPath, setRestoringPath] = useState<string | null>(null);
   const [navigationError, setNavigationError] = useState("");
   const createFormRef = useRef<HTMLFormElement>(null);
+  const libraryRef = useRef<HTMLElement>(null);
   const nameFieldRef = useRef<HTMLInputElement>(null);
   const addButtonRef = useRef<HTMLButtonElement>(null);
   const sourceEditorRef = useRef<HTMLDivElement>(null);
@@ -238,6 +240,14 @@ export function SkillLibrary({
     void loadSourceEditor(skill);
   }, [loadSourceEditor]);
 
+  const navigationSnapshot = useRef({ folder, skills, openSkillRequest, openSourceEditor, onOpenSkillRequestConsumed });
+  navigationSnapshot.current = { folder, skills, openSkillRequest, openSourceEditor, onOpenSkillRequestConsumed };
+  const navigationMounted = useRef(false);
+  useEffect(() => {
+    navigationMounted.current = true;
+    return () => { navigationMounted.current = false; };
+  }, []);
+
   useEffect(() => {
     if (!openSkillRequest || consumedOpenRequestRef.current === openSkillRequest.nonce || sourceSaving || removing) return;
     const target = skills.find((skill) => skill.path === openSkillRequest.path);
@@ -254,18 +264,23 @@ export function SkillLibrary({
       sourceFieldRef.current?.focus();
       return;
     }
-    let current = true;
+    const requestFolder = folder;
     void (async () => {
       const discard = !sourceLoaded || sourceDraft === sourceOriginal || await confirmDialog("Discard your unsaved skill changes?");
-      if (!current) return;
-      onOpenSkillRequestConsumed?.(openSkillRequest.nonce);
+      const latest = navigationSnapshot.current;
+      if (!navigationMounted.current || latest.folder !== requestFolder || latest.openSkillRequest?.nonce !== openSkillRequest.nonce) return;
+      latest.onOpenSkillRequestConsumed?.(openSkillRequest.nonce);
       if (!discard) return;
+      const currentTarget = latest.skills.find((skill) => skill.path === openSkillRequest.path);
+      if (!currentTarget) {
+        setNavigationError("This skill is no longer in the selected skills folder. Rescan the folder to check its current files.");
+        return;
+      }
       setPendingRemoval(null);
       setQuery("");
-      openSourceEditor(target);
+      latest.openSourceEditor(currentTarget);
     })();
-    return () => { current = false; };
-  }, [openSkillRequest, skills, busy, sourceSaving, removing, onOpenSkillRequestConsumed, sourceEditorSkill, sourceLoaded, sourceDraft, sourceOriginal, openSourceEditor]);
+  }, [openSkillRequest, folder, skills, busy, sourceSaving, removing, onOpenSkillRequestConsumed, sourceEditorSkill, sourceLoaded, sourceDraft, sourceOriginal, openSourceEditor]);
 
   const closeSourceEditor = async (confirmDiscard = true, force = false) => {
     if (sourceSaving && !force) return;
@@ -338,7 +353,7 @@ export function SkillLibrary({
   const sectionError = inlineCreateError ? "" : error;
 
   return (
-    <section className="skill-library-section">
+    <section className="skill-library-section" ref={libraryRef}>
       <div className={`skill-folder-card ${folder ? "selected" : "empty"}`}>
         <span className="skill-folder-icon"><FolderOpen size={19} /></span>
         <span className="skill-folder-copy">
@@ -529,7 +544,7 @@ export function SkillLibrary({
           </div>}
         </details>
 
-        {sourceEditorSkill && (
+        {sourceEditorSkill && createPortal(
           <div
             className="skill-editor-backdrop"
             onMouseDown={(event) => { if (event.target === event.currentTarget) closeSourceEditor(); }}
@@ -593,7 +608,11 @@ export function SkillLibrary({
                 </button>
               </div>
             </div>
-          </div>
+          </div>,
+          // A focused field can scroll a transformed, overflow-hidden sheet
+          // in WebKit. Keep this modal above that scrolling surface while
+          // inheriting the backdrop's live theme and UI scale.
+          libraryRef.current?.closest(".settings-backdrop") ?? libraryRef.current ?? document.body,
         )}
 
         {pendingRemoval && (

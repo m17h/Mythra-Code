@@ -2675,6 +2675,99 @@ describe("workspace switching during thread selection", () => {
     expect(invokeMock.mock.calls.some(([command, args]) => command === "codex_rpc" && args?.method === "gitDiffToRemote")).toBe(false);
   });
 
+  it.each(["success", "refused"] as const)("uses the guarded native fast-forward Pull without an unsafe shell fallback: %s", async (outcome) => {
+    const user = userEvent.setup();
+    const refusal = "Pull refused because ignored local files would be overwritten. Your files were kept.";
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "git_workspace_pull") {
+        if (outcome === "refused") throw new Error(refusal);
+        return { stdout: "Fast-forward complete", stderr: "" };
+      }
+      return stubInvoke(command, args);
+    });
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
+    await user.click(await screen.findByRole("tab", { name: "Git workspace tool" }));
+    await user.click(await screen.findByRole("button", { name: /^Pull$/ }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("git_workspace_pull", {
+      cwd: PROJECT_A.path, expectedHeadOid: "a".repeat(40), expectedBranch: "main",
+      expectedRemoteUrl: "https://github.com/test-user/alpha.git", expectedRepository: "test-user/alpha",
+    }));
+    expect(await screen.findByText(outcome === "refused" ? refusal : /Fast-forward complete/)).toBeInTheDocument();
+    expect(invokeMock.mock.calls.some(([command, args]) => command === "codex_rpc"
+      && args?.method === "command/exec" && (args.params as { command?: string[] })?.command?.includes("pull"))).toBe(false);
+  });
+
+  it.each([
+    ["Pull", "read-only"], ["Pull", "revisit"], ["Pull", "agent-started"],
+    ["Push", "read-only"], ["Push", "revisit"], ["Push", "agent-started"],
+  ] as const)("cancels %s when authorization changes during snapshot preflight: %s", async (action, change) => {
+    const user = userEvent.setup();
+    const pending = deferred<unknown>();
+    const nativeCommand = action === "Pull" ? "git_workspace_pull" : "git_workspace_push";
+    const buttonName = action === "Pull" ? /^Pull$/ : "Push commits";
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "git_workspace_snapshot" && args?.cwd === PROJECT_A.path) return pending.promise;
+      if (command === nativeCommand) return { stdout: "Transfer complete", stderr: "" };
+      return stubInvoke(command, args);
+    });
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
+    await user.click(await screen.findByRole("tab", { name: "Git workspace tool" }));
+    const reads = () => invokeMock.mock.calls.filter(([command, args]) => command === "git_workspace_snapshot" && args?.cwd === PROJECT_A.path).length;
+    const readsBeforeClick = reads();
+    await user.click(await screen.findByRole("button", { name: buttonName }));
+    await waitFor(() => expect(reads()).toBeGreaterThan(readsBeforeClick));
+    if (change === "read-only") {
+      await user.click(screen.getByRole("button", { name: "Ask to act" }));
+      await user.click(within(screen.getByRole("menu", { name: "Permission mode" })).getByRole("button", { name: /Read only/ }));
+    } else if (change === "revisit") {
+      await user.click(screen.getByRole("button", { name: /^Beta$/ }));
+      await user.click(screen.getByRole("button", { name: /^Alpha$/ }));
+    } else {
+      const { useTaskStore } = await import("./lib/taskStore");
+      act(() => {
+        useTaskStore.getState().ensureTask("pull-preflight-agent", PROJECT_A.path);
+        useTaskStore.getState().setTaskStatus("pull-preflight-agent", "running");
+      });
+    }
+    await act(async () => pending.resolve(await stubInvoke("git_workspace_snapshot", { cwd: PROJECT_A.path })));
+    expect(invokeMock.mock.calls.some(([command]) => command === nativeCommand)).toBe(false);
+    if (change === "read-only") {
+      expect(await screen.findByText("Switch this thread from Read only to Ask or Full access before changing Git or contacting GitHub.")).toBeInTheDocument();
+    } else if (change === "agent-started") {
+      expect(await screen.findByText("Wait for agents in this folder to finish before changing Git.")).toBeInTheDocument();
+    } else {
+      // Cancellation releases the original mutation leases for a fresh click.
+      await user.click(await screen.findByRole("button", { name: buttonName }));
+      await waitFor(() => expect(invokeMock.mock.calls.filter(([command]) => command === nativeCommand)).toHaveLength(1));
+    }
+  });
+
+  it.each(["Pull", "Push"] as const)("ignores a superseded %s preflight error after revisiting a project", async (action) => {
+    const user = userEvent.setup();
+    const pending = deferred<void>();
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "git_workspace_snapshot" && args?.cwd === PROJECT_A.path) {
+        await pending.promise;
+        throw new Error("Stale preflight snapshot failed");
+      }
+      return stubInvoke(command, args);
+    });
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
+    await user.click(await screen.findByRole("tab", { name: "Git workspace tool" }));
+    const reads = () => invokeMock.mock.calls.filter(([command, args]) => command === "git_workspace_snapshot" && args?.cwd === PROJECT_A.path).length;
+    const before = reads();
+    await user.click(await screen.findByRole("button", { name: action === "Pull" ? /^Pull$/ : "Push commits" }));
+    await waitFor(() => expect(reads()).toBeGreaterThan(before));
+    await user.click(screen.getByRole("button", { name: /^Beta$/ }));
+    await user.click(screen.getByRole("button", { name: /^Alpha$/ }));
+    await act(async () => pending.resolve());
+    expect(document.querySelector(".git-screen")?.textContent ?? "").not.toContain("Stale preflight snapshot failed");
+    expect(invokeMock.mock.calls.some(([command]) => command === "git_workspace_pull" || command === "git_workspace_push")).toBe(false);
+  });
+
   it("keeps GitHub terminal sign-in failures inside the Settings modal", async () => {
     const user = userEvent.setup();
     const failure = "Run gh auth login in your terminal, then refresh GitHub settings.";

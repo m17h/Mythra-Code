@@ -9,6 +9,9 @@
 .skill-reference-guide p { margin: 0 0 8px; overflow-wrap: anywhere; }
 .skill-reference-guide p:last-child { margin-bottom: 0; }
 .skill-reference-guide code { font-family: var(--font-mono); color: var(--text); }
+.skill-editor-backdrop { position: fixed; grid-template-rows: minmax(0, 1fr); }
+.skill-editor-dialog { min-height: 0; height: min(690px, 100%); max-height: 100%; overflow: hidden; }
+.skill-editor-head, .skill-editor-actions { flex: 0 0 auto; }
 .skill-editor-field .skill-prompt-editor { min-height: 0; flex: 1; display: flex; }
-.skill-editor-field .skill-prompt-editor textarea { min-height: 180px; }
-.skill-editor-dialog > .skill-dependency-notice, .skill-editor-dialog > .skill-dependency-details { flex: 0 0 auto; max-height: 25vh; overflow: auto; }
+.skill-editor-field .skill-prompt-editor textarea { min-height: 70px; max-height: 100%; }
+.skill-editor-dialog > .skill-dependency-notice, .skill-editor-dialog > .skill-dependency-details { flex: 0 1 auto; min-height: 0; max-height: 25%; overflow: auto; }

@@ -511,7 +511,24 @@ fn mutation_git(
 
 fn commit_for_pr_with_timeout(cwd: &Path, message: &str, limit: Duration) -> Result<(), String> {
     let before = optional_git_stdout(cwd, &["rev-parse", "--verify", "HEAD"]);
-    mutation_git(cwd, &["commit", "-m", message], limit, "Git commit")
+    // App initialization uses a command-local identity. Keep its PR workflow
+    // usable too, while preserving any complete user-configured identity.
+    let identity = optional_git_stdout(cwd, &["config", "user.name"])
+        .zip(optional_git_stdout(cwd, &["config", "user.email"]));
+    let args = if identity.is_some() {
+        vec!["commit", "-m", message]
+    } else {
+        vec![
+            "-c",
+            "user.name=Mythra Code",
+            "-c",
+            "user.email=openkiwi@local",
+            "commit",
+            "-m",
+            message,
+        ]
+    };
+    mutation_git(cwd, &args, limit, "Git commit")
         .map(|_| ())
         .map_err(|error| {
             let after = optional_git_stdout(cwd, &["rev-parse", "--verify", "HEAD"]);
@@ -1726,6 +1743,68 @@ pub(super) async fn github_pr_ready(
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn pr_commit_after_initialization_without_configured_identity() {
+        let root = env::temp_dir().join(format!("mythra-pr-initialized-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        git(&root, &["init", "-b", "main"]).unwrap();
+        git(&root, &["config", "user.name", ""]).unwrap();
+        git(&root, &["config", "user.email", ""]).unwrap();
+        fs::write(root.join("file.txt"), "initial\n").unwrap();
+        crate::project_git::initialize_workspace_git_sync(root.to_str().unwrap()).unwrap();
+        git(&root, &["switch", "-c", "topic"]).unwrap();
+        let before = git(&root, &["rev-parse", "HEAD"]).unwrap();
+        fs::write(root.join("file.txt"), "next\n").unwrap();
+        mutation_git(&root, &["add", "-A"], MUTATION_TIMEOUT, "Git stage").unwrap();
+        let result = commit_for_pr_with_timeout(&root, "PR change", MUTATION_TIMEOUT);
+        assert!(
+            result.is_ok(),
+            "initialized project's PR commit failed: {result:?}"
+        );
+        assert_eq!(
+            git(&root, &["log", "-1", "--format=%an <%ae>"]).unwrap(),
+            "Mythra Code <openkiwi@local>"
+        );
+        assert_eq!(git(&root, &["config", "user.name"]).unwrap(), "");
+        assert_eq!(git(&root, &["config", "user.email"]).unwrap(), "");
+        assert_eq!(
+            push_oid_for(&root, "topic", &before, true).unwrap(),
+            git(&root, &["rev-parse", "HEAD"]).unwrap()
+        );
+        assert_eq!(fs::read(root.join("file.txt")).unwrap(), b"next\n");
+        assert_eq!(git(&root, &["status", "--porcelain"]).unwrap(), "");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn pr_commit_preserves_configured_identity() {
+        let root = env::temp_dir().join(format!("mythra-pr-identity-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        git(&root, &["init", "-b", "main"]).unwrap();
+        git(&root, &["config", "user.name", "Configured User"]).unwrap();
+        git(
+            &root,
+            &["config", "user.email", "configured@example.invalid"],
+        )
+        .unwrap();
+        fs::write(root.join("file.txt"), "contents\n").unwrap();
+        mutation_git(&root, &["add", "-A"], MUTATION_TIMEOUT, "Git stage").unwrap();
+        commit_for_pr_with_timeout(&root, "PR change", MUTATION_TIMEOUT).unwrap();
+        assert_eq!(
+            git(&root, &["log", "-1", "--format=%an <%ae>"]).unwrap(),
+            "Configured User <configured@example.invalid>"
+        );
+        assert_eq!(
+            git(&root, &["config", "user.name"]).unwrap(),
+            "Configured User"
+        );
+        assert_eq!(
+            git(&root, &["config", "user.email"]).unwrap(),
+            "configured@example.invalid"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[cfg(unix)]
     fn cancellation_fixture(hook_name: &str) -> (PathBuf, String, String, PathBuf, PathBuf) {

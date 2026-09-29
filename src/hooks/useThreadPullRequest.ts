@@ -141,7 +141,11 @@ export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
   const currentScope = threadId ? stateScope(threadId, options.cwd) : "";
   const link = threadId ? links[threadId] ?? null : null;
   const linked = Boolean(link);
-  const scopedContext = threadId && contextState?.scope === currentScope ? contextState.value : contextCacheRef.current.get(currentScope) ?? null;
+  // A recent checkout may be served from the cache after thread navigation.
+  // Both its visible controls and their actions must consume that same scope.
+  const contextForScope = useCallback((scope: string) => contextState?.scope === scope
+    ? contextState.value : contextCacheRef.current.get(scope) ?? null, [contextState]);
+  const scopedContext = threadId ? contextForScope(currentScope) : null;
   const scopedCandidate = threadId && candidateState?.scope === currentScope ? candidateState.value : candidateCacheRef.current.get(currentScope) ?? null;
   const pullRequest = link?.snapshot ?? scopedCandidate;
 
@@ -362,7 +366,7 @@ export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
     const snapshot = optionsRef.current;
     if (!snapshot.threadId) throw new Error("No thread is selected.");
     const uiScope = stateScope(snapshot.threadId, snapshot.cwd);
-    const currentContext = contextState?.scope === uiScope ? contextState.value : null;
+    const currentContext = contextForScope(uiScope);
     const parsed = parsePullRequestReference(reference, currentContext?.repository);
     if (!parsed) {
       const error = new Error("Enter a GitHub pull request URL or a number for this repository.");
@@ -404,7 +408,7 @@ export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
         ? { scope: activeScope, value: false } : current);
       setLoadingState((current) => current?.scope.startsWith(`${snapshot.threadId}\0`) ? { ...current, value: false } : current);
     }
-  }, [bumpReadRevision, contextState, persistLink]);
+  }, [bumpReadRevision, contextForScope, persistLink]);
 
   const onDetach = useCallback(() => {
     const id = optionsRef.current.threadId;
@@ -430,7 +434,7 @@ export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
     const snapshot = optionsRef.current;
     if (!snapshot.threadId || !snapshot.cwd) throw new Error("This thread has no working directory.");
     const uiScope = stateScope(snapshot.threadId, snapshot.cwd);
-    const repository = contextState?.scope === uiScope ? contextState.value?.repository : null;
+    const repository = contextForScope(uiScope)?.repository;
     if (!repository) throw new Error("Refresh pull request status before creating a pull request.");
     const id = snapshot.threadId;
     const cwd = snapshot.cwd;
@@ -455,7 +459,7 @@ export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
       }
     });
     requestRefresh({ threadId: id, cwd, projectPath: snapshot.projectPath, enabled: snapshot.enabled, visible: snapshot.visible }, true);
-  }, [contextState, persistLink, requestRefresh, runMutation]);
+  }, [contextForScope, persistLink, requestRefresh, runMutation]);
 
   const archiveMerged = useCallback(async (id: string) => {
     const current = optionsRef.current;
@@ -541,15 +545,18 @@ export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
     if (!snapshot.threadId || !snapshot.cwd) throw new Error("This thread has no working directory.");
     if (snapshot.isolated) throw new Error("Branch creation is only available for shared project threads.");
     const uiScope = stateScope(snapshot.threadId, snapshot.cwd);
-    const currentContext = contextState?.scope === uiScope ? contextState.value : null;
+    const currentContext = contextForScope(uiScope);
     if (!currentContext) throw new Error("Refresh pull request status before creating a branch.");
     await runMutation(snapshot.threadId, snapshot.cwd, async () => {
       await createPullRequestBranch(snapshot.cwd!, name, currentContext.headOid);
       setNoticeState({ scope: uiScope, value: `Created branch ${name}.` });
       snapshot.onChanged?.();
-      requestRefresh({ threadId: snapshot.threadId!, cwd: snapshot.cwd, projectPath: snapshot.projectPath, enabled: snapshot.enabled, visible: snapshot.visible }, true);
     });
-  }, [contextState, requestRefresh, runMutation]);
+    // Mutation completion invalidates every read begun while the write was
+    // running. Start the branch owner's follow-up only after that boundary,
+    // so a slow native context read can settle into its originating checkout.
+    requestRefresh({ threadId: snapshot.threadId, cwd: snapshot.cwd, projectPath: snapshot.projectPath, enabled: snapshot.enabled, visible: snapshot.visible }, true);
+  }, [contextForScope, requestRefresh, runMutation]);
 
   const forgetThread = useCallback((id: string) => {
     creationDraftStore.forgetThread(id);

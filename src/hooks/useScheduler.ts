@@ -141,16 +141,19 @@ export function useScheduler(deps: SchedulerDeps): void {
       startedThreadId = started.thread.id;
       current.bindThreadToProject(started.thread.id, project.path);
       useTaskStore.getState().ensureTask(started.thread.id, project.path);
-      useTaskStore.getState().appendUserMessage(started.thread.id, { id: `scheduled-${crypto.randomUUID()}`, role: "user", text: scheduled.prompt, skillReferences: resolved.skillReferences, skillsFolder: resolved.skillsFolder, skillDependencies: resolved.skillDependencies });
       useTaskStore.getState().setTaskStatus(started.thread.id, "starting");
       // Snapshot before the unattended turn edits anything; the Codex event
       // router finalizes it on turn completion like any user turn.
-      await current.beginRunCheckpoint(started.thread.id, project.path, scheduled.prompt, run.provider, run.model);
       try {
+        await current.beginRunCheckpoint(started.thread.id, project.path, scheduled.prompt, run.provider, run.model);
         const model = started.model;
-        await rpc("turn/start", turnStartParams(runtimeRun, started.thread.id, project.path, [
+        const params = turnStartParams(runtimeRun, started.thread.id, project.path, [
           { type: "text", text: providerPrompt, text_elements: [] },
-        ], [], false, { systemPrompt: resolved.systemPrompt, model: typeof model === "string" ? model : undefined }));
+        ], [], false, { systemPrompt: resolved.systemPrompt, model: typeof model === "string" ? model : undefined });
+        // Preparation and parameter validation can fail without a request.
+        // Append only when dispatch is next, so history never claims delivery.
+        useTaskStore.getState().appendUserMessage(started.thread.id, { id: `scheduled-${crypto.randomUUID()}`, role: "user", text: scheduled.prompt, skillReferences: resolved.skillReferences, skillsFolder: resolved.skillsFolder, skillDependencies: resolved.skillDependencies });
+        await rpc("turn/start", params);
       } catch (reason) {
         // No turn started, so no completion event will finalize the snapshot.
         current.discardRunCheckpoint(started.thread.id);

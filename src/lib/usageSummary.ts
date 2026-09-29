@@ -3,7 +3,7 @@ import {
   pricingForModel, pricingModelKeys, providerUsageTotals, usageTotals, type UsageAmounts, type UsageProvider, type UsageTotals,
 } from "./usageLedger";
 import {
-  addComponentAmounts, emptyComponentAmounts, retainedUsageHistory, shiftDayKey, type UsageBucket, type UsageComponentAmounts,
+  addComponentAmounts, emptyComponentAmounts, retainedUsageHistory, shiftDayKey, unclassifiedTokens, type UsageBucket, type UsageComponentAmounts,
 } from "./usageHistory";
 
 /**
@@ -251,6 +251,7 @@ function perComponent(amounts: UsageComponentAmounts, kind: "tokens" | "cost", d
     result[component.id] = amounts[component[kind]] / divisor;
     result.total += result[component.id];
   }
+  if (kind === "tokens") result.total = amounts.totalTokens / divisor;
   return result;
 }
 
@@ -289,10 +290,10 @@ export function promptAverages(buckets: Iterable<UsageComponentAmounts>, per: "t
   const priced = emptyComponentAmounts();
   let prompts = 0; let pricedPrompts = 0; let excludedTokens = 0;
   for (const bucket of selected) {
-    if (bucket.unturnedTokens > 0) { excludedTokens += bucket.totalTokens; continue; }
+    if (bucket.unturnedTokens > 0 || (bucket.auxiliaryRequests ?? 0) > 0 || (!bucket.turns && !bucket.modelTurns && bucket.totalTokens > 0)) { excludedTokens += bucket.totalTokens; continue; }
     addComponentAmounts(identified, bucket);
     prompts += bucket[per];
-    if (bucket.unpricedTokens > 0) continue;
+    if (bucket.unpricedTokens > 0 || unclassifiedTokens(bucket) > 0) continue;
     addComponentAmounts(priced, bucket);
     pricedPrompts += bucket[per];
   }
@@ -322,6 +323,8 @@ export interface ComponentBreakdownRow {
 
 export interface ComponentBreakdown {
   rows: ComponentBreakdownRow[];
+  /** Total-only receipts and residual tokens have no known billable type. */
+  unclassifiedTokens: number;
   /** Undated earlier usage: its token split is known and counted in the rows;
    * its cost is known only in total. */
   earlier: { tokens: number; cost: number; priced: boolean } | null;
@@ -335,10 +338,14 @@ export interface ComponentBreakdown {
  * and earlier usage adds its known tokens but only a total cost.
  */
 export function componentBreakdown(buckets: Iterable<UsageComponentAmounts>, earlier?: UsageSelectionTotals | null): ComponentBreakdown {
+  let recordedTokens = earlier?.totalTokens ?? 0;
+  let unclassified = earlier ? unclassifiedTokens(earlier) : 0;
   const rows: ComponentBreakdownRow[] = USAGE_COMPONENTS.map((component) => ({
     id: component.id, label: component.label, tokens: earlier?.[component.tokens] ?? 0, cost: 0, costedTokens: 0, partlyCostedTokens: 0,
   }));
   for (const bucket of buckets) {
+    recordedTokens += bucket.totalTokens;
+    unclassified += unclassifiedTokens(bucket);
     USAGE_COMPONENTS.forEach((component, index) => {
       const row = rows[index];
       const tokens = bucket[component.tokens];
@@ -354,9 +361,10 @@ export function componentBreakdown(buckets: Iterable<UsageComponentAmounts>, ear
     : null;
   return {
     rows,
+    unclassifiedTokens: unclassified,
     earlier: earlierPart,
     total: {
-      tokens: rows.reduce((sum, row) => sum + row.tokens, 0),
+      tokens: recordedTokens,
       cost: rows.reduce((sum, row) => sum + row.cost, 0) + (earlierPart?.cost ?? 0),
     },
   };

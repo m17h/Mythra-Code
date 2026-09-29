@@ -113,8 +113,8 @@ export function CommandPalette({ open, projects, threads, workflows, projectActi
     if (!open) return;
     setQuery("");
     setActive(0);
-    const frame = requestAnimationFrame(() => inputRef.current?.focus());
-    return () => cancelAnimationFrame(frame);
+    // useModalFocus already focuses the input during this commit. A later
+    // queued focus would steal focus back after the user's first Tab.
   }, [open]);
 
   // Keyboard selection has to stay visible when the list scrolls past the fold.

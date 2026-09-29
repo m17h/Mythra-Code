@@ -860,6 +860,17 @@ export function resetUsageLedgerCache(): void {
 function positiveUsageDelta(next: TokenUsageView, previous: TokenUsageView): TokenUsageView {
   const inputTokens = Math.max(0, next.inputTokens - previous.inputTokens);
   const outputTokens = Math.max(0, next.outputTokens - previous.outputTokens);
+  const totalDelta = Math.max(0, next.totalTokens - previous.totalTokens);
+  if (previous.totalTokens > tokensIn(previous) && inputTokens + outputTokens > 0) {
+    // A cumulative runtime can supply previously omitted input/output types
+    // later. Even a split delta smaller than total growth may describe old
+    // tokens while the new tokens remain unsplit. We cannot identify their
+    // date/model/rate safely, so retain actual growth as unclassified/unpriced.
+    // The caller keeps `next` as the baseline for subsequent complete deltas.
+    return cleanUsage({ ...emptyUsage(), totalTokens: totalDelta, tokenAvailability: "partial",
+      cacheReadReported: false, cacheWriteReported: false, serviceTier: next.serviceTier,
+      serviceTierSource: next.serviceTierSource, requestedServiceTier: next.requestedServiceTier });
+  }
   return cleanUsage({
     totalTokens: Math.max(inputTokens + outputTokens, next.totalTokens - previous.totalTokens),
     inputTokens,
@@ -872,7 +883,7 @@ function positiveUsageDelta(next: TokenUsageView, previous: TokenUsageView): Tok
     cacheReadReported: next.cacheReadReported === true && (!previous.inputTokens || previous.cacheReadReported === true),
     cacheWriteReported: next.cacheWriteReported === true && (!previous.inputTokens || previous.cacheWriteReported === true),
     serviceTier: next.serviceTier, serviceTierSource: next.serviceTierSource, requestedServiceTier: next.requestedServiceTier,
-    tokenAvailability: previous.tokenAvailability === "partial" && tokensIn(previous) > 0 ? "partial" : next.tokenAvailability,
+    tokenAvailability: previous.tokenAvailability === "partial" && previous.totalTokens > 0 ? "partial" : next.tokenAvailability,
   });
 }
 
@@ -946,25 +957,26 @@ function acceptDelta(record: ThreadUsageRecord, delta: TokenUsageView, turnId?: 
 function withCostDelta(record: ThreadUsageRecord, delta: TokenUsageView, pricing: ModelPricing | undefined): Pick<ThreadUsageRecord, "estimatedCost" | "pricedTokens" | "unpricedTokens" | "providerUsage"> {
   const baseline = amountsFor(record);
   const tokens = tokensIn(delta);
+  const reportedTokens = Math.max(delta.totalTokens, tokens);
   const cost = estimateUsageCost(delta, pricing);
   // Ordinary threads need no duplicate counters: their provider label already
   // attributes the whole record. Materialize subtotals only after a provider
   // change (or compaction), when that shortcut would lose history.
   const providerUsage = record.providerUsage
-    ? mergeProviderUsage(providerParts(record), { [record.provider ?? "unknown"]: amountsFor({ ...record, usage: delta, estimatedCost: cost ?? 0, pricedTokens: cost === null ? 0 : tokens, unpricedTokens: cost === null ? tokens : 0 }) })
+    ? mergeProviderUsage(providerParts(record), { [record.provider ?? "unknown"]: amountsFor({ ...record, usage: delta, estimatedCost: cost ?? 0, pricedTokens: cost === null ? 0 : tokens, unpricedTokens: cost === null ? reportedTokens : reportedTokens - tokens }) })
     : undefined;
   return cost === null
     ? {
         providerUsage,
         estimatedCost: baseline.estimatedCost,
         pricedTokens: baseline.pricedTokens,
-        unpricedTokens: baseline.unpricedTokens + tokens,
+        unpricedTokens: baseline.unpricedTokens + reportedTokens,
       }
     : {
         providerUsage,
         estimatedCost: baseline.estimatedCost + cost,
         pricedTokens: baseline.pricedTokens + tokens,
-        unpricedTokens: baseline.unpricedTokens,
+        unpricedTokens: baseline.unpricedTokens + reportedTokens - tokens,
       };
 }
 
@@ -997,7 +1009,7 @@ export function recordCumulativeUsage(threadId: string, usage: TokenUsageView, t
   return upsert(threadId, (record) => {
     const nextSnapshot = cleanUsage(withTierEvidence(record, usage));
     const previousSnapshot = record.cumulativeSnapshot ?? record.usage;
-    const reset = tokensIn(record.usage) > 0 && snapshotReset(nextSnapshot, previousSnapshot);
+    const reset = record.usage.totalTokens > 0 && snapshotReset(nextSnapshot, previousSnapshot);
     const delta = reset ? emptyUsage() : positiveUsageDelta(nextSnapshot, previousSnapshot);
     return {
       ...record,
@@ -1366,10 +1378,10 @@ export function usageTotals(): UsageTotals {
     totals.threads += record.kind === "auxiliary" ? 0 : record.threadId === USAGE_ARCHIVE_THREAD_ID
       ? (record.archivedThreads ?? 1)
       : (record.countedInArchive ? 0 : 1);
-    const cost = record.estimatedCost ?? estimateUsageCost(usage, record.pricing);
-    totals.estimatedCost += cost ?? 0;
-    totals.pricedTokens += record.pricedTokens ?? (cost === null ? 0 : tokensIn(usage));
-    totals.unpricedTokens += record.unpricedTokens ?? (cost === null ? tokensIn(usage) : 0);
+    const coverage = amountsFor(record);
+    totals.estimatedCost += coverage.estimatedCost;
+    totals.pricedTokens += coverage.pricedTokens;
+    totals.unpricedTokens += coverage.unpricedTokens;
   }
   totals.estimatedCost = Math.max(0, totals.estimatedCost);
   totals.unpricedTokens = Math.max(0, totals.unpricedTokens);
@@ -1380,14 +1392,17 @@ export function usageTotals(): UsageTotals {
 function amountsFor(record: ThreadUsageRecord): UsageAmounts {
   const usage = cleanUsage(record.usage);
   const cost = record.estimatedCost ?? estimateUsageCost(usage, record.pricing);
+  const pricedTokens = record.pricedTokens ?? (cost === null ? 0 : tokensIn(usage));
   return {
     inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, totalTokens: usage.totalTokens,
     cachedInputTokens: usage.cachedInputTokens, cacheWriteInputTokens: usage.cacheWriteInputTokens ?? 0,
     cacheReadUnknownTokens: cacheUnknownTokens(usage, "Read"), cacheWriteUnknownTokens: cacheUnknownTokens(usage, "Write"),
     reasoningOutputTokens: usage.reasoningOutputTokens,
     estimatedCost: cost ?? 0,
-    pricedTokens: record.pricedTokens ?? (cost === null ? 0 : tokensIn(usage)),
-    unpricedTokens: record.unpricedTokens ?? (cost === null ? tokensIn(usage) : 0),
+    pricedTokens,
+    // Older records counted only input/output toward coverage. A reported
+    // total beyond that split has no billable type and stays unpriced.
+    unpricedTokens: Math.max(record.unpricedTokens ?? 0, usage.totalTokens - pricedTokens),
   };
 }
 
@@ -1412,7 +1427,11 @@ function providerParts(record: ThreadUsageRecord): Partial<Record<UsageProvider,
 function readProviderParts(raw: unknown, record: ThreadUsageRecord): Partial<Record<UsageProvider, UsageAmounts>> {
   const fallback = { unknown: amountsFor(record) };
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return fallback;
-  const entries = Object.entries(raw);
+  const rawEntries = Object.entries(raw);
+  const entries = rawEntries.map(([provider, value]) => [provider, value && {
+    ...value, unpricedTokens: Math.max(value.unpricedTokens, value.totalTokens - value.pricedTokens),
+  }] as const);
+  if (rawEntries.some(([, value]) => !value || AMOUNT_KEYS.some((key) => typeof value[key] !== "number" || !Number.isFinite(value[key]) || value[key] < 0))) return fallback;
   if (entries.some(([provider, value]) => !USAGE_PROVIDERS.includes(provider as UsageProvider) || !value
     || AMOUNT_KEYS.some((key) => typeof value[key] !== "number" || !Number.isFinite(value[key]) || value[key] < 0))) return fallback;
   const expected = amountsFor(record);

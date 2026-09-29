@@ -13,11 +13,11 @@ export function cacheUnknownTokens(usage: UsageEvidence & { inputTokens: number 
 }
 
 /** Empty accumulators do not turn a reported zero into unknown. */
-export function mergedUsageEvidence(left: UsageEvidence & { inputTokens: number; outputTokens?: number }, right: UsageEvidence & { inputTokens: number; outputTokens?: number }): UsageEvidence {
+export function mergedUsageEvidence(left: UsageEvidence & { inputTokens: number; outputTokens?: number; totalTokens?: number }, right: UsageEvidence & { inputTokens: number; outputTokens?: number; totalTokens?: number }): UsageEvidence {
   const cacheReadUnknownTokens = cacheUnknownTokens(left, "Read") + cacheUnknownTokens(right, "Read");
   const cacheWriteUnknownTokens = cacheUnknownTokens(left, "Write") + cacheUnknownTokens(right, "Write");
-  const leftUsed = left.inputTokens + (left.outputTokens ?? 0) > 0;
-  const rightUsed = right.inputTokens + (right.outputTokens ?? 0) > 0;
+  const leftUsed = Math.max(left.totalTokens ?? 0, left.inputTokens + (left.outputTokens ?? 0)) > 0;
+  const rightUsed = Math.max(right.totalTokens ?? 0, right.inputTokens + (right.outputTokens ?? 0)) > 0;
   const tier = leftUsed ? left.serviceTier : right.serviceTier;
   const sameTier = !leftUsed || !rightUsed || left.serviceTier === right.serviceTier;
   return {

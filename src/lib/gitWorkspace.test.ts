@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
 
-import { previewGitWorkspaceRevertAll, revertGitWorkspaceAll } from "./gitWorkspace";
+import { previewGitWorkspaceRevertAll, revertGitWorkspaceAll, pullGitWorkspace } from "./gitWorkspace";
 
 describe("native bulk Git revert", () => {
   beforeEach(() => { mocks.invoke.mockReset(); });
@@ -25,6 +25,26 @@ describe("native bulk Git revert", () => {
     const failure = new Error("Files changed during confirmation. Nothing was reverted.");
     mocks.invoke.mockRejectedValue(failure);
     await expect(revertGitWorkspaceAll("/project", "stale-token")).rejects.toBe(failure);
+    expect(mocks.invoke).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("native guarded Git Pull", () => {
+  beforeEach(() => { mocks.invoke.mockReset(); });
+
+  it("passes the originating checkout and visible destination to a single native transaction", async () => {
+    mocks.invoke.mockResolvedValue({ stdout: "Already up to date.", stderr: "" });
+    await pullGitWorkspace("C:\\project", "a".repeat(40), "feature/work", "https://github.com/owner/repo.git", "owner/repo");
+    expect(mocks.invoke).toHaveBeenCalledExactlyOnceWith("git_workspace_pull", {
+      cwd: "C:\\project", expectedHeadOid: "a".repeat(40), expectedBranch: "feature/work",
+      expectedRemoteUrl: "https://github.com/owner/repo.git", expectedRepository: "owner/repo",
+    });
+  });
+
+  it("preserves a native safety refusal without falling back to git pull", async () => {
+    const refusal = new Error("Ignored files would be overwritten. Files were kept.");
+    mocks.invoke.mockRejectedValue(refusal);
+    await expect(pullGitWorkspace("/project", "a".repeat(40), "main", "https://github.com/owner/repo.git", "owner/repo")).rejects.toBe(refusal);
     expect(mocks.invoke).toHaveBeenCalledTimes(1);
   });
 });

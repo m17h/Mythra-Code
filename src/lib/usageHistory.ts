@@ -153,6 +153,11 @@ export function emptyComponentAmounts(): UsageComponentAmounts {
   };
 }
 
+/** Reported total tokens whose input/output type was not supplied. */
+export function unclassifiedTokens(amounts: UsageComponentAmounts): number {
+  return Math.max(0, amounts.totalTokens - amounts.uncachedInputTokens - amounts.cacheReadTokens - amounts.cacheWriteTokens - amounts.outputTokens);
+}
+
 export function addComponentAmounts(target: UsageComponentAmounts, source: UsageComponentAmounts): UsageComponentAmounts {
   const targetInput = target.uncachedInputTokens + target.cacheReadTokens + target.cacheWriteTokens;
   const sourceInput = source.uncachedInputTokens + source.cacheReadTokens + source.cacheWriteTokens;
@@ -208,8 +213,9 @@ export function addUsageToAmounts(amounts: UsageComponentAmounts, usage: TokenUs
     amounts.cacheWriteCost += parts.costs.cacheWrite;
     amounts.outputCost += parts.costs.output;
     amounts.pricedTokens += tokens;
+    amounts.unpricedTokens += Math.max(0, usage.totalTokens - tokens);
   } else {
-    amounts.unpricedTokens += tokens;
+    amounts.unpricedTokens += Math.max(usage.totalTokens, tokens);
   }
   return amounts;
 }
@@ -385,6 +391,8 @@ function parseHistory(raw: unknown): UsageHistoryState | null {
     if (parsed.some((item) => item === null)) continue;
     const bucket = { day, provider: provider as UsageProvider, model } as UsageBucket;
     NUMBER_KEYS.forEach((key, index) => { bucket[key] = parsed[index]!; });
+    // Older coverage counters omitted total-only and unsplit residual usage.
+    bucket.unpricedTokens = Math.max(bucket.unpricedTokens, bucket.totalTokens - bucket.pricedTokens);
     const evidence = value.bucketEvidence?.[bucketKey(day, bucket.provider, model)];
     const input = bucket.uncachedInputTokens + bucket.cacheReadTokens + bucket.cacheWriteTokens;
     bucket.cacheReadUnknownTokens = Math.min(input, nonNegative(evidence?.cacheReadUnknownTokens) ?? input);
@@ -553,7 +561,7 @@ export function recordUsageHistory(delta: UsageHistoryDelta): void {
     if (firstSighting(current, turnKey)) bucket.turns += 1;
     if (firstSighting(current, `${turnKey}\0${delta.provider}\0${model}`)) bucket.modelTurns += 1;
   } else {
-    bucket.unturnedTokens += tokens;
+    bucket.unturnedTokens += Math.max(usage.totalTokens, tokens);
   }
   current.buckets.set(key, bucket);
   cachedState = current;

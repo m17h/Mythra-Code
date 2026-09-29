@@ -1419,7 +1419,7 @@ pub(super) fn worktree_merge_branch_sync(
     let worktree = checkpoint_repo(worktree_path)?;
     verify_linked_worktree(&source, &worktree)?;
     verify_managed_worktree_branch(&worktree, branch)?;
-    verify_current_safety_tree(&source, safety_id)?;
+    let safety_tree = verify_current_safety_tree(&source, safety_id)?;
     if !git_stdout(
         &source,
         &["status", "--porcelain=v1", "--untracked-files=all"],
@@ -1448,6 +1448,134 @@ pub(super) fn worktree_merge_branch_sync(
         ],
         None,
     )?;
+    let source_head_oid = git_stdout(&source, &["rev-parse", "--verify", "HEAD"], None)?;
+    let source_branch = optional_git_stdout(&source, &["symbolic-ref", "--short", "-q", "HEAD"]);
+    let branch_merge_options = source_branch.as_ref().and_then(|name| {
+        optional_git_stdout(
+            &source,
+            &[
+                "config",
+                "--get-all",
+                &format!("branch.{name}.mergeOptions"),
+            ],
+        )
+    });
+    let configured_strategy =
+        optional_git_stdout(&source, &["config", "--get-all", "pull.twohead"]);
+    if branch_merge_options.is_some()
+        || configured_strategy
+            .as_ref()
+            .is_some_and(|strategy| strategy != "ort")
+    {
+        return Err("This repository configures additional merge options or a custom strategy that cannot be safely previewed. Preserve ignored files and merge this branch manually.".into());
+    }
+    // Ort can derive new destinations from directory renames, and can overwrite
+    // ignored files even with --no-overwrite-ignore. Inspect its computed tree,
+    // rather than only the incoming branch's original paths. No real checkout
+    // or index is changed when this preview reports conflicts or is unavailable.
+    let (preview, truncated) = crate::git_workspace::bounded_git_output(
+        &source,
+        &[
+            "merge-tree",
+            "--write-tree",
+            "--no-messages",
+            &source_head_oid,
+            &isolated_head_oid,
+        ],
+        Duration::from_secs(30),
+        512 * 1024,
+        true,
+    )?;
+    if !preview.status.success() || truncated {
+        let detail = String::from_utf8_lossy(&preview.stderr);
+        if preview.status.code() == Some(129) || detail.contains("not a git command") {
+            return Err("This Git version cannot safely preview branch merges. Update Git to 2.38 or later, or preserve ignored files and merge the branch manually. Nothing was merged.".into());
+        }
+        return Err(format!("Git could not safely preview this branch merge, or the merge has conflicts. Nothing was merged. {}", detail.trim()));
+    }
+    let result_tree = std::str::from_utf8(&preview.stdout)
+        .map_err(|_| "Git returned an unreadable merge preview")?
+        .trim();
+    if !matches!(result_tree.len(), 40 | 64)
+        || !result_tree.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err("Git returned an invalid merge preview. Nothing was merged.".into());
+    }
+    let source_paths = git_nul_paths(
+        &source,
+        &["ls-tree", "-r", "-z", "--name-only", &safety_tree],
+    )?;
+    let target_paths = git_nul_paths(
+        &source,
+        &["ls-tree", "-r", "-z", "--name-only", result_tree],
+    )?;
+    let captured_paths: HashSet<_> = source_paths.iter().cloned().collect();
+    let target_set: HashSet<_> = target_paths.iter().cloned().collect();
+    let removable_paths: HashSet<_> = source_paths
+        .into_iter()
+        .filter(|path| !target_set.contains(path))
+        .collect();
+    verify_target_ancestors(&source, &target_paths, &removable_paths)?;
+    verify_target_leaves(&source, &target_paths, &captured_paths, &removable_paths)?;
+    // A file destination may replace a directory. Only inspect those specific
+    // directories, so unrelated ignored build output never blocks this merge.
+    let directory_destinations: Vec<_> = target_paths
+        .iter()
+        .filter(|path| {
+            fs::symlink_metadata(source.join(path)).is_ok_and(|metadata| metadata.is_dir())
+        })
+        .collect();
+    if !directory_destinations.is_empty() {
+        let mut args = vec!["--literal-pathspecs"];
+        args.extend_from_slice(IGNORED_FILES_ARGS);
+        args.push("--");
+        for path in &directory_destinations {
+            args.push(
+                path.to_str()
+                    .ok_or("The merge destination is not valid Unicode")?,
+            );
+        }
+        let (ignored, truncated) = crate::git_workspace::bounded_git_output(
+            &source,
+            &args,
+            Duration::from_secs(30),
+            512 * 1024,
+            true,
+        )?;
+        if !ignored.status.success() || truncated {
+            return Err(
+                "Could not safely inspect ignored files at merge destinations. Nothing was merged."
+                    .into(),
+            );
+        }
+        if !ignored.stdout.is_empty() {
+            return Err("The branch would replace a directory containing ignored files. Preserve those files before merging; nothing was merged.".into());
+        }
+    }
+    verify_current_safety_tree(&source, safety_id)?;
+    if optional_git_stdout(&source, &["rev-parse", "--verify", "HEAD"]).as_deref()
+        != Some(source_head_oid.as_str())
+        || optional_git_stdout(&source, &["symbolic-ref", "--short", "-q", "HEAD"]) != source_branch
+        || optional_git_stdout(&worktree, &["rev-parse", "--verify", "HEAD"]).as_deref()
+            != Some(isolated_head_oid.as_str())
+    {
+        return Err("The source or isolated branch changed while its merge was previewed. Nothing was merged; refresh and review the branches.".into());
+    }
+    if source_branch.as_ref().and_then(|name| {
+        optional_git_stdout(
+            &source,
+            &[
+                "config",
+                "--get-all",
+                &format!("branch.{name}.mergeOptions"),
+            ],
+        )
+    }) != branch_merge_options
+        || optional_git_stdout(&source, &["config", "--get-all", "pull.twohead"])
+            != configured_strategy
+    {
+        return Err("The repository's merge options changed while its merge was previewed. Nothing was merged; refresh and inspect the options.".into());
+    }
     let previous_pin = pin_reference
         .and_then(|reference| optional_git_stdout(&source, &["rev-parse", "--verify", reference]));
     if let Some(reference) = pin_reference {
@@ -1459,7 +1587,13 @@ pub(super) fn worktree_merge_branch_sync(
     let configured_identity = optional_git_stdout(&source, &["config", "user.name"])
         .zip(optional_git_stdout(&source, &["config", "user.email"]));
     let merge_args = if configured_identity.is_some() {
-        vec!["merge", "--no-ff", "--no-edit", isolated_head_oid.as_str()]
+        vec![
+            "merge",
+            "--no-overwrite-ignore",
+            "--no-ff",
+            "--no-edit",
+            isolated_head_oid.as_str(),
+        ]
     } else {
         vec![
             "-c",
@@ -1467,6 +1601,7 @@ pub(super) fn worktree_merge_branch_sync(
             "-c",
             "user.email=openkiwi@local",
             "merge",
+            "--no-overwrite-ignore",
             "--no-ff",
             "--no-edit",
             isolated_head_oid.as_str(),
@@ -3033,6 +3168,224 @@ mod worktree_lifecycle_tests {
             .unwrap_err()
             .to_string()
             .contains("small regular file"));
+    }
+
+    #[test]
+    fn worktree_merge_refuses_to_overwrite_ignored_destination() {
+        for shape in ["file", "ancestor", "directory", "symlink"] {
+            #[cfg(not(unix))]
+            if shape == "symlink" {
+                continue;
+            }
+            let fixture = RemovalFixture::new();
+            let target = if matches!(shape, "ancestor" | "symlink") {
+                "cache/nested.txt"
+            } else if shape == "directory" {
+                "cache"
+            } else {
+                "private.txt"
+            };
+            fs::create_dir_all(fixture.isolated.join(target).parent().unwrap()).unwrap();
+            fs::write(fixture.isolated.join(target), "committed destination\n").unwrap();
+            git_stdout(&fixture.isolated, &["add", target], None).unwrap();
+            git_stdout(&fixture.isolated, &["commit", "-m", "destination"], None).unwrap();
+            fs::write(
+                fixture.source.join(".git/info/exclude"),
+                "private.txt\ncache\n",
+            )
+            .unwrap();
+            let ignored = match shape {
+                "ancestor" => fixture.source.join("cache"),
+                "directory" => {
+                    fs::create_dir(fixture.source.join("cache")).unwrap();
+                    fixture.source.join("cache/private.txt")
+                }
+                "symlink" => {
+                    let outside = fixture.root.join("outside");
+                    fs::create_dir(&outside).unwrap();
+                    #[cfg(unix)]
+                    std::os::unix::fs::symlink(&outside, fixture.source.join("cache")).unwrap();
+                    outside.join("private.txt")
+                }
+                _ => fixture.source.join("private.txt"),
+            };
+            fs::write(&ignored, "unique ignored contents\n").unwrap();
+            capture_checkpoint_snapshot(
+                "ignored-merge-safety",
+                fixture.source.to_str().unwrap(),
+                "after",
+                "safety",
+            )
+            .unwrap();
+            let source_head = git_stdout(&fixture.source, &["rev-parse", "HEAD"], None).unwrap();
+            let isolated_head =
+                git_stdout(&fixture.isolated, &["rev-parse", "HEAD"], None).unwrap();
+            let index_before = fs::read(fixture.source.join(".git/index")).unwrap();
+            let reference = worktree_applied_ref("ignored-merge-thread").unwrap();
+            let result = worktree_merge_branch_sync(
+                fixture.source.to_str().unwrap(),
+                fixture.isolated.to_str().unwrap(),
+                "mythra/isolated",
+                "ignored-merge-safety",
+                Some(&reference),
+            );
+            assert!(
+                result.is_err(),
+                "{shape}: ignored contents were overwritten: {result:?}"
+            );
+            assert_eq!(
+                fs::read(&ignored).unwrap(),
+                b"unique ignored contents\n",
+                "{shape}"
+            );
+            if shape == "symlink" {
+                assert!(fs::symlink_metadata(fixture.source.join("cache"))
+                    .unwrap()
+                    .file_type()
+                    .is_symlink());
+            }
+            assert_eq!(
+                fs::read(fixture.source.join(".git/index")).unwrap(),
+                index_before
+            );
+            assert_eq!(
+                git_stdout(&fixture.source, &["rev-parse", "HEAD"], None).unwrap(),
+                source_head
+            );
+            assert_eq!(
+                git_stdout(&fixture.isolated, &["rev-parse", "HEAD"], None).unwrap(),
+                isolated_head
+            );
+            assert_eq!(
+                git_stdout(&fixture.source, &["symbolic-ref", "--short", "HEAD"], None).unwrap(),
+                "main"
+            );
+            assert!(
+                optional_git_stdout(&fixture.source, &["rev-parse", "--verify", &reference])
+                    .is_none()
+            );
+            assert!(
+                optional_git_stdout(&fixture.source, &["rev-parse", "--verify", "MERGE_HEAD"])
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn worktree_merge_preserves_unrelated_ignored_output_and_allows_tracked_file_to_directory() {
+        let fixture = RemovalFixture::new();
+        fs::remove_file(fixture.isolated.join("file.txt")).unwrap();
+        fs::create_dir(fixture.isolated.join("file.txt")).unwrap();
+        fs::write(
+            fixture.isolated.join("file.txt/nested.txt"),
+            "tracked replacement\n",
+        )
+        .unwrap();
+        git_stdout(&fixture.isolated, &["add", "-A"], None).unwrap();
+        git_stdout(
+            &fixture.isolated,
+            &["commit", "-m", "file to directory"],
+            None,
+        )
+        .unwrap();
+        fs::write(fixture.source.join(".git/info/exclude"), "build/\n").unwrap();
+        fs::create_dir(fixture.source.join("build")).unwrap();
+        fs::write(fixture.source.join("build/private.txt"), "unique output\n").unwrap();
+        capture_checkpoint_snapshot(
+            "ignored-output-safety",
+            fixture.source.to_str().unwrap(),
+            "after",
+            "safety",
+        )
+        .unwrap();
+        worktree_merge_branch_sync(
+            fixture.source.to_str().unwrap(),
+            fixture.isolated.to_str().unwrap(),
+            "mythra/isolated",
+            "ignored-output-safety",
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read(fixture.source.join("build/private.txt")).unwrap(),
+            b"unique output\n"
+        );
+        assert_eq!(
+            fs::read(fixture.source.join("file.txt/nested.txt")).unwrap(),
+            b"tracked replacement\n"
+        );
+    }
+
+    #[test]
+    fn worktree_merge_refuses_ignored_destinations_derived_from_directory_renames() {
+        for policy in [None, Some("true")] {
+            let fixture = RemovalFixture::new();
+            fs::create_dir(fixture.source.join("old")).unwrap();
+            fs::write(fixture.source.join("old/tracked.txt"), "base\n").unwrap();
+            git_stdout(&fixture.source, &["add", "old"], None).unwrap();
+            git_stdout(&fixture.source, &["commit", "-m", "directory base"], None).unwrap();
+            git_stdout(&fixture.isolated, &["merge", "--ff-only", "main"], None).unwrap();
+            git_stdout(&fixture.source, &["mv", "old", "new"], None).unwrap();
+            git_stdout(&fixture.source, &["commit", "-m", "rename directory"], None).unwrap();
+            fs::write(
+                fixture.isolated.join("old/private.txt"),
+                "incoming contents\n",
+            )
+            .unwrap();
+            git_stdout(&fixture.isolated, &["add", "old/private.txt"], None).unwrap();
+            git_stdout(&fixture.isolated, &["commit", "-m", "incoming file"], None).unwrap();
+            if let Some(value) = policy {
+                git_stdout(
+                    &fixture.source,
+                    &["config", "merge.directoryRenames", value],
+                    None,
+                )
+                .unwrap();
+            }
+            fs::write(
+                fixture.source.join(".git/info/exclude"),
+                "new/private.txt\n",
+            )
+            .unwrap();
+            fs::write(
+                fixture.source.join("new/private.txt"),
+                "unique ignored contents\n",
+            )
+            .unwrap();
+            capture_checkpoint_snapshot(
+                "rename-safety",
+                fixture.source.to_str().unwrap(),
+                "after",
+                "safety",
+            )
+            .unwrap();
+            let head = git_stdout(&fixture.source, &["rev-parse", "HEAD"], None).unwrap();
+            let index = fs::read(fixture.source.join(".git/index")).unwrap();
+            let result = worktree_merge_branch_sync(
+                fixture.source.to_str().unwrap(),
+                fixture.isolated.to_str().unwrap(),
+                "mythra/isolated",
+                "rename-safety",
+                None,
+            );
+            assert!(
+                result.is_err(),
+                "{policy:?}: merge-derived ignored file was overwritten: {result:?}"
+            );
+            assert_eq!(
+                fs::read(fixture.source.join("new/private.txt")).unwrap(),
+                b"unique ignored contents\n"
+            );
+            assert_eq!(fs::read(fixture.source.join(".git/index")).unwrap(), index);
+            assert_eq!(
+                git_stdout(&fixture.source, &["rev-parse", "HEAD"], None).unwrap(),
+                head
+            );
+            assert!(
+                optional_git_stdout(&fixture.source, &["rev-parse", "--verify", "MERGE_HEAD"])
+                    .is_none()
+            );
+        }
     }
 
     #[test]

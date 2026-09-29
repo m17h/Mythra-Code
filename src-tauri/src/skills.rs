@@ -207,14 +207,29 @@ pub(super) fn collect_skill_candidates(
 }
 
 pub(super) fn split_skill_markdown(content: &str) -> (Option<String>, &str) {
-    if !content.starts_with("---\n") && !content.starts_with("---\r\n") {
-        return (None, content);
-    }
-    let normalized = content.replace("\r\n", "\n");
-    let Some(end) = normalized[4..].find("\n---\n").map(|index| index + 4) else {
+    let opening_length = if content.starts_with("---\r\n") {
+        5
+    } else if content.starts_with("---\n") {
+        4
+    } else {
         return (None, content);
     };
-    let frontmatter = &normalized[4..end];
+    // Locate delimiter lines in the original bytes. A CRLF anywhere in the
+    // body must not change how an LF header is split, and imported files can
+    // mix both newline forms. Preserve the body exactly for dependency reads.
+    let mut closing = None;
+    let mut offset = opening_length;
+    for line in content[opening_length..].split_inclusive('\n') {
+        if matches!(line, "---\n" | "---\r\n") {
+            closing = Some((offset, offset + line.len()));
+            break;
+        }
+        offset += line.len();
+    }
+    let Some((end, body_offset)) = closing else {
+        return (None, content);
+    };
+    let frontmatter = &content[opening_length..end];
     let description = frontmatter.lines().find_map(|line| {
         let (key, value) = line.split_once(':')?;
         if !key.trim().eq_ignore_ascii_case("description") {
@@ -223,22 +238,7 @@ pub(super) fn split_skill_markdown(content: &str) -> (Option<String>, &str) {
         let value = value.trim().trim_matches(['\'', '"']);
         (!value.is_empty()).then(|| value.to_string())
     });
-    let body_offset = end + "\n---\n".len();
-    let body = if content.contains("\r\n") {
-        // Offset calculations above used normalized newlines. Find the second
-        // delimiter in the original text instead so the returned slice is valid.
-        let delimiter = "\r\n---\r\n";
-        content
-            .strip_prefix("---\r\n")
-            .and_then(|rest| {
-                rest.find(delimiter)
-                    .map(|index| &rest[index + delimiter.len()..])
-            })
-            .unwrap_or(content)
-    } else {
-        content.get(body_offset..).unwrap_or(content)
-    };
-    (description, body)
+    (description, &content[body_offset..])
 }
 
 pub(super) fn skill_description(content: &str, fallback: &str) -> String {
@@ -1266,6 +1266,72 @@ pub(super) async fn local_skills_delete(folder: String, path: String) -> Result<
 #[cfg(test)]
 mod invocation_tests {
     use super::*;
+
+    #[test]
+    fn scanner_and_bridges_preserve_mixed_newline_skill_bodies() {
+        let root =
+            std::env::temp_dir().join(format!("mythra-mixed-frontmatter-{}", uuid::Uuid::new_v4()));
+        let folder = root.join("library");
+        let source = folder.join("package/SKILL.md");
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        let body = "Body with café.\r\n\n---\nKeep this body separator.\n";
+        for (opening, middle, closing) in [
+            ("\n", "\n", "\n"),
+            ("\r\n", "\r\n", "\r\n"),
+            ("\n", "\r\n", "\n"),
+            ("\r\n", "\n", "\r\n"),
+            ("\n", "\n", "\r\n"),
+            ("\r\n", "\r\n", "\n"),
+        ] {
+            let content = format!(
+                "---{opening}description: Metadata café @example{middle}---{closing}{body}"
+            );
+            fs::write(&source, &content).unwrap();
+            let (description, actual_body) = split_skill_markdown(&content);
+            assert_eq!(description.as_deref(), Some("Metadata café @example"));
+            assert_eq!(actual_body, body);
+            let scanned = scan_local_skills(&folder).unwrap();
+            assert_eq!(scanned.len(), 1);
+            assert_eq!(scanned[0].description, "Metadata café @example");
+            let configs = vec![SkillBridgeConfig {
+                source_path: scanned[0].path.clone(),
+                name: scanned[0].default_name.clone(),
+                enabled: true,
+            }];
+            let resolved =
+                resolve_skill_prompts_at(&folder, "Use @package", "", None, configs.clone())
+                    .unwrap();
+            assert_eq!(
+                paired_payload(&resolved.prompt)["skills"][0]["instructions"],
+                content
+            );
+            let runtime = root.join(format!("runtime-{}", uuid::Uuid::new_v4()));
+            build_skill_runtime(&runtime, &folder, configs).unwrap();
+            for bridge in [
+                runtime.join("package/SKILL.md"),
+                runtime.join("skills/package/SKILL.md"),
+            ] {
+                let bridge = fs::read_to_string(bridge).unwrap();
+                let (_, bridged_body) = split_skill_markdown(&bridge);
+                assert!(!bridged_body.contains("Metadata café @example"));
+                assert!(bridged_body.ends_with(&format!("{body}\n")));
+            }
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn malformed_frontmatter_is_preserved_as_authored_text() {
+        for content in [
+            "---\n",
+            "---\r\nname: x\n",
+            "---\nname: x\n---",
+            "--- \nname: x\n---\nBody",
+            "---\nname: x\n ---\nBody",
+        ] {
+            assert_eq!(split_skill_markdown(content), (None, content));
+        }
+    }
 
     #[cfg(unix)]
     #[test]

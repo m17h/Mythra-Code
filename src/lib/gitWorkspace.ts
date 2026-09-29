@@ -133,3 +133,14 @@ export const pushGitWorkspace = (
 ) => invoke<GitWorkspaceCommandResult>("git_workspace_push", {
   cwd, headOid, branch, expectedRemoteUrl, expectedRepository,
 });
+
+/** Fetch and fast-forward under one repository lock, preserving ignored files. */
+export const pullGitWorkspace = (
+  cwd: string,
+  expectedHeadOid: string,
+  expectedBranch: string,
+  expectedRemoteUrl: string,
+  expectedRepository: string,
+) => invoke<GitWorkspaceCommandResult>("git_workspace_pull", {
+  cwd, expectedHeadOid, expectedBranch, expectedRemoteUrl, expectedRepository,
+});

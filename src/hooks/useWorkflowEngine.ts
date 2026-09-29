@@ -534,7 +534,8 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
               if (active.stopRequested) throw new WorkflowStoppedError();
               variables.previousExitCode = "";
               const beforeMessages = useTaskStore.getState().tasks[threadId]?.messages.length ?? 0;
-              useTaskStore.getState().appendUserMessage(threadId, {
+              const promptThreadId = threadId;
+              const appendPrompt = () => useTaskStore.getState().appendUserMessage(promptThreadId, {
                 id: `workflow-${runId}-${step.id}-${attempt}`,
                 role: "user",
                 text: prompt,
@@ -546,11 +547,13 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
               // Snapshot before the model edits anything. Provider event
               // routers finalize completed turns; explicitly await local
               // finalization before the next step can start a new snapshot.
-              await current.beginRunCheckpoint(threadId, project.path, prompt, workflow.run.provider, workflow.run.model);
               let result: { turn: Pick<Turn, "id"> };
               try {
+                await current.beginRunCheckpoint(threadId, project.path, prompt, workflow.run.provider, workflow.run.model);
                 if (active.stopRequested) throw new WorkflowStoppedError();
                 if (localProvider) {
+                  // Save only prior history while preparation can still fail
+                  // or be stopped. The optimistic prompt belongs to dispatch.
                   await persistLocalThread();
                   if (active.stopRequested) throw new WorkflowStoppedError();
                   const options = {
@@ -562,20 +565,26 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
                     attachments: [], interactive: source === "manual",
                   };
                   if (workflow.run.provider === "claude") {
-                    const started = await startClaudeTurn({ ...options, resume: claudeSessionStarted,
+                    const claudeOptions = { ...options, resume: claudeSessionStarted,
                       subagentMax: workflow.run.subagentsEnabled ? workflow.run.subagentMax : 0,
                       customAgents: workflow.run.subagentsEnabled ? current.customAgents : [],
-                      skillsPluginPath: current.getSkillsPluginPath?.() });
+                      skillsPluginPath: current.getSkillsPluginPath?.() };
+                    if (active.stopRequested) throw new WorkflowStoppedError();
+                    appendPrompt();
+                    const started = await startClaudeTurn(claudeOptions);
                     claudeSessionStarted = true;
                     result = { turn: { id: started.turnId } };
                   } else {
-                    const started = await startCursorTurn({ ...options, resumeSessionId: cursorSessionId });
+                    const cursorOptions = { ...options, resumeSessionId: cursorSessionId };
+                    if (active.stopRequested) throw new WorkflowStoppedError();
+                    appendPrompt();
+                    const started = await startCursorTurn(cursorOptions);
                     cursorSessionId = started.cursorSessionId;
                     localThread = depsRef.current.onLocalThreadUpdated?.(localThread!, cursorSessionId, workflow.run) ?? localThread;
                     result = { turn: { id: started.turnId } };
                   }
                 } else {
-                  result = await rpc<{ turn: Turn }>("turn/start", turnStartParams(
+                  const params = turnStartParams(
                     { ...providerRun, systemPrompt: resolved.systemPrompt },
                     threadId,
                     project.path,
@@ -583,7 +592,12 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
                     [],
                     source === "manual",
                     { systemPrompt: resolved.systemPrompt, model: appServerModel },
-                  ));
+                  );
+                  if (active.stopRequested) throw new WorkflowStoppedError();
+                  // Validate parameters before append; no await separates the
+                  // last cancellation check, optimistic history and dispatch.
+                  appendPrompt();
+                  result = await rpc<{ turn: Turn }>("turn/start", params);
                 }
               } catch (reason) {
                 // No turn ever started, so no completion event will finalize

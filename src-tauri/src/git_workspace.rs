@@ -1147,7 +1147,11 @@ fn branch_sync(
         {
             return Err(format!("Branch {name} already exists"));
         }
-        git_stdout(&selected, &["checkout", "-b", name], None)?;
+        git_stdout(
+            &selected,
+            &["checkout", "--no-overwrite-ignore", "-b", name],
+            None,
+        )?;
     } else {
         git_stdout(
             &selected,
@@ -1155,7 +1159,11 @@ fn branch_sync(
             None,
         )
         .map_err(|_| format!("Branch {name} does not exist"))?;
-        git_stdout(&selected, &["checkout", name], None)?;
+        git_stdout(
+            &selected,
+            &["checkout", "--no-overwrite-ignore", name],
+            None,
+        )?;
     }
     snapshot_for_selection(&selected, cwd)
 }
@@ -1725,6 +1733,11 @@ fn push_sync(
     require_expected(&selected, head_oid, branch)?;
     let (url, target, needs_upstream) =
         push_destination(&selected, branch, expected_remote_url, expected_repository)?;
+    let tracking_ref = format!("refs/remotes/origin/{target}");
+    if optional_git_stdout(&selected, &["symbolic-ref", "--quiet", &tracking_ref]).is_some() {
+        return Err("This remote tracking ref is symbolic. Inspect its mapping before pushing from the Git tab.".into());
+    }
+    let tracking_old = optional_git_stdout(&selected, &["rev-parse", "--verify", &tracking_ref]);
     let refspec = format!("{head_oid}:refs/heads/{target}");
     let output = bounded_git(
         &selected,
@@ -1747,12 +1760,19 @@ fn push_sync(
         return Err("The commit was pushed, but its upstream changed during the push. Refresh before pushing again.".into());
     }
     let record = (|| {
+        if optional_git_stdout(&selected, &["symbolic-ref", "--quiet", &tracking_ref]).is_some() {
+            return Err("The remote tracking ref became symbolic during the push. It was not rewritten; refresh and inspect it.".into());
+        }
         git_stdout(
             &selected,
             &[
                 "update-ref",
-                &format!("refs/remotes/origin/{target}"),
+                "--no-deref",
+                &tracking_ref,
                 head_oid,
+                tracking_old
+                    .as_deref()
+                    .unwrap_or(&"0".repeat(head_oid.len())),
             ],
             None,
         )?;
@@ -1796,6 +1816,148 @@ fn fetch_sync(cwd: &str) -> Result<GitWorkspaceSnapshot, String> {
     snapshot_for_selection(&selected, cwd)
 }
 
+fn pull_destination(
+    repo: &Path,
+    branch: &str,
+    expected_remote_url: &str,
+    expected_repository: &str,
+) -> Result<(String, String), String> {
+    validate_branch(repo, branch)?;
+    let fetch = git_stdout(repo, &["config", "--get-all", "remote.origin.url"], None)
+        .map_err(|_| "The GitHub remote no longer exists. Refresh and try again.".to_string())?;
+    if fetch != expected_remote_url
+        || !parse_github_repository(&fetch)
+            .is_some_and(|repository| repository.eq_ignore_ascii_case(expected_repository))
+    {
+        return Err("The GitHub remote changed since it was shown. Refresh and try again.".into());
+    }
+    let remote = optional_git_stdout(
+        repo,
+        &["config", "--get-all", &format!("branch.{branch}.remote")],
+    );
+    let merge = optional_git_stdout(
+        repo,
+        &["config", "--get-all", &format!("branch.{branch}.merge")],
+    );
+    let target = match (remote.as_deref(), merge.as_deref()) {
+        (None, None) => return Err("This branch has no origin upstream to pull. Configure its upstream, then refresh the Git tab.".into()),
+        (Some("origin"), Some(reference)) => reference.strip_prefix("refs/heads/").ok_or("This branch does not track a branch on origin")?,
+        _ => return Err("This branch's upstream must point to origin before pulling from the Git tab.".into()),
+    };
+    git_stdout(
+        repo,
+        &["check-ref-format", &format!("refs/heads/{target}")],
+        None,
+    )
+    .map_err(|_| "The upstream branch name is invalid".to_string())?;
+    let tracking = git_stdout(
+        repo,
+        &[
+            "for-each-ref",
+            "--format=%(upstream)",
+            &format!("refs/heads/{branch}"),
+        ],
+        None,
+    )?;
+    if tracking.is_empty() {
+        return Err("This upstream has no local fetch mapping. Configure its mapping and refresh before pulling from the Git tab.".into());
+    }
+    git_stdout(repo, &["check-ref-format", &tracking], None)
+        .map_err(|_| "The upstream fetch mapping is invalid".to_string())?;
+    if tracking.starts_with("refs/heads/") {
+        return Err("The upstream fetch mapping targets a local branch. Inspect the mapping before pulling from the Git tab.".into());
+    }
+    if optional_git_stdout(repo, &["symbolic-ref", "--quiet", &tracking]).is_some() {
+        return Err("The upstream tracking ref is symbolic. Inspect the mapping before pulling from the Git tab.".into());
+    }
+    Ok((target.to_owned(), tracking))
+}
+
+fn pull_sync(
+    cwd: &str,
+    expected_head: &str,
+    expected_branch: &str,
+    expected_remote_url: &str,
+    expected_repository: &str,
+) -> Result<GitWorkspaceCommandResult, String> {
+    let selected = mutation_repo(cwd)?;
+    require_expected(&selected, expected_head, expected_branch)?;
+    require_clean(&selected)?;
+    let destination = pull_destination(
+        &selected,
+        expected_branch,
+        expected_remote_url,
+        expected_repository,
+    )?;
+    let fetched_ref = format!("refs/openkiwi/fetched-pull/{}", uuid::Uuid::new_v4());
+    let refspec = format!("refs/heads/{}:{fetched_ref}", destination.0);
+    let tracking_old = optional_git_stdout(&selected, &["rev-parse", "--verify", &destination.1]);
+    let result = (|| {
+        bounded_git(
+            &selected,
+            &[
+                "fetch",
+                "--no-tags",
+                "--no-write-fetch-head",
+                "--",
+                expected_remote_url,
+                &refspec,
+            ],
+        )?;
+        let fetched_oid = git_stdout(
+            &selected,
+            &[
+                "rev-parse",
+                "--verify",
+                &format!("{fetched_ref}^{{commit}}"),
+            ],
+            None,
+        )?;
+        // The fetch can outlive the visible checkout or its remote settings.
+        // Merge only the reviewed branch's exact upstream object, never FETCH_HEAD.
+        require_expected(&selected, expected_head, expected_branch)?;
+        require_clean(&selected)?;
+        if pull_destination(
+            &selected,
+            expected_branch,
+            expected_remote_url,
+            expected_repository,
+        )? != destination
+        {
+            return Err("This branch's upstream changed while fetching. Nothing was pulled into the checkout; refresh and inspect its upstream.".into());
+        }
+        // Preserve normal fetch semantics for status and ahead/behind counts,
+        // including custom mappings. A concurrent fetch wins its own ref update;
+        // never overwrite it or follow a symbolic name into another branch.
+        local_git(&selected, &["update-ref", "--no-deref", &destination.1, &fetched_oid, tracking_old.as_deref().unwrap_or(&"0".repeat(fetched_oid.len()))])
+            .map_err(|error| format!("The upstream was fetched, but its local tracking ref changed or could not be recorded. Nothing was merged; refresh and inspect it before retrying. {error}"))?;
+        require_expected(&selected, expected_head, expected_branch)?;
+        require_clean(&selected)?;
+        let merged = local_git(
+            &selected,
+            &["merge", "--ff-only", "--no-overwrite-ignore", &fetched_oid],
+        )?;
+        if optional_git_stdout(&selected, &["symbolic-ref", "--short", "-q", "HEAD"]).as_deref()
+            != Some(expected_branch)
+        {
+            return Err("The selected branch changed while pulling. Its update may already have been saved; refresh and inspect the checkout before trying again.".into());
+        }
+        Ok(merged)
+    })();
+    // Fetch may update the temporary ref before a later phase reports failure.
+    // Its unique name and exact old value keep cleanup away from user refs.
+    if let Some(oid) = optional_git_stdout(&selected, &["rev-parse", "--verify", &fetched_ref]) {
+        let cleanup = local_git(
+            &selected,
+            &["update-ref", "--no-deref", "-d", &fetched_ref, &oid],
+        );
+        if let Err(error) = cleanup {
+            return Err(format!("{}\nThe temporary fetched ref could not be cleaned up: {error}. Refresh and inspect the checkout before retrying.", result.as_ref().err().map(String::as_str).unwrap_or("The branch update completed.")));
+        }
+    }
+    result
+}
+
 fn update_sync(
     cwd: &str,
     repository: &str,
@@ -1833,15 +1995,27 @@ fn update_sync(
     }
     let switched = expected_branch != base;
     let checkout = if local_oid.is_some() {
-        local_git(&selected, &["checkout", base])
+        local_git(&selected, &["checkout", "--no-overwrite-ignore", base])
     } else {
-        local_git(&selected, &["checkout", "-b", base, &fetched_oid])
+        local_git(
+            &selected,
+            &[
+                "checkout",
+                "--no-overwrite-ignore",
+                "-b",
+                base,
+                &fetched_oid,
+            ],
+        )
     };
     if let Err(error) = checkout {
         // Checkout hooks can fail after Git has already changed HEAD. Restore
         // the caller's branch even when the checkout command reports failure.
         if switched {
-            let _ = local_git(&selected, &["checkout", expected_branch]);
+            let _ = local_git(
+                &selected,
+                &["checkout", "--no-overwrite-ignore", expected_branch],
+            );
         }
         return Err(error);
     }
@@ -1854,9 +2028,15 @@ fn update_sync(
     }
     require_clean(&selected)?;
     if local_oid.as_deref() != Some(fetched_oid.as_str()) {
-        if let Err(error) = local_git(&selected, &["merge", "--ff-only", &fetched_oid]) {
+        if let Err(error) = local_git(
+            &selected,
+            &["merge", "--no-overwrite-ignore", "--ff-only", &fetched_oid],
+        ) {
             if switched {
-                let _ = local_git(&selected, &["checkout", expected_branch]);
+                let _ = local_git(
+                    &selected,
+                    &["checkout", "--no-overwrite-ignore", expected_branch],
+                );
             }
             return Err(error);
         }
@@ -2038,6 +2218,30 @@ pub(super) async fn git_workspace_fetch(cwd: String) -> Result<GitWorkspaceSnaps
     })
     .await
     .map_err(|error| format!("Git fetch task failed: {error}"))?
+}
+
+#[tauri::command]
+pub(super) async fn git_workspace_pull(
+    cwd: String,
+    expected_head_oid: String,
+    expected_branch: String,
+    expected_remote_url: String,
+    expected_repository: String,
+) -> Result<GitWorkspaceCommandResult, String> {
+    let lock = repository_lock(Path::new(&cwd)).await?;
+    let guard = lock.lock_owned().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = guard;
+        pull_sync(
+            &cwd,
+            &expected_head_oid,
+            &expected_branch,
+            &expected_remote_url,
+            &expected_repository,
+        )
+    })
+    .await
+    .map_err(|error| format!("Git pull task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -3408,6 +3612,567 @@ mod tests {
         assert_ne!(remote_topic, committed.head_oid);
     }
 
+    fn configure_pull(fixture: &RemoteFixture) {
+        git_stdout(
+            &fixture.client,
+            &["config", "branch.topic/local.remote", "origin"],
+            None,
+        )
+        .unwrap();
+        git_stdout(
+            &fixture.client,
+            &["config", "branch.topic/local.merge", "refs/heads/main"],
+            None,
+        )
+        .unwrap();
+        git_stdout(&fixture.seed, &["checkout", "main"], None).unwrap();
+    }
+
+    fn advance_pull(fixture: &RemoteFixture) -> String {
+        let committed = commit_sync(
+            fixture.seed.to_str().unwrap(),
+            "remote advance",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
+        git_stdout(&fixture.seed, &["push", "origin", "main"], None).unwrap();
+        committed.head_oid
+    }
+
+    #[test]
+    fn pull_fast_forwards_current_branch_without_changing_upstream_or_fetch_head() {
+        let fixture = remote_fixture();
+        configure_pull(&fixture);
+        fs::write(fixture.seed.join("file.txt"), "remote update\n").unwrap();
+        let target = advance_pull(&fixture);
+        fs::write(
+            fixture.client.join(".git/FETCH_HEAD"),
+            "keep prior fetch state\n",
+        )
+        .unwrap();
+        let before = snapshot(&fixture.client).unwrap();
+        pull_sync(
+            fixture.client.to_str().unwrap(),
+            before.head_oid.as_deref().unwrap(),
+            before.branch.as_deref().unwrap(),
+            "https://github.com/test/repo.git",
+            "test/repo",
+        )
+        .unwrap();
+        assert_eq!(snapshot(&fixture.client).unwrap().branch, before.branch);
+        assert_eq!(
+            snapshot(&fixture.client).unwrap().head_oid.as_deref(),
+            Some(target.as_str())
+        );
+        assert_eq!(
+            git_stdout(
+                &fixture.client,
+                &["config", "branch.topic/local.remote"],
+                None
+            )
+            .unwrap(),
+            "origin"
+        );
+        assert_eq!(
+            git_stdout(
+                &fixture.client,
+                &["config", "branch.topic/local.merge"],
+                None
+            )
+            .unwrap(),
+            "refs/heads/main"
+        );
+        assert_eq!(
+            git_stdout(&fixture.client, &["rev-parse", "@{upstream}"], None).unwrap(),
+            target
+        );
+        assert_eq!(
+            git_stdout(
+                &fixture.client,
+                &["rev-list", "--left-right", "--count", "HEAD...@{upstream}"],
+                None
+            )
+            .unwrap(),
+            "0\t0"
+        );
+        assert_eq!(
+            fs::read(fixture.client.join(".git/FETCH_HEAD")).unwrap(),
+            b"keep prior fetch state\n"
+        );
+        assert_eq!(
+            git_stdout(
+                &fixture.client,
+                &["for-each-ref", "refs/openkiwi/fetched-pull"],
+                None
+            )
+            .unwrap(),
+            ""
+        );
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[test]
+    fn pull_uses_origin_fetch_url_independently_of_a_separate_push_url() {
+        let fixture = remote_fixture();
+        configure_pull(&fixture);
+        git_stdout(
+            &fixture.client,
+            &[
+                "config",
+                "remote.origin.pushurl",
+                "https://github.com/fork/separate-repo.git",
+            ],
+            None,
+        )
+        .unwrap();
+        fs::write(fixture.seed.join("file.txt"), "remote update\n").unwrap();
+        let target = advance_pull(&fixture);
+        let before = snapshot(&fixture.client).unwrap();
+        pull_sync(
+            fixture.client.to_str().unwrap(),
+            before.head_oid.as_deref().unwrap(),
+            before.branch.as_deref().unwrap(),
+            "https://github.com/test/repo.git",
+            "test/repo",
+        )
+        .unwrap();
+        assert_eq!(
+            snapshot(&fixture.client).unwrap().head_oid.as_deref(),
+            Some(target.as_str())
+        );
+        assert_eq!(snapshot(&fixture.client).unwrap().branch, before.branch);
+        assert_eq!(
+            git_stdout(&fixture.client, &["config", "remote.origin.pushurl"], None).unwrap(),
+            "https://github.com/fork/separate-repo.git"
+        );
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[test]
+    fn pull_refuses_ignored_destination_matrix_without_changing_checkout() {
+        for shape in ["file", "ancestor", "directory", "symlink"] {
+            #[cfg(not(unix))]
+            if shape == "symlink" {
+                continue;
+            }
+            let fixture = remote_fixture();
+            configure_pull(&fixture);
+            let target = if matches!(shape, "ancestor" | "symlink") {
+                "cache/nested.txt"
+            } else if shape == "directory" {
+                "cache"
+            } else {
+                "private.txt"
+            };
+            fs::create_dir_all(fixture.seed.join(target).parent().unwrap()).unwrap();
+            fs::write(fixture.seed.join(target), "committed destination\n").unwrap();
+            advance_pull(&fixture);
+            fs::write(
+                fixture.client.join(".git/info/exclude"),
+                "private.txt\ncache\n",
+            )
+            .unwrap();
+            let ignored = match shape {
+                "ancestor" => fixture.client.join("cache"),
+                "directory" => {
+                    fs::create_dir(fixture.client.join("cache")).unwrap();
+                    fixture.client.join("cache/private.txt")
+                }
+                "symlink" => {
+                    let outside = fixture.root.join("outside");
+                    fs::create_dir(&outside).unwrap();
+                    #[cfg(unix)]
+                    std::os::unix::fs::symlink(&outside, fixture.client.join("cache")).unwrap();
+                    outside.join("private.txt")
+                }
+                _ => fixture.client.join("private.txt"),
+            };
+            fs::write(&ignored, "unique ignored contents\n").unwrap();
+            let before = snapshot(&fixture.client).unwrap();
+            let index = fs::read(fixture.client.join(".git/index")).unwrap();
+            let result = pull_sync(
+                fixture.client.to_str().unwrap(),
+                before.head_oid.as_deref().unwrap(),
+                before.branch.as_deref().unwrap(),
+                "https://github.com/test/repo.git",
+                "test/repo",
+            );
+            assert!(
+                result.is_err(),
+                "{shape}: ignored contents were overwritten: {result:?}"
+            );
+            assert_eq!(
+                fs::read(&ignored).unwrap(),
+                b"unique ignored contents\n",
+                "{shape}"
+            );
+            if shape == "symlink" {
+                assert!(fs::symlink_metadata(fixture.client.join("cache"))
+                    .unwrap()
+                    .file_type()
+                    .is_symlink());
+            }
+            assert_eq!(
+                fs::read(fixture.client.join(".git/index")).unwrap(),
+                index,
+                "{shape}"
+            );
+            assert_eq!(
+                snapshot(&fixture.client).unwrap().branch,
+                before.branch,
+                "{shape}"
+            );
+            assert_eq!(
+                snapshot(&fixture.client).unwrap().head_oid,
+                before.head_oid,
+                "{shape}"
+            );
+            assert_eq!(
+                git_stdout(
+                    &fixture.client,
+                    &["config", "branch.topic/local.merge"],
+                    None
+                )
+                .unwrap(),
+                "refs/heads/main"
+            );
+            assert_eq!(
+                git_stdout(
+                    &fixture.client,
+                    &["for-each-ref", "refs/openkiwi/fetched-pull"],
+                    None
+                )
+                .unwrap(),
+                ""
+            );
+            fs::remove_dir_all(fixture.root).unwrap();
+        }
+    }
+
+    #[test]
+    fn pull_records_the_effective_custom_fetch_mapping() {
+        let fixture = remote_fixture();
+        configure_pull(&fixture);
+        git_stdout(
+            &fixture.client,
+            &[
+                "config",
+                "remote.origin.fetch",
+                "+refs/heads/*:refs/remotes/custom/*",
+            ],
+            None,
+        )
+        .unwrap();
+        fs::write(fixture.seed.join("file.txt"), "remote update\n").unwrap();
+        let target = advance_pull(&fixture);
+        let before = snapshot(&fixture.client).unwrap();
+        pull_sync(
+            fixture.client.to_str().unwrap(),
+            before.head_oid.as_deref().unwrap(),
+            before.branch.as_deref().unwrap(),
+            "https://github.com/test/repo.git",
+            "test/repo",
+        )
+        .unwrap();
+        assert_eq!(
+            git_stdout(&fixture.client, &["rev-parse", "@{upstream}"], None).unwrap(),
+            target
+        );
+        assert_eq!(
+            git_stdout(
+                &fixture.client,
+                &["rev-parse", "refs/remotes/custom/main"],
+                None
+            )
+            .unwrap(),
+            target
+        );
+        assert_eq!(
+            git_stdout(
+                &fixture.client,
+                &["rev-list", "--left-right", "--count", "HEAD...@{upstream}"],
+                None
+            )
+            .unwrap(),
+            "0\t0"
+        );
+        assert_eq!(snapshot(&fixture.client).unwrap().branch, before.branch);
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[test]
+    fn pull_refuses_symbolic_or_local_branch_tracking_mappings() {
+        for mode in ["symbolic", "local"] {
+            let fixture = remote_fixture();
+            configure_pull(&fixture);
+            let before = snapshot(&fixture.client).unwrap();
+            git_stdout(&fixture.client, &["branch", "victim"], None).unwrap();
+            if mode == "symbolic" {
+                git_stdout(
+                    &fixture.client,
+                    &[
+                        "symbolic-ref",
+                        "refs/remotes/origin/main",
+                        "refs/heads/victim",
+                    ],
+                    None,
+                )
+                .unwrap();
+            } else {
+                git_stdout(
+                    &fixture.client,
+                    &[
+                        "config",
+                        "remote.origin.fetch",
+                        "+refs/heads/*:refs/heads/upstream/*",
+                    ],
+                    None,
+                )
+                .unwrap();
+            }
+            let result = pull_sync(
+                fixture.client.to_str().unwrap(),
+                before.head_oid.as_deref().unwrap(),
+                before.branch.as_deref().unwrap(),
+                "https://github.com/test/repo.git",
+                "test/repo",
+            );
+            assert!(
+                result.is_err(),
+                "unsafe {mode} tracking mapping was used: {result:?}"
+            );
+            assert_eq!(
+                git_stdout(&fixture.client, &["rev-parse", "victim"], None).unwrap(),
+                before.head_oid.unwrap()
+            );
+            assert_eq!(snapshot(&fixture.client).unwrap().branch, before.branch);
+            assert_eq!(
+                git_stdout(
+                    &fixture.client,
+                    &["for-each-ref", "refs/openkiwi/fetched-pull"],
+                    None
+                )
+                .unwrap(),
+                ""
+            );
+            fs::remove_dir_all(fixture.root).unwrap();
+        }
+    }
+
+    #[test]
+    fn pull_preserves_a_tracking_ref_changed_while_fetching() {
+        let fixture = remote_fixture();
+        configure_pull(&fixture);
+        fs::write(fixture.seed.join("file.txt"), "remote update\n").unwrap();
+        advance_pull(&fixture);
+        let before = snapshot(&fixture.client).unwrap();
+        let concurrent =
+            git_stdout(&fixture.client, &["rev-parse", "origin/release/v2"], None).unwrap();
+        let hook = fixture.client.join(".git/hooks/reference-transaction");
+        fs::write(&hook, format!("#!/bin/sh\nif test \"$1\" = committed; then\nwhile read old new ref; do\ncase \"$ref\" in refs/openkiwi/fetched-pull/*) git update-ref refs/remotes/origin/main {concurrent} ;; esac\ndone\nfi\n")).unwrap();
+        enable_test_hook(&hook);
+        let result = pull_sync(
+            fixture.client.to_str().unwrap(),
+            before.head_oid.as_deref().unwrap(),
+            before.branch.as_deref().unwrap(),
+            "https://github.com/test/repo.git",
+            "test/repo",
+        );
+        assert!(result.unwrap_err().contains("Nothing was merged"));
+        assert_eq!(
+            git_stdout(&fixture.client, &["rev-parse", "origin/main"], None).unwrap(),
+            concurrent
+        );
+        assert_eq!(snapshot(&fixture.client).unwrap().head_oid, before.head_oid);
+        assert_eq!(snapshot(&fixture.client).unwrap().branch, before.branch);
+        assert_eq!(
+            fs::read(fixture.client.join("file.txt")).unwrap(),
+            b"main\n"
+        );
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[test]
+    fn pull_rechecks_checkout_and_upstream_after_fetch() {
+        for action in [
+            "git config branch.topic/local.merge refs/heads/release/v2",
+            "git symbolic-ref HEAD refs/heads/main",
+        ] {
+            let fixture = remote_fixture();
+            configure_pull(&fixture);
+            fs::write(fixture.seed.join("file.txt"), "remote update\n").unwrap();
+            advance_pull(&fixture);
+            let before = snapshot(&fixture.client).unwrap();
+            let hook = fixture.client.join(".git/hooks/reference-transaction");
+            fs::write(&hook, format!("#!/bin/sh\nif test \"$1\" = committed; then\nwhile read old new ref; do\ncase \"$ref\" in refs/openkiwi/fetched-pull/*) {action} ;; esac\ndone\nfi\n")).unwrap();
+            enable_test_hook(&hook);
+            let result = pull_sync(
+                fixture.client.to_str().unwrap(),
+                before.head_oid.as_deref().unwrap(),
+                before.branch.as_deref().unwrap(),
+                "https://github.com/test/repo.git",
+                "test/repo",
+            );
+            assert!(
+                result.is_err(),
+                "a fetch hook changed the pull binding: {result:?}"
+            );
+            assert_eq!(
+                git_stdout(
+                    &fixture.client,
+                    &["rev-parse", "refs/heads/topic/local"],
+                    None
+                )
+                .unwrap(),
+                before.head_oid.unwrap()
+            );
+            assert_eq!(
+                fs::read(fixture.client.join("file.txt")).unwrap(),
+                b"main\n"
+            );
+            assert_eq!(
+                git_stdout(
+                    &fixture.client,
+                    &["for-each-ref", "refs/openkiwi/fetched-pull"],
+                    None
+                )
+                .unwrap(),
+                ""
+            );
+            fs::remove_dir_all(fixture.root).unwrap();
+        }
+    }
+
+    #[test]
+    fn pull_refuses_missing_upstream_dirty_or_stale_checkout_before_fetch() {
+        let fixture = remote_fixture();
+        let before = snapshot(&fixture.client).unwrap();
+        let invoke = || {
+            pull_sync(
+                fixture.client.to_str().unwrap(),
+                before.head_oid.as_deref().unwrap(),
+                before.branch.as_deref().unwrap(),
+                "https://github.com/test/repo.git",
+                "test/repo",
+            )
+        };
+        assert!(invoke().unwrap_err().contains("no origin upstream"));
+        configure_pull(&fixture);
+        fs::write(fixture.client.join("file.txt"), "local working change\n").unwrap();
+        assert!(invoke().unwrap_err().contains("working changes"));
+        git_stdout(&fixture.client, &["restore", "file.txt"], None).unwrap();
+        git_stdout(&fixture.client, &["checkout", "main"], None).unwrap();
+        assert!(invoke().unwrap_err().contains("changed since"));
+        assert_eq!(
+            git_stdout(
+                &fixture.client,
+                &["for-each-ref", "refs/openkiwi/fetched-pull"],
+                None
+            )
+            .unwrap(),
+            ""
+        );
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[test]
+    fn push_refuses_symbolic_tracking_refs_without_rewriting_local_branches() {
+        let fixture = remote_fixture();
+        let before = git_stdout(&fixture.client, &["rev-parse", "HEAD"], None).unwrap();
+        git_stdout(&fixture.client, &["branch", "victim"], None).unwrap();
+        fs::write(fixture.client.join("file.txt"), "intended change\n").unwrap();
+        let committed =
+            commit_sync(fixture.client.to_str().unwrap(), "next", false, None, None).unwrap();
+        git_stdout(
+            &fixture.client,
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/topic/local",
+                "refs/heads/victim",
+            ],
+            None,
+        )
+        .unwrap();
+        let result = push_sync(
+            fixture.client.to_str().unwrap(),
+            &committed.head_oid,
+            committed.branch.as_deref().unwrap(),
+            "https://github.com/test/repo.git",
+            "test/repo",
+        );
+        assert!(
+            result.is_err(),
+            "symbolic tracking target was rewritten: {result:?}"
+        );
+        assert_eq!(
+            git_stdout(&fixture.client, &["rev-parse", "victim"], None).unwrap(),
+            before
+        );
+        assert_eq!(
+            git_stdout(
+                &fixture.client,
+                &["symbolic-ref", "refs/remotes/origin/topic/local"],
+                None
+            )
+            .unwrap(),
+            "refs/heads/victim"
+        );
+        assert!(optional_git_stdout(
+            &fixture.bare,
+            &["rev-parse", "--verify", "refs/heads/topic/local"]
+        )
+        .is_none());
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[test]
+    fn push_preserves_a_tracking_ref_changed_while_the_network_command_runs() {
+        let fixture = remote_fixture();
+        let before = git_stdout(&fixture.client, &["rev-parse", "HEAD"], None).unwrap();
+        let concurrent =
+            git_stdout(&fixture.client, &["rev-parse", "origin/release/v2"], None).unwrap();
+        let tracking = "refs/remotes/origin/topic/local";
+        git_stdout(&fixture.client, &["update-ref", tracking, &before], None).unwrap();
+        fs::write(fixture.client.join("file.txt"), "intended change\n").unwrap();
+        let committed =
+            commit_sync(fixture.client.to_str().unwrap(), "next", false, None, None).unwrap();
+        let hook = fixture.client.join(".git/hooks/pre-push");
+        fs::write(
+            &hook,
+            format!("#!/bin/sh\ngit update-ref {tracking} {concurrent}\n"),
+        )
+        .unwrap();
+        enable_test_hook(&hook);
+        let result = push_sync(
+            fixture.client.to_str().unwrap(),
+            &committed.head_oid,
+            committed.branch.as_deref().unwrap(),
+            "https://github.com/test/repo.git",
+            "test/repo",
+        );
+        assert!(result.unwrap_err().contains("commit was pushed"));
+        assert_eq!(
+            git_stdout(&fixture.client, &["rev-parse", tracking], None).unwrap(),
+            concurrent
+        );
+        assert_eq!(
+            git_stdout(
+                &fixture.bare,
+                &["rev-parse", "refs/heads/topic/local"],
+                None
+            )
+            .unwrap(),
+            committed.head_oid
+        );
+        assert_eq!(
+            snapshot(&fixture.client).unwrap().head_oid.as_deref(),
+            Some(committed.head_oid.as_str())
+        );
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
     #[tokio::test]
     async fn push_creates_only_the_captured_branch_and_records_its_upstream() {
         let fixture = remote_fixture();
@@ -4205,6 +4970,136 @@ mod tests {
             .iter()
             .any(|branch| branch.name == "topic/local-only" && branch.current));
         fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn branch_change_refuses_to_overwrite_ignored_destination() {
+        let path = fixture();
+        let original_branch = snapshot(&path).unwrap().branch.unwrap();
+        git_stdout(&path, &["checkout", "-b", "topic/ignored"], None).unwrap();
+        fs::write(path.join("private.txt"), "committed destination\n").unwrap();
+        commit_sync(path.to_str().unwrap(), "destination", false, None, None).unwrap();
+        git_stdout(&path, &["checkout", &original_branch], None).unwrap();
+        fs::write(path.join(".git/info/exclude"), "private.txt\n").unwrap();
+        fs::write(path.join("private.txt"), "unique ignored contents\n").unwrap();
+        let before = snapshot(&path).unwrap();
+        assert_eq!(before.changed_files, 0);
+        let index_before = fs::read(path.join(".git/index")).unwrap();
+        let result = branch_sync(
+            path.to_str().unwrap(),
+            "topic/ignored",
+            false,
+            before.head_oid.as_deref().unwrap(),
+            &original_branch,
+        );
+        assert!(
+            result.is_err(),
+            "ignored contents were overwritten: {result:?}"
+        );
+        assert_eq!(
+            fs::read(path.join("private.txt")).unwrap(),
+            b"unique ignored contents\n"
+        );
+        assert_eq!(fs::read(path.join(".git/index")).unwrap(), index_before);
+        assert_eq!(snapshot(&path).unwrap().branch, before.branch);
+        assert_eq!(snapshot(&path).unwrap().head_oid, before.head_oid);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn update_refuses_to_overwrite_ignored_destination_during_checkout_or_merge() {
+        for mode in ["missing", "existing", "selected"] {
+            let fixture = remote_fixture();
+            if mode != "missing" {
+                git_stdout(
+                    &fixture.client,
+                    &["branch", "release/v2", "origin/release/v2"],
+                    None,
+                )
+                .unwrap();
+            }
+            if mode == "selected" {
+                git_stdout(&fixture.client, &["checkout", "release/v2"], None).unwrap();
+            }
+            fs::write(fixture.seed.join("private.txt"), "committed destination\n").unwrap();
+            advance_release(&fixture, "release with private path\n");
+            if mode == "existing" {
+                git_stdout(&fixture.client, &["fetch", "origin"], None).unwrap();
+                let target =
+                    git_stdout(&fixture.client, &["rev-parse", "origin/release/v2"], None).unwrap();
+                git_stdout(
+                    &fixture.client,
+                    &["update-ref", "refs/heads/release/v2", &target],
+                    None,
+                )
+                .unwrap();
+            }
+            fs::write(fixture.client.join(".git/info/exclude"), "private.txt\n").unwrap();
+            fs::write(
+                fixture.client.join("private.txt"),
+                "unique ignored contents\n",
+            )
+            .unwrap();
+            let before = snapshot(&fixture.client).unwrap();
+            assert_eq!(before.changed_files, 0);
+            let index_before = fs::read(fixture.client.join(".git/index")).unwrap();
+            let branches_before = git_stdout(
+                &fixture.client,
+                &[
+                    "for-each-ref",
+                    "--format=%(refname) %(objectname)",
+                    "refs/heads",
+                ],
+                None,
+            )
+            .unwrap();
+            let result = update_sync(
+                fixture.client.to_str().unwrap(),
+                "test/repo",
+                "release/v2",
+                before.head_oid.as_deref().unwrap(),
+                before.branch.as_deref().unwrap(),
+            );
+            assert!(
+                result.is_err(),
+                "{mode}: ignored contents were overwritten: {result:?}"
+            );
+            assert_eq!(
+                fs::read(fixture.client.join("private.txt")).unwrap(),
+                b"unique ignored contents\n",
+                "{mode}"
+            );
+            assert_eq!(
+                fs::read(fixture.client.join(".git/index")).unwrap(),
+                index_before,
+                "{mode}"
+            );
+            assert_eq!(
+                snapshot(&fixture.client).unwrap().branch,
+                before.branch,
+                "{mode}"
+            );
+            assert_eq!(
+                snapshot(&fixture.client).unwrap().head_oid,
+                before.head_oid,
+                "{mode}"
+            );
+            assert_eq!(
+                git_stdout(
+                    &fixture.client,
+                    &[
+                        "for-each-ref",
+                        "--format=%(refname) %(objectname)",
+                        "refs/heads"
+                    ],
+                    None
+                )
+                .unwrap(),
+                branches_before,
+                "{mode}"
+            );
+            fs::remove_dir_all(fixture.root).unwrap();
+        }
     }
 
     #[tokio::test]

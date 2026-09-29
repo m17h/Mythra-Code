@@ -35,18 +35,23 @@ it("keeps the palette and its scrollable results inside the native minimum windo
 it("contains keyboard focus while open and restores the opener on Escape", async () => {
   const view = render(<Fixture />);
   const opener = view.getByRole("button", { name: "Open palette" });
-  await page.getByRole("button", { name: "Open palette" }).click();
+  // macOS WebKit pointer clicks do not focus buttons. Open by keyboard so
+  // this check exercises focus restoration to a real focused opener.
+  opener.focus();
+  await userEvent.keyboard("{Enter}");
   const input = view.getByRole("textbox", { name: "Search commands, projects, and threads" });
   await expect.poll(() => document.activeElement).toBe(input);
   await userEvent.keyboard("{Shift>}{Tab}{/Shift}");
   expect(view.getByRole("dialog", { name: "Command palette" }).contains(document.activeElement)).toBe(true);
+  expect(view.getByRole("option", { name: /Open settings/ })).toHaveFocus();
+  await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
   expect(view.getByRole("option", { name: /Open settings/ })).toHaveFocus();
   await userEvent.keyboard("{Tab}");
   expect(input).toHaveFocus();
   await userEvent.keyboard("{Escape}");
   expect(view.queryByRole("dialog", { name: "Command palette" })).toBeNull();
   expect(opener).toHaveFocus();
-  await page.getByRole("button", { name: "Open palette" }).click();
+  await userEvent.keyboard("{Enter}");
   await expect.poll(() => document.activeElement).toBe(view.getByRole("textbox", { name: "Search commands, projects, and threads" }));
   await userEvent.keyboard("{Shift>}{Tab}{/Shift}");
   expect(view.getByRole("option", { name: /Open settings/ })).toHaveFocus();

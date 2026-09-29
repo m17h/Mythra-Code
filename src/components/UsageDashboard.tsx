@@ -7,7 +7,7 @@ import {
 } from "../lib/usageLedger";
 import { officialPricingStatus, type OfficialPricingSource, type OfficialPricingStatus } from "../lib/officialPricing";
 import {
-  emptyComponentAmounts, isDayKey, localDayKey, repricingSummary, shiftDayKey, usageCostParts, USAGE_HISTORY_RETENTION_DAYS,
+  emptyComponentAmounts, isDayKey, localDayKey, repricingSummary, shiftDayKey, unclassifiedTokens, usageCostParts, USAGE_HISTORY_RETENTION_DAYS,
   type RepricingSummary, type UsageBucket, type UsageComponentAmounts,
 } from "../lib/usageHistory";
 import {
@@ -326,7 +326,13 @@ function ComponentTable({ buckets, earlier, per, caption }: {
         <td>{anyCost ? <><strong>{estimate(row.cost)}</strong>{perCost !== undefined && <small>{estimate(perCost)}<PerPrompt /></small>}</> : <span className="usage-none">Unpriced</span>}</td>
         <td className={gap ? "usage-metric-note" : undefined}>{gap ? "Partial metrics" : coverage(row.costedTokens, row.partlyCostedTokens, row.tokens)}</td>
       </tr>;
-    })}</tbody>
+    })}
+      {breakdown.unclassifiedTokens > 0 && <tr>
+        <th scope="row">Unclassified tokens<small>Input/output type not reported</small></th>
+        <td><strong>{number(breakdown.unclassifiedTokens)}</strong></td>
+        <td className="usage-none">Unpriced</td><td>0%</td>
+      </tr>}
+    </tbody>
     <tfoot>
       {breakdown.earlier && <tr className="usage-earlier-row">
         <th scope="row">{breakdown.earlier.tokens ? "Earlier usage" : "Pricing adjustment"}<small>Cost not split by type</small></th>
@@ -656,7 +662,7 @@ function CompareView({ detail, allTimeModels, rangeLabel, periodRange, grain, on
   const set = (patch: Partial<CompareSelection>) => onSelection({ ...selection, left: leftKey, right: rightKey, ...patch });
 
   const whatIf = (from: ComparedModel, to: ComparedModel) => {
-    if (!from.used || !to.pricing || from.key === to.key || cacheGap(from.amounts, "cacheRead") || cacheGap(from.amounts, "cacheWrite")) return null;
+    if (!from.used || !to.pricing || from.key === to.key || unclassifiedTokens(from.amounts) > 0 || cacheGap(from.amounts, "cacheRead") || cacheGap(from.amounts, "cacheWrite")) return null;
     const { uncachedInputTokens, cacheReadTokens, cacheWriteTokens, cacheWrite1hTokens, outputTokens } = from.amounts;
     const input = uncachedInputTokens + cacheReadTokens + cacheWriteTokens;
     const { costs } = usageCostParts({
@@ -740,6 +746,7 @@ function CompareView({ detail, allTimeModels, rangeLabel, periodRange, grain, on
       Costs are estimates frozen at the rate each token was recorded under. A prompt that switched models counts toward each model it used.
       {columns.filter((item) => !item.used).map((item) => ` ${item.label} has no recorded usage in this range.`).join("")}
       {columns.some((item) => cacheGap(item.amounts, "cacheRead") || cacheGap(item.amounts, "cacheWrite")) && " Unknown cache metrics prevent a complete cache comparison or hypothetical re-price."}
+      {columns.some((item) => unclassifiedTokens(item.amounts) > 0) && " Some recorded tokens have no reported input/output type and cannot be hypothetically re-priced."}
     </p>
 
     <details className="usage-compare-hypothetical">

@@ -428,15 +428,21 @@ fn establish_upstream(
             "The commit was published, but its tracking ref is invalid: {error}"
         ))
     })?;
+    if tracking_ref.starts_with("refs/heads/") {
+        return Err(paused("The commit was published, but its fetch mapping targets a local branch. That branch was not rewritten; inspect the mapping before continuing automatic publication."));
+    }
+    if optional_git_stdout(repo, &["symbolic-ref", "--quiet", &tracking_ref]).is_some() {
+        return Err(paused("The commit was published, but its remote tracking ref is symbolic. It was not rewritten; inspect the mapping before continuing automatic publication."));
+    }
     let old = optional_git_stdout(repo, &["rev-parse", "--verify", &tracking_ref]);
     if old.as_deref() == Some(head_oid) {
         return Ok(());
     }
-    if tracking_ref.starts_with("refs/heads/") {
-        return Err(paused("The commit was published, but its fetch mapping targets a local branch. That branch was not rewritten; inspect the mapping before continuing automatic publication."));
-    }
     let expected_old = old.unwrap_or_else(|| "0".repeat(head_oid.len()));
-    git_stdout(repo, &["update-ref", &tracking_ref, head_oid, &expected_old], None)
+    // A symbolic ref introduced after the precheck must never redirect this
+    // transaction into a local branch. The expected old value also protects
+    // a direct ref changed by another Git client during the inspection.
+    git_stdout(repo, &["update-ref", "--no-deref", &tracking_ref, head_oid, &expected_old], None)
         .map_err(|error| paused(format!("The commit was published, but its local remote-tracking ref could not be recorded: {error}")))?;
     Ok(())
 }
@@ -777,6 +783,63 @@ mod tests {
         #[cfg(unix)]
         fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
         run(repo, &["config", "core.hooksPath", hooks.to_str().unwrap()]);
+    }
+
+    #[test]
+    fn publication_tracking_refuses_symbolic_local_branch_targets() {
+        let (root, repo) = fixture();
+        let before = run(&repo, &["rev-parse", "HEAD"]);
+        run(&repo, &["branch", "victim"]);
+        fs::write(repo.join("file.txt"), "published change\n").unwrap();
+        run(&repo, &["add", "-A"]);
+        run(&repo, &["commit", "-m", "next"]);
+        let next = run(&repo, &["rev-parse", "HEAD"]);
+        run(&repo, &["config", "branch.main.remote", "origin"]);
+        run(&repo, &["config", "branch.main.merge", "refs/heads/main"]);
+        run(
+            &repo,
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/main",
+                "refs/heads/victim",
+            ],
+        );
+        let binding = snapshot_sync(repo.to_str().unwrap()).unwrap().binding;
+        let result = establish_upstream(&repo, &binding, "main", &next, "main");
+        assert!(
+            result.is_err(),
+            "symbolic tracking target was rewritten: {result:?}"
+        );
+        assert_eq!(run(&repo, &["rev-parse", "victim"]), before);
+        assert_eq!(
+            run(&repo, &["symbolic-ref", "refs/remotes/origin/main"]),
+            "refs/heads/victim"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn publication_tracking_records_normal_and_missing_refs() {
+        for existing in [false, true] {
+            let (root, repo) = fixture();
+            let before = run(&repo, &["rev-parse", "HEAD"]);
+            if existing {
+                run(&repo, &["update-ref", "refs/remotes/origin/main", &before]);
+            }
+            fs::write(repo.join("file.txt"), "published change\n").unwrap();
+            run(&repo, &["add", "-A"]);
+            run(&repo, &["commit", "-m", "next"]);
+            let next = run(&repo, &["rev-parse", "HEAD"]);
+            let binding = snapshot_sync(repo.to_str().unwrap()).unwrap().binding;
+            establish_upstream(&repo, &binding, "main", &next, "main").unwrap();
+            assert_eq!(run(&repo, &["rev-parse", "refs/remotes/origin/main"]), next);
+            assert_eq!(run(&repo, &["config", "branch.main.remote"]), "origin");
+            assert_eq!(
+                run(&repo, &["config", "branch.main.merge"]),
+                "refs/heads/main"
+            );
+            fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[test]

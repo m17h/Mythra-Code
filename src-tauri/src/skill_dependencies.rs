@@ -1589,6 +1589,51 @@ mod tests {
     }
 
     #[test]
+    fn mixed_frontmatter_line_endings_keep_metadata_out_of_dependencies() {
+        let mut lib = Library::new();
+        let body = "Actual instructions.\r\n\n---\nKeep this body separator.\n";
+        for (opening, middle, closing) in [
+            ("\n", "\n", "\n"),
+            ("\r\n", "\r\n", "\r\n"),
+            ("\n", "\r\n", "\n"),
+            ("\r\n", "\n", "\r\n"),
+            ("\n", "\n", "\r\n"),
+            ("\r\n", "\r\n", "\n"),
+        ] {
+            let content = format!("---{opening}description: Use @example or [metadata](missing.txt){middle}---{closing}{body}");
+            if lib.configs.is_empty() {
+                lib.skill("a", "package/SKILL.md", &content, true);
+            } else {
+                lib.document("package/SKILL.md", &content);
+            }
+            let result = lib.analyze("@a", "");
+            assert!(
+                result.report.issues.is_empty(),
+                "{}",
+                serde_json::to_string(&result.report).unwrap()
+            );
+            assert!(result.report.edges.is_empty());
+            assert_eq!(result.loaded[0].instructions, content);
+            assert_eq!(
+                result.report.nodes[0].character_count,
+                content.chars().count()
+            );
+            assert_eq!(
+                result.report.nodes[0].content_hash,
+                Some(format!("{:x}", Sha256::digest(content.as_bytes())))
+            );
+
+            lib.document(
+                "package/SKILL.md",
+                format!("{content}\nUse @unknown in the body."),
+            );
+            let blocked = lib.analyze("@a", "");
+            assert!(has_issue(&blocked, "unknown-skill"));
+            assert_eq!(blocked.report.issues[0].chain, vec!["@a", "@unknown"]);
+        }
+    }
+
+    #[test]
     fn nested_chains_aliases_relative_links_and_authored_only_roots() {
         let mut lib = Library::new();
         lib.skill(

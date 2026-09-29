@@ -179,10 +179,18 @@ export const SkillPromptEditor = forwardRef<HTMLTextAreaElement, SkillPromptEdit
   const insertSkill = (skill: SkillMentionSkill) => {
     const textarea = textareaRef.current;
     if (!textarea || !query) return;
-    // setRangeText preserves native selection and emits one ordinary input
-    // update through React, so consumers keep their existing onChange contract.
-    textarea.setRangeText(`@${skill.name} `, query.start, query.end, "end");
-    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    const insertion = `@${skill.name} `;
+    const expected = `${textarea.value.slice(0, query.start)}${insertion}${textarea.value.slice(query.end)}`;
+    textarea.focus();
+    textarea.setSelectionRange(query.start, query.end);
+    // Native editing retains Undo/Redo and emits React's ordinary input
+    // event. Programmatic range replacement clears that history in both
+    // WebKit and Chromium, so it is only the unsupported-command fallback.
+    try { document.execCommand?.("insertText", false, insertion); } catch { /* use the range fallback below */ }
+    if (textarea.value !== expected) {
+      textarea.setRangeText(insertion, query.start, query.end, "end");
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    }
     setQuery(null);
     textarea.focus();
     syncHighlight();
@@ -237,6 +245,11 @@ export const SkillPromptEditor = forwardRef<HTMLTextAreaElement, SkillPromptEdit
           return;
         }
         if (menuOpen) {
+          if (event.key === "Tab" && event.shiftKey) {
+            setQuery(null);
+            onKeyDown?.(event);
+            return;
+          }
           if (event.key === "ArrowDown" || event.key === "ArrowUp") {
             event.preventDefault();
             setSelectedIndex((activeIndex + (event.key === "ArrowDown" ? 1 : suggestions.length - 1)) % suggestions.length);

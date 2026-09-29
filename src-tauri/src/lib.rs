@@ -69,10 +69,10 @@ use git_inspection::{
 };
 use git_publish::{git_publish_commit, git_publish_snapshot};
 use git_workspace::{
-    git_workspace_branch, git_workspace_commit, git_workspace_fetch, git_workspace_push,
-    git_workspace_revert, git_workspace_revert_all, git_workspace_revert_all_preview,
-    git_workspace_revert_preview, git_workspace_snapshot, git_workspace_stage,
-    git_workspace_update,
+    git_workspace_branch, git_workspace_commit, git_workspace_fetch, git_workspace_pull,
+    git_workspace_push, git_workspace_revert, git_workspace_revert_all,
+    git_workspace_revert_all_preview, git_workspace_revert_preview, git_workspace_snapshot,
+    git_workspace_stage, git_workspace_update,
 };
 use github::{
     github_attach_remote, github_clone_repository, github_create_repository, github_login,
@@ -6771,6 +6771,7 @@ pub fn run() {
             git_workspace_revert_all,
             git_workspace_commit,
             git_workspace_push,
+            git_workspace_pull,
             git_workspace_branch,
             git_workspace_fetch,
             git_workspace_update,

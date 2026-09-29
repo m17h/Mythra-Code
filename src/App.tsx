@@ -7,7 +7,7 @@ import { useTranscriptSaves } from "./hooks/useTranscriptSaves";
 import { flushBeforeClose, useFlushOnClose } from "./hooks/useFlushOnClose";
 import { useGitWorkspace } from "./hooks/useGitWorkspace";
 import { useGitAutoPublish } from "./hooks/useGitAutoPublish";
-import { commitGitWorkspace, stageGitWorkspace, pushGitWorkspace, getGitWorkspace, previewGitWorkspaceRevert, revertGitWorkspace, previewGitWorkspaceRevertAll, revertGitWorkspaceAll, type GitWorkflowControls, type GitWorkspaceRevertPreview, type GitWorkspaceSnapshot } from "./lib/gitWorkspace";
+import { commitGitWorkspace, stageGitWorkspace, pushGitWorkspace, pullGitWorkspace, getGitWorkspace, previewGitWorkspaceRevert, revertGitWorkspace, previewGitWorkspaceRevertAll, revertGitWorkspaceAll, type GitWorkflowControls, type GitWorkspaceRevertPreview, type GitWorkspaceSnapshot } from "./lib/gitWorkspace";
 import { useGitHubLogin } from "./hooks/useGitHubLogin";
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type CSSProperties, type Dispatch, type PointerEvent as ReactPointerEvent, type SetStateAction } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
@@ -5797,6 +5797,18 @@ export default function App() {
       }
       return;
     }
+    const preflightIntent = gitIntentRef.current.generation;
+    const preflightPaths = [...new Set([activeProject.path, commandPath].map(normalizedProjectPath))];
+    let transferDispatched = false;
+    // Cancel superseded preflight work; a started native transaction keeps its
+    // original ownership and must still surface any partial-operation warning.
+    const transferStillAllowed = () => {
+      if (!isCurrentProject() || gitIntentRef.current.generation !== preflightIntent) return false;
+      const reason = gitActionUnavailableReason(action, gitPermissionRef.current)
+        ?? (preflightPaths.some(projectHasActiveTask) ? "Wait for agents in this folder to finish before changing Git." : null);
+      if (reason) setGitOutput(reason);
+      return !reason;
+    };
     let command: string[];
     if (action === "status") command = ["git", "status", "--short", "--branch"];
     else if (action === "diff") command = ["git", "diff", "HEAD", "--stat", "--patch"];
@@ -5835,20 +5847,39 @@ export default function App() {
       }
       return;
     } else if (action === "fetch") command = ["git", "fetch", "--prune", "origin"];
-    else if (action === "pull") command = ["git", "pull", "--ff-only"];
+    else if (action === "pull") {
+      try {
+        const snapshot = gitWorkspace.snapshot ?? await getGitWorkspace(commandPath);
+        if (!transferStillAllowed()) return;
+        if (!snapshot?.headOid || !snapshot.branch || !githubRepoStatus?.remoteUrl || !githubRepoStatus.repository) {
+          if (isCurrentProject()) setGitOutput("Check out a named branch with a tracked GitHub branch before pulling.");
+          return;
+        }
+        transferDispatched = true;
+        const result = await pullGitWorkspace(commandPath, snapshot.headOid, snapshot.branch, githubRepoStatus.remoteUrl, githubRepoStatus.repository);
+        if (!isCurrentProject()) return;
+        setGitOutput(`Fast-forwarded ${snapshot.branch} from its tracked branch.\n${result.stdout}${result.stderr}`);
+        void refreshGitHubRepo(commandPath);
+      } catch (reason) {
+        if (isCurrentProject() && (transferDispatched || transferStillAllowed())) setGitOutput(formatGitError(reason));
+      }
+      return;
+    }
     else if (action === "push") {
       try {
         const snapshot = gitWorkspace.snapshot ?? await getGitWorkspace(commandPath);
+        if (!transferStillAllowed()) return;
         if (!snapshot?.headOid || !snapshot.branch || !githubRepoStatus?.remoteUrl || !githubRepoStatus.repository) {
           if (isCurrentProject()) setGitOutput("Make a local commit on a named branch and attach a GitHub repository before pushing.");
           return;
         }
+        transferDispatched = true;
         const result = await pushGitWorkspace(commandPath, snapshot.headOid, snapshot.branch, githubRepoStatus.remoteUrl, githubRepoStatus.repository);
         if (!isCurrentProject()) return;
         showPushOutput(`Pushed saved commit ${snapshot.headOid.slice(0, 7)} from ${snapshot.branch}:\n${result.stdout}${result.stderr}\n[exit 0]`);
         void refreshGitHubRepo(commandPath);
       } catch (reason) {
-        if (isCurrentProject()) setGitOutput(formatGitError(reason));
+        if (isCurrentProject() && (transferDispatched || transferStillAllowed())) setGitOutput(formatGitError(reason));
       }
       return;
     } else {
