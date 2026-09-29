@@ -343,6 +343,7 @@ interface LoadedThreadHistory {
 let paginatedHistoryUnavailable = false;
 
 class MalformedThreadHistoryPageError extends Error {}
+class SupersededSkillRefreshError extends Error {}
 
 function isMissingRuntimeThread(reason: unknown): boolean {
   const message = reason instanceof Error ? reason.message : String(reason);
@@ -713,6 +714,7 @@ export default function App() {
   const [skillsError, setSkillsError] = useState("");
   const [skillAnalysisRevision, setSkillAnalysisRevision] = useState(0);
   const skillRuntimeRootRef = useRef("");
+  const skillRuntimeClearFailedRef = useRef(false);
   const skillFilesRef = useRef<LocalSkillFile[]>([]);
   const skillScanSequenceRef = useRef(0);
   const skillsRefreshCountsRef = useRef(new Map<string, number>());
@@ -720,7 +722,7 @@ export default function App() {
   const skillsBusyCountRef = useRef(0);
   const preparedSkillsFolderRef = useRef("");
   const preparedSkillsSignatureRef = useRef("");
-  const refreshSkillsForInvocationRef = useRef<((folder: string) => Promise<LocalSkill[]>) | null>(null);
+  const refreshSkillsForInvocationRef = useRef<((folder: string, required?: boolean) => Promise<LocalSkill[]>) | null>(null);
   const skillWarmupRef = useRef<{ folder: string; promise: Promise<LocalSkill[]> } | null>(null);
   const removedSkills = useMemo(
     () => resolveLocalSkills(skillFiles.filter((file) => removedSkillPaths.includes(file.path)), skillAliases, disabledSkillPaths),
@@ -2404,24 +2406,57 @@ export default function App() {
           skillRuntimeRootRef.current = "";
           preparedSkillsFolderRef.current = "";
           preparedSkillsSignatureRef.current = "";
-          if (runtimeStatus?.available) await rpc("skills/extraRoots/set", { extraRoots: [] });
+          if (runtimeStatus?.available) {
+            try {
+              await rpc("skills/extraRoots/set", { extraRoots: [] });
+              skillRuntimeClearFailedRef.current = false;
+            } catch (reason) {
+              skillRuntimeClearFailedRef.current = true;
+              throw reason;
+            }
+          }
           return resolved;
         }
         // The native sync replaces one shared runtime directory. Serialize it
         // so an older scan cannot finish last and overwrite the files prepared
         // by a newer scan even when its renderer state is correctly ignored.
-        const runtimeRoot = await syncLocalSkills(folder, resolved);
-        if (superseded()) return resolved;
-        if (runtimeStatus?.available) {
-          await rpc("skills/extraRoots/set", { extraRoots: [runtimeRoot] });
+        try {
+          const runtimeRoot = await syncLocalSkills(folder, resolved);
           if (superseded()) return resolved;
+          if (runtimeStatus?.available) {
+            await rpc("skills/extraRoots/set", { extraRoots: [runtimeRoot] });
+            if (superseded()) return resolved;
+          }
+          skillRuntimeRootRef.current = runtimeRoot;
+          selectedSkillsRef.current = { folder, skills: resolved };
+          preparedSkillsFolderRef.current = folder;
+          preparedSkillsSignatureRef.current = signature;
+          if (runtimeStatus?.available) skillRuntimeClearFailedRef.current = false;
+          setSkills(resolved);
+          return resolved;
+        } catch (reason) {
+          if (!superseded()) {
+            // Scanning succeeded, so keep the source library available for
+            // editing and dependency previews. The failed provider mirror is
+            // never considered prepared, including after a prior good sync.
+            selectedSkillsRef.current = { folder, skills: resolved };
+            setSkills(resolved);
+            skillRuntimeRootRef.current = "";
+            preparedSkillsFolderRef.current = "";
+            preparedSkillsSignatureRef.current = "";
+            if (runtimeStatus?.available) {
+              try {
+                await rpc("skills/extraRoots/set", { extraRoots: [] });
+                skillRuntimeClearFailedRef.current = false;
+              } catch {
+                // The old provider root may still be attached. Block all
+                // sends until a later root update succeeds.
+                skillRuntimeClearFailedRef.current = true;
+              }
+            }
+          }
+          throw reason;
         }
-        skillRuntimeRootRef.current = runtimeRoot;
-        selectedSkillsRef.current = { folder, skills: resolved };
-        preparedSkillsFolderRef.current = folder;
-        preparedSkillsSignatureRef.current = signature;
-        setSkills(resolved);
-        return resolved;
       };
       const prepared = skillPrepareQueueRef.current.then(run, run);
       skillPrepareQueueRef.current = prepared.then(() => undefined, () => undefined);
@@ -2437,6 +2472,7 @@ export default function App() {
       disabled = disabledSkillPaths,
       removed = removedSkillPaths,
       silent = false,
+      requiredForInvocation = false,
     ) => {
       const scanSequence = ++skillScanSequenceRef.current;
       if (!folder) {
@@ -2452,11 +2488,16 @@ export default function App() {
         setSkillsError("");
       }
       skillsRefreshCountsRef.current.set(folder, (skillsRefreshCountsRef.current.get(folder) ?? 0) + 1);
+      let scannedFiles: LocalSkillFile[] | null = null;
       try {
         const files = await scanLocalSkills(folder);
         // Folder polling, focus refreshes, and explicit deletion can overlap.
         // Only the newest scan may publish state or rebuild the model runtime.
-        if (scanSequence !== skillScanSequenceRef.current) return [];
+        if (scanSequence !== skillScanSequenceRef.current) {
+          if (requiredForInvocation) throw new SupersededSkillRefreshError("A newer skills refresh started while preparing this prompt.");
+          return [];
+        }
+        scannedFiles = files;
         const unchanged = JSON.stringify(files) === JSON.stringify(skillFilesRef.current);
         setSkillsError("");
         if (silent && unchanged) {
@@ -2465,15 +2506,36 @@ export default function App() {
             && preparedSkillsSignatureRef.current === skillRuntimeSignature(folder, resolved)) {
             return resolved;
           }
-          return await prepareLocalSkills(folder, files, aliases, disabled, removed, scanSequence);
+          const prepared = await prepareLocalSkills(folder, files, aliases, disabled, removed, scanSequence);
+          if (requiredForInvocation && (scanSequence !== skillScanSequenceRef.current
+            || preparedSkillsFolderRef.current !== folder
+            || preparedSkillsSignatureRef.current !== skillRuntimeSignature(folder, prepared))) {
+            throw new SupersededSkillRefreshError("The skills refresh changed while preparing this prompt.");
+          }
+          return prepared;
         }
         skillFilesRef.current = files;
         setSkillFiles(files);
-        return await prepareLocalSkills(folder, files, aliases, disabled, removed, scanSequence);
+        const prepared = await prepareLocalSkills(folder, files, aliases, disabled, removed, scanSequence);
+        if (requiredForInvocation && (scanSequence !== skillScanSequenceRef.current
+          || preparedSkillsFolderRef.current !== folder
+          || preparedSkillsSignatureRef.current !== skillRuntimeSignature(folder, prepared))) {
+          throw new SupersededSkillRefreshError("The skills refresh changed while preparing this prompt.");
+        }
+        return prepared;
       } catch (reason) {
         // Editors, sync clients, and antivirus can briefly lock Markdown on
         // Windows. Background refreshes keep the last known-good library and
         // runtime instead of tearing every skill down for a transient error.
+        if (requiredForInvocation) {
+          if (reason instanceof SupersededSkillRefreshError) throw reason;
+          const action = preparedSkillsFolderRef.current === folder ? "refresh" : "load";
+          throw new Error(`Mythra Code could not ${action} the selected skills folder. ${friendlyError(reason)}`);
+        }
+        if (scanSequence === skillScanSequenceRef.current && scannedFiles) {
+          setSkillsError(friendlyError(reason));
+          return resolveLocalSkills(scannedFiles, aliases, disabled, removed);
+        }
         if (scanSequence !== skillScanSequenceRef.current || silent) return [];
         setSkillsError(friendlyError(reason));
         skillFilesRef.current = [];
@@ -2497,27 +2559,56 @@ export default function App() {
     },
     [disabledSkillPaths, prepareLocalSkills, removedSkillPaths, skillAliases, skillsFolder],
   );
-  // Silent, like the folder poller: a send must never be the reason the Skills
-  // library and its model runtime are torn down for a folder that is only
-  // briefly unreadable.
-  refreshSkillsForInvocationRef.current = (folder) => refreshLocalSkills(folder, undefined, undefined, undefined, true);
+  // A skill send checks the source again. A failed scan or sync preserves the
+  // last good library for the UI, but must stop this turn before model startup.
+  refreshSkillsForInvocationRef.current = async (folder, required = true) => {
+    if (!required) return refreshLocalSkills(folder, undefined, undefined, undefined, true);
+    // Focus and visible-Skills polling can start a newer scan while a send is
+    // preparing. Retry with a new scan instead of rejecting that normal race.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        return await refreshLocalSkills(folder, undefined, undefined, undefined, true, true);
+      } catch (reason) {
+        if (!(reason instanceof SupersededSkillRefreshError) || attempt === 2) throw reason;
+      }
+    }
+    throw new SupersededSkillRefreshError("The skills refresh changed while preparing this prompt.");
+  };
   const resolveSkillPrompt = useCallback(async (message: string, mentionSource?: string) => {
+    if (skillRuntimeClearFailedRef.current) throw new Error("Mythra Code could not clear the previous skills runtime. Refresh the Skills library and try again.");
     const selected = selectedSkillsRef.current;
     let available = selected.skills;
     const invocationText = mentionSource ?? message;
-    if (invocationText.includes("@") && selected.folder && preparedSkillsFolderRef.current !== selected.folder) {
-      // Only a skill-shaped mention makes a send depend on the skills folder at
-      // all. Classification comes from the same native parser that resolves
-      // skills, so an e-mail address or a file path never waits on — or fails
-      // for — a folder it was never going to read, and reaches the model as the
-      // ordinary text it already was.
-      if ((await skillMentionNames(invocationText)).length === 0) {
-        return resolveSelectedSkillPrompt(message, "", [], mentionSource);
+    if (invocationText.includes("@") && selected.folder) {
+      // Unknown user @words remain literal, including when the folder is
+      // unreadable. Only a known enabled skill makes this send depend on it.
+      const names = await skillMentionNames(invocationText);
+      let discovered = false;
+      if (names.length && preparedSkillsFolderRef.current !== selected.folder) {
+        const warmup = skillWarmupRef.current;
+        if (warmup?.folder === selected.folder) available = await warmup.promise;
+        if (preparedSkillsFolderRef.current !== selected.folder) {
+          available = await refreshSkillsForInvocationRef.current?.(selected.folder, false) ?? [];
+          discovered = true;
+        }
       }
-      const warmup = skillWarmupRef.current;
-      if (warmup?.folder === selected.folder) available = await warmup.promise;
-      if (preparedSkillsFolderRef.current !== selected.folder) {
-        available = await refreshSkillsForInvocationRef.current?.(selected.folder) ?? [];
+      const enabled = new Set(available.filter((skill) => skill.enabled).map((skill) => skill.name));
+      if (names.length && !discovered && !names.some((name) => enabled.has(name))) {
+        // A newly added skill may not be in the in-memory library yet. This
+        // discovery scan is best effort: an unknown user @word stays literal
+        // when the folder cannot be read.
+        available = await refreshSkillsForInvocationRef.current?.(selected.folder, false) ?? [];
+      }
+      const known = names.some((name) => available.some((skill) => skill.enabled && skill.name === name));
+      if (!known) {
+        if (preparedSkillsFolderRef.current !== selected.folder) {
+          return resolveSelectedSkillPrompt(message, "", [], mentionSource);
+        }
+        return resolveSelectedSkillPrompt(message, selected.folder, available, mentionSource);
+      }
+      available = await refreshSkillsForInvocationRef.current?.(selected.folder) ?? [];
+      if (selectedSkillsRef.current.folder !== selected.folder) {
+        throw new Error("The selected skills folder changed while preparing this prompt. Please send it again.");
       }
       if (preparedSkillsFolderRef.current !== selected.folder) {
         throw new Error("Mythra Code could not load the selected skills folder. Refresh the Skills library and try again.");
@@ -2531,23 +2622,38 @@ export default function App() {
   }, []);
 
   const resolveSkillPrompts = useCallback(async (message: string, systemPrompt: string, mentionSource?: string) => {
+    if (skillRuntimeClearFailedRef.current) throw new Error("Mythra Code could not clear the previous skills runtime. Refresh the Skills library and try again.");
     const selected = selectedSkillsRef.current;
     let available = selected.skills;
-    const invocationText = `${systemPrompt}\n${mentionSource ?? message}`;
-    if (invocationText.includes("@") && selected.folder && preparedSkillsFolderRef.current !== selected.folder) {
-      if ((await skillMentionNames(invocationText)).length === 0) {
-        return resolveSelectedSkillPrompts(message, systemPrompt, "", [], mentionSource);
+    const userSource = mentionSource ?? message;
+    if (selected.folder && (systemPrompt.includes("@") || userSource.includes("@"))) {
+      const [systemNames, userNames] = await Promise.all([
+        skillMentionNames(systemPrompt), skillMentionNames(userSource),
+      ]);
+      let discovered = false;
+      if (userNames.length && preparedSkillsFolderRef.current !== selected.folder) {
+        const warmup = skillWarmupRef.current;
+        if (warmup?.folder === selected.folder) available = await warmup.promise;
+        if (preparedSkillsFolderRef.current !== selected.folder) {
+          available = await refreshSkillsForInvocationRef.current?.(selected.folder, false) ?? [];
+          discovered = true;
+        }
       }
-      const warmup = skillWarmupRef.current;
-      if (warmup?.folder === selected.folder) available = await warmup.promise;
-      if (preparedSkillsFolderRef.current !== selected.folder) {
+      const enabled = new Set(available.filter((skill) => skill.enabled).map((skill) => skill.name));
+      if (systemNames.length === 0 && userNames.length && !discovered && !userNames.some((name) => enabled.has(name))) {
+        available = await refreshSkillsForInvocationRef.current?.(selected.folder, false) ?? [];
+      }
+      const needsFreshLibrary = systemNames.length > 0 || userNames.some((name) => available.some((skill) => skill.enabled && skill.name === name));
+      if (needsFreshLibrary) {
         available = await refreshSkillsForInvocationRef.current?.(selected.folder) ?? [];
-      }
-      if (selectedSkillsRef.current.folder !== selected.folder) {
-        throw new Error("The selected skills folder changed while preparing this prompt. Please send it again.");
-      }
-      if (preparedSkillsFolderRef.current !== selected.folder) {
-        throw new Error("Mythra Code could not load the selected skills folder. Refresh the Skills library and try again.");
+        if (selectedSkillsRef.current.folder !== selected.folder) {
+          throw new Error("The selected skills folder changed while preparing this prompt. Please send it again.");
+        }
+        if (preparedSkillsFolderRef.current !== selected.folder) {
+          throw new Error("Mythra Code could not load the selected skills folder. Refresh the Skills library and try again.");
+        }
+      } else if (preparedSkillsFolderRef.current !== selected.folder) {
+        return resolveSelectedSkillPrompts(message, systemPrompt, "", [], mentionSource);
       }
     }
     let resolved;
@@ -2586,7 +2692,9 @@ export default function App() {
       // updates the library, which schedules another preview and can loop.
       // Refresh/selection and actual delivery own retrying the source folder.
       if (selectedSkillsRef.current.folder !== selected.folder) throw new Error("The selected skills folder changed while checking references. Try again.");
-      if (preparedSkillsFolderRef.current !== selected.folder) throw new Error("Mythra Code could not load the selected skills folder. Refresh the Skills library and try again.");
+      // A successful scan can be previewed even if provider sync rejected its
+      // graph. Delivery still requires a fresh, prepared runtime.
+      available = selectedSkillsRef.current.skills;
     }
     const report = await analyzeSelectedSkillPrompts(message, systemPrompt, selected.folder, available, mentionSource, override);
     if (selectedSkillsRef.current.folder !== selected.folder) throw new Error("The selected skills folder changed while checking references. Try again.");
@@ -2654,7 +2762,13 @@ export default function App() {
   const ensureSkillRoots = useCallback(async () => {
     if (!runtimeStatus?.available) return;
     const root = skillRuntimeRootRef.current;
-    await rpc("skills/extraRoots/set", { extraRoots: root ? [root] : [] });
+    try {
+      await rpc("skills/extraRoots/set", { extraRoots: root ? [root] : [] });
+      skillRuntimeClearFailedRef.current = false;
+    } catch (reason) {
+      skillRuntimeClearFailedRef.current = true;
+      throw reason;
+    }
   }, [runtimeStatus?.available]);
 
   const executeCommand = useCallback(

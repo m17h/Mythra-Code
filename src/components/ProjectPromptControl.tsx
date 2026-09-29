@@ -5,6 +5,7 @@ import type { ProjectPromptMode, Provider, SkillDependencyReport } from "../type
 import { resolveSystemPrompt } from "../lib/systemPrompt";
 import type { SkillMentionSkill } from "../lib/skillMentions";
 import { SkillPromptEditor } from "./SkillPromptEditor";
+import { skillEditorOwnsEscape } from "./SkillReferenceInspector";
 
 export function ProjectPromptControl({
   projectName,
@@ -51,7 +52,8 @@ export function ProjectPromptControl({
     };
     const escape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        if (event.target instanceof HTMLElement && event.target.matches('[data-skill-prompt-editor="true"][aria-expanded="true"]')) return;
+        // The editor's completion list or dependency map closes first.
+        if (skillEditorOwnsEscape(event.target)) return;
         // Escape closes only this popover — never the app-level stop-turn handler.
         event.stopPropagation();
         setOpen(false);

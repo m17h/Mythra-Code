@@ -1589,6 +1589,215 @@ describe("overlapping refresh ordering", () => {
     })));
   });
 
+  it.each(["user", "system"] as const)("refreshes an edited supporting document before a %s skill send", async (channel) => {
+    localStorage.setItem("kiwi.skillsFolder", JSON.stringify("/skills"));
+    if (channel === "system") localStorage.setItem("kiwi.settings", JSON.stringify({ ...DEFAULT_SETTINGS, systemPrompt: "Use @review." }));
+    let guide = "old guide";
+    let mirroredGuide = "";
+    localSkillsScanImpl = () => [{ ...selectedReviewSkill, contentFingerprint: guide }];
+    localSkillsSyncImpl = () => { mirroredGuide = guide; return "/runtime/skills"; };
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "local_skills_resolve_prompts") return {
+        prompt: channel === "user" ? `Guide: ${mirroredGuide}\n${String(args?.message)}` : args?.message,
+        systemPrompt: channel === "system" ? `Guide: ${mirroredGuide}\n${String(args?.systemPrompt)}` : args?.systemPrompt,
+      };
+      return stubInvoke(command, args);
+    });
+    const user = userEvent.setup();
+    await renderApp();
+    await waitFor(() => expect(mirroredGuide).toBe("old guide"));
+    await user.click(screen.getByRole("button", { name: PROJECT_A.name }));
+    const scansBeforeSend = invokeMock.mock.calls.filter(([command]) => command === "local_skills_scan").length;
+    guide = "new guide from guide.txt";
+    await user.type(await screen.findByPlaceholderText(/Ask Mythra Code to work in/), `${channel === "user" ? "@review " : ""}Inspect this project{Enter}`);
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("codex_rpc", expect.objectContaining({ method: "turn/start" })));
+    expect(invokeMock.mock.calls.filter(([command]) => command === "local_skills_scan").length).toBeGreaterThan(scansBeforeSend);
+    expect(mirroredGuide).toBe("new guide from guide.txt");
+    const turn = invokeMock.mock.calls.find(([command, args]) => command === "codex_rpc" && args?.method === "turn/start")![1]?.params as {
+      input: Array<{ text: string }>;
+      collaborationMode: { settings: { developer_instructions: string } };
+    };
+    const delivered = channel === "user" ? turn.input[0].text : turn.collaborationMode.settings.developer_instructions;
+    expect(delivered).toContain("Guide: new guide from guide.txt");
+    expect(delivered).not.toContain("Guide: old guide");
+  });
+
+  it.each(["scan", "sync"] as const)("blocks a skill send when its required %s fails after a prior mirror was prepared", async (failure) => {
+    localStorage.setItem("kiwi.skillsFolder", JSON.stringify("/skills"));
+    let fail = false;
+    localSkillsScanImpl = () => {
+      if (fail && failure === "scan") throw new Error("Skill source unavailable");
+      return [{ ...selectedReviewSkill, contentFingerprint: fail ? "updated guide" : "old guide" }];
+    };
+    localSkillsSyncImpl = () => {
+      if (fail && failure === "sync") throw new Error("Skill mirror unavailable");
+      return "/runtime/skills";
+    };
+    const user = userEvent.setup();
+    await renderApp();
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("local_skills_sync", expect.anything()));
+    await user.click(screen.getByRole("button", { name: PROJECT_A.name }));
+    fail = true;
+    await user.type(await screen.findByPlaceholderText(/Ask Mythra Code to work in/), "@review Inspect this project{Enter}");
+    expect(await screen.findByText(/could not (?:load|refresh) the selected skills folder/i)).toBeInTheDocument();
+    expect(invokeMock.mock.calls.some(([command, args]) => command === "codex_rpc" && ["thread/start", "turn/start"].includes(String(args?.method)))).toBe(false);
+    expect(invokeMock.mock.calls.some(([command]) => command === "local_skills_resolve_prompts")).toBe(false);
+    if (failure === "sync") {
+      const roots = invokeMock.mock.calls
+        .filter(([command, args]) => command === "codex_rpc" && args?.method === "skills/extraRoots/set")
+        .map(([, args]) => ((args?.params ?? {}) as { extraRoots: string[] }).extraRoots);
+      expect(roots).toContainEqual(["/runtime/skills"]);
+      expect(roots.at(-1)).toEqual([]);
+    }
+  });
+
+  it("does not scan the skills folder for an ordinary send after warmup", async () => {
+    localStorage.setItem("kiwi.skillsFolder", JSON.stringify("/skills"));
+    localSkillsScanImpl = () => [selectedReviewSkill];
+    const user = userEvent.setup();
+    await renderApp();
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("local_skills_sync", expect.anything()));
+    await user.click(screen.getByRole("button", { name: PROJECT_A.name }));
+    const scansBeforeSend = invokeMock.mock.calls.filter(([command]) => command === "local_skills_scan").length;
+    await user.type(await screen.findByPlaceholderText(/Ask Mythra Code to work in/), "Inspect this project{Enter}");
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("codex_rpc", expect.objectContaining({ method: "turn/start" })));
+    expect(invokeMock.mock.calls.filter(([command]) => command === "local_skills_scan")).toHaveLength(scansBeforeSend);
+  });
+
+  it("retries a skill send when a focus refresh supersedes its scan", async () => {
+    localStorage.setItem("kiwi.skillsFolder", JSON.stringify("/skills"));
+    localSkillsScanImpl = () => [selectedReviewSkill];
+    const user = userEvent.setup();
+    await renderApp();
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("local_skills_sync", expect.anything()));
+    await user.click(screen.getByRole("button", { name: PROJECT_A.name }));
+    const sendScan = deferred<LocalSkillFile[]>();
+    let held = false;
+    localSkillsScanImpl = () => {
+      if (!held) { held = true; return sendScan.promise; }
+      return [selectedReviewSkill];
+    };
+    await user.type(await screen.findByPlaceholderText(/Ask Mythra Code to work in/), "@review Inspect this project{Enter}");
+    await waitFor(() => expect(held).toBe(true));
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    await act(async () => { sendScan.resolve([selectedReviewSkill]); });
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("codex_rpc", expect.objectContaining({ method: "turn/start" })));
+    expect(invokeMock.mock.calls.filter(([command]) => command === "local_skills_scan").length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("discovers a newly added user skill before resolving its first send", async () => {
+    localStorage.setItem("kiwi.skillsFolder", JSON.stringify("/skills"));
+    const newSkill: LocalSkillFile = {
+      path: "/skills/new/SKILL.md", relativePath: "new/SKILL.md", fileName: "SKILL.md",
+      defaultName: "new", description: "New skill", supportingMarkdownCount: 0,
+    };
+    let files = [selectedReviewSkill];
+    localSkillsScanImpl = () => files;
+    const user = userEvent.setup();
+    await renderApp();
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("local_skills_sync", expect.anything()));
+    await user.click(screen.getByRole("button", { name: PROJECT_A.name }));
+    files = [selectedReviewSkill, newSkill];
+    await user.type(await screen.findByPlaceholderText(/Ask Mythra Code to work in/), "@new Inspect this project{Enter}");
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("local_skills_resolve_prompts", expect.objectContaining({
+      skills: expect.arrayContaining([expect.objectContaining({ sourcePath: newSkill.path, name: "new", enabled: true })]),
+    })));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("codex_rpc", expect.objectContaining({ method: "turn/start" })));
+  });
+
+  it("keeps scanned broken skills visible and analyzable when runtime sync rejects them", async () => {
+    localStorage.setItem("kiwi.skillsFolder", JSON.stringify("/skills"));
+    const testsSkill: LocalSkillFile = {
+      path: "/skills/tests/SKILL.md", relativePath: "tests/SKILL.md", fileName: "SKILL.md",
+      defaultName: "tests", description: "Test instructions", supportingMarkdownCount: 0,
+    };
+    const report: SkillDependencyReport = {
+      ...emptySkillDependencyReport(),
+      roots: [{ nodeId: "review", channel: "user", name: "review" }],
+      nodes: [
+        { id: "review", kind: "skill", name: "review", path: selectedReviewSkill.path, status: "loaded", depth: 0, characterCount: 30 },
+        { id: "tests", kind: "skill", name: "tests", path: testsSkill.path, status: "loaded", depth: 1, characterCount: 30 },
+        { id: "checklist", kind: "document", name: "checklist.txt", path: "/skills/tests/checklist.txt", status: "blocked", depth: 2, characterCount: 0 },
+      ],
+      edges: [{ from: "review", to: "tests", reference: "@tests" }, { from: "tests", to: "checklist", reference: "checklist.txt" }],
+      issues: [{ code: "missing-document", rootName: "review", chain: ["@review", "@tests", "checklist.txt"], reference: "checklist.txt", message: "The nested checklist is missing." }],
+    };
+    localSkillsScanImpl = () => [selectedReviewSkill, testsSkill];
+    localSkillsSyncImpl = () => { throw new Error("The nested checklist is missing."); };
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "local_skills_analyze_prompts") return report;
+      if (command === "local_skills_read") return "# Review\n\nUse @tests.\n";
+      return stubInvoke(command, args);
+    });
+    const user = userEvent.setup();
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(await screen.findByRole("button", { name: /^Skills/ }));
+    const settings = await screen.findByRole("dialog", { name: "Settings" });
+    expect(await within(settings).findByRole("button", { name: "Edit review skill" })).toBeInTheDocument();
+    expect(within(settings).getByRole("button", { name: "Edit tests skill" })).toBeInTheDocument();
+    expect(within(settings).queryByText("No skills in this folder yet")).not.toBeInTheDocument();
+    await user.click(within(settings).getByRole("button", { name: "Edit review skill" }));
+    const editor = await screen.findByRole("dialog", { name: "Edit @review" });
+    expect(await within(editor).findByText("Turn blocked by skill dependencies")).toBeInTheDocument();
+    expect(within(editor).getAllByText(/nested checklist is missing/).length).toBeGreaterThan(0);
+    await user.click(within(editor).getByRole("button", { name: /Close/ }));
+    await user.click(within(settings).getByRole("button", { name: "Close settings" }));
+    await user.click(screen.getByRole("button", { name: PROJECT_A.name }));
+    await user.type(await screen.findByPlaceholderText(/Ask Mythra Code to work in/), "@review Inspect this project{Enter}");
+    expect(await screen.findByText(/could not load the selected skills folder/i)).toBeInTheDocument();
+    expect(invokeMock.mock.calls.some(([command, args]) => command === "codex_rpc" && ["thread/start", "turn/start"].includes(String(args?.method)))).toBe(false);
+  });
+
+  it("blocks plain sends until a failed provider-root clear is repaired", async () => {
+    localStorage.setItem("kiwi.skillsFolder", JSON.stringify("/skills"));
+    let fingerprint = "old";
+    let syncFails = false;
+    let clearFails = false;
+    localSkillsScanImpl = () => [{ ...selectedReviewSkill, contentFingerprint: fingerprint }];
+    localSkillsSyncImpl = () => {
+      if (syncFails) throw new Error("Skill mirror failed");
+      return "/runtime/skills";
+    };
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "codex_rpc" && args?.method === "skills/extraRoots/set"
+        && ((args.params ?? {}) as { extraRoots: string[] }).extraRoots.length === 0 && clearFails) {
+        throw new Error("Could not clear the old root");
+      }
+      return stubInvoke(command, args);
+    });
+    const user = userEvent.setup();
+    await renderApp();
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("codex_rpc", expect.objectContaining({
+      method: "skills/extraRoots/set", params: { extraRoots: ["/runtime/skills"] },
+    })));
+    await user.click(screen.getByRole("button", { name: PROJECT_A.name }));
+    const clearCount = () => invokeMock.mock.calls.filter(([command, args]) => command === "codex_rpc"
+      && args?.method === "skills/extraRoots/set"
+      && ((args.params ?? {}) as { extraRoots: string[] }).extraRoots.length === 0).length;
+    const clearsBefore = clearCount();
+    fingerprint = "new";
+    syncFails = true;
+    clearFails = true;
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    await waitFor(() => expect(clearCount()).toBeGreaterThan(clearsBefore));
+    const composer = await screen.findByPlaceholderText(/Ask Mythra Code to work in/);
+    await user.type(composer, "Inspect this project{Enter}");
+    expect(await screen.findByText(/could not clear the previous skills runtime/i)).toBeInTheDocument();
+    expect(invokeMock.mock.calls.some(([command, args]) => command === "codex_rpc" && ["thread/start", "turn/start"].includes(String(args?.method)))).toBe(false);
+    syncFails = false;
+    clearFails = false;
+    const rootsBefore = invokeMock.mock.calls.filter(([command, args]) => command === "codex_rpc"
+      && args?.method === "skills/extraRoots/set"
+      && ((args.params ?? {}) as { extraRoots: string[] }).extraRoots[0] === "/runtime/skills").length;
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    await waitFor(() => expect(invokeMock.mock.calls.filter(([command, args]) => command === "codex_rpc"
+      && args?.method === "skills/extraRoots/set"
+      && ((args.params ?? {}) as { extraRoots: string[] }).extraRoots[0] === "/runtime/skills").length).toBeGreaterThan(rootsBefore));
+    await user.type(composer, "{Enter}");
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("codex_rpc", expect.objectContaining({ method: "turn/start" })));
+  });
+
   it("sends a message whose only @ words are not skills while the folder cannot be read", async () => {
     localStorage.setItem("kiwi.skillsFolder", JSON.stringify("/skills"));
     localSkillsScanImpl = () => { throw new Error("Folder is locked by another process"); };
@@ -1620,10 +1829,10 @@ describe("overlapping refresh ordering", () => {
       message: "mail me@example.com about @src/App.tsx today",
       skills: [],
     }));
-    expect(invokeMock).toHaveBeenCalledWith("local_skills_mention_names", { message: "\nmail me@example.com about @src/App.tsx today" });
+    expect(invokeMock).toHaveBeenCalledWith("local_skills_mention_names", { message: "mail me@example.com about @src/App.tsx today" });
   });
 
-  it("still refuses a real @skill send while the folder cannot be read", async () => {
+  it("keeps an unknown user @word literal while the folder cannot be read", async () => {
     localStorage.setItem("kiwi.skillsFolder", JSON.stringify("/skills"));
     localSkillsScanImpl = () => { throw new Error("Folder is locked by another process"); };
     const user = userEvent.setup();
@@ -1633,8 +1842,10 @@ describe("overlapping refresh ordering", () => {
 
     await user.type(composer, "@review inspect this{Enter}");
 
-    expect(await screen.findByText(/could not load the selected skills folder/)).toBeInTheDocument();
-    expect(invokeMock.mock.calls.some(([command, args]) => command === "codex_rpc" && args?.method === "turn/start")).toBe(false);
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("codex_rpc", expect.objectContaining({
+      method: "turn/start",
+      params: expect.objectContaining({ input: [expect.objectContaining({ text: "@review inspect this" })] }),
+    })));
   });
 
   it("refuses a plain user message when its system prompt invokes an unreadable selected-folder skill", async () => {
@@ -1647,7 +1858,7 @@ describe("overlapping refresh ordering", () => {
     const composer = await screen.findByPlaceholderText(/Ask Mythra Code to work in/);
     await user.type(composer, "Inspect this project{Enter}");
     expect(await screen.findByText(/could not load the selected skills folder/)).toBeInTheDocument();
-    expect(invokeMock).toHaveBeenCalledWith("local_skills_mention_names", { message: "Use @review.\nInspect this project" });
+    expect(invokeMock).toHaveBeenCalledWith("local_skills_mention_names", { message: "Use @review." });
     expect(invokeMock.mock.calls.some(([command, args]) => command === "codex_rpc" && ["thread/start", "turn/start"].includes(String(args?.method)))).toBe(false);
   });
 

@@ -28,6 +28,11 @@ describe("friendlyError", () => {
       .toBe("The Codex runtime could not be found. Install the official Codex CLI, then try again.");
   });
 
+  it("keeps a missing skill path instead of calling it a missing Codex runtime", () => {
+    expect(friendlyError("Could not prepare Codex skill @tests: references/checklist.txt: No such file or directory"))
+      .toBe("Could not prepare Codex skill @tests: references/checklist.txt: No such file or directory");
+  });
+
   it("removes noisy transport prefixes from unknown errors", () => {
     expect(friendlyError("App Server error: useful detail")).toBe("useful detail");
   });
@@ -38,7 +43,6 @@ describe("formatGitError", () => {
     ["commit timeout", "Git operation timed out\n\nHEAD is now abc1234. A commit may already have been saved. Refresh and inspect it before trying another commit."],
     ["repository creation timeout", "GitHub repository creation timed out. It may have completed on GitHub; check your account before trying Create again."],
     ["created but not attached", "GitHub repository created at https://github.com/owner/name.git, but it could not be attached to this project. error: could not lock config file .git/config: Permission denied Use Attach remote with this URL to finish connecting it. No commits were uploaded."],
-    ["missing path", "Could not open the project folder: No such file or directory (os error 2)"],
     ["push rejection", "git@github.com: Permission denied (publickey).\nfatal: Could not read from remote repository."],
     ["not a repository", "fatal: not a git repository (or any of the parent directories): .git"],
   ])("keeps native recovery guidance for %s", (_label, message) => {
@@ -46,6 +50,11 @@ describe("formatGitError", () => {
     expect(friendlyError(new Error(message))).not.toBe(message);
     expect(formatGitError(new Error(message))).toBe(message);
     expect(formatGitError(message)).toBe(message);
+  });
+
+  it("keeps the exact missing project folder path", () => {
+    const message = "Could not open the project folder: No such file or directory (os error 2)";
+    expect(formatGitError(new Error(message))).toBe(message);
   });
 
   it("drops only a transport prefix and falls back for empty failures", () => {

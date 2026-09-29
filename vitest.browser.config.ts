@@ -31,6 +31,10 @@ export default defineConfig({
           // WebKit dispatches MediaQueryList changes on a later rendering step.
           await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
         },
+        async setForcedColors({ page }, active: boolean) {
+          await page.emulateMedia({ forcedColors: active ? "active" : "none" });
+          await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+        },
       },
       headless: true,
       screenshotFailures: false,

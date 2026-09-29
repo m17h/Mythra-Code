@@ -175,6 +175,10 @@ export interface SkillDependencyReport {
     chain: string[];
     sourcePath?: string;
     reference?: string;
+    /** Existing report node responsible for this failure; omitted for report-level limits. */
+    targetNodeId?: string;
+    /** Existing parent node that referenced the blocked target, when known. */
+    sourceNodeId?: string;
   }>;
 }
 

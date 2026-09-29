@@ -1,0 +1,87 @@
+/* Compact per-reference dependency map, anchored to an @skill token. */
+.skill-reference-inspector {
+  position: fixed; inset: auto; z-index: 60; margin: 0; padding: 0; box-sizing: border-box;
+  display: flex; flex-direction: column; min-width: 0; max-width: calc(100vw - 16px); overflow: hidden;
+  border: 1px solid var(--line-strong); border-radius: var(--r-md, 8px);
+  color: var(--text); background: var(--panel-2); box-shadow: var(--shadow);
+  font-size: var(--fs-meta, 12px); line-height: 1.4; text-align: left; visibility: hidden;
+  animation: sri-in 110ms ease-out;
+}
+.skill-reference-inspector.is-portaled { z-index: 140; }
+.skill-reference-inspector:focus { outline: none; }
+@keyframes sri-in { from { opacity: 0; transform: translateY(2px); } }
+@media (prefers-reduced-motion: reduce) { .skill-reference-inspector { animation: none; } }
+
+.sri-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+.sri-head { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 8px 10px 1px; }
+.sri-head > svg { flex: 0 0 auto; color: var(--info); }
+.sri-head strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--info); font-weight: 650; }
+.sri-state { flex: 0 0 auto; margin-left: auto; padding: 0 6px; border: 1px solid var(--line-strong); border-radius: 999px; color: var(--muted); font-size: var(--fs-micro, 10px); font-weight: 600; letter-spacing: 0.04em; line-height: 16px; text-transform: uppercase; }
+.skill-reference-inspector.is-blocked .sri-head > svg, .skill-reference-inspector.is-blocked .sri-head strong,
+.skill-reference-inspector.is-incomplete .sri-head > svg, .skill-reference-inspector.is-incomplete .sri-head strong { color: var(--red); }
+.skill-reference-inspector.is-blocked .sri-state, .skill-reference-inspector.is-incomplete .sri-state {
+  color: var(--red); border-color: color-mix(in srgb, var(--red) 42%, transparent); background: color-mix(in srgb, var(--red) 8%, transparent);
+}
+.sri-summary { margin: 0; padding: 1px 10px 7px; color: var(--muted); overflow-wrap: anywhere; }
+.skill-reference-inspector.is-blocked .sri-summary { color: var(--red); }
+
+.sri-body { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 7px 10px 8px; border-top: 1px solid var(--line); }
+.sri-body:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; }
+.sri-empty { margin: 2px 0; color: var(--muted); overflow-wrap: anywhere; }
+
+/* Tree: one restrained guide per level, masked below the last sibling. */
+.sri-tree, .sri-tree ul { margin: 0; padding: 0; list-style: none; }
+.sri-tree ul { position: relative; margin-left: 5px; padding-left: 12px; border-left: 1px solid var(--line-strong); }
+.sri-item { position: relative; }
+.sri-tree ul > .sri-item::before { content: ""; position: absolute; left: -12px; top: 10px; width: 8px; border-top: 1px solid var(--line-strong); }
+.sri-tree ul > .sri-item:last-child::after { content: ""; position: absolute; left: -13px; top: 11px; bottom: 0; width: 2px; background: var(--panel-2); }
+.sri-tree ul > .sri-item.on-path::before { border-top-color: color-mix(in srgb, var(--red) 70%, transparent); }
+
+.sri-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 6px; min-height: 21px; }
+.sri-row > svg { color: var(--muted-2); }
+.sri-item.is-loads > .sri-row > svg, .sri-item.is-held > .sri-row > svg { color: var(--info); }
+/* Name first; its folder yields space before the name does, and clips from
+   the start so the nearest folder stays readable. */
+.sri-name { display: flex; align-items: baseline; gap: 5px; min-width: 0; overflow: hidden; }
+.sri-label { flex: 0 1 auto; min-width: 2.5em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sri-where { flex: 0 10000 auto; min-width: 0; overflow: hidden; direction: rtl; text-align: left; text-overflow: ellipsis; white-space: nowrap; color: var(--muted-2); font-family: var(--font-mono); font-size: var(--fs-micro, 10px); }
+.sri-where > bdi { direction: ltr; unicode-bidi: isolate; }
+.sri-status { display: inline-flex; align-items: center; gap: 3px; color: var(--muted-2); font-size: var(--fs-micro, 10px); white-space: nowrap; }
+.sri-item.is-failed > .sri-row { color: var(--red); }
+.sri-item.is-failed > .sri-row > svg, .sri-item.is-failed > .sri-row .sri-status { color: var(--red); font-weight: 600; }
+.sri-item.is-repeat:not(.is-failed) > .sri-row .sri-label { color: var(--muted); }
+.sri-reason, .sri-reference { margin: 0 0 5px 18px; font-size: var(--fs-micro, 10px); line-height: 1.45; overflow-wrap: anywhere; }
+.sri-reason { color: var(--red); }
+.sri-reference { display: block; margin-top: -3px; color: var(--muted-2); font-family: var(--font-mono); white-space: pre-wrap; }
+
+.sri-issues { margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--line); }
+.sri-issues:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+.sri-issues h4 { margin: 0 0 4px; color: var(--muted-2); font-size: var(--fs-micro, 10px); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+.sri-issues ul { margin: 0; padding: 0; list-style: none; }
+.sri-issues li { display: flex; flex-direction: column; gap: 1px; margin-bottom: 6px; color: var(--red); overflow-wrap: anywhere; }
+.sri-issues small { color: var(--muted-2); font-size: var(--fs-micro, 10px); }
+
+.sri-foot { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-top: 1px solid var(--line); color: var(--muted-2); font-size: var(--fs-micro, 10px); }
+.sri-foot > span:first-child { flex: 1; min-width: 0; }
+.sri-keys { flex: 0 0 auto; white-space: nowrap; }
+.sri-keys kbd { padding: 0 4px; border: 1px solid var(--line-strong); border-radius: 3px; font-family: inherit; font-size: inherit; }
+
+/* The token whose map is showing, painted in the pointer-free mirror. */
+.skill-prompt-token.is-inspected, .composer-skill-token.is-inspected { border-radius: 3px; background: color-mix(in srgb, currentColor 14%, transparent); }
+
+@media (forced-colors: active) {
+  .skill-reference-inspector { border: 1px solid CanvasText; }
+  .sri-tree ul, .sri-tree ul > .sri-item::before { border-color: CanvasText; }
+  .sri-tree ul > .sri-item:last-child::after { background: Canvas; }
+  .sri-item.is-failed > .sri-row .sri-label { text-decoration: underline wavy; }
+  /* System colors would repaint the mirror's transparent text over the native
+     textarea's. Keep it unpainted and draw only a shape cue on a blocked
+     token: a wavy underline, plus a frame on the token being inspected. */
+  .skill-prompt-highlight, .composer-input-highlight { forced-color-adjust: none; color: transparent; }
+  .skill-prompt-highlight .skill-prompt-token[data-skill-start], .composer-input-highlight .composer-skill-token[data-skill-start] { color: transparent; }
+  .skill-prompt-highlight .skill-prompt-token.is-blocked, .composer-input-highlight .composer-skill-token.is-blocked {
+    color: transparent; text-decoration: underline wavy 1.5px; text-decoration-color: Highlight; text-underline-offset: 3px;
+  }
+  .skill-prompt-token.is-inspected, .composer-skill-token.is-inspected { background: transparent; outline: 1px solid Highlight; outline-offset: 1px; }
+}

@@ -100,11 +100,15 @@ export function validSkillDependencyReport(value: unknown): SkillDependencyRepor
       || !Array.isArray(issue.chain) || issue.chain.length > 66 || !issue.chain.every((entry) => text(entry))
       || (issue.rootName !== undefined && !text(issue.rootName, 256))
       || (issue.sourcePath !== undefined && (!text(issue.sourcePath) || !isSkillDependencyPath(issue.sourcePath)))
-      || (issue.reference !== undefined && !text(issue.reference))) return undefined;
+      || (issue.reference !== undefined && !text(issue.reference))
+      || (issue.targetNodeId !== undefined && (!text(issue.targetNodeId, 256) || !nodeIds.has(issue.targetNodeId)))
+      || (issue.sourceNodeId !== undefined && (!text(issue.sourceNodeId, 256) || !nodeIds.has(issue.sourceNodeId)))) return undefined;
     issues.push({ code: issue.code, message: issue.message, chain: [...issue.chain] as string[],
       ...(issue.rootName !== undefined ? { rootName: issue.rootName as string } : {}),
       ...(issue.sourcePath !== undefined ? { sourcePath: issue.sourcePath as string } : {}),
-      ...(issue.reference !== undefined ? { reference: issue.reference as string } : {}) });
+      ...(issue.reference !== undefined ? { reference: issue.reference as string } : {}),
+      ...(issue.targetNodeId !== undefined ? { targetNodeId: issue.targetNodeId as string } : {}),
+      ...(issue.sourceNodeId !== undefined ? { sourceNodeId: issue.sourceNodeId as string } : {}) });
   }
   return { version: 1, limits: { ...SKILL_DEPENDENCY_LIMITS }, roots, nodes, edges, issues };
 }
@@ -147,6 +151,6 @@ export function estimateSkillDependencyBytes(value: unknown): number {
     + report.roots.reduce((total, root) => total + 128 + bytes(root.nodeId) + bytes(root.channel) + bytes(root.name), 0)
     + report.nodes.reduce((total, node) => total + 256 + bytes(node.id) + bytes(node.kind) + bytes(node.name) + bytes(node.path) + bytes(node.status) + bytes(node.contentHash), 0)
     + report.edges.reduce((total, edge) => total + 128 + bytes(edge.from) + bytes(edge.to) + bytes(edge.reference), 0)
-    + report.issues.reduce((total, issue) => total + 256 + bytes(issue.code) + bytes(issue.message) + bytes(issue.rootName) + bytes(issue.sourcePath) + bytes(issue.reference)
+    + report.issues.reduce((total, issue) => total + 256 + bytes(issue.code) + bytes(issue.message) + bytes(issue.rootName) + bytes(issue.sourcePath) + bytes(issue.reference) + bytes(issue.targetNodeId) + bytes(issue.sourceNodeId)
       + issue.chain.reduce((sum, entry) => sum + 16 + bytes(entry), 0), 0);
 }

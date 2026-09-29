@@ -41,6 +41,21 @@ describe("persisted skill dependency provenance", () => {
     expect(error.message).toContain("Skills were not loaded and the model was not started.");
   });
 
+  it("retains exact issue-to-node provenance for a blocked nested document", () => {
+    const source = report();
+    source.nodes[1] = { ...source.nodes[1], status: "blocked", characterCount: 0 };
+    source.issues.push({ code: "unsupported-document", message: "This document type cannot be loaded.",
+      rootName: "review", chain: ["review", "checklist.md"],
+      targetNodeId: source.nodes[1].id, sourceNodeId: source.nodes[0].id });
+    expect(validSkillDependencyReport(source)).toEqual(source);
+    const damaged = structuredClone(source);
+    damaged.issues[0].targetNodeId = "a-missing-node";
+    expect(validSkillDependencyReport(damaged)).toBeUndefined();
+    const missingSource = structuredClone(source);
+    missingSource.issues[0].sourceNodeId = "a-missing-parent";
+    expect(validSkillDependencyReport(missingSource)).toBeUndefined();
+  });
+
   it.each([
     null, "corrupt", [], {}, { ...report(), version: 2 },
     { ...report(), limits: { ...SKILL_DEPENDENCY_LIMITS, maxFiles: 999 } },

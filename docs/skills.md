@@ -4,7 +4,7 @@ Choose a folder in **Settings → Skills**. Mythra Code discovers top-level `.md
 
 Direct message and system-prompt mentions use a standalone plain alias such as `@review`, separated from surrounding words. Inside a loaded skill or reference document, visible Markdown mentions can be plain, bold (`**@tests**`), or italic (`*@tests*`). Mentions in inline code, fenced code blocks, image text, or escaped as `\@tests` are examples rather than dependencies.
 
-An unknown or disabled alias typed directly in a message or system prompt remains ordinary text. Once an enabled root skill loads, an unknown or disabled nested alias is a broken dependency and blocks that turn.
+An unknown or disabled alias typed directly in a **message** remains ordinary text. In a **system prompt**, a direct `@alias` is treated as an intended skill reference: if it is unknown, disabled, or ambiguous, Mythra Code flags it and blocks the turn. Once an enabled root skill loads, an unknown or disabled nested alias also blocks the turn.
 
 ## Building a dependency graph
 
@@ -48,11 +48,13 @@ Repeated references load the same canonical file once. Shared dependencies are a
 
 The resolver also bounds unusually large inputs to 64 recognized direct roots and 1,000 configured aliases. These checks stop resolution with a diagnostic instead of truncating the graph.
 
-Blocked previews show the reference, reason, and complete chain in red, for example `@review → @tests → references/missing.md`. A root mention turns red when a nested dependency fails. System-only failures also appear in the composer when the message is empty.
+Blocked previews show the reference, reason, and complete chain in red, for example `@review → @tests → references/missing.md`. A root mention turns red when a nested dependency fails. System-only failures also appear in the composer when the message is empty. The system-prompt editor's flagged reference opens a dependency map on hover or keyboard focus so you can see which inspected skill or document is blocked and why. Files below an unreadable, unsupported, or over-limit reference cannot be inspected; the map does not claim to know or load their contents.
 
 ## Editing and inspecting context
 
 The system prompt, composer, and skill source editor preview dependencies after a short typing pause. The source editor checks unsaved Markdown. Closing an editor or replacing a request discards stale preview results. Sending resolves the current files again; a preview is not permission to reuse an earlier file snapshot.
+
+When importing a skill package from elsewhere on your computer, keep its supported `.md`, `.markdown`, and `.txt` reference files inside the package. A standalone `.md` skill with local document links cannot be imported by itself: put it and those documents in a folder with a `SKILL.md` entry point, then import that package. Unsupported formats such as PDF and Word, and local image targets such as `![diagram](assets/flow.png)`, are reported by name rather than silently left out; remote images are not imported. Package import and provider mirrors have file, size, and depth limits and report a failure instead of silently dropping required supported files.
 
 Sent user messages contain a collapsed **Skill context** disclosure, including skills loaded only by system instructions. Expand it to inspect root channels, skill and document paths, nested reference edges, load outcomes, and character counts. The disclosure stores graph metadata, not an additional copy of loaded file contents. Provider transcripts can retain the delivered context just like other prompts. A skill link opens only the exact source currently known in the selected folder; a different skill reusing its old alias cannot become its destination. Document paths are shown as read-only text.
 

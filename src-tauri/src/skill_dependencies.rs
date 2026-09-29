@@ -20,6 +20,8 @@ pub(super) const MAX_CHARACTERS: usize = 120_000;
 pub(super) const MAX_FILE_BYTES: u64 = 1_048_576;
 const MAX_REFERENCES: usize = 128;
 const MAX_ROOTS: usize = 64;
+const MAX_DIAGNOSTIC_NODES: usize = MAX_REFERENCES + MAX_ROOTS + 1;
+const MAX_ISSUES: usize = 256;
 const MAX_CONFIGS: usize = 1_000;
 
 #[derive(Clone, Serialize)]
@@ -70,6 +72,10 @@ pub(crate) struct SkillDependencyIssue {
     pub source_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reference: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_node_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_node_id: Option<String>,
 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -129,6 +135,7 @@ struct Config {
 enum Reference {
     Skill(String),
     Document(String),
+    Image(String),
 }
 fn diagnostic(value: &str) -> String {
     let mut output = String::new();
@@ -182,9 +189,12 @@ fn references(content: &str) -> Vec<Reference> {
                 visible.push('\n');
                 hidden += 1;
             }
-            Event::Start(Tag::Image { .. }) => {
+            Event::Start(Tag::Image { dest_url, .. }) => {
                 if hidden == 0 {
                     visible.push('\u{fffc}');
+                    if local_document_target(&dest_url) {
+                        references.push((range.start, Reference::Image(dest_url.into_string())));
+                    }
                 }
                 hidden += 1;
             }
@@ -285,6 +295,37 @@ fn references(content: &str) -> Vec<Reference> {
         .collect()
 }
 
+/// Reuse the resolver's rendered-Markdown rules when checking an imported
+/// package before copying it. Skill callers pass the body without frontmatter.
+/// The returned list is bounded by the resolver's reference scan budget.
+pub(super) fn local_document_references(content: &str) -> Vec<String> {
+    references(content)
+        .into_iter()
+        .filter_map(|reference| match reference {
+            Reference::Document(target) => Some(target),
+            Reference::Skill(_) | Reference::Image(_) => None,
+        })
+        .collect()
+}
+
+/// Local image destinations are known unsupported dependencies even when the
+/// target happens to use a text extension; image alt text remains an example.
+pub(super) fn local_image_references(content: &str) -> Vec<String> {
+    references(content)
+        .into_iter()
+        .filter_map(|reference| match reference {
+            Reference::Image(target) => Some(target),
+            Reference::Skill(_) | Reference::Document(_) => None,
+        })
+        .collect()
+}
+
+/// Import preflight must refuse a package when the bounded parser cannot
+/// inspect every authored dependency reference.
+pub(super) fn dependency_reference_limit_exceeded(content: &str) -> bool {
+    references(content).len() > MAX_REFERENCES
+}
+
 fn local_document_target(value: &str) -> bool {
     let value = value.trim();
     if value.is_empty() || value.starts_with('#') || value.starts_with("//") {
@@ -305,7 +346,7 @@ fn is_text(path: &Path) -> bool {
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("txt"))
 }
-fn percent_decode(value: &str) -> Result<String, String> {
+pub(super) fn percent_decode(value: &str) -> Result<String, String> {
     let mut bytes = Vec::with_capacity(value.len());
     let input = value.as_bytes();
     let mut index = 0;
@@ -339,6 +380,8 @@ struct Analyzer {
     characters: usize,
     skill_count: usize,
     references: usize,
+    reference_limit_reported: bool,
+    issue_pending_target: bool,
     preview: Option<(PathBuf, String)>,
     pending: VecDeque<Pending>,
 }
@@ -351,7 +394,20 @@ impl Analyzer {
         source: Option<&Path>,
         reference: Option<&str>,
     ) {
-        if self.report.issues.len() >= MAX_REFERENCES {
+        self.issue_pending_target = false;
+        if self.report.issues.len() >= MAX_ISSUES - 1 {
+            if self.report.issues.len() == MAX_ISSUES - 1 {
+                self.report.issues.push(SkillDependencyIssue {
+                    code: "diagnostic-limit".into(),
+                    message: "Additional dependency problems were found but could not be listed within the diagnostic limit. No skill context was sent.".into(),
+                    root_name: None,
+                    chain: vec![],
+                    source_path: None,
+                    reference: None,
+                    target_node_id: None,
+                    source_node_id: None,
+                });
+            }
             return;
         }
         self.report.issues.push(SkillDependencyIssue {
@@ -363,7 +419,28 @@ impl Analyzer {
             chain: chain.iter().map(|part| diagnostic(part)).collect(),
             source_path: source.and_then(diagnostic_path),
             reference: reference.map(diagnostic),
+            target_node_id: None,
+            source_node_id: source
+                .and_then(|path| self.identities.get(path))
+                .map(|index| self.report.nodes[*index].id.clone()),
         });
+        self.issue_pending_target = true;
+    }
+    fn identify_latest_issue(&mut self, reference: &str, target: &str, parent: Option<&str>) {
+        if !self.issue_pending_target {
+            return;
+        }
+        self.issue_pending_target = false;
+        if let Some(issue) = self.report.issues.last_mut() {
+            if issue.reference.as_deref() == Some(diagnostic(reference).as_str())
+                && issue.target_node_id.is_none()
+            {
+                issue.target_node_id = Some(target.into());
+                if let Some(parent) = parent {
+                    issue.source_node_id = Some(parent.into());
+                }
+            }
+        }
     }
     fn blocked(
         &mut self,
@@ -378,6 +455,7 @@ impl Analyzer {
         if !path.as_os_str().is_empty() {
             if let Some(index) = self.identities.get(path).copied() {
                 let id = self.report.nodes[index].id.clone();
+                self.identify_latest_issue(reference, &id, parent);
                 if let Some(parent) = parent {
                     self.report.edges.push(SkillDependencyEdge {
                         from: parent.into(),
@@ -394,7 +472,7 @@ impl Analyzer {
                 format!("{}:{reference}:{}", path.display(), self.report.nodes.len()).as_bytes()
             )
         );
-        if self.report.nodes.len() < MAX_REFERENCES + MAX_ROOTS {
+        if self.report.nodes.len() < MAX_DIAGNOSTIC_NODES {
             self.report.nodes.push(SkillDependencyNode {
                 id: id.clone(),
                 name: diagnostic(name),
@@ -416,6 +494,7 @@ impl Analyzer {
                 self.identities
                     .insert(path.to_path_buf(), self.report.nodes.len() - 1);
             }
+            self.identify_latest_issue(reference, &id, parent);
         }
         id
     }
@@ -436,7 +515,7 @@ impl Analyzer {
             .filter(|index| self.configs[*index].enabled)
             .collect::<Vec<_>>();
         if enabled.len() != 1 {
-            if parent.is_none() && enabled.is_empty() {
+            if parent.is_none() && !system && enabled.is_empty() {
                 return None;
             } // Legacy authored unknown mentions are plain text.
             let (code, message) = if enabled.len() > 1 {
@@ -447,7 +526,12 @@ impl Analyzer {
             } else if !matches.is_empty() {
                 ("disabled-skill", format!("Skill `{name}` is disabled."))
             } else {
-                ("unknown-skill", format!("Unknown nested skill `{name}`."))
+                let context = if parent.is_some() {
+                    "nested skill"
+                } else {
+                    "skill"
+                };
+                ("unknown-skill", format!("Unknown {context} `{name}`."))
             };
             self.issue(
                 code,
@@ -631,6 +715,7 @@ impl Analyzer {
                 stack.last().map(PathBuf::as_path),
                 Some(reference),
             );
+            self.identify_latest_issue(reference, &id, parent);
             return id;
         }
         if let Some(index) = self.identities.get(&source).copied() {
@@ -733,13 +818,26 @@ impl Analyzer {
         for dependency in refs {
             self.references += 1;
             if self.references > MAX_REFERENCES {
+                if self.reference_limit_reported {
+                    break;
+                }
+                self.reference_limit_reported = true;
+                let (kind, name, reference) = match &dependency {
+                    Reference::Skill(name) => ("skill", name.clone(), format!("@{name}")),
+                    Reference::Document(reference) | Reference::Image(reference) => {
+                        ("document", reference.clone(), reference.clone())
+                    }
+                };
+                let mut omitted_chain = chain.clone();
+                omitted_chain.push(reference.clone());
                 self.issue(
                     "reference-limit",
-                    format!("Skill dependencies contain more than {MAX_REFERENCES} references."),
-                    &chain,
+                    format!("Skill dependencies contain more than {MAX_REFERENCES} references. This reference and any later references were not inspected."),
+                    &omitted_chain,
                     Some(&source),
-                    None,
+                    Some(&reference),
                 );
+                self.blocked(&name, kind, Path::new(""), depth + 1, Some(&id), &reference);
                 break;
             }
             self.pending.push_back(Pending {
@@ -770,6 +868,25 @@ impl Analyzer {
                     let mut chain = chain.clone();
                     chain.push(format!("@{name}"));
                     self.skill(&name, depth, system, Some(&parent), chain, &stack);
+                }
+                Reference::Image(reference) => {
+                    let mut chain = chain.clone();
+                    chain.push(reference.clone());
+                    self.issue(
+                        "unsupported-document",
+                        "Local image targets are not loaded as skill dependencies. Link a supported UTF-8 text document instead.",
+                        &chain,
+                        Some(&source),
+                        Some(&reference),
+                    );
+                    self.blocked(
+                        &reference,
+                        "document",
+                        Path::new(""),
+                        depth,
+                        Some(&parent),
+                        &reference,
+                    );
                 }
                 Reference::Document(reference) => {
                     let mut chain = chain.clone();
@@ -1058,6 +1175,8 @@ pub(super) fn analyze(
         characters: 0,
         skill_count: 0,
         references: 0,
+        reference_limit_reported: false,
+        issue_pending_target: false,
         preview: None,
         pending: VecDeque::new(),
     };
@@ -1095,14 +1214,18 @@ pub(super) fn analyze(
         .filter(|(_, indexes)| indexes.iter().any(|index| analyzer.configs[*index].enabled))
         .map(|(name, _)| name.clone())
         .collect::<HashSet<_>>();
-    let authored_names = |text: &str| {
-        skill_mention_references_filtered(text, |name| enabled_names.contains(name), MAX_ROOTS + 1)
-            .into_iter()
-            .map(|(_, name)| name)
-            .collect::<Vec<_>>()
+    let authored_names = |text: &str, system: bool| {
+        skill_mention_references_filtered(
+            text,
+            |name| system || enabled_names.contains(name),
+            MAX_ROOTS + 1,
+        )
+        .into_iter()
+        .map(|(_, name)| name)
+        .collect::<Vec<_>>()
     };
-    let system_names = authored_names(system_prompt);
-    let user_names = authored_names(mention_source.unwrap_or(message));
+    let system_names = authored_names(system_prompt, true);
+    let user_names = authored_names(mention_source.unwrap_or(message), false);
     let has_root = system_names.iter().chain(&user_names).any(|name| {
         analyzer
             .aliases
@@ -1230,16 +1353,16 @@ fn detect_cycles(analyzer: &mut Analyzer) {
         active: &mut Vec<String>,
         done: &mut HashSet<String>,
         chain: &mut Vec<String>,
-    ) -> Option<Vec<String>> {
-        if active.iter().any(|item| item == id) {
-            return Some(chain.clone());
-        }
+    ) -> Option<(Vec<String>, String, String)> {
         if done.contains(id) {
             return None;
         }
         active.push(id.into());
         for edge in report.edges.iter().filter(|edge| edge.from == id) {
             chain.push(edge.reference.clone());
+            if active.iter().any(|item| item == &edge.to) {
+                return Some((chain.clone(), edge.from.clone(), edge.to.clone()));
+            }
             if let Some(cycle) = visit(&edge.to, report, active, done, chain) {
                 return Some(cycle);
             }
@@ -1258,20 +1381,22 @@ fn detect_cycles(analyzer: &mut Analyzer) {
         return;
     }
     for root in analyzer.report.roots.clone() {
-        if let Some(chain) = visit(
+        if let Some((chain, source, target)) = visit(
             &root.node_id,
             &analyzer.report,
             &mut vec![],
             &mut HashSet::new(),
             &mut vec![format!("@{}", root.name)],
         ) {
+            let reference = chain.last().cloned().unwrap_or_default();
             analyzer.issue(
                 "cycle",
                 "Skill dependency cycle detected.",
                 &chain,
                 None,
-                None,
+                Some(&reference),
             );
+            analyzer.identify_latest_issue(&reference, &target, Some(&source));
             break;
         }
     }
@@ -1332,6 +1457,229 @@ mod tests {
     }
 
     #[test]
+    fn direct_system_failures_are_reported_without_changing_unknown_user_text() {
+        let mut lib = Library::new();
+        lib.skill("disabled", "disabled.md", "Never loaded", false);
+        let result = lib.analyze("Please keep @unknown literal", "Use @missing and @disabled");
+        assert_eq!(result.report.roots.len(), 2);
+        assert!(result
+            .report
+            .roots
+            .iter()
+            .all(|root| root.channel == "system"));
+        assert!(has_issue(&result, "unknown-skill"));
+        assert!(has_issue(&result, "disabled-skill"));
+        assert!(result
+            .report
+            .issues
+            .iter()
+            .find(|issue| issue.code == "unknown-skill")
+            .unwrap()
+            .message
+            .starts_with("Unknown skill `missing`"));
+        assert!(result
+            .report
+            .nodes
+            .iter()
+            .all(|node| node.status == "blocked"));
+        for issue in &result.report.issues {
+            let target = issue
+                .target_node_id
+                .as_ref()
+                .expect("specific blocked node");
+            assert!(result.report.nodes.iter().any(|node| &node.id == target));
+        }
+    }
+
+    #[test]
+    fn repeated_authored_mentions_have_one_root_per_channel() {
+        let mut lib = Library::new();
+        lib.skill("a", "a.md", "Ready", true);
+        let result = lib.analyze("@a and @a", "@a then @a");
+        assert_eq!(result.report.roots.len(), 2);
+        assert_eq!(result.report.roots[0].channel, "system");
+        assert_eq!(result.report.roots[1].channel, "user");
+        assert!(result.report.issues.is_empty());
+    }
+
+    #[test]
+    fn shared_node_cycle_issue_identifies_the_closing_edge() {
+        let mut lib = Library::new();
+        lib.skill("a", "a.md", "Use @b and @c", true);
+        lib.skill("b", "b.md", "Use @c", true);
+        lib.skill("c", "c.md", "Use @b", true);
+        let report = lib.analyze("@a", "").report;
+        let issue = report
+            .issues
+            .iter()
+            .find(|issue| issue.code == "cycle")
+            .unwrap();
+        let source = issue.source_node_id.as_deref().expect("cycle source node");
+        let target = issue.target_node_id.as_deref().expect("cycle target node");
+        assert!(report.edges.iter().any(|edge| edge.from == source
+            && edge.to == target
+            && issue.chain.last() == Some(&edge.reference)));
+        assert!(report
+            .nodes
+            .iter()
+            .any(|node| node.id == source && node.name == "c"));
+        assert!(report
+            .nodes
+            .iter()
+            .any(|node| node.id == target && node.name == "b"));
+    }
+
+    #[test]
+    fn reused_blocked_target_keeps_each_failing_parent_edge() {
+        let mut lib = Library::new();
+        lib.skill("a", "a.md", "Use @b and @c", true);
+        lib.skill("b", "b.md", "[Required](missing.txt)", true);
+        lib.skill("c", "c.md", "[Required](missing.txt)", true);
+        let report = lib.analyze("@a", "").report;
+        let issues = report
+            .issues
+            .iter()
+            .filter(|issue| issue.code == "missing-file")
+            .collect::<Vec<_>>();
+        assert_eq!(issues.len(), 2);
+        assert_eq!(issues[0].target_node_id, issues[1].target_node_id);
+        assert_ne!(issues[0].source_node_id, issues[1].source_node_id);
+        for issue in issues {
+            assert!(report.edges.iter().any(|edge| Some(edge.from.as_str())
+                == issue.source_node_id.as_deref()
+                && Some(edge.to.as_str()) == issue.target_node_id.as_deref()
+                && Some(edge.reference.as_str()) == issue.reference.as_deref()));
+        }
+    }
+
+    #[test]
+    fn reference_limit_names_first_omitted_dependency() {
+        let mut lib = Library::new();
+        lib.skill(
+            "a",
+            "a.md",
+            &(0..=MAX_REFERENCES)
+                .map(|index| format!("[d](missing{index}.txt)\n"))
+                .collect::<String>(),
+            true,
+        );
+        let result = lib.analyze("@a", "");
+        let issue = result
+            .report
+            .issues
+            .iter()
+            .find(|issue| issue.code == "reference-limit")
+            .unwrap();
+        assert_eq!(
+            issue.chain.last().map(String::as_str),
+            Some("missing128.txt")
+        );
+        assert_eq!(issue.reference.as_deref(), Some("missing128.txt"));
+        let target = issue
+            .target_node_id
+            .as_ref()
+            .expect("specific omitted node");
+        assert!(result
+            .report
+            .nodes
+            .iter()
+            .any(|node| &node.id == target && node.status == "blocked"));
+    }
+
+    #[test]
+    fn full_root_and_reference_budget_still_names_every_reported_target() {
+        let mut lib = Library::new();
+        lib.skill(
+            "root",
+            "root.md",
+            &(0..=MAX_REFERENCES)
+                .map(|child| format!("[Required](missing{child}.txt)\n"))
+                .collect::<String>(),
+            true,
+        );
+        let system = format!(
+            "@root {}",
+            (1..MAX_ROOTS)
+                .map(|index| format!("@unknown{index}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        let report = lib.analyze("", &system).report;
+        assert_eq!(report.roots.len(), MAX_ROOTS);
+        assert_eq!(report.nodes.len(), MAX_ROOTS + MAX_REFERENCES + 1);
+        let ids = report
+            .nodes
+            .iter()
+            .map(|node| node.id.as_str())
+            .collect::<HashSet<_>>();
+        assert!(report
+            .edges
+            .iter()
+            .all(|edge| ids.contains(edge.from.as_str()) && ids.contains(edge.to.as_str())));
+        assert!(report.issues.iter().all(|issue| issue
+            .target_node_id
+            .as_deref()
+            .is_some_and(|id| ids.contains(id))));
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "reference-limit"
+                && issue.chain.last().map(String::as_str) == Some("missing128.txt")));
+    }
+
+    #[test]
+    fn diagnostic_cap_reports_that_later_issues_were_omitted() {
+        let mut analyzer = Analyzer {
+            folder: PathBuf::new(),
+            configs: vec![],
+            aliases: HashMap::new(),
+            identities: HashMap::new(),
+            report: SkillDependencyReport::default(),
+            loaded: vec![],
+            characters: 0,
+            skill_count: 0,
+            references: 0,
+            reference_limit_reported: false,
+            issue_pending_target: false,
+            preview: None,
+            pending: VecDeque::new(),
+        };
+        for index in 0..MAX_ISSUES + 10 {
+            analyzer.issue("sample", format!("Problem {index}"), &[], None, None);
+        }
+        assert_eq!(analyzer.report.issues.len(), MAX_ISSUES);
+        assert_eq!(
+            analyzer.report.issues.last().unwrap().code,
+            "diagnostic-limit"
+        );
+        assert!(analyzer
+            .report
+            .issues
+            .last()
+            .unwrap()
+            .message
+            .contains("could not be listed"));
+    }
+
+    #[test]
+    fn import_preflight_helpers_share_the_bounded_resolver_parser() {
+        let markdown = "[Keep](docs/one%20two.txt) ` [Ignore](hidden.md) ` [Web](https://example.com/file.txt)";
+        assert_eq!(
+            local_document_references(markdown),
+            vec!["docs/one%20two.txt"]
+        );
+        assert_eq!(
+            percent_decode("docs/one%20two.txt").unwrap(),
+            "docs/one two.txt"
+        );
+        assert!(!dependency_reference_limit_exceeded(markdown));
+        let many = (0..=MAX_REFERENCES)
+            .map(|index| format!("[Required](docs/{index}.txt)\n"))
+            .collect::<String>();
+        assert!(dependency_reference_limit_exceeded(&many));
+    }
+
+    #[test]
     fn unsupported_local_document_links_block_with_full_chains_without_reads() {
         let mut lib = Library::new();
         lib.skill("a", "a.md", "Use @b", true);
@@ -1346,11 +1694,66 @@ mod tests {
             .unwrap();
         assert_eq!(issue.chain, vec!["@a", "@b", "references/report.pdf"]);
         assert_eq!(result.report.edges.len(), 2);
+        let blocked = result
+            .report
+            .nodes
+            .iter()
+            .find(|node| node.status == "blocked")
+            .unwrap();
+        assert_eq!(issue.target_node_id.as_deref(), Some(blocked.id.as_str()));
+        let parent = result
+            .report
+            .nodes
+            .iter()
+            .find(|node| node.name == "b")
+            .unwrap();
+        assert_eq!(issue.source_node_id.as_deref(), Some(parent.id.as_str()));
         assert!(result
             .report
             .nodes
             .iter()
             .any(|node| node.kind == "document" && node.status == "blocked"));
+    }
+
+    #[test]
+    fn local_image_target_is_reported_without_reading_it_or_invoking_alt_text() {
+        let mut lib = Library::new();
+        lib.skill(
+            "a",
+            "a.md",
+            "![Diagram @ghost](assets/flow.png) ![Remote @ghost](https://example.com/flow.png)",
+            true,
+        );
+        lib.document("assets/flow.png", [0xff, 0xfe]);
+        let result = lib.analyze("@a", "");
+        let issue = result
+            .report
+            .issues
+            .iter()
+            .find(|issue| issue.code == "unsupported-document")
+            .expect("local image issue");
+        assert_eq!(issue.chain, vec!["@a", "assets/flow.png"]);
+        assert_eq!(issue.reference.as_deref(), Some("assets/flow.png"));
+        assert_eq!(result.loaded.len(), 1);
+        assert!(!has_issue(&result, "invalid-utf8"));
+        assert!(!has_issue(&result, "unknown-skill"));
+        let node = result
+            .report
+            .nodes
+            .iter()
+            .find(|node| node.status == "blocked")
+            .unwrap();
+        assert_eq!(node.kind, "document");
+        assert_eq!(issue.target_node_id.as_deref(), Some(node.id.as_str()));
+        assert_eq!(
+            local_image_references("![One](assets/flow.png) ![Two](https://example.com/flow.png)"),
+            vec!["assets/flow.png"]
+        );
+        lib.document("a.md", "![Looks like text](assets/notes.md)");
+        lib.document("assets/notes.md", "This must not be read");
+        let text_target = lib.analyze("@a", "");
+        assert!(has_issue(&text_target, "unsupported-document"));
+        assert_eq!(text_target.loaded.len(), 1);
     }
 
     #[test]
@@ -1385,7 +1788,7 @@ mod tests {
         fs::create_dir_all(lib.root.join("refs/directory.txt")).unwrap();
         lib.document("a.md", "[Required](refs/directory.txt)");
         assert!(has_issue(&lib.analyze("@a", ""), "unsupported-document"));
-        lib.document("a.md", "![Image](refs/file.png) [Web](https://example.com/file.pdf) [Anchor](#x) [Network](//example.com/file.pdf) ` [Example](refs/file.docx) `\n\n```md\n[Example](refs/file.csv)\n```\n");
+        lib.document("a.md", "![Remote image](https://example.com/file.png) [Web](https://example.com/file.pdf) [Anchor](#x) [Network](//example.com/file.pdf) ` [Example](refs/file.docx) `\n\n```md\n[Example](refs/file.csv)\n```\n");
         assert!(lib.analyze("@a", "").report.issues.is_empty());
         lib.document(
             "a.md",
@@ -1395,14 +1798,14 @@ mod tests {
         );
         let bounded = lib.analyze("@a", "");
         assert!(has_issue(&bounded, "reference-limit"));
-        assert!(bounded.report.edges.len() <= MAX_REFERENCES);
+        assert!(bounded.report.edges.len() <= MAX_REFERENCES + 1);
         assert!(bounded.report.nodes.len() <= MAX_REFERENCES + MAX_ROOTS);
     }
 
     #[test]
     fn commonmark_links_reference_styles_escapes_and_code_examples() {
         let mut lib = Library::new();
-        lib.skill("a", "a.md", "Use @b first, then [one](docs/one.md \"title\").\n[Two][two]\n\n[two]: docs/two.markdown\n\n[space](docs/space%20name.txt) [escaped](docs/parens\\(x\\).txt)\n\n`@missing [x](missing.md)`\n\n```md\n@missing [x](missing.md)\n```\n\n    @missing [x](missing.md)\n\n![image](missing.md) [web](https://example.com/web.md) [anchor](#section) [pdf](https://example.com/missing.pdf) \\@missing **ordinary**", true);
+        lib.skill("a", "a.md", "Use @b first, then [one](docs/one.md \"title\").\n[Two][two]\n\n[two]: docs/two.markdown\n\n[space](docs/space%20name.txt) [escaped](docs/parens\\(x\\).txt)\n\n`@missing [x](missing.md)`\n\n```md\n@missing [x](missing.md)\n```\n\n    @missing [x](missing.md)\n\n![image](https://example.com/image.png) [web](https://example.com/web.md) [anchor](#section) [pdf](https://example.com/missing.pdf) \\@missing **ordinary**", true);
         lib.skill("b", "b.md", "B", true);
         for name in ["one.md", "two.markdown", "space name.txt", "parens(x).txt"] {
             lib.document(&format!("docs/{name}"), "reference");
@@ -1430,7 +1833,7 @@ mod tests {
     #[test]
     fn nested_mentions_follow_rendered_emphasis_and_preserve_escapes_and_code() {
         let mut lib = Library::new();
-        lib.skill("a", "a.md", "😀 Use @plain, &#64;bold then **@bold**, \\@italic then *@italic*, then _@underscore_. @**mixed** @al&#105;as &#32;@after\n\nfoo**@within** **prefix@within** **word**@within word<span>@within</span> `sample`@within ![alt](ignored.txt)@within\n\n\\@escaped `@inline` ![image @image](ignored.txt)\n\n```markdown\n@fenced\n```\n\n    @indented\n", true);
+        lib.skill("a", "a.md", "😀 Use @plain, &#64;bold then **@bold**, \\@italic then *@italic*, then _@underscore_. @**mixed** @al&#105;as &#32;@after\n\nfoo**@within** **prefix@within** **word**@within word<span>@within</span> `sample`@within ![alt](https://example.com/ignored.png)@within\n\n\\@escaped `@inline` ![image @image](https://example.com/ignored.png)\n\n```markdown\n@fenced\n```\n\n    @indented\n", true);
         for name in [
             "plain",
             "bold",
@@ -1478,6 +1881,7 @@ mod tests {
                 .map(|reference| match reference {
                     Reference::Skill(name) => format!("@{name}"),
                     Reference::Document(path) => path,
+                    Reference::Image(path) => format!("image:{path}"),
                 })
                 .collect::<Vec<_>>()
         };
@@ -1501,13 +1905,14 @@ mod tests {
             as_strings("[**@b**][doc]\n\n[doc]: docs/x.txt"),
             vec!["docs/x.txt", "@b"]
         );
-        assert!(
-            as_strings("&#64;b \\@b `@b`\n\n```md\n@b\n```\n\n![alt @b](image.png)").is_empty()
+        assert_eq!(
+            as_strings("&#64;b \\@b `@b`\n\n```md\n@b\n```\n\n![alt @b](image.png)"),
+            vec!["image:image.png"]
         );
-        assert!(as_strings(
-            "foo**@b** **word**@b word<span>@b</span> `word`@b ![alt](image.png)@b"
-        )
-        .is_empty());
+        assert_eq!(
+            as_strings("foo**@b** **word**@b word<span>@b</span> `word`@b ![alt](image.png)@b"),
+            vec!["image:image.png"]
+        );
     }
 
     #[test]
@@ -1856,8 +2261,8 @@ mod tests {
         let result = lib.analyze("@a", "");
         assert!(has_issue(&result, "reference-limit"));
         assert!(result.report.nodes.len() <= MAX_REFERENCES + MAX_ROOTS);
-        assert!(result.report.edges.len() <= MAX_REFERENCES);
-        assert!(result.report.issues.len() <= MAX_REFERENCES);
+        assert!(result.report.edges.len() <= MAX_REFERENCES + 1);
+        assert!(result.report.issues.len() <= MAX_ISSUES);
         assert!(serde_json::to_vec(&result.report).unwrap().len() <= 480_000);
         lib.document(
             "a.md",

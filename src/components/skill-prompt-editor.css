@@ -14,6 +14,5 @@
 .skill-prompt-suggestions small { color: var(--muted-2); font-size: var(--fs-micro, 11px); }
 .skill-prompt-suggestions em { color: var(--muted-2); font-style: normal; font-size: 9px; text-transform: uppercase; }
 @media (forced-colors: active) {
-  .skill-prompt-highlight { display: none; }
   .skill-prompt-suggestions > button[aria-selected="true"] { outline: 1px solid Highlight; }
 }

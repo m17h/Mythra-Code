@@ -8,6 +8,8 @@ import type { SkillDependencyReport } from "../types";
 import { useSkillDependencyPreview, type AnalyzeSkillDependencies } from "../hooks/useSkillDependencyPreview";
 import { blockedSkillNames } from "./SkillDependencyDetails";
 import { SkillDependencyNotice } from "./SkillDependencyNotice";
+import { useSkillReferenceInspector } from "./SkillReferenceInspector";
+import { adoptPortalTheme, effectiveZoom, supportsTopLayer } from "../lib/floatingLayer";
 import {
   skillMentionQuery, skillMentionRanges, skillMentionSuggestions,
   type SkillMentionQuery, type SkillMentionSkill,
@@ -31,18 +33,6 @@ const MIRRORED_PROPERTIES = [
   "border-radius", "direction", "overflow-wrap", "word-break", "white-space",
 ] as const;
 
-function effectiveZoom(element: HTMLElement): number {
-  const current = (element as HTMLElement & { currentCSSZoom?: number }).currentCSSZoom;
-  if (typeof current === "number" && Number.isFinite(current) && current > 0) return current;
-  let zoom = 1;
-  for (let node: HTMLElement | null = element; node; node = node.parentElement) {
-    const value = getComputedStyle(node).zoom;
-    const factor = value.endsWith("%") ? parseFloat(value) / 100 : parseFloat(value);
-    if (Number.isFinite(factor) && factor > 0) zoom *= factor;
-  }
-  return zoom;
-}
-
 /** The mirror never owns input or selection; a native textarea remains editable. */
 export function syncSkillPromptHighlight(textarea: HTMLTextAreaElement, highlight: HTMLDivElement | null): void {
   if (!highlight) return;
@@ -61,7 +51,8 @@ export function syncSkillPromptHighlight(textarea: HTMLTextAreaElement, highligh
 
 export const SkillPromptEditor = forwardRef<HTMLTextAreaElement, SkillPromptEditorProps>(function SkillPromptEditor({
   value, skills = [], wrapperClassName, className, onChange, onSelect, onScroll, onBlur, onKeyDown,
-  onCompositionStart, onCompositionEnd, disabled, readOnly, onAnalyze, dependencyReport, showDependencyNotice = true, ...textareaProps
+  onCompositionStart, onCompositionEnd, onFocus, onPointerMove, onPointerLeave, "aria-describedby": describedBy,
+  disabled, readOnly, onAnalyze, dependencyReport, showDependencyNotice = true, ...textareaProps
 }, forwardedRef) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const highlightRef = useRef<HTMLDivElement>(null);
@@ -82,21 +73,30 @@ export const SkillPromptEditor = forwardRef<HTMLTextAreaElement, SkillPromptEdit
   const suggestions = useMemo(() => query ? skillMentionSuggestions(skills, query.query) : [], [query, skills]);
   const menuOpen = Boolean(query && value.slice(query.start, query.end) === `@${query.query}`
     && suggestions.length && !disabled && !readOnly);
-  const topLayer = typeof HTMLElement.prototype.showPopover === "function";
+  const topLayer = supportsTopLayer();
   const activeIndex = Math.min(selectedIndex, Math.max(0, suggestions.length - 1));
+  const inspector = useSkillReferenceInspector({
+    textareaRef, highlightRef, ranges, report, channel: "system", suppressed: menuOpen,
+    pending: dependencyReport === undefined && Boolean(onAnalyze) && !preview.report && !preview.error,
+    error: dependencyReport === undefined ? preview.error : "",
+  });
+  const { flaggedNames, activeStart } = inspector;
   const highlighted = useMemo(() => {
     const parts: ReactNode[] = [];
     let offset = 0;
     for (const range of ranges) {
       parts.push(value.slice(offset, range.start));
-      const reason = blockedNames.has(range.skill.name.toLowerCase())
-        ? report?.issues.map((issue) => `${issue.message} ${issue.chain.join(" → ")}`).join("\n") : undefined;
-      parts.push(<span className={`skill-prompt-token${reason ? " is-blocked" : ""}`} title={reason} key={range.start}>{value.slice(range.start, range.end)}</span>);
+      // Reasons live in the inspector: the mirror is pointer-free and hidden
+      // from assistive technology, so a title here could never be reached.
+      const blocked = flaggedNames.has(range.skill.name.toLowerCase());
+      parts.push(<span key={range.start} data-skill-start={range.start}
+        className={`skill-prompt-token${blocked ? " is-blocked" : ""}${activeStart === range.start ? " is-inspected" : ""}`}>
+        {value.slice(range.start, range.end)}</span>);
       offset = range.end;
     }
     parts.push(value.slice(offset), "\u200b");
     return parts;
-  }, [ranges, value, blockedNames, report]);
+  }, [ranges, value, flaggedNames, activeStart]);
 
   const syncHighlight = useCallback(() => {
     if (textareaRef.current) syncSkillPromptHighlight(textareaRef.current, highlightRef.current);
@@ -119,19 +119,7 @@ export const SkillPromptEditor = forwardRef<HTMLTextAreaElement, SkillPromptEdit
     const menu = listRef.current;
     const textarea = textareaRef.current;
     if (!menu || !textarea) return;
-    if (!topLayer) {
-      // Older WKWebViews have no top layer. Preserve the editor's live theme
-      // and scale while escaping transformed or clipped modal ancestors.
-      const style = getComputedStyle(textarea);
-      for (let index = 0; index < style.length; index += 1) {
-        const property = style[index];
-        if (property.startsWith("--")) menu.style.setProperty(property, style.getPropertyValue(property));
-      }
-      for (const property of ["font-family", "font-size", "line-height", "letter-spacing", "color", "color-scheme", "direction"]) {
-        menu.style.setProperty(property, style.getPropertyValue(property));
-      }
-      menu.style.zoom = String(effectiveZoom(textarea) / effectiveZoom(document.body));
-    }
+    if (!topLayer) adoptPortalTheme(menu, textarea);
     const anchor = textarea.getBoundingClientRect();
     const zoom = effectiveZoom(menu);
     const width = Math.min(anchor.width, Math.max(1, window.innerWidth - 16));
@@ -228,15 +216,20 @@ export const SkillPromptEditor = forwardRef<HTMLTextAreaElement, SkillPromptEdit
       disabled={disabled}
       readOnly={readOnly}
       data-skill-prompt-editor="true"
+      data-skill-inspector-open={inspector.open || undefined}
       className={`skill-prompt-input${className ? ` ${className}` : ""}`}
       aria-autocomplete="list"
       aria-expanded={menuOpen}
       aria-controls={menuOpen ? listId : undefined}
       aria-activedescendant={menuOpen ? `${listId}-${activeIndex}` : undefined}
+      aria-describedby={[describedBy, inspector.describedBy].filter(Boolean).join(" ") || undefined}
       onChange={(event) => { onChange?.(event); updateQuery(event.currentTarget); }}
-      onSelect={(event) => { onSelect?.(event); updateQuery(event.currentTarget); }}
-      onScroll={(event) => { syncHighlight(); onScroll?.(event); }}
-      onBlur={(event) => { setQuery(null); onBlur?.(event); }}
+      onSelect={(event) => { onSelect?.(event); updateQuery(event.currentTarget); inspector.handlers.onSelect(event.currentTarget); }}
+      onScroll={(event) => { syncHighlight(); inspector.handlers.onScroll(); onScroll?.(event); }}
+      onFocus={(event) => { inspector.handlers.onFocus(event.currentTarget); onFocus?.(event); }}
+      onBlur={(event) => { setQuery(null); inspector.handlers.onBlur(event); onBlur?.(event); }}
+      onPointerMove={(event) => { inspector.handlers.onPointerMove(event); onPointerMove?.(event); }}
+      onPointerLeave={(event) => { inspector.handlers.onPointerLeave(); onPointerLeave?.(event); }}
       onCompositionStart={(event) => { composingRef.current = true; setQuery(null); onCompositionStart?.(event); }}
       onCompositionEnd={(event) => { composingRef.current = false; updateQuery(event.currentTarget); onCompositionEnd?.(event); }}
       onKeyDown={(event) => {
@@ -268,10 +261,18 @@ export const SkillPromptEditor = forwardRef<HTMLTextAreaElement, SkillPromptEdit
             return;
           }
         }
+        if (inspector.handlers.onKeyDown(event)) {
+          if (menuOpen) {
+            dismissedSelectionRef.current = { value: event.currentTarget.value, start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd };
+            setQuery(null);
+          }
+          return;
+        }
         onKeyDown?.(event);
       }}
     />
     {topLayer ? suggestionMenu : suggestionMenu && createPortal(suggestionMenu, document.body)}
+    {inspector.inspector}
     {showDependencyNotice && <SkillDependencyNotice report={report} error={preview.error} />}
   </div>;
 });
