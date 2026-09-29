@@ -3,7 +3,7 @@ import { ChevronRight, ExternalLink, RefreshCw } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   formatEstimatedCost, getUsageRevision, modelPricingCatalogRevision, openRouterReportedCost,
-  pricingForModel, pricingRefreshStatus, subscribeUsage, type ModelPricing, type UsageProvider,
+  pricingForModel, pricingForServiceTier, pricingRefreshStatus, subscribeUsage, usageTotals, type ModelPricing, type UsageProvider,
 } from "../lib/usageLedger";
 import { officialPricingStatus, type OfficialPricingSource, type OfficialPricingStatus } from "../lib/officialPricing";
 import {
@@ -121,8 +121,20 @@ function periodLabel(period: UsagePeriod, grain: UsageGrain): string {
   return grain === "day" || period.from === period.to ? shortDay(period.from) : `${shortDay(period.from)} – ${shortDay(period.to)}`;
 }
 
-/** Cursor's usage never reports cache writes, so its zero is "unknown", not "none". */
-const writesReported = (provider: UsageProvider) => provider !== "cursor";
+type CacheAmounts = UsageComponentAmounts & { cacheReadUnknownTokens?: number; cacheWriteUnknownTokens?: number };
+type CachePart = "cacheRead" | "cacheWrite";
+/** Missing coverage is never evidence of zero cache use. Stored legacy usage
+ * is migrated to unknown input volume; the fallback also protects preview data. */
+function cacheGap(amounts: CacheAmounts, part: CachePart): number {
+  return Math.max(0, amounts[`${part}UnknownTokens`] ?? inputTokens(amounts));
+}
+function cacheState(amounts: CacheAmounts, part: CachePart): "reported" | "partial" | "unknown" {
+  return !cacheGap(amounts, part) ? "reported" : amounts[`${part}Tokens`] > 0 ? "partial" : "unknown";
+}
+function cacheShare(amounts: CacheAmounts): string {
+  const state = cacheState(amounts, "cacheRead");
+  return state === "unknown" ? "Unknown" : state === "partial" ? "Partly reported" : percent(amounts.cacheReadTokens, inputTokens(amounts));
+}
 
 function modelKey(provider: UsageProvider, model: string): string { return `${provider}:${model}`; }
 /** One model's dated buckets, so its averages are taken model-day by model-day. */
@@ -168,7 +180,7 @@ function rateLine(model: ModelUsageSummary): string {
     : rates.cacheWrite1hInputPerMillion === undefined ? `${rate(rates.cacheWriteInputPerMillion)} cache write`
       : `${rate(rates.cacheWriteInputPerMillion)} cache write (${rate(rates.cacheWrite1hInputPerMillion)} for 1-hour)`;
   const read = rates.cachedInputPerMillion === undefined ? "cache reads at the input rate" : `${rate(rates.cachedInputPerMillion)} cache read`;
-  return `Current rate per 1M: ${rate(rates.inputPerMillion)} input, ${read}, ${write}, ${rate(rates.outputPerMillion)} output (${rateSource(rates)}).`;
+  return `Current ${model.provider === "openai" ? "Standard " : ""}rate per 1M: ${rate(rates.inputPerMillion)} input, ${read}, ${write}, ${rate(rates.outputPerMillion)} output (${rateSource(rates)}).`;
 }
 
 function partValue(amounts: UsageComponentAmounts, part: Part, measure: Measure): number {
@@ -178,6 +190,7 @@ function partValue(amounts: UsageComponentAmounts, part: Part, measure: Measure)
 }
 /** A cost is unknown, not zero, when a period's usage has no rate at all. */
 function measured(amounts: UsageComponentAmounts, part: Part, measure: Measure): number | null {
+  if ((part === "cacheRead" || part === "cacheWrite") && cacheGap(amounts, part)) return null;
   if (measure === "cost" && amounts.totalTokens > 0 && !amounts.pricedTokens) return null;
   return partValue(amounts, part, measure);
 }
@@ -248,12 +261,14 @@ function promptNote(prompts: number, pricedPrompts: number, ambiguousCost = fals
  * average and how much of the part its cost covers. Earlier (undated) usage
  * adds its known token split and a cost total that can't be split by part.
  */
-function ComponentTable({ buckets, earlier, per, caption, writesUnreported = false }: {
-  buckets: UsageComponentAmounts[]; earlier?: UsageDetail["unallocated"]; per: "turns" | "modelTurns"; caption: string; writesUnreported?: boolean;
+function ComponentTable({ buckets, earlier, per, caption }: {
+  buckets: UsageComponentAmounts[]; earlier?: UsageDetail["unallocated"]; per: "turns" | "modelTurns"; caption: string;
 }) {
   const breakdown = componentBreakdown(buckets, earlier);
   const averages = promptAverages(buckets, per);
   const anyCost = breakdown.rows.some((row) => row.costedTokens + row.partlyCostedTokens > 0);
+  const inputHintId = useId();
+  const unknownInputSplit = [...buckets, ...(earlier ? [earlier] : [])].some((amounts) => cacheGap(amounts, "cacheRead") > 0 || cacheGap(amounts, "cacheWrite") > 0);
   const coverage = (costed: number, partly: number, tokens: number) => {
     if (!tokens) return "—";
     const share = percent(costed, tokens);
@@ -266,15 +281,16 @@ function ComponentTable({ buckets, earlier, per, caption, writesUnreported = fal
     <caption className="sr-only">{caption}</caption>
     <thead><tr><th scope="col">Token type</th><th scope="col">Tokens</th><th scope="col">Est. cost</th><th scope="col">Priced</th></tr></thead>
     <tbody>{breakdown.rows.map((row) => {
-      const unreported = writesUnreported && row.id === "cacheWrite";
+      const cache = row.id === "cacheRead" || row.id === "cacheWrite";
+      const gap = cache ? [...buckets, ...(earlier ? [earlier] : [])].reduce((sum, amounts) => sum + cacheGap(amounts, row.id as CachePart), 0) : 0;
       const perTokens = averages.tokens?.[row.id];
       const perCost = averages.cost?.[row.id];
-      if (unreported) return <tr key={row.id}><th scope="row">{row.label}</th><td className="usage-none">Not reported</td><td className="usage-none">Not reported</td><td className="usage-none">—</td></tr>;
+      if (gap && !row.tokens) return <tr key={row.id}><th scope="row">{row.label}</th><td className="usage-none">Unknown<small className="usage-metric-note">Not reported</small></td><td className="usage-none">Unknown</td><td className="usage-none">—</td></tr>;
       return <tr key={row.id}>
-        <th scope="row">{row.label}</th>
-        <td><strong>{number(row.tokens)}</strong>{perTokens !== undefined && <small>{number(perTokens)}<PerPrompt /></small>}</td>
+        <th scope="row" aria-describedby={row.id === "input" && unknownInputSplit ? inputHintId : undefined}>{row.label}{row.id === "input" && unknownInputSplit && <small id={inputHintId} aria-hidden="true">Includes input with unknown cache use</small>}</th>
+        <td><strong>{number(row.tokens)}</strong>{gap ? <small className="usage-metric-note">Reported portion only</small> : perTokens !== undefined && <small>{number(perTokens)}<PerPrompt /></small>}</td>
         <td>{anyCost ? <><strong>{estimate(row.cost)}</strong>{perCost !== undefined && <small>{estimate(perCost)}<PerPrompt /></small>}</> : <span className="usage-none">Unpriced</span>}</td>
-        <td>{coverage(row.costedTokens, row.partlyCostedTokens, row.tokens)}</td>
+        <td className={gap ? "usage-metric-note" : undefined}>{gap ? "Partial metrics" : coverage(row.costedTokens, row.partlyCostedTokens, row.tokens)}</td>
       </tr>;
     })}</tbody>
     <tfoot>
@@ -362,6 +378,40 @@ function providerTotals(provider: ProviderUsageSummary) {
   };
 }
 
+const tierLabel = (tier: string) => tier === "standard" ? "Standard" : tier === "fast" ? "Fast / Priority" : tier === "flex" ? "Flex" : tier === "unknown" ? "Unknown" : tier;
+
+/** Separate requested settings from runtime evidence; a request is not proof
+ * of the tier served, and a current rate is not a historical billing receipt. */
+function UsageEvidenceDetails({ detail, helperCoverage }: { detail: UsageDetail; helperCoverage?: { auxiliaryUnavailableRequests?: number; auxiliaryPartialRequests?: number } }) {
+  const rows = new Map<string, { bucket: UsageBucket; quote: NonNullable<UsageBucket["serviceTiers"]>[number] }>();
+  for (const bucket of detail.buckets) {
+    const quotes = bucket.serviceTiers ?? (bucket.provider === "openai" ? [{ tier: "unknown", source: "unknown" as const }] : []);
+    for (const quote of quotes) rows.set(`${bucket.provider}:${bucket.model}:${quote.tier}:${quote.source}:${quote.requestedTier ?? ""}`, { bucket, quote });
+  }
+  const requests = detail.totals.auxiliaryRequests ?? 0;
+  return <details className="usage-evidence">
+    <summary><ChevronRight size={13} aria-hidden="true" className="usage-disclosure" />Cache and service-tier evidence</summary>
+    <div className="usage-evidence-body" tabIndex={0} role="region" aria-label="Usage metric evidence">
+      <p>Unknown cache metrics are not zero. Partial counts show only reported use; neither API-equivalent estimates nor cache counts establish your actual subscription bill or savings.</p>
+      {cacheGap(detail.totals, "cacheRead") > 0 && <p>{compact(cacheGap(detail.totals, "cacheRead"))} input tokens lack cache-read metrics.</p>}
+      {cacheGap(detail.totals, "cacheWrite") > 0 && <p>{compact(cacheGap(detail.totals, "cacheWrite"))} input tokens lack cache-write metrics.</p>}
+      <p>Supported model/tier rates are used when available. Runtime-reported tiers take precedence; a requested tier is only an estimate fallback. Unknown or unsupported OpenAI tiers remain unpriced. Long-context and regional pricing may not be identifiable from usage.</p>
+      {rows.size > 0 && <ul aria-label="Service-tier evidence">{[...rows].map(([key, { bucket, quote }]) => {
+        const supported = bucket.provider !== "unknown" && quote.source !== "unknown" ? pricingForServiceTier(bucket.provider, bucket.model, quote.tier) : undefined;
+        const actual = quote.source === "reported" ? tierLabel(quote.tier) : "Unknown — not reported";
+        const requested = quote.requestedTier ?? (quote.source === "requested" ? quote.tier : undefined);
+        return <li key={key}><strong>{LABELS[bucket.provider]} · {modelLabel(bucket.model)}</strong>
+          <span>Requested tier: {requested ? tierLabel(requested) : "Unknown"}. Actual tier: {actual}.</span>
+          <small>{supported ? `Supported current tier rate: ${rate(supported.inputPerMillion)} input / ${rate(supported.outputPerMillion)} output per 1M (${rateSource(supported)}).` : "Tier-specific rate unknown or unsupported; no guessed tier multiplier."}{quote.source === "requested" && " Requested-tier estimate, not runtime confirmation."}</small>
+        </li>;
+      })}</ul>}
+      <p>{requests ? `${plural(requests, "local helper request")} included in this range when usage was supplied. Helpers do not add chat prompts or threads.` : "Local helper usage is included when supplied; helper requests do not add chat prompts or threads."} Unreported helper tokens are not invented.</p>
+      {Boolean(helperCoverage?.auxiliaryUnavailableRequests) && <p>{plural(helperCoverage!.auxiliaryUnavailableRequests!, "all-time helper request")} had no token report. Their cost is unknown, not zero.</p>}
+      {Boolean(helperCoverage?.auxiliaryPartialRequests) && <p>{plural(helperCoverage!.auxiliaryPartialRequests!, "all-time helper request")} had partial token reports. Only supplied counts are included; their complete cost is unknown.</p>}
+    </div>
+  </details>;
+}
+
 /** Each provider's share of the range's estimated cost, aligned for comparison. */
 function ProvidersCard({ providers, allTime }: { providers: ProviderUsageSummary[]; allTime: boolean }) {
   const rows = providers.map((provider) => ({ provider, ...providerTotals(provider) }));
@@ -399,6 +449,7 @@ function Overview({ detail, range, periodRange, grain, onGrain }: {
   const averages = promptAverages(detail.buckets, "turns");
   const billed = totals.pricedTokens + totals.unpricedTokens;
   const input = inputTokens(totals);
+  const readState = cacheState(totals, "cacheRead");
   const showTrend = periodRange !== null && periodRange.from < periodRange.to && detail.buckets.length > 0;
   const repriced = repricingNote(repricingSummary(detail.buckets));
   return <>
@@ -408,8 +459,9 @@ function Overview({ detail, range, periodRange, grain, onGrain }: {
       <Stat label="Tokens" value={compact(totals.totalTokens)} detail={`${compact(input)} input · ${compact(totals.outputTokens)} output`} />
       <Stat label="Per prompt" value={averages.cost ? estimate(averages.cost.total) : averages.tokens ? `${compact(averages.tokens.total)} tok` : "—"}
         detail={`${averages.cost && averages.tokens ? `${compact(averages.tokens.total)} tokens · ` : ""}${promptNote(averages.prompts, averages.pricedPrompts, averages.ambiguousCost)}`} />
-      <Stat label="Cache reads" value={input ? `${percent(totals.cacheReadTokens, input)} of input` : "—"}
-        detail={`${compact(totals.cacheReadTokens)} tokens${detail.detailTotals.cacheReadCost > 0 ? ` · ${estimate(detail.detailTotals.cacheReadCost)}` : ""}`} />
+      <Stat label="Cache reads" value={input ? readState === "reported" ? `${cacheShare(totals)} of input` : cacheShare(totals) : "—"}
+        detail={readState === "reported" ? `${compact(totals.cacheReadTokens)} tokens${detail.detailTotals.cacheReadCost > 0 ? ` · ${estimate(detail.detailTotals.cacheReadCost)}` : ""}`
+          : `${totals.cacheReadTokens > 0 ? `${compact(totals.cacheReadTokens)} reported · ` : ""}${compact(cacheGap(totals, "cacheRead"))} input tokens lack cache-read metrics`} />
     </div>
     {!range && unallocated && <p className="usage-dashboard-caption">Per-prompt figures and the trend use dated detail only.</p>}
     {repriced && <p className="usage-dashboard-caption">{repriced}</p>}
@@ -431,15 +483,15 @@ function ModelDetail({ model, buckets, periodRange, grain, onGrain }: {
   const own = bucketsOf(buckets, model.provider, model.model);
   const repriced = repricingNote(repricingSummary(own));
   const periods = periodRange ? usagePeriods(own, periodRange, grain).filter((period) => period.amounts.totalTokens > 0).reverse() : [];
-  const hidden = !writesReported(model.provider);
-  const parts = hidden ? USAGE_COMPONENTS.filter((component) => component.id !== "cacheWrite") : USAGE_COMPONENTS;
+  const incomplete = cacheGap(model, "cacheRead") > 0 || cacheGap(model, "cacheWrite") > 0;
+  const parts = USAGE_COMPONENTS;
   return <div className="usage-model-detail">
-    <div className="usage-table-scroll"><ComponentTable buckets={own} per="modelTurns" caption={`${label} tokens and estimated cost by type`} writesUnreported={hidden} /></div>
+    <div className="usage-table-scroll"><ComponentTable buckets={own} per="modelTurns" caption={`${label} tokens and estimated cost by type`} /></div>
     <p>
       {model.model && <><code>{model.model}</code> · </>}{model.provider === "claude" && model.model === "unattributed"
         ? "Claude reported tokens without a reliably matching model breakdown. They remain unpriced rather than being charged to a guessed model."
         : rateLine(model)}
-      {hidden && ratesFor(model.provider, model.model) ? " Cursor doesn’t report cache writes, so this estimate may be low." : ""}
+      {incomplete ? " Cache metrics are incomplete; unknown use is not zero. Estimates cannot establish actual cache savings." : ""}
       {model.cacheWrite1hTokens > 0 ? ` ${number(model.cacheWrite1hTokens)} cache-write tokens used the 1-hour cache.` : ""}
       {repriced ? ` ${repriced}` : ""}
     </p>
@@ -456,7 +508,9 @@ function ModelDetail({ model, buckets, periodRange, grain, onGrain }: {
             const priced = period.amounts.pricedTokens > 0;
             return <tr key={period.from}>
               <th scope="row">{periodLabel(period, grain)}<small>{plural(period.amounts.modelTurns, "prompt")}</small></th>
-              {parts.map((component) => <td key={component.id}><strong>{number(period.amounts[component.tokens])}</strong>{priced && <small>{estimate(period.amounts[component.cost])}</small>}</td>)}
+              {parts.map((component) => <td key={component.id}>{(component.id === "cacheRead" || component.id === "cacheWrite") && cacheGap(period.amounts, component.id)
+                ? <><strong>{period.amounts[component.tokens] ? `${number(period.amounts[component.tokens])} reported` : "Unknown"}</strong><small>Incomplete metrics</small></>
+                : <><strong>{number(period.amounts[component.tokens])}</strong>{priced && <small>{estimate(period.amounts[component.cost])}</small>}</>}</td>)}
               <td><strong>{number(period.amounts.totalTokens)}</strong><small>{priced ? estimate(componentCost(period.amounts)) : "Unpriced"}</small></td>
             </tr>;
           })}</tbody>
@@ -475,13 +529,13 @@ function ModelsView({ detail, range, periodRange, grain, onGrain, expanded, onEx
   const models = detail.providers.flatMap((provider) => provider.models)
     .sort((left, right) => componentCost(right) - componentCost(left) || right.totalTokens - left.totalTokens);
   const earlier = !range ? detail.unallocated : null;
-  const cursor = models.some((model) => !writesReported(model.provider));
+  const incomplete = models.some((model) => cacheGap(model, "cacheRead") > 0 || cacheGap(model, "cacheWrite") > 0);
   if (!detail.buckets.length && !earlier) return <div className="usage-dashboard-empty"><strong>No model detail in this range</strong><p>Try a wider range.</p></div>;
   return <>
     <section className="usage-dashboard-card" aria-labelledby={`${baseId}-types`}>
       <div className="usage-card-head"><h5 id={`${baseId}-types`}>By token type · all models</h5></div>
       <ComponentTable buckets={detail.buckets} earlier={earlier} per="turns" caption="Tokens and estimated cost by type, all models" />
-      <p className="usage-card-note">{averagesNote(detail.buckets, "turns")}{cursor ? " Cursor doesn’t report cache writes, so its estimates may be low." : ""}</p>
+      <p className="usage-card-note">{averagesNote(detail.buckets, "turns")}{incomplete ? " Some cache metrics were not reported. Their unknown use is not zero; reported portions are shown separately." : ""}</p>
     </section>
     {models.length > 0 && <section className="usage-dashboard-card" aria-labelledby={`${baseId}-models`}>
       <div className="usage-card-head"><h5 id={`${baseId}-models`}>Models</h5></div>
@@ -502,7 +556,7 @@ function ModelsView({ detail, range, periodRange, grain, onGrain, expanded, onEx
                 </button>
               </th>
               <td>{model.pricedTokens ? <><strong>{estimate(componentCost(model))}</strong>{model.unpricedTokens > 0 && <small>partly priced</small>}</> : <span className="usage-none">Unpriced</span>}</td>
-              <td><strong>{compact(model.totalTokens)}</strong><small>{percent(model.cacheReadTokens, inputTokens(model))} cache reads</small></td>
+              <td><strong>{compact(model.totalTokens)}</strong><small>{cacheShare(model)} cache reads</small></td>
               <td className="usage-optional">{average.cost ? <strong>{estimate(average.cost.total)}</strong> : <span className="usage-none">—</span>}{average.tokens && <small>{compact(average.tokens.total)} tokens</small>}</td>
             </tr>
             {open && <tr className="usage-model-panel"><td colSpan={4} id={panelId}>
@@ -562,13 +616,13 @@ function CompareView({ detail, allTimeModels, rangeLabel, periodRange, grain, on
   const labels = periods[0]?.map((period) => periodLabel(period, grain)) ?? [];
   const series = columns.map((item, index) => ({ label: item.label, values: periods[index]?.map((period) => measured(period.amounts, part, measure)) ?? [] }));
   const format = formatMeasure(measure);
-  const cell = (value: number | null) => (value === null ? "Unpriced" : format(value));
+  const cell = (value: number | null) => (value === null ? part === "cacheRead" || part === "cacheWrite" ? "Unknown" : "Unpriced" : format(value));
   const chartTitle = `${partLabel === "All token types" ? (measure === "cost" ? "Estimated cost" : "Tokens") : `${partLabel} ${measure === "cost" ? "cost" : "tokens"}`} by ${grain}`;
   const showChart = labels.length > 1 && columns.some((item) => item.used);
   const set = (patch: Partial<CompareSelection>) => onSelection({ ...selection, left: leftKey, right: rightKey, ...patch });
 
   const whatIf = (from: ComparedModel, to: ComparedModel) => {
-    if (!from.used || !to.pricing || from.key === to.key) return null;
+    if (!from.used || !to.pricing || from.key === to.key || cacheGap(from.amounts, "cacheRead") || cacheGap(from.amounts, "cacheWrite")) return null;
     const { uncachedInputTokens, cacheReadTokens, cacheWriteTokens, cacheWrite1hTokens, outputTokens } = from.amounts;
     const input = uncachedInputTokens + cacheReadTokens + cacheWriteTokens;
     const { costs } = usageCostParts({
@@ -628,11 +682,12 @@ function CompareView({ detail, allTimeModels, rangeLabel, periodRange, grain, on
         <th scope="row">{component.label}</th>
         {columns.map((item, index) => {
           if (!item.used) return <td key={index} className="usage-none">—</td>;
-          if (component.id === "cacheWrite" && !writesReported(item.provider)) return <td key={index} className="usage-none">Not reported</td>;
+          const gap = component.id === "cacheRead" || component.id === "cacheWrite" ? cacheGap(item.amounts, component.id) : 0;
+          if (gap && !item.amounts[component.tokens]) return <td key={index} className="usage-none">Unknown<small>Not reported</small></td>;
           const { average } = item;
           return <td key={index}>
             <strong>{item.priced ? estimate(item.amounts[component.cost]) : "Unpriced"}</strong>
-            <small>{plural(item.amounts[component.tokens], "token")}{average.tokens ? ` · ${compact(average.tokens[component.id])} per prompt` : ""}</small>
+            <small>{plural(item.amounts[component.tokens], "token")}{gap ? " · reported portion only" : average.tokens ? ` · ${compact(average.tokens[component.id])} per prompt` : ""}</small>
           </td>;
         })}
       </tr>)}</tbody>
@@ -644,12 +699,13 @@ function CompareView({ detail, allTimeModels, rangeLabel, periodRange, grain, on
           return <td key={index}><strong>{average.cost ? estimate(average.cost.total) : "Unpriced"}</strong><small>{plural(average.tokens.total, "token")}</small></td>;
         })}</tr>
         <tr><th scope="row">Prompts using model</th>{columns.map((item, index) => <td key={index} className={item.amounts.modelTurns ? undefined : "usage-none"}>{item.amounts.modelTurns ? number(item.amounts.modelTurns) : "—"}</td>)}</tr>
-        <tr><th scope="row">Cache read share of input</th>{columns.map((item, index) => <td key={index} className={inputTokens(item.amounts) ? undefined : "usage-none"}>{inputTokens(item.amounts) ? percent(item.amounts.cacheReadTokens, inputTokens(item.amounts)) : "—"}</td>)}</tr>
+        <tr><th scope="row">Cache read share of input</th>{columns.map((item, index) => <td key={index} className={inputTokens(item.amounts) ? undefined : "usage-none"}>{inputTokens(item.amounts) ? cacheShare(item.amounts) : "—"}</td>)}</tr>
       </tbody>
     </table>
     <p className="usage-card-note">
       Costs are estimates frozen at the rate each token was recorded under. A prompt that switched models counts toward each model it used.
       {columns.filter((item) => !item.used).map((item) => ` ${item.label} has no recorded usage in this range.`).join("")}
+      {columns.some((item) => cacheGap(item.amounts, "cacheRead") || cacheGap(item.amounts, "cacheWrite")) && " Unknown cache metrics prevent a complete cache comparison or hypothetical re-price."}
     </p>
 
     <details className="usage-compare-hypothetical">
@@ -754,9 +810,9 @@ function PricingStatus({ onRefreshPricing, openRouterPricingError }: { onRefresh
         </ul>
         <h6>What estimates include</h6>
         <ul className="usage-pricing-notes">
-          <li>Standard, short-context API rates. Batch, Flex, Fast or priority, long-context, and data-residency pricing aren’t visible in reported usage and aren’t applied.</li>
+          <li>Model- and tier-specific API rates where supported. A runtime-reported tier wins; otherwise a known requested tier is an explicitly labelled estimate fallback. Unknown or unsupported OpenAI tiers are unpriced, not assigned a universal multiplier. Long-context, regional and data-residency adjustments are not inferred without evidence.</li>
           <li>Where a provider lists no separate cache rate, those tokens are priced as input. Claude’s 1-hour cache writes use the 1-hour rate; usage recorded before this app read that split used the 5-minute rate.</li>
-          <li>Cursor models are priced at Cursor’s listed rate only when the model name matches exactly. Auto isn’t priced because Cursor doesn’t report where it routed. Cursor doesn’t report cache writes, and the Teams and Enterprise token rate isn’t added, so Cursor estimates may be low.</li>
+          <li>Cursor models are priced at Cursor’s listed rate only when the model name matches exactly. Auto isn’t priced because Cursor doesn’t report where it routed. Missing cache metrics are Unknown, not zero. Cursor’s Teams and Enterprise token rate is not added.</li>
           <li>A past rate is supported only if the pricing page showed it both before and after that time, with no more than two days between checks, or if the Mythra catalog gives the date and time it took effect. Two matching reads cannot rule out a change and reversal between them. A rate first seen after the usage is never applied to it. Usage without a known model and time can’t be repriced. That includes usage from before dated tracking, and days before this app recorded rates that mix priced and unpriced usage.</li>
           <li>OpenRouter charges come from cost receipts captured by this app. Earlier requests, interrupted responses without a receipt, and activity in other apps are not included. This is not an invoice.</li>
         </ul>
@@ -829,7 +885,7 @@ export function UsageDashboard({ onRefreshPricing, openRouterPricingError }: {
     setView(VIEWS[next].id);
     tabs.current?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
   };
-  const empty = !totals.totalTokens && !unallocated;
+  const empty = !totals.totalTokens && !unallocated && !totals.auxiliaryRequests;
 
   return <section className="set-group usage-dashboard" aria-label="Local usage">
     <header className="usage-dashboard-head">
@@ -857,6 +913,8 @@ export function UsageDashboard({ onRefreshPricing, openRouterPricingError }: {
           : view === "models" ? <ModelsView detail={detail} range={range} periodRange={periodRange} grain={grain} onGrain={setGrain} expanded={expanded} onExpand={setExpanded} />
             : <CompareView detail={detail} allTimeModels={allTimeModels} rangeLabel={rangeLabel} periodRange={periodRange} grain={grain} onGrain={setGrain} selection={selection} onSelection={setSelection} />}
     </div>
+
+    {!empty && <UsageEvidenceDetails detail={detail} helperCoverage={preview ? undefined : usageTotals()} />}
 
     <p className="usage-receipts" aria-label="OpenRouter reported charges" role="group">
       <span>OpenRouter reported charges<small>{reported.requests ? `${plural(reported.requests, "captured request")} · all time · not added to estimates` : "No cost receipts captured yet"}</small></span>

@@ -2,12 +2,14 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useEffect } from "react";
-import type { Thread } from "./types";
+import type { SkillDependencyReport, Thread } from "./types";
+import { emptySkillDependencyReport } from "./lib/skillDependencies";
 import type { PullRequest } from "./lib/pullRequests";
 import { DEFAULT_SETTINGS } from "./lib/appConfig";
 import { scheduleRunSnapshot } from "./lib/turnConfig";
 import { projectRunExecCommand } from "./lib/projectRun";
 import type { WorkflowDefinition } from "./lib/workflows";
+import type { LocalSkillFile } from "./lib/skills";
 
 /**
  * Integration harness for App-level lifecycle regressions. Mocks the Tauri
@@ -53,6 +55,11 @@ vi.mock("@tauri-apps/plugin-notification", () => ({
 
 const PROJECT_A = { id: "project-a", name: "Alpha", path: "/projects/alpha" };
 const PROJECT_B = { id: "project-b", name: "Beta", path: "/projects/beta" };
+
+const selectedReviewSkill: LocalSkillFile = {
+  path: "/skills/review/SKILL.md", relativePath: "review/SKILL.md", fileName: "SKILL.md",
+  defaultName: "review", description: "Review carefully", supportingMarkdownCount: 0,
+};
 
 const THREAD_A: Thread = {
   id: "thread-a",
@@ -144,7 +151,17 @@ function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
   if (command === "cursor_runtime_status") return cursorRuntimeStatusImpl();
   if (command === "local_skills_scan") return localSkillsScanImpl(String(args?.folder ?? ""));
   if (command === "local_skills_sync") return localSkillsSyncImpl(String(args?.folder ?? ""));
+  if (command === "local_skills_analyze_prompts") return emptySkillDependencyReport();
   if (command === "local_skills_resolve_prompt") return localSkillsResolvePromptImpl(args ?? {});
+  if (command === "local_skills_resolve_prompts") return (async () => {
+    const params = args ?? {};
+    const source = String(params.mentionSource ?? params.message ?? "");
+    const names = localSkillsMentionNamesImpl(source) as string[];
+    return {
+      prompt: names.length ? await localSkillsResolvePromptImpl(params) : params.message,
+      systemPrompt: params.systemPrompt,
+    };
+  })();
   if (command === "local_skills_mention_names") return localSkillsMentionNamesImpl(String(args?.message ?? ""));
   if (command === "claude_models") return claudeModelsImpl();
   if (command === "cursor_models") return cursorModelsImpl();
@@ -173,6 +190,39 @@ function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
       behind: 0,
     };
   }
+  if (command === "git_workspace_commit") {
+    // The native command owns this transaction; tests simulate its output,
+    // while Rust fixtures cover its actual index/identity/locking behavior.
+    return (async () => {
+      if (!args?.stagedOnly) {
+        const stage = await commandExecImpl({ command: ["git", "add", "--all"], cwd: args?.cwd }) as { exitCode: number; stdout: string; stderr: string };
+        if (stage.exitCode !== 0) throw new Error(stage.stdout + stage.stderr);
+      }
+      const committed = await commandExecImpl({ command: ["git", "commit", "-m", args?.message], cwd: args?.cwd }) as { exitCode: number; stdout: string; stderr: string };
+      if (committed.exitCode !== 0) throw new Error(committed.stdout + committed.stderr);
+      return { headOid: "b".repeat(40), branch: "main", stdout: committed.stdout, stderr: committed.stderr };
+    })();
+  }
+  if (command === "git_workspace_stage") return { stdout: "", stderr: "" };
+  if (command === "git_project_diff") return { text: "", source: "repository", baseline: "HEAD", untrackedPaths: [], truncated: false };
+  // Project Changes/History/PR reads: native commands are exercised by Rust
+  // fixtures; these mirror the one-unstaged-file snapshot below.
+  if (command === "git_project_changes") return {
+    rootPath: String(args?.cwd ?? PROJECT_A.path), rows: [{ path: "README.md", originalPath: null, area: "unstaged", status: "M" }],
+    stagedFiles: 0, unstagedFiles: 1, untrackedFiles: 0, changedFiles: 1, truncated: false,
+  };
+  if (command === "git_project_file_diff") return { path: args?.path, area: args?.area, text: "@@ -1 +1 @@\n-old\n+new\n", binary: false, truncated: false };
+  if (command === "git_project_history") return { entries: [], hasMore: false, nextOffset: 0, headOid: "a".repeat(40), truncated: false };
+  if (command === "github_pr_list") return [];
+  if (command === "git_workspace_snapshot") return {
+    branch: "main", headOid: "a".repeat(40), branches: [], stagedFiles: 0,
+    unstagedFiles: 1, changedFiles: 1, stagedPaths: [], rootPath: String(args?.cwd ?? PROJECT_A.path),
+  };
+  if (command === "git_workspace_push") return (async () => {
+    const result = await commandExecImpl({ command: ["git", "push"], cwd: args?.cwd }) as { exitCode: number; stdout: string; stderr: string };
+    if (result.exitCode !== 0) throw new Error(result.stdout + result.stderr);
+    return { stdout: result.stdout, stderr: result.stderr };
+  })();
   if (command === "github_pr_context") return {
     repository: "test-user/alpha", branch: "feature/alpha", defaultBranch: "main",
     headOid: "a".repeat(40), dirty: false, ahead: 1, behind: 0,
@@ -245,7 +295,7 @@ function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
       clean: true,
     };
   }
-  if (command === "worktree_remove") return null;
+  if (command === "worktree_remove") return { folderRemoved: true, branchDeleted: true, retainedBranch: null, retainedBranchOid: null, branchDeleteError: null };
   if (command === "checkpoint_create") {
     return {
       commit: `before-${String(args?.id)}`,
@@ -482,7 +532,7 @@ describe("onboarding Settings handoff", () => {
     const settings = await screen.findByRole("dialog", { name: "Settings" });
     expect(within(settings).getByRole("heading", { name: "Interface" })).toBeInTheDocument();
     expect(within(settings).getByRole("button", { name: /Synthwave.*Neon violet/ })).toHaveAttribute("aria-pressed", "true");
-    expect(within(settings).getByRole("button", { name: /Mono/ })).toHaveAttribute("aria-pressed", "true");
+    expect(within(settings).getByRole("button", { name: /Monospace/ })).toHaveAttribute("aria-pressed", "true");
     expect(within(settings).getByRole("button", { name: /Astra.*living nebula/i })).toHaveAttribute("aria-pressed", "true");
     expect(within(settings).getByText("Unsaved changes")).toBeInTheDocument();
     expect(document.querySelector(".app-shell")).toHaveAttribute("data-theme", "synthwave");
@@ -503,6 +553,28 @@ describe("onboarding Settings handoff", () => {
     expect(within(reopened).getByRole("button", { name: /Interface default.*same typeface/i })).toHaveAttribute("aria-pressed", "true");
     expect(within(reopened).getByRole("button", { name: /Aurora.*northern-light/i })).toHaveAttribute("aria-pressed", "true");
     expect(within(reopened).queryByText("Unsaved changes")).not.toBeInTheDocument();
+  });
+});
+
+describe("background helper usage", () => {
+  it("records native helper events once without creating a chat thread and unsubscribes on close", async () => {
+    const app = await renderApp();
+    const { usageTotals } = await import("./lib/usageLedger");
+    await waitFor(() => expect(tauriEvents.handlers.has("background-helper-usage")).toBe(true));
+    const event = {
+      executionId: "c012b670-3bb2-4f48-8b4c-329d2065ab17", provider: "claude", model: "claude-haiku-4-5",
+      modelSource: "reported", purpose: "thread-title", serviceTier: null, serviceTierSource: "unknown",
+      requestedServiceTier: null, outcome: "completed", tokenAvailability: "reported", reportedCost: null,
+      usage: { inputTokens: 100, cachedInputTokens: 20, cacheWriteInputTokens: 10,
+        cacheWrite1hInputTokens: 0, outputTokens: 15, reasoningOutputTokens: null, totalTokens: 115 },
+    };
+    act(() => {
+      tauriEvents.handlers.get("background-helper-usage")?.({ payload: event });
+      tauriEvents.handlers.get("background-helper-usage")?.({ payload: event });
+    });
+    expect(usageTotals()).toMatchObject({ inputTokens: 100, outputTokens: 15, totalTokens: 115, auxiliaryRequests: 1, threads: 0 });
+    app.unmount();
+    expect(tauriEvents.handlers.has("background-helper-usage")).toBe(false);
   });
 });
 
@@ -1127,6 +1199,79 @@ describe("chat header provider usage", () => {
   });
 });
 
+describe("thread inbox Open folder action", () => {
+  it("opens an inactive thread's folder without selecting or resuming the thread", async () => {
+    const user = userEvent.setup();
+    await renderApp();
+    await user.click(await screen.findByRole("button", { name: "Options for Beta thread" }));
+    await user.click(screen.getByRole("menuitem", { name: "Open folder" }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("open_workspace_folder", { path: PROJECT_A.path }));
+    expect(screen.queryByRole("menu", { name: "Options for Beta thread" })).not.toBeInTheDocument();
+    expect(invokeMock.mock.calls.some(([command, args]) => command === "codex_rpc" && args?.method === "thread/resume")).toBe(false);
+  });
+
+  it("opens the thread's isolated worktree rather than the shared project", async () => {
+    localStorage.setItem("kiwi.threadWorktrees", JSON.stringify({
+      [THREAD_A.id]: {
+        threadId: THREAD_A.id, projectId: PROJECT_A.id, projectPath: PROJECT_A.path,
+        path: "/managed/worktrees/thread-a", branch: "mythra/thread-a",
+        baseCommit: "head", gitDir: "/projects/alpha/.git", createdAt: 1, status: "active",
+      },
+    }));
+    const user = userEvent.setup();
+    await renderApp();
+    await user.click(await screen.findByRole("button", { name: "Options for Alpha thread" }));
+    await user.click(screen.getByRole("menuitem", { name: "Open folder" }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("open_workspace_folder", { path: "/managed/worktrees/thread-a" }));
+  });
+
+  it("uses the durable project binding when a provider reports an old folder", async () => {
+    localStorage.setItem("kiwi.threadProjects", JSON.stringify({ [THREAD_A.id]: PROJECT_A.path }));
+    threadListImpl = () => ({ data: [{ ...THREAD_A, cwd: "/old/project-location" }], nextCursor: null });
+    const user = userEvent.setup();
+    await renderApp();
+    await user.click(await screen.findByRole("button", { name: "Options for Alpha thread" }));
+    await user.click(screen.getByRole("menuitem", { name: "Open folder" }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("open_workspace_folder", { path: PROJECT_A.path }));
+  });
+
+  it("keeps native folder failures visible without misreporting a missing Codex runtime", async () => {
+    const failure = "Could not access the thread's folder: No such file or directory";
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "open_workspace_folder") throw new Error(failure);
+      return stubInvoke(command, args);
+    });
+    const user = userEvent.setup();
+    await renderApp();
+    await user.click(await screen.findByRole("button", { name: "Options for Alpha thread" }));
+    await user.click(screen.getByRole("menuitem", { name: "Open folder" }));
+    expect(await screen.findByText(failure)).toBeInTheDocument();
+    expect(screen.queryByText(/Codex runtime could not be found/)).not.toBeInTheDocument();
+  });
+});
+
+describe("GitHub CLI installation refresh", () => {
+  it("detects a newly installed CLI from Settings without remounting the app", async () => {
+    let installed = false;
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "github_status" && !installed) return {
+        available: false, authenticated: false, error: "GitHub CLI is not installed.",
+      };
+      return stubInvoke(command, args);
+    });
+    await renderApp();
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Settings" }));
+    await user.click(await screen.findByRole("button", { name: /^GitHub/ }));
+    expect(await screen.findByText("GitHub CLI is required")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Refresh GitHub status" })).toBeEnabled());
+    installed = true;
+    await user.click(screen.getByRole("button", { name: "Refresh GitHub status" }));
+    expect(await screen.findByText("@test-user")).toBeInTheDocument();
+    expect(screen.queryByText("GitHub CLI is required")).not.toBeInTheDocument();
+  });
+});
+
 describe("GitHub clone parent-folder flow", () => {
   it("clones to the previewed subfolder and preserves projects added while the clone is running", async () => {
     const user = userEvent.setup();
@@ -1228,6 +1373,14 @@ describe("Claude model updates", () => {
 });
 
 describe("chat typeface", () => {
+  it.each([["atari", "light"], ["monochrome", "dark"]])("restores the saved %s palette on the actual app shell", async (theme, scheme) => {
+    localStorage.setItem("kiwi.settings", JSON.stringify({ theme }));
+    await renderApp();
+    const shell = document.querySelector(".app-shell");
+    expect(shell).toHaveAttribute("data-theme", theme);
+    expect(shell).toHaveAttribute("data-color-scheme", scheme);
+  });
+
   it("publishes a saved chat font on the shell for the scoped chat styles to read", async () => {
     localStorage.setItem("kiwi.settings", JSON.stringify({ chatFont: "serif" }));
 
@@ -1393,7 +1546,7 @@ describe("overlapping refresh ordering", () => {
         supportingMarkdownCount: 0,
       }]);
     });
-    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("local_skills_resolve_prompt", expect.objectContaining({
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("local_skills_resolve_prompts", expect.objectContaining({
       folder: "/skills",
       message: "@review inspect this",
       skills: [expect.objectContaining({ name: "review", enabled: true })],
@@ -1432,12 +1585,12 @@ describe("overlapping refresh ordering", () => {
     // Nothing skill-shaped was mentioned, so the send never re-read the
     // unreadable folder and never tore the library down retrying it.
     expect(scans()).toBe(scansBeforeSend);
-    expect(invokeMock).toHaveBeenCalledWith("local_skills_resolve_prompt", expect.objectContaining({
+    expect(invokeMock).toHaveBeenCalledWith("local_skills_resolve_prompts", expect.objectContaining({
       folder: "",
       message: "mail me@example.com about @src/App.tsx today",
       skills: [],
     }));
-    expect(invokeMock).toHaveBeenCalledWith("local_skills_mention_names", { message: "mail me@example.com about @src/App.tsx today" });
+    expect(invokeMock).toHaveBeenCalledWith("local_skills_mention_names", { message: "\nmail me@example.com about @src/App.tsx today" });
   });
 
   it("still refuses a real @skill send while the folder cannot be read", async () => {
@@ -1452,6 +1605,191 @@ describe("overlapping refresh ordering", () => {
 
     expect(await screen.findByText(/could not load the selected skills folder/)).toBeInTheDocument();
     expect(invokeMock.mock.calls.some(([command, args]) => command === "codex_rpc" && args?.method === "turn/start")).toBe(false);
+  });
+
+  it("refuses a plain user message when its system prompt invokes an unreadable selected-folder skill", async () => {
+    localStorage.setItem("kiwi.skillsFolder", JSON.stringify("/skills"));
+    localStorage.setItem("kiwi.settings", JSON.stringify({ ...DEFAULT_SETTINGS, systemPrompt: "Use @review." }));
+    localSkillsScanImpl = () => { throw new Error("Selected folder is unreadable"); };
+    const user = userEvent.setup();
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: PROJECT_A.name }));
+    const composer = await screen.findByPlaceholderText(/Ask Mythra Code to work in/);
+    await user.type(composer, "Inspect this project{Enter}");
+    expect(await screen.findByText(/could not load the selected skills folder/)).toBeInTheDocument();
+    expect(invokeMock).toHaveBeenCalledWith("local_skills_mention_names", { message: "Use @review.\nInspect this project" });
+    expect(invokeMock.mock.calls.some(([command, args]) => command === "codex_rpc" && ["thread/start", "turn/start"].includes(String(args?.method)))).toBe(false);
+  });
+
+  it.each(["append", "replace"] as const)("resolves the effective global, subscription and project skill prompt in %s mode through one native request", async (mode) => {
+    const globalPrompt = "Global instructions use @review.";
+    const codexPrompt = "Codex instructions use @review.";
+    const projectPrompt = "Alpha project instructions use @review.";
+    const combined = mode === "append" ? `${globalPrompt}\n\n${codexPrompt}\n\n${projectPrompt}` : projectPrompt;
+    const resolvedSystem = `Selected-folder review instructions\n\n${combined}`;
+    localStorage.setItem("kiwi.skillsFolder", JSON.stringify("/skills"));
+    localStorage.setItem("kiwi.settings", JSON.stringify({
+      ...DEFAULT_SETTINGS, systemPrompt: globalPrompt, codexSystemPrompt: codexPrompt,
+      claudeSystemPrompt: "Claude-only @unselected must not participate.",
+    }));
+    localStorage.setItem("kiwi.projects", JSON.stringify([
+      { ...PROJECT_A, overrides: { systemPrompt: projectPrompt, systemPromptMode: mode } }, PROJECT_B,
+    ]));
+    localSkillsScanImpl = () => [selectedReviewSkill];
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "local_skills_resolve_prompts") return { prompt: args?.message, systemPrompt: resolvedSystem };
+      return stubInvoke(command, args);
+    });
+    const user = userEvent.setup();
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: PROJECT_A.name }));
+    const composer = await screen.findByPlaceholderText(/Ask Mythra Code to work in/);
+    await user.type(composer, "Inspect this project{Enter}");
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("local_skills_resolve_prompts", expect.objectContaining({
+      folder: "/skills", message: "Inspect this project", systemPrompt: combined,
+      skills: [expect.objectContaining({ sourcePath: selectedReviewSkill.path, name: "review", enabled: true })],
+    })));
+    const resolutions = invokeMock.mock.calls.filter(([command]) => command === "local_skills_resolve_prompts");
+    expect(resolutions).toHaveLength(1);
+    expect(invokeMock.mock.calls.some(([command]) => command === "local_skills_resolve_prompt")).toBe(false);
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("codex_rpc", expect.objectContaining({
+      method: "thread/start", params: expect.objectContaining({ baseInstructions: "" }),
+    })));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("codex_rpc", expect.objectContaining({
+      method: "turn/start", params: expect.objectContaining({ input: [expect.objectContaining({ text: "Inspect this project" })] }),
+    })));
+    const currentTurn = invokeMock.mock.calls.find(([command, args]) => command === "codex_rpc" && args?.method === "turn/start")![1]?.params as { collaborationMode: { settings: { developer_instructions: string } } };
+    expect(currentTurn.collaborationMode.settings.developer_instructions.split(resolvedSystem)).toHaveLength(2);
+    expect(currentTurn.collaborationMode.settings.developer_instructions).toContain(`Current effective app system prompt:\n${resolvedSystem}`);
+    const { useTaskStore } = await import("./lib/taskStore");
+    const displayed = useTaskStore.getState().tasks["isolated-thread"]?.messages.find((message) => message.role === "user")?.text;
+    expect(displayed).toBe("Inspect this project");
+    expect(JSON.parse(localStorage.getItem("kiwi.settings") ?? "{}").systemPrompt).toBe(globalPrompt);
+    expect(JSON.parse(localStorage.getItem("kiwi.projects") ?? "[]")[0].overrides.systemPrompt).toBe(projectPrompt);
+  });
+
+  it("retains the full system-only nested graph on a plain user message", async () => {
+    const report: SkillDependencyReport = { ...emptySkillDependencyReport(),
+      roots: [{ nodeId: "review", channel: "system", name: "review" }],
+      nodes: [
+        { id: "review", kind: "skill", name: "review", path: "/skills/review/SKILL.md", status: "loaded", depth: 0, characterCount: 30 },
+        { id: "security", kind: "skill", name: "security", path: "/skills/security.md", status: "loaded", depth: 1, characterCount: 20 },
+        { id: "checklist", kind: "document", name: "checklist.txt", path: "/skills/checklist.txt", status: "loaded", depth: 2, characterCount: 40 },
+      ], edges: [{ from: "review", to: "security", reference: "@security" }, { from: "security", to: "checklist", reference: "checklist.txt" }],
+    };
+    localStorage.setItem("kiwi.skillsFolder", JSON.stringify("/skills"));
+    localStorage.setItem("kiwi.settings", JSON.stringify({ ...DEFAULT_SETTINGS, systemPrompt: "Use @review." }));
+    localSkillsScanImpl = () => [selectedReviewSkill];
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "local_skills_analyze_prompts") return report;
+      if (command === "local_skills_resolve_prompts") return { prompt: args?.message, systemPrompt: "Complete nested system context", skillDependencies: report };
+      return stubInvoke(command, args);
+    });
+    const user = userEvent.setup();
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: PROJECT_A.name }));
+    await user.type(await screen.findByPlaceholderText(/Ask Mythra Code to work in/), "Inspect this project{Enter}");
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("codex_rpc", expect.objectContaining({ method: "turn/start" })));
+    const { useTaskStore } = await import("./lib/taskStore");
+    const message = useTaskStore.getState().tasks["isolated-thread"]?.messages.find((entry) => entry.role === "user");
+    expect(message?.text).toBe("Inspect this project");
+    expect(message?.skillDependencies).toEqual(report);
+  });
+
+  it("shows a blocked nested system chain in red and does not start a model", async () => {
+    const report: SkillDependencyReport = { ...emptySkillDependencyReport(),
+      roots: [{ nodeId: "review", channel: "system", name: "review" }],
+      nodes: [
+        { id: "review", kind: "skill", name: "review", path: "/skills/review/SKILL.md", status: "loaded", depth: 0, characterCount: 30 },
+        { id: "checklist", kind: "document", name: "checklist.txt", path: "/skills/checklist.txt", status: "blocked", depth: 5, characterCount: 0 },
+      ], edges: [{ from: "review", to: "checklist", reference: "checklist.txt" }],
+      issues: [{ code: "depth-limit", rootName: "review", chain: ["@review", "@security", "checklist.txt"], reference: "checklist.txt", message: "This chain exceeds the limit of 4 dependency hops." }],
+    };
+    localStorage.setItem("kiwi.skillsFolder", JSON.stringify("/skills"));
+    localStorage.setItem("kiwi.settings", JSON.stringify({ ...DEFAULT_SETTINGS, systemPrompt: "Use @review." }));
+    localSkillsScanImpl = () => [selectedReviewSkill];
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "local_skills_analyze_prompts") return report;
+      if (command === "local_skills_resolve_prompts") return { prompt: args?.message, systemPrompt: args?.systemPrompt, skillDependencies: report };
+      return stubInvoke(command, args);
+    });
+    const user = userEvent.setup();
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: PROJECT_A.name }));
+    expect(await screen.findByText("Turn blocked by skill dependencies")).toBeInTheDocument();
+    await user.type(await screen.findByPlaceholderText(/Ask Mythra Code to work in/), "Inspect this project{Enter}");
+    await waitFor(() => expect(screen.getByText(/Skills were not loaded and the model was not started/)).toBeInTheDocument());
+    expect(invokeMock.mock.calls.some(([command, args]) => command === "codex_rpc" && ["thread/start", "turn/start"].includes(String(args?.method)))).toBe(false);
+    expect(screen.getByPlaceholderText(/Ask Mythra Code to work in/)).toHaveValue("Inspect this project");
+  });
+
+  it("opens an exact history skill link directly in its Settings source editor", async () => {
+    localStorage.setItem("kiwi.skillsFolder", JSON.stringify("/skills"));
+    localSkillsScanImpl = () => [selectedReviewSkill];
+    resumeImpl = (params) => ({ thread: { ...THREAD_A, id: String(params.threadId), turns: [] } });
+    threadTurnsListImpl = () => ({
+      data: [{ id: "review-history-turn", status: "completed", items: [{
+        id: "review-history-message", type: "userMessage", content: [{ type: "text", text: "Use @review to inspect this." }],
+      }] }], nextCursor: null, backwardsCursor: null,
+    });
+    const markdown = "# Selected local review\n\nThis is the user's exact selected file.\n";
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "local_skills_read") return markdown;
+      return stubInvoke(command, args);
+    });
+    const user = userEvent.setup();
+    await renderApp();
+    await user.click(await screen.findByText("Alpha thread"));
+    const link = await screen.findByRole("link", { name: "@review" });
+    const previousHash = window.location.hash;
+    await user.click(link);
+    const settings = await screen.findByRole("dialog", { name: "Settings" });
+    expect(within(settings).getByRole("heading", { name: "Skills" })).toBeInTheDocument();
+    const editor = await screen.findByRole("dialog", { name: "Edit @review" });
+    expect(await within(editor).findByRole("textbox", { name: "Markdown for review" })).toHaveValue(markdown);
+    expect(invokeMock).toHaveBeenCalledWith("local_skills_read", { folder: "/skills", path: selectedReviewSkill.path });
+    expect(invokeMock.mock.calls.filter(([command]) => command === "local_skills_read")).toHaveLength(1);
+    expect(window.location.hash).toBe(previousHash);
+  });
+
+  it("passes the live paired skill resolver from App into a delegated child turn", async () => {
+    localStorage.setItem("kiwi.skillsFolder", JSON.stringify("/skills"));
+    localSkillsScanImpl = () => [selectedReviewSkill];
+    localStorage.setItem("kiwi.threadProjects", JSON.stringify({ [THREAD_A.id]: PROJECT_A.path }));
+    localStorage.setItem("kiwi.childAgentPolicies", JSON.stringify({
+      "session-skills": {
+        sessionId: "session-skills", rootThreadId: THREAD_A.id, maxConcurrent: 1,
+        permission: "read-only", systemPrompt: "Captured system use @review.",
+        providerSystemPrompts: { openai: "Captured Codex system use @review." },
+        projectInstructionsEnabled: false, reasoningEffort: "medium", serviceTier: null, capturedAt: 1,
+        targets: [{ id: "reviewer", provider: "openai", model: "gpt-5.6-sol", label: "Reviewer", description: "", enabled: true, reasoningMode: "inherit", reasoningEffort: "medium", reasoningMaxEffort: "high" }],
+      },
+    }));
+    const resolvedSystem = "Selected review instructions for child system";
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "local_skills_resolve_prompts") return { prompt: "Resolved child user instructions", systemPrompt: resolvedSystem };
+      return stubInvoke(command, args);
+    });
+    await renderApp();
+    await waitFor(() => expect(tauriEvents.handlers.has("child-agent-request")).toBe(true));
+    await act(async () => tauriEvents.handlers.get("child-agent-request")?.({ payload: {
+      requestId: "child-skills-1", sessionId: "session-skills", tool: "spawn_mythra_agent",
+      arguments: { target: "reviewer", prompt: "Use @review to inspect this child task." },
+    } }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("local_skills_resolve_prompts", expect.objectContaining({
+      folder: "/skills", message: "Use @review to inspect this child task.",
+      systemPrompt: "Captured Codex system use @review.",
+    })));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("codex_rpc", expect.objectContaining({
+      method: "thread/start", params: expect.objectContaining({ baseInstructions: "" }),
+    })));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("codex_rpc", expect.objectContaining({
+      method: "turn/start", params: expect.objectContaining({ input: [expect.objectContaining({ text: "Resolved child user instructions" })] }),
+    })));
+    const currentTurn = invokeMock.mock.calls.find(([command, args]) => command === "codex_rpc" && args?.method === "turn/start")![1]?.params as { collaborationMode: { settings: { developer_instructions: string } } };
+    expect(currentTurn.collaborationMode.settings.developer_instructions.split(resolvedSystem)).toHaveLength(2);
+    expect(currentTurn.collaborationMode.settings.developer_instructions).toContain(`Current effective app system prompt:\n${resolvedSystem}`);
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("child_agent_respond", expect.objectContaining({ requestId: "child-skills-1" })));
   });
 });
 
@@ -2125,6 +2463,70 @@ describe("workspace switching during thread selection", () => {
       ]);
     });
     expect(await screen.findByText(/“Polish the Git panel” was saved/)).toBeInTheDocument();
+    expect(invokeMock).toHaveBeenCalledWith("git_workspace_commit", expect.objectContaining({ cwd: PROJECT_A.path, message: "Polish the Git panel", stagedOnly: false }));
+  });
+
+  it("refreshes isolated-worktree availability after the first commit in the Git tab", async () => {
+    const user = userEvent.setup();
+    let committed = false;
+    workspaceGitInfoImpl = () => ({ isRepo: true, isRoot: true, hasCommit: committed, branch: "main", head: committed ? "head" : null });
+    commandExecImpl = (params) => {
+      const command = params.command as string[];
+      if (command[1] === "commit") committed = true;
+      return { exitCode: 0, stdout: "", stderr: "" };
+    };
+    await renderApp();
+    expect(await screen.findByRole("button", { name: /Create initial Git snapshot/i })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
+    await user.click(await screen.findByRole("tab", { name: "Git workspace tool" }));
+    await user.click(await screen.findByRole("button", { name: "Commit all changes locally" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /Isolated worktree/i })).toBeEnabled());
+    expect(screen.queryByRole("button", { name: /Create initial Git snapshot/i })).not.toBeInTheDocument();
+  });
+
+  it("keeps failed GitHub attachment input and shows its error in the connection form", async () => {
+    const user = userEvent.setup();
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "github_repo_status") return { isRepo: true, repository: null, remoteUrl: null, branch: "main", upstream: null, ahead: 0, behind: 0 };
+      if (command === "github_attach_remote") throw new Error("An origin remote already exists. It was left unchanged.");
+      return stubInvoke(command, args);
+    });
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
+    await user.click(await screen.findByRole("tab", { name: "Git workspace tool" }));
+    await user.click(await screen.findByRole("button", { name: /(?:Publish this project to GitHub|Connect a GitHub repository)/ }));
+    const url = screen.getByLabelText("Existing repository URL");
+    await user.type(url, "https://github.com/owner/alpha");
+    await user.keyboard("{Enter}");
+    expect(await screen.findByRole("alert", { name: "" })).toHaveTextContent("An origin remote already exists");
+    expect(url).toHaveValue("https://github.com/owner/alpha");
+    expect(screen.getByRole("button", { name: "Attach remote" })).toBeEnabled();
+    expect(invokeMock).toHaveBeenCalledWith("github_attach_remote", { cwd: PROJECT_A.path, url: "https://github.com/owner/alpha.git" });
+  });
+
+  it("serializes GitHub attachment and ignores its result after changing projects", async () => {
+    const user = userEvent.setup();
+    const pendingAttach = deferred<{ isRepo: boolean; repository: string; remoteUrl: string; branch: string; upstream: null; ahead: number; behind: number }>();
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "github_repo_status") return { isRepo: true, repository: null, remoteUrl: null, branch: "main", upstream: null, ahead: 0, behind: 0 };
+      if (command === "github_attach_remote") return pendingAttach.promise;
+      return stubInvoke(command, args);
+    });
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
+    await user.click(await screen.findByRole("tab", { name: "Git workspace tool" }));
+    await user.click(await screen.findByRole("button", { name: /(?:Publish this project to GitHub|Connect a GitHub repository)/ }));
+    await user.type(screen.getByLabelText("Existing repository URL"), "https://github.com/owner/alpha");
+    await user.keyboard("{Enter}");
+    expect(await screen.findByRole("button", { name: "Attaching…" })).toBeDisabled();
+    fireEvent.submit(screen.getByRole("form", { name: "Attach an existing GitHub repository" }));
+    expect(invokeMock.mock.calls.filter(([command]) => command === "github_attach_remote")).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "Commit all changes locally" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: PROJECT_B.name }));
+    await act(async () => { pendingAttach.resolve({ isRepo: true, repository: "owner/alpha", remoteUrl: "https://github.com/owner/alpha.git", branch: "main", upstream: null, ahead: 0, behind: 0 }); await pendingAttach.promise; });
+    expect(screen.queryByText("owner/alpha")).not.toBeInTheDocument();
+    expect(screen.queryByText("GitHub repository attached")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Commit all changes locally" })).toBeEnabled();
   });
 
   it("uses the visible commit message for Commit & push", async () => {
@@ -2141,6 +2543,35 @@ describe("workspace switching during thread selection", () => {
     await user.click(screen.getByRole("button", { name: /Commit & push/i }));
     await waitFor(() => expect(commands).toContainEqual(["git", "commit", "-m", "Keep this exact message"]));
     expect(commands).not.toContainEqual(["git", "commit", "-m", "Update project files"]);
+    expect(invokeMock).toHaveBeenCalledWith("git_workspace_push", {
+      cwd: PROJECT_A.path, headOid: "b".repeat(40), branch: "main",
+      expectedRemoteUrl: "https://github.com/test-user/alpha.git", expectedRepository: "test-user/alpha",
+    });
+  });
+
+  it("refreshes a connection completed after navigating away and back to its project", async () => {
+    const user = userEvent.setup();
+    const pendingAttach = deferred<{ isRepo: boolean; repository: string; remoteUrl: string; branch: string; upstream: null; ahead: number; behind: number }>();
+    let connected = false;
+    const connectedStatus = { isRepo: true, repository: "owner/alpha", remoteUrl: "https://github.com/owner/alpha.git", branch: "main", upstream: null, ahead: 0, behind: 0 };
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "github_repo_status") return connected && args?.cwd === PROJECT_A.path ? connectedStatus : { isRepo: true, repository: null, remoteUrl: null, branch: "main", upstream: null, ahead: 0, behind: 0 };
+      if (command === "github_attach_remote") return pendingAttach.promise;
+      return stubInvoke(command, args);
+    });
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
+    await user.click(await screen.findByRole("tab", { name: "Git workspace tool" }));
+    await user.click(await screen.findByRole("button", { name: /Connect a GitHub repository/ }));
+    await user.type(screen.getByLabelText("Existing repository URL"), "https://github.com/owner/alpha");
+    await user.keyboard("{Enter}");
+    await screen.findByRole("button", { name: "Attaching…" });
+    await user.click(screen.getByRole("button", { name: PROJECT_B.name }));
+    await user.click(screen.getByRole("button", { name: PROJECT_A.name }));
+    expect(screen.getByRole("button", { name: "Commit all changes locally" })).toBeDisabled();
+    await act(async () => { connected = true; pendingAttach.resolve(connectedStatus); await pendingAttach.promise; });
+    expect(await screen.findByText("owner/alpha")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Commit all changes locally" })).toBeEnabled();
   });
 
   it("can retry a failed push without committing the saved changes again", async () => {
@@ -2174,6 +2605,14 @@ describe("workspace switching during thread selection", () => {
         branch: "main", headOid: "a".repeat(40), branches: [], stagedFiles: 1,
         unstagedFiles: 2, changedFiles: 3, stagedPaths: ["chosen.ts"], rootPath: PROJECT_A.path,
       };
+      if (command === "git_project_changes") return {
+        rootPath: PROJECT_A.path, truncated: false, stagedFiles: 1, unstagedFiles: 2, untrackedFiles: 0, changedFiles: 3,
+        rows: [
+          { path: "chosen.ts", originalPath: null, area: "staged", status: "M" },
+          { path: "left.ts", originalPath: null, area: "unstaged", status: "M" },
+          { path: "other.ts", originalPath: null, area: "unstaged", status: "M" },
+        ],
+      };
       return stubInvoke(command, args);
     });
     commandExecImpl = (params) => {
@@ -2189,6 +2628,154 @@ describe("workspace switching during thread selection", () => {
     expect(commands.some((command) => command[1] === "add")).toBe(false);
     expect(await screen.findByText(/Using the existing staged changes/)).toBeInTheDocument();
     expect(screen.queryByText(/\$ git add --all/)).not.toBeInTheDocument();
+  });
+
+  it("loads repository Review changes without a thread or a model runtime diff", async () => {
+    const user = userEvent.setup();
+    const patch = "diff --git a/project.ts b/project.ts\n--- a/project.ts\n+++ b/project.ts\n@@ -1 +1 @@\n-old\n+project-only change\n";
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "git_project_diff") return { text: patch, source: "repository", baseline: "HEAD", untrackedPaths: [], truncated: false };
+      return stubInvoke(command, args);
+    });
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: "Review changes" }));
+    await user.click(await screen.findByRole("button", { name: "Refresh" }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("git_project_diff", { cwd: PROJECT_A.path }));
+    expect(await screen.findByText(/project-only change/)).toBeInTheDocument();
+    expect(invokeMock.mock.calls.some(([command, args]) => command === "codex_rpc" && args?.method === "gitDiffToRemote")).toBe(false);
+  });
+
+  it("keeps GitHub terminal sign-in failures inside the Settings modal", async () => {
+    const user = userEvent.setup();
+    const failure = "Run gh auth login in your terminal, then refresh GitHub settings.";
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "github_status") return { available: true, authenticated: false, path: "gh" };
+      if (command === "github_login") throw new Error(failure);
+      return stubInvoke(command, args);
+    });
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    const settings = await screen.findByRole("dialog", { name: "Settings" });
+    await user.click(within(settings).getByRole("button", { name: "GitHub" }));
+    await user.click(within(settings).getByRole("button", { name: "Sign in" }));
+    expect(await within(settings).findByText(failure)).toBeInTheDocument();
+    expect(within(settings).getByText("gh auth login --hostname github.com")).toBeInTheDocument();
+    expect(within(settings).getByRole("button", { name: /Refresh/ })).toBeEnabled();
+  });
+
+  it.each(["accept", "cancel", "stale", "partial-failure"] as const)("uses a native bulk Revert preview and preserves new files: %s", async (outcome) => {
+    const user = userEvent.setup();
+    const refusal = outcome === "partial-failure"
+      ? "Revert all reset the index, but restoring committed working files did not finish: permission denied. Some tracked paths may have changed. Refresh and inspect before trying again."
+      : "The repository changed while confirmation was open. Nothing reverted.";
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "git_workspace_revert_all_preview") return { token: "bulk-preview", restorePaths: ["tracked.txt"], preservedPaths: ["added.txt", "untracked.txt"], headOid: "a".repeat(40), branch: "main" };
+      if (command === "git_workspace_revert_all") {
+        if (outcome === "stale" || outcome === "partial-failure") throw new Error(refusal);
+        return { stdout: "", stderr: "" };
+      }
+      return stubInvoke(command, args);
+    });
+    vi.mocked(window.confirm).mockReturnValue(outcome !== "cancel");
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
+    await user.click(await screen.findByRole("tab", { name: "Git workspace tool" }));
+    await user.click(screen.getByRole("button", { name: "More local Git actions" }));
+    await user.click(screen.getByRole("menuitem", { name: /Revert all changes/ }));
+    await waitFor(() => expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining("2 added, untracked, or renamed destination paths will be kept")));
+    if (outcome === "cancel") expect(invokeMock.mock.calls.some(([command]) => command === "git_workspace_revert_all")).toBe(false);
+    else {
+      await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("git_workspace_revert_all", { cwd: PROJECT_A.path, expectedToken: "bulk-preview" }));
+      expect(await screen.findByText(outcome === "stale" || outcome === "partial-failure" ? refusal : /New file contents were kept/)).toBeInTheDocument();
+    }
+    expect(invokeMock.mock.calls.some(([command, args]) => command === "codex_rpc" && args?.method === "command/exec" && (args.params as { command: string[] }).command.includes("restore"))).toBe(false);
+  });
+
+  it("does not confirm or execute a bulk Revert preview after switching projects", async () => {
+    const user = userEvent.setup();
+    const pending = deferred<{ token: string; restorePaths: string[]; preservedPaths: string[]; headOid: string; branch: string }>();
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => command === "git_workspace_revert_all_preview" ? pending.promise : stubInvoke(command, args));
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
+    await user.click(await screen.findByRole("tab", { name: "Git workspace tool" }));
+    await user.click(screen.getByRole("button", { name: "More local Git actions" }));
+    await user.click(screen.getByRole("menuitem", { name: /Revert all changes/ }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("git_workspace_revert_all_preview", { cwd: PROJECT_A.path }));
+    await user.click(screen.getByRole("button", { name: /^Beta$/ }));
+    await act(async () => pending.resolve({ token: "old-project", restorePaths: ["tracked.txt"], preservedPaths: [], headOid: "a".repeat(40), branch: "main" }));
+    expect(window.confirm).not.toHaveBeenCalled();
+    expect(invokeMock.mock.calls.some(([command]) => command === "git_workspace_revert_all")).toBe(false);
+  });
+
+  it("uses a native exact-file preview token when reverting a rename", async () => {
+    const user = userEvent.setup();
+    resumeImpl = (params) => ({ thread: { ...THREAD_A, id: String(params.threadId), turns: [] } });
+    gitDiffToRemoteImpl = () => ({ diff: "diff --git a/old.txt b/new.txt\nsimilarity index 100%\nrename from old.txt\nrename to new.txt\n" });
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "git_workspace_revert_preview") return { token: "frozen-preview", paths: ["old.txt", "new.txt"], headOid: "a".repeat(40), branch: "main" };
+      if (command === "git_workspace_revert") return { stdout: "", stderr: "" };
+      return stubInvoke(command, args);
+    });
+    await renderApp();
+    await user.click(await screen.findByRole("button", { name: /^Open Alpha thread\b/ }));
+    await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
+    await user.click(await screen.findByRole("tab", { name: "Review workspace tool" }));
+    await user.click(await screen.findByRole("button", { name: "Refresh" }));
+    await user.click(await screen.findByRole("button", { name: "Revert new.txt" }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("git_workspace_revert", { cwd: PROJECT_A.path, path: "new.txt", expectedToken: "frozen-preview" }));
+    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('"old.txt" and "new.txt"'));
+    expect(invokeMock.mock.calls.some(([command, args]) => command === "codex_rpc" && args?.method === "command/exec" && (args.params as { command: string[] }).command.includes("restore"))).toBe(false);
+  });
+
+  it("shows a stale Revert refusal without leaving the Review tab", async () => {
+    const user = userEvent.setup();
+    const refusal = "The repository or file changed while confirmation was open. Nothing reverted.";
+    resumeImpl = (params) => ({ thread: { ...THREAD_A, id: String(params.threadId), turns: [] } });
+    gitDiffToRemoteImpl = () => ({ diff: "diff --git a/old.txt b/new.txt\nsimilarity index 100%\nrename from old.txt\nrename to new.txt\n" });
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "git_workspace_revert_preview") return { token: "stale-preview", paths: ["old.txt", "new.txt"], headOid: "a".repeat(40), branch: "main" };
+      if (command === "git_workspace_revert") throw new Error(refusal);
+      return stubInvoke(command, args);
+    });
+    await renderApp();
+    await user.click(await screen.findByRole("button", { name: /^Open Alpha thread\b/ }));
+    await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
+    await user.click(await screen.findByRole("tab", { name: "Review workspace tool" }));
+    await user.click(await screen.findByRole("button", { name: "Refresh" }));
+    await user.click(await screen.findByRole("button", { name: "Revert new.txt" }));
+    expect(await screen.findByText(refusal)).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Review workspace tool" })).toHaveAttribute("aria-selected", "true");
+  });
+
+  it.each([
+    { branchDeleted: false, retainedBranch: "kiwi/alpha", retainedBranchOid: "b".repeat(40), branchDeleteError: "Branch is not fully merged into its upstream.", message: "Branch kiwi/alpha was kept" },
+    { branchDeleted: true, retainedBranch: null, retainedBranchOid: null, branchDeleteError: "Branch configuration cleanup timed out.", message: "Branch kiwi/alpha was deleted, but cleanup is incomplete" },
+    { branchDeleted: false, retainedBranch: null, retainedBranchOid: null, branchDeleteError: "Branch inspection timed out.", message: "The state of branch kiwi/alpha could not be verified. Inspect the branch before retrying cleanup" },
+  ])("records a removed worktree and honestly reports partial branch cleanup: $message", async (outcome) => {
+    const user = userEvent.setup();
+    resumeImpl = (params) => ({ thread: { ...THREAD_A, id: String(params.threadId), turns: [] } });
+    localStorage.setItem("kiwi.studioTab", JSON.stringify("worktrees"));
+    localStorage.setItem("kiwi.threadWorktrees", JSON.stringify({ [THREAD_A.id]: {
+      threadId: THREAD_A.id, projectId: PROJECT_A.id, projectPath: PROJECT_A.path,
+      path: "/managed/worktrees/alpha", branch: "kiwi/alpha", baseCommit: "head",
+      gitDir: "/projects/alpha/.git", createdAt: 1, status: "active",
+    } }));
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "worktree_remove") return { folderRemoved: true, ...outcome };
+      return stubInvoke(command, args);
+    });
+    await renderApp();
+    await user.click(await screen.findByRole("button", { name: /^Open Alpha thread\b/ }));
+    await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
+    await user.click(await screen.findByRole("button", { name: "More worktree actions" }));
+    await user.click(await screen.findByRole("menuitem", { name: /Remove worktree/ }));
+    expect(await screen.findByText(`The worktree folder was removed. ${outcome.message}: ${outcome.branchDeleteError}`)).toBeInTheDocument();
+    await waitFor(() => {
+      const record = JSON.parse(localStorage.getItem("kiwi.threadWorktrees") ?? "{}")[THREAD_A.id];
+      expect(record).toMatchObject({ status: "removed", branchDeleteError: outcome.branchDeleteError });
+      expect(record.retainedBranch).toBe(outcome.retainedBranch ?? undefined);
+      expect(record.retainedBranchOid).toBe(outcome.retainedBranchOid ?? undefined);
+    });
   });
 
   it("wires per-file Unstage in Review to the index without reverting the file", async () => {
@@ -2213,13 +2800,65 @@ describe("workspace switching during thread selection", () => {
     await user.click(await screen.findByRole("tab", { name: "Review workspace tool" }));
     await user.click(await screen.findByRole("button", { name: "Refresh" }));
     await user.click(await screen.findByRole("button", { name: "Unstage" }));
-    await waitFor(() => expect(commands).toContainEqual(["git", "reset", "--", "chosen.ts"]));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("git_workspace_stage", expect.objectContaining({ cwd: PROJECT_A.path, path: "chosen.ts", unstage: true })));
     expect(commands.some((command) => command[1] === "restore")).toBe(false);
+  });
+
+  it.each(["stage", "unstage", "revert"] as const)("rejects a nested Review %s at the App owner before confirmation or mutation", async (action) => {
+    const user = userEvent.setup();
+    let dockProps: Parameters<(typeof import("./components/StudioDock"))["StudioDock"]>[0] | undefined;
+    vi.doMock("./components/StudioDock", async () => {
+      const actual = await vi.importActual<typeof import("./components/StudioDock")>("./components/StudioDock");
+      return { ...actual, StudioDock: (props: Parameters<typeof actual.StudioDock>[0]) => {
+        dockProps = props;
+        return <actual.StudioDock {...props} />;
+      } };
+    });
+    try {
+      resumeImpl = (params) => ({ thread: { ...THREAD_A, id: String(params.threadId), turns: [] } });
+      gitDiffToRemoteImpl = () => ({ diff: "diff --git a/alpha/chosen.ts b/alpha/chosen.ts\n--- a/alpha/chosen.ts\n+++ b/alpha/chosen.ts\n@@ -1 +1 @@\n-old\n+new\n" });
+      invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => command === "git_workspace_snapshot"
+        ? { branch: "main", headOid: "a".repeat(40), branches: [], stagedFiles: 1, unstagedFiles: 0, changedFiles: 1, stagedPaths: ["alpha/chosen.ts"], rootPath: "/projects", isRoot: false }
+        : stubInvoke(command, args));
+      const commands: string[][] = [];
+      commandExecImpl = (params) => {
+        commands.push(params.command as string[]);
+        return { exitCode: 0, stdout: "", stderr: "" };
+      };
+      await renderApp();
+      await user.click(await screen.findByRole("button", { name: /^Open Alpha thread\b/ }));
+      await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
+      await user.click(await screen.findByRole("tab", { name: "Review workspace tool" }));
+      await waitFor(() => expect(dockProps?.gitWorkflow?.snapshot?.isRoot).toBe(false));
+      vi.mocked(window.confirm).mockClear();
+      // Call the owner's callback directly: disabled buttons cannot prove that
+      // another caller, or a stale view, is refused before destructive work.
+      await act(async () => {
+        if (action === "unstage") dockProps?.onGitPathUnstage?.("alpha/chosen.ts");
+        else dockProps?.onGitPathAction(action, "alpha/chosen.ts");
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+      expect(window.confirm).not.toHaveBeenCalled();
+      expect(invokeMock.mock.calls.some(([command]) => command === "git_workspace_stage")).toBe(false);
+      expect(commands.some((command) => command.includes("restore"))).toBe(false);
+      await user.click(screen.getByRole("tab", { name: "Git workspace tool" }));
+      expect(screen.getByText("Git output").closest("details")).toHaveTextContent("Open the repository root (/projects)");
+    } finally {
+      vi.doUnmock("./components/StudioDock");
+    }
   });
 
   it("unstages an initial snapshot without deleting its working files", async () => {
     const user = userEvent.setup();
     const commands: string[][] = [];
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "git_workspace_snapshot") return { branch: "main", headOid: null, branches: [], stagedFiles: 1, unstagedFiles: 1, changedFiles: 1, stagedPaths: ["new.txt"], rootPath: PROJECT_A.path };
+      if (command === "git_project_changes") return {
+        rootPath: PROJECT_A.path, truncated: false, stagedFiles: 1, unstagedFiles: 1, untrackedFiles: 0, changedFiles: 1,
+        rows: [{ path: "new.txt", originalPath: null, area: "staged", status: "A" }, { path: "new.txt", originalPath: null, area: "unstaged", status: "M" }],
+      };
+      return stubInvoke(command, args);
+    });
     commandExecImpl = (params) => {
       const command = params.command as string[];
       commands.push(command);
@@ -2230,7 +2869,7 @@ describe("workspace switching during thread selection", () => {
     await user.click(await screen.findByRole("tab", { name: "Git workspace tool" }));
     await user.click(screen.getByRole("button", { name: "More local Git actions" }));
     await user.click(screen.getByRole("menuitem", { name: /Unstage all/ }));
-    await waitFor(() => expect(commands).toContainEqual(["git", "rm", "-r", "--cached", "--ignore-unmatch", "--", "."]));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("git_workspace_stage", expect.objectContaining({ cwd: PROJECT_A.path, path: null, unstage: true })));
     expect(commands.some((command) => command[1] === "reset")).toBe(false);
   });
 
@@ -2249,10 +2888,7 @@ describe("workspace switching during thread selection", () => {
     await user.type(screen.getByLabelText(/Commit message/i), "Commit Alpha changes");
     await user.click(screen.getByRole("button", { name: "Commit all changes locally" }));
     await waitFor(() => {
-      expect(invokeMock).toHaveBeenCalledWith("codex_rpc", expect.objectContaining({
-        method: "command/exec",
-        params: expect.objectContaining({ command: ["git", "commit", "-m", "Commit Alpha changes"] }),
-      }));
+      expect(invokeMock).toHaveBeenCalledWith("git_workspace_commit", expect.objectContaining({ cwd: PROJECT_A.path, message: "Commit Alpha changes", stagedOnly: false }));
     });
 
     await user.click(screen.getByRole("button", { name: PROJECT_B.name }));
@@ -2266,6 +2902,72 @@ describe("workspace switching during thread selection", () => {
     expect(screen.queryByText("Committed successfully")).not.toBeInTheDocument();
     expect(screen.queryByText("Changes committed locally")).not.toBeInTheDocument();
     expect(screen.getByLabelText(/Commit message/i)).toHaveValue("");
+  });
+
+  it("shows a completed commit and refreshes its checkout after navigating away and back", async () => {
+    const user = userEvent.setup();
+    const pendingCommit = deferred<{ exitCode: number; stdout: string; stderr: string }>();
+    let committed = false;
+    commandExecImpl = (params) => {
+      const command = params.command as string[];
+      if (command[1] === "commit") return pendingCommit.promise.then((result) => { committed = true; return result; });
+      return { exitCode: 0, stdout: "", stderr: "" };
+    };
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      const result = await stubInvoke(command, args);
+      if (command === "git_workspace_snapshot" && args?.cwd === PROJECT_A.path) return {
+        ...result as Record<string, unknown>, headOid: (committed ? "b" : "a").repeat(40),
+      };
+      return result;
+    });
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
+    await user.click(await screen.findByRole("tab", { name: "Git workspace tool" }));
+    await user.type(screen.getByLabelText(/Commit message/i), "Saved after returning");
+    await user.click(screen.getByRole("button", { name: "Commit all changes locally" }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("git_workspace_commit", expect.objectContaining({ cwd: PROJECT_A.path, message: "Saved after returning" })));
+    await user.click(screen.getByRole("button", { name: PROJECT_B.name }));
+    expect(screen.getByRole("button", { name: "Commit all changes locally" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: PROJECT_A.name }));
+    expect(screen.getByLabelText(/Commit message/i)).toHaveValue("Saved after returning");
+    expect(screen.getByRole("button", { name: "Committing…" })).toBeDisabled();
+    const readsBeforeCompletion = invokeMock.mock.calls.filter(([command, args]) => command === "git_workspace_snapshot" && args?.cwd === PROJECT_A.path).length;
+    await act(async () => {
+      pendingCommit.resolve({ exitCode: 0, stdout: "[main bbbbbbb] Saved after returning\n", stderr: "" });
+      await pendingCommit.promise;
+    });
+    expect(await screen.findByText(/“Saved after returning” was saved/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByLabelText(/Commit message/i)).toHaveValue(""));
+    expect(screen.getByRole("button", { name: "Commit all changes locally" })).toBeEnabled();
+    await waitFor(() => expect(invokeMock.mock.calls.filter(([command, args]) => command === "git_workspace_snapshot" && args?.cwd === PROJECT_A.path).length).toBeGreaterThan(readsBeforeCompletion));
+    expect(invokeMock.mock.calls.filter(([command]) => command === "git_workspace_commit")).toHaveLength(1);
+  });
+
+  it("retains a commit completed in another checkout and consumes its draft on return", async () => {
+    const user = userEvent.setup();
+    const pendingCommit = deferred<{ exitCode: number; stdout: string; stderr: string }>();
+    commandExecImpl = (params) => (params.command as string[])[1] === "commit"
+      ? pendingCommit.promise : { exitCode: 0, stdout: "", stderr: "" };
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
+    await user.click(await screen.findByRole("tab", { name: "Git workspace tool" }));
+    await user.type(screen.getByLabelText(/Commit message/i), "Saved while viewing Beta");
+    await user.click(screen.getByRole("button", { name: "Commit all changes locally" }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("git_workspace_commit", expect.objectContaining({ cwd: PROJECT_A.path, message: "Saved while viewing Beta" })));
+    await user.click(screen.getByRole("button", { name: PROJECT_B.name }));
+    await act(async () => {
+      pendingCommit.resolve({ exitCode: 0, stdout: "[main bbbbbbb] Saved while viewing Beta\n", stderr: "" });
+      await pendingCommit.promise;
+    });
+    expect(screen.queryByText("Committed successfully")).not.toBeInTheDocument();
+    expect(screen.queryByText("Changes committed locally")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Saved while viewing Beta/)).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/Commit message/i)).toHaveValue("");
+    await user.click(screen.getByRole("button", { name: PROJECT_A.name }));
+    expect(await screen.findByText(/“Saved while viewing Beta” was saved/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByLabelText(/Commit message/i)).toHaveValue(""));
+    expect(screen.getByRole("button", { name: "Commit all changes locally" })).toBeEnabled();
+    expect(invokeMock.mock.calls.filter(([command]) => command === "git_workspace_commit")).toHaveLength(1);
   });
 
   it("does not install a thread whose resume settles after switching workspaces", async () => {
@@ -4146,7 +4848,8 @@ describe("workspace review diff", () => {
     await user.click(await screen.findByText("Alpha thread"));
     await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
     await user.click(await screen.findByRole("tab", { name: "Git workspace tool" }));
-    await user.click(await screen.findByRole("button", { name: "Diff" }));
+    await user.click(await screen.findByRole("button", { name: "More local Git actions" }));
+    await user.click(await screen.findByRole("menuitem", { name: /Show full diff output/ }));
     await waitFor(() => expect(screen.getByText(/console only/)).toBeInTheDocument());
 
     await user.click(screen.getByRole("tab", { name: "Review workspace tool" }));
@@ -4433,7 +5136,7 @@ describe("project checks", () => {
     expect(send).toBeEnabled();
     expect(invokeMock.mock.calls.filter(([command, args]) => command === "codex_rpc" && args?.method === "turn/start")).toHaveLength(0);
     if (prompt) await user.type(await screen.findByPlaceholderText(/Add a message \(optional\)/), prompt);
-    const skillCallsBeforeSend = invokeMock.mock.calls.filter(([command]) => command === "local_skills_resolve_prompt").length;
+    const skillCallsBeforeSend = invokeMock.mock.calls.filter(([command]) => command === "local_skills_resolve_prompts").length;
     await user.click(send);
 
     await waitFor(() => expect(invokeMock.mock.calls.filter(([command, args]) => command === "codex_rpc" && args?.method === "turn/start")).toHaveLength(1));
@@ -4450,7 +5153,7 @@ describe("project checks", () => {
     const displayed = useTaskStore.getState().tasks[THREAD_A.id]?.messages.filter((message) => message.role === "user").at(-1)?.text;
     expect(displayed).toContain("important case @review");
     expect(displayed).not.toContain("resolved selected skill");
-    const skillCalls = invokeMock.mock.calls.filter(([command]) => command === "local_skills_resolve_prompt").slice(skillCallsBeforeSend);
+    const skillCalls = invokeMock.mock.calls.filter(([command]) => command === "local_skills_resolve_prompts").slice(skillCallsBeforeSend);
     if (invokesSkill) {
       expect(skillCalls).toHaveLength(1);
       expect(String(skillCalls[0][1]?.message)).toContain("important case @review");
@@ -4465,6 +5168,32 @@ describe("project checks", () => {
 
 
 describe("Thread pull request integration", () => {
+  it("does not refresh the newly selected project when an old project PR merge completes", async () => {
+    const pending = deferred<PullRequest>();
+    const pullRequest = { ...LINKED_PR, viewerCanMerge: true, autoMergeAllowed: false };
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "github_pr_list") return args?.cwd === PROJECT_A.path ? [pullRequest] : [];
+      if (command === "github_pr_view") return pullRequest;
+      if (command === "github_pr_merge") return pending.promise;
+      return stubInvoke(command, args);
+    });
+    const user = userEvent.setup();
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: /^Pull requests/ }));
+    await user.click(await screen.findByRole("button", { name: /#31 Improve Alpha.*Open details/ }));
+    await user.click(await screen.findByRole("button", { name: "Merge on GitHub…" }));
+    await user.click(within(screen.getByRole("group", { name: "Confirm merge" })).getByRole("button", { name: "Merge #31 on GitHub" }));
+    await waitFor(() => expect(invokeMock.mock.calls.some(([command]) => command === "github_pr_merge")).toBe(true));
+    await user.click(screen.getByRole("button", { name: /^Beta$/ }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("github_repo_status", { cwd: PROJECT_B.path }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("git_workspace_snapshot", { cwd: PROJECT_B.path }));
+    const callsBeforeCompletion = invokeMock.mock.calls.length;
+    await act(async () => { pending.resolve({ ...pullRequest, state: "MERGED" }); await pending.promise; });
+    await waitFor(() => expect(invokeMock.mock.calls.slice(callsBeforeCompletion).some(([command]) => command === "github_pr_list")).toBe(true));
+    const ownerReads = new Set(["github_repo_status", "git_project_diff", "git_workspace_snapshot"]);
+    expect(invokeMock.mock.calls.slice(callsBeforeCompletion).filter(([command, args]) => ownerReads.has(command) && args?.cwd === PROJECT_B.path)).toEqual([]);
+  });
+
   it("keeps local-only projects usable without showing a failed PR connection", async () => {
     invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
       if (command === "github_status") return { ...(stubInvoke(command, args) as object), authenticated: false };
@@ -4475,6 +5204,10 @@ describe("Thread pull request integration", () => {
     await renderApp();
     await user.click(await screen.findByRole("button", { name: /^Open Alpha thread\b/ }));
     await user.click(await screen.findByRole("button", { name: /^Pull requests/ }));
+    // The shortcut opens Pull requests, which explains the missing remote
+    // instead of reporting a failure; local commits are one tab away.
+    expect(await screen.findByText("Pull requests need a GitHub repository")).toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: /Changes/ }));
     expect(await screen.findByRole("button", { name: "Commit all changes locally" })).toBeEnabled();
     expect(screen.queryByRole("region", { name: "Pull request" })).not.toBeInTheDocument();
     expect(screen.queryByText(/cannot read this folder's Git repository/)).not.toBeInTheDocument();

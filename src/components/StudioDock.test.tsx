@@ -93,6 +93,25 @@ function dockProps(open: boolean): Parameters<typeof StudioDock>[0] {
 describe("StudioDock", () => {
   afterEach(() => vi.useRealTimers());
 
+  it.each([{ untrackedPaths: [] }, { untrackedPaths: ["new.txt"] }])("accurately describes a successfully read empty repository diff with new paths $untrackedPaths", ({ untrackedPaths }) => {
+    render(<StudioDock {...dockProps(true)} reviewDiff={reviewDiff("", { source: "repository", baseline: "HEAD", untrackedPaths })} />);
+    expect(screen.getByText("No tracked changes · against HEAD")).toBeInTheDocument();
+    expect(screen.getByText(/^No tracked changes against HEAD\./)).toBeInTheDocument();
+    expect(screen.queryByText(/Run a task or refresh/)).not.toBeInTheDocument();
+    if (untrackedPaths.length) expect(screen.getByText(/New files are listed separately above; stage them in Git to include them/)).toBeInTheDocument();
+  });
+
+  it("explains and disables local worktree Copy and Merge in read-only mode", () => {
+    const props = dockProps(true);
+    render(<StudioDock {...props} tab="worktrees" gitActionsReadOnly worktree={{
+      threadId: "thread-1", projectId: "project-1", projectPath: "/project", path: "/worktrees/thread-1",
+      branch: "isolated/thread-1", baseCommit: "a".repeat(40), gitDir: "/project/.git/worktrees/thread-1", createdAt: 1, status: "active",
+    }} />);
+    expect(screen.getByRole("button", { name: "Copy changes to project" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Merge into local project…" })).toBeDisabled();
+    expect(screen.getByText(/Switch this thread to Ask or Full access before copying or merging/)).toBeInTheDocument();
+  });
+
   it("exposes the surfaces as a keyboard-navigable tablist", () => {
     const onTab = vi.fn();
     render(<StudioDock {...dockProps(true)} onTab={onTab} />);
@@ -399,6 +418,17 @@ describe("StudioDock", () => {
     expect(metrics?.lastElementChild).toHaveTextContent("Reasoning");
   });
 
+  it("distinguishes omitted cache writes from a reported zero", () => {
+    const usage = { totalTokens: 110, inputTokens: 100, outputTokens: 10, cachedInputTokens: 80,
+      reasoningOutputTokens: 0, cacheReadReported: true, cacheWriteReported: false };
+    const view = render(<StudioDock {...dockProps(true)} tab="usage" usage={usage} />);
+    expect(screen.getByText("Prompt caching: 80 read · unknown written")).toBeInTheDocument();
+    view.rerender(<StudioDock {...dockProps(true)} tab="usage" usage={{ ...usage, cacheWriteInputTokens: 0, cacheWriteReported: true }} />);
+    expect(screen.getByText("Prompt caching: 80 read · 0 written")).toBeInTheDocument();
+    view.rerender(<StudioDock {...dockProps(true)} tab="usage" usage={{ ...usage, cacheWriteInputTokens: 10, cacheWriteUnknownTokens: 50 }} />);
+    expect(screen.getByText("Prompt caching: 80 read · 10 reported (partial) written")).toBeInTheDocument();
+  });
+
   it("does not present cumulative tokens as context pressure when a provider omits current occupancy", () => {
     const { container } = render(
       <StudioDock
@@ -649,18 +679,19 @@ describe("StudioDock", () => {
       />,
     );
 
-    expect(screen.getByRole("button", { name: "Status" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Diff" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Commit all changes locally" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Push commits" })).toBeDisabled();
-    // Staging and reverting moved into the local More menu; they are still
-    // refused there, with the reason attached rather than a silent no-op.
+    // Staging and reverting live in the local More menu; they are refused
+    // there, with the reason attached rather than a silent no-op. Git's own
+    // read-only status and diff output stay available beside them.
     fireEvent.click(screen.getByRole("button", { name: "More local Git actions" }));
+    expect(screen.getByRole("menuitem", { name: /Show git status output/ })).toBeEnabled();
+    expect(screen.getByRole("menuitem", { name: /Show full diff output/ })).toBeEnabled();
     expect(screen.getByRole("menuitem", { name: /Stage all/ })).toBeDisabled();
     expect(screen.getByRole("menuitem", { name: /Revert all changes/ })).toBeDisabled();
     expect(screen.getByRole("menuitem", { name: /Revert all changes/ }))
       .toHaveAttribute("title", expect.stringContaining("Read only"));
-    expect(screen.getByText(/Read only allows Status and Diff/)).toBeInTheDocument();
+    expect(screen.getByText(/Read only: you can inspect changes, history and pull requests/)).toBeInTheDocument();
   });
 
   it("gates per-file Review actions in read-only mode", () => {
@@ -675,6 +706,42 @@ describe("StudioDock", () => {
 
     expect(screen.getByRole("button", { name: "Stage" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Revert src/file.ts" })).toBeDisabled();
+  });
+
+  it.each([false, true])("requires the native repository root for Review mutations (staged=%s)", (staged) => {
+    const props = dockProps(true);
+    const onGitPathAction = vi.fn();
+    const onGitPathUnstage = vi.fn();
+    render(<StudioDock {...props} projectPath="/project/src" onGitPathAction={onGitPathAction} onGitPathUnstage={onGitPathUnstage}
+      reviewStagedPaths={staged ? ["src/file.ts"] : []}
+      reviewDiff={reviewDiff("diff --git a/src/file.ts b/src/file.ts\n--- a/src/file.ts\n+++ b/src/file.ts\n+change")}
+      gitWorkflow={{ snapshot: { branch: "main", headOid: "a".repeat(40), branches: [], stagedFiles: staged ? 1 : 0, unstagedFiles: 1, changedFiles: 1, stagedPaths: [], rootPath: "/project", isRoot: false }, busy: false, isolated: false, onBranch: vi.fn(), onRefresh: vi.fn() }}
+    />);
+    expect(screen.getByRole("alert")).toHaveTextContent("Open the repository root (/project)");
+    const indexButton = screen.getByRole("button", { name: staged ? "Unstage" : "Stage" });
+    const revert = screen.getByRole("button", { name: "Revert src/file.ts" });
+    expect(indexButton).toBeDisabled();
+    expect(revert).toBeDisabled();
+    expect(indexButton).toHaveAttribute("title", expect.stringContaining("repository root (/project)"));
+    expect(revert).toHaveAttribute("title", expect.stringContaining("repository root (/project)"));
+    fireEvent.click(indexButton);
+    fireEvent.click(revert);
+    expect(onGitPathAction).not.toHaveBeenCalled();
+    expect(onGitPathUnstage).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Refresh" })).toBeEnabled();
+  });
+
+  it.each([
+    { selected: "C:\\project\\", canonical: "\\\\?\\C:\\Project" },
+    { selected: "/projects/symlink", canonical: "/projects/canonical" },
+  ])("keeps Review mutations available for an authoritative native root alias: %j", ({ selected, canonical }) => {
+    render(<StudioDock {...dockProps(true)} projectPath={selected}
+      reviewDiff={reviewDiff("diff --git a/file.ts b/file.ts\n--- a/file.ts\n+++ b/file.ts\n+change")}
+      gitWorkflow={{ snapshot: { branch: "main", headOid: "a".repeat(40), branches: [], stagedFiles: 0, unstagedFiles: 1, changedFiles: 1, stagedPaths: [], rootPath: canonical, isRoot: true }, busy: false, isolated: false, onBranch: vi.fn(), onRefresh: vi.fn() }}
+    />);
+    expect(screen.getByRole("button", { name: "Stage" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Revert file.ts" })).toBeEnabled();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("makes local commits prominent, keeps the message optional, and confirms success", () => {
@@ -719,13 +786,62 @@ describe("StudioDock", () => {
     expect(screen.getByRole("button", { name: "Commit all changes locally" })).toBeDisabled();
     // Inspection survives a folder that is not a repository: "what does Git
     // think is here?" is precisely the question being asked at that point.
-    expect(screen.getByRole("button", { name: "Status" })).toBeEnabled();
     fireEvent.click(screen.getByRole("button", { name: "More local Git actions" }));
+    expect(screen.getByRole("menuitem", { name: /Show git status output/ })).toBeEnabled();
     expect(screen.getByRole("menuitem", { name: /Stage all/ })).toBeDisabled();
     expect(screen.getByRole("menuitem", { name: /Revert all changes/ })).toBeDisabled();
     fireEvent.keyDown(document, { key: "Escape" });
-    fireEvent.click(screen.getByRole("button", { name: /Publish this project to GitHub/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Connect a GitHub repository/ }));
     expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
+  });
+
+  it("retains Git form drafts across tab switches, closing, and checkout navigation", () => {
+    vi.useFakeTimers();
+    const props = { ...dockProps(true), tab: "git" as const, projectPath: "/projects/alpha", githubAuthenticated: true, defaultRepositoryName: "alpha" };
+    const view = render(<StudioDock {...props} />);
+    fireEvent.change(screen.getByLabelText(/Commit message/i), { target: { value: "Keep this draft" } });
+    fireEvent.click(screen.getByRole("button", { name: /Connect a GitHub repository/ }));
+    fireEvent.change(screen.getByLabelText("Existing repository URL"), { target: { value: "https://github.com/owner/alpha" } });
+    fireEvent.change(screen.getByLabelText("New GitHub repository name"), { target: { value: "my-alpha" } });
+    view.rerender(<StudioDock {...props} tab="context" />);
+    view.rerender(<StudioDock {...props} open={false} />);
+    act(() => vi.advanceTimersByTime(STUDIO_DOCK_EXIT_MS));
+    view.rerender(<StudioDock {...props} />);
+    expect(screen.getByLabelText(/Commit message/i)).toHaveValue("Keep this draft");
+    fireEvent.click(screen.getByRole("button", { name: /Connect a GitHub repository/ }));
+    expect(screen.getByLabelText("Existing repository URL")).toHaveValue("https://github.com/owner/alpha");
+    expect(screen.getByLabelText("New GitHub repository name")).toHaveValue("my-alpha");
+    view.rerender(<StudioDock {...props} projectPath="/projects/beta" defaultRepositoryName="beta" />);
+    expect(screen.getByLabelText(/Commit message/i)).toHaveValue("");
+    fireEvent.click(screen.getByRole("button", { name: /Connect a GitHub repository/ }));
+    expect(screen.getByLabelText("New GitHub repository name")).toHaveValue("beta");
+    view.rerender(<StudioDock {...props} />);
+    expect(screen.getByLabelText(/Commit message/i)).toHaveValue("Keep this draft");
+    vi.useRealTimers();
+  });
+
+  it("consumes a completed commit draft even while another workspace tab is open", () => {
+    const props = { ...dockProps(true), tab: "git" as const, projectPath: "/projects/alpha" };
+    const view = render(<StudioDock {...props} />);
+    fireEvent.change(screen.getByLabelText(/Commit message/i), { target: { value: "Committed draft" } });
+    fireEvent.click(screen.getByRole("button", { name: "Commit all changes locally" }));
+    view.rerender(<StudioDock {...props} tab="context" gitCommitBusy />);
+    view.rerender(<StudioDock {...props} tab="context" gitCommitSuccess="Saved" />);
+    view.rerender(<StudioDock {...props} gitCommitSuccess="Saved" />);
+    expect(screen.getByLabelText(/Commit message/i)).toHaveValue("");
+  });
+
+  it("does not consume a rejected draft using a previous commit confirmation", () => {
+    const props = { ...dockProps(true), tab: "git" as const, projectPath: "/projects/alpha", gitCommitSuccess: "Saved", gitCommitSuccessRevision: 1 };
+    const view = render(<StudioDock {...props} />);
+    fireEvent.change(screen.getByLabelText(/Commit message/i), { target: { value: "Rejected draft" } });
+    fireEvent.click(screen.getByRole("button", { name: "Commit all changes locally" }));
+    view.rerender(<StudioDock {...props} tab="context" gitOutput="Wait for agents to finish" />);
+    view.rerender(<StudioDock {...props} />);
+    expect(screen.getByLabelText(/Commit message/i)).toHaveValue("Rejected draft");
+    view.rerender(<StudioDock {...props} tab="context" gitCommitSuccessRevision={2} />);
+    view.rerender(<StudioDock {...props} gitCommitSuccessRevision={2} />);
+    expect(screen.getByLabelText(/Commit message/i)).toHaveValue("");
   });
 
   it("keeps local Git actions available when only the repository probe failed", () => {
@@ -757,7 +873,7 @@ describe("StudioDock", () => {
     expect(screen.queryByRole("button", { name: "Push commits" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "More GitHub actions" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Commit & push/ })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Publish this project to GitHub/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Connect a GitHub repository/ })).toBeInTheDocument();
 
     // And it does not claim the project was never published anywhere: all the
     // app knows is that *it* has no remote set up.
@@ -782,7 +898,7 @@ describe("StudioDock", () => {
     expect(screen.getByRole("menuitem", { name: /CI checks/ })).toBeInTheDocument();
   });
 
-  it("puts the pull request workflow after the local work and retires the controls it replaces", () => {
+  it("gives the pull request workflow its own view and retires the controls it replaces", async () => {
     render(
       <StudioDock
         {...dockProps(true)}
@@ -793,14 +909,10 @@ describe("StudioDock", () => {
       />,
     );
 
-    const workflow = screen.getByTestId("pull-request-workflow");
-    expect(workflow).toBeInTheDocument();
-
-    // Reversed deliberately. A pull request is a step you reach after
-    // committing; leading with it pushed the commit form below the fold and
-    // opened the dock on its most remote, least frequent action.
-    const commit = screen.getByText("Commit changes locally");
-    expect(commit.compareDocumentPosition(workflow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // Changes open first, with the commit form; pull requests are one tab
+    // away rather than stacked beneath it.
+    expect(screen.getByText("Commit changes locally")).toBeInTheDocument();
+    expect(screen.queryByTestId("pull-request-workflow")).not.toBeInTheDocument();
 
     // Two answers to the same question would be one too many.
     fireEvent.click(screen.getByRole("button", { name: "More GitHub actions" }));
@@ -810,9 +922,11 @@ describe("StudioDock", () => {
     // But the workflow has no comment viewer, so the only way to read review
     // comments in the app must not disappear with them.
     expect(screen.getByRole("menuitem", { name: /Review comments/ })).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: "Escape" });
 
-    // Everything purely local is untouched.
-    expect(screen.getByRole("button", { name: "Commit all changes locally" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: /Pull requests/ }));
+    expect(await screen.findByTestId("pull-request-workflow")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "This conversation" })).toBeInTheDocument();
   });
 });
 
@@ -821,10 +935,38 @@ it("uses the app menu for repository visibility while keeping local commits avai
   const props = dockProps(true);
   const view = render(<StudioDock {...props} tab="git" githubAuthenticated defaultRepositoryName="local-project" />);
   expect(view.container.querySelector("select")).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: /Publish this project to GitHub/ }));
+  fireEvent.click(screen.getByRole("button", { name: /Connect a GitHub repository/ }));
   fireEvent.click(screen.getByRole("button", { name: "Repository visibility" }));
   fireEvent.click(screen.getByRole("menuitemradio", { name: "Public" }));
   fireEvent.click(screen.getByRole("button", { name: "Create" }));
   expect(props.onGitHubCreate).toHaveBeenCalledWith("local-project", "public");
   expect(screen.getByRole("button", { name: "Commit all changes locally" })).toBeEnabled();
+});
+
+describe("StudioDock Git routing", () => {
+  it("applies a Git route once and keeps the chosen view across tab switches", () => {
+    const props = { ...dockProps(true), tab: "git" as const, projectPath: "/projects/route" };
+    const view = render(<StudioDock {...props} gitRoute={{ view: "history", nonce: 1 }} />);
+    expect(screen.getByRole("tab", { name: /History/ })).toHaveAttribute("aria-selected", "true");
+    fireEvent.click(screen.getByRole("tab", { name: /Changes/ }));
+    view.rerender(<StudioDock {...props} tab="context" gitRoute={{ view: "history", nonce: 1 }} />);
+    view.rerender(<StudioDock {...props} gitRoute={{ view: "history", nonce: 1 }} />);
+    // The same request is not replayed; the person's own choice stands.
+    expect(screen.getByRole("tab", { name: /Changes/ })).toHaveAttribute("aria-selected", "true");
+    view.rerender(<StudioDock {...props} gitRoute={{ view: "pulls", nonce: 2 }} />);
+    expect(screen.getByRole("tab", { name: /Pull requests/ })).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("links AI review to Git Changes, keeping the two named apart", () => {
+    const onTab = vi.fn();
+    render(<StudioDock {...dockProps(true)} tab="review" onTab={onTab} />);
+    fireEvent.click(screen.getByRole("button", { name: /Stage & commit in Git/ }));
+    expect(onTab).toHaveBeenCalledWith("git");
+    expect(screen.getByRole("heading", { name: "Review center" })).toBeInTheDocument();
+  });
+
+  it("explains that accepting a checkpoint commits, merges and pushes nothing", () => {
+    render(<StudioDock {...dockProps(true)} tab="checkpoints" />);
+    expect(screen.getByText(/Accept only marks a run as reviewed here; it does not commit, merge, or push anything/)).toBeInTheDocument();
+  });
 });

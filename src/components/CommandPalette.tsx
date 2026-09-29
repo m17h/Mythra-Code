@@ -1,10 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Command, FileCode2, Folder, Gauge, GitBranch, GitFork, History, MessageSquare, Paperclip, Plus, Search, SearchCode, Settings, TerminalSquare, UsersRound, Workflow as WorkflowIcon, Wrench, X } from "lucide-react";
+import { ArrowDownToLine, Command, FileCode2, FileDiff, Folder, Gauge, GitBranch, GitCommitHorizontal, GitFork, GitPullRequest, History, MessageSquare, Paperclip, Plus, RefreshCw, Search, SearchCode, Settings, TerminalSquare, Upload, UsersRound, Workflow as WorkflowIcon, Wrench, X } from "lucide-react";
 import type { WorkflowDefinition } from "../lib/workflows";
 import type { Project, Thread } from "../types";
 import type { StudioTab } from "../lib/studioTabs";
+import type { GitRoute } from "../lib/projectGit";
 
-interface PaletteAction { id: string; label: string; detail: string; group: string; icon: typeof Command; run: () => void }
+interface PaletteAction { id: string; label: string; detail: string; group: string; icon: typeof Command; run: () => void; aliases?: string[] }
+
+// Match words independently so punctuation in labels ("Git: Changes") and
+// natural word order ("git branch") do not hide otherwise matching commands.
+function searchWords(value: string): string[] {
+  return value.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+}
 
 const TOOL_ACTIONS: Array<[StudioTab, string, string, typeof Command]> = [
   ["files", "Browse project files", "Navigate, preview, search, and attach files", FileCode2],
@@ -15,11 +22,26 @@ const TOOL_ACTIONS: Array<[StudioTab, string, string, typeof Command]> = [
   ["worktrees", "Open worktrees", "Review, apply, merge, recover, and clean up isolated branches", GitFork],
   ["context", "Open context attachments", "Files and images sent with the next message", Paperclip],
   ["usage", "Open usage & audit", "Thread tokens, context pressure, plan limits, and request fields", Gauge],
-  ["git", "Open Git workspace", "Status, stage, commit, and review CI", GitBranch],
+  ["git", "Open Git workspace", "Changes, commits, branches, pull requests, and history", GitBranch],
   ["tools", "Open tools & skills", "Project actions, skills, and MCP servers", Wrench],
 ];
 
-export function CommandPalette({ open, projects, threads, workflows, projectActive, onClose, onProject, onThread, onWorkflow, onNewThread, onSettings, onTool }: {
+/**
+ * Git destinations. Each one opens a view and focuses a control; none of them
+ * runs Git. "Push" lands on the Push button, which still has to be pressed.
+ */
+const GIT_ROUTES: Array<[string, string, string, Omit<GitRoute, "nonce">, typeof Command]> = [
+  ["git-changes", "Git: Changes", "Staged, unstaged and new files · stage, unstage, diff", { view: "changes" }, FileDiff],
+  ["git-commit", "Git: Commit…", "Write a commit message · nothing is committed until you press Commit", { view: "changes", focus: "commit" }, GitCommitHorizontal],
+  ["git-branch", "Git: Switch or create branch…", "Checkout · new branch · branch menu", { view: "changes", focus: "branch" }, GitBranch],
+  ["git-fetch", "Git: Fetch…", "Go to Fetch · downloads remote status when pressed; files unchanged", { view: "changes", focus: "fetch" }, RefreshCw],
+  ["git-pull", "Git: Pull (fast-forward)…", "Go to Pull · update from the tracked branch when pressed", { view: "changes", focus: "pull" }, ArrowDownToLine],
+  ["git-push", "Git: Push…", "Go to Push · upload committed work when pressed · publish", { view: "changes", focus: "push" }, Upload],
+  ["git-pulls", "Git: Pull requests", "PR · browse, search, checks, reviews, merge", { view: "pulls", focus: "pullRequestSearch" }, GitPullRequest],
+  ["git-history", "Git: History", "Commit log for the current branch", { view: "history" }, History],
+];
+
+export function CommandPalette({ open, projects, threads, workflows, projectActive, onClose, onProject, onThread, onWorkflow, onNewThread, onSettings, onTool, onGitRoute }: {
   open: boolean;
   projects: Project[];
   threads: Thread[];
@@ -32,15 +54,19 @@ export function CommandPalette({ open, projects, threads, workflows, projectActi
   onNewThread: () => void;
   onSettings: () => void;
   onTool: (tab: StudioTab) => void;
+  /** Opens a Git view and focuses a control. Never runs a Git action. */
+  onGitRoute?: (route: Omit<GitRoute, "nonce">) => void;
 }) {
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const resultsRef = useRef<HTMLDivElement>(null);
-  const actions = useMemo<PaletteAction[]>(() => [
+  const actions = useMemo<PaletteAction[]>(() => {
+    const allActions: PaletteAction[] = [
     { id: "new", label: "New thread", detail: "Start in the active workspace", group: "Commands", icon: Plus, run: onNewThread },
     { id: "settings", label: "Open settings", detail: "Models, prompts, tools, and appearance", group: "Commands", icon: Settings, run: onSettings },
     ...(projectActive ? TOOL_ACTIONS.map(([id, label, detail, icon]) => ({ id, label, detail, icon, group: "Commands", run: () => onTool(id) })) : []),
+    ...(projectActive && onGitRoute ? GIT_ROUTES.map(([id, label, detail, route, icon]) => ({ id, label, detail, icon, group: "Git", aliases: [id.replaceAll("-", " "), label, ...(id === "git-pulls" ? ["git pr", "git pull requests"] : [])], run: () => onGitRoute(route) })) : []),
     ...workflows.filter((workflow) => workflow.enabled).map((workflow) => ({
       id: `workflow-${workflow.id}`,
       label: `Run workflow: ${workflow.name}`,
@@ -51,7 +77,19 @@ export function CommandPalette({ open, projects, threads, workflows, projectActi
     })),
     ...projects.map((project) => ({ id: `project-${project.id}`, label: project.name, detail: project.path, group: "Projects", icon: Folder, run: () => onProject(project) })),
     ...threads.map((thread) => ({ id: `thread-${thread.id}`, label: thread.name || thread.preview || "Untitled thread", detail: thread.preview || "Open thread", group: "Threads", icon: MessageSquare, run: () => onThread(thread) })),
-  ].filter((action) => `${action.label} ${action.detail}`.toLowerCase().includes(query.toLowerCase())), [onNewThread, onProject, onSettings, onThread, onTool, onWorkflow, projectActive, projects, query, threads, workflows]);
+    ];
+    const terms = searchWords(query);
+    const canonicalQuery = [...terms].sort().join(" ");
+    const matchesAlias = (action: PaletteAction) => action.aliases?.some((alias) => searchWords(alias).sort().join(" ") === canonicalQuery);
+    // An explicit Git destination must win over incidental words such as
+    // "press" matching "PR" or the generic Open Git workspace command.
+    const exactDestination = canonicalQuery && allActions.some(matchesAlias);
+    return allActions.filter((action) => {
+      if (exactDestination) return matchesAlias(action);
+      const words = searchWords(`${action.label} ${action.detail} ${action.group}`);
+      return terms.every((term) => words.some((word) => word.includes(term)));
+    });
+  }, [onGitRoute, onNewThread, onProject, onSettings, onThread, onTool, onWorkflow, projectActive, projects, query, threads, workflows]);
 
   // Results keep one flat keyboard order but render under category headings, so
   // arrowing through the list never jumps between unrelated kinds of result.

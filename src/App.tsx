@@ -7,7 +7,7 @@ import { useTranscriptSaves } from "./hooks/useTranscriptSaves";
 import { flushBeforeClose, useFlushOnClose } from "./hooks/useFlushOnClose";
 import { useGitWorkspace } from "./hooks/useGitWorkspace";
 import { useGitAutoPublish } from "./hooks/useGitAutoPublish";
-import { getGitWorkspace, type GitWorkflowControls, type GitWorkspaceSnapshot } from "./lib/gitWorkspace";
+import { commitGitWorkspace, stageGitWorkspace, pushGitWorkspace, getGitWorkspace, previewGitWorkspaceRevert, revertGitWorkspace, previewGitWorkspaceRevertAll, revertGitWorkspaceAll, type GitWorkflowControls, type GitWorkspaceSnapshot } from "./lib/gitWorkspace";
 import { useGitHubLogin } from "./hooks/useGitHubLogin";
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type CSSProperties, type Dispatch, type PointerEvent as ReactPointerEvent, type SetStateAction } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
@@ -53,11 +53,22 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { AuthRequiredModal, RuntimeSetupModal } from "./components/RuntimeModals";
 import type { AgentRecord, AttachmentRecord, McpView } from "./components/StudioDock";
 import { isStudioTab, type StudioTab } from "./lib/studioTabs";
+import type { GitRoute, ProjectGitInspection, ProjectPullRequestAccess } from "./lib/projectGit";
 import type { GitPanelAction, GitRepositoryState } from "./components/GitPanel";
 import { ThreadPullRequestChip } from "./components/ThreadPullRequestChip";
 import { useAutomaticThreadTitles } from "./hooks/useAutomaticThreadTitles";
 import { useThreadPullRequest } from "./hooks/useThreadPullRequest";
 import { acquirePullRequestMutation, releasePullRequestMutation, isPullRequestMutationRunning } from "./lib/pullRequestOperations";
+import {
+  createPullRequest,
+  createPullRequestBranch,
+  findPullRequest,
+  getPullRequest,
+  getPullRequestContext,
+  listPullRequests,
+  markPullRequestReady,
+  mergePullRequest,
+} from "./lib/pullRequests";
 import type { Account, Activity, AppSettings, ArchivedThread, ChatFont, ChatMessage, CustomAgentProfile, PendingApproval, PermissionMode, Project, ProjectAction, ProjectPromptMode, ProjectSubagentSettings, EffortSliderStyle, PromptProfile, Provider, ScheduledTask, ScheduleRunRecord, ScheduleRunSettings, SettingsSection, Thread, ThreadHandoff, ThreadReasoning, ThemeName, WorkspaceMode } from "./types";
 import type { OnboardingSettingsDraft } from "./lib/onboardingSettings";
 import type { ProjectRunCommand } from "./types";
@@ -65,6 +76,7 @@ import { PendingTurnStarts } from "./lib/pendingTurnStarts";
 import { useTaskStore, type QueuedTurn } from "./lib/taskStore";
 import { friendlyError, isAuthenticationError } from "./lib/errors";
 import { recordError } from "./lib/errorLog";
+import { subscribeBackgroundUsage } from "./lib/backgroundUsage";
 import { beginThreadOpen, failThreadOpen, markRendererLaunchComposerMounted, markRendererLaunchPaintOpportunity, markRendererLaunchShellCommitted, markThreadHistoryHydrated, markThreadPaintOpportunity, markThreadRenderMetrics, markThreadRuntimeReady, markThreadShellCommitted, markThreadTimelineCommitted, projectedJsonBytes, threadOpenAwaitingRenderMetrics, threadOpenAwaitingTimeline } from "./lib/performanceDiagnostics";
 import { forgetRuntimePerformanceProvider, registerRuntimePerformanceProvider } from "./lib/runtimePerformanceBridge";
 import {
@@ -118,7 +130,7 @@ import { useSidebarSplitResize } from "./hooks/useSidebarSplitResize";
 import { useWorkflowEngine } from "./hooks/useWorkflowEngine";
 import { isEstablishedMythraCodeInstall, ONBOARDING_EXIT_MS, ONBOARDING_VERSION } from "./lib/onboarding";
 import { scheduleSettingsPreload } from "./lib/settingsPreload";
-import { createLocalSkill, deleteLocalSkill, importLocalSkills, normalizeSkillName, readLocalSkill, resolveLocalSkills, resolveSkillPrompt as resolveSelectedSkillPrompt, scanLocalSkills, skillMentionNames, skillRuntimeSignature, syncLocalSkills, updateLocalSkill, type LocalSkill, type LocalSkillFile } from "./lib/skills";
+import { analyzeSkillPrompts as analyzeSelectedSkillPrompts, createLocalSkill, deleteLocalSkill, importLocalSkills, normalizeSkillName, readLocalSkill, resolveLocalSkills, resolveSkillPrompt as resolveSelectedSkillPrompt, resolveSkillPrompts as resolveSelectedSkillPrompts, scanLocalSkills, skillMentionNames, skillRuntimeSignature, syncLocalSkills, updateLocalSkill, type LocalSkill, type LocalSkillFile } from "./lib/skills";
 import { compactWorkflowRun, normalizeWorkflows, recoverWorkflowRuns, type WorkflowDefinition, type WorkflowRunRecord } from "./lib/workflows";
 import { isClaudeThread, isCursorThread, isLocalSubscriptionThread, modelForProvider, providerFromThread } from "./lib/threadProvider";
 import { listLMStudioModels, type LMStudioModel } from "./lib/lmStudio";
@@ -127,9 +139,12 @@ import { fetchOpenRouterCatalog, mergeOpenRouterModels, resolveOpenRouterSlug } 
 import { basename, isAbsolutePath, joinPath, normalizedProjectPath } from "./lib/paths";
 import { attachmentKind, attachmentRecord, unsupportedImageReason, withAttachedPaths } from "./lib/attachments";
 import { attachmentsFor, forgetAttachmentDraft, withAttachmentDraft, type AttachmentDrafts } from "./lib/attachmentDrafts";
-import { EMPTY_REVIEW_DIFF, parseDiffSections } from "./lib/gitDiff";
+import { EMPTY_REVIEW_DIFF, parseDiffSections, type ReviewDiff } from "./lib/gitDiff";
+import { getProjectGitChanges, getProjectGitDiff, getProjectGitFileDiff, getProjectGitHistory } from "./lib/gitInspection";
 import { shellCommand } from "./lib/shellCommand";
 import { resolveProviderSystemPrompt, resolveSystemPrompt } from "./lib/systemPrompt";
+import { SkillDependencyError } from "./lib/skillDependencies";
+import { skillMentionRanges } from "./lib/skillMentions";
 import { currentAccountUsageSnapshot, mergeAccountUsageSnapshot, parseCodexRateLimits, providerAccountUsage, providerHeaderUsage, sanitizeUsageDisplay, sanitizeHeaderUsageWindows, USAGE_SNAPSHOT_MAX_AGE_MS, type AccountUsageSnapshot, type HeaderUsageWindows } from "./lib/providerUsage";
 import { UsagePopover } from "./components/UsagePopover";
 import { contextUsagePercent } from "./lib/contextUsage";
@@ -505,16 +520,17 @@ function RendererLaunchCommitMarker() {
   return null;
 }
 
-function ConversationTimeline({ threadId, running, thinkingLabel, approval, provider, searchQuery, searchActiveMatch, onSearchMatches, onEditMessage, onApprovalRespond, onLoadEarlier }: { threadId: string; running: boolean; thinkingLabel: string; approval: PendingApproval | null; provider: AppSettings["provider"]; searchQuery?: string; searchActiveMatch?: number; onSearchMatches?: (count: number) => void; onEditMessage: (text: string) => void; onApprovalRespond: (approval: PendingApproval, result: JsonObject) => void | Promise<void>; onLoadEarlier: () => void }) {
+function ConversationTimeline({ threadId, running, thinkingLabel, approval, provider, searchQuery, searchActiveMatch, onSearchMatches, onEditMessage, onApprovalRespond, onLoadEarlier, skills, onOpenSkill }: { threadId: string; running: boolean; thinkingLabel: string; approval: PendingApproval | null; provider: AppSettings["provider"]; searchQuery?: string; searchActiveMatch?: number; onSearchMatches?: (count: number) => void; onEditMessage: (text: string) => void; onApprovalRespond: (approval: PendingApproval, result: JsonObject) => void | Promise<void>; onLoadEarlier: () => void; skills: LocalSkill[]; onOpenSkill: (path: string) => void }) {
   const messages = useTaskStore((state) => state.tasks[threadId]?.messages ?? EMPTY_MESSAGES);
   const activities = useTaskStore((state) => state.tasks[threadId]?.activities ?? EMPTY_ACTIVITIES);
   const history = useTaskStore((state) => state.tasks[threadId]?.history);
   // A thread change must create a fresh virtual scroller so its initial
   // position is applied to the newly selected conversation.
-  return <ChatTimeline key={threadId} messages={messages} activities={activities} running={running} thinkingLabel={thinkingLabel} approval={approval} provider={provider} history={history} onLoadEarlier={onLoadEarlier} searchQuery={searchQuery} searchActiveMatch={searchActiveMatch} onSearchMatches={onSearchMatches} onEditMessage={onEditMessage} onApprovalRespond={onApprovalRespond} />;
+  return <ChatTimeline key={threadId} messages={messages} activities={activities} running={running} thinkingLabel={thinkingLabel} approval={approval} provider={provider} history={history} onLoadEarlier={onLoadEarlier} searchQuery={searchQuery} searchActiveMatch={searchActiveMatch} onSearchMatches={onSearchMatches} onEditMessage={onEditMessage} onApprovalRespond={onApprovalRespond} skills={skills} onOpenSkill={onOpenSkill} />;
 }
 
 export default function App() {
+  useEffect(() => subscribeBackgroundUsage(() => recordError("Background helper usage could not be recorded.")), []);
   const appUpdater = useAppUpdater();
   const updateNoticePreview = useUpdateNoticePreview();
   const [projects, setProjects, projectsRef] = usePersistedStateRef<Project[]>("kiwi.projects", [], { init: () => initialProjects });
@@ -571,6 +587,8 @@ export default function App() {
     serialize: (runs) => runs.map((run) => compactWorkflowRun(run)),
   });
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [openSkillRequest, setOpenSkillRequest] = useState<{ path: string; nonce: number } | null>(null);
+  const openSkillNonceRef = useRef(0);
   const [settingsMounted, setSettingsMounted] = useState(false);
   const [settingsLoadAttempt, setSettingsLoadAttempt] = useState(0);
   const [settingsInitialSection, setSettingsInitialSection] = useState<SettingsSection>("general");
@@ -656,6 +674,10 @@ export default function App() {
       return isStudioTab(stored) ? stored : "review";
     },
   });
+  // Shortcuts and the command palette name a Git view and a control to focus.
+  // They never run the Git action themselves.
+  const [gitRoute, setGitRoute] = useState<GitRoute | null>(null);
+  const gitRouteNonceRef = useRef(0);
   const [attachmentDrafts, setAttachmentDrafts] = useState<AttachmentDrafts>({});
   const [openAiUsageSnapshot, setOpenAiUsageSnapshot] = useState<AccountUsageSnapshot | null>(null);
   const [openAiAccountKey, setOpenAiAccountKey] = useState("");
@@ -674,6 +696,7 @@ export default function App() {
   const [skills, setSkills] = useState<LocalSkill[]>([]);
   const [skillsBusy, setSkillsBusy] = useState(false);
   const [skillsError, setSkillsError] = useState("");
+  const [skillAnalysisRevision, setSkillAnalysisRevision] = useState(0);
   const skillRuntimeRootRef = useRef("");
   const skillFilesRef = useRef<LocalSkillFile[]>([]);
   const skillScanSequenceRef = useRef(0);
@@ -689,17 +712,18 @@ export default function App() {
     [disabledSkillPaths, removedSkillPaths, skillAliases, skillFiles],
   );
   const [mcpServers, setMcpServers] = useState<McpView[]>([]);
-  const [gitOutput, setGitOutput] = useState("");
-  const [gitCommitSuccess, setGitCommitSuccess] = useState("");
-  const [gitCommitBusy, setGitCommitBusy] = useState(false);
+  const [gitResults, setGitResults] = useState<Record<string, { output: string; success: string; successRevision: number }>>({});
+  const [gitOperations, setGitOperations] = useState<Record<string, { busy: boolean; committing: boolean }>>({});
   const gitProjectSequenceRef = useRef(0);
   const [githubStatus, setGithubStatus] = useState<GitHubAccountStatus | null>(null);
   const [githubBusy, setGithubBusy] = useState(false);
   const githubClonePendingRef = useRef(false);
   const [githubLoginPending, setGithubLoginPending] = useState(false);
+  const [githubSignInError, setGithubSignInError] = useState("");
   const [githubRepoStatus, setGithubRepoStatus] = useState<GitHubRepoStatus | null>(null);
   const githubRepoRefreshSequenceRef = useRef(0);
   const [githubRepoError, setGithubRepoError] = useState("");
+  const [githubRepositoryOperations, setGithubRepositoryOperations] = useState<Record<string, { busy: boolean; error: string }>>({});
   const [runtimeModels, setRuntimeModels] = useState<RuntimeModel[]>([]);
   const [runtimeModelsLoading, setRuntimeModelsLoading] = useState(false);
   const [runtimeModelsError, setRuntimeModelsError] = useState("");
@@ -767,6 +791,26 @@ export default function App() {
   const activeExecutionPath = activeWorkspace
     ? executionPathForThread(activeThreadId, activeWorkspace.path, threadWorktrees)
     : "";
+  const gitWorkspaceScope = `${activeProject?.id ?? ""}\0${activeExecutionPath}`;
+  const gitWorkspaceScopeRef = useRef(gitWorkspaceScope);
+  gitWorkspaceScopeRef.current = gitWorkspaceScope;
+  const gitOutput = gitResults[gitWorkspaceScope]?.output ?? "";
+  const gitCommitSuccess = gitResults[gitWorkspaceScope]?.success ?? "";
+  const gitCommitSuccessRevision = gitResults[gitWorkspaceScope]?.successRevision ?? 0;
+  const setGitOutput = useCallback((output: string | ((previous: string) => string)) => setGitResults((current) => {
+    const previous = current[gitWorkspaceScope] ?? { output: "", success: "", successRevision: 0 };
+    return { ...current, [gitWorkspaceScope]: { ...previous, output: typeof output === "function" ? output(previous.output) : output } };
+  }), [gitWorkspaceScope]);
+  const setGitCommitSuccess = useCallback((success: string) => setGitResults((current) => ({ ...current, [gitWorkspaceScope]: {
+    output: current[gitWorkspaceScope]?.output ?? "", success,
+    successRevision: (current[gitWorkspaceScope]?.successRevision ?? 0) + (success ? 1 : 0),
+  } })), [gitWorkspaceScope]);
+  const gitCommitBusy = gitOperations[gitWorkspaceScope]?.committing ?? false;
+  const gitOperationBusy = gitOperations[gitWorkspaceScope]?.busy ?? false;
+  const setGitCommitBusy = (committing: boolean) => setGitOperations((current) => ({ ...current, [gitWorkspaceScope]: { busy: current[gitWorkspaceScope]?.busy ?? false, committing } }));
+  const setGitOperationBusy = (busy: boolean) => setGitOperations((current) => ({ ...current, [gitWorkspaceScope]: { committing: current[gitWorkspaceScope]?.committing ?? false, busy } }));
+  const githubRepositoryBusy = githubRepositoryOperations[gitWorkspaceScope]?.busy ?? false;
+  const githubRepositoryError = githubRepositoryOperations[gitWorkspaceScope]?.error ?? "";
   // Attachments follow the composer's draft identity exactly: a started thread
   // owns them by id, an unsent one by its workspace. Switching conversations
   // therefore cannot carry a file into another thread's next turn, and coming
@@ -991,7 +1035,10 @@ export default function App() {
     // generic empty state.
     return !task || (task.messages.length === 0 && task.activities.length === 0 && !task.history.hasMore);
   });
-  const reviewDiff = useTaskStore((state) => (activeThreadId ? (state.tasks[activeThreadId]?.diff ?? EMPTY_REVIEW_DIFF) : EMPTY_REVIEW_DIFF));
+  const threadReviewDiff = useTaskStore((state) => (activeThreadId ? (state.tasks[activeThreadId]?.diff ?? EMPTY_REVIEW_DIFF) : EMPTY_REVIEW_DIFF));
+  const [projectReview, setProjectReview] = useState<{ scope: string; diff: ReviewDiff } | null>(null);
+  const projectReviewSequence = useRef(0);
+  const reviewDiff = activeThreadId ? threadReviewDiff : projectReview?.scope === gitWorkspaceScope ? projectReview.diff : EMPTY_REVIEW_DIFF;
   const addCheckFeedback = (result: ProjectCheckResult): boolean => {
     if (result.projectId !== activeProject?.id || result.cwd !== activeExecutionPath || result.id !== checks.latest?.id) return false;
     if (feedback.notes.some(({ anchor }) => anchor.kind === "check"
@@ -1207,7 +1254,7 @@ export default function App() {
     : effectiveSettings.provider === "lmstudio"
       ? "Local inference · no API charge"
     : activeUsageCost === null || activeUsageIsUnpriced
-      ? "Price unavailable for this model"
+      ? "Cost estimate unavailable"
       : `≈ ${formatEstimatedCost(activeUsageCost)} ${activeUsageRecord?.pricing?.source === "OpenRouter" ? "estimated spend" : "API-equivalent"}${activeUsageRecord?.unpricedTokens ? " · partial estimate" : ""}`;
   const costTotalsView = (() => {
     const totals = costTotals(activeProject ? normalizedProjectPath(activeProject.path) : undefined);
@@ -1293,6 +1340,20 @@ export default function App() {
     executionPathForThread(threadId, logicalPath, threadWorktreesRef.current)
   ), [threadWorktreesRef]);
 
+  const threadFolderFor = (thread: Thread) => executionPathFor(
+    thread.id,
+    threadProjectBindingsRef.current?.[thread.id] || thread.cwd || activeWorkspace?.path || "",
+  );
+  const openThreadFolder = async (thread: Thread) => {
+    try {
+      await invoke("open_workspace_folder", { path: threadFolderFor(thread) });
+    } catch (reason) {
+      // Folder IO failures are not provider/runtime errors. In particular,
+      // "No such file or directory" must not suggest reinstalling Codex.
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  };
+
   useEffect(() => {
     let disposed = false;
     if (!activeProject) {
@@ -1309,7 +1370,9 @@ export default function App() {
     return () => {
       disposed = true;
     };
-  }, [activeProject]);
+    // A first commit changes whether an isolated workspace can be created.
+    // Refresh that capability alongside the Git panel's confirmed completion.
+  }, [activeProject, gitCommitSuccessRevision]);
 
   useEffect(() => () => {
     if (successToastTimerRef.current !== null) {
@@ -1337,8 +1400,8 @@ export default function App() {
     pending: githubLoginPending,
     onStatus: setGithubStatus,
     onDone: () => setGithubLoginPending(false),
-    onSuccess: showSuccessToast,
-    onError: setError,
+    onSuccess: (message) => { setGithubSignInError(""); showSuccessToast(message); },
+    onError: setGithubSignInError,
   });
 
   const dismissSuccessToast = useCallback(() => {
@@ -1659,6 +1722,14 @@ export default function App() {
     setSettingsOpen(true);
   }, []);
 
+  const openSkillInSettings = useCallback((path: string) => {
+    setOpenSkillRequest({ path, nonce: ++openSkillNonceRef.current });
+    openSettings("skills");
+  }, [openSettings]);
+  const consumeOpenSkillRequest = useCallback((nonce: number) => {
+    setOpenSkillRequest((current) => current?.nonce === nonce ? null : current);
+  }, []);
+
   const resumeOnboardingAfterSettings = useRef(false);
   const closeSettings = useCallback(() => {
     setPreviewTheme(null);
@@ -1667,6 +1738,7 @@ export default function App() {
     setPreviewUiScale(null);
     setSettingsInitialDraft(undefined);
     setSettingsOpen(false);
+    setOpenSkillRequest(null);
     if (resumeOnboardingAfterSettings.current) {
       resumeOnboardingAfterSettings.current = false;
       setOnboardingOpen(true);
@@ -2427,7 +2499,88 @@ export default function App() {
         throw new Error("Mythra Code could not load the selected skills folder. Refresh the Skills library and try again.");
       }
     }
-    return resolveSelectedSkillPrompt(message, selected.folder, available, mentionSource);
+    const resolved = await resolveSelectedSkillPrompt(message, selected.folder, available, mentionSource);
+    if (selectedSkillsRef.current.folder !== selected.folder) {
+      throw new Error("The selected skills folder changed while preparing this prompt. Please send it again.");
+    }
+    return resolved;
+  }, []);
+
+  const resolveSkillPrompts = useCallback(async (message: string, systemPrompt: string, mentionSource?: string) => {
+    const selected = selectedSkillsRef.current;
+    let available = selected.skills;
+    const invocationText = `${systemPrompt}\n${mentionSource ?? message}`;
+    if (invocationText.includes("@") && selected.folder && preparedSkillsFolderRef.current !== selected.folder) {
+      if ((await skillMentionNames(invocationText)).length === 0) {
+        return resolveSelectedSkillPrompts(message, systemPrompt, "", [], mentionSource);
+      }
+      const warmup = skillWarmupRef.current;
+      if (warmup?.folder === selected.folder) available = await warmup.promise;
+      if (preparedSkillsFolderRef.current !== selected.folder) {
+        available = await refreshSkillsForInvocationRef.current?.(selected.folder) ?? [];
+      }
+      if (selectedSkillsRef.current.folder !== selected.folder) {
+        throw new Error("The selected skills folder changed while preparing this prompt. Please send it again.");
+      }
+      if (preparedSkillsFolderRef.current !== selected.folder) {
+        throw new Error("Mythra Code could not load the selected skills folder. Refresh the Skills library and try again.");
+      }
+    }
+    let resolved;
+    try {
+      resolved = await resolveSelectedSkillPrompts(message, systemPrompt, selected.folder, available, mentionSource);
+    } catch (reason) {
+      // A file can change after a successful draft preview. Invalidate it when
+      // delivery detects a blocked graph, so the red token state catches up.
+      if (reason instanceof SkillDependencyError) setSkillAnalysisRevision((current) => current + 1);
+      throw reason;
+    }
+    if (selectedSkillsRef.current.folder !== selected.folder) {
+      throw new Error("The selected skills folder changed while preparing this prompt. Please send it again.");
+    }
+    const names = new Set(skillMentionRanges(mentionSource ?? message, available).map((range) => range.skill.name));
+    return {
+      ...resolved,
+      skillsFolder: selected.folder,
+      skillReferences: skillMentionRanges(message, available.filter((skill) => names.has(skill.name)))
+        .map(({ start, end, skill }) => ({ start, end, name: skill.name, path: skill.path })),
+    };
+  }, []);
+
+  // Previews use the same bounded native graph as delivery, but do not load a
+  // provider or change a saved prompt. Delivery always validates afresh.
+  const skillAnalysisSnapshot = useMemo(() => ({ folder: skillsFolder, skills, revision: skillAnalysisRevision }), [skillsFolder, skills, skillAnalysisRevision]);
+  const analyzeSkillDependencies = useCallback(async (message: string, systemPrompt: string, mentionSource?: string, override?: { rootSkillPath?: string; rootSkillContent?: string }) => {
+    const selected = skillAnalysisSnapshot;
+    let available = selected.skills;
+    const invocationText = `${systemPrompt}\n${mentionSource ?? message}`;
+    if (selected.folder && preparedSkillsFolderRef.current !== selected.folder
+      && (override?.rootSkillPath || (invocationText.includes("@") && (await skillMentionNames(invocationText)).length))) {
+      const warmup = skillWarmupRef.current;
+      if (warmup?.folder === selected.folder) available = await warmup.promise;
+      // A background preview must not retry a failed library scan. Retrying
+      // updates the library, which schedules another preview and can loop.
+      // Refresh/selection and actual delivery own retrying the source folder.
+      if (selectedSkillsRef.current.folder !== selected.folder) throw new Error("The selected skills folder changed while checking references. Try again.");
+      if (preparedSkillsFolderRef.current !== selected.folder) throw new Error("Mythra Code could not load the selected skills folder. Refresh the Skills library and try again.");
+    }
+    const report = await analyzeSelectedSkillPrompts(message, systemPrompt, selected.folder, available, mentionSource, override);
+    if (selectedSkillsRef.current.folder !== selected.folder) throw new Error("The selected skills folder changed while checking references. Try again.");
+    return report;
+    // Library changes must invalidate previews even when the authored text
+    // stays the same (for example, disabling a nested skill).
+  }, [skillAnalysisSnapshot]);
+  const analyzeComposerSkills = useCallback((draft: string) => analyzeSkillDependencies(draft, effectiveSettings.systemPrompt), [analyzeSkillDependencies, effectiveSettings.systemPrompt]);
+  const analyzeSkillSource = useCallback((path: string, content: string) => analyzeSkillDependencies("", "", undefined, { rootSkillPath: path, rootSkillContent: content }), [analyzeSkillDependencies]);
+
+  const getSkillReferences = useCallback((message: string, mentionSource?: string) => {
+    const selected = selectedSkillsRef.current;
+    const names = new Set(skillMentionRanges(mentionSource ?? message, selected.skills).map((range) => range.skill.name));
+    return {
+      skillsFolder: selected.folder,
+      skillReferences: skillMentionRanges(message, selected.skills.filter((skill) => names.has(skill.name)))
+        .map(({ start, end, skill }) => ({ start, end, name: skill.name, path: skill.path })),
+    };
   }, []);
 
   // Load once for this selected library/configuration and refresh when the app
@@ -2564,9 +2717,20 @@ export default function App() {
   );
 
   const refreshDiff = useCallback(async () => {
-    if (!activeProject || !activeThreadId || !activeExecutionPath) return;
-    await refreshDiffFor(activeThreadId, activeExecutionPath);
-  }, [activeExecutionPath, activeProject, activeThreadId, refreshDiffFor]);
+    if (!activeProject || !activeExecutionPath) return;
+    if (activeThreadId) { await refreshDiffFor(activeThreadId, activeExecutionPath); return; }
+    const scope = gitWorkspaceScope;
+    const sequence = ++projectReviewSequence.current;
+    try {
+      const diff = await getProjectGitDiff(activeExecutionPath);
+      if (sequence === projectReviewSequence.current && gitWorkspaceScopeRef.current === scope) setProjectReview({ scope, diff });
+    } catch (reason) {
+      if (sequence === projectReviewSequence.current && gitWorkspaceScopeRef.current === scope) setProjectReview({ scope, diff: {
+        text: `Could not inspect repository changes: ${reason instanceof Error ? reason.message : String(reason)}`,
+        source: "repository", baseline: "HEAD", untrackedPaths: [],
+      } });
+    }
+  }, [activeExecutionPath, activeProject, activeThreadId, gitWorkspaceScope, refreshDiffFor]);
 
   const {
     checkpoints,
@@ -3821,7 +3985,7 @@ export default function App() {
         }
       }
       if (selectThreadRequestRef.current !== requestId) return;
-      const resumeParams = threadResumeParams(resumedSettings, thread.id, executionPath, { projectRunCommand: activeProject?.overrides?.run ?? null, projectCheckCommand: activeProject?.overrides?.check ?? null, customAgents, modelContextWindow: provider === "openrouter" ? openRouterModels.find((entry) => entry.id === resumedSettings.model)?.context_length : provider === "lmstudio" ? lmStudioModels.find((entry) => entry.id === resumedSettings.model)?.maxContextLength : undefined, additionalWorkspaceRoots: isolation?.gitDir ? [isolation.gitDir] : [], childAgentBridge: childBridge?.launch, refreshRuntimeConfig: true });
+      const resumeParams = threadResumeParams(resumedSettings, thread.id, executionPath, { perTurnSystemPrompt: true, projectRunCommand: activeProject?.overrides?.run ?? null, projectCheckCommand: activeProject?.overrides?.check ?? null, customAgents, modelContextWindow: provider === "openrouter" ? openRouterModels.find((entry) => entry.id === resumedSettings.model)?.context_length : provider === "lmstudio" ? lmStudioModels.find((entry) => entry.id === resumedSettings.model)?.maxContextLength : undefined, additionalWorkspaceRoots: isolation?.gitDir ? [isolation.gitDir] : [], childAgentBridge: childBridge?.launch, refreshRuntimeConfig: true });
       if (isolation?.status !== "missing" && isolation?.status !== "removed" && !capabilityRefreshDeferred) {
         const resumed = await rpc<{ thread: Thread }>("thread/resume", { ...resumeParams, excludeTurns: true });
         if (selectThreadRequestRef.current !== requestId) return;
@@ -4053,6 +4217,8 @@ export default function App() {
     worktreeBusy,
     skillsFolder,
     resolveSkillPrompt,
+    resolveSkillPrompts,
+    getSkillReferences,
     childAgentPolicies,
     childAgentLinks,
     activeThreadIsChild,
@@ -4240,6 +4406,7 @@ export default function App() {
     beginRunCheckpoint,
     discardRunCheckpoint,
     resolveSkillPrompt,
+    resolveSkillPrompts,
   });
 
   /**
@@ -4739,6 +4906,12 @@ export default function App() {
     if (tab === "git") void refreshGitHubAccount();
   };
 
+  const openGitRoute = (route: Omit<GitRoute, "nonce">) => {
+    gitRouteNonceRef.current += 1;
+    setGitRoute({ ...route, nonce: gitRouteNonceRef.current });
+    openStudio("git");
+  };
+
   const reviewDisabledReason = !activeProject
     ? "Open a project to review its changes."
     : undefined;
@@ -4878,7 +5051,7 @@ export default function App() {
       await waitForThreadPreparation(checkpoint?.threadId ?? activeThread.id);
       await ensureSkillRoots();
       const modelProvider = runtimeModelProviderId(effectiveSettings.provider);
-      const forkParams = { threadId: checkpoint?.threadId ?? activeThread.id, lastTurnId: checkpoint?.turnId, cwd: activeWorkspace?.path, runtimeWorkspaceRoots: activeWorkspace ? [activeWorkspace.path] : undefined, model: effectiveSettings.model, ...(modelProvider ? { modelProvider } : {}), config: threadRuntimeConfig(effectiveSettings, { customAgents, modelContextWindow: effectiveSettings.provider === "openrouter" ? openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.context_length : effectiveSettings.provider === "lmstudio" ? lmStudioModels.find((entry) => entry.id === effectiveSettings.model)?.maxContextLength : undefined }), baseInstructions: effectiveSettings.systemPrompt, developerInstructions: mythraCodeDeveloperInstructions(false) };
+      const forkParams = { threadId: checkpoint?.threadId ?? activeThread.id, lastTurnId: checkpoint?.turnId, cwd: activeWorkspace?.path, runtimeWorkspaceRoots: activeWorkspace ? [activeWorkspace.path] : undefined, model: effectiveSettings.model, ...(modelProvider ? { modelProvider } : {}), config: threadRuntimeConfig(effectiveSettings, { customAgents, modelContextWindow: effectiveSettings.provider === "openrouter" ? openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.context_length : effectiveSettings.provider === "lmstudio" ? lmStudioModels.find((entry) => entry.id === effectiveSettings.model)?.maxContextLength : undefined }), baseInstructions: "", developerInstructions: mythraCodeDeveloperInstructions(false) };
       let result: { thread: Thread };
       let forkedWithoutTurns = false;
       try {
@@ -5123,8 +5296,8 @@ export default function App() {
         (checkpoint) => checkpoint.workspacePath
           && normalizedProjectPath(checkpoint.workspacePath) === normalizedProjectPath(activeThreadWorktree.path),
       );
-      await runCheckpointProjectOperation(activeThreadWorktree.projectPath, async () => {
-        await removeThreadWorktree(
+      const removal = await runCheckpointProjectOperation(activeThreadWorktree.projectPath, async () => {
+        const result = await removeThreadWorktree(
           activeThread.id,
           activeThreadWorktree.projectPath,
           activeThreadWorktree.path,
@@ -5135,6 +5308,7 @@ export default function App() {
         for (const checkpoint of worktreeCheckpoints) {
           await deleteCheckpointSnapshot(checkpoint.id, activeThreadWorktree.projectPath).catch(() => undefined);
         }
+        return result;
       });
       persistCheckpoints((current) => current.map((checkpoint) => (
         checkpoint.workspacePath
@@ -5154,6 +5328,9 @@ export default function App() {
           ...activeThreadWorktree,
           status: "removed",
           removedAt: Date.now(),
+          retainedBranch: removal.retainedBranch ?? undefined,
+          retainedBranchOid: removal.retainedBranchOid ?? undefined,
+          branchDeleteError: removal.branchDeleteError ?? undefined,
         },
       }));
       setWorktreeStatus(null);
@@ -5166,6 +5343,14 @@ export default function App() {
         useTaskStore.getState().ensureTask(activeThread.id, activeThreadWorktree.projectPath);
         setTransientStatus("Worktree removed. This thread now uses the shared project.");
       } else setTransientStatus("Isolated worktree removed");
+      if (removal.branchDeleteError) {
+        const outcome = removal.retainedBranch
+          ? `Branch ${removal.retainedBranch} was kept`
+          : removal.branchDeleted
+            ? `Branch ${activeThreadWorktree.branch} was deleted, but cleanup is incomplete`
+            : `The state of branch ${activeThreadWorktree.branch} could not be verified. Inspect the branch before retrying cleanup`;
+        setError(`The worktree folder was removed. ${outcome}: ${removal.branchDeleteError}`);
+      }
     } catch (reason) {
       setError(friendlyError(reason));
     } finally {
@@ -5218,6 +5403,9 @@ export default function App() {
           // branch may contain commits that still need to cross to source.
           appliedTree: activeThreadWorktree.appliedTree,
           recreatedFromMissing: true,
+          retainedBranch: undefined,
+          retainedBranchOid: undefined,
+          branchDeleteError: undefined,
         },
       }));
       setWorktreeStatus(null);
@@ -5343,10 +5531,9 @@ export default function App() {
 
   useEffect(() => {
     gitProjectSequenceRef.current += 1;
+    setGithubRepoStatus(null);
+    setGithubRepoError("");
     void refreshGitHubRepo();
-    setGitOutput("");
-    setGitCommitBusy(false);
-    setGitCommitSuccess("");
   }, [activeExecutionPath, activeProject?.id, activeProject?.name, refreshGitHubRepo]);
 
   const gitWorkspace = useGitWorkspace({
@@ -5356,7 +5543,7 @@ export default function App() {
     isolated: Boolean(activeThreadWorktree && activeThreadWorktree.status !== "removed"),
     blocked: (paths) => {
       if (effectiveSettings.permission === "read-only") return "Switch this thread to Ask or Full access before changing Git.";
-      if (worktreeBusy || gitCommitBusy || githubBusy || checkpointBusyId) return "Wait for the current workspace operation to finish.";
+      if (worktreeBusy || gitCommitBusy || gitOperationBusy || githubRepositoryBusy || checkpointBusyId) return "Wait for the current workspace operation to finish.";
       if (paths.some(projectHasActiveTask)) return "Wait for agents in this folder to finish before changing Git.";
       return null;
     },
@@ -5367,15 +5554,16 @@ export default function App() {
   });
   const autoPublish = useGitAutoPublish({
     projects,
-    blocked: (path) => worktreeBusy || gitCommitBusy || githubBusy || Boolean(checkpointBusyId)
+    blocked: (path) => worktreeBusy || gitCommitBusy || gitOperationBusy || githubRepositoryBusy || Boolean(checkpointBusyId)
       || projectHasActiveTask(path)
       || Object.values(threadWorktreesRef.current).some((record) => normalizedProjectPath(record.projectPath) === normalizedProjectPath(path) && projectHasActiveTask(record.path)),
   });
   const publishConfig = activeProject ? autoPublish.configs[activeProject.id] : undefined;
-  const { onBranch: changeWorkspaceBranch, fetch: fetchWorkspace, refresh: refreshWorkspace } = gitWorkspace;
+  const { onBranch: changeWorkspaceBranch, refresh: refreshWorkspace, updateBase: updateWorkspaceBase } = gitWorkspace;
   const { enable: enablePublishing, disable: disablePublishing, retry: retryPublishing } = autoPublish;
   const gitWorkflow = useMemo<GitWorkflowControls>(() => ({
     snapshot: gitWorkspace.snapshot,
+    readRevision: gitWorkspace.readRevision,
     busy: gitWorkspace.busy,
     error: gitWorkspace.error,
     notice: gitWorkspace.notice,
@@ -5383,7 +5571,7 @@ export default function App() {
     lastFetchedAt: gitWorkspace.lastFetchedAt,
     isolated: Boolean(activeThreadWorktree && activeThreadWorktree.status !== "removed"),
     onBranch: changeWorkspaceBranch,
-    onRefresh: () => { void (githubRepoStatus?.repository ? fetchWorkspace() : refreshWorkspace()); },
+    onRefresh: () => { void refreshWorkspace(); },
     autoPublish: activeProject && (githubRepoStatus?.repository || publishConfig) ? {
       enabled: Boolean(publishConfig?.enabled),
       status: publishConfig?.status ?? "idle",
@@ -5396,11 +5584,11 @@ export default function App() {
       },
       onRetry: () => retryPublishing(activeProject.id),
     } : undefined,
-  }), [gitWorkspace.snapshot, gitWorkspace.busy, gitWorkspace.error, gitWorkspace.notice, gitWorkspace.branchNotice, gitWorkspace.lastFetchedAt, changeWorkspaceBranch, fetchWorkspace, refreshWorkspace, activeThreadWorktree, activeProject, githubRepoStatus?.repository, publishConfig, enablePublishing, disablePublishing, retryPublishing, effectiveSettings.permission]);
+  }), [gitWorkspace.snapshot, gitWorkspace.readRevision, gitWorkspace.busy, gitWorkspace.error, gitWorkspace.notice, gitWorkspace.branchNotice, gitWorkspace.lastFetchedAt, changeWorkspaceBranch, refreshWorkspace, activeThreadWorktree, activeProject, githubRepoStatus?.repository, publishConfig, enablePublishing, disablePublishing, retryPublishing, effectiveSettings.permission, setGitOutput]);
 
   const prMutationBlockedReason = effectiveSettings.permission === "read-only"
     ? "Switch this thread to Ask or Full access before changing Git or a pull request."
-    : worktreeBusy || gitCommitBusy || githubBusy || checkpointBusyId
+    : worktreeBusy || gitCommitBusy || gitOperationBusy || githubRepositoryBusy || checkpointBusyId
       ? "Wait for the current workspace operation to finish."
       : activeExecutionPath && projectHasActiveTask(activeExecutionPath)
         ? "Wait for agents working in this folder to finish before changing Git."
@@ -5438,7 +5626,7 @@ export default function App() {
     },
     checkMutationAllowed: (cwd) => {
       if (effectiveSettings.permission === "read-only") return "Switch this thread to Ask or Full access first.";
-      if (worktreeBusy || gitCommitBusy || githubBusy || checkpointBusyId) return "Wait for the current workspace operation to finish.";
+      if (worktreeBusy || gitCommitBusy || gitOperationBusy || githubRepositoryBusy || checkpointBusyId) return "Wait for the current workspace operation to finish.";
       if (projectHasActiveTask(cwd)) return "Wait for agents working in this folder to finish before changing Git.";
       return null;
     },
@@ -5449,6 +5637,63 @@ export default function App() {
     },
   });
 
+  // Project Git contracts for the dock. Checks and follow-ups read the latest
+  // state through refs, so these objects only change with the checkout.
+  const projectGitCwd = activeProject && !activeWorkspace?.isChat ? activeExecutionPath || activeProject.path : "";
+  const projectGitInspection = useMemo<ProjectGitInspection | undefined>(() => projectGitCwd ? {
+    cwd: projectGitCwd,
+    getChanges: getProjectGitChanges,
+    getFileDiff: getProjectGitFileDiff,
+    getHistory: getProjectGitHistory,
+  } : undefined, [projectGitCwd]);
+  const projectGitMutationCheckRef = useRef<(cwd: string) => string | null>(() => null);
+  projectGitMutationCheckRef.current = (cwd) => {
+    if (effectiveSettings.permission === "read-only") return "Switch to Ask or Full access before changing Git or a pull request.";
+    if (worktreeBusy || gitCommitBusy || gitOperationBusy || githubRepositoryBusy || checkpointBusyId) return "Wait for the current workspace operation to finish.";
+    if (projectHasActiveTask(cwd)) return "Wait for agents working in this folder to finish before changing Git.";
+    return null;
+  };
+  const projectGitChangedRef = useRef<(cwd: string) => void>(() => undefined);
+  projectGitChangedRef.current = (cwd) => {
+    // The hook invalidates the originating checkout's cache itself. Owner reads
+    // must never be retargeted to whichever project is visible on completion.
+    if (!projectGitCwd || normalizedProjectPath(cwd) !== normalizedProjectPath(projectGitCwd)) return;
+    void refreshGitHubRepo();
+    void refreshDiff();
+    void refreshWorkspace();
+    autoPublish.refresh();
+    threadPullRequest.onRefresh();
+  };
+  const checkProjectGitMutation = useCallback((cwd: string) => projectGitMutationCheckRef.current(cwd), []);
+  const notifyProjectGitChanged = useCallback((cwd: string) => projectGitChangedRef.current(cwd), []);
+  const { onAttach: attachThreadPullRequest } = threadPullRequest;
+  const threadPullRequestRepository = threadPullRequest.linked ? threadPullRequest.pullRequest?.repository ?? null : null;
+  const threadPullRequestNumber = threadPullRequest.linked ? threadPullRequest.pullRequest?.number ?? null : null;
+  const projectPullRequests = useMemo<ProjectPullRequestAccess | undefined>(() => projectGitCwd && activeProject ? {
+    cwd: projectGitCwd,
+    projectPath: activeProject.path,
+    repository: githubRepoStatus?.repository ?? null,
+    authenticated: Boolean(githubStatus?.authenticated),
+    threadActive: Boolean(activeThreadId),
+    isolated: Boolean(activeThreadWorktree && activeThreadWorktree.status !== "removed"),
+    mutationBlockedReason: prMutationBlockedReason,
+    checkMutationAllowed: checkProjectGitMutation,
+    list: listPullRequests,
+    view: getPullRequest,
+    context: getPullRequestContext,
+    find: findPullRequest,
+    create: createPullRequest,
+    merge: mergePullRequest,
+    ready: markPullRequestReady,
+    createBranch: createPullRequestBranch,
+    // Attaching is offered only to a conversation without a pull request, so
+    // browsing can never silently replace an existing attachment.
+    attachToThread: activeThreadId && !threadPullRequestRepository ? attachThreadPullRequest : undefined,
+    threadLink: threadPullRequestRepository && threadPullRequestNumber ? { repository: threadPullRequestRepository, number: threadPullRequestNumber } : null,
+    onUpdateLocal: updateWorkspaceBase,
+    onChanged: notifyProjectGitChanged,
+  } : undefined, [projectGitCwd, activeProject, githubRepoStatus?.repository, githubStatus?.authenticated, activeThreadId, activeThreadWorktree, prMutationBlockedReason, checkProjectGitMutation, attachThreadPullRequest, threadPullRequestRepository, threadPullRequestNumber, updateWorkspaceBase, notifyProjectGitChanged]);
+
   const runGitActionUnlocked = async (action: GitPanelAction, commitMessageInput?: string) => {
     if (!activeProject) return;
     const unavailable = gitActionUnavailableReason(action, effectiveSettings.permission);
@@ -5457,8 +5702,8 @@ export default function App() {
       return;
     }
     const commandPath = activeExecutionPath || activeProject.path;
-    const projectSequence = gitProjectSequenceRef.current;
-    const isCurrentProject = () => gitProjectSequenceRef.current === projectSequence;
+    const scope = gitWorkspaceScope;
+    const isCurrentProject = () => gitWorkspaceScopeRef.current === scope;
     const gitRoots = activeThreadWorktree?.gitDir ? [activeThreadWorktree.gitDir] : [];
     const pushCommand = gitPushCommand(githubRepoStatus);
     const pushCompletionNote = async () => {
@@ -5480,7 +5725,7 @@ export default function App() {
     if (["commit", "commitPush", "commitStaged", "commitStagedPush"].includes(action)) {
       const pushAfter = action === "commitPush" || action === "commitStagedPush";
       const stagedOnly = action === "commitStaged" || action === "commitStagedPush";
-      if (pushAfter && !pushCommand) {
+      if (pushAfter && (!pushCommand || (gitWorkspace.snapshot && !gitWorkspace.snapshot.branch) || !githubRepoStatus?.remoteUrl || !githubRepoStatus.repository)) {
         setGitOutput("Check out a named branch before committing and pushing to GitHub.");
         return;
       }
@@ -5490,71 +5735,94 @@ export default function App() {
       setGitCommitBusy(true);
       setGitCommitSuccess("");
       try {
-        const stage = stagedOnly ? { exitCode: 0, stdout: "Using the existing staged changes.\n", stderr: "" } : await executeCommand(stageCommand, commandPath, gitRoots);
-        if (stage.exitCode !== 0) {
-          if (isCurrentProject()) setGitOutput(`$ ${stageCommand.join(" ")}\n${stage.stdout}${stage.stderr}\n[exit ${stage.exitCode}]`);
-          return;
-        }
-        const stageOutput = stagedOnly ? stage.stdout.trim() : `$ ${stageCommand.join(" ")}\n${stage.stdout}${stage.stderr}\n[exit ${stage.exitCode}]`;
-        const commit = await executeCommand(commitCommand, commandPath, gitRoots);
-        if (commit.exitCode !== 0) {
-          if (isCurrentProject()) setGitOutput(`${stageOutput}\n\n$ ${commitCommand.join(" ")}\n${commit.stdout}${commit.stderr}\n[exit ${commit.exitCode}]`);
-          return;
-        }
+        // Staging and committing belong to one native repository transaction.
+        // Generic shell commands release ownership between these two steps.
+        const commit = await commitGitWorkspace(commandPath, commitMessage, stagedOnly, gitWorkspace.snapshot);
+        const stageOutput = stagedOnly ? "Using the existing staged changes." : `$ ${stageCommand.join(" ")}\n[exit 0]`;
         const commitResultIsVisible = isCurrentProject();
-        if (commitResultIsVisible) {
-          setGitCommitSuccess(`“${commitMessage}” was saved to this repository.`);
-        }
+        setGitCommitSuccess(`“${commitMessage}” was saved to this repository.`);
         if (!pushAfter) {
-          if (!commitResultIsVisible) return;
-          setGitOutput(`${stageOutput}\n\n$ ${commitCommand.join(" ")}\n${commit.stdout}${commit.stderr}\n[exit ${commit.exitCode}]`);
-          showSuccessToast("Changes committed locally");
-          void refreshGitHubRepo(commandPath);
+          setGitOutput(`${stageOutput}\n\n$ ${commitCommand.join(" ")}\n${commit.stdout}${commit.stderr}\n[exit 0]`);
+          if (commitResultIsVisible) { showSuccessToast("Changes committed locally"); void refreshGitHubRepo(commandPath); }
           return;
         }
-        const push = await executeCommand(pushCommand!, commandPath, gitRoots);
-        if (!isCurrentProject()) return;
-        const output = `${stageOutput}\n\n$ ${commitCommand.join(" ")}\n${commit.stdout}${commit.stderr}\n[exit ${commit.exitCode}]\n\n$ ${pushCommand!.join(" ")}\n${push.stdout}${push.stderr}\n[exit ${push.exitCode}]`;
-        if (push.exitCode === 0) {
+        const commitOutput = `${stageOutput}\n\n$ ${commitCommand.join(" ")}\n${commit.stdout}${commit.stderr}\n[exit 0]`;
+        let push;
+        try {
+          if (!commit.branch) throw new Error("Check out a named branch before pushing this saved commit.");
+          push = await pushGitWorkspace(commandPath, commit.headOid, commit.branch, githubRepoStatus!.remoteUrl!, githubRepoStatus!.repository!);
+        } catch (reason) {
+          setGitOutput(`${commitOutput}\n\nGitHub push needs attention:\n${friendlyError(reason)}`);
+          if (isCurrentProject()) { showToast("Changes committed locally; GitHub push needs attention", "info"); void refreshGitHubRepo(commandPath); }
+          return;
+        }
+        const output = `${commitOutput}\n\nPushed saved commit ${commit.headOid.slice(0, 7)} from ${commit.branch}:\n${push.stdout}${push.stderr}\n[exit 0]`;
+        setGitOutput(output);
+        if (isCurrentProject()) {
           showPushOutput(output);
           showSuccessToast("Changes committed locally and pushed to GitHub");
           void refreshGitHubRepo(commandPath);
-        } else {
-          setGitOutput(output);
-          showToast("Changes committed locally; GitHub push needs attention", "info");
-          void refreshGitHubRepo(commandPath);
         }
       } catch (reason) {
-        if (isCurrentProject()) setGitOutput(friendlyError(reason));
+        setGitOutput(friendlyError(reason));
       } finally {
-        if (isCurrentProject()) setGitCommitBusy(false);
+        setGitCommitBusy(false);
       }
       return;
     }
     let command: string[];
     if (action === "status") command = ["git", "status", "--short", "--branch"];
     else if (action === "diff") command = ["git", "diff", "HEAD", "--stat", "--patch"];
-    else if (action === "stage") command = ["git", "add", "--all"];
-    else if (action === "unstage") {
-      const head = await executeCommand(["git", "rev-parse", "--verify", "HEAD"], commandPath, gitRoots);
-      command = head.exitCode === 0 ? ["git", "reset", "--", "."] : ["git", "rm", "-r", "--cached", "--ignore-unmatch", "--", "."];
+    else if (action === "stage" || action === "unstage") {
+      try {
+        const result = await stageGitWorkspace(commandPath, null, action === "unstage", gitWorkspace.snapshot);
+        if (isCurrentProject()) setGitOutput(`${action === "stage" ? "Staged all changes." : "Unstaged all changes; working files were kept."}\n${result.stdout}${result.stderr}`);
+      } catch (reason) {
+        if (isCurrentProject()) setGitOutput(friendlyError(reason));
+      }
+      return;
     }
     else if (action === "revert") {
-      if (!await confirmDialog("Revert all tracked staged and working-tree changes? Untracked files will be kept.")) return;
-      command = ["git", "restore", "--staged", "--worktree", "."];
+      try {
+        const preview = await previewGitWorkspaceRevertAll(commandPath);
+        if (!isCurrentProject()) return;
+        const confirmation = `Restore ${preview.restorePaths.length} committed file path${preview.restorePaths.length === 1 ? "" : "s"} and unstage all changes? ${preview.preservedPaths.length} added, untracked, or renamed destination path${preview.preservedPaths.length === 1 ? " will" : "s will"} be kept as new files. If anything changes while this confirmation is open, nothing will be reverted.`;
+        if (!await confirmDialog(confirmation) || !isCurrentProject()) return;
+        const result = await revertGitWorkspaceAll(commandPath, preview.token);
+        if (isCurrentProject()) setGitOutput(`Restored committed files and unstaged changes. New file contents were kept.\n${result.stdout}${result.stderr}`);
+      } catch (reason) {
+        // Preserve the native partial-operation warning and recovery guidance;
+        // generic provider error mapping can replace it with an unrelated hint.
+        if (isCurrentProject()) setGitOutput((reason instanceof Error ? reason.message : String(reason)).slice(0, 16_384));
+      }
+      return;
     } else if (action === "fetch") command = ["git", "fetch", "--prune", "origin"];
     else if (action === "pull") command = ["git", "pull", "--ff-only"];
     else if (action === "push") {
-      if (!pushCommand) {
-        setGitOutput("Check out a named branch before pushing to GitHub.");
+      try {
+        const snapshot = gitWorkspace.snapshot ?? await getGitWorkspace(commandPath);
+        if (!snapshot?.headOid || !snapshot.branch || !githubRepoStatus?.remoteUrl || !githubRepoStatus.repository) {
+          if (isCurrentProject()) setGitOutput("Make a local commit on a named branch and attach a GitHub repository before pushing.");
+          return;
+        }
+        const result = await pushGitWorkspace(commandPath, snapshot.headOid, snapshot.branch, githubRepoStatus.remoteUrl, githubRepoStatus.repository);
+        if (!isCurrentProject()) return;
+        showPushOutput(`Pushed saved commit ${snapshot.headOid.slice(0, 7)} from ${snapshot.branch}:\n${result.stdout}${result.stderr}\n[exit 0]`);
+        void refreshGitHubRepo(commandPath);
+      } catch (reason) {
+        if (isCurrentProject()) setGitOutput(friendlyError(reason));
+      }
+      return;
+    } else {
+      if (action !== "comments" && action !== "ci" && !await confirmDialog("Create a draft pull request on the configured GitHub remote?")) return;
+      try {
+        command = githubCliCommand(githubStatus?.path || "gh", action === "comments" || action === "ci" ? action : "pr",
+          action !== "pr" && threadPullRequest.linked && threadPullRequest.pullRequest ? threadPullRequest.pullRequest : undefined,
+          githubRepoStatus?.repository);
+      } catch (reason) {
+        if (isCurrentProject()) setGitOutput(reason instanceof Error ? reason.message : String(reason));
         return;
       }
-      command = pushCommand;
-    } else if (action === "comments") command = githubCliCommand(githubStatus?.path || "gh", "comments", threadPullRequest.linked && threadPullRequest.pullRequest ? threadPullRequest.pullRequest : undefined);
-    else if (action === "ci") command = githubCliCommand(githubStatus?.path || "gh", "ci", threadPullRequest.linked && threadPullRequest.pullRequest ? threadPullRequest.pullRequest : undefined);
-    else {
-      if (!await confirmDialog("Create a draft pull request on the configured GitHub remote?")) return;
-      command = githubCliCommand(githubStatus?.path || "gh", "pr");
     }
     try {
       let result = await executeCommand(command, commandPath, gitRoots);
@@ -5570,8 +5838,7 @@ export default function App() {
       const output = combined.includes("not a git repository")
         ? "This project folder is not a Git repository yet. Choose Initialize Git in this panel to enable these workflows."
         : `$ ${command.join(" ")}\n${combined}\n[exit ${result.exitCode}]`;
-      if (action === "push" && result.exitCode === 0) showPushOutput(output);
-      else setGitOutput(output);
+      setGitOutput(output);
       // The Git console shows its own command output. It deliberately does not
       // write the Review panel's diff: `git diff HEAD --stat --patch` is a different
       // baseline than the review diff, and overwriting it made Review claim to
@@ -5587,6 +5854,7 @@ export default function App() {
     if (action === "fetch") { await gitWorkspace.fetch(); return; }
     if (["status", "diff", "comments", "ci"].includes(action)) { await runGitActionUnlocked(action, commitMessageInput); return; }
     const paths = [...new Set([activeProject.path, activeExecutionPath || activeProject.path].map(normalizedProjectPath))];
+    if (worktreeBusy || checkpointBusyId || gitWorkspace.busy || githubRepositoryBusy) { setGitOutput("Wait for the current workspace operation to finish."); return; }
     if (paths.some(projectHasActiveTask)) { setGitOutput("Wait for agents in this folder to finish before changing Git."); return; }
     const leases: string[] = [];
     for (const path of paths) {
@@ -5594,68 +5862,91 @@ export default function App() {
       if (!lease) { leases.forEach(releasePullRequestMutation); setGitOutput("Wait for the current Git operation to finish."); return; }
       leases.push(lease);
     }
-    const sequence = gitProjectSequenceRef.current;
+    const scope = gitWorkspaceScope;
+    setGitOperationBusy(true);
     try { await runGitActionUnlocked(action, commitMessageInput); }
     finally {
       leases.forEach(releasePullRequestMutation);
-      void gitWorkspace.refresh();
+      setGitOperationBusy(false);
       autoPublish.refresh();
-      if (gitProjectSequenceRef.current === sequence) threadPullRequest.onRefresh();
+      if (gitWorkspaceScopeRef.current === scope) {
+        void gitWorkspace.refresh();
+        void refreshDiff();
+        threadPullRequest.onRefresh();
+      }
+    }
+  };
+
+  const changeActiveGitHubRepository = async (
+    action: "attach" | "create",
+    operation: (cwd: string) => Promise<GitHubRepoStatus>,
+    successMessage: string,
+  ) => {
+    if (!activeProject) return;
+    const scope = gitWorkspaceScope;
+    const sequence = gitProjectSequenceRef.current;
+    const cwd = activeExecutionPath || activeProject.path;
+    const isCurrent = () => gitWorkspaceScopeRef.current === scope && gitProjectSequenceRef.current === sequence;
+    const updateOperation = (busy: boolean, error = "") => setGithubRepositoryOperations((current) => ({ ...current, [scope]: { busy, error } }));
+    const paths = [...new Set([activeProject.path, cwd].map(normalizedProjectPath))];
+    const unavailable = gitActionUnavailableReason(action, effectiveSettings.permission)
+      || (worktreeBusy || checkpointBusyId || gitWorkspace.busy
+        ? "Wait for the current workspace operation to finish." : null)
+      || (paths.some(projectHasActiveTask) ? "Wait for agents in this folder to finish before changing GitHub settings." : null);
+    if (unavailable) { updateOperation(false, unavailable); setGitOutput(unavailable); return; }
+    const leases: string[] = [];
+    for (const path of paths) {
+      const lease = acquirePullRequestMutation(path);
+      if (!lease) {
+        leases.forEach(releasePullRequestMutation);
+        // Keep a running operation's busy flag; duplicate clicks must not reset it.
+        setGithubRepositoryOperations((current) => current[scope]?.busy ? current : ({ ...current, [scope]: { busy: false, error: "Wait for the current Git operation to finish." } }));
+        return;
+      }
+      leases.push(lease);
+    }
+    githubRepoRefreshSequenceRef.current += 1;
+    updateOperation(true);
+    let failure = "";
+    try {
+      const next = await operation(cwd);
+      if (!isCurrent()) return;
+      githubRepoRefreshSequenceRef.current += 1;
+      setGithubRepoStatus(next);
+      setGithubRepoError("");
+      showSuccessToast(successMessage);
+    } catch (reason) {
+      failure = friendlyError(reason);
+      if (isCurrent()) {
+        setGitOutput(failure);
+      }
+    } finally {
+      leases.forEach(releasePullRequestMutation);
+      updateOperation(false, failure);
+      // Returning to the same checkout can invalidate the original sequence.
+      // Read it again rather than leaving a pre-attachment return probe visible.
+      if (gitWorkspaceScopeRef.current === scope) { void refreshGitHubRepo(cwd); void gitWorkspace.refresh(); autoPublish.refresh(); }
     }
   };
 
   const attachActiveGitHubRemote = async (url: string) => {
-    if (!activeProject || !url.trim()) return;
-    if (isPullRequestMutationRunning(activeExecutionPath || activeProject.path)) {
-      setGitOutput("Wait for the pull request operation to finish before changing GitHub settings.");
-      return;
-    }
-    const unavailable = gitActionUnavailableReason("attach", effectiveSettings.permission);
-    if (unavailable) {
-      setGitOutput(unavailable);
-      return;
-    }
-    setGithubBusy(true);
-    try {
-      const next = await attachGitHubRemote(activeExecutionPath || activeProject.path, url.trim());
-      setGithubRepoStatus(next);
-      showSuccessToast("GitHub repository attached");
-    } catch (reason) {
-      setError(friendlyError(reason));
-    } finally {
-      setGithubBusy(false);
-    }
+    if (!url.trim()) return;
+    await changeActiveGitHubRepository("attach", (cwd) => attachGitHubRemote(cwd, url.trim()), "GitHub repository attached");
   };
 
   const createActiveGitHubRepository = async (name: string, visibility: "private" | "public") => {
-    if (!activeProject || !name.trim()) return;
-    if (isPullRequestMutationRunning(activeExecutionPath || activeProject.path)) {
-      setGitOutput("Wait for the pull request operation to finish before changing GitHub settings.");
-      return;
-    }
-    const unavailable = gitActionUnavailableReason("create", effectiveSettings.permission);
-    if (unavailable) {
-      setGitOutput(unavailable);
-      return;
-    }
-    setGithubBusy(true);
-    try {
-      const next = await createGitHubRepository(activeExecutionPath || activeProject.path, name.trim(), visibility);
-      setGithubRepoStatus(next);
-      showSuccessToast(`${visibility === "private" ? "Private" : "Public"} GitHub repository created`);
-    } catch (reason) {
-      setError(friendlyError(reason));
-    } finally {
-      setGithubBusy(false);
-    }
+    if (!name.trim()) return;
+    await changeActiveGitHubRepository("create", (cwd) => createGitHubRepository(cwd, name.trim(), visibility), `${visibility === "private" ? "Private" : "Public"} GitHub repository created`);
   };
 
   const refreshGitHubAccount = async () => {
     setGithubBusy(true);
     try {
-      setGithubStatus(await getGitHubStatus());
+      const status = await getGitHubStatus();
+      setGithubStatus(status);
+      if (status.authenticated) { setGithubSignInError(""); setGithubLoginPending(false); }
     } catch (reason) {
-      setError(friendlyError(reason));
+      setGithubSignInError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setGithubBusy(false);
     }
@@ -5663,12 +5954,15 @@ export default function App() {
 
   const beginGitHubLogin = async () => {
     setGithubBusy(true);
+    setGithubSignInError("");
     try {
       await startGitHubLogin();
       setGithubLoginPending(true);
       showSuccessToast("Finish GitHub sign-in in Terminal; Mythra Code will connect automatically");
     } catch (reason) {
-      setError(friendlyError(reason));
+      const message = reason instanceof Error ? reason.message : String(reason);
+      setGithubSignInError(message);
+      throw new Error(message);
     } finally {
       setGithubBusy(false);
     }
@@ -5748,9 +6042,14 @@ export default function App() {
       setGitOutput(unavailable);
       return;
     }
+    if (gitWorkspace.snapshot?.isRoot === false) {
+      setGitOutput(`Open the repository root (${gitWorkspace.snapshot.rootPath}) as your project before changing Git. This selected folder is inside that repository.`);
+      return;
+    }
     const commandPath = activeExecutionPath || activeProject.path;
-    const projectSequence = gitProjectSequenceRef.current;
+    const scope = gitWorkspaceScope;
     const paths = [...new Set([activeProject.path, commandPath].map(normalizedProjectPath))];
+    if (worktreeBusy || checkpointBusyId || gitWorkspace.busy || githubRepositoryBusy) { setGitOutput("Wait for the current workspace operation to finish."); return; }
     if (paths.some(projectHasActiveTask)) { setGitOutput("Wait for agents in this folder to finish before changing Git."); return; }
     const leases: string[] = [];
     for (const root of paths) {
@@ -5758,25 +6057,31 @@ export default function App() {
       if (!lease) { leases.forEach(releasePullRequestMutation); setGitOutput("Wait for the current Git operation to finish."); return; }
       leases.push(lease);
     }
-    const isCurrentProject = () => gitProjectSequenceRef.current === projectSequence;
-    const gitRoots = activeThreadWorktree?.gitDir ? [activeThreadWorktree.gitDir] : [];
+    const isCurrentProject = () => gitWorkspaceScopeRef.current === scope;
+    setGitOperationBusy(true);
     try {
-      if (action === "revert" && !await confirmDialog(`Revert changes to ${path}?`)) return;
+      const revertPreview = action === "revert" ? await previewGitWorkspaceRevert(commandPath, path) : null;
+      if (revertPreview && !await confirmDialog(`Revert changes to ${revertPreview.paths.map((item) => JSON.stringify(item)).join(" and ")}?\n\nThis restores the committed content and discards staged and working edits for these paths. New edits made while this confirmation is open will cause the operation to be refused.`)) return;
       if (paths.some(projectHasActiveTask)) { if (isCurrentProject()) setGitOutput("Wait for agents in this folder to finish before changing Git."); return; }
-      let command = action === "stage" ? ["git", "add", "--", path] : action === "unstage" ? ["git", "reset", "--", path] : ["git", "restore", "--staged", "--worktree", "--", path];
-      if (action === "unstage") {
-        const head = await executeCommand(["git", "rev-parse", "--verify", "HEAD"], commandPath, gitRoots);
-        if (head.exitCode !== 0) command = ["git", "rm", "-r", "--cached", "--ignore-unmatch", "--", path];
-      }
-      const result = await executeCommand(command, commandPath, gitRoots);
+      const result = action === "revert"
+        ? await revertGitWorkspace(commandPath, path, revertPreview!.token)
+        : { ...await stageGitWorkspace(commandPath, path, action === "unstage", gitWorkspace.snapshot), exitCode: 0 };
       if (!isCurrentProject()) return;
-      setGitOutput(`$ ${command.join(" ")}\n${result.stdout}${result.stderr}\n[exit ${result.exitCode}]`);
-      if (activeThreadId) await refreshDiffFor(activeThreadId, commandPath);
+      setGitOutput(`${action === "revert" ? "Reverted" : action === "stage" ? "Staged" : "Unstaged"} ${path}\n${result.stdout}${result.stderr}`);
+      await refreshDiff();
     } catch (reason) {
-      if (isCurrentProject()) setError(friendlyError(reason));
+      if (isCurrentProject()) {
+        const message = reason instanceof Error ? reason.message : String(reason);
+        setGitOutput(message);
+        // Review has no Git console. Refusals must also be visible where the
+        // user confirmed a destructive action, without requiring a tab switch.
+        if (action === "revert") setError(message);
+        void refreshDiff();
+      }
     } finally {
       leases.forEach(releasePullRequestMutation);
-      void gitWorkspace.refresh();
+      setGitOperationBusy(false);
+      if (isCurrentProject()) void gitWorkspace.refresh();
     }
   };
 
@@ -5972,6 +6277,7 @@ export default function App() {
     ensureSkillRoots,
     getSkillsPluginPath: () => skillRuntimeRootRef.current || undefined,
     resolveSkillPrompt,
+    resolveSkillPrompts,
     bindThreadToProject,
     beginRunCheckpoint,
     finalizeRunCheckpoint,
@@ -6132,6 +6438,7 @@ export default function App() {
     lmStudioModels,
     ensureSkillRoots,
     resolveSkillPrompt,
+    resolveSkillPrompts,
     bindThreadToProject,
     beginRunCheckpoint,
     discardRunCheckpoint,
@@ -6314,7 +6621,7 @@ export default function App() {
                     title={thread.name || thread.preview || "Untitled thread"}
                     titlePending={automaticTitles.pendingIds.has(thread.id)}
                     workspaceName={activeWorkspace?.name ?? basename(thread.cwd)}
-                    directory={threadWorktrees[thread.id]?.path || thread.cwd || activeWorkspace?.path || ""}
+                    directory={threadFolderFor(thread)}
                     provider={providerFromThread(thread, projectDefaultProvider)}
                     providerName={providerLabel(providerFromThread(thread, projectDefaultProvider))}
                     pinned={pinnedThreadIds.includes(thread.id)}
@@ -6330,6 +6637,7 @@ export default function App() {
                   items={[
                     { label: pinnedThreadIds.includes(thread.id) ? "Unpin" : "Pin", icon: pinnedThreadIds.includes(thread.id) ? <PinOff size={13} /> : <Pin size={13} />, onSelect: () => toggleThreadPin(thread.id) },
                     { label: "Rename", icon: <Pencil size={13} />, onSelect: () => startThreadRename(thread) },
+                    { label: "Open folder", icon: <FolderOpen size={13} />, onSelect: () => void openThreadFolder(thread) },
                     { label: "Archive", icon: <Archive size={13} />, onSelect: () => void archiveThread(thread) },
                     { label: "Delete forever", icon: <Trash2 size={13} />, danger: true, onSelect: () => void deleteThreadForever(thread.id, thread.name || thread.preview || "Untitled thread") },
                   ]}
@@ -6411,7 +6719,7 @@ export default function App() {
                 repository={threadPullRequest.pullRequest?.repository ?? githubRepoStatus?.repository}
                 pullRequest={threadPullRequest.pullRequest}
                 linked={threadPullRequest.linked}
-                onClick={() => openStudio("git")}
+                onClick={() => openGitRoute({ view: "pulls", focus: activeThreadId ? "conversationPullRequest" : "pullRequestSearch" })}
               />
             )}
             {activeThreadHandoff && (
@@ -6427,6 +6735,8 @@ export default function App() {
             )}
             {activeProject && (
               <ProjectPromptControl
+                skills={skills}
+                onAnalyzeSkillDependencies={analyzeSkillDependencies}
                 key={activeProject.id}
                 projectName={activeProject.name}
                 projectPrompt={activeProject.overrides?.systemPrompt}
@@ -6696,7 +7006,7 @@ export default function App() {
                     }
                   >
                     <SubAgentControlsProvider workers={subAgentWorkers} onOpen={openSubAgentWorker} onStop={stopSubAgentWorker}>
-                    <AgentQuestionDelivery value={{ threadId: activeThreadId, send: answerQuestions }}><ConversationTimeline threadId={activeThreadId} running={running} thinkingLabel={activeWorkspace.isChat ? "Thinking in normal chat" : `Working in ${activeProject?.name}`} approval={inlineApproval} provider={effectiveSettings.provider} onLoadEarlier={() => void loadEarlier(activeThreadId)} searchQuery={convSearchOpen ? convSearchQuery : ""} searchActiveMatch={convSearchIndex} onSearchMatches={setConvSearchCount} onEditMessage={editMessageIntoComposer} onApprovalRespond={respondToApproval} /></AgentQuestionDelivery>
+                    <AgentQuestionDelivery value={{ threadId: activeThreadId, send: answerQuestions }}><ConversationTimeline threadId={activeThreadId} running={running} thinkingLabel={activeWorkspace.isChat ? "Thinking in normal chat" : `Working in ${activeProject?.name}`} approval={inlineApproval} provider={effectiveSettings.provider} onLoadEarlier={() => void loadEarlier(activeThreadId)} searchQuery={convSearchOpen ? convSearchQuery : ""} searchActiveMatch={convSearchIndex} onSearchMatches={setConvSearchCount} onEditMessage={editMessageIntoComposer} onApprovalRespond={respondToApproval} skills={skills} onOpenSkill={openSkillInSettings} /></AgentQuestionDelivery>
                     </SubAgentControlsProvider>
                   </Suspense>
                 </ErrorBoundary>
@@ -6735,6 +7045,7 @@ export default function App() {
                 queuedTurns={queuedTurns}
                 searchFiles={searchProjectFiles}
                 skills={composerSkills}
+                onAnalyzeSkillDependencies={analyzeComposerSkills}
                 workflows={projectWorkflows}
                 onWorkflow={invokeComposerWorkflow}
                 onRemoveAttachment={(path) => setAttachments((current) => current.filter((entry) => entry.path !== path))}
@@ -6928,13 +7239,20 @@ export default function App() {
             mcpServers={mcpServers}
             gitOutput={gitOutput}
             gitCommitSuccess={gitCommitSuccess}
+            gitCommitSuccessRevision={gitCommitSuccessRevision}
             gitCommitBusy={gitCommitBusy}
+            gitOperationBusy={gitOperationBusy}
             gitWorkflow={gitWorkflow}
+            projectGitInspection={projectGitInspection}
+            projectPullRequests={projectPullRequests}
+            gitRoute={gitRoute}
             gitRepositoryState={gitRepositoryState}
             gitRepositoryStateDetail={githubRepoError || workspaceGitInfo?.error || undefined}
             gitInitializing={gitInitializing}
             githubAuthenticated={Boolean(githubStatus?.authenticated)}
-            pullRequestPanel={activeProject && !activeWorkspace?.isChat && (threadPullRequest.linked || (githubStatus?.authenticated && githubRepoStatus?.repository)) ? (
+            githubBusy={githubRepositoryBusy}
+            githubOperationError={githubRepositoryError}
+            pullRequestPanel={activeProject && activeThreadId && !activeWorkspace?.isChat && (threadPullRequest.linked || (githubStatus?.authenticated && githubRepoStatus?.repository)) ? (
               <Suspense fallback={<div className="tool-empty-line">Loading pull requests…</div>}>
                 <ThreadPullRequestPanel
                   key={activeThreadId ?? activeProject.id}
@@ -7071,7 +7389,9 @@ export default function App() {
         onDiscoverOpenRouterModels={(query) => void discoverOpenRouterModels(query)}
         childAgentReadiness={childAgentReadiness}
         githubStatus={githubStatus}
-        githubBusy={githubBusy || githubLoginPending}
+        githubBusy={githubBusy}
+        githubLoginPending={githubLoginPending}
+        githubSignInError={githubSignInError}
         onRefreshUsagePricing={async () => {
           // Every source is attempted even when another fails; each reports
           // its own result on the usage page.
@@ -7133,7 +7453,11 @@ export default function App() {
         activeProjectId={workspaceMode === "project" ? activeProjectId : null}
         skillsFolder={skillsFolder}
         skills={skills}
+        onAnalyzeSkillDependencies={analyzeSkillDependencies}
+        onAnalyzeSkill={analyzeSkillSource}
         removedSkills={removedSkills}
+        openSkillRequest={openSkillRequest}
+        onOpenSkillRequestConsumed={consumeOpenSkillRequest}
         skillsBusy={skillsBusy}
         skillsError={skillsError}
         mcpServers={mcpServers}
@@ -7221,6 +7545,7 @@ export default function App() {
         onNewThread={newThread}
         onSettings={() => openSettings()}
         onTool={openStudio}
+        onGitRoute={openGitRoute}
       />
       </Suspense>}
       <ConfirmDialogModal />

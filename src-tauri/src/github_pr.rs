@@ -7,28 +7,211 @@
 
 use std::{
     collections::HashMap,
-    env,
+    io::Read,
     path::{Path, PathBuf},
     process::Stdio,
-    sync::{Arc, Mutex as StdMutex, OnceLock},
-    time::Duration,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc, Mutex as StdMutex, OnceLock,
+    },
+    thread,
+    time::{Duration, Instant},
 };
 
 use serde::Serialize;
 use serde_json::Value;
 use tauri::AppHandle;
-use tokio::{process::Command, sync::Mutex};
+use tokio::{
+    process::Command,
+    sync::{Mutex, OwnedMutexGuard},
+};
 
 #[cfg(test)]
 use crate::process_launch::background_std_command;
 use crate::{
-    github::{parse_github_repository, resolve_github_binary},
-    process_launch::background_command,
-    project_git::{git_runtime_path, optional_git_stdout, run_git},
+    git_workspace::{bounded_git_output, spawn_scoped_git},
+    github::{github_command, github_remote_url, parse_github_repository, resolve_github_binary},
+    project_git::{optional_git_stdout, run_git},
 };
+#[cfg(test)]
+use std::env;
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 const MUTATION_TIMEOUT: Duration = Duration::from_secs(120);
+const MAX_LIST_LIMIT: usize = 50;
+const MAX_COMMAND_OUTPUT: usize = 1024 * 1024;
+
+#[derive(Clone, Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct GitHubPrSummary {
+    repository: String,
+    number: u64,
+    url: String,
+    title: String,
+    state: String,
+    is_draft: bool,
+    head_ref_name: String,
+    base_ref_name: String,
+    updated_at: String,
+    author_login: Option<String>,
+}
+
+struct PrListQuery {
+    search: Option<String>,
+    state: String,
+    limit: usize,
+}
+
+fn pr_list_query(
+    repository: &str,
+    search: Option<String>,
+    state: Option<String>,
+    limit: Option<usize>,
+) -> Result<PrListQuery, String> {
+    validate_repository(repository)?;
+    let state = state.unwrap_or_else(|| "open".into());
+    if !matches!(state.as_str(), "open" | "closed" | "merged" | "all") {
+        return Err("Pull request state must be open, closed, merged, or all.".into());
+    }
+    let limit = limit.unwrap_or(30);
+    if !(1..=MAX_LIST_LIMIT).contains(&limit) {
+        return Err("Request between 1 and 50 pull requests at a time.".into());
+    }
+    if search
+        .as_ref()
+        .is_some_and(|value| value.chars().any(char::is_control) || value.chars().count() > 256)
+    {
+        return Err(
+            "Pull request search must be at most 256 characters without control characters.".into(),
+        );
+    }
+    let search = search
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    Ok(PrListQuery {
+        search,
+        state,
+        limit,
+    })
+}
+
+const PR_SUMMARY_FIELDS: &str =
+    "number,url,title,state,isDraft,headRefName,baseRefName,updatedAt,author";
+
+fn pr_summaries_from_json(
+    repository: &str,
+    value: &Value,
+    limit: usize,
+) -> Result<Vec<GitHubPrSummary>, String> {
+    let items = value
+        .as_array()
+        .ok_or_else(|| "GitHub returned an invalid pull request list.".to_string())?;
+    if items.len() > limit {
+        return Err("GitHub returned more pull requests than requested.".into());
+    }
+    items
+        .iter()
+        .map(|item| {
+            let get = |field: &str| {
+                item.get(field)
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string()
+            };
+            let number = item
+                .get("number")
+                .and_then(Value::as_u64)
+                .filter(|number| *number > 0)
+                .ok_or_else(|| "GitHub did not report a valid pull request number.".to_string())?;
+            let url = get("url");
+            if !url.eq_ignore_ascii_case(&format!("https://github.com/{repository}/pull/{number}"))
+            {
+                return Err(
+                    "GitHub returned a pull request outside the requested repository.".into(),
+                );
+            }
+            let state = get("state").to_ascii_uppercase();
+            if !matches!(state.as_str(), "OPEN" | "CLOSED" | "MERGED") {
+                return Err("GitHub returned an unknown pull request state.".into());
+            }
+            Ok(GitHubPrSummary {
+                repository: repository.to_string(),
+                number,
+                url,
+                title: get("title"),
+                state,
+                is_draft: item
+                    .get("isDraft")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                head_ref_name: get("headRefName"),
+                base_ref_name: get("baseRefName"),
+                updated_at: get("updatedAt"),
+                author_login: item
+                    .pointer("/author/login")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+            })
+        })
+        .collect()
+}
+
+async fn list_with(
+    gh: &Path,
+    repository: &str,
+    query: PrListQuery,
+) -> Result<Vec<GitHubPrSummary>, String> {
+    let mut args = vec![
+        "pr".to_string(),
+        "list".into(),
+        "--repo".into(),
+        format!("github.com/{repository}"),
+        "--state".into(),
+        query.state,
+        "--limit".into(),
+        query.limit.to_string(),
+        "--json".into(),
+        PR_SUMMARY_FIELDS.into(),
+    ];
+    if let Some(search) = query.search {
+        args.extend(["--search".into(), search]);
+    }
+    let borrowed_args: Vec<_> = args.iter().map(String::as_str).collect();
+    pr_summaries_from_json(repository, &gh_json(gh, &borrowed_args).await?, query.limit)
+}
+
+fn project_for_pr_list(cwd: &str, expected: &str) -> Result<PathBuf, String> {
+    let selected = selected_repository(cwd)?;
+    let origin = github_remote_url(&selected, "origin")
+        .and_then(|url| parse_github_repository(&url))
+        .ok_or_else(|| {
+            "Connect this project to a GitHub repository before listing pull requests.".to_string()
+        })?;
+    if !origin.eq_ignore_ascii_case(expected) {
+        return Err(
+            "This project's GitHub repository changed. Refresh before listing pull requests."
+                .into(),
+        );
+    }
+    Ok(selected)
+}
+
+/// One read-only, bounded page for the project PR home. This never attaches a
+/// PR to a thread and never stages, commits, pushes, or changes authentication.
+#[tauri::command]
+pub(super) async fn github_pr_list(
+    app: AppHandle,
+    cwd: String,
+    repository: String,
+    search: Option<String>,
+    state: Option<String>,
+    limit: Option<usize>,
+) -> Result<Vec<GitHubPrSummary>, String> {
+    let query = pr_list_query(&repository, search, state, limit)?;
+    let expected = repository.clone();
+    blocking_local(move || project_for_pr_list(&cwd, &expected)).await?;
+    list_with(&resolve_github_binary(&app).await?, &repository, query).await
+}
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -142,6 +325,46 @@ fn mutation_lock(repository: &str) -> Arc<Mutex<()>> {
         .clone()
 }
 
+/// A worker owns a clone of this lease. Dropping the IPC future cannot release
+/// either lock while its blocking Git worker or mutating CLI child is active.
+struct MutationLease {
+    _local: Option<OwnedMutexGuard<()>>,
+    _github: OwnedMutexGuard<()>,
+}
+
+async fn mutation_lease(
+    selected: Option<&Path>,
+    repository: &str,
+) -> Result<Arc<MutationLease>, String> {
+    // All PR workflows acquire local then GitHub; never reverse this order.
+    let local = match selected {
+        Some(selected) => Some(
+            crate::git_workspace::repository_lock(selected)
+                .await?
+                .lock_owned()
+                .await,
+        ),
+        None => None,
+    };
+    let github = mutation_lock(repository).lock_owned().await;
+    Ok(Arc::new(MutationLease {
+        _local: local,
+        _github: github,
+    }))
+}
+
+async fn blocking_mutation<T, F>(lease: Arc<MutationLease>, operation: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    blocking_local(move || {
+        let _lease = lease;
+        operation()
+    })
+    .await
+}
+
 fn validate_repository(repository: &str) -> Result<(), String> {
     let mut parts = repository.split('/');
     let valid_part = |value: &str| {
@@ -250,35 +473,168 @@ async fn command_output(
     }
 }
 
-fn async_git_command(cwd: &Path) -> Command {
-    let mut command = background_command("git");
-    command
-        .current_dir(cwd)
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_COMMON_DIR")
-        .env_remove("GIT_INDEX_FILE");
-    let home = env::var_os("HOME").map(PathBuf::from);
-    if let Some(path) = git_runtime_path(env::var_os("PATH").as_deref(), home.as_deref()) {
-        command.env("PATH", path);
+fn mutation_git(
+    cwd: &Path,
+    args: &[&str],
+    limit: Duration,
+    action: &str,
+) -> Result<String, String> {
+    let network = args.first().is_some_and(|arg| *arg == "push");
+    let (output, truncated) = bounded_git_output(cwd, args, limit, MAX_COMMAND_OUTPUT, network)
+        .map_err(|error| format!("{action}: {error}"))?;
+    if truncated {
+        return Err(format!(
+            "{action} produced too much output. Refresh before retrying."
+        ));
     }
-    command
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if detail.is_empty() {
+            format!("{action} failed.")
+        } else {
+            detail
+        });
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 async fn bounded_git(
+    lease: Arc<MutationLease>,
     cwd: &Path,
     args: &[String],
     limit: Duration,
     action: &str,
 ) -> Result<String, String> {
-    let mut command = async_git_command(cwd);
-    command.args(args);
-    let output = command_output(command, limit, action).await?;
-    Ok(String::from_utf8_lossy(&output).trim().to_string())
+    let cwd = cwd.to_path_buf();
+    let args = args.to_vec();
+    let action = action.to_string();
+    blocking_mutation(lease, move || {
+        let borrowed: Vec<_> = args.iter().map(String::as_str).collect();
+        mutation_git(&cwd, &borrowed, limit, &action)
+    })
+    .await
+}
+
+struct CancelMutationChild(Arc<AtomicBool>);
+
+impl Drop for CancelMutationChild {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
+fn drain_command_pipe(
+    mut pipe: Box<dyn Read + Send>,
+) -> mpsc::Receiver<Result<(Vec<u8>, bool), String>> {
+    let (sender, receiver) = mpsc::sync_channel(1);
+    thread::spawn(move || {
+        let _ = sender.send(read_command_pipe(&mut pipe));
+    });
+    receiver
+}
+
+fn read_command_pipe(pipe: &mut dyn Read) -> Result<(Vec<u8>, bool), String> {
+    let mut kept = Vec::new();
+    let mut truncated = false;
+    let mut chunk = [0; 8192];
+    loop {
+        let count = pipe
+            .read(&mut chunk)
+            .map_err(|error| format!("Could not read GitHub CLI output: {error}"))?;
+        if count == 0 {
+            return Ok((kept, truncated));
+        }
+        let retain = count.min(MAX_COMMAND_OUTPUT.saturating_sub(kept.len()));
+        kept.extend_from_slice(&chunk[..retain]);
+        truncated |= retain < count;
+    }
+}
+
+/// The blocking child owner is cancelled by a signal, not by dropping its
+/// future. It retains both leases through scoped kill/reap, then ends; cancellation
+/// does not continue the remaining push/create/refresh workflow.
+async fn mutation_command_output(
+    lease: Arc<MutationLease>,
+    command: Command,
+    limit: Duration,
+    action: &str,
+) -> Result<Vec<u8>, String> {
+    let action = action.to_string();
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let _cancel_on_drop = CancelMutationChild(cancelled.clone());
+    blocking_mutation(lease, move || {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(format!("{action} was cancelled. Refresh before retrying."));
+        }
+        let mut command = command.into_std();
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let deadline = Instant::now() + limit;
+        let (mut child, scope) = spawn_scoped_git(&mut command)
+            .map_err(|error| format!("Could not run {action}: {error}"))?;
+        let stdout = drain_command_pipe(Box::new(child.stdout.take().unwrap()));
+        let stderr = drain_command_pipe(Box::new(child.stderr.take().unwrap()));
+        let interruption = || {
+            if cancelled.load(Ordering::Acquire) {
+                Some(format!("{action} was cancelled. Refresh before retrying."))
+            } else if Instant::now() >= deadline {
+                Some(format!("{action} timed out. Refresh before retrying."))
+            } else {
+                None
+            }
+        };
+        let status = loop {
+            if let Some(error) = interruption() {
+                return Err(scope.stop(&mut child, error));
+            }
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) => thread::sleep(Duration::from_millis(10)),
+                Err(error) => {
+                    return Err(
+                        scope.stop(&mut child, format!("Could not wait for {action}: {error}"))
+                    )
+                }
+            }
+        };
+        let mut receive = |reader: mpsc::Receiver<Result<(Vec<u8>, bool), String>>| loop {
+            if let Some(error) = interruption() {
+                return Err(scope.stop(&mut child, error));
+            }
+            match reader.try_recv() {
+                Ok(Ok(value)) => return Ok(value),
+                Ok(Err(error)) => return Err(scope.stop(&mut child, error)),
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    return Err(scope.stop(&mut child, format!("Could not read {action} output.")))
+                }
+                Err(mpsc::TryRecvError::Empty) => thread::sleep(Duration::from_millis(10)),
+            }
+        };
+        let (stdout, stdout_truncated) = receive(stdout)?;
+        let (stderr, stderr_truncated) = receive(stderr)?;
+        if stdout_truncated || stderr_truncated {
+            return Err(format!(
+                "{action} produced too much output. Refresh before retrying."
+            ));
+        }
+        if status.success() {
+            Ok(stdout)
+        } else {
+            let detail = String::from_utf8_lossy(&stderr).trim().to_string();
+            Err(if detail.is_empty() {
+                format!("{action} failed.")
+            } else {
+                detail
+            })
+        }
+    })
+    .await
 }
 
 async fn gh_json(path: &Path, args: &[&str]) -> Result<Value, String> {
-    let mut command = background_command(path);
+    let mut command = github_command(path);
     command.args(args);
     let bytes = command_output(command, COMMAND_TIMEOUT, "GitHub CLI").await?;
     serde_json::from_slice(&bytes).map_err(|error| format!("GitHub returned invalid data: {error}"))
@@ -538,7 +894,7 @@ async fn find_with(
 fn remote_for_repository(cwd: &Path, repository: &str) -> Result<String, String> {
     let remotes = git(cwd, &["remote"])?;
     for remote in remotes.lines() {
-        if let Some(url) = optional_git_stdout(cwd, &["remote", "get-url", remote]) {
+        if let Some(url) = github_remote_url(cwd, remote) {
             if parse_github_repository(&url)
                 .as_deref()
                 .is_some_and(|found| found.eq_ignore_ascii_case(repository))
@@ -680,7 +1036,7 @@ pub(super) async fn github_pr_context(
     let (selected, branch, head_oid, repository, push_remote) = blocking_local(move || {
         let selected = selected_repository(&cwd)?;
         let (branch, head_oid) = branch_and_head(&selected)?;
-        let origin = optional_git_stdout(&selected, &["remote", "get-url", "origin"])
+        let origin = github_remote_url(&selected, "origin")
             .ok_or_else(|| "This repository has no origin remote.".to_string())?;
         let repository = parse_github_repository(&origin)
             .ok_or_else(|| "The origin remote is not a GitHub repository.".to_string())?;
@@ -800,22 +1156,26 @@ pub(super) async fn github_pr_branch(
     validate_oid(&expected_head_oid)?;
     let (selected, repository) = blocking_local(move || {
         let selected = selected_repository(&cwd)?;
-        let origin = optional_git_stdout(&selected, &["remote", "get-url", "origin"])
+        let origin = github_remote_url(&selected, "origin")
             .ok_or_else(|| "This repository has no origin remote.".to_string())?;
         let repository = parse_github_repository(&origin)
             .ok_or_else(|| "The origin remote is not a GitHub repository.".to_string())?;
         Ok((selected, repository))
     })
     .await?;
-    let local_lock = crate::git_workspace::repository_lock(&selected).await?;
-    let _local_guard = local_lock.lock().await;
-    // Resolve authentication up front so this command has the same GitHub
-    // availability boundary as the rest of the PR workflow, without making a
-    // network request or changing any remote state.
+    // Resolve availability without making a network request or changing auth.
     let _ = resolve_github_binary(&app).await?;
-    let lock = mutation_lock(&repository);
-    let _guard = lock.lock().await;
-    blocking_local(move || {
+    branch_with(selected, repository, name, expected_head_oid).await
+}
+
+async fn branch_with(
+    selected: PathBuf,
+    repository: String,
+    name: String,
+    expected_head_oid: String,
+) -> Result<(), String> {
+    let lease = mutation_lease(Some(&selected), &repository).await?;
+    blocking_mutation(lease, move || {
         let (_, current_oid) = branch_and_head(&selected)?;
         if current_oid != expected_head_oid {
             return Err(
@@ -837,7 +1197,13 @@ pub(super) async fn github_pr_branch(
         {
             return Err(format!("A local branch named {name} already exists."));
         }
-        git(&selected, &["switch", "-c", &name]).map(|_| ())
+        mutation_git(
+            &selected,
+            &["switch", "-c", &name],
+            MUTATION_TIMEOUT,
+            "Git branch creation",
+        )
+        .map(|_| ())
     })
     .await
 }
@@ -897,11 +1263,38 @@ pub(super) async fn github_pr_create(
         return Err("Pull request title must be 1–256 characters.".into());
     }
     let selected = blocking_local(move || selected_repository(&cwd)).await?;
-    let local_lock = crate::git_workspace::repository_lock(&selected).await?;
-    let _local_guard = local_lock.lock().await;
     let gh = resolve_github_binary(&app).await?;
-    let lock = mutation_lock(&repository);
-    let _guard = lock.lock().await;
+    create_with(
+        selected,
+        gh,
+        repository,
+        head,
+        base,
+        title,
+        body,
+        draft,
+        commit_message,
+        commit_all,
+        expected_head_oid,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn create_with(
+    selected: PathBuf,
+    gh: PathBuf,
+    repository: String,
+    head: String,
+    base: String,
+    title: String,
+    body: String,
+    draft: bool,
+    commit_message: Option<String>,
+    commit_all: bool,
+    expected_head_oid: String,
+) -> Result<GitHubPrCreateResult, String> {
+    let lease = mutation_lease(Some(&selected), &repository).await?;
     let info = repository_info(&gh, &repository).await?;
     let preflight_selected = selected.clone();
     let preflight_repository = repository.clone();
@@ -909,7 +1302,7 @@ pub(super) async fn github_pr_create(
     let preflight_base = base.clone();
     let preflight_expected = expected_head_oid.clone();
     let preflight_default = info.default_branch.clone();
-    blocking_local(move || {
+    blocking_mutation(lease.clone(), move || {
         create_preflight(
             &preflight_selected,
             &preflight_repository,
@@ -948,7 +1341,7 @@ pub(super) async fn github_pr_create(
     } else {
         None
     };
-    let (selected, remote) = blocking_local(move || {
+    let (selected, remote) = blocking_mutation(lease.clone(), move || {
         create_preflight(
             &selected,
             &mutation_repository,
@@ -960,13 +1353,14 @@ pub(super) async fn github_pr_create(
         let remote = remote_for_repository(&selected, &mutation_repository)?;
         ensure_local_base(&selected, &remote, &mutation_base)?;
         if commit_all {
-            git(&selected, &["add", "-A"])?;
+            mutation_git(&selected, &["add", "-A"], MUTATION_TIMEOUT, "Git stage")?;
         }
         Ok((selected, remote))
     })
     .await?;
     if let Some(message) = commit_message {
         bounded_git(
+            lease.clone(),
             &selected,
             &["commit".into(), "-m".into(), message],
             MUTATION_TIMEOUT,
@@ -982,12 +1376,13 @@ pub(super) async fn github_pr_create(
     let verify_base = base.clone();
     let verify_remote = remote.clone();
     let verify_expected = expected_head_oid.clone();
-    let (refspec, pushed_oid) = blocking_local(move || {
+    let (refspec, pushed_oid) = blocking_mutation(lease.clone(), move || {
         if committed_delta(&verify_selected, &verify_remote, &verify_base)? == 0 { return Err("There are no committed changes to include in this pull request. Commit changes explicitly or select Commit all changes.".into()); }
         let push_oid = push_oid_for(&verify_selected, &verify_head, &verify_expected, commit_all)?;
         Ok((format!("{push_oid}:refs/heads/{verify_head}"), push_oid))
     }).await?;
     bounded_git(
+        lease.clone(),
         &selected,
         &["push".into(), "--".into(), remote, refspec],
         MUTATION_TIMEOUT,
@@ -1005,7 +1400,7 @@ pub(super) async fn github_pr_create(
         ensure_pull_request_identity(&existing, &repository, &head, &base, Some(&pushed_oid))?;
         return Ok(GitHubPrCreateResult::updated(existing));
     }
-    let mut command = background_command(&gh);
+    let mut command = github_command(&gh);
     command.args([
         "pr",
         "create",
@@ -1023,7 +1418,7 @@ pub(super) async fn github_pr_create(
     if draft {
         command.arg("--draft");
     }
-    let output = command_output(command, MUTATION_TIMEOUT, "GitHub pull request creation").await
+    let output = mutation_command_output(lease.clone(), command, MUTATION_TIMEOUT, "GitHub pull request creation").await
         .map_err(|error| format!("The branch was pushed, but GitHub did not confirm pull request creation. Refresh before retrying: {error}"))?;
     let url = String::from_utf8_lossy(&output).trim().to_string();
     let number = url
@@ -1052,11 +1447,8 @@ pub(super) async fn github_pr_merge(
     auto: bool,
 ) -> Result<GitHubPullRequest, String> {
     let selected = blocking_local(move || selected_repository(&cwd)).await?;
-    let local_lock = crate::git_workspace::repository_lock(&selected).await?;
-    let _local_guard = local_lock.lock().await;
     let gh = resolve_github_binary(&app).await?;
-    let lock = mutation_lock(&repository);
-    let _guard = lock.lock().await;
+    let lease = mutation_lease(Some(&selected), &repository).await?;
     let current = view_with(&gh, &repository, number).await?;
     if current.head_oid != expected_head_oid {
         return Err(
@@ -1089,9 +1481,15 @@ pub(super) async fn github_pr_merge(
         return Err("This pull request is not currently mergeable. Refresh its checks and review status before merging.".into());
     }
     let args = merge_args(&repository, number, &method, &expected_head_oid, auto)?;
-    let mut command = background_command(&gh);
+    let mut command = github_command(&gh);
     command.args(args);
-    command_output(command, MUTATION_TIMEOUT, "GitHub pull request merge").await?;
+    mutation_command_output(
+        lease.clone(),
+        command,
+        MUTATION_TIMEOUT,
+        "GitHub pull request merge",
+    )
+    .await?;
     view_with(&gh, &repository, number).await
 }
 
@@ -1110,8 +1508,7 @@ pub(super) async fn github_pr_ready(
         return Err("Pull request number must be positive.".into());
     }
     let gh = resolve_github_binary(&app).await?;
-    let lock = mutation_lock(&repository);
-    let _guard = lock.lock().await;
+    let lease = mutation_lease(None, &repository).await?;
     let info = repository_info(&gh, &repository).await?;
     let number_text = number.to_string();
     let value = gh_json(
@@ -1148,9 +1545,15 @@ pub(super) async fn github_pr_ready(
     if !can_write && (login.is_empty() || !login.eq_ignore_ascii_case(author)) {
         return Err("Only the pull request author or a repository collaborator with write permission can mark this draft ready.".into());
     }
-    let mut command = background_command(&gh);
+    let mut command = github_command(&gh);
     command.args(["pr", "ready", "--repo", &repository, "--", &number_text]);
-    command_output(command, MUTATION_TIMEOUT, "GitHub draft update").await?;
+    mutation_command_output(
+        lease.clone(),
+        command,
+        MUTATION_TIMEOUT,
+        "GitHub draft update",
+    )
+    .await?;
     view_with(&gh, &repository, number).await
 }
 
@@ -1160,12 +1563,424 @@ mod tests {
     use std::fs;
 
     #[cfg(unix)]
+    fn cancellation_fixture(hook_name: &str) -> (PathBuf, String, String, PathBuf, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let root = env::temp_dir().join(format!("mythra-pr-cancel-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        git(&root, &["init", "-b", "main"]).unwrap();
+        git(&root, &["config", "user.name", "Fixture"]).unwrap();
+        git(&root, &["config", "user.email", "fixture@example.com"]).unwrap();
+        fs::write(root.join("file"), "base").unwrap();
+        git(&root, &["add", "file"]).unwrap();
+        git(&root, &["commit", "-m", "base"]).unwrap();
+        let expected = git(&root, &["rev-parse", "HEAD"]).unwrap();
+        let repository = format!("owner/fixture-{}", uuid::Uuid::new_v4());
+        git(
+            &root,
+            &[
+                "remote",
+                "add",
+                "origin",
+                &format!("https://github.com/{repository}.git"),
+            ],
+        )
+        .unwrap();
+        git(
+            &root,
+            &["update-ref", "refs/remotes/origin/main", &expected],
+        )
+        .unwrap();
+        git(&root, &["switch", "-c", "topic"]).unwrap();
+        let marker = root.join(".git/hook-started");
+        let gate = root.join(".git/hook-release");
+        let hook = root.join(".git/hooks").join(hook_name);
+        fs::write(
+            &hook,
+            format!(
+                "#!/bin/sh\ntouch '{}'\nwhile [ ! -f '{}' ]; do sleep 0.01; done\n",
+                marker.display(),
+                gate.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        (root, repository, expected, marker, gate)
+    }
+
+    #[cfg(unix)]
+    async fn assert_cancelled_worker_retains_ownership<T: Send + 'static>(
+        task: tokio::task::JoinHandle<T>,
+        root: &Path,
+        repository: &str,
+        marker: &Path,
+        gate: &Path,
+    ) {
+        let started = tokio::time::timeout(Duration::from_secs(5), async {
+            while !marker.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        if started.is_err() {
+            fs::write(gate, "release").unwrap();
+            panic!("the gated PR Git hook did not start");
+        }
+        task.abort();
+        assert!(task.await.err().unwrap().is_cancelled());
+        let local = crate::git_workspace::repository_lock(root).await.unwrap();
+        let github = mutation_lock(repository);
+        let local_retained = local.try_lock().is_err();
+        let github_retained = github.try_lock().is_err();
+        let second = tokio::spawn(crate::git_workspace::git_workspace_stage(
+            root.to_string_lossy().into_owned(),
+            None,
+            false,
+            None,
+            None,
+        ));
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let second_blocked = !second.is_finished();
+        fs::write(gate, "release").unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(5), second)
+            .await
+            .unwrap()
+            .unwrap();
+        let local_guard = tokio::time::timeout(Duration::from_secs(5), local.lock())
+            .await
+            .unwrap();
+        let github_guard = tokio::time::timeout(Duration::from_secs(5), github.lock())
+            .await
+            .unwrap();
+        assert!(
+            local_retained,
+            "cancelling IPC released the active PR Git worker's local lease"
+        );
+        assert!(
+            github_retained,
+            "cancelling IPC released the active PR Git worker's GitHub lease"
+        );
+        assert!(
+            second_blocked,
+            "a second native Git mutation entered before the cancelled worker finished"
+        );
+        drop((local_guard, github_guard));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancelled_pr_branch_retains_both_leases_through_post_checkout_hook() {
+        let (root, repository, expected, marker, gate) = cancellation_fixture("post-checkout");
+        let task = tokio::spawn(branch_with(
+            root.clone(),
+            repository.clone(),
+            "new-topic".into(),
+            expected,
+        ));
+        assert_cancelled_worker_retains_ownership(task, &root, &repository, &marker, &gate).await;
+        assert_eq!(
+            git(&root, &["branch", "--show-current"]).unwrap(),
+            "new-topic"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancelled_pr_create_retains_both_leases_through_pre_commit_hook() {
+        use std::os::unix::fs::PermissionsExt;
+        let (root, repository, expected, marker, gate) = cancellation_fixture("pre-commit");
+        let gh = root.join("fake-gh");
+        fs::write(&gh, "#!/bin/sh\nif [ \"$1\" = api ]; then printf '%s\\n' '{\"default_branch\":\"main\",\"permissions\":{\"push\":true},\"allow_squash_merge\":true}'; elif [ \"$1:$2\" = pr:list ]; then printf '[]\\n'; else exit 88; fi\n").unwrap();
+        fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::write(root.join("file"), "working").unwrap();
+        let task = tokio::spawn(create_with(
+            root.clone(),
+            gh,
+            repository.clone(),
+            "topic".into(),
+            "main".into(),
+            "A change".into(),
+            "".into(),
+            true,
+            Some("fixture commit".into()),
+            true,
+            expected,
+        ));
+        assert_cancelled_worker_retains_ownership(task, &root, &repository, &marker, &gate).await;
+        assert_eq!(
+            git(&root, &["log", "-1", "--format=%s"]).unwrap(),
+            "fixture commit"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancelled_mutating_cli_retains_both_leases_until_kill_and_reap() {
+        use std::os::unix::fs::PermissionsExt;
+        let (root, repository, _, marker, gate) = cancellation_fixture("pre-commit");
+        let binary = root.join("fake-gh");
+        fs::write(&binary, format!(
+            "#!/bin/sh\ntrap 'while [ ! -f \"{}\" ]; do sleep 0.01; done; exit 1' TERM\ntouch '{}'\nwhile :; do sleep 0.01; done\n",
+            gate.display(), marker.display(),
+        )).unwrap();
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+        let lease = mutation_lease(Some(&root), &repository).await.unwrap();
+        let task = tokio::spawn(async move {
+            mutation_command_output(
+                lease,
+                github_command(&binary),
+                Duration::from_secs(5),
+                "fixture mutation",
+            )
+            .await
+        });
+        assert_cancelled_worker_retains_ownership(task, &root, &repository, &marker, &gate).await;
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn mutating_cli_timeout_stops_descendants_and_bounds_output() {
+        use std::os::unix::fs::PermissionsExt;
+        let (root, repository, _, _, _) = cancellation_fixture("pre-commit");
+        let binary = root.join("fake-gh");
+        let late_write = root.join("unexpected-child-write");
+        fs::write(
+            &binary,
+            format!(
+                "#!/bin/sh\ntrap '' TERM\n(sleep 0.6; printf late > '{}') &\nwait\n",
+                late_write.display(),
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+        let lease = mutation_lease(Some(&root), &repository).await.unwrap();
+        let error = mutation_command_output(
+            lease,
+            github_command(&binary),
+            Duration::from_millis(80),
+            "fixture mutation",
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("timed out"));
+        let local = crate::git_workspace::repository_lock(&root).await.unwrap();
+        assert!(local.try_lock().is_ok());
+        assert!(mutation_lock(&repository).try_lock().is_ok());
+        tokio::time::sleep(Duration::from_millis(650)).await;
+        assert!(
+            !late_write.exists(),
+            "timed-out CLI descendant continued mutating after lease release"
+        );
+        fs::write(&binary, "#!/bin/sh\nprintf '%1048577d' 0\n").unwrap();
+        let lease = mutation_lease(Some(&root), &repository).await.unwrap();
+        assert!(mutation_command_output(
+            lease,
+            github_command(&binary),
+            Duration::from_secs(5),
+            "fixture mutation"
+        )
+        .await
+        .unwrap_err()
+        .contains("too much output"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn mutating_cli_parent_exit_keeps_descendants_contained_until_pipe_timeout() {
+        let root = env::temp_dir().join(format!("mythra-pr-parent-exit-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        git(&root, &["init", "-b", "main"]).unwrap();
+        let repository = format!("owner/fixture-{}", uuid::Uuid::new_v4());
+        let late_write = root.join("unexpected-child-write");
+        let parent_exit = root.join("parent-exited");
+        #[cfg(unix)]
+        let (command, timeout, after) = {
+            use std::os::unix::fs::PermissionsExt;
+            let binary = root.join("fake-gh");
+            fs::write(
+                &binary,
+                format!(
+                    "#!/bin/sh\n(sleep 3; printf late > '{}') &\nprintf exited > '{}'\nexit 0\n",
+                    late_write.display(),
+                    parent_exit.display()
+                ),
+            )
+            .unwrap();
+            fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+            (
+                github_command(&binary),
+                Duration::from_secs(2),
+                Duration::from_millis(3200),
+            )
+        };
+        #[cfg(windows)]
+        let (command, timeout, after) = {
+            let child_script = root.join("child.ps1");
+            let parent_script = root.join("parent.ps1");
+            let started = root.join("child-started");
+            let escaped = |path: &Path| path.to_string_lossy().replace('\'', "''");
+            fs::write(&child_script, format!("Set-Content -LiteralPath '{}' -Value 'started'; Start-Sleep -Seconds 3; Set-Content -LiteralPath '{}' -Value 'late'", escaped(&started), escaped(&late_write))).unwrap();
+            fs::write(&parent_script, format!("$child = Start-Process -FilePath powershell.exe -ArgumentList @('-NoProfile', '-NonInteractive', '-File', '\"{}\"') -NoNewWindow -PassThru; while (!(Test-Path -LiteralPath '{}')) {{ Start-Sleep -Milliseconds 10 }}; Set-Content -LiteralPath '{}' -Value 'exited'; exit 0", escaped(&child_script), escaped(&started), escaped(&parent_exit))).unwrap();
+            let mut command = crate::process_launch::background_command("powershell.exe");
+            command
+                .args(["-NoProfile", "-NonInteractive", "-File"])
+                .arg(parent_script);
+            (command, Duration::from_secs(2), Duration::from_millis(3200))
+        };
+        let lease = mutation_lease(Some(&root), &repository).await.unwrap();
+        let error = mutation_command_output(lease, command, timeout, "fixture mutation")
+            .await
+            .unwrap_err();
+        assert!(error.contains("timed out"), "{error}");
+        assert!(
+            parent_exit.exists(),
+            "fixture parent did not reach its exit before timeout"
+        );
+        let local = crate::git_workspace::repository_lock(&root).await.unwrap();
+        assert!(local.try_lock().is_ok());
+        assert!(mutation_lock(&repository).try_lock().is_ok());
+        tokio::time::sleep(after).await;
+        assert!(
+            !late_write.exists(),
+            "CLI parent exited before timeout and its descendant mutated after lease release"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn project_pr_list_validates_bounds_and_keeps_search_as_data() {
+        let query = pr_list_query(
+            "owner/repo",
+            Some("  title --limit 500  ".into()),
+            Some("all".into()),
+            Some(50),
+        )
+        .unwrap();
+        assert_eq!(query.search.as_deref(), Some("title --limit 500"));
+        assert_eq!(query.state, "all");
+        assert_eq!(query.limit, 50);
+        for limit in [0, 51, usize::MAX] {
+            assert!(pr_list_query("owner/repo", None, None, Some(limit)).is_err());
+        }
+        for search in ["title\nrepo:other/target".into(), "x".repeat(257)] {
+            assert!(pr_list_query("owner/repo", Some(search), None, None).is_err());
+        }
+        assert!(pr_list_query("--invalid/repo", None, None, None).is_err());
+        assert!(pr_list_query("owner/repo", None, Some("unknown".into()), None).is_err());
+    }
+
+    #[test]
+    fn project_pr_list_rejects_overflow_and_wrong_repository_results() {
+        let item = serde_json::json!({
+            "number": 7, "url": "https://github.com/owner/repo/pull/7", "title": "A change",
+            "state": "OPEN", "isDraft": true, "headRefName": "feature", "baseRefName": "main",
+            "updatedAt": "2026-09-28T00:00:00Z", "author": { "login": "author" },
+        });
+        let parsed =
+            pr_summaries_from_json("owner/repo", &serde_json::json!([item.clone()]), 30).unwrap();
+        assert_eq!(parsed[0].author_login.as_deref(), Some("author"));
+        assert!(parsed[0].is_draft);
+        let mut different = item.clone();
+        different["url"] = serde_json::json!("https://github.com/other/repo/pull/7");
+        assert!(pr_summaries_from_json("owner/repo", &serde_json::json!([different]), 30).is_err());
+        assert!(
+            pr_summaries_from_json("owner/repo", &serde_json::json!([item.clone(), item]), 1)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn project_pr_list_binds_the_configured_origin_without_changing_local_git() {
+        let root = env::temp_dir().join(format!("mythra-pr-list-origin-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        git(&root, &["init", "-b", "main"]).unwrap();
+        let cwd = root.to_string_lossy();
+        assert!(project_for_pr_list(&cwd, "owner/repo")
+            .unwrap_err()
+            .contains("Connect this project"));
+        git(
+            &root,
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/Owner/Repo.git",
+            ],
+        )
+        .unwrap();
+        git(
+            &root,
+            &[
+                "config",
+                "url.ssh://git@ssh.github.com:443/.insteadOf",
+                "https://github.com/",
+            ],
+        )
+        .unwrap();
+        let config_before = fs::read(root.join(".git/config")).unwrap();
+        assert_eq!(
+            project_for_pr_list(&cwd, "owner/repo").unwrap(),
+            root.canonicalize().unwrap()
+        );
+        assert!(project_for_pr_list(&cwd, "other/repo")
+            .unwrap_err()
+            .contains("repository changed"));
+        assert_eq!(fs::read(root.join(".git/config")).unwrap(), config_before);
+        git(
+            &root,
+            &[
+                "config",
+                "--add",
+                "remote.origin.url",
+                "https://github.com/other/repo.git",
+            ],
+        )
+        .unwrap();
+        assert!(project_for_pr_list(&cwd, "owner/repo").is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn project_pr_list_uses_one_bounded_read_on_the_explicit_github_host() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = env::temp_dir().join(format!("mythra-pr-list-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        let binary = root.join("gh");
+        fs::write(&binary, r#"#!/bin/sh
+[ "$GH_HOST" = github.com ] || exit 80
+[ "$GH_PROMPT_DISABLED" = 1 ] || exit 81
+[ -z "$GH_REPO" ] || exit 82
+[ "$#" = 12 ] || exit 83
+[ "$1:$2:$3:$4:$5:$6:$7:$8" = 'pr:list:--repo:github.com/owner/repo:--state:all:--limit:2' ] || exit 84
+[ "${11}:${12}" = '--search:title --limit 500' ] || exit 85
+printf '%s\n' '[{"number":7,"url":"https://github.com/owner/repo/pull/7","title":"A change","state":"OPEN","isDraft":false,"headRefName":"feature","baseRefName":"main","updatedAt":"2026-09-28T00:00:00Z","author":{"login":"author"}}]'
+"#).unwrap();
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+        let query = pr_list_query(
+            "owner/repo",
+            Some("title --limit 500".into()),
+            Some("all".into()),
+            Some(2),
+        )
+        .unwrap();
+        let result = list_with(&binary, "owner/repo", query).await.unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].number, 7);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
     fn fake_gh(root: &Path) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let script = root.join("gh");
         let log = root.join("gh.log");
         let source = format!(
             r#"#!/bin/sh
+[ "$GH_HOST" = github.com ] || {{ printf '%s\n' 'wrong GitHub host' >&2; exit 80; }}
+[ "$GH_PROMPT_DISABLED" = 1 ] || {{ printf '%s\n' 'interactive GitHub command' >&2; exit 81; }}
 printf '%s\n' "$*" >> '{}'
 if [ "$1" = api ]; then
   printf '%s\n' '{{"default_branch":"main","permissions":{{"push":true}},"allow_squash_merge":true,"allow_merge_commit":false,"allow_rebase_merge":false}}'
@@ -1202,6 +2017,60 @@ fi
         permissions.set_mode(0o700);
         fs::set_permissions(&script, permissions).unwrap();
         script
+    }
+
+    #[test]
+    fn github_remote_identity_supports_the_official_https_ssh_transport_and_checks_every_push_url()
+    {
+        let root =
+            std::env::temp_dir().join(format!("mythra-pr-transport-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        git(&root, &["init", "-b", "main"]).unwrap();
+        git(
+            &root,
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/owner/repo.git",
+            ],
+        )
+        .unwrap();
+        git(
+            &root,
+            &[
+                "config",
+                "url.ssh://git@ssh.github.com:443/.insteadOf",
+                "https://github.com/",
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            remote_for_repository(&root, "owner/repo").unwrap(),
+            "origin"
+        );
+        git(
+            &root,
+            &[
+                "config",
+                "--add",
+                "remote.origin.pushurl",
+                "ssh://git@ssh.github.com:443/owner/repo.git",
+            ],
+        )
+        .unwrap();
+        git(
+            &root,
+            &[
+                "config",
+                "--add",
+                "remote.origin.pushurl",
+                "https://github.com/owner/other.git",
+            ],
+        )
+        .unwrap();
+        assert!(remote_for_repository(&root, "owner/repo").is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1605,7 +2474,7 @@ fi
         let gh = fake_gh(&root);
         let oid = "0123456789abcdef0123456789abcdef01234567";
         let args = merge_args("owner/repo", 7, "squash", oid, true).unwrap();
-        let mut command = background_command(&gh);
+        let mut command = github_command(&gh);
         command.args(args);
         command_output(command, COMMAND_TIMEOUT, "fake merge")
             .await

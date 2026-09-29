@@ -16,7 +16,7 @@ use std::{
 use futures_util::TryStreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
     process::{Child, Command},
@@ -768,6 +768,7 @@ fn codex_arguments(options: &RunDiscoveryOptions, schema_path: &Path) -> Vec<OsS
     let mut arguments = vec![
         "exec".into(),
         "--ephemeral".into(),
+        "--json".into(),
         "--ignore-user-config".into(),
         "--ignore-rules".into(),
         "--skip-git-repo-check".into(),
@@ -992,6 +993,495 @@ impl Drop for DiscoveryWorkspace {
 struct BoundedOutput {
     bytes: Vec<u8>,
     exceeded: bool,
+}
+
+const BACKGROUND_USAGE_EVENT: &str = "background-helper-usage";
+const MAX_USAGE_COUNT: u64 = 9_007_199_254_740_991;
+
+#[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct HelperTokenUsage {
+    input_tokens: Option<u64>,
+    cached_input_tokens: Option<u64>,
+    cache_write_input_tokens: Option<u64>,
+    cache_write1h_input_tokens: Option<u64>,
+    output_tokens: Option<u64>,
+    reasoning_output_tokens: Option<u64>,
+    total_tokens: Option<u64>,
+}
+
+impl HelperTokenUsage {
+    fn any_reported(&self) -> bool {
+        self.input_tokens.is_some()
+            || self.cached_input_tokens.is_some()
+            || self.cache_write_input_tokens.is_some()
+            || self.cache_write1h_input_tokens.is_some()
+            || self.output_tokens.is_some()
+            || self.reasoning_output_tokens.is_some()
+            || self.total_tokens.is_some()
+    }
+
+    fn add(&mut self, next: Self) -> bool {
+        fn add(left: &mut Option<u64>, right: Option<u64>) -> bool {
+            if let Some(right) = right {
+                let sum = left
+                    .unwrap_or(0)
+                    .checked_add(right)
+                    .filter(|sum| *sum <= MAX_USAGE_COUNT);
+                *left = Some(sum.unwrap_or(MAX_USAGE_COUNT));
+                return sum.is_some();
+            }
+            true
+        }
+        // Every category must still be updated when one saturates. Saturation
+        // is a lower bound, never a complete reported execution count.
+        let mut unclamped = add(&mut self.input_tokens, next.input_tokens);
+        unclamped &= add(&mut self.cached_input_tokens, next.cached_input_tokens);
+        unclamped &= add(
+            &mut self.cache_write_input_tokens,
+            next.cache_write_input_tokens,
+        );
+        unclamped &= add(
+            &mut self.cache_write1h_input_tokens,
+            next.cache_write1h_input_tokens,
+        );
+        unclamped &= add(&mut self.output_tokens, next.output_tokens);
+        unclamped &= add(
+            &mut self.reasoning_output_tokens,
+            next.reasoning_output_tokens,
+        );
+        unclamped &= add(&mut self.total_tokens, next.total_tokens);
+        unclamped
+    }
+
+    fn retain_known_lower_bounds(&mut self) {
+        // Missing input is not zero: reported cached categories prove at least
+        // this many input tokens. Compute per terminal before summing so mixed
+        // partial turns never cause later normalization to erase real counts.
+        if self.input_tokens.is_none()
+            && (self.cached_input_tokens.is_some()
+                || self.cache_write_input_tokens.is_some()
+                || self.cache_write1h_input_tokens.is_some())
+        {
+            self.input_tokens = self
+                .cached_input_tokens
+                .unwrap_or(0)
+                .checked_add(
+                    self.cache_write_input_tokens
+                        .or(self.cache_write1h_input_tokens)
+                        .unwrap_or(0),
+                )
+                .filter(|count| *count <= MAX_USAGE_COUNT);
+        }
+        // Reasoning is an output subset. A missing output total cannot turn
+        // reported reasoning into zero during downstream normalization.
+        if self.output_tokens.is_none() {
+            self.output_tokens = self.reasoning_output_tokens;
+        }
+        let known_total = self
+            .input_tokens
+            .unwrap_or(0)
+            .checked_add(self.output_tokens.unwrap_or(0))
+            .filter(|count| *count <= MAX_USAGE_COUNT);
+        if self.input_tokens.is_some() || self.output_tokens.is_some() {
+            self.total_tokens = self.total_tokens.max(known_total);
+        }
+    }
+}
+
+fn usage_count(value: Option<&Value>) -> Option<u64> {
+    value?.as_u64().filter(|count| *count <= MAX_USAGE_COUNT)
+}
+
+fn count_any(value: &Value, names: &[&str]) -> Option<u64> {
+    names.iter().find_map(|name| usage_count(value.get(*name)))
+}
+
+fn helper_usage(provider: &str, usage: &Value) -> Option<HelperTokenUsage> {
+    let cached = count_any(
+        usage,
+        &[
+            "cached_input_tokens",
+            "cachedInputTokens",
+            "cache_read_input_tokens",
+        ],
+    )
+    .or_else(|| usage_count(usage.pointer("/input_tokens_details/cached_tokens")))
+    .or_else(|| usage_count(usage.pointer("/prompt_tokens_details/cached_tokens")));
+    let written = count_any(
+        usage,
+        &[
+            "cache_creation_input_tokens",
+            "cache_write_input_tokens",
+            "cacheWriteInputTokens",
+        ],
+    )
+    .or_else(|| usage_count(usage.pointer("/input_tokens_details/cache_write_tokens")))
+    .or_else(|| usage_count(usage.pointer("/prompt_tokens_details/cache_write_tokens")));
+    let input = count_any(usage, &["input_tokens", "inputTokens", "prompt_tokens"]);
+    let hour = usage_count(usage.pointer("/cache_creation/ephemeral_1h_input_tokens"));
+    // Claude reports ordinary input separately from cache reads/writes. Retain
+    // every known token; absent extra categories remain null/partial evidence,
+    // not a claim that the provider reported zero cache activity.
+    let input = if provider == "claude" {
+        input.and_then(|input| {
+            input
+                .checked_add(cached.unwrap_or(0))?
+                .checked_add(written.or(hour).unwrap_or(0))
+                .filter(|count| *count <= MAX_USAGE_COUNT)
+        })
+    } else {
+        input
+    };
+    let output = count_any(
+        usage,
+        &["output_tokens", "outputTokens", "completion_tokens"],
+    );
+    let result = HelperTokenUsage {
+        input_tokens: input,
+        cached_input_tokens: cached,
+        cache_write_input_tokens: written,
+        cache_write1h_input_tokens: hour,
+        output_tokens: output,
+        reasoning_output_tokens: count_any(
+            usage,
+            &["reasoning_output_tokens", "reasoningOutputTokens"],
+        )
+        .or_else(|| usage_count(usage.pointer("/output_tokens_details/reasoning_tokens")))
+        .or_else(|| usage_count(usage.pointer("/completion_tokens_details/reasoning_tokens"))),
+        total_tokens: count_any(usage, &["total_tokens", "totalTokens"]).or_else(|| {
+            if provider == "claude" && (cached.is_none() || written.is_none()) {
+                return None;
+            }
+            input.zip(output).and_then(|(input, output)| {
+                input
+                    .checked_add(output)
+                    .filter(|count| *count <= MAX_USAGE_COUNT)
+            })
+        }),
+    };
+    // Invalid subset receipts must not make the entire metadata event fail TS
+    // validation (and lose its actual execution/cost). Treat counts as unknown.
+    let cache_subset = cached
+        .unwrap_or(0)
+        .checked_add(written.or(hour).unwrap_or(0))?;
+    if cache_subset > MAX_USAGE_COUNT
+        || input.is_some_and(|input| cache_subset > input)
+        || hour
+            .zip(written)
+            .is_some_and(|(hour, written)| hour > written)
+        || result
+            .reasoning_output_tokens
+            .zip(output)
+            .is_some_and(|(reasoning, output)| reasoning > output)
+    {
+        return None;
+    }
+    result.any_reported().then_some(result)
+}
+
+fn harmless_identity(value: Option<&Value>) -> Option<String> {
+    let value = value?.as_str()?.trim();
+    (!value.is_empty() && value.len() <= 160 && !value.chars().any(char::is_control))
+        .then(|| value.to_string())
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HelperUsageEvent {
+    execution_id: String,
+    provider: String,
+    model: String,
+    model_source: &'static str,
+    purpose: &'static str,
+    service_tier: Option<String>,
+    service_tier_source: &'static str,
+    requested_service_tier: Option<String>,
+    outcome: &'static str,
+    token_availability: &'static str,
+    usage: Option<HelperTokenUsage>,
+    reported_cost: Option<f64>,
+}
+
+struct HelperUsageObserver {
+    event: HelperUsageEvent,
+    line: Vec<u8>,
+    oversized_line: bool,
+    terminal_seen: bool,
+    terminal_count: usize,
+    all_usage_complete: bool,
+    usage_overflowed: bool,
+    mixed_model: bool,
+    mixed_tier: bool,
+}
+
+impl HelperUsageObserver {
+    fn new(options: &RunDiscoveryOptions, task: NativeTask) -> Self {
+        let priority_requested = options.provider == "openai" && options.fast;
+        Self {
+            event: HelperUsageEvent {
+                execution_id: uuid::Uuid::new_v4().to_string(),
+                provider: options.provider.clone(),
+                model: options.model.clone(),
+                model_source: "requested",
+                purpose: match (task, options.purpose) {
+                    (NativeTask::Title, _) => "thread-title",
+                    (_, DiscoveryPurpose::Checks) => "check-discovery",
+                    _ => "run-discovery",
+                },
+                service_tier: priority_requested.then(|| "priority".into()),
+                service_tier_source: if priority_requested {
+                    "requested"
+                } else {
+                    "unknown"
+                },
+                requested_service_tier: priority_requested.then(|| "priority".into()),
+                outcome: "unknown",
+                token_availability: "unavailable",
+                usage: None,
+                reported_cost: None,
+            },
+            line: Vec::new(),
+            oversized_line: false,
+            terminal_seen: false,
+            terminal_count: 0,
+            all_usage_complete: true,
+            usage_overflowed: false,
+            mixed_model: false,
+            mixed_tier: false,
+        }
+    }
+
+    fn observe(&mut self, value: &Value) {
+        let provider = self.event.provider.as_str();
+        let kind = value.get("type").and_then(Value::as_str);
+        if provider == "openai" && kind == Some("turn.started") {
+            self.terminal_seen = false;
+            return;
+        }
+        let terminal = if provider == "openai" {
+            matches!(kind, Some("turn.completed" | "turn.failed"))
+        } else {
+            kind == Some("result") || (kind.is_none() && value.get("usage").is_some())
+        };
+        if !terminal || self.terminal_seen {
+            return;
+        }
+        self.terminal_seen = true;
+        let previous_model = self.event.model.clone();
+        let previous_model_source = self.event.model_source;
+        let previous_tier = self.event.service_tier.clone();
+        let previous_tier_source = self.event.service_tier_source;
+        self.terminal_count += 1;
+        let mut reported_model = false;
+        if let Some(model) = harmless_identity(value.get("model")) {
+            self.event.model = model;
+            self.event.model_source = "reported";
+            reported_model = true;
+        } else if provider == "claude" {
+            if let Some(models) = value.get("modelUsage").and_then(Value::as_object) {
+                if models.len() == 1 {
+                    if let Some(model) = models
+                        .keys()
+                        .next()
+                        .and_then(|model| harmless_identity(Some(&json!(model))))
+                    {
+                        self.event.model = model;
+                        self.event.model_source = "reported";
+                        reported_model = true;
+                    }
+                } else if models.len() > 1 {
+                    // A multi-model result cannot honestly be priced as one
+                    // requested alias. Its provider-reported cost still survives.
+                    self.event.model = "unattributed".into();
+                    self.event.model_source = "unknown";
+                    self.mixed_model = true;
+                }
+            }
+        }
+        if self.terminal_count > 1
+            && (previous_model != self.event.model
+                || previous_model_source != self.event.model_source
+                || (!reported_model && previous_model_source == "reported"))
+        {
+            self.mixed_model = true;
+        }
+        if self.mixed_model {
+            self.event.model = "unattributed".into();
+            self.event.model_source = "unknown";
+        }
+        let mut reported_tier = false;
+        if let Some(tier) = harmless_identity(
+            value
+                .get("service_tier")
+                .or_else(|| value.get("serviceTier")),
+        ) {
+            self.event.service_tier = Some(tier);
+            self.event.service_tier_source = "reported";
+            reported_tier = true;
+        }
+        if self.terminal_count > 1
+            && (previous_tier != self.event.service_tier
+                || previous_tier_source != self.event.service_tier_source
+                || (!reported_tier && previous_tier_source == "reported"))
+        {
+            self.mixed_tier = true;
+        }
+        if self.mixed_tier {
+            self.event.service_tier = None;
+            self.event.service_tier_source = "unknown";
+        }
+        if let Some(cost) = value
+            .get("total_cost_usd")
+            .or_else(|| value.pointer("/usage/cost"))
+            .and_then(Value::as_f64)
+            .filter(|cost| cost.is_finite() && *cost >= 0.0)
+        {
+            let total = self.event.reported_cost.unwrap_or(0.0) + cost;
+            if total.is_finite() {
+                self.event.reported_cost = Some(total);
+            }
+        }
+        let next_usage = value
+            .get("usage")
+            .and_then(|usage| helper_usage(provider, usage));
+        self.all_usage_complete &= next_usage.as_ref().is_some_and(|usage| {
+            usage.input_tokens.is_some()
+                && usage.output_tokens.is_some()
+                && usage.cached_input_tokens.is_some()
+                && usage.cache_write_input_tokens.is_some()
+        });
+        if let Some(mut usage) = next_usage.filter(|_| !self.usage_overflowed) {
+            usage.retain_known_lower_bounds();
+            let unclamped = self
+                .event
+                .usage
+                .get_or_insert_with(HelperTokenUsage::default)
+                .add(usage);
+            if !unclamped {
+                // An over-cap aggregate cannot safely represent all disjoint
+                // cache subsets. Keep the execution/cost, not invented counts.
+                self.usage_overflowed = true;
+                self.event.usage = None;
+                self.all_usage_complete = false;
+            }
+        }
+        self.event.token_availability = if self.event.usage.is_none() {
+            "unavailable"
+        } else if self.all_usage_complete {
+            "reported"
+        } else {
+            "partial"
+        };
+    }
+
+    fn feed(&mut self, bytes: &[u8]) {
+        // The protocol observer remains bounded independently of retained
+        // stdout, so a terminal usage receipt after large tool output survives.
+        for byte in bytes {
+            if *byte == b'\n' {
+                self.finish_line();
+            } else if self.line.len() < MAX_OUTPUT_BYTES && !self.oversized_line {
+                self.line.push(*byte);
+            } else {
+                self.line.clear();
+                self.oversized_line = true;
+            }
+        }
+    }
+
+    fn finish_line(&mut self) {
+        if !self.oversized_line {
+            if let Ok(value) = serde_json::from_slice::<Value>(&self.line) {
+                self.observe(&value);
+            }
+        }
+        self.line.clear();
+        self.oversized_line = false;
+    }
+}
+
+type SharedHelperUsage = Arc<StdMutex<HelperUsageObserver>>;
+
+struct HelperUsageGuard {
+    app: AppHandle,
+    observer: SharedHelperUsage,
+    request: Arc<DiscoveryRequest>,
+    started: AtomicBool,
+}
+
+impl HelperUsageGuard {
+    fn new(
+        app: &AppHandle,
+        options: &RunDiscoveryOptions,
+        task: NativeTask,
+        request: Arc<DiscoveryRequest>,
+    ) -> Self {
+        Self {
+            app: app.clone(),
+            observer: Arc::new(StdMutex::new(HelperUsageObserver::new(options, task))),
+            request,
+            started: AtomicBool::new(false),
+        }
+    }
+
+    fn outcome(&self, outcome: &'static str) {
+        self.observer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .event
+            .outcome = outcome;
+    }
+
+    fn begin(&self) {
+        self.started.store(true, Ordering::Release);
+    }
+}
+
+impl Drop for HelperUsageGuard {
+    fn drop(&mut self) {
+        if !self.started.load(Ordering::Acquire) {
+            return;
+        }
+        let mut event = self
+            .observer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .event
+            .clone();
+        if self.request.cancelled.load(Ordering::Acquire) {
+            event.outcome = "cancelled";
+        }
+        // Deliberately no cwd, prompt, tool output, provider error, or transcript.
+        let _ = self.app.emit(BACKGROUND_USAGE_EVENT, event);
+    }
+}
+
+async fn read_bounded_with_usage<R: AsyncRead + Unpin>(
+    mut reader: R,
+    observer: SharedHelperUsage,
+) -> std::io::Result<BoundedOutput> {
+    let mut bytes = Vec::new();
+    let mut buffer = [0u8; 8192];
+    let mut exceeded = false;
+    loop {
+        let read = reader.read(&mut buffer).await?;
+        if read == 0 {
+            break;
+        }
+        observer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .feed(&buffer[..read]);
+        let retained = MAX_OUTPUT_BYTES.saturating_sub(bytes.len()).min(read);
+        bytes.extend_from_slice(&buffer[..retained]);
+        exceeded |= retained < read;
+    }
+    observer
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .finish_line();
+    Ok(BoundedOutput { bytes, exceeded })
 }
 
 async fn read_bounded<R: AsyncRead + Unpin>(mut reader: R) -> std::io::Result<BoundedOutput> {
@@ -1300,6 +1790,26 @@ fn parse_json_document(bytes: &[u8]) -> Result<Value, String> {
         return Ok(value);
     }
     let text = String::from_utf8_lossy(bytes);
+    // Codex --json emits protocol events instead of the previous plain final
+    // message. Only a completed agent message can supply the structured result.
+    let final_message = text
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|event| {
+            event.get("type").and_then(Value::as_str) == Some("item.completed")
+                && event.pointer("/item/type").and_then(Value::as_str) == Some("agent_message")
+        })
+        .filter_map(|event| {
+            event
+                .pointer("/item/text")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .next_back();
+    if let Some(message) = final_message {
+        return serde_json::from_str(&message)
+            .map_err(|_| "The provider returned a malformed run command proposal.".into());
+    }
     let trimmed = text.trim();
     if let Some(body) = trimmed
         .strip_prefix("```json")
@@ -2133,11 +2643,22 @@ async fn await_or_cancel<T>(
     }
 }
 
+#[cfg(test)]
 async fn send_http_request<T>(
     provider: &str,
     request: &DiscoveryRequest,
     builder: reqwest::RequestBuilder,
     parse: fn(&[u8]) -> Result<T, String>,
+) -> Result<T, String> {
+    send_http_request_with_usage(provider, request, builder, parse, None).await
+}
+
+async fn send_http_request_with_usage<T>(
+    provider: &str,
+    request: &DiscoveryRequest,
+    builder: reqwest::RequestBuilder,
+    parse: fn(&[u8]) -> Result<T, String>,
+    usage: Option<&HelperUsageGuard>,
 ) -> Result<T, String> {
     let notified = request.cancellation.notified();
     tokio::pin!(notified);
@@ -2146,12 +2667,42 @@ async fn send_http_request<T>(
         return Err("Run command discovery was cancelled.".into());
     }
     let response = tokio::select! {
-        response = builder.send() => response
-            .map_err(|error| format!("{provider} could not discover a run command: {error}"))?,
+        biased;
         _ = &mut notified => return Err("Run command discovery was cancelled.".into()),
+        response = async {
+            if let Some(usage) = usage { usage.begin(); usage.outcome("failed"); }
+            builder.send().await
+        } => response.map_err(|error| {
+            if let Some(usage) = usage { usage.outcome(if error.is_timeout() { "timed-out" } else { "failed" }); }
+            format!("{provider} could not discover a run command: {error}")
+        })?,
     };
     let status = response.status();
-    let body = read_http_body_bounded(response, request).await?;
+    let body = read_http_body_bounded(response, request)
+        .await
+        .inspect_err(|error| {
+            if let Some(usage) = usage {
+                usage.outcome(if error.to_ascii_lowercase().contains("timed out") {
+                    "timed-out"
+                } else {
+                    "failed"
+                });
+            }
+        })?;
+    if let Some(usage) = usage {
+        if let Ok(envelope) = serde_json::from_slice::<Value>(&body.bytes) {
+            usage
+                .observer
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .observe(&envelope);
+        }
+        usage.outcome(if status.is_success() {
+            "completed"
+        } else {
+            "failed"
+        });
+    }
     if !status.is_success() {
         let mut detail = String::from_utf8_lossy(&body.bytes)
             .split_whitespace()
@@ -2195,14 +2746,17 @@ async fn send_http_discovery(
 }
 
 async fn execute_http_discovery(
+    app: &AppHandle,
     guard: &DiscoveryGuard,
     options: &RunDiscoveryOptions,
     messages: Vec<Value>,
 ) -> Result<RunDiscoveryResult, String> {
     execute_http_request(
+        app,
         guard,
         options,
         chat_completion_body(options, &messages),
+        NativeTask::Discovery,
         if options.purpose == DiscoveryPurpose::Checks {
             parse_check_provider_output
         } else {
@@ -2213,9 +2767,11 @@ async fn execute_http_discovery(
 }
 
 async fn execute_http_request<T>(
+    app: &AppHandle,
     guard: &DiscoveryGuard,
     options: &RunDiscoveryOptions,
     body: Value,
+    task: NativeTask,
     parse: fn(&[u8]) -> Result<T, String>,
 ) -> Result<T, String> {
     let client = reqwest::Client::builder()
@@ -2246,11 +2802,13 @@ async fn execute_http_request<T>(
             token,
         )
     };
-    send_http_request(
+    let usage = HelperUsageGuard::new(app, options, task, guard.request.clone());
+    send_http_request_with_usage(
         provider,
         &guard.request,
         client.post(url).bearer_auth(token).json(&body),
         parse,
+        Some(&usage),
     )
     .await
 }
@@ -2392,6 +2950,11 @@ async fn execute_native_request<T>(
     let mut child = command
         .spawn()
         .map_err(|error| format!("Could not start run command discovery: {error}"))?;
+    // One identity per actual execution, never per logical discovery/retry.
+    // Creating it only after spawn excludes launch/preflight failures.
+    let usage = HelperUsageGuard::new(app, options, task, guard.request.clone());
+    usage.begin();
+    usage.outcome("failed");
     let identity = child.id().map(managed_identity_for);
     *guard
         .request
@@ -2424,7 +2987,7 @@ async fn execute_native_request<T>(
             return Err("Run command discovery did not expose diagnostics.".into());
         }
     };
-    let stdout_task = tokio::spawn(read_bounded(stdout));
+    let stdout_task = tokio::spawn(read_bounded_with_usage(stdout, usage.observer.clone()));
     let stderr_task = tokio::spawn(read_bounded(stderr));
     let mut stdin = match child.stdin.take() {
         Some(stdin) => stdin,
@@ -2455,6 +3018,7 @@ async fn execute_native_request<T>(
             clear_request_identity(&guard.request, identity);
             discard_readers(stdout_task, stderr_task).await;
             stopped?;
+            usage.outcome("timed-out");
             return Err("Run command discovery timed out while sending project metadata.".into());
         }
     }
@@ -2481,6 +3045,7 @@ async fn execute_native_request<T>(
             clear_request_identity(&guard.request, identity);
             discard_readers(stdout_task, stderr_task).await;
             stopped?;
+            usage.outcome("timed-out");
             return Err("Run command discovery timed out.".into());
         }
     };
@@ -2500,6 +3065,11 @@ async fn execute_native_request<T>(
         return Err("Run command discovery exceeded its output limit.".into());
     }
     let status_text = status.to_string();
+    usage.outcome(if status.success() {
+        "completed"
+    } else {
+        "failed"
+    });
     let result = if !status.success() {
         Err(provider_error(&options.provider, &stderr.bytes))
     } else {
@@ -2534,7 +3104,7 @@ pub(crate) async fn run_discovery_start(
             cwd,
             guard.request.clone(),
             options.purpose,
-            |messages| execute_http_discovery(&guard, &options, messages),
+            |messages| execute_http_discovery(&app, &guard, &options, messages),
         )
         .await
     } else {
@@ -2814,6 +3384,7 @@ mod tests {
             .windows(2)
             .any(|pair| pair == ["--sandbox", "read-only"]));
         assert!(arguments.contains(&"--ephemeral".to_string()));
+        assert!(arguments.contains(&"--json".to_string()));
         assert!(arguments.contains(&"--ignore-user-config".to_string()));
         assert!(arguments.contains(&"--ignore-rules".to_string()));
         assert!(arguments.contains(&"model_reasoning_effort=\"minimal\"".to_string()));
@@ -2838,6 +3409,337 @@ mod tests {
         let ultra_arguments = argument_strings(codex_arguments(&ultra, Path::new("schema.json")));
         assert!(ultra_arguments.contains(&"model_reasoning_effort=\"max\"".to_string()));
         assert!(!ultra_arguments.contains(&"model_reasoning_effort=\"ultra\"".to_string()));
+    }
+
+    #[test]
+    fn codex_jsonl_keeps_the_structured_helper_result() {
+        // Recorded Codex exec event shapes; all message bodies are synthetic.
+        let output = br#"{"type":"thread.started","thread_id":"fixture"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"{\"command\":\"npm run dev\",\"setupCommand\":\"\",\"label\":\"Run app\",\"explanation\":\"package.json defines dev\",\"inspect\":[]}"}}
+{"type":"turn.completed","usage":{"input_tokens":24763,"cached_input_tokens":24448,"output_tokens":122,"reasoning_output_tokens":0}}
+"#;
+        assert_eq!(
+            parse_provider_output(output).unwrap().command,
+            "npm run dev"
+        );
+    }
+
+    #[test]
+    fn helper_usage_codex_receipts_are_metadata_only_and_terminal_deduplicated() {
+        let mut observer = HelperUsageObserver::new(&options("openai"), NativeTask::Title);
+        // Official Codex exec example counts; item bodies are synthetic privacy sentinels.
+        observer.feed(br#"{"type":"turn.started"}
+{"type":"item.completed","item":{"type":"command_execution","aggregated_output":"Bearer private-body","usage":{"input_tokens":99999}}}
+{"type":"usage_update","usage":{"input_tokens":100000}}
+{"type":"turn.completed","usage":{"input_tokens":24763,"cached_input_tokens":24448,"output_tokens":122,"reasoning_output_tokens":0}}
+{"type":"turn.completed","usage":{"input_tokens":24763,"cached_input_tokens":24448,"output_tokens":122,"reasoning_output_tokens":0}}
+"#);
+        let usage = observer.event.usage.as_ref().unwrap();
+        assert_eq!(usage.input_tokens, Some(24763));
+        assert_eq!(usage.cached_input_tokens, Some(24448));
+        assert_eq!(usage.output_tokens, Some(122));
+        assert_eq!(usage.cache_write_input_tokens, None);
+        assert_eq!(observer.event.token_availability, "partial");
+        assert_eq!(observer.event.service_tier_source, "requested");
+        assert_eq!(observer.event.purpose, "thread-title");
+        let serialized = serde_json::to_string(&observer.event).unwrap();
+        for sentinel in [
+            "Bearer",
+            "private-body",
+            "aggregated_output",
+            "stderr",
+            "thread_id",
+        ] {
+            assert!(!serialized.contains(sentinel));
+        }
+    }
+
+    #[test]
+    fn helper_usage_claude_failure_retains_actual_model_cost_and_cache_split() {
+        let mut observer = HelperUsageObserver::new(&options("claude"), NativeTask::Discovery);
+        observer.observe(
+            &json!({"type":"result","subtype":"error_max_turns","is_error":true,
+            "result":"private result text", "total_cost_usd":0.125,
+            "modelUsage":{"claude-opus-5-5":{"inputTokens":7}},
+            "usage":{"input_tokens":12,"cache_read_input_tokens":4,"cache_creation_input_tokens":3,
+                "cache_creation":{"ephemeral_1h_input_tokens":2},"output_tokens":8}}),
+        );
+        let usage = observer.event.usage.as_ref().unwrap();
+        assert_eq!(usage.input_tokens, Some(19));
+        assert_eq!(usage.total_tokens, Some(27));
+        assert_eq!(usage.cache_write1h_input_tokens, Some(2));
+        assert_eq!(observer.event.model, "claude-opus-5-5");
+        assert_eq!(observer.event.model_source, "reported");
+        assert_eq!(observer.event.reported_cost, Some(0.125));
+        assert_eq!(observer.event.token_availability, "reported");
+        assert!(!serde_json::to_string(&observer.event)
+            .unwrap()
+            .contains("private result"));
+        let mut partial = HelperUsageObserver::new(&options("claude"), NativeTask::Discovery);
+        partial.observe(&json!({"type":"result","usage":{"input_tokens":12,"cache_read_input_tokens":4,"output_tokens":8}}));
+        assert_eq!(partial.event.usage.as_ref().unwrap().input_tokens, Some(16));
+        assert_eq!(
+            partial
+                .event
+                .usage
+                .as_ref()
+                .unwrap()
+                .cache_write_input_tokens,
+            None
+        );
+        // This is a known lower bound, not a claim that missing writes were zero.
+        assert_eq!(partial.event.usage.as_ref().unwrap().total_tokens, Some(24));
+        assert_eq!(partial.event.token_availability, "partial");
+    }
+
+    #[test]
+    fn helper_usage_missing_metrics_are_unavailable_and_retry_execution_ids_are_distinct() {
+        let mut observer = HelperUsageObserver::new(&options("cursor"), NativeTask::Discovery);
+        observer.observe(
+            &json!({"type":"result","subtype":"success","duration_ms":1234,
+            "result":"private assistant text","session_id":"not a dashboard thread"}),
+        );
+        assert_eq!(observer.event.usage, None);
+        assert_eq!(observer.event.token_availability, "unavailable");
+        assert_eq!(observer.event.reported_cost, None);
+        let mut with_metrics = HelperUsageObserver::new(&options("cursor"), NativeTask::Discovery);
+        with_metrics.observe(&json!({"type":"result","usage":{"inputTokens":15,"cachedInputTokens":5,"outputTokens":2}}));
+        assert_eq!(
+            with_metrics.event.usage.unwrap().cached_input_tokens,
+            Some(5)
+        );
+        assert_ne!(observer.event.execution_id, with_metrics.event.execution_id);
+        let usage = helper_usage(
+            "claude",
+            &json!({"cache_creation":{"ephemeral_1h_input_tokens":2}}),
+        )
+        .unwrap();
+        assert_eq!(usage.cache_write1h_input_tokens, Some(2));
+        assert_eq!(usage.input_tokens, None);
+        assert!(helper_usage("openai", &json!({"input_tokens":-1,"output_tokens":"12","cached_input_tokens":MAX_USAGE_COUNT + 1})).is_none());
+        for invalid in [
+            json!({"input_tokens":1,"cached_input_tokens":2}),
+            json!({"cached_input_tokens":MAX_USAGE_COUNT,"cache_write_input_tokens":MAX_USAGE_COUNT}),
+            json!({"output_tokens":0,"reasoning_output_tokens":25}),
+            json!({"cache_write_input_tokens":1,"cache_creation":{"ephemeral_1h_input_tokens":2}}),
+        ] {
+            assert!(helper_usage("openai", &invalid).is_none());
+        }
+    }
+
+    #[test]
+    fn helper_usage_multiple_turns_never_upgrade_incomplete_counts_to_reported() {
+        let mut observer = HelperUsageObserver::new(&options("openai"), NativeTask::Discovery);
+        observer.observe(&json!({"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":2},"total_cost_usd":0.1}));
+        observer.observe(&json!({"type":"turn.started"}));
+        observer.observe(&json!({"type":"turn.failed","usage":{"cached_input_tokens":4,"cache_write_input_tokens":1},"total_cost_usd":0.2}));
+        let usage = observer.event.usage.as_ref().unwrap();
+        assert_eq!(usage.input_tokens, Some(15));
+        assert_eq!(usage.cached_input_tokens, Some(4));
+        assert_eq!(usage.cache_write_input_tokens, Some(1));
+        assert_eq!(observer.event.token_availability, "partial");
+        assert!((observer.event.reported_cost.unwrap() - 0.3).abs() < 0.00001);
+        let mut complete = HelperUsageObserver::new(&options("openai"), NativeTask::Discovery);
+        complete.observe(&json!({"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":2,"cached_input_tokens":4,"cache_write_input_tokens":0}}));
+        complete.observe(&json!({"type":"turn.started"}));
+        complete.observe(&json!({"type":"turn.failed"}));
+        assert_eq!(complete.event.token_availability, "partial");
+        assert_eq!(complete.event.reported_cost, None);
+    }
+
+    #[test]
+    fn helper_usage_saturated_aggregate_keeps_execution_without_unsafe_counts() {
+        let mut observer = HelperUsageObserver::new(&options("openai"), NativeTask::Discovery);
+        for index in 0..2 {
+            if index > 0 {
+                observer.observe(&json!({"type":"turn.started"}));
+            }
+            observer.observe(&json!({"type":"turn.completed","usage":{"input_tokens":MAX_USAGE_COUNT,"output_tokens":0,"cached_input_tokens":0,"cache_write_input_tokens":0}}));
+        }
+        assert_eq!(observer.event.usage, None);
+        assert_eq!(observer.event.token_availability, "unavailable");
+        observer.observe(&json!({"type":"turn.started"}));
+        observer.observe(&json!({"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":0,"cached_input_tokens":0,"cache_write_input_tokens":0}}));
+        assert_eq!(observer.event.usage, None);
+    }
+
+    #[test]
+    fn helper_usage_native_payloads_preserve_disjoint_partial_lower_bounds() {
+        let mut partial = HelperUsageObserver::new(&options("openai"), NativeTask::Discovery);
+        partial.observe(&json!({"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":10,"cached_input_tokens":0,"cache_write_input_tokens":0},"total_cost_usd":0.1}));
+        partial.observe(&json!({"type":"turn.started"}));
+        partial.observe(&json!({"type":"turn.failed","usage":{"output_tokens":10,"cached_input_tokens":300,"cache_write_input_tokens":0}}));
+        let usage = partial.event.usage.as_ref().unwrap();
+        assert_eq!(usage.input_tokens, Some(400));
+        assert_eq!(usage.cached_input_tokens, Some(300));
+        assert_eq!(usage.output_tokens, Some(20));
+        assert_eq!(usage.total_tokens, Some(420));
+        assert_eq!(partial.event.token_availability, "partial");
+        // Only terminal one supplied cost: retain that observed amount, not an
+        // invented complete cost for both terminals.
+        assert_eq!(partial.event.reported_cost, Some(0.1));
+
+        let mut reasoning = HelperUsageObserver::new(&options("openai"), NativeTask::Discovery);
+        reasoning.observe(&json!({"type":"turn.failed","usage":{"reasoning_output_tokens":25}}));
+        assert_eq!(
+            reasoning.event.usage.as_ref().unwrap().output_tokens,
+            Some(25)
+        );
+        assert_eq!(reasoning.event.token_availability, "partial");
+        let mut cache1h = HelperUsageObserver::new(&options("claude"), NativeTask::Discovery);
+        cache1h.observe(
+            &json!({"type":"result","usage":{"cache_creation":{"ephemeral_1h_input_tokens":2}}}),
+        );
+        let mut unavailable = HelperUsageObserver::new(&options("cursor"), NativeTask::Discovery);
+        unavailable
+            .observe(&json!({"type":"result","subtype":"success","result":"private result"}));
+        let mut claude = HelperUsageObserver::new(&options("claude"), NativeTask::Title);
+        claude.observe(&json!({"type":"result","is_error":true,"total_cost_usd":0.125,"modelUsage":{"claude-opus-5-5":{}},"usage":{"input_tokens":12,"cache_read_input_tokens":4,"cache_creation_input_tokens":3,"output_tokens":8}}));
+        let mut overflow = HelperUsageObserver::new(&options("openai"), NativeTask::Title);
+        overflow.observe(&json!({"type":"turn.completed","total_cost_usd":0.1,"usage":{"input_tokens":MAX_USAGE_COUNT,"output_tokens":0,"cached_input_tokens":MAX_USAGE_COUNT,"cache_write_input_tokens":0}}));
+        overflow.observe(&json!({"type":"turn.started"}));
+        overflow.observe(&json!({"type":"turn.completed","usage":{"input_tokens":MAX_USAGE_COUNT,"output_tokens":0,"cached_input_tokens":0,"cache_write_input_tokens":MAX_USAGE_COUNT}}));
+        assert_eq!(overflow.event.usage, None);
+        assert_eq!(overflow.event.token_availability, "unavailable");
+        assert_eq!(overflow.event.reported_cost, Some(0.1));
+        let events = json!([
+            {"label":"partial-disjoint-cache","event":partial.event},
+            {"label":"partial-reasoning","event":reasoning.event},
+            {"label":"partial-cache1h","event":cache1h.event},
+            {"label":"cursor-unavailable","event":unavailable.event},
+            {"label":"claude-reported","event":claude.event},
+            {"label":"overflow-unavailable","event":overflow.event}
+        ]);
+        // Optional local QA export is metadata-only and lets the real TS
+        // validator consume these exact native serialized events.
+        if let Some(path) = std::env::var_os("MYTHRA_BACKGROUND_USAGE_EXPORT") {
+            fs::write(path, serde_json::to_vec_pretty(&events).unwrap()).unwrap();
+        }
+    }
+
+    #[test]
+    fn helper_usage_failing_process_fixture() {
+        if std::env::var_os("MYTHRA_HELPER_USAGE_TEST_FIXTURE").is_none() {
+            return;
+        }
+        println!(
+            "{{\"type\":\"turn.failed\",\"usage\":{{\"input_tokens\":10,\"output_tokens\":3}}}}"
+        );
+        eprintln!("{{\"type\":\"turn.failed\",\"usage\":{{\"input_tokens\":99999}},\"error\":\"Bearer private-stderr\"}}");
+        std::process::exit(1);
+    }
+
+    #[tokio::test]
+    async fn helper_usage_failed_process_keeps_stdout_metrics_without_stderr_content() {
+        let mut child = background_command(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "run_discovery::tests::helper_usage_failing_process_fixture",
+                "--nocapture",
+            ])
+            .env("MYTHRA_HELPER_USAGE_TEST_FIXTURE", "1")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let observer = Arc::new(StdMutex::new(HelperUsageObserver::new(
+            &options("openai"),
+            NativeTask::Discovery,
+        )));
+        let stdout = tokio::spawn(read_bounded_with_usage(
+            child.stdout.take().unwrap(),
+            observer.clone(),
+        ));
+        let stderr = tokio::spawn(read_bounded(child.stderr.take().unwrap()));
+        assert!(!child.wait().await.unwrap().success());
+        stdout.await.unwrap().unwrap();
+        assert!(
+            String::from_utf8_lossy(&stderr.await.unwrap().unwrap().bytes)
+                .contains("private-stderr")
+        );
+        let mut locked = observer.lock().unwrap();
+        locked.event.outcome = "failed";
+        assert_eq!(locked.event.usage.as_ref().unwrap().input_tokens, Some(10));
+        assert_eq!(locked.event.usage.as_ref().unwrap().output_tokens, Some(3));
+        assert_eq!(locked.event.token_availability, "partial");
+        let serialized = serde_json::to_string(&locked.event).unwrap();
+        assert!(!serialized.contains("private-stderr"));
+        assert!(!serialized.contains("Bearer"));
+    }
+
+    #[test]
+    fn helper_usage_multi_model_or_tier_execution_is_not_attributed_to_last_request() {
+        let mut observer = HelperUsageObserver::new(&options("openai"), NativeTask::Discovery);
+        observer.observe(&json!({"type":"turn.completed","model":"gpt-6-luna","service_tier":"priority","usage":{"input_tokens":10}}));
+        observer.observe(&json!({"type":"turn.started"}));
+        observer.observe(&json!({"type":"turn.completed","model":"gpt-6-sol","service_tier":"default","usage":{"input_tokens":20}}));
+        assert_eq!(observer.event.model, "unattributed");
+        assert_eq!(observer.event.model_source, "unknown");
+        assert_eq!(observer.event.service_tier, None);
+        assert_eq!(observer.event.service_tier_source, "unknown");
+        assert_eq!(observer.event.usage.unwrap().input_tokens, Some(30));
+        let mut later_reported =
+            HelperUsageObserver::new(&options("openai"), NativeTask::Discovery);
+        let requested_model = later_reported.event.model.clone();
+        later_reported.observe(&json!({"type":"turn.completed","usage":{"input_tokens":10}}));
+        later_reported.observe(&json!({"type":"turn.started"}));
+        later_reported.observe(&json!({"type":"turn.completed","model":requested_model,"service_tier":"priority","usage":{"input_tokens":20}}));
+        assert_eq!(later_reported.event.model_source, "unknown");
+        assert_eq!(later_reported.event.model, "unattributed");
+        assert_eq!(later_reported.event.service_tier_source, "unknown");
+        assert_eq!(later_reported.event.service_tier, None);
+        let mut http = HelperUsageObserver::new(&options("openrouter"), NativeTask::Title);
+        http.observe(&json!({"id":"gen-fixture","model":"google/gemini-3-pro", "choices":[{"message":{"content":"private result"}}],
+            "usage":{"prompt_tokens":30,"completion_tokens":5,"cost":0.001,"prompt_tokens_details":{"cached_tokens":20,"cache_write_tokens":0}}}));
+        assert_eq!(http.event.model, "google/gemini-3-pro");
+        assert_eq!(http.event.reported_cost, Some(0.001));
+        assert_eq!(http.event.usage.unwrap().total_tokens, Some(35));
+    }
+
+    #[tokio::test]
+    async fn helper_usage_stream_stays_bounded_and_retains_terminal_metrics_after_large_output() {
+        let observer = Arc::new(StdMutex::new(HelperUsageObserver::new(
+            &options("openai"),
+            NativeTask::Discovery,
+        )));
+        let mut output = vec![b'x'; MAX_OUTPUT_BYTES + 100];
+        output.extend_from_slice(b"\nnot-json-private-stderr\n");
+        output.extend_from_slice(
+            br#"{"type":"turn.failed","usage":{"input_tokens":10,"output_tokens":3}}
+"#,
+        );
+        let result = read_bounded_with_usage(output.as_slice(), observer.clone())
+            .await
+            .unwrap();
+        assert!(result.exceeded);
+        assert_eq!(result.bytes.len(), MAX_OUTPUT_BYTES);
+        let locked = observer.lock().unwrap();
+        assert_eq!(locked.event.usage.as_ref().unwrap().input_tokens, Some(10));
+        assert!(locked.line.is_empty());
+        assert!(!serde_json::to_string(&locked.event)
+            .unwrap()
+            .contains("private-stderr"));
+    }
+
+    #[tokio::test]
+    async fn helper_usage_stream_handles_fragmented_json_and_missing_final_newline() {
+        let observer = Arc::new(StdMutex::new(HelperUsageObserver::new(
+            &options("openai"),
+            NativeTask::Title,
+        )));
+        let (reader, mut writer) = tokio::io::duplex(32);
+        let task = tokio::spawn(read_bounded_with_usage(reader, observer.clone()));
+        for fragment in [
+            b"{\"type\":\"turn.".as_slice(),
+            b"failed\",\"usage\":{\"output_tokens\":15}}",
+        ] {
+            writer.write_all(fragment).await.unwrap();
+        }
+        drop(writer);
+        task.await.unwrap().unwrap();
+        let locked = observer.lock().unwrap();
+        assert_eq!(locked.event.usage.as_ref().unwrap().output_tokens, Some(15));
+        assert_eq!(locked.event.token_availability, "partial");
     }
 
     #[test]
@@ -3966,7 +4868,15 @@ pub(crate) async fn generate_thread_title(
     let prompt = title_prompt(&prompt);
     let result = if matches!(options.provider.as_str(), "openrouter" | "lmstudio") {
         let body = json!({"model":options.model,"messages":[{"role":"user","content":prompt}],"stream":false,"max_tokens":512});
-        execute_http_request(&guard, &options, body, parse_thread_title).await
+        execute_http_request(
+            &app,
+            &guard,
+            &options,
+            body,
+            NativeTask::Title,
+            parse_thread_title,
+        )
+        .await
     } else {
         execute_native_request(
             &app,

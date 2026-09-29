@@ -16,6 +16,10 @@ import { recordComposerInputToFrame } from "../lib/runtimePerformanceBridge";
 import type { ChatFont, Provider } from "../types";
 import type { QueuedTurn } from "../lib/taskStore";
 import type { AttachmentRecord } from "./StudioDock";
+import { skillMentionRanges } from "../lib/skillMentions";
+import { useSkillDependencyPreview, type AnalyzeSkillDependencies } from "../hooks/useSkillDependencyPreview";
+import { blockedSkillNames, SkillDependencyDetails } from "./SkillDependencyDetails";
+import { SkillDependencyNotice } from "./SkillDependencyNotice";
 
 export interface ComposerHandle {
   setDraft: (text: string) => void;
@@ -86,10 +90,10 @@ export function resetDraftStoreForTests(): void {
 // skill instead of sending the message.
 const MENTION_PATTERN = /(^|\s)@([\w./-]*)$/;
 const WORKFLOW_PATTERN = /(^|\s)!([\w-]*)$/;
-const SKILL_TOKEN_PATTERN = /(^|\s)@([a-z0-9][a-z0-9-]*)/gi;
 
 export interface ComposerSkill {
   name: string;
+  path?: string;
   description?: string;
 }
 
@@ -227,6 +231,8 @@ export const Composer = forwardRef<ComposerHandle, {
   controls: ReactNode;
   searchFiles?: (query: string) => Promise<string[]>;
   skills?: ComposerSkill[];
+  /** The caller includes effective system instructions, even for an empty draft. */
+  onAnalyzeSkillDependencies?: AnalyzeSkillDependencies;
   workflows?: ComposerWorkflow[];
   onWorkflow?: (id: string, prompt: string) => Promise<boolean>;
   onRemoveAttachment: (path: string) => void;
@@ -242,6 +248,8 @@ export const Composer = forwardRef<ComposerHandle, {
 }>(function Composer(props, ref) {
   const willQueue = props.queueing || Boolean(props.queuedTurns?.length);
   const [draft, setDraftState] = useState(() => draftFor(props.threadKey));
+  const dependencyPreview = useSkillDependencyPreview(draft, props.onAnalyzeSkillDependencies, props.threadKey);
+  const blockedNames = useMemo(() => blockedSkillNames(dependencyPreview.report), [dependencyPreview.report]);
   const submittingRef = useRef(new Set<string>());
   const [submittingKeys, setSubmittingKeys] = useState<ReadonlySet<string>>(new Set());
   const submitting = submittingKeys.has(props.threadKey);
@@ -418,18 +426,16 @@ export const Composer = forwardRef<ComposerHandle, {
   // depend on the overlay being pixel-perfect.
   const skills = props.skills;
   const { highlightedDraft, hasSkillMentions } = useMemo(() => {
-    const skillNames = new Set((skills ?? []).map((skill) => skill.name.toLowerCase()));
     const parts: ReactNode[] = [];
     let offset = 0;
-    if (skillNames.size) {
-      for (const match of draft.matchAll(SKILL_TOKEN_PATTERN)) {
-        const index = (match.index ?? 0) + match[1].length;
-        const token = `@${match[2]}`;
-        if (!skillNames.has(match[2].toLowerCase())) continue;
-        parts.push(draft.slice(offset, index));
-        parts.push(<span className="composer-skill-token" key={`${index}:${token}`}>{token}</span>);
-        offset = index + token.length;
-      }
+    const candidates = [...(skills ?? []), ...[...blockedNames].filter((name) => !skills?.some((skill) => skill.name.toLowerCase() === name)).map((name) => ({ name }))];
+    for (const range of skillMentionRanges(draft, candidates)) {
+      const token = draft.slice(range.start, range.end);
+      parts.push(draft.slice(offset, range.start));
+      const reason = blockedNames.has(range.skill.name.toLowerCase())
+        ? dependencyPreview.report?.issues.map((issue) => `${issue.message} ${issue.chain.join(" → ")}`).join("\n") : undefined;
+      parts.push(<span className={`composer-skill-token${reason ? " is-blocked" : ""}`} title={reason} key={`${range.start}:${token}`}>{token}</span>);
+      offset = range.end;
     }
     parts.push(draft.slice(offset));
     // A block with pre-wrap otherwise omits the empty visual line after a
@@ -437,7 +443,7 @@ export const Composer = forwardRef<ComposerHandle, {
     // in the aria-hidden overlay and is never added to the submitted draft.
     parts.push("\u200b");
     return { highlightedDraft: parts, hasSkillMentions: offset > 0 };
-  }, [draft, skills]);
+  }, [draft, skills, blockedNames, dependencyPreview.report]);
 
   useLayoutEffect(() => {
     const textarea = textareaRef.current;
@@ -742,6 +748,8 @@ export const Composer = forwardRef<ComposerHandle, {
           rows={1}
         />
       </div>
+      <SkillDependencyNotice report={dependencyPreview.report} error={dependencyPreview.error} />
+      <SkillDependencyDetails report={dependencyPreview.report} />
       {props.modelControls}
       <div className="composer-toolbar">
         <div className="composer-controls">{props.controls}</div>

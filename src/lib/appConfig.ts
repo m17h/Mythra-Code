@@ -22,6 +22,8 @@ export const THEMES: Array<{ id: ThemeName; name: string; description: string; s
   { id: "daylight", name: "Light Kiwi", description: "Paper white with a deep leaf green", swatches: ["#f4f5f2", "#ffffff", "#3e8e22"] },
   { id: "midnight", name: "Midnight", description: "Deep ocean blue with arctic ice", swatches: ["#14181f", "#1d232d", "#7fc4ff"] },
   { id: "synthwave", name: "Synthwave", description: "Neon violet with hot magenta", swatches: ["#17131f", "#221b2e", "#ff6ac1"] },
+  { id: "atari", name: "Atari", description: "Warm tan with deep brick-red accents", swatches: ["#eee5d2", "#f7efdf", "#8e3b32"] },
+  { id: "monochrome", name: "Monochrome", description: "Graphite with quiet white accents", swatches: ["#1e2024", "#292d32", "#eceeeb"] },
 ];
 
 /** Stored theme ids may outlive a palette. Retired and malformed values fall
@@ -31,7 +33,7 @@ export function sanitizeTheme(value: unknown): ThemeName {
 }
 
 export function themeColorScheme(theme: ThemeName): "light" | "dark" {
-  return theme === "light-mythra" || theme === "daylight" ? "light" : "dark";
+  return theme === "light-mythra" || theme === "daylight" || theme === "atari" ? "light" : "dark";
 }
 
 export const EFFORT_SLIDER_STYLES: Array<{ id: EffortSliderStyle; name: string; description: string }> = [

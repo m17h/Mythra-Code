@@ -28,6 +28,8 @@ const usage = (inputTokens: number, outputTokens: number, cachedInputTokens = 0,
   outputTokens,
   reasoningOutputTokens: 0,
   contextWindow: null,
+  cacheReadReported: true, cacheWriteReported: true,
+  serviceTier: "standard", serviceTierSource: "requested" as const,
 });
 
 /** Writes a catalog straight to storage, without clearing module caches, so

@@ -18,6 +18,7 @@ import {
   type ThreadPullRequestLink,
 } from "../lib/pullRequests";
 import { usePersistedStateRef } from "./usePersistedState";
+import { createPullRequestCreationDraftStore } from "../lib/pullRequestCreationDrafts";
 
 const REFRESH_MS = 60_000;
 const CACHE_LIMIT = 64;
@@ -122,6 +123,7 @@ export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
   const [busyState, setBusyState] = useState<Scoped<boolean> | null>(null);
   const [errorState, setErrorState] = useState<Scoped<string | null> | null>(null);
   const [noticeState, setNoticeState] = useState<Scoped<string | null> | null>(null);
+  const [creationDraftStore] = useState(createPullRequestCreationDraftStore);
   const readRevisionsRef = useRef(new Map<string, number>());
   const mutationRevisionsRef = useRef(new Map<string, number>());
   const readSequenceRef = useRef(0);
@@ -530,6 +532,7 @@ export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
   }, [contextState, requestRefresh, runMutation]);
 
   const forgetThread = useCallback((id: string) => {
+    creationDraftStore.forgetThread(id);
     bumpReadRevision(id);
     readRevisionsRef.current.delete(id);
     mutationRevisionsRef.current.set(id, mutationSequenceRef.current += 1);
@@ -542,17 +545,21 @@ export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
     for (const scope of contextCacheRef.current.keys()) if (scope.startsWith(`${id}\0`)) contextCacheRef.current.delete(scope);
     for (const scope of candidateCacheRef.current.keys()) if (scope.startsWith(`${id}\0`)) candidateCacheRef.current.delete(scope);
     if (!operationCountsRef.current.has(id)) mutationRevisionsRef.current.delete(id);
-  }, [bumpReadRevision, setLinks]);
+  }, [bumpReadRevision, creationDraftStore, setLinks]);
 
   return {
     links,
     context: scopedContext,
     pullRequest,
     linked,
-    loading: Boolean(threadId && loadingState?.scope === currentScope && loadingState.value),
+    loading: Boolean(threadId && (loadingState?.scope === currentScope
+      ? loadingState.value
+      : options.enabled && options.visible && !lastRefreshesRef.current.has(currentScope))),
     busy: Boolean(threadId && busyState?.scope === currentScope && busyState.value),
     error: threadId && errorState?.scope === currentScope ? errorState.value : null,
     notice: threadId && noticeState?.scope === currentScope ? noticeState.value : null,
+    creationDraftStore,
+    creationDraftScope: currentScope,
     onRefresh: refreshCurrent,
     onAttach,
     onDetach,

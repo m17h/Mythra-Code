@@ -24,6 +24,15 @@ describe("theme catalog", () => {
     expect(themeColorScheme("mythra")).toBe("dark");
     expect(themeColorScheme("kiwi")).toBe("dark");
   });
+
+  it("registers and restores Atari and Monochrome with the correct color schemes", () => {
+    for (const id of ["atari", "monochrome"] as const) {
+      expect(THEMES.filter((theme) => theme.id === id)).toHaveLength(1);
+      expect(sanitizeTheme(id)).toBe(id);
+    }
+    expect(themeColorScheme("atari")).toBe("light");
+    expect(themeColorScheme("monochrome")).toBe("dark");
+  });
 });
 
 describe("effort slider catalog", () => {

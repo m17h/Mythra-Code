@@ -7,6 +7,7 @@ import { useTaskStore } from "./taskStore";
 import { compactionActivity, compactionState, compactionTitle } from "./contextCompaction";
 import { consumeProviderStopIntent } from "./providerStopIntent";
 import { annotateThreadUsage, claudeCanonicalModel } from "./usageLedger";
+import { mergedUsageEvidence } from "./usageEvidence";
 
 interface ClaudeBlock {
   id: string;
@@ -95,6 +96,9 @@ function usageView(value: unknown): TokenUsageView | null {
     inputTokens,
     cachedInputTokens,
     cacheWriteInputTokens,
+    cacheReadReported: Number.isSafeInteger(usage.cache_read_input_tokens) && Number(usage.cache_read_input_tokens) >= 0,
+    cacheWriteReported: Number.isSafeInteger(usage.cache_creation_input_tokens) && Number(usage.cache_creation_input_tokens) >= 0,
+    tokenAvailability: Number.isSafeInteger(usage.input_tokens) && Number(usage.input_tokens) >= 0 && Number.isSafeInteger(usage.output_tokens) && Number(usage.output_tokens) >= 0 ? "reported" : "partial",
     cacheWrite1hInputTokens,
     outputTokens,
     reasoningOutputTokens: 0,
@@ -112,6 +116,7 @@ function addUsage(left: TokenUsageView, right: TokenUsageView): TokenUsageView {
     outputTokens: left.outputTokens + right.outputTokens,
     reasoningOutputTokens: left.reasoningOutputTokens + right.reasoningOutputTokens,
     contextWindow: null,
+    ...mergedUsageEvidence(left, right),
   };
 }
 
@@ -127,6 +132,9 @@ function remainingUsage(total: TokenUsageView, recorded: TokenUsageView): TokenU
     outputTokens,
     reasoningOutputTokens: Math.max(0, total.reasoningOutputTokens - recorded.reasoningOutputTokens),
     contextWindow: null,
+    cacheReadReported: total.cacheReadReported === true && (!recorded.inputTokens || recorded.cacheReadReported === true),
+    cacheWriteReported: total.cacheWriteReported === true && (!recorded.inputTokens || recorded.cacheWriteReported === true),
+    tokenAvailability: total.tokenAvailability === "partial" || recorded.tokenAvailability === "partial" ? "partial" : total.tokenAvailability,
   };
 }
 
@@ -188,6 +196,7 @@ function sessionSnapshotRemainder(byModel: Map<string, TokenUsageView>, total: T
  * The cache-write duration is absent from modelUsage, so an unobserved 1-hour
  * remainder can only be assigned when exactly one model has unrecorded writes. */
 function reconciledModelRemainder(value: unknown, total: TokenUsageView, partial?: ClaudePartialUsage): Map<string, TokenUsageView> | null {
+  if (total.tokenAvailability === "partial" || total.tokenAvailability === "unavailable") return null;
   const raw = object(value);
   const entries = Object.entries(raw);
   if (!entries.length) return null;
@@ -206,6 +215,7 @@ function reconciledModelRemainder(value: unknown, total: TokenUsageView, partial
       inputTokens: uncached + cached + written,
       cachedInputTokens: cached,
       cacheWriteInputTokens: written,
+      cacheReadReported: true, cacheWriteReported: true,
       cacheWrite1hInputTokens: 0,
       outputTokens: output,
       reasoningOutputTokens: 0,

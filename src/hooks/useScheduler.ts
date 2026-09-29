@@ -3,6 +3,8 @@ import { auditEvent, rpc } from "../lib/codex";
 import { useTaskStore } from "../lib/taskStore";
 import { scheduleRunSnapshot, threadResumeParams, threadStartParams, turnStartParams } from "../lib/turnConfig";
 import type { LMStudioModel } from "../lib/lmStudio";
+import type { ResolvedSkillPrompts } from "../lib/skills";
+import { SkillDependencyError } from "../lib/skillDependencies";
 import type { AppSettings, Project, Provider, ScheduleRunRecord, ScheduleRunSettings, ScheduledTask, Thread } from "../types";
 
 export interface SchedulerDeps {
@@ -18,6 +20,7 @@ export interface SchedulerDeps {
   lmStudioModels?: LMStudioModel[];
   ensureSkillRoots: () => Promise<void>;
   resolveSkillPrompt: (message: string) => Promise<string>;
+  resolveSkillPrompts?: (message: string, systemPrompt: string, mentionSource?: string) => Promise<ResolvedSkillPrompts>;
   bindThreadToProject: (threadId: string, projectPath: string) => void;
   /** Automatic pre-turn file snapshot, same lifecycle user turns get. */
   beginRunCheckpoint: (threadId: string, workspacePath: string, prompt: string, provider: Provider, model: string) => Promise<string | undefined>;
@@ -102,24 +105,29 @@ export function useScheduler(deps: SchedulerDeps): void {
     let startedThreadId: string | undefined;
     let turnStarted = false;
     try {
+      const resolved: ResolvedSkillPrompts = current.resolveSkillPrompts
+        ? await current.resolveSkillPrompts(scheduled.prompt, run.systemPrompt)
+        : { prompt: await current.resolveSkillPrompt(scheduled.prompt), systemPrompt: run.systemPrompt };
       await current.ensureSkillRoots();
-      const providerPrompt = await current.resolveSkillPrompt(scheduled.prompt);
+      const providerPrompt = resolved.prompt;
+      const runtimeRun = { ...run, systemPrompt: resolved.systemPrompt };
       const modelContextWindow = run.provider === "lmstudio"
         ? current.lmStudioModels?.find((entry) => entry.id === run.model)?.maxContextLength
         : undefined;
-      const startFreshThread = () => rpc<{ thread: Thread }>("thread/start", threadStartParams(run, project.path, {
+      const startFreshThread = () => rpc<{ thread: Thread; model?: unknown }>("thread/start", threadStartParams(runtimeRun, project.path, {
         serviceName: "Mythra Code",
         modelContextWindow,
         interactive: false,
+        perTurnSystemPrompt: true,
       }));
-      let started: { thread: Thread };
+      let started: { thread: Thread; model?: unknown };
       if (reuseThread && scheduled.lastThreadId) {
         try {
-          started = await rpc<{ thread: Thread }>("thread/resume", threadResumeParams(
-            run,
+          started = await rpc<{ thread: Thread; model?: unknown }>("thread/resume", threadResumeParams(
+            runtimeRun,
             scheduled.lastThreadId,
             project.path,
-            { modelContextWindow, refreshRuntimeConfig: true, interactive: false },
+            { modelContextWindow, refreshRuntimeConfig: true, interactive: false, perTurnSystemPrompt: true },
           ));
         } catch {
           // The user may have deleted the earlier run's conversation. Keep the
@@ -133,15 +141,16 @@ export function useScheduler(deps: SchedulerDeps): void {
       startedThreadId = started.thread.id;
       current.bindThreadToProject(started.thread.id, project.path);
       useTaskStore.getState().ensureTask(started.thread.id, project.path);
-      useTaskStore.getState().appendUserMessage(started.thread.id, { id: `scheduled-${crypto.randomUUID()}`, role: "user", text: scheduled.prompt });
+      useTaskStore.getState().appendUserMessage(started.thread.id, { id: `scheduled-${crypto.randomUUID()}`, role: "user", text: scheduled.prompt, skillReferences: resolved.skillReferences, skillsFolder: resolved.skillsFolder, skillDependencies: resolved.skillDependencies });
       useTaskStore.getState().setTaskStatus(started.thread.id, "starting");
       // Snapshot before the unattended turn edits anything; the Codex event
       // router finalizes it on turn completion like any user turn.
       await current.beginRunCheckpoint(started.thread.id, project.path, scheduled.prompt, run.provider, run.model);
       try {
-        await rpc("turn/start", turnStartParams(run, started.thread.id, project.path, [
+        const model = started.model;
+        await rpc("turn/start", turnStartParams(runtimeRun, started.thread.id, project.path, [
           { type: "text", text: providerPrompt, text_elements: [] },
-        ], [], false));
+        ], [], false, { systemPrompt: resolved.systemPrompt, model: typeof model === "string" ? model : undefined }));
       } catch (reason) {
         // No turn started, so no completion event will finalize the snapshot.
         current.discardRunCheckpoint(started.thread.id);
@@ -166,11 +175,12 @@ export function useScheduler(deps: SchedulerDeps): void {
       });
       current.onThreadStarted(project);
     } catch (reason) {
+      const error = reason instanceof SkillDependencyError ? reason.message : String(reason).slice(0, 200);
       // A thread whose turn never started would otherwise stay "starting"
       // forever, blocking checkpoints, worktree operations, and deletion for
       // the whole project.
       if (startedThreadId && !turnStarted) {
-        useTaskStore.getState().setTaskStatus(startedThreadId, "error", String(reason).slice(0, 200));
+        useTaskStore.getState().setTaskStatus(startedThreadId, "error", error);
       }
       depsRef.current.updateSchedule(scheduled.id, (item) => ({ ...item, nextRunAt: Date.now() + 5 * 60_000 }));
       depsRef.current.recordRun({
@@ -181,7 +191,7 @@ export function useScheduler(deps: SchedulerDeps): void {
         threadId: startedThreadId,
         at: Date.now(),
         status: "failed",
-        error: String(reason).slice(0, 200),
+        error,
       });
       void auditEvent("schedule.failed", { scheduleId: scheduled.id, error: String(reason) }).catch(() => {});
     } finally {

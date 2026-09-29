@@ -1,7 +1,9 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { StrictMode } from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { LocalSkill } from "../lib/skills";
 import { SkillLibrary } from "./SkillLibrary";
+import { skillDependencyFixture } from "../test/skillDependencyFixtures";
 
 const revealItemInDir = vi.hoisted(() => vi.fn(async () => undefined));
 vi.mock("@tauri-apps/plugin-opener", () => ({ revealItemInDir }));
@@ -65,6 +67,90 @@ function fillComposer(name = "release check", instructions = "Check the release 
 }
 
 describe("SkillLibrary", () => {
+  it("checks unsaved Markdown and shows the failing nested reference in red diagnostics", async () => {
+    const onAnalyzeSkill = vi.fn(async () => skillDependencyFixture(true));
+    const view = renderLibrary({ onAnalyzeSkill, onRead: vi.fn(async () => "Use @tests") });
+    fireEvent.click(screen.getByRole("button", { name: "Edit review skill" }));
+    const field = await screen.findByRole("textbox", { name: "Markdown for review" });
+    fireEvent.change(field, { target: { value: "Use @tests\n[Checklist](../references/checklist.md)" } });
+    expect(await screen.findByText("Turn blocked by skill dependencies")).toBeInTheDocument();
+    expect(onAnalyzeSkill).toHaveBeenLastCalledWith(skill.path, "Use @tests\n[Checklist](../references/checklist.md)");
+    expect(view.container.querySelector(".skill-prompt-token.is-blocked")).toHaveTextContent("@tests");
+    fireEvent.click(screen.getByText("Skill dependencies · 2 skills · 1 document · blocked"));
+    expect(view.container.querySelector(".skill-dependency-edges .is-blocked")).toBeInTheDocument();
+    expect(screen.getByText("@review → @tests → references/checklist.md", { selector: ".skill-dependency-issue small" })).toBeInTheDocument();
+  });
+
+  it("provides an accessible local reference guide with limits and stop behavior", async () => {
+    renderLibrary();
+    const guide = screen.getByText("How skill references work");
+    fireEvent.click(guide);
+    await waitFor(() => expect(guide.closest("details")).toHaveTextContent("120,000 Unicode characters"));
+    expect(guide.closest("details")).toHaveTextContent("block the entire turn");
+    expect(guide.closest("details")).toHaveTextContent("UTF-8 .md, .markdown, or .txt");
+    expect(guide.closest("details")).toHaveTextContent("[Checklist](references/checklist.txt)");
+    expect(guide.closest("details")).toHaveTextContent("PDF, Word, CSV, JSON");
+    expect(guide.closest("details")).toHaveTextContent("do not extract");
+    expect(guide.closest("details")?.querySelector("a")).toBeNull();
+  });
+  it("loads a requested editor under the application's StrictMode lifecycle", async () => {
+    const setup = renderLibrary();
+    setup.unmount();
+    const onRead = vi.fn(async () => "# Review from source\n");
+    render(<StrictMode><SkillLibrary {...setup.props} onRead={onRead} openSkillRequest={{ path: skill.path, nonce: 1 }} /></StrictMode>);
+    const field = await screen.findByRole("textbox", { name: "Markdown for review" });
+    expect(field).toHaveValue("# Review from source\n");
+    await waitFor(() => expect(field).toHaveFocus());
+    expect(onRead).toHaveBeenCalledExactlyOnceWith(skill.path);
+  });
+  it("opens an exact requested skill, clears a hiding search, and focuses its Markdown", async () => {
+    const consumed = vi.fn();
+    const view = renderLibrary({ skills: [skill, second], onOpenSkillRequestConsumed: consumed });
+    fireEvent.change(screen.getByRole("textbox", { name: "Search skills" }), { target: { value: "review" } });
+    view.rerender(<SkillLibrary {...view.props} openSkillRequest={{ path: second.path, nonce: 1 }} />);
+    const field = await screen.findByRole("textbox", { name: "Markdown for release" });
+    await waitFor(() => expect(field).toHaveFocus());
+    expect(screen.getByRole("textbox", { name: "Search skills" })).toHaveValue("");
+    expect(view.props.onRead).toHaveBeenCalledWith(second.path);
+    expect(consumed).toHaveBeenCalledWith(1);
+    expect(view.container.querySelector(".skill-card-selected")).toHaveTextContent("@release");
+  });
+
+  it("reports a missing exact target without opening a same-name replacement", async () => {
+    const view = renderLibrary({ openSkillRequest: { path: "/old/review.md", nonce: 1 } });
+    expect(await screen.findByRole("alert")).toHaveTextContent("no longer in the selected skills folder");
+    expect(view.props.onRead).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("ignores an earlier read when a newer exact navigation request selects another skill", async () => {
+    let finishFirst!: (text: string) => void;
+    const onRead = vi.fn((path: string) => path === skill.path
+      ? new Promise<string>((resolve) => { finishFirst = resolve; })
+      : Promise.resolve("# Release\n"));
+    const view = renderLibrary({ skills: [skill, second], onRead, openSkillRequest: { path: skill.path, nonce: 1 } });
+    expect(screen.getByRole("dialog", { name: "Edit @review" })).toBeInTheDocument();
+    view.rerender(<SkillLibrary {...view.props} openSkillRequest={{ path: second.path, nonce: 2 }} />);
+    expect(await screen.findByRole("textbox", { name: "Markdown for release" })).toHaveValue("# Release\n");
+    finishFirst("# Stale review\n");
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Markdown for release" })).toHaveValue("# Release\n"));
+    expect(onRead.mock.calls.map(([path]) => path)).toEqual([skill.path, second.path]);
+  });
+
+  it("preserves an unsaved editor when an external request is declined", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const consumed = vi.fn();
+    const view = renderLibrary({ skills: [skill, second], onOpenSkillRequestConsumed: consumed });
+    fireEvent.click(screen.getByRole("button", { name: "Edit review skill" }));
+    const field = await screen.findByRole("textbox", { name: "Markdown for review" });
+    fireEvent.change(field, { target: { value: "# Unsaved review\n" } });
+    view.rerender(<SkillLibrary {...view.props} openSkillRequest={{ path: second.path, nonce: 1 }} />);
+    await waitFor(() => expect(consumed).toHaveBeenCalledWith(1));
+    expect(field).toHaveValue("# Unsaved review\n");
+    expect(view.props.onRead).not.toHaveBeenCalledWith(second.path);
+    confirm.mockRestore();
+  });
+
   it("shows the existing filename-derived invocation name and app-only rename control", () => {
     const onRename = vi.fn(() => true);
     renderLibrary({ onRename });

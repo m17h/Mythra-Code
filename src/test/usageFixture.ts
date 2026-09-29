@@ -53,12 +53,13 @@ export function seedUsageDashboard(now = Date.now()): void {
   ];
   for (const [daysAgo, thread, provider, model, input, output, turns] of rows) {
     at(now - daysAgo * DAY_MS, () => {
-      annotateThreadUsage(thread, { provider, model });
+      annotateThreadUsage(thread, { provider, model, ...(provider === "openai" ? { requestedServiceTier: "standard" } : {}) });
       for (let turn = 0; turn < turns; turn += 1) {
         const inputTokens = input / turns;
         const outputTokens = output / turns;
         recordUsageDelta(thread, {
-          inputTokens, outputTokens, cachedInputTokens: inputTokens / 4, cacheWriteInputTokens: inputTokens / 8,
+          inputTokens, outputTokens, cachedInputTokens: inputTokens / 4, cacheWriteInputTokens: provider === "cursor" ? 0 : inputTokens / 8,
+          cacheReadReported: true, cacheWriteReported: provider !== "cursor",
           totalTokens: inputTokens + outputTokens, reasoningOutputTokens: outputTokens / 5, contextWindow: null,
         }, `${thread}-event-${turn}`, `${thread}-turn-${turn}`);
       }

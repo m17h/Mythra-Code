@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { ThreadPullRequestPanel, type ThreadPullRequestPanelProps } from "./ThreadPullRequestPanel";
 import type { PullRequest, PullRequestContext, PullRequestPanelProps } from "../lib/pullRequests";
+import { createPullRequestCreationDraftStore } from "../lib/pullRequestCreationDrafts";
 
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn().mockResolvedValue(undefined) }));
 
@@ -69,6 +70,144 @@ function panelProps(overrides: Partial<PullRequestPanelProps> = {}): PullRequest
     ...overrides,
   };
 }
+
+describe("ThreadPullRequestPanel — navigation and availability", () => {
+  it("retains creation text after the dock unmounts", () => {
+    const props = panelProps({ creationDraftStore: createPullRequestCreationDraftStore(), creationDraftScope: "thread-1\0/project" });
+    const view = render(<ThreadPullRequestPanel {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: /create a pull request/i }));
+    fireEvent.change(screen.getByLabelText(/^title$/i), { target: { value: "Handwritten title" } });
+    fireEvent.change(screen.getByLabelText(/^description/i), { target: { value: "Handwritten description" } });
+    view.unmount();
+    render(<ThreadPullRequestPanel {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: /create a pull request/i }));
+    expect(screen.getByLabelText(/^title$/i)).toHaveValue("Handwritten title");
+    expect(screen.getByLabelText(/^description/i)).toHaveValue("Handwritten description");
+  });
+
+  it.each([
+    ["thread", { threadId: "thread-2", creationDraftScope: "thread-2\0/project" }],
+    ["checkout", { creationDraftScope: "thread-1\0/another-checkout" }],
+    ["repository", { context: context({ repository: "someone/another-repo" }) }],
+    ["branch", { context: context({ branch: "feature/another-branch" }) }],
+    ["head", { context: context({ headOid: "def4567" }) }],
+  ] as Array<[string, Partial<PullRequestPanelProps>]>)("does not move creation text to another %s, and restores it on return", (_name, changed) => {
+    const props = panelProps({ creationDraftStore: createPullRequestCreationDraftStore(), creationDraftScope: "thread-1\0/project" });
+    let view = render(<ThreadPullRequestPanel {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: /create a pull request/i }));
+    fireEvent.change(screen.getByLabelText(/^title$/i), { target: { value: "Only this branch" } });
+    fireEvent.change(screen.getByLabelText(/^description/i), { target: { value: "Only this checkout" } });
+    view.unmount();
+    view = render(<ThreadPullRequestPanel {...props} {...changed} />);
+    fireEvent.click(screen.getByRole("button", { name: /create a pull request/i }));
+    expect(screen.getByLabelText(/^title$/i)).not.toHaveValue("Only this branch");
+    expect(screen.getByLabelText(/^description/i)).toHaveValue("");
+    view.unmount();
+    render(<ThreadPullRequestPanel {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: /create a pull request/i }));
+    expect(screen.getByLabelText(/^title$/i)).toHaveValue("Only this branch");
+    expect(screen.getByLabelText(/^description/i)).toHaveValue("Only this checkout");
+  });
+
+  it("clears the submitted creation draft only after success", async () => {
+    const props = panelProps({ creationDraftStore: createPullRequestCreationDraftStore(), creationDraftScope: "thread-1\0/project" });
+    const view = render(<ThreadPullRequestPanel {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: /create a pull request/i }));
+    fireEvent.change(screen.getByLabelText(/^title$/i), { target: { value: "Submitted title" } });
+    fireEvent.change(screen.getByLabelText(/^description/i), { target: { value: "Submitted description" } });
+    fireEvent.click(screen.getByRole("button", { name: /push and create/i }));
+    await vi.waitFor(() => expect(screen.queryByLabelText(/^title$/i)).not.toBeInTheDocument());
+    view.unmount();
+    render(<ThreadPullRequestPanel {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: /create a pull request/i }));
+    expect(screen.getByLabelText(/^title$/i)).not.toHaveValue("Submitted title");
+    expect(screen.getByLabelText(/^description/i)).toHaveValue("");
+  });
+
+  it("retains creation text across a failed submission and remount", async () => {
+    const props = panelProps({ creationDraftStore: createPullRequestCreationDraftStore(), creationDraftScope: "thread-1\0/project", onCreate: vi.fn().mockRejectedValue(new Error("Push refused")) });
+    const view = render(<ThreadPullRequestPanel {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: /create a pull request/i }));
+    fireEvent.change(screen.getByLabelText(/^title$/i), { target: { value: "Retry this title" } });
+    fireEvent.change(screen.getByLabelText(/^description/i), { target: { value: "Retry this description" } });
+    fireEvent.click(screen.getByRole("button", { name: /push and create/i }));
+    await vi.waitFor(() => expect(screen.getByRole("button", { name: /push and create/i })).not.toHaveAttribute("aria-busy", "true"));
+    view.unmount();
+    render(<ThreadPullRequestPanel {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: /create a pull request/i }));
+    expect(screen.getByLabelText(/^title$/i)).toHaveValue("Retry this title");
+    expect(screen.getByLabelText(/^description/i)).toHaveValue("Retry this description");
+  });
+
+  it("keeps the live draft pinned until the person adopts a new head", () => {
+    const props = panelProps({ creationDraftStore: createPullRequestCreationDraftStore(), creationDraftScope: "thread-1\0/project" });
+    const next = { ...props, context: context({ headOid: "new-head" }) };
+    const view = render(<ThreadPullRequestPanel {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: /create a pull request/i }));
+    fireEvent.change(screen.getByLabelText(/^title$/i), { target: { value: "Review these new details" } });
+    view.rerender(<ThreadPullRequestPanel {...next} />);
+    expect(screen.getByRole("button", { name: /push and create/i })).toBeDisabled();
+    expect(screen.getByLabelText(/^title$/i)).toHaveValue("Review these new details");
+    fireEvent.click(screen.getByRole("button", { name: /use the current details/i }));
+    expect(screen.getByRole("button", { name: /push and create/i })).toBeEnabled();
+    view.unmount();
+    render(<ThreadPullRequestPanel {...next} />);
+    fireEvent.click(screen.getByRole("button", { name: /create a pull request/i }));
+    expect(screen.getByLabelText(/^title$/i)).toHaveValue("Review these new details");
+  });
+
+  it("does not clear a replacement draft when an earlier unmounted submission finishes", async () => {
+    let finish!: () => void;
+    const props = panelProps({ creationDraftStore: createPullRequestCreationDraftStore(), creationDraftScope: "thread-1\0/project", onCreate: vi.fn(() => new Promise<void>((resolve) => { finish = resolve; })) });
+    const view = render(<ThreadPullRequestPanel {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: /create a pull request/i }));
+    fireEvent.change(screen.getByLabelText(/^title$/i), { target: { value: "Earlier title" } });
+    fireEvent.click(screen.getByRole("button", { name: /push and create/i }));
+    view.unmount();
+    const replacement = render(<ThreadPullRequestPanel {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: /create a pull request/i }));
+    fireEvent.change(screen.getByLabelText(/^title$/i), { target: { value: "Later title" } });
+    await act(async () => { finish(); });
+    replacement.unmount();
+    render(<ThreadPullRequestPanel {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: /create a pull request/i }));
+    expect(screen.getByLabelText(/^title$/i)).toHaveValue("Later title");
+  });
+
+  it("does not retain auto-merge or archive consent across a remount", () => {
+    const props = panelProps({ linked: true, pullRequest: pullRequest(), creationDraftStore: createPullRequestCreationDraftStore(), onMergeAndArchive: vi.fn().mockResolvedValue(undefined) });
+    let view = render(<ThreadPullRequestPanel {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: /merge on github…/i }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /^archive this thread/i }));
+    expect(screen.getByRole("checkbox", { name: /^archive this thread/i })).toBeChecked();
+    view.unmount();
+    view = render(<ThreadPullRequestPanel {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: /merge on github…/i }));
+    expect(screen.getByRole("checkbox", { name: /^archive this thread/i })).not.toBeChecked();
+    fireEvent.click(screen.getByRole("checkbox", { name: /^ask github to merge it when it is ready/i }));
+    view.unmount();
+    render(<ThreadPullRequestPanel {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: /merge on github…/i }));
+    expect(screen.getByRole("checkbox", { name: /^ask github to merge it when it is ready/i })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: /^archive this thread/i })).not.toBeChecked();
+  });
+
+  it("does not announce an unreadable checkout while its first lookup is pending", () => {
+    render(<ThreadPullRequestPanel {...panelProps({ context: null, loading: true })} />);
+    expect(screen.queryByText(/cannot read this folder's Git repository/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(/checking/i);
+  });
+
+  it("disables updating the local base when mutations are blocked", () => {
+    const onUpdateLocal = vi.fn().mockResolvedValue(undefined);
+    render(<ThreadPullRequestPanel {...panelProps({ pullRequest: pullRequest({ state: "MERGED" }), linked: true, mutationBlockedReason: "Switch this thread to Ask or Full access first.", onUpdateLocal })} />);
+    const update = screen.getByRole("button", { name: "Update local main" });
+    expect(update).toBeDisabled();
+    expect(update).toHaveAttribute("title", "Switch this thread to Ask or Full access first.");
+    fireEvent.click(update);
+    expect(onUpdateLocal).not.toHaveBeenCalled();
+  });
+});
 
 describe("ThreadPullRequestPanel — attaching", () => {
   it("never attaches a discovered pull request on its own", () => {

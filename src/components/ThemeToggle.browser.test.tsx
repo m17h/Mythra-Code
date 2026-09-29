@@ -1,10 +1,10 @@
 import { render } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import type { ThemeName } from "../types";
-import { themeColorScheme } from "../lib/appConfig";
+import { themeColorScheme, THEMES as THEME_CATALOG } from "../lib/appConfig";
 import "../styles.css";
 
-const THEMES: ThemeName[] = ["mythra", "light-mythra", "kiwi", "daylight", "midnight", "synthwave"];
+const THEMES = THEME_CATALOG.map((theme) => theme.id);
 
 function ToggleSamples({ theme }: { theme: ThemeName }) {
   return (

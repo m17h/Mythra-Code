@@ -76,7 +76,11 @@ pub async fn fetch_pricing_document(source: String) -> Result<String, String> {
                 attempt.stop()
             }
         }))
-        .user_agent(concat!("MythraCode/", env!("CARGO_PKG_VERSION"), " pricing-check"))
+        .user_agent(concat!(
+            "MythraCode/",
+            env!("CARGO_PKG_VERSION"),
+            " pricing-check"
+        ))
         .build()
         .map_err(|error| format!("Could not create the pricing client: {error}"))?;
     // No `Accept` header: cursor.com answers `Accept: text/markdown` with 404.
@@ -129,7 +133,10 @@ mod tests {
             assert_eq!(url.scheme(), "https", "{source}");
             assert!(url.path().ends_with(".md"), "{source}");
             assert!(url.query().is_none(), "{source}");
-            assert!(url.username().is_empty() && url.password().is_none(), "{source}");
+            assert!(
+                url.username().is_empty() && url.password().is_none(),
+                "{source}"
+            );
         }
         for source in [
             "",
@@ -154,7 +161,10 @@ mod tests {
             "https://cursor.com.evil.example/docs",
             "https://cursor.com:8443/docs",
         ] {
-            assert!(!redirect_allowed(&origin, &Url::parse(next).unwrap(), 0), "{next}");
+            assert!(
+                !redirect_allowed(&origin, &Url::parse(next).unwrap(), 0),
+                "{next}"
+            );
         }
     }
 
@@ -186,7 +196,10 @@ mod tests {
     #[ignore = "network"]
     async fn capture_pricing_pages() {
         let _ = rustls::crypto::ring::default_provider().install_default();
-        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../node_modules/.cache/pricing");
+        let dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../node_modules/.cache/pricing"
+        );
         std::fs::create_dir_all(dir).unwrap();
         for (source, anchor) in [
             ("openai", "### Standard pricing data"),
@@ -199,7 +212,10 @@ mod tests {
             let text = fetch_pricing_document(source.into())
                 .await
                 .unwrap_or_else(|error| panic!("{source}: {error}"));
-            assert!(text.contains(anchor), "{source} no longer contains {anchor:?}");
+            assert!(
+                text.contains(anchor),
+                "{source} no longer contains {anchor:?}"
+            );
             std::fs::write(format!("{dir}/{source}.md"), text).unwrap();
         }
     }

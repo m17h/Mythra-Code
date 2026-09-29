@@ -137,6 +137,9 @@ function remainderOf(ledger: UsageAmounts, detail: UsageComponentAmounts): Usage
     uncachedInputTokens: remaining(ledger.inputTokens - ledger.cachedInputTokens - ledger.cacheWriteInputTokens - detail.uncachedInputTokens),
     cacheReadTokens: remaining(ledger.cachedInputTokens - detail.cacheReadTokens),
     cacheWriteTokens: remaining(ledger.cacheWriteInputTokens - detail.cacheWriteTokens),
+    cacheReadUnknownTokens: remaining((ledger.cacheReadUnknownTokens ?? ledger.inputTokens) - (detail.cacheReadUnknownTokens ?? detail.uncachedInputTokens + detail.cacheReadTokens + detail.cacheWriteTokens)),
+    cacheWriteUnknownTokens: remaining((ledger.cacheWriteUnknownTokens ?? ledger.inputTokens) - (detail.cacheWriteUnknownTokens ?? detail.uncachedInputTokens + detail.cacheReadTokens + detail.cacheWriteTokens)),
+    auxiliaryRequests: remaining((ledger.auxiliaryRequests ?? 0) - (detail.auxiliaryRequests ?? 0)),
     outputTokens: remaining(ledger.outputTokens - detail.outputTokens),
     reasoningOutputTokens: remaining(ledger.reasoningOutputTokens - detail.reasoningOutputTokens),
     totalTokens: remaining(ledger.totalTokens - detail.totalTokens),
@@ -149,7 +152,7 @@ function remainderOf(ledger: UsageAmounts, detail: UsageComponentAmounts): Usage
   rest.estimatedCost = Math.abs(cost) > 1e-9 ? cost : 0;
   // A ledger-first pricing correction can change only cost in either
   // direction. Keep its signed difference until dated detail catches up.
-  return rest.totalTokens > 0 || rest.pricedTokens + rest.unpricedTokens > 0 || rest.estimatedCost !== 0 ? rest : null;
+  return rest.totalTokens > 0 || rest.pricedTokens + rest.unpricedTokens > 0 || rest.estimatedCost !== 0 || (rest.auxiliaryRequests ?? 0) > 0 ? rest : null;
 }
 
 /**
@@ -205,6 +208,9 @@ function ledgerTotals(ledger: UsageAmounts): UsageSelectionTotals {
     uncachedInputTokens: Math.max(0, ledger.inputTokens - ledger.cachedInputTokens - ledger.cacheWriteInputTokens),
     cacheReadTokens: ledger.cachedInputTokens,
     cacheWriteTokens: ledger.cacheWriteInputTokens,
+    cacheReadUnknownTokens: ledger.cacheReadUnknownTokens ?? ledger.inputTokens,
+    cacheWriteUnknownTokens: ledger.cacheWriteUnknownTokens ?? ledger.inputTokens,
+    auxiliaryRequests: ledger.auxiliaryRequests ?? 0,
     outputTokens: ledger.outputTokens,
     reasoningOutputTokens: ledger.reasoningOutputTokens,
     totalTokens: ledger.totalTokens,

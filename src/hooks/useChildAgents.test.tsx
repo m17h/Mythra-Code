@@ -3,7 +3,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { resetTaskStore, useTaskStore } from "../lib/taskStore";
 import type { ChildAgentLink, ChildAgentPolicy } from "../lib/childAgents";
 import type { ChildAgentRequest } from "../lib/agentBridge";
-import type { ChildAgentTarget, Thread } from "../types";
+import type { ChildAgentTarget, SkillDependencyReport, Thread } from "../types";
+import { SKILL_DEPENDENCY_LIMITS, SkillDependencyError } from "../lib/skillDependencies";
+
+const DEPENDENCIES: SkillDependencyReport = {
+  version: 1, limits: { ...SKILL_DEPENDENCY_LIMITS }, roots: [{ nodeId: "policy", channel: "system", name: "policy" }],
+  nodes: [{ id: "policy", kind: "skill", name: "policy", path: "/skills/policy.md", status: "loaded", characterCount: 12, depth: 0 }], edges: [], issues: [],
+};
 
 const bridge = vi.hoisted(() => ({
   onChildAgentRequest: vi.fn(),
@@ -201,6 +207,31 @@ describe("useChildAgents", () => {
       const view = await mount();
       await view.send(request({ arguments: { target: "grok", prompt: "Do the work." } }));
       expect(childRun.startChildAgentTurn.mock.calls[0][2].modelContextWindow).toBe(256_000);
+    });
+
+    it("passes the paired resolver to child delivery while retaining frozen raw policies", async () => {
+      const resolveSkillPrompts = vi.fn(async (prompt: string, systemPrompt: string) => ({ prompt, systemPrompt }));
+      const skillReferences = [{ start: 4, end: 11, name: "review", path: "/skills/review/SKILL.md" }];
+      childRun.startChildAgentTurn.mockResolvedValueOnce({ thread: childThread("child-terra", "openai"), turnId: "turn-terra", provider: "openai", model: "gpt-5.6-terra", skillReferences, skillsFolder: "/skills", skillDependencies: DEPENDENCIES });
+      const view = await mount({ resolveSkillPrompts });
+      await view.send(request({ arguments: { target: "terra", prompt: "Use @review" } }));
+      const [, prompt, runContext] = childRun.startChildAgentTurn.mock.calls[0];
+      expect(prompt).toBe("Use @review");
+      expect(runContext.resolveSkillPrompts).toBe(resolveSkillPrompts);
+      expect(runContext.systemPrompt).toBe(POLICY.providerSystemPrompts!.openai);
+      expect(runContext.policy).toBe(POLICY);
+      expect(useTaskStore.getState().tasks["child-terra"].messages.at(-1)?.text).toBe("Use @review");
+      expect(useTaskStore.getState().tasks["child-terra"].messages.at(-1)).toMatchObject({ skillReferences, skillsFolder: "/skills", skillDependencies: DEPENDENCIES });
+    });
+
+    it("reports a child dependency chain clearly without persisting a partial child", async () => {
+      childRun.startChildAgentTurn.mockRejectedValueOnce(new SkillDependencyError({ ...DEPENDENCIES, issues: [{ code: "missing-document", message: "Missing guide", chain: ["policy", "guide.md"] }] }));
+      const view = await mount();
+      await view.send(request());
+      expect(lastResponse()?.[1]).toBeNull();
+      expect(lastResponse()?.[2]).toContain("policy → guide.md: Missing guide");
+      expect(persistedLinks["child-terra"]).toBeUndefined();
+      expect(useTaskStore.getState().tasks["child-terra"]).toBeUndefined();
     });
 
     it("uses an agent-selected reasoning level within the frozen user ceiling", async () => {

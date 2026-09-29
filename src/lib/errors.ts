@@ -1,3 +1,5 @@
+import { SkillDependencyError } from "./skillDependencies";
+
 const TEXT_REPLACEMENTS: Array<[RegExp, string]> = [
   [/runtimeWorkspaceRoots requires experimentalApi capability/i, "Mythra Code needs to reconnect before it can reopen this project thread. Restart the runtime and try again."],
   [/(no such file or directory|could not start.*codex app-server|codex.*not.*path)/i, "The Codex runtime could not be found. Install the official Codex CLI, then try again."],
@@ -9,6 +11,9 @@ const TEXT_REPLACEMENTS: Array<[RegExp, string]> = [
 ];
 
 export function friendlyError(reason: unknown): string {
+  // Dependency resolution already supplies a bounded reason chain. Generic
+  // runtime classification must not hide which selected source failed.
+  if (reason instanceof SkillDependencyError) return reason.message;
   const raw = reason instanceof Error ? reason.message : String(reason ?? "Unknown error");
   for (const [pattern, message] of TEXT_REPLACEMENTS) {
     if (pattern.test(raw)) return message;

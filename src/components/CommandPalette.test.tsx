@@ -19,6 +19,25 @@ const baseProps = {
 };
 
 describe("CommandPalette", () => {
+  it.each([
+    ["git changes", /^Git: Changes/],
+    ["git commit", /^Git: Commit/],
+    ["git PR", /^Git: Pull requests/],
+    ["git branch", /^Git: Switch or create branch/],
+    ["branch git", /^Git: Switch or create branch/],
+    ["git fetch", /^Git: Fetch/],
+    ["git pull", /^Git: Pull \(fast-forward\)/],
+    ["git push", /^Git: Push/],
+    ["  GIT:   HISTORY  ", /^Git: History/],
+  ])("finds the natural Git query %s without running an action", (query, label) => {
+    const onGitRoute = vi.fn();
+    render(<CommandPalette {...baseProps} projectActive onGitRoute={onGitRoute} />);
+    fireEvent.change(screen.getByRole("textbox", { name: /Search commands/i }), { target: { value: query } });
+    expect(screen.getByRole("option", { name: label })).toBeInTheDocument();
+    expect(screen.getAllByRole("option")[0]).toHaveAccessibleName(label);
+    expect(onGitRoute).not.toHaveBeenCalled();
+  });
+
   it("exposes direct project tool commands when a project is active", () => {
     const onTool = vi.fn();
     render(<CommandPalette {...baseProps} projectActive onTool={onTool} />);

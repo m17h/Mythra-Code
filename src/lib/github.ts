@@ -6,10 +6,11 @@ export interface GitHubCloneTarget {
   url: string;
 }
 
-/** Derive a cross-platform folder name and canonical GitHub URL, never a path from URL text. */
-export function parseGitHubCloneTarget(input: string): GitHubCloneTarget | null {
-  const value = input.trim().split(/[?#]/, 1)[0];
-  const prefixes = ["https://github.com/", "http://github.com/", "git@github.com:", "ssh://git@github.com/"];
+function parseGitHubRemoteTarget(input: string): GitHubCloneTarget | null {
+  const trimmed = input.trim();
+  if (/[\x00-\x1f\x7f]/.test(trimmed)) return null;
+  const value = trimmed.split(/[?#]/, 1)[0];
+  const prefixes = ["https://github.com/", "http://github.com/", "git@github.com:", "ssh://git@github.com/", "ssh://git@ssh.github.com:443/"];
   const prefix = prefixes.find((item) => value.startsWith(item));
   if (!prefix) return null;
   const parts = value.slice(prefix.length).replace(/\/+$/, "").split("/");
@@ -17,10 +18,25 @@ export function parseGitHubCloneTarget(input: string): GitHubCloneTarget | null 
   const [owner, repository] = parts;
   const name = repository.endsWith(".git") ? repository.slice(0, -4) : repository;
   if (!/^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/.test(owner) || !/^[A-Za-z0-9._-]{1,100}$/.test(name)) return null;
-  // Windows trims trailing dots and treats device names (even with extensions) as special files.
-  if (name === "." || name === ".." || name.endsWith(".") || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i.test(name)) return null;
+  if (name === "." || name === "..") return null;
+  if (prefix === "ssh://git@ssh.github.com:443/") return { name, url: `${prefix}${owner}/${name}.git` };
   const ssh = prefix.startsWith("git@") || prefix.startsWith("ssh:");
   return { name, url: ssh ? `git@github.com:${owner}/${name}.git` : `https://github.com/${owner}/${name}.git` };
+}
+
+/** Canonicalize a repository address without imposing local-folder restrictions. */
+export function normalizeGitHubRemoteUrl(input: string): string | null {
+  return parseGitHubRemoteTarget(input)?.url ?? null;
+}
+
+/** Derive a cross-platform folder name and canonical GitHub URL, never a path from URL text. */
+export function parseGitHubCloneTarget(input: string): GitHubCloneTarget | null {
+  const target = parseGitHubRemoteTarget(input);
+  if (!target) return null;
+  const { name } = target;
+  // Windows trims trailing dots and treats device names (even with extensions) as special files.
+  if (name.endsWith(".") || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i.test(name)) return null;
+  return target;
 }
 
 export type GitWorkspaceAction =
@@ -77,8 +93,10 @@ export function getGitHubRepoStatus(cwd: string): Promise<GitHubRepoStatus> {
   return invoke<GitHubRepoStatus>("github_repo_status", { cwd });
 }
 
-export function attachGitHubRemote(cwd: string, url: string): Promise<GitHubRepoStatus> {
-  return invoke<GitHubRepoStatus>("github_attach_remote", { cwd, url });
+export async function attachGitHubRemote(cwd: string, url: string): Promise<GitHubRepoStatus> {
+  const normalized = normalizeGitHubRemoteUrl(url);
+  if (!normalized) throw new Error("Enter a GitHub repository URL such as https://github.com/owner/repository.git");
+  return invoke<GitHubRepoStatus>("github_attach_remote", { cwd, url: normalized });
 }
 
 export function createGitHubRepository(
@@ -118,12 +136,25 @@ export function githubCliCommand(
   binary: string,
   action: Extract<GitWorkspaceAction, "comments" | "ci" | "pr">,
   attached?: { repository: string; number: number },
+  repositoryContext?: string | null,
 ): string[] {
+  // An explicit full host also protects the generic terminal fallback from
+  // enterprise GH_HOST/GH_REPO defaults inherited by the desktop process.
+  const repository = action === "pr" ? repositoryContext : attached?.repository ?? repositoryContext;
+  if (!repository) throw new Error("Connect this project to a GitHub repository before using pull request actions.");
+  if (!/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9._-]{1,100}$/.test(repository)
+    || [".", ".."].includes(repository.split("/")[1])) {
+    throw new Error("Choose a valid GitHub repository in owner/repository form before using pull request actions.");
+  }
+  if (attached && action !== "pr" && (!Number.isSafeInteger(attached.number) || attached.number <= 0)) {
+    throw new Error("Choose a valid pull request number before using pull request actions.");
+  }
+  const target = `github.com/${repository}`;
   if (action === "comments") return attached
-    ? [binary, "pr", "view", String(attached.number), "--repo", attached.repository, "--comments"]
-    : [binary, "pr", "view", "--comments"];
+    ? [binary, "pr", "view", String(attached.number), "--repo", target, "--comments"]
+    : [binary, "pr", "view", "--repo", target, "--comments"];
   if (action === "ci") return attached
-    ? [binary, "pr", "checks", String(attached.number), "--repo", attached.repository]
-    : [binary, "pr", "checks"];
-  return [binary, "pr", "create", "--draft", "--fill"];
+    ? [binary, "pr", "checks", String(attached.number), "--repo", target]
+    : [binary, "pr", "checks", "--repo", target];
+  return [binary, "pr", "create", "--repo", target, "--draft", "--fill"];
 }

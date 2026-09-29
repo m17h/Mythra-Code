@@ -15,10 +15,14 @@ export interface GitWorkspaceSnapshot {
   changedFiles: number;
   stagedPaths: string[];
   rootPath: string;
+  /** Native canonical identity check; optional for older runtimes. */
+  isRoot?: boolean;
 }
 
 export interface GitWorkflowControls {
   snapshot: GitWorkspaceSnapshot | null;
+  /** Advances after every accepted successful read, even an unchanged summary. */
+  readRevision?: number;
   busy: boolean;
   error?: string;
   notice?: string;
@@ -62,3 +66,68 @@ export const updateLocalGitBase = (
 
 export const fetchGitWorkspace = (cwd: string) =>
   invoke<GitWorkspaceSnapshot>("git_workspace_fetch", { cwd });
+
+export interface GitWorkspaceCommandResult {
+  stdout: string;
+  stderr: string;
+}
+export interface GitWorkspaceRevertPreview {
+  token: string;
+  paths: string[];
+  headOid: string | null;
+  branch: string | null;
+}
+
+/** Freeze exact index and working contents before the destructive confirmation. */
+export const previewGitWorkspaceRevert = (cwd: string, path: string) =>
+  invoke<GitWorkspaceRevertPreview>("git_workspace_revert_preview", { cwd, path });
+export const revertGitWorkspace = (cwd: string, path: string, expectedToken: string) =>
+  invoke<GitWorkspaceCommandResult>("git_workspace_revert", { cwd, path, expectedToken });
+export interface GitWorkspaceRevertAllPreview {
+  token: string;
+  restorePaths: string[];
+  preservedPaths: string[];
+  headOid: string;
+  branch: string | null;
+}
+/** Freeze the bulk operation; newly added/untracked contents are preserved. */
+export const previewGitWorkspaceRevertAll = (cwd: string) =>
+  invoke<GitWorkspaceRevertAllPreview>("git_workspace_revert_all_preview", { cwd });
+export const revertGitWorkspaceAll = (cwd: string, expectedToken: string) =>
+  invoke<GitWorkspaceCommandResult>("git_workspace_revert_all", { cwd, expectedToken });
+export interface GitWorkspaceCommitResult extends GitWorkspaceCommandResult {
+  headOid: string;
+  branch: string | null;
+}
+
+export const commitGitWorkspace = (
+  cwd: string,
+  message: string,
+  stagedOnly: boolean,
+  snapshot: GitWorkspaceSnapshot | null,
+) => invoke<GitWorkspaceCommitResult>("git_workspace_commit", {
+  cwd, message, stagedOnly,
+  expectedHeadOid: snapshot?.headOid ?? null,
+  expectedBranch: snapshot?.branch ?? null,
+});
+
+export const stageGitWorkspace = (
+  cwd: string,
+  path: string | null,
+  unstage: boolean,
+  snapshot: GitWorkspaceSnapshot | null,
+) => invoke<GitWorkspaceCommandResult>("git_workspace_stage", {
+  cwd, path, unstage,
+  expectedHeadOid: snapshot?.headOid ?? null,
+  expectedBranch: snapshot?.branch ?? null,
+});
+
+export const pushGitWorkspace = (
+  cwd: string,
+  headOid: string,
+  branch: string,
+  expectedRemoteUrl: string,
+  expectedRepository: string,
+) => invoke<GitWorkspaceCommandResult>("git_workspace_push", {
+  cwd, headOid, branch, expectedRemoteUrl, expectedRepository,
+});

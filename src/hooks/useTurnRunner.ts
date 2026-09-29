@@ -45,12 +45,13 @@ import {
 import { normalizedProjectPath } from "../lib/paths";
 import { isPullRequestMutationRunning } from "../lib/pullRequestOperations";
 import { unsupportedImageReason } from "../lib/attachments";
+import type { ResolvedSkillPrompts } from "../lib/skills";
 import { PendingTurnStarts, type PendingTurnStart } from "../lib/pendingTurnStarts";
 import type { SetPersisted } from "./usePersistedState";
 import type { OpenRouterModel } from "../components/OpenRouterModelControl";
 import type { LMStudioModel } from "../lib/lmStudio";
 import type { AttachmentRecord } from "../components/StudioDock";
-import type { Account, AppSettings, CustomAgentProfile, Project, Provider, SettingsSection, Thread, ThreadReasoning, Turn } from "../types";
+import type { Account, AppSettings, ChatMessage, CustomAgentProfile, Project, Provider, SettingsSection, Thread, ThreadReasoning, Turn } from "../types";
 
 const queuedDeliveries = new Map<string, { threadId: string; context: TurnRunnerContext }>();
 const activeQueuedDeliveries = new Set<string>();
@@ -167,6 +168,8 @@ export interface TurnRunnerContext {
   worktreeBusy: boolean;
   skillsFolder: string;
   resolveSkillPrompt: (message: string, mentionSource?: string) => Promise<string>;
+  resolveSkillPrompts?: (message: string, systemPrompt: string, mentionSource?: string) => Promise<ResolvedSkillPrompts>;
+  getSkillReferences?: (message: string, mentionSource?: string) => Pick<ChatMessage, "skillReferences" | "skillsFolder">;
   /** Preserve literal generated prompts through deferred and restored delivery. */
   resolveSkillMentions?: false;
   /** Skill invocations in formatted prompts come only from authored text. */
@@ -258,6 +261,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
     text: string,
     mode: "turn" | "steer",
     onUnavailableSteer?: () => void,
+    onResolutionFailure?: (reason: unknown) => void,
   ): Promise<boolean> => {
     const {
       activeThread, activeWorkspace, activeProject, running, attachments, deferredDelivery,
@@ -342,10 +346,22 @@ export function useTurnRunner(context: TurnRunnerContext): {
         ? lmStudioModels.find((entry) => entry.id === effectiveSettings.model)?.maxContextLength
         : undefined;
     let providerText: string;
+    let resolvedSystemPrompt = effectiveSettings.systemPrompt;
+    let userSkillMetadata: Pick<ChatMessage, "skillReferences" | "skillsFolder" | "skillDependencies"> = {};
     if (mode === "steer" && running && activeThread) {
       try {
-        providerText = await resolveSkillPrompt(text, ctx.skillInvocationText);
+        if (ctx.resolveSkillPrompts) {
+          // Steering changes only user input. Never re-resolve or resend the
+          // running turn's frozen system policy.
+          const resolved = await ctx.resolveSkillPrompts(text, "", ctx.resolveSkillMentions === false ? "" : ctx.skillInvocationText);
+          providerText = resolved.prompt;
+          userSkillMetadata = { skillReferences: ctx.resolveSkillMentions === false ? [] : resolved.skillReferences, skillsFolder: resolved.skillsFolder, skillDependencies: resolved.skillDependencies };
+        } else {
+          providerText = await resolveSkillPrompt(text, ctx.skillInvocationText);
+          userSkillMetadata = ctx.resolveSkillMentions === false ? { skillReferences: [] } : ctx.getSkillReferences?.(text, ctx.skillInvocationText) ?? {};
+        }
       } catch (reason) {
+        onResolutionFailure?.(reason);
         setError(friendlyError(reason));
         return false;
       }
@@ -356,6 +372,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         id: steerMessageId,
         role: "user",
         text,
+        ...userSkillMetadata,
         attachments: messageImageAttachments(sentAttachments),
         steerStatus: "sending",
       });
@@ -553,6 +570,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         id: sentMessageId,
         role: "user",
         text,
+        ...userSkillMetadata,
         attachments: messageImageAttachments(sentAttachments),
       });
       const result = await strategy.startTurn(thread, updatedThread);
@@ -588,7 +606,15 @@ export function useTurnRunner(context: TurnRunnerContext): {
       // Skill scans can wait on disk or startup preparation. They are part of
       // starting a turn, so expose Stop before awaiting them and honor it
       // before creating any workspace, bridge, or provider process.
-      providerText = await resolveSkillPrompt(text, ctx.skillInvocationText);
+      if (ctx.resolveSkillPrompts) {
+        const resolved = await ctx.resolveSkillPrompts(text, effectiveSettings.systemPrompt, ctx.resolveSkillMentions === false ? "" : ctx.skillInvocationText);
+        providerText = resolved.prompt;
+        resolvedSystemPrompt = resolved.systemPrompt;
+        userSkillMetadata = { skillReferences: ctx.resolveSkillMentions === false ? [] : resolved.skillReferences, skillsFolder: resolved.skillsFolder, skillDependencies: resolved.skillDependencies };
+      } else {
+        providerText = await resolveSkillPrompt(text, ctx.skillInvocationText);
+        userSkillMetadata = ctx.resolveSkillMentions === false ? { skillReferences: [] } : ctx.getSkillReferences?.(text, ctx.skillInvocationText) ?? {};
+      }
       if (pendingStart?.cancelRequested || (!activeThread && draftGeneration !== draftGenerationRef.current)) {
         if (startingThreadId && pendingStart) {
           pendingTurnStartsRef.current.finish(startingThreadId, pendingStart);
@@ -641,9 +667,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       const runtimeSubagentMax = childBridge?.policy.maxConcurrent
         ?? capturedPolicy?.maxConcurrent
         ?? effectiveSettings.subagentMax;
-      const runtimeSettings = runtimeSubagentMax === effectiveSettings.subagentMax
-        ? effectiveSettings
-        : { ...effectiveSettings, subagentMax: runtimeSubagentMax };
+      const runtimeSettings = { ...effectiveSettings, systemPrompt: resolvedSystemPrompt, subagentMax: runtimeSubagentMax };
       // The Run button is a project feature: the model is told about it (and
       // its current command) only when this thread's bridge can change it.
       const runButton = {
@@ -662,7 +686,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
             // presence, so resume detection is unaffected by running after it.
             const canResumeClaude = Boolean(activeThread && useTaskStore.getState().tasks[thread.id]?.messages.some((message) => message.role === "assistant"));
             await saveClaudeTranscript({ thread: updatedThread, messages: useTaskStore.getState().tasks[thread.id]?.messages ?? [], activities: useTaskStore.getState().tasks[thread.id]?.activities ?? [] });
-            const result = await startClaudeTurn({ threadId: thread.id, cwd: executionPath, prompt: providerText, model: effectiveSettings.model || DEFAULT_CLAUDE_MODEL, effort: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort, permission: effectiveSettings.permission, systemPrompt: withMythraCodeCompletionInstructions(effectiveSettings.systemPrompt, Boolean(childBridge?.launch.toolNames.includes("spawn_mythra_agent")), Boolean(childBridge?.launch.toolNames.includes("propose_agent_settings")), runButton, checkButton), resume: canResumeClaude, attachments: sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })), subagentMax: runtimeSubagentMax, customAgents, skillsPluginPath: skillRuntimeRootRef.current || undefined, childAgentBridgeConfig: childBridge?.launch.configPath });
+            const result = await startClaudeTurn({ threadId: thread.id, cwd: executionPath, prompt: providerText, model: effectiveSettings.model || DEFAULT_CLAUDE_MODEL, effort: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort, permission: effectiveSettings.permission, systemPrompt: withMythraCodeCompletionInstructions(resolvedSystemPrompt, Boolean(childBridge?.launch.toolNames.includes("spawn_mythra_agent")), Boolean(childBridge?.launch.toolNames.includes("propose_agent_settings")), runButton, checkButton), resume: canResumeClaude, attachments: sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })), subagentMax: runtimeSubagentMax, customAgents, skillsPluginPath: skillRuntimeRootRef.current || undefined, childAgentBridgeConfig: childBridge?.launch.configPath });
             return { turnId: result.turnId };
           },
           hardStop: (threadId) => killClaudeTurn(threadId),
@@ -681,7 +705,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
               model: effectiveSettings.model || DEFAULT_CURSOR_MODEL,
               effort: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort,
               permission: effectiveSettings.permission,
-              systemPrompt: withMythraCodeCompletionInstructions(effectiveSettings.systemPrompt, Boolean(childBridge?.launch.toolNames.includes("spawn_mythra_agent")), Boolean(childBridge?.launch.toolNames.includes("propose_agent_settings")), runButton, checkButton),
+              systemPrompt: withMythraCodeCompletionInstructions(resolvedSystemPrompt, Boolean(childBridge?.launch.toolNames.includes("spawn_mythra_agent")), Boolean(childBridge?.launch.toolNames.includes("propose_agent_settings")), runButton, checkButton),
               resumeSessionId: priorSessionId || undefined,
               attachments: sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })),
               childAgentBridge: childBridge
@@ -716,10 +740,12 @@ export function useTurnRunner(context: TurnRunnerContext): {
         bridgeInstanceId: childBridge?.launch.configPath,
       });
       let threadId = activeThread?.id;
+      let runtimeTurnModel: unknown;
       startedThreadId = threadId;
       if (!threadId) {
-        const result = await rpc<{ thread: Thread }>("thread/start", threadStartParams(runtimeSettings, executionPath, { serviceName: activeWorkspace.isChat ? "Mythra Code Chat" : "Mythra Code", customAgents, modelContextWindow, interactive: true, additionalWorkspaceRoots, childAgentBridge: childBridge?.launch, projectRunCommand: runButton.run, projectCheckCommand: checkButton.check }));
+        const result = await rpc<{ thread: Thread; model?: unknown }>("thread/start", threadStartParams(runtimeSettings, executionPath, { serviceName: activeWorkspace.isChat ? "Mythra Code Chat" : "Mythra Code", customAgents, modelContextWindow, interactive: true, perTurnSystemPrompt: true, additionalWorkspaceRoots, childAgentBridge: childBridge?.launch, projectRunCommand: runButton.run, projectCheckCommand: checkButton.check }));
         const startedThread = optimisticStartedThread(result.thread, text);
+        runtimeTurnModel = result.model;
         threadId = startedThread.id;
         startedThreadId = threadId;
         bindThreadToProject(startedThread.id, activeWorkspace.path);
@@ -732,7 +758,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         rememberThread(startedThread);
         contextRef.current.onThreadTitlePending?.(startedThread.id, text);
         onThreadCreated(startedThread.id);
-        persistThreadModel(startedThread.id, effectiveSettings.model);
+        persistThreadModel(startedThread.id, effectiveSettings.model.trim() || (typeof runtimeTurnModel === "string" ? runtimeTurnModel.trim() : ""));
         persistThreadReasoning(startedThread.id, { reasoningEffort: effectiveSettings.reasoningEffort, ultra: effectiveSettings.ultra });
         recordSubagentCapabilities(startedThread.id, runtimeInstance, capabilities);
         useTaskStore.getState().ensureTask(startedThread.id, executionPath);
@@ -755,8 +781,9 @@ export function useTurnRunner(context: TurnRunnerContext): {
         const plan = planSubagentCapabilities(threadId, runtimeInstance, capabilities, currentRuntime.loaded);
         if (plan.restartRuntime) runtimeInstance = await restartRuntimeForCapabilities(threadId);
         if (effectiveSettings.provider === "openrouter" || effectiveSettings.provider === "lmstudio" || plan.resume) {
-          const resume = threadResumeParams(runtimeSettings, threadId, executionPath, { customAgents, modelContextWindow, excludeTurns: true, additionalWorkspaceRoots, childAgentBridge: childBridge?.launch, refreshRuntimeConfig: true, projectRunCommand: runButton.run, projectCheckCommand: checkButton.check });
-          await rpc("thread/resume", effectiveSettings.provider === "openrouter" || effectiveSettings.provider === "lmstudio" ? { ...resume, model: effectiveSettings.model } : resume);
+          const resume = threadResumeParams(runtimeSettings, threadId, executionPath, { customAgents, modelContextWindow, excludeTurns: true, perTurnSystemPrompt: true, additionalWorkspaceRoots, childAgentBridge: childBridge?.launch, refreshRuntimeConfig: true, projectRunCommand: runButton.run, projectCheckCommand: checkButton.check });
+          const resumed = await rpc<{ model?: unknown }>("thread/resume", effectiveSettings.provider === "openrouter" || effectiveSettings.provider === "lmstudio" ? { ...resume, model: effectiveSettings.model } : resume);
+          runtimeTurnModel = resumed?.model;
           recordSubagentCapabilities(threadId, runtimeInstance, capabilities);
         }
       }
@@ -788,10 +815,14 @@ export function useTurnRunner(context: TurnRunnerContext): {
         id: sentMessageId,
         role: "user",
         text,
+        ...userSkillMetadata,
         attachments: messageImageAttachments(sentAttachments),
       });
 
-      const result = await rpc<{ turn: Turn }>("turn/start", turnStartParams(effectiveSettings, threadId, executionPath, input, additionalWorkspaceRoots));
+      const result = await rpc<{ turn: Turn }>("turn/start", turnStartParams(runtimeSettings, threadId, executionPath, input, additionalWorkspaceRoots, true, {
+        systemPrompt: resolvedSystemPrompt,
+        model: typeof runtimeTurnModel === "string" ? runtimeTurnModel : undefined,
+      }));
       const resultTurnId = result.turn?.id;
       const completedBeforeStartReturned = Boolean(
         resultTurnId
@@ -1073,22 +1104,26 @@ export function useTurnRunner(context: TurnRunnerContext): {
     if (ctx.running && !ctx.activeThread) return false;
     const task = ctx.activeThread ? useTaskStore.getState().tasks[ctx.activeThread.id] : undefined;
     if (ctx.activeThread && task?.status === "starting") return queueFollowUp(ctx, text);
+    let resolutionFailed = false;
+    const resolutionFailure = () => { resolutionFailed = true; };
     if (ctx.activeThread && task?.status === "running") {
       const delivered = await deliverMessage(
         { ...ctx, running: true },
         text,
         "steer",
+        undefined,
+        resolutionFailure,
       );
       // Steering is an intent, not a lossy transport operation. If the runtime
-      // crosses a lifecycle boundary or rejects the insertion for any reason,
-      // retain the instruction as the next turn instead of handing the user a
-      // rejected prompt.
-      if (!delivered) return queueFollowUp(ctx, text);
+      // crosses a lifecycle boundary or rejects the transport insertion,
+      // retain the instruction as the next turn. A failed dependency preflight
+      // remains blocked so it cannot be hidden by this fallback.
+      if (!delivered && !resolutionFailed) return queueFollowUp(ctx, text);
       return delivered;
     }
     if (ctx.activeThread && ctx.running && !task) {
-      const delivered = await deliverMessage(ctx, text, "steer");
-      return delivered || queueFollowUp(ctx, text);
+      const delivered = await deliverMessage(ctx, text, "steer", undefined, resolutionFailure);
+      return delivered || (!resolutionFailed && queueFollowUp(ctx, text));
     }
     if (task?.queuedTurns.length) return queueFollowUp({ ...ctx, running: false }, text);
     return deliverMessage({ ...ctx, running: false }, text, "turn");
@@ -1105,6 +1140,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
     if (!queuedTurn || queuedTurn.status === "sending" || queuedTurn.editing) return;
     useTaskStore.getState().setQueuedTurnStatus(threadId, queuedTurn.id, "sending");
     let steerUnavailable = false;
+    let resolutionFailure: { reason: unknown } | undefined;
     const delivered = await deliverMessage(
       { ...ctx, running: true, attachments: queuedTurn.attachments, setAttachments: () => undefined,
         skillInvocationText: queuedTurn.skillInvocationText,
@@ -1112,11 +1148,16 @@ export function useTurnRunner(context: TurnRunnerContext): {
       queuedTurn.text,
       "steer",
       () => { steerUnavailable = true; },
+      (reason) => { resolutionFailure = { reason }; },
     );
     if (delivered) {
       useTaskStore.getState().removeQueuedTurn(threadId, queuedTurn.id);
       queuedDeliveries.delete(queuedTurn.id);
       queuedBusyRetries.delete(queuedTurn.id);
+    } else if (resolutionFailure) {
+      // A broken dependency is configuration failure, not a provider lifecycle
+      // boundary. Keep the source entry for correction and preserve its banner.
+      useTaskStore.getState().setQueuedTurnStatus(threadId, queuedTurn.id, "failed", friendlyError(resolutionFailure.reason));
     } else {
       // Whether the provider crossed a lifecycle boundary or rejected the
       // insertion, the user's queued instruction remains durable and will run

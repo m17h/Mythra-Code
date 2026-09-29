@@ -3,7 +3,7 @@ import { page, userEvent } from "vitest/browser";
 import { beforeEach, describe, expect, it } from "vitest";
 import { UsageDashboard } from "./UsageDashboard";
 import { refreshOfficialPricing } from "../lib/officialPricing";
-import { pricingForModel } from "../lib/usageLedger";
+import { annotateThreadUsage, flushUsageLedger, pricingForModel, recordAuxiliaryUsage, recordUsageDelta, resetUsageLedgerCache } from "../lib/usageLedger";
 import { seedUsageDashboard } from "../test/usageFixture";
 import { CURSOR_PRICING_PAGE, OPENAI_PRICING_PAGE } from "../test/pricingPages";
 import "../styles.css";
@@ -14,7 +14,10 @@ function mount(width: number, scheme: "dark" | "light" = "dark") {
 }
 
 function expectNoHorizontalOverflow(element: HTMLElement) {
-  expect(element.scrollWidth, element.className).toBeLessThanOrEqual(element.clientWidth + 1);
+  const right = element.getBoundingClientRect().right + 1;
+  const outside = [...element.querySelectorAll<HTMLElement>("*")].filter((node) => node.getBoundingClientRect().right > right && !node.closest(".usage-table-scroll"))
+    .slice(0, 5).map((node) => `${node.tagName}.${node.className}: ${node.textContent?.slice(0, 60)}`).join("; ");
+  expect(element.scrollWidth, `${element.className}${outside ? ` · ${outside}` : ""}`).toBeLessThanOrEqual(element.clientWidth + 1);
 }
 
 /** Everything fits its container except deliberately scrollable wide tables. */
@@ -34,6 +37,45 @@ const tab = (view: ReturnType<typeof render>, name: string) => view.getByRole("t
 
 describe("usage dashboard layout", () => {
   beforeEach(async () => { seedUsageDashboard(); await page.viewport(1400, 900); });
+
+  it.each(["light", "dark"] as const)("keeps unknown cache and tier evidence readable and keyboard-scrollable in narrow %s", async (scheme) => {
+    localStorage.clear();
+    resetUsageLedgerCache();
+    await page.viewport(430, 700);
+    const usage = { inputTokens: 1_000, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 10, totalTokens: 1_010, reasoningOutputTokens: 0, contextWindow: null, cacheReadReported: false, cacheWriteReported: false };
+    annotateThreadUsage("cache-unknown", { provider: "openai", model: "gpt-6-sol", requestedServiceTier: "fast" });
+    recordUsageDelta("cache-unknown", usage, "unknown-cache", "turn-unknown");
+    annotateThreadUsage("actual-standard", { provider: "openai", model: "gpt-6-sol", requestedServiceTier: "flex" });
+    recordUsageDelta("actual-standard", { ...usage, serviceTier: "standard", serviceTierSource: "reported" }, "known-tier", "turn-tier");
+    recordAuxiliaryUsage({ executionId: "helper-missing", provider: "openai", model: "gpt-6-luna", purpose: "thread-title", requestedServiceTier: "standard", usage: null });
+    flushUsageLedger();
+    const { view, dashboard } = mount(320, scheme);
+    const stats = view.getByRole("group", { name: /^Summary/ });
+    const cache = within(stats).getByText("Cache reads").parentElement!;
+    expect(cache).toHaveTextContent("Unknown");
+    expect(cache).not.toHaveTextContent("0% of input");
+    const guide = view.getByText("Cache and service-tier evidence").closest("summary")!;
+    guide.focus();
+    await userEvent.keyboard("{Enter}");
+    const body = view.getByRole("region", { name: "Usage metric evidence" });
+    expect(body).toBeVisible();
+    expect(body).toHaveTextContent("Requested tier: Fast / Priority. Actual tier: Unknown — not reported.");
+    expect(body).toHaveTextContent("Requested tier: Flex. Actual tier: Standard.");
+    expect(body).toHaveTextContent("Tier-specific rate unknown or unsupported");
+    expect(body).toHaveTextContent("1 all-time helper request had no token report");
+    expectNoHorizontalOverflow(body);
+    expect(body.getBoundingClientRect().height).toBeLessThanOrEqual(281);
+    expect(body.scrollHeight).toBeGreaterThan(body.clientHeight);
+    body.focus();
+    expect(body).toHaveFocus();
+    expect(getComputedStyle(body).outlineStyle).toBe("solid");
+    await userEvent.keyboard("{End}");
+    await waitFor(() => expect(body.scrollTop).toBeGreaterThan(0));
+    expectContained(dashboard);
+    fireEvent.click(tab(view, "Models"));
+    const table = view.getByRole("table", { name: "Tokens and estimated cost by type, all models" });
+    expect(within(table).getByRole("rowheader", { name: "Cache read" }).closest("tr")).toHaveTextContent("UnknownNot reported");
+  });
 
   it("has room for the four-up summary inside the widened Settings sheet at a 1380x901 window", async () => {
     await page.viewport(1380, 901);

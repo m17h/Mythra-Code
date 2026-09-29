@@ -6,6 +6,8 @@ import {
 } from "./usageLedger";
 import { historicalPricing } from "./pricingEvidence";
 import { loadStored, storeValue } from "./storage";
+import type { UsageEvidence } from "../types";
+import { cacheUnknownTokens, normalizedServiceTier } from "./usageEvidence";
 
 export { USAGE_HISTORY_KEY };
 
@@ -37,6 +39,9 @@ const MAX_COHORTS = 4;
 const MINUTE_MS = 60_000;
 
 export interface UsageComponentAmounts {
+  cacheReadUnknownTokens?: number;
+  cacheWriteUnknownTokens?: number;
+  auxiliaryRequests?: number;
   uncachedInputTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
@@ -64,6 +69,7 @@ export interface UsageComponentAmounts {
 }
 
 export interface UsageBucket extends UsageComponentAmounts {
+  serviceTiers?: Array<{ tier: string; source: "reported" | "requested" | "unknown"; requestedTier?: string }>;
   /** Local calendar day, YYYY-MM-DD. */
   day: string;
   provider: UsageProvider;
@@ -80,7 +86,7 @@ export interface UsageBucket extends UsageComponentAmounts {
  * time it happened in. This is what makes a later, evidence-backed repricing
  * exact: the token split and moment are known, and so is the old rate.
  */
-export interface RateCohort {
+export interface RateCohort extends UsageEvidence {
   /** Unique per cohort; a correction's id also includes its revision. */
   id: string;
   /** Index into the rate table, or -1 when unpriced. */
@@ -120,7 +126,7 @@ interface UsageHistoryState {
 
 type PersistedCohort = [id: string, rate: number, firstMinute: number, lastMinute: number, uncached: number, cacheRead: number, cacheWrite: number, cacheWrite1h: number, output: number, was?: number, basis?: "o" | "c", revision?: number, checkpointed?: "k"];
 type PersistedBucket = [string, string, string, ...Array<number | PersistedCohort[]>];
-type PersistedRate = [input: number, output: number, cacheRead: number | null, cacheWrite: number | null, cacheWrite1h: number | null, source: ModelPricing["source"], origin: string, asOf: string];
+type PersistedRate = [input: number, output: number, cacheRead: number | null, cacheWrite: number | null, cacheWrite1h: number | null, source: ModelPricing["source"], origin: string, asOf: string, serviceTier?: string];
 interface PersistedHistory {
   schemaVersion: 1;
   startedAt: number;
@@ -129,23 +135,33 @@ interface PersistedHistory {
   recentTurns: string[];
   turnDays?: Array<[string, string]>;
   rates?: PersistedRate[];
+  bucketEvidence?: Record<string, Pick<UsageBucket, "cacheReadUnknownTokens" | "cacheWriteUnknownTokens" | "serviceTiers" | "auxiliaryRequests">>;
+  cohortEvidence?: Record<string, UsageEvidence>;
 }
 
 const PROVIDERS: UsageProvider[] = ["openai", "claude", "openrouter", "cursor", "lmstudio", "unknown"];
-const NUMBER_KEYS: Array<keyof UsageComponentAmounts> = [
+const NUMBER_KEYS = [
   "uncachedInputTokens", "cacheReadTokens", "cacheWriteTokens", "outputTokens", "reasoningOutputTokens", "totalTokens",
   "uncachedInputCost", "cacheReadCost", "cacheWriteCost", "outputCost", "pricedTokens", "unpricedTokens", "turns", "unturnedTokens", "modelTurns", "cacheWrite1hTokens",
-];
+] as const;
 
 export function emptyComponentAmounts(): UsageComponentAmounts {
   return {
+    cacheReadUnknownTokens: 0, cacheWriteUnknownTokens: 0, auxiliaryRequests: 0,
     uncachedInputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 0,
     uncachedInputCost: 0, cacheReadCost: 0, cacheWriteCost: 0, outputCost: 0, pricedTokens: 0, unpricedTokens: 0, turns: 0, unturnedTokens: 0, modelTurns: 0, cacheWrite1hTokens: 0,
   };
 }
 
 export function addComponentAmounts(target: UsageComponentAmounts, source: UsageComponentAmounts): UsageComponentAmounts {
+  const targetInput = target.uncachedInputTokens + target.cacheReadTokens + target.cacheWriteTokens;
+  const sourceInput = source.uncachedInputTokens + source.cacheReadTokens + source.cacheWriteTokens;
+  const unknownRead = (target.cacheReadUnknownTokens ?? targetInput) + (source.cacheReadUnknownTokens ?? sourceInput);
+  const unknownWrite = (target.cacheWriteUnknownTokens ?? targetInput) + (source.cacheWriteUnknownTokens ?? sourceInput);
   for (const key of NUMBER_KEYS) target[key] += source[key];
+  target.cacheReadUnknownTokens = unknownRead;
+  target.cacheWriteUnknownTokens = unknownWrite;
+  target.auxiliaryRequests = (target.auxiliaryRequests ?? 0) + (source.auxiliaryRequests ?? 0);
   return target;
 }
 
@@ -161,7 +177,7 @@ export function usageCostParts(usage: TokenUsageView, pricing?: ModelPricing): {
   const cacheWrite1hTokens = Math.min(cacheWriteTokens, Math.max(0, usage.cacheWrite1hInputTokens ?? 0));
   const uncachedInputTokens = Math.max(0, usage.inputTokens - cacheReadTokens - cacheWriteTokens);
   const outputTokens = usage.outputTokens;
-  if (!pricing) return { uncachedInputTokens, cacheReadTokens, cacheWriteTokens, cacheWrite1hTokens, outputTokens, costs: null };
+  if (!pricing || usage.tokenAvailability === "partial" || usage.tokenAvailability === "unavailable" || (usage.inputTokens && (cacheUnknownTokens(usage, "Read") || cacheUnknownTokens(usage, "Write")))) return { uncachedInputTokens, cacheReadTokens, cacheWriteTokens, cacheWrite1hTokens, outputTokens, costs: null };
   return {
     uncachedInputTokens, cacheReadTokens, cacheWriteTokens, cacheWrite1hTokens, outputTokens,
     costs: {
@@ -177,6 +193,8 @@ export function usageCostParts(usage: TokenUsageView, pricing?: ModelPricing): {
 export function addUsageToAmounts(amounts: UsageComponentAmounts, usage: TokenUsageView, pricing?: ModelPricing): UsageComponentAmounts {
   const tokens = usage.inputTokens + usage.outputTokens;
   const parts = usageCostParts(usage, pricing);
+  amounts.cacheReadUnknownTokens = (amounts.cacheReadUnknownTokens ?? 0) + cacheUnknownTokens(usage, "Read");
+  amounts.cacheWriteUnknownTokens = (amounts.cacheWriteUnknownTokens ?? 0) + cacheUnknownTokens(usage, "Write");
   amounts.uncachedInputTokens += parts.uncachedInputTokens;
   amounts.cacheReadTokens += parts.cacheReadTokens;
   amounts.cacheWriteTokens += parts.cacheWriteTokens;
@@ -230,8 +248,8 @@ const SOURCES: Array<ModelPricing["source"]> = ["OpenAI", "Anthropic", "OpenRout
 const ORIGINS = ["official", "catalog", "bundled"];
 
 function parseRate(raw: unknown): ModelPricing | null {
-  if (!Array.isArray(raw) || raw.length !== 8) return null;
-  const [input, output, cacheRead, cacheWrite, cacheWrite1h, source, origin, asOf] = raw as unknown[];
+  if (!Array.isArray(raw) || (raw.length !== 8 && raw.length !== 9)) return null;
+  const [input, output, cacheRead, cacheWrite, cacheWrite1h, source, origin, asOf, serviceTier] = raw as unknown[];
   const optional = [cacheRead, cacheWrite, cacheWrite1h].map((value) => value === null ? undefined : nonNegative(value)) as Array<number | undefined | null>;
   if (nonNegative(input) === null || nonNegative(output) === null || optional.includes(null)
     || !SOURCES.includes(source as ModelPricing["source"]) || typeof origin !== "string" || !isDayKey(asOf)) return null;
@@ -241,6 +259,7 @@ function parseRate(raw: unknown): ModelPricing | null {
     ...(typeof optional[1] === "number" ? { cacheWriteInputPerMillion: optional[1] } : {}),
     ...(typeof optional[2] === "number" ? { cacheWrite1hInputPerMillion: optional[2] } : {}),
     source: source as ModelPricing["source"], asOf, ...(ORIGINS.includes(origin) ? { origin: origin as ModelPricing["origin"] } : {}),
+    ...(normalizedServiceTier(serviceTier) ? { serviceTier: normalizedServiceTier(serviceTier) } : {}),
   };
 }
 
@@ -248,13 +267,14 @@ function serializeRate(rate: ModelPricing): PersistedRate {
   return [
     rate.inputPerMillion, rate.outputPerMillion, rate.cachedInputPerMillion ?? null, rate.cacheWriteInputPerMillion ?? null,
     rate.cacheWrite1hInputPerMillion ?? null, rate.source, rate.origin ?? "", rate.asOf,
-  ];
+    ...(rate.serviceTier ? [rate.serviceTier] : []),
+  ] as PersistedRate;
 }
 
 /** Rates are the same cohort when every billable part costs the same. */
 function rateIdentity(rate: ModelPricing): string {
   const write = rate.cacheWriteInputPerMillion ?? rate.inputPerMillion;
-  return JSON.stringify([rate.source, rate.inputPerMillion, rate.outputPerMillion, rate.cachedInputPerMillion ?? rate.inputPerMillion, write, rate.cacheWrite1hInputPerMillion ?? write]);
+  return JSON.stringify([rate.source, rate.inputPerMillion, rate.outputPerMillion, rate.cachedInputPerMillion ?? rate.inputPerMillion, write, rate.cacheWrite1hInputPerMillion ?? write, rate.serviceTier ?? "standard"]);
 }
 
 const COHORT_TOKENS = ["uncachedInputTokens", "cacheReadTokens", "cacheWriteTokens", "cacheWrite1hTokens", "outputTokens"] as const;
@@ -365,11 +385,30 @@ function parseHistory(raw: unknown): UsageHistoryState | null {
     if (parsed.some((item) => item === null)) continue;
     const bucket = { day, provider: provider as UsageProvider, model } as UsageBucket;
     NUMBER_KEYS.forEach((key, index) => { bucket[key] = parsed[index]!; });
+    const evidence = value.bucketEvidence?.[bucketKey(day, bucket.provider, model)];
+    const input = bucket.uncachedInputTokens + bucket.cacheReadTokens + bucket.cacheWriteTokens;
+    bucket.cacheReadUnknownTokens = Math.min(input, nonNegative(evidence?.cacheReadUnknownTokens) ?? input);
+    bucket.cacheWriteUnknownTokens = Math.min(input, nonNegative(evidence?.cacheWriteUnknownTokens) ?? input);
+    bucket.auxiliaryRequests = nonNegative(evidence?.auxiliaryRequests) ?? 0;
+    bucket.serviceTiers = Array.isArray(evidence?.serviceTiers) ? evidence.serviceTiers.slice(0, 12).filter((tier) => tier && normalizedServiceTier(tier.tier)
+      && ["reported", "requested", "unknown"].includes(tier.source)).map((tier) => ({ tier: normalizedServiceTier(tier.tier)!, source: tier.source,
+        ...(normalizedServiceTier(tier.requestedTier) ? { requestedTier: normalizedServiceTier(tier.requestedTier) } : {}) })) : undefined;
     if (cohorts === undefined) {
       const legacy = legacyCohort(bucket);
       if (legacy) cohorts = [legacy];
     } else if (!cohortsFit(bucket, cohorts)) cohorts = [];
-    if (cohorts?.length) bucket.cohorts = cohorts;
+    if (cohorts?.length) {
+      for (const item of cohorts) {
+        const metadata = value.cohortEvidence?.[item.id];
+        item.cacheReadReported = metadata?.cacheReadReported === true;
+        item.cacheWriteReported = metadata?.cacheWriteReported === true;
+        item.serviceTier = normalizedServiceTier(metadata?.serviceTier);
+        item.serviceTierSource = item.serviceTier && (metadata?.serviceTierSource === "reported" || metadata?.serviceTierSource === "requested") ? metadata.serviceTierSource : "unknown";
+        item.requestedServiceTier = normalizedServiceTier(metadata?.requestedServiceTier);
+        item.tokenAvailability = metadata?.tokenAvailability === "partial" || metadata?.tokenAvailability === "unavailable" ? metadata.tokenAvailability : undefined;
+      }
+      bucket.cohorts = cohorts;
+    }
     const key = bucketKey(day, bucket.provider, model);
     const existing = buckets.get(key);
     // Duplicate keys are never written; if one appears, keep totals but no
@@ -431,6 +470,15 @@ function serialize(state: UsageHistoryState): PersistedHistory {
     recentTurns: state.recentTurns,
     ...(state.turnDays.size ? { turnDays: [...state.turnDays] } : {}),
     ...(rates.length ? { rates } : {}),
+    bucketEvidence: Object.fromEntries([...state.buckets.entries()].map(([key, bucket]) => [key, {
+      cacheReadUnknownTokens: bucket.cacheReadUnknownTokens, cacheWriteUnknownTokens: bucket.cacheWriteUnknownTokens,
+      serviceTiers: bucket.serviceTiers, auxiliaryRequests: bucket.auxiliaryRequests,
+    }])),
+    cohortEvidence: Object.fromEntries([...state.buckets.values()].flatMap((bucket) => (bucket.cohorts ?? []).map((item) => [item.id, {
+      cacheReadReported: item.cacheReadReported, cacheWriteReported: item.cacheWriteReported,
+      serviceTier: item.serviceTier, serviceTierSource: item.serviceTierSource, requestedServiceTier: item.requestedServiceTier,
+      tokenAvailability: item.tokenAvailability,
+    }]))),
   };
 }
 
@@ -464,6 +512,7 @@ export interface UsageHistoryDelta {
   model?: string;
   usage: TokenUsageView;
   pricing?: ModelPricing;
+  auxiliary?: boolean;
 }
 
 /** True the first time `key` is seen among the recent turn identities. */
@@ -486,7 +535,7 @@ export function recordUsageHistory(delta: UsageHistoryDelta): void {
   const tokens = usage.inputTokens + usage.outputTokens;
   if (usage.totalTokens <= 0 && tokens <= 0) return;
   const current: UsageHistoryState = state() ?? { startedAt: delta.at, buckets: new Map(), recentTurns: [], turnDays: new Map(), rates: [] };
-  const turnKey = delta.turnId ? `${delta.threadId}\0${delta.turnId}`.slice(0, MAX_TURN_KEY) : null;
+  const turnKey = !delta.auxiliary && delta.turnId ? `${delta.threadId}\0${delta.turnId}`.slice(0, MAX_TURN_KEY) : null;
   const day = (turnKey && current.turnDays.get(turnKey)) || localDayKey(delta.at);
   if (turnKey && !current.turnDays.has(turnKey)) {
     current.turnDays.set(turnKey, day);
@@ -496,6 +545,9 @@ export function recordUsageHistory(delta: UsageHistoryDelta): void {
   const key = bucketKey(day, delta.provider, model);
   const bucket = current.buckets.get(key) ?? { day, provider: delta.provider, model, ...emptyComponentAmounts() };
   addUsageToAmounts(bucket, usage, delta.pricing);
+  if (delta.auxiliary) bucket.auxiliaryRequests = (bucket.auxiliaryRequests ?? 0) + 1;
+  const quote = { tier: usage.serviceTier ?? "unknown", source: usage.serviceTierSource ?? "unknown", requestedTier: usage.requestedServiceTier };
+  if (!(bucket.serviceTiers ?? []).some((tier) => JSON.stringify(tier) === JSON.stringify(quote))) bucket.serviceTiers = [...(bucket.serviceTiers ?? []), quote].slice(-12);
   addToCohort(current, bucket, delta);
   if (turnKey) {
     if (firstSighting(current, turnKey)) bucket.turns += 1;
@@ -527,7 +579,7 @@ function indexRate(current: UsageHistoryState, pricing: ModelPricing): number {
 /** Adds the delta to the cohort of its rate, widening its span to whole
  * minutes. A repriced cohort is closed: new usage never inherits its label. */
 function addToCohort(current: UsageHistoryState, bucket: UsageBucket, delta: UsageHistoryDelta): void {
-  const rate = delta.pricing ? indexRate(current, delta.pricing) : -1;
+  const rate = delta.pricing && usageCostParts(delta.usage, delta.pricing).costs ? indexRate(current, delta.pricing) : -1;
   const parts = usageCostParts(delta.usage);
   const firstAt = Math.floor(delta.at / MINUTE_MS) * MINUTE_MS;
   const lastAt = Math.ceil(delta.at / MINUTE_MS) * MINUTE_MS;
@@ -539,7 +591,10 @@ function addToCohort(current: UsageHistoryState, bucket: UsageBucket, delta: Usa
   // The native ledger may already contain a correction while this key's
   // older history snapshot is being hydrated. Do not add fresh tokens to that
   // checkpointed cohort before recovery replays its exact original amount.
-  const canExtend = latest?.rate === rate && latest.was === undefined;
+  const canExtend = latest?.rate === rate && latest.was === undefined && latest.cacheReadReported === (delta.usage.cacheReadReported !== false)
+    && latest.cacheWriteReported === (delta.usage.cacheWriteReported !== false) && latest.serviceTier === delta.usage.serviceTier
+    && latest.serviceTierSource === delta.usage.serviceTierSource && latest.requestedServiceTier === delta.usage.requestedServiceTier
+    && latest.tokenAvailability === delta.usage.tokenAvailability;
   const correctionPending = canExtend && (pricingCorrectionCheckpoint(correctionKey(bucket, latest))?.revision ?? 0) > (latest.revision ?? 0);
   let cohort = canExtend && !correctionPending ? latest : undefined;
   if (!cohort) {
@@ -547,6 +602,9 @@ function addToCohort(current: UsageHistoryState, bucket: UsageBucket, delta: Usa
     cohort = {
       id: `${Date.now().toString(36)}${(cohortSequence++).toString(36)}`, rate, firstAt, lastAt,
       uncachedInputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, cacheWrite1hTokens: 0, outputTokens: 0,
+      cacheReadReported: delta.usage.cacheReadReported !== false, cacheWriteReported: delta.usage.cacheWriteReported !== false,
+      serviceTier: delta.usage.serviceTier, serviceTierSource: delta.usage.serviceTierSource, requestedServiceTier: delta.usage.requestedServiceTier,
+      tokenAvailability: delta.usage.tokenAvailability,
     };
     cohorts.push(cohort);
     bucket.cohorts = cohorts;
@@ -562,11 +620,14 @@ function cohortUsage(cohort: RateCohort): TokenUsageView {
     inputTokens, cachedInputTokens: cohort.cacheReadTokens, cacheWriteInputTokens: cohort.cacheWriteTokens,
     cacheWrite1hInputTokens: cohort.cacheWrite1hTokens, outputTokens: cohort.outputTokens, reasoningOutputTokens: 0,
     totalTokens: inputTokens + cohort.outputTokens, contextWindow: null,
+    cacheReadReported: cohort.cacheReadReported, cacheWriteReported: cohort.cacheWriteReported,
+    serviceTier: cohort.serviceTier, serviceTierSource: cohort.serviceTierSource, requestedServiceTier: cohort.requestedServiceTier,
+    tokenAvailability: cohort.tokenAvailability,
   };
 }
 
 type CostParts = NonNullable<ReturnType<typeof usageCostParts>["costs"]>;
-const COST_FIELDS: Array<[keyof CostParts, keyof UsageComponentAmounts]> = [
+const COST_FIELDS: Array<[keyof CostParts, (typeof NUMBER_KEYS)[number]]> = [
   ["uncachedInput", "uncachedInputCost"], ["cacheRead", "cacheReadCost"], ["cacheWrite", "cacheWriteCost"], ["output", "outputCost"],
 ];
 const totalCost = (costs: CostParts | null) => costs ? costs.uncachedInput + costs.cacheRead + costs.cacheWrite + costs.output : 0;
@@ -642,6 +703,8 @@ export function repriceUsageHistory(): number {
   for (const bucket of current.buckets.values()) {
     if (correctionDayWasPruned(bucket.day)) continue;
     for (const cohort of bucket.cohorts ?? []) {
+      if (cohort.cacheReadReported !== true || cohort.cacheWriteReported !== true || cohort.tokenAvailability === "partial" || cohort.tokenAvailability === "unavailable") continue;
+      if (bucket.provider === "openai" && (!cohort.serviceTier || cohort.serviceTier === "unknown" || cohort.serviceTier === "mixed")) continue;
       const key = correctionKey(bucket, cohort);
       const checkpoint = pricingCorrectionCheckpoint(key);
       if (checkpoint && !checkpointFitsCohort(current, cohort, checkpoint)) {
@@ -669,8 +732,10 @@ export function repriceUsageHistory(): number {
   for (const bucket of current.buckets.values()) {
     if (correctionDayWasPruned(bucket.day)) continue;
     for (const cohort of bucket.cohorts ?? []) {
+      if (cohort.cacheReadReported !== true || cohort.cacheWriteReported !== true || cohort.tokenAvailability === "partial" || cohort.tokenAvailability === "unavailable") continue;
+      if (bucket.provider === "openai" && (!cohort.serviceTier || cohort.serviceTier === "unknown" || cohort.serviceTier === "mixed")) continue;
       if (unreliableCohorts.has(correctionKey(bucket, cohort))) continue;
-      const evidence = historicalPricing(bucket.provider, bucket.model, cohort.firstAt, cohort.lastAt);
+      const evidence = historicalPricing(bucket.provider, bucket.model, cohort.firstAt, cohort.lastAt, cohort.serviceTier);
       if (!evidence || evidence === "conflict") continue;
       const usage = cohortUsage(cohort);
       const before = cohort.rate >= 0 ? usageCostParts(usage, current.rates[cohort.rate]).costs : null;

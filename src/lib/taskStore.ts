@@ -1,4 +1,6 @@
-import { reconcileUserMessages, userEchoIndex } from "./userMessageEcho";
+import { displayedUserMessage, reconcileUserMessages, userEchoIndex } from "./userMessageEcho";
+import { validSkillReferences } from "./skillReferences";
+import { estimateSkillDependencyBytes, sanitizeMessageSkillDependencies } from "./skillDependencies";
 import { restoreQuestionRequests } from "./agentQuestionRecords";
 import { create } from "zustand";
 import type { Activity, ChatMessage, PendingApproval, Turn } from "../types";
@@ -281,6 +283,7 @@ function stringBytes(value: string | undefined): number {
 
 function estimateMessageBytes(message: ChatMessage): number {
   const attachments = message.attachments ?? [];
+  const skillReferences = validSkillReferences(message.text, message.skillReferences);
   return MESSAGE_BASE_BYTES
     + stringBytes(message.id)
     + stringBytes(message.role)
@@ -290,6 +293,9 @@ function estimateMessageBytes(message: ChatMessage): number {
     + stringBytes(message.turnId)
     + stringBytes(message.turnStatus)
     + stringBytes(message.steerStatus)
+    + stringBytes(message.skillsFolder)
+    + estimateSkillDependencyBytes(message.skillDependencies)
+    + skillReferences.reduce((total, reference) => total + 48 + stringBytes(reference.name) + stringBytes(reference.path), skillReferences.length * ARRAY_SLOT_BYTES)
     + attachments.reduce((total, attachment) => total
       + ATTACHMENT_BASE_BYTES
       + stringBytes(attachment.path)
@@ -573,7 +579,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
   prependHistory: (threadId, messages, activities, patch) => set((state) => {
     const task = state.tasks[threadId];
     if (!task) return state;
-    const restoredMessages = restoreQuestionRequests(threadId, messages, activities, patch.hasMore === false);
+    const restoredMessages = restoreQuestionRequests(threadId, messages.map(sanitizeMessageSkillDependencies), activities, patch.hasMore === false);
     const existingIds = new Set<string>();
     let oldestOrder = 0;
     let hasOrder = false;
@@ -633,14 +639,16 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
   appendUserMessage: (threadId, message) => set((state) => {
     const task = state.tasks[threadId] ?? emptyTask(threadId);
     if (task.messages.some((entry) => entry.id === message.id || entry.clientMessageId === message.id)) return state;
-    const candidate = { ...message, clientMessageId: message.id, turnId: message.turnId ?? task.activeTurnId };
+    const candidate = { ...sanitizeMessageSkillDependencies(message), clientMessageId: message.id, turnId: message.turnId ?? task.activeTurnId };
     // A very fast child can deliver its runtime echo before spawn returns.
     const echoedIndex = task.messages.findIndex((entry) => Boolean(message.turnId) && entry.role === "user" && !entry.clientMessageId
       && userEchoIndex([candidate], entry) === 0);
     if (echoedIndex >= 0) {
       const previous = task.messages[echoedIndex];
       const messages = [...task.messages];
-      messages[echoedIndex] = { ...previous, text: candidate.text, attachments: candidate.attachments, clientMessageId: candidate.id };
+      messages[echoedIndex] = { ...previous, text: candidate.text, attachments: candidate.attachments, clientMessageId: candidate.id,
+        skillReferences: candidate.skillReferences ?? previous.skillReferences, skillsFolder: candidate.skillsFolder ?? previous.skillsFolder,
+        skillDependencies: candidate.skillDependencies ?? previous.skillDependencies };
       return { tasks: { ...state.tasks, [threadId]: { ...task, messages,
         estimatedTranscriptBytes: adjustedBytes(task.estimatedTranscriptBytes, estimateMessageBytes(previous), estimateMessageBytes(messages[echoedIndex])) } } };
     }
@@ -847,7 +855,11 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     return set((state) => {
     const task = state.tasks[threadId] ?? emptyTask(threadId);
     const byId = task.messages.findIndex((entry) => entry.id === message.id);
-    const incoming = { ...message, turnId: message.turnId ?? task.activeTurnId };
+    const sanitized = sanitizeMessageSkillDependencies(message);
+    const normalized = sanitized.role === "user" ? { ...sanitized, ...displayedUserMessage(sanitized.text),
+      ...(sanitized.skillReferences !== undefined ? { skillReferences: sanitized.skillReferences } : {}), ...(sanitized.skillsFolder !== undefined ? { skillsFolder: sanitized.skillsFolder } : {}),
+      ...(sanitized.skillDependencies !== undefined ? { skillDependencies: sanitized.skillDependencies } : {}) } : sanitized;
+    const incoming = { ...normalized, turnId: message.turnId ?? task.activeTurnId };
     const regularEchoIndex = byId >= 0 ? -1 : userEchoIndex(task.messages, incoming);
     const existingIndex = byId >= 0
       ? byId
@@ -856,11 +868,13 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
         : pendingStartUserEchoIndex(task, incoming);
     const original = task.messages[existingIndex];
     const display = original && message.role === "user" && (original.clientMessageId || original.id !== message.id)
-      ? { text: original.text, attachments: original.attachments ?? message.attachments, clientMessageId: original.clientMessageId ?? original.id, steerStatus: original.steerStatus }
+      ? { text: original.text, attachments: original.attachments ?? message.attachments, clientMessageId: original.clientMessageId ?? original.id, steerStatus: original.steerStatus,
+        skillReferences: original.skillReferences ?? normalized.skillReferences, skillsFolder: original.skillsFolder ?? normalized.skillsFolder,
+        skillDependencies: original.skillDependencies ?? normalized.skillDependencies }
       : {};
     const nextMessage = existingIndex >= 0
-      ? { ...original, ...message, ...display, streaming: false, turnId: message.turnId ?? task.messages[existingIndex].turnId ?? task.activeTurnId, turnStatus: message.turnStatus ?? task.messages[existingIndex].turnStatus, timelineOrder: task.messages[existingIndex].timelineOrder }
-      : withTimelineOrder({ ...message, streaming: false, turnId: message.turnId ?? task.activeTurnId });
+      ? { ...original, ...normalized, ...display, streaming: false, turnId: message.turnId ?? task.messages[existingIndex].turnId ?? task.activeTurnId, turnStatus: message.turnStatus ?? task.messages[existingIndex].turnStatus, timelineOrder: task.messages[existingIndex].timelineOrder }
+      : withTimelineOrder({ ...normalized, streaming: false, turnId: message.turnId ?? task.activeTurnId });
     const messages = existingIndex >= 0
       ? task.messages.map((entry, index) => index === existingIndex ? nextMessage : entry)
       : [...task.messages, nextMessage];

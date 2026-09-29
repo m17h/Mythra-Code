@@ -9,6 +9,7 @@ export type OfficialPricingSource = "openai" | "anthropic" | "cursor";
 export const OFFICIAL_PRICING_SOURCES: readonly OfficialPricingSource[] = ["openai", "anthropic", "cursor"];
 /** One model's rates as read from a page, per million tokens. */
 export interface OfficialRate {
+  serviceTier?: string;
   input: number;
   output: number;
   cacheRead?: number;
@@ -109,7 +110,7 @@ function modelsSeenAtLastCheck(source: OfficialPricingSource, store = readStore(
   if (!verifiedAt) return 0;
   const prefix = `${PROVIDER_KEY[source]}:`;
   const day = dayOf(verifiedAt);
-  return Object.entries(store.models).filter(([key, entry]) => key.startsWith(prefix) && entry.asOf === day).length;
+  return Object.entries(store.models).filter(([key, entry]) => key.startsWith(prefix) && !key.includes("@") && entry.asOf === day).length;
 }
 
 export function officialPricingStatus(): OfficialPricingStatus[] {
@@ -141,6 +142,7 @@ export function recordOfficialPricingResult(source: OfficialPricingSource, resul
         ...(rate.cacheWrite !== undefined ? { cacheWriteInputPerMillion: rate.cacheWrite } : {}),
         ...(rate.cacheWrite1h !== undefined ? { cacheWrite1hInputPerMillion: rate.cacheWrite1h } : {}),
         asOf: rate.asOf,
+        ...(rate.serviceTier ? { serviceTier: rate.serviceTier } : {}),
         ...(rate.status ? { status: rate.status } : {}),
         ...(source === "cursor" ? { note: CURSOR_NOTE } : {}),
       } as ModelPricingCatalogEntry;
@@ -150,7 +152,7 @@ export function recordOfficialPricingResult(source: OfficialPricingSource, resul
     for (const key of Object.keys(epochs)) if (!(key in models)) delete epochs[key];
   }
   const state: SourceState = result.ok
-    ? { checkedAt: now, verifiedAt: now, lastModelCount: Object.keys(result.models).length }
+    ? { checkedAt: now, verifiedAt: now, lastModelCount: Object.keys(result.models).filter((model) => !model.includes("@")).length }
     : { ...store.sources[source], checkedAt: now, error: result.error.slice(0, 240) };
   storeValue(OFFICIAL_PRICING_KEY, { schemaVersion: 1, updatedAt: new Date(now).toISOString(), models, sources: { ...store.sources, [source]: state }, epochs });
   notifyPricingChanged();
@@ -172,7 +174,8 @@ function setChecking(value: boolean): void {
  * cell count, an unreadable rate, or two different rates for one model. A
  * failed source changes nothing, and its last verified rates stay in use.
  * Rows it cannot map to a model id with certainty are skipped rather than
- * guessed. Batch, Flex, Fast and long-context columns are never read.
+ * guessed. Tier rates come only from their explicitly labelled tables;
+ * long-context columns are not yet read.
  */
 
 const MAX_ROWS = 400;
@@ -313,7 +316,7 @@ const OPENAI_MODEL = /^[a-z0-9][a-z0-9.-]{0,79}$/;
  * annotation does not change which model the row describes. */
 const OPENAI_CONTEXT_NOTE = /\s*\(<\s*\d+K context length\)$/i;
 
-/** OpenAI's Standard tier, short-context columns only. */
+/** Explicitly labelled tier tables only; never infer one tier from another. */
 export function parseOpenAIPricing(markdown: string, asOf: string): Parsed {
   const table = tableAfter(markdown.split(/\r?\n/), OPENAI_ANCHOR, true);
   if (typeof table === "string") return fail(table);
@@ -326,6 +329,19 @@ export function parseOpenAIPricing(markdown: string, asOf: string): Parsed {
     const error = addModel(models, id, { input: row[1], cacheRead: row[2], cacheWrite: row[3], output: row[4] }, { asOf });
     if (error === "skipped") skipped += 1;
     else if (error) return fail(error);
+  }
+  for (const [tier, label] of [["fast", "Fast"], ["flex", "Flex"], ["batch", "Batch"]] as const) {
+    const extra = tableAfter(markdown.split(/\r?\n/), `### ${label} pricing data`, false);
+    if (extra === "missing") continue;
+    if (typeof extra === "string") return fail(extra);
+    if (!headerMatches(extra.header, OPENAI_HEADER)) return fail(`OpenAI's ${tier} pricing columns changed`);
+    for (const row of extra.rows) {
+      const id = plainText(row[0]).replace(OPENAI_CONTEXT_NOTE, "");
+      if (!OPENAI_MODEL.test(id)) { skipped += 1; continue; }
+      const error = addModel(models, `${id}@${tier}`, { input: row[1], cacheRead: row[2], cacheWrite: row[3], output: row[4] }, { asOf, serviceTier: tier });
+      if (error === "skipped") skipped += 1;
+      else if (error) return fail(error);
+    }
   }
   return finish(models, skipped);
 }
@@ -410,7 +426,7 @@ const PARSERS: Record<OfficialPricingSource, (markdown: string, asOf: string) =>
 function shrankSuspiciously(source: OfficialPricingSource, result: Parsed): boolean {
   if (!result.ok) return false;
   const before = modelsSeenAtLastCheck(source);
-  return before >= 6 && Object.keys(result.models).length < before / 2;
+  return before >= 6 && Object.keys(result.models).filter((model) => !model.includes("@")).length < before / 2;
 }
 
 export type PricingDocumentFetcher = (source: OfficialPricingSource) => Promise<string>;

@@ -4,7 +4,7 @@ import { MYTHRA_CODE_DELEGATION_INSTRUCTIONS, MYTHRA_CODE_NATIVE_DELEGATION_POLI
 
 /** Skill-mention plus completion guidance: what every turn carries. */
 const BASE_INSTRUCTIONS = mythraCodeDeveloperInstructions(false);
-import { childAgentMcpConfig, normalizeLmStudioBaseUrl, threadResumeParams, threadRuntimeConfig, threadStartParams, turnStartParams } from "./turnConfig";
+import { childAgentMcpConfig, normalizeLmStudioBaseUrl, threadResumeParams, threadRuntimeConfig, threadStartParams, turnStartParams, withCurrentSystemPrompt } from "./turnConfig";
 import { LM_STUDIO_RUNTIME_PROVIDER_ID } from "./providerIds";
 import { codexModelProviderId, providerFromThread } from "./threadProvider";
 
@@ -23,6 +23,65 @@ const baseRun: ScheduleRunSettings = {
   ultra: false,
   serviceTier: null,
 };
+
+describe("current system prompt turn transport", () => {
+  it.each(["openai", "openrouter", "lmstudio"] as const)("delivers %s instructions through the per-turn developer channel", (provider) => {
+    const run = { ...baseRun, provider, model: "selected/model", reasoningEffort: "high" as const };
+    const params = turnStartParams(run, "thread-1", "/project", [], [], true, { systemPrompt: "RESOLVED SYSTEM SKILL" });
+    expect(params.collaborationMode).toMatchObject({ mode: "default", settings: {
+      model: "selected/model", reasoning_effort: "high", developer_instructions: expect.stringContaining("RESOLVED SYSTEM SKILL"),
+    } });
+    expect(params.input).toEqual([]);
+    expect(params).toMatchObject({ approvalPolicy: "on-request", sandboxPolicy: { type: "workspaceWrite" } });
+  });
+
+  it("makes an empty current system prompt explicitly clear older app skill snapshots", () => {
+    const params = turnStartParams(baseRun, "thread-1", "/project", [], [], true, { systemPrompt: "" });
+    const mode = params.collaborationMode as { settings: { developer_instructions: string } };
+    expect(mode.settings.developer_instructions).toMatch(/latest.*authoritative/i);
+    expect(mode.settings.developer_instructions).toMatch(/supersedes.*earlier/i);
+    expect(mode.settings.developer_instructions).toMatch(/no additional app system prompt/i);
+    expect(mode.settings.developer_instructions).toMatch(/user.*skills.*remain valid/i);
+  });
+
+  it("does not change legacy default behavior when no prompt override is supplied", () => {
+    expect(turnStartParams(baseRun, "thread-1", "/project", [])).not.toHaveProperty("collaborationMode");
+  });
+
+  it("uses a known current model only when the selected run model is empty, never a guessed default", () => {
+    const run = { ...baseRun, model: "", ultra: true };
+    expect(turnStartParams(run, "thread-1", "/project", [], [], false, { systemPrompt: "current", model: "actual-loaded-model" })).toMatchObject({
+      approvalPolicy: "never", collaborationMode: { settings: { model: "actual-loaded-model", reasoning_effort: "ultra" } },
+    });
+    expect(() => turnStartParams(run, "thread-1", "/project", [], [], true, { systemPrompt: "current" })).toThrow(/current model/i);
+  });
+
+  it("preserves existing collaboration guidance, mode, and unrelated options without mutating them", () => {
+    const original = { threadId: "thread-1", model: "selected-model", effort: "high", serviceTier: "priority", outputSchema: { type: "object" }, collaborationMode: {
+      mode: "plan", settings: { model: "older-model", reasoning_effort: "low", developer_instructions: "Keep the existing plan guidance." },
+    } };
+    const params = withCurrentSystemPrompt(original, "CURRENT SYSTEM", "fallback-not-used");
+    expect(params).toMatchObject({ serviceTier: "priority", outputSchema: { type: "object" }, collaborationMode: { mode: "plan", settings: {
+      model: "selected-model", reasoning_effort: "high", developer_instructions: expect.stringContaining("Keep the existing plan guidance."),
+    } } });
+    expect((params.collaborationMode as { settings: { developer_instructions: string } }).settings.developer_instructions).toContain("CURRENT SYSTEM");
+    expect(original.collaborationMode.settings.developer_instructions).toBe("Keep the existing plan guidance.");
+  });
+
+  it("resumes genuinely unloaded threads with resolved base instructions", () => {
+    expect(threadResumeParams({ ...baseRun, systemPrompt: "RESOLVED BASE" }, "thread-1", "/project")).toHaveProperty("baseInstructions", "RESOLVED BASE");
+  });
+
+  it.each(["RAW @skill", "RESOLVED SYSTEM SKILL"])("uses a single current snapshot rather than sticky startup instructions for %s", (systemPrompt) => {
+    const run = { ...baseRun, systemPrompt };
+    expect(threadStartParams(run, "/project", { interactive: true, perTurnSystemPrompt: true })).toHaveProperty("baseInstructions", "");
+    expect(threadResumeParams(run, "thread-1", "/project", { perTurnSystemPrompt: true })).toHaveProperty("baseInstructions", "");
+    expect(threadStartParams(run, "/project", { interactive: true })).toHaveProperty("baseInstructions", systemPrompt);
+    expect(threadResumeParams(run, "thread-1", "/project")).toHaveProperty("baseInstructions", systemPrompt);
+    const mode = turnStartParams(run, "thread-1", "/project", [], [], true, { systemPrompt }).collaborationMode as { settings: { developer_instructions: string } };
+    expect(mode.settings.developer_instructions.split(systemPrompt)).toHaveLength(2);
+  });
+});
 
 describe("permission policy", () => {
   it.each([

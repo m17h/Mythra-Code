@@ -35,6 +35,8 @@ export function AppActionMenu({
   disabled = false,
   compact = false,
   align = "end",
+  icon,
+  className,
 }: {
   label?: string;
   ariaLabel?: string;
@@ -43,6 +45,9 @@ export function AppActionMenu({
   /** Icon-only trigger, for rows that are already dense. */
   compact?: boolean;
   align?: "start" | "end";
+  /** Leading trigger icon; the label then truncates instead of wrapping. */
+  icon?: ReactNode;
+  className?: string;
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -99,7 +104,7 @@ export function AppActionMenu({
   if (!items.length) return null;
 
   return (
-    <div className={`app-action-menu ${open ? "open" : ""} ${align === "start" ? "align-start" : ""}`} ref={rootRef} onBlur={(event) => { if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget as Node)) setOpen(false); }}>
+    <div className={`app-action-menu ${open ? "open" : ""} ${align === "start" ? "align-start" : ""} ${className ?? ""}`} ref={rootRef} onBlur={(event) => { if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget as Node)) setOpen(false); }}>
       <button
         ref={triggerRef}
         type="button"
@@ -120,7 +125,7 @@ export function AppActionMenu({
           }
         }}
       >
-        {compact ? <Ellipsis size={13} aria-hidden="true" /> : <>{label}<ChevronDown size={12} aria-hidden="true" /></>}
+        {compact ? <Ellipsis size={13} aria-hidden="true" /> : <>{icon}{icon ? <span className="app-action-label">{label}</span> : label}<ChevronDown size={12} aria-hidden="true" /></>}
       </button>
 
       {open && (

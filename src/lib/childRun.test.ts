@@ -10,7 +10,13 @@ vi.mock("./cursor", () => cursor);
 import { childRunSettings, startChildAgentTurn, type ChildRunContext } from "./childRun";
 import { LM_STUDIO_RUNTIME_PROVIDER_ID } from "./providerIds";
 import type { ChildAgentPolicy } from "./childAgents";
-import type { ChildAgentTarget } from "../types";
+import type { ChildAgentTarget, SkillDependencyReport } from "../types";
+import { SKILL_DEPENDENCY_LIMITS, SkillDependencyError } from "./skillDependencies";
+
+const DEPENDENCIES: SkillDependencyReport = {
+  version: 1, limits: { ...SKILL_DEPENDENCY_LIMITS }, roots: [{ nodeId: "policy", channel: "system", name: "policy" }],
+  nodes: [{ id: "policy", kind: "skill", name: "policy", path: "/skills/policy.md", status: "loaded", characterCount: 12, depth: 0 }], edges: [], issues: [],
+};
 
 const POLICY: ChildAgentPolicy = {
   sessionId: "session-1",
@@ -145,6 +151,60 @@ describe("startChildAgentTurn", () => {
       }));
     }
     expect(result.thread.preview).toBe("@review the diff");
+  });
+
+  it.each([
+    { provider: "claude", model: "claude-fable-5" },
+    { provider: "cursor", model: "auto" },
+    { provider: "openai", model: "gpt-5.6-terra" },
+    { provider: "openrouter", model: "x-ai/grok-4.5" },
+    { provider: "lmstudio", model: "local/qwen3-coder" },
+  ] as const)("resolves authored system skills in the $provider system channel before the child starts", async ({ provider, model }) => {
+    const skillReferences = [{ start: 0, end: 7, name: "review", path: "/skills/review.md" }];
+    const resolveSkillPrompts = vi.fn(async () => ({ prompt: "resolved user skill", systemPrompt: "resolved system skill", skillReferences, skillsFolder: "/skills", skillDependencies: DEPENDENCIES }));
+    const result = await startChildAgentTurn(
+      target({ provider, model }),
+      "@review the diff",
+      context({ systemPrompt: "Always use @careful", resolveSkillPrompts }),
+    );
+
+    expect(resolveSkillPrompts).toHaveBeenCalledExactlyOnceWith("@review the diff", "Always use @careful");
+    if (provider === "claude" || provider === "cursor") {
+      const start = provider === "claude" ? claude.startClaudeTurn : cursor.startCursorTurn;
+      expect(start).toHaveBeenCalledWith(expect.objectContaining({ prompt: "resolved user skill", systemPrompt: expect.stringContaining("resolved system skill") }));
+      expect(start.mock.calls[0][0].prompt).not.toContain("resolved system skill");
+    } else {
+      expect(codex.rpc).toHaveBeenCalledWith("thread/start", expect.objectContaining({ baseInstructions: "" }));
+      expect(codex.rpc).toHaveBeenCalledWith("turn/start", expect.objectContaining({ input: [expect.objectContaining({ text: "resolved user skill" })] }));
+      expect(codex.rpc).toHaveBeenCalledWith("turn/start", expect.objectContaining({ collaborationMode: expect.objectContaining({ settings: expect.objectContaining({ developer_instructions: expect.stringContaining("resolved system skill") }) }) }));
+    }
+    expect(result.thread.preview).toBe("@review the diff");
+    expect(result.skillReferences).toEqual(skillReferences);
+    expect(result.skillsFolder).toBe("/skills");
+    expect(result.skillDependencies).toEqual(DEPENDENCIES);
+  });
+
+  it.each(["openai", "openrouter", "lmstudio", "claude", "cursor"] as const)("blocks a %s child graph failure before any provider or checkpoint starts", async (provider) => {
+    const beginCheckpoint = vi.fn();
+    const error = new SkillDependencyError({ ...DEPENDENCIES, issues: [{ code: "missing-document", message: "Missing guide", chain: ["policy", "guide.md"] }] });
+    await expect(startChildAgentTurn(target({ provider }), "Continue", context({
+      resolveSkillPrompts: async () => { throw error; }, beginCheckpoint,
+    }))).rejects.toBe(error);
+    expect(codex.rpc).not.toHaveBeenCalled();
+    expect(claude.startClaudeTurn).not.toHaveBeenCalled();
+    expect(cursor.startCursorTurn).not.toHaveBeenCalled();
+    expect(beginCheckpoint).not.toHaveBeenCalled();
+  });
+
+  it("does not create a child or checkpoint when a system skill fails resolution", async () => {
+    const beginCheckpoint = vi.fn();
+    await expect(startChildAgentTurn(target(), "Do the work", context({
+      resolveSkillPrompts: async () => { throw new Error("system skill missing"); }, beginCheckpoint,
+    }))).rejects.toThrow("system skill missing");
+    expect(codex.rpc).not.toHaveBeenCalled();
+    expect(claude.startClaudeTurn).not.toHaveBeenCalled();
+    expect(cursor.startCursorTurn).not.toHaveBeenCalled();
+    expect(beginCheckpoint).not.toHaveBeenCalled();
   });
 
   it.each([

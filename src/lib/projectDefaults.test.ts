@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import { sanitizeProjectDefaultOverrides, sanitizeProjectDefaults } from "./projectDefaults";
 
 describe("project defaults", () => {
+  it.each(["atari", "monochrome"])("preserves the %s theme in per-project settings", (theme) => {
+    expect(sanitizeProjectDefaults({ provider: "openai", model: "gpt-5.6-sol", theme })?.theme).toBe(theme);
+  });
   it("keeps valid routing and optional appearance defaults", () => {
     expect(sanitizeProjectDefaults({
       provider: "claude",

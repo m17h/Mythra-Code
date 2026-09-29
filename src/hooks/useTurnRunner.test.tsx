@@ -3,7 +3,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS } from "../lib/appConfig";
 import { PendingTurnStarts } from "../lib/pendingTurnStarts";
 import { resetTaskStore, useTaskStore } from "../lib/taskStore";
-import type { Thread } from "../types";
+import type { SkillDependencyReport, Thread } from "../types";
+import { SKILL_DEPENDENCY_LIMITS, SkillDependencyError } from "../lib/skillDependencies";
+import { friendlyError } from "../lib/errors";
 import { acquirePullRequestMutation, releasePullRequestMutation } from "../lib/pullRequestOperations";
 
 const codex = vi.hoisted(() => ({
@@ -109,6 +111,19 @@ const CLAUDE_THREAD: Thread = {
   updatedAt: 1,
   modelProvider: "claude",
 };
+
+function dependencyGraph(channel: "system" | "user" = "system", blocked = false): SkillDependencyReport {
+  return {
+    version: 1, limits: { ...SKILL_DEPENDENCY_LIMITS },
+    roots: [{ nodeId: "policy", channel, name: "policy" }],
+    nodes: [
+      { id: "policy", kind: "skill", name: "policy", path: "/skills/policy.md", status: "loaded", characterCount: 12, depth: 0 },
+      { id: "doc", kind: "document", name: "guide.md", path: "/skills/guide.md", status: blocked ? "blocked" : "loaded", characterCount: blocked ? 0 : 24, depth: 1 },
+    ],
+    edges: [{ from: "policy", to: "doc", reference: "guide.md" }],
+    issues: blocked ? [{ code: "missing-document", message: "Missing guide", rootName: "policy", chain: ["policy", "guide.md"], sourcePath: "/skills/policy.md", reference: "guide.md" }] : [],
+  };
+}
 
 function context(overrides: Partial<TurnRunnerContext> = {}): TurnRunnerContext {
   const pendingTurnStarts = new PendingTurnStarts();
@@ -372,6 +387,154 @@ describe("useTurnRunner", () => {
       prompt: "resolved skill context\n\n@review this",
     }));
     expect(useTaskStore.getState().tasks[CLAUDE_THREAD.id]?.messages.at(-1)?.text).toBe("@review this");
+  });
+
+  it.each(["cursor", "claude"] as const)("resolves authored user and raw system skills together before starting %s", async (provider) => {
+    const skillReferences = [{ start: 4, end: 11, name: "review", path: "/skills/review/SKILL.md" }];
+    const resolveSkillPrompts = vi.fn(async () => ({ prompt: "resolved user channel", systemPrompt: "resolved system channel", skillReferences, skillsFolder: "/skills" }));
+    const overrides = { running: false, resolveSkillPrompts };
+    const deps = provider === "claude" ? claudeContext(overrides) : context(overrides);
+    deps.effectiveSettings = { ...deps.effectiveSettings, systemPrompt: "Use @policy in system" };
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { await result.current.sendMessage("Use @review in user", { skillInvocationText: "Use @review" }); });
+    expect(resolveSkillPrompts).toHaveBeenCalledExactlyOnceWith("Use @review in user", "Use @policy in system", "Use @review");
+    expect(deps.resolveSkillPrompt).not.toHaveBeenCalled();
+    const start = provider === "claude" ? claude.startClaudeTurn : cursor.startCursorTurn;
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({ prompt: "resolved user channel", systemPrompt: expect.stringContaining("resolved system channel") }));
+    expect(childSessions.ensureChildAgentBridge).toHaveBeenCalledWith(expect.objectContaining({ systemPrompt: "Use @policy in system" }));
+    expect(useTaskStore.getState().tasks[deps.activeThread!.id]?.messages.at(-1)?.text).toBe("Use @review in user");
+    expect(useTaskStore.getState().tasks[deps.activeThread!.id]?.messages.at(-1)).toMatchObject({ skillReferences, skillsFolder: "/skills" });
+    expect(deps.effectiveSettings.systemPrompt).toBe("Use @policy in system");
+  });
+
+  it("resolves actual system skills for generated feedback while user mentions stay literal", async () => {
+    const resolveSkillPrompts = vi.fn(async (prompt: string) => ({ prompt, systemPrompt: "resolved system policy", skillReferences: [{ start: 16, end: 23, name: "policy", path: "/skills/policy/SKILL.md" }], skillsFolder: "/skills" }));
+    const deps = context({ resolveSkillPrompts, effectiveSettings: { ...DEFAULT_SETTINGS, provider: "cursor", model: "auto", systemPrompt: "Use @policy" } });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { await result.current.sendMessage("Reviewer quoted @policy", { resolveSkillMentions: false }); });
+    expect(resolveSkillPrompts).toHaveBeenCalledExactlyOnceWith("Reviewer quoted @policy", "Use @policy", "");
+    expect(cursor.startCursorTurn).toHaveBeenCalledWith(expect.objectContaining({ prompt: "Reviewer quoted @policy", systemPrompt: expect.stringContaining("resolved system policy") }));
+    expect(deps.resolveSkillPrompt).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]?.messages.at(-1)?.skillReferences).toEqual([]);
+  });
+
+  it.each(["running", "idle"] as const)("keeps question-answer user mentions literal while respecting the %s system-policy boundary", async (status) => {
+    const resolveSkillPrompts = vi.fn(async (prompt: string, systemPrompt: string) => ({ prompt, systemPrompt: systemPrompt ? "resolved actual policy" : "", skillReferences: [], skillsFolder: "/skills" }));
+    const deps = context({ resolveSkillPrompts, effectiveSettings: { ...DEFAULT_SETTINGS, provider: "cursor", model: "auto", systemPrompt: "Use @policy" } });
+    const store = useTaskStore.getState();
+    store.ensureTask(CURSOR_THREAD.id, CURSOR_THREAD.cwd);
+    if (status === "running") { store.setActiveTurn(CURSOR_THREAD.id, "turn-live"); store.setTaskStatus(CURSOR_THREAD.id, "running"); }
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { expect(await result.current.answerQuestions(CURSOR_THREAD.id, "Use @review literally")).toBe(true); });
+    expect(resolveSkillPrompts).toHaveBeenCalledExactlyOnceWith("Use @review literally", status === "running" ? "" : "Use @policy", "");
+    if (status === "running") expect(cursor.steerCursorTurn).toHaveBeenCalledWith(CURSOR_THREAD.id, "Use @review literally", []);
+    else expect(cursor.startCursorTurn).toHaveBeenCalledWith(expect.objectContaining({ prompt: "Use @review literally", systemPrompt: expect.stringContaining("resolved actual policy") }));
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]?.messages.at(-1)).toMatchObject({ text: "Use @review literally", skillReferences: [], skillsFolder: "/skills" });
+    expect(deps.resolveSkillPrompt).not.toHaveBeenCalled();
+  });
+
+  it("keeps a running turn's system frozen when steering with paired resolution available", async () => {
+    const skillDependencies = dependencyGraph("user");
+    const skillReferences = [{ start: 4, end: 11, name: "review", path: "/skills/review/SKILL.md" }];
+    const resolveSkillPrompts = vi.fn(async () => ({ prompt: "resolved steering user", systemPrompt: "must not resend the frozen policy", skillReferences, skillsFolder: "/skills", skillDependencies }));
+    const resolveSkillPrompt = vi.fn(async () => "unexpected legacy expansion");
+    const getSkillReferences = vi.fn(() => ({ skillReferences, skillsFolder: "/skills" }));
+    const deps = context({ running: true, resolveSkillPrompts, resolveSkillPrompt, getSkillReferences });
+    useTaskStore.getState().ensureTask(CURSOR_THREAD.id, CURSOR_THREAD.cwd);
+    useTaskStore.getState().setActiveTurn(CURSOR_THREAD.id, "turn-live");
+    useTaskStore.getState().setTaskStatus(CURSOR_THREAD.id, "running");
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { await result.current.steerMessage("Use @review"); });
+    expect(resolveSkillPrompt).not.toHaveBeenCalled();
+    expect(resolveSkillPrompts).toHaveBeenCalledExactlyOnceWith("Use @review", "", undefined);
+    expect(cursor.steerCursorTurn).toHaveBeenCalledWith(CURSOR_THREAD.id, "resolved steering user", []);
+    expect(getSkillReferences).not.toHaveBeenCalled();
+    expect(cursor.startCursorTurn).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]?.messages.at(-1)).toMatchObject({ skillReferences, skillsFolder: "/skills", skillDependencies });
+  });
+
+  it("rejects a steering dependency issue while leaving the active turn and system policy intact", async () => {
+    const resolveSkillPrompts = vi.fn(async () => { throw new SkillDependencyError(dependencyGraph("user", true)); });
+    const deps = context({ running: true, resolveSkillPrompts, effectiveSettings: { ...DEFAULT_SETTINGS, provider: "cursor", model: "auto", systemPrompt: "Frozen @policy" } });
+    const store = useTaskStore.getState();
+    store.ensureTask(CURSOR_THREAD.id, CURSOR_THREAD.cwd);
+    store.setActiveTurn(CURSOR_THREAD.id, "turn-live");
+    store.setTaskStatus(CURSOR_THREAD.id, "running");
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { expect(await result.current.steerMessage("Use @policy")).toBe(false); });
+    expect(resolveSkillPrompts).toHaveBeenCalledExactlyOnceWith("Use @policy", "", undefined);
+    expect(cursor.steerCursorTurn).not.toHaveBeenCalled();
+    expect(codex.rpc).not.toHaveBeenCalled();
+    expect(deps.effectiveSettings.systemPrompt).toBe("Frozen @policy");
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]).toMatchObject({ activeTurnId: "turn-live", status: "running", messages: [] });
+    expect(deps.setError).toHaveBeenCalledWith(expect.stringContaining("policy → guide.md: Missing guide"));
+  });
+
+  it.each(["Folder permission denied", "The skill dependency report was invalid"])("keeps a steering resolver error visible without queuing: %s", async (message) => {
+    const deps = context({ running: true, resolveSkillPrompts: async () => { throw new Error(message); } });
+    const store = useTaskStore.getState();
+    store.ensureTask(CURSOR_THREAD.id, CURSOR_THREAD.cwd);
+    store.setActiveTurn(CURSOR_THREAD.id, "turn-live");
+    store.setTaskStatus(CURSOR_THREAD.id, "running");
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { expect(await result.current.steerMessage("Use @policy")).toBe(false); });
+    expect(cursor.steerCursorTurn).not.toHaveBeenCalled();
+    expect(codex.rpc).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id].queuedTurns).toHaveLength(0);
+    expect(deps.setError).toHaveBeenLastCalledWith(friendlyError(new Error(message)));
+  });
+
+  it("keeps a queued steering source failed with its dependency error and preserves the active turn", async () => {
+    const deps = context({ running: true, resolveSkillPrompts: async () => { throw new SkillDependencyError(dependencyGraph("user", true)); } });
+    const store = useTaskStore.getState();
+    store.ensureTask(CURSOR_THREAD.id, CURSOR_THREAD.cwd);
+    store.setActiveTurn(CURSOR_THREAD.id, "turn-live");
+    store.setTaskStatus(CURSOR_THREAD.id, "running");
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { expect(await result.current.sendMessage("Use @policy")).toBe(true); });
+    const queuedId = useTaskStore.getState().tasks[CURSOR_THREAD.id].queuedTurns[0].id;
+    await act(async () => { await result.current.steerQueuedMessage(queuedId); });
+    expect(cursor.steerCursorTurn).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]).toMatchObject({ activeTurnId: "turn-live", status: "running", queuedTurns: [expect.objectContaining({ status: "failed", error: expect.stringContaining("policy → guide.md: Missing guide") })] });
+    expect(deps.setError).toHaveBeenLastCalledWith(expect.stringContaining("policy → guide.md: Missing guide"));
+  });
+
+  it.each([true, false])("honors Stop while paired system skill resolution is pending (existing thread: %s)", async (existing) => {
+    let release!: (value: { prompt: string; systemPrompt: string }) => void;
+    const resolveSkillPrompts = vi.fn(() => new Promise<{ prompt: string; systemPrompt: string }>((resolve) => { release = resolve; }));
+    const deps = context({ activeThread: existing ? CURSOR_THREAD : null, resolveSkillPrompts });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    let delivered: boolean | undefined;
+    await act(async () => {
+      const sent = result.current.sendMessage("Use @review").then((value) => { delivered = value; });
+      await Promise.resolve();
+      deps.running = true;
+      await result.current.stopTurn();
+      release({ prompt: "resolved user", systemPrompt: "resolved policy" });
+      await sent;
+    });
+    expect(delivered).toBe(false);
+    expect(cursor.startCursorTurn).not.toHaveBeenCalled();
+    expect(childSessions.ensureChildAgentBridge).not.toHaveBeenCalled();
+    expect(deps.resolveSkillPrompt).not.toHaveBeenCalled();
+  });
+
+  it("resolves queued feedback's system policy without expanding quoted user skills", async () => {
+    const store = useTaskStore.getState();
+    store.ensureTask(CURSOR_THREAD.id, CURSOR_THREAD.cwd);
+    store.setActiveTurn(CURSOR_THREAD.id, "turn-live");
+    store.setTaskStatus(CURSOR_THREAD.id, "running");
+    const resolveSkillPrompts = vi.fn(async (prompt: string) => ({ prompt, systemPrompt: "resolved queued policy", skillReferences: [], skillsFolder: "/skills" }));
+    const deps = context({ running: true, resolveSkillPrompts, effectiveSettings: { ...DEFAULT_SETTINGS, provider: "cursor", model: "auto", systemPrompt: "Use @policy" } });
+    const { result, rerender } = renderHook(({ value }) => useTurnRunner(value), { initialProps: { value: deps } });
+    await act(async () => { await result.current.sendMessage("Feedback quotes @review", { resolveSkillMentions: false }); });
+    expect(resolveSkillPrompts).not.toHaveBeenCalled();
+    rerender({ value: { ...deps, running: false } });
+    await act(async () => { store.completeTurn(CURSOR_THREAD.id, "turn-live", "completed"); });
+    expect(resolveSkillPrompts).toHaveBeenCalledExactlyOnceWith("Feedback quotes @review", "Use @policy", "");
+    expect(cursor.startCursorTurn).toHaveBeenCalledWith(expect.objectContaining({ prompt: "Feedback quotes @review", systemPrompt: expect.stringContaining("resolved queued policy") }));
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]?.messages.at(-1)).toMatchObject({ text: "Feedback quotes @review", skillReferences: [], skillsFolder: "/skills" });
+    expect(deps.resolveSkillPrompt).not.toHaveBeenCalled();
   });
 
   it.each(["cursor", "openai"] as const)("does not reactivate an existing %s thread after the user selects another thread", async (provider) => {
@@ -1468,6 +1631,71 @@ describe("useTurnRunner activating sub-agents mid-conversation", () => {
     expect(codex.rpc).toHaveBeenCalledWith("turn/start", expect.objectContaining({
       input: [expect.objectContaining({ text: "resolved skill context\n\n@review this" })],
     }));
+  });
+
+  it.each(["openai", "openrouter", "lmstudio", "claude", "cursor"] as const)("persists the complete system-only dependency graph for %s turns", async (provider) => {
+    const skillDependencies = dependencyGraph();
+    const resolveSkillPrompts = vi.fn(async (prompt: string) => ({ prompt, systemPrompt: "resolved system dependency", skillDependencies }));
+    const deps = provider === "claude" ? claudeContext({ resolveSkillPrompts }) : provider === "cursor" ? context({ resolveSkillPrompts }) : openAiContext({
+      resolveSkillPrompts, openRouterReady: true, lmStudioReady: true,
+      effectiveSettings: { ...DEFAULT_SETTINGS, provider, model: "selected/model" },
+    });
+    deps.effectiveSettings = { ...deps.effectiveSettings, systemPrompt: "Use @policy" };
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { expect(await result.current.sendMessage("Continue")).toBe(true); });
+    expect(resolveSkillPrompts).toHaveBeenCalledExactlyOnceWith("Continue", "Use @policy", undefined);
+    expect(useTaskStore.getState().tasks[deps.activeThread!.id].messages.at(-1)).toMatchObject({ text: "Continue", skillDependencies });
+    expect(deps.effectiveSettings.systemPrompt).toBe("Use @policy");
+  });
+
+  it.each(["openai", "openrouter", "lmstudio", "claude", "cursor"] as const)("blocks %s dependency failures before bridges, provider calls, or checkpoints", async (provider) => {
+    const resolveSkillPrompts = vi.fn(async () => { throw new SkillDependencyError(dependencyGraph("system", true)); });
+    const deps = provider === "claude" ? claudeContext({ activeThread: null, running: false, resolveSkillPrompts }) : provider === "cursor" ? context({ activeThread: null, resolveSkillPrompts }) : openAiContext({
+      activeThread: null, resolveSkillPrompts, openRouterReady: true, lmStudioReady: true,
+      effectiveSettings: { ...DEFAULT_SETTINGS, provider, model: "selected/model" },
+    });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { expect(await result.current.sendMessage("Continue")).toBe(false); });
+    expect(codex.rpc).not.toHaveBeenCalled();
+    expect(claude.startClaudeTurn).not.toHaveBeenCalled();
+    expect(cursor.startCursorTurn).not.toHaveBeenCalled();
+    expect(childSessions.ensureChildAgentBridge).not.toHaveBeenCalled();
+    expect(deps.beginRunCheckpoint).not.toHaveBeenCalled();
+    expect(deps.setError).toHaveBeenCalledWith(expect.stringContaining("policy → guide.md: Missing guide"));
+  });
+
+  it("sends current resolved system instructions and an explicit clear on every loaded Codex turn", async () => {
+    const skillReferences = [{ start: 4, end: 11, name: "review", path: "/skills/review/SKILL.md" }];
+    const resolveSkillPrompts = vi.fn(async (prompt: string, systemPrompt: string) => ({ prompt: `resolved ${prompt}`, systemPrompt: systemPrompt ? `resolved ${systemPrompt}` : "", skillReferences, skillsFolder: "/skills" }));
+    const deps = openAiContext({ resolveSkillPrompts, effectiveSettings: { ...ENABLED, systemPrompt: "Use @policy" } });
+    const { result, rerender } = renderHook(({ value }) => useTurnRunner(value), { initialProps: { value: deps } });
+    await act(async () => { await result.current.sendMessage("Use @review"); });
+    const first = codex.rpc.mock.calls.filter(([method]) => method === "turn/start").at(-1)!;
+    expect(first[1].collaborationMode.settings.developer_instructions).toContain("resolved Use @policy");
+    expect(first[1].input[0].text).toBe("resolved Use @review");
+    expect(useTaskStore.getState().tasks[OPENAI_THREAD.id].messages.at(-1)).toMatchObject({ text: "Use @review", skillReferences, skillsFolder: "/skills" });
+    rerender({ value: { ...deps, effectiveSettings: { ...deps.effectiveSettings, systemPrompt: "" } } });
+    await act(async () => { await result.current.sendMessage("Continue"); });
+    const last = codex.rpc.mock.calls.filter(([method]) => method === "turn/start").at(-1)!;
+    expect(last[1].collaborationMode.settings.developer_instructions).toContain("Current effective app system prompt: none");
+    expect(last[1].collaborationMode.settings.developer_instructions).not.toContain("resolved Use @policy");
+    expect(resolveSkillPrompts).toHaveBeenLastCalledWith("Continue", "", undefined);
+    expect(deps.restartRuntimeForCapabilities).not.toHaveBeenCalled();
+  });
+
+  it("uses the actual top-level model for a newly started default-model Codex thread", async () => {
+    codex.rpc.mockImplementation(async (method: string) => method === "thread/start"
+      ? { thread: { ...OPENAI_THREAD, id: "fresh-default" }, model: "actual-runtime-default" }
+      : { turn: { id: "turn-1" } });
+    const deps = openAiContext({ activeThread: null, effectiveSettings: { ...ENABLED, model: "", systemPrompt: "Use @policy" }, resolveSkillPrompts: vi.fn(async (prompt: string) => ({ prompt, systemPrompt: "resolved policy" })) });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { expect(await result.current.sendMessage("Build it")).toBe(true); });
+    const turn = codex.rpc.mock.calls.find(([method]) => method === "turn/start")!;
+    expect(turn[1].collaborationMode.settings.model).toBe("actual-runtime-default");
+    expect(deps.persistThreadModel).toHaveBeenCalledWith("fresh-default", "actual-runtime-default");
+    const start = codex.rpc.mock.calls.find(([method]) => method === "thread/start")!;
+    expect(start[1].baseInstructions).toBe("");
+    expect(turn[1].collaborationMode.settings.developer_instructions).toContain("resolved policy");
   });
 
   it("reattaches the bridge to an existing OpenAI thread on the very next turn", async () => {

@@ -91,9 +91,10 @@ const SOURCE: Partial<Record<UsageProvider, ModelPricing["source"]>> = { openai:
  * ms), or undefined when nothing proves one. Sources that disagree about the
  * span return "conflict" so the caller changes nothing.
  */
-export function historicalPricing(provider: UsageProvider, model: string, from: number, to: number): HistoricalPricing | "conflict" | undefined {
+export function historicalPricing(provider: UsageProvider, model: string, from: number, to: number, serviceTier = "standard"): HistoricalPricing | "conflict" | undefined {
   const source = SOURCE[provider];
   if (!source || !model || to < from) return undefined;
+  if (provider === "openai" && serviceTier !== "standard") model = `${model}@${serviceTier}`;
   const epochs = officialEpochs();
   const { key, catalog } = evidenceSources(provider, model, (candidate) => candidate in epochs);
   const candidates: HistoricalPricing[] = [];
@@ -103,7 +104,7 @@ export function historicalPricing(provider: UsageProvider, model: string, from: 
     const end = Math.min(catalog.effectiveUntil ? Date.parse(catalog.effectiveUntil) : Infinity, Date.parse(catalog.asOf) + DAY_MS);
     if (start <= from && to < end) {
       const { effectiveFrom: _from, effectiveUntil: _until, status: _status, ...pricing } = catalog;
-      candidates.push({ pricing: { ...pricing, origin: "catalog" }, basis: "catalog" });
+      if (provider !== "openai" || (pricing.serviceTier ?? "standard") === serviceTier) candidates.push({ pricing: { ...pricing, origin: "catalog" }, basis: "catalog" });
     }
   }
   const epoch = key ? epochs[key]?.find(([first, last]) => first <= from && to <= last) : undefined;
@@ -117,6 +118,7 @@ export function historicalPricing(provider: UsageProvider, model: string, from: 
         ...(cacheWrite !== null ? { cacheWriteInputPerMillion: cacheWrite } : {}),
         ...(cacheWrite1h !== null ? { cacheWrite1hInputPerMillion: cacheWrite1h } : {}),
         source, asOf: new Date(last).toISOString().slice(0, 10), origin: "official",
+        ...(provider === "openai" ? { serviceTier } : {}),
       },
     });
   }

@@ -2,6 +2,8 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { GitWorkspaceSnapshot } from "../lib/gitWorkspace";
 import { useGitWorkspace } from "./useGitWorkspace";
+import { useProjectGitChanges } from "./useProjectGitChanges";
+import type { ProjectGitInspection } from "../lib/projectGit";
 
 const native = vi.hoisted(() => ({
   get: vi.fn(),
@@ -57,6 +59,43 @@ beforeEach(() => {
 });
 
 describe("useGitWorkspace", () => {
+  it("refreshes a selected preview after a successful read with identical summary counts", async () => {
+    const summary = { ...snapshot("/same-count-preview"), unstagedFiles: 1, changedFiles: 1 };
+    native.get.mockResolvedValue(summary);
+    let contents = "first contents";
+    const api: ProjectGitInspection = {
+      cwd: "/same-count-preview",
+      getChanges: vi.fn().mockResolvedValue({ rootPath: "/same-count-preview", rows: [{ path: "a.ts", area: "unstaged", status: "M", originalPath: null }], stagedFiles: 0, unstagedFiles: 1, untrackedFiles: 0, changedFiles: 1, truncated: false }),
+      getFileDiff: vi.fn(async (_cwd, path, area) => ({ path, area, text: contents, binary: false, truncated: false })),
+      getHistory: vi.fn(),
+    };
+    const view = renderHook(() => {
+      const owner = useGitWorkspace(options({ cwd: api.cwd, projectPath: api.cwd }));
+      const changes = useProjectGitChanges(api, true, String(owner.readRevision));
+      return { owner, changes };
+    });
+    await waitFor(() => expect(view.result.current.owner.snapshot).toEqual(summary));
+    await waitFor(() => expect(view.result.current.changes.loading).toBe(false));
+    act(() => view.result.current.changes.select({ path: "a.ts", area: "unstaged" }));
+    await waitFor(() => expect(view.result.current.changes.diff?.text).toBe("first contents"));
+    contents = "newer contents, same Git summary";
+    await act(async () => { await view.result.current.owner.refresh(); });
+    await waitFor(() => expect(view.result.current.changes.diff?.text).toBe(contents));
+    expect(view.result.current.owner.snapshot).toEqual(summary);
+  });
+
+  it("advances the successful read revision even for identical results, but not failed reads", async () => {
+    const view = renderHook(() => useGitWorkspace(options()));
+    await waitFor(() => expect(view.result.current.snapshot).not.toBeNull());
+    const revision = () => view.result.current.readRevision;
+    expect(revision()).toBe(1);
+    await act(async () => { await view.result.current.refresh(); });
+    expect(revision()).toBe(2);
+    native.get.mockRejectedValueOnce(new Error("read failed"));
+    await act(async () => { await view.result.current.refresh(); });
+    expect(revision()).toBe(2);
+  });
+
   it("starts a new-folder read immediately while the previous folder read is pending", async () => {
     const pending = new Map<string, (value: GitWorkspaceSnapshot) => void>();
     native.get.mockImplementation((cwd: string) => new Promise((resolve) => pending.set(cwd, resolve)));

@@ -2,6 +2,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PullRequest, PullRequestContext, ThreadPullRequestLink } from "../lib/pullRequests";
 import { useThreadPullRequest, type UseThreadPullRequestOptions } from "./useThreadPullRequest";
+import { emptyPullRequestCreationDraft } from "../lib/pullRequestCreationDrafts";
 
 const native = vi.hoisted(() => ({
   context: vi.fn(),
@@ -95,6 +96,31 @@ beforeEach(() => {
 });
 
 describe("useThreadPullRequest", () => {
+  it("owns creation drafts across navigation and forgets them with their thread", () => {
+    const view = renderHook((input: UseThreadPullRequestOptions) => useThreadPullRequest(input), { initialProps: options({ enabled: false }) });
+    const owner = view.result.current.creationDraftStore;
+    const scope = `${view.result.current.creationDraftScope}\0repository/branch/head`;
+    owner.write(scope, { ...emptyPullRequestCreationDraft(), title: "Retained title" });
+    view.rerender(options({ threadId: "beta", cwd: "/project/beta", enabled: false }));
+    expect(view.result.current.creationDraftStore).toBe(owner);
+    expect(view.result.current.creationDraftScope).not.toBe("alpha\0/project/alpha");
+    view.rerender(options({ enabled: false }));
+    expect(view.result.current.creationDraftStore.read(scope)?.title).toBe("Retained title");
+    act(() => view.result.current.forgetThread("alpha"));
+    expect(owner.read(scope)).toBeUndefined();
+  });
+
+  it("reports the initial visible lookup as loading before any repository result", async () => {
+    let finish!: (value: PullRequestContext) => void;
+    native.context.mockImplementation(() => new Promise<PullRequestContext>((resolve) => { finish = resolve; }));
+    const view = renderHook(() => useThreadPullRequest(options()));
+    expect(view.result.current.loading).toBe(true);
+    expect(view.result.current.context).toBeNull();
+    await act(async () => { finish(context()); });
+    await waitFor(() => expect(view.result.current.loading).toBe(false));
+    expect(view.result.current.context?.repository).toBe("m17h/Mythra-Code");
+  });
+
   it("persists a created PR to the thread that started the action after navigation", async () => {
     let finish!: (value: PullRequest) => void;
     native.create.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));

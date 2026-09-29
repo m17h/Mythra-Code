@@ -60,6 +60,8 @@ export interface ThreadStartOptions {
   /** Non-interactive threads (scheduled runs) never issue approval requests,
    *  because nobody is guaranteed to be present to answer them. */
   interactive: boolean;
+  /** Managed turns send their current app prompt separately, without a sticky duplicate. */
+  perTurnSystemPrompt?: boolean;
   additionalWorkspaceRoots?: string[];
   /**
    * Cross-provider delegation bridge. Attached only to a root thread, which is
@@ -169,7 +171,9 @@ export function threadStartParams(run: ScheduleRunSettings, cwd: string, options
     runtimeWorkspaceRoots: [cwd, ...(options.additionalWorkspaceRoots ?? [])],
     sandbox: sandboxMode(run.permission),
     approvalPolicy: options.interactive && run.permission === "ask" ? "on-request" : "never",
-    baseInstructions: run.systemPrompt,
+    // Explicit empty preserves the app's historical no-prompt behavior rather
+    // than restoring Codex's default base. The current snapshot is sent by turn/start.
+    baseInstructions: options.perTurnSystemPrompt ? "" : run.systemPrompt,
     developerInstructions,
     config: threadRuntimeConfig(run, options),
     serviceName: options.serviceName ?? "Mythra Code",
@@ -185,7 +189,7 @@ export function threadResumeParams(
   run: ScheduleRunSettings,
   threadId: string,
   cwd: string,
-  options: Partial<Pick<ThreadStartOptions, "interactive" | "customAgents" | "modelContextWindow" | "additionalWorkspaceRoots" | "childAgentBridge" | "projectRunCommand" | "projectCheckCommand">> & {
+  options: Partial<Pick<ThreadStartOptions, "interactive" | "perTurnSystemPrompt" | "customAgents" | "modelContextWindow" | "additionalWorkspaceRoots" | "childAgentBridge" | "projectRunCommand" | "projectCheckCommand">> & {
     excludeTurns?: boolean;
     /**
      * Re-send the whole runtime config even with no bridge attached. This is
@@ -212,12 +216,60 @@ export function threadResumeParams(
     // policy cannot survive after the user switches to Full access.
     approvalPolicy: options.interactive !== false && run.permission === "ask" ? "on-request" : "never",
     sandbox: sandboxMode(run.permission),
+    // Honored when a durable thread is genuinely loaded into this process.
+    // Already-loaded threads ignore this; current turn instructions use the
+    // collaboration-mode override below instead of restarting shared runtime.
+    baseInstructions: options.perTurnSystemPrompt ? "" : run.systemPrompt,
     developerInstructions,
     ...(options.excludeTurns ? { excludeTurns: true } : {}),
     ...(modelProvider ? { modelProvider } : {}),
     ...(run.provider === "openrouter" || run.provider === "lmstudio" || options.childAgentBridge || options.refreshRuntimeConfig
       ? { config: threadRuntimeConfig(run, options) }
       : {}),
+  };
+}
+
+export interface TurnSystemPromptOptions {
+  /** Fully resolved current app/provider/project prompt. Empty explicitly clears it. */
+  systemPrompt?: string;
+  /** Actual thread/start or thread/resume response model when the run uses a default. */
+  model?: string;
+}
+
+function objectValue(value: unknown): JsonObject {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as JsonObject : {};
+}
+
+/**
+ * Current app instruction state, delivered in the developer channel supported
+ * by Codex's per-turn experimental API. Loaded-thread resume does not replace
+ * base instructions. Prior overrides remain historical conversation items,
+ * so every managed turn must carry its current snapshot, including clearing.
+ */
+export function withCurrentSystemPrompt(params: JsonObject, systemPrompt: string, currentModel?: string): JsonObject {
+  const mode = objectValue(params.collaborationMode);
+  const settings = objectValue(mode.settings);
+  const selected = typeof params.model === "string" ? params.model.trim() : "";
+  const model = selected || currentModel?.trim() || (typeof settings.model === "string" ? settings.model.trim() : "");
+  if (!model) throw new Error("Mythra Code could not identify this thread's current model. Select a model before sending current system instructions.");
+  const existing = typeof settings.developer_instructions === "string" ? settings.developer_instructions : "";
+  const instructions = [
+    existing,
+    "Mythra Code current app system-prompt configuration for this turn. The latest such snapshot is authoritative for this app configuration: it supersedes earlier app system-prompt snapshots, resolved system-skill envelopes, and unresolved @skill selections from earlier app system prompts. Earlier snapshots can remain in conversation history; do not treat their removed skill selections as current requirements. User-message skills and instructions remain valid independently. Native permissions, delegation policy, and other non-app-system instructions remain in force.",
+    systemPrompt.trim() ? `Current effective app system prompt:\n${systemPrompt}` : "Current effective app system prompt: none. There is no additional app system prompt or system-selected skill for this turn.",
+  ].filter(Boolean).join("\n\n");
+  return {
+    ...params,
+    collaborationMode: {
+      ...mode,
+      mode: mode.mode === "plan" ? "plan" : "default",
+      settings: {
+        ...settings,
+        model,
+        reasoning_effort: params.effort ?? settings.reasoning_effort ?? null,
+        developer_instructions: instructions,
+      },
+    },
   };
 }
 
@@ -228,8 +280,9 @@ export function turnStartParams(
   input: JsonObject[],
   additionalWritableRoots: string[] = [],
   interactive = true,
+  instructions: TurnSystemPromptOptions = {},
 ): JsonObject {
-  return {
+  const params: JsonObject = {
     threadId,
     input,
     cwd,
@@ -243,6 +296,7 @@ export function turnStartParams(
     effort: run.ultra ? "ultra" : run.reasoningEffort,
     serviceTier: run.serviceTier,
   };
+  return instructions.systemPrompt === undefined ? params : withCurrentSystemPrompt(params, instructions.systemPrompt, instructions.model);
 }
 
 export function scheduleRunSnapshot(

@@ -36,6 +36,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 mod agents;
 mod cursor;
+mod git_inspection;
 mod git_publish;
 mod git_workspace;
 mod github;
@@ -47,6 +48,7 @@ mod process_launch;
 mod project_git;
 mod run_discovery;
 mod skills;
+mod workspace_folder;
 #[cfg(test)]
 use agents::{
     bridge_local_response, tokens_match, tool_catalog, validate_targets, validate_tool_call,
@@ -62,9 +64,15 @@ use cursor::{
     cursor_turn_active, cursor_turn_interrupt, cursor_turn_kill, cursor_turn_start,
     cursor_turn_steer, shutdown_cursor_on_exit, CursorState,
 };
+use git_inspection::{
+    git_project_changes, git_project_diff, git_project_file_diff, git_project_history,
+};
 use git_publish::{git_publish_commit, git_publish_snapshot};
 use git_workspace::{
-    git_workspace_branch, git_workspace_fetch, git_workspace_snapshot, git_workspace_update,
+    git_workspace_branch, git_workspace_commit, git_workspace_fetch, git_workspace_push,
+    git_workspace_revert, git_workspace_revert_all, git_workspace_revert_all_preview,
+    git_workspace_revert_preview, git_workspace_snapshot, git_workspace_stage,
+    git_workspace_update,
 };
 use github::{
     github_attach_remote, github_clone_repository, github_create_repository, github_login,
@@ -76,8 +84,8 @@ use github::{
     validate_github_repository_name,
 };
 use github_pr::{
-    github_pr_branch, github_pr_context, github_pr_create, github_pr_find, github_pr_merge,
-    github_pr_ready, github_pr_view,
+    github_pr_branch, github_pr_context, github_pr_create, github_pr_find, github_pr_list,
+    github_pr_merge, github_pr_ready, github_pr_view,
 };
 use persistence::{
     local_transcript_full_read, local_transcript_list, local_transcript_metadata_write,
@@ -104,9 +112,10 @@ use run_discovery::{
 #[cfg(test)]
 use skills::*;
 use skills::{
-    local_skills_create, local_skills_delete, local_skills_import, local_skills_mention_names,
-    local_skills_read, local_skills_resolve_prompt, local_skills_scan, local_skills_sync,
-    local_skills_update, normalize_skill_name,
+    local_skills_analyze_prompts, local_skills_create, local_skills_delete, local_skills_import,
+    local_skills_mention_names, local_skills_read, local_skills_resolve_prompt,
+    local_skills_resolve_prompts, local_skills_scan, local_skills_sync, local_skills_update,
+    normalize_skill_name,
 };
 
 const KEYRING_SERVICE: &str = "com.kiwi.harness";
@@ -777,6 +786,34 @@ fn kill_process_tree(pid: u32) {
 struct ClaudeState {
     turns: Arc<Mutex<HashMap<String, Arc<ClaudeTurn>>>>,
     authenticated: AtomicBool,
+    prompt_snapshot_support: Mutex<Option<ClaudePromptSnapshotSupport>>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct ClaudeExecutableIdentity {
+    path: PathBuf,
+    target: Option<PathBuf>,
+    metadata: Option<(u64, Option<SystemTime>)>,
+}
+
+struct ClaudePromptSnapshotSupport {
+    identity: ClaudeExecutableIdentity,
+    supported: Option<bool>,
+    checked_at: Instant,
+}
+
+// A transient version failure must not pin a modern CLI to stale snapshots.
+// Known versions remain cached until the executable changes; unknown versions
+// retry at a bounded cadence instead of spawning a probe on every turn.
+const CLAUDE_PROMPT_SNAPSHOT_RETRY_AFTER: Duration = Duration::from_secs(30);
+
+impl ClaudePromptSnapshotSupport {
+    fn reusable(&self, identity: &ClaudeExecutableIdentity, now: Instant) -> bool {
+        self.identity == *identity
+            && (self.supported.is_some()
+                || now.saturating_duration_since(self.checked_at)
+                    < CLAUDE_PROMPT_SNAPSHOT_RETRY_AFTER)
+    }
 }
 
 /// How long a cooperative interrupt gets to unwind before the Claude process
@@ -3332,6 +3369,85 @@ fn subscription_only_command(path: &Path, home: Option<&Path>) -> Command {
     command
 }
 
+fn claude_prompt_snapshot_version_support(version: Option<&str>) -> Option<bool> {
+    // Official `--version` output starts with the version, followed by
+    // `(Claude Code)`. Do not infer capabilities from arbitrary banner text.
+    let token = version?.split_whitespace().next()?;
+    let version = semver::Version::parse(token.strip_prefix('v').unwrap_or(token)).ok()?;
+    Some(version >= semver::Version::new(2, 1, 257))
+}
+
+async fn claude_executable_identity(path: &Path) -> ClaudeExecutableIdentity {
+    ClaudeExecutableIdentity {
+        path: path.to_path_buf(),
+        target: tokio::fs::canonicalize(path).await.ok(),
+        metadata: tokio::fs::metadata(path)
+            .await
+            .ok()
+            .map(|metadata| (metadata.len(), metadata.modified().ok())),
+    }
+}
+
+async fn cached_claude_prompt_snapshot_support<F, Fut>(
+    cache: &Mutex<Option<ClaudePromptSnapshotSupport>>,
+    path: &Path,
+    probe: F,
+) -> bool
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Option<String>>,
+{
+    let identity = claude_executable_identity(path).await;
+    let mut cached = cache.lock().await;
+    if let Some(runtime) = cached
+        .as_ref()
+        .filter(|runtime| runtime.reusable(&identity, Instant::now()))
+    {
+        return runtime.supported.unwrap_or(false);
+    }
+    let version = probe().await;
+    let supported = claude_prompt_snapshot_version_support(version.as_deref());
+    // An updater can replace the CLI during a probe. Never attribute the old
+    // version to the new executable (or send a new flag to a replaced old CLI).
+    if claude_executable_identity(path).await != identity {
+        *cached = None;
+        return false;
+    }
+    *cached = Some(ClaudePromptSnapshotSupport {
+        identity,
+        supported,
+        checked_at: Instant::now(),
+    });
+    supported.unwrap_or(false)
+}
+
+async fn claude_prompt_snapshot_supported(state: &ClaudeState, path: &Path) -> bool {
+    cached_claude_prompt_snapshot_support(&state.prompt_snapshot_support, path, || {
+        runtime_version(path)
+    })
+    .await
+}
+
+fn claude_system_prompt_arguments(system_prompt: &str, snapshot_supported: bool) -> Vec<String> {
+    let mut arguments = Vec::new();
+    if snapshot_supported {
+        // Recent Claude Code restores the first recorded prompt on --resume,
+        // ignoring even changed/removed append text until compaction. Re-render
+        // authored instructions on first turns and resumes, including clears.
+        arguments.extend(["--system-prompt-snapshot".into(), "off".into()]);
+    }
+    if !system_prompt.trim().is_empty() {
+        arguments.extend(["--append-system-prompt".into(), system_prompt.into()]);
+    }
+    arguments
+}
+
+fn claude_prompt_snapshot_version_warning(version: Option<&str>) -> Option<&'static str> {
+    claude_prompt_snapshot_version_support(version).is_none().then_some(
+        "Mythra Code could not verify this Claude Code version. Updated system instructions in resumed conversations may not apply; recheck or update the Claude Code runtime.",
+    )
+}
+
 fn claude_credential_override_present() -> bool {
     [
         "ANTHROPIC_API_KEY",
@@ -3584,6 +3700,14 @@ async fn read_claude_runtime_status(app: &AppHandle) -> ClaudeRuntimeStatus {
     };
 
     let version = runtime_version(&path).await;
+    let warning = match (
+        warning,
+        claude_prompt_snapshot_version_warning(version.as_deref()),
+    ) {
+        (Some(existing), Some(freshness)) => Some(format!("{existing} {freshness}")),
+        (None, Some(freshness)) => Some(freshness.to_string()),
+        (existing, None) => existing,
+    };
     let home = app.path().home_dir().ok();
     let auth = timeout(
         CLAUDE_AUTH_STATUS_TIMEOUT,
@@ -4334,11 +4458,11 @@ async fn claude_turn_start(
     // descendant the CLI spawns, not just the direct child.
     #[cfg(unix)]
     command.process_group(0);
-    if !options.system_prompt.trim().is_empty() {
-        command
-            .arg("--append-system-prompt")
-            .arg(&options.system_prompt);
-    }
+    let snapshot_supported = claude_prompt_snapshot_supported(&state, &binary).await;
+    command.args(claude_system_prompt_arguments(
+        &options.system_prompt,
+        snapshot_supported,
+    ));
     let agent_definitions = claude_agent_definitions(&options.custom_agents, options.subagent_max);
     if agent_definitions
         .as_object()
@@ -6604,6 +6728,17 @@ pub fn run() {
             github_create_repository,
             github_clone_repository,
             git_workspace_snapshot,
+            git_project_changes,
+            git_project_diff,
+            git_project_file_diff,
+            git_project_history,
+            git_workspace_stage,
+            git_workspace_revert_preview,
+            git_workspace_revert,
+            git_workspace_revert_all_preview,
+            git_workspace_revert_all,
+            git_workspace_commit,
+            git_workspace_push,
             git_workspace_branch,
             git_workspace_fetch,
             git_workspace_update,
@@ -6612,6 +6747,7 @@ pub fn run() {
             github_pr_context,
             github_pr_view,
             github_pr_find,
+            github_pr_list,
             github_pr_create,
             github_pr_merge,
             github_pr_branch,
@@ -6666,10 +6802,13 @@ pub fn run() {
             local_skills_create,
             local_skills_read,
             local_skills_mention_names,
+            local_skills_analyze_prompts,
             local_skills_resolve_prompt,
+            local_skills_resolve_prompts,
             local_skills_update,
             local_skills_delete,
             normal_chat_workspace,
+            workspace_folder::open_workspace_folder,
             codex_rpc,
             codex_respond,
             save_openrouter_key,

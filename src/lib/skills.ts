@@ -1,4 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { SkillDependencyReport, SkillReference } from "../types";
+import { emptySkillDependencyReport, hasBlockedSkillDependencies, SkillDependencyError, validSkillDependencyReport } from "./skillDependencies";
+import { displayedUserMessage } from "./userMessageEcho";
+
+export { SkillDependencyError } from "./skillDependencies";
 
 export interface LocalSkillFile {
   path: string;
@@ -19,6 +24,20 @@ export interface SkillBridgeConfig {
   sourcePath: string;
   name: string;
   enabled: boolean;
+}
+
+/** Provider delivery text; authored user and system instructions keep their own channels. */
+export interface ResolvedSkillPrompts {
+  prompt: string;
+  systemPrompt: string;
+  skillReferences?: SkillReference[];
+  skillsFolder?: string;
+  skillDependencies?: SkillDependencyReport;
+}
+
+export interface SkillPromptAnalysisOverride {
+  rootSkillPath?: string;
+  rootSkillContent?: string;
 }
 
 export function normalizeSkillName(value: string): string {
@@ -91,6 +110,39 @@ export async function skillMentionNames(message: string): Promise<string[]> {
 export async function resolveSkillPrompt(message: string, folder: string, skills: LocalSkill[], mentionSource?: string): Promise<string> {
   if (!(mentionSource ?? message).includes("@") && !message.includes("mythra_code_invoked_skills")) return message;
   return invoke<string>("local_skills_resolve_prompt", { folder, message, skills: skillBridges(skills), mentionSource });
+}
+
+/** Resolve both authored channels with one selected-library validation and one turn budget. */
+export async function resolveSkillPrompts(message: string, systemPrompt: string, folder: string, skills: LocalSkill[], mentionSource?: string): Promise<ResolvedSkillPrompts> {
+  if (!(mentionSource ?? message).includes("@") && !systemPrompt.includes("@")
+    && !message.includes("mythra_code_invoked_skills") && !systemPrompt.includes("mythra_code_invoked_skills")) {
+    return { prompt: message, systemPrompt };
+  }
+  const resolved = await invoke<ResolvedSkillPrompts>("local_skills_resolve_prompts", {
+    folder, message, systemPrompt, skills: skillBridges(skills), mentionSource,
+  });
+  const restored = displayedUserMessage(resolved.prompt);
+  const report = resolved.skillDependencies === undefined ? restored.skillDependencies : validSkillDependencyReport(resolved.skillDependencies);
+  if (resolved.skillDependencies !== undefined && !report) throw new Error("The skill dependency report was invalid. Skills were not loaded and the model was not started.");
+  if (report && hasBlockedSkillDependencies(report)) throw new SkillDependencyError(report);
+  return { ...resolved,
+    ...(resolved.skillReferences === undefined && restored.skillReferences !== undefined ? { skillReferences: restored.skillReferences } : {}),
+    ...(resolved.skillsFolder === undefined && restored.skillsFolder !== undefined ? { skillsFolder: restored.skillsFolder } : {}),
+    ...(report ? { skillDependencies: report } : restored.skillDependencies ? { skillDependencies: restored.skillDependencies } : {}) };
+}
+
+/** Preview uses the native parser and filesystem rules, including unsaved root
+ * content. Reported dependency issues are data; ordinary read/bridge errors reject. */
+export async function analyzeSkillPrompts(message: string, systemPrompt: string, folder: string, skills: LocalSkill[], mentionSource?: string, override?: SkillPromptAnalysisOverride): Promise<SkillDependencyReport> {
+  if (!override && !(mentionSource ?? message).includes("@") && !systemPrompt.includes("@")) return emptySkillDependencyReport();
+  const result = await invoke<SkillDependencyReport>("local_skills_analyze_prompts", {
+    folder, message, systemPrompt, skills: skillBridges(skills), mentionSource,
+    ...(override?.rootSkillPath !== undefined ? { rootSkillPath: override.rootSkillPath } : {}),
+    ...(override?.rootSkillContent !== undefined ? { rootSkillContent: override.rootSkillContent } : {}),
+  });
+  const report = validSkillDependencyReport(result);
+  if (!report) throw new Error("The skill dependency preview report was invalid.");
+  return report;
 }
 
 export async function importLocalSkills(folder: string, paths: string[]): Promise<string[]> {

@@ -8,7 +8,8 @@ import { optimisticStartedThread } from "./threadList";
 import { buildTurnInput } from "./turnInput";
 import type { ChildAgentPolicy } from "./childAgents";
 import type { ReasoningEffort } from "../components/ModelPowerControl";
-import type { ChildAgentTarget, ScheduleRunSettings, Thread, Turn } from "../types";
+import type { ChildAgentTarget, ScheduleRunSettings, SkillDependencyReport, SkillReference, Thread, Turn } from "../types";
+import type { ResolvedSkillPrompts } from "./skills";
 
 /**
  * Starting a cross-provider child.
@@ -37,6 +38,8 @@ export interface ChildRunContext {
   lmStudioBaseUrl?: string;
   /** Resolve exact enabled Mythra Code skill mentions before provider delivery. */
   resolveSkillPrompt: (message: string) => Promise<string>;
+  /** Paired resolution keeps inherited skill instructions in the system channel. */
+  resolveSkillPrompts?: (message: string, systemPrompt: string) => Promise<ResolvedSkillPrompts>;
   /**
    * Snapshot the execution folder just before the child's first turn starts,
    * keyed by the child's thread id so the provider's turn-completion handler
@@ -53,6 +56,9 @@ export interface ChildRunResult {
   provider: ChildAgentTarget["provider"];
   model: string;
   cursorSessionId?: string;
+  skillReferences?: SkillReference[];
+  skillsFolder?: string;
+  skillDependencies?: SkillDependencyReport;
 }
 
 /**
@@ -93,9 +99,13 @@ export async function startChildAgentTurn(
   prompt: string,
   context: ChildRunContext,
 ): Promise<ChildRunResult> {
-  const run = childRunSettings(target, context);
-  const systemPrompt = withMythraCodeCompletionInstructions(context.systemPrompt);
-  const providerPrompt = await context.resolveSkillPrompt(prompt);
+  const resolved: ResolvedSkillPrompts = context.resolveSkillPrompts
+    ? await context.resolveSkillPrompts(prompt, context.systemPrompt)
+    : { prompt: await context.resolveSkillPrompt(prompt), systemPrompt: context.systemPrompt };
+  const run = { ...childRunSettings(target, context), systemPrompt: resolved.systemPrompt };
+  const systemPrompt = withMythraCodeCompletionInstructions(resolved.systemPrompt);
+  const providerPrompt = resolved.prompt;
+  const provenance = { skillReferences: resolved.skillReferences, skillsFolder: resolved.skillsFolder, skillDependencies: resolved.skillDependencies };
 
   if (target.provider === "claude") {
     const thread = childThreadRecord(crypto.randomUUID(), target, prompt, context.executionPath);
@@ -121,7 +131,7 @@ export async function startChildAgentTurn(
       context.discardCheckpoint?.(threadId);
       throw reason;
     }
-    return { thread, turnId: result.turnId, provider: "claude", model: run.model };
+    return { thread, turnId: result.turnId, provider: "claude", model: run.model, ...provenance };
   }
 
   if (target.provider === "cursor") {
@@ -151,11 +161,13 @@ export async function startChildAgentTurn(
       provider: "cursor",
       model: run.model,
       cursorSessionId: result.cursorSessionId,
+      ...provenance,
     };
   }
 
   const started = await rpc<{ thread: Thread }>("thread/start", threadStartParams(run, context.executionPath, {
     serviceName: context.serviceName,
+    perTurnSystemPrompt: true,
     customAgents: [],
     modelContextWindow: context.modelContextWindow,
     interactive: true,
@@ -171,10 +183,12 @@ export async function startChildAgentTurn(
       context.executionPath,
       buildTurnInput(providerPrompt, []),
       context.additionalWorkspaceRoots,
+      true,
+      { systemPrompt: resolved.systemPrompt },
     ));
   } catch (reason) {
     context.discardCheckpoint?.(thread.id);
     throw reason;
   }
-  return { thread, turnId: turn.turn?.id, provider: target.provider, model: run.model };
+  return { thread, turnId: turn.turn?.id, provider: target.provider, model: run.model, ...provenance };
 }

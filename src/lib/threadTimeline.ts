@@ -1,4 +1,4 @@
-import { displayedUserPrompt } from "./userMessageEcho";
+import { displayedUserMessage } from "./userMessageEcho";
 import type { Activity, ChatMessage, ThreadItem, Turn } from "../types";
 import { compactionActivity, compactionState } from "./contextCompaction";
 import { nativeSubAgentPresentation } from "./nativeSubAgentActivity";
@@ -117,7 +117,7 @@ export function timelineFromTurns(turns: Turn[] = [], options: ThreadTimelineOpt
         messages.push({
           id,
           role: "user",
-          text: displayedUserPrompt(userText(item)),
+          ...displayedUserMessage(userText(item)),
           attachments: userImageAttachments(item),
           timelineOrder: order,
           turnId: turn.id,

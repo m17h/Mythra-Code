@@ -4,6 +4,13 @@ import { DEFAULT_SETTINGS } from "../lib/appConfig";
 import { resetTaskStore, useTaskStore } from "../lib/taskStore";
 import { scheduleRunSnapshot } from "../lib/turnConfig";
 import type { WorkflowDefinition, WorkflowRunRecord } from "../lib/workflows";
+import type { SkillDependencyReport } from "../types";
+import { SKILL_DEPENDENCY_LIMITS } from "../lib/skillDependencies";
+
+const DEPENDENCIES: SkillDependencyReport = {
+  version: 1, limits: { ...SKILL_DEPENDENCY_LIMITS }, roots: [{ nodeId: "policy", channel: "system", name: "policy" }],
+  nodes: [{ id: "policy", kind: "skill", name: "policy", path: "/skills/policy.md", status: "loaded", characterCount: 12, depth: 0 }], edges: [], issues: [],
+};
 
 const runtime = vi.hoisted(() => ({ rpc: vi.fn(), auditEvent: vi.fn(async () => {}), claude: vi.fn(), cursor: vi.fn(), saveClaude: vi.fn(async () => {}), saveCursor: vi.fn(async () => {}), killClaude: vi.fn(async () => {}), killCursor: vi.fn(async () => {}) }));
 vi.mock("../lib/codex", () => ({ rpc: runtime.rpc, auditEvent: runtime.auditEvent }));
@@ -43,6 +50,44 @@ async function flush() { for (let i = 0; i < 30; i++) await Promise.resolve(); }
 describe.each(["claude", "cursor"] as const)("%s saved workflows", (provider) => {
   beforeEach(() => { resetTaskStore(); vi.clearAllMocks(); runtime.claude.mockReset(); runtime.cursor.mockReset(); runtime.rpc.mockReset(); });
   afterEach(() => { vi.useRealTimers(); });
+  it("resolves saved system skills for both new and resumed turns without adding them to history", async () => {
+    const skillReferences = [{ start: 0, end: 7, name: "review", path: "/skills/review.md" }];
+    const resolveSkillPrompts = vi.fn(async (message: string) => ({ prompt: `resolved user: ${message}`, systemPrompt: "resolved system skill", skillReferences, skillsFolder: "/skills", skillDependencies: DEPENDENCIES }));
+    const { deps, workflow, runs } = setup(provider, { resolveSkillPrompts });
+    workflow.run.systemPrompt = "Always use @careful";
+    const start = provider === "claude" ? runtime.claude : runtime.cursor;
+    let sequence = 0;
+    start.mockImplementation(async ({ threadId }: { threadId: string }) => {
+      const turnId = `skills-${++sequence}`;
+      finish(threadId, turnId);
+      return { turnId, cursorSessionId: "skills-session" };
+    });
+    const { result } = renderHook(() => useWorkflowEngine(deps));
+    await act(async () => { await result.current.runWorkflow("recipe"); });
+    expect(resolveSkillPrompts).toHaveBeenCalledWith("", "Always use @careful");
+    expect(start).toHaveBeenCalledTimes(2);
+    for (const [options] of start.mock.calls) {
+      expect(options.systemPrompt).toContain("resolved system skill");
+      expect(options.prompt).toContain("resolved user:");
+      expect(options.prompt).not.toContain("resolved system skill");
+    }
+    const messages = useTaskStore.getState().tasks[runs.at(-1)!.threadId!].messages;
+    expect(messages.filter((message) => message.role === "user").every((message) => !message.text.includes("resolved"))).toBe(true);
+    expect(messages.filter((message) => message.role === "user").every((message) => message.skillReferences?.[0].path === "/skills/review.md" && message.skillsFolder === "/skills")).toBe(true);
+    expect(messages.filter((message) => message.role === "user").every((message) => message.skillDependencies?.roots[0].channel === "system")).toBe(true);
+    expect(workflow.run.systemPrompt).toBe("Always use @careful");
+  });
+
+  it("stops before creating a workflow thread when an authored system skill cannot resolve", async () => {
+    const { deps, runs } = setup(provider, { resolveSkillPrompts: vi.fn(async () => { throw new Error("system skill missing"); }) });
+    const { result } = renderHook(() => useWorkflowEngine(deps));
+    await act(async () => { await result.current.runWorkflow("recipe"); });
+    expect(runtime.claude).not.toHaveBeenCalled();
+    expect(runtime.cursor).not.toHaveBeenCalled();
+    expect(deps.onThreadStarted).not.toHaveBeenCalled();
+    expect(runs.at(-1)?.status).toBe("failed");
+  });
+
   it("uses the native provider without Codex, reuses sessions, persists history, and handles completion before start returns", async () => {
     const { deps, runs } = setup(provider);
     const start = provider === "claude" ? runtime.claude : runtime.cursor;

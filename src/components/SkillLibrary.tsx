@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { confirmDialog } from "../lib/confirmDialog";
 import { Boxes, Check, FilePenLine, FilePlus2, FolderOpen, LoaderCircle, Pencil, Plus, RefreshCw, RotateCcw, Save, Search, Trash2, X } from "lucide-react";
@@ -6,6 +6,17 @@ import { normalizeSkillName, type LocalSkill } from "../lib/skills";
 import { useModalFocus } from "../hooks/useModalFocus";
 import { primaryModifierLabel, primaryModifierPressed } from "../lib/platform";
 import { friendlyError } from "../lib/errors";
+import type { SkillDependencyReport } from "../types";
+import { SkillPromptEditor } from "./SkillPromptEditor";
+import { SkillDependencyDetails } from "./SkillDependencyDetails";
+import { SkillDependencyNotice } from "./SkillDependencyNotice";
+import { useSkillDependencyPreview } from "../hooks/useSkillDependencyPreview";
+import "./SkillLibrary.navigation.css";
+
+export interface OpenSkillRequest {
+  path: string;
+  nonce: number;
+}
 
 export function SkillLibrary({
   folder,
@@ -23,6 +34,9 @@ export function SkillLibrary({
   onToggle,
   onRemove,
   onRestore,
+  openSkillRequest,
+  onOpenSkillRequestConsumed,
+  onAnalyzeSkill,
 }: {
   folder: string;
   skills: LocalSkill[];
@@ -39,9 +53,13 @@ export function SkillLibrary({
   onToggle: (path: string) => void;
   onRemove: (path: string, deleteSource: boolean) => Promise<boolean>;
   onRestore: (path: string) => Promise<boolean>;
+  openSkillRequest?: OpenSkillRequest | null;
+  onOpenSkillRequestConsumed?: (nonce: number) => void;
+  onAnalyzeSkill?: (path: string, content: string) => Promise<SkillDependencyReport>;
 }) {
   const fieldId = useId();
   const [query, setQuery] = useState("");
+  const [referenceGuideOpen, setReferenceGuideOpen] = useState(false);
   const [editingPath, setEditingPath] = useState<string | null>(null);
   const [nameDraft, setNameDraft] = useState("");
   const [composerOpen, setComposerOpen] = useState(false);
@@ -60,12 +78,15 @@ export function SkillLibrary({
   const [pendingRemoval, setPendingRemoval] = useState<LocalSkill | null>(null);
   const [removing, setRemoving] = useState(false);
   const [restoringPath, setRestoringPath] = useState<string | null>(null);
+  const [navigationError, setNavigationError] = useState("");
   const createFormRef = useRef<HTMLFormElement>(null);
   const nameFieldRef = useRef<HTMLInputElement>(null);
   const addButtonRef = useRef<HTMLButtonElement>(null);
   const sourceEditorRef = useRef<HTMLDivElement>(null);
   const sourceFieldRef = useRef<HTMLTextAreaElement>(null);
   const sourceRequestRef = useRef(0);
+  const consumedOpenRequestRef = useRef<number | null>(null);
+  const skillCardRefs = useRef(new Map<string, HTMLLIElement>());
   const removeDialogRef = useRef<HTMLDivElement>(null);
   // Focus only moves back to the trigger for a composer the user actually
   // opened — never on the first render, which would steal focus from the
@@ -78,6 +99,10 @@ export function SkillLibrary({
     return skills.filter((skill) => `${skill.name} ${skill.fileName} ${skill.description}`.toLowerCase().includes(needle));
   }, [query, skills]);
   const enabledCount = useMemo(() => skills.filter((skill) => skill.enabled).length, [skills]);
+  const sourcePath = sourceEditorSkill?.path;
+  const analyzeSource = useMemo(() => sourcePath && sourceLoaded && onAnalyzeSkill
+    ? (text: string) => onAnalyzeSkill(sourcePath, text) : undefined, [sourcePath, sourceLoaded, onAnalyzeSkill]);
+  const dependencyPreview = useSkillDependencyPreview(sourceDraft, analyzeSource, sourcePath);
 
   useEffect(() => {
     if (composerOpen) {
@@ -98,8 +123,8 @@ export function SkillLibrary({
     }
   }, [pendingRemoval, skills]);
   useEffect(() => {
-    if (sourceLoaded) sourceFieldRef.current?.focus();
-  }, [sourceLoaded]);
+    if (sourceEditorSkill) skillCardRefs.current.get(sourceEditorSkill.path)?.scrollIntoView?.({ block: "nearest" });
+  }, [sourceEditorSkill, query]);
   useEffect(() => {
     if (!sourceEditorSkill) return;
     const current = skills.find((candidate) => candidate.path === sourceEditorSkill.path);
@@ -112,6 +137,11 @@ export function SkillLibrary({
   }, [skills, sourceEditorSkill]);
   useModalFocus(sourceEditorRef, Boolean(sourceEditorSkill));
   useModalFocus(removeDialogRef, Boolean(pendingRemoval));
+  // The editor may mount with its read already resolved in the same batch.
+  // Run after the dialog's initial focus so Markdown wins in that case too.
+  useEffect(() => {
+    if (sourceLoaded) sourceFieldRef.current?.focus();
+  }, [sourceLoaded, sourceEditorSkill?.path]);
 
   const nameReady = Boolean(createName.trim());
   const instructionsReady = Boolean(createInstructions.trim());
@@ -178,7 +208,7 @@ export function SkillLibrary({
     setNameDraft("");
   };
 
-  const loadSourceEditor = async (skill: LocalSkill) => {
+  const loadSourceEditor = useCallback(async (skill: LocalSkill) => {
     const request = sourceRequestRef.current + 1;
     sourceRequestRef.current = request;
     setSourceLoading(true);
@@ -198,13 +228,44 @@ export function SkillLibrary({
     } finally {
       if (sourceRequestRef.current === request) setSourceLoading(false);
     }
-  };
+  }, [onRead]);
 
-  const openSourceEditor = (skill: LocalSkill) => {
-    cancelRename();
+  const openSourceEditor = useCallback((skill: LocalSkill) => {
+    setEditingPath(null);
+    setNameDraft("");
+    setNavigationError("");
     setSourceEditorSkill(skill);
     void loadSourceEditor(skill);
-  };
+  }, [loadSourceEditor]);
+
+  useEffect(() => {
+    if (!openSkillRequest || consumedOpenRequestRef.current === openSkillRequest.nonce || sourceSaving || removing) return;
+    const target = skills.find((skill) => skill.path === openSkillRequest.path);
+    if (!target && busy) return;
+    consumedOpenRequestRef.current = openSkillRequest.nonce;
+    if (!target) {
+      onOpenSkillRequestConsumed?.(openSkillRequest.nonce);
+      setNavigationError("This skill is no longer in the selected skills folder. Rescan the folder to check its current files.");
+      return;
+    }
+    if (sourceEditorSkill?.path === target.path) {
+      onOpenSkillRequestConsumed?.(openSkillRequest.nonce);
+      setQuery("");
+      sourceFieldRef.current?.focus();
+      return;
+    }
+    let current = true;
+    void (async () => {
+      const discard = !sourceLoaded || sourceDraft === sourceOriginal || await confirmDialog("Discard your unsaved skill changes?");
+      if (!current) return;
+      onOpenSkillRequestConsumed?.(openSkillRequest.nonce);
+      if (!discard) return;
+      setPendingRemoval(null);
+      setQuery("");
+      openSourceEditor(target);
+    })();
+    return () => { current = false; };
+  }, [openSkillRequest, skills, busy, sourceSaving, removing, onOpenSkillRequestConsumed, sourceEditorSkill, sourceLoaded, sourceDraft, sourceOriginal, openSourceEditor]);
 
   const closeSourceEditor = async (confirmDiscard = true, force = false) => {
     if (sourceSaving && !force) return;
@@ -292,6 +353,7 @@ export function SkillLibrary({
       </div>
 
       {sectionError && <p className="skill-library-alert" role="alert">{sectionError}</p>}
+      {navigationError && <p className="skill-library-alert" role="alert">{navigationError}</p>}
 
       {folder && <>
         <div className="skill-library-toolbar">
@@ -313,7 +375,8 @@ export function SkillLibrary({
 
           {filtered.length > 0 && <ul className="skill-card-list" aria-labelledby={`${fieldId}-list`}>
             {filtered.map((skill) => (
-              <li className={`skill-card ${skill.enabled ? "enabled" : "disabled"}`} key={skill.path}>
+              <li className={`skill-card ${skill.enabled ? "enabled" : "disabled"}${sourceEditorSkill?.path === skill.path ? " skill-card-selected" : ""}`} key={skill.path}
+                ref={(element) => { if (element) skillCardRefs.current.set(skill.path, element); else skillCardRefs.current.delete(skill.path); }}>
                 <button
                   type="button"
                   role="switch"
@@ -447,8 +510,24 @@ export function SkillLibrary({
 
         <ul className="skill-notes">
           <li><Check size={13} aria-hidden="true" /><span>Top-level <code>.md</code> files and nested <code>SKILL.md</code> packages are detected. Renaming changes only the invocation name inside Mythra Code.</span></li>
-          <li><Check size={13} aria-hidden="true" /><span>Relative <code>.md</code> references are mirrored when Mythra Code prepares a skill. Its source changes only when you explicitly save it in the editor.</span></li>
+          <li><Check size={13} aria-hidden="true" /><span>Skill dependencies are checked before each turn. A broken nested reference blocks the turn and shows its full chain. Its source changes only when you explicitly save it in the editor.</span></li>
         </ul>
+        <details className="skill-reference-guide" onToggle={(event) => setReferenceGuideOpen(event.currentTarget.open)}>
+          <summary>How skill references work</summary>
+          {referenceGuideOpen && <div>
+            <p>Type a standalone plain <code>@review</code> in your message or system instructions to load an enabled skill from this folder. Inside a skill or reference document, visible <code>@tests</code> mentions invoke another enabled skill, including bold <code>**@tests**</code> and italic <code>*@tests*</code> text. Names use the invocation aliases shown above.</p>
+            <p>Mentions in inline code, fenced code blocks, images, or escaped with a backslash stay examples and do not load nested skills.</p>
+            <p>Unknown or disabled names typed directly in a message or system prompt stay ordinary text. An unknown or disabled nested skill reference blocks the turn.</p>
+            <p>A Markdown text link such as <code>[Checklist](references/checklist.txt)</code> loads a local UTF-8 <code>.md</code>, <code>.markdown</code>, or <code>.txt</code> document. Reference-style links work too. Links resolve from the containing file and may use <code>../</code> only while staying inside the selected folder. Documents provide reference material; skill files provide instructions.</p>
+            <p>Inside a skill or reference document, local text links to PDF, Word, CSV, JSON, other unsupported formats, directories, or extensionless paths block the turn. We do not extract their contents. Convert the reference to a supported UTF-8 text file and update the link. This restriction does not change ordinary attachment workflows. A bare filename such as <code>checklist.txt</code> does not load anything.</p>
+            <p>Links to detected skill sources also require an enabled skill in this library. Removed or disabled skills cannot be loaded as ordinary documents; keep supporting Markdown in a reference subfolder.</p>
+            <p>Nested references load recursively before delivery. URLs, anchors, images, code examples and bare filenames do not load documents. Mythra Code never fetches linked websites for this process.</p>
+            <p>One turn shares limits across system instructions and the message: 4 dependency hops from any directly mentioned root skill, 8 skills, 24 unique files, 120,000 Unicode characters, and 1 MiB per file. Repeated files load once; depth uses the shortest chain from a root. Cycles, disabled skills, unreadable files, folder escapes and exceeded limits block the entire turn.</p>
+            <p>A graph also stops above 128 local dependency references; repeated document links count separately. Large inputs are bounded to 64 recognized direct roots and 1,000 configured aliases.</p>
+            <p>The editor previews your unsaved Markdown after a short pause. Sending checks the current files again. Expand Skill context on a sent message to inspect its files and chains; this records the loaded context, not a guarantee that a model follows every instruction.</p>
+            <p>Supported provider runtimes manage prompt caching. Mythra Code prepares fresh, stable context where possible; cache hits and savings are not guaranteed, and the app does not send artificial keepalive requests.</p>
+          </div>}
+        </details>
 
         {sourceEditorSkill && (
           <div
@@ -486,15 +565,22 @@ export function SkillLibrary({
               ) : sourceLoaded ? (
                 <label className="skill-editor-field">
                   <span>Skill Markdown</span>
-                  <textarea
+                  <SkillPromptEditor
                     ref={sourceFieldRef}
+                    data-autofocus
                     value={sourceDraft}
                     onChange={(event) => setSourceDraft(event.target.value)}
                     spellCheck={false}
                     aria-label={`Markdown for ${sourceEditorSkill.name}`}
+                    skills={skills}
+                    dependencyReport={dependencyPreview.report}
+                    showDependencyNotice={false}
                   />
                 </label>
               ) : null}
+
+              <SkillDependencyNotice report={dependencyPreview.report} error={dependencyPreview.error} />
+              <SkillDependencyDetails report={dependencyPreview.report} label="Skill dependencies" />
 
               {sourceError && <p className="skill-create-error" role="alert">{sourceError}</p>}
 

@@ -19,6 +19,8 @@ const usage = (inputTokens: number, outputTokens: number, cachedInputTokens = 0,
   outputTokens,
   reasoningOutputTokens: 0,
   contextWindow: null,
+  cacheReadReported: true, cacheWriteReported: true,
+  serviceTier: "standard", serviceTierSource: "requested" as const,
 });
 
 /** Simulates a renderer reload: flush, forget every in-memory cache, re-read. */
@@ -331,7 +333,9 @@ describe("provider event attribution", () => {
     const models = usageDetail(null).providers[0].models;
     expect(models.find((model) => model.model === "claude-opus-5-5")).toMatchObject({ uncachedInputTokens: 100, outputTokens: 40 });
     expect(models.find((model) => model.model === "claude-sonnet-5")).toMatchObject({ uncachedInputTokens: 200, outputTokens: 50 });
-    expect(usageDetail(null).totals).toMatchObject({ totalTokens: 390, unpricedTokens: 0, turns: 1 });
+    // Assistant cache categories were omitted, not reported zero. Only the
+    // output-only reconciled remainder has a complete billable split.
+    expect(usageDetail(null).totals).toMatchObject({ totalTokens: 390, unpricedTokens: 330, turns: 1, cacheReadUnknownTokens: 300, cacheWriteUnknownTokens: 300 });
   });
 
   it("prices a resumed turn whose single-model session snapshot contains it", () => {
@@ -377,7 +381,7 @@ describe("provider event attribution", () => {
     const models = usageDetail(null).providers[0].models;
     expect(models.find((model) => model.model === "claude-opus-5-5")).toMatchObject({ totalTokens: 110, outputTokens: 10 });
     expect(models.find((model) => model.model === "unattributed")).toMatchObject({ totalTokens: 30, outputTokens: 30, unpricedTokens: 30 });
-    expect(usageTotals()).toMatchObject({ totalTokens: 140, unpricedTokens: 30 });
+    expect(usageTotals()).toMatchObject({ totalTokens: 140, unpricedTokens: 140 });
   });
 
   it("does not guess which model owns unobserved 1-hour cache writes", () => {

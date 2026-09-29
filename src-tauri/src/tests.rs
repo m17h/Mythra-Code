@@ -184,6 +184,155 @@ fn claude_always_uses_mythra_code_as_its_only_subagent_route() {
 }
 
 #[test]
+fn claude_system_prompt_snapshot_support_is_version_compatible() {
+    for version in [
+        "2.1.257 (Claude Code)",
+        "2.1.283 (Claude Code)",
+        "v2.1.257",
+        "3.0.0",
+    ] {
+        assert_eq!(
+            claude_prompt_snapshot_version_support(Some(version)),
+            Some(true),
+            "{version}"
+        );
+    }
+    for version in ["2.1.256 (Claude Code)", "2.0.0", "2.1.257-beta.1"] {
+        assert_eq!(
+            claude_prompt_snapshot_version_support(Some(version)),
+            Some(false),
+            "{version}"
+        );
+    }
+    for version in [
+        None,
+        Some(""),
+        Some("unknown"),
+        Some("2.1"),
+        Some("2.1.283garbage"),
+        Some("<html>2.1.283</html>"),
+    ] {
+        assert_eq!(claude_prompt_snapshot_version_support(version), None);
+        assert!(claude_prompt_snapshot_version_warning(version).is_some());
+    }
+    assert!(claude_prompt_snapshot_version_warning(Some("2.1.256 (Claude Code)")).is_none());
+    assert!(claude_prompt_snapshot_version_warning(Some("2.1.283 (Claude Code)")).is_none());
+}
+
+#[test]
+fn claude_system_prompt_arguments_refresh_first_resumed_changed_and_cleared_prompts() {
+    let nested = r#"<mythra_code_invoked_skills>{"systemPrompt":"Use @policy","skills":[{"kind":"skill","name":"policy","instructions":"New policy"},{"kind":"document","name":"guide","instructions":"Fresh reference"}]}</mythra_code_invoked_skills>"#;
+    // The same arguments are used for first turns and --resume. Neither a
+    // changed prompt nor clearing it may restore an older recorded snapshot.
+    for prompt in ["Initial policy", "Changed policy", nested] {
+        assert_eq!(
+            claude_system_prompt_arguments(prompt, true),
+            vec![
+                "--system-prompt-snapshot",
+                "off",
+                "--append-system-prompt",
+                prompt
+            ]
+        );
+    }
+    for prompt in ["", " \n\t"] {
+        assert_eq!(
+            claude_system_prompt_arguments(prompt, true),
+            vec!["--system-prompt-snapshot", "off"]
+        );
+    }
+    assert_eq!(
+        claude_system_prompt_arguments(nested, false),
+        vec!["--append-system-prompt", nested]
+    );
+    assert!(claude_system_prompt_arguments("", false).is_empty());
+}
+
+#[tokio::test]
+async fn claude_system_prompt_capability_caches_known_versions_and_rechecks_replaced_cli() {
+    let path = env::temp_dir().join(format!("mythra-claude-capability-{}", uuid::Uuid::new_v4()));
+    fs::write(&path, "first executable").unwrap();
+    let cache = Mutex::new(None);
+    assert!(
+        cached_claude_prompt_snapshot_support(&cache, &path, || async {
+            Some("2.1.283 (Claude Code)".into())
+        })
+        .await
+    );
+    assert!(
+        cached_claude_prompt_snapshot_support(&cache, &path, || async {
+            panic!("unchanged CLI must not be probed every turn")
+        })
+        .await
+    );
+    fs::write(&path, "replaced older executable with different metadata").unwrap();
+    assert!(
+        !cached_claude_prompt_snapshot_support(&cache, &path, || async {
+            Some("2.1.256 (Claude Code)".into())
+        })
+        .await
+    );
+    assert!(
+        !cached_claude_prompt_snapshot_support(&cache, &path, || async {
+            panic!("known old CLI must remain runnable without repeated probes")
+        })
+        .await
+    );
+    fs::remove_file(path).unwrap();
+}
+
+#[tokio::test]
+async fn claude_system_prompt_capability_retries_unknown_versions_without_probing_every_turn() {
+    let path = env::temp_dir().join(format!("mythra-claude-capability-{}", uuid::Uuid::new_v4()));
+    let cache = Mutex::new(None);
+    assert!(!cached_claude_prompt_snapshot_support(&cache, &path, || async { None }).await);
+    assert!(
+        !cached_claude_prompt_snapshot_support(&cache, &path, || async {
+            panic!("unknown version gets a bounded negative cache")
+        })
+        .await
+    );
+    cache.lock().await.as_mut().unwrap().checked_at =
+        Instant::now() - CLAUDE_PROMPT_SNAPSHOT_RETRY_AFTER;
+    assert!(
+        !cached_claude_prompt_snapshot_support(&cache, &path, || async {
+            Some("malformed".into())
+        })
+        .await
+    );
+    cache.lock().await.as_mut().unwrap().checked_at =
+        Instant::now() - CLAUDE_PROMPT_SNAPSHOT_RETRY_AFTER;
+    assert!(
+        cached_claude_prompt_snapshot_support(&cache, &path, || async {
+            Some("2.1.283 (Claude Code)".into())
+        })
+        .await
+    );
+}
+
+#[tokio::test]
+async fn claude_system_prompt_capability_does_not_cache_a_version_from_a_replaced_probe_target() {
+    let path = env::temp_dir().join(format!("mythra-claude-capability-{}", uuid::Uuid::new_v4()));
+    fs::write(&path, "before").unwrap();
+    let cache = Mutex::new(None);
+    assert!(
+        !cached_claude_prompt_snapshot_support(&cache, &path, || async {
+            fs::write(&path, "changed during version probe").unwrap();
+            Some("2.1.283 (Claude Code)".into())
+        })
+        .await
+    );
+    assert!(cache.lock().await.is_none());
+    assert!(
+        !cached_claude_prompt_snapshot_support(&cache, &path, || async {
+            Some("2.1.256 (Claude Code)".into())
+        })
+        .await
+    );
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn claude_keeps_its_normal_coding_tools_and_read_only_stays_read_only() {
     let asking = claude_allowed_builtin_tools("ask");
     for tool in [

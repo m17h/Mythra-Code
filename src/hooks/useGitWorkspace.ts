@@ -20,9 +20,11 @@ interface State {
   error: string;
   notice: string;
   branchNotice: string;
+  /** Successful reads, including reads whose summary did not change. */
+  readRevision: number;
   lastFetchedAt?: number;
 }
-const empty = (cwd: string | null): State => ({ cwd, snapshot: null, busy: false, error: "", notice: "", branchNotice: "" });
+const empty = (cwd: string | null): State => ({ cwd, snapshot: null, busy: false, error: "", notice: "", branchNotice: "", readRevision: 0 });
 
 /** The checkout is the scope: thread navigation must never retarget a Git action. */
 export function useGitWorkspace(options: Options) {
@@ -34,6 +36,7 @@ export function useGitWorkspace(options: Options) {
   const generation = useRef(0);
   const mounted = useRef(true);
   const readSequence = useRef(0);
+  const successfulReads = useRef(0);
   const readsPending = useRef(new Map<string, number>());
   const mutationsPending = useRef(new Set<string>());
   const update = useCallback((cwd: string, value: Partial<State>) => {
@@ -44,12 +47,15 @@ export function useGitWorkspace(options: Options) {
     });
   }, []);
   const accept = useCallback((cwd: string, snapshot: GitWorkspaceSnapshot, value: Partial<State> = {}) => {
-    if (!snapshot) return;
+    if (!snapshot || !mounted.current || optionsRef.current.cwd !== cwd) return;
     const previous = stateRef.current.cwd === cwd ? stateRef.current.snapshot : null;
     const branchNotice = previous?.branch && previous.branch !== snapshot.branch
       ? `${optionsRef.current.isolated ? "This folder" : "The shared project"} moved from ${previous.branch} to ${snapshot.branch ?? "a detached commit"}.${optionsRef.current.isolated ? "" : " All shared threads use this branch."}`
       : stateRef.current.cwd === cwd ? stateRef.current.branchNotice : "";
-    update(cwd, { snapshot, branchNotice, ...value });
+    // Counts, HEAD and staging paths cannot reveal same-count content edits.
+    // Consumers may lazily reread their selected preview after this signal.
+    successfulReads.current += 1;
+    update(cwd, { snapshot, branchNotice, ...value, readRevision: successfulReads.current });
   }, [update]);
 
   const refresh = useCallback(async () => {

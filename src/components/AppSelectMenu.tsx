@@ -9,6 +9,18 @@ const POPOVER_VIEWPORT_MARGIN = 8;
 const POPOVER_GAP = 4;
 const POPOVER_WIDTH = 320;
 
+function effectiveZoom(element: HTMLElement): number {
+  const current = (element as HTMLElement & { currentCSSZoom?: number }).currentCSSZoom;
+  if (typeof current === "number" && Number.isFinite(current) && current > 0) return current;
+  let zoom = 1;
+  for (let node: HTMLElement | null = element; node; node = node.parentElement) {
+    const value = getComputedStyle(node).zoom;
+    const factor = value.endsWith("%") ? Number.parseFloat(value) / 100 : Number.parseFloat(value);
+    if (Number.isFinite(factor) && factor > 0) zoom *= factor;
+  }
+  return zoom;
+}
+
 export interface AppSelectOption {
   value: string;
   label: string;
@@ -118,9 +130,15 @@ export function AppSelectMenu({
     const triggerRect = trigger.getBoundingClientRect();
     const viewportWidth = window.innerWidth;
     const viewportHeight = window.innerHeight;
+    // The top-layer menu still inherits app zoom. Rectangles are visual
+    // pixels; its fixed offsets and offsetHeight are unscaled layout pixels.
+    const zoom = effectiveZoom(menu);
     const maxWidth = Math.max(1, viewportWidth - POPOVER_VIEWPORT_MARGIN * 2);
-    const width = Math.min(POPOVER_WIDTH, maxWidth);
-    const height = menu.offsetHeight;
+    const width = Math.min(POPOVER_WIDTH * zoom, maxWidth);
+    const layoutWidth = width / zoom;
+    // Apply the clamped width before measuring wrapped options' height.
+    menu.style.width = `${layoutWidth}px`;
+    const height = menu.offsetHeight * zoom;
     const above = triggerRect.top - POPOVER_GAP - height;
     const below = triggerRect.bottom + POPOVER_GAP;
     const openAbove = menuPlacement === "top"
@@ -133,13 +151,15 @@ export function AppSelectMenu({
       POPOVER_VIEWPORT_MARGIN,
       Math.min(triggerRect.left, viewportWidth - width - POPOVER_VIEWPORT_MARGIN),
     );
+    const layoutTop = top / zoom;
+    const layoutLeft = left / zoom;
     setPopoverStyle((current) => (
-      current.top === top
-      && current.left === left
-      && current.width === width
+      current.top === layoutTop
+      && current.left === layoutLeft
+      && current.width === layoutWidth
       && current.visibility === "visible"
         ? current
-        : { top, left, width, visibility: "visible" }
+        : { top: layoutTop, left: layoutLeft, width: layoutWidth, visibility: "visible" }
     ));
   }, [open, topLayer, menuPlacement]);
 

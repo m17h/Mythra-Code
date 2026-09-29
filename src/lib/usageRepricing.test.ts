@@ -6,9 +6,11 @@ import {
 import { pruneUsageHistory, repriceUsageHistory, repricingSummary, retainedUsageHistory, USAGE_HISTORY_KEY } from "./usageHistory";
 import { recordOfficialPricingResult, type OfficialRate } from "./officialPricing";
 import { componentCost, usageDetail } from "./usageSummary";
+import type { TokenUsageView } from "../components/StudioDock";
 
 const usage = (inputTokens: number, outputTokens: number, cachedInputTokens = 0, cacheWriteInputTokens = 0) => ({
   totalTokens: inputTokens + outputTokens, inputTokens, cachedInputTokens, cacheWriteInputTokens, outputTokens, reasoningOutputTokens: 0, contextWindow: null,
+  cacheReadReported: true, cacheWriteReported: true, serviceTier: "standard", serviceTierSource: "requested" as const,
 });
 const at = (day: number, hour: number) => new Date(2026, 8, day, hour).getTime();
 const HOUR = 3_600_000;
@@ -225,12 +227,17 @@ describe("evidence-backed repricing of dated usage", () => {
     expect(usageTotals().unpricedTokens).toBe(1_000_000);
   });
 
-  it("reprices a wholly unpriced legacy day, but never a mixed legacy day or the archive", () => {
+  it("never invents missing cache or tier provenance for legacy days or the archive", () => {
     const old = at(1, 12);
+    const legacyUsage = (input: number, output: number): TokenUsageView => {
+      const value: TokenUsageView = usage(input, output);
+      delete value.cacheReadReported; delete value.cacheWriteReported; delete value.serviceTier; delete value.serviceTierSource;
+      return value;
+    };
     localStorage.setItem(USAGE_LEDGER_KEY, JSON.stringify([
-      { threadId: "unpriced", provider: "openai", model: "gpt-7-nova", usage: usage(1_000_000, 100_000), estimatedCost: 0, pricedTokens: 0, unpricedTokens: 1_100_000, updatedAt: at(19, 12) },
-      { threadId: "mixed", provider: "openai", model: "gpt-7-nova", usage: usage(2_000_000, 0), estimatedCost: 1, pricedTokens: 1_000_000, unpricedTokens: 1_000_000, updatedAt: at(18, 12) },
-      { threadId: "openkiwi:archived-usage", provider: "openai", usage: usage(500_000, 0), estimatedCost: 0, pricedTokens: 0, unpricedTokens: 500_000, archivedThreads: 1, updatedAt: old },
+      { threadId: "unpriced", provider: "openai", model: "gpt-7-nova", usage: legacyUsage(1_000_000, 100_000), estimatedCost: 0, pricedTokens: 0, unpricedTokens: 1_100_000, updatedAt: at(19, 12) },
+      { threadId: "mixed", provider: "openai", model: "gpt-7-nova", usage: legacyUsage(2_000_000, 0), estimatedCost: 1, pricedTokens: 1_000_000, unpricedTokens: 1_000_000, updatedAt: at(18, 12) },
+      { threadId: "openkiwi:archived-usage", provider: "openai", usage: legacyUsage(500_000, 0), estimatedCost: 0, pricedTokens: 0, unpricedTokens: 500_000, archivedThreads: 1, updatedAt: old },
     ]));
     // Pre-cohort buckets: [day, provider, model, 16 amounts].
     const bucket = (day: string, uncached: number, output: number, cost: number, priced: number, unpriced: number) =>
@@ -242,18 +249,17 @@ describe("evidence-backed repricing of dated usage", () => {
     resetUsageLedgerCache();
     publishCatalog({ "openai:gpt-7-nova": { inputPerMillion: 1, outputPerMillion: 4, asOf: "2026-09-22", effectiveFrom: "2026-09-01" } });
 
-    expect(repriceUsageHistory()).toBe(1);
-    // $1 + $0.40 for the unpriced day; the mixed day and the archive keep theirs.
-    expect(usageTotals().estimatedCost).toBeCloseTo(2.4, 10);
-    expect(usageTotals()).toMatchObject({ pricedTokens: 2_100_000, unpricedTokens: 1_500_000 });
+    expect(repriceUsageHistory()).toBe(0);
+    expect(usageTotals().estimatedCost).toBeCloseTo(1, 10);
+    expect(usageTotals()).toMatchObject({ pricedTokens: 1_000_000, unpricedTokens: 2_600_000 });
     const days = [...retainedUsageHistory().buckets];
     expect(days.find((item) => item.day === "2026-09-18")).toMatchObject({ pricedTokens: 1_000_000, unpricedTokens: 1_000_000, uncachedInputCost: 1 });
-    expect(days.find((item) => item.day === "2026-09-19")).toMatchObject({ pricedTokens: 1_100_000, unpricedTokens: 0 });
+    expect(days.find((item) => item.day === "2026-09-19")).toMatchObject({ pricedTokens: 0, unpricedTokens: 1_100_000, cacheReadUnknownTokens: 1_000_000 });
     // The archive's undated usage stays unpriced and outside dated detail.
     expect(usageDetail(null).unallocated).toMatchObject({ unpricedTokens: 500_000, estimatedCost: 0 });
     reload();
     expect(repriceUsageHistory()).toBe(0);
-    expect(usageTotals().estimatedCost).toBeCloseTo(2.4, 10);
+    expect(usageTotals().estimatedCost).toBeCloseTo(1, 10);
   });
 
   it("finishes the dated side of a correction interrupted before detail was saved, without charging twice", () => {

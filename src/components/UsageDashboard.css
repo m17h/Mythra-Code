@@ -1,8 +1,11 @@
-/* Two-series colors validated for color-vision deficiency and 3:1 contrast
-   against the dark and light panel surfaces (blue / orange). Theme accents
-   are not used for data: several themes set them close to each other. */
+/* Data palettes are independent from general UI accents and keep 3:1 contrast
+   against their surfaces. The subdued themes also distinguish series two by
+   texture so the comparison never relies on hue alone. */
 .usage-dashboard { container-type: inline-size; --usage-series-1: #3987e5; --usage-series-2: #d95926; }
 .app-shell[data-color-scheme="light"] .usage-dashboard { --usage-series-1: #2a78d6; --usage-series-2: #eb6834; }
+.app-shell[data-theme="atari"] .usage-dashboard { --usage-series-1: #8e3b32; --usage-series-2: #977030; }
+.app-shell[data-theme="monochrome"] .usage-dashboard { --usage-series-1: #eceeeb; --usage-series-2: #8d9299; }
+.app-shell:is([data-theme="atari"], [data-theme="monochrome"]) .usage-dashboard :is(.usage-chart-bar, .usage-swatch).series-2 { background: repeating-linear-gradient(135deg, var(--usage-series-2) 0 3px, var(--field) 3px 5px); }
 
 .usage-dashboard-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: var(--s-2) var(--s-4); }
 .usage-dashboard-head > div:first-child > p { margin: var(--s-1) 0 0; color: var(--muted); font-size: var(--fs-meta); line-height: 1.5; max-width: 62ch; }
@@ -58,6 +61,16 @@
 .usage-dashboard-stats span, .usage-dashboard-stats small { color: var(--muted); font-size: var(--fs-meta); line-height: 1.45; }
 .usage-dashboard-stats strong { font-size: clamp(18px, 2.4cqi, 24px); font-weight: 600; line-height: 1.2; overflow-wrap: anywhere; }
 .usage-dashboard-caption, .usage-card-note { margin: var(--s-2) 0 0; color: var(--muted); font-size: var(--fs-meta); line-height: 1.55; }
+.usage-evidence { margin-top: var(--s-3); min-width: 0; }
+.usage-evidence > summary { display: flex; align-items: center; gap: 6px; width: fit-content; color: var(--muted); font-size: var(--fs-meta); border-radius: var(--r-xs); }
+.usage-evidence-body { margin-top: var(--s-2); padding: var(--s-3); max-height: min(40vh, 340px); overflow: auto; overscroll-behavior: contain; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--field); color: var(--muted); font-size: var(--fs-meta); line-height: 1.55; overflow-wrap: anywhere; }
+.usage-evidence-body:focus-visible { outline: 2px solid color-mix(in srgb, var(--green) 62%, transparent); outline-offset: 2px; }
+.usage-evidence-body p { margin: 0 0 var(--s-2); }
+.usage-evidence-body p:last-child { margin-bottom: 0; }
+.usage-evidence-body ul { margin: var(--s-2) 0; padding: 0; list-style: none; }
+.usage-evidence-body li { display: flex; flex-direction: column; gap: 2px; padding: var(--s-2) 0; border-top: 1px solid var(--line); }
+.usage-evidence-body strong { color: var(--text); font-weight: 500; }
+.usage-evidence-body small { font-size: var(--fs-micro); }
 
 .usage-panel { min-width: 0; }
 .usage-overview-grid { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: var(--s-3); margin-top: var(--s-3); align-items: start; }
@@ -85,6 +98,7 @@
 .usage-dashboard .usage-none { color: var(--muted); }
 .usage-component-table th[scope="row"] { width: 40%; }
 .usage-component-table td small { white-space: nowrap; }
+.usage-component-table .usage-metric-note { white-space: normal; overflow-wrap: anywhere; }
 .usage-earlier-row th { font-weight: 500 !important; }
 .usage-table-scroll { overflow-x: auto; }
 .usage-table-toggle { margin-top: var(--s-2); }

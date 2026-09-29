@@ -3,7 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS } from "../lib/appConfig";
 import { resetTaskStore, useTaskStore } from "../lib/taskStore";
 import { scheduleRunSnapshot } from "../lib/turnConfig";
-import type { ScheduleRunRecord, ScheduledTask } from "../types";
+import type { ScheduleRunRecord, ScheduledTask, SkillDependencyReport } from "../types";
+import { SKILL_DEPENDENCY_LIMITS, SkillDependencyError } from "../lib/skillDependencies";
+
+const DEPENDENCIES: SkillDependencyReport = {
+  version: 1, limits: { ...SKILL_DEPENDENCY_LIMITS }, roots: [{ nodeId: "policy", channel: "system", name: "policy" }],
+  nodes: [{ id: "policy", kind: "skill", name: "policy", path: "/skills/policy.md", status: "loaded", characterCount: 12, depth: 0 }], edges: [], issues: [],
+};
 
 const codex = vi.hoisted(() => ({
   rpc: vi.fn(),
@@ -110,6 +116,63 @@ describe("useScheduler", () => {
       input: [{ type: "text", text: "resolved schedule skill context", text_elements: [] }],
     }));
     expect(useTaskStore.getState().tasks["thread-1"].messages.at(-1)?.text).toBe("@review the release");
+  });
+
+  it.each(["new", "reuse"] as const)("resolves user and captured system skills before scheduled %s thread preparation", async (mode) => {
+    const runs: ScheduleRunRecord[] = [];
+    const skillReferences = [{ start: 4, end: 11, name: "review", path: "/skills/review/SKILL.md" }];
+    const resolveSkillPrompts = vi.fn(async () => ({ prompt: "resolved scheduled user", systemPrompt: "resolved scheduled policy", skillReferences, skillsFolder: "/skills", skillDependencies: DEPENDENCIES }));
+    const run = { ...scheduleRunSnapshot(DEFAULT_SETTINGS), systemPrompt: "Use @policy" };
+    codex.rpc.mockImplementation((method: string) => method.startsWith("thread/") ? Promise.resolve({ thread: { id: "thread-1" }, model: run.model }) : Promise.resolve({}));
+    const deps = testSchedulerDeps(testSchedule({ prompt: "Use @review", run, threadMode: mode, lastThreadId: mode === "reuse" ? "thread-1" : undefined }), runs, { resolveSkillPrompts });
+    renderHook(() => useScheduler(deps));
+    await act(async () => { await flushMicrotasks(); });
+    expect(resolveSkillPrompts).toHaveBeenCalledExactlyOnceWith("Use @review", "Use @policy");
+    expect(deps.resolveSkillPrompt).not.toHaveBeenCalled();
+    const preparation = codex.rpc.mock.calls.find(([method]) => method === (mode === "new" ? "thread/start" : "thread/resume"))!;
+    expect(preparation[1].baseInstructions).toBe("");
+    const turn = codex.rpc.mock.calls.find(([method]) => method === "turn/start")!;
+    expect(turn[1].collaborationMode.settings.developer_instructions).toContain("resolved scheduled policy");
+    expect(codex.rpc).toHaveBeenCalledWith("turn/start", expect.objectContaining({ input: [{ type: "text", text: "resolved scheduled user", text_elements: [] }] }));
+    expect(useTaskStore.getState().tasks["thread-1"].messages.at(-1)?.text).toBe("Use @review");
+    expect(useTaskStore.getState().tasks["thread-1"].messages.at(-1)).toMatchObject({ skillReferences, skillsFolder: "/skills", skillDependencies: DEPENDENCIES });
+    expect(run.systemPrompt).toBe("Use @policy");
+  });
+
+  it.each(["openai", "openrouter", "lmstudio"] as const)("rejects a %s schedule's graph before runtime roots, thread preparation, or checkpoint", async (provider) => {
+    const runs: ScheduleRunRecord[] = [];
+    const run = { ...scheduleRunSnapshot(DEFAULT_SETTINGS), provider, model: "selected/model" };
+    const deps = testSchedulerDeps(testSchedule({ run }), runs, {
+      openRouterReady: true, lmStudioReady: true,
+      resolveSkillPrompts: async () => { throw new SkillDependencyError({ ...DEPENDENCIES, issues: [{ code: "missing-document", message: "Missing guide", chain: ["policy", "guide.md"] }] }); },
+    });
+    renderHook(() => useScheduler(deps));
+    await act(async () => { await flushMicrotasks(); });
+    expect(codex.rpc).not.toHaveBeenCalled();
+    expect(deps.ensureSkillRoots).not.toHaveBeenCalled();
+    expect(deps.beginRunCheckpoint).not.toHaveBeenCalled();
+    expect(runs.at(-1)).toMatchObject({ status: "failed", error: expect.stringContaining("policy → guide.md: Missing guide") });
+  });
+
+  it("retains the full bounded dependency reason chain in a failed scheduled run", async () => {
+    const runs: ScheduleRunRecord[] = [];
+    const error = new SkillDependencyError({ ...DEPENDENCIES, issues: [{ code: "missing-document", message: "Missing final guide", chain: ["policy", "folder-".repeat(35) + "guide.md"] }] });
+    renderHook(() => useScheduler(testSchedulerDeps(testSchedule(), runs, { resolveSkillPrompts: async () => { throw error; } })));
+    await act(async () => { await flushMicrotasks(); });
+    expect(runs.at(-1)?.error).toBe(error.message);
+    expect(runs.at(-1)?.error).toContain("Missing final guide");
+    expect(codex.rpc).not.toHaveBeenCalled();
+  });
+
+  it("uses the actual top-level scheduled thread model when its saved model selects a provider default", async () => {
+    const runs: ScheduleRunRecord[] = [];
+    const run = { ...scheduleRunSnapshot(DEFAULT_SETTINGS), model: "", systemPrompt: "" };
+    codex.rpc.mockImplementation((method: string) => method === "thread/start" ? Promise.resolve({ thread: { id: "thread-1" }, model: "server-chosen-model" }) : Promise.resolve({}));
+    renderHook(() => useScheduler(testSchedulerDeps(testSchedule({ run }), runs)));
+    await act(async () => { await flushMicrotasks(); });
+    const turn = codex.rpc.mock.calls.find(([method]) => method === "turn/start")!;
+    expect(turn[1].collaborationMode.settings.model).toBe("server-chosen-model");
+    expect(turn[1].collaborationMode.settings.developer_instructions).toContain("Current effective app system prompt: none");
   });
 
   it("runs a projectless schedule in the normal Chats workspace", async () => {

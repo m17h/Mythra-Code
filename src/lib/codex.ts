@@ -48,7 +48,8 @@ export async function getNormalChatWorkspace(): Promise<string> {
 export async function rpc<T = JsonObject>(method: string, params: JsonObject = {}): Promise<T> {
   if (method === "turn/start" && typeof params.threadId === "string" && typeof params.model === "string") {
     const record = usageForThread(params.threadId);
-    if (record?.provider) annotateThreadUsage(params.threadId, { provider: record.provider, model: params.model, projectPath: record.projectPath });
+    if (record?.provider) annotateThreadUsage(params.threadId, { provider: record.provider, model: params.model, projectPath: record.projectPath,
+      requestedServiceTier: typeof params.serviceTier === "string" ? params.serviceTier : "standard" });
   }
   const result = await invoke<T>("codex_rpc", { method, params });
   if (method === "thread/start" || method === "thread/resume") {

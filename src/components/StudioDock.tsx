@@ -1,4 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import type { UsageEvidence } from "../types";
 import {
   Bot,
   Boxes,
@@ -36,8 +37,9 @@ import {
 import { FileBrowser } from "./FileBrowser";
 import { DiffFileSections, DiffText } from "./DiffView";
 import { AppActionMenu, type AppActionMenuItem } from "./AppActionMenu";
-import { GitPanel, type GitPanelAction, type GitRepositoryState } from "./GitPanel";
+import { GitPanel, type GitPanelAction, type GitPanelDraft, type GitRepositoryState } from "./GitPanel";
 import type { GitWorkflowControls } from "../lib/gitWorkspace";
+import type { GitRoute, GitView, ProjectGitInspection, ProjectPullRequestAccess } from "../lib/projectGit";
 import { TerminalPanel } from "./TerminalPanel";
 import type { ProjectAction } from "../types";
 import { PANE_BOUNDS } from "../hooks/usePaneResize";
@@ -73,7 +75,7 @@ export interface AttachmentRecord {
   kind: "image" | "file";
 }
 
-export interface TokenUsageView {
+export interface TokenUsageView extends UsageEvidence {
   totalTokens: number;
   /** Tokens currently occupying runtime context. This can shrink after
    * compaction or when a resumed runtime rebaselines its counters. */
@@ -86,6 +88,11 @@ export interface TokenUsageView {
   outputTokens: number;
   reasoningOutputTokens: number;
   contextWindow?: number | null;
+}
+
+function cacheMetric(count: number, reported: boolean | undefined, unknown: number | undefined): string {
+  if (reported === true && !unknown) return count.toLocaleString();
+  return count > 0 ? `${count.toLocaleString()} reported (partial)` : "unknown";
 }
 
 export interface SkillView { name: string; description?: string; path: string; enabled?: boolean }
@@ -114,7 +121,8 @@ function PanelHeader({ icon: Icon, title, subtitle, onClose }: { icon: typeof Co
 
 /** What the Review panel is actually showing, stated in the panel itself. */
 function reviewDiffSummary(diff: ReviewDiff, fileCount: number): string {
-  const files = fileCount ? `${fileCount} file${fileCount === 1 ? "" : "s"} changed` : "No changes loaded";
+  const files = fileCount ? `${fileCount} file${fileCount === 1 ? "" : "s"} changed`
+    : diff.source === "repository" ? "No tracked changes" : "No changes loaded";
   return `${files} · against ${diff.baseline}`;
 }
 
@@ -159,11 +167,15 @@ export function StudioDock(props: {
   mcpServers: McpView[];
   gitOutput: string;
   gitCommitSuccess: string;
+  gitCommitSuccessRevision?: number;
   gitCommitBusy: boolean;
+  gitOperationBusy?: boolean;
   gitRepositoryState: GitRepositoryState;
   gitRepositoryStateDetail?: string;
   gitInitializing: boolean;
   githubAuthenticated: boolean;
+  githubBusy?: boolean;
+  githubOperationError?: string;
   githubRepoStatus: GitHubRepoStatus | null;
   githubRepoError?: string;
   gitActionsReadOnly: boolean;
@@ -224,6 +236,12 @@ export function StudioDock(props: {
   pullRequestPanel?: ReactNode;
   /** Local branch state, branch switching and optional automatic publishing. */
   gitWorkflow?: GitWorkflowControls;
+  /** Bounded project Changes and History reads; needs no AI thread. */
+  projectGitInspection?: ProjectGitInspection;
+  /** Project-owned pull request browsing, details, create and merge. */
+  projectPullRequests?: ProjectPullRequestAccess;
+  /** A request to show a Git view and focus one of its controls. */
+  gitRoute?: GitRoute | null;
   onAttachPath: (path: string) => void;
   onProjectAction: (action: ProjectAction) => void;
   onRunWorkflow: (workflow: WorkflowDefinition) => void;
@@ -245,6 +263,43 @@ export function StudioDock(props: {
     return () => window.clearTimeout(timer);
   }, [props.open]);
   const renderContent = props.open || contentMounted;
+  // The Git view survives dock tab switches; a route request picks it and
+  // hands its focus target to the panel once.
+  const [gitView, setGitView] = useState<GitView>("changes");
+  const [pendingGitFocus, setPendingGitFocus] = useState<{ route: GitRoute; scope: string } | null>(null);
+  const handledGitRoute = useRef(0);
+  useEffect(() => {
+    const route = props.gitRoute;
+    if (!route || route.nonce <= handledGitRoute.current) return;
+    handledGitRoute.current = route.nonce;
+    setGitView(route.view);
+    setPendingGitFocus({ route, scope: props.projectPath ?? "" });
+  }, [props.gitRoute, props.projectPath]);
+  useEffect(() => {
+    setPendingGitFocus((current) => current && current.scope !== (props.projectPath ?? "") ? null : current);
+  }, [props.projectPath]);
+  useEffect(() => {
+    if (!props.open || props.tab !== "git") setPendingGitFocus(null);
+  }, [props.open, props.tab]);
+  // Keep small form drafts here, not mounted Git/PR panels, when tabs close.
+  // Checkout identity also separates isolated worktrees of the same project.
+  const [gitDrafts, setGitDrafts] = useState<Record<string, GitPanelDraft>>({});
+  const gitDraftScope = props.projectPath ?? "";
+  const gitDraft = gitDrafts[gitDraftScope] ?? {
+    commitMessage: "", remoteInput: "", repositoryName: props.defaultRepositoryName, visibility: "private" as const,
+  };
+  const submittedGitMessages = useRef(new Map<string, { message: string; success: string; revision?: number }>());
+  useEffect(() => {
+    if (!props.gitCommitSuccess || props.gitCommitBusy) return;
+    const submitted = submittedGitMessages.current.get(gitDraftScope);
+    if (!submitted || (props.gitCommitSuccessRevision !== undefined
+      ? props.gitCommitSuccessRevision <= (submitted.revision ?? 0)
+      : props.gitCommitSuccess === submitted.success)) return;
+    submittedGitMessages.current.delete(gitDraftScope);
+    setGitDrafts((current) => current[gitDraftScope]?.commitMessage === submitted.message
+      ? { ...current, [gitDraftScope]: { ...current[gitDraftScope], commitMessage: "" } }
+      : current);
+  }, [gitDraftScope, props.gitCommitSuccess, props.gitCommitSuccessRevision, props.gitCommitBusy]);
   const contextPercent = contextUsagePercent(props.usage);
   const tabsRef = useRef<HTMLDivElement>(null);
   const idPrefix = useId();
@@ -284,6 +339,8 @@ export function StudioDock(props: {
     return <aside className="studio-dock closed" aria-label="Project workspace tools" aria-hidden inert />;
   }
   const projectLabel = props.projectName || "this project";
+  const outsideRepositoryRoot = props.gitWorkflow?.snapshot?.isRoot === false;
+  const repositoryRootReason = `Open the repository root (${props.gitWorkflow?.snapshot?.rootPath}) as your project before changing Git. This selected folder is inside that repository.`;
   return (
     <aside className={`studio-dock ${props.open ? "open" : "closed"}`} aria-label="Project workspace tools" aria-hidden={!props.open} inert={!props.open ? true : undefined}>
       {props.onResizeStart && (
@@ -338,7 +395,8 @@ export function StudioDock(props: {
         </>}
 
         {props.tab === "review" && <>
-          <PanelHeader icon={SearchCode} title="Review center" subtitle="Inspect the live turn diff" onClose={props.onClose} />
+          <PanelHeader icon={SearchCode} title="Review center" subtitle={props.activeThread ? "Inspect the live turn diff" : "Inspect repository changes against HEAD"} onClose={props.onClose} />
+          {outsideRepositoryRoot && <div className="git-local-note bad" role="alert"><TriangleAlert size={13} aria-hidden="true" /><span>{repositoryRootReason}</span></div>}
           <div className="studio-actions wrap review-actions">
             <button onClick={props.onRefreshDiff}><RefreshCw size={13} /> Refresh</button>
             <button
@@ -347,6 +405,10 @@ export function StudioDock(props: {
               title={props.reviewDisabledReason || (props.activeThread ? "Ask the model to review the working changes" : "Open a thread to request a review")}
             ><Bot size={13} /> AI review</button>
             {props.checksControl}
+            <button
+              onClick={() => { setGitView("changes"); props.onTab("git"); }}
+              title="Open Git Changes to see staged and unstaged files separately and commit them"
+            ><GitCommitHorizontal size={13} /> Stage &amp; commit in Git</button>
           </div>
           <div className="diff-summary">
             <span><CodeXml size={13} /> {props.reviewDiff.source === "repository" ? "Repository changes" : "Working changes"}</span>
@@ -360,15 +422,19 @@ export function StudioDock(props: {
           {diffSections.length ? (
             <DiffFileSections
               sections={diffSections}
-              readOnly={props.gitActionsReadOnly}
-              readOnlyReason="Switch this thread from Read only to Ask or Full access before staging or reverting files."
+              readOnly={props.gitActionsReadOnly || outsideRepositoryRoot}
+              readOnlyReason={props.gitActionsReadOnly
+                ? "Switch this thread from Read only to Ask or Full access before staging or reverting files."
+                : repositoryRootReason}
               stagedPaths={props.reviewStagedPaths}
               feedbackDiff={props.reviewDiff}
               onPathAction={props.onGitPathAction}
               onUnstage={props.onGitPathUnstage}
             />
           ) : (
-            <pre className="diff-view">{props.reviewDiff.text || "Run a task or refresh to inspect the current Git diff."}</pre>
+            <pre className="diff-view">{props.reviewDiff.text || (props.reviewDiff.source === "repository"
+              ? `No tracked changes against ${props.reviewDiff.baseline}.${props.reviewDiff.untrackedPaths.length ? " New files are listed separately above; stage them in Git to include them." : ""}`
+              : "Run a task or refresh to inspect the current Git diff.")}</pre>
           )}
         </>}
 
@@ -404,7 +470,7 @@ export function StudioDock(props: {
               <Plus size={13} /> {props.checkpointBusyId === "manual" ? "Saving current state…" : "Save current state"}
             </button>
           </div>
-          <div className="checkpoint-note"><ShieldCheck size={14} /><div><strong>Every model run is protected automatically.</strong><span>Restore moves the complete source worktree to that point. Mythra Code saves the current state first, while Git commits and ignored files remain unchanged.</span></div></div>
+          <div className="checkpoint-note"><ShieldCheck size={14} /><div><strong>Every model run is protected automatically.</strong><span>Restore moves the complete source worktree to that point. Mythra Code saves the current state first, while Git commits and ignored files remain unchanged. Accept only marks a run as reviewed here; it does not commit, merge, or push anything.</span></div></div>
           <div className="checkpoint-list">
             {props.checkpoints.length ? props.checkpoints.map((checkpoint) => {
               const currentPosition = props.checkpointHead?.checkpointId === checkpoint.id
@@ -454,7 +520,7 @@ export function StudioDock(props: {
                         <button className="danger-action" onClick={() => props.onCheckpointRestore(checkpoint, "before")} disabled={!canRestoreBefore || busy}><RotateCcw size={12} /> Restore before</button>
                         <button onClick={() => props.onCheckpointRestore(checkpoint, "after")} disabled={!canRestoreAfter || busy}><RotateCw size={12} /> {checkpoint.status === "restored-before" ? "Reapply run" : "Restore result"}</button>
                       </>}
-                      {checkpoint.status !== "safety" && <button className={checkpoint.accepted ? "approved" : ""} onClick={() => props.onCheckpointAccept(checkpoint)} disabled={checkpoint.status === "running" || busy}><Check size={12} /> {checkpoint.accepted ? "Undo accept" : "Accept"}</button>}
+                      {checkpoint.status !== "safety" && <button className={checkpoint.accepted ? "approved" : ""} onClick={() => props.onCheckpointAccept(checkpoint)} disabled={checkpoint.status === "running" || busy} title="Mark this run as reviewed. Nothing is committed, merged, or pushed."><Check size={12} /> {checkpoint.accepted ? "Undo accept" : "Accept"}</button>}
                     </>}
                     <button className="danger-action icon-only" onClick={() => props.onCheckpointDelete(checkpoint)} disabled={checkpoint.status === "running" || busy} title={`Delete ${checkpoint.label}`} aria-label={`Delete ${checkpoint.label}`}><Trash2 size={12} /></button>
                   </div>
@@ -529,14 +595,15 @@ export function StudioDock(props: {
                   )}
                   <div className="studio-actions wrap">
                     <button onClick={props.onWorktreeReview} disabled={props.worktreeBusy}><SearchCode size={13} /> Review</button>
-                    <button onClick={props.onWorktreeApply} disabled={props.worktreeBusy} title="Copy the resulting files into the shared project folder, without their commit history"><RotateCw size={13} /> Copy changes to project</button>
+                    <button onClick={props.onWorktreeApply} disabled={props.worktreeBusy || props.gitActionsReadOnly} title="Copy the resulting files into the shared project folder, without their commit history"><RotateCw size={13} /> Copy changes to project</button>
                     <button
                       onClick={props.onWorktreeMerge}
-                      disabled={props.worktreeBusy}
+                      disabled={props.worktreeBusy || props.gitActionsReadOnly}
                       title={`Merge this branch's committed history into your local project${props.worktreeStatus?.sourceBranch ? ` (${props.worktreeStatus.sourceBranch})` : ""}. This is a local merge — it does not touch GitHub.`}
                     ><GitCommitHorizontal size={13} /> Merge into local project…</button>
                     <AppActionMenu label="More" ariaLabel="More worktree actions" items={worktreeMenuItems(props)} />
                   </div>
+                  {props.gitActionsReadOnly && <div className="worktree-note"><ShieldCheck size={13} aria-hidden="true" /><span>Switch this thread to Ask or Full access before copying or merging changes into the local project.</span></div>}
                 </>
               )}
             </div>
@@ -573,9 +640,9 @@ export function StudioDock(props: {
             {contextPercent !== null ? <i style={{ width: `${contextPercent}%` }} /> : null}
           </div>
           <div className="metric-grid usage-token-metrics"><div><strong>{props.usage?.inputTokens.toLocaleString() ?? "—"}</strong><span>Input</span></div><div><strong>{props.usage?.outputTokens.toLocaleString() ?? "—"}</strong><span>Output</span></div><div className="usage-reasoning-metric"><strong>{props.usage?.reasoningOutputTokens.toLocaleString() ?? "—"}</strong><span>Reasoning</span></div></div>
-          {props.usage && (props.usage.cachedInputTokens > 0 || (props.usage.cacheWriteInputTokens ?? 0) > 0) ? (
+          {props.usage ? (
             <div className="usage-cache-note">
-              Prompt caching: {props.usage.cachedInputTokens.toLocaleString()} read · {(props.usage.cacheWriteInputTokens ?? 0).toLocaleString()} written
+              Prompt caching: {cacheMetric(props.usage.cachedInputTokens, props.usage.cacheReadReported, props.usage.cacheReadUnknownTokens)} read · {cacheMetric(props.usage.cacheWriteInputTokens ?? 0, props.usage.cacheWriteReported, props.usage.cacheWriteUnknownTokens)} written
             </div>
           ) : null}
           {props.accountUsage.windows?.length ? (
@@ -629,28 +696,49 @@ export function StudioDock(props: {
         </>}
 
         {props.tab === "git" && <>
-          <PanelHeader icon={GitBranch} title="Git workspace" subtitle="Shape changes without leaving MYTHRA CODE" onClose={props.onClose} />
+          <PanelHeader icon={GitBranch} title="Git workspace" subtitle="Changes, pull requests, and history for this folder" onClose={props.onClose} />
           <GitPanel
             key={props.projectPath ?? ""}
             repositoryState={props.gitRepositoryState}
+            selectedFolder={props.projectPath}
             repositoryStateDetail={props.gitRepositoryStateDetail}
             gitInitializing={props.gitInitializing}
             gitOutput={props.gitOutput}
             gitCommitSuccess={props.gitCommitSuccess}
+            gitCommitSuccessRevision={props.gitCommitSuccessRevision}
             gitCommitBusy={props.gitCommitBusy}
+            gitOperationBusy={props.gitOperationBusy}
             githubAuthenticated={props.githubAuthenticated}
+            githubBusy={props.githubBusy}
+            githubOperationError={props.githubOperationError}
             githubRepoStatus={props.githubRepoStatus}
             githubRepoError={props.githubRepoError}
             readOnly={props.gitActionsReadOnly}
             defaultRepositoryName={props.defaultRepositoryName}
-            onAction={props.onGitAction}
+            draft={gitDraft}
+            onDraftChange={(draft) => setGitDrafts((current) => ({ ...current, [gitDraftScope]: draft }))}
+            onAction={(action, message) => {
+              if (["commit", "commitStaged", "commitPush", "commitStagedPush"].includes(action)) submittedGitMessages.current.set(gitDraftScope, { message: message ?? "", success: props.gitCommitSuccess, revision: props.gitCommitSuccessRevision });
+              props.onGitAction(action, message);
+            }}
             onInitializeGit={props.onInitializeGit}
             onGitHubAttach={props.onGitHubAttach}
             onGitHubCreate={props.onGitHubCreate}
             onOpenGitHubSettings={props.onOpenGitHubSettings}
-            hasPullRequestWorkflow={!!props.pullRequestPanel}
             pullRequestPanel={props.pullRequestPanel}
             workflow={props.gitWorkflow}
+            hasPullRequestWorkflow={Boolean(props.pullRequestPanel || props.projectPullRequests)}
+            pullRequests={props.projectPullRequests}
+            inspection={props.projectGitInspection}
+            onPathAction={(action, path) => {
+              if (action === "unstage") props.onGitPathUnstage?.(path);
+              else props.onGitPathAction(action, path);
+            }}
+            view={gitView}
+            onViewChange={(next) => { setGitView(next); setPendingGitFocus(null); }}
+            focusRequest={props.open && pendingGitFocus?.scope === gitDraftScope ? pendingGitFocus.route : null}
+            onFocusHandled={(nonce) => setPendingGitFocus((current) => current?.route.nonce === nonce ? null : current)}
+            onOpenTool={props.onTab}
           />
         </>}
       </div>

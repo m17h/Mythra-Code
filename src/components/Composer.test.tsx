@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve()) }));
 
 import { COMPOSER_INPUT_MAX_HEIGHT, Composer, draftFor, resetDraftStoreForTests, type ComposerHandle } from "./Composer";
+import { skillDependencyFixture } from "../test/skillDependencyFixtures";
 
 function composerProps(overrides: Partial<Parameters<typeof Composer>[0]> = {}): Parameters<typeof Composer>[0] {
   return {
@@ -30,6 +31,29 @@ describe("Composer", () => {
   beforeEach(() => {
     localStorage.clear();
     resetDraftStoreForTests();
+  });
+
+  it("previews system-only blocked dependencies even with an empty draft and rechecks changed system context", async () => {
+    const analyze = vi.fn(async () => skillDependencyFixture(true));
+    const props = composerProps({ onAnalyzeSkillDependencies: analyze });
+    const view = render(<Composer {...props} />);
+    expect(await screen.findByText("Turn blocked by skill dependencies")).toBeInTheDocument();
+    expect(analyze).toHaveBeenCalledExactlyOnceWith("");
+    expect(screen.getByPlaceholderText("Ask anything")).toHaveValue("");
+    const updated = vi.fn(async () => skillDependencyFixture());
+    view.rerender(<Composer {...props} onAnalyzeSkillDependencies={updated} />);
+    await waitFor(() => expect(updated).toHaveBeenCalledExactlyOnceWith(""));
+    await waitFor(() => expect(screen.queryByText("Turn blocked by skill dependencies")).toBeNull());
+  });
+
+  it("marks a blocked parent red but keeps send governed by fresh delivery validation", async () => {
+    const props = composerProps({ skills: [{ name: "review" }], onAnalyzeSkillDependencies: async () => skillDependencyFixture(true), onSend: vi.fn(async () => false) });
+    const view = render(<Composer {...props} />);
+    fireEvent.change(screen.getByPlaceholderText("Ask anything"), { target: { value: "Use @review" } });
+    await waitFor(() => expect(view.container.querySelector(".composer-skill-token.is-blocked")).toHaveTextContent("@review"));
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(props.onSend).toHaveBeenCalledWith("Use @review"));
+    expect(screen.getByPlaceholderText("Ask anything")).toHaveValue("Use @review");
   });
 
   it("sends the trimmed draft and clears it on success", async () => {
@@ -398,6 +422,15 @@ describe("Composer", () => {
     // Enter still sends rather than accepting a suggestion the user never saw.
     fireEvent.keyDown(textarea, { key: "Enter" });
     await waitFor(() => expect(onSend).toHaveBeenCalledWith("mail me at morgan@hat"));
+  });
+
+  it("does not color skill names embedded in a filename, path or longer identifier", () => {
+    render(<Composer {...composerProps({ skills: [{ name: "hatch-pet" }] })} />);
+    const textarea = screen.getByPlaceholderText("Ask anything");
+    fireEvent.change(textarea, { target: { value: "@hatch-pet.md @hatch-pet/file @hatch-pet_extra @hatch-pet-longer @hatch-pet." } });
+    const tokens = document.querySelectorAll(".composer-skill-token");
+    expect(tokens).toHaveLength(1);
+    expect(tokens[0]).toHaveTextContent("@hatch-pet");
   });
 
   it("keeps a mention anchored to its leading space when accepted", () => {

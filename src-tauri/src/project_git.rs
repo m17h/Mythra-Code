@@ -6,7 +6,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::Stdio,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use serde::Serialize;
@@ -97,6 +97,32 @@ pub(super) struct WorktreeMergeResult {
     pub(super) isolated_head_oid: String,
     pub(super) source_commit: String,
     pub(super) isolated_tree: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct WorktreeRemoveResult {
+    pub(super) folder_removed: bool,
+    pub(super) branch_deleted: bool,
+    pub(super) retained_branch: Option<String>,
+    pub(super) retained_branch_oid: Option<String>,
+    pub(super) branch_delete_error: Option<String>,
+}
+
+/// A blocking Git worker keeps mutation ownership even if its awaiting command
+/// is cancelled. Dropping the outer future must not unlock a running worker.
+fn spawn_locked_worktree_worker<T, F>(
+    guard: tokio::sync::OwnedMutexGuard<()>,
+    worker: F,
+) -> tauri::async_runtime::JoinHandle<Result<T, String>>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = guard;
+        worker()
+    })
 }
 
 pub(super) fn unix_timestamp_ms() -> i64 {
@@ -1141,8 +1167,8 @@ pub(super) async fn worktree_create(
         .app_data_dir()
         .map_err(|error| format!("Could not locate Mythra Code's application data: {error}"))?;
     let lock = crate::git_workspace::repository_lock(Path::new(&project_path)).await?;
-    let _guard = lock.lock().await;
-    tauri::async_runtime::spawn_blocking(move || {
+    let guard = lock.lock_owned().await;
+    spawn_locked_worktree_worker(guard, move || {
         let source = checkpoint_repo(&project_path)?;
         let base_commit =
             git_stdout(&source, &["rev-parse", "--verify", "HEAD"], None).map_err(|_| {
@@ -1192,8 +1218,8 @@ pub(super) async fn worktree_recreate(
         .app_data_dir()
         .map_err(|error| format!("Could not locate Mythra Code's application data: {error}"))?;
     let lock = crate::git_workspace::repository_lock(Path::new(&project_path)).await?;
-    let _guard = lock.lock().await;
-    tauri::async_runtime::spawn_blocking(move || {
+    let guard = lock.lock_owned().await;
+    spawn_locked_worktree_worker(guard, move || {
         let source = checkpoint_repo(&project_path)?;
         if !is_managed_worktree_branch(&branch) {
             return Err("That branch is not managed by Mythra Code".into());
@@ -1345,8 +1371,8 @@ pub(super) async fn worktree_apply_to_source(
     safety_id: String,
 ) -> Result<WorktreeApplyResult, String> {
     let lock = crate::git_workspace::repository_lock(Path::new(&project_path)).await?;
-    let _guard = lock.lock().await;
-    tauri::async_runtime::spawn_blocking(move || {
+    let guard = lock.lock_owned().await;
+    spawn_locked_worktree_worker(guard, move || {
         let source = checkpoint_repo(&project_path)?;
         let reference = worktree_applied_ref(&thread_id)?;
         let effective_base = git_stdout(
@@ -1374,8 +1400,8 @@ pub(super) async fn worktree_set_applied_baseline(
     baseline: String,
 ) -> Result<String, String> {
     let lock = crate::git_workspace::repository_lock(Path::new(&project_path)).await?;
-    let _guard = lock.lock().await;
-    tauri::async_runtime::spawn_blocking(move || {
+    let guard = lock.lock_owned().await;
+    spawn_locked_worktree_worker(guard, move || {
         set_worktree_applied_baseline_sync(&project_path, &thread_id, &baseline)
     })
     .await
@@ -1482,8 +1508,8 @@ pub(super) async fn worktree_merge_branch(
     expected_source_head_oid: String,
 ) -> Result<WorktreeMergeResult, String> {
     let lock = crate::git_workspace::repository_lock(Path::new(&project_path)).await?;
-    let _guard = lock.lock().await;
-    tauri::async_runtime::spawn_blocking(move || {
+    let guard = lock.lock_owned().await;
+    spawn_locked_worktree_worker(guard, move || {
         let source = checkpoint_repo(&project_path)?;
         if optional_git_stdout(&source, &["symbolic-ref", "--short", "-q", "HEAD"]).as_deref() != Some(expected_source_branch.as_str())
             || optional_git_stdout(&source, &["rev-parse", "--verify", "HEAD"]).as_deref() != Some(expected_source_head_oid.as_str()) {
@@ -1502,7 +1528,693 @@ pub(super) async fn worktree_merge_branch(
     .map_err(|error| format!("Worktree merge task failed: {error}"))?
 }
 
+const WORKTREE_REMOVE_OUTPUT_LIMIT: usize = 512 * 1024;
+
+struct WorktreeRemovalGit {
+    deadline: std::cell::Cell<Instant>,
+}
+
+impl WorktreeRemovalGit {
+    fn remaining(&self) -> Result<Duration, String> {
+        let remaining = self
+            .deadline
+            .get()
+            .saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            Err("Git operation timed out".into())
+        } else {
+            Ok(remaining)
+        }
+    }
+
+    fn output(&self, repo: &Path, args: &[&str]) -> Result<std::process::Output, String> {
+        let (output, truncated) = crate::git_workspace::bounded_git_output(
+            repo,
+            args,
+            self.remaining()?,
+            WORKTREE_REMOVE_OUTPUT_LIMIT,
+            false,
+        )?;
+        if truncated {
+            return Err("Git produced too much output to safely remove the worktree".into());
+        }
+        Ok(output)
+    }
+
+    fn stdout(&self, repo: &Path, args: &[&str]) -> Result<String, String> {
+        let output = self.output(repo, args)?;
+        if !output.status.success() {
+            let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            return Err(if detail.is_empty() {
+                "Git could not finish worktree cleanup".into()
+            } else {
+                detail
+            });
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+
+    fn optional(&self, repo: &Path, args: &[&str]) -> Result<Option<String>, String> {
+        let output = self.output(repo, args)?;
+        Ok(output
+            .status
+            .success()
+            .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string()))
+    }
+
+    fn repo(&self, path: &str) -> Result<PathBuf, String> {
+        let selected = Path::new(path)
+            .canonicalize()
+            .map_err(|error| format!("Could not open the worktree folder: {error}"))?;
+        let root = self.stdout(&selected, &["rev-parse", "--show-toplevel"])?;
+        Path::new(&root)
+            .canonicalize()
+            .map_err(|error| format!("Could not open the Git repository: {error}"))
+    }
+
+    fn common_dir(&self, repo: &Path) -> Result<PathBuf, String> {
+        let directory = PathBuf::from(self.stdout(repo, &["rev-parse", "--git-common-dir"])?);
+        let directory = if directory.is_absolute() {
+            directory
+        } else {
+            repo.join(directory)
+        };
+        directory
+            .canonicalize()
+            .map_err(|error| format!("Could not open the common Git directory: {error}"))
+    }
+
+    fn require_unoccupied(&self, repo: &Path, branch: &str) -> Result<(), String> {
+        let reference = format!("refs/heads/{branch}");
+        let output = self.output(repo, &["worktree", "list", "--porcelain", "-z"])?;
+        if !output.status.success() {
+            return Err("Could not inspect worktree branch ownership".into());
+        }
+        let mut paths = Vec::new();
+        for field in output.stdout.split(|byte| *byte == 0) {
+            if let Some(path) = field.strip_prefix(b"worktree ") {
+                paths.push(PathBuf::from(String::from_utf8_lossy(path).into_owned()));
+            }
+            if field
+                .strip_prefix(b"branch ")
+                .is_some_and(|value| value == reference.as_bytes())
+            {
+                return Err("The retained branch is checked out in another worktree. Keep it until that worktree is finished.".into());
+            }
+        }
+        // Git also protects detached worktrees whose rebase or bisect owns the
+        // branch. Do not replace that protection with only a HEAD-name check.
+        for path in paths.into_iter().filter(|path| path.is_dir()) {
+            for state in [
+                "rebase-merge/head-name",
+                "rebase-apply/head-name",
+                "BISECT_START",
+            ] {
+                let state_path =
+                    PathBuf::from(self.stdout(&path, &["rev-parse", "--git-path", state])?);
+                let state_path = if state_path.is_absolute() {
+                    state_path
+                } else {
+                    path.join(state_path)
+                };
+                match read_worktree_operation_identity(&state_path) {
+                    Ok(value) if value.trim() == reference || value.trim() == branch => return Err(
+                        "The retained branch is used by a rebase or bisect in another worktree."
+                            .into(),
+                    ),
+                    Ok(_) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        return Err(format!(
+                            "Could not inspect active worktree operations: {error}"
+                        ))
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn require_merged(&self, repo: &Path, branch: &str, expected_oid: &str) -> Result<(), String> {
+        // Match `git branch -d`: a resolvable upstream is authoritative, even
+        // when the branch is merged to HEAD; otherwise Git falls back to HEAD.
+        let upstream = self.stdout(
+            repo,
+            &[
+                "for-each-ref",
+                "--format=%(upstream)",
+                &format!("refs/heads/{branch}"),
+            ],
+        )?;
+        let upstream_oid = if upstream.is_empty() {
+            None
+        } else {
+            self.optional(
+                repo,
+                &["rev-parse", "--verify", &format!("{upstream}^{{commit}}")],
+            )?
+        };
+        let reference_oid = match upstream_oid {
+            Some(oid) => oid,
+            None => self.stdout(repo, &["rev-parse", "--verify", "HEAD^{commit}"])?,
+        };
+        let result = self.output(
+            repo,
+            &["merge-base", "--is-ancestor", expected_oid, &reference_oid],
+        )?;
+        if result.status.success() {
+            Ok(())
+        } else if result.status.code() == Some(1) {
+            Err(format!(
+                "The branch '{branch}' is not fully merged into {}. Its commits were kept.",
+                if upstream.is_empty() {
+                    "HEAD"
+                } else {
+                    upstream.as_str()
+                }
+            ))
+        } else {
+            Err("Could not verify whether the isolated branch is fully merged; its commits were kept.".into())
+        }
+    }
+}
+
+fn read_worktree_operation_identity(path: &Path) -> std::io::Result<String> {
+    use std::io::Read;
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.share_mode(7).custom_flags(0x00200000);
+    }
+    let file = options.open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > 4096 {
+        return Err(std::io::Error::other(
+            "Git operation identity is not a small regular file",
+        ));
+    }
+    let mut value = String::new();
+    file.take(4097).read_to_string(&mut value)?;
+    if value.len() > 4096 {
+        return Err(std::io::Error::other(
+            "Git operation identity exceeded its size limit",
+        ));
+    }
+    Ok(value)
+}
+
+/// Git's prepared `verify <ref> 0` transaction reserves an absent name while
+/// config is removed. A recreated branch must never lose its own configuration.
+struct DeletedBranchConfigLease {
+    child: std::process::Child,
+    scope: crate::git_workspace::GitProcessScope,
+    input: Option<std::process::ChildStdin>,
+    replies: std::sync::mpsc::Receiver<Result<String, String>>,
+    output_done: std::sync::mpsc::Receiver<()>,
+    errors_done: std::sync::mpsc::Receiver<()>,
+    completed: bool,
+}
+
+impl DeletedBranchConfigLease {
+    fn prepare(
+        git: &WorktreeRemovalGit,
+        repo: &Path,
+        reference: &str,
+        oid_width: usize,
+    ) -> Result<Self, String> {
+        use std::io::Read;
+        git.remaining()?;
+        let home = env::var_os("HOME").map(PathBuf::from);
+        let mut command = git_command_for(repo, env::var_os("PATH").as_deref(), home.as_deref());
+        command
+            .args(["update-ref", "--no-deref", "--stdin"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let (mut child, scope) = crate::git_workspace::spawn_scoped_git(&mut command)?;
+        let input = child.stdin.take().ok_or_else(|| {
+            scope.stop(
+                &mut child,
+                "Could not open reference transaction input".into(),
+            )
+        })?;
+        let mut output = child.stdout.take().ok_or_else(|| {
+            scope.stop(
+                &mut child,
+                "Could not read reference transaction output".into(),
+            )
+        })?;
+        let mut errors = child.stderr.take().ok_or_else(|| {
+            scope.stop(
+                &mut child,
+                "Could not read reference transaction errors".into(),
+            )
+        })?;
+        let (sender, replies) = std::sync::mpsc::sync_channel(1);
+        let (output_done_tx, output_done) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _completed = output_done_tx;
+            let mut line = Vec::new();
+            let mut buffer = [0u8; 4096];
+            loop {
+                match output.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(count) => {
+                        for byte in &buffer[..count] {
+                            if *byte == b'\n' {
+                                if sender
+                                    .send(Ok(String::from_utf8_lossy(&line).to_string()))
+                                    .is_err()
+                                {
+                                    return;
+                                }
+                                line.clear();
+                            } else {
+                                line.push(*byte);
+                                if line.len() > WORKTREE_REMOVE_OUTPUT_LIMIT {
+                                    let _ = sender.send(Err(
+                                        "Git reference transaction produced too much output".into(),
+                                    ));
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        let _ = sender.send(Err(format!(
+                            "Could not read reference transaction: {error}"
+                        )));
+                        return;
+                    }
+                }
+            }
+        });
+        let (errors_done_tx, errors_done) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _completed = errors_done_tx;
+            let mut buffer = [0u8; 4096];
+            while matches!(errors.read(&mut buffer), Ok(count) if count > 0) {}
+        });
+        let mut lease = Self {
+            child,
+            scope,
+            input: Some(input),
+            replies,
+            output_done,
+            errors_done,
+            completed: false,
+        };
+        if let Err(error) = lease.exchange(git, "start\n", "start: ok") {
+            return Err(lease.stop_with_reason(error));
+        }
+        if let Err(error) = lease.exchange(
+            git,
+            &format!("verify {reference} {}\nprepare\n", "0".repeat(oid_width)),
+            "prepare: ok",
+        ) {
+            return Err(lease.stop_with_reason(error));
+        }
+        Ok(lease)
+    }
+
+    fn exchange(
+        &mut self,
+        git: &WorktreeRemovalGit,
+        command: &str,
+        expected: &str,
+    ) -> Result<(), String> {
+        git.remaining()?;
+        let input = self
+            .input
+            .as_mut()
+            .ok_or_else(|| "Reference cleanup input is closed".to_string())?;
+        input
+            .write_all(command.as_bytes())
+            .and_then(|()| input.flush())
+            .map_err(|error| format!("Could not finish reference cleanup: {error}"))?;
+        let reply = self.replies.recv_timeout(git.remaining()?).map_err(|error| match error {
+            std::sync::mpsc::RecvTimeoutError::Timeout => "Git reference cleanup timed out".to_string(),
+            std::sync::mpsc::RecvTimeoutError::Disconnected => "The deleted branch was recreated or Git could not reserve its name; configuration was kept".to_string(),
+        })??;
+        if reply != expected {
+            return Err(
+                "Git could not safely reserve the deleted branch; configuration was kept".into(),
+            );
+        }
+        Ok(())
+    }
+
+    fn finish(&mut self, git: &WorktreeRemovalGit) -> Result<(), String> {
+        self.input.take();
+        loop {
+            match self.child.try_wait() {
+                Ok(Some(status)) if status.success() => break,
+                Ok(Some(_)) => return Err("Git did not finish reference cleanup".into()),
+                Ok(None) => {
+                    git.remaining()?;
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => return Err(format!("Could not wait for reference cleanup: {error}")),
+            }
+        }
+        for done in [&self.output_done, &self.errors_done] {
+            if matches!(
+                done.recv_timeout(git.remaining()?),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ) {
+                return Err("Git reference cleanup timed out while draining hook output".into());
+            }
+        }
+        self.completed = true;
+        Ok(())
+    }
+
+    fn stop_with_reason(&mut self, reason: String) -> String {
+        let reason = self.scope.stop(&mut self.child, reason);
+        self.completed = true;
+        reason
+    }
+}
+
+impl Drop for DeletedBranchConfigLease {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.scope
+                .stop(&mut self.child, "Reference cleanup was interrupted".into());
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum WorktreeRemovalPhase {
+    FolderRemoved,
+    BeforeBranchDelete,
+    BeforeConfigCleanup,
+    ConfigNameReserved,
+}
+
+fn delete_worktree_branch(
+    git: &WorktreeRemovalGit,
+    source: &Path,
+    branch: &str,
+    expected_oid: &str,
+    force: bool,
+    deletion_completed: &mut bool,
+    gate: &mut impl FnMut(WorktreeRemovalPhase, &WorktreeRemovalGit) -> Result<(), String>,
+) -> Result<(), String> {
+    let reference = format!("refs/heads/{branch}");
+    git.require_unoccupied(source, branch)?;
+    if !force {
+        git.require_merged(source, branch, expected_oid)?;
+    }
+    gate(WorktreeRemovalPhase::BeforeBranchDelete, git)?;
+    // Bind deletion to the approved tip inside Git's reference transaction;
+    // no second resolution of a possibly advanced branch and no force retry.
+    git.stdout(
+        source,
+        &["update-ref", "--no-deref", "-d", &reference, expected_oid],
+    )?;
+    *deletion_completed = true;
+    gate(WorktreeRemovalPhase::BeforeConfigCleanup, git)?;
+    let mut lease = DeletedBranchConfigLease::prepare(git, source, &reference, expected_oid.len())?;
+    let cleanup = (|| {
+        gate(WorktreeRemovalPhase::ConfigNameReserved, git)?;
+        let escaped_branch: String = branch
+            .chars()
+            .flat_map(|character| {
+                if ".^$[]()|?*+{}\\".contains(character) {
+                    vec!['\\', character]
+                } else {
+                    vec![character]
+                }
+            })
+            .collect();
+        let names = git.output(
+            source,
+            &[
+                "config",
+                "--local",
+                "--name-only",
+                "--get-regexp",
+                &format!("^branch\\.{escaped_branch}\\."),
+            ],
+        )?;
+        if names.status.success() {
+            git.stdout(
+                source,
+                &[
+                    "config",
+                    "--local",
+                    "--remove-section",
+                    &format!("branch.{branch}"),
+                ],
+            )?;
+        } else if names.status.code() != Some(1) {
+            return Err(
+                "The branch was deleted, but its configuration could not be inspected".into(),
+            );
+        }
+        lease.exchange(git, "abort\n", "abort: ok")?;
+        lease.finish(git)
+    })();
+    cleanup.map_err(|error| lease.stop_with_reason(error))
+}
+
+struct WorktreeRemoveOptions<'a> {
+    force: bool,
+    delete_branch: bool,
+    expected_retained_branch_oid: Option<&'a str>,
+    timeout: Duration,
+}
+
+fn worktree_remove_sync(
+    managed_root: &Path,
+    thread_id: Option<&str>,
+    project_path: &str,
+    worktree_path: &str,
+    branch: &str,
+    options: WorktreeRemoveOptions<'_>,
+) -> Result<WorktreeRemoveResult, String> {
+    worktree_remove_sync_with_gate(
+        managed_root,
+        thread_id,
+        project_path,
+        worktree_path,
+        branch,
+        options,
+        |_, _| Ok(()),
+    )
+}
+
+fn worktree_remove_sync_with_gate(
+    managed_root: &Path,
+    thread_id: Option<&str>,
+    project_path: &str,
+    worktree_path: &str,
+    branch: &str,
+    options: WorktreeRemoveOptions<'_>,
+    mut gate: impl FnMut(WorktreeRemovalPhase, &WorktreeRemovalGit) -> Result<(), String>,
+) -> Result<WorktreeRemoveResult, String> {
+    let git = WorktreeRemovalGit {
+        deadline: std::cell::Cell::new(Instant::now() + options.timeout),
+    };
+    let source = git.repo(project_path)?;
+    // Validate cleanup identities before doing anything irreversible. A bad
+    // checkpoint identity must not be discovered after its folder disappeared.
+    let applied_reference = thread_id.map(worktree_applied_ref).transpose()?;
+    if !is_managed_worktree_branch(branch) {
+        return Err("That branch is not managed by Mythra Code".into());
+    }
+    git.stdout(&source, &["check-ref-format", "--branch", branch])?;
+    let canonical_root = managed_root
+        .canonicalize()
+        .map_err(|error| format!("Could not open Mythra Code's worktree folder: {error}"))?;
+    let path = Path::new(worktree_path);
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir))
+    {
+        return Err("The managed worktree path is invalid".into());
+    }
+    let folder_exists = match fs::symlink_metadata(path) {
+        Ok(_) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(format!("Could not inspect the isolated worktree: {error}")),
+    };
+    let canonical_worktree = if folder_exists {
+        path.canonicalize()
+    } else {
+        path.parent()
+            .ok_or_else(|| "The managed worktree path is invalid".to_string())?
+            .canonicalize()
+            .map(|parent| parent.join(path.file_name().unwrap_or_default()))
+    }
+    .map_err(|error| format!("Could not open the isolated worktree: {error}"))?;
+    if canonical_worktree == canonical_root || !canonical_worktree.starts_with(&canonical_root) {
+        return Err(
+            "Mythra Code will only remove worktrees it created in its managed folder".into(),
+        );
+    }
+    let branch_reference = format!("refs/heads/{branch}");
+    let branch_oid = git.optional(&source, &["rev-parse", "--verify", &branch_reference])?;
+    if folder_exists {
+        if options.expected_retained_branch_oid.is_some() {
+            return Err("The worktree folder exists again. Review it before removing it.".into());
+        }
+        let worktree = git.repo(worktree_path)?;
+        if git.common_dir(&source)? != git.common_dir(&worktree)? {
+            return Err("That worktree does not belong to the selected project".into());
+        }
+        if git.stdout(&worktree, &["symbolic-ref", "--quiet", "HEAD"])? != branch_reference {
+            return Err(
+                "The isolated worktree no longer has its recorded branch checked out".into(),
+            );
+        }
+        let status = git.stdout(
+            &worktree,
+            &["status", "--porcelain=v1", "--untracked-files=all"],
+        )?;
+        let ignored_files = git.output(&worktree, IGNORED_FILES_ARGS)?;
+        if !ignored_files.status.success() {
+            return Err("Could not inspect ignored worktree files".into());
+        }
+        if (!status.is_empty() || !ignored_files.stdout.is_empty()) && !options.force {
+            return Err(
+                "The isolated worktree contains uncommitted, untracked, or ignored files".into(),
+            );
+        }
+        let mut args = vec!["worktree", "remove"];
+        if options.force {
+            args.push("--force");
+        }
+        args.push(worktree_path);
+        if let Err(error) = git.stdout(&source, &args) {
+            if matches!(fs::symlink_metadata(path), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
+            {
+                return Ok(WorktreeRemoveResult {
+                    folder_removed: true,
+                    branch_deleted: false,
+                    retained_branch: None,
+                    retained_branch_oid: None,
+                    branch_delete_error: Some(format!("The folder was removed, but Git did not finish its administrative cleanup. Current branch state could not be verified; the last observed tip was {}. Inspect it before retrying: {error}", branch_oid.as_deref().unwrap_or("unavailable"))),
+                });
+            }
+            return Err(error);
+        }
+    } else {
+        let expected_oid = options.expected_retained_branch_oid.ok_or_else(||
+            "The worktree folder is missing. Review its retained branch before retrying cleanup.".to_string())?;
+        if thread_id.is_none()
+            || ![40, 64].contains(&expected_oid.len())
+            || !expected_oid.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(
+                "Retained branch cleanup needs its recorded thread and full commit identity."
+                    .into(),
+            );
+        }
+        if !options.delete_branch || options.force {
+            return Err("Retained branch cleanup requires safe deletion without force.".into());
+        }
+        if branch_oid.as_deref().is_some_and(|oid| oid != expected_oid) {
+            return Err(
+                "The retained branch changed since removal. Review it before deleting it.".into(),
+            );
+        }
+        git.require_unoccupied(&source, branch)?;
+    }
+    // Folder removal is complete. Never convert a later cleanup failure into a
+    // rejected command that suggests the removed folder can still be used.
+    let mut branch_delete_error = gate(WorktreeRemovalPhase::FolderRemoved, &git).err();
+    let mut branch_state_verified = true;
+    let mut retained_branch_oid =
+        match git.optional(&source, &["rev-parse", "--verify", &branch_reference]) {
+            Ok(oid) => oid,
+            Err(error) => {
+                branch_state_verified = false;
+                branch_delete_error = Some(format!(
+                "Current branch state could not be verified; the last observed tip was {}: {error}",
+                branch_oid.as_deref().unwrap_or("unavailable")
+            ));
+                None
+            }
+        };
+    let mut deletion_completed = false;
+    if options.delete_branch && retained_branch_oid.is_some() {
+        if retained_branch_oid != branch_oid {
+            branch_delete_error = Some(
+                "The isolated branch changed during removal; its new tip was retained.".into(),
+            );
+        } else if branch_delete_error.is_none() {
+            let expected_oid = retained_branch_oid.as_deref().unwrap();
+            let result = delete_worktree_branch(
+                &git,
+                &source,
+                branch,
+                expected_oid,
+                options.force,
+                &mut deletion_completed,
+                &mut gate,
+            );
+            if let Err(error) = result {
+                branch_delete_error = Some(error);
+            }
+            retained_branch_oid = match git
+                .optional(&source, &["rev-parse", "--verify", &branch_reference])
+            {
+                Ok(oid) => oid,
+                Err(error) => {
+                    branch_state_verified = false;
+                    let phase = if deletion_completed {
+                        "The approved branch tip was deleted, but current branch state could not be verified"
+                    } else {
+                        "Branch cleanup could not be verified"
+                    };
+                    branch_delete_error = Some(format!(
+                        "{phase}; the last observed tip was {expected_oid}: {error}. {}",
+                        branch_delete_error
+                            .as_deref()
+                            .unwrap_or("Inspect the branch before retrying.")
+                    ));
+                    None
+                }
+            };
+        }
+    }
+    if let Some(reference) = applied_reference {
+        if let Err(error) = git.stdout(&source, &["update-ref", "-d", &reference]) {
+            branch_delete_error
+                .get_or_insert(format!("Checkpoint cleanup did not finish: {error}"));
+        }
+    }
+    if let Err(error) = git.stdout(&source, &["worktree", "prune"]) {
+        branch_delete_error.get_or_insert(format!(
+            "Worktree registration cleanup did not finish: {error}"
+        ));
+    }
+    Ok(WorktreeRemoveResult {
+        folder_removed: true,
+        branch_deleted: options.delete_branch
+            && branch_state_verified
+            && retained_branch_oid.is_none(),
+        retained_branch: retained_branch_oid.as_ref().map(|_| branch.to_string()),
+        retained_branch_oid,
+        branch_delete_error,
+    })
+}
+
 #[tauri::command]
+// Keep the bridge's named arguments compatible; the retained tip is optional
+// and only authorizes safe cleanup after a previously completed folder removal.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn worktree_remove(
     app: AppHandle,
     thread_id: Option<String>,
@@ -1511,61 +2223,997 @@ pub(super) async fn worktree_remove(
     branch: String,
     force: bool,
     delete_branch: bool,
-) -> Result<(), String> {
+    expected_retained_branch_oid: Option<String>,
+) -> Result<WorktreeRemoveResult, String> {
     let managed_root = app
         .path()
         .app_data_dir()
         .map_err(|error| format!("Could not locate Mythra Code's application data: {error}"))?
         .join("worktrees");
     let lock = crate::git_workspace::repository_lock(Path::new(&project_path)).await?;
-    let _guard = lock.lock().await;
-    tauri::async_runtime::spawn_blocking(move || {
-        let source = checkpoint_repo(&project_path)?;
-        let canonical_root = managed_root
-            .canonicalize()
-            .map_err(|error| format!("Could not open Mythra Code's worktree folder: {error}"))?;
-        let canonical_worktree = PathBuf::from(&worktree_path)
-            .canonicalize()
-            .map_err(|error| format!("Could not open the isolated worktree: {error}"))?;
-        if !canonical_worktree.starts_with(&canonical_root) {
-            return Err(
-                "Mythra Code will only remove worktrees it created in its managed folder".into(),
-            );
-        }
-        let worktree = checkpoint_repo(&worktree_path)?;
-        verify_linked_worktree(&source, &worktree)?;
-        verify_managed_worktree_branch(&worktree, &branch)?;
-        let status = git_stdout(
-            &worktree,
-            &["status", "--porcelain=v1", "--untracked-files=all"],
-            None,
-        )?;
-        let ignored_file_count = git_nul_path_count(&worktree, IGNORED_FILES_ARGS)?;
-        if (!status.is_empty() || ignored_file_count > 0) && !force {
-            return Err(
-                "The isolated worktree contains uncommitted, untracked, or ignored files".into(),
-            );
-        }
-        let mut args = vec!["worktree", "remove"];
-        if force {
-            args.push("--force");
-        }
-        args.push(&worktree_path);
-        git_stdout(&source, &args, None)?;
-        if delete_branch {
-            git_stdout(
-                &source,
-                &["branch", if force { "-D" } else { "-d" }, &branch],
-                None,
-            )?;
-        }
-        if let Some(thread_id) = thread_id {
-            let reference = worktree_applied_ref(&thread_id)?;
-            let _ = git_stdout(&source, &["update-ref", "-d", &reference], None);
-        }
-        let _ = git_stdout(&source, &["worktree", "prune"], None);
-        Ok(())
+    let guard = lock.lock_owned().await;
+    spawn_locked_worktree_worker(guard, move || {
+        worktree_remove_sync(
+            &managed_root,
+            thread_id.as_deref(),
+            &project_path,
+            &worktree_path,
+            &branch,
+            WorktreeRemoveOptions {
+                force,
+                delete_branch,
+                expected_retained_branch_oid: expected_retained_branch_oid.as_deref(),
+                timeout: Duration::from_secs(120),
+            },
+        )
     })
     .await
     .map_err(|error| format!("Worktree removal task failed: {error}"))?
+}
+
+#[cfg(test)]
+mod worktree_lifecycle_tests {
+    use super::*;
+
+    struct RemovalFixture {
+        root: PathBuf,
+        source: PathBuf,
+        managed_root: PathBuf,
+        isolated: PathBuf,
+    }
+
+    impl RemovalFixture {
+        fn new() -> Self {
+            let root =
+                env::temp_dir().join(format!("mythra-worktree-remove-{}", uuid::Uuid::new_v4()));
+            let source = root.join("source");
+            let managed_root = root.join("worktrees");
+            let isolated = managed_root.join("project/isolated");
+            fs::create_dir_all(&source).unwrap();
+            fs::create_dir_all(isolated.parent().unwrap()).unwrap();
+            git_stdout(&source, &["init", "-b", "main"], None).unwrap();
+            git_stdout(&source, &["config", "user.name", "Test"], None).unwrap();
+            git_stdout(&source, &["config", "user.email", "test@example.com"], None).unwrap();
+            fs::write(source.join("file.txt"), "initial\n").unwrap();
+            git_stdout(&source, &["add", "--all"], None).unwrap();
+            git_stdout(&source, &["commit", "-m", "initial"], None).unwrap();
+            git_stdout(
+                &source,
+                &[
+                    "worktree",
+                    "add",
+                    "-b",
+                    "mythra/isolated",
+                    isolated.to_str().unwrap(),
+                    "HEAD",
+                ],
+                None,
+            )
+            .unwrap();
+            Self {
+                root,
+                source,
+                managed_root,
+                isolated,
+            }
+        }
+
+        fn remove(&self) -> Result<WorktreeRemoveResult, String> {
+            worktree_remove_sync(
+                &self.managed_root,
+                Some("remove-thread"),
+                self.source.to_str().unwrap(),
+                self.isolated.to_str().unwrap(),
+                "mythra/isolated",
+                WorktreeRemoveOptions {
+                    force: false,
+                    delete_branch: true,
+                    expected_retained_branch_oid: None,
+                    timeout: Duration::from_secs(120),
+                },
+            )
+        }
+
+        fn cleanup(&self, expected_oid: &str, force: bool) -> Result<WorktreeRemoveResult, String> {
+            worktree_remove_sync(
+                &self.managed_root,
+                Some("remove-thread"),
+                self.source.to_str().unwrap(),
+                self.isolated.to_str().unwrap(),
+                "mythra/isolated",
+                WorktreeRemoveOptions {
+                    force,
+                    delete_branch: true,
+                    expected_retained_branch_oid: Some(expected_oid),
+                    timeout: Duration::from_secs(120),
+                },
+            )
+        }
+
+        fn merge_with_stale_upstream(&self) -> String {
+            let initial = git_stdout(&self.source, &["rev-parse", "HEAD"], None).unwrap();
+            git_stdout(
+                &self.source,
+                &[
+                    "remote",
+                    "add",
+                    "origin",
+                    self.root.join("remote.git").to_str().unwrap(),
+                ],
+                None,
+            )
+            .unwrap();
+            git_stdout(
+                &self.source,
+                &["update-ref", "refs/remotes/origin/main", &initial],
+                None,
+            )
+            .unwrap();
+            git_stdout(
+                &self.source,
+                &["config", "branch.mythra/isolated.remote", "origin"],
+                None,
+            )
+            .unwrap();
+            git_stdout(
+                &self.source,
+                &["config", "branch.mythra/isolated.merge", "refs/heads/main"],
+                None,
+            )
+            .unwrap();
+            fs::write(self.isolated.join("file.txt"), "isolated\n").unwrap();
+            git_stdout(&self.isolated, &["add", "--all"], None).unwrap();
+            git_stdout(&self.isolated, &["commit", "-m", "isolated"], None).unwrap();
+            let oid = git_stdout(&self.isolated, &["rev-parse", "HEAD"], None).unwrap();
+            git_stdout(
+                &self.source,
+                &["merge", "--no-ff", "--no-edit", "mythra/isolated"],
+                None,
+            )
+            .unwrap();
+            oid
+        }
+    }
+
+    impl Drop for RemovalFixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[test]
+    fn worktree_removal_reports_removed_folder_when_branch_deletion_is_refused() {
+        let fixture = RemovalFixture::new();
+        let isolated_oid = fixture.merge_with_stale_upstream();
+        set_worktree_applied_baseline_sync(
+            fixture.source.to_str().unwrap(),
+            "remove-thread",
+            &isolated_oid,
+        )
+        .unwrap();
+        let result = fixture.remove();
+        assert!(
+            !fixture.isolated.exists(),
+            "the successful first phase removed the folder"
+        );
+        assert!(
+            result.is_ok(),
+            "completed folder removal must be a resolved phased result: {result:?}"
+        );
+        let result = result.unwrap();
+        assert!(result.folder_removed);
+        assert!(!result.branch_deleted);
+        assert_eq!(result.retained_branch.as_deref(), Some("mythra/isolated"));
+        assert_eq!(
+            result.retained_branch_oid.as_deref(),
+            Some(isolated_oid.as_str())
+        );
+        assert!(result
+            .branch_delete_error
+            .unwrap()
+            .contains("not fully merged"));
+        assert_eq!(
+            git_stdout(
+                &fixture.source,
+                &["rev-parse", "refs/heads/mythra/isolated"],
+                None
+            )
+            .unwrap(),
+            isolated_oid
+        );
+        assert!(optional_git_stdout(
+            &fixture.source,
+            &[
+                "rev-parse",
+                "--verify",
+                "refs/openkiwi/worktrees/remove-thread/applied"
+            ]
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn worktree_removal_reports_complete_cleanup() {
+        let fixture = RemovalFixture::new();
+        git_stdout(
+            &fixture.source,
+            &["config", "branch.mythra/isolated.description", "old branch"],
+            None,
+        )
+        .unwrap();
+        let result = fixture.remove().unwrap();
+        assert!(result.folder_removed && result.branch_deleted);
+        assert!(
+            result.retained_branch.is_none()
+                && result.retained_branch_oid.is_none()
+                && result.branch_delete_error.is_none()
+        );
+        assert!(!fixture.isolated.exists());
+        assert!(optional_git_stdout(
+            &fixture.source,
+            &["config", "--get", "branch.mythra/isolated.description"]
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn worktree_removal_preserves_a_recreated_branch_and_its_config() {
+        let fixture = RemovalFixture::new();
+        let initial = git_stdout(&fixture.source, &["rev-parse", "HEAD"], None).unwrap();
+        let tree = git_stdout(&fixture.source, &["rev-parse", "HEAD^{tree}"], None).unwrap();
+        let new_tip = git_stdout(
+            &fixture.source,
+            &[
+                "commit-tree",
+                &tree,
+                "-p",
+                &initial,
+                "-m",
+                "recreated branch",
+            ],
+            None,
+        )
+        .unwrap();
+        git_stdout(
+            &fixture.source,
+            &["config", "branch.mythra/isolated.description", "old branch"],
+            None,
+        )
+        .unwrap();
+        let result = worktree_remove_sync_with_gate(
+            &fixture.managed_root,
+            Some("remove-thread"),
+            fixture.source.to_str().unwrap(),
+            fixture.isolated.to_str().unwrap(),
+            "mythra/isolated",
+            WorktreeRemoveOptions {
+                force: true,
+                delete_branch: true,
+                expected_retained_branch_oid: None,
+                timeout: Duration::from_secs(120),
+            },
+            |phase, _| {
+                if matches!(phase, WorktreeRemovalPhase::BeforeConfigCleanup) {
+                    git_stdout(
+                        &fixture.source,
+                        &[
+                            "update-ref",
+                            "refs/heads/mythra/isolated",
+                            &new_tip,
+                            &"0".repeat(40),
+                        ],
+                        None,
+                    )?;
+                    git_stdout(
+                        &fixture.source,
+                        &[
+                            "config",
+                            "branch.mythra/isolated.description",
+                            "new branch configuration",
+                        ],
+                        None,
+                    )?;
+                }
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(result.folder_removed && !result.branch_deleted);
+        assert_eq!(
+            result.retained_branch_oid.as_deref(),
+            Some(new_tip.as_str())
+        );
+        assert!(result.branch_delete_error.unwrap().contains("recreated"));
+        assert_eq!(
+            git_stdout(
+                &fixture.source,
+                &["config", "--get", "branch.mythra/isolated.description"],
+                None
+            )
+            .unwrap(),
+            "new branch configuration"
+        );
+    }
+
+    #[test]
+    fn worktree_removal_reserves_absent_branch_name_while_cleaning_config() {
+        let fixture = RemovalFixture::new();
+        let initial = git_stdout(&fixture.source, &["rev-parse", "HEAD"], None).unwrap();
+        git_stdout(
+            &fixture.source,
+            &["config", "branch.mythra/isolated.description", "old branch"],
+            None,
+        )
+        .unwrap();
+        let mut attempted_recreation = false;
+        let result = worktree_remove_sync_with_gate(&fixture.managed_root, Some("remove-thread"), fixture.source.to_str().unwrap(), fixture.isolated.to_str().unwrap(), "mythra/isolated", WorktreeRemoveOptions { force: true, delete_branch: true, expected_retained_branch_oid: None, timeout: Duration::from_secs(120) }, |phase, _| {
+            if matches!(phase, WorktreeRemovalPhase::ConfigNameReserved) {
+                let output = run_git(&fixture.source, &["update-ref", "refs/heads/mythra/isolated", &initial, &"0".repeat(40)], None)?;
+                assert!(!output.status.success(), "the prepared absence transaction must prevent same-name recreation until old config is removed");
+                attempted_recreation = true;
+            }
+            Ok(())
+        }).unwrap();
+        assert!(attempted_recreation);
+        assert!(result.folder_removed && result.branch_deleted);
+        assert!(result.branch_delete_error.is_none());
+        assert!(optional_git_stdout(
+            &fixture.source,
+            &["config", "--get", "branch.mythra/isolated.description"]
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn worktree_removal_keeps_branches_owned_by_detached_rebase_or_bisect() {
+        for state in [
+            "rebase-merge/head-name",
+            "rebase-apply/head-name",
+            "BISECT_START",
+        ] {
+            let fixture = RemovalFixture::new();
+            let other = fixture.managed_root.join("project/other");
+            git_stdout(
+                &fixture.source,
+                &[
+                    "worktree",
+                    "add",
+                    "--detach",
+                    other.to_str().unwrap(),
+                    "HEAD",
+                ],
+                None,
+            )
+            .unwrap();
+            let git_path = git_stdout(&other, &["rev-parse", "--git-path", state], None).unwrap();
+            let git_path = PathBuf::from(git_path);
+            let git_path = if git_path.is_absolute() {
+                git_path
+            } else {
+                other.join(git_path)
+            };
+            fs::create_dir_all(git_path.parent().unwrap()).unwrap();
+            fs::write(
+                &git_path,
+                if state == "BISECT_START" {
+                    "mythra/isolated\n"
+                } else {
+                    "refs/heads/mythra/isolated\n"
+                },
+            )
+            .unwrap();
+            let result = worktree_remove_sync(
+                &fixture.managed_root,
+                Some("remove-thread"),
+                fixture.source.to_str().unwrap(),
+                fixture.isolated.to_str().unwrap(),
+                "mythra/isolated",
+                WorktreeRemoveOptions {
+                    force: true,
+                    delete_branch: true,
+                    expected_retained_branch_oid: None,
+                    timeout: Duration::from_secs(120),
+                },
+            )
+            .unwrap();
+            assert!(result.folder_removed && !result.branch_deleted);
+            assert!(result
+                .branch_delete_error
+                .unwrap()
+                .contains("rebase or bisect"));
+            assert!(optional_git_stdout(
+                &fixture.source,
+                &["rev-parse", "--verify", "refs/heads/mythra/isolated"]
+            )
+            .is_some());
+        }
+    }
+
+    #[test]
+    fn worktree_removal_timeout_before_preflight_preserves_folder_branch_and_index() {
+        let fixture = RemovalFixture::new();
+        let initial = git_stdout(&fixture.source, &["rev-parse", "HEAD"], None).unwrap();
+        let index = fs::read(fixture.source.join(".git/index")).unwrap();
+        let error = worktree_remove_sync(
+            &fixture.managed_root,
+            Some("remove-thread"),
+            fixture.source.to_str().unwrap(),
+            fixture.isolated.to_str().unwrap(),
+            "mythra/isolated",
+            WorktreeRemoveOptions {
+                force: true,
+                delete_branch: true,
+                expected_retained_branch_oid: None,
+                timeout: Duration::ZERO,
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("timed out"));
+        assert!(fixture.isolated.join("file.txt").exists());
+        assert_eq!(fs::read(fixture.source.join(".git/index")).unwrap(), index);
+        assert_eq!(
+            git_stdout(
+                &fixture.source,
+                &["rev-parse", "refs/heads/mythra/isolated"],
+                None
+            )
+            .unwrap(),
+            initial
+        );
+    }
+
+    #[test]
+    fn worktree_removal_reports_unknown_branch_state_when_cleanup_deadline_expires() {
+        let fixture = RemovalFixture::new();
+        let initial = git_stdout(&fixture.source, &["rev-parse", "HEAD"], None).unwrap();
+        let result = worktree_remove_sync_with_gate(
+            &fixture.managed_root,
+            Some("remove-thread"),
+            fixture.source.to_str().unwrap(),
+            fixture.isolated.to_str().unwrap(),
+            "mythra/isolated",
+            WorktreeRemoveOptions {
+                force: true,
+                delete_branch: true,
+                expected_retained_branch_oid: None,
+                timeout: Duration::from_secs(120),
+            },
+            |phase, git| {
+                if matches!(phase, WorktreeRemovalPhase::FolderRemoved) {
+                    // Expire exactly after successful folder removal, independent
+                    // of native process/job startup cost on either platform.
+                    git.deadline.set(Instant::now());
+                }
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(result.folder_removed && !result.branch_deleted);
+        assert!(result.retained_branch.is_none() && result.retained_branch_oid.is_none());
+        let warning = result.branch_delete_error.unwrap();
+        assert!(warning.contains("could not be verified") && warning.contains(&initial));
+        assert!(!fixture.isolated.exists());
+        assert_eq!(
+            git_stdout(
+                &fixture.source,
+                &["rev-parse", "refs/heads/mythra/isolated"],
+                None
+            )
+            .unwrap(),
+            initial
+        );
+    }
+
+    #[test]
+    fn worktree_removal_preserves_an_external_commit_created_after_final_tip_check() {
+        let fixture = RemovalFixture::new();
+        let initial = git_stdout(&fixture.source, &["rev-parse", "HEAD"], None).unwrap();
+        let tree = git_stdout(&fixture.source, &["rev-parse", "HEAD^{tree}"], None).unwrap();
+        let external_commit = git_stdout(
+            &fixture.source,
+            &[
+                "commit-tree",
+                &tree,
+                "-p",
+                &initial,
+                "-m",
+                "external unmerged commit",
+            ],
+            None,
+        )
+        .unwrap();
+        let result = worktree_remove_sync_with_gate(
+            &fixture.managed_root,
+            Some("remove-thread"),
+            fixture.source.to_str().unwrap(),
+            fixture.isolated.to_str().unwrap(),
+            "mythra/isolated",
+            WorktreeRemoveOptions {
+                force: true,
+                delete_branch: true,
+                expected_retained_branch_oid: None,
+                timeout: Duration::from_secs(120),
+            },
+            |phase, _| {
+                if matches!(phase, WorktreeRemovalPhase::BeforeBranchDelete) {
+                    git_stdout(
+                        &fixture.source,
+                        &[
+                            "update-ref",
+                            "refs/heads/mythra/isolated",
+                            &external_commit,
+                            &initial,
+                        ],
+                        None,
+                    )?;
+                }
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(result.folder_removed);
+        assert!(
+            !result.branch_deleted,
+            "a newer externally created commit must remain named after folder removal"
+        );
+        assert_eq!(
+            result.retained_branch_oid.as_deref(),
+            Some(external_commit.as_str())
+        );
+        assert_eq!(
+            git_stdout(
+                &fixture.source,
+                &["rev-parse", "refs/heads/mythra/isolated"],
+                None
+            )
+            .unwrap(),
+            external_commit
+        );
+    }
+
+    #[test]
+    fn worktree_removal_keeps_branch_when_deletion_was_not_requested() {
+        let fixture = RemovalFixture::new();
+        let result = worktree_remove_sync(
+            &fixture.managed_root,
+            None,
+            fixture.source.to_str().unwrap(),
+            fixture.isolated.to_str().unwrap(),
+            "mythra/isolated",
+            WorktreeRemoveOptions {
+                force: false,
+                delete_branch: false,
+                expected_retained_branch_oid: None,
+                timeout: Duration::from_secs(120),
+            },
+        )
+        .unwrap();
+        assert!(result.folder_removed && !result.branch_deleted);
+        assert_eq!(result.retained_branch.as_deref(), Some("mythra/isolated"));
+        assert!(result.branch_delete_error.is_none());
+    }
+
+    #[test]
+    fn worktree_removal_validates_checkpoint_identity_before_removing_folder() {
+        let fixture = RemovalFixture::new();
+        let error = worktree_remove_sync(
+            &fixture.managed_root,
+            Some("invalid/thread"),
+            fixture.source.to_str().unwrap(),
+            fixture.isolated.to_str().unwrap(),
+            "mythra/isolated",
+            WorktreeRemoveOptions {
+                force: false,
+                delete_branch: true,
+                expected_retained_branch_oid: None,
+                timeout: Duration::from_secs(120),
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("identity is invalid"));
+        assert!(fixture.isolated.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn worktree_removal_bounds_a_hanging_fsmonitor_before_removing_data() {
+        use std::{os::unix::fs::PermissionsExt, sync::mpsc};
+        let fixture = RemovalFixture::new();
+        let gate = fixture.root.join("finish-fsmonitor");
+        let hook = fixture.root.join("fsmonitor.sh");
+        fs::write(
+            &hook,
+            format!(
+                "#!/bin/sh\nwhile ! test -f '{}'; do sleep 0.01; done\nprintf '\\0'\n",
+                gate.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        git_stdout(
+            &fixture.source,
+            &["config", "core.fsmonitor", hook.to_str().unwrap()],
+            None,
+        )
+        .unwrap();
+        fs::write(fixture.isolated.join("file.txt"), "preserve this change\n").unwrap();
+        let managed = fixture.managed_root.clone();
+        let source = fixture.source.clone();
+        let isolated = fixture.isolated.clone();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            tx.send(worktree_remove_sync(
+                &managed,
+                Some("remove-thread"),
+                source.to_str().unwrap(),
+                isolated.to_str().unwrap(),
+                "mythra/isolated",
+                WorktreeRemoveOptions {
+                    force: false,
+                    delete_branch: true,
+                    expected_retained_branch_oid: None,
+                    timeout: Duration::from_millis(300),
+                },
+            ))
+            .unwrap();
+        });
+        let timely = rx.recv_timeout(Duration::from_secs(1));
+        let completed_within_bound = timely.is_ok();
+        // Release the old unbounded implementation so fail-before leaves no
+        // blocked Git process and does not use the long production timeout.
+        fs::write(&gate, "finish\n").unwrap();
+        let result = timely.unwrap_or_else(|_| rx.recv_timeout(Duration::from_secs(2)).unwrap());
+        assert!(
+            completed_within_bound,
+            "a hanging fsmonitor must not retain removal ownership indefinitely"
+        );
+        assert!(result.unwrap_err().contains("timed out"));
+        assert_eq!(
+            fs::read_to_string(fixture.isolated.join("file.txt")).unwrap(),
+            "preserve this change\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn timed_out_removal_releases_cancelled_worker_ownership_and_stops_hook_descendants() {
+        use std::{os::unix::fs::PermissionsExt, sync::mpsc};
+        let fixture = RemovalFixture::new();
+        let ready = fixture.root.join("fsmonitor-ready");
+        let escaped = fixture.root.join("fsmonitor-descendant-escaped");
+        let hook = fixture.root.join("fsmonitor.sh");
+        fs::write(&hook, format!("#!/bin/sh\nprintf ready > '{}'\n(sleep 1.5; printf escaped > '{}') &\nwhile true; do sleep 0.01; done\n", ready.display(), escaped.display())).unwrap();
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        let index_path = PathBuf::from(
+            git_stdout(
+                &fixture.isolated,
+                &["rev-parse", "--git-path", "index"],
+                None,
+            )
+            .unwrap(),
+        );
+        let index_path = if index_path.is_absolute() {
+            index_path
+        } else {
+            fixture.isolated.join(index_path)
+        };
+        let index_before = fs::read(&index_path).unwrap();
+        git_stdout(
+            &fixture.source,
+            &["config", "core.fsmonitor", hook.to_str().unwrap()],
+            None,
+        )
+        .unwrap();
+        fs::write(
+            fixture.isolated.join("file.txt"),
+            "keep my working change\n",
+        )
+        .unwrap();
+        let lock = crate::git_workspace::repository_lock(&fixture.source)
+            .await
+            .unwrap();
+        let worker_lock = std::sync::Arc::clone(&lock);
+        let managed = fixture.managed_root.clone();
+        let source = fixture.source.clone();
+        let isolated = fixture.isolated.clone();
+        let (tx, rx) = mpsc::channel();
+        let outer = tokio::spawn(async move {
+            let guard = worker_lock.lock_owned().await;
+            spawn_locked_worktree_worker(guard, move || {
+                tx.send(worktree_remove_sync(
+                    &managed,
+                    Some("remove-thread"),
+                    source.to_str().unwrap(),
+                    isolated.to_str().unwrap(),
+                    "mythra/isolated",
+                    WorktreeRemoveOptions {
+                        force: false,
+                        delete_branch: true,
+                        expected_retained_branch_oid: None,
+                        timeout: Duration::from_secs(1),
+                    },
+                ))
+                .unwrap();
+                Ok(())
+            })
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !ready.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        outer.abort();
+        assert!(outer.await.unwrap_err().is_cancelled());
+        assert!(lock.try_lock().is_err());
+        let _next_worker_guard = tokio::time::timeout(Duration::from_secs(2), lock.lock())
+            .await
+            .expect("timeout must finish the worker and release ownership for the next operation");
+        assert!(rx
+            .recv_timeout(Duration::from_millis(100))
+            .unwrap()
+            .unwrap_err()
+            .contains("timed out"));
+        assert_eq!(fs::read(&index_path).unwrap(), index_before);
+        assert_eq!(
+            fs::read_to_string(fixture.isolated.join("file.txt")).unwrap(),
+            "keep my working change\n"
+        );
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        assert!(
+            !escaped.exists(),
+            "timeout must stop hook descendants as well as Git itself"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn worktree_removal_reports_partial_cleanup_when_a_reference_hook_times_out() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = RemovalFixture::new();
+        let initial = git_stdout(&fixture.source, &["rev-parse", "HEAD"], None).unwrap();
+        let ready = fixture.root.join("reference-hook-ready");
+        let hook = fixture.source.join(".git/hooks/reference-transaction");
+        fs::write(&hook, format!("#!/bin/sh\nif test \"$1\" = prepared; then\nprintf ready > '{}'\nwhile true; do sleep 0.01; done\nfi\n", ready.display())).unwrap();
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        let result = worktree_remove_sync_with_gate(
+            &fixture.managed_root,
+            Some("remove-thread"),
+            fixture.source.to_str().unwrap(),
+            fixture.isolated.to_str().unwrap(),
+            "mythra/isolated",
+            WorktreeRemoveOptions {
+                force: true,
+                delete_branch: true,
+                expected_retained_branch_oid: None,
+                timeout: Duration::from_secs(120),
+            },
+            |phase, git| {
+                if matches!(phase, WorktreeRemovalPhase::BeforeBranchDelete) {
+                    // Start the hook's bounded mutation budget at its actual
+                    // phase. Parallel preflight cost must not expire it before
+                    // the ref transaction reaches the hanging hook.
+                    git.deadline.set(Instant::now() + Duration::from_secs(2));
+                }
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(
+            ready.exists(),
+            "the actual ref mutation must have reached its hook after folder removal"
+        );
+        assert!(result.folder_removed && !result.branch_deleted);
+        assert!(result.retained_branch.is_none() && result.retained_branch_oid.is_none());
+        assert!(result.branch_delete_error.unwrap().contains("timed out"));
+        assert!(!fixture.isolated.exists());
+        assert_eq!(
+            git_stdout(
+                &fixture.source,
+                &["rev-parse", "refs/heads/mythra/isolated"],
+                None
+            )
+            .unwrap(),
+            initial
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn worktree_operation_identity_refuses_a_fifo_without_waiting_for_a_writer() {
+        use std::{ffi::CString, os::unix::ffi::OsStrExt};
+        let fixture = RemovalFixture::new();
+        let path = fixture.root.join("rebase-identity-fifo");
+        let name = CString::new(path.as_os_str().as_bytes()).unwrap();
+        // SAFETY: name is a valid NUL-terminated disposable fixture path.
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        assert!(read_worktree_operation_identity(&path)
+            .unwrap_err()
+            .to_string()
+            .contains("small regular file"));
+    }
+
+    #[test]
+    fn worktree_removal_refuses_dirty_and_ignored_files_without_force() {
+        let fixture = RemovalFixture::new();
+        fs::write(fixture.isolated.join("file.txt"), "changed\n").unwrap();
+        assert!(fixture.remove().unwrap_err().contains("uncommitted"));
+        git_stdout(&fixture.isolated, &["restore", "file.txt"], None).unwrap();
+        fs::write(fixture.source.join(".git/info/exclude"), "private.log\n").unwrap();
+        fs::write(fixture.isolated.join("private.log"), "private\n").unwrap();
+        assert!(fixture.remove().unwrap_err().contains("ignored files"));
+        assert!(fixture.isolated.exists());
+    }
+
+    #[test]
+    fn retained_branch_retry_requires_matching_tip_and_never_upgrades_to_force() {
+        let fixture = RemovalFixture::new();
+        let isolated_oid = fixture.merge_with_stale_upstream();
+        fixture.remove().unwrap();
+        assert!(fixture
+            .remove()
+            .unwrap_err()
+            .contains("Review its retained branch"));
+        assert!(fixture
+            .cleanup(&isolated_oid, true)
+            .unwrap_err()
+            .contains("without force"));
+        let retry = fixture.cleanup(&isolated_oid, false).unwrap();
+        assert!(!retry.branch_deleted);
+        assert_eq!(
+            retry.retained_branch_oid.as_deref(),
+            Some(isolated_oid.as_str())
+        );
+        assert!(retry
+            .branch_delete_error
+            .unwrap()
+            .contains("not fully merged"));
+        let source_head = git_stdout(&fixture.source, &["rev-parse", "HEAD"], None).unwrap();
+        git_stdout(
+            &fixture.source,
+            &["update-ref", "refs/heads/mythra/isolated", &source_head],
+            None,
+        )
+        .unwrap();
+        assert!(fixture
+            .cleanup(&isolated_oid, false)
+            .unwrap_err()
+            .contains("changed since removal"));
+        assert_eq!(
+            git_stdout(
+                &fixture.source,
+                &["rev-parse", "refs/heads/mythra/isolated"],
+                None
+            )
+            .unwrap(),
+            source_head
+        );
+    }
+
+    #[test]
+    fn retained_branch_retry_completes_after_upstream_contains_tip() {
+        let fixture = RemovalFixture::new();
+        let isolated_oid = fixture.merge_with_stale_upstream();
+        fixture.remove().unwrap();
+        git_stdout(
+            &fixture.source,
+            &["update-ref", "refs/remotes/origin/main", &isolated_oid],
+            None,
+        )
+        .unwrap();
+        let result = fixture.cleanup(&isolated_oid, false).unwrap();
+        assert!(result.branch_deleted && result.folder_removed);
+        // A repeated cleanup of the same completed removal is harmless.
+        assert!(
+            fixture
+                .cleanup(&isolated_oid, false)
+                .unwrap()
+                .branch_deleted
+        );
+    }
+
+    #[test]
+    fn retained_branch_retry_refuses_recreated_folder_and_other_worktree() {
+        let fixture = RemovalFixture::new();
+        let isolated_oid = fixture.merge_with_stale_upstream();
+        fixture.remove().unwrap();
+        fs::create_dir_all(&fixture.isolated).unwrap();
+        fs::write(fixture.isolated.join("new.txt"), "keep\n").unwrap();
+        assert!(fixture
+            .cleanup(&isolated_oid, false)
+            .unwrap_err()
+            .contains("exists again"));
+        assert!(fixture.isolated.join("new.txt").exists());
+        fs::remove_dir_all(&fixture.isolated).unwrap();
+        let other = fixture.managed_root.join("project/recreated");
+        git_stdout(
+            &fixture.source,
+            &[
+                "worktree",
+                "add",
+                other.to_str().unwrap(),
+                "mythra/isolated",
+            ],
+            None,
+        )
+        .unwrap();
+        assert!(fixture
+            .cleanup(&isolated_oid, false)
+            .unwrap_err()
+            .contains("checked out in another worktree"));
+        assert!(other.join("file.txt").exists());
+    }
+
+    #[test]
+    fn retained_branch_retry_refuses_outside_and_parent_traversal_paths() {
+        let fixture = RemovalFixture::new();
+        let isolated_oid = fixture.merge_with_stale_upstream();
+        fixture.remove().unwrap();
+        for path in [
+            fixture.root.join("outside"),
+            fixture.managed_root.join("project/../missing"),
+        ] {
+            let error = worktree_remove_sync(
+                &fixture.managed_root,
+                Some("remove-thread"),
+                fixture.source.to_str().unwrap(),
+                path.to_str().unwrap(),
+                "mythra/isolated",
+                WorktreeRemoveOptions {
+                    force: false,
+                    delete_branch: true,
+                    expected_retained_branch_oid: Some(&isolated_oid),
+                    timeout: Duration::from_secs(120),
+                },
+            )
+            .unwrap_err();
+            assert!(error.contains("managed") || error.contains("managed folder"));
+        }
+        assert_eq!(
+            git_stdout(
+                &fixture.source,
+                &["rev-parse", "refs/heads/mythra/isolated"],
+                None
+            )
+            .unwrap(),
+            isolated_oid
+        );
+    }
+
+    #[tokio::test]
+    async fn worktree_blocking_worker_owns_lock_until_it_finishes_after_cancellation() {
+        use std::{
+            sync::{mpsc, Arc},
+            time::Duration,
+        };
+        let lock = Arc::new(tokio::sync::Mutex::new(()));
+        let worker_lock = Arc::clone(&lock);
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (finish_tx, finish_rx) = mpsc::channel();
+        let outer = tokio::spawn(async move {
+            let guard = worker_lock.lock_owned().await;
+            spawn_locked_worktree_worker(guard, move || {
+                started_tx.send(()).unwrap();
+                finish_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                Ok(())
+            })
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), started_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        outer.abort();
+        assert!(outer.await.unwrap_err().is_cancelled());
+        assert!(
+            lock.try_lock().is_err(),
+            "cancelling the command cannot release its still-running worker's ownership"
+        );
+        finish_tx.send(()).unwrap();
+        let _guard = tokio::time::timeout(Duration::from_secs(2), lock.lock())
+            .await
+            .unwrap();
+    }
 }

@@ -4,10 +4,13 @@ import { flushSync } from "react-dom";
 import { Check, ChevronDown, ChevronRight, CircleDot, Clipboard, CornerUpRight, FileCode2, FoldVertical, ImageIcon, ListChecks, MessageSquare, MessageSquarePlus, Pencil, TerminalSquare, UsersRound } from "lucide-react";
 import { convertFileSrc, invoke, isTauri } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import Markdown from "react-markdown";
+import Markdown, { type Options as MarkdownOptions } from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
-import type { Activity, ChatMessage, PendingApproval, Provider } from "../types";
+import type { Element } from "hast";
+import type { LocalSkill } from "../lib/skills";
+import { remarkSkillMentions } from "../lib/skillMentionMarkdown";
+import type { Activity, ChatMessage, PendingApproval, Provider, SkillReference } from "../types";
 import type { JsonObject } from "../lib/codex";
 import { InlineApprovalCard } from "./ApprovalCenter";
 import { SubAgentControls } from "./SubAgentControls";
@@ -21,6 +24,8 @@ import { describeSubAgentActivity, subAgentStatusLabel, workerStatusFromAgentRec
 import type { ThreadHistoryState } from "../lib/threadHistory";
 import { createStreamingTextFade, type StreamingTextFade } from "../lib/streamingTextFade";
 import "./ChatTimeline.compaction.css";
+import "./ChatTimeline.skills.css";
+import { SkillDependencyDetails } from "./SkillDependencyDetails";
 import { createStreamingTextPacer, type StreamingTextPacer } from "../lib/streamingTextPacer";
 
 export type WorkItemEntry =
@@ -278,7 +283,19 @@ function useCopyFeedback(): [boolean, (text: string) => void] {
  * Markdown links must never navigate the webview itself away from the app.
  * http(s) destinations open in the system browser; anything else is inert.
  */
-function MarkdownLink({ href, children }: { href?: string; children?: ReactNode }) {
+function MarkdownLink({ href, children, node }: { href?: string; children?: ReactNode; node?: Element }) {
+  const skillNavigation = useContext(SkillNavigation);
+  const path = node?.properties["data-skill-path"];
+  const name = node?.properties["data-skill-name"];
+  const disabled = node?.properties["data-skill-disabled"];
+  const missing = node?.properties["data-skill-missing"];
+  if (typeof path === "string" && typeof name === "string") {
+    if (missing) return <span className="message-skill-mention unavailable" title={`@${name} is unavailable in the selected skills folder`}>{children}</span>;
+    return <a href="#skills" className="message-skill-mention"
+      title={`Open @${name} in Settings · Skills${disabled ? " (disabled)" : ""}`}
+      onClick={(event) => { event.preventDefault(); skillNavigation?.onOpenSkill?.(path); }}
+    >{children}</a>;
+  }
   const external = Boolean(href && /^https?:\/\//i.test(href));
   return (
     <a
@@ -295,6 +312,8 @@ function MarkdownLink({ href, children }: { href?: string; children?: ReactNode 
 }
 
 const FlushStreamingDisplay = createContext<(() => void) | undefined>(undefined);
+const SkillNavigation = createContext<{ skills: LocalSkill[]; onOpenSkill?: (path: string) => void } | undefined>(undefined);
+const NO_SKILLS: LocalSkill[] = [];
 
 function CodePre({ children }: { children?: ReactNode }) {
   const [copied, copy] = useCopyFeedback();
@@ -333,6 +352,14 @@ const MessageMarkdown = memo(function MessageMarkdown({ text, rootRef, assistant
       <Markdown remarkPlugins={assistant ? ASSISTANT_MARKDOWN_PLUGINS : DEFAULT_MARKDOWN_PLUGINS} components={MARKDOWN_COMPONENTS}>{text}</Markdown>
     </div>
   );
+});
+
+const UserMessageMarkdown = memo(function UserMessageMarkdown({ text, references }: { text: string; references?: SkillReference[] }) {
+  const navigation = useContext(SkillNavigation);
+  const plugins = useMemo<NonNullable<MarkdownOptions["remarkPlugins"]>>(() => navigation?.skills.length || references !== undefined
+    ? [...DEFAULT_MARKDOWN_PLUGINS, [remarkSkillMentions, { text, skills: navigation?.skills ?? NO_SKILLS, references }]]
+    : DEFAULT_MARKDOWN_PLUGINS, [text, navigation?.skills, references]);
+  return <div className="message-text rich-markdown"><Markdown remarkPlugins={plugins} components={MARKDOWN_COMPONENTS}>{text}</Markdown></div>;
 });
 
 /**
@@ -463,6 +490,8 @@ function MessageImagePreview({ path, name }: { path: string; name: string }) {
 }
 
 const MessageRow = memo(function MessageRow({ message, provider, onEdit }: { message: ChatMessage; provider: Provider; onEdit?: (text: string) => void }) {
+  const skillNavigation = useContext(SkillNavigation);
+  const dependencies = message.role === "user" && <SkillDependencyDetails report={message.skillDependencies} skills={skillNavigation?.skills} onOpenSkill={skillNavigation?.onOpenSkill} mode="history" />;
   const [copied, copy] = useCopyFeedback();
   const openFeedback = useFeedbackMessageSource(message);
   const attachments = message.role === "user" ? message.attachments ?? [] : [];
@@ -523,10 +552,11 @@ const MessageRow = memo(function MessageRow({ message, provider, onEdit }: { mes
           </div>
           {message.text.trim() !== "" && (
             <div className="message-body">
-              <MessageMarkdown text={message.text} assistant={message.role === "assistant"} />
+              <UserMessageMarkdown text={message.text} references={message.skillReferences} />
             </div>
           )}
           {steerStatus}
+          {dependencies}
         </div>
       </article>
     );
@@ -542,9 +572,10 @@ const MessageRow = memo(function MessageRow({ message, provider, onEdit }: { mes
           ? <div className="message-feedback-source" data-feedback-message={openFeedback ? message.id : undefined}>
             <AssistantMessageMarkdown text={message.text} streaming={Boolean(message.streaming)} />
           </div>
-          : <MessageMarkdown text={message.text} />}
+          : <UserMessageMarkdown text={message.text} references={message.skillReferences} />}
         {message.role === "assistant" && message.questions?.length ? <AsyncAgentQuestions message={message} /> : null}
         {steerStatus}
+        {dependencies}
         {message.streaming && <span className="stream-caret" />}
       </div>
     </article>
@@ -867,7 +898,9 @@ export function formatCompletedDuration(durationMs: number): string {
   return minutes ? `${hourPart} ${minutes} minute${minutes === 1 ? "" : "s"}` : hourPart;
 }
 
-export const CompletedWorkDisclosure = memo(function CompletedWorkDisclosure({ entries, reveal = false }: { entries: WorkItemEntry[]; reveal?: boolean }) {
+export const CompletedWorkDisclosure = memo(function CompletedWorkDisclosure({ entries, reveal = false, skills, onOpenSkill }: { entries: WorkItemEntry[]; reveal?: boolean; skills?: LocalSkill[]; onOpenSkill?: (path: string) => void }) {
+  const parentNavigation = useContext(SkillNavigation);
+  const navigation = useMemo(() => skills ? { skills, onOpenSkill } : parentNavigation, [skills, onOpenSkill, parentNavigation]);
   const [expanded, setExpanded] = useState(false);
   useEffect(() => {
     if (reveal) setExpanded(true);
@@ -879,7 +912,7 @@ export const CompletedWorkDisclosure = memo(function CompletedWorkDisclosure({ e
     : [`Worked for ${formatCompletedDuration(durationMs)}`, ...parts];
   const description = summaryParts.join(", ") || `${entries.length} step${entries.length === 1 ? "" : "s"}`;
   return (
-    <div className={`reasoning-disclosure completed-work-disclosure ${expanded ? "expanded" : "collapsed"} complete`}>
+    <SkillNavigation.Provider value={navigation}><div className={`reasoning-disclosure completed-work-disclosure ${expanded ? "expanded" : "collapsed"} complete`}>
       <button
         type="button"
         className="reasoning-toggle completed-work-toggle"
@@ -902,7 +935,8 @@ export const CompletedWorkDisclosure = memo(function CompletedWorkDisclosure({ e
                     <div className="completed-work-update" key={`update-${entry.value.id}`}>
                       <MessageSquare size={13} />
                       <div className="rich-markdown">
-                        <Markdown remarkPlugins={entry.value.role === "assistant" ? ASSISTANT_MARKDOWN_PLUGINS : DEFAULT_MARKDOWN_PLUGINS} components={MARKDOWN_COMPONENTS}>{entry.value.text}</Markdown>
+                        {entry.value.role === "user" ? <UserMessageMarkdown text={entry.value.text} references={entry.value.skillReferences} /> : <MessageMarkdown text={entry.value.text} assistant />}
+                        {entry.value.role === "user" && <SkillDependencyDetails report={entry.value.skillDependencies} skills={navigation?.skills} onOpenSkill={navigation?.onOpenSkill} mode="history" />}
                       </div>
                     </div>
                   )];
@@ -914,9 +948,9 @@ export const CompletedWorkDisclosure = memo(function CompletedWorkDisclosure({ e
           )}
         </div>
       </div>
-    </div>
+    </div></SkillNavigation.Provider>
   );
-}, (previous, next) => (previous.reveal ?? false) === (next.reveal ?? false) && sameWorkItems(previous.entries, next.entries));
+}, (previous, next) => previous.skills === next.skills && previous.onOpenSkill === next.onOpenSkill && (previous.reveal ?? false) === (next.reveal ?? false) && sameWorkItems(previous.entries, next.entries));
 
 export const TIMELINE_FOLLOW_REARM_THRESHOLD_PX = 40;
 export const TIMELINE_MOUNT_ROWS = 40;
@@ -1387,6 +1421,8 @@ export function ChatTimeline({
   onLoadEarlier,
   onEditMessage,
   onApprovalRespond,
+  skills = NO_SKILLS,
+  onOpenSkill,
 }: {
   messages: ChatMessage[];
   activities: Activity[];
@@ -1401,7 +1437,10 @@ export function ChatTimeline({
   onLoadEarlier?: () => void;
   onEditMessage?: (text: string) => void;
   onApprovalRespond?: (approval: PendingApproval, result: JsonObject) => void | Promise<void>;
+  skills?: LocalSkill[];
+  onOpenSkill?: (path: string) => void;
 }) {
+  const skillNavigation = useMemo(() => ({ skills, onOpenSkill }), [skills, onOpenSkill]);
   const entries = useMemo<TimelineEntry[]>(() => {
     const next = compactCompletedTurns(orderedTimelineEntries(messages, activities), running);
     const liveIndicatorPresent = activities.some((activity) =>
@@ -1449,7 +1488,7 @@ export function ChatTimeline({
     return spawns.length ? `Sub-agents: ${describeSubAgentActivity(subAgentCountsFromActivities(spawns))}` : "";
   }, [activities]);
   return (
-    <FlowTimeline
+    <SkillNavigation.Provider value={skillNavigation}><FlowTimeline
       activeEntryIndex={activeEntryIndex}
       entries={entries}
       liveSubAgentSummary={liveSubAgentSummary}
@@ -1459,6 +1498,6 @@ export function ChatTimeline({
       onEditMessage={onEditMessage}
       provider={provider}
       searchQuery={searchQuery}
-    />
+    /></SkillNavigation.Provider>
   );
 }
