@@ -2,6 +2,7 @@ import type { CSSProperties } from "react";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { commands, page, userEvent } from "vitest/browser";
+import { open as openFolderDialog } from "@tauri-apps/plugin-dialog";
 import { DEFAULT_SETTINGS, themeColorScheme } from "../lib/appConfig";
 import { SettingsModal } from "./SettingsModal";
 import "../styles.css";
@@ -40,6 +41,20 @@ afterEach(async () => {
   await page.viewport(1400, 900);
 });
 
+it("retains native clone recovery details instead of replacing them with model-runtime advice", async () => {
+  vi.mocked(openFolderDialog).mockResolvedValueOnce("/projects");
+  const failure = "Clone failed: SSH permission denied (publickey). Verify access to owner/repo before retrying. No existing folder was overwritten.";
+  const onGitHubClone = vi.fn().mockRejectedValue(new Error(failure));
+  render(<div className="app-shell" data-theme="mythra"><SettingsModal {...settingsProps({
+    githubStatus: { available: true, authenticated: true }, onGitHubClone,
+  })} /></div>);
+  await page.getByRole("textbox", { name: "Repository URL" }).fill("https://github.com/owner/repo");
+  await page.getByRole("button", { name: "Choose parent folder…" }).click();
+  await page.getByRole("button", { name: "Clone repository" }).click();
+  expect(await screen.findByRole("alert")).toHaveTextContent(failure);
+  expect(screen.getByRole("textbox", { name: "Repository URL" })).toHaveValue("https://github.com/owner/repo");
+});
+
 it.each([["mythra", 1], ["atari", 1.5]] as const)("keeps rejected sign-in recovery inside real %s Settings at scale %s", async (theme, scale) => {
   await page.viewport(scale === 1 ? 1400 : 980, scale === 1 ? 900 : 680);
   // This is the actual non-macOS native rejection contract, not a pre-rendered
@@ -69,4 +84,34 @@ it.each([["mythra", 1], ["atari", 1.5]] as const)("keeps rejected sign-in recove
   const bounds = dialog.getBoundingClientRect();
   expect(alert.left).toBeGreaterThanOrEqual(bounds.left);
   expect(alert.right).toBeLessThanOrEqual(bounds.right + 1);
+});
+
+it.each([[360, 400, 1], [980, 480, 1.5]] as const)("keeps real Settings usable at %sx%s and scale %s across wide-pane transitions", async (width, height, scale) => {
+  await page.viewport(width, height);
+  render(<div className="app-shell" data-theme="atari" data-color-scheme="light" style={{ zoom: scale, "--ui-scale": scale } as CSSProperties}>
+    <SettingsModal {...settingsProps({ initialSection: "general" })} />
+  </div>);
+  const dialog = screen.getByRole("dialog", { name: "Settings" });
+  const assertContained = async () => {
+    await waitFor(() => {
+      const bounds = dialog.getBoundingClientRect();
+      expect(bounds.left).toBeGreaterThanOrEqual(0);
+      expect(bounds.top).toBeGreaterThanOrEqual(0);
+      expect(bounds.right).toBeLessThanOrEqual(width + 1);
+      expect(bounds.bottom).toBeLessThanOrEqual(height + 1);
+    });
+    const content = dialog.querySelector<HTMLElement>(".settings-content")!;
+    expect(content.scrollWidth).toBeLessThanOrEqual(content.clientWidth + 1);
+    expect(content.clientHeight).toBeGreaterThan(0);
+    const save = within(dialog).getByRole("button", { name: /^Save settings$/ });
+    expect(save.getBoundingClientRect().bottom).toBeLessThanOrEqual(height + 1);
+    save.focus();
+    await userEvent.keyboard("{Tab}");
+    expect(within(dialog).getByRole("textbox", { name: "Search settings" })).toHaveFocus();
+  };
+  await assertContained();
+  await page.getByRole("button", { name: "Usage", exact: true }).click();
+  await assertContained();
+  await page.getByRole("button", { name: "Interface", exact: true }).click();
+  await assertContained();
 });

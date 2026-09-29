@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { resetTaskStore, useTaskStore } from "../lib/taskStore";
 import type { ChildAgentLink, ChildAgentPolicy } from "../lib/childAgents";
 import type { ChildAgentRequest } from "../lib/agentBridge";
+import type { ChildRunContext } from "../lib/childRun";
 import type { ChildAgentTarget, SkillDependencyReport, Thread } from "../types";
 import { SKILL_DEPENDENCY_LIMITS, SkillDependencyError } from "../lib/skillDependencies";
 
@@ -685,6 +686,22 @@ describe("useChildAgents", () => {
       });
       expect(codex.rpc).toHaveBeenCalledWith("turn/interrupt", { threadId: "late-child", turnId: "late-turn" });
       expect(lastResponse()?.[2]).toMatch(/stopped this run/);
+    });
+
+    it.each(["stop", "root deletion"])("cancels pending skill preparation immediately after %s and releases its start slot", async (action) => {
+      let rejectStart!: (reason: unknown) => void;
+      childRun.startChildAgentTurn.mockImplementationOnce(() => new Promise((_, reject) => { rejectStart = reject; }));
+      const view = await mount();
+      await view.send(request());
+      const startContext = childRun.startChildAgentTurn.mock.calls[0][2] as ChildRunContext;
+      expect(startContext.isStartCancelled?.()).toBe(false);
+      if (action === "stop") await act(async () => { await view.result.current.cancelChildAgentsFor("root-1"); });
+      else view.rerender({ policies: {} });
+      expect(startContext.isStartCancelled?.()).toBe(true);
+      await act(async () => { rejectStart(new Error("Sub-agent start cancelled")); await Promise.resolve(); });
+      expect(view.result.current.hasChildStartInFlight("root-1")).toBe(false);
+      expect(persistedLinks).toEqual({});
+      expect(lastResponse()?.[2]).toMatch(/cancelled/);
     });
 
     it("reports a start as in flight until the child's ownership record exists", async () => {

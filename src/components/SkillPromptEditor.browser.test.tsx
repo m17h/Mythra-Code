@@ -58,6 +58,19 @@ afterEach(async () => {
 });
 
 describe("system prompt skill editor in a real browser", () => {
+  it.each([
+    ["Use @review/file", 11], ["Use @review.md", 11], ["Use @review", 8],
+  ])("preserves native Tab and existing text when the caret is inside %s", async (initial, caret) => {
+    render(<><Fixture initial={initial as string} /><button type="button">Next control</button></>);
+    const input = screen.getByRole("textbox", { name: "System instructions" }) as HTMLTextAreaElement;
+    input.focus();
+    input.setSelectionRange(caret as number, caret as number);
+    fireEvent.select(input);
+    expect(screen.queryByRole("listbox", { name: "Skill suggestions" })).toBeNull();
+    await userEvent.keyboard("{Tab}");
+    expect(input).toHaveValue(initial);
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Next control" }));
+  });
   it.each(["light", "dark"] as const)("shows a nested failure and a red parent token while preserving keyboard editing in %s", async (colorScheme) => {
     await page.viewport(430, 800);
     const analyze = vi.fn(async () => skillDependencyFixture(true));

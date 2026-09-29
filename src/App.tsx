@@ -7,7 +7,7 @@ import { useTranscriptSaves } from "./hooks/useTranscriptSaves";
 import { flushBeforeClose, useFlushOnClose } from "./hooks/useFlushOnClose";
 import { useGitWorkspace } from "./hooks/useGitWorkspace";
 import { useGitAutoPublish } from "./hooks/useGitAutoPublish";
-import { commitGitWorkspace, stageGitWorkspace, pushGitWorkspace, getGitWorkspace, previewGitWorkspaceRevert, revertGitWorkspace, previewGitWorkspaceRevertAll, revertGitWorkspaceAll, type GitWorkflowControls, type GitWorkspaceSnapshot } from "./lib/gitWorkspace";
+import { commitGitWorkspace, stageGitWorkspace, pushGitWorkspace, getGitWorkspace, previewGitWorkspaceRevert, revertGitWorkspace, previewGitWorkspaceRevertAll, revertGitWorkspaceAll, type GitWorkflowControls, type GitWorkspaceRevertPreview, type GitWorkspaceSnapshot } from "./lib/gitWorkspace";
 import { useGitHubLogin } from "./hooks/useGitHubLogin";
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type CSSProperties, type Dispatch, type PointerEvent as ReactPointerEvent, type SetStateAction } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
@@ -74,7 +74,7 @@ import type { OnboardingSettingsDraft } from "./lib/onboardingSettings";
 import type { ProjectRunCommand } from "./types";
 import { PendingTurnStarts } from "./lib/pendingTurnStarts";
 import { useTaskStore, type QueuedTurn } from "./lib/taskStore";
-import { friendlyError, isAuthenticationError } from "./lib/errors";
+import { formatGitError, formatSkillFileError, friendlyError, isAuthenticationError } from "./lib/errors";
 import { recordError } from "./lib/errorLog";
 import { subscribeBackgroundUsage } from "./lib/backgroundUsage";
 import { beginThreadOpen, failThreadOpen, markRendererLaunchComposerMounted, markRendererLaunchPaintOpportunity, markRendererLaunchShellCommitted, markThreadHistoryHydrated, markThreadPaintOpportunity, markThreadRenderMetrics, markThreadRuntimeReady, markThreadShellCommitted, markThreadTimelineCommitted, projectedJsonBytes, threadOpenAwaitingRenderMetrics, threadOpenAwaitingTimeline } from "./lib/performanceDiagnostics";
@@ -214,6 +214,21 @@ const OnboardingModal = lazy(() => import("./components/OnboardingModal").then((
 let settingsModalPromise: ReturnType<typeof importSettingsModal> | null = null;
 type SettingsModalComponent = typeof import("./components/SettingsModal").SettingsModal;
 let loadedSettingsModal: SettingsModalComponent | null = null;
+/**
+ * Name exactly which paths are restored and which stay as new files. Native
+ * revert resets the index for every path, restores only `restorePaths` (never
+ * empty; pure additions are refused), and leaves `preservedPaths` untracked.
+ */
+function gitRevertConfirmation(preview: GitWorkspaceRevertPreview): string {
+  const quoted = (paths: string[]) => paths.map((item) => JSON.stringify(item)).join(" and ");
+  const { restorePaths: restore, preservedPaths: keep } = preview;
+  const effect = [
+    `This restores the committed content of ${quoted(restore)} and discards ${restore.length === 1 ? "its" : "their"} staged and working edits.`,
+    keep.length ? `${quoted(keep)} will be unstaged and kept as ${keep.length === 1 ? "a new untracked file" : "new untracked files"} with ${keep.length === 1 ? "its" : "their"} current contents.` : "",
+  ].filter(Boolean).join(" ");
+  return `Revert changes to ${quoted(preview.paths)}?\n\n${effect} New edits made while this confirmation is open will cause the operation to be refused.`;
+}
+
 function importSettingsModal() {
   return import("./components/SettingsModal").then((module) => {
     loadedSettingsModal = module.SettingsModal;
@@ -794,6 +809,12 @@ export default function App() {
   const gitWorkspaceScope = `${activeProject?.id ?? ""}\0${activeExecutionPath}`;
   const gitWorkspaceScopeRef = useRef(gitWorkspaceScope);
   gitWorkspaceScopeRef.current = gitWorkspaceScope;
+  // Every checkout change during a Git preview or confirmation starts a new
+  // intent, including A -> B -> A. Updated during render, before effects run.
+  const gitIntentRef = useRef({ scope: gitWorkspaceScope, generation: 0 });
+  if (gitIntentRef.current.scope !== gitWorkspaceScope) {
+    gitIntentRef.current = { scope: gitWorkspaceScope, generation: gitIntentRef.current.generation + 1 };
+  }
   const gitOutput = gitResults[gitWorkspaceScope]?.output ?? "";
   const gitCommitSuccess = gitResults[gitWorkspaceScope]?.success ?? "";
   const gitCommitSuccessRevision = gitResults[gitWorkspaceScope]?.successRevision ?? 0;
@@ -880,6 +901,9 @@ export default function App() {
       ? settingsWithoutChildDelegation(resolved)
       : resolved;
   }, [activeProject, activeProvider, activeThread, activeThreadId, childThreadLinks, draftThreadModel, projectSettings, subscriptionSystemPrompts, threadModels, threadReasoning]);
+  // Destructive Git confirmations recheck the permission visible when they finish.
+  const gitPermissionRef = useRef(effectiveSettings.permission);
+  gitPermissionRef.current = effectiveSettings.permission;
 
   useEffect(() => {
     if (!pendingHandoff || !activeWorkspace || activeThread) return;
@@ -1430,7 +1454,7 @@ export default function App() {
       );
     } catch (reason) {
       if (activeProjectIdRef.current === project.id) {
-        setError(friendlyError(reason));
+        setError(formatGitError(reason));
         void readWorkspaceGitInfo(project.path).then(setWorkspaceGitInfo).catch(() => {});
       }
     } finally {
@@ -5352,7 +5376,9 @@ export default function App() {
         setError(`The worktree folder was removed. ${outcome}: ${removal.branchDeleteError}`);
       }
     } catch (reason) {
-      setError(friendlyError(reason));
+      // Native worktree errors name the folder, branch, or partial cleanup to
+      // inspect; runtime setup hints would misdirect a timeout or missing path.
+      setError(formatGitError(reason));
     } finally {
       setWorktreeBusy(false);
     }
@@ -5411,7 +5437,7 @@ export default function App() {
       setWorktreeStatus(null);
       setTransientStatus("Isolated worktree recreated from branch");
     } catch (reason) {
-      setError(friendlyError(reason));
+      setError(formatGitError(reason));
     } finally {
       setWorktreeBusy(false);
     }
@@ -5525,7 +5551,7 @@ export default function App() {
     } catch (reason) {
       if (githubRepoRefreshSequenceRef.current !== refreshSequence) return;
       setGithubRepoStatus(null);
-      setGithubRepoError(friendlyError(reason));
+      setGithubRepoError(formatGitError(reason));
     }
   }, [activeExecutionPath, activeProject?.path]);
 
@@ -5579,7 +5605,7 @@ export default function App() {
       repository: publishConfig?.binding.repository ?? githubRepoStatus?.repository ?? undefined,
       onToggle: (enabled) => {
         if (effectiveSettings.permission === "read-only") { setGitOutput("Switch this thread to Ask or Full access before changing automatic publishing."); return; }
-        if (enabled) void enablePublishing(activeProject.id, activeProject.path).catch((reason) => setGitOutput(friendlyError(reason)));
+        if (enabled) void enablePublishing(activeProject.id, activeProject.path).catch((reason) => setGitOutput(formatGitError(reason)));
         else disablePublishing(activeProject.id);
       },
       onRetry: () => retryPublishing(activeProject.id),
@@ -5752,7 +5778,7 @@ export default function App() {
           if (!commit.branch) throw new Error("Check out a named branch before pushing this saved commit.");
           push = await pushGitWorkspace(commandPath, commit.headOid, commit.branch, githubRepoStatus!.remoteUrl!, githubRepoStatus!.repository!);
         } catch (reason) {
-          setGitOutput(`${commitOutput}\n\nGitHub push needs attention:\n${friendlyError(reason)}`);
+          setGitOutput(`${commitOutput}\n\nGitHub push needs attention:\n${formatGitError(reason)}`);
           if (isCurrentProject()) { showToast("Changes committed locally; GitHub push needs attention", "info"); void refreshGitHubRepo(commandPath); }
           return;
         }
@@ -5764,7 +5790,8 @@ export default function App() {
           void refreshGitHubRepo(commandPath);
         }
       } catch (reason) {
-        setGitOutput(friendlyError(reason));
+        // A timeout can follow a saved commit; keep the native recovery note.
+        setGitOutput(formatGitError(reason));
       } finally {
         setGitCommitBusy(false);
       }
@@ -5778,22 +5805,33 @@ export default function App() {
         const result = await stageGitWorkspace(commandPath, null, action === "unstage", gitWorkspace.snapshot);
         if (isCurrentProject()) setGitOutput(`${action === "stage" ? "Staged all changes." : "Unstaged all changes; working files were kept."}\n${result.stdout}${result.stderr}`);
       } catch (reason) {
-        if (isCurrentProject()) setGitOutput(friendlyError(reason));
+        if (isCurrentProject()) setGitOutput(formatGitError(reason));
       }
       return;
     }
     else if (action === "revert") {
+      const intent = gitIntentRef.current.generation;
+      const paths = [...new Set([activeProject.path, commandPath].map(normalizedProjectPath))];
+      // The caller's leases stay held through both waits; recheck what the
+      // click established before the native mutation.
+      const stillAllowed = () => {
+        if (!isCurrentProject() || gitIntentRef.current.generation !== intent) return false;
+        const reason = gitActionUnavailableReason(action, gitPermissionRef.current)
+          ?? (paths.some(projectHasActiveTask) ? "Wait for agents in this folder to finish before changing Git." : null);
+        if (reason) setGitOutput(reason);
+        return !reason;
+      };
       try {
         const preview = await previewGitWorkspaceRevertAll(commandPath);
-        if (!isCurrentProject()) return;
+        if (!stillAllowed()) return;
         const confirmation = `Restore ${preview.restorePaths.length} committed file path${preview.restorePaths.length === 1 ? "" : "s"} and unstage all changes? ${preview.preservedPaths.length} added, untracked, or renamed destination path${preview.preservedPaths.length === 1 ? " will" : "s will"} be kept as new files. If anything changes while this confirmation is open, nothing will be reverted.`;
-        if (!await confirmDialog(confirmation) || !isCurrentProject()) return;
+        if (!await confirmDialog(confirmation) || !stillAllowed()) return;
         const result = await revertGitWorkspaceAll(commandPath, preview.token);
         if (isCurrentProject()) setGitOutput(`Restored committed files and unstaged changes. New file contents were kept.\n${result.stdout}${result.stderr}`);
       } catch (reason) {
         // Preserve the native partial-operation warning and recovery guidance;
         // generic provider error mapping can replace it with an unrelated hint.
-        if (isCurrentProject()) setGitOutput((reason instanceof Error ? reason.message : String(reason)).slice(0, 16_384));
+        if (isCurrentProject()) setGitOutput(formatGitError(reason));
       }
       return;
     } else if (action === "fetch") command = ["git", "fetch", "--prune", "origin"];
@@ -5810,7 +5848,7 @@ export default function App() {
         showPushOutput(`Pushed saved commit ${snapshot.headOid.slice(0, 7)} from ${snapshot.branch}:\n${result.stdout}${result.stderr}\n[exit 0]`);
         void refreshGitHubRepo(commandPath);
       } catch (reason) {
-        if (isCurrentProject()) setGitOutput(friendlyError(reason));
+        if (isCurrentProject()) setGitOutput(formatGitError(reason));
       }
       return;
     } else {
@@ -5916,7 +5954,8 @@ export default function App() {
       setGithubRepoError("");
       showSuccessToast(successMessage);
     } catch (reason) {
-      failure = friendlyError(reason);
+      // Creation can succeed remotely before attachment fails; keep its URL.
+      failure = formatGitError(reason);
       if (isCurrent()) {
         setGitOutput(failure);
       }
@@ -5946,7 +5985,7 @@ export default function App() {
       setGithubStatus(status);
       if (status.authenticated) { setGithubSignInError(""); setGithubLoginPending(false); }
     } catch (reason) {
-      setGithubSignInError(reason instanceof Error ? reason.message : String(reason));
+      setGithubSignInError(formatGitError(reason));
     } finally {
       setGithubBusy(false);
     }
@@ -5960,7 +5999,7 @@ export default function App() {
       setGithubLoginPending(true);
       showSuccessToast("Finish GitHub sign-in in Terminal; Mythra Code will connect automatically");
     } catch (reason) {
-      const message = reason instanceof Error ? reason.message : String(reason);
+      const message = formatGitError(reason);
       setGithubSignInError(message);
       throw new Error(message);
     } finally {
@@ -5988,7 +6027,7 @@ export default function App() {
       return true;
     } catch (reason) {
       // Settings renders this inline; a global banner would be hidden behind the modal.
-      throw new Error(friendlyError(reason));
+      throw new Error(formatGitError(reason));
     } finally {
       githubClonePendingRef.current = false;
       setGithubBusy(false);
@@ -6057,12 +6096,26 @@ export default function App() {
       if (!lease) { leases.forEach(releasePullRequestMutation); setGitOutput("Wait for the current Git operation to finish."); return; }
       leases.push(lease);
     }
-    const isCurrentProject = () => gitWorkspaceScopeRef.current === scope;
+    const intent = gitIntentRef.current.generation;
+    const isCurrentProject = () => gitWorkspaceScopeRef.current === scope && gitIntentRef.current.generation === intent;
+    // Waiting on the preview or the user can outlast the click's checkout,
+    // permission, and idle folder. The leases stay held until `finally`.
+    const stillAllowed = () => {
+      if (!isCurrentProject()) return false;
+      const reason = gitActionUnavailableReason(action, gitPermissionRef.current)
+        ?? (paths.some(projectHasActiveTask) ? "Wait for agents in this folder to finish before changing Git." : null);
+      if (reason) {
+        setGitOutput(reason);
+        // Review has no Git console; show a refused revert where it was confirmed.
+        if (action === "revert") setError(reason);
+      }
+      return !reason;
+    };
     setGitOperationBusy(true);
     try {
       const revertPreview = action === "revert" ? await previewGitWorkspaceRevert(commandPath, path) : null;
-      if (revertPreview && !await confirmDialog(`Revert changes to ${revertPreview.paths.map((item) => JSON.stringify(item)).join(" and ")}?\n\nThis restores the committed content and discards staged and working edits for these paths. New edits made while this confirmation is open will cause the operation to be refused.`)) return;
-      if (paths.some(projectHasActiveTask)) { if (isCurrentProject()) setGitOutput("Wait for agents in this folder to finish before changing Git."); return; }
+      if (revertPreview && (!stillAllowed() || !await confirmDialog(gitRevertConfirmation(revertPreview)))) return;
+      if (!stillAllowed()) return;
       const result = action === "revert"
         ? await revertGitWorkspace(commandPath, path, revertPreview!.token)
         : { ...await stageGitWorkspace(commandPath, path, action === "unstage", gitWorkspace.snapshot), exitCode: 0 };
@@ -6071,7 +6124,7 @@ export default function App() {
       await refreshDiff();
     } catch (reason) {
       if (isCurrentProject()) {
-        const message = reason instanceof Error ? reason.message : String(reason);
+        const message = formatGitError(reason);
         setGitOutput(message);
         // Review has no Git console. Refusals must also be visible where the
         // user confirmed a destructive action, without requiring a tab switch.
@@ -6105,7 +6158,7 @@ export default function App() {
       if (nextRemoved.length !== removedSkillPaths.length) setRemovedSkillPaths(nextRemoved);
       await refreshLocalSkills(skillsFolder, skillAliases, disabledSkillPaths, nextRemoved);
     } catch (reason) {
-      setSkillsError(friendlyError(reason));
+      setSkillsError(formatSkillFileError(reason));
     } finally {
       setSkillsBusy(false);
     }
@@ -6121,7 +6174,7 @@ export default function App() {
       await refreshLocalSkills(skillsFolder, skillAliases, disabledSkillPaths, nextRemoved);
       return true;
     } catch (reason) {
-      setSkillsError(friendlyError(reason));
+      setSkillsError(formatSkillFileError(reason));
       return false;
     }
   };

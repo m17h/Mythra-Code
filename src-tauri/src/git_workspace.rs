@@ -63,6 +63,8 @@ pub(super) struct GitWorkspaceCommandResult {
 pub(super) struct GitWorkspaceRevertPreview {
     token: String,
     paths: Vec<String>,
+    restore_paths: Vec<String>,
+    preserved_paths: Vec<String>,
     head_oid: String,
     branch: Option<String>,
 }
@@ -90,6 +92,8 @@ struct RevertState {
     common_dir: PathBuf,
     requested_path: String,
     paths: Vec<String>,
+    restore_paths: Vec<String>,
+    preserved_paths: Vec<String>,
     head_oid: String,
     branch: Option<String>,
     index: Vec<u8>,
@@ -187,7 +191,7 @@ fn mutation_repo(cwd: &str) -> Result<PathBuf, String> {
         .canonicalize()
         .map_err(|error| format!("Could not open the project folder: {error}"))?;
     if selected != root {
-        return Err("Open the Git repository root before staging, committing, or pushing".into());
+        return Err("Open the Git repository root before changing Git".into());
     }
     Ok(root)
 }
@@ -556,7 +560,14 @@ fn revert_state(cwd: &str, path: &str) -> Result<RevertState, String> {
     if !index.status.success() || truncated {
         return Err("Could not inspect the staged files to revert. Refresh and try again.".into());
     }
-    let mut args = vec!["--literal-pathspecs", "ls-tree", "-z", &head_oid, "--"];
+    let mut args = vec![
+        "--literal-pathspecs",
+        "ls-tree",
+        "--name-only",
+        "-z",
+        &head_oid,
+        "--",
+    ];
     args.extend(paths.iter().map(String::as_str));
     let (head, truncated) = bounded_git_output(&root, &args, LOCAL_TIMEOUT, 64 * 1024, false)?;
     if !head.status.success() || truncated {
@@ -567,6 +578,20 @@ fn revert_state(cwd: &str, path: &str) -> Result<RevertState, String> {
             "This file is not tracked by Git. Revert does not delete untracked files.".into(),
         );
     }
+    let head_paths: HashSet<_> = head
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .map(|path| {
+            std::str::from_utf8(path).map(str::to_owned).map_err(|_| {
+                "A saved Git path is not valid Unicode. Use Unstage instead.".to_string()
+            })
+        })
+        .collect::<Result<_, _>>()?;
+    let (restore_paths, preserved_paths): (Vec<_>, Vec<_>) = paths
+        .iter()
+        .cloned()
+        .partition(|path| head_paths.contains(path));
     let working: Vec<_> = paths
         .iter()
         .map(|path| revert_working_state(&root, path))
@@ -576,12 +601,22 @@ fn revert_state(cwd: &str, path: &str) -> Result<RevertState, String> {
         // untracked content, not part of the rename the user chose to discard.
         return Err(format!("The rename's original path {} has been recreated. Revert would overwrite that file; move or preserve it before trying again.", paths[0]));
     }
+    for (path, working) in paths.iter().zip(&working) {
+        if preserved_paths.contains(path) && *working == RevertWorkingState::Missing {
+            return Err("This newly staged file has no working copy. Its contents remain in the index; restore the working copy or export the staged contents before unstaging. Unstage cannot recover a missing working file. Nothing was reverted.".into());
+        }
+    }
+    if restore_paths.is_empty() {
+        return Err("This is a newly added or copied file with no committed version to restore. Use Unstage to keep its working contents; Revert does not delete new files.".into());
+    }
     require_expected_checkout(&root, Some(&head_oid), branch.as_deref())?;
     Ok(RevertState {
         root,
         common_dir,
         requested_path: path.to_string(),
         paths,
+        restore_paths,
+        preserved_paths,
         head_oid,
         branch,
         index: index.stdout,
@@ -595,6 +630,8 @@ fn revert_preview_sync(cwd: &str, path: &str) -> Result<GitWorkspaceRevertPrevie
     let result = GitWorkspaceRevertPreview {
         token: token.clone(),
         paths: state.paths.clone(),
+        restore_paths: state.restore_paths.clone(),
+        preserved_paths: state.preserved_paths.clone(),
         head_oid: state.head_oid.clone(),
         branch: state.branch.clone(),
     };
@@ -639,16 +676,22 @@ fn revert_sync(
     }
     // Pin the actual source object, not a mutable HEAD symbolic reference.
     let source = format!("--source={}", saved.state.head_oid);
+    let mut args = vec!["--literal-pathspecs", "restore", &source, "--staged", "--"];
+    args.extend(saved.state.paths.iter().map(String::as_str));
+    let unstaged = local_git(&saved.state.root, &args).map_err(|error| format!("Revert did not finish resetting the selected index paths: {error}\nGit may have changed staging, but this step does not remove working files. Refresh and inspect before trying again."))?;
     let mut args = vec![
         "--literal-pathspecs",
         "restore",
         &source,
-        "--staged",
         "--worktree",
         "--",
     ];
-    args.extend(saved.state.paths.iter().map(String::as_str));
-    local_git(&saved.state.root, &args).map_err(|error| format!("Revert did not finish: {error}\nGit may have changed some of the selected paths. Refresh and inspect both staged and working changes before trying again."))
+    args.extend(saved.state.restore_paths.iter().map(String::as_str));
+    let restored = local_git(&saved.state.root, &args).map_err(|error| format!("Revert reset the selected index paths, but restoring committed working files did not finish: {error}\nSome tracked paths may have changed. New and renamed-destination contents were not selected for removal. Refresh and inspect before trying again."))?;
+    Ok(GitWorkspaceCommandResult {
+        stdout: format!("{}{}", unstaged.stdout, restored.stdout),
+        stderr: format!("{}{}", unstaged.stderr, restored.stderr),
+    })
 }
 
 fn bulk_revert_remaining(deadline: Instant) -> Result<Duration, String> {
@@ -1088,7 +1131,7 @@ fn branch_sync(
     expected_head: &str,
     expected_branch: &str,
 ) -> Result<GitWorkspaceSnapshot, String> {
-    let selected = repo(cwd)?;
+    let selected = mutation_repo(cwd)?;
     require_expected(&selected, expected_head, expected_branch)?;
     require_clean(&selected)?;
     validate_branch(&selected, name)?;
@@ -1747,7 +1790,7 @@ fn push_sync(
 }
 
 fn fetch_sync(cwd: &str) -> Result<GitWorkspaceSnapshot, String> {
-    let selected = repo(cwd)?;
+    let selected = mutation_repo(cwd)?;
     let (remote, _) = remote_for_repository(&selected, None)?;
     bounded_git(&selected, &["fetch", "--prune", "--no-tags", &remote])?;
     snapshot_for_selection(&selected, cwd)
@@ -1760,7 +1803,7 @@ fn update_sync(
     expected_head: &str,
     expected_branch: &str,
 ) -> Result<GitWorkspaceSnapshot, String> {
-    let selected = repo(cwd)?;
+    let selected = mutation_repo(cwd)?;
     require_expected(&selected, expected_head, expected_branch)?;
     require_clean(&selected)?;
     validate_branch(&selected, base)?;
@@ -2126,7 +2169,8 @@ mod tests {
     }
 
     #[test]
-    fn revert_staged_rename_restores_both_paths_without_touching_other_changes() {
+    fn revert_staged_rename_restores_source_and_preserves_destination_without_touching_other_changes(
+    ) {
         let path = fixture();
         fs::write(path.join("other.txt"), "other\n").unwrap();
         git_stdout(&path, &["add", "other.txt"], None).unwrap();
@@ -2134,11 +2178,16 @@ mod tests {
         fs::write(path.join("renamed.txt"), "edited rename\n").unwrap();
         let preview = revert_preview_sync(path.to_str().unwrap(), "renamed.txt").unwrap();
         assert_eq!(preview.paths, ["file.txt", "renamed.txt"]);
+        assert_eq!(preview.restore_paths, ["file.txt"]);
+        assert_eq!(preview.preserved_paths, ["renamed.txt"]);
         assert!(revert_preview_sync(path.to_str().unwrap(), "./renamed.txt").is_err());
         assert!(revert_preview_sync(path.to_str().unwrap(), "renamed.txt/").is_err());
         revert_sync(path.to_str().unwrap(), "renamed.txt", &preview.token).unwrap();
         assert_restored_from_head(&path, "file.txt");
-        assert!(!path.join("renamed.txt").exists());
+        assert_eq!(
+            fs::read(path.join("renamed.txt")).unwrap(),
+            b"edited rename\n"
+        );
         assert_eq!(
             git_stdout(&path, &["diff", "--cached", "--name-only"], None).unwrap(),
             "other.txt"
@@ -2226,25 +2275,80 @@ mod tests {
     }
 
     #[test]
-    fn revert_added_copy_does_not_reset_its_source_and_uses_one_file_token() {
+    fn revert_added_copy_is_refused_without_resetting_its_source_or_contents() {
         let path = fixture();
         fs::write(path.join("file.txt"), "source staged edit\n").unwrap();
         fs::copy(path.join("file.txt"), path.join("copy.txt")).unwrap();
         git_stdout(&path, &["add", "file.txt", "copy.txt"], None).unwrap();
-        let preview = revert_preview_sync(path.to_str().unwrap(), "copy.txt").unwrap();
-        assert_eq!(preview.paths, ["copy.txt"]);
-        assert!(revert_sync(path.to_str().unwrap(), "file.txt", &preview.token).is_err());
-        let preview = revert_preview_sync(path.to_str().unwrap(), "copy.txt").unwrap();
-        revert_sync(path.to_str().unwrap(), "copy.txt", &preview.token).unwrap();
-        assert!(!path.join("copy.txt").exists());
+        let error = revert_preview_sync(path.to_str().unwrap(), "copy.txt").unwrap_err();
+        assert!(error.contains("Unstage"), "{error}");
+        assert_eq!(
+            fs::read(path.join("copy.txt")).unwrap(),
+            b"source staged edit\n"
+        );
         assert_eq!(
             fs::read_to_string(path.join("file.txt")).unwrap(),
             "source staged edit\n"
         );
         assert_eq!(
             git_stdout(&path, &["diff", "--cached", "--name-only"], None).unwrap(),
-            "file.txt"
+            "copy.txt\nfile.txt"
         );
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn revert_refuses_new_file_and_missing_rename_working_copy_without_losing_staged_data() {
+        let path = fixture();
+        fs::write(path.join("new.txt"), "only new working contents\n").unwrap();
+        git_stdout(&path, &["add", "new.txt"], None).unwrap();
+        let before = git_stdout(&path, &["diff", "--cached"], None).unwrap();
+        assert!(revert_preview_sync(path.to_str().unwrap(), "new.txt")
+            .unwrap_err()
+            .contains("Unstage"));
+        assert_eq!(
+            fs::read(path.join("new.txt")).unwrap(),
+            b"only new working contents\n"
+        );
+        assert_eq!(
+            git_stdout(&path, &["diff", "--cached"], None).unwrap(),
+            before
+        );
+        git_stdout(&path, &["mv", "file.txt", "renamed.txt"], None).unwrap();
+        fs::remove_file(path.join("renamed.txt")).unwrap();
+        let before = git_stdout(&path, &["diff", "--cached"], None).unwrap();
+        let staged = git_stdout(&path, &["show", ":renamed.txt"], None).unwrap();
+        assert!(revert_preview_sync(path.to_str().unwrap(), "renamed.txt")
+            .unwrap_err()
+            .contains("no working copy"));
+        assert_eq!(
+            git_stdout(&path, &["diff", "--cached"], None).unwrap(),
+            before
+        );
+        assert_eq!(
+            git_stdout(&path, &["show", ":renamed.txt"], None).unwrap(),
+            staged
+        );
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn revert_missing_staged_addition_preserves_index_and_requires_recovery_before_unstage() {
+        let path = fixture();
+        fs::write(path.join("new.txt"), "only staged copy\n").unwrap();
+        git_stdout(&path, &["add", "new.txt"], None).unwrap();
+        fs::remove_file(path.join("new.txt")).unwrap();
+        let staged = git_stdout(&path, &["show", ":new.txt"], None).unwrap();
+        let error = revert_preview_sync(path.to_str().unwrap(), "new.txt").unwrap_err();
+        assert_eq!(
+            git_stdout(&path, &["show", ":new.txt"], None).unwrap(),
+            staged
+        );
+        assert!(
+            error.contains("no working copy") && error.contains("before unstaging"),
+            "{error}"
+        );
+        assert!(!error.contains("Unstage to keep"), "{error}");
         fs::remove_dir_all(path).unwrap();
     }
 
@@ -2397,7 +2501,11 @@ mod tests {
         )
         .unwrap();
         let error = revert_sync(path.to_str().unwrap(), "file.txt", &preview.token).unwrap_err();
-        assert!(error.contains("may have changed some"), "{error}");
+        assert!(
+            error.contains("reset the selected index paths")
+                && error.contains("Some tracked paths may have changed"),
+            "{error}"
+        );
         assert!(
             revert_sync(path.to_str().unwrap(), "file.txt", &preview.token)
                 .unwrap_err()
@@ -3686,6 +3794,48 @@ mod tests {
         assert_eq!(after.staged_files, 0);
     }
 
+    #[test]
+    fn nested_project_branch_and_update_cannot_mutate_the_enclosing_repository() {
+        let fixture = remote_fixture();
+        let nested = fixture.client.join("nested-project");
+        fs::create_dir(&nested).unwrap();
+        let before = snapshot(&fixture.client).unwrap();
+        let branched = branch_sync(
+            nested.to_str().unwrap(),
+            "nested-unintended",
+            true,
+            before.head_oid.as_deref().unwrap(),
+            before.branch.as_deref().unwrap(),
+        );
+        let after_branch = snapshot(&fixture.client).unwrap();
+        git_stdout(
+            &fixture.client,
+            &["checkout", before.branch.as_deref().unwrap()],
+            None,
+        )
+        .unwrap();
+        let updated = update_sync(
+            nested.to_str().unwrap(),
+            "test/repo",
+            "main",
+            before.head_oid.as_deref().unwrap(),
+            before.branch.as_deref().unwrap(),
+        );
+        let after_update = snapshot(&fixture.client).unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+        assert!(
+            branched.is_err(),
+            "nested branch creation changed the enclosing repository"
+        );
+        assert_eq!(after_branch.branch, before.branch);
+        assert!(
+            updated.is_err(),
+            "nested base update changed the enclosing checkout"
+        );
+        assert_eq!(after_update.branch, before.branch);
+        assert_eq!(after_update.head_oid, before.head_oid);
+    }
+
     #[cfg(unix)]
     #[test]
     fn local_git_timeout_stops_a_hook_and_preserves_the_index_and_worktree() {
@@ -3851,7 +4001,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn snapshot_marks_nested_selections_and_branch_results_as_not_root() {
+    async fn snapshot_marks_nested_selections_as_not_root_and_blocks_branch_mutation() {
         let path = fixture();
         let nested = path.join("nested-project");
         fs::create_dir_all(&nested).unwrap();
@@ -3864,17 +4014,19 @@ mod tests {
         assert!(root.is_root);
         assert!(!nested_value.is_root);
         assert_eq!(root.root_path, nested_value.root_path);
-        let changed = git_workspace_branch(
+        let error = git_workspace_branch(
             nested.to_string_lossy().into_owned(),
             "topic/nested".into(),
             true,
-            root.head_oid.unwrap(),
-            root.branch.unwrap(),
+            root.head_oid.clone().unwrap(),
+            root.branch.clone().unwrap(),
         )
         .await
-        .unwrap();
-        assert!(!changed.is_root);
-        assert_eq!(changed.branch.as_deref(), Some("topic/nested"));
+        .unwrap_err();
+        assert!(error.contains("repository root"));
+        let after = snapshot(&path).unwrap();
+        assert_eq!(after.head_oid, root.head_oid);
+        assert_eq!(after.branch, root.branch);
         fs::remove_dir_all(path).unwrap();
     }
 
@@ -4304,9 +4456,15 @@ mod tests {
         let fixture = remote_fixture();
         let before = snapshot(&fixture.client).unwrap();
         let upload_pack = fixture.root.join("slow-upload-pack.sh");
+        let marker = fixture.root.join("fetch-started");
+        let gate = fixture.root.join("fetch-release");
         fs::write(
             &upload_pack,
-            "#!/bin/sh\nsleep 1\nexec git-upload-pack \"$@\"\n",
+            format!(
+                "#!/bin/sh\ntouch \"{}\"\nwhile [ ! -f \"{}\" ]; do sleep 0.01; done\nexec git-upload-pack \"$@\"\n",
+                marker.display(),
+                gate.display(),
+            ),
         )
         .unwrap();
         let mut permissions = fs::metadata(&upload_pack).unwrap().permissions();
@@ -4331,10 +4489,23 @@ mod tests {
             before.head_oid.unwrap(),
             before.branch.unwrap(),
         ));
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        let started = tokio::time::timeout(Duration::from_secs(5), async {
+            while !marker.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
         // Simulate another Git client changing the checkout while network I/O
         // is in flight. The post-fetch guard must observe and preserve it.
-        git_stdout(&fixture.client, &["checkout", "main"], None).unwrap();
+        let checkout = if started.is_ok() {
+            git_stdout(&fixture.client, &["checkout", "main"], None)
+        } else {
+            Err("the fixture Git fetch did not start".into())
+        };
+        // Release the child even if the fixture checkout failed, so a test
+        // assertion never leaves an in-flight Git command behind.
+        fs::write(&gate, "release").unwrap();
+        checkout.unwrap();
         let error = task.await.unwrap().unwrap_err();
         assert!(error.contains("changed since"));
         assert_eq!(

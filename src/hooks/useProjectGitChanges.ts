@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef } from "react";
-import { friendlyError } from "../lib/errors";
+import { formatGitError } from "../lib/errors";
 import { normalizedProjectPath } from "../lib/paths";
 import { changeKey } from "../lib/gitChanges";
 import type { GitChangeArea, ProjectGitChanges, ProjectGitFileDiff } from "../lib/gitInspection";
@@ -47,7 +47,7 @@ async function readDiff(api: ProjectGitInspection, scope: string, cwd: string, s
     projectChangesStore.update(scope, { diff, diffLoading: false });
   } catch (error) {
     if (diffSequences.get(scope) !== sequence) return;
-    projectChangesStore.update(scope, { diff: null, diffLoading: false, diffError: friendlyError(error) });
+    projectChangesStore.update(scope, { diff: null, diffLoading: false, diffError: formatGitError(error) });
   }
 }
 
@@ -74,7 +74,7 @@ async function readChanges(api: ProjectGitInspection, cwd: string) {
     if (selected) void readDiff(api, scope, cwd, selected);
     else diffSequences.set(scope, (diffSequences.get(scope) ?? 0) + 1);
   } catch (error) {
-    projectChangesStore.update(scope, { loading: false, error: friendlyError(error) });
+    projectChangesStore.update(scope, { loading: false, error: formatGitError(error) });
   } finally {
     reads.delete(scope);
     if (entry.rerun) void readChanges(api, cwd);

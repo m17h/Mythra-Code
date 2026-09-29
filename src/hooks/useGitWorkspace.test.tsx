@@ -186,6 +186,42 @@ describe("useGitWorkspace", () => {
     expect(view.result.current.error).toContain("An agent started working");
   });
 
+  it.each(["before", "during"])("cancels a local update when the checkout changes %s confirmation", async (timing) => {
+    let finishRead!: (value: GitWorkspaceSnapshot) => void;
+    let finishConfirm!: (value: boolean) => void;
+    const confirmUpdate = vi.fn(() => new Promise<boolean>((resolve) => { finishConfirm = resolve; }));
+    const view = renderHook((props: Options) => useGitWorkspace(props), { initialProps: options({ confirmUpdate }) });
+    await waitFor(() => expect(view.result.current.snapshot).not.toBeNull());
+    if (timing === "before") native.get.mockImplementationOnce(() => new Promise((resolve) => { finishRead = resolve; }));
+    let update!: Promise<void>;
+    act(() => { update = view.result.current.updateBase("owner/repo", "main"); });
+    if (timing === "during") await waitFor(() => expect(confirmUpdate).toHaveBeenCalled());
+    view.rerender(options({ cwd: "/project/b", projectPath: "/project/b", confirmUpdate }));
+    await act(async () => {
+      if (timing === "before") finishRead(snapshot("/project/a"));
+      else finishConfirm(true);
+      await update;
+    });
+    if (timing === "before") expect(confirmUpdate).not.toHaveBeenCalled();
+    expect(native.update).not.toHaveBeenCalled();
+    expect(locks.release).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a pending mutation busy when returning to its checkout", async () => {
+    let finish!: (value: GitWorkspaceSnapshot) => void;
+    const view = renderHook((props: Options) => useGitWorkspace(props), { initialProps: options() });
+    await waitFor(() => expect(view.result.current.snapshot).not.toBeNull());
+    native.branch.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    let update!: Promise<boolean>;
+    act(() => { update = view.result.current.onBranch("feature/pending", true); });
+    view.rerender(options({ cwd: "/project/b", projectPath: "/project/b" }));
+    await waitFor(() => expect(view.result.current.snapshot?.rootPath).toBe("/project/b"));
+    view.rerender(options());
+    expect(view.result.current.busy).toBe(true);
+    await act(async () => { finish(snapshot("/project/a", "feature/pending")); await update; });
+    expect(view.result.current.busy).toBe(false);
+  });
+
   it("rechecks both isolated and shared folders after update confirmation", async () => {
     let finishConfirm!: (value: boolean) => void;
     const confirmUpdate = vi.fn(() => new Promise<boolean>((resolve) => { finishConfirm = resolve; }));
@@ -229,5 +265,14 @@ describe("useGitWorkspace", () => {
     expect(result).toBe(false);
     expect(view.result.current.error).toContain("branch is occupied");
     expect(onChanged).not.toHaveBeenCalled();
+  });
+
+  it("retains native Git timeout guidance rather than suggesting a Codex restart", async () => {
+    const warning = "Git fetch timed out. Your working files were not changed; inspect remote status before retrying.";
+    native.fetch.mockRejectedValueOnce(new Error(warning));
+    const view = renderHook(() => useGitWorkspace(options()));
+    await waitFor(() => expect(view.result.current.snapshot).not.toBeNull());
+    await act(async () => view.result.current.fetch());
+    expect(view.result.current.error).toBe(warning);
   });
 });

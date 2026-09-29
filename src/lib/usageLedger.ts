@@ -760,6 +760,7 @@ function readCorrectionCheckpoints(raw: unknown): Record<string, PricingCorrecti
   for (const [key, value] of Object.entries(raw)) {
     const item = value as Partial<PricingCorrectionCheckpoint> | null;
     const pricing = item?.pricing;
+    const serviceTier = normalizedServiceTier(pricing?.serviceTier);
     if (!key || key.length > 500 || !isCalendarDate(key.slice(0, 10)) || !item || typeof item.id !== "string" || item.id.length > 200
       || !Number.isSafeInteger(item.revision) || item.revision! < 1
       || typeof item.cost !== "number" || !Number.isFinite(item.cost)
@@ -769,6 +770,7 @@ function readCorrectionCheckpoints(raw: unknown): Record<string, PricingCorrecti
       || (pricing.cachedInputPerMillion !== undefined && finiteRate(pricing.cachedInputPerMillion) === undefined)
       || (pricing.cacheWriteInputPerMillion !== undefined && finiteRate(pricing.cacheWriteInputPerMillion) === undefined)
       || (pricing.cacheWrite1hInputPerMillion !== undefined && finiteRate(pricing.cacheWrite1hInputPerMillion) === undefined)
+      || (pricing.serviceTier !== undefined && !["standard", "fast", "flex", "batch", "ultrafast"].includes(serviceTier ?? ""))
       || !["OpenAI", "Anthropic", "OpenRouter", "Cursor"].includes(pricing.source)
       || !isCalendarDate(pricing.asOf)) continue;
     result[key] = {
@@ -777,6 +779,7 @@ function readCorrectionCheckpoints(raw: unknown): Record<string, PricingCorrecti
         ...(pricing.cachedInputPerMillion !== undefined ? { cachedInputPerMillion: pricing.cachedInputPerMillion } : {}),
         ...(pricing.cacheWriteInputPerMillion !== undefined ? { cacheWriteInputPerMillion: pricing.cacheWriteInputPerMillion } : {}),
         ...(pricing.cacheWrite1hInputPerMillion !== undefined ? { cacheWrite1hInputPerMillion: pricing.cacheWrite1hInputPerMillion } : {}),
+        ...(serviceTier ? { serviceTier } : {}),
         source: pricing.source, asOf: pricing.asOf }, basis: item.basis,
     };
   }
@@ -1096,8 +1099,14 @@ function samePricing(left?: ModelPricing, right?: ModelPricing): boolean {
 }
 
 function withTierEvidence(record: ThreadUsageRecord, usage: TokenUsageView): TokenUsageView {
-  const reported = normalizedServiceTier(usage.serviceTierSource === "reported" ? usage.serviceTier : record.reportedServiceTier);
   const requested = normalizedServiceTier(usage.requestedServiceTier ?? record.requestedServiceTier);
+  // Native helpers explicitly invalidate attribution when an execution mixed
+  // served tiers. The retained request is not evidence that every turn used it.
+  // Omitted source metadata still permits the existing requested-tier fallback.
+  if (record.kind === "auxiliary" && usage.serviceTierSource === "unknown") {
+    return { ...usage, requestedServiceTier: requested, serviceTier: undefined, serviceTierSource: "unknown" };
+  }
+  const reported = normalizedServiceTier(usage.serviceTierSource === "reported" ? usage.serviceTier : record.reportedServiceTier);
   return { ...usage, requestedServiceTier: requested, serviceTier: reported ?? normalizedServiceTier(usage.serviceTier) ?? requested,
     serviceTierSource: reported ? "reported" : normalizedServiceTier(usage.serviceTier) ? usage.serviceTierSource ?? "unknown" : requested ? "requested" : "unknown" };
 }

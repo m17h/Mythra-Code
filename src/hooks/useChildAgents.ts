@@ -413,6 +413,8 @@ export function useChildAgents(context: ChildAgentContext): {
         lmStudioBaseUrl: ctx.lmStudioBaseUrl,
         resolveSkillPrompt: ctx.resolveSkillPrompt,
         resolveSkillPrompts: ctx.resolveSkillPrompts,
+        isStartCancelled: () => (stopGenerationRef.current.get(rootThreadId) ?? 0) !== stopGeneration
+          || !childAgentPolicyForSession(contextRef.current.policies, request.sessionId),
         beginCheckpoint: async (childThreadId) => {
           await ctx.beginRunCheckpoint(childThreadId, executionPath, prompt, target.provider, childAgentModel(target));
         },

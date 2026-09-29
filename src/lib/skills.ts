@@ -112,6 +112,26 @@ export async function resolveSkillPrompt(message: string, folder: string, skills
   return invoke<string>("local_skills_resolve_prompt", { folder, message, skills: skillBridges(skills), mentionSource });
 }
 
+const INVALID_DEPENDENCY_REPORT = "The skill dependency report was invalid. Skills were not loaded and the model was not started.";
+
+/** Compatibility receipts must fail closed during sending. History display
+ * deliberately remains lenient so a damaged old record can still be read. */
+function deliveryEnvelopeReport(text: string): SkillDependencyReport | undefined {
+  if (!text.startsWith("<mythra_code_invoked_skills>\n")) return undefined;
+  const start = text.indexOf("\n{");
+  const end = text.indexOf("\n</mythra_code_invoked_skills>");
+  if (start < 0 || end < start || end - start > 2_000_000) throw new Error(INVALID_DEPENDENCY_REPORT);
+  let payload;
+  try { payload = JSON.parse(text.slice(start + 1, end)); }
+  catch { throw new Error(INVALID_DEPENDENCY_REPORT); }
+  if (!payload || typeof payload !== "object" || !Array.isArray(payload.skills)
+    || (typeof payload.userMessage !== "string" && typeof payload.systemPrompt !== "string")) throw new Error(INVALID_DEPENDENCY_REPORT);
+  if (!Object.hasOwn(payload, "dependencyReport") && !Object.hasOwn(payload, "skillDependencies")) return undefined;
+  const report = validSkillDependencyReport(payload.dependencyReport ?? payload.skillDependencies);
+  if (!report) throw new Error(INVALID_DEPENDENCY_REPORT);
+  return report;
+}
+
 /** Resolve both authored channels with one selected-library validation and one turn budget. */
 export async function resolveSkillPrompts(message: string, systemPrompt: string, folder: string, skills: LocalSkill[], mentionSource?: string): Promise<ResolvedSkillPrompts> {
   if (!(mentionSource ?? message).includes("@") && !systemPrompt.includes("@")
@@ -122,9 +142,15 @@ export async function resolveSkillPrompts(message: string, systemPrompt: string,
     folder, message, systemPrompt, skills: skillBridges(skills), mentionSource,
   });
   const restored = displayedUserMessage(resolved.prompt);
-  const report = resolved.skillDependencies === undefined ? restored.skillDependencies : validSkillDependencyReport(resolved.skillDependencies);
-  if (resolved.skillDependencies !== undefined && !report) throw new Error("The skill dependency report was invalid. Skills were not loaded and the model was not started.");
-  if (report && hasBlockedSkillDependencies(report)) throw new SkillDependencyError(report);
+  // Modern bridges supply one authoritative, complete device report. Older
+  // bridges can carry it in either authored channel; validate every recovered
+  // report rather than silently dropping invalid or blocked system metadata.
+  const reports = resolved.skillDependencies === undefined
+    ? [deliveryEnvelopeReport(resolved.prompt), deliveryEnvelopeReport(resolved.systemPrompt)]
+    : [validSkillDependencyReport(resolved.skillDependencies)];
+  if (resolved.skillDependencies !== undefined && !reports[0]) throw new Error(INVALID_DEPENDENCY_REPORT);
+  for (const report of reports) if (report && hasBlockedSkillDependencies(report)) throw new SkillDependencyError(report);
+  const report = reports.find((entry) => entry !== undefined);
   return { ...resolved,
     ...(resolved.skillReferences === undefined && restored.skillReferences !== undefined ? { skillReferences: restored.skillReferences } : {}),
     ...(resolved.skillsFolder === undefined && restored.skillsFolder !== undefined ? { skillsFolder: restored.skillsFolder } : {}),

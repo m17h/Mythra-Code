@@ -794,6 +794,7 @@ struct ClaudeExecutableIdentity {
     path: PathBuf,
     target: Option<PathBuf>,
     metadata: Option<(u64, Option<SystemTime>)>,
+    file_identity: Option<(u64, u64)>,
 }
 
 struct ClaudePromptSnapshotSupport {
@@ -3378,13 +3379,44 @@ fn claude_prompt_snapshot_version_support(version: Option<&str>) -> Option<bool>
 }
 
 async fn claude_executable_identity(path: &Path) -> ClaudeExecutableIdentity {
+    let metadata = tokio::fs::metadata(path).await.ok();
+    #[cfg(unix)]
+    let file_identity = {
+        use std::os::unix::fs::MetadataExt;
+        metadata
+            .as_ref()
+            .map(|metadata| (metadata.dev(), metadata.ino()))
+    };
+    #[cfg(windows)]
+    let file_identity = {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{
+            GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+        };
+        match tokio::fs::File::open(path).await {
+            Ok(file) => {
+                let mut information: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+                // SAFETY: the file remains open through the read-only query,
+                // and information is a correctly sized initialized output.
+                (unsafe {
+                    GetFileInformationByHandle(file.as_raw_handle().cast(), &mut information)
+                } != 0)
+                    .then_some((
+                        u64::from(information.dwVolumeSerialNumber),
+                        (u64::from(information.nFileIndexHigh) << 32)
+                            | u64::from(information.nFileIndexLow),
+                    ))
+            }
+            Err(_) => None,
+        }
+    };
+    #[cfg(not(any(unix, windows)))]
+    let file_identity = None;
     ClaudeExecutableIdentity {
         path: path.to_path_buf(),
         target: tokio::fs::canonicalize(path).await.ok(),
-        metadata: tokio::fs::metadata(path)
-            .await
-            .ok()
-            .map(|metadata| (metadata.len(), metadata.modified().ok())),
+        metadata: metadata.map(|metadata| (metadata.len(), metadata.modified().ok())),
+        file_identity,
     }
 }
 

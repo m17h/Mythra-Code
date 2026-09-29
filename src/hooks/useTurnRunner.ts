@@ -32,7 +32,7 @@ import { friendlyError } from "../lib/errors";
 import { confirmDialog } from "../lib/confirmDialog";
 import { clearProviderStopIntent, markProviderStopIntent } from "../lib/providerStopIntent";
 import { isClaudeThread, isCursorThread } from "../lib/threadProvider";
-import { withMythraCodeCompletionInstructions } from "../lib/completionPrompt";
+import { mythraCodeDeveloperInstructions, withMythraCodeCompletionInstructions } from "../lib/completionPrompt";
 import { RUN_COMMAND_TOOL } from "../lib/projectRun";
 import { CHECK_COMMAND_TOOL } from "../lib/projectChecks";
 import {
@@ -57,6 +57,9 @@ const queuedDeliveries = new Map<string, { threadId: string; context: TurnRunner
 const activeQueuedDeliveries = new Set<string>();
 /** One bounded recovery attempt for a local-provider slot still unwinding. */
 const queuedBusyRetries = new Set<string>();
+
+/** Stop before a provider request is an undelivered prompt, not a runtime error. */
+class CancelledTurnStart extends Error {}
 
 /** The local provider can cross a lifecycle boundary after the UI enables Steer. */
 function isUnavailableSteerError(reason: unknown): boolean {
@@ -488,6 +491,11 @@ export function useTurnRunner(context: TurnRunnerContext): {
     let provisionalPersisted = false;
     let childBridge: ChildAgentBridgeResult | null = null;
     const sentAttachments = [...attachments];
+    const assertCanStart = () => {
+      if (pendingStart?.cancelRequested || (!activeThread && draftGeneration !== draftGenerationRef.current)) {
+        throw new CancelledTurnStart("Stopped before starting the model turn");
+      }
+    };
 
     // The approved cross-provider destinations are captured once, on the first
     // turn of a thread, and reused verbatim afterwards. Binding them to the
@@ -511,7 +519,8 @@ export function useTurnRunner(context: TurnRunnerContext): {
       provider: "claude" | "cursor",
       executionPath: string,
       strategy: {
-        startTurn: (thread: Thread, updatedThread: Thread) => Promise<{ turnId: string }>;
+        prepareTurn: (thread: Thread, updatedThread: Thread) => Promise<void>;
+        startTurn: (thread: Thread) => Promise<{ turnId: string }>;
         afterStart?: (threadId: string) => void;
         hardStop: (threadId: string) => Promise<unknown>;
       },
@@ -565,6 +574,13 @@ export function useTurnRunner(context: TurnRunnerContext): {
       useTaskStore.getState().setTaskStatus(thread.id, "starting");
       if (!pendingStart) pendingStart = pendingTurnStartsRef.current.begin(thread.id);
       await beginRunCheckpoint(thread.id, executionPath, text, effectiveSettings.provider, effectiveSettings.model);
+      assertCanStart();
+      // Persist the owned thread/prior history before dispatch, not the new
+      // optimistic prompt. A Stop or failed save must not leave undelivered
+      // skill provenance in a durable (possibly paged) transcript. No await
+      // separates the final check, optimistic append and model request.
+      await strategy.prepareTurn(thread, updatedThread);
+      assertCanStart();
       sentMessageId = `local-${crypto.randomUUID()}`;
       useTaskStore.getState().appendUserMessage(thread.id, {
         id: sentMessageId,
@@ -573,7 +589,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         ...userSkillMetadata,
         attachments: messageImageAttachments(sentAttachments),
       });
-      const result = await strategy.startTurn(thread, updatedThread);
+      const result = await strategy.startTurn(thread);
       // Provider events can race ahead of the start RPC response. If a very
       // short turn already delivered its result, reinstalling it here would
       // resurrect the completed thread as permanently running.
@@ -615,16 +631,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         providerText = await resolveSkillPrompt(text, ctx.skillInvocationText);
         userSkillMetadata = ctx.resolveSkillMentions === false ? { skillReferences: [] } : ctx.getSkillReferences?.(text, ctx.skillInvocationText) ?? {};
       }
-      if (pendingStart?.cancelRequested || (!activeThread && draftGeneration !== draftGenerationRef.current)) {
-        if (startingThreadId && pendingStart) {
-          pendingTurnStartsRef.current.finish(startingThreadId, pendingStart);
-          useTaskStore.getState().setTaskStatus(startingThreadId, "interrupted");
-        }
-        if (!activeThread) setStartingDraftTurn(false);
-        setStatus("Ready");
-        setTransientStatus("Stopped");
-        return false;
-      }
+      assertCanStart();
       let executionPath = activeWorkspace.path;
       if (!activeThread && draftThreadIsolated && activeProject) {
         provisionalWorktree = await createThreadWorktree(activeProject.path, text);
@@ -632,6 +639,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       } else if (activeThread) {
         executionPath = executionPathFor(activeThread.id, activeWorkspace.path);
       }
+      assertCanStart();
       if (isPullRequestMutationRunning(executionPath)) {
         throw new Error("Wait for the pull request operation to finish before starting another model turn.");
       }
@@ -639,6 +647,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       const additionalWorkspaceRoots = isolationGitDir ? [isolationGitDir] : [];
       if (activeThread && effectiveSettings.provider !== "claude" && effectiveSettings.provider !== "cursor") {
         await waitForThreadPreparation(activeThread.id);
+        assertCanStart();
       }
       childBridge = await ensureChildAgentBridge({
         threadId: activeThread?.id,
@@ -658,6 +667,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         // allowed to consume a staged thread-local crew edit.
         promoteStagedEdits: true,
       });
+      assertCanStart();
       // A captured cross-provider policy freezes one concurrency budget for
       // the whole conversation. Use that same budget for provider-native
       // sub-agents too, so the number displayed by the command center is the
@@ -680,24 +690,26 @@ export function useTurnRunner(context: TurnRunnerContext): {
       };
       if (effectiveSettings.provider === "claude") {
         if (skillsFolder && !skillRuntimeRootRef.current) await refreshLocalSkills();
+        assertCanStart();
         return await runLocalTurn("claude", executionPath, {
-          startTurn: async (thread, updatedThread) => {
+          prepareTurn: (thread, updatedThread) => saveClaudeTranscript({ thread: updatedThread, messages: useTaskStore.getState().tasks[thread.id]?.messages ?? [], activities: useTaskStore.getState().tasks[thread.id]?.activities ?? [] }),
+          startTurn: async (thread) => {
             // Appending the optimistic user message cannot flip assistant
             // presence, so resume detection is unaffected by running after it.
             const canResumeClaude = Boolean(activeThread && useTaskStore.getState().tasks[thread.id]?.messages.some((message) => message.role === "assistant"));
-            await saveClaudeTranscript({ thread: updatedThread, messages: useTaskStore.getState().tasks[thread.id]?.messages ?? [], activities: useTaskStore.getState().tasks[thread.id]?.activities ?? [] });
             const result = await startClaudeTurn({ threadId: thread.id, cwd: executionPath, prompt: providerText, model: effectiveSettings.model || DEFAULT_CLAUDE_MODEL, effort: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort, permission: effectiveSettings.permission, systemPrompt: withMythraCodeCompletionInstructions(resolvedSystemPrompt, Boolean(childBridge?.launch.toolNames.includes("spawn_mythra_agent")), Boolean(childBridge?.launch.toolNames.includes("propose_agent_settings")), runButton, checkButton), resume: canResumeClaude, attachments: sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })), subagentMax: runtimeSubagentMax, customAgents, skillsPluginPath: skillRuntimeRootRef.current || undefined, childAgentBridgeConfig: childBridge?.launch.configPath });
             return { turnId: result.turnId };
           },
+          afterStart: (threadId) => scheduleClaudeThreadSave(threadId),
           hardStop: (threadId) => killClaudeTurn(threadId),
         });
       }
 
       if (effectiveSettings.provider === "cursor") {
         return await runLocalTurn("cursor", executionPath, {
-          startTurn: async (thread, updatedThread) => {
+          prepareTurn: (thread, updatedThread) => saveCursorTranscript({ thread: updatedThread, cursorSessionId: cursorSessionIdsRef.current[thread.id] ?? "", messages: useTaskStore.getState().tasks[thread.id]?.messages ?? [], activities: useTaskStore.getState().tasks[thread.id]?.activities ?? [] }),
+          startTurn: async (thread) => {
             const priorSessionId = cursorSessionIdsRef.current[thread.id];
-            await saveCursorTranscript({ thread: updatedThread, cursorSessionId: priorSessionId ?? "", messages: useTaskStore.getState().tasks[thread.id]?.messages ?? [], activities: useTaskStore.getState().tasks[thread.id]?.activities ?? [] });
             const result = await startCursorTurn({
               threadId: thread.id,
               cwd: executionPath,
@@ -721,6 +733,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       }
 
       await ensureSkillRoots();
+      assertCanStart();
       const input = buildTurnInput(providerText, sentAttachments);
       // The Codex app server keeps one thread alive across turns and only reads
       // this config when a thread is started or resumed, so the capabilities it
@@ -730,6 +743,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       const currentRuntime = activeThread
         ? await runtimeThreadState(activeThread.id)
         : { instance: await runtimeInstanceId(), loaded: false };
+      assertCanStart();
       let runtimeInstance = currentRuntime.instance;
       const capabilities = subagentCapabilitySignature({
         subagentsEnabled: Boolean(childBridge?.launch.toolNames.includes("spawn_mythra_agent")),
@@ -780,6 +794,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         // and takes the new config from the resume alone.
         const plan = planSubagentCapabilities(threadId, runtimeInstance, capabilities, currentRuntime.loaded);
         if (plan.restartRuntime) runtimeInstance = await restartRuntimeForCapabilities(threadId);
+        assertCanStart();
         if (effectiveSettings.provider === "openrouter" || effectiveSettings.provider === "lmstudio" || plan.resume) {
           const resume = threadResumeParams(runtimeSettings, threadId, executionPath, { customAgents, modelContextWindow, excludeTurns: true, perTurnSystemPrompt: true, additionalWorkspaceRoots, childAgentBridge: childBridge?.launch, refreshRuntimeConfig: true, projectRunCommand: runButton.run, projectCheckCommand: checkButton.check });
           const resumed = await rpc<{ model?: unknown }>("thread/resume", effectiveSettings.provider === "openrouter" || effectiveSettings.provider === "lmstudio" ? { ...resume, model: effectiveSettings.model } : resume);
@@ -787,6 +802,8 @@ export function useTurnRunner(context: TurnRunnerContext): {
           recordSubagentCapabilities(threadId, runtimeInstance, capabilities);
         }
       }
+
+      assertCanStart();
 
       if (activeThread?.id === threadId) {
         const updatedThread = { ...activeThread, updatedAt: Math.floor(Date.now() / 1000) };
@@ -810,6 +827,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       useTaskStore.getState().setTaskStatus(threadId, "starting");
       if (!pendingStart) pendingStart = pendingTurnStartsRef.current.begin(threadId);
       await beginRunCheckpoint(threadId, executionPath, text, effectiveSettings.provider, effectiveSettings.model);
+      assertCanStart();
       sentMessageId = `local-${crypto.randomUUID()}`;
       useTaskStore.getState().appendUserMessage(threadId, {
         id: sentMessageId,
@@ -822,6 +840,12 @@ export function useTurnRunner(context: TurnRunnerContext): {
       const result = await rpc<{ turn: Turn }>("turn/start", turnStartParams(runtimeSettings, threadId, executionPath, input, additionalWorkspaceRoots, true, {
         systemPrompt: resolvedSystemPrompt,
         model: typeof runtimeTurnModel === "string" ? runtimeTurnModel : undefined,
+        developerInstructions: mythraCodeDeveloperInstructions(
+          Boolean(childBridge?.launch.toolNames.includes("spawn_mythra_agent")),
+          Boolean(childBridge?.launch.toolNames.includes("propose_agent_settings")),
+          runButton,
+          checkButton,
+        ),
       }));
       const resultTurnId = result.turn?.id;
       const completedBeforeStartReturned = Boolean(
@@ -843,6 +867,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       if (!activeThread) contextRef.current.onThreadTitleRequested?.(threadId, text);
       return true;
     } catch (reason) {
+      const cancelled = reason instanceof CancelledTurnStart;
       setStartingDraftTurn(false);
       // Use the locally captured thread ids: for a brand-new thread the
       // activeThread closure is still null here (which used to leave the
@@ -872,7 +897,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         discardRunCheckpoint(failedThreadId);
         if (pendingStart) pendingTurnStartsRef.current.finish(failedThreadId, pendingStart);
         if (sentMessageId) useTaskStore.getState().removeMessage(failedThreadId, sentMessageId);
-        useTaskStore.getState().setTaskStatus(failedThreadId, "error", friendlyError(reason));
+        useTaskStore.getState().setTaskStatus(failedThreadId, cancelled ? "interrupted" : "error", cancelled ? undefined : friendlyError(reason));
         if (isClaudeThreadBusyError(reason)) {
           // The backend slot is held by a Claude process the UI no longer
           // tracks (e.g. after an event loss). Free it so a retry succeeds
@@ -883,7 +908,8 @@ export function useTurnRunner(context: TurnRunnerContext): {
         }
       }
       setStatus("Ready");
-      setError(friendlyError(reason));
+      if (cancelled) setTransientStatus("Stopped");
+      else setError(friendlyError(reason));
       return false;
     }
   }, [archiveOwnsThread]);

@@ -136,8 +136,11 @@ export function AppSelectMenu({
     const maxWidth = Math.max(1, viewportWidth - POPOVER_VIEWPORT_MARGIN * 2);
     const width = Math.min(POPOVER_WIDTH * zoom, maxWidth);
     const layoutWidth = width / zoom;
-    // Apply the clamped width before measuring wrapped options' height.
+    const maxHeight = Math.max(1, viewportHeight - POPOVER_VIEWPORT_MARGIN * 2) / zoom;
+    // Clamp both dimensions before measuring. The options scroll inside the
+    // remaining height, including in short windows at enlarged UI scales.
     menu.style.width = `${layoutWidth}px`;
+    menu.style.maxHeight = `${maxHeight}px`;
     const height = menu.offsetHeight * zoom;
     const above = triggerRect.top - POPOVER_GAP - height;
     const below = triggerRect.bottom + POPOVER_GAP;
@@ -157,9 +160,10 @@ export function AppSelectMenu({
       current.top === layoutTop
       && current.left === layoutLeft
       && current.width === layoutWidth
+      && current.maxHeight === maxHeight
       && current.visibility === "visible"
         ? current
-        : { top: layoutTop, left: layoutLeft, width: layoutWidth, visibility: "visible" }
+        : { top: layoutTop, left: layoutLeft, width: layoutWidth, maxHeight, visibility: "visible" }
     ));
   }, [open, topLayer, menuPlacement]);
 
@@ -255,6 +259,8 @@ export function AppSelectMenu({
       popover={topLayer ? "manual" : undefined}
       style={topLayer ? {
         position: "fixed",
+        display: "flex",
+        flexDirection: "column",
         inset: "auto",
         width: `min(${POPOVER_WIDTH}px, calc(100vw - ${POPOVER_VIEWPORT_MARGIN * 2}px))`,
         right: "auto",

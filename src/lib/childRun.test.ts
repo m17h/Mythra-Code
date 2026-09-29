@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const codex = vi.hoisted(() => ({ rpc: vi.fn() }));
-const claude = vi.hoisted(() => ({ startClaudeTurn: vi.fn(), saveClaudeTranscript: vi.fn() }));
-const cursor = vi.hoisted(() => ({ startCursorTurn: vi.fn(), saveCursorTranscript: vi.fn() }));
+const claude = vi.hoisted(() => ({ startClaudeTurn: vi.fn(), saveClaudeTranscript: vi.fn(), deleteClaudeTranscript: vi.fn() }));
+const cursor = vi.hoisted(() => ({ startCursorTurn: vi.fn(), saveCursorTranscript: vi.fn(), deleteCursorTranscript: vi.fn() }));
 vi.mock("./codex", () => codex);
 vi.mock("./claude", () => claude);
 vi.mock("./cursor", () => cursor);
@@ -72,11 +72,102 @@ describe("startChildAgentTurn", () => {
     vi.clearAllMocks();
     claude.saveClaudeTranscript.mockResolvedValue(undefined);
     cursor.saveCursorTranscript.mockResolvedValue(undefined);
+    claude.deleteClaudeTranscript.mockResolvedValue(undefined);
+    cursor.deleteCursorTranscript.mockResolvedValue(undefined);
     claude.startClaudeTurn.mockResolvedValue({ turnId: "turn-claude" });
     cursor.startCursorTurn.mockResolvedValue({ turnId: "turn-cursor", cursorSessionId: "cursor-1" });
     codex.rpc.mockImplementation(async (method: string) => (method === "thread/start"
       ? { thread: { id: "thread-child", name: null, preview: "", cwd: "/tmp", updatedAt: 0, modelProvider: "openai" } }
       : { turn: { id: "turn-codex", items: [] } }));
+  });
+
+  it.each(["openai", "openrouter", "lmstudio", "claude", "cursor"] as const)("does not start a %s child stopped while skill preparation waits", async (provider) => {
+    let finish!: (value: { prompt: string; systemPrompt: string }) => void;
+    let cancelled = false;
+    const beginCheckpoint = vi.fn();
+    const pending = startChildAgentTurn(target({ provider }), "Use @review", context({
+      isStartCancelled: () => cancelled,
+      beginCheckpoint,
+      resolveSkillPrompts: () => new Promise((resolve) => { finish = resolve; }),
+    }));
+    cancelled = true;
+    finish({ prompt: "resolved user skill", systemPrompt: "resolved system skill" });
+    await expect(pending).rejects.toThrow(/stopped|cancelled/i);
+    expect(codex.rpc).not.toHaveBeenCalled();
+    expect(claude.startClaudeTurn).not.toHaveBeenCalled();
+    expect(cursor.startCursorTurn).not.toHaveBeenCalled();
+    expect(claude.saveClaudeTranscript).not.toHaveBeenCalled();
+    expect(cursor.saveCursorTranscript).not.toHaveBeenCalled();
+    expect(beginCheckpoint).not.toHaveBeenCalled();
+  });
+
+  it.each(["openai", "openrouter", "lmstudio", "claude", "cursor"] as const)("does not execute a %s child stopped while its checkpoint waits", async (provider) => {
+    let cancelled = false;
+    const discardCheckpoint = vi.fn();
+    await expect(startChildAgentTurn(target({ provider }), "Use @review", context({
+      isStartCancelled: () => cancelled,
+      beginCheckpoint: async () => { cancelled = true; }, discardCheckpoint,
+    }))).rejects.toThrow(/cancelled/i);
+    expect(codex.rpc.mock.calls.some(([method]) => method === "turn/start")).toBe(false);
+    expect(claude.startClaudeTurn).not.toHaveBeenCalled();
+    expect(cursor.startCursorTurn).not.toHaveBeenCalled();
+    expect(discardCheckpoint).toHaveBeenCalledOnce();
+    if (provider === "claude") expect(claude.deleteClaudeTranscript).toHaveBeenCalledExactlyOnceWith(expect.any(String));
+    else if (provider === "cursor") expect(cursor.deleteCursorTranscript).toHaveBeenCalledExactlyOnceWith(expect.any(String));
+    else expect(codex.rpc).toHaveBeenCalledWith("thread/archive", { threadId: "thread-child" });
+  });
+
+  it("archives only its newly created unused child when Stop lands during thread/start", async () => {
+    let cancelled = false;
+    codex.rpc.mockImplementation(async (method: string) => {
+      if (method === "thread/start") {
+        cancelled = true;
+        return { thread: { id: "unused-child", modelProvider: "openai", cwd: "/tmp", updatedAt: 0 } };
+      }
+      return {};
+    });
+    const beginCheckpoint = vi.fn();
+    await expect(startChildAgentTurn(target(), "Use @review", context({ isStartCancelled: () => cancelled, beginCheckpoint }))).rejects.toThrow(/cancelled/);
+    expect(codex.rpc.mock.calls.map(([method]) => method)).toEqual(["thread/start", "thread/archive"]);
+    expect(codex.rpc).toHaveBeenLastCalledWith("thread/archive", { threadId: "unused-child" });
+    expect(beginCheckpoint).not.toHaveBeenCalled();
+  });
+
+  it("surfaces failed early cleanup without pretending an unused child was removed", async () => {
+    codex.rpc.mockImplementation(async (method: string) => {
+      if (method === "thread/archive") throw new Error("Archive refused");
+      return { thread: { id: "unused-child", modelProvider: "openai", cwd: "/tmp", updatedAt: 0 } };
+    });
+    await expect(startChildAgentTurn(target(), "Do work", context({ beginCheckpoint: async () => { throw new Error("Checkpoint failed"); } })))
+      .rejects.toThrow(/Checkpoint failed.*\n.*unused-child.*Archive refused/);
+    expect(codex.rpc.mock.calls.some(([method]) => method === "turn/start")).toBe(false);
+  });
+
+  it("never archives a thread after an ambiguous model turn/start error", async () => {
+    codex.rpc.mockImplementation(async (method: string) => {
+      if (method === "turn/start") throw new Error("Transport closed after send");
+      return { thread: { id: "started-child", modelProvider: "openai", cwd: "/tmp", updatedAt: 0 } };
+    });
+    await expect(startChildAgentTurn(target(), "Do work", context())).rejects.toThrow("Transport closed after send");
+    expect(codex.rpc.mock.calls.some(([method]) => method === "thread/archive")).toBe(false);
+  });
+
+  it.each(["openrouter", "lmstudio"] as const)("uses the actual reported default model for a blank-model %s child", async (provider) => {
+    codex.rpc.mockImplementation(async (method: string) => method === "thread/start"
+      ? { thread: { id: "default-child", modelProvider: provider, cwd: "/tmp", updatedAt: 0 }, model: "actual/default-model" }
+      : { turn: { id: "turn-default" } });
+    const result = await startChildAgentTurn(target({ provider, model: "" }), "Use @review", context());
+    const turn = codex.rpc.mock.calls.find(([method]) => method === "turn/start")!;
+    expect(turn[1].collaborationMode.settings.model).toBe("actual/default-model");
+    expect(result.model).toBe("actual/default-model");
+    expect(codex.rpc.mock.calls.some(([method]) => method === "thread/archive")).toBe(false);
+  });
+
+  it("cleans up an unused child if turn parameters fail before any model request", async () => {
+    await expect(startChildAgentTurn(target({ provider: "lmstudio", model: "" }), "Do work", context()))
+      .rejects.toThrow("could not identify this thread's current model");
+    expect(codex.rpc.mock.calls.map(([method]) => method)).toEqual(["thread/start", "thread/archive"]);
+    expect(codex.rpc).toHaveBeenLastCalledWith("thread/archive", { threadId: "thread-child" });
   });
 
   it.each([

@@ -24,6 +24,13 @@ describe("GitHistoryView stale snapshots", () => {
     expect(screen.queryByText(/branch has moved/)).not.toBeInTheDocument();
   });
 
+  it("does not label a pinned old history page as commits on the newly selected branch", () => {
+    const state = history({ headOid: "a".repeat(40), entries: [{ oid: "a".repeat(40), shortOid: "aaaaaaa", subject: "Previous branch commit", authorName: "A", authoredAt: "2026-09-28T10:00:00Z" }] });
+    render(<GitHistoryView history={state} branch="new-branch" currentHeadOid={"b".repeat(40)} currentHeadKnown absent={false} />);
+    expect(screen.queryByLabelText("Commits on new-branch")).not.toBeInTheDocument();
+    expect(screen.getByRole("list", { name: "Commits at aaaaaaa" })).toBeInTheDocument();
+  });
+
   it("uses the failed request's retry rather than inferring it from cached entries", () => {
     const state = history({ error: "reload failed", entries: [{ oid: "a".repeat(40), shortOid: "aaaaaaa", subject: "old", authorName: "A", authoredAt: "2026-09-28T10:00:00Z" }] });
     render(<GitHistoryView history={state} branch="main" currentHeadOid={state.headOid} absent={false} />);

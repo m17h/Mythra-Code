@@ -427,6 +427,17 @@ fn selected_repository(cwd: &str) -> Result<PathBuf, String> {
         .map_err(|error| format!("Could not open the Git repository: {error}"))
 }
 
+fn selected_mutation_repository(cwd: &str) -> Result<PathBuf, String> {
+    let root = selected_repository(cwd)?;
+    let selected = Path::new(cwd)
+        .canonicalize()
+        .map_err(|error| format!("Could not open the project folder: {error}"))?;
+    if selected != root {
+        return Err("Open the Git repository root before creating a branch or pull request. This project folder belongs to an enclosing repository.".into());
+    }
+    Ok(root)
+}
+
 async fn blocking_local<T, F>(operation: F) -> Result<T, String>
 where
     T: Send + 'static,
@@ -496,6 +507,21 @@ fn mutation_git(
         });
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn commit_for_pr_with_timeout(cwd: &Path, message: &str, limit: Duration) -> Result<(), String> {
+    let before = optional_git_stdout(cwd, &["rev-parse", "--verify", "HEAD"]);
+    mutation_git(cwd, &["commit", "-m", message], limit, "Git commit")
+        .map(|_| ())
+        .map_err(|error| {
+            let after = optional_git_stdout(cwd, &["rev-parse", "--verify", "HEAD"]);
+            if after != before {
+                if let Some(head) = after {
+                    return format!("Git did not confirm completion of the requested commit: {error}\nHEAD is now {head}. A commit may already have been saved. Mythra Code did not attempt a push; refresh and inspect the local history, staged changes, and working files before trying again.");
+                }
+            }
+            format!("Git did not confirm completion of the requested commit: {error}\nMythra Code did not attempt a push. Refresh and inspect the local history, staged changes, and working files before trying again.")
+        })
 }
 
 async fn bounded_git(
@@ -915,6 +941,128 @@ fn remote_for_repository(cwd: &Path, repository: &str) -> Result<String, String>
     Err(format!("No Git remote points to {repository}. Creating pull requests from a fork is not supported yet."))
 }
 
+#[derive(PartialEq, Eq)]
+struct PrPushBinding {
+    remote: String,
+    fetch_url: String,
+    push_url: String,
+    fetch_refspecs: Vec<String>,
+}
+
+fn pr_push_binding(cwd: &Path, remote: &str, repository: &str) -> Result<PrPushBinding, String> {
+    let fetch_url = github_remote_url(cwd, remote).ok_or_else(|| {
+        "The Git remote changed before the branch could be pushed. Refresh and try again."
+            .to_string()
+    })?;
+    // Keep the configured identity separate from Git's transport rewrites.
+    // An explicit URL pins the destination even if another client changes the
+    // named remote after this check; existing insteadOf/credential rules remain.
+    let push_url = optional_git_stdout(
+        cwd,
+        &["config", "--get-all", &format!("remote.{remote}.pushurl")],
+    )
+    .unwrap_or_else(|| fetch_url.clone());
+    if !parse_github_repository(&fetch_url)
+        .is_some_and(|found| found.eq_ignore_ascii_case(repository))
+        || !parse_github_repository(&push_url)
+            .is_some_and(|found| found.eq_ignore_ascii_case(repository))
+    {
+        return Err("The Git remote changed before the branch could be pushed. Origin must have one fetch and one push URL matching the reviewed GitHub repository. Refresh and try again.".into());
+    }
+    Ok(PrPushBinding {
+        remote: remote.into(),
+        fetch_url,
+        push_url,
+        fetch_refspecs: optional_git_stdout(
+            cwd,
+            &["config", "--get-all", &format!("remote.{remote}.fetch")],
+        )
+        .map(|value| value.lines().map(str::to_owned).collect())
+        .unwrap_or_default(),
+    })
+}
+
+fn mapped_ref(reference: &str, pattern: &str) -> Option<String> {
+    match pattern.split_once('*') {
+        Some((prefix, suffix)) if !suffix.contains('*') => reference
+            .strip_prefix(prefix)?
+            .strip_suffix(suffix)
+            .map(str::to_owned),
+        None if reference == pattern => Some(String::new()),
+        _ => None,
+    }
+}
+
+fn pr_tracking_refs(
+    cwd: &Path,
+    binding: &PrPushBinding,
+    head: &str,
+) -> Result<Vec<(String, Option<String>)>, String> {
+    let source = format!("refs/heads/{head}");
+    if binding.fetch_refspecs.iter().any(|spec| {
+        spec.strip_prefix('^')
+            .is_some_and(|pattern| mapped_ref(&source, pattern).is_some())
+    }) {
+        return Ok(Vec::new());
+    }
+    let mut targets = Vec::new();
+    for spec in &binding.fetch_refspecs {
+        let Some((from, to)) = spec.trim_start_matches('+').split_once(':') else {
+            continue;
+        };
+        let Some(middle) = mapped_ref(&source, from) else {
+            continue;
+        };
+        let target = if from.contains('*') && to.matches('*').count() == 1 {
+            to.replace('*', &middle)
+        } else if !from.contains('*') && !to.contains('*') {
+            to.to_owned()
+        } else {
+            return Err("The remote fetch mapping cannot be safely recorded. Refresh and inspect it before creating the pull request.".into());
+        };
+        git(cwd, &["check-ref-format", &target])?;
+        if target.starts_with("refs/heads/") {
+            return Err("The remote fetch mapping targets a local branch. That branch was not rewritten; inspect its mapping before creating the pull request.".into());
+        }
+        if optional_git_stdout(cwd, &["symbolic-ref", "--quiet", &target]).is_some() {
+            return Err("The remote tracking mapping is symbolic. It was not rewritten; inspect it before creating the pull request.".into());
+        }
+        if !targets.iter().any(|(found, _)| found == &target) {
+            let old = optional_git_stdout(cwd, &["rev-parse", "--verify", &target]);
+            targets.push((target, old));
+        }
+    }
+    Ok(targets)
+}
+
+fn record_pr_tracking(
+    cwd: &Path,
+    binding: &PrPushBinding,
+    repository: &str,
+    oid: &str,
+    tracking: &[(String, Option<String>)],
+) -> Result<(), String> {
+    if pr_push_binding(cwd, &binding.remote, repository)? != *binding {
+        return Err("The Git remote changed during the push. Its tracking refs were not changed; refresh before trying again.".into());
+    }
+    for (reference, old) in tracking {
+        if optional_git_stdout(cwd, &["symbolic-ref", "--quiet", reference]).is_some() {
+            return Err("A remote tracking ref became symbolic during the push. It was not rewritten; refresh and inspect it.".into());
+        }
+        git(
+            cwd,
+            &[
+                "update-ref",
+                "--no-deref",
+                reference,
+                oid,
+                old.as_deref().unwrap_or(&"0".repeat(oid.len())),
+            ],
+        )?;
+    }
+    Ok(())
+}
+
 fn branch_and_head(cwd: &Path) -> Result<(String, String), String> {
     let branch = git(cwd, &["symbolic-ref", "--short", "-q", "HEAD"])
         .map_err(|_| "Pull requests cannot be created from a detached HEAD.".to_string())?;
@@ -1155,7 +1303,7 @@ pub(super) async fn github_pr_branch(
     validate_ref(&name, "New branch")?;
     validate_oid(&expected_head_oid)?;
     let (selected, repository) = blocking_local(move || {
-        let selected = selected_repository(&cwd)?;
+        let selected = selected_mutation_repository(&cwd)?;
         let origin = github_remote_url(&selected, "origin")
             .ok_or_else(|| "This repository has no origin remote.".to_string())?;
         let repository = parse_github_repository(&origin)
@@ -1262,7 +1410,7 @@ pub(super) async fn github_pr_create(
     if title.is_empty() || title.chars().count() > 256 {
         return Err("Pull request title must be 1–256 characters.".into());
     }
-    let selected = blocking_local(move || selected_repository(&cwd)).await?;
+    let selected = blocking_local(move || selected_mutation_repository(&cwd)).await?;
     let gh = resolve_github_binary(&app).await?;
     create_with(
         selected,
@@ -1341,7 +1489,7 @@ async fn create_with(
     } else {
         None
     };
-    let (selected, remote) = blocking_mutation(lease.clone(), move || {
+    let (selected, binding) = blocking_mutation(lease.clone(), move || {
         create_preflight(
             &selected,
             &mutation_repository,
@@ -1352,39 +1500,51 @@ async fn create_with(
         )?;
         let remote = remote_for_repository(&selected, &mutation_repository)?;
         ensure_local_base(&selected, &remote, &mutation_base)?;
+        let binding = pr_push_binding(&selected, &remote, &mutation_repository)?;
         if commit_all {
             mutation_git(&selected, &["add", "-A"], MUTATION_TIMEOUT, "Git stage")?;
         }
-        Ok((selected, remote))
+        Ok((selected, binding))
     })
     .await?;
     if let Some(message) = commit_message {
-        bounded_git(
-            lease.clone(),
-            &selected,
-            &["commit".into(), "-m".into(), message],
-            MUTATION_TIMEOUT,
-            "Git commit",
-        )
-        .await
-        .map_err(|error| {
-            format!("Could not create the requested commit. The changes remain staged: {error}")
-        })?;
+        let commit_selected = selected.clone();
+        blocking_mutation(lease.clone(), move || {
+            commit_for_pr_with_timeout(&commit_selected, &message, MUTATION_TIMEOUT)
+        })
+        .await?;
     }
     let verify_selected = selected.clone();
     let verify_head = head.clone();
     let verify_base = base.clone();
-    let verify_remote = remote.clone();
+    let verify_remote = binding.remote.clone();
     let verify_expected = expected_head_oid.clone();
     let (refspec, pushed_oid) = blocking_mutation(lease.clone(), move || {
         if committed_delta(&verify_selected, &verify_remote, &verify_base)? == 0 { return Err("There are no committed changes to include in this pull request. Commit changes explicitly or select Commit all changes.".into()); }
         let push_oid = push_oid_for(&verify_selected, &verify_head, &verify_expected, commit_all)?;
         Ok((format!("{push_oid}:refs/heads/{verify_head}"), push_oid))
     }).await?;
+    let verify_selected = selected.clone();
+    let verify_repository = repository.clone();
+    let verify_tracking_head = head.clone();
+    let binding = blocking_mutation(lease.clone(), move || {
+        if pr_push_binding(&verify_selected, &binding.remote, &verify_repository)? != binding {
+            return Err("The Git remote changed while creating the requested commit. The local commit was retained but was not pushed. Refresh and review the remote before trying again.".into());
+        }
+        let tracking = pr_tracking_refs(&verify_selected, &binding, &verify_tracking_head)?;
+        Ok((binding, tracking))
+    }).await?;
+    let (binding, tracking) = binding;
     bounded_git(
         lease.clone(),
         &selected,
-        &["push".into(), "--".into(), remote, refspec],
+        &[
+            "push".into(),
+            "--no-follow-tags".into(),
+            "--".into(),
+            binding.push_url.clone(),
+            refspec,
+        ],
         MUTATION_TIMEOUT,
         "Git push",
     )
@@ -1396,6 +1556,11 @@ async fn create_with(
             format!("The branch was not pushed: {error}")
         }
     })?;
+    let tracking_selected = selected.clone();
+    let tracking_repository = repository.clone();
+    let tracking_oid = pushed_oid.clone();
+    blocking_mutation(lease.clone(), move || record_pr_tracking(&tracking_selected, &binding, &tracking_repository, &tracking_oid, &tracking)).await
+        .map_err(|error| format!("The branch was pushed, but its local tracking could not be recorded: {error}. Refresh and inspect the remote before retrying."))?;
     if let Some(existing) = find_with(&gh, &repository, &head, Some(&base)).await? {
         ensure_pull_request_identity(&existing, &repository, &head, &base, Some(&pushed_oid))?;
         return Ok(GitHubPrCreateResult::updated(existing));
@@ -1716,6 +1881,87 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn pr_creation_never_pushes_to_remote_retargeted_by_commit_hook() {
+        use std::os::unix::fs::PermissionsExt;
+        let (root, repository, expected, _, _) = cancellation_fixture("post-commit");
+        let destination = root.join(".git/unexpected.git");
+        git(&root, &["init", "--bare", destination.to_str().unwrap()]).unwrap();
+        let hook = root.join(".git/hooks/post-commit");
+        fs::write(
+            &hook,
+            format!(
+                "#!/bin/sh\ngit remote set-url origin '{}'\n",
+                destination.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        let gh = root.join(".git/fake-gh");
+        fs::write(&gh, "#!/bin/sh\nif [ \"$1\" = api ]; then printf '%s\\n' '{\"default_branch\":\"main\",\"permissions\":{\"push\":true},\"allow_squash_merge\":true}'; elif [ \"$1:$2\" = pr:list ]; then printf '[]\\n'; else exit 88; fi\n").unwrap();
+        fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::write(root.join("file"), "reviewed working change").unwrap();
+        let error = create_with(
+            root.clone(),
+            gh,
+            repository,
+            "topic".into(),
+            "main".into(),
+            "A change".into(),
+            "".into(),
+            true,
+            Some("fixture commit".into()),
+            true,
+            expected,
+        )
+        .await
+        .unwrap_err();
+        let pushed = run_git(
+            &destination,
+            &["show-ref", "--verify", "--quiet", "refs/heads/topic"],
+            None,
+        )
+        .unwrap()
+        .status
+        .success();
+        assert!(
+            !pushed,
+            "PR creation uploaded the commit to a destination selected by a commit hook: {error}"
+        );
+        assert!(error.contains("remote changed"), "{error}");
+        assert_eq!(
+            git(&root, &["log", "-1", "--format=%s"]).unwrap(),
+            "fixture commit"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pr_commit_timeout_after_save_reports_the_observed_head_and_never_claims_staged_contents() {
+        use std::os::unix::fs::PermissionsExt;
+        let (root, _, before, _, _) = cancellation_fixture("post-commit");
+        let hook = root.join(".git/hooks/post-commit");
+        fs::write(&hook, "#!/bin/sh\nsleep 2\n").unwrap();
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::write(root.join("file"), "saved before timeout\n").unwrap();
+        git(&root, &["add", "file"]).unwrap();
+        let error =
+            commit_for_pr_with_timeout(&root, "saved before timeout", Duration::from_millis(500))
+                .unwrap_err();
+        let after = git(&root, &["rev-parse", "HEAD"]).unwrap();
+        let staged = git(&root, &["diff", "--cached", "--name-only"]).unwrap();
+        fs::remove_dir_all(root).unwrap();
+        assert_ne!(after, before);
+        assert!(staged.is_empty());
+        assert!(
+            error.contains("may already have been saved") && error.contains(&after),
+            "{error}"
+        );
+        assert!(!error.contains("changes remain staged"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn cancelled_mutating_cli_retains_both_leases_until_kill_and_reap() {
         use std::os::unix::fs::PermissionsExt;
         let (root, repository, _, marker, gate) = cancellation_fixture("pre-commit");
@@ -1939,6 +2185,123 @@ mod tests {
         )
         .unwrap();
         assert!(project_for_pr_list(&cwd, "owner/repo").is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn local_pr_mutations_reject_nested_projects_without_restricting_inspection() {
+        let root = env::temp_dir().join(format!("mythra-pr-nested-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        git(&root, &["init", "-b", "main"]).unwrap();
+        let nested = root.join("nested");
+        fs::create_dir(&nested).unwrap();
+        let canonical = root.canonicalize().unwrap();
+        assert_eq!(
+            selected_repository(nested.to_str().unwrap()).unwrap(),
+            canonical
+        );
+        assert_eq!(
+            selected_mutation_repository(root.to_str().unwrap()).unwrap(),
+            canonical
+        );
+        assert!(selected_mutation_repository(nested.to_str().unwrap())
+            .unwrap_err()
+            .contains("enclosing repository"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn pinned_pr_push_tracks_custom_mappings_with_cas_and_never_rewrites_local_branches() {
+        let root = env::temp_dir().join(format!("mythra-pr-tracking-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        git(&root, &["init", "-b", "main"]).unwrap();
+        git(&root, &["config", "user.name", "Fixture"]).unwrap();
+        git(&root, &["config", "user.email", "fixture@example.com"]).unwrap();
+        fs::write(root.join("file"), "one").unwrap();
+        git(&root, &["add", "file"]).unwrap();
+        git(&root, &["commit", "-m", "one"]).unwrap();
+        let first = git(&root, &["rev-parse", "HEAD"]).unwrap();
+        git(
+            &root,
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/owner/repo.git",
+            ],
+        )
+        .unwrap();
+        git(
+            &root,
+            &[
+                "config",
+                "remote.origin.fetch",
+                "+refs/heads/*:refs/review/origin/*",
+            ],
+        )
+        .unwrap();
+        let binding = pr_push_binding(&root, "origin", "owner/repo").unwrap();
+        let targets = pr_tracking_refs(&root, &binding, "topic/nested").unwrap();
+        assert_eq!(targets, [("refs/review/origin/topic/nested".into(), None)]);
+        record_pr_tracking(&root, &binding, "owner/repo", &first, &targets).unwrap();
+        assert_eq!(
+            git(&root, &["rev-parse", "refs/review/origin/topic/nested"]).unwrap(),
+            first
+        );
+        assert!(
+            record_pr_tracking(&root, &binding, "owner/repo", &first, &targets).is_err(),
+            "stale tracking CAS overwrote a concurrently created ref"
+        );
+        git(
+            &root,
+            &[
+                "symbolic-ref",
+                "refs/review/origin/topic/nested",
+                "refs/heads/main",
+            ],
+        )
+        .unwrap();
+        assert!(pr_tracking_refs(&root, &binding, "topic/nested").is_err());
+        assert!(record_pr_tracking(&root, &binding, "owner/repo", &first, &targets).is_err());
+        assert_eq!(
+            git(&root, &["symbolic-ref", "refs/review/origin/topic/nested"]).unwrap(),
+            "refs/heads/main"
+        );
+        assert_eq!(git(&root, &["rev-parse", "HEAD"]).unwrap(), first);
+        git(
+            &root,
+            &[
+                "config",
+                "remote.origin.fetch",
+                "+refs/heads/*:refs/heads/*",
+            ],
+        )
+        .unwrap();
+        let binding = pr_push_binding(&root, "origin", "owner/repo").unwrap();
+        assert!(pr_tracking_refs(&root, &binding, "topic/nested").is_err());
+        git(
+            &root,
+            &[
+                "config",
+                "remote.origin.fetch",
+                "refs/heads/topic:refs/review/topic",
+            ],
+        )
+        .unwrap();
+        git(
+            &root,
+            &[
+                "config",
+                "--add",
+                "remote.origin.fetch",
+                "^refs/heads/topic",
+            ],
+        )
+        .unwrap();
+        let binding = pr_push_binding(&root, "origin", "owner/repo").unwrap();
+        assert!(pr_tracking_refs(&root, &binding, "topic")
+            .unwrap()
+            .is_empty());
         fs::remove_dir_all(root).unwrap();
     }
 

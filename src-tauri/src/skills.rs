@@ -2,6 +2,7 @@ use std::{
     collections::{hash_map::DefaultHasher, HashMap, HashSet, VecDeque},
     fs,
     hash::{Hash, Hasher},
+    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -710,7 +711,7 @@ pub(super) async fn local_skills_sync(
     .map_err(|error| format!("Skill preparation failed: {error}"))?
 }
 
-pub(super) fn available_import_path(folder: &Path, source_name: &str) -> PathBuf {
+fn create_import_file(folder: &Path, source_name: &str) -> Result<(PathBuf, fs::File), String> {
     let stem = Path::new(source_name)
         .file_stem()
         .and_then(|value| value.to_str())
@@ -719,17 +720,55 @@ pub(super) fn available_import_path(folder: &Path, source_name: &str) -> PathBuf
         .extension()
         .and_then(|value| value.to_str())
         .unwrap_or("md");
-    let initial = folder.join(source_name);
-    if !initial.exists() {
-        return initial;
-    }
-    for index in 2..10_000 {
-        let candidate = folder.join(format!("{stem}-{index}.{extension}"));
-        if !candidate.exists() {
-            return candidate;
+    for index in 1..10_000 {
+        let candidate = if index == 1 {
+            folder.join(source_name)
+        } else {
+            folder.join(format!("{stem}-{index}.{extension}"))
+        };
+        // exists() treats dangling symlinks as absent and a check-then-write
+        // can overwrite a concurrent import. Reserve the leaf atomically;
+        // create_new refuses existing files, directories, and symlinks.
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            // A reader can retain an fd opened before a later chmod. Reserve
+            // privately at creation, then copy explicit source permissions
+            // before writing imported contents.
+            options.mode(0o600);
+        }
+        match options.open(&candidate) {
+            Ok(file) => return Ok((candidate, file)),
+            Err(error)
+                if error.kind() == std::io::ErrorKind::AlreadyExists
+                    // Windows can report AccessDenied for an occupied
+                    // directory/reparse leaf. Inspect without following it;
+                    // any occupied leaf is a collision, never a write target.
+                    || fs::symlink_metadata(&candidate).is_ok() =>
+            {
+                continue
+            }
+            Err(error) => return Err(format!("Could not create a skill file: {error}")),
         }
     }
-    folder.join(format!("{stem}-imported.{extension}"))
+    Err("This skills folder has too many files with the same name. Choose a different name.".into())
+}
+
+#[cfg(any(windows, test))]
+fn ensure_skill_import_encryption(
+    source_attributes: u32,
+    destination_attributes: u32,
+) -> Result<(), String> {
+    // FILE_ATTRIBUTE_ENCRYPTED is stable Windows filesystem metadata. A
+    // reserved destination inherits its parent's protection; never create a
+    // certificate or silently downgrade encrypted source contents to plaintext.
+    const ENCRYPTED: u32 = 0x4000;
+    if source_attributes & ENCRYPTED != 0 && destination_attributes & ENCRYPTED == 0 {
+        return Err("The source skill uses Windows EFS encryption, but the selected folder did not provide an encrypted destination. Import it into an EFS-encrypted folder or copy it manually while preserving its encryption, then rescan.".into());
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -761,9 +800,25 @@ pub(super) async fn local_skills_import(
                 .file_name()
                 .and_then(|value| value.to_str())
                 .unwrap_or("skill.md");
-            let destination = available_import_path(&folder, name);
-            fs::copy(&source, &destination)
-                .map_err(|error| format!("Could not import {}: {error}", source.display()))?;
+            // Read and bound the selected source before reserving a new leaf;
+            // imports must never truncate a pre-existing destination.
+            let (content, source_metadata) = read_validated_skill_source_with_metadata(&source)?;
+            let (destination, mut file) = create_import_file(&folder, name)?;
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::MetadataExt;
+                let destination_metadata = file.metadata().map_err(|error| format!("Could not inspect the new empty skill file {}: {error}", destination.display()))?;
+                ensure_skill_import_encryption(source_metadata.file_attributes(), destination_metadata.file_attributes())
+                    .map_err(|error| format!("{error} The new empty file {} was kept; no source contents were written.", destination.display()))?;
+            }
+            // Keep fs::copy's prior permission behavior. Apply it before
+            // writing any contents, so a private source is not exposed by
+            // the destination's default creation mode even momentarily.
+            file.set_permissions(source_metadata.permissions()).map_err(|error| {
+                format!("Could not set permissions for {}: {error}. The new empty file was kept; existing files were not changed.", destination.display())
+            })?;
+            file.write_all(content.as_bytes())
+                .map_err(|error| format!("Could not import {}: {error}. The new file {} may be incomplete; existing files were not changed.", source.display(), destination.display()))?;
             imported.push(destination.to_string_lossy().into_owned());
         }
         Ok(imported)
@@ -790,11 +845,17 @@ pub(super) async fn local_skills_create(
         if instructions.len() as u64 > MAX_SKILL_FILE_BYTES {
             return Err("Skill instructions must be smaller than 1 MB.".into());
         }
-        let destination = available_import_path(&folder, &format!("{invocation_name}.md"));
         let title = name.trim();
         let content = format!("# {title}\n\n{}\n", instructions.trim());
-        fs::write(&destination, content)
-            .map_err(|error| format!("Could not create the skill: {error}"))?;
+        if content.len() as u64 > MAX_SKILL_FILE_BYTES {
+            return Err(
+                "The skill title and instructions together must be smaller than 1 MB.".into(),
+            );
+        }
+        let (destination, mut file) =
+            create_import_file(&folder, &format!("{invocation_name}.md"))?;
+        file.write_all(content.as_bytes())
+            .map_err(|error| format!("Could not create the skill: {error}. The new file {} may be incomplete; existing files were not changed.", destination.display()))?;
         Ok(destination.to_string_lossy().into_owned())
     })
     .await
@@ -835,14 +896,16 @@ pub(super) fn read_local_skill_source(folder: &Path, source: &Path) -> Result<St
 }
 
 fn read_validated_skill_source(source: &Path) -> Result<String, String> {
-    let size = fs::metadata(source)
-        .map_err(|error| format!("Could not inspect {}: {error}", source.display()))?
-        .len();
-    if size > MAX_SKILL_FILE_BYTES {
-        return Err(format!("{} is larger than 1 MB", source.display()));
-    }
-    fs::read_to_string(source)
-        .map_err(|error| format!("Could not read {}: {error}", source.display()))
+    read_validated_skill_source_with_metadata(source).map(|(contents, _)| contents)
+}
+
+fn read_validated_skill_source_with_metadata(
+    source: &Path,
+) -> Result<(String, fs::Metadata), String> {
+    let parent = source
+        .parent()
+        .ok_or_else(|| "The skill source path has no parent folder.".to_string())?;
+    skill_dependencies::read_bounded_with_metadata(parent, source).map_err(|(_, message)| message)
 }
 
 #[cfg(test)]
@@ -1203,6 +1266,49 @@ pub(super) async fn local_skills_delete(folder: String, path: String) -> Result<
 #[cfg(test)]
 mod invocation_tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn skill_import_reserves_a_private_leaf_before_writing_contents() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let folder =
+            std::env::temp_dir().join(format!("mythra-private-leaf-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&folder).unwrap();
+        let (_, mut file) = create_import_file(&folder, "private.md").unwrap();
+        assert_eq!(file.metadata().unwrap().permissions().mode() & 0o077, 0);
+        file.write_all(b"private skill instructions").unwrap();
+        assert_eq!(file.metadata().unwrap().permissions().mode() & 0o077, 0);
+        // The final explicit source-permission copy remains possible. The
+        // reservation itself must not open a public reader window beforehand.
+        file.set_permissions(fs::Permissions::from_mode(0o644))
+            .unwrap();
+        assert_eq!(file.metadata().unwrap().permissions().mode() & 0o777, 0o644);
+        drop(file);
+        fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn encrypted_skill_import_never_allows_plaintext_destination_contents() {
+        // Synthetic attribute policy test does not need an EFS certificate or
+        // create user encryption keys; actual Windows filesystem checks use
+        // the source and reserved destination's native metadata above.
+        for source in [0, 0x20, 0x1] {
+            assert!(ensure_skill_import_encryption(source, 0x20).is_ok());
+            assert!(ensure_skill_import_encryption(source, 0x4020).is_ok());
+        }
+        for source in [0x4000, 0x4020, 0x4001] {
+            assert!(ensure_skill_import_encryption(source, 0x4020).is_ok());
+            let mut destination = Vec::new();
+            let outcome = ensure_skill_import_encryption(source, 0x20).and_then(|()| {
+                destination
+                    .write_all(b"encrypted source contents")
+                    .map_err(|error| error.to_string())
+            });
+            assert!(outcome.unwrap_err().contains("EFS encryption"));
+            assert!(destination.is_empty());
+        }
+    }
 
     #[test]
     fn paired_prompts_load_nested_skill_and_linked_text_document() {

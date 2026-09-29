@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { friendlyError } from "../lib/errors";
+import { formatGitError } from "../lib/errors";
 import { normalizedProjectPath } from "../lib/paths";
 import { acquirePullRequestMutation, releasePullRequestMutation } from "../lib/pullRequestOperations";
 import {
@@ -229,12 +229,15 @@ export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
       const context = await getPullRequestContext(snapshot.cwd);
       if (readRevisionsRef.current.get(snapshot.threadId) !== readRevision) return;
       rememberContext(uiScope, context);
+      const previousCandidate = candidateCacheRef.current.get(uiScope);
+      if (previousCandidate && (previousCandidate.repository.toLowerCase() !== context.repository.toLowerCase()
+        || previousCandidate.headRefName !== context.branch)) rememberCandidate(uiScope, null);
       const candidate = await findPullRequest(snapshot.cwd, context.repository, context.branch);
       if (readRevisionsRef.current.get(snapshot.threadId) !== readRevision || linksRef.current[snapshot.threadId]) return;
       rememberCandidate(uiScope, candidate);
     } catch (error) {
       if (optionsRef.current.threadId && stateScope(optionsRef.current.threadId, optionsRef.current.cwd) === uiScope && readRevisionsRef.current.get(snapshot.threadId) === readRevision) {
-        setErrorState({ scope: uiScope, value: friendlyError(error) });
+        setErrorState({ scope: uiScope, value: formatGitError(error) });
       }
     } finally {
       if (optionsRef.current.threadId && stateScope(optionsRef.current.threadId, optionsRef.current.cwd) === uiScope && readRevisionsRef.current.get(snapshot.threadId) === readRevision) {
@@ -314,11 +317,13 @@ export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
   }, [bumpReadRevision]);
 
   const runMutation = useCallback(async <T,>(id: string, cwd: string, operation: (revision: number) => Promise<T>) => {
+    const projectPath = optionsRef.current.projectPath;
+    const originalLink = linksRef.current[id];
     let lock: { key: string; revision: number; readRevision: number };
     try {
       lock = beginMutation(cwd, id);
     } catch (error) {
-      setErrorState({ scope: stateScope(id, cwd), value: friendlyError(error) });
+      setErrorState({ scope: stateScope(id, cwd), value: formatGitError(error) });
       throw error;
     }
     try {
@@ -326,11 +331,19 @@ export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
       if (latestBlock) throw new Error(latestBlock);
       return await operation(lock.revision);
     } catch (error) {
-      setErrorState({ scope: stateScope(id, cwd), value: friendlyError(error) });
+      setErrorState({ scope: stateScope(id, cwd), value: formatGitError(error) });
       throw error;
     } finally {
       releasePullRequestMutation(lock.key);
-      if (readRevisionsRef.current.get(id) === lock.readRevision) readRevisionsRef.current.delete(id);
+      // A refresh may have started after beginMutation. None of those reads
+      // can replace the authoritative write result, even if they finish later.
+      bumpReadRevision(id);
+      readRevisionsRef.current.delete(id);
+      for (const target of [originalLink, linksRef.current[id]]) {
+        if (!target) continue;
+        invalidatePullRequest(cwd, target.repository, target.number);
+        if (projectPath && projectPath !== cwd) invalidatePullRequest(projectPath, target.repository, target.number);
+      }
       const remaining = (operationCountsRef.current.get(id) ?? 1) - 1;
       if (remaining > 0) operationCountsRef.current.set(id, remaining);
       else {
@@ -338,9 +351,12 @@ export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
         mutationRevisionsRef.current.delete(id);
       }
       const uiScope = stateScope(id, cwd);
-      setBusyState((current) => current?.scope === uiScope ? { scope: uiScope, value: false } : current);
+      const activeScope = optionsRef.current.threadId === id ? stateScope(id, optionsRef.current.cwd) : uiScope;
+      setBusyState((current) => current?.scope.startsWith(`${id}\0`) || optionsRef.current.threadId === id
+        ? { scope: activeScope, value: false } : current);
+      setLoadingState((current) => current?.scope.startsWith(`${id}\0`) ? { ...current, value: false } : current);
     }
-  }, [beginMutation]);
+  }, [beginMutation, bumpReadRevision, linksRef]);
 
   const onAttach = useCallback(async (reference: string) => {
     const snapshot = optionsRef.current;
@@ -372,7 +388,7 @@ export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
         snapshot.onChanged?.();
       }
     } catch (error) {
-      setErrorState({ scope: uiScope, value: friendlyError(error) });
+      setErrorState({ scope: uiScope, value: formatGitError(error) });
       throw error;
     } finally {
       attachLocksRef.current.delete(lockKey);
@@ -383,7 +399,10 @@ export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
         operationCountsRef.current.delete(snapshot.threadId);
         mutationRevisionsRef.current.delete(snapshot.threadId);
       }
-      setBusyState((current) => current?.scope === uiScope ? { scope: uiScope, value: false } : current);
+      const activeScope = optionsRef.current.threadId === snapshot.threadId ? stateScope(snapshot.threadId, optionsRef.current.cwd) : uiScope;
+      setBusyState((current) => current?.scope.startsWith(`${snapshot.threadId}\0`) || optionsRef.current.threadId === snapshot.threadId
+        ? { scope: activeScope, value: false } : current);
+      setLoadingState((current) => current?.scope.startsWith(`${snapshot.threadId}\0`) ? { ...current, value: false } : current);
     }
   }, [bumpReadRevision, contextState, persistLink]);
 
@@ -400,6 +419,7 @@ export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
       return next;
     });
     const uiScope = stateScope(id, optionsRef.current.cwd);
+    setLoadingState((current) => current?.scope.startsWith(`${id}\0`) ? { ...current, value: false } : current);
     rememberCandidate(uiScope, null);
     setNoticeState({ scope: uiScope, value: "Pull request detached." });
     optionsRef.current.onChanged?.();
@@ -555,7 +575,7 @@ export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
     loading: Boolean(threadId && (loadingState?.scope === currentScope
       ? loadingState.value
       : options.enabled && options.visible && !lastRefreshesRef.current.has(currentScope))),
-    busy: Boolean(threadId && busyState?.scope === currentScope && busyState.value),
+    busy: Boolean(threadId && (operationCountsRef.current.has(threadId) || busyState?.scope === currentScope && busyState.value)),
     error: threadId && errorState?.scope === currentScope ? errorState.value : null,
     notice: threadId && noticeState?.scope === currentScope ? noticeState.value : null,
     creationDraftStore,

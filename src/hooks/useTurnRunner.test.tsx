@@ -6,6 +6,7 @@ import { resetTaskStore, useTaskStore } from "../lib/taskStore";
 import type { SkillDependencyReport, Thread } from "../types";
 import { SKILL_DEPENDENCY_LIMITS, SkillDependencyError } from "../lib/skillDependencies";
 import { friendlyError } from "../lib/errors";
+import { MYTHRA_CODE_DELEGATION_INSTRUCTIONS, MYTHRA_CODE_SUBAGENT_SETTINGS_INSTRUCTIONS } from "../lib/completionPrompt";
 import { acquirePullRequestMutation, releasePullRequestMutation } from "../lib/pullRequestOperations";
 
 const codex = vi.hoisted(() => ({
@@ -1737,6 +1738,27 @@ describe("useTurnRunner activating sub-agents mid-conversation", () => {
       },
     });
     expect(codex.rpc).toHaveBeenCalledWith("turn/start", expect.objectContaining({ threadId: OPENAI_THREAD.id }));
+    const turn = codex.rpc.mock.calls.find(([method]) => method === "turn/start")!;
+    const guide = turn[1].collaborationMode.settings.developer_instructions;
+    expect(guide).toContain("set_project_run_command");
+    expect(guide).toContain("set_project_check_command");
+    expect(guide).toContain("`npm run verify`");
+    expect(guide).toContain(MYTHRA_CODE_SUBAGENT_SETTINGS_INSTRUCTIONS);
+    expect(guide).not.toContain(MYTHRA_CODE_DELEGATION_INSTRUCTIONS);
+  });
+
+  it("replaces the per-turn delegation guide when the managed bridge is removed", async () => {
+    childSessions.ensureChildAgentBridge.mockResolvedValue(bridgeResult());
+    const deps = openAiContext({ effectiveSettings: ENABLED });
+    const { result, rerender } = renderHook(({ value }) => useTurnRunner(value), { initialProps: { value: deps } });
+    await act(async () => { await result.current.sendMessage("split this up"); });
+    let turn = codex.rpc.mock.calls.filter(([method]) => method === "turn/start").at(-1)!;
+    expect(turn[1].collaborationMode.settings.developer_instructions).toContain(MYTHRA_CODE_DELEGATION_INSTRUCTIONS);
+    childSessions.ensureChildAgentBridge.mockResolvedValue(null);
+    rerender({ value: openAiContext() });
+    await act(async () => { await result.current.sendMessage("work alone"); });
+    turn = codex.rpc.mock.calls.filter(([method]) => method === "turn/start").at(-1)!;
+    expect(turn[1].collaborationMode.settings.developer_instructions).not.toContain(MYTHRA_CODE_DELEGATION_INSTRUCTIONS);
   });
 
   it("never exposes native Codex sub-agents when no managed destination is available", async () => {
@@ -1769,6 +1791,121 @@ describe("useTurnRunner activating sub-agents mid-conversation", () => {
     releasePreparation();
     await act(async () => { await delivery; });
     expect(codex.rpc).toHaveBeenCalledWith("turn/start", expect.objectContaining({ threadId: OPENAI_THREAD.id }));
+  });
+
+  it.each([true, false])("honors Stop during skill-root preparation without starting a provider (existing thread: %s)", async (existing) => {
+    let releaseRoots!: () => void;
+    const roots = new Promise<void>((resolve) => { releaseRoots = resolve; });
+    const ensureSkillRoots = vi.fn(() => roots);
+    childSessions.ensureChildAgentBridge.mockResolvedValue(bridgeResult());
+    const deps = openAiContext({ activeThread: existing ? OPENAI_THREAD : null, ensureSkillRoots });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    let delivered!: Promise<boolean>;
+    await act(async () => {
+      delivered = result.current.sendMessage("use prepared skills");
+      for (let step = 0; step < 8; step++) await Promise.resolve();
+    });
+    expect(ensureSkillRoots).toHaveBeenCalledOnce();
+    deps.running = true;
+    await act(async () => { await result.current.stopTurn(); });
+    await act(async () => {
+      releaseRoots();
+      expect(await delivered).toBe(false);
+    });
+    expect(codex.rpc).not.toHaveBeenCalled();
+    expect(deps.beginRunCheckpoint).not.toHaveBeenCalled();
+    expect(childSessions.releaseChildAgentSession).toHaveBeenCalledExactlyOnceWith("session-1");
+    expect(deps.setError).not.toHaveBeenCalledWith(expect.any(String));
+    if (existing) expect(useTaskStore.getState().statuses[OPENAI_THREAD.id]).toBe("interrupted");
+  });
+
+  it.each(["openai", "openrouter", "lmstudio", "claude", "cursor"] as const)("does not start a %s model turn stopped during its checkpoint", async (provider) => {
+    let releaseCheckpoint!: (checkpointId?: string) => void;
+    const checkpoint = new Promise<string | undefined>((resolve) => { releaseCheckpoint = resolve; });
+    const beginRunCheckpoint = vi.fn(() => checkpoint);
+    const deps = provider === "claude" ? claudeContext({ running: false, beginRunCheckpoint })
+      : provider === "cursor" ? context({ beginRunCheckpoint })
+        : openAiContext({ beginRunCheckpoint, openRouterReady: true, lmStudioReady: true, effectiveSettings: { ...DEFAULT_SETTINGS, provider, model: "selected/model" } });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    let delivered!: Promise<boolean>;
+    await act(async () => {
+      delivered = result.current.sendMessage("Stop this pending checkpoint");
+      for (let step = 0; step < 12; step++) await Promise.resolve();
+    });
+    expect(beginRunCheckpoint).toHaveBeenCalledOnce();
+    deps.running = true;
+    await act(async () => { await result.current.stopTurn(); });
+    await act(async () => {
+      releaseCheckpoint();
+      expect(await delivered).toBe(false);
+    });
+    expect(codex.rpc).not.toHaveBeenCalledWith("turn/start", expect.anything());
+    expect(cursor.startCursorTurn).not.toHaveBeenCalled();
+    expect(claude.startClaudeTurn).not.toHaveBeenCalled();
+    expect(deps.discardRunCheckpoint).toHaveBeenCalledExactlyOnceWith(deps.activeThread!.id);
+    expect(useTaskStore.getState().tasks[deps.activeThread!.id]).toMatchObject({ status: "interrupted", messages: [] });
+    expect(deps.setError).not.toHaveBeenCalledWith(expect.any(String));
+  });
+
+  it.each(["claude", "cursor"] as const)("does not persist an undelivered skill graph in %s while Stop lands during saving", async (provider) => {
+    let releaseSave!: () => void;
+    const saved = new Promise<void>((resolve) => { releaseSave = resolve; });
+    const saveTranscript = provider === "claude" ? claude.saveClaudeTranscript : cursor.saveCursorTranscript;
+    saveTranscript.mockImplementationOnce(() => saved);
+    const resolveSkillPrompts = vi.fn(async (prompt: string) => ({ prompt, systemPrompt: "resolved policy", skillDependencies: dependencyGraph() }));
+    const deps = provider === "claude" ? claudeContext({ running: false, resolveSkillPrompts }) : context({ resolveSkillPrompts });
+    const prior = { id: "prior-user", role: "user" as const, text: "Prior instructions", turnId: "prior-turn", turnStatus: "completed" as const };
+    useTaskStore.getState().appendUserMessage(deps.activeThread!.id, prior);
+    const { result } = renderHook(() => useTurnRunner(deps));
+    let delivered!: Promise<boolean>;
+    await act(async () => {
+      delivered = result.current.sendMessage("Use @policy");
+      for (let step = 0; step < 12; step++) await Promise.resolve();
+    });
+    expect(saveTranscript).toHaveBeenCalledOnce();
+    expect(saveTranscript.mock.calls[0][0].messages).toEqual([expect.objectContaining(prior)]);
+    expect(useTaskStore.getState().tasks[deps.activeThread!.id].messages).toEqual([expect.objectContaining(prior)]);
+    deps.running = true;
+    await act(async () => { await result.current.stopTurn(); });
+    await act(async () => {
+      releaseSave();
+      expect(await delivered).toBe(false);
+    });
+    expect(saveTranscript).toHaveBeenCalledOnce();
+    expect(cursor.startCursorTurn).not.toHaveBeenCalled();
+    expect(claude.startClaudeTurn).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().tasks[deps.activeThread!.id].messages).toEqual([expect.objectContaining(prior)]);
+  });
+
+  it.each(["claude", "cursor"] as const)("does not append a new skill graph if prior %s transcript preparation rejects", async (provider) => {
+    const saveTranscript = provider === "claude" ? claude.saveClaudeTranscript : cursor.saveCursorTranscript;
+    saveTranscript.mockRejectedValueOnce(new Error("Transcript save failed"));
+    const resolveSkillPrompts = vi.fn(async (prompt: string) => ({ prompt, systemPrompt: "resolved policy", skillDependencies: dependencyGraph() }));
+    const deps = provider === "claude" ? claudeContext({ running: false, resolveSkillPrompts }) : context({ resolveSkillPrompts });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { expect(await result.current.sendMessage("Use @policy")).toBe(false); });
+    expect(saveTranscript.mock.calls[0][0].messages).toEqual([]);
+    expect(useTaskStore.getState().tasks[deps.activeThread!.id].messages).toEqual([]);
+    expect(cursor.startCursorTurn).not.toHaveBeenCalled();
+    expect(claude.startClaudeTurn).not.toHaveBeenCalled();
+    expect(deps.setError).toHaveBeenCalledWith(expect.stringContaining("Transcript save failed"));
+  });
+
+  it.each(["claude", "cursor"] as const)("adds current skill provenance immediately before %s dispatch and schedules durable on-start saving", async (provider) => {
+    const resolveSkillPrompts = vi.fn(async (prompt: string) => ({ prompt, systemPrompt: "resolved policy", skillDependencies: dependencyGraph() }));
+    const deps = provider === "claude" ? claudeContext({ running: false, resolveSkillPrompts }) : context({ resolveSkillPrompts });
+    const start = provider === "claude" ? claude.startClaudeTurn : cursor.startCursorTurn;
+    start.mockImplementation(async () => {
+      expect(useTaskStore.getState().tasks[deps.activeThread!.id].messages).toEqual([expect.objectContaining({ text: "Use @policy", skillDependencies: dependencyGraph() })]);
+      return { turnId: "new-turn", cursorSessionId: "cursor-new" };
+    });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { expect(await result.current.sendMessage("Use @policy")).toBe(true); });
+    const saveTranscript = provider === "claude" ? claude.saveClaudeTranscript : cursor.saveCursorTranscript;
+    expect(saveTranscript.mock.calls[0][0].messages).toEqual([]);
+    const scheduleSave = provider === "claude" ? deps.scheduleClaudeThreadSave : deps.scheduleCursorThreadSave;
+    expect(scheduleSave).toHaveBeenCalledExactlyOnceWith(deps.activeThread!.id);
+    expect(useTaskStore.getState().tasks[deps.activeThread!.id]).toMatchObject({ activeTurnId: "new-turn", status: "running" });
   });
 
   it("refreshes the runtime that is already holding this thread with other capabilities", async () => {

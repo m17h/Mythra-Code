@@ -37,6 +37,22 @@ function deferred<T>() {
 }
 
 describe("project pull request navigation", () => {
+  it("removes the previous branch's PR while the new branch lookup is pending and after it fails", async () => {
+    let rejectLookup!: (reason: Error) => void;
+    const pending = new Promise<PullRequest | null>((_resolve, reject) => { rejectLookup = reject; });
+    const api = access({ threadActive: false, find: vi.fn().mockResolvedValueOnce(detail(7)).mockReturnValueOnce(pending) });
+    mount(api);
+    const previous = page.getByRole("button", { name: /found for feature\/7/ });
+    await expect.element(previous).toBeVisible();
+    vi.mocked(api.context).mockResolvedValue({ repository: "owner/repo", branch: "feature/new", defaultBranch: "main", headOid: "b".repeat(40), dirty: false, ahead: 1, behind: 0, pushRemote: "origin", permission: "write", mergeMethods: ["squash"] });
+    await page.getByRole("button", { name: "Refresh pull requests", exact: true }).click();
+    await expect.element(page.getByText("feature/new", { exact: true })).toBeVisible();
+    await expect.element(previous).not.toBeInTheDocument();
+    await act(async () => rejectLookup(new Error("Branch discovery unavailable")));
+    await expect.element(page.getByRole("alert")).toHaveTextContent("Branch discovery unavailable");
+    await expect.element(previous).not.toBeInTheDocument();
+  });
+
   it("focuses the opened detail and restores the originating row on Back", async () => {
     mount(access());
     const row = page.getByRole("button", { name: /#7 PR 7,/ });

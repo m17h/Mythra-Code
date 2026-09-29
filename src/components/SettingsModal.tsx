@@ -37,7 +37,7 @@ import { isClaudeModelSuperseded, visibleClaudeModels, type ClaudeRuntimeStatus 
 import type { CursorModel, CursorRuntimeStatus } from "../lib/cursor";
 import { DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_SETTINGS, EFFORT_SLIDER_STYLES, RELEASE_NOTES_URL, THEMES } from "../lib/appConfig";
 import { resolveThreadTitleModel } from "../lib/threadTitles";
-import { friendlyError } from "../lib/errors";
+import { formatGitError, friendlyError } from "../lib/errors";
 import { resolveProviderSystemPrompt } from "../lib/systemPrompt";
 import { useModalFocus } from "../hooks/useModalFocus";
 import { AnthropicLogo, ClaudeLogo, CodexLogo, CursorDarkAppIcon, CursorLogo, LmStudioLogo, OpenAILogo, OpenRouterLogo, ProviderLogo } from "./BrandLogos";
@@ -1905,7 +1905,7 @@ function GitHubSettings({
       await onSignIn();
     } catch (error) {
       // These are GitHub/terminal errors, not model-runtime failures.
-      setLocalSignInError(error instanceof Error ? error.message : String(error));
+      setLocalSignInError(formatGitError(error));
     } finally {
       startingSignInRef.current = false;
       setStartingSignIn(false);
@@ -1923,7 +1923,7 @@ function GitHubSettings({
   };
   const refresh = async () => {
     try { await onRefresh(); } catch (error) {
-      setLocalSignInError(error instanceof Error ? error.message : String(error));
+      setLocalSignInError(formatGitError(error));
     }
   };
   const target = parseGitHubCloneTarget(cloneUrl);
@@ -1944,7 +1944,7 @@ function GitHubSettings({
   };
   const clone = async () => {
     setFolderError("");
-    try { await onClone(); } catch (error) { setFolderError(friendlyError(error)); }
+    try { await onClone(); } catch (error) { setFolderError(formatGitError(error)); }
   };
   return <>
     <section className="set-group">

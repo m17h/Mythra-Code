@@ -1274,7 +1274,18 @@ impl HelperUsageObserver {
         let previous_tier_source = self.event.service_tier_source;
         self.terminal_count += 1;
         let mut reported_model = false;
-        if let Some(model) = harmless_identity(value.get("model")) {
+        if provider == "claude"
+            && value
+                .get("modelUsage")
+                .and_then(Value::as_object)
+                .is_some_and(|models| models.len() > 1)
+        {
+            // A primary/top-level model cannot attribute summed usage from a
+            // multi-model execution. Keep the receipt, not a guessed model rate.
+            self.event.model = "unattributed".into();
+            self.event.model_source = "unknown";
+            self.mixed_model = true;
+        } else if let Some(model) = harmless_identity(value.get("model")) {
             self.event.model = model;
             self.event.model_source = "reported";
             reported_model = true;
@@ -1290,12 +1301,6 @@ impl HelperUsageObserver {
                         self.event.model_source = "reported";
                         reported_model = true;
                     }
-                } else if models.len() > 1 {
-                    // A multi-model result cannot honestly be priced as one
-                    // requested alias. Its provider-reported cost still survives.
-                    self.event.model = "unattributed".into();
-                    self.event.model_source = "unknown";
-                    self.mixed_model = true;
                 }
             }
         }
@@ -3665,6 +3670,18 @@ mod tests {
         let serialized = serde_json::to_string(&locked.event).unwrap();
         assert!(!serialized.contains("private-stderr"));
         assert!(!serialized.contains("Bearer"));
+    }
+
+    #[test]
+    fn helper_usage_top_level_model_does_not_hide_a_multi_model_receipt() {
+        let mut observer = HelperUsageObserver::new(&options("claude"), NativeTask::Title);
+        observer.observe(&json!({"type":"result","model":"claude-sonnet-5","total_cost_usd":0.125,
+            "modelUsage":{"claude-sonnet-5":{},"claude-haiku-4-5":{}},
+            "usage":{"input_tokens":12,"cache_read_input_tokens":4,"cache_creation_input_tokens":3,"output_tokens":8}}));
+        assert_eq!(observer.event.model, "unattributed");
+        assert_eq!(observer.event.model_source, "unknown");
+        assert_eq!(observer.event.reported_cost, Some(0.125));
+        assert_eq!(observer.event.usage.unwrap().input_tokens, Some(19));
     }
 
     #[test]

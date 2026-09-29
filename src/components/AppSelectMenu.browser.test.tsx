@@ -1,10 +1,31 @@
 import { act, fireEvent, render } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { page } from "vitest/browser";
 import { AppSelectMenu } from "./AppSelectMenu";
 import "../styles.css";
 
+afterEach(() => page.viewport(1400, 900));
+
 describe("app-owned select browser layout", () => {
+  it.each([1, 1.5])("keeps a searchable portal menu scrollable inside a short viewport at %s scale", async (zoom) => {
+    await page.viewport(360, 200);
+    const view = render(<div className="app-shell" style={{ display: "block", position: "fixed", inset: 0, width: window.innerWidth / zoom, height: window.innerHeight / zoom, zoom }}>
+      <AppSelectMenu value="one" options={Array.from({ length: 20 }, (_, index) => ({ value: String(index), label: `Choice ${index}` }))} ariaLabel="Short window choices" portal searchable onChange={vi.fn()} />
+    </div>);
+    await page.getByRole("button", { name: "Short window choices" }).click();
+    const menu = view.container.querySelector<HTMLElement>(".app-select-menu")!;
+    act(() => menu.getAnimations().forEach((animation) => animation.finish()));
+    const bounds = menu.getBoundingClientRect();
+    expect(bounds.top).toBeGreaterThanOrEqual(7);
+    expect(bounds.bottom).toBeLessThanOrEqual(window.innerHeight - 7);
+    const options = view.getByRole("menu", { name: "Short window choices choices" });
+    expect(options.scrollHeight).toBeGreaterThan(options.clientHeight);
+    expect(getComputedStyle(options).overflowY).toBe("auto");
+    await page.getByRole("textbox", { name: "Search Short window choices" }).fill("Choice 19");
+    await page.getByRole("menuitemradio", { name: "Choice 19" }).click();
+    expect(view.queryByRole("menu", { name: "Short window choices choices" })).toBeNull();
+  });
+
   it.each([.8, 1, 1.5])("keeps portal choices anchored and selectable outside a clipping container at %s scale", async (zoom) => {
     const onChange = vi.fn();
     const view = render(<div className="app-shell" data-theme="mythra" style={{ display: "block", position: "fixed", top: 0, left: 0, width: window.innerWidth / zoom, height: window.innerHeight / zoom, paddingTop: (window.innerHeight - 100) / zoom, paddingLeft: (window.innerWidth - 100) / zoom, zoom }}>

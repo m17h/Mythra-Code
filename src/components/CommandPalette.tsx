@@ -4,6 +4,7 @@ import type { WorkflowDefinition } from "../lib/workflows";
 import type { Project, Thread } from "../types";
 import type { StudioTab } from "../lib/studioTabs";
 import type { GitRoute } from "../lib/projectGit";
+import { useModalFocus } from "../hooks/useModalFocus";
 
 interface PaletteAction { id: string; label: string; detail: string; group: string; icon: typeof Command; run: () => void; aliases?: string[] }
 
@@ -61,6 +62,8 @@ export function CommandPalette({ open, projects, threads, workflows, projectActi
   const [active, setActive] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const resultsRef = useRef<HTMLDivElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useModalFocus(dialogRef, open);
   const actions = useMemo<PaletteAction[]>(() => {
     const allActions: PaletteAction[] = [
     { id: "new", label: "New thread", detail: "Start in the active workspace", group: "Commands", icon: Plus, run: onNewThread },
@@ -110,7 +113,8 @@ export function CommandPalette({ open, projects, threads, workflows, projectActi
     if (!open) return;
     setQuery("");
     setActive(0);
-    requestAnimationFrame(() => inputRef.current?.focus());
+    const frame = requestAnimationFrame(() => inputRef.current?.focus());
+    return () => cancelAnimationFrame(frame);
   }, [open]);
 
   // Keyboard selection has to stay visible when the list scrolls past the fold.
@@ -123,7 +127,13 @@ export function CommandPalette({ open, projects, threads, workflows, projectActi
   if (!open) return null;
   return (
     <div className="modal-backdrop palette-backdrop" onMouseDown={onClose}>
-      <div className="command-palette" role="dialog" aria-modal="true" aria-label="Command palette" onMouseDown={(event) => event.stopPropagation()}>
+      <div ref={dialogRef} className="command-palette" role="dialog" aria-modal="true" aria-label="Command palette" onMouseDown={(event) => event.stopPropagation()}
+        onKeyDown={(event) => {
+          if (event.key !== "Escape" || event.defaultPrevented) return;
+          event.preventDefault();
+          event.stopPropagation();
+          onClose();
+        }}>
         <div className="palette-search">
           <Search size={16} />
           <input
@@ -137,7 +147,6 @@ export function CommandPalette({ open, projects, threads, workflows, projectActi
               if (event.key === "ArrowDown") { event.preventDefault(); setActive((value) => Math.min(actions.length - 1, value + 1)); }
               if (event.key === "ArrowUp") { event.preventDefault(); setActive((value) => Math.max(0, value - 1)); }
               if (event.key === "Enter" && actions[active]) { actions[active].run(); onClose(); }
-              if (event.key === "Escape") onClose();
             }}
             placeholder="Search commands, projects, and threads…"
           />

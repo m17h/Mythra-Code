@@ -74,6 +74,8 @@ export interface GitWorkspaceCommandResult {
 export interface GitWorkspaceRevertPreview {
   token: string;
   paths: string[];
+  restorePaths: string[];
+  preservedPaths: string[];
   headOid: string | null;
   branch: string | null;
 }

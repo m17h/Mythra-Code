@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { projectPullRequestScope, projectPullRequestStore, useProjectPullRequests } from "./useProjectPullRequests";
 import { acquirePullRequestMutation, isPullRequestMutationRunning, releasePullRequestMutation } from "../lib/pullRequestOperations";
 import type { ProjectPullRequestAccess } from "../lib/projectGit";
-import type { PullRequest, PullRequestSummary } from "../lib/pullRequests";
+import type { PullRequest, PullRequestContext, PullRequestSummary } from "../lib/pullRequests";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -43,6 +43,29 @@ function access(cwd: string, overrides: Partial<ProjectPullRequestAccess> = {}):
 
 describe("useProjectPullRequests", () => {
   beforeEach(() => projectPullRequestStore.clear());
+
+  it("preserves a possibly completed merge's timeout and retry warning", async () => {
+    const warning = "GitHub merge timed out. The pull request may already be merged; refresh its status before retrying.";
+    const api = access("/prs/merge-warning", { merge: vi.fn().mockRejectedValue(new Error(warning)) });
+    const { result } = renderHook(() => useProjectPullRequests(api, true));
+    act(() => result.current.select({ repository: "owner/repo", number: 7 }));
+    await waitFor(() => expect(result.current.detail?.number).toBe(7));
+    await act(async () => { await expect(result.current.merge("squash", false, confirmed())).rejects.toThrow(warning); });
+    expect(result.current.error).toBe(warning);
+  });
+
+  it("never associates a previous branch's found PR with newly read checkout context", async () => {
+    const pending = deferred<PullRequest | null>();
+    const api = access("/prs/branch-context", { find: vi.fn().mockResolvedValueOnce(detail(7)).mockReturnValueOnce(pending.promise) });
+    const { result } = renderHook(() => useProjectPullRequests(api, true));
+    await waitFor(() => expect(result.current.branchPullRequest?.number).toBe(7));
+    const next = { ...result.current.context!, branch: "feature/other", headOid: "d".repeat(40) } satisfies PullRequestContext;
+    vi.mocked(api.context).mockResolvedValueOnce(next);
+    act(() => result.current.refreshContext());
+    await waitFor(() => expect(result.current.context?.branch).toBe("feature/other"));
+    expect(result.current.branchPullRequest).toBeNull();
+    await act(async () => pending.resolve(null));
+  });
 
   it.each(["merge", "ready"] as const)("a late %s does not overwrite another selected PR", async (action) => {
     const pending = deferred<PullRequest>();

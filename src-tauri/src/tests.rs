@@ -2990,6 +2990,166 @@ fn skill_test_directory(label: &str) -> PathBuf {
     ))
 }
 
+#[cfg(any(unix, windows))]
+#[tokio::test]
+async fn local_skill_creation_does_not_follow_a_dangling_destination_symlink() {
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink;
+    #[cfg(windows)]
+    use std::os::windows::fs::symlink_file as symlink;
+    let root = skill_test_directory("skill-create-symlink");
+    let outside = skill_test_directory("skill-create-outside");
+    fs::create_dir_all(&root).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+    let target = outside.join("new.md");
+    symlink(&target, root.join("new.md")).unwrap();
+    let result = local_skills_create(
+        root.to_string_lossy().into_owned(),
+        "new".into(),
+        "Selected folder instructions".into(),
+    )
+    .await;
+    assert!(
+        !target.exists(),
+        "skill creation escaped the selected folder"
+    );
+    let created = PathBuf::from(result.unwrap());
+    assert!(created.starts_with(root.canonicalize().unwrap()));
+    assert_eq!(fs::read_link(root.join("new.md")).unwrap(), target);
+    assert!(!fs::symlink_metadata(&created)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert!(fs::read_to_string(created)
+        .unwrap()
+        .contains("Selected folder instructions"));
+    fs::remove_dir_all(root).unwrap();
+    fs::remove_dir_all(outside).unwrap();
+}
+
+#[cfg(any(unix, windows))]
+#[tokio::test]
+async fn local_skill_import_does_not_follow_a_dangling_destination_symlink() {
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink;
+    #[cfg(windows)]
+    use std::os::windows::fs::symlink_file as symlink;
+    let root = skill_test_directory("skill-import-symlink");
+    let outside = skill_test_directory("skill-import-outside");
+    fs::create_dir_all(&root).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+    let source = outside.join("source.md");
+    let target = outside.join("must-not-create.md");
+    fs::write(&source, "Imported instructions").unwrap();
+    symlink(&target, root.join("source.md")).unwrap();
+    let imported = local_skills_import(
+        root.to_string_lossy().into_owned(),
+        vec![source.to_string_lossy().into_owned()],
+    )
+    .await
+    .unwrap();
+    assert!(!target.exists());
+    assert_eq!(fs::read_link(root.join("source.md")).unwrap(), target);
+    assert_eq!(
+        fs::read_to_string(&imported[0]).unwrap(),
+        "Imported instructions"
+    );
+    fs::remove_dir_all(root).unwrap();
+    fs::remove_dir_all(outside).unwrap();
+}
+
+#[tokio::test]
+async fn local_skill_concurrent_creations_preserve_existing_files_and_reserved_leaves() {
+    let root = skill_test_directory("skill-create-collisions");
+    fs::create_dir_all(root.join("new-2.md")).unwrap();
+    fs::write(root.join("new.md"), "Existing instructions").unwrap();
+    let mut tasks = Vec::new();
+    for index in 0..16 {
+        let folder = root.to_string_lossy().into_owned();
+        tasks.push(tokio::spawn(local_skills_create(
+            folder,
+            "new".into(),
+            format!("Creator {index}"),
+        )));
+    }
+    let mut paths = HashSet::new();
+    for (index, task) in tasks.into_iter().enumerate() {
+        let path = task.await.unwrap().unwrap();
+        assert!(paths.insert(path.clone()));
+        assert!(fs::read_to_string(path)
+            .unwrap()
+            .contains(&format!("Creator {index}")));
+    }
+    assert_eq!(
+        fs::read_to_string(root.join("new.md")).unwrap(),
+        "Existing instructions"
+    );
+    assert!(root.join("new-2.md").is_dir());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn local_skill_import_preserves_private_source_permissions() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let root = skill_test_directory("skill-import-permissions");
+    let outside = skill_test_directory("skill-import-private-source");
+    fs::create_dir_all(&root).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+    let source = outside.join("private.md");
+    fs::write(&source, "Private instructions").unwrap();
+    fs::set_permissions(&source, fs::Permissions::from_mode(0o600)).unwrap();
+    let imported = local_skills_import(
+        root.to_string_lossy().into_owned(),
+        vec![source.to_string_lossy().into_owned()],
+    )
+    .await
+    .unwrap();
+    assert_eq!(fs::metadata(&imported[0]).unwrap().mode() & 0o777, 0o600);
+    assert_eq!(
+        fs::read_to_string(&imported[0]).unwrap(),
+        "Private instructions"
+    );
+    fs::remove_dir_all(root).unwrap();
+    fs::remove_dir_all(outside).unwrap();
+}
+
+#[tokio::test]
+async fn claude_system_prompt_capability_rechecks_same_metadata_atomic_replacement() {
+    let root = skill_test_directory("claude-capability-identity");
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("cli");
+    let replacement = root.join("replacement");
+    fs::write(&path, "new").unwrap();
+    let modified = fs::metadata(&path).unwrap().modified().unwrap();
+    let cache = Mutex::new(None);
+    assert!(
+        cached_claude_prompt_snapshot_support(&cache, &path, || async {
+            Some("2.1.283 (Claude Code)".into())
+        })
+        .await
+    );
+    fs::write(&replacement, "old").unwrap();
+    fs::File::options()
+        .write(true)
+        .open(&replacement)
+        .unwrap()
+        .set_times(fs::FileTimes::new().set_modified(modified))
+        .unwrap();
+    fs::remove_file(&path).unwrap();
+    fs::rename(&replacement, &path).unwrap();
+    assert_eq!(fs::metadata(&path).unwrap().len(), 3);
+    assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), modified);
+    assert!(
+        !cached_claude_prompt_snapshot_support(&cache, &path, || async {
+            Some("2.1.256 (Claude Code)".into())
+        })
+        .await,
+        "atomic replacement retained the old runtime capability"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn local_skill_scan_uses_top_level_markdown_and_nested_skill_packages() {
     let root = skill_test_directory("skill-scan");

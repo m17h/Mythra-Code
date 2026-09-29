@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef } from "react";
-import { friendlyError } from "../lib/errors";
+import { formatGitError } from "../lib/errors";
 import { normalizedProjectPath } from "../lib/paths";
 import { acquirePullRequestMutation, releasePullRequestMutation } from "../lib/pullRequestOperations";
 import { createPullRequestCreationDraftStore } from "../lib/pullRequestCreationDrafts";
@@ -91,7 +91,7 @@ async function readList(access: ProjectPullRequestAccess, scope: string, query: 
     projectPullRequestStore.update(scope, { items, itemsQuery: projectPullRequestListKey(query, filter), listLoading: false, listAt: Date.now() });
   } catch (error) {
     if (!current(`${scope}\0list`, sequence)) return;
-    projectPullRequestStore.update(scope, { listLoading: false, listError: friendlyError(error) });
+    projectPullRequestStore.update(scope, { listLoading: false, listError: formatGitError(error) });
   }
 }
 
@@ -109,7 +109,7 @@ async function readDetail(access: ProjectPullRequestAccess, scope: string, targe
     projectPullRequestStore.update(scope, { detail, detailLoading: false, detailAt: Date.now() });
   } catch (error) {
     if (!current(`${scope}\0detail`, sequence)) return;
-    projectPullRequestStore.update(scope, { detailLoading: false, detailError: friendlyError(error) });
+    projectPullRequestStore.update(scope, { detailLoading: false, detailError: formatGitError(error) });
   }
 }
 
@@ -159,13 +159,20 @@ async function readContext(access: ProjectPullRequestAccess, scope: string) {
     const context = await access.context(access.cwd);
     if (!current(`${scope}\0context`, sequence)) return;
     if (!context || typeof context.branch !== "string") throw new Error("Mythra Code could not read this checkout's pull request context.");
-    projectPullRequestStore.update(scope, { context });
+    projectPullRequestStore.update(scope, (saved) => ({
+      context,
+      // Discovery belongs to the branch/repository that produced it, not a
+      // newer context whose lookup is still pending or may fail.
+      branchPullRequest: saved.branchPullRequest
+        && saved.branchPullRequest.repository.toLowerCase() === context.repository.toLowerCase()
+        && saved.branchPullRequest.headRefName === context.branch ? saved.branchPullRequest : null,
+    }));
     const branchPullRequest = (await access.find(access.cwd, context.repository, context.branch)) ?? null;
     if (!current(`${scope}\0context`, sequence)) return;
     projectPullRequestStore.update(scope, { branchPullRequest, contextLoading: false, contextAt: Date.now() });
   } catch (error) {
     if (!current(`${scope}\0context`, sequence)) return;
-    projectPullRequestStore.update(scope, { contextLoading: false, contextError: friendlyError(error) });
+    projectPullRequestStore.update(scope, { contextLoading: false, contextError: formatGitError(error) });
   }
 }
 
@@ -292,7 +299,7 @@ export function useProjectPullRequests(access: ProjectPullRequestAccess | undefi
       // A rejected native request can have partially changed remote/local state.
       // Its older reads must not win either; errors still belong to this checkout.
       finishMutation(captured, key, null);
-      projectPullRequestStore.update(key, { error: friendlyError(error) });
+      projectPullRequestStore.update(key, { error: formatGitError(error) });
       throw error;
     } finally {
       leases.forEach(releasePullRequestMutation);

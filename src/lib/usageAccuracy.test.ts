@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { TokenUsageView } from "../components/StudioDock";
 import { annotateThreadUsage, flushUsageLedger, MODEL_PRICING_CATALOG_KEY, OFFICIAL_PRICING_KEY, openRouterReportedCost,
-  pricingForServiceTier, pricingModelKeys, recordAuxiliaryUsage, recordCumulativeUsage, recordUsageDelta, reportThreadServiceTier,
+  pricingCorrectionCheckpoint, pricingForServiceTier, pricingModelKeys, PRICING_CORRECTIONS_ID, recordAuxiliaryUsage, recordCumulativeUsage, recordUsageDelta, reportThreadServiceTier,
   resetUsageLedgerCache, usageForThread, usageTotals, USAGE_LEDGER_KEY } from "./usageLedger";
 import { repriceUsageHistory, USAGE_HISTORY_KEY } from "./usageHistory";
+import { recordBackgroundUsage } from "./backgroundUsage";
 import { usageDetail } from "./usageSummary";
 import { historicalPricing } from "./pricingEvidence";
 import { parseOpenAIPricing, recordOfficialPricingResult } from "./officialPricing";
@@ -94,6 +95,88 @@ describe("usage metric and tier evidence", () => {
       "openai:gpt-6-sol@fast": { inputPerMillion: 4, outputPerMillion: 20, serviceTier: "fast", asOf: "2026-09-25", effectiveUntil: "2026-09-26" },
     } }));
     expect(pricingForServiceTier("openai", "gpt-6-sol", "fast")).toBeUndefined();
+  });
+
+  it("preserves a non-Standard correction's tier when recovering a ledger-first save", () => {
+    annotateThreadUsage("fast-recovery", { provider: "openai", model: "unknown-fast-model", requestedServiceTier: "fast" });
+    recordUsageDelta("fast-recovery", counts(1_000_000, 0, { serviceTier: "fast" }), "first", "first");
+    flushUsageLedger();
+    const historyBeforeCorrection = localStorage.getItem(USAGE_HISTORY_KEY)!;
+    const cohort = usageDetail(null).buckets[0].cohorts![0];
+    localStorage.setItem(MODEL_PRICING_CATALOG_KEY, JSON.stringify({ schemaVersion: 1, updatedAt: new Date().toISOString(), models: {
+      "openai:unknown-fast-model@fast": { inputPerMillion: 2, outputPerMillion: 8, serviceTier: "fast", asOf: new Date().toISOString().slice(0, 10), effectiveFrom: new Date(cohort.firstAt - 60_000).toISOString() },
+    } }));
+    expect(repriceUsageHistory()).toBe(1);
+    localStorage.setItem(USAGE_HISTORY_KEY, historyBeforeCorrection);
+    localStorage.removeItem(MODEL_PRICING_CATALOG_KEY);
+    resetUsageLedgerCache();
+    expect(repriceUsageHistory()).toBe(1);
+    expect(usageTotals().estimatedCost).toBe(2);
+    const recoveredHistory = JSON.parse(localStorage.getItem(USAGE_HISTORY_KEY)!);
+    expect(recoveredHistory.rates[0][8]).toBe("fast");
+  });
+
+  it.each(["mixed", "unknown", "auto", "made-up", 42, null])("rejects an invalid correction-checkpoint pricing tier: %s", (serviceTier) => {
+    const key = "2026-09-28\0openai\0fast-model\0cohort";
+    localStorage.setItem(USAGE_LEDGER_KEY, JSON.stringify([{ threadId: PRICING_CORRECTIONS_ID, kind: "pricing-correction",
+      usage: counts(0, 0), updatedAt: Date.now(), correctionCheckpoints: { [key]: {
+        id: "correction", revision: 1, cost: 2, tokens: 100, basis: "catalog",
+        pricing: { inputPerMillion: 2, outputPerMillion: 8, source: "OpenAI", asOf: "2026-09-28", serviceTier },
+      } } }]));
+    expect(pricingCorrectionCheckpoint(key)).toBeUndefined();
+  });
+
+  it("does not turn a partial multi-terminal helper's summed counters into complete cache coverage", () => {
+    // Serialized native output from two terminals: the first reports full
+    // input; the second reports cache-only input, so 400 is only a lower bound.
+    expect(recordBackgroundUsage({
+      executionId: "0d749065-73b9-439d-a72c-1705584c6944", provider: "openai", model: "gpt-6-luna", modelSource: "requested",
+      purpose: "run-discovery", serviceTier: "priority", serviceTierSource: "requested", requestedServiceTier: "priority",
+      outcome: "completed", tokenAvailability: "partial", reportedCost: 0.1,
+      usage: { inputTokens: 400, cachedInputTokens: 300, cacheWriteInputTokens: 0, cacheWrite1hInputTokens: null,
+        outputTokens: 20, reasoningOutputTokens: null, totalTokens: 420 },
+    })).toBe(true);
+    expect(usageTotals()).toMatchObject({ inputTokens: 400, cachedInputTokens: 300, unpricedTokens: 420,
+      cacheReadUnknownTokens: 400, cacheWriteUnknownTokens: 400, auxiliaryPartialRequests: 1 });
+    reload();
+    expect(usageDetail(null).totals).toMatchObject({ cacheReadTokens: 300, cacheReadUnknownTokens: 400, cacheWriteUnknownTokens: 400 });
+  });
+
+  it("does not restore a requested Fast estimate after the native helper invalidates mixed actual tiers", () => {
+    recordOfficialPricingResult("openai", { ok: true, models: { "gpt-6-sol@fast": {
+      input: 8, output: 40, cacheRead: 0.8, cacheWrite: 10, asOf: "2026-09-28", serviceTier: "fast",
+    } } }, Date.parse("2026-09-28T12:00:00Z"));
+    // Native mixed-tier execution: same reported model, priority then default.
+    // It deliberately clears the actual tier while retaining the request.
+    expect(recordBackgroundUsage({
+      executionId: "70ae4aa2-f1a8-44cf-bb75-cac0f4b994cf", provider: "openai", model: "gpt-6-sol", modelSource: "reported",
+      purpose: "run-discovery", serviceTier: null, serviceTierSource: "unknown", requestedServiceTier: "priority",
+      outcome: "completed", tokenAvailability: "reported", reportedCost: null,
+      usage: { inputTokens: 200, cachedInputTokens: 0, cacheWriteInputTokens: 0, cacheWrite1hInputTokens: null,
+        outputTokens: 20, reasoningOutputTokens: null, totalTokens: 220 },
+    })).toBe(true);
+    expect(usageTotals()).toMatchObject({ estimatedCost: 0, pricedTokens: 0, unpricedTokens: 220 });
+    reload();
+    expect(usageDetail(null).buckets[0].serviceTiers).toContainEqual({ tier: "unknown", source: "unknown", requestedTier: "fast" });
+  });
+
+  it("retains native requested-helper estimates and the normal chat's omitted-source fallback", () => {
+    recordOfficialPricingResult("openai", { ok: true, models: { "gpt-6-sol@fast": {
+      input: 8, output: 40, cacheRead: 0.8, cacheWrite: 10, asOf: "2026-09-28", serviceTier: "fast",
+    } } }, Date.parse("2026-09-28T12:00:00Z"));
+    expect(recordBackgroundUsage({
+      executionId: "340d1b0d-9c81-4fb3-bca1-e3db91d24975", provider: "openai", model: "gpt-6-sol", modelSource: "requested",
+      purpose: "thread-title", serviceTier: "priority", serviceTierSource: "requested", requestedServiceTier: "priority",
+      outcome: "completed", tokenAvailability: "reported", reportedCost: null,
+      usage: { inputTokens: 100, cachedInputTokens: 0, cacheWriteInputTokens: 0, cacheWrite1hInputTokens: null,
+        outputTokens: 10, reasoningOutputTokens: null, totalTokens: 110 },
+    })).toBe(true);
+    expect(usageTotals()).toMatchObject({ estimatedCost: 0.0012, pricedTokens: 110, unpricedTokens: 0 });
+    annotateThreadUsage("legacy-fallback", { provider: "openai", model: "gpt-6-sol", requestedServiceTier: "priority" });
+    recordUsageDelta("legacy-fallback", counts(100, 10, { serviceTier: undefined, serviceTierSource: undefined }), "first", "first");
+    expect(usageTotals()).toMatchObject({ estimatedCost: 0.0024, pricedTokens: 220, unpricedTokens: 0 });
+    reload();
+    expect(usageDetail(null).buckets[0].serviceTiers).toContainEqual({ tier: "fast", source: "requested", requestedTier: "fast" });
   });
 
   it("does not merge partial and complete unpriced cohorts then retrospectively price both", () => {

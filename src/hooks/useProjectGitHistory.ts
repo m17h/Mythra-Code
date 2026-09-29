@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef } from "react";
-import { friendlyError } from "../lib/errors";
+import { formatGitError } from "../lib/errors";
 import { normalizedProjectPath } from "../lib/paths";
 import type { ProjectGitCommit } from "../lib/gitInspection";
 import type { ProjectGitInspection } from "../lib/projectGit";
@@ -60,7 +60,7 @@ async function readPage(api: ProjectGitInspection, cwd: string, first: boolean) 
     if (generations.get(scope) !== generation) return;
     // Preserve the same base if eviction happens before a failed page, so a
     // retry can still use the exact offset and HEAD the user requested.
-    projectHistoryStore.update(scope, { ...current, loading: false, error: friendlyError(error), failedRequest: first ? "reload" : "more" });
+    projectHistoryStore.update(scope, { ...current, loading: false, error: formatGitError(error), failedRequest: first ? "reload" : "more" });
   }
 }
 

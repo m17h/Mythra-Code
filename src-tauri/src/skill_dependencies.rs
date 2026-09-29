@@ -173,6 +173,7 @@ struct Traversal<'a> {
 fn references(content: &str) -> Vec<Reference> {
     let mut visible = String::with_capacity(content.len());
     let mut mention_sources = Vec::new();
+    let mut code_ranges = Vec::new();
     let mut references = Vec::new();
     let mut hidden = 0usize;
     for (event, range) in Parser::new(content).into_offset_iter() {
@@ -219,7 +220,12 @@ fn references(content: &str) -> Vec<Reference> {
                 // an entity-created @ has no authored invocation position.
                 visible.push_str(&text);
             }
-            Event::Code(text) if hidden == 0 => visible.push_str(&text),
+            Event::Code(text) if hidden == 0 => {
+                // Keep rendered code text for adjacent token boundaries, but
+                // never let it supply any part of an invocation's name.
+                code_ranges.push(visible.len()..visible.len() + text.len());
+                visible.push_str(&text);
+            }
             Event::SoftBreak | Event::HardBreak | Event::Rule if hidden == 0 => visible.push('\n'),
             Event::Start(
                 Tag::Paragraph
@@ -245,10 +251,15 @@ fn references(content: &str) -> Vec<Reference> {
     }
     let names = skill_mention_references_filtered_at(
         &visible,
-        |offset, _| {
-            mention_sources
-                .binary_search_by_key(&offset, |(offset, _)| *offset)
-                .is_ok()
+        |offset, name| {
+            let first_code = code_ranges.partition_point(|range| range.end <= offset);
+            let overlaps_code = code_ranges
+                .get(first_code)
+                .is_some_and(|range| range.start < offset + 1 + name.len());
+            !overlaps_code
+                && mention_sources
+                    .binary_search_by_key(&offset, |(offset, _)| *offset)
+                    .is_ok()
         },
         MAX_REFERENCES + 1,
     );
@@ -702,7 +713,16 @@ impl Analyzer {
         }
         self.characters += count;
         self.skill_count += usize::from(kind == "skill");
-        let refs = references(&instructions);
+        // Skill frontmatter describes discovery metadata, not dependency
+        // instructions. Keep the complete source in the payload/hash/budget;
+        // only dependency discovery uses its authored body. Reference
+        // documents remain literal text, including any YAML examples.
+        let reference_content = if kind == "skill" {
+            super::split_skill_markdown(&instructions).1
+        } else {
+            &instructions
+        };
+        let refs = references(reference_content);
         self.loaded.push(LoadedDependency {
             node: index,
             instructions,
@@ -878,7 +898,14 @@ fn detected_path(folder: &Path, source: &Path) -> bool {
                 .file_name()
                 .is_some_and(|name| name.eq_ignore_ascii_case("SKILL.md")))
 }
-fn read_bounded(folder: &Path, source: &Path) -> Result<String, (&'static str, String)> {
+pub(super) fn read_bounded(folder: &Path, source: &Path) -> Result<String, (&'static str, String)> {
+    read_bounded_with_metadata(folder, source).map(|(contents, _)| contents)
+}
+
+pub(super) fn read_bounded_with_metadata(
+    folder: &Path,
+    source: &Path,
+) -> Result<(String, std::fs::Metadata), (&'static str, String)> {
     let mut options = fs_open_options();
     let mut file = options.read(true).open(source).map_err(|error| {
         (
@@ -918,8 +945,17 @@ fn read_bounded(folder: &Path, source: &Path) -> Result<String, (&'static str, S
     let after = file
         .metadata()
         .map_err(|error| ("read-error", error.to_string()))?;
+    #[cfg(windows)]
+    let encryption_changed = {
+        use std::os::windows::fs::MetadataExt;
+        (before.file_attributes() ^ after.file_attributes()) & 0x4000 != 0
+    };
+    #[cfg(not(windows))]
+    let encryption_changed = false;
     if before.len() != after.len()
         || before.modified().ok() != after.modified().ok()
+        || before.permissions() != after.permissions()
+        || encryption_changed
         || !opened_identity_matches(folder, source, &file, &after)
     {
         return Err((
@@ -930,12 +966,14 @@ fn read_bounded(folder: &Path, source: &Path) -> Result<String, (&'static str, S
             ),
         ));
     }
-    String::from_utf8(bytes).map_err(|error| {
-        (
-            "invalid-utf8",
-            format!("Could not read {} as UTF-8: {error}", source.display()),
-        )
-    })
+    String::from_utf8(bytes)
+        .map(|contents| (contents, before))
+        .map_err(|error| {
+            (
+                "invalid-utf8",
+                format!("Could not read {} as UTF-8: {error}", source.display()),
+            )
+        })
 }
 
 fn fs_open_options() -> std::fs::OpenOptions {
@@ -1473,6 +1511,84 @@ mod tests {
     }
 
     #[test]
+    fn inline_code_cannot_supply_a_nested_invocation_name() {
+        for text in ["Use @`b`", "Use @b`eta`", "Use @be`ta`", "Use @`b`eta"] {
+            assert!(
+                references(text)
+                    .iter()
+                    .all(|reference| !matches!(reference, Reference::Skill(_))),
+                "inline code manufactured a nested invocation: {text}"
+            );
+        }
+        for text in ["Use @b`.`", "Use @b` `"] {
+            assert!(
+                matches!(references(text).as_slice(), [Reference::Skill(name)] if name == "b"),
+                "{text}"
+            );
+        }
+        for text in ["Use @b`/x`", "Use @b`_`", "Use @b`.x`"] {
+            assert!(
+                references(text)
+                    .iter()
+                    .all(|reference| !matches!(reference, Reference::Skill(_))),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn skill_frontmatter_metadata_does_not_invoke_nested_dependencies() {
+        let mut lib = Library::new();
+        for newline in ["\n", "\r\n"] {
+            let content = "---\nname: a\ndescription: Use when the user asks about @example or [a report](missing.txt)\n---\n\nActual instructions.\n".replace('\n', newline);
+            if lib.configs.is_empty() {
+                lib.skill("a", "package/SKILL.md", &content, true);
+            } else {
+                lib.document("package/SKILL.md", &content);
+            }
+            let result = lib.analyze("@a", "");
+            assert!(
+                result.report.issues.is_empty(),
+                "frontmatter became dependencies: {}",
+                serde_json::to_string(&result.report).unwrap()
+            );
+            assert!(result.report.edges.is_empty());
+            assert_eq!(result.loaded[0].instructions, content);
+            assert_eq!(
+                result.report.nodes[0].character_count,
+                content.chars().count()
+            );
+            assert_eq!(
+                result.report.nodes[0].content_hash,
+                Some(format!("{:x}", Sha256::digest(content.as_bytes())))
+            );
+        }
+        // A referenced document is not a skill; its text remains discoverable
+        // even when it happens to start with a YAML-looking example.
+        lib.skill("b", "b.md", "B instructions", true);
+        lib.document(
+            "docs/guide.txt",
+            "---\ndescription: Use @b\n---\n\nReference text.",
+        );
+        lib.document(
+            "package/SKILL.md",
+            "---\ndescription: Use @example\n---\n\n[Guide](../docs/guide.txt)",
+        );
+        let result = lib.analyze("@a", "");
+        assert!(result.report.issues.is_empty());
+        assert_eq!(result.loaded.len(), 3);
+        assert_eq!(
+            result
+                .report
+                .edges
+                .iter()
+                .map(|edge| edge.reference.as_str())
+                .collect::<Vec<_>>(),
+            vec!["../docs/guide.txt", "@b"]
+        );
+    }
+
+    #[test]
     fn nested_chains_aliases_relative_links_and_authored_only_roots() {
         let mut lib = Library::new();
         lib.skill(
@@ -1844,6 +1960,26 @@ mod tests {
                 .iter()
                 .all(|issue| issue.chain.iter().all(|part| part.len() <= 4096)));
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bounded_skill_read_keeps_contents_and_permissions_from_one_opened_source() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let lib = Library::new();
+        let path = lib.document("private.txt", "Original private contents");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        let source = path.canonicalize().unwrap();
+        let (contents, metadata) =
+            read_bounded_with_metadata(&lib.root.canonicalize().unwrap(), &source).unwrap();
+        let replacement = lib.document("replacement.txt", "New public contents");
+        fs::set_permissions(&replacement, fs::Permissions::from_mode(0o644)).unwrap();
+        fs::rename(replacement, &path).unwrap();
+        assert_eq!(contents, "Original private contents");
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+        let named = fs::metadata(&path).unwrap();
+        assert_eq!(named.permissions().mode() & 0o777, 0o644);
+        assert_ne!(metadata.ino(), named.ino());
     }
 
     #[cfg(unix)]

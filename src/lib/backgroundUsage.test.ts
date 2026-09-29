@@ -20,7 +20,7 @@ describe("background helper usage metadata", () => {
     expect(recordBackgroundUsage(fixture())).toBe(true);
     expect(mocks.record).toHaveBeenCalledWith(expect.objectContaining({ executionId: fixture().executionId, purpose: "thread-title",
       serviceTierSource: "requested", requestedServiceTier: "priority", reportedCost: undefined,
-      usage: expect.objectContaining({ inputTokens: 24763, cachedInputTokens: 24448, cacheReadReported: true, cacheWriteReported: false,
+      usage: expect.objectContaining({ inputTokens: 24763, cachedInputTokens: 24448, cacheReadReported: false, cacheWriteReported: false,
         cacheWriteInputTokens: 0, tokenAvailability: "partial" }) }));
   });
   it("counts an actual execution with unavailable tokens without inventing usage", () => {

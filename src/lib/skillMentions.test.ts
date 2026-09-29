@@ -35,6 +35,13 @@ describe("exact selected-folder skill mentions", () => {
     }
   });
 
+  it.each([
+    ["@review/file", 7], ["@review.md", 7], ["@review_extra", 7],
+    ["@reviewé", 7], ["@review𝟙", 7], ["@review", 4],
+  ])("does not complete a prefix inside an existing non-invocation or name (%s)", (text, caret) => {
+    expect(skillMentionQuery(text as string, caret as number)).toBeNull();
+  });
+
   it("suggests enabled local skills by name and description with prefix matches first", () => {
     expect(skillMentionSuggestions([
       { name: "z-review" }, { name: "review" }, { name: "helper", description: "Review helper" },

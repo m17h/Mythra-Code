@@ -20,12 +20,16 @@ export function GitHistoryView(props: {
 }) {
   const { history } = props;
   const moved = Boolean(history.loaded && props.currentHeadKnown && props.currentHeadOid !== history.headOid);
+  const pinnedHead = moved ? history.headOid?.slice(0, 7) : null;
+  const listLabel = moved ? pinnedHead ? `Commits at ${pinnedHead}` : "Previously read commits"
+    : props.branch ? `Commits on ${props.branch}` : "Commits";
   const freshness = readTime(history.loadedAt);
   return (
     <div className="git-history">
       <div className="git-view-toolbar">
         <div className="git-view-summary">
-          <span><strong>Commits</strong>{props.branch ? <> on <code title={props.branch}>{props.branch}</code></> : ""}</span>
+          <span><strong>Commits</strong>{moved ? pinnedHead ? <> at <code title={history.headOid ?? undefined}>{pinnedHead}</code></> : " previously read"
+            : props.branch ? <> on <code title={props.branch}>{props.branch}</code></> : ""}</span>
           {freshness && <small>read {freshness}</small>}
         </div>
         {history.available && !props.absent && (
@@ -62,7 +66,7 @@ export function GitHistoryView(props: {
             <p className="git-changes-empty">No commits yet. Your first commit will appear here.</p>
           )}
           {history.entries.length > 0 && (
-            <ol className="git-history-list" aria-label={props.branch ? `Commits on ${props.branch}` : "Commits"}>
+            <ol className="git-history-list" aria-label={listLabel}>
               {history.entries.map((entry) => (
                 <li key={entry.oid}>
                   <code className="git-history-oid" title={entry.oid}>{entry.shortOid}</code>

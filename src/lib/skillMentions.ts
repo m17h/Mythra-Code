@@ -17,6 +17,14 @@ const ALPHANUMERIC = /[\p{Alphabetic}\p{Number}]/u;
 const ASCII_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/i;
 const ASCII_NAME_CHARACTER = /^[a-z0-9-]$/i;
 
+function mentionEndsAt(text: string, end: number): boolean {
+  const nextCodePoint = text.codePointAt(end);
+  const next = nextCodePoint === undefined ? undefined : String.fromCodePoint(nextCodePoint);
+  return next === undefined || WHITESPACE.test(next)
+    || (next !== "." && !ALPHANUMERIC.test(next) && !["_", "/", "\\", "-"].includes(next))
+    || (next === "." && (end + 1 === text.length || WHITESPACE.test(text[end + 1])));
+}
+
 /** Keep these boundaries aligned with skills.rs::skill_mention_names. */
 export function skillMentionRanges<T extends SkillMentionSkill>(
   text: string,
@@ -39,16 +47,9 @@ export function skillMentionRanges<T extends SkillMentionSkill>(
     const start = index + 1;
     let end = start;
     while (end < text.length && ASCII_NAME_CHARACTER.test(text[end])) end += 1;
-    const nextCodePoint = text.codePointAt(end);
-    const next = nextCodePoint === undefined ? undefined : String.fromCodePoint(nextCodePoint);
-    const periodEndsSentence = next === "."
-      && (end + 1 === text.length || WHITESPACE.test(text[end + 1]));
-    const boundary = next === undefined || WHITESPACE.test(next)
-      || (next !== "." && !ALPHANUMERIC.test(next) && !["_", "/", "\\", "-"].includes(next))
-      || periodEndsSentence;
     const name = text.slice(start, end);
     const skill = available.get(name.toLowerCase());
-    if (ASCII_NAME.test(name) && boundary && skill) ranges.push({ start: index, end, skill });
+    if (ASCII_NAME.test(name) && mentionEndsAt(text, end) && skill) ranges.push({ start: index, end, skill });
     index = Math.max(end, index + 1);
   }
   return ranges;
@@ -58,6 +59,9 @@ export interface SkillMentionQuery { start: number; end: number; query: string }
 
 /** Partial local skill name at the caret; files and email addresses are excluded. */
 export function skillMentionQuery(text: string, caret: number): SkillMentionQuery | null {
+  // Completion replaces only the authored prefix before the native caret.
+  // Never split an existing name, file path, extension, or Unicode word.
+  if (!Number.isSafeInteger(caret) || caret < 0 || caret > text.length || !mentionEndsAt(text, caret)) return null;
   const before = text.slice(0, caret);
   const match = /@([a-z0-9-]*)$/i.exec(before);
   if (!match || (match.index > 0 && !WHITESPACE.test(before[match.index - 1]))) return null;

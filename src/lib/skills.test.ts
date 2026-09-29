@@ -131,6 +131,38 @@ describe("local skills", () => {
     await expect(resolveSkillPrompts("@review", "", "/skills", [])).rejects.toBeInstanceOf(SkillDependencyError);
   });
 
+  it.each(["user", "system"] as const)("rejects malformed %s-envelope dependency metadata during delivery, not history display", async (channel) => {
+    const envelope = `<mythra_code_invoked_skills>\n${JSON.stringify({ skills: [], dependencyReport: { nodes: "corrupt" }, [channel === "user" ? "userMessage" : "systemPrompt"]: "Use @review" })}\n</mythra_code_invoked_skills>`;
+    vi.mocked(invoke).mockResolvedValueOnce({ prompt: channel === "user" ? envelope : "Continue", systemPrompt: channel === "system" ? envelope : "" });
+    await expect(resolveSkillPrompts("Use @review", "Use @policy", "/skills", [])).rejects.toThrow("skill dependency report was invalid");
+    if (channel === "user") expect(displayedUserMessage(envelope)).toEqual({ text: "Use @review", skillReferences: [] });
+  });
+
+  it("fails a blocked system-only envelope report when top-level metadata is omitted", async () => {
+    const report = dependencyReport(true);
+    report.roots[0].channel = "system";
+    const systemPrompt = `<mythra_code_invoked_skills>\n${JSON.stringify({ skills: [], dependencyReport: report, systemPrompt: "Use @review" })}\n</mythra_code_invoked_skills>`;
+    vi.mocked(invoke).mockResolvedValueOnce({ prompt: "Continue", systemPrompt });
+    await expect(resolveSkillPrompts("Continue", "Use @review", "/skills", [])).rejects.toBeInstanceOf(SkillDependencyError);
+  });
+
+  it.each([
+    "<mythra_code_invoked_skills>\n{broken JSON}\n</mythra_code_invoked_skills>",
+    `<mythra_code_invoked_skills>\n${JSON.stringify({ skills: [], userMessage: "x".repeat(2_000_000) })}\n</mythra_code_invoked_skills>`,
+  ])("bounds and rejects corrupt compatibility envelopes before sending", async (prompt) => {
+    vi.mocked(invoke).mockResolvedValueOnce({ prompt, systemPrompt: "" });
+    await expect(resolveSkillPrompts("Use @review", "", "/skills", [])).rejects.toThrow("skill dependency report was invalid");
+  });
+
+  it("accepts old envelopes without graph metadata and recovers valid system-only metadata", async () => {
+    const legacy = `<mythra_code_invoked_skills>\n${JSON.stringify({ skills: [], userMessage: "Use @review" })}\n</mythra_code_invoked_skills>`;
+    const report = dependencyReport();
+    report.roots[0].channel = "system";
+    const systemPrompt = `<mythra_code_invoked_skills>\n${JSON.stringify({ skills: [], dependencyReport: report, systemPrompt: "Use @review" })}\n</mythra_code_invoked_skills>`;
+    vi.mocked(invoke).mockResolvedValueOnce({ prompt: legacy, systemPrompt });
+    expect(await resolveSkillPrompts("Use @review", "Use @review", "/skills", [])).toMatchObject({ prompt: legacy, systemPrompt, skillDependencies: report });
+  });
+
   it("returns successful sanitized graph provenance and rejects malformed bridge metadata", async () => {
     const report = dependencyReport();
     vi.mocked(invoke).mockResolvedValueOnce({ prompt: "envelope", systemPrompt: "", skillDependencies: { ...report, instructions: "secret" } });

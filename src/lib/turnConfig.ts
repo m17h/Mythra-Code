@@ -234,6 +234,8 @@ export interface TurnSystemPromptOptions {
   systemPrompt?: string;
   /** Actual thread/start or thread/resume response model when the run uses a default. */
   model?: string;
+  /** Current Mythra tool/delegation guidance, which mode overrides replace. */
+  developerInstructions?: string;
 }
 
 function objectValue(value: unknown): JsonObject {
@@ -246,7 +248,7 @@ function objectValue(value: unknown): JsonObject {
  * base instructions. Prior overrides remain historical conversation items,
  * so every managed turn must carry its current snapshot, including clearing.
  */
-export function withCurrentSystemPrompt(params: JsonObject, systemPrompt: string, currentModel?: string): JsonObject {
+export function withCurrentSystemPrompt(params: JsonObject, systemPrompt: string, currentModel?: string, developerInstructions?: string): JsonObject {
   const mode = objectValue(params.collaborationMode);
   const settings = objectValue(mode.settings);
   const selected = typeof params.model === "string" ? params.model.trim() : "";
@@ -255,6 +257,10 @@ export function withCurrentSystemPrompt(params: JsonObject, systemPrompt: string
   const existing = typeof settings.developer_instructions === "string" ? settings.developer_instructions : "";
   const instructions = [
     existing,
+    // collaborationMode supersedes thread developer instructions in the
+    // actual app-server schema. Include the current app-owned guide here;
+    // callers pass tool guidance only for their real active bridge surface.
+    developerInstructions ?? mythraCodeDeveloperInstructions(false),
     "Mythra Code current app system-prompt configuration for this turn. The latest such snapshot is authoritative for this app configuration: it supersedes earlier app system-prompt snapshots, resolved system-skill envelopes, and unresolved @skill selections from earlier app system prompts. Earlier snapshots can remain in conversation history; do not treat their removed skill selections as current requirements. User-message skills and instructions remain valid independently. Native permissions, delegation policy, and other non-app-system instructions remain in force.",
     systemPrompt.trim() ? `Current effective app system prompt:\n${systemPrompt}` : "Current effective app system prompt: none. There is no additional app system prompt or system-selected skill for this turn.",
   ].filter(Boolean).join("\n\n");
@@ -296,7 +302,7 @@ export function turnStartParams(
     effort: run.ultra ? "ultra" : run.reasoningEffort,
     serviceTier: run.serviceTier,
   };
-  return instructions.systemPrompt === undefined ? params : withCurrentSystemPrompt(params, instructions.systemPrompt, instructions.model);
+  return instructions.systemPrompt === undefined ? params : withCurrentSystemPrompt(params, instructions.systemPrompt, instructions.model, instructions.developerInstructions);
 }
 
 export function scheduleRunSnapshot(

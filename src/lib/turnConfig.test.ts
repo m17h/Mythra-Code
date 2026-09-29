@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ScheduleRunSettings } from "../types";
-import { MYTHRA_CODE_DELEGATION_INSTRUCTIONS, MYTHRA_CODE_NATIVE_DELEGATION_POLICY, mythraCodeDeveloperInstructions } from "./completionPrompt";
+import { MYTHRA_CODE_DELEGATION_INSTRUCTIONS, MYTHRA_CODE_NATIVE_DELEGATION_POLICY, MYTHRA_CODE_SKILL_MENTION_INSTRUCTIONS, mythraCodeDeveloperInstructions } from "./completionPrompt";
 
 /** Skill-mention plus completion guidance: what every turn carries. */
 const BASE_INSTRUCTIONS = mythraCodeDeveloperInstructions(false);
@@ -25,6 +25,22 @@ const baseRun: ScheduleRunSettings = {
 };
 
 describe("current system prompt turn transport", () => {
+  it("retains skill/completion guidance in the actual mode override, not only thread/start", () => {
+    const params = turnStartParams(baseRun, "thread-1", "/project", [], [], true, { systemPrompt: "CURRENT SYSTEM" });
+    const mode = params.collaborationMode as { settings: { developer_instructions: string } };
+    expect(mode.settings.developer_instructions).toContain(MYTHRA_CODE_SKILL_MENTION_INSTRUCTIONS);
+    expect(mode.settings.developer_instructions).toContain(BASE_INSTRUCTIONS);
+  });
+
+  it("preserves the current exact delegation and project tool guidance with a system override", () => {
+    const developerInstructions = mythraCodeDeveloperInstructions(true, true, { toolAvailable: true, run: null }, { toolAvailable: true, check: null });
+    const params = turnStartParams(baseRun, "thread-1", "/project", [], [], true, { systemPrompt: "CURRENT SYSTEM", developerInstructions });
+    const mode = params.collaborationMode as { settings: { developer_instructions: string } };
+    expect(mode.settings.developer_instructions).toContain(developerInstructions);
+    expect(mode.settings.developer_instructions).toContain("set_project_run_command");
+    expect(mode.settings.developer_instructions).toContain("set_project_check_command");
+    expect(mode.settings.developer_instructions).toContain("CURRENT SYSTEM");
+  });
   it.each(["openai", "openrouter", "lmstudio"] as const)("delivers %s instructions through the per-turn developer channel", (provider) => {
     const run = { ...baseRun, provider, model: "selected/model", reasoningEffort: "high" as const };
     const params = turnStartParams(run, "thread-1", "/project", [], [], true, { systemPrompt: "RESOLVED SYSTEM SKILL" });

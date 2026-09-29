@@ -60,14 +60,30 @@ function props(overrides: Partial<GitPanelProps> = {}): GitPanelProps {
     ...overrides,
   };
 }
-function mount(input: GitPanelProps, width: number, theme = "mythra", zoom = 1) {
-  return render(<div className="app-shell" data-theme={theme} data-color-scheme={themeColorScheme(theme as never)} style={{ display: "block", padding: 16, zoom }}>
+function shell(input: GitPanelProps, width: number, theme = "mythra", zoom = 1) {
+  return <div className="app-shell" data-theme={theme} data-color-scheme={themeColorScheme(theme as never)} style={{ display: "block", padding: 16, zoom }}>
     <aside className="studio-dock" style={{ width, height: 860 }}>
       <nav className="studio-tabs" aria-label="Workspace tools"><button className="active" type="button">Git</button></nav>
       <div className="studio-panel"><GitPanel {...input} /></div>
     </aside>
-  </div>);
+  </div>;
 }
+const mount = (input: GitPanelProps, width: number, theme = "mythra", zoom = 1) => render(shell(input, width, theme, zoom));
+
+it("labels a pending history page by its pinned commit after the checkout changes branch", async () => {
+  let finish!: (value: Awaited<ReturnType<ProjectGitInspection["getHistory"]>>) => void;
+  const api = inspection();
+  api.getHistory = vi.fn(() => new Promise<Awaited<ReturnType<ProjectGitInspection["getHistory"]>>>((resolve) => { finish = resolve; }));
+  const input = props({ inspection: api, view: "history" });
+  const view = mount(input, 360);
+  await waitFor(() => expect(api.getHistory).toHaveBeenCalledOnce());
+  view.rerender(shell({ ...input, workflow: { ...input.workflow!, snapshot: { ...input.workflow!.snapshot!, branch: "new-branch", headOid: "b".repeat(40) } } }, 360));
+  finish({ headOid: "a".repeat(40), entries: [{ oid: "a".repeat(40), shortOid: "aaaaaaa", subject: "Old branch commit", authorName: "A", authoredAt: "2026-09-28T10:00:00Z" }], hasMore: false, nextOffset: 1, truncated: false });
+  await expect.element(page.getByRole("list", { name: "Commits at aaaaaaa" })).toBeVisible();
+  await expect.element(page.getByRole("list", { name: "Commits on new-branch" })).not.toBeInTheDocument();
+  const panel = view.container.querySelector<HTMLElement>(".studio-panel")!;
+  expect(panel.scrollWidth).toBeLessThanOrEqual(panel.clientWidth + 1);
+});
 
 function luminance(color: string) {
   const channels = color.match(/[\d.]+/g)!.slice(0, 3).map(Number).map((value) => {

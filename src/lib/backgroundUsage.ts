@@ -87,8 +87,11 @@ export function recordBackgroundUsage(value: unknown): boolean {
     outputTokens: knownOutput,
     reasoningOutputTokens: counts.reasoningOutputTokens ?? 0,
     totalTokens: counts.totalTokens ?? (knownInput + knownOutput),
-    cacheReadReported: counts.cachedInputTokens !== null,
-    cacheWriteReported: counts.cacheWriteInputTokens !== null,
+    // A partial multi-terminal aggregate can have every counter populated
+    // even though a constituent omitted input/cache data. Without per-terminal
+    // coverage, preserve its known counts but never infer a complete cache share.
+    cacheReadReported: event.tokenAvailability === "reported" && counts.cachedInputTokens !== null,
+    cacheWriteReported: event.tokenAvailability === "reported" && counts.cacheWriteInputTokens !== null,
     tokenAvailability: event.tokenAvailability,
     serviceTier: event.serviceTier ?? undefined,
     serviceTierSource: event.serviceTierSource,
