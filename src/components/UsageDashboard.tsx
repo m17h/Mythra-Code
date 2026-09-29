@@ -15,6 +15,7 @@ import {
   type ModelUsageSummary, type PromptAverages, type ProviderUsageSummary, type UsageComponentId, type UsageDetail, type UsageGrain, type UsagePeriod, type UsageRange,
 } from "../lib/usageSummary";
 import { AppSelectMenu } from "./AppSelectMenu";
+import { UsageCalendarCard } from "./UsageCalendar";
 import { UsageColumnChart } from "./UsageColumnChart";
 import { previewUsageSource, type UsageDashboardSource } from "./usageDashboardPreview";
 import "./UsageDashboard.css";
@@ -95,6 +96,39 @@ export function modelLabel(model: string): string {
   if (gpt) return `GPT-${gpt[1]}${gpt[2] ? ` ${gpt[2][0].toUpperCase()}${gpt[2].slice(1)}` : ""}`;
   if (model === "auto") return "Auto";
   return model;
+}
+
+/** The calendar names unknowns plainly rather than as blank or guessed labels. */
+const calendarProviderLabel = (provider: UsageProvider) => (provider === "unknown" ? "Unknown provider" : LABELS[provider]);
+const calendarModelLabel = (model: string) => (!model ? "Unknown model (not reported)" : model === "unattributed" ? "Unknown model (not attributable)" : modelLabel(model));
+
+/**
+ * The current local day, re-read just after each local midnight and whenever
+ * the window returns, so an open page never keeps yesterday as "today". The
+ * timer is capped at an hour so sleep or a clock change can't strand it.
+ */
+function useLocalDay(): string {
+  const [day, setDay] = useState(() => localDayKey());
+  useEffect(() => {
+    let timer = 0;
+    const check = () => {
+      window.clearTimeout(timer);
+      setDay(localDayKey());
+      const now = new Date();
+      const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).getTime();
+      timer = window.setTimeout(check, Math.min(Math.max(midnight - now.getTime() + 50, 50), 3_600_000));
+    };
+    check();
+    const onVisible = () => { if (document.visibilityState === "visible") check(); };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", check);
+    return () => {
+      window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", check);
+    };
+  }, []);
+  return day;
 }
 
 function rangeFor(preset: Preset, today: string, custom: { from: string; to: string }): UsageRange | null {
@@ -833,7 +867,7 @@ export function UsageDashboard({ onRefreshPricing, openRouterPricingError }: {
 }) {
   // Subscribe here, not in App: background usage updates this page without
   // rerendering the chat shell or parsing any transcript history.
-  useSyncExternalStore(subscribeUsage, getUsageRevision, getUsageRevision);
+  const revision = useSyncExternalStore(subscribeUsage, getUsageRevision, getUsageRevision);
   const preview = useUsageDashboardPreview();
   const source = preview ?? LIVE_SOURCE;
   const baseId = useId();
@@ -844,7 +878,7 @@ export function UsageDashboard({ onRefreshPricing, openRouterPricingError }: {
   const [view, setView] = useState<View>("overview");
   const [chosenGrain, setGrain] = useState<UsageGrain | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
-  const today = localDayKey();
+  const today = useLocalDay();
   const [custom, setCustom] = useState(() => ({ from: shiftDayKey(today, -6), to: today }));
   const range = rangeFor(preset, today, custom);
   const detail = source.detail(range);
@@ -896,6 +930,8 @@ export function UsageDashboard({ onRefreshPricing, openRouterPricingError }: {
       <PricingStatus onRefreshPricing={onRefreshPricing} openRouterPricingError={openRouterPricingError} />
     </header>
     {preview?.preview && <p className="usage-preview-banner" role="note">Development preview — synthetic usage, not your data.</p>}
+    <UsageCalendarCard source={source} revision={revision} today={today} range={range}
+      providerLabel={calendarProviderLabel} modelLabel={calendarModelLabel} />
     <div className="usage-toolbar">
       <RangePicker preset={preset} onPreset={setPreset} custom={custom} onCustom={setCustom} today={today} />
       <div ref={tabs} className="usage-tabs" role="tablist" aria-label="Usage views">

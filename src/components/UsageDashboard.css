@@ -177,6 +177,85 @@ details[open] > summary > .usage-disclosure, [aria-expanded="true"] > .usage-dis
 .usage-compare-whatif { margin: var(--s-3) 0 0; padding-left: 18px; font-size: var(--fs-meta); line-height: 1.6; color: var(--muted); }
 .usage-compare-whatif strong { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
 
+/* Token activity calendar: a year of squares, darker (or, on dark themes,
+   brighter) toward the theme accent as a day's tokens rise. Tracked days
+   without tokens are filled quietly; untracked days are hollow. */
+.usage-heat {
+  --heat-empty: color-mix(in srgb, var(--text) 9%, var(--field));
+  --heat-1: color-mix(in srgb, var(--green) 32%, var(--field));
+  --heat-2: color-mix(in srgb, var(--green) 54%, var(--field));
+  --heat-3: color-mix(in srgb, var(--green) 77%, var(--field));
+  --heat-4: var(--green);
+  --heat-edge: color-mix(in srgb, var(--text) 10%, transparent);
+  --heat-hollow: color-mix(in srgb, var(--text) 26%, transparent);
+  margin-top: var(--s-4);
+  padding: var(--s-3) var(--s-4);
+}
+.usage-heat-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: var(--s-2) var(--s-4); }
+.usage-heat-summary { margin: 2px 0 0; color: var(--muted); font-size: var(--fs-meta); font-variant-numeric: tabular-nums; }
+.usage-heat-scope { margin: var(--s-1) 0 var(--s-2); color: var(--muted); font-size: var(--fs-micro); line-height: 1.5; max-width: 90ch; }
+.usage-heat-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; color: var(--muted); font-size: var(--fs-micro); }
+.usage-heat-legend > span:first-child { margin-right: 2px; }
+.usage-heat-legend > span:nth-child(7) { margin-left: 2px; }
+.usage-heat-legend-item { display: inline-flex; align-items: center; gap: 4px; margin-left: var(--s-3); }
+.usage-heat-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
+
+/* The squares size to the panel between 10 and 14px; below that the year
+   scrolls sideways, starting at today. */
+.usage-heat-scroll { container-type: inline-size; overflow-x: auto; overflow-y: hidden; padding: 2px 0; }
+.usage-dashboard .usage-heat-table {
+  --cell: clamp(10px, calc((100cqi - 34px) / 53 - 3px), 14px);
+  width: auto; border-collapse: separate; border-spacing: 3px; font-size: var(--fs-micro); table-layout: auto;
+}
+.usage-dashboard .usage-heat-table :is(th, td) { padding: 0; border: 0; text-align: left; vertical-align: middle; line-height: 1; white-space: nowrap; }
+.usage-dashboard .usage-heat-table td { width: var(--cell); min-width: var(--cell); height: var(--cell); }
+.usage-dashboard .usage-heat-month { position: relative; height: 12px; color: var(--muted); font-weight: 400; }
+.usage-heat-month > span { position: absolute; left: 0; bottom: 1px; }
+.usage-dashboard .usage-heat-weekday { width: 26px; min-width: 26px; padding-right: 3px; color: var(--muted); font-weight: 400; }
+.usage-dashboard .usage-heat-table thead td { width: 26px; height: 12px; }
+
+.usage-heat-day, .usage-heat-swatch { border-radius: 2px; background: var(--heat-empty); box-shadow: inset 0 0 0 1px var(--heat-edge); }
+:is(.usage-heat-day, .usage-heat-swatch)[data-level="1"] { background: var(--heat-1); }
+:is(.usage-heat-day, .usage-heat-swatch)[data-level="2"] { background: var(--heat-2); }
+:is(.usage-heat-day, .usage-heat-swatch)[data-level="3"] { background: var(--heat-3); }
+:is(.usage-heat-day, .usage-heat-swatch)[data-level="4"] { background: var(--heat-4); }
+:is(.usage-heat-day, .usage-heat-swatch)[data-state="unavailable"] { background: transparent; box-shadow: inset 0 0 0 1px var(--heat-hollow); }
+.usage-dashboard .usage-heat-day { cursor: pointer; }
+.usage-heat-day.outside { opacity: .38; }
+.usage-heat-day:hover { outline: 1px solid color-mix(in srgb, var(--text) 55%, transparent); outline-offset: 1px; }
+.usage-heat-day[aria-selected="true"] { outline: 2px solid var(--text); outline-offset: 1px; opacity: 1; }
+.usage-dashboard .usage-heat-day:focus-visible { outline: 2px solid var(--text); outline-offset: 1px; opacity: 1; }
+
+/* The day card sits in the top layer, so Settings' scrolling can't clip it.
+   Placement, width and height caps are set in visual pixels by script. */
+.usage-heat-card {
+  position: fixed; inset: auto; margin: 0; z-index: 260;
+  display: flex; flex-direction: column; width: 300px; box-sizing: border-box; overflow: hidden;
+  padding: var(--s-3); border: 1px solid var(--line-strong); border-radius: var(--r-md);
+  color: var(--text); background: var(--menu-surface, var(--panel-2)); box-shadow: var(--elev-3, var(--shadow));
+  font-size: var(--fs-meta); line-height: 1.4; font-variant-numeric: tabular-nums;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .usage-heat-card { animation: usage-heat-card-in 120ms var(--ease, ease-out); }
+}
+@keyframes usage-heat-card-in { from { opacity: 0; } }
+.usage-heat-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s-2); }
+.usage-heat-card-head small { color: var(--muted); font-size: var(--fs-micro); white-space: nowrap; }
+.usage-heat-card-total { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s-2); margin: var(--s-2) 0 0; padding-bottom: var(--s-2); border-bottom: 1px solid var(--line); color: var(--muted); }
+.usage-heat-card-total strong { color: var(--text); font-size: var(--fs-ui); font-weight: 600; }
+.usage-heat-card-note { margin: var(--s-2) 0 0; color: var(--muted); font-size: var(--fs-micro); line-height: 1.5; }
+.usage-heat-card-list { min-height: 0; overflow-y: auto; overscroll-behavior: contain; margin-right: calc(-1 * var(--s-2)); padding-right: var(--s-2); border-radius: var(--r-xs); }
+.usage-heat-card-list:focus-visible { outline: 2px solid color-mix(in srgb, var(--green) 62%, transparent); outline-offset: 2px; }
+.usage-heat-provider { padding-top: var(--s-2); }
+.usage-heat-provider + .usage-heat-provider { margin-top: var(--s-1); border-top: 1px solid var(--line); }
+.usage-heat-provider :is(h6, li) { display: grid; grid-template-columns: minmax(0, 1fr) auto 5.5ch; gap: var(--s-2); align-items: baseline; }
+.usage-heat-provider h6 { margin: 0; font-size: var(--fs-meta); font-weight: 600; }
+.usage-heat-provider ul { margin: 2px 0 0; padding: 0; list-style: none; }
+.usage-heat-provider li { padding: 2px 0 2px var(--s-2); color: var(--ink-2, var(--text)); }
+.usage-heat-provider :is(h6, li) > span:first-child { overflow-wrap: anywhere; }
+.usage-heat-provider :is(h6, li) > span:not(:first-child) { text-align: right; white-space: nowrap; }
+.usage-heat-provider li > span:last-child { color: var(--muted); }
+
 .usage-receipts { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s-3); margin: var(--s-4) 0 0; padding-top: var(--s-3); border-top: 1px solid var(--line); font-size: var(--fs-meta); }
 .usage-receipts small { display: block; margin-top: 2px; color: var(--muted); }
 .usage-receipts strong { font-variant-numeric: tabular-nums; white-space: nowrap; }
