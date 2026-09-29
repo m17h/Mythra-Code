@@ -2148,7 +2148,7 @@ mod tests {
             let parent_script = root.join("parent.ps1");
             let started = root.join("child-started");
             let escaped = |path: &Path| path.to_string_lossy().replace('\'', "''");
-            fs::write(&child_script, format!("Set-Content -LiteralPath '{}' -Value 'started'; while (!(Test-Path -LiteralPath '{}')) {{ Start-Sleep -Milliseconds 10 }}; Set-Content -LiteralPath '{}' -Value 'late'", escaped(&started), escaped(&child_release), escaped(&late_write))).unwrap();
+            fs::write(&child_script, format!("Set-Content -LiteralPath '{}' -Value 'started'; $deadline = (Get-Date).AddSeconds(20); while (!(Test-Path -LiteralPath '{}')) {{ if ((Get-Date) -ge $deadline) {{ exit 0 }}; Start-Sleep -Milliseconds 10 }}; Set-Content -LiteralPath '{}' -Value 'late'", escaped(&started), escaped(&child_release), escaped(&late_write))).unwrap();
             fs::write(&parent_script, format!("$child = Start-Process -FilePath powershell.exe -ArgumentList @('-NoProfile', '-NonInteractive', '-File', '\"{}\"') -NoNewWindow -PassThru; while (!(Test-Path -LiteralPath '{}')) {{ Start-Sleep -Milliseconds 10 }}; Set-Content -LiteralPath '{}' -Value 'exited'; exit 0", escaped(&child_script), escaped(&started), escaped(&parent_exit))).unwrap();
             let mut command = crate::process_launch::background_command("powershell.exe");
             command
