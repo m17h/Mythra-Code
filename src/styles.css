@@ -1218,10 +1218,11 @@ button[aria-disabled="true"] { cursor: not-allowed; }
 
 .context-meter { color: var(--muted-2); font-variant-numeric: tabular-nums; }
 .context-meter.warn { color: var(--orange); }
-.error-banner { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: var(--s-2); padding: var(--s-2) var(--s-3); border: 1px solid color-mix(in srgb, var(--red) 24%, transparent); border-radius: var(--r-md); background: color-mix(in srgb, var(--red) 10%, transparent); color: color-mix(in srgb, var(--red) 78%, var(--text)); font-size: var(--fs-meta); }
+.error-banner { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: var(--s-2); padding: var(--s-2) var(--s-3); border: 1px solid color-mix(in srgb, var(--red) 24%, transparent); border-radius: var(--r-md); background: color-mix(in srgb, var(--red) 10%, transparent); color: color-mix(in srgb, var(--red) 78%, var(--text)); font-size: var(--fs-meta); }
 .error-banner button { display: grid; place-items: center; padding: 0; border: 0; background: transparent; color: inherit; cursor: pointer; }
-.error-banner span { flex: 1; }
+.error-banner > span { flex: 1 1 260px; min-width: 0; overflow-wrap: anywhere; white-space: pre-line; }
 .error-banner button.error-settings { min-height: 25px; display: flex; padding: 0 8px; border: 1px solid color-mix(in srgb, var(--red) 20%, transparent); border-radius: 6px; background: color-mix(in srgb, var(--red) 6%, transparent); font-size: var(--fs-meta); white-space: nowrap; }
+.error-banner-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; max-width: 100%; }
 .error-banner button:hover { color: color-mix(in srgb, var(--red) 55%, var(--text)); }
 
 .modal-backdrop { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 30px; background: rgba(2,3,4,.68); backdrop-filter: blur(7px); }

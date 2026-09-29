@@ -144,6 +144,7 @@ import { getProjectGitChanges, getProjectGitDiff, getProjectGitFileDiff, getProj
 import { shellCommand } from "./lib/shellCommand";
 import { resolveProviderSystemPrompt, resolveSystemPrompt } from "./lib/systemPrompt";
 import { SkillDependencyError } from "./lib/skillDependencies";
+import { blockedSystemPromptTargets, type SkillPromptRepairTarget } from "./lib/skillPromptRepair";
 import { skillMentionRanges } from "./lib/skillMentions";
 import { currentAccountUsageSnapshot, mergeAccountUsageSnapshot, parseCodexRateLimits, providerAccountUsage, providerHeaderUsage, sanitizeUsageDisplay, sanitizeHeaderUsageWindows, USAGE_SNAPSHOT_MAX_AGE_MS, type AccountUsageSnapshot, type HeaderUsageWindows } from "./lib/providerUsage";
 import { UsagePopover } from "./components/UsagePopover";
@@ -605,6 +606,9 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [openSkillRequest, setOpenSkillRequest] = useState<{ path: string; nonce: number } | null>(null);
   const openSkillNonceRef = useRef(0);
+  const [promptFocusRequest, setPromptFocusRequest] = useState<{ target: "global" | "codex" | "claude"; name: string; nonce: number } | null>(null);
+  const [projectPromptOpenRequest, setProjectPromptOpenRequest] = useState<{ name: string; nonce: number } | null>(null);
+  const promptFocusNonceRef = useRef(0);
   const [settingsMounted, setSettingsMounted] = useState(false);
   const [settingsLoadAttempt, setSettingsLoadAttempt] = useState(0);
   const [settingsInitialSection, setSettingsInitialSection] = useState<SettingsSection>("general");
@@ -649,6 +653,7 @@ export default function App() {
   const [permissionOpen, setPermissionOpen] = useState(false);
   const [status, setStatus] = useState("Checking runtime");
   const [error, setError] = useState<string | null>(null);
+  const [skillPromptRepair, setSkillPromptRepair] = useState<{ message: string; workspacePath: string | null; targets: SkillPromptRepairTarget[] } | null>(null);
   const [runtimeStatus, setRuntimeStatus] = useState<CodexRuntimeStatus | null>(null);
   const [claudeStatus, setClaudeStatus] = useState<ClaudeRuntimeStatus | null>(null);
   const [claudeLoginStarting, setClaudeLoginStarting] = useState(false);
@@ -1752,12 +1757,36 @@ export default function App() {
     setOpenSkillRequest({ path, nonce: ++openSkillNonceRef.current });
     openSettings("skills");
   }, [openSettings]);
+  const recordSkillDependencyFailure = useCallback((failure: SkillDependencyError) => {
+    setSkillPromptRepair({
+      message: failure.message,
+      workspacePath: activeWorkspace?.path ?? null,
+      targets: blockedSystemPromptTargets(failure.report, {
+        global: settings.systemPrompt,
+        codex: settings.codexSystemPrompt,
+        claude: settings.claudeSystemPrompt,
+        project: activeProject?.overrides?.systemPrompt,
+        projectMode: activeProject?.overrides?.systemPromptMode,
+        provider: activeProvider,
+      }),
+    });
+  }, [activeProject, activeProvider, activeWorkspace?.path, settings]);
+  const openPromptRepair = useCallback((target: SkillPromptRepairTarget) => {
+    const nonce = ++promptFocusNonceRef.current;
+    if (target.layer === "project") {
+      setProjectPromptOpenRequest({ name: target.name, nonce });
+    } else {
+      setPromptFocusRequest({ target: target.layer, name: target.name, nonce });
+      openSettings("prompts");
+    }
+  }, [openSettings]);
   const consumeOpenSkillRequest = useCallback((nonce: number) => {
     setOpenSkillRequest((current) => current?.nonce === nonce ? null : current);
   }, []);
 
   const resumeOnboardingAfterSettings = useRef(false);
   const closeSettings = useCallback(() => {
+    setPromptFocusRequest(null);
     setPreviewTheme(null);
     setPreviewEffortSlider(null);
     setPreviewChatFont(null);
@@ -4393,6 +4422,7 @@ export default function App() {
     setDraftThreadIsolated,
     setStartingDraftTurn,
     setError,
+    onSkillDependencyFailure: recordSkillDependencyFailure,
     setStatus,
     setTransientStatus,
     setRuntimeSetupOpen,
@@ -6664,6 +6694,15 @@ export default function App() {
       onDefaultSettings={() => openSettings(activeProject ? "projects" : "models")}
     />
   );
+  const promptRepairTargets = error && skillPromptRepair?.message === error
+    && skillPromptRepair.workspacePath === (activeWorkspace?.path ?? null)
+    ? skillPromptRepair.targets : [];
+  const promptRepairActions = promptRepairTargets.map((target) => {
+    const label = target.layer === "project" ? "project" : target.layer === "codex" ? "Codex" : target.layer === "claude" ? "Claude" : "global";
+    return <button key={target.layer} className="error-settings" onClick={() => openPromptRepair(target)} title={`Open the ${label} prompt containing @${target.name}`}>
+      Edit {label} prompt
+    </button>;
+  });
 
   return (
     <div ref={shellRef} className="app-shell" data-theme={previewTheme ?? projectDefaults?.theme ?? settings.theme} data-color-scheme={themeColorScheme(previewTheme ?? projectDefaults?.theme ?? settings.theme)} data-effort-slider={tourOwnsSliderPreview ? undefined : activeEffortSlider} data-onboarding-effort-slider={tourOwnsSliderPreview ? activeEffortSlider : undefined} data-chat-font={activeChatFont} data-openai-logo={settings.openAiLogo} data-claude-logo={settings.claudeLogo} data-cursor-logo={settings.cursorLogo} style={{ zoom: ((previewUiScale ?? settings.uiScale) || 100) / 100, "--ui-scale": ((previewUiScale ?? settings.uiScale) || 100) / 100 } as CSSProperties}>
@@ -6934,6 +6973,7 @@ export default function App() {
             {activeProject && (
               <ProjectPromptControl
                 skills={skills}
+                openRequest={projectPromptOpenRequest}
                 onAnalyzeSkillDependencies={analyzeSkillDependencies}
                 key={activeProject.id}
                 projectName={activeProject.name}
@@ -6942,7 +6982,14 @@ export default function App() {
                 appPrompt={resolveProviderSystemPrompt(settings.systemPrompt, effectiveSettings.provider, settings.codexSystemPrompt, settings.claudeSystemPrompt)}
                 provider={effectiveSettings.provider}
                 threadStarted={Boolean(activeThread)}
-                onSave={persistActiveProjectPrompt}
+                onSave={(prompt, mode) => {
+                  const changed = prompt !== activeProject.overrides?.systemPrompt || mode !== (activeProject.overrides?.systemPromptMode ?? "replace");
+                  persistActiveProjectPrompt(prompt, mode);
+                  if (changed && skillPromptRepair?.message === error && skillPromptRepair.targets.some((target) => target.layer === "project")) {
+                    setError(null);
+                    setSkillPromptRepair(null);
+                  }
+                }}
                 onAppPromptSettings={() => openSettings("prompts")}
               />
             )}
@@ -7027,14 +7074,11 @@ export default function App() {
             {error && (
               <div className="error-banner" role="alert">
                 <span>{error}</span>
-                {errorSuggestsSettings && (
-                  <button className="error-settings" onClick={() => openSettings(errorSettingsSection ?? "system")}>
-                    Check settings
-                  </button>
-                )}
-                <button onClick={() => setError(null)} aria-label="Dismiss error">
-                  <X size={14} />
-                </button>
+                <div className="error-banner-actions">
+                  {promptRepairActions}
+                  {errorSuggestsSettings && !promptRepairActions.length && <button className="error-settings" onClick={() => openSettings(errorSettingsSection ?? "system")}>Check settings</button>}
+                  <button onClick={() => setError(null)} aria-label="Dismiss error"><X size={14} /></button>
+                </div>
               </div>
             )}
             <div className="welcome-orbit">
@@ -7216,14 +7260,11 @@ export default function App() {
               {error && (
                 <div className="error-banner" role="alert">
                   <span>{error}</span>
-                  {errorSuggestsSettings && (
-                    <button className="error-settings" onClick={() => openSettings(errorSettingsSection ?? "system")}>
-                      Check settings
-                    </button>
-                  )}
-                  <button onClick={() => setError(null)} aria-label="Dismiss error">
-                    <X size={14} />
-                  </button>
+                  <div className="error-banner-actions">
+                    {promptRepairActions}
+                    {errorSuggestsSettings && !promptRepairActions.length && <button className="error-settings" onClick={() => openSettings(errorSettingsSection ?? "system")}>Check settings</button>}
+                    <button onClick={() => setError(null)} aria-label="Dismiss error"><X size={14} /></button>
+                  </div>
                 </div>
               )}
               <Composer
@@ -7563,6 +7604,8 @@ export default function App() {
           <SettingsModalView
         open={settingsOpen}
         initialSection={settingsInitialSection}
+        promptFocusRequest={promptFocusRequest}
+        onPromptFocusHandled={(nonce) => setPromptFocusRequest((current) => current?.nonce === nonce ? null : current)}
         initialDraft={settingsInitialDraft}
         appUpdater={appUpdater}
         settings={settings}
@@ -7606,8 +7649,15 @@ export default function App() {
         openRouterPricingError={openRouterModelsError}
         onClose={closeSettings}
         onSave={(next) => {
+          const repairedLayerChanged = skillPromptRepair?.targets.some((target) => target.layer === "global" ? next.systemPrompt !== settings.systemPrompt
+            : target.layer === "codex" ? next.codexSystemPrompt !== settings.codexSystemPrompt
+              : target.layer === "claude" ? next.claudeSystemPrompt !== settings.claudeSystemPrompt : false);
           persistSettings(next);
           closeSettings();
+          if (repairedLayerChanged && skillPromptRepair?.message === error) {
+            setError(null);
+            setSkillPromptRepair(null);
+          }
         }}
         onThemePreview={setPreviewTheme}
         onEffortSliderPreview={setPreviewEffortSlider}

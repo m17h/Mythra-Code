@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import { open as openFolderDialog, save } from "@tauri-apps/plugin-dialog";
 import { isTauri } from "@tauri-apps/api/core";
 import { confirmDialog } from "../lib/confirmDialog";
+import { skillMentionRanges } from "../lib/skillMentions";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   Boxes,
@@ -332,6 +333,8 @@ export function useDeveloperRuntimeUpdater(
 export function SettingsModal({
   open,
   initialSection,
+  promptFocusRequest,
+  onPromptFocusHandled,
   initialDraft,
   appUpdater,
   developerRuntimeUpdater: injectedDeveloperRuntimeUpdater,
@@ -429,6 +432,8 @@ export function SettingsModal({
 }: {
   open: boolean;
   initialSection: SettingsSection;
+  promptFocusRequest?: { target: "global" | "codex" | "claude"; name: string; nonce: number } | null;
+  onPromptFocusHandled?: (nonce: number) => void;
   initialDraft?: OnboardingSettingsDraft;
   appUpdater: AppUpdater;
   developerRuntimeUpdater?: DeveloperRuntimeUpdater;
@@ -546,6 +551,9 @@ export function SettingsModal({
   const [lmStudioConnectionMessage, setLmStudioConnectionMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>(initialSection);
+  const globalPromptRef = useRef<HTMLTextAreaElement>(null);
+  const codexPromptRef = useRef<HTMLTextAreaElement>(null);
+  const claudePromptRef = useRef<HTMLTextAreaElement>(null);
   const [cloneUrl, setCloneUrl] = useState("");
   const [cloneParent, setCloneParent] = useState("");
   const githubRefreshRequestedRef = useRef(false);
@@ -730,6 +738,19 @@ export function SettingsModal({
 
   const dialogRef = useRef<HTMLDivElement>(null);
   useModalFocus(dialogRef, open);
+
+  // The modal's generic initial focus runs first; a repair link then brings
+  // the exact authored prompt into view and selects the failed @reference.
+  useEffect(() => {
+    if (!open || settingsSection !== "prompts" || !promptFocusRequest) return;
+    const field = { global: globalPromptRef, codex: codexPromptRef, claude: claudePromptRef }[promptFocusRequest.target].current;
+    if (!field) return;
+    field.focus();
+    field.scrollIntoView?.({ block: "center" });
+    const mention = skillMentionRanges(field.value, [{ name: promptFocusRequest.name }])[0];
+    if (mention) field.setSelectionRange(mention.start, mention.end);
+    onPromptFocusHandled?.(promptFocusRequest.nonce);
+  }, [onPromptFocusHandled, open, promptFocusRequest, settingsSection]);
 
   const requestCloseRef = useRef(requestClose);
   requestCloseRef.current = requestClose;
@@ -1243,6 +1264,7 @@ export function SettingsModal({
                   <div className="set-copy"><strong>Global Mythra Code prompt</strong><small>Used by every provider.</small></div>
                   <div className="set-control">
                     <SkillPromptEditor
+                      ref={globalPromptRef}
                       skills={skills}
                       aria-label="Global Mythra Code prompt"
                       onAnalyze={open && onAnalyzeSkillDependencies ? analyzeGlobalPrompt : undefined}
@@ -1258,6 +1280,7 @@ export function SettingsModal({
                   <div className="set-copy"><strong>Codex subscription prompt</strong><small>Appended after the global prompt for ChatGPT subscription threads.</small></div>
                   <div className="set-control">
                     <SkillPromptEditor
+                      ref={codexPromptRef}
                       skills={skills}
                       aria-label="Codex subscription prompt"
                       onAnalyze={open && onAnalyzeSkillDependencies ? analyzeCodexPrompt : undefined}
@@ -1273,6 +1296,7 @@ export function SettingsModal({
                   <div className="set-copy"><strong>Claude Code subscription prompt</strong><small>Appended after the global prompt for Claude subscription threads.</small></div>
                   <div className="set-control">
                     <SkillPromptEditor
+                      ref={claudePromptRef}
                       skills={skills}
                       aria-label="Claude Code subscription prompt"
                       onAnalyze={open && onAnalyzeSkillDependencies ? analyzeClaudePrompt : undefined}

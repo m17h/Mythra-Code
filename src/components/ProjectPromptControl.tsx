@@ -15,6 +15,7 @@ export function ProjectPromptControl({
   threadStarted,
   onSave,
   onAppPromptSettings,
+  openRequest,
   skills,
   onAnalyzeSkillDependencies,
 }: {
@@ -26,6 +27,7 @@ export function ProjectPromptControl({
   threadStarted: boolean;
   onSave: (prompt: string | undefined, mode: ProjectPromptMode) => void;
   onAppPromptSettings: () => void;
+  openRequest?: { name: string; nonce: number } | null;
   skills?: readonly SkillMentionSkill[];
   onAnalyzeSkillDependencies?: (message: string, systemPrompt: string) => Promise<SkillDependencyReport>;
 }) {
@@ -35,8 +37,15 @@ export function ProjectPromptControl({
   const [draft, setDraft] = useState(projectPrompt ?? "");
   const [mode, setMode] = useState<ProjectPromptMode>(promptMode);
   const rootRef = useRef<HTMLDivElement>(null);
+  const seenOpenRequest = useRef(openRequest?.nonce);
   const hasProjectPrompt = Boolean(projectPrompt?.trim());
   const analyzeDraft = useCallback((text: string) => onAnalyzeSkillDependencies!("", resolveSystemPrompt(appPrompt, text, mode)), [appPrompt, mode, onAnalyzeSkillDependencies]);
+
+  useEffect(() => {
+    if (!openRequest || openRequest.nonce === seenOpenRequest.current) return;
+    seenOpenRequest.current = openRequest.nonce;
+    setOpen(true);
+  }, [openRequest]);
 
   useEffect(() => {
     if (!open) return;

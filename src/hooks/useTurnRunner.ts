@@ -29,6 +29,7 @@ import { buildTurnInput, withoutSentAttachments } from "../lib/turnInput";
 import { optimisticStartedThread, upsertThread } from "../lib/threadList";
 import { useTaskStore } from "../lib/taskStore";
 import { friendlyError } from "../lib/errors";
+import { SkillDependencyError } from "../lib/skillDependencies";
 import { confirmDialog } from "../lib/confirmDialog";
 import { clearProviderStopIntent, markProviderStopIntent } from "../lib/providerStopIntent";
 import { isClaudeThread, isCursorThread } from "../lib/threadProvider";
@@ -221,6 +222,7 @@ export interface TurnRunnerContext {
   setDraftThreadIsolated: (isolated: boolean) => void;
   setStartingDraftTurn: (starting: boolean) => void;
   setError: (error: string | null) => void;
+  onSkillDependencyFailure?: (error: SkillDependencyError) => void;
   setStatus: (status: string) => void;
   setTransientStatus: (message: string) => void;
   setRuntimeSetupOpen: (open: boolean) => void;
@@ -868,6 +870,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       return true;
     } catch (reason) {
       const cancelled = reason instanceof CancelledTurnStart;
+      if (reason instanceof SkillDependencyError) ctx.onSkillDependencyFailure?.(reason);
       setStartingDraftTurn(false);
       // Use the locally captured thread ids: for a brand-new thread the
       // activeThread closure is still null here (which used to leave the

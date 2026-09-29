@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useEffect } from "react";
 import type { SkillDependencyReport, Thread } from "./types";
 import { emptySkillDependencyReport } from "./lib/skillDependencies";
+import { skillDependencyFixture } from "./test/skillDependencyFixtures";
 import type { PullRequest } from "./lib/pullRequests";
 import { DEFAULT_SETTINGS } from "./lib/appConfig";
 import { scheduleRunSnapshot } from "./lib/turnConfig";
@@ -1962,6 +1963,64 @@ describe("overlapping refresh ordering", () => {
     await waitFor(() => expect(screen.getByText(/Skills were not loaded and the model was not started/)).toBeInTheDocument());
     expect(invokeMock.mock.calls.some(([command, args]) => command === "codex_rpc" && ["thread/start", "turn/start"].includes(String(args?.method)))).toBe(false);
     expect(screen.getByPlaceholderText(/Ask Mythra Code to work in/)).toHaveValue("Inspect this project");
+    expect(screen.queryByRole("button", { name: "Check settings" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Edit global prompt" }));
+    const editor = await screen.findByRole("textbox", { name: "Global Mythra Code prompt" });
+    expect(editor).toHaveFocus();
+    expect(editor).toHaveValue("Use @review.");
+  });
+
+  it("routes a blocked Codex subscription reference to its own prompt field", async () => {
+    const report = skillDependencyFixture(true);
+    localStorage.setItem("kiwi.skillsFolder", JSON.stringify("/skills"));
+    localStorage.setItem("kiwi.settings", JSON.stringify({ ...DEFAULT_SETTINGS, codexSystemPrompt: "Use @review for Codex." }));
+    localSkillsScanImpl = () => [selectedReviewSkill];
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "local_skills_analyze_prompts") return report;
+      if (command === "local_skills_resolve_prompts") return { prompt: args?.message, systemPrompt: args?.systemPrompt, skillDependencies: report };
+      return stubInvoke(command, args);
+    });
+    const user = userEvent.setup();
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: PROJECT_A.name }));
+    await user.type(await screen.findByPlaceholderText(/Ask Mythra Code to work in/), "Inspect this project{Enter}");
+    await user.click(await screen.findByRole("button", { name: "Edit Codex prompt" }));
+    const editor = await screen.findByRole("textbox", { name: "Codex subscription prompt" });
+    expect(editor).toHaveFocus();
+    expect(editor).toHaveValue("Use @review for Codex.");
+    expect(screen.queryByRole("button", { name: "Edit global prompt" })).toBeNull();
+    await user.clear(editor);
+    await user.click(screen.getByRole("button", { name: "Save settings" }));
+    expect(screen.queryByText(/Skills were not loaded and the model was not started/)).toBeNull();
+  });
+
+  it("opens the affected project editor instead of a suppressed app prompt", async () => {
+    const report = skillDependencyFixture(true);
+    localStorage.setItem("kiwi.skillsFolder", JSON.stringify("/skills"));
+    localStorage.setItem("kiwi.settings", JSON.stringify({ ...DEFAULT_SETTINGS, systemPrompt: "Also use @review globally." }));
+    localStorage.setItem("kiwi.projects", JSON.stringify([
+      { ...PROJECT_A, overrides: { systemPrompt: "Use @review for Alpha.", systemPromptMode: "replace" } }, PROJECT_B,
+    ]));
+    localSkillsScanImpl = () => [selectedReviewSkill];
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "local_skills_analyze_prompts") return report;
+      if (command === "local_skills_resolve_prompts") return { prompt: args?.message, systemPrompt: args?.systemPrompt, skillDependencies: report };
+      return stubInvoke(command, args);
+    });
+    const user = userEvent.setup();
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: PROJECT_A.name }));
+    await user.type(await screen.findByPlaceholderText(/Ask Mythra Code to work in/), "Inspect this project{Enter}");
+    expect(screen.queryByRole("button", { name: "Edit global prompt" })).toBeNull();
+    await user.click(await screen.findByRole("button", { name: "Edit project prompt" }));
+    expect(await screen.findByRole("dialog", { name: "Project instructions for Alpha" })).toBeVisible();
+    const editor = screen.getByRole("textbox", { name: "Prompt for Alpha" });
+    expect(editor).toHaveFocus();
+    expect(editor).toHaveValue("Use @review for Alpha.");
+    await user.clear(editor);
+    await user.type(editor, "Alpha instructions without a skill.");
+    await user.click(screen.getByRole("button", { name: "Save project prompt" }));
+    expect(screen.queryByText(/Skills were not loaded and the model was not started/)).toBeNull();
   });
 
   it("opens an exact history skill link directly in its Settings source editor", async () => {
