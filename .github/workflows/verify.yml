@@ -54,8 +54,18 @@ jobs:
       - name: Verify the browser suite in WebKit
         if: runner.os == 'macOS'
         run: |
+          set -euo pipefail
           npx playwright install webkit
-          npm run test:browser
+          # Fresh browser processes keep the larger suite from accumulating
+          # stalled WebKit sessions across unrelated spec files. Vitest shards
+          # partition the entire discovered suite; no spec is excluded.
+          file_count="$(find src -type f \( -name '*.browser.test.ts' -o -name '*.browser.test.tsx' \) | wc -l | tr -d '[:space:]')"
+          test "$file_count" -gt 0
+          shard_count=$(( (file_count + 2) / 3 ))
+          for (( shard=1; shard<=shard_count; shard++ )); do
+            echo "WebKit shard $shard/$shard_count ($file_count spec files total)"
+            npm run test:browser -- --shard "$shard/$shard_count"
+          done
         env:
           MYTHRA_BROWSER_TEST_ENGINE: webkit
 
