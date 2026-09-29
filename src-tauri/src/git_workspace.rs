@@ -4027,10 +4027,7 @@ mod tests {
         );
         assert_eq!(snapshot(&fixture.client).unwrap().head_oid, before.head_oid);
         assert_eq!(snapshot(&fixture.client).unwrap().branch, before.branch);
-        assert_eq!(
-            fs::read(fixture.client.join("file.txt")).unwrap(),
-            b"main\n"
-        );
+        assert_restored_from_head(&fixture.client, "file.txt");
         fs::remove_dir_all(fixture.root).unwrap();
     }
 
@@ -4068,10 +4065,7 @@ mod tests {
                 .unwrap(),
                 before.head_oid.unwrap()
             );
-            assert_eq!(
-                fs::read(fixture.client.join("file.txt")).unwrap(),
-                b"main\n"
-            );
+            assert_restored_from_head(&fixture.client, "file.txt");
             assert_eq!(
                 git_stdout(
                     &fixture.client,

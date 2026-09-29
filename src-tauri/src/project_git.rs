@@ -3311,8 +3311,23 @@ mod worktree_lifecycle_tests {
             b"unique output\n"
         );
         assert_eq!(
-            fs::read(fixture.source.join("file.txt/nested.txt")).unwrap(),
-            b"tracked replacement\n"
+            git_stdout(
+                &fixture.source,
+                &[
+                    "hash-object",
+                    "--path=file.txt/nested.txt",
+                    "--",
+                    "file.txt/nested.txt",
+                ],
+                None,
+            )
+            .unwrap(),
+            git_stdout(
+                &fixture.source,
+                &["rev-parse", "HEAD:file.txt/nested.txt"],
+                None,
+            )
+            .unwrap()
         );
     }
 

@@ -905,7 +905,7 @@ mod tests {
         let hook = repo.join(".git/hooks/pre-push");
         fs::write(
             &hook,
-            "#!/bin/sh\nprintf started > publication-started\nsleep 1\n",
+            "#!/bin/sh\nprintf started > publication-started\nattempt=0\nwhile [ ! -f publication-release ] && [ \"$attempt\" -lt 100 ]; do\n  sleep 0.1\n  attempt=$((attempt + 1))\ndone\ntest -f publication-release\n",
         )
         .unwrap();
         #[cfg(unix)]
@@ -925,8 +925,16 @@ mod tests {
             )
             .await
         });
-        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        // Windows starts several Git processes before reaching the hook. Wait
+        // for the hook itself, then hold it open until after the lock check.
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
         while !repo.join("publication-started").exists() {
+            if task.is_finished() {
+                panic!(
+                    "publication finished before its pre-push hook: {:?}",
+                    task.await
+                );
+            }
             assert!(
                 std::time::Instant::now() < deadline,
                 "publication did not reach its pre-push hook"
@@ -941,7 +949,8 @@ mod tests {
                 .is_err(),
             "caller cancellation released the mutation lock while Git was running"
         );
-        let guard = tokio::time::timeout(Duration::from_secs(3), lock.lock())
+        fs::write(repo.join("publication-release"), "released\n").unwrap();
+        let guard = tokio::time::timeout(Duration::from_secs(15), lock.lock())
             .await
             .unwrap();
         assert!(run(&repo, &["ls-remote", "origin", "refs/heads/main"]).starts_with(&oid));

@@ -2120,6 +2120,8 @@ mod tests {
         let repository = format!("owner/fixture-{}", uuid::Uuid::new_v4());
         let late_write = root.join("unexpected-child-write");
         let parent_exit = root.join("parent-exited");
+        #[cfg(windows)]
+        let child_release = root.join("child-release");
         #[cfg(unix)]
         let (command, timeout, after) = {
             use std::os::unix::fs::PermissionsExt;
@@ -2146,13 +2148,13 @@ mod tests {
             let parent_script = root.join("parent.ps1");
             let started = root.join("child-started");
             let escaped = |path: &Path| path.to_string_lossy().replace('\'', "''");
-            fs::write(&child_script, format!("Set-Content -LiteralPath '{}' -Value 'started'; Start-Sleep -Seconds 3; Set-Content -LiteralPath '{}' -Value 'late'", escaped(&started), escaped(&late_write))).unwrap();
+            fs::write(&child_script, format!("Set-Content -LiteralPath '{}' -Value 'started'; while (!(Test-Path -LiteralPath '{}')) {{ Start-Sleep -Milliseconds 10 }}; Set-Content -LiteralPath '{}' -Value 'late'", escaped(&started), escaped(&child_release), escaped(&late_write))).unwrap();
             fs::write(&parent_script, format!("$child = Start-Process -FilePath powershell.exe -ArgumentList @('-NoProfile', '-NonInteractive', '-File', '\"{}\"') -NoNewWindow -PassThru; while (!(Test-Path -LiteralPath '{}')) {{ Start-Sleep -Milliseconds 10 }}; Set-Content -LiteralPath '{}' -Value 'exited'; exit 0", escaped(&child_script), escaped(&started), escaped(&parent_exit))).unwrap();
             let mut command = crate::process_launch::background_command("powershell.exe");
             command
                 .args(["-NoProfile", "-NonInteractive", "-File"])
                 .arg(parent_script);
-            (command, Duration::from_secs(2), Duration::from_millis(3200))
+            (command, Duration::from_secs(5), Duration::from_millis(3200))
         };
         let lease = mutation_lease(Some(&root), &repository).await.unwrap();
         let error = mutation_command_output(lease, command, timeout, "fixture mutation")
@@ -2166,6 +2168,8 @@ mod tests {
         let local = crate::git_workspace::repository_lock(&root).await.unwrap();
         assert!(local.try_lock().is_ok());
         assert!(mutation_lock(&repository).try_lock().is_ok());
+        #[cfg(windows)]
+        fs::write(&child_release, "release").unwrap();
         tokio::time::sleep(after).await;
         assert!(
             !late_write.exists(),
