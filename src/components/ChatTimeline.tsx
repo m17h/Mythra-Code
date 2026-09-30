@@ -1123,7 +1123,12 @@ function FlowTimeline({
         restoredPrependScrollPendingRef.current = true;
         restoredPrependScrollTopRef.current = null;
         restoredPrependScrollUserIntentRef.current = false;
-        scroller.scrollTop = anchor.scrollTop + (visualDelta ?? (scroller.scrollHeight - anchor.scrollHeight));
+        // The measured rectangle already includes any native/focus scroll
+        // correction. Applying its remaining delta to the old scrollTop would
+        // undo that correction and jump by the height of the inserted rows.
+        scroller.scrollTop = visualDelta === null
+          ? anchor.scrollTop + (scroller.scrollHeight - anchor.scrollHeight)
+          : scroller.scrollTop + visualDelta;
         restoredPrependScrollTopRef.current = scroller.scrollTop;
       }
       if (scroller.scrollHeight <= scroller.clientHeight + 1) {

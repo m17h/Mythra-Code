@@ -59,9 +59,19 @@ try {
   const files = readdirSync('src', { recursive: true }).filter((file) => /\.browser\.test\.tsx?$/.test(file));
   if (!files.length) throw new Error('No browser specs were found.');
   const shards = Math.ceil(files.length / 3);
+  const failures = [];
   for (let shard = 1; shard <= shards; shard++) {
-    await run(['node_modules/vitest/vitest.mjs', 'run', '--config', 'vitest.browser.config.ts', '--shard', `${shard}/${shards}`], 180_000);
+    try {
+      await run(['node_modules/vitest/vitest.mjs', 'run', '--config', 'vitest.browser.config.ts', '--shard', `${shard}/${shards}`], 180_000);
+    } catch (error) {
+      // Collect assertion failures across the complete suite in one CI run.
+      // A hung browser still fails promptly instead of spending the job budget.
+      if (String(error).includes('(timeout)')) throw error;
+      failures.push(error);
+      write(`WebKit shard ${shard}/${shards} failed: ${error.message}\n`);
+    }
   }
+  if (failures.length) throw new AggregateError(failures, `${failures.length} WebKit shard(s) failed.`);
 } catch (error) {
   write(`${error.stack ?? error}\n`);
   process.exitCode = 1;
