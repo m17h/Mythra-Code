@@ -1,5 +1,5 @@
 import { AsyncAgentQuestions } from "./AsyncAgentQuestions";
-import { Children, createContext, isValidElement, memo, useCallback, useContext, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type Ref } from "react";
+import { Children, createContext, isValidElement, memo, useCallback, useContext, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode, type Ref } from "react";
 import { flushSync } from "react-dom";
 import { Check, ChevronDown, ChevronRight, CircleDot, Clipboard, CornerUpRight, FileCode2, FoldVertical, ImageIcon, ListChecks, MessageSquare, MessageSquarePlus, Pencil, TerminalSquare, UsersRound } from "lucide-react";
 import { convertFileSrc, invoke, isTauri } from "@tauri-apps/api/core";
@@ -1191,6 +1191,19 @@ function FlowTimeline({
     onLoadEarlier?.();
   }, [firstEntryKey, history?.loading, onLoadEarlier]);
 
+  const activateHistoryControl = useCallback((event: MouseEvent<HTMLButtonElement>) => {
+    if (hiddenPrefixCount > 0) {
+      // WebKit can deliver a deferred focus reveal after keyboard activation.
+      // Move focus to the scroll region so it cannot reset scrollTop after the
+      // local prepend anchor has been restored. Server pagination keeps the
+      // loading control focused while its request is in flight.
+      if (event.detail === 0) scrollerRef.current?.focus({ preventScroll: true });
+      revealEarlier();
+      return;
+    }
+    loadEarlierFromServer();
+  }, [hiddenPrefixCount, loadEarlierFromServer, revealEarlier]);
+
   const jumpToLatest = useCallback(() => {
     restoredPrependScrollPendingRef.current = false;
     restoredPrependScrollTopRef.current = null;
@@ -1257,6 +1270,8 @@ function FlowTimeline({
       <div
         ref={scrollerRef}
         className="timeline flow-timeline"
+        role="region"
+        aria-label="Conversation timeline"
         data-flow-timeline="true"
         data-testid="timeline-scroller"
         tabIndex={0}
@@ -1351,7 +1366,7 @@ function FlowTimeline({
               data-testid={hiddenPrefixCount > 0 ? "reveal-earlier" : "load-earlier"}
               disabled={anchoring || (hiddenPrefixCount === 0 && (history?.loading || !onLoadEarlier))}
               aria-busy={anchoring || (hiddenPrefixCount === 0 && history?.loading)}
-              onClick={hiddenPrefixCount > 0 ? revealEarlier : loadEarlierFromServer}
+              onClick={activateHistoryControl}
             >
               {hiddenPrefixCount > 0
                 ? `Show ${Math.min(TIMELINE_MOUNT_ROWS, hiddenPrefixCount)} earlier messages`

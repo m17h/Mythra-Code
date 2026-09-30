@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { commands, userEvent } from "vitest/browser";
 import { ChatTimeline, TIMELINE_MOUNT_ROWS } from "./ChatTimeline";
 import type { Activity, ChatMessage } from "../types";
+import type { ThreadHistoryState } from "../lib/threadHistory";
 import "../styles.css";
 
 declare module "vitest/internal/browser" {
@@ -21,16 +22,20 @@ const messages: ChatMessage[] = Array.from({ length: TIMELINE_MOUNT_ROWS * 2 + 3
 function Shell({
   displayedMessages = messages,
   activities = [],
+  history,
+  onLoadEarlier,
   searchQuery,
   onSearchMatches,
 }: {
   displayedMessages?: ChatMessage[];
   activities?: Activity[];
+  history?: ThreadHistoryState;
+  onLoadEarlier?: () => void;
   searchQuery?: string;
   onSearchMatches?: (count: number) => void;
 }) {
   return <div className="app-shell" data-theme="kiwi" style={{ width: 760, height: 480 }}>
-    <ChatTimeline messages={displayedMessages} activities={activities} running={false}
+    <ChatTimeline messages={displayedMessages} activities={activities} history={history} onLoadEarlier={onLoadEarlier} running={false}
       thinkingLabel="Working" provider="claude" searchQuery={searchQuery} onSearchMatches={onSearchMatches} />
   </div>;
 }
@@ -71,12 +76,12 @@ describe("performance UX contracts in a real browser", () => {
       const anchoredTop = firstMounted.getBoundingClientRect().top;
       const beforeCount = mounted().length;
       await userEvent.keyboard("{Enter}");
+      expect(scroller).toHaveFocus();
       await waitFor(() => expect(mounted().length).toBeGreaterThan(beforeCount));
       const expandedCount = mounted().length;
       expect(Math.abs(firstMounted.getBoundingClientRect().top - anchoredTop)).toBeLessThanOrEqual(2);
       let scrollerToRearm: HTMLElement | null = null;
       if (!checkedDelayedRestore && beforeCount === TIMELINE_MOUNT_ROWS) {
-        const scroller = view.container.querySelector<HTMLElement>("[data-testid=timeline-scroller]")!;
         // WebKit can deliver the scroll event from scrollTop restoration after
         // the synchronous prepend handler has finished. It must not look like
         // the reader manually reached the live edge and discard the new rows.
@@ -118,6 +123,34 @@ describe("performance UX contracts in a real browser", () => {
     await waitFor(() => expect(matches).toHaveBeenLastCalledWith(1));
     expect(view.container.querySelector('[data-entry-index="0"]')?.textContent).toContain("Archived message 001");
     expect(view.container.querySelector('[data-entry-index="82"]')?.textContent).toContain("Archived message 083");
+  });
+
+  it("keeps the earlier control keyboard reachable after a reveal focus handoff", async () => {
+    const view = render(<Shell />);
+    const button = screen.getByTestId("reveal-earlier");
+    const scroller = view.container.querySelector<HTMLElement>("[data-testid=timeline-scroller]")!;
+    button.focus({ preventScroll: true });
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => expect(view.container.querySelectorAll("[data-entry-index]")).toHaveLength(TIMELINE_MOUNT_ROWS + 40));
+    expect(scroller).toHaveFocus();
+    await userEvent.tab();
+    expect(screen.getByTestId("reveal-earlier")).toHaveFocus();
+  });
+
+  it("keeps the server history control focused while an older page loads", async () => {
+    const onLoadEarlier = vi.fn();
+    const view = render(<Shell
+      displayedMessages={messages.slice(-TIMELINE_MOUNT_ROWS)}
+      history={{ nextCursor: "older", hasMore: true, loading: false, paginated: true }}
+      onLoadEarlier={onLoadEarlier}
+    />);
+    const button = screen.getByTestId("load-earlier");
+    button.focus();
+    expect(button).toHaveFocus();
+    await userEvent.keyboard("{Enter}");
+    expect(onLoadEarlier).toHaveBeenCalledOnce();
+    expect(button).toHaveFocus();
+    expect(view.container.querySelector("[data-testid=timeline-scroller]")).toHaveAttribute("aria-label", "Conversation timeline");
   });
 
   it("keeps completed work discoverable by keyboard and preserves motion preferences", async () => {
