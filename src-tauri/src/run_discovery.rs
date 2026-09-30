@@ -4841,14 +4841,24 @@ fn title_prompt(prompt: &str) -> String {
 /// into Cyrillic. This is not language detection: short/mixed-script requests
 /// are left alone, and Latin-script languages remain the model's responsibility.
 fn title_script_matches_request(request: &str, title: &str) -> bool {
-    let request_letters: Vec<char> = request.chars().take(2000).filter(|c| c.is_alphabetic()).collect();
-    let latin_letters = request_letters.iter().filter(|c| c.is_ascii_alphabetic() || matches!(**c, '\u{00c0}'..='\u{024f}' | '\u{1e00}'..='\u{1eff}')).count();
+    let is_cyrillic = |c: char| matches!(c,
+        '\u{0400}'..='\u{052f}' | '\u{2de0}'..='\u{2dff}' | '\u{a640}'..='\u{a69f}');
+    let request_letters: Vec<char> = request.chars().take(2000)
+        .filter(|c| c.is_alphabetic()).collect();
+    // Even a short Cyrillic instruction can be followed by a large Latin code
+    // sample. Abstain whenever the request itself contains Cyrillic wording.
+    if request_letters.iter().any(|c| is_cyrillic(*c)) {
+        return true;
+    }
+    let latin_letters = request_letters.iter().filter(|c| c.is_ascii_alphabetic()
+        || matches!(**c, '\u{00c0}'..='\u{024f}' | '\u{1e00}'..='\u{1eff}')).count();
     if latin_letters < 20 || latin_letters * 100 < request_letters.len() * 90 {
         return true;
     }
     let title_letters: Vec<char> = title.chars().filter(|c| c.is_alphabetic()).collect();
-    let cyrillic_letters = title_letters.iter().filter(|c| matches!(**c, '\u{0400}'..='\u{052f}' | '\u{2de0}'..='\u{2dff}' | '\u{a640}'..='\u{a69f}')).count();
-    cyrillic_letters * 2 <= title_letters.len()
+    let cyrillic_letters = title_letters.iter().filter(|c| is_cyrillic(**c)).count();
+    // Allow mixed titles and proper nouns; reject only a clear script switch.
+    cyrillic_letters * 100 < title_letters.len() * 80 || title_letters.is_empty()
 }
 
 fn parse_thread_title(bytes: &[u8]) -> Result<String, String> {
@@ -4970,6 +4980,11 @@ mod title_tests {
         assert!(title_script_matches_request("Полностью обнови интерфейс и игру", "Обновление интерфейса игры"));
         assert!(title_script_matches_request("Corrige el diseño de la interfaz", "Mejorar el diseño de interfaz"));
         assert!(title_script_matches_request("Fix the parser for Russian names", "Fix parser for Иван"));
+        assert!(title_script_matches_request("Fix the city display for Moscow", "Fix Москва"));
+        assert!(title_script_matches_request(
+            &format!("Исправь эту функцию: ```ts\n{}\n```", "const example = true;".repeat(100)),
+            "Исправление функции",
+        ));
         assert!(title_script_matches_request("Fix", "Исправление интерфейса"));
         assert!(title_script_matches_request("Review this text: Полностью обновить интерфейс и игру", "Обновление интерфейса игры"));
         assert!(title_script_matches_request("日本語でゲームのユーザーインターフェースを改善してください", "ゲーム画面を改善する"));
